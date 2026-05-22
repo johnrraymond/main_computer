@@ -1,0 +1,85 @@
+    const activeTitle = document.querySelector("#active-app-title");
+    const activeSummary = document.querySelector("#active-app-summary");
+    const activeState = document.querySelector("#active-app-state");
+    const terminalAnalysis = document.querySelector("#terminal-analysis");
+    const terminalAnalysisToggle = document.querySelector("#terminal-analysis-toggle");
+    const appCopy = {
+      webgl: ["Game Surface", "Isometric surface is ready.", "Game surface renders the selected isometric sprite-and-particle scene."],
+      calculator: ["Calculator", "Local arithmetic tool is ready.", "Calculator is running."],
+      document: ["Document Editor", "Editable writing workspace is ready.", "Document Editor is running."],
+      spreadsheet: ["Spreadsheet", "Editable sheet workspace is ready.", "Spreadsheet is running."],
+      onlyoffice: ["ONLYOFFICE", "Native XLSX workbook editor is ready.", "ONLYOFFICE is running."],
+      "task-manager": ["Task Manager", "Process monitor, server control, connection watch, and AI operations are ready.", "Task Manager is running."],
+      terminal: ["Terminal", "Local command runner is ready.", "Terminal is running."],
+      "chat-console": ["Chat Console", "Typed AI/code/Terminal/Mathics notebook cells are ready.", "Chat Console notebook is running."],
+      "git-tools": ["Git Tools", "Repository status, patch inbox, and harness actions are ready.", "Git Tools are ready."],
+      "code-editor": ["Code Editor", "Aider action dock is ready for the future editor.", "Code Editor Aider setup is running."],
+      "file-explorer": ["File Explorer", "Read-only system file browser is ready.", "File Explorer is running read-only."],
+      "game-editor": ["Game Editor", "Project-backed scene editor is ready.", "Game Editor is scene-backed."],
+      "website-builder": ["Website Builder", "Manage site manifests, save website files, and publish local Docker lanes.", "Website Builder is running."],
+      worker: ["Worker", "Configure remote AI use and local AI rental behavior.", "Worker configuration is ready."]
+    };
+    const desktopApps = [
+      {app: "webgl", glyph: "G", title: "Game Surface", summary: "project preview"},
+      {app: "calculator", glyph: "C", title: "Calculator", summary: "arithmetic tool"},
+      {app: "task-manager", glyph: "T", title: "Task Manager", summary: "operations deck"},
+      {app: "terminal", glyph: "S", title: "Terminal", summary: "command shell"},
+      {app: "chat-console", glyph: "N", title: "Chat Console", summary: "notebook cells"},
+      {app: "git-tools", glyph: "G", title: "Git Tools", summary: "revision tools"},
+      {app: "code-editor", glyph: "E", title: "Code Editor", summary: "Aider dock"},
+      {app: "file-explorer", glyph: "F", title: "File Explorer", summary: "system files"},
+      {app: "game-editor", glyph: "P", title: "Game Editor", summary: "scene builder"},
+      {app: "website-builder", glyph: "W", title: "Website Builder", summary: "site manager"},
+      {app: "worker", glyph: "A", title: "Worker", summary: "AI rental config"}
+    ];
+    const routeableApps = new Set(Object.keys(appCopy));
+    const websiteBuilderRouteSitePattern = /^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/;
+
+    function normalizeWebsiteBuilderRouteSiteId(siteId = "") {
+      const value = String(siteId || "").trim().toLowerCase();
+      return websiteBuilderRouteSitePattern.test(value) ? value : "";
+    }
+
+    function websiteBuilderSiteIdFromPath(pathname = window.location.pathname) {
+      const cleaned = String(pathname || "").replace(/\/+$/, "") || "/";
+      const parts = cleaned.split("/").filter(Boolean);
+      if (!parts.length || !["applications", "apps", "app"].includes(parts[0])) return "";
+      if (parts[1] !== "website-builder") return "";
+      return normalizeWebsiteBuilderRouteSiteId(parts[2] || "");
+    }
+
+    function websiteBuilderPath(siteId = "") {
+      const normalizedSiteId = normalizeWebsiteBuilderRouteSiteId(siteId);
+      return normalizedSiteId
+        ? `/applications/website-builder/${encodeURIComponent(normalizedSiteId)}`
+        : "/applications/website-builder";
+    }
+
+    function applicationPath(appName, options = {}) {
+      const normalized = routeableApps.has(appName) ? appName : "calculator";
+      if (normalized === "website-builder") {
+        return websiteBuilderPath(options.siteId || "");
+      }
+      return normalized === "calculator" ? "/applications" : `/applications/${normalized}`;
+    }
+
+    function normalizedTaskNotebookTab(tabName) {
+      return tabName === "connections"
+        ? "connections"
+        : tabName === "all-processes"
+          ? "all-processes"
+          : tabName === "hardware"
+            ? "hardware"
+            : "server-processes";
+    }
+
+    function taskNotebookTabFromPath(pathname = window.location.pathname) {
+      const cleaned = String(pathname || "").replace(/\/+$/, "") || "/";
+      const parts = cleaned.split("/").filter(Boolean);
+      if (parts.length < 3 || parts[1] !== "task-manager") return "server-processes";
+      return normalizedTaskNotebookTab(parts[2]);
+    }
+
+    function taskManagerTabPath(tabName) {
+      return `/applications/task-manager/${normalizedTaskNotebookTab(tabName)}`;
+    }

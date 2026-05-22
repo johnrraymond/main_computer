@@ -1,0 +1,117 @@
+services:
+  postgres:
+    container_name: ${COOLIFY_POSTGRES_CONTAINER_NAME:-mc-coolify-local-db}
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USERNAME:?DB_USERNAME is required}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      POSTGRES_DB: ${DB_DATABASE:?DB_DATABASE is required}
+    volumes:
+      - ${COOLIFY_LOCAL_STATE:?COOLIFY_LOCAL_STATE is required}/postgres:/var/lib/postgresql/data
+    networks:
+      default:
+        aliases:
+          - coolify-db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    container_name: ${COOLIFY_REDIS_CONTAINER_NAME:-mc-coolify-local-redis}
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --save 20 1 --loglevel warning --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    volumes:
+      - ${COOLIFY_LOCAL_STATE:?COOLIFY_LOCAL_STATE is required}/redis:/data
+    networks:
+      default:
+        aliases:
+          - coolify-redis
+    healthcheck:
+      test: ["CMD-SHELL", 'redis-cli -a "$$REDIS_PASSWORD" ping | grep PONG']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  soketi:
+    container_name: ${COOLIFY_SOKETI_CONTAINER_NAME:-mc-coolify-local-realtime}
+    image: quay.io/soketi/soketi:${LATEST_REALTIME_VERSION:-1.4-16-debian}
+    restart: unless-stopped
+    environment:
+      SOKETI_DEBUG: "false"
+      SOKETI_DEFAULT_APP_ID: ${PUSHER_APP_ID:?PUSHER_APP_ID is required}
+      SOKETI_DEFAULT_APP_KEY: ${PUSHER_APP_KEY:?PUSHER_APP_KEY is required}
+      SOKETI_DEFAULT_APP_SECRET: ${PUSHER_APP_SECRET:?PUSHER_APP_SECRET is required}
+    networks:
+      default:
+        aliases:
+          - coolify-realtime
+    ports:
+      - "127.0.0.1:${SOKETI_PORT:-6001}:6001"
+      - "127.0.0.1:${SOKETI_TERMINAL_PORT:-6002}:6002"
+
+  coolify:
+    container_name: ${COOLIFY_CONTAINER_NAME:-mc-coolify-local}
+    build:
+      context: ./deploy/coolify/local-docker
+      dockerfile: Dockerfile
+      args:
+        COOLIFY_BASE_IMAGE: ${REGISTRY_URL:-ghcr.io}/coollabsio/coolify:${LATEST_IMAGE:-latest}
+    image: ${COOLIFY_LOCAL_IMAGE:-main-computer-coolify-local:self-ssh}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      soketi:
+        condition: service_started
+    env_file:
+      - ${COOLIFY_LOCAL_STATE:?COOLIFY_LOCAL_STATE is required}/source/.env
+    environment:
+      APP_ENV: production
+      APP_NAME: ${APP_NAME:-Coolify}
+      APP_KEY: ${APP_KEY:?APP_KEY is required}
+      APP_ID: ${APP_ID:?APP_ID is required}
+      APP_URL: http://127.0.0.1:${APP_PORT:-8000}
+      DB_CONNECTION: pgsql
+      DB_HOST: ${DB_HOST:-postgres}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_DATABASE: ${DB_DATABASE:?DB_DATABASE is required}
+      DB_USERNAME: ${DB_USERNAME:?DB_USERNAME is required}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      PUSHER_APP_ID: ${PUSHER_APP_ID:?PUSHER_APP_ID is required}
+      PUSHER_APP_KEY: ${PUSHER_APP_KEY:?PUSHER_APP_KEY is required}
+      PUSHER_APP_SECRET: ${PUSHER_APP_SECRET:?PUSHER_APP_SECRET is required}
+      PUSHER_HOST: coolify-realtime
+      PUSHER_PORT: "6001"
+      PUSHER_SCHEME: http
+      ROOT_USERNAME: ${ROOT_USERNAME:?ROOT_USERNAME is required}
+      ROOT_USER_EMAIL: ${ROOT_USER_EMAIL:?ROOT_USER_EMAIL is required}
+      ROOT_USER_PASSWORD: ${ROOT_USER_PASSWORD:?ROOT_USER_PASSWORD is required}
+      # Local self-SSH deploys use plain SSH. OpenSSH ControlMaster mux sockets
+      # are unreliable for root@127.0.0.1 inside this container.
+      MUX_ENABLED: "false"
+      SSH_MUX_ENABLED: "false"
+    ports:
+      - "127.0.0.1:${APP_PORT:-8000}:8080"
+    volumes:
+      - ${COOLIFY_LOCAL_STATE:?COOLIFY_LOCAL_STATE is required}/coolify:/var/www/html/storage/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+networks:
+  default:
+    name: ${COOLIFY_NETWORK_NAME:-main-computer-coolify-local_default}

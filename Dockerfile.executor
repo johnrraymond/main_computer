@@ -1,0 +1,12 @@
+﻿FROM python:3.12-slim
+
+# docker build -f Dockerfile.executor -t main-computer-executor:latest .
+
+RUN apt-get update  && apt-get install -y --no-install-recommends bash coreutils findutils grep sed && rm -rf /var/lib/apt/lists/*
+
+RUN pip install playwright && playwright install --with-deps chromium
+
+WORKDIR /workspace
+
+CMD ["bash"]
+

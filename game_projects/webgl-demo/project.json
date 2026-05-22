@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "id": "webgl-demo",
+  "name": "WebGL Demo",
+  "description": "Isometric sprite-and-particle demo project for Main Computer.",
+  "activeSceneId": "default-empty-scene",
+  "settings": {
+    "targetWidth": 960,
+    "targetHeight": 540
+  },
+  "scenes": [
+    {
+      "id": "default-empty-scene",
+      "name": "Isometric Battle Floor",
+      "version": 2,
+      "background": "radial-gradient(circle at 50% 24%, rgba(56, 189, 248, 0.16), rgba(15, 23, 42, 0.92) 55%, #020617 100%)",
+      "objects": [
+        {
+          "id": "hero-sprite",
+          "type": "sprite-actor",
+          "x": 4,
+          "y": 4,
+          "width": 104,
+          "height": 144,
+          "props": {
+            "label": "Main Character",
+            "role": "player",
+            "spawn": true,
+            "color": "#7dd3fc",
+            "z": 18,
+            "bob": 10,
+            "motion": "stride",
+            "spriteSeries": [
+              "idle-nw",
+              "step-left",
+              "idle-ne",
+              "step-right"
+            ]
+          }
+        },
+        {
+          "id": "hero-aura",
+          "type": "particle-emitter",
+          "x": 4,
+          "y": 4,
+          "width": 120,
+          "height": 96,
+          "props": {
+            "label": "Arc Halo",
+            "role": "support",
+            "color": "#facc15",
+            "particleCount": 30,
+            "particleSize": 4,
+            "spread": 0.9,
+            "motion": "orbit",
+            "z": 44
+          }
+        },
+        {
+          "id": "ruin-scout",
+          "type": "sprite-actor",
+          "x": 7,
+          "y": 3,
+          "width": 96,
+          "height": 128,
+          "props": {
+            "label": "Ruin Scout",
+            "color": "#c084fc",
+            "z": 12,
+            "bob": 6,
+            "motion": "glide",
+            "spriteSeries": [
+              "watch",
+              "lean",
+              "ready",
+              "dash"
+            ]
+          }
+        },
+        {
+          "id": "gate-sentinel",
+          "type": "sprite-actor",
+          "x": 2,
+          "y": 7,
+          "width": 92,
+          "height": 120,
+          "props": {
+            "label": "Gate Sentinel",
+            "color": "#fb7185",
+            "z": 10,
+            "bob": 5,
+            "motion": "guard",
+            "spriteSeries": [
+              "guard",
+              "lean",
+              "brace",
+              "lunge"
+            ]
+          }
+        }
+      ],
+      "metadata": {
+        "starter": true,
+        "projection": "isometric",
+        "tileWidth": 92,
+        "tileHeight": 46,
+        "originX": 480,
+        "originY": 124,
+        "particleOnly": false,
+        "includesDefaultPlayer": true,
+        "isometric": true
+      }
+    }
+  ],
+  "assets": [],
+  "scripts": [],
+  "metadata": {
+    "createdBy": "Main Computer Scene Store",
+    "revision": 5
+  }
+}

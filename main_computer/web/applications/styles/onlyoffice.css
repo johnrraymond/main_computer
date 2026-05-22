@@ -1,0 +1,230 @@
+    .onlyoffice-app {
+      display: none;
+      height: 100%;
+      min-height: 320px;
+      padding: 18px;
+      align-items: stretch;
+    }
+    .onlyoffice-shell {
+      width: 100%;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+      gap: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: #050605;
+    }
+    .onlyoffice-library {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto auto auto minmax(0, 1fr);
+      gap: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #070806;
+      overflow: hidden;
+    }
+    .onlyoffice-library-head,
+    .onlyoffice-head,
+    .onlyoffice-toolbar,
+    .onlyoffice-library-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .onlyoffice-library-head,
+    .onlyoffice-head {
+      justify-content: space-between;
+    }
+    .onlyoffice-library-actions {
+      flex-wrap: wrap;
+    }
+    .onlyoffice-library-head strong,
+    .onlyoffice-head strong {
+      color: var(--gold);
+      font-size: 14px;
+      text-transform: uppercase;
+    }
+    .onlyoffice-head span {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 3px;
+    }
+    .onlyoffice-library-head button,
+    .onlyoffice-library-actions button,
+    .onlyoffice-toolbar button {
+      min-height: 32px;
+      padding: 6px 9px;
+    }
+    .onlyoffice-library-status,
+    .onlyoffice-current-path,
+    .onlyoffice-server-status,
+    .onlyoffice-server-url,
+    .onlyoffice-note,
+    .onlyoffice-file-empty {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    .onlyoffice-current-path {
+      color: var(--sky);
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+    .onlyoffice-server-status {
+      color: var(--mint);
+      font-weight: 800;
+    }
+    .onlyoffice-server-status.offline {
+      color: #ffb36b;
+    }
+    .onlyoffice-server-url {
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }
+    .onlyoffice-status {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--ink);
+      background: #10110d;
+      padding: 6px 10px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .onlyoffice-workspace {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto auto auto auto auto auto minmax(0, 1fr);
+      gap: 10px;
+    }
+    .onlyoffice-note {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 10px;
+      background: #070806;
+    }
+    .onlyoffice-file-list {
+      min-height: 0;
+      overflow: auto;
+      display: grid;
+      align-content: start;
+      gap: 8px;
+    }
+    .onlyoffice-file-item {
+      width: 100%;
+      display: grid;
+      gap: 4px;
+      text-align: left;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #10110d;
+      color: var(--ink);
+      cursor: pointer;
+    }
+    .onlyoffice-file-item.active {
+      border-color: var(--sky);
+      box-shadow: inset 4px 0 0 var(--sky);
+    }
+    .onlyoffice-file-item strong {
+      color: var(--ink);
+      overflow-wrap: anywhere;
+    }
+    .onlyoffice-file-item span {
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+    .onlyoffice-editor-host {
+      min-height: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0b0c09;
+      overflow: hidden;
+      position: relative;
+    }
+    .onlyoffice-editor-placeholder {
+      height: 100%;
+      min-height: 360px;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      padding: 24px;
+      text-align: center;
+    }
+
+
+    html.onlyoffice-contained-editor-page,
+    html.onlyoffice-contained-editor-page body,
+    body.onlyoffice-contained-editor-page {
+      overflow: hidden !important;
+    }
+
+    .onlyoffice-contained-stage-root {
+      position: relative !important;
+      overflow: hidden !important;
+      overflow-x: hidden !important;
+      overflow-y: hidden !important;
+      contain: layout size !important;
+      transform: none !important;
+      clip-path: none !important;
+      min-width: 0 !important;
+      min-height: 360px !important;
+    }
+
+    .onlyoffice-app.onlyoffice-contained-editor-active .onlyoffice-library,
+    .onlyoffice-app.onlyoffice-contained-editor-active .onlyoffice-head,
+    .onlyoffice-app.onlyoffice-contained-editor-active .onlyoffice-current-path,
+    .onlyoffice-app.onlyoffice-contained-editor-active .onlyoffice-server-status,
+    .onlyoffice-app.onlyoffice-contained-editor-active .onlyoffice-server-url,
+    .onlyoffice-app.onlyoffice-contained-editor-active .onlyoffice-toolbar,
+    .onlyoffice-app.onlyoffice-contained-editor-active .onlyoffice-note,
+    .onlyoffice-app.onlyoffice-contained-editor-active .widget-ticker,
+    .onlyoffice-app.onlyoffice-contained-editor-active .fullscreen-control {
+      display: none !important;
+    }
+
+    .onlyoffice-contained-editor-stage {
+      position: absolute !important;
+      left: 10px !important;
+      top: 10px !important;
+      right: 18px !important;
+      bottom: 42px !important;
+      overflow: hidden !important;
+      overflow-x: hidden !important;
+      overflow-y: hidden !important;
+      z-index: 2147482400 !important;
+      display: block !important;
+      border: 1px solid var(--line) !important;
+      border-radius: 8px !important;
+      background: #000 !important;
+      box-sizing: border-box !important;
+      contain: layout size paint !important;
+    }
+
+    iframe.onlyoffice-contained-editor-frame {
+      position: absolute !important;
+      left: 0 !important;
+      top: 0 !important;
+      right: auto !important;
+      bottom: auto !important;
+      width: 100% !important;
+      height: 100% !important;
+      min-width: 0 !important;
+      min-height: 0 !important;
+      max-width: none !important;
+      max-height: none !important;
+      display: block !important;
+      border: 0 !important;
+      border-radius: 0 !important;
+      background: #000 !important;
+      transform: none !important;
+      z-index: 1 !important;
+    }
+

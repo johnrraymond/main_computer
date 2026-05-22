@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Main Computer Spreadsheet Browser Smoke</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; line-height: 1.4; }
+    code, pre { background: #f3f4f6; border-radius: 0.35rem; padding: 0.15rem 0.35rem; }
+    .ok { color: #166534; }
+    .fail { color: #991b1b; }
+  </style>
+  <script src="/applications/vendor/hyperformula/hyperformula.full.min.js"></script>
+</head>
+<body>
+  <h1>Spreadsheet browser smoke</h1>
+  <p>This page checks the local spreadsheet vendor assets without requiring the full app shell.</p>
+  <pre id="spreadsheet-smoke-output">running...</pre>
+  <script type="module">
+    const output = document.getElementById("spreadsheet-smoke-output");
+    const lines = [];
+    function log(message) {
+      lines.push(message);
+      output.textContent = lines.join("\n");
+    }
+    function assert(condition, message) {
+      if (!condition) throw new Error(message);
+      log("✓ " + message);
+    }
+
+    try {
+      assert(typeof window.HyperFormula === "function", "HyperFormula global is visible");
+      const functions = typeof window.HyperFormula.getRegisteredFunctionNames === "function"
+        ? window.HyperFormula.getRegisteredFunctionNames()
+        : [];
+      assert(functions.includes("SUM"), "formula functions are visible");
+      const hf = window.HyperFormula.buildFromSheets({
+        Sheet1: [["2", "3", "=A1+B1", "=SUM(A1:B1)"]]
+      }, {licenseKey: "gpl-v3"});
+      assert(hf.getCellValue({sheet: hf.getSheetId("Sheet1"), row: 0, col: 2}) === 5, "=A1+B1 calculates");
+      assert(hf.getCellValue({sheet: hf.getSheetId("Sheet1"), row: 0, col: 3}) === 5, "=SUM(A1:B1) calculates");
+      hf.destroy();
+      const errorEngine = window.HyperFormula.buildFromSheets({
+        Sheet1: [["1", "0", "=A1/B1"]]
+      }, {licenseKey: "gpl-v3"});
+      const errorValue = errorEngine.getCellValue({sheet: errorEngine.getSheetId("Sheet1"), row: 0, col: 2});
+      assert(Boolean(errorValue && (errorValue.message || errorValue.type)), "formula errors are visible");
+      errorEngine.destroy();
+
+      const appHtml = await fetch("/applications/spreadsheet", {cache: "no-store"}).then((response) => response.text());
+      assert(appHtml.includes('id="spreadsheet-export-xlsx"'), "XLSX export button exists");
+      assert(appHtml.includes("function spreadsheetFormulaRawSource"), "formula cell save/load keeps raw source");
+      assert(appHtml.includes("function runSpreadsheetSelectedCell"), "code cell execution runtime exists");
+      await import("/applications/vendor/revogrid/revo-grid.esm.js");
+      await customElements.whenDefined("revo-grid");
+      assert(Boolean(customElements.get("revo-grid")), "RevoGrid loads");
+      output.className = "ok";
+      log("spreadsheet browser smoke passed");
+    } catch (error) {
+      output.className = "fail";
+      log("✗ " + (error?.message || error));
+      throw error;
+    }
+  </script>
+</body>
+</html>

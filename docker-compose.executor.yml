@@ -1,0 +1,6 @@
+services:
+  executor-image:
+    build:
+      context: .
+      dockerfile: docker/executor/Dockerfile
+    image: main-computer-executor:latest

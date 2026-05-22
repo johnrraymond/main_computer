@@ -1,0 +1,192 @@
+    }
+    
+    .project-doc-display {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      z-index: 9990;
+      width: min(920px, calc(100vw - 48px));
+      height: min(720px, calc(100vh - 48px));
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
+      gap: 8px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #050604;
+      color: var(--ink);
+      box-shadow: 0 20px 60px #000c;
+      padding: 10px;
+    }
+    .project-doc-display[hidden] {
+      display: none;
+    }
+    .project-doc-display-header {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 12px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 8px;
+    }
+    .project-doc-display-header strong {
+      display: block;
+      color: var(--gold);
+      font-size: 13px;
+      text-transform: uppercase;
+    }
+    .project-doc-display-header span,
+    .project-doc-display-status {
+      color: var(--muted);
+      font: 800 12px Consolas, "Lucida Console", monospace;
+      overflow-wrap: anywhere;
+    }
+    .project-doc-display-header button {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #111610;
+      color: var(--ink);
+      padding: 7px 9px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .project-doc-display-header button:hover {
+      border-color: var(--gold);
+      color: var(--gold);
+    }
+    .project-doc-display iframe {
+      display: block;
+      width: 100%;
+      height: 100%;
+      min-height: 280px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f8f7f2;
+    }
+
+    #mc-widget-editor-root {
+      position: fixed;
+      inset: 0;
+      z-index: 10000;
+      pointer-events: none;
+    }
+    .mc-widget-selection {
+      position: fixed;
+      border: 2px solid var(--sky);
+      border-radius: 7px;
+      box-shadow: 0 0 0 1px #000, 0 0 18px rgba(60, 219, 255, 0.35);
+      pointer-events: none;
+    }
+    #mc-widget-editor-pane {
+      position: fixed;
+      width: 380px;
+      max-width: calc(100vw - 24px);
+      max-height: calc(100vh - 24px);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #050604;
+      color: var(--ink);
+      box-shadow: 0 20px 60px #000c;
+      display: none;
+      grid-template-rows: auto 1fr;
+      pointer-events: auto;
+      overflow: hidden;
+    }
+    #mc-widget-editor-pane.open {
+      display: grid;
+    }
+    .mc-widget-editor-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border-bottom: 1px solid var(--line);
+      padding: 10px;
+      cursor: move;
+      user-select: none;
+    }
+    .mc-widget-editor-header strong {
+      color: var(--gold);
+      font-size: 13px;
+      text-transform: uppercase;
+    }
+    .mc-widget-editor-body {
+      overflow: auto;
+      padding: 10px;
+      display: grid;
+      gap: 10px;
+    }
+    .mc-widget-editor-actions,
+    .mc-widget-editor-docks {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .mc-widget-editor-actions button,
+    .mc-widget-editor-docks button {
+      padding: 6px 8px;
+      font-size: 11px;
+      background: #111610;
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    .mc-widget-editor-actions button:hover,
+    .mc-widget-editor-docks button:hover {
+      border-color: var(--gold);
+      color: var(--gold);
+    }
+    .mc-widget-editor-meta {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      background: #020302;
+      display: grid;
+      gap: 4px;
+      font: 12px Consolas, "Lucida Console", monospace;
+    }
+    .mc-widget-editor-meta span {
+      color: var(--muted);
+    }
+    .mc-widget-editor-field {
+      display: grid;
+      gap: 4px;
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+    .mc-widget-editor-field input,
+    .mc-widget-editor-field select {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #010201;
+      color: var(--ink);
+      padding: 7px;
+      text-transform: none;
+    }
+    .mc-widget-editor-field input[type="checkbox"] {
+      width: auto;
+      justify-self: start;
+    }
+    .mc-widget-dock-preview {
+      position: fixed;
+      border: 2px dashed var(--gold);
+      background: rgba(245, 190, 84, 0.08);
+      pointer-events: none;
+    }
+    @media (max-width: 980px) {
+      header { align-items: flex-start; flex-direction: column; }
+      nav { justify-content: flex-start; }
+      main { grid-template-columns: 1fr; }
+      .stage { min-height: 560px; }
+      .aider-shell { grid-template-columns: 1fr; }
+      .layout-builder-workspace { grid-template-columns: 1fr; }
+      .terminal-app { grid-template-columns: 1fr; }
+      .file-map-list { max-height: 260px; }
+    }
+    @media (max-width: 620px) {
+      header, main { padding: 12px; }
+      h1 { font-size: 20px; }
+      .demo-controls { grid-template-columns: 1fr; }
+      .terminal-controls { grid-template-columns: 1fr; }
+      .terminal-ai-command { grid-template-columns: 1fr; }
+      .aider-grid { grid-template-columns: 1fr; }
+    }

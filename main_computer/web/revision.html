@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Main Computer Revision Control</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #f6f0df;
+      --muted: #c8bea5;
+      --line: #4a4334;
+      --gold: #f7c95f;
+      --rose: #df6794;
+      --sky: #75d2f2;
+      --mint: #a6d96f;
+      --shell: #080806;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; overflow: hidden; }
+    body {
+      background: var(--shell);
+      color: var(--ink);
+      font-family: "Segoe UI", Arial, sans-serif;
+      letter-spacing: 0;
+    }
+    .viewport {
+      height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    h1 { margin: 0; font-size: 22px; }
+    nav { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    a, button {
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 12px;
+      color: #100d07;
+      background: var(--gold);
+      font: inherit;
+      font-weight: 800;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    main {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 340px minmax(0, 1fr) 420px;
+      gap: 12px;
+      padding: 12px;
+    }
+    section, aside {
+      min-height: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #10100d;
+      padding: 14px;
+      overflow: auto;
+    }
+    h2 {
+      margin: 0 0 10px;
+      color: var(--gold);
+      font-size: 14px;
+      text-transform: uppercase;
+    }
+    label {
+      display: grid;
+      gap: 5px;
+      margin-bottom: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    input {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      color: var(--ink);
+      background: #090907;
+      font: inherit;
+    }
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .actions button:nth-child(2) { background: var(--sky); }
+    .actions button:nth-child(3) { background: var(--mint); }
+    .actions button:nth-child(4) { background: var(--rose); }
+    .snapshot {
+      margin-bottom: 8px;
+      padding: 10px;
+      border-radius: 8px;
+      border-left: 10px solid var(--gold);
+      background: #090907;
+      color: var(--muted);
+      word-break: break-word;
+    }
+    .snapshot strong { display: block; color: var(--ink); }
+    pre {
+      min-height: 260px;
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--muted);
+      font-family: Consolas, "Lucida Console", monospace;
+    }
+    @media (max-width: 980px) {
+      html, body { overflow: auto; }
+      .viewport { height: auto; min-height: 100vh; }
+      main { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="viewport">
+    <header>
+      <h1>Main Computer Revision Control</h1>
+      <nav>
+        <a href="/graphical">Graphical View</a>
+        <a href="/debug/graphical">Debug</a>
+        <a href="/energy">Energy</a>
+        <a href="/text">Text Console</a>
+      </nav>
+    </header>
+    <main>
+      <aside aria-label="Revision status">
+        <h2>Checkpoint Store</h2>
+        <pre id="revision-status">loading</pre>
+        <div id="snapshots"></div>
+      </aside>
+      <section aria-label="Revision controls">
+        <h2>Guarded Revision Controls</h2>
+        <label>debug passcode<input id="revision-passcode" type="password" autocomplete="current-password" placeholder="optional"></label>
+        <label>checkpoint label<input id="revision-label" value="manual checkpoint"></label>
+        <label>snapshot id<input id="revision-id" placeholder="select from the list"></label>
+        <label>project file<input id="revision-path" value="main_computer/viewport.py"></label>
+        <div class="actions">
+          <button id="revision-refresh" type="button">Refresh</button>
+          <button id="revision-create" type="button">Snapshot</button>
+          <button id="revision-diff" type="button">Diff File</button>
+          <button id="revision-restore" type="button">Restore File</button>
+          <button id="revision-restore-system" type="button">Restore System</button>
+        </div>
+      </section>
+      <aside aria-label="Revision output">
+        <h2>Output</h2>
+        <pre id="revision-output">ready</pre>
+      </aside>
+    </main>
+  </div>
+  <script>
+    const passcode = document.querySelector("#revision-passcode");
+    const label = document.querySelector("#revision-label");
+    const snapshotId = document.querySelector("#revision-id");
+    const revisionPath = document.querySelector("#revision-path");
+    const statusBox = document.querySelector("#revision-status");
+    const output = document.querySelector("#revision-output");
+    const snapshotsBox = document.querySelector("#snapshots");
+
+    async function revisionRequest(path, payload = {}) {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({...payload, passcode: passcode.value})
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      return data;
+    }
+    function render(data) {
+      statusBox.textContent = `${data.count} snapshots\nroot: ${data.root}\nstore: ${data.store}`;
+      snapshotsBox.textContent = "";
+      (data.snapshots || []).forEach((snapshot) => {
+        const item = document.createElement("button");
+        item.className = "snapshot";
+        item.type = "button";
+        const assetState = snapshot.metadata?.debug_asset_snapshot_id ? ` | assets ${snapshot.metadata.debug_asset_snapshot_id}` : "";
+        item.innerHTML = `<strong>${snapshot.id}</strong>${snapshot.label} | ${snapshot.file_count} files${assetState} | ${snapshot.created_at}`;
+        item.addEventListener("click", () => {
+          snapshotId.value = snapshot.id;
+        });
+        snapshotsBox.append(item);
+      });
+      if (data.created) {
+        snapshotId.value = data.created.id;
+        output.textContent = `created snapshot ${data.created.id}`;
+      }
+    }
+    async function refresh() {
+      try {
+        const response = await fetch("/api/revisions/status", {cache: "no-store"});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        render(data);
+      } catch (error) {
+        output.textContent = String(error.message || error);
+      }
+    }
+    document.querySelector("#revision-refresh").addEventListener("click", refresh);
+    document.querySelector("#revision-create").addEventListener("click", async () => {
+      try {
+        render(await revisionRequest("/api/revisions/snapshot", {label: label.value}));
+      } catch (error) {
+        output.textContent = String(error.message || error);
+      }
+    });
+    document.querySelector("#revision-diff").addEventListener("click", async () => {
+      try {
+        const data = await revisionRequest("/api/revisions/diff", {id: snapshotId.value, path: revisionPath.value});
+        output.textContent = data.diff || "no differences";
+      } catch (error) {
+        output.textContent = String(error.message || error);
+      }
+    });
+    document.querySelector("#revision-restore").addEventListener("click", async () => {
+      try {
+        const data = await revisionRequest("/api/revisions/restore", {id: snapshotId.value, path: revisionPath.value});
+        output.textContent = JSON.stringify(data, null, 2);
+        await refresh();
+      } catch (error) {
+        output.textContent = String(error.message || error);
+      }
+    });
+    document.querySelector("#revision-restore-system").addEventListener("click", async () => {
+      try {
+        const data = await revisionRequest("/api/revisions/restore-system", {id: snapshotId.value});
+        output.textContent = JSON.stringify(data, null, 2);
+        await refresh();
+      } catch (error) {
+        output.textContent = String(error.message || error);
+      }
+    });
+    refresh();
+  </script>
+</body>
+</html>

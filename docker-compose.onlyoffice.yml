@@ -1,0 +1,23 @@
+name: main-computer-onlyoffice
+
+services:
+  onlyoffice:
+    image: onlyoffice/documentserver:${MAIN_COMPUTER_ONLYOFFICE_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      JWT_ENABLED: ${MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED:-true}
+      JWT_SECRET: ${MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET:-main-computer-onlyoffice-local-secret}
+    ports:
+      # Local platform site publishing owns 18080-18083; ONLYOFFICE starts at 18084.
+      - "127.0.0.1:${MAIN_COMPUTER_ONLYOFFICE_PORT:-18084}:80"
+    volumes:
+      - onlyoffice-data:/var/www/onlyoffice/Data
+      - onlyoffice-logs:/var/log/onlyoffice
+      - onlyoffice-lib:/var/lib/onlyoffice
+      - onlyoffice-db:/var/lib/postgresql
+
+volumes:
+  onlyoffice-data:
+  onlyoffice-logs:
+  onlyoffice-lib:
+  onlyoffice-db:

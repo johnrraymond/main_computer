@@ -1,0 +1,217 @@
+name: ${MAIN_COMPUTER_DEV_COMPOSE_PROJECT:-main-computer-dev}
+
+x-main-computer-dev-image: &main-computer-dev-image
+  image: main-computer-dev:latest
+  build:
+    context: .
+    dockerfile: docker/dev/app.Dockerfile
+
+services:
+  # Optional containerized viewport. The current in-process DockerExecutor is
+  # host-path based, so this app container keeps executor execution disabled by
+  # default. Run the viewport on the host when actively developing executor runs.
+  main-computer:
+    <<: *main-computer-dev-image
+    profiles: ["app"]
+    command:
+      - python
+      - -m
+      - main_computer.cli
+      - viewport
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8765"
+      - -noverbose
+    environment:
+      MAIN_COMPUTER_PROVIDER: hub
+      MAIN_COMPUTER_MODEL: ${MAIN_COMPUTER_MODEL:-qwen2.5:1.5b}
+      MAIN_COMPUTER_WORKSPACE: /workspace
+      MAIN_COMPUTER_PATH_MODE: ${MAIN_COMPUTER_PATH_MODE:-local}
+      MAIN_COMPUTER_HOST_OS: ${MAIN_COMPUTER_HOST_OS:-auto}
+      MAIN_COMPUTER_HOST_DRIVE_ROOT: ${MAIN_COMPUTER_HOST_DRIVE_ROOT:-/host}
+      MAIN_COMPUTER_HUB_URL: http://hub:8770
+      MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK: "1"
+      MAIN_COMPUTER_HUB_CLIENT_NODE_ID: docker-dev-client
+      MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL: http://ethereum-dev:8545
+      MAIN_COMPUTER_ENERGY_CHAIN_ID: "42424242"
+      OLLAMA_BASE_URL: http://ollama:11434
+      MAIN_COMPUTER_EXECUTOR_ENABLED: "0"
+      MAIN_COMPUTER_EXECUTOR_IMAGE: main-computer-executor:latest
+      MAIN_COMPUTER_EXECUTOR_ROOT: /workspace/runtime/executor
+      MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL: http://127.0.0.1:${MAIN_COMPUTER_ONLYOFFICE_PORT:-18084}
+      MAIN_COMPUTER_ONLYOFFICE_INTERNAL_URL: http://onlyoffice:80
+      MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL: http://main-computer:8765
+      MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET: ${MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET:-main-computer-onlyoffice-local-secret}
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+    volumes:
+      - .:/workspace
+      - main-computer-dev-runtime:/runtime
+    ports:
+      # The dev-control Docker mode sets MAIN_COMPUTER_DOCKER_VIEWPORT_PORT
+      # and keeps the Docker viewport away from the local 8765 viewport.
+      - "${MAIN_COMPUTER_DOCKER_VIEWPORT_PORT:-18765}:8765"
+    depends_on:
+      - hub
+      - ethereum-dev
+
+  hub:
+    <<: *main-computer-dev-image
+    command:
+      - python
+      - -m
+      - main_computer.cli
+      - hub
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8770"
+      - --hub-root
+      - /runtime/hub
+      - -noverbose
+    environment:
+      MAIN_COMPUTER_WORKSPACE: /workspace
+      MAIN_COMPUTER_HUB_ROOT: /runtime/hub
+      MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK: "1"
+      MAIN_COMPUTER_HUB_CREDITS_PER_REQUEST: ${MAIN_COMPUTER_HUB_CREDITS_PER_REQUEST:-1}
+      MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL: http://ethereum-dev:8545
+      MAIN_COMPUTER_ENERGY_CHAIN_ID: "42424242"
+    volumes:
+      - .:/workspace
+      - hub-runtime:/runtime/hub
+    ports:
+      - "${MAIN_COMPUTER_HUB_PORT:-8770}:8770"
+    depends_on:
+      - ethereum-dev
+
+  # Start with --profile worker after Ollama has the requested model available.
+  hub-worker:
+    <<: *main-computer-dev-image
+    profiles: ["worker"]
+    command:
+      - python
+      - -m
+      - main_computer.cli
+      - hub-worker
+      - --provider
+      - ollama
+      - --model
+      - ${MAIN_COMPUTER_MODEL:-qwen2.5:1.5b}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8771"
+      - --hub-url
+      - http://hub:8770
+      - --public-endpoint
+      - http://hub-worker:8771
+      - --hub-worker-node-id
+      - docker-dev-worker-01
+      - --hub-credits-per-request
+      - ${MAIN_COMPUTER_HUB_CREDITS_PER_REQUEST:-1}
+      - -noverbose
+    environment:
+      MAIN_COMPUTER_PROVIDER: ollama
+      MAIN_COMPUTER_MODEL: ${MAIN_COMPUTER_MODEL:-qwen2.5:1.5b}
+      OLLAMA_BASE_URL: http://ollama:11434
+      MAIN_COMPUTER_OLLAMA_TIMEOUT_S: ${MAIN_COMPUTER_OLLAMA_TIMEOUT_S:-600}
+      MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK: "1"
+    volumes:
+      - .:/workspace
+    ports:
+      - "${MAIN_COMPUTER_HUB_WORKER_PORT:-8771}:8771"
+    depends_on:
+      - hub
+      - ollama
+
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "${MAIN_COMPUTER_OLLAMA_HOST_PORT:-11434}:11434"
+
+  ethereum-dev:
+    image: ghcr.io/foundry-rs/foundry:latest
+    # Pin the executable separately from its flags. The Foundry image has used
+    # different default ENTRYPOINT/CMD shapes across tags; passing only flags as
+    # the command prevents Anvil from silently falling back to its defaults.
+    entrypoint:
+      - anvil
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8545"
+      - --chain-id
+      - "42424242"
+    volumes:
+      - ethereum-dev-data:/data
+    ports:
+      - "${MAIN_COMPUTER_ETHEREUM_RPC_PORT:-8545}:8545"
+
+  # Gitea is no longer defined in the dev stack. Main Computer uses the
+  # standalone machine-wide docker-compose.gitea.yml stack on HTTP localhost:3000
+  # so dev, debug, safe, and applications modes do not start competing Git servers.
+
+  # Optional ONLYOFFICE Docs service. Windows local installs prefer WSL-native
+  # ONLYOFFICE via tools/onlyoffice/onlyoffice-control.ps1; this Docker profile
+  # keeps dev/prod container deployments available with the same app config.
+  onlyoffice:
+    image: onlyoffice/documentserver:${MAIN_COMPUTER_ONLYOFFICE_IMAGE_TAG:-latest}
+    profiles: ["onlyoffice"]
+    restart: unless-stopped
+    environment:
+      JWT_ENABLED: ${MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED:-true}
+      JWT_SECRET: ${MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET:-main-computer-onlyoffice-local-secret}
+    ports:
+      - "127.0.0.1:${MAIN_COMPUTER_ONLYOFFICE_PORT:-18084}:80"
+    volumes:
+      - onlyoffice-data:/var/www/onlyoffice/Data
+      - onlyoffice-logs:/var/log/onlyoffice
+      - onlyoffice-lib:/var/lib/onlyoffice
+      - onlyoffice-db:/var/lib/postgresql
+
+  # Build target for the image used by the existing DockerExecutor when the
+  # viewport is run on the host with MAIN_COMPUTER_EXECUTOR_ENABLED=1.
+  executor-image:
+    image: main-computer-executor:latest
+    build:
+      context: .
+      dockerfile: docker/executor/Dockerfile
+    profiles: ["executor"]
+    command:
+      - bash
+      - -lc
+      - python --version && echo executor image built
+
+  # Cheap manual smoke for the executor image without involving the app server.
+  executor-smoke:
+    image: main-computer-executor:latest
+    build:
+      context: .
+      dockerfile: docker/executor/Dockerfile
+    profiles: ["smoke"]
+    command:
+      - bash
+      - -lc
+      - |
+        set -e
+        python - <<'PY'
+        from pathlib import Path
+        Path('/outputs/smoke.txt').write_text('executor smoke ok\n', encoding='utf-8')
+        print('executor smoke ok')
+        PY
+    volumes:
+      - ./runtime/executor/smoke/inputs:/inputs:ro
+      - ./runtime/executor/smoke/outputs:/outputs:rw
+
+volumes:
+  main-computer-dev-runtime:
+  hub-runtime:
+  ollama-data:
+  ethereum-dev-data:
+  onlyoffice-data:
+  onlyoffice-logs:
+  onlyoffice-lib:
+  onlyoffice-db:

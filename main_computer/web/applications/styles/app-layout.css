@@ -1,0 +1,39 @@
+    /* Shared application layout primitives for complex embedded apps.
+       Apps map their own panels onto these roles, then keep app-specific
+       grid areas in the app stylesheet. */
+    .mc-app-shell {
+      width: 100%;
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      overflow: hidden;
+      container-type: inline-size;
+    }
+    .mc-app-workspace {
+      width: 100%;
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      align-items: stretch;
+      overflow: hidden;
+    }
+    .mc-app-pane {
+      min-width: 0;
+      min-height: 0;
+      max-width: 100%;
+      display: grid;
+      align-content: start;
+      overflow: hidden auto;
+      scrollbar-gutter: stable;
+    }
+    .mc-app-primary {
+      min-width: 0;
+      min-height: 0;
+    }
+    .mc-app-tools,
+    .mc-app-inspector,
+    .mc-app-notebook {
+      min-width: 0;
+      min-height: 0;
+    }

@@ -1,0 +1,1893 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Main Computer Control Panel</title>
+  <style>
+    :root {
+      color-scheme: dark;
+
+      --mc-black: #050503;
+      --mc-panel: #0c0c08;
+      --mc-panel-2: #15130c;
+
+      --mc-gold-face: #d7b24c;
+      --mc-gold-edge-hi: #ffe59d;
+      --mc-gold-edge-mid: #f3c95d;
+      --mc-gold-edge-lo: #7d5a17;
+
+      --mc-green-face: #8fbe55;
+      --mc-green-edge-hi: #d8f2aa;
+      --mc-green-edge-mid: #a9d66b;
+      --mc-green-edge-lo: #496920;
+
+      --mc-cyan-face: #56b8dc;
+      --mc-cyan-edge-hi: #bcecff;
+      --mc-cyan-edge-mid: #79d7fb;
+      --mc-cyan-edge-lo: #205f76;
+
+      --mc-gray-face: #9d998a;
+      --mc-gray-edge-hi: #ece5d3;
+      --mc-gray-edge-mid: #c1baa8;
+      --mc-gray-edge-lo: #585348;
+
+      --mc-coral-face: #d5765e;
+      --mc-coral-edge-hi: #ffc8b8;
+      --mc-coral-edge-mid: #f19a80;
+      --mc-coral-edge-lo: #6f2f21;
+
+      --mc-ink: #f7f1df;
+      --mc-muted: #d6ccb7;
+
+      --mc-lcd-top: #5a5b53;
+      --mc-lcd-mid: #45463f;
+      --mc-lcd-bottom: #2c2d28;
+
+      --bg: var(--mc-black);
+      --ink: var(--mc-ink);
+      --muted: var(--mc-muted);
+      --line: rgba(246, 199, 91, 0.35);
+      --line-soft: rgba(246, 199, 91, 0.24);
+      --gold: #f6c75b;
+      --gold-hi: #ffe08a;
+      --good: #a7d86d;
+      --warn: #f6c75b;
+      --bad: #ff8f70;
+      --idle: #cabf9f;
+      --accent: #73d6ff;
+      --glow: 0 12px 24px rgba(0,0,0,.36), inset 0 1px 0 rgba(255,238,190,.06);
+    }
+
+    * { box-sizing: border-box; }
+
+    html,
+    body {
+      min-height: 100%;
+      margin: 0;
+      background:
+        radial-gradient(circle at 14% 0%, rgba(246,199,91,.09), transparent 24%),
+        radial-gradient(circle at 82% 8%, rgba(115,214,255,.07), transparent 22%),
+        radial-gradient(circle at 76% 74%, rgba(255,143,112,.045), transparent 18%),
+        linear-gradient(180deg, #0b0a07, #020202);
+      color: var(--ink);
+      font-family: Arial, Helvetica, sans-serif;
+      scrollbar-color: rgba(246,199,91,.85) rgba(8,8,5,.96);
+      scrollbar-width: thin;
+    }
+
+    body {
+      overflow-y: auto;
+      overflow-x: hidden;
+      position: relative;
+    }
+
+    body::before,
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    body::before {
+      background:
+        linear-gradient(110deg, transparent 0%, transparent 18%, rgba(255,244,210,.08) 22%, rgba(115,214,255,.04) 25%, transparent 34%),
+        linear-gradient(300deg, transparent 0%, transparent 62%, rgba(255,226,158,.05) 70%, transparent 79%);
+      mix-blend-mode: screen;
+      opacity: .6;
+      animation: mcGlassDrift 16s ease-in-out infinite alternate;
+    }
+
+    body::after {
+      background:
+        repeating-linear-gradient(180deg, rgba(255,255,255,.012) 0, rgba(255,255,255,.012) 1px, transparent 1px, transparent 4px),
+        radial-gradient(circle at 50% 0%, rgba(255,214,107,.035), transparent 38%);
+      opacity: .48;
+    }
+
+    ::-webkit-scrollbar {
+      width: 13px;
+      height: 13px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: rgba(8,8,5,.96);
+    }
+
+    ::-webkit-scrollbar-thumb {
+      border: 2px solid rgba(8,8,5,.96);
+      border-radius: 999px;
+      background: var(--mc-gold-face);
+      box-shadow:
+        inset 1px 1px 0 var(--mc-gold-edge-hi),
+        inset -1px -1px 0 var(--mc-gold-edge-lo);
+    }
+
+    button,
+    input,
+    textarea,
+    select {
+      font: inherit;
+    }
+
+    .control-panel {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      position: relative;
+      z-index: 1;
+      background: transparent;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: grid;
+      grid-template-columns: minmax(240px, 0.9fr) minmax(360px, 1.4fr) auto;
+      gap: 14px;
+      align-items: center;
+      padding: 14px 16px;
+      border-bottom: 1px solid rgba(246,199,91,.42);
+      background: linear-gradient(180deg, rgba(18,17,11,.98), rgba(5,5,3,.98));
+      box-shadow:
+        0 12px 24px rgba(0,0,0,.36),
+        inset 0 1px 0 rgba(255,238,190,.06);
+      backdrop-filter: blur(12px);
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: clamp(24px, 3vw, 36px);
+      line-height: 1;
+      letter-spacing: 0;
+      text-transform: uppercase;
+      color: var(--ink);
+      text-shadow: 0 0 18px rgba(246,199,91,.10);
+    }
+
+    .brand span {
+      display: block;
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .overall-card,
+    .panel {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid rgba(246,199,91,.35);
+      background: linear-gradient(180deg, rgba(18,17,11,.98), rgba(5,5,3,.98));
+      box-shadow: var(--glow);
+    }
+
+    .overall-card {
+      min-height: 76px;
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 14px;
+      border-radius: 12px;
+    }
+
+    .status-dot {
+      width: 44px;
+      height: 44px;
+      border-radius: 999px;
+      border: 2px solid currentColor;
+      box-shadow: 0 0 18px currentColor, inset 0 0 14px rgba(255,255,255,.12);
+      color: var(--idle);
+      background: radial-gradient(circle at 35% 30%, rgba(255,255,255,.28), rgba(255,255,255,.03) 48%, rgba(255,255,255,0) 62%);
+    }
+
+    .status-dot.healthy { color: var(--good); }
+    .status-dot.degraded { color: var(--warn); }
+    .status-dot.broken,
+    .status-dot.down { color: var(--bad); }
+    .status-dot.unknown,
+    .status-dot.disabled { color: var(--idle); }
+
+    .top-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .top-actions a,
+    .top-actions button {
+      position: relative;
+      overflow: hidden;
+      border-radius: 8px;
+      border: 1px solid var(--mc-gold-edge-mid);
+      color: #090806;
+      background: var(--mc-gold-face);
+      padding: 10px 14px;
+      text-decoration: none;
+      cursor: pointer;
+      font-weight: 900;
+      box-shadow:
+        inset 1px 1px 0 var(--mc-gold-edge-hi),
+        inset -1px -1px 0 var(--mc-gold-edge-lo),
+        0 5px 10px rgba(0,0,0,.22);
+    }
+
+    .top-actions button {
+      border-color: var(--mc-cyan-edge-mid);
+      background: var(--mc-cyan-face);
+      box-shadow:
+        inset 1px 1px 0 var(--mc-cyan-edge-hi),
+        inset -1px -1px 0 var(--mc-cyan-edge-lo),
+        0 5px 10px rgba(0,0,0,.22);
+    }
+
+    .top-actions .danger-button {
+      border-color: var(--mc-coral-edge-mid);
+      color: #210703;
+      background: var(--mc-coral-face);
+      box-shadow:
+        inset 1px 1px 0 var(--mc-coral-edge-hi),
+        inset -1px -1px 0 var(--mc-coral-edge-lo),
+        0 7px 16px rgba(0,0,0,.32);
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+
+    .hard-halt-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 80;
+      display: none;
+      place-items: center;
+      padding: 24px;
+      background: rgba(0,0,0,.72);
+      backdrop-filter: blur(3px);
+    }
+
+    .hard-halt-overlay.open { display: grid; }
+
+    .hard-halt-dialog {
+      width: min(560px, calc(100vw - 32px));
+      overflow: hidden;
+      border: 1px solid rgba(255,143,112,.62);
+      border-radius: 14px;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 20% 0%, rgba(255,143,112,.18), transparent 34%),
+        linear-gradient(180deg, #15100c, #080706);
+      box-shadow:
+        0 28px 80px rgba(0,0,0,.62),
+        inset 0 1px 0 rgba(255,238,190,.08);
+    }
+
+    .hard-halt-head {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 18px 20px;
+      border-bottom: 1px solid rgba(255,143,112,.28);
+    }
+
+    .hard-halt-mark {
+      width: 38px;
+      height: 38px;
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+      border-radius: 999px;
+      color: #210703;
+      background: var(--bad);
+      font-weight: 900;
+      box-shadow: 0 0 24px rgba(255,143,112,.38);
+    }
+
+    .hard-halt-head h2 {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.15;
+    }
+
+    .hard-halt-head span {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .hard-halt-body {
+      padding: 18px 20px 8px;
+      line-height: 1.5;
+    }
+
+    .hard-halt-warning {
+      margin: 0 0 14px;
+      color: #ffe0d6;
+    }
+
+    .hard-halt-note {
+      margin: 0;
+      padding: 12px;
+      border: 1px solid rgba(246,199,91,.3);
+      border-radius: 10px;
+      color: var(--gold);
+      background: rgba(246,199,91,.08);
+      font-size: 13px;
+    }
+
+    .hard-halt-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 10px;
+      padding: 16px 20px 20px;
+    }
+
+    .hard-halt-actions button {
+      min-width: 130px;
+      padding: 11px 14px;
+      border-radius: 9px;
+      border: 1px solid rgba(255,255,255,.16);
+      cursor: pointer;
+      font: inherit;
+      font-weight: 900;
+    }
+
+    .hard-halt-cancel {
+      color: var(--ink);
+      background: #25221b;
+    }
+
+    .hard-halt-confirm {
+      color: #210703;
+      background: var(--bad);
+      border-color: var(--mc-coral-edge-hi) !important;
+    }
+
+    .hard-halt-confirm:disabled {
+      opacity: .64;
+      cursor: wait;
+    }
+
+    .hard-halt-result {
+      min-height: 22px;
+      padding: 0 20px 18px;
+      color: var(--muted);
+      font-size: 13px;
+      white-space: pre-wrap;
+    }
+
+    .diagnostics-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 78;
+      display: none;
+      place-items: center;
+      padding: 24px;
+      background: rgba(0,0,0,.72);
+      backdrop-filter: blur(3px);
+    }
+
+    .diagnostics-overlay.open { display: grid; }
+
+    .diagnostics-dialog {
+      width: min(980px, calc(100vw - 32px));
+      max-height: min(86vh, 820px);
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr) auto;
+      overflow: hidden;
+      border: 1px solid rgba(115,214,255,.62);
+      border-radius: 14px;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 18% 0%, rgba(115,214,255,.16), transparent 34%),
+        linear-gradient(180deg, #12150f, #070806);
+      box-shadow:
+        0 28px 80px rgba(0,0,0,.62),
+        inset 0 1px 0 rgba(255,238,190,.08);
+    }
+
+    .diagnostics-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 18px 20px;
+      border-bottom: 1px solid rgba(115,214,255,.28);
+    }
+
+    .diagnostics-head h2 {
+      margin: 0;
+      color: var(--accent);
+      font-size: 20px;
+      line-height: 1.15;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+
+    .diagnostics-head span,
+    .diagnostics-status {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .diagnostics-status {
+      padding: 10px 20px;
+      border-bottom: 1px solid rgba(246,199,91,.18);
+      background: rgba(246,199,91,.06);
+      white-space: pre-wrap;
+    }
+
+    .diagnostics-content {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(260px, .8fr) minmax(320px, 1.2fr);
+      gap: 12px;
+      padding: 14px;
+      overflow: hidden;
+    }
+
+    .diagnostics-pane {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 8px;
+      overflow: hidden;
+    }
+
+    .diagnostics-pane h3 {
+      margin: 0;
+      color: var(--gold);
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+
+    .diagnostics-summary {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      align-content: start;
+      overflow-y: auto;
+    }
+
+    .diagnostics-summary .metric {
+      min-height: 74px;
+    }
+
+    .diagnostics-stream,
+    .diagnostics-findings {
+      min-height: 0;
+      overflow-y: auto;
+      display: grid;
+      align-content: start;
+      gap: 7px;
+      padding-right: 4px;
+    }
+
+    .diagnostics-line,
+    .finding-row {
+      padding: 8px;
+      border: 1px solid rgba(246,199,91,.22);
+      border-radius: 8px;
+      color: #ddd4bd;
+      background: rgba(0,0,0,.18);
+      font-family: Consolas, "Lucida Console", monospace;
+      font-size: 12px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .finding-row strong {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--gold-hi);
+    }
+
+    .finding-row.warn strong { color: var(--warn); }
+    .finding-row.fail strong { color: var(--bad); }
+    .finding-row.pass strong { color: var(--good); }
+    .finding-row.info strong { color: var(--accent); }
+
+    .diagnostics-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 10px;
+      padding: 14px 20px 18px;
+      border-top: 1px solid rgba(115,214,255,.22);
+    }
+
+    .diagnostics-actions button {
+      min-width: 130px;
+      padding: 11px 14px;
+      border-radius: 9px;
+      border: 1px solid rgba(255,255,255,.16);
+      cursor: pointer;
+      font: inherit;
+      font-weight: 900;
+    }
+
+    .diagnostics-close {
+      color: var(--ink);
+      background: #25221b;
+    }
+
+    .diagnostics-run {
+      color: #061006;
+      background: var(--accent);
+      border-color: var(--mc-cyan-edge-hi) !important;
+    }
+
+    .diagnostics-run:disabled {
+      opacity: .64;
+      cursor: wait;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(280px, 0.9fr) minmax(420px, 1.3fr) minmax(320px, 0.95fr);
+      gap: 14px;
+      padding: 14px 16px 18px;
+      align-items: start;
+    }
+
+    .column {
+      display: grid;
+      gap: 14px;
+      align-content: start;
+      min-width: 0;
+    }
+
+    .panel {
+      border-radius: 10px;
+      isolation: isolate;
+    }
+
+    .panel-header {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 13px 14px;
+      border-bottom: 1px solid rgba(246,199,91,.24);
+      background: linear-gradient(180deg, #17150d, #090906);
+      box-shadow: inset 0 1px 0 rgba(255,240,198,.07);
+    }
+
+    .panel-header::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 1px;
+      background: linear-gradient(90deg, rgba(246,199,91,.55), transparent 70%);
+    }
+
+    .panel-header h2 {
+      margin: 0;
+      color: var(--gold);
+      font-size: 14px;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+
+    .panel-runtime .panel-header h2,
+    .panel-activity .panel-header h2 {
+      color: var(--good);
+    }
+
+    .panel-dependencies .panel-header h2,
+    .panel-ports .panel-header h2 {
+      color: var(--accent);
+    }
+
+    .panel-map .panel-header h2 { color: var(--gold-hi); }
+
+    .panel-header span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .panel-body { padding: 14px; }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .machine-list,
+    .detail-list,
+    .activity-list,
+    .dependency-list,
+    .port-list {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .service-map {
+      display: grid;
+      gap: 12px;
+    }
+
+    .map-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .service-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .ports {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    /*
+      Raised colored shells. The face is intentionally flat; the button feel comes
+      from a Windows-style top/left highlight and bottom/right shadow.
+    */
+    .metric,
+    .machine-list li,
+    .detail-list li,
+    .activity-list li,
+    .dependency-list li,
+    .map-node,
+    .service-card,
+    .port-pill {
+      --shell-face: var(--mc-gold-face);
+      --shell-edge-hi: var(--mc-gold-edge-hi);
+      --shell-edge-mid: var(--mc-gold-edge-mid);
+      --shell-edge-lo: var(--mc-gold-edge-lo);
+
+      position: relative;
+      overflow: hidden;
+      display: grid;
+      gap: 6px;
+      padding: 8px;
+      border-radius: 10px;
+      border: 1px solid var(--shell-edge-mid);
+      background: var(--shell-face);
+      color: var(--muted);
+      box-shadow:
+        inset 1px 1px 0 var(--shell-edge-hi),
+        inset -1px -1px 0 var(--shell-edge-lo),
+        0 6px 12px rgba(0,0,0,.26);
+    }
+
+    .metric { min-height: 82px; align-content: center; }
+    .map-node { min-height: 92px; align-content: center; padding-left: 10px; }
+    .service-card {
+      min-height: 164px;
+      grid-template-rows: auto auto 1fr auto;
+    }
+
+    .shell-green,
+    .activity-list li,
+    .panel-runtime .machine-list li {
+      --shell-face: var(--mc-green-face);
+      --shell-edge-hi: var(--mc-green-edge-hi);
+      --shell-edge-mid: var(--mc-green-edge-mid);
+      --shell-edge-lo: var(--mc-green-edge-lo);
+    }
+
+    .shell-cyan,
+    .dependency-list li,
+    .port-pill {
+      --shell-face: var(--mc-cyan-face);
+      --shell-edge-hi: var(--mc-cyan-edge-hi);
+      --shell-edge-mid: var(--mc-cyan-edge-mid);
+      --shell-edge-lo: var(--mc-cyan-edge-lo);
+    }
+
+    .shell-gray,
+    .map-node.unknown,
+    .map-node.disabled,
+    .service-card:has(.badge.unknown),
+    .service-card:has(.badge.disabled) {
+      --shell-face: var(--mc-gray-face);
+      --shell-edge-hi: var(--mc-gray-edge-hi);
+      --shell-edge-mid: var(--mc-gray-edge-mid);
+      --shell-edge-lo: var(--mc-gray-edge-lo);
+    }
+
+    .shell-coral,
+    .map-node.broken,
+    .map-node.down,
+    .service-card:has(.badge.broken),
+    .service-card:has(.badge.down) {
+      --shell-face: var(--mc-coral-face);
+      --shell-edge-hi: var(--mc-coral-edge-hi);
+      --shell-edge-mid: var(--mc-coral-edge-mid);
+      --shell-edge-lo: var(--mc-coral-edge-lo);
+    }
+
+    .metric::after,
+    .machine-list li::after,
+    .detail-list li::after,
+    .activity-list li::after,
+    .dependency-list li::after,
+    .map-node::after,
+    .service-card::after,
+    .port-pill::after {
+      content: "";
+      position: absolute;
+      inset: 2px;
+      border-radius: 7px;
+      pointer-events: none;
+      border-top: 1px solid rgba(255,255,255,.18);
+      border-left: 1px solid rgba(255,255,255,.09);
+      border-right: 1px solid rgba(0,0,0,.12);
+      border-bottom: 1px solid rgba(0,0,0,.28);
+    }
+
+    .metric::before,
+    .machine-list li::before,
+    .detail-list li::before,
+    .activity-list li::before,
+    .dependency-list li::before,
+    .map-node::before,
+    .service-card::before,
+    .port-pill::before,
+    .overall-card::before,
+    .panel::before,
+    .top-actions a::before,
+    .top-actions button::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: linear-gradient(120deg, transparent 0%, rgba(255,255,255,.10) 8%, transparent 16%);
+      transform: translateX(-140%);
+      opacity: .24;
+      animation: mcButtonSheen 10s ease-in-out infinite;
+    }
+
+    /*
+      Copper down state. Only failed/down/broken service cards and map nodes get
+      the copper-penny shell; the rest of the control panel keeps its existing
+      Starfleet chrome colors. These selectors intentionally override the
+      generic ::before sheen on failed services so it does not compete or flash.
+    */
+    #service-grid .service-card.shell-coral,
+    #service-grid .service-card:has(.badge.broken),
+    #service-grid .service-card:has(.badge.down),
+    #service-grid .service-card:has(.badge.failed),
+    #service-map .map-node.shell-coral,
+    #service-map .map-node.broken,
+    #service-map .map-node.down,
+    #service-map .map-node.failed {
+      --shell-face: #bf5d29;
+      --shell-edge-hi: #ffddb8;
+      --shell-edge-mid: #e47b42;
+      --shell-edge-lo: #4b1909;
+
+      isolation: isolate;
+      border-color: rgba(255,153,92,.78);
+      background:
+        radial-gradient(circle at 24% 18%, rgba(255,230,190,.34), transparent 19%),
+        radial-gradient(circle at 78% 66%, rgba(255,170,105,.20), transparent 24%),
+        linear-gradient(145deg,
+          #321006 0%,
+          #bf5d29 16%,
+          #ffb071 31%,
+          #823316 47%,
+          #e47b42 64%,
+          #4b1909 82%,
+          #f09a58 100%
+        );
+      box-shadow:
+        inset 1px 1px 0 rgba(255,220,180,.78),
+        inset -1px -1px 0 rgba(55,12,0,.82),
+        inset 0 -18px 30px rgba(60,12,0,.42),
+        0 8px 16px rgba(0,0,0,.34);
+    }
+
+    #service-grid .service-card.shell-coral > *,
+    #service-grid .service-card:has(.badge.broken) > *,
+    #service-grid .service-card:has(.badge.down) > *,
+    #service-grid .service-card:has(.badge.failed) > *,
+    #service-map .map-node.shell-coral > *,
+    #service-map .map-node.broken > *,
+    #service-map .map-node.down > *,
+    #service-map .map-node.failed > * {
+      position: relative;
+      z-index: 2;
+    }
+
+    #service-grid .service-card.shell-coral::before,
+    #service-grid .service-card:has(.badge.broken)::before,
+    #service-grid .service-card:has(.badge.down)::before,
+    #service-grid .service-card:has(.badge.failed)::before,
+    #service-map .map-node.shell-coral::before,
+    #service-map .map-node.broken::before,
+    #service-map .map-node.down::before,
+    #service-map .map-node.failed::before {
+      inset: 0;
+      z-index: 0;
+      background:
+        repeating-linear-gradient(78deg,
+          rgba(255,225,170,.14) 0 1px,
+          rgba(90,25,5,.16) 1px 3px,
+          transparent 3px 8px
+        ),
+        radial-gradient(circle at 36% 28%, rgba(255,245,220,.18), transparent 22%),
+        radial-gradient(circle at 72% 78%, rgba(40,8,0,.20), transparent 28%);
+      mix-blend-mode: soft-light;
+      opacity: .9;
+      transform: none;
+      animation: none;
+    }
+
+    #service-grid .service-card.shell-coral::after,
+    #service-grid .service-card:has(.badge.broken)::after,
+    #service-grid .service-card:has(.badge.down)::after,
+    #service-grid .service-card:has(.badge.failed)::after,
+    #service-map .map-node.shell-coral::after,
+    #service-map .map-node.broken::after,
+    #service-map .map-node.down::after,
+    #service-map .map-node.failed::after {
+      inset: -65%;
+      z-index: 1;
+      border: 0;
+      background:
+        linear-gradient(100deg,
+          transparent 37%,
+          rgba(255,196,120,.16) 44%,
+          rgba(255,248,220,.48) 50%,
+          rgba(204,85,34,.14) 57%,
+          transparent 68%
+        );
+      mix-blend-mode: screen;
+      opacity: 0;
+      transform: translateX(-90%) rotate(17deg);
+      animation: mcCopperDownGlint 18s cubic-bezier(.2,.65,.2,1) infinite;
+      will-change: transform, opacity;
+    }
+
+    /*
+      Green healthy state. Healthy service cards and map nodes keep their green
+      identity, but use a layered emerald-metal surface and a quieter rare glint
+      instead of the generic shimmer.
+    */
+    #service-grid .service-card.shell-green,
+    #service-grid .service-card:has(.badge.healthy),
+    #service-map .map-node.shell-green,
+    #service-map .map-node.healthy {
+      --shell-face: var(--mc-green-face);
+      --shell-edge-hi: var(--mc-green-edge-hi);
+      --shell-edge-mid: var(--mc-green-edge-mid);
+      --shell-edge-lo: var(--mc-green-edge-lo);
+
+      isolation: isolate;
+      border-color: rgba(169,214,107,.82);
+      background:
+        radial-gradient(circle at 24% 18%, rgba(231,255,190,.38), transparent 20%),
+        radial-gradient(circle at 78% 66%, rgba(104,164,42,.22), transparent 24%),
+        linear-gradient(145deg,
+          #1f3210 0%,
+          #6d982f 16%,
+          #d8f2aa 31%,
+          #4f7622 47%,
+          #a7d86d 64%,
+          #2f4d16 82%,
+          #bde77f 100%
+        );
+      box-shadow:
+        inset 1px 1px 0 rgba(225,255,185,.72),
+        inset -1px -1px 0 rgba(35,62,10,.78),
+        inset 0 -18px 30px rgba(29,66,8,.38),
+        0 8px 16px rgba(0,0,0,.30);
+    }
+
+    #service-grid .service-card.shell-green > *,
+    #service-grid .service-card:has(.badge.healthy) > *,
+    #service-map .map-node.shell-green > *,
+    #service-map .map-node.healthy > * {
+      position: relative;
+      z-index: 2;
+    }
+
+    #service-grid .service-card.shell-green::before,
+    #service-grid .service-card:has(.badge.healthy)::before,
+    #service-map .map-node.shell-green::before,
+    #service-map .map-node.healthy::before {
+      inset: 0;
+      z-index: 0;
+      background:
+        repeating-linear-gradient(78deg,
+          rgba(235,255,188,.13) 0 1px,
+          rgba(39,87,15,.14) 1px 3px,
+          transparent 3px 8px
+        ),
+        radial-gradient(circle at 36% 28%, rgba(247,255,218,.20), transparent 22%),
+        radial-gradient(circle at 72% 78%, rgba(19,56,8,.22), transparent 28%);
+      mix-blend-mode: soft-light;
+      opacity: .9;
+      transform: none;
+      animation: none;
+    }
+
+    #service-grid .service-card.shell-green::after,
+    #service-grid .service-card:has(.badge.healthy)::after,
+    #service-map .map-node.shell-green::after,
+    #service-map .map-node.healthy::after {
+      inset: -65%;
+      z-index: 1;
+      border: 0;
+      background:
+        linear-gradient(100deg,
+          transparent 37%,
+          rgba(200,255,150,.13) 44%,
+          rgba(255,255,224,.40) 50%,
+          rgba(111,210,65,.12) 57%,
+          transparent 68%
+        );
+      mix-blend-mode: screen;
+      opacity: 0;
+      transform: translateX(-90%) rotate(17deg);
+      animation: mcGreenHealthyGlint 20s cubic-bezier(.2,.65,.2,1) infinite;
+      will-change: transform, opacity;
+    }
+
+    /*
+      Recessed LCD/LED strips. These use inverse beveling:
+      top/left shadow, bottom/right highlight, so they feel sunk into the card.
+    */
+    .lcd-window,
+    .metric strong,
+    .metric span,
+    .machine-list strong,
+    .machine-list span,
+    .detail-list strong,
+    .detail-list span,
+    .activity-list strong,
+    .activity-list span,
+    .dependency-list strong,
+    .dependency-list span,
+    .port-list strong,
+    .port-list span,
+    .map-node small,
+    .map-node strong,
+    .map-node span,
+    .service-card h3,
+    .service-card p,
+    .service-meta,
+    .port-pill strong,
+    .port-pill span,
+    .overall-card strong,
+    .overall-card span,
+    .badge {
+      position: relative;
+      display: block;
+      width: 100%;
+      margin: 0;
+      padding: 5px 8px;
+      border-radius: 5px;
+      border: 1px solid rgba(20,20,17,.92);
+      color: var(--mc-ink);
+      background:
+        linear-gradient(180deg, rgba(0,0,0,.22), transparent 22%, transparent 70%, rgba(255,255,255,.035)),
+        repeating-linear-gradient(90deg, rgba(255,255,255,.028) 0px, rgba(255,255,255,.028) 1px, transparent 1px, transparent 8px),
+        repeating-linear-gradient(180deg, rgba(0,0,0,.16) 0px, rgba(0,0,0,.16) 1px, transparent 1px, transparent 6px),
+        linear-gradient(180deg, var(--mc-lcd-top) 0%, var(--mc-lcd-mid) 48%, var(--mc-lcd-bottom) 100%);
+      box-shadow:
+        inset 2px 2px 3px rgba(0,0,0,.62),
+        inset -1px -1px 0 rgba(255,246,210,.16),
+        inset 0 -2px 3px rgba(255,255,255,.035),
+        0 1px 0 rgba(255,246,210,.16);
+      overflow: hidden;
+      text-shadow:
+        0 1px 0 rgba(0,0,0,.85),
+        0 0 5px rgba(255,246,210,.08);
+    }
+
+    .lcd-window::before,
+    .metric strong::before,
+    .metric span::before,
+    .machine-list strong::before,
+    .machine-list span::before,
+    .detail-list strong::before,
+    .detail-list span::before,
+    .activity-list strong::before,
+    .activity-list span::before,
+    .dependency-list strong::before,
+    .dependency-list span::before,
+    .port-list strong::before,
+    .port-list span::before,
+    .map-node small::before,
+    .map-node strong::before,
+    .map-node span::before,
+    .service-card h3::before,
+    .service-card p::before,
+    .service-meta::before,
+    .port-pill strong::before,
+    .port-pill span::before,
+    .overall-card strong::before,
+    .overall-card span::before,
+    .badge::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      border-radius: inherit;
+      background:
+        repeating-linear-gradient(90deg, transparent 0, transparent 7px, rgba(0,0,0,.18) 7px, rgba(0,0,0,.18) 8px),
+        repeating-linear-gradient(180deg, transparent 0, transparent 5px, rgba(0,0,0,.14) 5px, rgba(0,0,0,.14) 6px);
+      opacity: .42;
+      mix-blend-mode: screen;
+    }
+
+    .lcd-window::after,
+    .metric strong::after,
+    .metric span::after,
+    .machine-list strong::after,
+    .machine-list span::after,
+    .detail-list strong::after,
+    .detail-list span::after,
+    .activity-list strong::after,
+    .activity-list span::after,
+    .dependency-list strong::after,
+    .dependency-list span::after,
+    .port-list strong::after,
+    .port-list span::after,
+    .map-node small::after,
+    .map-node strong::after,
+    .map-node span::after,
+    .service-card h3::after,
+    .service-card p::after,
+    .service-meta::after,
+    .port-pill strong::after,
+    .port-pill span::after,
+    .overall-card strong::after,
+    .overall-card span::after,
+    .badge::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      border-radius: inherit;
+      box-shadow:
+        inset 1px 1px 0 rgba(0,0,0,.72),
+        inset -1px -1px 0 rgba(255,238,190,.14);
+    }
+
+    .metric strong {
+      min-width: 0;
+      overflow: hidden;
+      color: #9fe8ff;
+      font-size: 24px;
+      line-height: 1.05;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 900;
+    }
+
+    .metric span,
+    .machine-list span,
+    .detail-list span,
+    .activity-list span,
+    .dependency-list span,
+    .port-list span,
+    .map-node span,
+    .service-card p,
+    .service-meta,
+    .port-pill span,
+    .overall-card span {
+      color: #ddd4bd;
+      font-size: 12px;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
+    .machine-list strong,
+    .detail-list strong,
+    .activity-list strong,
+    .dependency-list strong,
+    .port-list strong,
+    .map-node strong,
+    .service-card h3,
+    .port-pill strong {
+      color: #fff1bd;
+      font-size: 13px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: .035em;
+      word-break: break-word;
+    }
+
+    .map-node small {
+      color: #ddd4bd;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      font-size: 12px;
+    }
+
+    .map-node strong,
+    .service-card h3 {
+      font-size: 16px;
+    }
+
+    .dependency-list strong,
+    .port-pill strong { color: #bcecff; }
+    .activity-list strong { color: #d8f2aa; }
+
+    .badge {
+      justify-self: start;
+      width: auto;
+      padding: 4px 10px;
+      border-radius: 999px;
+      color: var(--idle);
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+
+    .badge.healthy { color: #d8f2aa; }
+    .badge.degraded { color: #fff1bd; }
+    .badge.broken,
+    .badge.down { color: #ffc8b8; }
+    .badge.disabled,
+    .badge.unknown { color: #ece5d3; }
+
+    .overall-card strong {
+      font-size: 18px;
+      text-transform: capitalize;
+    }
+
+    .map-arrow {
+      color: var(--gold);
+      text-align: center;
+      font-size: 24px;
+      line-height: 1;
+      text-shadow: 0 0 10px rgba(246,199,91,.30);
+    }
+
+    .footer-note {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .error { color: var(--bad); }
+
+    @keyframes mcButtonSheen {
+      0%, 84%, 100% { transform: translateX(-140%); }
+      92% { transform: translateX(160%); }
+    }
+
+    @keyframes mcCopperDownGlint {
+      0%, 74%, 100% {
+        opacity: 0;
+        transform: translateX(-90%) rotate(17deg);
+      }
+      82% {
+        opacity: .46;
+      }
+      90% {
+        opacity: .10;
+        transform: translateX(90%) rotate(17deg);
+      }
+    }
+
+    @keyframes mcGreenHealthyGlint {
+      0%, 76%, 100% {
+        opacity: 0;
+        transform: translateX(-90%) rotate(17deg);
+      }
+      84% {
+        opacity: .38;
+      }
+      92% {
+        opacity: .08;
+        transform: translateX(90%) rotate(17deg);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #service-grid .service-card.shell-coral::after,
+      #service-grid .service-card:has(.badge.broken)::after,
+      #service-grid .service-card:has(.badge.down)::after,
+      #service-grid .service-card:has(.badge.failed)::after,
+      #service-map .map-node.shell-coral::after,
+      #service-map .map-node.broken::after,
+      #service-map .map-node.down::after,
+      #service-map .map-node.failed::after {
+        animation: none;
+        opacity: .16;
+        transform: translateX(0) rotate(17deg);
+      }
+
+      #service-grid .service-card.shell-green::after,
+      #service-grid .service-card:has(.badge.healthy)::after,
+      #service-map .map-node.shell-green::after,
+      #service-map .map-node.healthy::after {
+        animation: none;
+        opacity: .14;
+        transform: translateX(0) rotate(17deg);
+      }
+    }
+
+    @keyframes mcGlassDrift {
+      0% { transform: translate3d(-2%, 0, 0) scale(1.02); opacity: .46; }
+      50% { transform: translate3d(2%, -1%, 0) scale(1.03); opacity: .62; }
+      100% { transform: translate3d(5%, 1%, 0) scale(1.05); opacity: .50; }
+    }
+
+    @media (max-width: 1180px) {
+      .topbar,
+      .layout {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 700px) {
+      .map-row,
+      .service-grid,
+      .metric-grid,
+      .ports {
+        grid-template-columns: 1fr;
+      }
+      .top-actions { justify-content: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <div class="control-panel">
+    <header class="topbar">
+      <div class="brand">
+        <h1>Main Computer Control Panel</h1>
+        <span>/graphical renamed into a useful live machine and services view · starfleet-inspired operational chrome</span>
+      </div>
+      <section class="overall-card" aria-label="Overall status">
+        <div id="overall-dot" class="status-dot unknown" aria-hidden="true"></div>
+        <div>
+          <strong id="overall-state">Loading</strong>
+          <span id="overall-message">Checking this user session, machine ports, runtime, model backend, Git server, hub, worker, and blockchain.</span>
+        </div>
+      </section>
+      <nav class="top-actions" aria-label="Related views">
+        <button id="refresh-button" type="button">Refresh</button>
+        <button id="level-5-diagnostics-button" type="button">Level 5 Diagnostics</button>
+        <button id="hard-halt-server-button" class="danger-button" type="button">Hard Halt Server</button>
+        <a href="/text">Text Console</a>
+        <a href="/applications">Applications</a>
+        <a href="/energy">Energy Credits</a>
+        <a href="/debug/graphical">Debug View</a>
+        <a href="/revision">Revisions</a>
+      </nav>
+    </header>
+
+    <main class="layout">
+      <section class="column" aria-label="Machine summary">
+        <section class="panel panel-machine">
+          <div class="panel-header">
+            <h2>Machine</h2>
+            <span id="updated-at">loading</span>
+          </div>
+          <div class="panel-body">
+            <div class="metric-grid">
+              <div class="metric"><strong id="metric-cpu">--</strong><span>CPU</span></div>
+              <div class="metric"><strong id="metric-memory">--</strong><span>Memory</span></div>
+              <div class="metric"><strong id="metric-disk">--</strong><span>Disk free</span></div>
+              <div class="metric"><strong id="metric-processes">--</strong><span>Main Computer processes</span></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel panel-runtime">
+          <div class="panel-header">
+            <h2>User Runtime</h2>
+            <span>per-user default</span>
+          </div>
+          <div class="panel-body">
+            <ul id="machine-list" class="machine-list"></ul>
+          </div>
+        </section>
+
+        <section class="panel panel-dependencies">
+          <div class="panel-header">
+            <h2>Dependencies</h2>
+            <span>PATH checks</span>
+          </div>
+          <div class="panel-body">
+            <ul id="dependency-list" class="dependency-list"></ul>
+          </div>
+        </section>
+      </section>
+
+      <section class="column" aria-label="Service map">
+        <section class="panel panel-map">
+          <div class="panel-header">
+            <h2>Service Map</h2>
+            <span>top-level product pieces</span>
+          </div>
+          <div class="panel-body">
+            <div id="service-map" class="service-map">
+              <div class="footer-note">Loading service map...</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel panel-services">
+          <div class="panel-header">
+            <h2>Services</h2>
+            <span>app, hub, worker, Ollama, Gitea, blockchain</span>
+          </div>
+          <div class="panel-body">
+            <div id="service-grid" class="service-grid">
+              <article class="service-card shell-gray"><h3>Main Computer App</h3><span class="badge unknown">loading</span><p>Viewport and local API status.</p></article>
+              <article class="service-card shell-gray"><h3>Hub</h3><span class="badge unknown">loading</span><p>Broker status.</p></article>
+              <article class="service-card shell-gray"><h3>Hub Worker</h3><span class="badge unknown">loading</span><p>Worker and model route status.</p></article>
+              <article class="service-card shell-gray"><h3>Ollama</h3><span class="badge unknown">loading</span><p>Local model backend status.</p></article>
+              <article class="service-card shell-gray"><h3>Git Server / Gitea</h3><span class="badge unknown">loading</span><p>Local project mirror status.</p></article>
+              <article class="service-card shell-gray"><h3>Blockchain / Anvil</h3><span class="badge unknown">loading</span><p>Local chain RPC status.</p></article>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="column" aria-label="Live details">
+        <section class="panel panel-ports">
+          <div class="panel-header">
+            <h2>Open Ports</h2>
+            <span>127.0.0.1 probes</span>
+          </div>
+          <div class="panel-body">
+            <div id="ports" class="ports"></div>
+          </div>
+        </section>
+
+        <section class="panel panel-config">
+          <div class="panel-header">
+            <h2>Configuration</h2>
+            <span>current server config</span>
+          </div>
+          <div class="panel-body">
+            <ul id="config-list" class="detail-list"></ul>
+          </div>
+        </section>
+
+        <section class="panel panel-activity">
+          <div class="panel-header">
+            <h2>Recent Activity</h2>
+            <span>local event bus</span>
+          </div>
+          <div class="panel-body">
+            <ul id="activity-list" class="activity-list"></ul>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <div id="hard-halt-overlay" class="hard-halt-overlay" role="dialog" aria-modal="true" aria-labelledby="hard-halt-title">
+      <div class="hard-halt-dialog">
+        <div class="hard-halt-head">
+          <div class="hard-halt-mark" aria-hidden="true">!</div>
+          <div>
+            <h2 id="hard-halt-title">Hard Halt Server</h2>
+            <span>Local development recovery control</span>
+          </div>
+        </div>
+        <div class="hard-halt-body">
+          <p class="hard-halt-warning">This will immediately stop the local viewport server. Any browser tabs connected to it will stop responding until you restart the server.</p>
+          <p class="hard-halt-note">Use this after applying a local patch when the browser still appears to be served by stale Python code.</p>
+        </div>
+        <div class="hard-halt-actions">
+          <button id="hard-halt-cancel-button" class="hard-halt-cancel" type="button">Cancel</button>
+          <button id="hard-halt-confirm-button" class="hard-halt-confirm" type="button">Hard Halt Server</button>
+        </div>
+        <div id="hard-halt-result" class="hard-halt-result" aria-live="polite"></div>
+      </div>
+    </div>
+
+    <div id="diagnostics-overlay" class="diagnostics-overlay" role="dialog" aria-modal="true" aria-labelledby="diagnostics-title">
+      <div class="diagnostics-dialog">
+        <div class="diagnostics-head">
+          <div>
+            <h2 id="diagnostics-title">Level 5 Diagnostics</h2>
+            <span>Deep system sanity stream for Docker, WSL, Coolify, website ports, ONLYOFFICE, and machine roots.</span>
+          </div>
+          <span id="diagnostics-clock">idle</span>
+        </div>
+        <div id="diagnostics-status" class="diagnostics-status" aria-live="polite">Open this panel to run the full system sanity check.</div>
+        <div class="diagnostics-content">
+          <section class="diagnostics-pane" aria-label="System sanity summary">
+            <h3>Summary</h3>
+            <div id="diagnostics-summary" class="diagnostics-summary">
+              <div class="metric shell-gray"><strong>--</strong><span>overall</span></div>
+              <div class="metric shell-gray"><strong>--</strong><span>findings</span></div>
+            </div>
+          </section>
+          <section class="diagnostics-pane" aria-label="System sanity stream and findings">
+            <h3>Live stream and findings</h3>
+            <div id="diagnostics-stream" class="diagnostics-stream"></div>
+            <div id="diagnostics-findings" class="diagnostics-findings" hidden></div>
+          </section>
+        </div>
+        <div class="diagnostics-actions">
+          <button id="diagnostics-close-button" class="diagnostics-close" type="button">Close</button>
+          <button id="diagnostics-run-button" class="diagnostics-run" type="button">Run System Sanity</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const state = {
+      lastPayload: null,
+      timer: null,
+      sanityStream: null,
+      sanityDone: false,
+      sanityStartedAt: null
+    };
+
+    const byId = (id) => document.getElementById(id);
+
+    function text(value, fallback = "—") {
+      if (value === null || value === undefined || value === "") return fallback;
+      if (typeof value === "object") return JSON.stringify(value);
+      return String(value);
+    }
+
+    function percent(value) {
+      if (value === null || value === undefined || value === "") return "--";
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "--";
+      return `${number.toFixed(number % 1 ? 1 : 0)}%`;
+    }
+
+    function shortPath(value) {
+      const raw = text(value);
+      if (raw.length <= 72) return raw;
+      return `…${raw.slice(-69)}`;
+    }
+
+    function setOverall(payload) {
+      const overall = payload.overall || {};
+      const currentState = overall.state || "unknown";
+      const dot = byId("overall-dot");
+      dot.className = `status-dot ${currentState}`;
+      byId("overall-state").textContent = currentState;
+      byId("overall-message").textContent = overall.message || "Status unavailable.";
+      byId("updated-at").textContent = payload.updated_at ? new Date(payload.updated_at).toLocaleTimeString() : "not updated";
+    }
+
+    function renderMachine(payload) {
+      const machine = payload.machine || {};
+      const cpu = machine.cpu || {};
+      const memory = machine.memory || {};
+      const disk = machine.disk || {};
+      byId("metric-cpu").textContent = cpu.overall_percent === null || cpu.overall_percent === undefined ? "n/a" : percent(cpu.overall_percent);
+      byId("metric-memory").textContent = memory.percent === null || memory.percent === undefined ? "n/a" : percent(memory.percent);
+      byId("metric-disk").textContent = disk.summary || "n/a";
+      byId("metric-processes").textContent = text(machine.main_computer_process_count, "0");
+
+      const runtime = machine.runtime || {};
+      const items = [
+        ["Platform", machine.platform],
+        ["Python", `${machine.python || "unknown"} — ${shortPath(machine.executable)}`],
+        ["Windows user", runtime.username || "unknown"],
+        ["Runtime context", runtime.is_wsl ? `WSL ${runtime.wsl_distro || ""}` : (runtime.is_windows ? "Windows" : "Local/Unix")],
+        ["Home", runtime.home],
+        ["Current directory", machine.cwd],
+        ["Workspace", payload.config?.workspace],
+        ["Runtime root", payload.config?.runtime_root]
+      ];
+      const target = byId("machine-list");
+      target.textContent = "";
+      items.forEach(([label, value]) => {
+        const li = document.createElement("li");
+        li.innerHTML = `<strong>${label}</strong><span>${text(value)}</span>`;
+        target.append(li);
+      });
+    }
+
+    function renderDependencies(payload) {
+      const target = byId("dependency-list");
+      target.textContent = "";
+      (payload.dependencies || []).forEach((dep) => {
+        const li = document.createElement("li");
+        li.innerHTML = `<strong>${dep.available ? "✓" : "×"} ${dep.name}</strong><span>${dep.available ? dep.path : "not found on PATH"}</span>`;
+        target.append(li);
+      });
+    }
+
+    function shellClassForState(stateValue) {
+      const normalized = String(stateValue || "unknown").toLowerCase();
+      if (normalized === "healthy") return "shell-green";
+      if (normalized === "degraded" || normalized === "starting" || normalized === "repairing") return "shell-gold";
+      if (normalized === "broken" || normalized === "down" || normalized === "failed") return "shell-coral";
+      return "shell-gray";
+    }
+
+    function shellClassForService(service) {
+      return shellClassForState(service?.state);
+    }
+
+    function nodeFor(service) {
+      const div = document.createElement("div");
+      div.className = `map-node ${service?.state || "unknown"} ${shellClassForService(service)}`;
+      div.innerHTML = `<small>${service?.state || "unknown"}</small><strong>${service?.label || "Missing"}</strong><span>${service?.port ? `port ${service.port}` : ""}</span>`;
+      return div;
+    }
+
+    function renderServiceMap(payload) {
+      const services = Object.fromEntries((payload.services || []).map((service) => [service.id, service]));
+      const rows = [
+        ["runtime", "supervisor", "app"],
+        ["hub", "worker", "ollama"],
+        ["gitea", "blockchain", "executor"]
+      ];
+      const target = byId("service-map");
+      target.textContent = "";
+      rows.forEach((row, index) => {
+        if (index > 0) {
+          const arrow = document.createElement("div");
+          arrow.className = "map-arrow";
+          arrow.textContent = "↓";
+          target.append(arrow);
+        }
+        const rowElement = document.createElement("div");
+        rowElement.className = "map-row";
+        row.forEach((id) => rowElement.append(nodeFor(services[id])));
+        target.append(rowElement);
+      });
+    }
+
+    function renderServices(payload) {
+      const target = byId("service-grid");
+      target.textContent = "";
+      (payload.services || []).forEach((service) => {
+        const card = document.createElement("article");
+        card.className = `service-card ${shellClassForService(service)}`;
+        const required = service.required ? "required" : "optional";
+        const port = service.port ? `port ${service.port}` : "no fixed port";
+        card.innerHTML = `
+          <h3>${service.label}</h3>
+          <span class="badge ${service.state}">${service.state} · ${required}</span>
+          <p>${text(service.summary)}</p>
+          <div class="service-meta">${text(service.detail)}<br>${port}</div>
+        `;
+        target.append(card);
+      });
+    }
+
+    function renderPorts(payload) {
+      const target = byId("ports");
+      target.textContent = "";
+      Object.entries(payload.ports || {}).forEach(([id, probe]) => {
+        const div = document.createElement("div");
+        div.className = "port-pill";
+        div.innerHTML = `<strong>${id}: ${probe.port}</strong><span>${probe.ok ? `open in ${probe.elapsed_ms}ms` : "closed/unreachable"}</span>`;
+        target.append(div);
+      });
+    }
+
+    function renderConfig(payload) {
+      const config = payload.config || {};
+      const taskServer = payload.task?.server || {};
+      const items = [
+        ["Provider", `${config.active_provider || config.provider} / ${config.model}`],
+        ["Patch level", config.patch_level],
+        ["Path mode", `${config.path_mode} / ${config.host_os}`],
+        ["Server PID", taskServer.pid || "not detected"],
+        ["Heartbeat", taskServer.heartbeat_running ? `running on ${taskServer.heartbeat_port}` : "not detected"],
+        ["Workspace", config.workspace],
+        ["Runtime root", config.runtime_root]
+      ];
+      const target = byId("config-list");
+      target.textContent = "";
+      items.forEach(([label, value]) => {
+        const li = document.createElement("li");
+        li.innerHTML = `<strong>${label}</strong><span>${text(value)}</span>`;
+        target.append(li);
+      });
+    }
+
+    function renderActivity(payload) {
+      const target = byId("activity-list");
+      target.textContent = "";
+      const events = payload.activity?.events || payload.activity?.recent || [];
+      const visible = Array.isArray(events) ? events.slice(-8).reverse() : [];
+      if (!visible.length) {
+        const li = document.createElement("li");
+        li.innerHTML = "<strong>No recent events</strong><span>The local activity bus did not return visible events.</span>";
+        target.append(li);
+        return;
+      }
+      visible.forEach((event) => {
+        const label = event.name || event.type || event.event || "event";
+        const when = event.created_at || event.timestamp || event.time || "";
+        const li = document.createElement("li");
+        li.innerHTML = `<strong>${label}</strong><span>${text(when)} ${event.message ? "— " + event.message : ""}</span>`;
+        target.append(li);
+      });
+    }
+
+    function render(payload) {
+      state.lastPayload = payload;
+      setOverall(payload);
+      renderMachine(payload);
+      renderDependencies(payload);
+      renderServiceMap(payload);
+      renderServices(payload);
+      renderPorts(payload);
+      renderConfig(payload);
+      renderActivity(payload);
+    }
+
+    function parseDiagnosticEvent(event) {
+      try {
+        return JSON.parse(event.data || "{}");
+      } catch (error) {
+        return {line: event.data || "", parse_error: String(error.message || error)};
+      }
+    }
+
+    function closeSanityStream() {
+      if (state.sanityStream) {
+        state.sanityStream.close();
+        state.sanityStream = null;
+      }
+    }
+
+    function resetDiagnosticsModal() {
+      state.sanityDone = false;
+      state.sanityStartedAt = Date.now();
+      byId("diagnostics-status").textContent = "Starting system sanity check…";
+      byId("diagnostics-clock").textContent = "running";
+      byId("diagnostics-stream").textContent = "";
+      byId("diagnostics-findings").textContent = "";
+      byId("diagnostics-findings").hidden = true;
+      byId("diagnostics-summary").innerHTML = `
+        <div class="metric shell-gray"><strong>--</strong><span>overall</span></div>
+        <div class="metric shell-gray"><strong>--</strong><span>findings</span></div>
+        <div class="metric shell-gray"><strong>--</strong><span>warnings</span></div>
+        <div class="metric shell-gray"><strong>--</strong><span>failures</span></div>
+      `;
+    }
+
+    function appendDiagnosticsLine(line) {
+      const target = byId("diagnostics-stream");
+      const div = document.createElement("div");
+      div.className = "diagnostics-line";
+      div.textContent = text(line);
+      target.append(div);
+      while (target.children.length > 220) target.firstElementChild?.remove();
+      target.scrollTop = target.scrollHeight;
+    }
+
+    function setDiagnosticsStatus(message) {
+      byId("diagnostics-status").textContent = message;
+    }
+
+    function renderDiagnosticsSummary(data) {
+      const summary = data.summary || {};
+      const target = byId("diagnostics-summary");
+      const cards = [
+        ["overall", data.overall_status || "UNKNOWN", shellClassForState(data.overall_status === "PASS" ? "healthy" : (data.overall_status === "FAIL" ? "broken" : "degraded"))],
+        ["findings", data.finding_count ?? 0, "shell-cyan"],
+        ["pass / info", `${summary.PASS || 0} / ${summary.INFO || 0}`, "shell-green"],
+        ["warn / fail", `${summary.WARN || 0} / ${summary.FAIL || 0}`, (summary.FAIL || 0) ? "shell-coral" : ((summary.WARN || 0) ? "shell-gold" : "shell-green")],
+        ["non-current roots", data.active_non_current_environment_count ?? 0, (data.active_non_current_environment_count || 0) ? "shell-gold" : "shell-green"],
+        ["coolify roots", data.active_coolify_root_count ?? 0, (data.active_coolify_root_count || 0) ? "shell-gold" : "shell-green"],
+        ["onlyoffice roots", data.active_onlyoffice_root_count ?? 0, (data.active_onlyoffice_root_count || 0) ? "shell-gold" : "shell-green"],
+        ["unattributed containers", data.unattributed_project_container_count ?? 0, (data.unattributed_project_container_count || 0) ? "shell-gold" : "shell-green"]
+      ];
+      target.textContent = "";
+      cards.forEach(([label, value, shellClass]) => {
+        const card = document.createElement("div");
+        card.className = `metric ${shellClass}`;
+        const strong = document.createElement("strong");
+        strong.textContent = text(value);
+        const span = document.createElement("span");
+        span.textContent = label;
+        card.append(strong, span);
+        target.append(card);
+      });
+      const status = `${data.overall_status || "UNKNOWN"} · ${data.finding_count ?? 0} findings · report ${data.report_path || ""}`;
+      setDiagnosticsStatus(status);
+    }
+
+    function renderDiagnosticsFinding(data) {
+      const target = byId("diagnostics-findings");
+      target.hidden = false;
+      const row = document.createElement("div");
+      const status = String(data.status || "INFO").toLowerCase();
+      row.className = `finding-row ${status}`;
+      const heading = document.createElement("strong");
+      heading.textContent = `${data.status || "INFO"} · ${data.area || "system"}`;
+      const message = document.createElement("span");
+      message.textContent = data.message || "";
+      row.append(heading, message);
+      if (data.evidence) {
+        const evidence = document.createElement("span");
+        evidence.textContent = `\n${JSON.stringify(data.evidence)}`;
+        row.append(evidence);
+      }
+      target.append(row);
+      target.scrollTop = target.scrollHeight;
+    }
+
+    function openDiagnosticsDialog({autoRun = true} = {}) {
+      byId("diagnostics-overlay").classList.add("open");
+      byId("diagnostics-run-button").focus();
+      if (autoRun) runSystemSanity();
+    }
+
+    function closeDiagnosticsDialog() {
+      closeSanityStream();
+      byId("diagnostics-overlay").classList.remove("open");
+      byId("diagnostics-run-button").disabled = false;
+    }
+
+    function runSystemSanity() {
+      closeSanityStream();
+      resetDiagnosticsModal();
+      const runButton = byId("diagnostics-run-button");
+      runButton.disabled = true;
+      const source = new EventSource("/api/control-panel/system-sanity/stream");
+      state.sanityStream = source;
+      source.addEventListener("start", (event) => {
+        const data = parseDiagnosticEvent(event);
+        setDiagnosticsStatus(data.message || "System sanity check started.");
+        appendDiagnosticsLine(`started: ${data.repo_root || ""}`);
+      });
+      source.addEventListener("line", (event) => {
+        const data = parseDiagnosticEvent(event);
+        appendDiagnosticsLine(data.line || "");
+      });
+      source.addEventListener("summary", (event) => {
+        renderDiagnosticsSummary(parseDiagnosticEvent(event));
+      });
+      source.addEventListener("finding", (event) => {
+        renderDiagnosticsFinding(parseDiagnosticEvent(event));
+      });
+      source.addEventListener("done", (event) => {
+        const data = parseDiagnosticEvent(event);
+        state.sanityDone = true;
+        byId("diagnostics-clock").textContent = "complete";
+        setDiagnosticsStatus(`${data.overall_status || "UNKNOWN"} · report ${data.report_path || ""}`);
+        appendDiagnosticsLine("system sanity stream complete");
+        runButton.disabled = false;
+        closeSanityStream();
+      });
+      source.addEventListener("failed", (event) => {
+        const data = parseDiagnosticEvent(event);
+        state.sanityDone = true;
+        byId("diagnostics-clock").textContent = "error";
+        setDiagnosticsStatus(data.message || "System sanity stream failed.");
+        appendDiagnosticsLine(`ERROR: ${data.message || "system sanity stream failed"}`);
+        runButton.disabled = false;
+        closeSanityStream();
+      });
+      source.addEventListener("error", (event) => {
+        if (state.sanityDone) return;
+        state.sanityDone = true;
+        byId("diagnostics-clock").textContent = "error";
+        setDiagnosticsStatus("System sanity stream failed or disconnected.");
+        appendDiagnosticsLine("ERROR: system sanity stream failed or disconnected");
+        runButton.disabled = false;
+        closeSanityStream();
+      });
+    }
+
+    function openHardHaltDialog() {
+      const overlay = byId("hard-halt-overlay");
+      byId("hard-halt-result").textContent = "";
+      overlay.classList.add("open");
+      byId("hard-halt-cancel-button").focus();
+    }
+
+    function closeHardHaltDialog() {
+      byId("hard-halt-overlay").classList.remove("open");
+    }
+
+    async function requestHardHaltServer() {
+      const confirmButton = byId("hard-halt-confirm-button");
+      const result = byId("hard-halt-result");
+      confirmButton.disabled = true;
+      result.textContent = "Requesting hard halt…";
+      try {
+        const response = await fetch("/system/hard-halt", {
+          method: "POST",
+          headers: {
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            source: "graphical-head",
+            action: "hard-halt-server",
+            requested_at: new Date().toISOString()
+          })
+        });
+        const contentType = response.headers.get("content-type") || "";
+        const payload = contentType.includes("application/json")
+          ? await response.json()
+          : {message: await response.text()};
+        if (!response.ok) throw new Error(payload.error || payload.message || `HTTP ${response.status}`);
+        result.textContent = payload.message || "Hard halt requested. Restart the server to load patched code.";
+      } catch (error) {
+        result.textContent = `Hard halt request failed: ${error.message || error}`;
+      } finally {
+        confirmButton.disabled = false;
+      }
+    }
+
+    async function refreshStatus() {
+      byId("refresh-button").disabled = true;
+      try {
+        const response = await fetch("/api/control-panel/status", {cache: "no-store"});
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        render(payload);
+      } catch (error) {
+        byId("overall-dot").className = "status-dot broken";
+        byId("overall-state").textContent = "status error";
+        byId("overall-message").innerHTML = `<span class="error">${text(error.message || error)}</span>`;
+      } finally {
+        byId("refresh-button").disabled = false;
+      }
+    }
+
+    byId("level-5-diagnostics-button").addEventListener("click", () => openDiagnosticsDialog({autoRun: true}));
+    byId("diagnostics-run-button").addEventListener("click", runSystemSanity);
+    byId("diagnostics-close-button").addEventListener("click", closeDiagnosticsDialog);
+    byId("diagnostics-overlay").addEventListener("click", (event) => {
+      if (event.target === byId("diagnostics-overlay")) closeDiagnosticsDialog();
+    });
+    byId("hard-halt-server-button").addEventListener("click", openHardHaltDialog);
+    byId("hard-halt-cancel-button").addEventListener("click", closeHardHaltDialog);
+    byId("hard-halt-confirm-button").addEventListener("click", requestHardHaltServer);
+    byId("hard-halt-overlay").addEventListener("click", (event) => {
+      if (event.target === byId("hard-halt-overlay")) closeHardHaltDialog();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      if (byId("diagnostics-overlay").classList.contains("open")) closeDiagnosticsDialog();
+      if (byId("hard-halt-overlay").classList.contains("open")) closeHardHaltDialog();
+    });
+    byId("refresh-button").addEventListener("click", refreshStatus);
+    refreshStatus();
+    state.timer = setInterval(refreshStatus, 5000);
+  </script>
+</body>
+</html>

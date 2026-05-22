@@ -1,0 +1,209 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def load_dev_chain_reset():
+    spec = importlib.util.spec_from_file_location("dev_chain_reset", ROOT / "dev-chain-reset.py")
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_parser_accepts_run_id_and_soft_pool_options() -> None:
+    reset = load_dev_chain_reset()
+    parser = reset.build_parser()
+    args = parser.parse_args(["--dry-run", "--run-id", "first-soft-test", "--accounts", "4"])
+
+    assert args.run_id == "first-soft-test"
+    assert args.accounts == 4
+    assert args.port_strategy == "replace-project"
+    assert reset.resolved_run_id(args) == "first-soft-test"
+
+
+def test_host_port_shorthand_updates_rpc_url() -> None:
+    reset = load_dev_chain_reset()
+    parser = reset.build_parser()
+    args = parser.parse_args(["--dry-run", "--host-port", "18546"])
+
+    reset.validate_args(args)
+
+    assert args.host_rpc_url == "http://127.0.0.1:18546"
+    assert reset.anvil_command(args, "unit")[reset.anvil_command(args, "unit").index("-p") + 1] == "127.0.0.1:18546:8545"
+
+
+def test_default_deployments_cover_governance_and_xlag_contracts() -> None:
+    reset = load_dev_chain_reset()
+    parser = reset.build_parser()
+    args = parser.parse_args(["--yes", "--run-id", "unit"])
+
+    specs = reset.deployment_specs(args)
+
+    assert [spec.key for spec in specs] == ["alpha-beta-lockout", "xlag-bridge-reserve"]
+    assert specs[0].target == "AlphaBetaLockout.sol:AlphaBetaLockout"
+    assert specs[1].target == "src/XLagBridgeReserve.sol:XLagBridgeReserve"
+    assert specs[0].constructor_args[0].startswith("[0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266")
+    assert specs[1].constructor_args[-3:] == ["1000000000000000000", "1", "1"]
+
+
+def test_soft_deploy_commands_create_isolated_network_and_anvil_pool(monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+    monkeypatch.setattr(reset, "docker_executable", lambda: "docker")
+    parser = reset.build_parser()
+    args = parser.parse_args(["--yes", "--run-id", "first-soft-test", "--project-name", "main-computer-dev"])
+    rid = reset.resolved_run_id(args)
+
+    network = reset.network_create_command(args, rid)
+    anvil = reset.anvil_command(args, rid)
+
+    assert network == ["docker", "network", "create", "main-computer-dev-soft-first-soft-test"]
+    assert "--name" in anvil
+    assert "main-computer-dev-chain-first-soft-test" in anvil
+    assert "--accounts" in anvil
+    assert anvil[anvil.index("--accounts") + 1] == "4"
+    assert "-p" in anvil
+    assert "127.0.0.1:18545:8545" in anvil
+
+
+def test_docker_deploy_command_uses_soft_network_and_forge_entrypoint(monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+    monkeypatch.setattr(reset, "docker_executable", lambda: "docker")
+    parser = reset.build_parser()
+    args = parser.parse_args(["--yes", "--run-id", "first-soft-test", "--project-name", "main-computer-dev"])
+    spec = reset.deployment_specs(args)[1]
+
+    cmd = reset.docker_deploy_command(args, spec, ROOT / "contracts", reset.resolved_run_id(args))
+
+    assert cmd[:4] == ["docker", "run", "--rm", "--network"]
+    assert "main-computer-dev-soft-first-soft-test" in cmd
+    assert "--entrypoint" in cmd
+    assert "forge" in cmd
+    assert "create" in cmd
+    assert "src/XLagBridgeReserve.sol:XLagBridgeReserve" in cmd
+    assert "--constructor-args" in cmd
+    assert "http://main-computer-dev-chain-first-soft-test:8545" in cmd
+
+
+def test_dry_run_writes_soft_chroot_outputs(tmp_path: Path, monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+    monkeypatch.setattr(reset, "repo_root", lambda: tmp_path)
+    deploy_root = tmp_path / "deployments"
+    code = reset.main([
+        "--dry-run",
+        "--run-id",
+        "unit-dry-run",
+        "--output-dir",
+        str(tmp_path / "legacy-dev-chain"),
+        "--deployment-output-dir",
+        str(deploy_root),
+    ])
+
+    assert code == 0
+    latest = json.loads((tmp_path / "legacy-dev-chain" / "latest.json").read_text(encoding="utf-8"))
+
+    assert latest["schema"] == "main-computer.deployment.v1"
+    assert latest["environment"] == "dev"
+    assert latest["run_id"] == "unit-dry-run"
+    assert latest["dry_run"] is True
+    assert latest["chain"]["accounts"] == 4
+    assert latest["chain"]["container"] == "main-computer-dev-chain-unit-dry-run"
+    assert latest["deployments"]["xlag-bridge-reserve"]["target"] == "src/XLagBridgeReserve.sol:XLagBridgeReserve"
+    assert (tmp_path / "legacy-dev-chain" / "runs" / "unit-dry-run" / "deploy.env").exists()
+
+    current = json.loads((deploy_root / "current.json").read_text(encoding="utf-8"))
+    env_latest = json.loads((deploy_root / "dev" / "latest.json").read_text(encoding="utf-8"))
+    assert current == env_latest
+    assert current["schema"] == "main-computer.deployment.v1"
+    assert current["chain"]["rpc_url"] == "http://127.0.0.1:18545"
+    assert current["contracts"]["xlag-bridge-reserve"]["target"] == "src/XLagBridgeReserve.sol:XLagBridgeReserve"
+    assert "private_key" not in json.dumps(current)
+    assert "mnemonic" not in json.dumps(current)
+
+
+def test_parse_deployment_address_from_forge_json_and_text() -> None:
+    reset = load_dev_chain_reset()
+    payload = {
+        "deployedTo": "0x1111111111111111111111111111111111111111",
+        "transactionHash": "0x" + "a" * 64,
+    }
+
+    assert reset.parse_deployment_address(json.dumps(payload)) == "0x1111111111111111111111111111111111111111"
+    assert reset.parse_transaction_hash(json.dumps(payload)) == "0x" + "a" * 64
+    assert (
+        reset.parse_deployment_address("Deployed to: 0x2222222222222222222222222222222222222222")
+        == "0x2222222222222222222222222222222222222222"
+    )
+
+
+def test_parse_docker_port_owners_and_published_port_detection() -> None:
+    reset = load_dev_chain_reset()
+    output = (
+        "abc123\tmain-computer-dev-chain-old\t127.0.0.1:18545->8545/tcp\n"
+        "def456\tother-service\t0.0.0.0:18000->8000/tcp\n"
+    )
+
+    owners = reset.parse_docker_port_owners(output)
+
+    assert [owner.name for owner in owners] == ["main-computer-dev-chain-old", "other-service"]
+    assert reset.port_owner_publishes_host_port(owners[0], 18545)
+    assert not reset.port_owner_publishes_host_port(owners[1], 18545)
+
+
+def test_project_chain_container_detection_uses_project_name_prefix() -> None:
+    reset = load_dev_chain_reset()
+    parser = reset.build_parser()
+    args = parser.parse_args(["--dry-run", "--project-name", "main-computer-dev"])
+    owner = reset.DockerPortOwner(
+        container_id="abc123",
+        name="main-computer-dev-chain-any-user-frobber-v1",
+        ports="127.0.0.1:18545->8545/tcp",
+    )
+    foreign = reset.DockerPortOwner(
+        container_id="def456",
+        name="unrelated-anvil",
+        ports="127.0.0.1:18545->8545/tcp",
+    )
+
+    assert reset.is_project_chain_container(args, owner)
+    assert not reset.is_project_chain_container(args, foreign)
+
+
+def test_host_rpc_url_with_port_preserves_scheme_and_host() -> None:
+    reset = load_dev_chain_reset()
+
+    assert reset.host_rpc_url_with_port("http://127.0.0.1:18545", 18546) == "http://127.0.0.1:18546"
+    assert reset.host_rpc_port("http://127.0.0.1:18546") == "18546"
+
+
+def test_parse_offices_requires_four_addresses() -> None:
+    reset = load_dev_chain_reset()
+
+    assert len(reset.parse_offices(None)) == 4
+
+    try:
+        reset.parse_offices("0x1111111111111111111111111111111111111111")
+    except ValueError as exc:
+        assert "exactly four" in str(exc)
+    else:
+        raise AssertionError("expected invalid office list to fail")
+
+
+def test_reset_refuses_to_write_when_prod_lock_exists(tmp_path: Path, monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+    monkeypatch.setattr(reset, "repo_root", lambda: tmp_path)
+    (tmp_path / ".prod.lock").write_text('{"deployment":"prod","protected":true}\n', encoding="utf-8")
+
+    code = reset.main(["--dry-run", "--run-id", "locked-reset"])
+
+    assert code == 1
+    assert not (tmp_path / "runtime" / "deployments" / "current.json").exists()
+    assert not (tmp_path / "runtime" / "dev-chain" / "latest.json").exists()

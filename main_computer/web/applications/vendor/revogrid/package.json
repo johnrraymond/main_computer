@@ -1,0 +1,146 @@
+{
+  "name": "@revolist/revogrid",
+  "version": "4.20.0",
+  "type": "module",
+  "description": "Virtual reactive data grid spreadsheet component - RevoGrid.",
+  "license": "MIT",
+  "author": "revolist",
+  "homepage": "https://rv-grid.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/revolist/revogrid.git"
+  },
+  "bugs": {
+    "url": "https://github.com/revolist/revogrid/issues"
+  },
+  "keywords": [
+    "revo-grid",
+    "csv",
+    "datagrid",
+    "datalist",
+    "datamanager",
+    "editable",
+    "excel",
+    "excel-grid",
+    "export",
+    "pivot",
+    "filtering",
+    "grid",
+    "grouping",
+    "infinity-grid",
+    "reactive",
+    "spreadsheet",
+    "stenciljs",
+    "chart",
+    "sparkline",
+    "storybook",
+    "treeview",
+    "virtualgrid",
+    "virtual",
+    "virtuallist",
+    "virtual-scroll",
+    "vue",
+    "vue-grid",
+    "vue-datagrid",
+    "vue3",
+    "vue3-datagrid",
+    "react",
+    "react-grid",
+    "react-datagrid",
+    "svelte",
+    "svelte-grid",
+    "svelte-datagrid",
+    "angular",
+    "angular-grid",
+    "angular-datagrid",
+    "angular-tree"
+  ],
+  "main": "dist/index.cjs.js",
+  "module": "dist/index.js",
+  "unpkg": "dist/revo-grid/revo-grid.esm.js",
+  "collection": "dist/collection/collection-manifest.json",
+  "collection:main": "dist/collection/index.js",
+  "types": "dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs.js"
+    },
+    "./standalone": {
+      "types": "./standalone/index.d.ts",
+      "import": "./standalone/revo-grid.js"
+    },
+    "./standalone/revo-grid.js": {
+      "types": "./standalone/revo-grid.d.ts",
+      "import": "./standalone/revo-grid.js"
+    },
+    "./standalone/revogr-filter-panel.js": {
+      "types": "./standalone/revogr-filter-panel.d.ts",
+      "import": "./standalone/revogr-filter-panel.js"
+    },
+    "./loader": {
+      "types": "./loader/index.d.ts",
+      "import": "./loader/index.js",
+      "require": "./loader/index.cjs"
+    }
+  },
+  "files": [
+    "dist/",
+    "hydrate/",
+    "standalone/",
+    "loader/"
+  ],
+  "scripts": {
+    "docs": "npx typedoc",
+    "build": "stencil build --prod && rm -f loader/package.json",
+    "build:packages": "npm run api:clear && npm run build  && npm run api:update && npm run docs",
+    "api:clear": "rm -rf docs/guide/api",
+    "api:update": "./scripts/generate_api.sh",
+    "readme": "node ./scripts/generate_readme.mjs",
+    "test": "stencil test --spec",
+    "dev": "stencil build --dev --watch --serve",
+    "release": "npm run build && npm publish --public --tag pre-release && npm run package:update"
+  },
+  "devDependencies": {
+    "@angular/core": "^20.3.0",
+    "@revolist/stencil-angular-output": "^1.1.3",
+    "@revolist/stencil-vue2-output-target": "^0.0.6",
+    "@revolist/svelte-output-target": "0.0.7",
+    "@stencil/angular-output-target": "1.1.1",
+    "@stencil/core": "4.36.3",
+    "@stencil/react-output-target": "0.5.3",
+    "@stencil/sass": "^3.2.2",
+    "@stencil/store": "^2.2.0",
+    "@stencil/vue-output-target": "^0.8.9",
+    "@types/events": "^3.0.3",
+    "@types/jest": "^29.5.12",
+    "@types/lodash": "^4.17.14",
+    "@types/node": "^20.14.2",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "bootstrap": "^5.3.2",
+    "chalk": "^5.3.0",
+    "execa": "^9.2.0",
+    "fs": "^0.0.1-security",
+    "jest": "^29.7.0",
+    "jest-cli": "^29.7.0",
+    "json2md": "^2.0.1",
+    "lodash": "npm:lodash-es@4.17.21",
+    "minimist": "^1.2.8",
+    "path": "^0.12.7",
+    "prettier": "3.3.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "rxjs": "^7.8.2",
+    "svelte": "^5.38.10",
+    "typedoc": "^0.26.5",
+    "typedoc-plugin-markdown": "^4.2.3",
+    "typescript": "^5.5.4",
+    "url": "^0.11.3",
+    "vue": "^3.5.13"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

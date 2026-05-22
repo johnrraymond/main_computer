@@ -1,0 +1,719 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Main Computer Graphical Debug</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #f7f3e8;
+      --muted: #c8c0aa;
+      --line: #4f493a;
+      --amber: #f6c75b;
+      --peach: #ff8f70;
+      --rose: #e86d93;
+      --sky: #73d6ff;
+      --shell: #070806;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; overflow: hidden; }
+    body {
+      background: var(--shell);
+      color: var(--ink);
+      font-family: "Segoe UI", Arial, sans-serif;
+      letter-spacing: 0;
+    }
+    .bridge {
+      height: 100vh;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      background:
+        linear-gradient(90deg, rgba(246, 199, 91, 0.08), transparent 32%, rgba(115, 214, 255, 0.08)),
+        #070806;
+    }
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      padding: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    h1 { margin: 0; font-size: 22px; line-height: 1.1; }
+    .links { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    a, button {
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 12px;
+      color: #130d05;
+      background: var(--amber);
+      font: inherit;
+      font-weight: 700;
+      text-decoration: none;
+      cursor: pointer;
+      text-align: center;
+    }
+    main {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr) 360px;
+      gap: 12px;
+      padding: 12px;
+    }
+    .rail, .core, .output {
+      position: relative;
+      min-height: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0f0f0c;
+      overflow: hidden;
+    }
+    .rail, .output {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      align-content: start;
+    }
+    .core {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 10px;
+      padding: 12px;
+    }
+    .band {
+      min-height: 54px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      color: #130d05;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .band:nth-child(1) { background: var(--amber); }
+    .band:nth-child(2) { background: var(--peach); }
+    .band:nth-child(3) { background: var(--rose); }
+    .band:nth-child(4) { background: var(--sky); }
+    label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    input, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 11px;
+      color: var(--ink);
+      background: #090907;
+      font: inherit;
+      outline: none;
+      letter-spacing: 0;
+    }
+    textarea {
+      min-height: 0;
+      resize: none;
+      white-space: pre;
+      overflow: auto;
+      font-family: Consolas, "Lucida Console", monospace;
+    }
+    .actions {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 8px;
+    }
+    #debug-toggle {
+      position: relative;
+      isolation: isolate;
+      overflow: visible;
+      font-weight: 800;
+      border: 1px solid transparent;
+    }
+    #debug-toggle::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      opacity: 0.7;
+      background: radial-gradient(circle, rgba(255, 255, 255, 0.72), transparent 34%);
+      background-size: 240% 240%;
+      border-radius: inherit;
+      pointer-events: none;
+    }
+    #debug-toggle.debug-enable {
+      color: #061006;
+      background: #8fe388;
+      box-shadow: 0 0 0 1px rgba(143, 227, 136, 0.55), 0 0 18px rgba(143, 227, 136, 0.28);
+    }
+    #debug-toggle.debug-enable::after {
+      background: radial-gradient(circle, rgba(177, 255, 128, 0.98), rgba(54, 255, 91, 0.74) 23%, transparent 46%);
+      animation: debug-pulse-enable 3.2s ease-in-out infinite;
+    }
+    #debug-toggle.debug-disable {
+      color: #130505;
+      background: #ff6b5f;
+      box-shadow: 0 0 0 1px rgba(255, 107, 95, 0.18);
+    }
+    #debug-toggle.debug-disable::after {
+      animation: debug-pulse-disable 4.4s ease-in-out infinite;
+    }
+    @keyframes debug-pulse-enable {
+      0%, 100% {
+        background-position: 0% 0%;
+        opacity: 0.22;
+        filter: saturate(1);
+      }
+      50% {
+        background-position: 100% 100%;
+        opacity: 0.95;
+        filter: saturate(1.8);
+      }
+    }
+    .debug-magic-burst {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 0;
+      height: 0;
+      z-index: 6;
+      pointer-events: none;
+    }
+    .debug-magic-ring {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 72px;
+      height: 72px;
+      border: 2px solid rgba(177, 255, 128, 0.38);
+      border-radius: 50%;
+      box-shadow: 0 0 4px rgba(54, 255, 91, 0.22), inset 0 0 4px rgba(203, 255, 161, 0.1);
+      transform: translate(-50%, -50%) scale(0.42);
+      animation: debug-magic-ring 980ms ease-out forwards;
+    }
+    .debug-magic-ring:nth-child(2) {
+      animation-delay: 90ms;
+      border-color: rgba(115, 214, 255, 0.28);
+      box-shadow: 0 0 4px rgba(143, 227, 136, 0.18);
+    }
+    .debug-magic-spark {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 12px;
+      height: 40px;
+      border-radius: 999px;
+      background: linear-gradient(rgba(203, 255, 161, 0), rgba(203, 255, 161, 0.42), rgba(54, 255, 91, 0));
+      box-shadow: 0 0 3px rgba(54, 255, 91, 0.22);
+      transform-origin: 50% 100%;
+      animation: debug-magic-spark 900ms ease-out forwards;
+      animation-delay: calc(var(--i) * 18ms);
+    }
+    @keyframes debug-magic-ring {
+      0% { opacity: 0.38; transform: translate(-50%, -50%) scale(0.42) rotate(0deg); }
+      65% { opacity: 0.22; }
+      100% { opacity: 0; transform: translate(-50%, -50%) scale(1.9) rotate(28deg); }
+    }
+    @keyframes debug-magic-spark {
+      0% {
+        opacity: 0;
+        transform: rotate(calc(var(--i) * 45deg)) translateY(-32px) scaleY(0.35);
+      }
+      18% { opacity: 0.45; }
+      100% {
+        opacity: 0;
+        transform: rotate(calc(var(--i) * 45deg)) translateY(-120px) scaleY(1.1);
+      }
+    }
+    @keyframes debug-pulse-disable {
+      0%, 100% { background-position: 100% 100%; opacity: 0.1; }
+      50% { background-position: 0% 0%; opacity: 0.28; }
+    }
+    .actions button:nth-child(2) { background: var(--peach); }
+    .actions button:nth-child(3) { background: var(--rose); }
+    .actions button:nth-child(4) { background: var(--sky); }
+    .actions button:nth-child(5) { background: #9fd46d; }
+    .fullscreen-control {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      z-index: 10;
+      width: 112px;
+      min-height: 0;
+      border: 1px solid var(--line);
+      padding: 6px 8px;
+      color: var(--ink);
+      background: rgba(9, 9, 7, 0.9);
+      font-size: 11px;
+      line-height: 1;
+    }
+    .fullscreen-widget:not(:fullscreen) {
+      position: relative;
+      padding-top: 42px;
+    }
+    .widget-ticker {
+      position: absolute;
+      left: 8px;
+      right: 132px;
+      top: 8px;
+      z-index: 9;
+      height: 24px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: var(--sky);
+      background: rgba(9, 9, 7, 0.88);
+      font-size: 11px;
+      line-height: 22px;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+    .widget-ticker span {
+      display: inline-block;
+      min-width: 100%;
+      padding-left: 100%;
+      animation: ticker-scroll 16s linear infinite;
+    }
+    @keyframes ticker-scroll {
+      from { transform: translateX(0); }
+      to { transform: translateX(-100%); }
+    }
+    .fullscreen-widget:fullscreen {
+      width: 100vw;
+      height: 100vh;
+      min-height: 100vh;
+      padding: 48px 18px 18px;
+      background: #0f0f0c;
+      overflow: auto;
+    }
+    .fullscreen-widget:fullscreen .widget-ticker {
+      position: sticky;
+      top: 0;
+      left: 0;
+      right: 0;
+      width: calc(100% - 130px);
+      height: auto;
+      min-height: 34px;
+      margin: 0 0 10px;
+      padding: 8px 10px;
+      color: var(--ink);
+      line-height: 1.4;
+      white-space: normal;
+      pointer-events: auto;
+    }
+    .asset-nav {
+      display: grid;
+      gap: 8px;
+      max-height: 160px;
+      overflow: auto;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #090907;
+    }
+    .asset-nav button {
+      display: block;
+      width: 100%;
+      min-height: 34px;
+      padding: 7px 8px;
+      text-align: left;
+      color: var(--ink);
+      background: #17140d;
+      border: 1px solid var(--line);
+      font-size: 12px;
+    }
+    .fullscreen-widget:fullscreen .widget-ticker span {
+      min-width: 0;
+      padding-left: 0;
+      animation: none;
+    }
+    .meta {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+    #output {
+      min-height: 0;
+      overflow: auto;
+      padding: 12px;
+      border-radius: 8px;
+      color: var(--muted);
+      background: #090907;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: Consolas, "Lucida Console", monospace;
+    }
+    @media (max-width: 980px) {
+      main { grid-template-columns: 1fr; overflow-y: auto; }
+      html, body { overflow: auto; }
+      .bridge { min-height: 100vh; height: auto; }
+      .actions { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="bridge">
+    <header>
+      <h1>Main Computer Graphical Debug</h1>
+      <nav class="links">
+        <a href="/graphical">Graphical View</a>
+        <a href="/debug/text">Text Debug</a>
+        <a href="/text">Text Console</a>
+      </nav>
+    </header>
+    <main>
+      <aside class="rail fullscreen-widget" aria-label="Debug status">
+        <button class="fullscreen-control" type="button" data-fullscreen-target="closest">Full Screen</button>
+        <div class="band">local ai</div>
+        <div class="band">self edit</div>
+        <div class="band">project root</div>
+        <div class="band">guarded write</div>
+        <p class="meta" id="debug-status">debug offline</p>
+      </aside>
+      <section class="core fullscreen-widget" aria-label="Graphical debug interface">
+        <button class="fullscreen-control" type="button" data-fullscreen-target="closest">Full Screen</button>
+        <div>
+          <label>passcode<input id="debug-passcode" type="password" autocomplete="current-password" placeholder="optional"></label>
+          <label>project file<input id="debug-path" type="text" value="main_computer/viewport.py"></label>
+          <label>debug asset<input id="debug-asset-name" type="text" list="debug-asset-options" placeholder="auto-name on save"></label>
+          <datalist id="debug-asset-options"></datalist>
+          <label>asset state<input id="debug-asset-state" type="text" placeholder="select a prior asset state"></label>
+        </div>
+        <textarea id="debug-prompt" placeholder="Ask the local model to inspect, write, or revise this project"></textarea>
+        <div class="actions">
+          <button id="debug-toggle" type="button">Enable</button>
+          <button id="debug-ask" type="button">Ask</button>
+          <button id="debug-read" type="button">Read</button>
+          <button id="debug-write" type="button">Write</button>
+          <button id="debug-revise" type="button">Revise</button>
+          <button id="asset-save" type="button">Save Asset</button>
+          <button id="asset-load" type="button">Load Asset</button>
+          <button id="asset-list" type="button">List Assets</button>
+          <button id="asset-delete" type="button">Remove Asset</button>
+          <button id="asset-snapshot" type="button">Save State</button>
+          <button id="asset-history" type="button">Asset History</button>
+          <button id="asset-restore" type="button">Restore State</button>
+          <button id="asset-reset" type="button">Reset Assets</button>
+        </div>
+      </section>
+      <aside class="output fullscreen-widget" aria-label="Debug output">
+        <button class="fullscreen-control" type="button" data-fullscreen-target="closest">Full Screen</button>
+        <p class="meta">Debug mode is separate from the command viewport.</p>
+        <p class="meta">Default route: local Ollama, `gemma4:26b`.</p>
+        <p class="meta">Debug assets are saved under `debug_assets` in the running project.</p>
+        <div id="asset-nav" class="asset-nav" aria-label="Saved debug assets"></div>
+        <pre id="output" aria-live="polite"></pre>
+      </aside>
+    </main>
+  </div>
+  <script>
+    const debugStatus = document.querySelector("#debug-status");
+    const debugPasscode = document.querySelector("#debug-passcode");
+    const debugPrompt = document.querySelector("#debug-prompt");
+    const debugPath = document.querySelector("#debug-path");
+    const debugAssetName = document.querySelector("#debug-asset-name");
+    const debugAssetOptions = document.querySelector("#debug-asset-options");
+    const debugAssetState = document.querySelector("#debug-asset-state");
+    const debugToggle = document.querySelector("#debug-toggle");
+    const assetNav = document.querySelector("#asset-nav");
+    const output = document.querySelector("#output");
+    let debugMagicBurstTimer = null;
+
+    function setDebugStatus(data) {
+      const lock = data.passcode_required ? "passcode protected" : "local open";
+      const state = data.active ? "enabled" : "disabled";
+      debugStatus.textContent = `${state} | ${lock} | ${data.model || "gemma4:26b"} | ${data.root || ""}`;
+      debugToggle.textContent = data.active ? "Disable" : "Enable";
+      debugToggle.classList.toggle("debug-disable", Boolean(data.active));
+      debugToggle.classList.toggle("debug-enable", !data.active);
+      syncDebugMagicBurst(!data.active);
+    }
+    function emitDebugMagicBurst() {
+      if (!debugToggle.classList.contains("debug-enable")) return;
+      const burst = document.createElement("span");
+      burst.className = "debug-magic-burst";
+      burst.setAttribute("aria-hidden", "true");
+      burst.append(document.createElement("span"), document.createElement("span"));
+      burst.children[0].className = "debug-magic-ring";
+      burst.children[1].className = "debug-magic-ring";
+      for (let index = 0; index < 8; index += 1) {
+        const spark = document.createElement("span");
+        spark.className = "debug-magic-spark";
+        spark.style.setProperty("--i", String(index));
+        burst.append(spark);
+      }
+      debugToggle.append(burst);
+      window.setTimeout(() => burst.remove(), 1200);
+    }
+    function syncDebugMagicBurst(active) {
+      if (active && !debugMagicBurstTimer) {
+        emitDebugMagicBurst();
+        debugMagicBurstTimer = window.setInterval(emitDebugMagicBurst, 4800);
+      } else if (!active && debugMagicBurstTimer) {
+        window.clearInterval(debugMagicBurstTimer);
+        debugMagicBurstTimer = null;
+        debugToggle.querySelectorAll(".debug-magic-burst").forEach((item) => item.remove());
+      }
+    }
+    async function debugRequest(path, payload = {}) {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({...payload, passcode: debugPasscode.value})
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      return data;
+    }
+    function updateAssetOptions(assets) {
+      if (debugAssetOptions) {
+        debugAssetOptions.textContent = "";
+        assets.forEach((asset) => {
+          const option = document.createElement("option");
+          option.value = asset.name;
+          option.label = `${asset.kind} | ${asset.bytes} bytes`;
+          debugAssetOptions.append(option);
+        });
+      }
+    }
+    function renderAssetList(assets) {
+      updateAssetOptions(assets);
+      renderAssetNav(assets);
+      if (!assets.length) {
+        output.textContent = "No debug assets saved yet.";
+        return;
+      }
+      output.textContent = assets.map((asset) => `${asset.name} | ${asset.kind} | ${asset.bytes} bytes`).join("\n");
+    }
+    function renderAssetNav(assets) {
+      if (!assetNav) return;
+      assetNav.textContent = "";
+      if (!assets.length) {
+        const empty = document.createElement("span");
+        empty.className = "meta";
+        empty.textContent = "No debug artifacts saved yet.";
+        assetNav.append(empty);
+        return;
+      }
+      assets.forEach((asset) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = `${asset.name} | ${asset.kind} | ${asset.bytes} bytes`;
+        button.addEventListener("click", async () => {
+          debugAssetName.value = asset.name;
+          await readDebugAsset(asset.name);
+        });
+        assetNav.append(button);
+      });
+    }
+    async function readDebugAsset(name) {
+      const data = await debugRequest("/api/debug-assets/read", {name});
+      debugPrompt.value = data.content;
+      output.textContent = `loaded debug asset ${data.name}`;
+      return data;
+    }
+    function renderAssetHistory(history) {
+      const snapshots = history.snapshots || [];
+      if (!snapshots.length) {
+        output.textContent = "No debug asset states saved yet.";
+        return;
+      }
+      output.textContent = snapshots.map((state) => `${state.id} | ${state.label} | ${state.asset_count} assets | ${state.created_at}`).join("\n");
+      debugAssetState.value = snapshots[0].id;
+    }
+    function inferDebugReadPath(prompt) {
+      const text = prompt.trim().toLowerCase();
+      if (!text) return "";
+      if (/\b(todo|todo\.md|to-do|task list|backlog)\b/.test(text)) return "TODO.md";
+      if (/\b(readme|readme\.md)\b/.test(text)) return "README.md";
+      const match = text.match(/\b(?:load|read|open|show|view)\s+(?:the\s+)?([a-z0-9_.\/\\-]+\.(?:md|py|txt|json|toml|cfg|css|html|js))\b/i);
+      return match ? match[1] : "";
+    }
+    async function readDebugFile(path) {
+      const data = await debugRequest("/api/ollama-debug/read", {path});
+      debugPath.value = data.path;
+      debugPrompt.value = data.content;
+      output.textContent = `loaded ${data.path}\n\n${data.content}`;
+      return data;
+    }
+    async function loadDebugStatus() {
+      try {
+        const response = await fetch("/api/ollama-debug/status", {cache: "no-store"});
+        setDebugStatus(await response.json());
+      } catch (error) {
+        debugStatus.textContent = "debug status unavailable";
+      }
+    }
+    async function refreshAssetList({show = false} = {}) {
+      const response = await fetch("/api/debug-assets", {cache: "no-store"});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      updateAssetOptions(data.assets || []);
+      renderAssetNav(data.assets || []);
+      if (show) renderAssetList(data.assets || []);
+      return data.assets || [];
+    }
+    function ensureWidgetTickers() {
+      document.querySelectorAll(".fullscreen-widget").forEach((widget) => {
+        if (widget.querySelector(":scope > .widget-ticker")) return;
+        const label = widget.getAttribute("aria-label") || "Debug widget";
+        const ticker = document.createElement("div");
+        ticker.className = "widget-ticker";
+        ticker.innerHTML = `<span>${label} | embedded ticker view | full screen becomes projection workspace</span>`;
+        const control = widget.querySelector(":scope > .fullscreen-control");
+        if (control) {
+          control.insertAdjacentElement("afterend", ticker);
+        } else {
+          widget.prepend(ticker);
+        }
+      });
+    }
+    debugToggle.addEventListener("click", async () => {
+      try {
+        const action = debugToggle.textContent === "Enable" ? "enable" : "disable";
+        const data = await debugRequest("/api/ollama-debug/session", {action});
+        setDebugStatus(data);
+        output.textContent = `debug ${data.active ? "enabled" : "disabled"}`;
+      } catch (error) {
+        output.textContent = String(error.message || error);
+      }
+    });
+    document.querySelector("#debug-ask").addEventListener("click", async () => {
+      try {
+        const prompt = debugPrompt.value.trim();
+        if (!prompt) return;
+        const readPath = inferDebugReadPath(prompt);
+        if (readPath) {
+          await readDebugFile(readPath);
+          return;
+        }
+        output.textContent = "asking local model...";
+        const data = await debugRequest("/api/ollama-debug/chat", {prompt});
+        output.textContent = data.content;
+      } catch (error) {
+        output.textContent = String(error.message || error);
+      }
+    });
+    document.querySelector("#debug-read").addEventListener("click", async () => {
+      try {
+        await readDebugFile(debugPath.value);
+      } catch (error) {
+        output.textContent = String(error.message || error);
+      }
+    });
+    document.querySelector("#debug-write").addEventListener("click", async () => {
+      try {
+        const data = await debugRequest("/api/ollama-debug/write", {path: debugPath.value, content: debugPrompt.value});
+        output.textContent = `wrote ${data.path}\nbytes: ${data.bytes}`;
+      } catch (error) {
+        output.textContent = String(error.message || error);
+      }
+    });
+    document.querySelector("#debug-revise").addEventListener("click", async () => {
+      try {
+        const instruction = debugPrompt.value.trim();
+        if (!instruction) return;
+        output.textContent = "local model is revising the selected file...";
+        const data = await debugRequest("/api/ollama-debug/revise", {path: debugPath.value, instruction});
+        output.textContent = `revised ${data.path}\nbytes: ${data.bytes}`;
+      } catch (error) {
+        output.textContent = String(error.message || error);
+      }
+    });
+    document.querySelector("#asset-save").addEventListener("click", async () => {
+      try {
+        const content = output.textContent.trim() || debugPrompt.value;
+        const data = await debugRequest("/api/debug-assets/write", {name: "", auto_name: true, content, kind: "debug-note"});
+        debugAssetName.value = data.name;
+        const assets = await refreshAssetList();
+        output.textContent = `saved debug asset ${data.name}\nname source: ${data.name_source || "auto"}\nbytes: ${data.bytes}\n\nassets:\n${assets.map((asset) => `${asset.name} | ${asset.kind} | ${asset.bytes} bytes`).join("\n")}`;
+      } catch (error) {
+        output.textContent = String(error.message || error);
+      }
+    });
+    document.querySelector("#asset-load").addEventListener("click", async () => {
+      try {
+        await readDebugAsset(debugAssetName.value);
+      } catch (error) {
+        output.textContent = String(error.message || error);
+      }
+    });
+    document.querySelector("#asset-list").addEventListener("click", async () => {
+      try {
+        await refreshAssetList({show: true});
+      } catch (error) {
+        output.textContent = String(error.message || error);
+      }
+    });
+    document.querySelector("#asset-delete").addEventListener("click", async () => {
+      try {
+        const data = await debugRequest("/api/debug-assets/delete", {name: debugAssetName.value});
+        output.textContent = `removed debug asset ${data.name}\ncheckpoint: ${data.snapshot?.id || "none"}`;
+      } catch (error) {
+        output.textContent = String(error.message || error);
+      }
+    });
+    document.querySelector("#asset-snapshot").addEventListener("click", async () => {
+      try {
+        const data = await debugRequest("/api/debug-assets/history/snapshot", {label: `asset checkpoint ${debugAssetName.value}`});
+        debugAssetState.value = data.created.id;
+        output.textContent = `saved asset state ${data.created.id}`;
+      } catch (error) {
+        output.textContent = String(error.message || error);
+      }
+    });
+    document.querySelector("#asset-history").addEventListener("click", async () => {
+      try {
+        const response = await fetch("/api/debug-assets/history", {cache: "no-store"});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        renderAssetHistory(data);
+      } catch (error) {
+        output.textContent = String(error.message || error);
+      }
+    });
+    document.querySelector("#asset-restore").addEventListener("click", async () => {
+      try {
+        const data = await debugRequest("/api/debug-assets/history/restore", {id: debugAssetState.value});
+        output.textContent = `restored debug asset state ${data.id}\nassets: ${(data.assets || []).length}`;
+      } catch (error) {
+        output.textContent = String(error.message || error);
+      }
+    });
+    document.querySelector("#asset-reset").addEventListener("click", async () => {
+      try {
+        const data = await debugRequest("/api/debug-assets/reset", {label: "before reset from graphical debug"});
+        output.textContent = `reset debug assets\ncheckpoint: ${data.created?.id || "none"}`;
+      } catch (error) {
+        output.textContent = String(error.message || error);
+      }
+    });
+    document.addEventListener("click", async (event) => {
+      const button = event.target.closest("[data-fullscreen-target]");
+      if (!button) return;
+      const widget = button.closest(".fullscreen-widget");
+      if (!widget) return;
+      try {
+        if (document.fullscreenElement === widget) {
+          await document.exitFullscreen();
+        } else {
+          await widget.requestFullscreen();
+        }
+      } catch (error) {
+        output.textContent = `fullscreen failed: ${String(error.message || error)}`;
+      }
+    });
+    document.addEventListener("fullscreenchange", () => {
+      document.querySelectorAll("[data-fullscreen-target]").forEach((button) => {
+        button.textContent = document.fullscreenElement === button.closest(".fullscreen-widget") ? "Exit Full Screen" : "Full Screen";
+      });
+    });
+    ensureWidgetTickers();
+    loadDebugStatus();
+    refreshAssetList().catch(() => {});
+  </script>
+</body>
+</html>

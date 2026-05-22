@@ -1,0 +1,107 @@
+# TODO
+
+- Expand diagnostics so every level displays the report in the viewport and records a consistent JSON artifact.
+- Add a full functional diagnostic path for the configured local Ollama model, with a clear skip/fail reason when the model is unavailable.
+- Bring `main_copmputer_production` test coverage up to parity with `main_computer_test`.
+- Add production export/sync command so promotion from test to production is repeatable instead of manual file copying.
+- Add a project file-cleanup pass:
+  - identify stale, duplicated, temporary, and generated files that should not live in the repository.
+  - remove or relocate cleanup candidates safely and document what should be kept, ignored, or regenerated.
+- Add Docker integration for eventual release:
+  - define a Dockerfile for running the main computer server.
+  - add docker-compose support for local development and production-style launch.
+  - document required ports, volumes, environment variables, Ollama connectivity, and OpenAI API configuration.
+  - add build/run diagnostics so release candidates can verify the container starts and serves the viewport.
+- Continue widget hardening:
+  - verify every widget has condensed ticker mode.
+  - verify every widget has distinct fullscreen projection mode.
+  - keep oversized widget content scrollable and searchable inside the viewport.
+- Render model responses as Markdown by default:
+  - preserve code blocks, lists, tables, links, and inline formatting.
+  - sanitize rendered output before inserting it into the viewport.
+  - add a raw-result toggle so the user can inspect the exact model text when needed.
+  - keep raw mode available for debugging, diagnostics, and copy/paste fidelity.
+- Change prompt controls while a request is active:
+  - turn the Send button into a Stop button during model generation.
+  - let Stop cancel or abort the active request when possible.
+  - return the button to Send when the system is ready again.
+  - make the behavior consistent in both text and graphical viewports.
+- Expand fractal plugin support:
+  - keep the default Buddhabrot loaded first.
+  - add automated orientation checks for every selectable fractal.
+  - document each generator function, coordinate extent, and axis convention.
+- Add explicit, auditable tool execution for the main computer:
+  - file inspection tools.
+  - test/diagnostic runners.
+  - guarded command execution.
+  - clear logs showing what the model requested and what the system allowed.
+- Harden Ollama debug mode before broader use:
+  - require/pass through passcode policy when configured.
+  - keep write/revise operations checkpointed.
+  - show a diff before applying model-generated edits.
+- Fix main computer file discovery for Ollama:
+  - build a complete manifest of relevant files and directories in `main_computer`, `main_computer_test`, and `main_copmputer_production`.
+  - include source files, tests, README/TODO docs, config files, and production/test sync targets.
+  - exclude generated runtime artifacts such as harness outputs, diagnostics outputs, revision snapshots, debug assets, logs, caches, and temporary folders.
+  - make the manifest available to the model as grounding context.
+  - add file-inspection tools so the model can request exact file contents when the manifest is not enough.
+  - add diagnostics that confirm Ollama can see the expected main computer file set.
+- Expand project discovery beyond the current catalog:
+  - list every top-level workspace directory, including folders that do not have recognized project markers.
+  - clearly distinguish cataloged projects from uncataloged directories in the frontend.
+  - let the user add/promote any uncataloged directory into the main catalog from the frontend.
+  - integrate this flow with the code editor so uncataloged directories can be browsed before the user chooses to add them as projects.
+  - let the code editor open an uncataloged directory in read/browse mode, then promote it to an editable/cataloged project when the user confirms.
+  - persist user-added catalog entries so they survive server restarts.
+  - expose added catalog entries to Ollama in the same grounding context as marker-discovered projects.
+  - add diagnostics/harness coverage for discovering, adding, and displaying uncataloged directories.
+- Create a built-in code editor interface similar to VS Code:
+  - project explorer.
+  - browse uncataloged directories separately from cataloged projects.
+  - add/promote a browsed directory into the main catalog from inside the editor.
+  - tabbed file editor.
+  - syntax highlighting.
+  - search across files.
+  - integrated terminal/command panel.
+  - diagnostics/problems panel.
+  - source-control/revision controls.
+  - frontend Git tools for viewing `git status` and running guarded Git commands.
+  - guarded model-assisted edits with preview diffs.
+  - connection to main computer tools, debug assets, and diagnostics.
+- Add an Applications area to the frontend:
+  - provide a launcher/catalog for local main-computer applications.
+  - add a task manager/top-style app that lists running processes, CPU/memory use, command names, and main-computer server state.
+  - add filtering/search/sort controls for process and resource views.
+  - add a terminal app that lets users run commands directly from the UI.
+  - add a WebGL demo app for exercising GPU/browser rendering inside the main computer viewport.
+  - add a spreadsheet application that can open, view, edit, and save Excel files.
+  - support workbook sheets, cell editing, formulas, basic formatting, import/export, and guarded file writes for spreadsheet changes.
+  - add a Project Omniscience app/page that runs and supervises the main computer's automated project actions.
+  - route terminal execution through the same guarded command-execution framework, including working directory selection, timeouts, stdout/stderr capture, exit codes, and audit logs.
+  - support command history, copyable output, and clear running/stopped/error states.
+  - connect Applications to the code editor, diagnostics, revision control, and agentic control loop so tools share the same safety and logging model.
+- Integrate local agent-based actions using `../aider_integration_basis/aider_integration_basis` as the reference pattern:
+  - keep the main computer as the UI/API head while local agent workers run behind guarded adapters.
+  - reuse the basis ideas of validation, command building, subprocess execution, async bridging, mock-worker tests, and saved run outputs.
+  - support Aider-style code actions that can receive repo paths, target files, and instructions from the main computer.
+  - route all agent actions through the same approval, logging, timeout, status, and revision/snapshot framework as terminal commands.
+  - expose agent progress, stdout/stderr, generated diffs, and final results in the frontend before anything is applied.
+  - add diagnostics proving the local agent can see the intended project files and cannot escape the allowed workspace policy.
+- Implement an agentic control loop framework:
+  - add a `main_computer.commands` capability layer so model providers can advertise available tools such as shell execution.
+  - define a structured command-request protocol, for example an `execute_shell` action with command, description, working directory, timeout, and safety metadata.
+  - create a backend execution engine, likely `main_computer/executor.py`, that runs commands with controlled subprocess handling, timeouts, stdout/stderr capture, exit codes, and normalized command-result objects.
+  - add manual/verify mode where the frontend shows a clear "Run Command?" approval before execution.
+  - add configurable auto-bless mode for trusted local workflows, with logging and policy checks still applied.
+  - feed command results back into conversation history as `command_output` messages so the model can continue from real tool output.
+  - update CLI/API/chat routing to distinguish normal text responses from structured execution requests.
+  - include diagnostics and tests for command parsing, approval, execution, timeout, error capture, and conversation feedback.
+- Add Project Omniscience as the automated-action coordinator:
+  - scan the full project state, current TODOs, diagnostics, revision status, debug assets, applications, and catalog state.
+  - propose and run computer-owned automated actions through the guarded command/action framework.
+  - distinguish read-only inspection, analysis, edits, diagnostics, tests, git actions, and application actions before execution.
+  - require clear approval or policy-based auto-blessing before writes, command execution, or project-wide changes.
+  - show a live action queue, current step, elapsed time, tool output, and final report in the frontend.
+  - persist an auditable action log so every automated decision, input, tool call, output, and resulting file change can be reviewed.
+- Full Ethereum-style integration.
+- Integrate a dedicated Chromium-based frontend (e.g., via Electron or a similar framework) directly into the project for a more robust, standalone application experience.

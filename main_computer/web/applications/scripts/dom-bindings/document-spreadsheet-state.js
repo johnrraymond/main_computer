@@ -1,0 +1,16 @@
+    let documentInitialized = false;
+    let documentLibraryLoaded = false;
+    let documentCurrentPrettyPath = "";
+    let documentRecords = [];
+    let spreadsheetInitialized = false;
+    let spreadsheetFiles = [];
+    let spreadsheetWorkbook = null;
+    let spreadsheetPath = "untitled.json";
+    let spreadsheetContentHash = "";
+    let spreadsheetDirty = false;
+    let spreadsheetSelectedPath = "";
+    let spreadsheetSelectionAnchor = null;
+    let spreadsheetSelectedRange = null;
+    let spreadsheetDragSelecting = false;
+    let spreadsheetInspectorRef = "";
+    let spreadsheetPendingWrites = [];

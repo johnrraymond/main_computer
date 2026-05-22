@@ -1,0 +1,612 @@
+<section class="app-shell website-builder-app mc-app" id="website-builder-app" aria-label="Website Builder" data-mc-component-id="applications.websites" data-mc-component-kind="workspace" data-mc-component-label="Website Builder" data-mc-widget-id="website-builder.root" data-mc-widget-kind="workspace" data-mc-widget-class="app" data-mc-widget-label="Website Builder">
+  <div class="website-builder-main mc-shell" data-mc-widget-id="website-builder.shell" data-mc-widget-kind="panel" data-mc-widget-class="shell" data-mc-widget-label="Website Builder Shell">
+    <header class="website-builder-summary">
+      <div>
+        <p class="eyebrow">Website Builder</p>
+        <h3 id="website-builder-site-name">No site selected</h3>
+        <p id="website-builder-site-meta">Refresh to load Hub Site and Blog Site.</p>
+      </div>
+      <div class="website-builder-actions">
+        <button type="button" id="website-builder-save">Save</button>
+        <span class="website-builder-deploy-action">
+          <button type="button" id="website-builder-publish-dev">Deploy</button>
+          <button type="button" class="website-builder-visit-button" id="website-builder-visit-dev" disabled>Visit</button>
+        </span>
+        <span class="website-builder-deploy-action">
+          <button type="button" id="website-builder-publish-local">Local Server</button>
+          <button type="button" class="website-builder-visit-button" id="website-builder-visit-local" disabled>Visit</button>
+        </span>
+        <span class="website-builder-deploy-action">
+          <button type="button" id="website-builder-publish-remote" disabled title="Configure publishing targets before using this action.">Publish</button>
+          <button type="button" class="website-builder-visit-button" id="website-builder-visit-remote-prod" disabled>Visit</button>
+        </span>
+      </div>
+    </header>
+
+    <nav class="website-builder-tabs" aria-label="Website Builder modes">
+      <button class="active" type="button" data-website-builder-tab="design">Design</button>
+      <button type="button" data-website-builder-tab="overview">Overview</button>
+      <button type="button" data-website-builder-tab="source">Source</button>
+      <button type="button" data-website-builder-tab="backend">Backend</button>
+      <button type="button" data-website-builder-tab="publish">Publishing</button>
+      <button type="button" data-website-builder-tab="settings">Settings</button>
+    </nav>
+
+    <div class="website-builder-panels">
+      <section class="website-builder-panel website-builder-design-panel active" data-website-builder-panel="design" aria-label="Website design preview">
+        <div class="website-builder-preview-toolbar">
+          <div class="website-builder-preview-actions" role="group" aria-label="Preview source">
+            <button class="active" type="button" id="website-builder-preview-draft">Draft</button>
+            <button type="button" id="website-builder-preview-local">Local Server</button>
+            <button type="button" id="website-builder-preview-dev">Deploy</button>
+          </div>
+          <div class="website-builder-device-actions" role="group" aria-label="Preview device size">
+            <button class="active" type="button" data-website-builder-device="desktop">Desktop</button>
+            <button type="button" data-website-builder-device="tablet">Tablet</button>
+            <button type="button" data-website-builder-device="mobile">Mobile</button>
+          </div>
+          <div class="website-builder-preview-tools">
+            <button type="button" id="website-builder-preview-refresh">Refresh</button>
+            <button type="button" id="website-builder-preview-open">Open</button>
+          </div>
+        </div>
+
+        <section class="website-builder-preview-card" aria-label="Website visual builder">
+          <div class="website-builder-preview-head">
+            <div>
+              <p class="eyebrow">Visual Builder</p>
+              <h4 id="website-builder-preview-title">GrapesJS canvas</h4>
+              <p id="website-builder-preview-meta">Drag real blocks, edit live HTML/CSS, then save baked project files.</p>
+            </div>
+          </div>
+          <div class="website-builder-grapes-host" id="website-builder-grapes-host">
+            <div id="website-builder-grapes" class="website-builder-grapes-canvas" aria-label="GrapesJS visual website canvas"></div>
+            <div id="website-builder-grapes-fallback" class="website-builder-grapes-fallback" hidden>
+              GrapesJS did not load. Source editing and draft preview still work.
+            </div>
+          </div>
+          <div class="website-builder-preview-stage" id="website-builder-preview-stage">
+            <iframe
+              id="website-builder-preview-frame"
+              title="Selected website live view"
+              sandbox="allow-forms allow-modals allow-popups allow-scripts allow-same-origin"
+              referrerpolicy="no-referrer"
+            ></iframe>
+          </div>
+        </section>
+      </section>
+
+      <section class="website-builder-panel website-builder-overview-panel" data-website-builder-panel="overview" aria-label="Website overview">
+        <div class="website-builder-info-grid">
+          <article>
+            <h4>Site</h4>
+            <p id="website-builder-overview-site">Select a site to view details.</p>
+          </article>
+          <article>
+            <h4>Workflow</h4>
+            <p>Edit in Design or Source, save runtime files, then deploy to a local lane.</p>
+          </article>
+          <article>
+            <h4>Local Server</h4>
+            <p id="website-builder-overview-local">No Local Server lane configured.</p>
+          </article>
+          <article>
+            <h4>Deploy</h4>
+            <p id="website-builder-overview-dev">No Deploy lane configured.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="website-builder-panel website-builder-source-panel" data-website-builder-panel="source" aria-label="Website source files">
+        <div class="website-builder-file-tabs" role="group" aria-label="Source file">
+          <button class="active" type="button" data-website-builder-file="html">index.html</button>
+          <button type="button" data-website-builder-file="css">style.css</button>
+          <button type="button" data-website-builder-file="js">script.js</button>
+          <button type="button" data-website-builder-file="builder">builder.json</button>
+        </div>
+        <div class="website-builder-editors">
+          <label class="active" data-website-builder-editor="html">
+            index.html
+            <textarea id="website-builder-html" spellcheck="false"></textarea>
+          </label>
+          <label data-website-builder-editor="css">
+            style.css
+            <textarea id="website-builder-css" spellcheck="false"></textarea>
+          </label>
+          <label data-website-builder-editor="js">
+            script.js
+            <textarea id="website-builder-js" spellcheck="false"></textarea>
+          </label>
+          <label data-website-builder-editor="builder">
+            builder.json
+            <textarea id="website-builder-state" spellcheck="false"></textarea>
+          </label>
+        </div>
+      </section>
+
+      <section class="website-builder-panel website-builder-backend-panel" data-website-builder-panel="backend" aria-label="Website backend">
+        <div class="website-builder-backend-hero">
+          <div>
+            <p class="eyebrow">Backend</p>
+            <h4>Build APIs and site services</h4>
+            <p id="website-builder-backend-summary">Choose a backend runtime, select products, and save the draft with this site.</p>
+          </div>
+          <div class="website-builder-backend-status" aria-label="Backend status">
+            <strong id="website-builder-backend-runtime-label">Static only</strong>
+            <span id="website-builder-backend-dev">Dev runtime will sync after Save / Preview.</span>
+          </div>
+        </div>
+
+        <section class="website-builder-backend-section" aria-label="Backend runtime options">
+          <div class="website-builder-section-head">
+            <div>
+              <h4>Runtime</h4>
+              <p>FastAPI is the first backend runtime; the others reserve the shape for later products.</p>
+            </div>
+          </div>
+          <div class="website-builder-backend-runtime-grid" role="group" aria-label="Backend runtime">
+            <button class="website-builder-backend-runtime-card active" type="button" data-website-builder-backend-runtime="none">
+              <span>Static only</span>
+              <strong>No backend</strong>
+              <small>Serve HTML, CSS, JS, and assets only.</small>
+            </button>
+            <button class="website-builder-backend-runtime-card" type="button" data-website-builder-backend-runtime="fastapi">
+              <span>First implementation</span>
+              <strong>FastAPI</strong>
+              <small>Python APIs under /api with a dev runtime.</small>
+            </button>
+            <button class="website-builder-backend-runtime-card" type="button" data-website-builder-backend-runtime="node-express">
+              <span>Planned</span>
+              <strong>Node / Express</strong>
+              <small>JavaScript APIs once multiple runtimes land.</small>
+            </button>
+            <button class="website-builder-backend-runtime-card" type="button" data-website-builder-backend-runtime="worker">
+              <span>Planned</span>
+              <strong>Worker</strong>
+              <small>Background jobs without a public API surface.</small>
+            </button>
+          </div>
+        </section>
+
+        <section class="website-builder-backend-section" aria-label="Backend products">
+          <div class="website-builder-section-head">
+            <div>
+              <h4>Products</h4>
+              <p>Select the backend capabilities this site needs. These are saved as a draft backend plan.</p>
+            </div>
+          </div>
+          <div class="website-builder-backend-products" role="group" aria-label="Backend products">
+            <button type="button" data-website-builder-backend-product="api">API Routes</button>
+            <button type="button" data-website-builder-backend-product="forms">Forms</button>
+            <button type="button" data-website-builder-backend-product="database">Database</button>
+            <button type="button" data-website-builder-backend-product="blog" data-mc-widget-id="website-builder.backend-product-blog" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Blog Product">Blog</button>
+            <button type="button" data-website-builder-backend-product="auth">Auth</button>
+            <button type="button" data-website-builder-backend-product="email">Email</button>
+            <button type="button" data-website-builder-backend-product="jobs">Scheduled Jobs</button>
+            <button type="button" data-website-builder-backend-product="webhooks">Webhooks</button>
+            <button type="button" data-website-builder-backend-product="ai">AI Calls</button>
+            <button type="button" data-website-builder-backend-product="secrets">Secrets</button>
+            <button type="button" data-website-builder-backend-product="logs">Logs</button>
+          </div>
+        </section>
+
+        <div class="website-builder-backend-workspace">
+          <section class="website-builder-backend-section" aria-label="Backend API routes">
+            <div class="website-builder-section-head">
+              <div>
+                <h4>API Routes</h4>
+                <p>Draft routes the builder will sync to the dev backend runtime.</p>
+              </div>
+            </div>
+            <div class="website-builder-backend-routes" id="website-builder-backend-routes">
+              <p>Choose FastAPI and API Routes to seed a backend route plan.</p>
+            </div>
+          </section>
+
+          <section class="website-builder-backend-section" aria-label="Backend source preview">
+            <div class="website-builder-section-head">
+              <div>
+                <h4>Source Preview</h4>
+                <p>First-cut generated shape for backend/app.py.</p>
+              </div>
+            </div>
+            <pre class="website-builder-backend-source" id="website-builder-backend-source-preview"># Select FastAPI to preview a backend source shape.</pre>
+          </section>
+        </div>
+
+        <section class="website-builder-backend-section website-builder-backend-flow" aria-label="Backend workflow">
+          <div>
+            <strong>Edit API</strong>
+            <span>Configure routes and products from the builder.</span>
+          </div>
+          <div>
+            <strong>Save / Preview</strong>
+            <span>Persist the backend draft and sync the dev runtime.</span>
+          </div>
+          <div>
+            <strong>Publishing</strong>
+            <span>Configure the external publish target before remote publishing.</span>
+          </div>
+        </section>
+      </section>
+
+      <div class="website-builder-blog-wizard-backdrop mc-modal" id="website-builder-blog-wizard" hidden role="dialog" aria-modal="true" aria-labelledby="website-builder-blog-wizard-title" data-mc-widget-id="website-builder.blog-runtime-wizard" data-mc-widget-kind="dialog" data-mc-widget-class="dialog" data-mc-widget-label="Configure Blog Runtime">
+        <section class="website-builder-blog-wizard-pane mc-shell" aria-label="Configure Blog Runtime wizard" data-mc-widget-id="website-builder.blog-runtime-wizard-pane" data-mc-widget-kind="panel" data-mc-widget-class="shell" data-mc-widget-label="Blog Runtime Wizard Pane">
+          <header class="website-builder-blog-wizard-header mc-panel-header" data-mc-widget-id="website-builder.blog-runtime-header" data-mc-widget-kind="panel" data-mc-widget-class="header" data-mc-widget-label="Blog Runtime Header">
+            <div>
+              <p class="eyebrow">Layered backend feature</p>
+              <h3 id="website-builder-blog-wizard-title" data-mc-widget-id="website-builder.blog-runtime-title" data-mc-widget-kind="status" data-mc-widget-class="heading" data-mc-widget-label="Blog Runtime Title">Configure Blog Runtime</h3>
+              <p id="website-builder-blog-wizard-summary" data-mc-widget-id="website-builder.blog-runtime-summary" data-mc-widget-kind="status" data-mc-widget-class="status" data-mc-widget-label="Blog Runtime Summary">Blog requires Directus and SQLite. Configure Blog Runtime prepares the local Directus and SQLite dependencies.</p>
+            </div>
+            <button type="button" class="website-builder-blog-wizard-close" id="website-builder-blog-wizard-close" aria-label="Close Blog runtime wizard" data-mc-widget-id="website-builder.blog-runtime-close" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Close Blog Runtime Wizard">×</button>
+          </header>
+
+          <div class="website-builder-blog-wizard-body mc-app-pane" data-mc-widget-id="website-builder.blog-runtime-body" data-mc-widget-kind="panel" data-mc-widget-class="panel" data-mc-widget-label="Blog Runtime Body">
+            <aside class="website-builder-blog-stack" aria-label="Blog runtime layers" data-mc-widget-id="website-builder.blog-runtime-layers-panel" data-mc-widget-kind="panel" data-mc-widget-class="panel" data-mc-widget-label="Blog Runtime Layers">
+              <h4>Runtime layers</h4>
+              <p>Shown top-down for the user; Configure Blog Runtime prepares dependencies bottom-up.</p>
+              <div id="website-builder-blog-layer-stack" class="website-builder-blog-layer-stack" data-mc-widget-id="website-builder.blog-runtime-layer-stack" data-mc-widget-kind="panel" data-mc-widget-class="panel" data-mc-widget-label="Blog Runtime Layer Stack"></div>
+            </aside>
+
+            <section class="website-builder-blog-details" aria-label="Blog runtime readiness" data-mc-widget-id="website-builder.blog-runtime-details" data-mc-widget-kind="panel" data-mc-widget-class="panel" data-mc-widget-label="Blog Runtime Details">
+              <div class="website-builder-blog-next-action" data-mc-widget-id="website-builder.blog-runtime-next-action-panel" data-mc-widget-kind="status" data-mc-widget-class="status" data-mc-widget-label="Blog Runtime Next Action">
+                <span>Next action</span>
+                <strong id="website-builder-blog-next-action" data-mc-widget-id="website-builder.blog-runtime-next-action" data-mc-widget-kind="status" data-mc-widget-class="status" data-mc-widget-label="Blog Runtime Next Action Text">Configure Blog Runtime prepares local runtime dependencies.</strong>
+              </div>
+
+              <section class="website-builder-blog-card" data-mc-widget-id="website-builder.blog-runtime-dependency-order-card" data-mc-widget-kind="panel" data-mc-widget-class="panel" data-mc-widget-label="Blog Runtime Dependency Order">
+                <div class="website-builder-section-head">
+                  <div>
+                    <h4>Runtime dependencies</h4>
+                    <p>Blog requires Directus and SQLite. Configure Blog Runtime prepares the local Directus and SQLite dependencies.</p>
+                  </div>
+                </div>
+                <ol id="website-builder-blog-install-order" class="website-builder-blog-install-order" data-mc-widget-id="website-builder.blog-runtime-dependency-order" data-mc-widget-kind="list" data-mc-widget-class="list" data-mc-widget-label="Blog Runtime Dependency Order List"></ol>
+              </section>
+
+              <section class="website-builder-blog-card" data-mc-widget-id="website-builder.blog-runtime-assumptions-card" data-mc-widget-kind="panel" data-mc-widget-class="panel" data-mc-widget-label="Blog Runtime Assumptions">
+                <div class="website-builder-section-head">
+                  <div>
+                    <h4>Assumptions and gates</h4>
+                    <p>Backend hooks render configuration state. Configure Blog Runtime owns local readiness facts.</p>
+                  </div>
+                </div>
+                <div id="website-builder-blog-assumptions" class="website-builder-blog-assumptions" data-mc-widget-id="website-builder.blog-runtime-assumptions" data-mc-widget-kind="list" data-mc-widget-class="list" data-mc-widget-label="Blog Runtime Assumptions List"></div>
+              </section>
+
+              <section class="website-builder-blog-card website-builder-blog-runtime-card" data-mc-widget-id="website-builder.blog-runtime-card" data-mc-widget-kind="panel" data-mc-widget-class="panel" data-mc-widget-label="Blog Runtime Card">
+                <div class="website-builder-section-head">
+                  <div>
+                    <h4>Blog Runtime</h4>
+                    <p id="website-builder-blog-runtime-summary" data-mc-widget-id="website-builder.blog-runtime-card-summary" data-mc-widget-kind="status" data-mc-widget-class="status" data-mc-widget-label="Blog Runtime Card Summary">Blog requires Directus and SQLite. Configure Blog Runtime prepares the local Directus and SQLite dependencies.</p>
+                  </div>
+                </div>
+                <dl class="website-builder-blog-runtime-details" id="website-builder-blog-runtime-details" data-mc-widget-id="website-builder.blog-runtime-facts" data-mc-widget-kind="list" data-mc-widget-class="list" data-mc-widget-label="Blog Runtime Facts"></dl>
+                <div class="website-builder-blog-runtime-actions" id="website-builder-blog-runtime-actions" aria-label="Blog runtime actions" data-mc-widget-id="website-builder.blog-runtime-actions" data-mc-widget-kind="toolbar" data-mc-widget-class="toolbar" data-mc-widget-label="Blog Runtime Actions"></div>
+              </section>
+
+              <section class="website-builder-blog-card" data-mc-widget-id="website-builder.blog-runtime-activity-card" data-mc-widget-kind="panel" data-mc-widget-class="panel" data-mc-widget-label="Blog Runtime Activity">
+                <div class="website-builder-section-head">
+                  <div>
+                    <h4>Process log</h4>
+                    <p>Configuration events appear here. Existing DB management tools will come later.</p>
+                  </div>
+                </div>
+                <div id="website-builder-blog-activity" class="website-builder-blog-activity" aria-live="polite" data-mc-widget-id="website-builder.blog-runtime-activity" data-mc-widget-kind="log" data-mc-widget-class="output" data-mc-widget-label="Blog Runtime Activity Log"></div>
+              </section>
+            </section>
+          </div>
+
+          <footer class="website-builder-blog-wizard-footer mc-toolbar" data-mc-widget-id="website-builder.blog-runtime-footer" data-mc-widget-kind="toolbar" data-mc-widget-class="toolbar" data-mc-widget-label="Blog Runtime Footer Actions">
+            <button type="button" id="website-builder-blog-install-confirm" data-mc-widget-id="website-builder.blog-runtime-configure" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Configure Blog Runtime">Configure Blog Runtime</button>
+          </footer>
+        </section>
+      </div>
+
+      <div class="website-builder-deploy-preflight-backdrop mc-modal" id="website-builder-deploy-preflight" hidden role="dialog" aria-modal="true" aria-labelledby="website-builder-deploy-preflight-title" data-mc-widget-id="website-builder.deploy-preflight" data-mc-widget-kind="dialog" data-mc-widget-class="dialog" data-mc-widget-label="Deploy Preflight">
+        <section class="website-builder-deploy-preflight-pane mc-shell" aria-label="Deploy preflight confirmation" data-mc-widget-id="website-builder.deploy-preflight-pane" data-mc-widget-kind="panel" data-mc-widget-class="shell" data-mc-widget-label="Deploy Preflight Pane">
+          <header class="website-builder-deploy-preflight-header mc-panel-header" data-mc-widget-id="website-builder.deploy-preflight-header" data-mc-widget-kind="panel" data-mc-widget-class="header" data-mc-widget-label="Deploy Preflight Header">
+            <div>
+              <p class="eyebrow">Deploy preflight</p>
+              <h3 id="website-builder-deploy-preflight-title" data-mc-widget-id="website-builder.deploy-preflight-title" data-mc-widget-kind="status" data-mc-widget-class="heading" data-mc-widget-label="Deploy Preflight Title">Ready to deploy?</h3>
+              <p id="website-builder-deploy-preflight-summary" data-mc-widget-id="website-builder.deploy-preflight-summary" data-mc-widget-kind="status" data-mc-widget-class="status" data-mc-widget-label="Deploy Preflight Summary">Run a dry-run first to see the deploy plan.</p>
+            </div>
+            <button type="button" class="website-builder-deploy-preflight-close" id="website-builder-deploy-preflight-close" aria-label="Close deploy preflight" data-mc-widget-id="website-builder.deploy-preflight-close" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Close Deploy Preflight">×</button>
+          </header>
+
+          <div class="website-builder-deploy-preflight-body mc-app-pane" data-mc-widget-id="website-builder.deploy-preflight-body" data-mc-widget-kind="panel" data-mc-widget-class="panel" data-mc-widget-label="Deploy Preflight Body">
+            <dl class="website-builder-deploy-preflight-details" id="website-builder-deploy-preflight-details" data-mc-widget-id="website-builder.deploy-preflight-details" data-mc-widget-kind="list" data-mc-widget-class="list" data-mc-widget-label="Deploy Preflight Details"></dl>
+
+            <section class="website-builder-deploy-preflight-command-card" data-mc-widget-id="website-builder.deploy-preflight-command-card" data-mc-widget-kind="panel" data-mc-widget-class="panel" data-mc-widget-label="Deploy Command Preview">
+              <h4>Command preview</h4>
+              <p>This command will run only after you confirm.</p>
+              <pre id="website-builder-deploy-preflight-command" data-mc-widget-id="website-builder.deploy-preflight-command" data-mc-widget-kind="code" data-mc-widget-class="code" data-mc-widget-label="Deploy Command">—</pre>
+            </section>
+
+            <section class="website-builder-deploy-preflight-warning" id="website-builder-deploy-preflight-warning" hidden data-mc-widget-id="website-builder.deploy-preflight-warning" data-mc-widget-kind="status" data-mc-widget-class="warning" data-mc-widget-label="Deploy Preflight Warning">
+              <h4>Needs acknowledgement</h4>
+              <div id="website-builder-deploy-preflight-warning-list" class="website-builder-deploy-preflight-warning-list" data-mc-widget-id="website-builder.deploy-preflight-warning-list" data-mc-widget-kind="list" data-mc-widget-class="list" data-mc-widget-label="Deploy Preflight Warnings"></div>
+              <label class="website-builder-deploy-preflight-ack">
+                <input type="checkbox" id="website-builder-deploy-preflight-ack">
+                <span>I understand this deploy will recreate the selected site container.</span>
+              </label>
+            </section>
+          </div>
+
+          <footer class="website-builder-deploy-preflight-footer mc-toolbar" data-mc-widget-id="website-builder.deploy-preflight-footer" data-mc-widget-kind="toolbar" data-mc-widget-class="toolbar" data-mc-widget-label="Deploy Preflight Actions">
+            <button type="button" id="website-builder-deploy-preflight-cancel" data-mc-widget-id="website-builder.deploy-preflight-cancel" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Cancel Deploy">Cancel</button>
+            <button type="button" id="website-builder-deploy-preflight-confirm" data-mc-widget-id="website-builder.deploy-preflight-confirm" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Confirm Deploy">Deploy</button>
+          </footer>
+        </section>
+      </div>
+
+
+
+
+      <div class="website-builder-directus-connection-backdrop mc-modal" id="website-builder-directus-connection" hidden role="dialog" aria-modal="true" aria-labelledby="website-builder-directus-connection-title" data-mc-widget-id="website-builder.directus-connection" data-mc-widget-kind="dialog" data-mc-widget-class="dialog" data-mc-widget-label="Connect Directus Storage">
+        <section class="website-builder-directus-connection-pane mc-shell" aria-label="Connect Directus storage before local publish" data-mc-widget-id="website-builder.directus-connection-pane" data-mc-widget-kind="panel" data-mc-widget-class="shell" data-mc-widget-label="Directus Connection Pane">
+          <header class="website-builder-directus-connection-header mc-panel-header" data-mc-widget-id="website-builder.directus-connection-header" data-mc-widget-kind="panel" data-mc-widget-class="header" data-mc-widget-label="Directus Connection Header">
+            <div>
+              <p class="eyebrow">Local Server publish</p>
+              <h3 id="website-builder-directus-connection-title" data-mc-widget-id="website-builder.directus-connection-title" data-mc-widget-kind="status" data-mc-widget-class="heading" data-mc-widget-label="Directus Connection Title">Connect Directus Storage</h3>
+              <p id="website-builder-directus-connection-summary" data-mc-widget-id="website-builder.directus-connection-summary" data-mc-widget-kind="status" data-mc-widget-class="status" data-mc-widget-label="Directus Connection Summary">This site uses Directus. Choose whether to reuse existing data or overwrite it with a new empty Directus.</p>
+            </div>
+            <button type="button" class="website-builder-directus-connection-close" id="website-builder-directus-connection-close" aria-label="Close Directus storage connection" data-mc-widget-id="website-builder.directus-connection-close" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Close Directus Connection">×</button>
+          </header>
+
+          <div class="website-builder-directus-connection-body mc-app-pane" data-mc-widget-id="website-builder.directus-connection-body" data-mc-widget-kind="panel" data-mc-widget-class="panel" data-mc-widget-label="Directus Connection Body">
+            <p id="website-builder-directus-connection-intro" class="website-builder-directus-connection-intro">Directus containers are disposable, but the database and uploads volumes are durable. Reuse preserves old content; overwrite resets those volumes on the next deploy.</p>
+            <dl class="website-builder-directus-connection-facts">
+              <dt>Site</dt>
+              <dd><code id="website-builder-directus-connection-site">not selected</code></dd>
+              <dt>Service</dt>
+              <dd><code id="website-builder-directus-connection-service">not ready</code></dd>
+              <dt>Internal URL</dt>
+              <dd><code id="website-builder-directus-connection-internal-url">not ready</code></dd>
+            </dl>
+
+            <div class="website-builder-directus-connection-form" aria-label="Directus storage binding">
+              <label>
+                Database volume
+                <input type="text" id="website-builder-directus-database-volume" autocomplete="off">
+              </label>
+              <label>
+                Uploads volume
+                <input type="text" id="website-builder-directus-uploads-volume" autocomplete="off">
+              </label>
+              <label>
+                Public port
+                <input type="number" id="website-builder-directus-public-port" min="1" max="65535" step="1">
+              </label>
+            </div>
+
+            <p class="website-builder-directus-connection-warning">Directus volumes are deleted only when you explicitly choose overwrite. Reusing existing data may recreate a stale Directus container, but keeps the named volumes.</p>
+            <label class="website-builder-directus-connection-ack">
+              <input type="checkbox" id="website-builder-directus-connection-ack">
+              I reviewed this Directus storage binding and understand whether it reuses or overwrites Directus data.
+            </label>
+            <pre id="website-builder-directus-connection-preview" class="website-builder-directus-connection-preview">No Directus connection selected.</pre>
+          </div>
+
+          <footer class="website-builder-directus-connection-footer mc-toolbar" data-mc-widget-id="website-builder.directus-connection-footer" data-mc-widget-kind="toolbar" data-mc-widget-class="toolbar" data-mc-widget-label="Directus Connection Actions">
+            <button type="button" id="website-builder-directus-connection-cancel" data-mc-widget-id="website-builder.directus-connection-cancel" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Cancel Directus Connection">Cancel</button>
+            <button type="button" id="website-builder-directus-connection-new" data-mc-widget-id="website-builder.directus-connection-new" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Create New Directus Volumes">Create separate empty volumes</button>
+            <button type="button" id="website-builder-directus-connection-overwrite" data-mc-widget-id="website-builder.directus-connection-overwrite" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Overwrite Directus Data">Overwrite old Directus data</button>
+            <button type="button" id="website-builder-directus-connection-existing" data-mc-widget-id="website-builder.directus-connection-existing" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Use Directus Volumes">Use existing Directus data</button>
+          </footer>
+        </section>
+      </div>
+
+      <section class="website-builder-panel website-builder-publish-panel" data-website-builder-panel="publish" aria-label="Website publish lanes">
+        <div class="website-builder-publish-grid">
+          <article>
+            <h4>Local Server</h4>
+            <p id="website-builder-publish-local-url">No Local Server lane configured.</p>
+            <p id="website-builder-publish-local-target">Target: direct local Docker server bound on 0.0.0.0.</p>
+            <div class="website-builder-publish-actions">
+              <button type="button" id="website-builder-publish-local-card">Local Server</button>
+              <button type="button" class="website-builder-visit-button" id="website-builder-visit-local-card" disabled>Visit</button>
+            </div>
+          </article>
+          <article>
+            <h4>Deploy</h4>
+            <p id="website-builder-publish-dev-url">No Deploy lane configured.</p>
+            <div class="website-builder-publish-actions">
+              <button type="button" id="website-builder-publish-dev-card">Deploy</button>
+              <button type="button" class="website-builder-visit-button" id="website-builder-visit-dev-card" disabled>Visit</button>
+            </div>
+          </article>
+          <article class="website-builder-publish-target-card">
+            <h4>Publishing Setup</h4>
+            <p>Accept setup to save the command variables used when Publish runs. Keep the publish slug separate from the local source folder.</p>
+            <div class="website-builder-publishing-setup-form" aria-label="Publishing setup">
+              <p id="website-builder-publishing-setup-status" class="website-builder-publishing-setup-status">Enter publish command values, then accept the setup before using Publish.</p>
+              <label class="website-builder-publishing-checkbox">
+                <input id="website-builder-publishing-use-local-server" type="checkbox">
+                <span>Use Local Server</span>
+              </label>
+              <label>
+                Publish slug / remote directory
+                <input id="website-builder-publishing-site-slug" type="text" placeholder="johnrraymond">
+                <span>Used for the remote folder and service name. This is not the local Website Builder source folder.</span>
+              </label>
+              <label>
+                Source website folder
+                <input id="website-builder-publishing-source-path" type="text" placeholder="runtime/websites/hub-site">
+                <span>The repo-relative folder to upload. Keep this separate from the publish slug.</span>
+              </label>
+              <div class="website-builder-remote-command-fields" id="website-builder-remote-command-fields">
+                <label>
+                  Remote SSH host
+                  <input id="website-builder-publishing-ssh-host" type="text" placeholder="root@publish.greatlibrary.io">
+                  <span>The user@host used by the SCP publish command.</span>
+                </label>
+                <label>
+                  SSH password
+                  <input id="website-builder-publishing-ssh-password" type="password" placeholder="Used as SSHPASS for this publish command">
+                  <span>Stored with the site publish setup and passed as an environment variable only while Publish runs.</span>
+                </label>
+              </div>
+              <label>
+                Remote root
+                <input id="website-builder-publishing-remote-root" type="text" placeholder="/srv/main-computer/sites">
+                <span>The parent directory mounted into the remote Coolify nginx service.</span>
+              </label>
+              <label>
+                Published host / domain
+                <input id="website-builder-publishing-domain" type="text" placeholder="https://johnrraymond.example.com">
+                <span>Optional. Used for the Visit button after Publish.</span>
+              </label>
+              <details class="website-builder-coolify-compose-details" open>
+                <summary>Remote Coolify nginx service</summary>
+                <p>Create a Docker Compose service like this in Coolify so the uploaded folder is served by nginx.</p>
+                <pre id="website-builder-coolify-compose-example">services:
+  johnrraymond-site:
+    image: 'nginx:alpine'
+    restart: unless-stopped
+    volumes:
+      - '/srv/main-computer/sites/johnrraymond:/usr/share/nginx/html:ro'
+    expose:
+      - '80'</pre>
+              </details>
+              <details class="website-builder-publishing-implementation-details">
+                <summary>Command details</summary>
+                <dl>
+                  <dt>Route</dt>
+                  <dd><code id="website-builder-publishing-route">remote_prod</code></dd>
+                  <dt>Mode</dt>
+                  <dd><code id="website-builder-publishing-controller-id">scp</code></dd>
+                  <dt>Command target</dt>
+                  <dd><code id="website-builder-publishing-server-target">not selected</code></dd>
+                  <dt>Remote destination</dt>
+                  <dd><code id="website-builder-publishing-destination">not selected</code></dd>
+                </dl>
+                <pre id="website-builder-publishing-implementation-payload">No publishing setup prepared.</pre>
+              </details>
+              <div class="website-builder-publish-actions">
+                <button type="button" id="website-builder-save-remote-prod-target" disabled title="Enter publish command values before accepting.">Accept Publishing Setup</button>
+                <button type="button" class="website-builder-visit-button" id="website-builder-visit-remote-prod-card" disabled>Visit</button>
+              </div>
+              <div class="website-builder-publish-compatibility-controls" hidden aria-hidden="true">
+                <select id="website-builder-remote-prod-target"></select>
+                <input id="website-builder-remote-prod-project" type="text" placeholder="johnrraymond">
+                <input id="website-builder-remote-prod-environment" type="text" placeholder="production">
+                <input id="website-builder-remote-prod-domain" type="text" placeholder="www.example.com">
+                <p id="website-builder-publish-remote-url">No Publish URL configured.</p>
+              </div>
+            </div>
+          </article>
+          <article class="website-builder-publish-addon-card" id="website-builder-publish-blog-directus-card" hidden>
+            <p class="eyebrow">Addons</p>
+            <h4>Blog / Directus</h4>
+            <p id="website-builder-publish-directus-summary">Blog is not selected for this site.</p>
+            <label>
+              Published Site Directus URL
+              <input id="website-builder-publish-directus-url" type="url" placeholder="https://cms.example.com">
+              <span>Deploy and Local Server use the managed local Directus automatically. Published sites use this URL to read Blog posts.</span>
+            </label>
+            <p class="website-builder-publish-directus-status" id="website-builder-publish-directus-status">Configure Blog to enable this publishing addon.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="website-builder-panel website-builder-settings-panel" data-website-builder-panel="settings" aria-label="Website settings">
+        <div class="website-builder-info-grid">
+          <article>
+            <h4>Manifest</h4>
+            <p id="website-builder-settings-manifest">Site settings are stored in runtime/websites/&lt;site-id&gt;/site.json.</p>
+          </article>
+          <article class="website-builder-coolify-card">
+            <h4>Coolify Targets</h4>
+            <p>One local Coolify is shared by all sites. Add as many remote Coolify targets as publishing destinations require.</p>
+            <div id="website-builder-coolify-targets" class="website-builder-coolify-targets" role="list" aria-label="Connected Coolify targets"></div>
+            <div class="website-builder-coolify-form" aria-label="Connect remote Coolify target">
+              <label>
+                Target ID
+                <input id="website-builder-coolify-id" type="text" placeholder="coolify-client-a">
+              </label>
+              <label>
+                Name
+                <input id="website-builder-coolify-name" type="text" placeholder="Client A Coolify">
+              </label>
+              <label>
+                URL
+                <input id="website-builder-coolify-url" type="url" placeholder="https://deploy.client-a.com">
+              </label>
+              <label>
+                Token env var
+                <input id="website-builder-coolify-token-ref" type="text" placeholder="MAIN_COMPUTER_COOLIFY_CLIENT_A_TOKEN">
+              </label>
+              <button type="button" id="website-builder-coolify-save">Add / Update Remote Coolify</button>
+            </div>
+          </article>
+          <article>
+            <h4>Builder State</h4>
+            <p>Use the Source tab to inspect builder.json. A structured settings form can replace raw JSON later.</p>
+          </article>
+        </div>
+      </section>
+    </div>
+
+    <pre class="website-builder-log" id="website-builder-log" aria-live="polite">Website Builder idle.</pre>
+  </div>
+
+  <aside class="website-builder-rail" aria-label="Website manager and inspector">
+    <section class="website-builder-site-manager" aria-label="Website sites">
+      <div class="website-builder-rail-head">
+        <h3>Sites</h3>
+      </div>
+      <select id="website-builder-site-select" aria-label="Select website"></select>
+      <div class="website-builder-site-actions">
+        <button type="button" id="website-builder-create-toggle">+ New</button>
+        <button type="button" id="website-builder-refresh">Refresh</button>
+        <button type="button" class="website-builder-danger-button" id="website-builder-archive">Archive</button>
+      </div>
+      <div class="website-builder-create" id="website-builder-create-panel" hidden>
+        <h4>New Website</h4>
+        <label>
+          Name
+          <input id="website-builder-new-name" type="text" placeholder="Portfolio Site">
+        </label>
+        <label>
+          Site ID
+          <input id="website-builder-new-id" type="text" placeholder="portfolio-site">
+        </label>
+        <button type="button" id="website-builder-create">Create Site</button>
+      </div>
+      <div class="website-site-list" id="website-builder-site-list" role="list" aria-label="Website projects"></div>
+    </section>
+
+    <section class="website-builder-inspector" aria-label="Website inspector">
+      <p class="eyebrow">Inspector</p>
+      <h3>Site Info</h3>
+      <p class="website-builder-inspector-summary">Context for the selected site and current preview.</p>
+      <dl>
+        <div>
+          <dt>Selected Site</dt>
+          <dd id="website-builder-inspector-site">—</dd>
+        </div>
+        <div>
+          <dt>Mode</dt>
+          <dd id="website-builder-inspector-mode">Design / draft</dd>
+        </div>
+        <div>
+          <dt>Files</dt>
+          <dd>index.html, style.css, script.js, builder.json, backend draft</dd>
+        </div>
+        <div>
+          <dt>Local Server URL</dt>
+          <dd id="website-builder-inspector-local">—</dd>
+        </div>
+        <div>
+          <dt>Remote Prod Target</dt>
+          <dd id="website-builder-inspector-remote-target">—</dd>
+        </div>
+        <div>
+          <dt>Deploy URL</dt>
+          <dd id="website-builder-inspector-dev">—</dd>
+        </div>
+      </dl>
+    </section>
+  </aside>
+</section>

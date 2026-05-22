@@ -1,0 +1,46 @@
+# Python/runtime noise
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Git/editor/local operating state
+.git/
+.gitignore
+.DS_Store
+Thumbs.db
+
+# Main Computer runtime output
+.tmp/
+runtime/
+diagnostics_output*/
+harness_output*/
+revision_control/
+debug_asset_revisions/
+energy_credits/
+aider_web_context/
+debug_assets/
+main_computer/debug_assets/
+main_computer/.main_computer_browser_profile/
+
+# Large/generated docs and logs are not needed inside dev images.
+aider.log/
+generated_component_docs/work/
+generated_component_docs/archive/
+generated_component_docs/doc-build.json
+generated_component_docs/doc-health.json
+generated_component_docs/graph.json
+tools/documentation/plan-*
+
+# Generated contract build outputs
+contracts/cache/
+contracts/out/
+pretty_docs/
+
+# Game build artifacts stay on the host bind mount.
+game_projects/*/builds/

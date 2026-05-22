@@ -1,0 +1,24 @@
+<div class="terminal-app mc-app" id="terminal-app" aria-label="Terminal">
+            <div class="terminal-analysis-panel mc-panel mc-sidebar app-widget" data-widget-label="Terminal Analysis" aria-label="Terminal analysis">
+              <div class="mc-panel-header">
+                <strong>Terminal Analysis</strong>
+              </div>
+              <div class="terminal-analysis-tools mc-toolbar">
+                <button type="button" id="terminal-analysis-toggle">Raw</button>
+              </div>
+              <div class="terminal-analysis mc-output" id="terminal-analysis">No terminal failure yet.</div>
+            </div>
+            <div class="terminal-shell mc-shell app-widget" data-widget-label="Terminal Shell">
+              <div class="terminal-controls mc-toolbar">
+                <label class="mc-field">working directory<input id="terminal-cwd" value="."></label>
+                <label class="mc-field">timeout seconds<input id="terminal-timeout" type="number" min="1" max="60" value="15"></label>
+              </div>
+              <div class="terminal-ai-command mc-action-row">
+                <label class="mc-field">ask AI for a command<textarea id="terminal-ai-prompt" placeholder="show me git status"></textarea></label>
+                <button type="button" id="terminal-ai-suggest">Stage Command</button>
+                <div class="terminal-ai-status" id="terminal-ai-status">Ask AI for a command. The command will be placed on the terminal line; it will not run until you press Enter.</div>
+              </div>
+              <div class="terminal-xterm mc-fill" id="terminal-xterm" aria-label="xterm.js terminal"></div>
+              <div class="terminal-hint">Enter runs. Up and Down recall command history. Ctrl+L clears the terminal. Ctrl+C clears the current input.</div>
+            </div>
+          </div>

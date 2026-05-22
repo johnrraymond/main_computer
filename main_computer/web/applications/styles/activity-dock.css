@@ -1,0 +1,570 @@
+    .activity-nav-button.nav-link {
+      font: inherit;
+      text-transform: none;
+    }
+
+    body.activity-dock-collapsed main {
+      grid-template-columns: minmax(220px, 300px) minmax(420px, 1fr) minmax(64px, 78px);
+    }
+
+    body.activity-dock-open main {
+      grid-template-columns: minmax(220px, 300px) minmax(420px, 1fr) minmax(320px, 420px);
+    }
+
+    body[data-active-app="document"].activity-dock-open main {
+      grid-template-columns: minmax(220px, 300px) minmax(420px, 1fr) minmax(64px, 78px);
+    }
+
+    .machine-activity-dock {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 10px;
+      padding: 10px;
+      overflow: hidden;
+      transition: width 140ms ease, max-width 140ms ease;
+    }
+
+    body[data-active-app="document"].activity-dock-open .machine-activity-dock {
+      position: fixed;
+      top: 92px;
+      right: 16px;
+      bottom: 16px;
+      width: min(420px, calc(100vw - 32px));
+      max-width: min(420px, calc(100vw - 32px));
+      z-index: 1200;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.72);
+    }
+
+    .machine-activity-rail {
+      display: grid;
+      gap: 8px;
+      align-content: start;
+    }
+
+    .machine-activity-toggle,
+    .machine-activity-close,
+    .machine-activity-filters button {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #070806;
+      color: var(--ink);
+      padding: 8px 10px;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .machine-activity-toggle {
+      background: var(--gold);
+      color: #090806;
+    }
+
+    .machine-activity-toggle:hover,
+    .machine-activity-close:hover,
+    .machine-activity-filters button:hover,
+    .machine-activity-filters button.active {
+      border-color: var(--gold);
+      color: var(--gold);
+      background: #111610;
+    }
+
+    .machine-activity-heartbeat {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #020302;
+      color: var(--mint);
+      min-height: 42px;
+      padding: 8px;
+      font: 800 11px Consolas, "Lucida Console", monospace;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .machine-activity-body {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto auto auto auto minmax(160px, 1fr) auto auto;
+      gap: 10px;
+      overflow: hidden;
+    }
+
+    body.activity-dock-collapsed .machine-activity-body {
+      display: none;
+    }
+
+    body.activity-dock-collapsed .machine-activity-dock {
+      align-content: start;
+    }
+
+    body.activity-dock-collapsed .machine-activity-toggle {
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
+      min-height: 140px;
+      justify-self: center;
+      padding: 10px 8px;
+    }
+
+    body.activity-dock-collapsed .machine-activity-heartbeat {
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
+      justify-self: center;
+      min-height: 180px;
+      max-height: 280px;
+      width: 42px;
+      overflow: hidden;
+    }
+
+    .machine-activity-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 8px;
+    }
+
+    .machine-activity-header h2 {
+      color: var(--gold);
+      font-size: 18px;
+      text-transform: uppercase;
+    }
+
+    .machine-activity-header p,
+    .machine-activity-card p,
+    .machine-activity-stubbed li,
+    .machine-activity-summary {
+      color: var(--muted);
+      line-height: 1.4;
+    }
+
+    .machine-activity-filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .machine-activity-status-grid {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: 1fr;
+    }
+
+    .machine-activity-card,
+    .machine-activity-ai-session,
+    .machine-activity-stubbed {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #070806;
+      padding: 10px;
+    }
+
+    .machine-activity-ai-session {
+      position: relative;
+      display: grid;
+      gap: 6px;
+      border-color: rgba(138, 225, 174, 0.45);
+      background: #03100b;
+      font: 12px Consolas, "Lucida Console", monospace;
+    }
+
+    .machine-activity-ai-session[hidden] {
+      display: none;
+    }
+
+
+    .machine-activity-session-card {
+      position: relative;
+      display: grid;
+      gap: 6px;
+      border: 1px solid rgba(138, 225, 174, 0.45);
+      border-radius: 8px;
+      background: #03100b;
+      padding: 10px;
+    }
+
+    .machine-activity-session-card.archived {
+      border-color: rgba(247, 243, 232, 0.18);
+      background: rgba(247, 243, 232, 0.035);
+    }
+
+    .machine-activity-session-card.settled,
+    .machine-activity-session-card.finished {
+      border-color: rgba(247, 243, 232, 0.24);
+      background: rgba(247, 243, 232, 0.045);
+    }
+
+    .machine-activity-session-card.failed {
+      border-color: var(--coral);
+      background: #120807;
+    }
+
+    .machine-activity-session-card.idle {
+      border-color: var(--line);
+      background: #050604;
+    }
+
+    .machine-activity-session-archive {
+      display: grid;
+      gap: 6px;
+      border-top: 1px solid rgba(247, 243, 232, 0.14);
+      padding-top: 8px;
+      overflow: visible;
+    }
+
+    .machine-activity-session-archive-title {
+      color: rgba(247, 243, 232, 0.48);
+      font: 900 10px Consolas, "Lucida Console", monospace;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .machine-activity-ai-session.idle {
+      border-color: var(--line);
+      background: #050604;
+    }
+
+    .machine-activity-ai-session.settled,
+    .machine-activity-ai-session.finished {
+      border-color: rgba(247, 243, 232, 0.24);
+      background: rgba(247, 243, 232, 0.045);
+    }
+
+    .machine-activity-ai-session.failed {
+      border-color: var(--coral);
+      background: #120807;
+    }
+
+    .machine-activity-session-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .machine-activity-copy-log {
+      position: absolute;
+      right: 8px;
+      bottom: 8px;
+      width: 18px;
+      height: 18px;
+      border: 1px solid rgba(247, 243, 232, 0.24);
+      border-radius: 4px;
+      background: #020302;
+      color: var(--mint);
+      font: 900 12px Consolas, "Lucida Console", monospace;
+      line-height: 1;
+      padding: 0;
+    }
+
+    .machine-activity-copy-log:disabled {
+      color: rgba(247, 243, 232, 0.24);
+      border-color: rgba(247, 243, 232, 0.12);
+    }
+
+    .machine-activity-session-head strong {
+      color: var(--gold);
+      text-transform: uppercase;
+      font-size: 12px;
+    }
+
+    .machine-activity-session-head small {
+      margin-left: auto;
+      color: var(--mint);
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+
+    .machine-activity-ai-session.finished .machine-activity-session-head small,
+    .machine-activity-ai-session.settled .machine-activity-session-head small,
+    .machine-activity-session-card.finished .machine-activity-session-head small,
+    .machine-activity-session-card.settled .machine-activity-session-head small,
+    .machine-activity-session-card.archived .machine-activity-session-head small {
+      color: rgba(247, 243, 232, 0.52);
+    }
+
+    .machine-activity-ai-session.failed .machine-activity-session-head small,
+    .machine-activity-session-card.failed .machine-activity-session-head small {
+      color: var(--coral);
+    }
+
+    .machine-activity-session-run,
+    .machine-activity-session-model,
+    .machine-activity-session-stream,
+    .machine-activity-session-latest,
+    .machine-activity-session-rag-types,
+    .machine-activity-session-meta {
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .machine-activity-session-run {
+      color: var(--ink);
+      font-weight: 900;
+    }
+
+    .machine-activity-session-model {
+      color: var(--gold);
+      font-weight: 900;
+    }
+
+    .machine-activity-session-stream {
+      color: var(--mint);
+      border-left: 2px solid rgba(138, 225, 174, 0.5);
+      padding-left: 8px;
+      line-height: 1.4;
+    }
+
+    .machine-activity-session-latest,
+    .machine-activity-session-rag-types,
+    .machine-activity-session-meta {
+      color: var(--muted);
+      line-height: 1.4;
+    }
+
+    .machine-activity-session-history-panel {
+      border-top: 1px solid rgba(247, 243, 232, 0.12);
+      padding-top: 6px;
+    }
+
+    .machine-activity-session-history-panel > summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: rgba(247, 243, 232, 0.72);
+      font: 900 10px Consolas, "Lucida Console", monospace;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 0 0 4px;
+    }
+
+    .machine-activity-session-history-title {
+      color: var(--gold);
+    }
+
+    .machine-activity-session-history-hint {
+      color: rgba(247, 243, 232, 0.42);
+    }
+
+    .machine-activity-session-thought-history {
+      display: grid;
+      gap: 6px;
+      padding-top: 6px;
+      color: rgba(247, 243, 232, 0.54);
+      overflow: visible;
+    }
+
+    .machine-activity-session-thought-row {
+      display: grid;
+      gap: 4px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .machine-activity-session-thought-panel {
+      border: 1px solid rgba(247, 243, 232, 0.12);
+      border-radius: 6px;
+      background: rgba(247, 243, 232, 0.03);
+      padding: 6px 8px;
+    }
+
+    .machine-activity-session-thought-panel > summary {
+      display: grid;
+      gap: 3px;
+    }
+
+    .machine-activity-session-thought-row.muted {
+      color: rgba(247, 243, 232, 0.38);
+      font-style: italic;
+    }
+
+    .machine-activity-session-thought-meta {
+      color: rgba(247, 243, 232, 0.4);
+      font-size: 10px;
+      text-transform: uppercase;
+    }
+
+    .machine-activity-session-thought-preview {
+      color: rgba(247, 243, 232, 0.66);
+    }
+
+    .machine-activity-session-thought-body {
+      margin-top: 6px;
+      padding-top: 6px;
+      border-top: 1px solid rgba(247, 243, 232, 0.1);
+      color: rgba(247, 243, 232, 0.82);
+      white-space: pre-wrap;
+    }
+
+    .machine-activity-throbber {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      border: 2px solid rgba(138, 225, 174, 0.28);
+      border-top-color: var(--mint);
+      display: inline-block;
+    }
+
+    .machine-activity-throbber.active,
+    .machine-activity-throbber.alive {
+      animation: machine-activity-alive 850ms ease-in-out infinite;
+      background: var(--mint);
+      box-shadow: 0 0 12px rgba(138, 225, 174, 0.46);
+    }
+
+    .machine-activity-throbber.finished,
+    .machine-activity-throbber.idle {
+      border-color: rgba(247, 243, 232, 0.3);
+      border-top-color: rgba(247, 243, 232, 0.3);
+      background: rgba(247, 243, 232, 0.18);
+      box-shadow: none;
+    }
+
+    .machine-activity-throbber.failed {
+      border-color: var(--coral);
+      border-top-color: var(--coral);
+      background: var(--coral);
+    }
+
+    @keyframes machine-activity-alive {
+      0%, 100% {
+        transform: scale(0.78);
+        opacity: 0.62;
+      }
+      50% {
+        transform: scale(1.18);
+        opacity: 1;
+      }
+    }
+
+    .machine-activity-card strong,
+    .machine-activity-stubbed strong {
+      display: block;
+      color: var(--gold);
+      font-size: 12px;
+      text-transform: uppercase;
+      margin-bottom: 5px;
+    }
+
+    .machine-activity-log {
+      min-height: 0;
+      overflow: auto;
+      display: grid;
+      align-content: start;
+      gap: 8px;
+      padding-right: 2px;
+    }
+
+    .machine-activity-event {
+      border: 1px solid rgba(247, 243, 232, 0.16);
+      border-radius: 8px;
+      background: #050604;
+      padding: 8px;
+      display: grid;
+      gap: 4px;
+      font: 12px Consolas, "Lucida Console", monospace;
+    }
+
+    .machine-activity-event[data-severity="warn"] {
+      border-color: var(--gold);
+    }
+
+    .machine-activity-event[data-severity="error"] {
+      border-color: var(--coral);
+      box-shadow: inset 4px 0 0 var(--coral);
+    }
+
+    .machine-activity-event-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--ink);
+      font-weight: 900;
+    }
+
+    .machine-activity-event-meta {
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }
+
+    .machine-activity-event-message {
+      color: var(--mint);
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+    }
+
+    .machine-activity-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    .machine-activity-tag {
+      border: 1px solid rgba(247, 243, 232, 0.14);
+      border-radius: 999px;
+      color: var(--muted);
+      padding: 2px 6px;
+      font-size: 10px;
+    }
+
+    .machine-activity-meta-shell {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #020302;
+      overflow: hidden;
+    }
+
+    .machine-activity-meta-shell summary {
+      color: var(--gold);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 900;
+      padding: 8px;
+      text-transform: uppercase;
+    }
+
+    #machine-activity-meta {
+      max-height: 240px;
+      overflow: auto;
+      margin: 0;
+      border-top: 1px solid var(--line);
+      padding: 8px;
+      color: var(--mint);
+      font: 11px Consolas, "Lucida Console", monospace;
+      white-space: pre-wrap;
+    }
+
+    .machine-activity-stubbed {
+      max-height: 220px;
+      overflow: auto;
+    }
+
+    .machine-activity-stubbed ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    @media (max-width: 980px) {
+      body.activity-dock-collapsed main,
+      body.activity-dock-open main {
+        grid-template-columns: 1fr;
+      }
+      body.activity-dock-collapsed .machine-activity-body {
+        display: grid;
+      }
+      body.activity-dock-collapsed .machine-activity-toggle,
+      body.activity-dock-collapsed .machine-activity-heartbeat {
+        writing-mode: horizontal-tb;
+        transform: none;
+        width: auto;
+        min-height: 0;
+        max-height: none;
+      }
+      body[data-active-app="document"].activity-dock-open .machine-activity-dock {
+        top: 76px;
+        right: 10px;
+        bottom: 10px;
+        left: 10px;
+        width: auto;
+        max-width: none;
+      }
+    }

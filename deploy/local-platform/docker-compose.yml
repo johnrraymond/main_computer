@@ -1,0 +1,57 @@
+name: main-computer-local-platform
+
+x-site-server-common: &site-server-common
+  build:
+    context: ./site-server
+  restart: unless-stopped
+  volumes:
+    - ../../runtime/websites:/app/runtime/websites:ro
+
+services:
+  hub-local:
+    <<: *site-server-common
+    image: main-computer-phase0-hub-local:latest
+    environment:
+      SITE_ID: hub-site
+      SITE_NAME: Hub Site
+      SITE_KIND: hub
+      SITE_LANE: local
+      CONTENT_ROOT: /app/runtime/websites
+    ports:
+      - "0.0.0.0:18080:8080"
+
+  blog-local:
+    <<: *site-server-common
+    image: main-computer-phase0-blog-local:latest
+    environment:
+      SITE_ID: blog-site
+      SITE_NAME: Blog Site
+      SITE_KIND: blog
+      SITE_LANE: local
+      CONTENT_ROOT: /app/runtime/websites
+    ports:
+      - "0.0.0.0:18081:8080"
+
+  hub-dev:
+    <<: *site-server-common
+    image: main-computer-phase0-hub-dev:latest
+    environment:
+      SITE_ID: hub-site
+      SITE_NAME: Hub Site
+      SITE_KIND: hub
+      SITE_LANE: dev
+      CONTENT_ROOT: /app/runtime/websites
+    ports:
+      - "0.0.0.0:18082:8080"
+
+  blog-dev:
+    <<: *site-server-common
+    image: main-computer-phase0-blog-dev:latest
+    environment:
+      SITE_ID: blog-site
+      SITE_NAME: Blog Site
+      SITE_KIND: blog
+      SITE_LANE: dev
+      CONTENT_ROOT: /app/runtime/websites
+    ports:
+      - "0.0.0.0:18083:8080"

@@ -1,0 +1,246 @@
+    .worker-app {
+      display: none;
+      width: 100%;
+      min-width: 0;
+      min-height: 0;
+      height: 100%;
+    }
+    .worker-shell {
+      gap: 14px;
+      color: var(--ink);
+    }
+    .worker-hero {
+      display: flex;
+      align-items: stretch;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 16px;
+      border: 1px solid rgba(246, 199, 91, 0.34);
+      border-radius: 12px;
+      background:
+        linear-gradient(135deg, rgba(246, 199, 91, 0.13), rgba(115, 214, 255, 0.08)),
+        #0b0c09;
+    }
+    .worker-hero strong {
+      display: block;
+      color: var(--gold);
+      font-size: 22px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .worker-hero span,
+    .worker-pane-head p,
+    .worker-card small,
+    .worker-hub-card span,
+    .worker-save-note {
+      color: var(--muted);
+      line-height: 1.35;
+    }
+    .worker-status-strip {
+      display: flex;
+      flex-wrap: wrap;
+      align-content: center;
+      justify-content: flex-end;
+      gap: 8px;
+      min-width: min(420px, 100%);
+    }
+    .worker-status-strip span,
+    .worker-hub-badges span {
+      border: 1px solid rgba(115, 214, 255, 0.36);
+      border-radius: 999px;
+      background: rgba(115, 214, 255, 0.1);
+      color: var(--sky);
+      font-weight: 800;
+      padding: 7px 10px;
+    }
+    .worker-workspace {
+      grid-template-columns: minmax(230px, 0.8fr) minmax(280px, 1fr) minmax(360px, 1.35fr);
+      gap: 14px;
+    }
+    .worker-pane {
+      gap: 12px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #0b0b09;
+    }
+    .worker-pane-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .worker-pane h3,
+    .worker-card h4,
+    .worker-card legend {
+      margin: 0;
+      color: var(--gold);
+      font-size: 16px;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+    .worker-pane-head p {
+      margin-top: 6px;
+      font-weight: 600;
+    }
+    .worker-card,
+    .worker-add-hub,
+    .worker-hub-card {
+      display: grid;
+      gap: 10px;
+      border: 1px solid rgba(79, 73, 58, 0.82);
+      border-radius: 10px;
+      background: rgba(17, 17, 14, 0.96);
+      padding: 12px;
+    }
+    .worker-card {
+      align-content: start;
+    }
+    .worker-card label,
+    .worker-add-hub label,
+    .worker-switch,
+    .worker-checkline {
+      display: grid;
+      gap: 6px;
+      color: var(--ink);
+      font-weight: 800;
+    }
+    .worker-card label:has(input[type="checkbox"]),
+    .worker-card label:has(input[type="radio"]),
+    .worker-switch,
+    .worker-checkline {
+      grid-template-columns: auto minmax(0, 1fr);
+      align-items: center;
+    }
+    .worker-card label span,
+    .worker-add-hub label span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .worker-app input,
+    .worker-app select {
+      min-width: 0;
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #080907;
+      color: var(--ink);
+      padding: 9px 10px;
+      font: inherit;
+      font-weight: 700;
+    }
+    .worker-app input[type="checkbox"],
+    .worker-app input[type="radio"] {
+      width: auto;
+      accent-color: var(--gold);
+    }
+    .worker-app input:focus,
+    .worker-app select:focus {
+      border-color: var(--sky);
+      outline: 2px solid rgba(115, 214, 255, 0.25);
+      outline-offset: 1px;
+    }
+    .worker-add-hub button,
+    .worker-actions button {
+      width: 100%;
+    }
+    .worker-hub-list {
+      display: grid;
+      gap: 10px;
+    }
+    .worker-hub-card {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .worker-hub-card strong {
+      display: block;
+      font-size: 16px;
+    }
+    .worker-hub-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+    }
+    .worker-hub-badges span {
+      padding: 5px 8px;
+      font-size: 12px;
+    }
+    .worker-switch {
+      min-width: fit-content;
+      border: 1px solid rgba(167, 216, 109, 0.34);
+      border-radius: 999px;
+      background: rgba(167, 216, 109, 0.1);
+      color: var(--mint);
+      padding: 8px 10px;
+    }
+    .worker-radio-grid,
+    .worker-check-grid,
+    .worker-field-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .worker-radio-grid legend,
+    .worker-check-grid h4,
+    .worker-field-grid h4,
+    .worker-wide {
+      grid-column: 1 / -1;
+    }
+    .worker-field-grid label:not(.worker-checkline) {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .worker-field-grid label small {
+      margin-top: -4px;
+      font-weight: 700;
+    }
+    .worker-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #0a0a08;
+      padding: 12px 14px;
+    }
+    .worker-actions output {
+      color: var(--muted);
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    .worker-actions div {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .worker-actions button {
+      width: auto;
+    }
+    @container (max-width: 1120px) {
+      .worker-workspace {
+        grid-template-columns: 1fr;
+      }
+      .worker-pane {
+        max-height: none;
+      }
+    }
+    @media (max-width: 760px) {
+      .worker-hero,
+      .worker-actions {
+        display: grid;
+      }
+      .worker-status-strip {
+        justify-content: flex-start;
+        min-width: 0;
+      }
+      .worker-radio-grid,
+      .worker-check-grid,
+      .worker-field-grid {
+        grid-template-columns: 1fr;
+      }
+      .worker-actions div,
+      .worker-actions button {
+        width: 100%;
+      }
+    }

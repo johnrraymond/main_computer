@@ -1,0 +1,12 @@
+    let running = true;
+    let frameCount = 0;
+    let startedAt = performance.now();
+    let currentApp = "calculator";
+    let xterm = null;
+    let xtermFit = null;
+    let terminalBuffer = "";
+    let terminalBusy = false;
+    let terminalHistory = [];
+    let terminalHistoryCursor = 0;
+    let terminalAnalysisRaw = "No terminal failure yet.";
+    let terminalAnalysisRawMode = false;

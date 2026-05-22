@@ -1,0 +1,253 @@
+    .file-explorer-app {
+      display: none;
+      height: 100%;
+      min-height: 320px;
+      padding: 18px;
+      align-items: stretch;
+    }
+    .file-explorer-shell {
+      width: 100%;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(220px, 280px) minmax(0, 1fr) minmax(240px, 340px);
+      gap: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: #050605;
+    }
+    .file-explorer-roots-panel,
+    .file-explorer-main,
+    .file-explorer-preview {
+      min-height: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #070806;
+      padding: 10px;
+      overflow: auto;
+    }
+    .file-explorer-roots-panel {
+      display: grid;
+      gap: 10px;
+      align-content: start;
+    }
+    .file-explorer-roots-panel strong {
+      color: var(--gold);
+      font-size: 18px;
+      text-transform: uppercase;
+    }
+    .file-explorer-roots-panel span,
+    .file-explorer-status {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1.45;
+      margin-top: 4px;
+    }
+    .file-explorer-roots,
+    .file-explorer-fallback-list {
+      display: grid;
+      gap: 6px;
+      align-content: start;
+      grid-auto-rows: max-content;
+    }
+    .file-explorer-list {
+      min-height: 0;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #010201;
+    }
+    .file-explorer-list.wb-skeleton,
+    .file-explorer-list.wunderbaum,
+    .file-explorer-wunderbaum-host.wb-skeleton,
+    .file-explorer-wunderbaum-host.wunderbaum {
+      color: var(--ink);
+      font: 12px Consolas, "Lucida Console", monospace;
+      --wb-row-outer-height: 24px !important;
+      --wb-row-inner-height: 22px !important;
+    }
+    .file-explorer-list-with-wunderbaum {
+      display: block;
+      overflow: hidden !important;
+    }
+    .file-explorer-wunderbaum-host {
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      overflow: auto;
+      background: #010201;
+      color: var(--ink);
+    }
+    .file-explorer-list.wunderbaum,
+    .file-explorer-list.wunderbaum .wb-list-container,
+    .file-explorer-list.wunderbaum .wb-node-list {
+      background: #010201 !important;
+      color: var(--ink) !important;
+      min-width: 0 !important;
+      width: 100% !important;
+    }
+    .file-explorer-list.wunderbaum .wb-list-container,
+    .file-explorer-list.wunderbaum .wb-node-list {
+      overflow: visible !important;
+      max-height: none !important;
+    }
+    .file-explorer-list.wunderbaum .wb-row,
+    .file-explorer-list.wunderbaum .wb-node,
+    .file-explorer-list.wunderbaum .wb-col {
+      min-width: 0 !important;
+      max-width: 100% !important;
+      color: var(--ink) !important;
+      font: 12px Consolas, "Lucida Console", monospace;
+    }
+    .file-explorer-list.wunderbaum .wb-row:hover,
+    .file-explorer-list.wunderbaum .wb-row:hover .wb-node {
+      background: rgba(125, 211, 252, 0.14) !important;
+      color: var(--sky) !important;
+    }
+    .file-explorer-list.wunderbaum .wb-row.wb-active,
+    .file-explorer-list.wunderbaum .wb-row.wb-selected,
+    .file-explorer-list.wunderbaum .wb-row.wb-active .wb-node,
+    .file-explorer-list.wunderbaum .wb-row.wb-selected .wb-node {
+      background: #123247 !important;
+      background-color: #123247 !important;
+      color: #ffffff !important;
+    }
+    .file-explorer-list.wunderbaum .wb-title {
+      overflow-wrap: anywhere !important;
+      white-space: normal !important;
+      line-height: 1.35 !important;
+    }
+    .file-explorer-list.wunderbaum .wb-expander,
+    .file-explorer-list.wunderbaum .wb-icon {
+      color: var(--gold) !important;
+    }
+    .file-explorer-list.wunderbaum .file-explorer-tree-directory .wb-title,
+    .file-explorer-list.wunderbaum .file-explorer-tree-directory .wb-icon {
+      color: var(--gold) !important;
+      font-weight: 800;
+    }
+    .file-explorer-list.wunderbaum .file-explorer-tree-file .wb-title {
+      color: var(--ink) !important;
+    }
+    .file-explorer-list.wunderbaum .wb-row.wb-active .wb-title,
+    .file-explorer-list.wunderbaum .wb-row.wb-selected .wb-title,
+    .file-explorer-list.wunderbaum .wb-row.wb-active .wb-icon,
+    .file-explorer-list.wunderbaum .wb-row.wb-selected .wb-icon,
+    .file-explorer-list.wunderbaum .wb-row.wb-active .wb-expander,
+    .file-explorer-list.wunderbaum .wb-row.wb-selected .wb-expander {
+      color: #ffffff !important;
+      text-shadow: none !important;
+    }
+    .file-explorer-list:empty::before,
+    .file-explorer-list.wb-initializing::before,
+    .file-explorer-wunderbaum-host:empty::before,
+    .file-explorer-wunderbaum-host.wb-initializing::before {
+      content: "Loading Wunderbaum file tree…";
+      display: block;
+      color: var(--muted);
+      padding: 10px;
+      font: 800 12px Arial, Helvetica, sans-serif;
+    }
+    .file-explorer-root-button,
+    .file-explorer-entry,
+    .file-explorer-empty {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #10110d;
+      color: var(--ink);
+      padding: 8px;
+      text-align: left;
+      display: grid;
+      gap: 4px;
+      align-self: start;
+    }
+    .file-explorer-empty {
+      color: var(--muted);
+      font: 800 12px Arial, Helvetica, sans-serif;
+    }
+    .file-explorer-root-button.active,
+    .file-explorer-entry.active {
+      border-color: var(--sky);
+      color: var(--sky);
+    }
+    .file-explorer-main {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 10px;
+      overflow: hidden;
+    }
+    .file-explorer-toolbar {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) minmax(160px, 260px) auto auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .file-explorer-path {
+      color: var(--gold);
+      font: 700 12px Consolas, "Lucida Console", monospace;
+      overflow-wrap: anywhere;
+    }
+    .file-explorer-toolbar input {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #010201;
+      color: var(--ink);
+      padding: 8px;
+    }
+    .file-explorer-entry {
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: start;
+      cursor: pointer;
+    }
+    .file-explorer-entry-title {
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+    .file-explorer-entry-meta,
+    .file-explorer-preview {
+      color: var(--muted);
+      font: 12px Consolas, "Lucida Console", monospace;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .file-explorer-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      justify-content: flex-end;
+    }
+    .file-explorer-badge {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 6px;
+      color: var(--gold);
+      font: 800 10px Arial, Helvetica, sans-serif;
+      text-transform: uppercase;
+    }
+    .file-explorer-badge.purview {
+      border-color: var(--mint);
+      color: var(--mint);
+    }
+    .file-explorer-preview button {
+      margin-top: 8px;
+      margin-right: 8px;
+    }
+    @media (max-width: 980px) {
+      .spreadsheet-workspace {
+        grid-template-columns: 1fr;
+      }
+      .spreadsheet-library {
+        max-height: 420px;
+      }
+      .file-explorer-shell {
+        grid-template-columns: 1fr;
+      }
+      .file-explorer-toolbar {
+        grid-template-columns: 1fr;
+      }
+    }

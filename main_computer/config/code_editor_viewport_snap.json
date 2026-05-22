@@ -1,0 +1,23 @@
+{
+  "default_snap_mode": "docs-wide",
+  "grow_step_px": 80,
+  "allow_manual_override": true,
+  "presets": {
+    "docs-compact": {
+      "max_width": 720,
+      "max_height": 480
+    },
+    "docs-wide": {
+      "max_width": 1024,
+      "max_height": 640
+    },
+    "workspace": {
+      "max_width": 1280,
+      "max_height": 800
+    },
+    "full": {
+      "max_width": 1920,
+      "max_height": 1080
+    }
+  }
+}

@@ -1,0 +1,82 @@
+from __future__ import annotations
+
+import tempfile
+import threading
+import urllib.request
+import unittest
+from pathlib import Path
+
+from main_computer.config import MainComputerConfig
+from main_computer.viewport import ViewportServer
+
+
+class GameEditorFunctionalSceneTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+        self.server = ViewportServer(("127.0.0.1", 0), MainComputerConfig(workspace=self.root), verbose=False)
+        self.server.debug_root = self.root
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        self.temp_dir.cleanup()
+
+    def get_text(self, path: str) -> str:
+        with urllib.request.urlopen(self.base_url + path, timeout=5) as response:
+            return response.read().decode("utf-8")
+
+    def test_game_surface_route_renders_scene_aware_surface(self) -> None:
+        html = self.get_text("/applications/webgl")
+        self.assertIn('id="webgl-demo"', html)
+        self.assertIn('aria-label="Scene-aware game surface"', html)
+        self.assertIn('data-scene-id="default-empty-scene"', html)
+        self.assertIn("MainComputerSceneViewer", html)
+        self.assertIn("main-computer-game-editor-scene-change", html)
+        self.assertIn("loadWebglProject", html)
+        self.assertIn("Game Surface mirror", html)
+        self.assertIn("sprite-actor", html)
+        self.assertIn("scene-object--sprite-actor", html)
+        self.assertIn("scene-sprite-frame", html)
+        self.assertIn("particle-emitter", html)
+        self.assertNotIn("MainComputerBabylonPreview", html)
+        self.assertNotIn("MeshBuilder", html)
+        self.assertNotIn("SceneLoader", html)
+
+    def test_game_editor_route_renders_project_backed_scene_builder(self) -> None:
+        html = self.get_text("/applications/game-editor")
+        self.assertIn('data-app="game-editor"', html)
+        self.assertIn('id="game-editor-app"', html)
+        self.assertIn("Project-backed scene editor is ready.", html)
+        self.assertIn("function initGameEditorApp()", html)
+        self.assertIn("gameEditorApi", html)
+        self.assertIn("main-computer-game-editor-scene-change", html)
+        self.assertIn("syncGameEditorSceneStore({reason: message})", html)
+        self.assertIn("MainComputerSceneStore", html)
+        self.assertIn('id="game-editor-preview"', html)
+        self.assertIn('id="game-editor-webgl-canvas"', html)
+        self.assertIn('id="game-editor-chat-toggle"', html)
+        self.assertIn('aria-controls="game-editor-chat-popout"', html)
+        self.assertIn('id="game-editor-chat-popout"', html)
+        self.assertIn('id="game-editor-chat-panel"', html)
+        self.assertIn('data-chat-console-embed="game-editor"', html)
+        self.assertIn('data-chat-console-layout="full"', html)
+        self.assertIn('data-chat-console-show-thread-rail="1"', html)
+        self.assertIn('layout: "full"', html)
+        self.assertIn("showThreadRail: true", html)
+        self.assertIn("width: min(980px, calc(100% - 28px));", html)
+        self.assertIn("Game Assistant", html)
+        self.assertIn("function setGameEditorChatOpen", html)
+        self.assertIn("setGameEditorChatOpen(!gameEditorState.chatOpen)", html)
+        self.assertIn("window.MainComputerGameEditorContext", html)
+        self.assertIn("getEmbeddedContext: gameEditorChatContextSnapshot", html)
+        self.assertIn("/api/applications/game-editor/project/write", html)
+        self.assertIn("/api/applications/game-editor/asset/upload", html)
+
+
+if __name__ == "__main__":
+    unittest.main()

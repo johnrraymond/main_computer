@@ -1,0 +1,309 @@
+.task-manager-app {
+  display: none;
+  height: 100%;
+  min-height: 320px;
+  padding: 18px;
+  align-items: stretch;
+}
+.task-manager-shell {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  background: #050605;
+  overflow: hidden;
+  align-items: stretch;
+}
+.task-manager-sidebar,
+.task-manager-detail {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  gap: 10px;
+  overflow: hidden;
+}
+.task-manager-sidebar {
+  grid-template-rows: auto auto minmax(0, 1fr);
+  align-content: start;
+}
+.task-manager-detail {
+  grid-template-rows: minmax(0, 1fr) auto minmax(180px, 0.7fr);
+  align-content: stretch;
+}
+.task-card,
+.task-pane {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #070806;
+  padding: 12px;
+  min-height: 0;
+}
+.task-card strong,
+.task-pane strong {
+  color: var(--gold);
+  display: block;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  font-size: 13px;
+}
+.task-notebook {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  padding-top: 44px;
+}
+.task-notebook-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.task-tab-button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #060706;
+  color: var(--sky);
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+.task-tab-button.active {
+  color: var(--gold);
+  box-shadow: inset 0 0 0 1px rgba(247, 199, 79, 0.2);
+}
+.task-tab-panels,
+.task-tab-panel {
+  min-height: 0;
+}
+.task-tab-panel {
+  display: grid;
+}
+.task-tab-panel[hidden] {
+  display: none !important;
+}
+.task-notebook .task-grid-scroll {
+  height: 100%;
+}
+.task-overview-card,
+.task-schedule-card,
+.task-pane {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 8px;
+  overflow: hidden;
+}
+.task-manager-status {
+  color: var(--mint);
+  font-weight: 800;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.task-manager-server,
+.task-ai-output {
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: Consolas, "Lucida Console", monospace;
+  font-size: 13px;
+  line-height: 1.45;
+  min-height: 160px;
+  overflow: auto;
+  padding-right: 4px;
+}
+.task-inline-grid {
+  display: grid;
+  grid-template-columns: minmax(110px, 130px) repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  align-items: end;
+}
+.task-inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--muted);
+}
+.task-inline-check input {
+  width: auto;
+}
+.task-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.task-detail-grid {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: stretch;
+}
+.task-grid-scroll,
+.task-schedule-list {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #010201;
+}
+.task-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.task-table th,
+.task-table td {
+  padding: 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  text-align: left;
+  vertical-align: top;
+}
+.task-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #0b0d09;
+  color: var(--gold);
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+}
+.task-table td code {
+  display: inline-block;
+  max-width: 100%;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--muted);
+}
+.task-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: rgba(167,216,109,0.14);
+  color: var(--mint);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.task-pill.warn {
+  background: rgba(255,143,112,0.16);
+  color: var(--coral);
+}
+.task-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.task-row-actions button:nth-child(2) {
+  background: var(--coral);
+}
+.task-hardware-sections {
+  display: grid;
+  gap: 12px;
+  padding: 10px;
+}
+.task-hardware-section {
+  display: grid;
+  gap: 8px;
+}
+.task-hardware-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.task-hardware-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: rgba(255,255,255,0.05);
+  color: var(--muted);
+  font-size: 12px;
+}
+.task-utilization-cell {
+  min-width: 160px;
+}
+.task-utilization {
+  display: grid;
+  grid-template-columns: minmax(84px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+.task-utilization-bar {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.08);
+}
+.task-utilization-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--mint), var(--gold));
+}
+.task-utilization strong {
+  font-size: 12px;
+  color: var(--ink);
+}
+.task-hardware-note {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.task-schedule-item {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.task-schedule-item:last-child {
+  border-bottom: 0;
+}
+.task-schedule-meta {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.task-schedule-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.task-schedule-actions button:nth-child(2) {
+  background: var(--coral);
+}
+.task-ai-toolbar textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+.task-empty {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 10px;
+}
+@media (max-width: 1180px) {
+  .task-manager-shell {
+    grid-template-columns: 1fr;
+  }
+  .task-detail-grid {
+    grid-template-columns: 1fr;
+  }
+  .task-inline-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}

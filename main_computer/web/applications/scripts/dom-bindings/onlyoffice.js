@@ -1,0 +1,24 @@
+    const onlyofficeApp = document.querySelector("#onlyoffice-app");
+    const onlyofficeStatus = document.querySelector("#onlyoffice-status");
+    const onlyofficeLibraryStatus = document.querySelector("#onlyoffice-library-status");
+    const onlyofficeFileList = document.querySelector("#onlyoffice-file-list");
+    const onlyofficeRefreshFiles = document.querySelector("#onlyoffice-refresh-files");
+    const onlyofficeNewWorkbook = document.querySelector("#onlyoffice-new-workbook");
+    const onlyofficeUploadTrigger = document.querySelector("#onlyoffice-upload-trigger");
+    const onlyofficeUploadFile = document.querySelector("#onlyoffice-upload-file");
+    const onlyofficeCurrentPath = document.querySelector("#onlyoffice-current-path");
+    const onlyofficeServerStatus = document.querySelector("#onlyoffice-server-status");
+    const onlyofficeServerUrl = document.querySelector("#onlyoffice-server-url");
+    const onlyofficeSaveNow = document.querySelector("#onlyoffice-save-now");
+    const onlyofficeReloadEditor = document.querySelector("#onlyoffice-reload-editor");
+    const onlyofficeEditorHost = document.querySelector("#onlyoffice-editor-host");
+    const stageAdvanced = document.querySelector("#stage-advanced");
+    const stageAdvancedToggle = document.querySelector("#stage-advanced-toggle");
+    const stageAdvancedPane = document.querySelector("#stage-advanced-pane");
+    const stageAdvancedClose = document.querySelector("#stage-advanced-close");
+    const onlyofficeAdvancedChatPanel = document.querySelector("#onlyoffice-advanced-chat-panel");
+    const onlyofficeAdvancedCodePanel = document.querySelector("#onlyoffice-advanced-code-panel");
+    const onlyofficeAdvancedCodeSource = document.querySelector("#onlyoffice-advanced-code-source");
+    const onlyofficeAdvancedAttachCode = document.querySelector("#onlyoffice-advanced-attach-code");
+    const onlyofficeAdvancedCodeStatus = document.querySelector("#onlyoffice-advanced-code-status");
+

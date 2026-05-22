@@ -1,0 +1,43 @@
+<div class="onlyoffice-app" id="onlyoffice-app" aria-label="ONLYOFFICE" data-mc-widget-id="onlyoffice.root" data-mc-widget-kind="app" data-mc-widget-class="app" data-mc-widget-label="ONLYOFFICE" data-mc-component-id="onlyoffice.root" data-mc-component-kind="app" data-mc-component-label="ONLYOFFICE" data-mc-component-owner="applications.workspace" data-mc-feature-id="onlyoffice.feature.workbook">
+            <div class="onlyoffice-shell app-widget" data-widget-label="ONLYOFFICE">
+              <aside class="onlyoffice-library" aria-label="ONLYOFFICE workbook library">
+                <div class="onlyoffice-library-head">
+                  <strong>ONLYOFFICE</strong>
+                  <button type="button" id="onlyoffice-refresh-files">Refresh</button>
+                </div>
+                <div class="onlyoffice-library-actions">
+                  <button type="button" id="onlyoffice-new-workbook">New XLSX</button>
+                  <button type="button" id="onlyoffice-upload-trigger">Upload XLSX</button>
+                  <input type="file" id="onlyoffice-upload-file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
+                </div>
+                <div class="onlyoffice-library-status" id="onlyoffice-library-status">Loading ONLYOFFICE workbooks...</div>
+                <div class="onlyoffice-file-list" id="onlyoffice-file-list">
+                  <div class="onlyoffice-file-empty">No XLSX workbooks found.</div>
+                </div>
+              </aside>
+              <main class="onlyoffice-workspace">
+                <div class="onlyoffice-head">
+                  <div>
+                    <strong>ONLYOFFICE Workbook Editor</strong>
+                    <span>Native XLSX editing through a self-hosted ONLYOFFICE Document Server.</span>
+                  </div>
+                  <div class="onlyoffice-status" id="onlyoffice-status">ONLYOFFICE not connected</div>
+                </div>
+                <div class="onlyoffice-current-path" id="onlyoffice-current-path">No workbook selected.</div>
+                <div class="onlyoffice-server-status" id="onlyoffice-server-status">Document Server status unknown.</div>
+                <div class="onlyoffice-server-url" id="onlyoffice-server-url">Default local WSL URL: http://127.0.0.1:18084</div>
+                <div class="onlyoffice-toolbar" aria-label="ONLYOFFICE workbook controls">
+                  <button type="button" id="onlyoffice-save-now">Save now</button>
+                  <button type="button" id="onlyoffice-reload-editor">Reload editor</button>
+                </div>
+                <div class="onlyoffice-note" id="onlyoffice-note">
+                  Default Windows local mode uses ONLYOFFICE Docs in WSL at http://127.0.0.1:18084. Run tools\onlyoffice\onlyoffice-control.ps1 install, then start, if the server is offline.
+                </div>
+                <div class="onlyoffice-editor-host" id="onlyoffice-editor-host">
+                  <div class="onlyoffice-editor-placeholder">
+                    Select or upload an .xlsx workbook to open it in ONLYOFFICE.
+                  </div>
+                </div>
+              </main>
+            </div>
+          </div>

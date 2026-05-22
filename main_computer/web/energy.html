@@ -1,0 +1,1100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Main Computer Energy Credits</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #f7f3e8;
+      --muted: #c9c0aa;
+      --line: #4f493a;
+      --gold: #f6c75b;
+      --coral: #ff8f70;
+      --sky: #73d6ff;
+      --mint: #a7d86d;
+      --shell: #070806;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; overflow: hidden; }
+    body {
+      background: var(--shell);
+      color: var(--ink);
+      font-family: "Segoe UI", Arial, sans-serif;
+      letter-spacing: 0;
+    }
+    .viewport {
+      height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    h1 { margin: 0; font-size: 22px; }
+    nav { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    a, button {
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 12px;
+      color: #120d05;
+      background: var(--gold);
+      font: inherit;
+      font-weight: 800;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    main {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 320px minmax(0, 1fr) 380px;
+      gap: 12px;
+      padding: 12px;
+    }
+    section, aside {
+      min-height: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0f0f0c;
+      padding: 14px;
+      overflow: auto;
+    }
+    h2 {
+      margin: 0 0 10px;
+      color: var(--gold);
+      font-size: 14px;
+      text-transform: uppercase;
+    }
+    .metric {
+      min-height: 72px;
+      display: grid;
+      align-content: center;
+      margin-bottom: 10px;
+      padding: 12px;
+      border-radius: 8px;
+      color: #120d05;
+      background: var(--gold);
+      font-weight: 800;
+    }
+    .metric:nth-child(2) { background: var(--sky); }
+    .metric:nth-child(3) { background: var(--mint); }
+    .chain-panel {
+      margin: 12px 0;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #090907;
+    }
+    .chain-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .chain-grid div {
+      min-width: 0;
+      padding: 8px;
+      border: 1px solid #2f2a20;
+      border-radius: 8px;
+      background: #0f0f0c;
+    }
+    .chain-grid strong {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+    }
+    .chain-grid span {
+      color: var(--ink);
+      font-weight: 800;
+      word-break: break-word;
+    }
+    .chain-error {
+      min-height: 18px;
+      margin-bottom: 8px;
+      color: var(--coral);
+      font-size: 12px;
+      word-break: break-word;
+    }
+    label {
+      display: grid;
+      gap: 5px;
+      margin-bottom: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    input, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      color: var(--ink);
+      background: #090907;
+      font: inherit;
+    }
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .actions button:nth-child(2) { background: var(--sky); }
+    .actions button:nth-child(3) { background: var(--mint); }
+    .actions button:nth-child(4) { background: var(--coral); }
+    .node, .tx {
+      margin-bottom: 8px;
+      padding: 10px;
+      border-radius: 8px;
+      border-left: 10px solid var(--gold);
+      background: #090907;
+      color: var(--muted);
+      word-break: break-word;
+    }
+    .node strong, .tx strong { color: var(--ink); display: block; }
+    pre {
+      min-height: 140px;
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--muted);
+      font-family: Consolas, "Lucida Console", monospace;
+    }
+    @media (max-width: 980px) {
+      html, body { overflow: auto; }
+      .viewport { height: auto; min-height: 100vh; }
+      main { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="viewport">
+    <header>
+      <h1>Main Computer Energy Credits</h1>
+      <nav>
+        <a href="/graphical">Graphical View</a>
+        <a href="/debug/graphical">Debug</a>
+        <a href="/text">Text Console</a>
+      </nav>
+    </header>
+    <main>
+      <aside aria-label="Energy network state">
+        <h2>Local Head</h2>
+        <div class="metric" id="head-node" data-mc-widget-id="energy.head-node" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Head Node" data-mc-component-id="energy.head.node" data-mc-component-kind="output" data-mc-component-label="Head Node" data-mc-component-owner="energy.feature.ledger" data-mc-feature-id="energy.feature.ledger">loading</div>
+        <div class="metric" id="chain-name" data-mc-widget-id="energy.chain-name" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Chain Name" data-mc-component-id="energy.chain.name" data-mc-component-kind="output" data-mc-component-label="Chain Name" data-mc-component-owner="energy.feature.ledger" data-mc-feature-id="energy.feature.ledger">local ethereum-style</div>
+        <div class="metric" id="node-count" data-mc-widget-id="energy.node-count" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Node Count" data-mc-component-id="energy.node.count" data-mc-component-kind="output" data-mc-component-label="Node Count" data-mc-component-owner="energy.feature.ledger" data-mc-feature-id="energy.feature.ledger">0 nodes</div>
+        <div class="chain-panel" aria-label="Native energy chain status">
+          <h2>Native Energy Chain</h2>
+          <div class="chain-grid">
+            <div><strong>connected</strong><span id="energy-chain-connected" data-mc-widget-id="energy.chain-connected" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Energy Chain Connected" data-mc-component-id="energy.chain.connected" data-mc-component-kind="output" data-mc-component-label="Energy Chain Connected" data-mc-component-owner="energy.feature.chain-status" data-mc-feature-id="energy.feature.chain-status">loading</span></div>
+            <div><strong>chain id</strong><span id="energy-chain-id" data-mc-widget-id="energy.chain-id" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Energy Chain ID" data-mc-component-id="energy.chain.id" data-mc-component-kind="output" data-mc-component-label="Energy Chain ID" data-mc-component-owner="energy.feature.chain-status" data-mc-feature-id="energy.feature.chain-status">loading</span></div>
+            <div><strong>expected</strong><span id="energy-chain-expected-id" data-mc-widget-id="energy.chain-expected-id" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Energy Chain Expected ID" data-mc-component-id="energy.chain.expected.id" data-mc-component-kind="output" data-mc-component-label="Energy Chain Expected ID" data-mc-component-owner="energy.feature.chain-status" data-mc-feature-id="energy.feature.chain-status">loading</span></div>
+            <div><strong>id ok</strong><span id="energy-chain-id-ok" data-mc-widget-id="energy.chain-id-ok" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Energy Chain ID OK" data-mc-component-id="energy.chain.id.ok" data-mc-component-kind="output" data-mc-component-label="Energy Chain ID OK" data-mc-component-owner="energy.feature.chain-status" data-mc-feature-id="energy.feature.chain-status">loading</span></div>
+            <div><strong>block</strong><span id="energy-chain-block" data-mc-widget-id="energy.chain-block" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Energy Chain Block" data-mc-component-id="energy.chain.block" data-mc-component-kind="output" data-mc-component-label="Energy Chain Block" data-mc-component-owner="energy.feature.chain-status" data-mc-feature-id="energy.feature.chain-status">loading</span></div>
+            <div><strong>peers</strong><span id="energy-chain-peers" data-mc-widget-id="energy.chain-peers" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Energy Chain Peers" data-mc-component-id="energy.chain.peers" data-mc-component-kind="output" data-mc-component-label="Energy Chain Peers" data-mc-component-owner="energy.feature.chain-status" data-mc-feature-id="energy.feature.chain-status">loading</span></div>
+            <div><strong>defaults</strong><span id="energy-chain-defaults" data-mc-widget-id="energy.chain-defaults" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Energy Chain Defaults" data-mc-component-id="energy.chain.defaults" data-mc-component-kind="output" data-mc-component-label="Energy Chain Defaults" data-mc-component-owner="energy.feature.chain-status" data-mc-feature-id="energy.feature.chain-status">loading</span></div>
+            <div><strong>rpc source</strong><span id="energy-chain-rpc-source" data-mc-widget-id="energy.chain-rpc-source" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Energy Chain RPC Source" data-mc-component-id="energy.chain.rpc.source" data-mc-component-kind="output" data-mc-component-label="Energy Chain RPC Source" data-mc-component-owner="energy.feature.chain-status" data-mc-feature-id="energy.feature.chain-status">loading</span></div>
+            <div><strong>id source</strong><span id="energy-chain-id-source" data-mc-widget-id="energy.chain-id-source" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Energy Chain ID Source" data-mc-component-id="energy.chain.id.source" data-mc-component-kind="output" data-mc-component-label="Energy Chain ID Source" data-mc-component-owner="energy.feature.chain-status" data-mc-feature-id="energy.feature.chain-status">loading</span></div>
+          </div>
+          <div class="chain-error" id="energy-chain-error" data-mc-widget-id="energy.chain-error" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Energy Chain Error" data-mc-component-id="energy.chain.error" data-mc-component-kind="output" data-mc-component-label="Energy Chain Error" data-mc-component-owner="energy.feature.chain-status" data-mc-feature-id="energy.feature.chain-status"></div>
+          <pre id="energy-chain-status" data-mc-widget-id="energy.chain-status" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Energy Chain Status" data-mc-component-id="energy.chain.status" data-mc-component-kind="output" data-mc-component-label="Energy Chain Status" data-mc-component-owner="energy.feature.chain-status" data-mc-feature-id="energy.feature.chain-status">loading</pre>
+        </div>
+        <div class="chain-panel" aria-label="Main Computer bridge governance">
+          <h2>Main Computer Governance</h2>
+          <div class="chain-grid">
+            <div><strong>model</strong><span id="bridge-governance-model" data-mc-widget-id="energy.bridge-governance-model" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Bridge Governance Model" data-mc-component-id="energy.bridge.governance.model" data-mc-component-kind="output" data-mc-component-label="Bridge Governance Model" data-mc-component-owner="energy.feature.bridge-governance" data-mc-feature-id="energy.feature.bridge-governance">loading</span></div>
+            <div><strong>Alpha</strong><span id="bridge-governance-alpha" data-mc-widget-id="energy.bridge-governance-alpha" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Bridge Governance Alpha" data-mc-component-id="energy.bridge.governance.alpha" data-mc-component-kind="output" data-mc-component-label="Bridge Governance Alpha" data-mc-component-owner="energy.feature.bridge-governance" data-mc-feature-id="energy.feature.bridge-governance">loading</span></div>
+            <div><strong>Beta</strong><span id="bridge-governance-beta" data-mc-widget-id="energy.bridge-governance-beta" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Bridge Governance Beta" data-mc-component-id="energy.bridge.governance.beta" data-mc-component-kind="output" data-mc-component-label="Bridge Governance Beta" data-mc-component-owner="energy.feature.bridge-governance" data-mc-feature-id="energy.feature.bridge-governance">loading</span></div>
+            <div><strong>adversary</strong><span id="bridge-governance-adversary" data-mc-widget-id="energy.bridge-governance-adversary" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Bridge Governance Adversary" data-mc-component-id="energy.bridge.governance.adversary" data-mc-component-kind="output" data-mc-component-label="Bridge Governance Adversary" data-mc-component-owner="energy.feature.bridge-governance" data-mc-feature-id="energy.feature.bridge-governance">loading</span></div>
+            <div><strong>contest</strong><span id="bridge-governance-contest-rule" data-mc-widget-id="energy.bridge-governance-contest-rule" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Bridge Governance Contest Rule" data-mc-component-id="energy.bridge.governance.contest.rule" data-mc-component-kind="output" data-mc-component-label="Bridge Governance Contest Rule" data-mc-component-owner="energy.feature.bridge-governance" data-mc-feature-id="energy.feature.bridge-governance">loading</span></div>
+            <div><strong>outside consensus</strong><span id="bridge-governance-outside-consensus" data-mc-widget-id="energy.bridge-governance-outside-consensus" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Bridge Governance Outside Consensus" data-mc-component-id="energy.bridge.governance.outside.consensus" data-mc-component-kind="output" data-mc-component-label="Bridge Governance Outside Consensus" data-mc-component-owner="energy.feature.bridge-governance" data-mc-feature-id="energy.feature.bridge-governance">loading</span></div>
+            <div><strong>execution</strong><span id="bridge-governance-execution" data-mc-widget-id="energy.bridge-governance-execution" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Bridge Governance Execution" data-mc-component-id="energy.bridge.governance.execution" data-mc-component-kind="output" data-mc-component-label="Bridge Governance Execution" data-mc-component-owner="energy.feature.bridge-governance" data-mc-feature-id="energy.feature.bridge-governance">loading</span></div>
+          </div>
+          <h2>Bridge Order Flow</h2>
+          <div class="chain-grid" id="bridge-order-flow" data-mc-widget-id="energy.bridge-order-flow" data-mc-widget-kind="panel" data-mc-widget-class="panel" data-mc-widget-label="Bridge Order Flow" data-mc-component-id="energy.bridge.order.flow" data-mc-component-kind="panel" data-mc-component-label="Bridge Order Flow" data-mc-component-owner="energy.feature.ledger" data-mc-feature-id="energy.feature.bridge-governance">
+            <div><strong>captain</strong><span id="bridge-order-captain" data-mc-widget-id="energy.bridge-order-captain" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Bridge Order Captain" data-mc-component-id="energy.bridge.order.captain" data-mc-component-kind="output" data-mc-component-label="Bridge Order Captain" data-mc-component-owner="energy.bridge.order.flow" data-mc-feature-id="energy.feature.bridge-governance">loading</span></div>
+            <div><strong>conn</strong><span id="bridge-order-conn" data-mc-widget-id="energy.bridge-order-conn" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Bridge Order Conn" data-mc-component-id="energy.bridge.order.conn" data-mc-component-kind="output" data-mc-component-label="Bridge Order Conn" data-mc-component-owner="energy.bridge.order.flow" data-mc-feature-id="energy.feature.bridge-governance">loading</span></div>
+            <div><strong>belay</strong><span id="bridge-order-belay" data-mc-widget-id="energy.bridge-order-belay" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Bridge Order Belay" data-mc-component-id="energy.bridge.order.belay" data-mc-component-kind="output" data-mc-component-label="Bridge Order Belay" data-mc-component-owner="energy.bridge.order.flow" data-mc-feature-id="energy.feature.bridge-governance">loading</span></div>
+            <div><strong>helm</strong><span id="bridge-order-helm" data-mc-widget-id="energy.bridge-order-helm" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Bridge Order Helm" data-mc-component-id="energy.bridge.order.helm" data-mc-component-kind="output" data-mc-component-label="Bridge Order Helm" data-mc-component-owner="energy.bridge.order.flow" data-mc-feature-id="energy.feature.bridge-governance">loading</span></div>
+            <div><strong>execution</strong><span id="bridge-order-execution" data-mc-widget-id="energy.bridge-order-execution" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Bridge Order Execution" data-mc-component-id="energy.bridge.order.execution" data-mc-component-kind="output" data-mc-component-label="Bridge Order Execution" data-mc-component-owner="energy.bridge.order.flow" data-mc-feature-id="energy.feature.bridge-governance">loading</span></div>
+          </div>
+          <pre id="bridge-governance-status" data-mc-widget-id="energy.bridge-governance-status" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Bridge Governance Status" data-mc-component-id="energy.bridge.governance.status" data-mc-component-kind="output" data-mc-component-label="Bridge Governance Status" data-mc-component-owner="energy.feature.bridge-governance" data-mc-feature-id="energy.feature.bridge-governance">loading</pre>
+        </div>
+        <pre id="energy-status" data-mc-widget-id="energy.status" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Energy Status" data-mc-component-id="energy.status" data-mc-component-kind="output" data-mc-component-label="Energy Status" data-mc-component-owner="energy.feature.ledger" data-mc-feature-id="energy.feature.ledger">loading</pre>
+      </aside>
+      <section aria-label="Energy node controls">
+        <h2>Guarded Node Configuration</h2>
+        <label>admin passcode<input id="energy-passcode" data-mc-widget-id="energy.passcode" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="Energy Passcode" data-mc-component-id="energy.passcode" data-mc-component-kind="input" data-mc-component-label="Energy Passcode" data-mc-component-owner="energy.feature.ledger" data-mc-feature-id="energy.feature.ledger" type="password" autocomplete="current-password" placeholder="optional"></label>
+        <label>node id<input id="node-id" data-mc-widget-id="energy.node-id" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="Node ID" data-mc-component-id="energy.node.id" data-mc-component-kind="input" data-mc-component-label="Node ID" data-mc-component-owner="energy.feature.ledger" data-mc-feature-id="energy.feature.ledger" value="energy-node-1"></label>
+        <label>role<input id="node-role" data-mc-widget-id="energy.node-role" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="Node Role" data-mc-component-id="energy.node.role" data-mc-component-kind="input" data-mc-component-label="Node Role" data-mc-component-owner="energy.feature.ledger" data-mc-feature-id="energy.feature.ledger" value="meter"></label>
+        <label>endpoint<input id="node-endpoint" data-mc-widget-id="energy.node-endpoint" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="Node Endpoint" data-mc-component-id="energy.node.endpoint" data-mc-component-kind="input" data-mc-component-label="Node Endpoint" data-mc-component-owner="energy.feature.ledger" data-mc-feature-id="energy.feature.ledger" value="local://energy-node-1"></label>
+        <label>credits<input id="credit-amount" data-mc-widget-id="energy.credit-amount" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="Credit Amount" data-mc-component-id="energy.credit.amount" data-mc-component-kind="input" data-mc-component-label="Credit Amount" data-mc-component-owner="energy.feature.ledger" data-mc-feature-id="energy.feature.ledger" type="number" min="1" step="1" value="10"></label>
+        <label>memo<input id="credit-memo" data-mc-widget-id="energy.credit-memo" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="Credit Memo" data-mc-component-id="energy.credit.memo" data-mc-component-kind="input" data-mc-component-label="Credit Memo" data-mc-component-owner="energy.feature.ledger" data-mc-feature-id="energy.feature.ledger" value="startup energy credit preparation"></label>
+        <div class="actions">
+          <button id="register-node" data-mc-widget-id="energy.register-node" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Register Node" data-mc-component-id="energy.register.node" data-mc-component-kind="action" data-mc-component-label="Register Node" data-mc-component-owner="energy.feature.ledger" data-mc-feature-id="energy.feature.ledger" type="button">Register Node</button>
+          <button id="issue-credit" data-mc-widget-id="energy.issue-credit" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Issue Credit" data-mc-component-id="energy.issue.credit" data-mc-component-kind="action" data-mc-component-label="Issue Credit" data-mc-component-owner="energy.feature.ledger" data-mc-feature-id="energy.feature.ledger" type="button">Issue Credits</button>
+          <button id="spend-credit" data-mc-widget-id="energy.spend-credit" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Spend Credit" data-mc-component-id="energy.spend.credit" data-mc-component-kind="action" data-mc-component-label="Spend Credit" data-mc-component-owner="energy.feature.ledger" data-mc-feature-id="energy.feature.ledger" type="button">Spend Credits</button>
+          <button id="refresh-energy" data-mc-widget-id="energy.refresh-energy" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Refresh Energy" data-mc-component-id="energy.refresh.energy" data-mc-component-kind="action" data-mc-component-label="Refresh Energy" data-mc-component-owner="energy.feature.ledger" data-mc-feature-id="energy.feature.ledger" type="button">Refresh</button>
+        </div>
+        <div class="chain-panel" id="hub-config-panel" data-mc-widget-id="energy.hub-config-panel" data-mc-widget-kind="panel" data-mc-widget-class="panel" data-mc-widget-label="Hub Config Panel" data-mc-component-id="energy.hub.config.panel" data-mc-component-kind="panel" data-mc-component-label="Hub Config Panel" data-mc-component-owner="energy.feature.hub-config" data-mc-feature-id="energy.feature.hub-config" aria-label="Hub configuration">
+          <h2>Hub Configuration</h2>
+          <div class="chain-grid">
+            <div><strong>active provider</strong><span id="hub-provider-state" data-mc-widget-id="energy.hub-provider-state" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Hub Provider State" data-mc-component-id="energy.hub.provider.state" data-mc-component-kind="output" data-mc-component-label="Hub Provider State" data-mc-component-owner="energy.hub.config.panel" data-mc-feature-id="energy.feature.hub-config">loading</span></div>
+            <div><strong>local hub</strong><span id="hub-local-status" data-mc-widget-id="energy.hub-local-status" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Hub Local Status" data-mc-component-id="energy.hub.local.status" data-mc-component-kind="output" data-mc-component-label="Hub Local Status" data-mc-component-owner="energy.hub.config.panel" data-mc-feature-id="energy.feature.hub-config">loading</span></div>
+          </div>
+          <label>provider<select id="hub-provider" data-mc-widget-id="energy.hub-provider" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="Hub Provider" data-mc-component-id="energy.hub.provider" data-mc-component-kind="input" data-mc-component-label="Hub Provider" data-mc-component-owner="energy.hub.config.panel" data-mc-feature-id="energy.feature.hub-config"><option value="ollama">ollama</option><option value="openai">openai</option><option value="hub">hub</option></select></label>
+          <label>local hub url<input id="hub-url" data-mc-widget-id="energy.hub-url" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="Hub URL" data-mc-component-id="energy.hub.url" data-mc-component-kind="input" data-mc-component-label="Hub URL" data-mc-component-owner="energy.hub.config.panel" data-mc-feature-id="energy.feature.hub-config" value="http://127.0.0.1:8770"></label>
+          <label>client node id<input id="hub-client-node-id" data-mc-widget-id="energy.hub-client-node-id" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="Hub Client Node ID" data-mc-component-id="energy.hub.client.node.id" data-mc-component-kind="input" data-mc-component-label="Hub Client Node ID" data-mc-component-owner="energy.hub.config.panel" data-mc-feature-id="energy.feature.hub-config" value="main-computer-client"></label>
+          <label>timeout seconds<input id="hub-timeout-s" data-mc-widget-id="energy.hub-timeout-s" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="Hub Timeout Seconds" data-mc-component-id="energy.hub.timeout.s" data-mc-component-kind="input" data-mc-component-label="Hub Timeout Seconds" data-mc-component-owner="energy.hub.config.panel" data-mc-feature-id="energy.feature.hub-config" type="number" min="1" step="1" value="600"></label>
+          <label>upstream hub url<input id="hub-upstream-url" data-mc-widget-id="energy.hub-upstream-url" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="Hub Upstream URL" data-mc-component-id="energy.hub.upstream.url" data-mc-component-kind="input" data-mc-component-label="Hub Upstream URL" data-mc-component-owner="energy.hub.config.panel" data-mc-feature-id="energy.feature.hub-config" placeholder="http://remote-host:8770"></label>
+          <label>upstream node id<input id="hub-upstream-node-id" data-mc-widget-id="energy.hub-upstream-node-id" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="Hub Upstream Node ID" data-mc-component-id="energy.hub.upstream.node.id" data-mc-component-kind="input" data-mc-component-label="Hub Upstream Node ID" data-mc-component-owner="energy.hub.config.panel" data-mc-feature-id="energy.feature.hub-config" value="upstream-hub"></label>
+          <label>upstream credits<input id="hub-upstream-credits" data-mc-widget-id="energy.hub-upstream-credits" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="Hub Upstream Credits" data-mc-component-id="energy.hub.upstream.credits" data-mc-component-kind="input" data-mc-component-label="Hub Upstream Credits" data-mc-component-owner="energy.hub.config.panel" data-mc-feature-id="energy.feature.hub-config" type="number" min="1" step="1" value="1"></label>
+          <div class="actions">
+            <button id="hub-apply-config" data-mc-widget-id="energy.hub-apply-config" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Hub Apply Config" data-mc-component-id="energy.hub.apply.config" data-mc-component-kind="action" data-mc-component-label="Hub Apply Config" data-mc-component-owner="energy.hub.config.panel" data-mc-feature-id="energy.feature.hub-config" type="button">Apply Provider</button>
+            <button id="hub-connect-upstream" data-mc-widget-id="energy.hub-connect-upstream" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Hub Connect Upstream" data-mc-component-id="energy.hub.connect.upstream" data-mc-component-kind="action" data-mc-component-label="Hub Connect Upstream" data-mc-component-owner="energy.hub.config.panel" data-mc-feature-id="energy.feature.hub-config" type="button">Connect Upstream</button>
+            <button id="hub-refresh-config" data-mc-widget-id="energy.hub-refresh-config" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Hub Refresh Config" data-mc-component-id="energy.hub.refresh.config" data-mc-component-kind="action" data-mc-component-label="Hub Refresh Config" data-mc-component-owner="energy.hub.config.panel" data-mc-feature-id="energy.feature.hub-config" type="button">Refresh Hub</button>
+          </div>
+          <pre id="hub-config-status" data-mc-widget-id="energy.hub-config-status" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="Hub Config Status" data-mc-component-id="energy.hub.config.status" data-mc-component-kind="output" data-mc-component-label="Hub Config Status" data-mc-component-owner="energy.hub.config.panel" data-mc-feature-id="energy.feature.hub-config">loading</pre>
+        </div>
+        <div class="chain-panel" id="xlag-contract-panel" data-mc-widget-id="energy.xlag-contract-panel" data-mc-widget-kind="panel" data-mc-widget-class="panel" data-mc-widget-label="X-LAG Contract Panel" data-mc-component-id="energy.xlag.contract.panel" data-mc-component-kind="panel" data-mc-component-label="X-LAG Contract Panel" data-mc-component-owner="energy.feature.xlag-contract" data-mc-feature-id="energy.feature.xlag-contract" aria-label="X-LAG contract reserve">
+          <h2>X-LAG Contract Reserve</h2>
+          <p>Use one browser profile/window per bridge office. Backend does not sign or move funds.</p>
+          <div class="chain-grid">
+            <div><strong>contract</strong><span id="xlag-contract-address" data-mc-widget-id="energy.xlag-contract-address" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="X-LAG Contract Address" data-mc-component-id="energy.xlag.contract.address" data-mc-component-kind="output" data-mc-component-label="X-LAG Contract Address" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract">loading</span></div>
+            <div><strong>chain</strong><span id="xlag-contract-chain" data-mc-widget-id="energy.xlag-contract-chain" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="X-LAG Contract Chain" data-mc-component-id="energy.xlag.contract.chain" data-mc-component-kind="output" data-mc-component-label="X-LAG Contract Chain" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract">loading</span></div>
+            <div><strong>account</strong><span id="xlag-contract-active-account" data-mc-widget-id="energy.xlag-contract-active-account" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="X-LAG Contract Active Account" data-mc-component-id="energy.xlag.contract.active.account" data-mc-component-kind="output" data-mc-component-label="X-LAG Contract Active Account" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract">not connected</span></div>
+            <div><strong>office</strong><span id="xlag-contract-active-office" data-mc-widget-id="energy.xlag-contract-active-office" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="X-LAG Contract Active Office" data-mc-component-id="energy.xlag.contract.active.office" data-mc-component-kind="output" data-mc-component-label="X-LAG Contract Active Office" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract">unknown office</span></div>
+          </div>
+          <div id="xlag-contract-office-list" data-mc-widget-id="energy.xlag-contract-office-list" data-mc-widget-kind="list" data-mc-widget-class="list" data-mc-widget-label="X-LAG Contract Office List" data-mc-component-id="energy.xlag.contract.office.list" data-mc-component-kind="list" data-mc-component-label="X-LAG Contract Office List" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" class="node">offices loading</div>
+          <h2>Browser Wallet Diagnostics</h2>
+          <div id="xlag-wallet-diagnostics" data-mc-widget-id="energy.xlag-wallet-diagnostics" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="X-LAG Wallet Diagnostics" data-mc-component-id="energy.xlag.wallet.diagnostics" data-mc-component-kind="output" data-mc-component-label="X-LAG Wallet Diagnostics" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" class="node">wallet diagnostics not run yet</div>
+          <h2>Wallet Smoke Test</h2>
+          <div id="xlag-wallet-smoke-guide" data-mc-widget-id="energy.xlag-wallet-smoke-guide" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="X-LAG Wallet Smoke Guide" data-mc-component-id="energy.xlag.wallet.smoke.guide" data-mc-component-kind="output" data-mc-component-label="X-LAG Wallet Smoke Guide" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" class="node">Run python .\dev-chain-wallet-smoke-guide.py --show-private-keys for MetaMask import help.</div>
+          <label>smoke id<input id="xlag-wallet-smoke-id" data-mc-widget-id="energy.xlag-wallet-smoke-id" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="X-LAG Wallet Smoke ID" data-mc-component-id="energy.xlag.wallet.smoke.id" data-mc-component-kind="input" data-mc-component-label="X-LAG Wallet Smoke ID" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" placeholder="0x...32 bytes"></label>
+          <label>memo<input id="xlag-wallet-smoke-memo" data-mc-widget-id="energy.xlag-wallet-smoke-memo" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="X-LAG Wallet Smoke Memo" data-mc-component-id="energy.xlag.wallet.smoke.memo" data-mc-component-kind="input" data-mc-component-label="X-LAG Wallet Smoke Memo" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" value="browser wallet smoke test"></label>
+          <div class="actions">
+            <button id="xlag-wallet-connect" data-mc-widget-id="energy.xlag-wallet-connect" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="X-LAG Wallet Connect" data-mc-component-id="energy.xlag.wallet.connect" data-mc-component-kind="action" data-mc-component-label="X-LAG Wallet Connect" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="button">Connect Wallet</button>
+            <button id="xlag-wallet-smoke-new-id" data-mc-widget-id="energy.xlag-wallet-smoke-new-id" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="X-LAG Wallet Smoke New ID" data-mc-component-id="energy.xlag.wallet.smoke.new.id" data-mc-component-kind="action" data-mc-component-label="X-LAG Wallet Smoke New ID" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="button">New ID</button>
+            <button id="xlag-wallet-smoke-finalize" data-mc-widget-id="energy.xlag-wallet-smoke-finalize" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="X-LAG Wallet Smoke Finalize" data-mc-component-id="energy.xlag.wallet.smoke.finalize" data-mc-component-kind="action" data-mc-component-label="X-LAG Wallet Smoke Finalize" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="button">Finalize Smoke</button>
+          </div>
+          <div id="xlag-wallet-smoke-status" data-mc-widget-id="energy.xlag-wallet-smoke-status" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="X-LAG Wallet Smoke Status" data-mc-component-id="energy.xlag.wallet.smoke.status" data-mc-component-kind="output" data-mc-component-label="X-LAG Wallet Smoke Status" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" class="node">not finalized yet</div>
+          <h2>Any User Frobber</h2>
+          <p>Harmless dev-chain test: any connected wallet can write a frob record. No backend signing, office role, or reserve movement.</p>
+          <div class="chain-grid">
+            <div><strong>wallet</strong><span id="xlag-any-user-frob-wallet" data-mc-widget-id="energy.xlag-any-user-frob-wallet" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="X-LAG Any User Frob Wallet" data-mc-component-id="energy.xlag.any.user.frob.wallet" data-mc-component-kind="output" data-mc-component-label="X-LAG Any User Frob Wallet" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract">not connected</span></div>
+            <div><strong>chain ok</strong><span id="xlag-any-user-frob-chain-ok" data-mc-widget-id="energy.xlag-any-user-frob-chain-ok" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="X-LAG Any User Frob Chain OK" data-mc-component-id="energy.xlag.any.user.frob.chain.ok" data-mc-component-kind="output" data-mc-component-label="X-LAG Any User Frob Chain OK" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract">unknown</span></div>
+            <div><strong>available</strong><span id="xlag-any-user-frob-available" data-mc-widget-id="energy.xlag-any-user-frob-available" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="X-LAG Any User Frob Available" data-mc-component-id="energy.xlag.any.user.frob.available" data-mc-component-kind="output" data-mc-component-label="X-LAG Any User Frob Available" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract">unknown</span></div>
+            <div><strong>nonce</strong><span id="xlag-any-user-frob-nonce" data-mc-widget-id="energy.xlag-any-user-frob-nonce" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="X-LAG Any User Frob Nonce" data-mc-component-id="energy.xlag.any.user.frob.nonce" data-mc-component-kind="output" data-mc-component-label="X-LAG Any User Frob Nonce" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract">unknown</span></div>
+            <div><strong>native ENG</strong><span id="xlag-any-user-frob-balance" data-mc-widget-id="energy.xlag-any-user-frob-balance" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="X-LAG Any User Frob Balance" data-mc-component-id="energy.xlag.any.user.frob.balance" data-mc-component-kind="output" data-mc-component-label="X-LAG Any User Frob Balance" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract">unknown</span></div>
+          </div>
+          <h2>Dev Wallet Faucet</h2>
+          <p>Local-dev gas helper: fund the connected browser wallet with native ENG from the Anvil faucet account. No reserve funds or contract permissions are touched.</p>
+          <label>amount ENG<input id="xlag-dev-faucet-amount" data-mc-widget-id="energy.xlag-dev-faucet-amount" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="X-LAG Dev Faucet Amount" data-mc-component-id="energy.xlag.dev.faucet.amount" data-mc-component-kind="input" data-mc-component-label="X-LAG Dev Faucet Amount" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" value="1"></label>
+          <div class="actions">
+            <button id="xlag-dev-faucet-fund" data-mc-widget-id="energy.xlag-dev-faucet-fund" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="X-LAG Dev Faucet Fund" data-mc-component-id="energy.xlag.dev.faucet.fund" data-mc-component-kind="action" data-mc-component-label="X-LAG Dev Faucet Fund" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="button">Fund Connected Wallet</button>
+          </div>
+          <div id="xlag-dev-faucet-status" data-mc-widget-id="energy.xlag-dev-faucet-status" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="X-LAG Dev Faucet Status" data-mc-component-id="energy.xlag.dev.faucet.status" data-mc-component-kind="output" data-mc-component-label="X-LAG Dev Faucet Status" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" class="node">not funded yet</div>
+          <label>frob id<input id="xlag-any-user-frob-id" data-mc-widget-id="energy.xlag-any-user-frob-id" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="X-LAG Any User Frob ID" data-mc-component-id="energy.xlag.any.user.frob.id" data-mc-component-kind="input" data-mc-component-label="X-LAG Any User Frob ID" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" placeholder="0x...32 bytes"></label>
+          <label>memo<input id="xlag-any-user-frob-memo" data-mc-widget-id="energy.xlag-any-user-frob-memo" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="X-LAG Any User Frob Memo" data-mc-component-id="energy.xlag.any.user.frob.memo" data-mc-component-kind="input" data-mc-component-label="X-LAG Any User Frob Memo" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" value="any user browser frob"></label>
+          <div class="actions">
+            <button id="xlag-any-user-frob-connect" data-mc-widget-id="energy.xlag-any-user-frob-connect" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="X-LAG Any User Frob Connect" data-mc-component-id="energy.xlag.any.user.frob.connect" data-mc-component-kind="action" data-mc-component-label="X-LAG Any User Frob Connect" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="button">Connect Wallet</button>
+            <button id="xlag-any-user-frob-new-id" data-mc-widget-id="energy.xlag-any-user-frob-new-id" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="X-LAG Any User Frob New ID" data-mc-component-id="energy.xlag.any.user.frob.new.id" data-mc-component-kind="action" data-mc-component-label="X-LAG Any User Frob New ID" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="button">New ID</button>
+            <button id="xlag-any-user-frob-submit" data-mc-widget-id="energy.xlag-any-user-frob-submit" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="X-LAG Any User Frob Submit" data-mc-component-id="energy.xlag.any.user.frob.submit" data-mc-component-kind="action" data-mc-component-label="X-LAG Any User Frob Submit" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="button">Any User Frobber</button>
+          </div>
+          <div id="xlag-any-user-frob-status" data-mc-widget-id="energy.xlag-any-user-frob-status" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="X-LAG Any User Frob Status" data-mc-component-id="energy.xlag.any.user.frob.status" data-mc-component-kind="output" data-mc-component-label="X-LAG Any User Frob Status" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" class="node">not frobbed yet</div>
+          <h2>Payout</h2>
+          <label>recipient<input id="xlag-payout-recipient" data-mc-widget-id="energy.xlag-payout-recipient" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="X-LAG Payout Recipient" data-mc-component-id="energy.xlag.payout.recipient" data-mc-component-kind="input" data-mc-component-label="X-LAG Payout Recipient" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" placeholder="0x..."></label>
+          <label>amount wei<input id="xlag-payout-amount-wei" data-mc-widget-id="energy.xlag-payout-amount-wei" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="X-LAG Payout Amount wei" data-mc-component-id="energy.xlag.payout.amount.wei" data-mc-component-kind="input" data-mc-component-label="X-LAG Payout Amount wei" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="number" min="1" step="1" value="1"></label>
+          <label>memo<input id="xlag-payout-memo" data-mc-widget-id="energy.xlag-payout-memo" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="X-LAG Payout Memo" data-mc-component-id="energy.xlag.payout.memo" data-mc-component-kind="input" data-mc-component-label="X-LAG Payout Memo" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" value="captain payout intent"></label>
+          <label>expires block<input id="xlag-payout-expires-block" data-mc-widget-id="energy.xlag-payout-expires-block" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="X-LAG Payout Expires Block" data-mc-component-id="energy.xlag.payout.expires.block" data-mc-component-kind="input" data-mc-component-label="X-LAG Payout Expires Block" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="number" min="1" step="1" value="999999999"></label>
+          <label>payout id<input id="xlag-payout-id" data-mc-widget-id="energy.xlag-payout-id" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="X-LAG Payout ID" data-mc-component-id="energy.xlag.payout.id" data-mc-component-kind="input" data-mc-component-label="X-LAG Payout ID" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="number" min="1" step="1" value="1"></label>
+          <div class="actions">
+            <button id="xlag-payout-propose" data-mc-widget-id="energy.xlag-payout-propose" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="X-LAG Payout Propose" data-mc-component-id="energy.xlag.payout.propose" data-mc-component-kind="action" data-mc-component-label="X-LAG Payout Propose" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="button">Propose Payout</button>
+            <button id="xlag-payout-second" data-mc-widget-id="energy.xlag-payout-second" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="X-LAG Payout Second" data-mc-component-id="energy.xlag.payout.second" data-mc-component-kind="action" data-mc-component-label="X-LAG Payout Second" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="button">Second</button>
+            <button id="xlag-payout-belay" data-mc-widget-id="energy.xlag-payout-belay" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="X-LAG Payout Belay" data-mc-component-id="energy.xlag.payout.belay" data-mc-component-kind="action" data-mc-component-label="X-LAG Payout Belay" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="button">Belay</button>
+            <button id="xlag-payout-contest" data-mc-widget-id="energy.xlag-payout-contest" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="X-LAG Payout Contest" data-mc-component-id="energy.xlag.payout.contest" data-mc-component-kind="action" data-mc-component-label="X-LAG Payout Contest" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="button">Contest</button>
+            <button id="xlag-payout-execute" data-mc-widget-id="energy.xlag-payout-execute" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="X-LAG Payout Execute" data-mc-component-id="energy.xlag.payout.execute" data-mc-component-kind="action" data-mc-component-label="X-LAG Payout Execute" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="button">Execute</button>
+          </div>
+          <h2>Office Reset</h2>
+          <label>office<input id="xlag-reset-office" data-mc-widget-id="energy.xlag-reset-office" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="X-LAG Reset Office" data-mc-component-id="energy.xlag.reset.office" data-mc-component-kind="input" data-mc-component-label="X-LAG Reset Office" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="number" min="0" max="3" step="1" value="0"></label>
+          <label>new address<input id="xlag-reset-new-address" data-mc-widget-id="energy.xlag-reset-new-address" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="X-LAG Reset New Address" data-mc-component-id="energy.xlag.reset.new.address" data-mc-component-kind="input" data-mc-component-label="X-LAG Reset New Address" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" placeholder="0x..."></label>
+          <label>reason<input id="xlag-reset-reason" data-mc-widget-id="energy.xlag-reset-reason" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="X-LAG Reset Reason" data-mc-component-id="energy.xlag.reset.reason" data-mc-component-kind="input" data-mc-component-label="X-LAG Reset Reason" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" value="office identity reset"></label>
+          <label>expires block<input id="xlag-reset-expires-block" data-mc-widget-id="energy.xlag-reset-expires-block" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="X-LAG Reset Expires Block" data-mc-component-id="energy.xlag.reset.expires.block" data-mc-component-kind="input" data-mc-component-label="X-LAG Reset Expires Block" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="number" min="1" step="1" value="999999999"></label>
+          <label>reset id<input id="xlag-reset-id" data-mc-widget-id="energy.xlag-reset-id" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="X-LAG Reset ID" data-mc-component-id="energy.xlag.reset.id" data-mc-component-kind="input" data-mc-component-label="X-LAG Reset ID" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="number" min="1" step="1" value="1"></label>
+          <div class="actions">
+            <button id="xlag-reset-propose" data-mc-widget-id="energy.xlag-reset-propose" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="X-LAG Reset Propose" data-mc-component-id="energy.xlag.reset.propose" data-mc-component-kind="action" data-mc-component-label="X-LAG Reset Propose" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="button">Propose Reset</button>
+            <button id="xlag-reset-approve" data-mc-widget-id="energy.xlag-reset-approve" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="X-LAG Reset Approve" data-mc-component-id="energy.xlag.reset.approve" data-mc-component-kind="action" data-mc-component-label="X-LAG Reset Approve" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="button">Approve</button>
+            <button id="xlag-reset-contest" data-mc-widget-id="energy.xlag-reset-contest" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="X-LAG Reset Contest" data-mc-component-id="energy.xlag.reset.contest" data-mc-component-kind="action" data-mc-component-label="X-LAG Reset Contest" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="button">Contest</button>
+            <button id="xlag-reset-execute" data-mc-widget-id="energy.xlag-reset-execute" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="X-LAG Reset Execute" data-mc-component-id="energy.xlag.reset.execute" data-mc-component-kind="action" data-mc-component-label="X-LAG Reset Execute" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="button">Execute</button>
+          </div>
+          <div class="chain-error" id="xlag-contract-action-result" data-mc-widget-id="energy.xlag-contract-action-result" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="X-LAG Contract Action Result" data-mc-component-id="energy.xlag.contract.action.result" data-mc-component-kind="output" data-mc-component-label="X-LAG Contract Action Result" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract"></div>
+          <pre id="xlag-contract-status" data-mc-widget-id="energy.xlag-contract-status" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="X-LAG Contract Status" data-mc-component-id="energy.xlag.contract.status" data-mc-component-kind="output" data-mc-component-label="X-LAG Contract Status" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract">loading</pre>
+        </div>
+      </section>
+      <aside aria-label="Energy ledger">
+        <h2>Ledger</h2>
+        <div id="nodes" data-mc-widget-id="energy.nodes" data-mc-widget-kind="list" data-mc-widget-class="list" data-mc-widget-label="Nodes" data-mc-component-id="energy.nodes" data-mc-component-kind="list" data-mc-component-label="Nodes" data-mc-component-owner="energy.feature.ledger" data-mc-feature-id="energy.feature.ledger"></div>
+        <h2>Transactions</h2>
+        <div id="transactions" data-mc-widget-id="energy.transactions" data-mc-widget-kind="list" data-mc-widget-class="list" data-mc-widget-label="Transactions" data-mc-component-id="energy.transactions" data-mc-component-kind="list" data-mc-component-label="Transactions" data-mc-component-owner="energy.feature.ledger" data-mc-feature-id="energy.feature.ledger"></div>
+      </aside>
+    </main>
+  </div>
+  <script>
+    const passcode = document.querySelector("#energy-passcode");
+    const nodeId = document.querySelector("#node-id");
+    const nodeRole = document.querySelector("#node-role");
+    const nodeEndpoint = document.querySelector("#node-endpoint");
+    const creditAmount = document.querySelector("#credit-amount");
+    const creditMemo = document.querySelector("#credit-memo");
+    const hubProvider = document.querySelector("#hub-provider");
+    const hubProviderState = document.querySelector("#hub-provider-state");
+    const hubLocalStatus = document.querySelector("#hub-local-status");
+    const hubUrl = document.querySelector("#hub-url");
+    const hubClientNodeId = document.querySelector("#hub-client-node-id");
+    const hubTimeoutS = document.querySelector("#hub-timeout-s");
+    const hubUpstreamUrl = document.querySelector("#hub-upstream-url");
+    const hubUpstreamNodeId = document.querySelector("#hub-upstream-node-id");
+    const hubUpstreamCredits = document.querySelector("#hub-upstream-credits");
+    const hubConfigStatus = document.querySelector("#hub-config-status");
+    const statusBox = document.querySelector("#energy-status");
+    const nodesBox = document.querySelector("#nodes");
+    const txBox = document.querySelector("#transactions");
+    const headNode = document.querySelector("#head-node");
+    const chainName = document.querySelector("#chain-name");
+    const nodeCount = document.querySelector("#node-count");
+    const energyChainConnected = document.querySelector("#energy-chain-connected");
+    const energyChainId = document.querySelector("#energy-chain-id");
+    const energyChainExpectedId = document.querySelector("#energy-chain-expected-id");
+    const energyChainIdOk = document.querySelector("#energy-chain-id-ok");
+    const energyChainBlock = document.querySelector("#energy-chain-block");
+    const energyChainPeers = document.querySelector("#energy-chain-peers");
+    const energyChainDefaults = document.querySelector("#energy-chain-defaults");
+    const energyChainRpcSource = document.querySelector("#energy-chain-rpc-source");
+    const energyChainIdSource = document.querySelector("#energy-chain-id-source");
+    const energyChainError = document.querySelector("#energy-chain-error");
+    const energyChainStatus = document.querySelector("#energy-chain-status");
+    const bridgeGovernanceModel = document.querySelector("#bridge-governance-model");
+    const bridgeGovernanceAlpha = document.querySelector("#bridge-governance-alpha");
+    const bridgeGovernanceBeta = document.querySelector("#bridge-governance-beta");
+    const bridgeGovernanceAdversary = document.querySelector("#bridge-governance-adversary");
+    const bridgeGovernanceContestRule = document.querySelector("#bridge-governance-contest-rule");
+    const bridgeGovernanceOutsideConsensus = document.querySelector("#bridge-governance-outside-consensus");
+    const bridgeGovernanceExecution = document.querySelector("#bridge-governance-execution");
+    const bridgeGovernanceStatus = document.querySelector("#bridge-governance-status");
+    const bridgeOrderCaptain = document.querySelector("#bridge-order-captain");
+    const bridgeOrderConn = document.querySelector("#bridge-order-conn");
+    const bridgeOrderBelay = document.querySelector("#bridge-order-belay");
+    const bridgeOrderHelm = document.querySelector("#bridge-order-helm");
+    const bridgeOrderExecution = document.querySelector("#bridge-order-execution");
+    const xlagContractAddress = document.querySelector("#xlag-contract-address");
+    const xlagContractChain = document.querySelector("#xlag-contract-chain");
+    const xlagContractOfficeList = document.querySelector("#xlag-contract-office-list");
+    const xlagContractActiveAccount = document.querySelector("#xlag-contract-active-account");
+    const xlagContractActiveOffice = document.querySelector("#xlag-contract-active-office");
+    const xlagContractActionResult = document.querySelector("#xlag-contract-action-result");
+    const xlagContractStatus = document.querySelector("#xlag-contract-status");
+    const xlagWalletDiagnostics = document.querySelector("#xlag-wallet-diagnostics");
+    const xlagPayoutRecipient = document.querySelector("#xlag-payout-recipient");
+    const xlagPayoutAmountWei = document.querySelector("#xlag-payout-amount-wei");
+    const xlagPayoutMemo = document.querySelector("#xlag-payout-memo");
+    const xlagPayoutExpiresBlock = document.querySelector("#xlag-payout-expires-block");
+    const xlagPayoutId = document.querySelector("#xlag-payout-id");
+    const xlagResetOffice = document.querySelector("#xlag-reset-office");
+    const xlagResetNewAddress = document.querySelector("#xlag-reset-new-address");
+    const xlagResetReason = document.querySelector("#xlag-reset-reason");
+    const xlagResetExpiresBlock = document.querySelector("#xlag-reset-expires-block");
+    const xlagResetId = document.querySelector("#xlag-reset-id");
+    const xlagWalletSmokeGuide = document.querySelector("#xlag-wallet-smoke-guide");
+    const xlagWalletSmokeId = document.querySelector("#xlag-wallet-smoke-id");
+    const xlagWalletSmokeMemo = document.querySelector("#xlag-wallet-smoke-memo");
+    const xlagWalletSmokeStatus = document.querySelector("#xlag-wallet-smoke-status");
+    const xlagAnyUserFrobWallet = document.querySelector("#xlag-any-user-frob-wallet");
+    const xlagAnyUserFrobChainOk = document.querySelector("#xlag-any-user-frob-chain-ok");
+    const xlagAnyUserFrobAvailable = document.querySelector("#xlag-any-user-frob-available");
+    const xlagAnyUserFrobNonce = document.querySelector("#xlag-any-user-frob-nonce");
+    const xlagAnyUserFrobBalance = document.querySelector("#xlag-any-user-frob-balance");
+    const xlagDevFaucetAmount = document.querySelector("#xlag-dev-faucet-amount");
+    const xlagDevFaucetStatus = document.querySelector("#xlag-dev-faucet-status");
+    const xlagAnyUserFrobId = document.querySelector("#xlag-any-user-frob-id");
+    const xlagAnyUserFrobMemo = document.querySelector("#xlag-any-user-frob-memo");
+    const xlagAnyUserFrobStatus = document.querySelector("#xlag-any-user-frob-status");
+    let xlagStatus = null;
+    let xlagActiveAccount = "";
+    let xlagWalletLastAction = "not started";
+    let xlagWalletLastError = "none";
+    let xlagLastSubmittedFrobId = "";
+    const xlagPendingActions = new Set();
+
+    function xlagWalletErrorMessage(error) {
+      const pieces = [];
+      if (error && typeof error === "object" && "code" in error) pieces.push(`code ${error.code}`);
+      pieces.push(String(error?.message || error || "unknown wallet error"));
+      return pieces.join(": ");
+    }
+    function xlagWalletLog(level, message, detail = null) {
+      const fn = console[level] || console.log;
+      if (detail === null || detail === undefined) {
+        fn.call(console, "[energy:xlag-wallet]", message);
+      } else {
+        fn.call(console, "[energy:xlag-wallet]", message, detail);
+      }
+    }
+    function xlagExpectedChainDetails() {
+      const live = xlagStatus?.live || {};
+      const expectedRaw = live.expected_chain_id || xlagStatus?.chain_id || live.chain_id;
+      const expected = expectedRaw ? Number(expectedRaw) : null;
+      return {
+        expected,
+        expectedHex: expected ? `0x${expected.toString(16)}` : "",
+        rpcUrl: live.rpc_url || xlagStatus?.rpc_url || "http://127.0.0.1:18545",
+        chainName: live.chain_name || "Main Computer Dev Chain",
+        currencySymbol: live.currency_symbol || "ENG"
+      };
+    }
+    function xlagSetWalletMessage(message, target = null) {
+      if (target) target.textContent = message;
+      xlagContractActionResult.textContent = message;
+      xlagWalletLastAction = message;
+    }
+    function xlagSetButtonPending(button, pending, pendingText = "Waiting for MetaMask...") {
+      if (!button) return;
+      if (!button.dataset.readyText) button.dataset.readyText = button.textContent;
+      if (pending) {
+        button.disabled = true;
+        button.setAttribute("aria-busy", "true");
+        button.textContent = pendingText;
+      } else {
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+        button.textContent = button.dataset.readyText || button.textContent;
+      }
+    }
+    async function xlagRunExclusive(actionKey, button, target, pendingText, task) {
+      if (xlagPendingActions.has(actionKey)) {
+        const message = `${actionKey} is already waiting for MetaMask or confirmation; duplicate click ignored.`;
+        xlagSetWalletMessage(message, target);
+        xlagWalletLog("warn", "duplicate wallet action ignored", {actionKey});
+        return null;
+      }
+      xlagPendingActions.add(actionKey);
+      xlagSetButtonPending(button, true, pendingText);
+      try {
+        return await task();
+      } finally {
+        xlagPendingActions.delete(actionKey);
+        xlagSetButtonPending(button, false);
+      }
+    }
+    function xlagSendButton(event, actionKey, selector, types, values, target = xlagContractActionResult) {
+      return xlagRunExclusive(actionKey, event.currentTarget, target, "Waiting for MetaMask...", () => xlagSend(selector, types, values));
+    }
+    async function refreshXlagWalletDiagnostics(context = "manual") {
+      const detail = {context, provider: Boolean(window.ethereum), lastAction: xlagWalletLastAction, lastError: xlagWalletLastError};
+      const {expected, expectedHex, rpcUrl, currencySymbol} = xlagExpectedChainDetails();
+      const lines = [
+        `context: ${context}`,
+        `provider: ${window.ethereum ? "available" : "missing"}`,
+        `expected chain: ${expected || "unknown"} ${expectedHex || ""}`.trim(),
+        `configured rpc: ${rpcUrl || "unknown"}`,
+        `last action: ${xlagWalletLastAction}`,
+        `last error: ${xlagWalletLastError}`
+      ];
+      if (!window.ethereum) {
+        lines.push("next step: install/enable MetaMask or another injected browser wallet for this page.");
+        xlagWalletDiagnostics.textContent = lines.join("\n");
+        xlagWalletLog("warn", "browser wallet provider missing", detail);
+        return detail;
+      }
+      try {
+        const chainHex = await window.ethereum.request({method: "eth_chainId"});
+        const chainId = Number(BigInt(chainHex));
+        detail.walletChainId = chainId;
+        detail.walletChainHex = chainHex;
+        detail.chainMatchesExpected = expected ? chainId === expected : null;
+        lines.push(`wallet chain: ${chainId} ${chainHex}`);
+        lines.push(`wallet chain ok: ${expected ? String(chainId === expected) : "unknown"}`);
+      } catch (error) {
+        const message = xlagWalletErrorMessage(error);
+        detail.chainError = message;
+        lines.push(`wallet chain error: ${message}`);
+      }
+      try {
+        const accounts = await window.ethereum.request({method: "eth_accounts"});
+        const normalized = (accounts || []).map((account) => String(account).toLowerCase());
+        detail.accounts = normalized;
+        if (normalized[0]) {
+          xlagActiveAccount = normalized[0];
+          xlagContractActiveAccount.textContent = xlagActiveAccount;
+          xlagAnyUserFrobWallet.textContent = xlagActiveAccount;
+        }
+        lines.push(`accounts: ${normalized.length}`);
+        lines.push(`selected account: ${normalized[0] || "not connected"}`);
+      } catch (error) {
+        const message = xlagWalletErrorMessage(error);
+        detail.accountsError = message;
+        lines.push(`accounts error: ${message}`);
+      }
+      lines.push(`native currency: ${currencySymbol}`);
+      lines.push("console prefix: [energy:xlag-wallet]");
+      try {
+        if (xlagActiveAccount) {
+          const balanceHex = await window.ethereum.request({method: "eth_getBalance", params: [xlagActiveAccount, "latest"]});
+          const balanceEng = formatWeiToEng(balanceHex);
+          detail.balanceWei = String(BigInt(balanceHex));
+          detail.balanceEng = balanceEng;
+          xlagAnyUserFrobBalance.textContent = `${balanceEng} ENG`;
+          lines.push(`native balance: ${balanceEng} ENG`);
+        } else {
+          xlagAnyUserFrobBalance.textContent = "not connected";
+        }
+      } catch (error) {
+        const message = xlagWalletErrorMessage(error);
+        detail.balanceError = message;
+        xlagAnyUserFrobBalance.textContent = "unknown";
+        lines.push(`balance error: ${message}`);
+      }
+      xlagWalletDiagnostics.textContent = lines.join("\n");
+      xlagWalletLog("debug", "diagnostics updated", detail);
+      return detail;
+    }
+    function xlagHandleWalletError(error, target = null, context = "wallet action") {
+      const message = xlagWalletErrorMessage(error);
+      xlagWalletLastAction = context;
+      xlagWalletLastError = message;
+      xlagWalletLog("error", `${context} failed`, {message, error});
+      const output = `${context} failed: ${message}`;
+      if (target) target.textContent = output;
+      xlagContractActionResult.textContent = output;
+      refreshXlagWalletDiagnostics(context);
+    }
+
+    async function energyRequest(path, payload = {}) {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({...payload, passcode: passcode.value})
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      return data;
+    }
+    function hubConfigPayload(connectUpstream = false) {
+      return {
+        hub_url: hubUrl.value,
+        hub_client_node_id: hubClientNodeId.value,
+        hub_timeout_s: Number(hubTimeoutS.value || 600),
+        upstream_hub_url: hubUpstreamUrl.value,
+        upstream_node_id: hubUpstreamNodeId.value,
+        upstream_credits_per_request: Number(hubUpstreamCredits.value || 1),
+        connect_upstream: Boolean(connectUpstream)
+      };
+    }
+    function renderHubConfig(data) {
+      const saved = data.saved || {};
+      hubProvider.value = data.active_provider || "ollama";
+      hubUrl.value = data.hub_url || saved.hub_url || "http://127.0.0.1:8770";
+      hubClientNodeId.value = data.hub_client_node_id || saved.hub_client_node_id || "main-computer-client";
+      hubTimeoutS.value = data.hub_timeout_s || saved.hub_timeout_s || 600;
+      hubUpstreamUrl.value = saved.upstream_hub_url || hubUpstreamUrl.value || "";
+      hubProviderState.textContent = `${data.active_provider || data.provider || "unknown"} | ${data.model || "unknown model"}`;
+      const local = data.local_hub_status || {};
+      const status = local.status || {};
+      hubLocalStatus.textContent = local.reachable ? `${status.worker_count || 0} workers | ${status.upstream_count || 0} upstreams` : "not reachable";
+      hubConfigStatus.textContent = JSON.stringify(data, null, 2);
+    }
+    async function refreshHubConfig() {
+      try {
+        const response = await fetch("/api/hub/config", {cache: "no-store"});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        renderHubConfig(data);
+      } catch (error) {
+        hubProviderState.textContent = "unavailable";
+        hubLocalStatus.textContent = "unknown";
+        hubConfigStatus.textContent = String(error.message || error);
+      }
+    }
+    async function saveHubConfig(connectUpstream = false) {
+      try {
+        const data = await energyRequest("/api/hub/config", hubConfigPayload(connectUpstream));
+        renderHubConfig(data);
+      } catch (error) {
+        hubConfigStatus.textContent = String(error.message || error);
+      }
+    }
+    function render(data) {
+      headNode.textContent = `${data.head.node_id} | ${data.head.role}`;
+      chainName.textContent = `${data.network.name} | ${data.network.currency}`;
+      nodeCount.textContent = `${data.nodes.length + 1} configured nodes`;
+      statusBox.textContent = JSON.stringify(data.balances, null, 2);
+      nodesBox.textContent = "";
+      [data.head, ...data.nodes].forEach((node) => {
+        const item = document.createElement("div");
+        item.className = "node";
+        item.innerHTML = `<strong>${node.node_id}</strong>${node.role} | ${node.endpoint || "local"} | balance ${data.balances[node.node_id] || 0}`;
+        nodesBox.append(item);
+      });
+      txBox.textContent = "";
+      data.transactions.slice().reverse().forEach((tx) => {
+        const item = document.createElement("div");
+        item.className = "tx";
+        item.innerHTML = `<strong>${tx.tx_id} | ${tx.kind}</strong>${tx.node_id} | ${tx.credits} | ${tx.memo || "no memo"}`;
+        txBox.append(item);
+      });
+    }
+    function displayValue(value) {
+      return value === null || value === undefined ? "unknown" : String(value);
+    }
+    function formatWeiToEng(weiValue) {
+      const wei = BigInt(weiValue || 0);
+      const base = 1000000000000000000n;
+      const whole = wei / base;
+      const fraction = (wei % base).toString().padStart(18, "0").replace(/0+$/, "");
+      return fraction ? `${whole}.${fraction}` : `${whole}`;
+    }
+    function renderChainStatus(data) {
+      if (!data.enabled) {
+        energyChainConnected.textContent = "disabled";
+      } else {
+        energyChainConnected.textContent = data.connected ? "yes" : "no";
+      }
+      energyChainId.textContent = displayValue(data.chain_id);
+      energyChainExpectedId.textContent = displayValue(data.expected_chain_id);
+      energyChainIdOk.textContent = data.chain_id_ok === null || data.chain_id_ok === undefined ? "unknown" : String(Boolean(data.chain_id_ok));
+      energyChainBlock.textContent = displayValue(data.block_number);
+      energyChainPeers.textContent = displayValue(data.peer_count);
+      energyChainDefaults.textContent = data.using_defaults ? (data.defaults_used || []).join(", ") : "none";
+      energyChainRpcSource.textContent = displayValue(data.config_source?.rpc_url);
+      energyChainIdSource.textContent = displayValue(data.config_source?.expected_chain_id);
+      energyChainError.textContent = data.error || "";
+      energyChainStatus.textContent = JSON.stringify(data, null, 2);
+    }
+    async function refreshChain() {
+      try {
+        const response = await fetch("/api/energy/chain/status", {cache: "no-store"});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        renderChainStatus(data);
+      } catch (error) {
+        energyChainConnected.textContent = "no";
+        energyChainId.textContent = "unknown";
+        energyChainExpectedId.textContent = "unknown";
+        energyChainIdOk.textContent = "unknown";
+        energyChainBlock.textContent = "unknown";
+        energyChainPeers.textContent = "unknown";
+        energyChainDefaults.textContent = "unknown";
+        energyChainRpcSource.textContent = "unknown";
+        energyChainIdSource.textContent = "unknown";
+        energyChainError.textContent = String(error.message || error);
+        energyChainStatus.textContent = JSON.stringify({error: String(error.message || error)}, null, 2);
+      }
+    }
+    function officeLabel(office) {
+      return office ? office.title : "unknown";
+    }
+    function renderBridgeGovernance(data) {
+      const offices = data.offices || {};
+      bridgeGovernanceModel.textContent = data.model || "unknown";
+      bridgeGovernanceAlpha.textContent = `${officeLabel(offices.O0)} + ${officeLabel(offices.O1)}`;
+      bridgeGovernanceBeta.textContent = `${officeLabel(offices.O2)} + ${officeLabel(offices.O3)}`;
+      bridgeGovernanceAdversary.textContent = data.adversary?.any_pair_can_collude ? "Any pair can collude" : "unknown";
+      bridgeGovernanceContestRule.textContent = data.safety?.any_office_can_contest ? "Any office can contest" : "unknown";
+      bridgeGovernanceOutsideConsensus.textContent = data.safety?.outside_consensus_required_on_contest ? "Contest => outside consensus" : "unknown";
+      bridgeGovernanceExecution.textContent = data.execution?.reserve_execution_enabled ? "Execution enabled" : "Execution disabled";
+      const orderFlow = data.bridge_order_flow || {};
+      bridgeOrderCaptain.textContent = orderFlow.captain_touches_computer_required === false ? "Captain gives intent; no computer touch required" : "Captain gives intent";
+      bridgeOrderConn.textContent = orderFlow.console_operator_role === "conn" ? "Conn relays" : "console relay";
+      bridgeOrderBelay.textContent = orderFlow.first_officer_touches_computer_required === false ? "First Officer may belay; no computer touch required" : "First Officer may belay";
+      bridgeOrderHelm.textContent = orderFlow.seconding_station === "helm" ? "Helm seconds/carries" : "seconding station";
+      bridgeOrderExecution.textContent = orderFlow.execution?.serious_outcomes_require_governance ? "serious execution disabled/policy-gated" : "execution disabled";
+      bridgeGovernanceStatus.textContent = [
+        "Alpha/Beta is grammar, not trust",
+        bridgeGovernanceAdversary.textContent,
+        bridgeGovernanceContestRule.textContent,
+        bridgeGovernanceOutsideConsensus.textContent,
+        bridgeGovernanceExecution.textContent,
+        bridgeOrderCaptain.textContent,
+        bridgeOrderConn.textContent,
+        bridgeOrderBelay.textContent,
+        bridgeOrderHelm.textContent,
+        bridgeOrderExecution.textContent,
+        "",
+        JSON.stringify(data, null, 2)
+      ].join("\n");
+    }
+    async function refreshBridgeGovernance() {
+      try {
+        const response = await fetch("/api/bridge/governance", {cache: "no-store"});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        renderBridgeGovernance(data);
+      } catch (error) {
+        const message = String(error.message || error);
+        bridgeGovernanceModel.textContent = "unavailable";
+        bridgeGovernanceAlpha.textContent = "unknown";
+        bridgeGovernanceBeta.textContent = "unknown";
+        bridgeGovernanceAdversary.textContent = "unknown";
+        bridgeGovernanceContestRule.textContent = "unknown";
+        bridgeGovernanceOutsideConsensus.textContent = "unknown";
+        bridgeGovernanceExecution.textContent = "Execution disabled";
+        bridgeOrderCaptain.textContent = "unknown";
+        bridgeOrderConn.textContent = "unknown";
+        bridgeOrderBelay.textContent = "unknown";
+        bridgeOrderHelm.textContent = "unknown";
+        bridgeOrderExecution.textContent = "Execution disabled";
+        bridgeGovernanceStatus.textContent = message;
+      }
+    }
+    function stripHex(value) {
+      return String(value || "").replace(/^0x/i, "");
+    }
+    function padWord(hex) {
+      return stripHex(hex).padStart(64, "0");
+    }
+    function encodeUint(value) {
+      return BigInt(value || 0).toString(16).padStart(64, "0");
+    }
+    function encodeAddress(value) {
+      const clean = stripHex(value).toLowerCase();
+      if (!/^[0-9a-f]{40}$/.test(clean)) throw new Error("Invalid address");
+      return clean.padStart(64, "0");
+    }
+    function encodeBytes32(value) {
+      const clean = stripHex(value).toLowerCase();
+      if (!/^[0-9a-f]{1,64}$/.test(clean)) throw new Error("Invalid bytes32 value");
+      return clean.padStart(64, "0");
+    }
+    function encodeStringTail(value) {
+      const bytes = new TextEncoder().encode(String(value || ""));
+      const length = encodeUint(bytes.length);
+      const hex = Array.from(bytes).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+      const paddedLength = Math.ceil(hex.length / 64) * 64;
+      return length + hex.padEnd(paddedLength, "0");
+    }
+    function abiEncode(types, values) {
+      const head = [];
+      const tail = [];
+      let offset = types.length * 32;
+      types.forEach((type, index) => {
+        const value = values[index];
+        if (type === "string") {
+          const encoded = encodeStringTail(value);
+          head.push(encodeUint(offset));
+          tail.push(encoded);
+          offset += encoded.length / 2;
+        } else if (type === "address") {
+          head.push(encodeAddress(value));
+        } else if (type === "bytes32") {
+          head.push(encodeBytes32(value));
+        } else {
+          head.push(encodeUint(value));
+        }
+      });
+      return head.join("") + tail.join("");
+    }
+    function contractData(selector, types = [], values = []) {
+      return selector + abiEncode(types, values);
+    }
+    function randomSmokeId() {
+      const bytes = new Uint8Array(32);
+      window.crypto.getRandomValues(bytes);
+      return "0x" + Array.from(bytes).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    }
+    async function xlagEnsureExpectedChain() {
+      if (!window.ethereum) throw new Error("Browser wallet not available.");
+      const {expected, expectedHex, rpcUrl, chainName, currencySymbol} = xlagExpectedChainDetails();
+      if (!expected) {
+        xlagWalletLog("warn", "expected chain is unknown; skipping wallet chain enforcement");
+        return;
+      }
+      const actualHex = await window.ethereum.request({method: "eth_chainId"});
+      const actual = Number(BigInt(actualHex));
+      if (actual === expected) {
+        xlagWalletLog("debug", "wallet is already on the expected chain", {expected, expectedHex, actualHex});
+        return;
+      }
+      xlagWalletLog("warn", "wallet chain mismatch; requesting switch", {expected, expectedHex, actual, actualHex, rpcUrl});
+      try {
+        await window.ethereum.request({method: "wallet_switchEthereumChain", params: [{chainId: expectedHex}]});
+      } catch (error) {
+        if (error && typeof error === "object" && error.code === 4902 && rpcUrl) {
+          xlagWalletLog("warn", "wallet does not know the dev chain; requesting addEthereumChain", {expected, expectedHex, rpcUrl});
+          await window.ethereum.request({
+            method: "wallet_addEthereumChain",
+            params: [{
+              chainId: expectedHex,
+              chainName,
+              nativeCurrency: {name: currencySymbol, symbol: currencySymbol, decimals: 18},
+              rpcUrls: [rpcUrl]
+            }]
+          });
+        } else {
+          throw new Error(`Switch wallet to chain ${expected} (${expectedHex}) before sending. ${xlagWalletErrorMessage(error)}`);
+        }
+      }
+      const confirmedHex = await window.ethereum.request({method: "eth_chainId"});
+      const confirmed = Number(BigInt(confirmedHex));
+      if (confirmed !== expected) {
+        throw new Error(`Wallet is still on chain ${confirmed} (${confirmedHex}); expected ${expected} (${expectedHex}).`);
+      }
+      xlagWalletLog("info", "wallet chain is ready", {expected, expectedHex, confirmedHex});
+    }
+    function renderWalletSmokeGuide(data) {
+      const live = data?.live || {};
+      const smoke = live.wallet_smoke || {};
+      const guide = [
+        "1) Run: python .\\dev-chain-wallet-smoke-guide.py --show-private-keys",
+        `2) MetaMask RPC: ${live.rpc_url || "http://127.0.0.1:18545"}`,
+        `3) Chain ID: ${live.expected_chain_id || data.chain_id || "42424242"} / symbol ENG`,
+        "4) Import an O0/O1/O2/O3 dev office private key.",
+        `5) Call ${smoke.function || "finalizeWalletSmokeTest(bytes32,string)"} from one office wallet.`,
+        `selector ${smoke.selector || "0xaa46bd04"}`
+      ];
+      xlagWalletSmokeGuide.textContent = guide.join("\n");
+      xlagWalletSmokeStatus.textContent = [
+        `available: ${smoke.available === false ? "no, redeploy the dev chain" : "yes"}`,
+        `nonce: ${smoke.nonce ?? "unknown"}`,
+        `last finalizer: ${smoke.last_finalizer || "none"}`,
+        `last office: ${smoke.last_office ?? "none"}`,
+        `last id: ${smoke.last_smoke_id || "none"}`,
+        `last memo: ${smoke.last_memo || "none"}`,
+        `last block: ${smoke.last_block ?? "none"}`,
+        smoke.error ? `error: ${smoke.error}` : "error: none"
+      ].join("\n");
+    }
+    function renderAnyUserFrobberStatus(data) {
+      const live = data?.live || {};
+      const frob = live.any_user_frobber || {};
+      const chainOk = live.chain_id_ok === null || live.chain_id_ok === undefined ? "unknown" : String(Boolean(live.chain_id_ok));
+      xlagAnyUserFrobWallet.textContent = xlagActiveAccount || "not connected";
+      xlagAnyUserFrobChainOk.textContent = chainOk;
+      xlagAnyUserFrobAvailable.textContent = frob.available === false ? "no, redeploy the dev chain" : "yes";
+      xlagAnyUserFrobNonce.textContent = frob.nonce ?? "unknown";
+      xlagAnyUserFrobStatus.textContent = [
+        `function: ${frob.function || "frobByAnyUser(bytes32,string)"}`,
+        `selector: ${frob.selector || "0xbcd0a3bf"}`,
+        `requires: ${frob.requires || "any connected browser wallet on the configured dev chain"}`,
+        `effect: ${frob.effect || "harmless dev-chain write; no reserve funds move"}`,
+        `nonce: ${frob.nonce ?? "unknown"}`,
+        `last frobber: ${frob.last_frobber || "none"}`,
+        `last id: ${frob.last_frob_id || "none"}`,
+        `last memo: ${frob.last_frob_memo || "none"}`,
+        `last block: ${frob.last_block ?? "none"}`,
+        frob.error ? `error: ${frob.error}` : "error: none"
+      ].join("\n");
+    }
+    async function xlagConnectWallet() {
+      if (!window.ethereum) throw new Error("Browser wallet not available. Use MetaMask or another injected wallet on this page.");
+      xlagWalletLastAction = "requesting accounts";
+      xlagWalletLastError = "none";
+      xlagWalletLog("info", "requesting browser wallet accounts");
+      const accounts = await window.ethereum.request({method: "eth_requestAccounts"});
+      xlagActiveAccount = (accounts && accounts[0] || "").toLowerCase();
+      if (!xlagActiveAccount) throw new Error("Wallet returned no accounts. Unlock the wallet and approve account access for this site.");
+      xlagContractActiveAccount.textContent = xlagActiveAccount;
+      xlagAnyUserFrobWallet.textContent = xlagActiveAccount;
+      xlagWalletLastAction = `connected ${xlagActiveAccount}; checking chain`;
+      xlagWalletLog("info", "wallet account connected", {account: xlagActiveAccount});
+      await xlagEnsureExpectedChain();
+      xlagWalletLastAction = `connected ${xlagActiveAccount}`;
+      await refreshXlagWalletDiagnostics("connect-wallet");
+      return xlagActiveAccount;
+    }
+    async function xlagSend(selector, types, values) {
+      await xlagEnsureExpectedChain();
+      const from = xlagActiveAccount || await xlagConnectWallet();
+      if (!xlagStatus?.contract_address) throw new Error("X-LAG contract address is not configured.");
+      const tx = {from, to: xlagStatus.contract_address, data: contractData(selector, types, values)};
+      xlagWalletLastAction = `sending transaction ${selector}`;
+      xlagWalletLog("info", "requesting transaction signature", {selector, from, to: tx.to, valueTypes: types});
+      const txHash = await window.ethereum.request({method: "eth_sendTransaction", params: [tx]});
+      xlagWalletLastAction = `sent ${txHash}`;
+      xlagWalletLastError = "none";
+      xlagContractActionResult.textContent = `sent ${txHash}`;
+      xlagWalletLog("info", "transaction submitted", {selector, txHash});
+      await refreshXlagWalletDiagnostics("transaction-sent");
+      return txHash;
+    }
+    async function xlagRequestDevFaucet() {
+      const account = xlagActiveAccount || await xlagConnectWallet();
+      if (!account) throw new Error("Connect a browser wallet before using the dev faucet.");
+      const amountEng = String(xlagDevFaucetAmount.value || "1").trim() || "1";
+      xlagSetWalletMessage(`requesting ${amountEng} ENG from local dev faucet...`, xlagDevFaucetStatus);
+      xlagWalletLog("info", "requesting local dev faucet funding", {account, amountEng});
+      const response = await fetch("/api/xlag/dev/faucet", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({address: account, amount_eng: amountEng})
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      xlagWalletLastAction = `dev faucet sent ${data.tx_hash}`;
+      xlagWalletLastError = "none";
+      xlagDevFaucetStatus.textContent = [
+        `sent ${data.amount_eng || amountEng} ENG`,
+        `to ${data.to || account}`,
+        `tx ${data.tx_hash}`,
+        data.note || "local dev faucet transfer submitted"
+      ].join("\n");
+      xlagWalletLog("info", "local dev faucet transfer submitted", data);
+      setTimeout(() => refreshXlagWalletDiagnostics("dev-faucet-funded"), 900);
+      return data;
+    }
+    function decodeAddressWord(word) {
+      return "0x" + word.slice(24);
+    }
+    function decodeOffices(result) {
+      const clean = stripHex(result);
+      return [0, 1, 2, 3].map((index) => decodeAddressWord(clean.slice(index * 64, index * 64 + 64)));
+    }
+    async function xlagCall(data) {
+      if (!window.ethereum || !xlagStatus?.contract_address) return null;
+      return window.ethereum.request({method: "eth_call", params: [{to: xlagStatus.contract_address, data}, "latest"]});
+    }
+    async function refreshXLagContract() {
+      try {
+        const response = await fetch("/api/xlag/contract/status", {cache: "no-store"});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        xlagStatus = data;
+        xlagContractAddress.textContent = data.contract_address || "not configured";
+        xlagContractChain.textContent = String(data.chain_id || "unknown");
+        xlagContractStatus.textContent = JSON.stringify(data, null, 2);
+        renderWalletSmokeGuide(data);
+        renderAnyUserFrobberStatus(data);
+        if (!data.configured) {
+          xlagContractOfficeList.textContent = "Set MAIN_COMPUTER_XLAG_CONTRACT_ADDRESS after deployment.";
+          xlagContractActiveOffice.textContent = "unknown office";
+          renderAnyUserFrobberStatus(data);
+          return;
+        }
+        if (window.ethereum) {
+          const accounts = await window.ethereum.request({method: "eth_accounts"});
+          xlagActiveAccount = (accounts && accounts[0] || "").toLowerCase();
+          xlagContractActiveAccount.textContent = xlagActiveAccount || "not connected";
+          xlagAnyUserFrobWallet.textContent = xlagActiveAccount || "not connected";
+          const officesRaw = await xlagCall("0x9e718f3a");
+          if (officesRaw) {
+            const offices = decodeOffices(officesRaw);
+            xlagContractOfficeList.textContent = offices.map((office, index) => `O${index}: ${office}`).join("\n");
+            const officeIndex = offices.findIndex((office) => office.toLowerCase() === xlagActiveAccount);
+            xlagContractActiveOffice.textContent = officeIndex >= 0 ? `O${officeIndex}` : "unknown office";
+          }
+        } else {
+          xlagActiveAccount = "";
+          xlagContractActiveAccount.textContent = "wallet unavailable";
+          xlagAnyUserFrobWallet.textContent = "wallet unavailable";
+          xlagAnyUserFrobBalance.textContent = "wallet unavailable";
+          xlagContractActiveOffice.textContent = "unknown office";
+        }
+        renderAnyUserFrobberStatus(data);
+        await refreshXlagWalletDiagnostics("contract-status-refresh");
+      } catch (error) {
+        xlagContractActionResult.textContent = String(error.message || error);
+        xlagHandleWalletError(error, xlagWalletDiagnostics, "contract status refresh");
+      }
+    }
+    async function refresh() {
+      try {
+        const response = await fetch("/api/energy/status", {cache: "no-store"});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        render(data);
+      } catch (error) {
+        statusBox.textContent = String(error.message || error);
+      }
+      refreshChain();
+      refreshBridgeGovernance();
+      refreshXLagContract();
+      refreshHubConfig();
+    }
+    document.querySelector("#register-node").addEventListener("click", async () => {
+      try {
+        render(await energyRequest("/api/energy/nodes/register", {node_id: nodeId.value, role: nodeRole.value, endpoint: nodeEndpoint.value}));
+      } catch (error) {
+        statusBox.textContent = String(error.message || error);
+      }
+    });
+    document.querySelector("#issue-credit").addEventListener("click", async () => {
+      try {
+        render(await energyRequest("/api/energy/credits/issue", {node_id: nodeId.value, credits: Number(creditAmount.value), memo: creditMemo.value}));
+      } catch (error) {
+        statusBox.textContent = String(error.message || error);
+      }
+    });
+    document.querySelector("#spend-credit").addEventListener("click", async () => {
+      try {
+        render(await energyRequest("/api/energy/credits/spend", {node_id: nodeId.value, credits: Number(creditAmount.value), memo: creditMemo.value}));
+      } catch (error) {
+        statusBox.textContent = String(error.message || error);
+      }
+    });
+    document.querySelector("#refresh-energy").addEventListener("click", refresh);
+    document.querySelector("#hub-apply-config").addEventListener("click", () => saveHubConfig(false));
+    document.querySelector("#hub-connect-upstream").addEventListener("click", () => saveHubConfig(true));
+    document.querySelector("#hub-refresh-config").addEventListener("click", refreshHubConfig);
+    document.querySelector("#xlag-wallet-connect").addEventListener("click", (event) => {
+      xlagSetWalletMessage("connecting wallet...", xlagWalletSmokeStatus);
+      xlagRunExclusive("wallet connect", event.currentTarget, xlagWalletSmokeStatus, "Connecting...", () => xlagConnectWallet().then(refreshXLagContract))
+        .catch((error) => xlagHandleWalletError(error, xlagWalletSmokeStatus, "wallet smoke connect"));
+    });
+    document.querySelector("#xlag-wallet-smoke-new-id").addEventListener("click", () => {
+      xlagWalletSmokeId.value = randomSmokeId();
+      xlagWalletSmokeStatus.textContent = `ready ${xlagWalletSmokeId.value}`;
+    });
+    document.querySelector("#xlag-wallet-smoke-finalize").addEventListener("click", (event) => {
+      if (!xlagWalletSmokeId.value) xlagWalletSmokeId.value = randomSmokeId();
+      xlagSendButton(event, "wallet smoke transaction", "0xaa46bd04", ["bytes32", "string"], [xlagWalletSmokeId.value, xlagWalletSmokeMemo.value], xlagWalletSmokeStatus)
+        .then((txHash) => {
+          if (!txHash) return;
+          xlagWalletSmokeStatus.textContent = `sent ${txHash}\nwaiting for live status refresh`;
+          setTimeout(refreshXLagContract, 900);
+        })
+        .catch((error) => xlagHandleWalletError(error, xlagWalletSmokeStatus, "wallet smoke transaction"));
+    });
+    document.querySelector("#xlag-any-user-frob-connect").addEventListener("click", (event) => {
+      xlagSetWalletMessage("connecting wallet...", xlagAnyUserFrobStatus);
+      xlagRunExclusive("wallet connect", event.currentTarget, xlagAnyUserFrobStatus, "Connecting...", () => xlagConnectWallet().then(refreshXLagContract))
+        .catch((error) => xlagHandleWalletError(error, xlagAnyUserFrobStatus, "any user frob connect"));
+    });
+    document.querySelector("#xlag-any-user-frob-new-id").addEventListener("click", () => {
+      xlagLastSubmittedFrobId = "";
+      xlagAnyUserFrobId.value = randomSmokeId();
+      xlagAnyUserFrobStatus.textContent = `ready ${xlagAnyUserFrobId.value}`;
+    });
+    document.querySelector("#xlag-dev-faucet-fund").addEventListener("click", (event) => {
+      xlagRunExclusive("dev faucet funding", event.currentTarget, xlagDevFaucetStatus, "Funding...", () => xlagRequestDevFaucet())
+        .catch((error) => xlagHandleWalletError(error, xlagDevFaucetStatus, "dev faucet funding"));
+    });
+    document.querySelector("#xlag-any-user-frob-submit").addEventListener("click", (event) => {
+      xlagRunExclusive("any user frob transaction", event.currentTarget, xlagAnyUserFrobStatus, "Waiting for MetaMask...", async () => {
+        if (!xlagAnyUserFrobId.value) xlagAnyUserFrobId.value = randomSmokeId();
+        const frobId = String(xlagAnyUserFrobId.value || "").trim();
+        if (xlagLastSubmittedFrobId && frobId.toLowerCase() === xlagLastSubmittedFrobId.toLowerCase()) {
+          throw new Error("This frob id was already submitted. Click New ID before sending another frob.");
+        }
+        const txHash = await xlagSend("0xbcd0a3bf", ["bytes32", "string"], [frobId, xlagAnyUserFrobMemo.value]);
+        xlagLastSubmittedFrobId = frobId;
+        xlagAnyUserFrobStatus.textContent = `sent ${txHash}\nwaiting for live status refresh\nClick New ID before sending another frob.`;
+        setTimeout(refreshXLagContract, 900);
+        return txHash;
+      }).catch((error) => xlagHandleWalletError(error, xlagAnyUserFrobStatus, "any user frob transaction"));
+    });
+    document.querySelector("#xlag-payout-propose").addEventListener("click", (event) => xlagSendButton(event, "payout propose transaction", "0x707216b1", ["address", "uint256", "string", "uint64"], [xlagPayoutRecipient.value, xlagPayoutAmountWei.value, xlagPayoutMemo.value, xlagPayoutExpiresBlock.value]).catch((error) => xlagHandleWalletError(error, xlagContractActionResult, "payout propose transaction")));
+    document.querySelector("#xlag-payout-second").addEventListener("click", (event) => xlagSendButton(event, "payout second transaction", "0xa74928e3", ["uint256"], [xlagPayoutId.value]).catch((error) => xlagHandleWalletError(error, xlagContractActionResult, "payout second transaction")));
+    document.querySelector("#xlag-payout-belay").addEventListener("click", (event) => xlagSendButton(event, "payout belay transaction", "0x135b2083", ["uint256"], [xlagPayoutId.value]).catch((error) => xlagHandleWalletError(error, xlagContractActionResult, "payout belay transaction")));
+    document.querySelector("#xlag-payout-contest").addEventListener("click", (event) => xlagSendButton(event, "payout contest transaction", "0x7e3b404b", ["uint256"], [xlagPayoutId.value]).catch((error) => xlagHandleWalletError(error, xlagContractActionResult, "payout contest transaction")));
+    document.querySelector("#xlag-payout-execute").addEventListener("click", (event) => xlagSendButton(event, "payout execute transaction", "0x21814f90", ["uint256"], [xlagPayoutId.value]).catch((error) => xlagHandleWalletError(error, xlagContractActionResult, "payout execute transaction")));
+    document.querySelector("#xlag-reset-propose").addEventListener("click", (event) => xlagSendButton(event, "reset propose transaction", "0x033f4b4d", ["uint8", "address", "string", "uint64"], [xlagResetOffice.value, xlagResetNewAddress.value, xlagResetReason.value, xlagResetExpiresBlock.value]).catch((error) => xlagHandleWalletError(error, xlagContractActionResult, "reset propose transaction")));
+    document.querySelector("#xlag-reset-approve").addEventListener("click", (event) => xlagSendButton(event, "reset approve transaction", "0xee9804c7", ["uint256"], [xlagResetId.value]).catch((error) => xlagHandleWalletError(error, xlagContractActionResult, "reset approve transaction")));
+    document.querySelector("#xlag-reset-contest").addEventListener("click", (event) => xlagSendButton(event, "reset contest transaction", "0x7e3b404b", ["uint256"], [xlagResetId.value]).catch((error) => xlagHandleWalletError(error, xlagContractActionResult, "reset contest transaction")));
+    document.querySelector("#xlag-reset-execute").addEventListener("click", (event) => xlagSendButton(event, "reset execute transaction", "0x0d3cb42a", ["uint256"], [xlagResetId.value]).catch((error) => xlagHandleWalletError(error, xlagContractActionResult, "reset execute transaction")));
+    refresh();
+  </script>
+</body>
+</html>

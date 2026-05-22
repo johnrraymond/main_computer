@@ -1,0 +1,592 @@
+    .calculator-app {
+      display: none;
+      height: 100%;
+      min-height: 320px;
+      padding: clamp(12px, 1.4vw, 18px);
+      place-items: stretch;
+      overflow: hidden;
+    }
+    .calculator-shell {
+      width: 100%;
+      max-width: 1680px;
+      grid-template-rows: auto auto;
+      align-content: start;
+      gap: 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px;
+      background: #070806;
+      min-height: 0;
+      overflow: hidden;
+      isolation: isolate;
+      --mc-app-gap: clamp(12px, 1.2vw, 18px);
+    }
+    .calculator-shell.graphing-active,
+    .calculator-shell.chat-docked {
+      width: 100%;
+      max-width: 1680px;
+    }
+    .calculator-prompt,
+    .calculator-scientific-prompt,
+    .calculator-mathics-field,
+    .calculator-qa-panel,
+    .calculator-pane-title {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+    }
+    .calculator-prompt label,
+    .calculator-scientific-prompt label,
+    .calculator-mathics-field,
+    .calculator-qa-panel label,
+    .calculator-pane-title strong {
+      color: var(--gold);
+      font-size: 13px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .calculator-prompt textarea,
+    .calculator-scientific-prompt textarea,
+    .calculator-mathics-field textarea,
+    .calculator-qa-panel textarea {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      min-height: 78px;
+      resize: vertical;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #030402;
+      color: var(--ink);
+      font: 700 15px Arial, Helvetica, sans-serif;
+      letter-spacing: 0;
+      line-height: 1.4;
+      padding: 10px;
+    }
+    #calculator-mathics-expression {
+      min-height: 112px;
+      font-family: Consolas, "Lucida Console", monospace;
+    }
+    .calculator-prompt-row {
+      display: grid;
+      grid-template-columns: minmax(0, 180px) minmax(0, 1fr);
+      gap: 8px;
+      align-items: center;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+    }
+    .calculator-model-status {
+      min-width: 0;
+      max-width: 100%;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .calculator-display {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #030402;
+      color: var(--ink);
+      font: 800 26px Arial, Helvetica, sans-serif;
+      letter-spacing: 0;
+      padding: 14px;
+      text-align: right;
+    }
+    .calculator-result {
+      min-height: 28px;
+      color: var(--mint);
+      font-size: 18px;
+      font-weight: 800;
+      text-align: right;
+      overflow-wrap: anywhere;
+    }
+    .calculator-mode-switch {
+      display: flex;
+      align-items: flex-end;
+      gap: 0;
+      min-width: 0;
+      max-width: 100%;
+      overflow-x: auto;
+      overflow-y: hidden;
+      border-bottom: 1px solid var(--line);
+    }
+    .calculator-mode-switch button {
+      flex: 0 1 220px;
+      min-width: 0;
+      min-height: 34px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      background: #141410;
+      color: var(--ink);
+      border-radius: 8px 8px 0 0;
+      border-bottom-color: var(--line);
+      padding: 8px 12px;
+    }
+    .calculator-mode-switch button.active {
+      background: #070806;
+      color: var(--gold);
+      border-color: var(--gold);
+      border-bottom-color: #070806;
+      transform: translateY(1px);
+    }
+    .calculator-basic-panel,
+    .calculator-graphing-panel,
+    .calculator-mathics-pane,
+    .calculator-chat-pane {
+      display: grid;
+      gap: 12px;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+    }
+    .calculator-workspace {
+      grid-template-columns: minmax(280px, 0.82fr) minmax(420px, 1.18fr);
+      grid-template-rows: auto;
+      grid-template-areas: "basic chat";
+      gap: var(--mc-app-gap);
+      align-content: start;
+    }
+    .calculator-shell.graphing-active .calculator-workspace {
+      grid-template-columns: minmax(260px, 0.72fr) minmax(480px, 1.7fr) minmax(320px, 0.9fr);
+      grid-template-rows: auto auto;
+      grid-template-areas:
+        "basic graphing mathics"
+        "chat chat chat";
+    }
+    .calculator-pane {
+      gap: 12px;
+      overflow: hidden auto;
+    }
+    .calculator-basic-pane {
+      grid-area: basic;
+      grid-template-rows: auto auto;
+      align-self: stretch;
+    }
+    .calculator-scientific-pane {
+      grid-area: graphing;
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto auto auto auto auto;
+      grid-template-areas:
+        "scientific-prompt"
+        "expression"
+        "graph"
+        "status"
+        "lower-controls";
+      align-content: start;
+      align-self: stretch;
+    }
+    .calculator-mathics-pane {
+      grid-area: mathics;
+      align-self: stretch;
+    }
+    .calculator-shell.chat-docked .calculator-chat-pane {
+      border-left: 1px solid var(--line);
+      padding-left: clamp(12px, 1.2vw, 18px);
+    }
+    .calculator-shell.graphing-active .calculator-scientific-pane,
+    .calculator-shell.graphing-active .calculator-mathics-pane {
+      border-left: 0;
+      padding-left: 0;
+    }
+    .calculator-shell.graphing-active .calculator-chat-pane {
+      border-left: 0;
+      border-top: 1px solid var(--line);
+      padding-left: 0;
+      padding-top: clamp(12px, 1.2vw, 18px);
+    }
+    .calculator-graphing-panel[hidden],
+    .calculator-mathics-pane[hidden],
+    .calculator-chat-pane[hidden] {
+      display: none;
+    }
+    .calculator-pane-title span {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.4;
+      text-transform: none;
+    }
+    .calculator-scientific-prompt {
+      grid-area: scientific-prompt;
+    }
+    .calculator-graph-expression-label,
+    .calculator-graph-range label {
+      display: grid;
+      gap: 5px;
+      color: var(--gold);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .calculator-graph-expression-label {
+      grid-area: expression;
+    }
+    .calculator-graph-expression-label input,
+    .calculator-graph-range input {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #030402;
+      color: var(--ink);
+      font: 700 15px Consolas, "Lucida Console", monospace;
+      letter-spacing: 0;
+      padding: 10px;
+      text-transform: none;
+    }
+    .calculator-graph-range {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(96px, 1fr));
+      gap: 8px;
+    }
+    .calculator-graph-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .calculator-graph-actions button:nth-child(2) {
+      background: #141410;
+      color: var(--ink);
+    }
+    .calculator-graph-canvas {
+      grid-area: graph;
+      width: 100%;
+      max-width: 100%;
+      min-height: 260px;
+      height: clamp(260px, 28vw, 430px);
+      max-height: 430px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #010201;
+      display: block;
+    }
+    .calculator-graph-status {
+      grid-area: status;
+      min-height: 24px;
+      color: var(--mint);
+      font-size: 14px;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #010201;
+      padding: 8px 10px;
+    }
+    .calculator-scientific-keypad {
+      grid-area: lower-controls;
+      display: grid;
+      grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+      gap: 14px;
+      align-items: start;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #050604;
+      padding: 12px;
+    }
+    .calculator-graph-controls,
+    .calculator-scientific-functions {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #070806;
+      padding: 10px;
+    }
+    .calculator-scientific-functions {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      align-self: start;
+    }
+    .calculator-scientific-functions button {
+      min-height: 40px;
+      background: #141410;
+      color: var(--ink);
+      border-color: var(--line);
+      padding: 8px;
+    }
+    .calculator-scientific-functions button:hover {
+      border-color: var(--sky);
+      color: var(--sky);
+    }
+    .calculator-mathics-actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #050604;
+      padding: 8px;
+    }
+    .calculator-mathics-actions button:nth-child(2) {
+      background: #141410;
+      color: var(--ink);
+    }
+    .calculator-mathics-output {
+      min-height: 150px;
+      max-height: 260px;
+      overflow: auto;
+      margin: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #010201;
+      color: var(--mint);
+      padding: 12px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font: 700 13px Consolas, "Lucida Console", monospace;
+    }
+    .calculator-mathics-output.error {
+      color: var(--coral);
+    }
+    .calculator-mathics-examples {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #050604;
+      padding: 8px;
+    }
+    .calculator-mathics-examples button {
+      min-height: 34px;
+      background: #141410;
+      color: var(--ink);
+      border-color: var(--line);
+      padding: 7px;
+      text-align: left;
+      font: 700 12px Consolas, "Lucida Console", monospace;
+    }
+    .calculator-keys {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .calculator-key {
+      min-height: 48px;
+      background: #141410;
+      color: var(--ink);
+    }
+    .calculator-key.operator {
+      background: var(--sky);
+      color: #061014;
+    }
+    .calculator-key.action {
+      background: var(--coral);
+      color: #120805;
+    }
+    .calculator-key.equals {
+      grid-column: 1 / -1;
+      background: var(--mint);
+      color: #071005;
+    }
+    .calculator-qa-panel {
+      min-height: 0;
+      border-top: 1px solid var(--line);
+      padding-top: 12px;
+    }
+    .calculator-qa-panel textarea {
+      min-height: 88px;
+    }
+    .calculator-qa-answer {
+      min-height: 120px;
+      max-height: 240px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #010201;
+      color: var(--ink);
+      padding: 12px;
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .calculator-qa-answer.error {
+      color: var(--coral);
+    }
+    .calculator-chat-pane {
+      grid-area: chat;
+      min-height: 0;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      overflow: hidden;
+      align-self: start;
+    }
+    .calculator-chat-notebook {
+      min-height: 0;
+      max-height: none;
+      overflow: auto;
+    }
+    .calculator-chat-toolbar {
+      justify-content: flex-start;
+    }
+
+    /* Calculator containment pass: every visible tool stays inside its owning pane. */
+    .calculator-shell label,
+    .calculator-shell input,
+    .calculator-shell textarea,
+    .calculator-shell pre,
+    .calculator-shell button,
+    .calculator-keys,
+    .calculator-graph-range,
+    .calculator-graph-actions,
+    .calculator-mathics-actions,
+    .calculator-mathics-examples,
+    .calculator-qa-answer,
+    .calculator-mathics-output {
+      min-width: 0;
+      max-width: 100%;
+    }
+    .calculator-shell button {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      overflow-wrap: anywhere;
+      line-height: 1.2;
+    }
+    .calculator-keys,
+    .calculator-graph-range,
+    .calculator-mathics-actions,
+    .calculator-mathics-examples {
+      overflow: hidden;
+    }
+    .calculator-mathics-examples button,
+    .calculator-scientific-functions button {
+      white-space: normal;
+    }
+
+    /* The embedded Chat Console notebook is bounded inside the calculator app,
+       because chat-console.css also styles the standalone Chat Console page. */
+    .calculator-chat-pane .chat-console-shell,
+    .calculator-chat-pane .calculator-chat-console-shell {
+      min-height: 0;
+      height: 100%;
+      max-height: none;
+      overflow: hidden;
+    }
+    .calculator-chat-pane .chat-console-thread-layout,
+    .calculator-chat-pane .calculator-chat-console-layout,
+    .calculator-chat-pane .chat-thread-workspace,
+    .calculator-chat-pane .calculator-chat-workspace {
+      min-height: 0;
+      overflow: hidden;
+    }
+    .calculator-chat-notebook.chat-console-notebook {
+      min-height: 0;
+      max-height: none;
+      overflow: auto;
+      align-content: start;
+    }
+    .calculator-chat-pane .chat-cell,
+    .calculator-chat-pane .chat-cell-controls,
+    .calculator-chat-pane .chat-cell-attachments,
+    .calculator-chat-pane .chat-output-variant-row,
+    .calculator-chat-pane .chat-output-cell-block,
+    .calculator-chat-pane .chat-output-cell-body,
+    .calculator-chat-pane .chat-output-part,
+    .calculator-chat-pane .chat-cell textarea {
+      min-width: 0;
+      max-width: 100%;
+    }
+    .calculator-chat-pane .chat-cell-tabs {
+      max-width: 100%;
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+    .calculator-chat-pane .chat-console-cell-output.chat-console-output-indent {
+      width: 100%;
+      margin-left: 0;
+    }
+
+    @container (max-width: 1100px) {
+      .calculator-workspace {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto auto;
+        grid-template-areas:
+          "basic"
+          "chat";
+        gap: 12px;
+      }
+      .calculator-shell.graphing-active .calculator-workspace {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        grid-template-rows: auto auto auto;
+        grid-template-areas:
+          "graphing graphing"
+          "basic mathics"
+          "chat chat";
+      }
+      .calculator-prompt-row {
+        grid-template-columns: minmax(0, 42%) minmax(0, 1fr);
+      }
+      .calculator-shell.chat-docked .calculator-chat-pane,
+      .calculator-shell.graphing-active .calculator-chat-pane,
+      .calculator-shell.graphing-active .calculator-scientific-pane,
+      .calculator-shell.graphing-active .calculator-mathics-pane {
+        border-left: 0;
+        border-top: 1px solid var(--line);
+        padding-left: 0;
+        padding-top: 14px;
+      }
+      .calculator-scientific-keypad {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @container (max-width: 700px) {
+      .calculator-workspace {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto;
+        grid-template-areas:
+          "basic"
+          "chat";
+        overflow: auto;
+      }
+      .calculator-shell.graphing-active .calculator-workspace {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto;
+        grid-template-areas:
+          "graphing"
+          "basic"
+          "mathics"
+          "chat";
+        overflow: auto;
+      }
+      .calculator-prompt-row,
+      .calculator-graph-range,
+      .calculator-scientific-functions,
+      .calculator-mathics-actions,
+      .calculator-mathics-examples {
+        grid-template-columns: 1fr;
+      }
+      .calculator-mode-switch {
+        overflow-x: auto;
+      }
+      .calculator-mode-switch button {
+        flex-basis: 170px;
+        white-space: nowrap;
+      }
+      .calculator-graph-canvas {
+        height: clamp(240px, 56vw, 360px);
+        max-height: 360px;
+      }
+      .calculator-chat-pane {
+        min-height: 260px;
+      }
+    }

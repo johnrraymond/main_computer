@@ -1,0 +1,240 @@
+from __future__ import annotations
+
+import json
+import os
+import re
+import tempfile
+import threading
+import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from pathlib import Path
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+from unittest.mock import patch
+
+from main_computer.cli import _config_from_args
+from main_computer.config import DEFAULT_ENERGY_CHAIN_ID, DEFAULT_ENERGY_CHAIN_RPC_URL, MainComputerConfig
+from main_computer.energy import EnergyCreditLedger
+from main_computer.governance import bridge_governance_status
+from main_computer.models import ChatMessage, ChatResponse
+from main_computer.revision import DebugAssetRevisionControl, RevisionControl
+from main_computer.viewport import APPLICATIONS_INDEX_HTML, DEBUG_GRAPHICAL_INDEX_HTML, DEBUG_TEXT_INDEX_HTML, ENERGY_INDEX_HTML, GRAPHICAL_INDEX_HTML, REVISION_INDEX_HTML, TEXT_INDEX_HTML, ViewportHandler, ViewportServer, _application_route_target, serve
+
+
+class ViewportApplicationsStaticDocumentTests(unittest.TestCase):
+    def test_applications_index_contains_calculator_and_document_hooks(self) -> None:
+            self.assertLess(
+                APPLICATIONS_INDEX_HTML.index('class="calculator-pane calculator-scientific-pane calculator-graphing-panel"'),
+                APPLICATIONS_INDEX_HTML.index('class="calculator-pane calculator-mathics-pane"'),
+            )
+            self.assertLess(
+                APPLICATIONS_INDEX_HTML.index('class="calculator-keys"'),
+                APPLICATIONS_INDEX_HTML.index('id="calculator-qa-panel"'),
+            )
+            self.assertLess(
+                APPLICATIONS_INDEX_HTML.index('class="calculator-pane calculator-basic-pane"'),
+                APPLICATIONS_INDEX_HTML.index('id="calculator-qa-panel"'),
+            )
+            self.assertLess(
+                APPLICATIONS_INDEX_HTML.index('id="calculator-qa-panel"'),
+                APPLICATIONS_INDEX_HTML.index('class="calculator-pane calculator-scientific-pane calculator-graphing-panel"'),
+            )
+            self.assertLess(
+                APPLICATIONS_INDEX_HTML.index('id="calculator-graph-canvas"'),
+                APPLICATIONS_INDEX_HTML.index('class="calculator-graph-range"'),
+            )
+            self.assertLess(
+                APPLICATIONS_INDEX_HTML.index('class="calculator-graph-range"'),
+                APPLICATIONS_INDEX_HTML.index('class="calculator-scientific-functions"'),
+            )
+            self.assertIn('data-calc-graph-template="sin()"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('data-calc-graph-token="x"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('data-app="calculator"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('data-app="document"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-app"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-editor"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-status"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-toolbar"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-library"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-library-toggle"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-library-close"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-library-scrim"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-library-list"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-library-refresh"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-current-path"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-draft-banner"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-discard-draft"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-reload-doc"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-draft-state"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-version-token"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-layout-button"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-layout-popover"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-layout-preset"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('<option value="letter">Letter</option>', APPLICATIONS_INDEX_HTML)
+            self.assertIn('<option value="a4">A4</option>', APPLICATIONS_INDEX_HTML)
+            self.assertIn('<option value="legal">Legal</option>', APPLICATIONS_INDEX_HTML)
+            self.assertIn('<option value="screen">Screen</option>', APPLICATIONS_INDEX_HTML)
+            self.assertIn('<option value="custom">Custom</option>', APPLICATIONS_INDEX_HTML)
+            self.assertNotIn('<option value="endless">', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-layout-width"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-layout-height"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-margin-top"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-margin-right"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-margin-bottom"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-margin-left"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-view-paged"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-view-endless"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-show-page-breaks"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-layout-cancel"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-layout-apply"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-ai-toggle"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-ai-scrim"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-ai-pane"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-ai-close"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-ai-status"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-ai-anchor-summary"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-ai-lock-anchor"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-ai-main"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-ai-threads"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-ai-messages"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-ai-prompt"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-ai-send"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-ai-cancel"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-ai-apply"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-ai-undo"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-ai-rebase"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-ai-preview"', APPLICATIONS_INDEX_HTML)
+            self.assertIn("/api/applications/docs/ai", APPLICATIONS_INDEX_HTML)
+            self.assertIn("getDocumentSelectionSnapshot", APPLICATIONS_INDEX_HTML)
+            self.assertIn("restoreDocumentSelectionFromOffsets", APPLICATIONS_INDEX_HTML)
+            self.assertIn("documentAiState", APPLICATIONS_INDEX_HTML)
+            self.assertIn("AbortController", APPLICATIONS_INDEX_HTML)
+            self.assertIn("applyDocumentAiSuggestion", APPLICATIONS_INDEX_HTML)
+            self.assertIn("undoDocumentAiEdit", APPLICATIONS_INDEX_HTML)
+            self.assertIn("document-ai-composer", APPLICATIONS_INDEX_HTML)
+            self.assertIn("grid-template-rows: auto auto auto minmax(0, 1fr) auto", APPLICATIONS_INDEX_HTML)
+            self.assertIn('body[data-active-app="document"] .stage', APPLICATIONS_INDEX_HTML)
+            self.assertIn('body[data-active-app="document"] .canvas-wrap', APPLICATIONS_INDEX_HTML)
+            self.assertIn("document.body.dataset.activeApp = normalizedApp", APPLICATIONS_INDEX_HTML)
+            self.assertIn("document-ai-open", APPLICATIONS_INDEX_HTML)
+            self.assertIn("position: fixed", APPLICATIONS_INDEX_HTML)
+            self.assertIn("transform: translateX(calc(100% + 28px))", APPLICATIONS_INDEX_HTML)
+            self.assertIn(".document-shell {\n      position: relative;\n      width: 100%;\n      display: grid;\n      grid-template-columns: minmax(0, 1fr);", APPLICATIONS_INDEX_HTML)
+            self.assertIn("mergeDocumentBlockBackwardUsingLeftStyle", APPLICATIONS_INDEX_HTML)
+            self.assertIn("previousEditableDocumentBlock", APPLICATIONS_INDEX_HTML)
+            self.assertIn("isRangeAtStartOfDocumentBlock", APPLICATIONS_INDEX_HTML)
+            self.assertIn("isDocumentBackspaceMergeEvent", APPLICATIONS_INDEX_HTML)
+            self.assertIn('event.key === "Backspace"', APPLICATIONS_INDEX_HTML)
+            self.assertIn("appendTextUsingPreviousStyle", APPLICATIONS_INDEX_HTML)
+            self.assertIn("document-page-toolbar", APPLICATIONS_INDEX_HTML)
+            self.assertIn('class="document-canvas"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('class="mc-page"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('class="mc-page-break-guide"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('class="mc-page-content document-editor"', APPLICATIONS_INDEX_HTML)
+            self.assertIn("/api/applications/docs/files", APPLICATIONS_INDEX_HTML)
+            self.assertIn("/api/applications/docs/read", APPLICATIONS_INDEX_HTML)
+            self.assertIn("/api/applications/docs/draft/read", APPLICATIONS_INDEX_HTML)
+            self.assertIn("/api/applications/docs/draft/write", APPLICATIONS_INDEX_HTML)
+            self.assertIn("/api/applications/docs/draft/delete", APPLICATIONS_INDEX_HTML)
+            self.assertIn("content_hash", APPLICATIONS_INDEX_HTML)
+            self.assertIn("main-computer-document-selected-v1", APPLICATIONS_INDEX_HTML)
+            self.assertIn("main-computer-document-editor-draft-v1", APPLICATIONS_INDEX_HTML)
+            self.assertIn("main-computer-document-layout-v1", APPLICATIONS_INDEX_HTML)
+            self.assertIn("main-computer-document-loaded-revision-v1", APPLICATIONS_INDEX_HTML)
+            self.assertIn("docsApi", APPLICATIONS_INDEX_HTML)
+            self.assertIn("documentRenderer", APPLICATIONS_INDEX_HTML)
+            self.assertIn("draftStore", APPLICATIONS_INDEX_HTML)
+            self.assertIn("selectionStore", APPLICATIONS_INDEX_HTML)
+            self.assertIn("revisionStore", APPLICATIONS_INDEX_HTML)
+            self.assertIn("documentSession", APPLICATIONS_INDEX_HTML)
+            self.assertIn("documentLibraryView", APPLICATIONS_INDEX_HTML)
+            self.assertIn("setDocumentLibraryOpen", APPLICATIONS_INDEX_HTML)
+            self.assertIn("toggleDocumentLibrary", APPLICATIONS_INDEX_HTML)
+            self.assertIn("document-library-open", APPLICATIONS_INDEX_HTML)
+            self.assertIn("setDocumentAiOpen", APPLICATIONS_INDEX_HTML)
+            self.assertIn("toggleDocumentAi", APPLICATIONS_INDEX_HTML)
+            self.assertIn("Backend draft storage is enabled", APPLICATIONS_INDEX_HTML)
+            self.assertIn("draft saved to backend", APPLICATIONS_INDEX_HTML)
+            self.assertNotIn("Disk save is not enabled", APPLICATIONS_INDEX_HTML)
+            self.assertNotIn("Local draft shown", APPLICATIONS_INDEX_HTML)
+            self.assertNotIn("local draft only", APPLICATIONS_INDEX_HTML)
+            self.assertIn("documentDraftView", APPLICATIONS_INDEX_HTML)
+            self.assertIn("documentPagePresets", APPLICATIONS_INDEX_HTML)
+            self.assertIn("defaultDocumentLayoutState", APPLICATIONS_INDEX_HTML)
+            self.assertIn("applyDocumentLayoutState", APPLICATIONS_INDEX_HTML)
+            self.assertIn("readDocumentLayoutPopoverState", APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-format"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('data-document-command="bold"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('data-document-command="italic"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('data-document-command="underline"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('data-document-command="insertUnorderedList"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('data-document-command="insertOrderedList"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('data-document-command="removeFormat"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('document.execCommand', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-object-stage"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-plugin-rail"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-plugin-markers"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-insert-inline-math"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-insert-paragraph-math"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-toggle-math-layout"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-add-hidden-plugin"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-export-epub"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-export-pdf"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="document-export-pdf-smoke"', APPLICATIONS_INDEX_HTML)
+            self.assertIn("documentEpubExport", APPLICATIONS_INDEX_HTML)
+            self.assertIn("documentPdfExport", APPLICATIONS_INDEX_HTML)
+            self.assertIn("exportCurrentDocumentAsEpub", APPLICATIONS_INDEX_HTML)
+            self.assertIn("exportCurrentDocumentAsPdf", APPLICATIONS_INDEX_HTML)
+            self.assertIn("exportCurrentDocumentPdfSmoke", APPLICATIONS_INDEX_HTML)
+            self.assertIn("/api/applications/docs/export/pdf", APPLICATIONS_INDEX_HTML)
+            self.assertIn("/api/applications/docs/export/pdf-smoke", APPLICATIONS_INDEX_HTML)
+            self.assertIn("application/epub+zip", APPLICATIONS_INDEX_HTML)
+            self.assertIn("META-INF/container.xml", APPLICATIONS_INDEX_HTML)
+            self.assertIn("OEBPS/package.opf", APPLICATIONS_INDEX_HTML)
+            self.assertIn('class="mc-page-overlay-layer"', APPLICATIONS_INDEX_HTML)
+            self.assertIn("documentObjectRuntime", APPLICATIONS_INDEX_HTML)
+            self.assertIn("registerHiddenPluginType", APPLICATIONS_INDEX_HTML)
+            self.assertIn("main-computer-document-hidden-plugins-v1", APPLICATIONS_INDEX_HTML)
+            self.assertIn("data-doc-object", APPLICATIONS_INDEX_HTML)
+            self.assertIn("data-doc-object-layout", APPLICATIONS_INDEX_HTML)
+            self.assertNotIn("document-math-chrome", APPLICATIONS_INDEX_HTML)
+            self.assertIn("insertDocumentMathObject", APPLICATIONS_INDEX_HTML)
+            self.assertIn("toggleSelectedDocumentMathLayout", APPLICATIONS_INDEX_HTML)
+            self.assertIn("createHiddenDocumentPlugin", APPLICATIONS_INDEX_HTML)
+            self.assertIn("initDocumentApp", APPLICATIONS_INDEX_HTML)
+            self.assertIn("main-computer-document-editor-v1", APPLICATIONS_INDEX_HTML)
+            self.assertIn('data-app="spreadsheet"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="spreadsheet-app"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="spreadsheet-container"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="spreadsheet-status"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="spreadsheet-file-list"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="spreadsheet-current-path"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="spreadsheet-selection-status"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="spreadsheet-plot-canvas"', APPLICATIONS_INDEX_HTML)
+            self.assertIn("/api/applications/spreadsheet/files", APPLICATIONS_INDEX_HTML)
+            self.assertIn("/api/applications/spreadsheet/read", APPLICATIONS_INDEX_HTML)
+            self.assertIn("/api/applications/spreadsheet/write", APPLICATIONS_INDEX_HTML)
+            self.assertIn("/api/applications/spreadsheet/create", APPLICATIONS_INDEX_HTML)
+            self.assertIn("renderDiskSpreadsheet", APPLICATIONS_INDEX_HTML)
+            self.assertIn("plotSpreadsheetSelection", APPLICATIONS_INDEX_HTML)
+            self.assertIn("setSpreadsheetSelection", APPLICATIONS_INDEX_HTML)
+            self.assertIn("spreadsheet-fallback", APPLICATIONS_INDEX_HTML)
+            self.assertIn("main-computer-spreadsheet-grid-v1", APPLICATIONS_INDEX_HTML)
+            self.assertNotIn("tryLoadUniverSpreadsheet", APPLICATIONS_INDEX_HTML)
+            self.assertNotIn("spreadsheetContainer.innerHTML = \"\";\n        const {univerAPI}", APPLICATIONS_INDEX_HTML)
+            self.assertNotIn('{app: "document"', APPLICATIONS_INDEX_HTML)
+            self.assertNotIn('{app: "spreadsheet"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="terminal-app"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="terminal-xterm"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="code-editor-app"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="aider-repo"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('value="."', APPLICATIONS_INDEX_HTML)
+            self.assertIn('id="aider-files"', APPLICATIONS_INDEX_HTML)
+            self.assertIn('<label>selected files<textarea id="aider-files" readonly', APPLICATIONS_INDEX_HTML)
+            self.assertIn("Mark files in the explorer on the left.", APPLICATIONS_INDEX_HTML)
+            self.assertIn("aider-workspace", APPLICATIONS_INDEX_HTML)
+
+
+if __name__ == "__main__":
+    unittest.main()

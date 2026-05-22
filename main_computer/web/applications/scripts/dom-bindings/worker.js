@@ -1,0 +1,14 @@
+    const workerApp = document.querySelector("#worker-app");
+    const workerHubCount = document.querySelector("#worker-hub-count");
+    const workerAddHubForm = document.querySelector("#worker-add-hub-form");
+    const workerHubName = document.querySelector("#worker-hub-name");
+    const workerHubUrl = document.querySelector("#worker-hub-url");
+    const workerHubRole = document.querySelector("#worker-hub-role");
+    const workerHubList = document.querySelector("#worker-hub-list");
+    const workerRemoteEnabled = document.querySelector("#worker-remote-enabled");
+    const workerRentalEnabled = document.querySelector("#worker-rental-enabled");
+    const workerLockAiModel = document.querySelector("#worker-lock-ai-model");
+    const workerSaveStatus = document.querySelector("#worker-save-status");
+    const workerSaveSettings = document.querySelector("#worker-save-settings");
+    const workerPauseRentals = document.querySelector("#worker-pause-rentals");
+    const workerTestHubs = document.querySelector("#worker-test-hubs");

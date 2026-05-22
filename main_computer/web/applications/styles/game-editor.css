@@ -1,0 +1,587 @@
+
+.game-editor-app {
+  display: none;
+  min-height: 0;
+  height: 100%;
+}
+
+.game-editor-app[data-scene-builder="empty"],
+.game-editor-app[data-scene-builder="project-backed"] {
+  min-height: 0;
+}
+
+.game-editor-shell {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 14px;
+  height: 100%;
+  min-height: 0;
+  position: relative;
+}
+
+.game-editor-sidebar,
+.game-editor-main,
+.game-editor-inspector,
+.game-editor-preview-card,
+.game-editor-chat-popout,
+.game-editor-chat-panel {
+  min-height: 0;
+  border: 1px solid color-mix(in srgb, var(--line, currentColor) 70%, transparent);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--panel, Canvas) 94%, transparent);
+  box-sizing: border-box;
+}
+
+.game-editor-sidebar,
+.game-editor-inspector {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  overflow: auto;
+  padding: 14px;
+}
+
+.game-editor-chat-popout {
+  position: absolute;
+  top: 56px;
+  right: 14px;
+  z-index: 50;
+  width: min(980px, calc(100% - 28px));
+  height: min(680px, calc(100% - 84px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px;
+  box-shadow: 0 22px 54px color-mix(in srgb, #000 62%, transparent);
+  overflow: hidden;
+}
+
+.game-editor-chat-popout[hidden] {
+  display: none !important;
+}
+
+.game-editor-chat-popout-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--mint, currentColor) 18%, transparent);
+  padding-bottom: 10px;
+}
+
+.game-editor-chat-popout-head strong {
+  display: block;
+  color: var(--mint, currentColor);
+  font-size: 0.88rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.game-editor-chat-popout-head span {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted, currentColor);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.game-editor-chat-toggle,
+.game-editor-chat-close {
+  cursor: pointer;
+}
+
+.game-editor-chat-toggle[aria-expanded="true"],
+.game-editor-chat-toggle:focus-visible {
+  border-color: var(--mint, currentColor);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--mint, currentColor) 24%, transparent);
+}
+
+.game-editor-chat-close {
+  min-height: 30px;
+  padding: 5px 10px;
+  border-radius: 999px;
+}
+
+.game-editor-chat-panel {
+  overflow: hidden;
+  padding: 0;
+}
+
+.game-editor-chat-panel .chat-console-shell {
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: 18px;
+  background: transparent;
+}
+
+.game-editor-chat-panel .chat-console-thread-layout,
+.game-editor-chat-panel .chat-thread-workspace,
+.game-editor-chat-panel .chat-console-notebook {
+  min-height: 0;
+}
+
+.game-editor-chat-panel .chat-console-notebook {
+  overflow: auto;
+}
+
+.game-editor-main {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  overflow: hidden;
+  padding: 14px;
+}
+
+.game-editor-toolbar,
+.game-editor-preview-head,
+.game-editor-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.game-editor-section-head h3,
+.game-editor-preview-head h3 {
+  margin: 0;
+}
+
+.game-editor-section-head p,
+.game-editor-preview-head p {
+  margin: 3px 0 0;
+  font-size: 0.85rem;
+  opacity: 0.74;
+}
+
+.game-editor-toolbar label,
+.game-editor-inspector label {
+  display: grid;
+  gap: 5px;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.game-editor-toolbar input,
+.game-editor-inspector input,
+.game-editor-inspector select {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.game-editor-actions,
+.game-editor-project-list,
+.game-editor-entity-list,
+.game-editor-asset-list {
+  display: grid;
+  gap: 8px;
+}
+
+.game-editor-project-list button,
+.game-editor-entity-list button,
+.game-editor-actions button,
+.game-editor-sidebar button,
+#game-editor-frame-selected {
+  cursor: pointer;
+}
+
+.game-editor-project-list button,
+.game-editor-entity-list button,
+.game-editor-asset-item {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--line, currentColor) 70%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface, Canvas) 90%, transparent);
+  text-align: left;
+}
+
+.game-editor-project-list button.active,
+.game-editor-entity-list button.active {
+  border-color: var(--mint, currentColor);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--mint, currentColor) 22%, transparent);
+}
+
+.game-editor-assets {
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--line, currentColor) 70%, transparent);
+}
+
+.game-editor-workbench {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 300px);
+  gap: 12px;
+  min-height: 0;
+}
+
+.game-editor-preview-card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  overflow: hidden;
+  padding: 14px;
+}
+
+.game-editor-webgl-viewport {
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--line, currentColor) 70%, transparent);
+  border-radius: 16px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--ink, currentColor) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(0deg, color-mix(in srgb, var(--ink, currentColor) 7%, transparent) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+.game-editor-webgl-canvas {
+  min-height: 420px;
+}
+
+.game-editor-status {
+  display: block;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface, Canvas) 88%, transparent);
+  font-size: 0.9rem;
+}
+
+.scene-surface,
+#webgl-demo.project-game-surface {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 260px;
+  position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.scene-surface[data-scene-state="empty"] {
+  background: transparent;
+}
+
+.scene-surface[data-scene-projection="isometric"] {
+  perspective: 960px;
+  transform-style: preserve-3d;
+}
+
+.scene-stage {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.scene-stage--isometric {
+  background:
+    radial-gradient(circle at 50% 76%, rgba(14, 165, 233, 0.08), transparent 24%),
+    linear-gradient(180deg, transparent 0 48%, rgba(2, 6, 23, 0.28) 100%);
+}
+
+.scene-stage-grid {
+  position: absolute;
+  left: calc(var(--scene-origin-x, 480px) - 288px);
+  top: calc(var(--scene-origin-y, 124px) + 120px);
+  width: 576px;
+  height: 288px;
+  border-radius: 22px;
+  background:
+    linear-gradient(45deg, color-mix(in srgb, var(--line, currentColor) 18%, transparent) 1px, transparent 1px),
+    linear-gradient(-45deg, color-mix(in srgb, var(--line, currentColor) 18%, transparent) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(15, 23, 42, 0.72), rgba(15, 23, 42, 0.2));
+  background-size: var(--scene-tile-width, 92px) var(--scene-tile-height, 46px), var(--scene-tile-width, 92px) var(--scene-tile-height, 46px), auto;
+  transform: rotateX(68deg) rotateZ(45deg);
+  transform-origin: center;
+  box-shadow:
+    0 24px 48px rgba(2, 6, 23, 0.45),
+    inset 0 0 0 1px color-mix(in srgb, var(--line, currentColor) 22%, transparent);
+  opacity: 0.9;
+}
+
+.scene-object {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--mint, currentColor) 75%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--mint, currentColor) 14%, transparent);
+  color: var(--ink, currentColor);
+  font-size: 0.72rem;
+  font-weight: 700;
+  pointer-events: none;
+  text-align: center;
+}
+
+.scene-object.selected {
+  outline: 3px solid color-mix(in srgb, var(--mint, currentColor) 45%, transparent);
+  outline-offset: 3px;
+}
+
+.scene-object-label {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0 4px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scene-surface[data-scene-state="isometric-sprite-scene"] {
+  background:
+    radial-gradient(circle at 50% 46%, color-mix(in srgb, var(--mint, #7dd3fc) 10%, transparent), transparent 36%),
+    linear-gradient(180deg, rgba(15, 23, 42, 0), rgba(2, 6, 23, 0.18));
+}
+
+.scene-object--sprite-actor {
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--mint, #7dd3fc);
+  filter: drop-shadow(0 12px 22px rgba(2, 6, 23, 0.42));
+}
+
+.scene-object--sprite-actor.selected {
+  outline: 2px dashed color-mix(in srgb, var(--mint, currentColor) 72%, transparent);
+  outline-offset: 8px;
+}
+
+.scene-sprite-shadow {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  width: 58%;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(2, 6, 23, 0.48);
+  transform: translateX(-50%) rotateX(76deg);
+  filter: blur(3px);
+}
+
+.scene-sprite-body {
+  position: absolute;
+  left: 50%;
+  bottom: 20px;
+  width: 72%;
+  height: 78%;
+  transform: translateX(-50%);
+  transform-style: preserve-3d;
+  animation: scene-sprite-float 2100ms ease-in-out infinite alternate;
+}
+
+.scene-sprite-illustration {
+  position: absolute;
+  inset: 8% 14% 26% 14%;
+  border-radius: 18px 18px 14px 14px;
+  background:
+    var(--scene-sprite-asset, none),
+    radial-gradient(circle at 50% 18%, color-mix(in srgb, white 24%, var(--mint, #7dd3fc)) 0 18%, transparent 20%),
+    linear-gradient(180deg, color-mix(in srgb, white 10%, var(--mint, #7dd3fc)) 0%, var(--mint, #7dd3fc) 38%, color-mix(in srgb, var(--mint, #7dd3fc) 55%, black) 100%);
+  background-size: cover, auto, auto;
+  background-position: center, center, center;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+    inset 0 -10px 18px rgba(2, 6, 23, 0.28);
+  transform: translateZ(12px);
+}
+
+.scene-sprite-series {
+  position: absolute;
+  left: 50%;
+  bottom: -4px;
+  display: flex;
+  gap: 6px;
+  transform: translateX(-50%);
+}
+
+.scene-sprite-frame {
+  position: relative;
+  width: 18px;
+  height: 24px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--mint, #7dd3fc) 22%, rgba(15, 23, 42, 0.65));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mint, #7dd3fc) 44%, transparent);
+  opacity: 0.32;
+  animation: scene-sprite-frame-pulse 1400ms steps(1, end) infinite;
+  animation-delay: calc(var(--scene-frame-index, 0) * -350ms);
+}
+
+.scene-sprite-silhouette {
+  position: absolute;
+  left: 50%;
+  top: 3px;
+  width: 10px;
+  height: 15px;
+  border-radius: 999px 999px 6px 6px;
+  background: color-mix(in srgb, white 14%, var(--mint, #7dd3fc));
+  transform: translateX(-50%);
+}
+
+.scene-sprite-spark {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: #f8fafc;
+  box-shadow: 0 0 10px rgba(248, 250, 252, 0.85);
+}
+
+.scene-sprite-trail {
+  position: absolute;
+  right: -8px;
+  top: 24%;
+  width: 30%;
+  height: 20%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--mint, #7dd3fc) 55%, transparent), transparent);
+  opacity: 0.55;
+  filter: blur(2px);
+}
+
+.scene-object--sprite-actor .scene-object-label {
+  position: absolute;
+  left: 50%;
+  bottom: -1.55rem;
+  width: max-content;
+  max-width: 14rem;
+  transform: translateX(-50%);
+  color: var(--ink, currentColor);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.55);
+}
+
+.scene-surface[data-scene-state="particle-field"] {
+  background:
+    radial-gradient(circle at 50% 46%, color-mix(in srgb, var(--mint, #7dd3fc) 14%, transparent), transparent 42%),
+    transparent;
+}
+
+.scene-object--particle-emitter {
+  overflow: visible;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--particle-color, var(--mint, currentColor));
+  filter: drop-shadow(0 0 18px color-mix(in srgb, var(--particle-color, var(--mint, currentColor)) 55%, transparent));
+  mix-blend-mode: screen;
+}
+
+.scene-object--particle-emitter.selected {
+  outline: 2px dashed color-mix(in srgb, var(--mint, currentColor) 70%, transparent);
+  outline-offset: 10px;
+}
+
+.scene-particle-field {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.scene-particle {
+  position: absolute;
+  left: calc(50% + var(--particle-x, 0px));
+  top: calc(50% + var(--particle-y, 0px));
+  width: var(--particle-size, 5px);
+  height: var(--particle-size, 5px);
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow:
+    0 0 calc(var(--particle-size, 5px) * 2) currentColor,
+    0 0 calc(var(--particle-size, 5px) * 5) color-mix(in srgb, currentColor 55%, transparent);
+  opacity: var(--particle-alpha, 0.7);
+  transform: translate(-50%, -50%) scale(0.82);
+  animation: scene-particle-drift var(--particle-duration, 2400ms) ease-in-out infinite alternate;
+  animation-delay: var(--particle-delay, 0ms);
+}
+
+.scene-object--particle-emitter .scene-object-label {
+  position: absolute;
+  left: 50%;
+  bottom: -1.35rem;
+  width: max-content;
+  max-width: 14rem;
+  transform: translateX(-50%);
+  color: var(--ink, currentColor);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.55);
+}
+
+@keyframes scene-particle-drift {
+  from {
+    transform: translate(-50%, -50%) scale(0.72);
+    opacity: calc(var(--particle-alpha, 0.7) * 0.64);
+  }
+
+  to {
+    transform: translate(-50%, -50%) scale(1.26);
+    opacity: var(--particle-alpha, 0.7);
+  }
+}
+
+@keyframes scene-sprite-float {
+  from {
+    transform: translateX(-50%) translateY(0);
+  }
+
+  to {
+    transform: translateX(-50%) translateY(calc(var(--scene-bob-height, 8px) * -1));
+  }
+}
+
+@keyframes scene-sprite-frame-pulse {
+  0%, 100% {
+    opacity: 0.28;
+    transform: translateY(0);
+  }
+
+  25% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+
+  60% {
+    opacity: 0.5;
+    transform: translateY(1px);
+  }
+}
+
+.scene-surface[data-scene-state="player-ready"] {
+  background: transparent;
+}
+
+.scene-object--player-capsule {
+  display: grid;
+  place-items: center;
+  border: 2px solid var(--mint, currentColor);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--mint, currentColor) 18%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--ink, currentColor) 28%, transparent),
+    0 10px 24px rgba(0, 0, 0, 0.28);
+}
+
+.scene-player-capsule-core {
+  width: 42%;
+  height: 18%;
+  border-radius: 999px;
+  background: var(--ink, currentColor);
+  opacity: 0.9;
+}
+
+.document-scene-embed .scene-object--player-capsule {
+  pointer-events: none;
+}
+
+@media (max-width: 980px) {
+  .game-editor-shell,
+  .game-editor-workbench {
+    grid-template-columns: 1fr;
+  }
+
+  .game-editor-sidebar {
+    max-height: 280px;
+  }
+}

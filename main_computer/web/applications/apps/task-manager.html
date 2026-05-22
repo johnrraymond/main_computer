@@ -1,0 +1,78 @@
+<div class="task-manager-app" id="task-manager-app" aria-label="Task Manager">
+  <div class="task-manager-shell">
+    <div class="task-manager-sidebar">
+      <div class="task-card task-overview-card app-widget" data-widget-label="Task Overview">
+        <strong>Task Manager</strong>
+        <div class="task-manager-status" id="task-manager-status">Task manager ready.</div>
+        <div class="task-manager-server" id="task-manager-server">Select Task Manager to load process, server, and connection state.</div>
+      </div>
+      <div class="task-card task-controls-card app-widget" data-widget-label="Task Controls">
+        <label>process filter<input id="task-query" placeholder="main_computer, python, port, pid"></label>
+        <div class="task-inline-grid">
+          <label>row limit<input id="task-limit" type="number" min="5" max="100" value="24"></label>
+          <label class="task-inline-check"><input id="task-include-connections" type="checkbox" checked> connections</label>
+          <label class="task-inline-check"><input id="task-auto-refresh" type="checkbox" checked> auto refresh</label>
+        </div>
+        <div class="task-actions">
+          <button type="button" id="task-refresh">Refresh</button>
+          <button type="button" id="task-server-shutdown">Shutdown Server</button>
+          <button type="button" id="task-server-start">Start Server</button>
+          <button type="button" id="task-server-restart">Restart Server</button>
+        </div>
+      </div>
+      <div class="task-card task-schedule-card app-widget" data-widget-label="Task Schedules">
+        <strong>Schedules</strong>
+        <label>scheduled action<select id="task-schedule-action">
+          <option value="server_status">Server Status</option>
+          <option value="server_restart">Restart Server</option>
+          <option value="server_shutdown">Shutdown Server</option>
+          <option value="server_start">Start Server</option>
+        </select></label>
+        <label>run at<input id="task-schedule-when" type="datetime-local"></label>
+        <label>note<input id="task-schedule-note" placeholder="Optional operator note"></label>
+        <div class="task-actions">
+          <button type="button" id="task-schedule-create">Add Schedule</button>
+          <button type="button" id="task-schedules-refresh">Reload Schedules</button>
+        </div>
+        <div class="task-schedule-list" id="task-schedule-list"><div class="task-empty">No scheduled actions yet.</div></div>
+      </div>
+    </div>
+    <div class="task-manager-detail">
+      <div class="task-detail-grid">
+        <div class="task-pane task-notebook app-widget" data-widget-label="Task Data Notebook">
+          <div class="task-notebook-tabs" id="task-notebook-tabs" role="tablist" aria-label="Task manager data views">
+            <button type="button" class="task-tab-button active" id="task-tab-processes" data-task-tab-group="task-notebook" data-task-tab="server-processes" role="tab" aria-selected="true" aria-controls="task-panel-processes">Server Processes</button>
+            <button type="button" class="task-tab-button" id="task-tab-all-processes" data-task-tab-group="task-notebook" data-task-tab="all-processes" role="tab" aria-selected="false" aria-controls="task-panel-all-processes">All Processes</button>
+            <button type="button" class="task-tab-button" id="task-tab-connections" data-task-tab-group="task-notebook" data-task-tab="connections" role="tab" aria-selected="false" aria-controls="task-panel-connections">Connections</button>
+            <button type="button" class="task-tab-button" id="task-tab-hardware" data-task-tab-group="task-notebook" data-task-tab="hardware" role="tab" aria-selected="false" aria-controls="task-panel-hardware">CPU + GPU</button>
+          </div>
+          <div class="task-tab-panels">
+            <section class="task-tab-panel" id="task-panel-processes" data-task-panel="server-processes" role="tabpanel" aria-labelledby="task-tab-processes">
+              <div class="task-grid-scroll" id="task-process-table"><div class="task-empty">No server process data loaded yet.</div></div>
+            </section>
+            <section class="task-tab-panel" id="task-panel-all-processes" data-task-panel="all-processes" role="tabpanel" aria-labelledby="task-tab-all-processes" hidden>
+              <div class="task-grid-scroll" id="task-all-process-table"><div class="task-empty">No all-process data loaded yet.</div></div>
+            </section>
+            <section class="task-tab-panel" id="task-panel-connections" data-task-panel="connections" role="tabpanel" aria-labelledby="task-tab-connections" hidden>
+              <div class="task-grid-scroll" id="task-connection-table"><div class="task-empty">No connection data loaded yet.</div></div>
+            </section>
+            <section class="task-tab-panel" id="task-panel-hardware" data-task-panel="hardware" role="tabpanel" aria-labelledby="task-tab-hardware" hidden>
+              <div class="task-grid-scroll" id="task-hardware-table"><div class="task-empty">No CPU or GPU utilization data loaded yet.</div></div>
+            </section>
+          </div>
+        </div>
+      </div>
+      <div class="task-card task-ai-toolbar app-widget" data-widget-label="Task AI Controls">
+        <strong>AI Operations</strong>
+        <label>task manager prompt<textarea id="task-ai-prompt" placeholder="Explain what should be watched, killed, restarted, or scheduled next."></textarea></label>
+        <div class="task-actions">
+          <button type="button" id="task-ai-analyze">Ask AI</button>
+        </div>
+      </div>
+      <div class="task-pane app-widget" data-widget-label="Task AI Brief">
+        <strong>AI Operations Brief</strong>
+        <pre class="task-ai-output" id="task-ai-output">AI analysis will appear here after you ask for it.</pre>
+      </div>
+    </div>
+  </div>
+</div>

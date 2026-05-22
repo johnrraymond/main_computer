@@ -1,0 +1,14 @@
+    const chatConsoleApp = document.querySelector("#chat-console-app");
+    const chatConsoleNotebook = document.querySelector("#chat-console-notebook");
+    const chatConsoleSaveStatus = document.querySelector("#chat-console-save-status");
+    const chatThreadNew = document.querySelector("#chat-thread-new");
+    const chatThreadSearch = document.querySelector("#chat-thread-search");
+    const chatThreadList = document.querySelector("#chat-thread-list");
+    const chatThreadActiveTitle = document.querySelector("#chat-thread-active-title");
+    const chatThreadActiveMeta = document.querySelector("#chat-thread-active-meta");
+    const chatThreadRename = document.querySelector("#chat-thread-rename");
+    const chatThreadClone = document.querySelector("#chat-thread-clone");
+    const chatThreadArchive = document.querySelector("#chat-thread-archive");
+    const chatThreadCopyLink = document.querySelector("#chat-thread-copy-link");
+    const chatConsoleOpenVarsSpreadsheet = document.querySelector("#chat-console-open-vars-spreadsheet");
+    const chatConsoleClear = document.querySelector("#chat-console-clear");

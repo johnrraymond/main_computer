@@ -1,0 +1,17 @@
+services:
+  __SERVICE_NAME__:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    command:
+      - /bin/sh
+      - -c
+      - |
+        printf '%s\n' '__SMOKE_MARKER__' > /usr/share/nginx/html/index.html
+        nginx -g 'daemon off;'
+    ports:
+      - "127.0.0.1:__HOST_PORT__:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ | grep -F __SMOKE_MARKER__"]
+      interval: 5s
+      timeout: 3s
+      retries: 12

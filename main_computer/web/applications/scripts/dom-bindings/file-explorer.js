@@ -1,0 +1,10 @@
+    const codeEditorApp = document.querySelector("#code-editor-app");
+    const systemFileExplorerApp = document.querySelector("#file-explorer-app");
+    const systemFileExplorerRoots = document.querySelector("#file-explorer-roots");
+    const systemFileExplorerPath = document.querySelector("#file-explorer-path");
+    const systemFileExplorerList = document.querySelector("#file-explorer-list");
+    const systemFileExplorerPreview = document.querySelector("#file-explorer-preview");
+    const systemFileExplorerSearch = document.querySelector("#file-explorer-search");
+    const systemFileExplorerStatus = document.querySelector("#file-explorer-status");
+    const systemFileExplorerSearchRun = document.querySelector("#file-explorer-search-run");
+    const systemFileExplorerUp = document.querySelector("#file-explorer-up");

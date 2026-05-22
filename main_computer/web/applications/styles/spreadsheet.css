@@ -1,0 +1,859 @@
+    .spreadsheet-app {
+      display: none;
+      height: 100%;
+      min-height: 320px;
+      padding: 18px;
+      align-items: stretch;
+    }
+    .spreadsheet-shell {
+      width: 100%;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: #050605;
+      min-height: 0;
+    }
+    .spreadsheet-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .spreadsheet-head strong {
+      color: var(--gold);
+      font-size: 18px;
+      text-transform: uppercase;
+    }
+    .spreadsheet-head span {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+      margin-top: 4px;
+    }
+    .spreadsheet-status {
+      min-width: 180px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: var(--mint);
+      background: #070806;
+      font-weight: 800;
+      text-align: right;
+    }
+    .spreadsheet-workspace {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) clamp(440px, 32vw, 560px);
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 12px;
+      position: relative;
+      isolation: isolate;
+    }
+    .spreadsheet-library {
+      grid-column: 1 / -1;
+      min-height: 0;
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 6px 8px;
+      background: #070806;
+      display: grid;
+      grid-template-columns: minmax(260px, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      overflow: visible;
+      position: relative;
+      z-index: 8;
+    }
+    .spreadsheet-filebar-identity {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      grid-template-rows: auto auto;
+      align-items: center;
+      column-gap: 8px;
+      row-gap: 2px;
+    }
+    .spreadsheet-filebar-kicker {
+      grid-row: 1 / span 2;
+      color: var(--gold);
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .spreadsheet-filebar-meta {
+      min-width: 0;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      overflow: hidden;
+    }
+    .spreadsheet-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .spreadsheet-library .spreadsheet-toolbar {
+      flex: 0 0 auto;
+      gap: 6px;
+      align-items: center;
+    }
+    .spreadsheet-toolbar button {
+      padding: 8px 10px;
+      font-size: 12px;
+    }
+    .spreadsheet-library .spreadsheet-toolbar button {
+      padding: 6px 9px;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .spreadsheet-filebar-nav {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      justify-content: flex-end;
+      white-space: nowrap;
+    }
+    .spreadsheet-filebar-menu {
+      position: relative;
+      display: block;
+    }
+    .spreadsheet-filebar-menu > summary {
+      list-style: none;
+      cursor: pointer;
+      user-select: none;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 7px 10px;
+      color: #050605;
+      background: var(--gold);
+      font-size: 12px;
+      font-weight: 900;
+      line-height: 1;
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.15) inset;
+    }
+    .spreadsheet-filebar-menu > summary::-webkit-details-marker {
+      display: none;
+    }
+    .spreadsheet-filebar-menu[open] > summary,
+    .spreadsheet-filebar-menu > summary:focus-visible {
+      border-color: var(--sky);
+      outline: 2px solid rgba(121, 212, 242, 0.35);
+      outline-offset: 2px;
+    }
+    .spreadsheet-filebar-menu-panel {
+      position: absolute;
+      top: calc(100% + 7px);
+      right: 0;
+      z-index: 30;
+      width: max-content;
+      min-width: 220px;
+      max-width: min(440px, calc(100vw - 40px));
+      max-height: 260px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      background: #050605;
+      box-shadow: 0 16px 36px rgba(0, 0, 0, 0.55);
+    }
+    .spreadsheet-filebar-command-panel,
+    .spreadsheet-filebar-selection-panel,
+    .spreadsheet-filebar-sheet-panel {
+      display: grid;
+      gap: 8px;
+    }
+    .spreadsheet-file-list {
+      display: grid;
+      gap: 6px;
+    }
+    .spreadsheet-file-list button {
+      width: 100%;
+      max-width: 100%;
+      padding: 7px 8px;
+      text-align: left;
+      background: #10110d;
+      color: var(--ink);
+      border-color: var(--line);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .spreadsheet-file-list button.active {
+      border-color: var(--sky);
+      color: var(--sky);
+    }
+    .spreadsheet-current-path,
+    .spreadsheet-save-state,
+    .spreadsheet-selection-status,
+    .spreadsheet-plot-status {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+    .spreadsheet-current-path {
+      min-width: 0;
+      max-width: 100%;
+      color: var(--sky);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .spreadsheet-save-state,
+    .spreadsheet-selection-status,
+    .spreadsheet-plot-status {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .spreadsheet-plot-canvas {
+      width: 260px;
+      height: 140px;
+      max-width: 100%;
+      max-height: 140px;
+      min-height: 100px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #010201;
+    }
+    .spreadsheet-container {
+      min-height: 0;
+      min-width: 0;
+      height: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #010201;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
+    }
+    .spreadsheet-sheet-tabbar {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 6px;
+      align-items: stretch;
+      border-top: 1px solid var(--line);
+      background: #070806;
+      padding: 6px;
+    }
+    .spreadsheet-sheet-tabs {
+      min-width: 0;
+      display: flex;
+      gap: 5px;
+      align-items: stretch;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+    .spreadsheet-sheet-tab,
+    .spreadsheet-add-sheet {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #10110d;
+      color: var(--ink);
+      font: 900 12px Consolas, "Lucida Console", monospace;
+      padding: 6px 10px;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    .spreadsheet-sheet-tab {
+      max-width: 220px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .spreadsheet-sheet-tab.active,
+    .spreadsheet-sheet-tab[aria-selected="true"] {
+      border-color: var(--sky);
+      color: #050605;
+      background: var(--sky);
+      box-shadow: 0 0 0 1px rgba(121, 212, 242, 0.25);
+    }
+    .spreadsheet-sheet-tab:focus-visible,
+    .spreadsheet-add-sheet:focus-visible {
+      border-color: var(--gold);
+      outline: 2px solid rgba(247, 201, 72, 0.35);
+      outline-offset: 2px;
+    }
+    .spreadsheet-add-sheet {
+      min-width: 34px;
+      color: #050605;
+      background: var(--gold);
+    }
+    .spreadsheet-main {
+      min-height: 0;
+      min-width: 0;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
+      gap: 12px;
+      overflow: hidden;
+      position: relative;
+      z-index: 0;
+    }
+    .spreadsheet-grid-host {
+      width: 100%;
+      height: 100%;
+      min-height: 320px;
+      min-width: 0;
+      display: grid;
+      overflow: hidden;
+      position: relative;
+      z-index: 0;
+      background: #010201;
+    }
+    .spreadsheet-grid-host revo-grid,
+    revo-grid.spreadsheet-grid {
+      width: 100%;
+      height: 100%;
+      min-height: 320px;
+      color: #f4f7ec;
+      background: #010201;
+      --revo-grid-primary: #79d4f2;
+      --revo-grid-primary-transparent: rgba(121, 212, 242, 0.92);
+      --revo-grid-background: #010201;
+      --revo-grid-foreground: #f4f7ec;
+      --revo-grid-divider: #3d4335;
+      --revo-grid-shadow: rgba(0, 0, 0, 0.42);
+      --revo-grid-text: #f4f7ec;
+      --revo-grid-border: rgba(244, 247, 236, 0.22);
+      --revo-grid-header-bg: #15180f;
+      --revo-grid-header-color: #f7c948;
+      --revo-grid-header-border: #404735;
+      --revo-grid-cell-border: #4b533f;
+      --revo-grid-focused-bg: rgba(121, 212, 242, 0.18);
+      --revo-grid-row-hover: rgba(167, 216, 109, 0.13);
+      --revo-grid-row-headers-bg: #10130d;
+      --revo-grid-row-headers-color: #d7dfc4;
+      --revo-grid-cell-disabled-bg: rgba(244, 247, 236, 0.08);
+      --revo-grid-filter-panel-bg: #11140e;
+      --revo-grid-filter-panel-border: #404735;
+      --revo-grid-filter-panel-input-bg: #050605;
+      --revo-grid-filter-panel-divider: #404735;
+      font: 700 13px Consolas, "Lucida Console", monospace;
+    }
+    revo-grid.spreadsheet-grid revogr-data .rgCell {
+      color: #f4f7ec;
+      background-color: #050605;
+      box-shadow:
+        -1px 0 0 0 var(--revo-grid-cell-border) inset,
+        0 -1px 0 0 var(--revo-grid-cell-border) inset;
+    }
+    revo-grid.spreadsheet-grid revogr-data .rgCell:not(.disabled) {
+      text-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
+    }
+    revo-grid.spreadsheet-grid revogr-header,
+    revo-grid.spreadsheet-grid .rowHeaders {
+      background-color: #15180f;
+      color: #f7c948;
+    }
+    revo-grid.spreadsheet-grid revogr-header .rgHeaderCell,
+    revo-grid.spreadsheet-grid .rowHeaders revogr-data .rgCell {
+      color: #f7c948;
+      background-color: #15180f;
+      box-shadow:
+        -1px 0 0 0 var(--revo-grid-header-border) inset,
+        0 -1px 0 0 var(--revo-grid-header-border) inset;
+    }
+    revo-grid.spreadsheet-grid revogr-focus.focused-cell {
+      box-shadow:
+        -2px 0 0 #79d4f2 inset,
+        2px 0 0 #79d4f2 inset,
+        0 -2px 0 #79d4f2 inset,
+        0 2px 0 #79d4f2 inset;
+      background: rgba(121, 212, 242, 0.18);
+    }
+    revo-grid.spreadsheet-grid revogr-overlay-selection .selection-border-range {
+      background: rgba(121, 212, 242, 0.13);
+      box-shadow:
+        -2px 0 0 #79d4f2 inset,
+        2px 0 0 #79d4f2 inset,
+        0 -2px 0 #79d4f2 inset,
+        0 2px 0 #79d4f2 inset;
+    }
+    revo-grid.spreadsheet-grid revogr-temp-range.temp-bg-range {
+      background: rgba(247, 201, 72, 0.12);
+      border-color: #f7c948;
+    }
+    revo-grid.spreadsheet-grid revogr-edit input,
+    revo-grid.spreadsheet-grid .edit-input-wrapper input {
+      color: #f4f7ec;
+      background: #010201;
+    }
+    .spreadsheet-grid-error {
+      min-height: 320px;
+      padding: 16px;
+      display: grid;
+      align-content: start;
+      gap: 8px;
+      color: var(--ink);
+      background: #010201;
+      font: 800 13px Consolas, "Lucida Console", monospace;
+    }
+    .spreadsheet-grid-error strong {
+      color: var(--gold);
+    }
+    .spreadsheet-inspector {
+      min-height: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #070806;
+      display: grid;
+      grid-template-columns: minmax(180px, 240px) minmax(260px, 1fr) auto minmax(260px, 1fr);
+      gap: 10px;
+      align-items: start;
+    }
+    .spreadsheet-inspector-head {
+      display: grid;
+      gap: 4px;
+    }
+    .spreadsheet-inspector-head strong {
+      color: var(--gold);
+      text-transform: uppercase;
+      font-size: 13px;
+    }
+    .spreadsheet-inspector-head span,
+    .spreadsheet-code-status {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .spreadsheet-inspector-field {
+      display: grid;
+      gap: 5px;
+      color: var(--gold);
+      font-size: 11px;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+    .spreadsheet-inspector-field select,
+    .spreadsheet-inspector-field textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #010201;
+      color: var(--ink);
+      font: 800 13px Consolas, "Lucida Console", monospace;
+      padding: 8px;
+    }
+    .spreadsheet-inspector-field textarea {
+      min-height: 94px;
+      resize: vertical;
+      text-transform: none;
+    }
+    .spreadsheet-inspector-actions {
+      align-content: start;
+    }
+    .spreadsheet-output,
+    .spreadsheet-write-preview {
+      min-height: 76px;
+      max-height: 180px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      background: #010201;
+      color: var(--ink);
+      font: 800 12px Consolas, "Lucida Console", monospace;
+      white-space: pre-wrap;
+    }
+    .spreadsheet-output-part {
+      border-bottom: 1px solid #26291e;
+      padding: 6px 0;
+    }
+    .spreadsheet-output-part:last-child {
+      border-bottom: 0;
+    }
+    .spreadsheet-output-part strong {
+      display: block;
+      color: var(--gold);
+      margin-bottom: 4px;
+    }
+    .spreadsheet-output-part[data-kind="error"],
+    .spreadsheet-output-part[data-kind="stderr"] {
+      color: #ff9b7a;
+    }
+    .spreadsheet-output-part[data-kind="warning"] {
+      color: var(--gold);
+    }
+    .spreadsheet-output-part[data-kind="write_preview"] {
+      color: var(--mint);
+    }
+
+    .spreadsheet-chat-thread {
+      min-height: 0;
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #070806;
+      display: grid;
+      grid-template-rows: auto auto auto minmax(70px, 0.4fr) auto auto minmax(180px, 1fr);
+      gap: 9px;
+      overflow: hidden;
+      position: relative;
+      z-index: 2;
+    }
+    .spreadsheet-chat-thread-head {
+      display: grid;
+      gap: 4px;
+      color: var(--ink);
+    }
+    .spreadsheet-chat-thread-head strong {
+      color: var(--gold);
+      display: block;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .spreadsheet-chat-thread-head span,
+    .spreadsheet-chat-thread-meta,
+    .spreadsheet-chat-thread-status {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+    .spreadsheet-chat-thread-search {
+      width: 100%;
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #020302;
+      color: var(--ink);
+      padding: 8px 9px;
+      font: inherit;
+      font-size: 12px;
+    }
+    .spreadsheet-chat-thread-list,
+    .spreadsheet-chat-thread-messages {
+      min-height: 0;
+      overflow: auto;
+      display: grid;
+      align-content: start;
+      gap: 8px;
+      border: 1px solid rgba(247, 201, 72, 0.18);
+      border-radius: 8px;
+      background: #030403;
+      padding: 8px;
+    }
+    .spreadsheet-chat-thread-actions button,
+    .spreadsheet-import-history-actions button,
+    .spreadsheet-chat-code-head button {
+      font-size: 11px;
+      padding: 6px 8px;
+    }
+    .spreadsheet-chat-message {
+      border: 1px solid rgba(244, 247, 236, 0.14);
+      border-radius: 8px;
+      background: #080a06;
+      padding: 8px;
+      display: grid;
+      gap: 7px;
+    }
+    .spreadsheet-chat-message.assistant {
+      border-color: rgba(247, 201, 72, 0.28);
+    }
+    .spreadsheet-chat-message-head,
+    .spreadsheet-chat-code-head,
+    .spreadsheet-import-history-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+      color: var(--gold);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .spreadsheet-chat-message-head span,
+    .spreadsheet-import-history-head span {
+      color: var(--muted);
+      font-size: 11px;
+      text-align: right;
+    }
+    .spreadsheet-chat-input-source,
+    .spreadsheet-chat-code-card pre {
+      margin: 0;
+      max-height: 170px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      border: 1px solid rgba(121, 212, 242, 0.16);
+      border-radius: 7px;
+      background: #010201;
+      color: var(--ink);
+      padding: 8px;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .spreadsheet-chat-part {
+      display: grid;
+      gap: 6px;
+    }
+    .spreadsheet-chat-part > strong {
+      color: var(--mint);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .spreadsheet-chat-part-content {
+      color: var(--ink);
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 140px;
+      overflow: auto;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .spreadsheet-chat-code-card {
+      border: 1px solid rgba(121, 212, 242, 0.28);
+      border-radius: 8px;
+      padding: 7px;
+      background: rgba(121, 212, 242, 0.05);
+      display: grid;
+      gap: 6px;
+    }
+    .spreadsheet-chat-code-card.unsupported {
+      border-color: rgba(244, 247, 236, 0.14);
+      opacity: 0.65;
+    }
+    .spreadsheet-chat-thread-banner,
+    .spreadsheet-chat-empty,
+    .spreadsheet-import-history-empty {
+      border: 1px dashed rgba(247, 201, 72, 0.28);
+      border-radius: 8px;
+      color: var(--muted);
+      padding: 8px;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .spreadsheet-import-history {
+      display: grid;
+      gap: 8px;
+      margin-top: 2px;
+    }
+    .spreadsheet-import-history-card {
+      display: grid;
+      gap: 5px;
+      border: 1px solid rgba(247, 201, 72, 0.22);
+      border-radius: 8px;
+      background: #050605;
+      color: var(--muted);
+      padding: 8px;
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+    .spreadsheet-import-history-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 4px;
+    }
+    .spreadsheet-ai-range-panel {
+      grid-column: 1 / -1;
+      display: grid;
+      gap: 8px;
+      border: 1px solid rgba(121, 212, 242, 0.22);
+      border-radius: 8px;
+      background: rgba(121, 212, 242, 0.05);
+      padding: 9px;
+    }
+    .spreadsheet-ai-range-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--gold);
+      font-size: 12px;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+    .spreadsheet-ai-range-head span {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      text-align: right;
+      text-transform: none;
+    }
+    .spreadsheet-ai-range-panel textarea {
+      min-height: 70px;
+    }
+    .spreadsheet-ai-range-actions button {
+      font-size: 11px;
+      padding: 6px 8px;
+    }
+    .spreadsheet-ai-range-status,
+    .spreadsheet-ai-range-context-preview {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+    .spreadsheet-ai-range-context-preview {
+      border: 1px dashed rgba(121, 212, 242, 0.22);
+      border-radius: 7px;
+      background: #010201;
+      padding: 7px;
+      color: var(--mint);
+    }
+    @media (max-width: 1180px) {
+      .spreadsheet-workspace {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto minmax(0, 1fr) minmax(320px, 0.72fr);
+      }
+      .spreadsheet-chat-thread {
+        grid-column: 1;
+        min-height: 320px;
+      }
+    }
+    @media (max-width: 760px) {
+      .spreadsheet-app {
+        padding: 10px;
+      }
+      .spreadsheet-shell {
+        padding: 10px;
+      }
+      .spreadsheet-library {
+        grid-template-columns: 1fr;
+        align-items: stretch;
+      }
+      .spreadsheet-filebar-nav {
+        justify-content: flex-start;
+        overflow-x: auto;
+        padding-bottom: 2px;
+      }
+      .spreadsheet-filebar-menu-panel {
+        left: 0;
+        right: auto;
+        max-width: calc(100vw - 40px);
+      }
+      .spreadsheet-plot-canvas {
+        width: 100%;
+        height: 120px;
+        max-height: 120px;
+      }
+    }
+
+    .spreadsheet-embedded-chat-console {
+      padding: 0;
+      overflow: hidden;
+      background: transparent;
+      align-content: stretch;
+    }
+    .spreadsheet-chat-console-shell {
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      gap: 8px;
+      background: #050605;
+    }
+    .spreadsheet-chat-console-header strong {
+      font-size: 14px;
+    }
+    .spreadsheet-chat-console-header span {
+      font-size: 11px;
+      line-height: 1.25;
+    }
+    .spreadsheet-chat-console-layout {
+      min-height: 0;
+      grid-template-columns: minmax(128px, 0.28fr) minmax(0, 1fr);
+      gap: 8px;
+    }
+    .spreadsheet-chat-thread-rail {
+      min-width: 0;
+      padding: 8px;
+    }
+    .spreadsheet-chat-thread-rail .chat-thread-rail-header {
+      gap: 6px;
+    }
+    .spreadsheet-chat-thread-rail .chat-thread-rail-header strong,
+    .spreadsheet-chat-current-bar strong {
+      font-size: 12px;
+    }
+    .spreadsheet-chat-thread-rail .chat-thread-rail-header span,
+    .spreadsheet-chat-current-bar span {
+      font-size: 10px;
+    }
+    .spreadsheet-chat-thread-rail .chat-thread-row {
+      padding: 7px;
+      gap: 3px;
+    }
+    .spreadsheet-chat-thread-rail .chat-thread-row strong {
+      font-size: 11px;
+    }
+    .spreadsheet-chat-thread-rail .chat-thread-row-meta,
+    .spreadsheet-chat-thread-rail .chat-thread-row-preview {
+      font-size: 10px;
+      line-height: 1.25;
+    }
+    .spreadsheet-chat-workspace {
+      min-width: 0;
+      min-height: 0;
+    }
+    .spreadsheet-chat-current-bar {
+      padding: 7px 8px;
+      gap: 6px;
+    }
+    .spreadsheet-embedded-chat-notebook {
+      min-height: 0;
+      max-height: none;
+      overflow: auto;
+      padding: 8px;
+    }
+    .spreadsheet-embedded-chat-notebook .chat-cell {
+      padding: 8px;
+      gap: 7px;
+    }
+    .spreadsheet-embedded-chat-notebook .chat-cell-tabs {
+      gap: 4px;
+    }
+    .spreadsheet-embedded-chat-notebook .chat-cell-tab {
+      font-size: 10px;
+      padding: 4px 6px;
+    }
+    .spreadsheet-embedded-chat-notebook textarea {
+      min-height: 72px;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .spreadsheet-embedded-chat-notebook .chat-output-part,
+    .spreadsheet-embedded-chat-notebook .chat-snippet {
+      font-size: 12px;
+    }
+    .spreadsheet-embedded-chat-notebook .chat-snippet-promote {
+      gap: 5px;
+    }
+    .spreadsheet-embedded-chat-notebook .chat-snippet-promote button {
+      font-size: 10px;
+      padding: 5px 7px;
+    }
+    .spreadsheet-chat-console-footer {
+      gap: 5px;
+      align-items: center;
+    }
+    .spreadsheet-chat-console-footer button {
+      font-size: 10px;
+      padding: 5px 7px;
+    }
+    @media (max-width: 1180px) {
+      .spreadsheet-chat-console-layout {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto minmax(0, 1fr);
+      }
+      .spreadsheet-chat-thread-rail {
+        max-height: 180px;
+      }
+    }

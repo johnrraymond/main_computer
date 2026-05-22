@@ -1,0 +1,1 @@
+    let gameEditorInitialized = false;

@@ -1,0 +1,129 @@
+# Dockerfile.full_executor
+#
+# Build from the repo root:
+#   docker build -f Dockerfile.full_executor -t main-computer-full-executor:latest .
+#
+# Fast smoke check:
+#   docker run --rm main-computer-full-executor:latest
+#
+# Run against the live repo:
+#   docker run --rm --network none -v "%cd%:/workspace" -w /workspace main-computer-full-executor:latest \
+#     python - <<'PY'
+#   import main_computer
+#   print("main_computer import ok")
+#   PY
+
+FROM python:3.12-bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_NO_CACHE_DIR=1
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+WORKDIR /workspace
+
+# Base OS tools:
+# - git/curl/wget/ca-certificates: fetching, diagnostics, package repos
+# - jq/ripgrep/fd-find/tree: fast repo inspection
+# - build-essential/python3-dev/pkg-config/cmake: native Python wheels when needed
+# - pwsh: PowerShell for Linux
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        apt-transport-https \
+        bash \
+        build-essential \
+        ca-certificates \
+        cmake \
+        curl \
+        fd-find \
+        git \
+        gnupg \
+        jq \
+        less \
+        locales \
+        make \
+        openssh-client \
+        pkg-config \
+        procps \
+        python3-dev \
+        ripgrep \
+        rsync \
+        tar \
+        tini \
+        tree \
+        unzip \
+        vim-tiny \
+        wget \
+        xz-utils \
+        zip \
+    && source /etc/os-release \
+    && wget -q "https://packages.microsoft.com/config/debian/${VERSION_ID}/packages-microsoft-prod.deb" -O /tmp/packages-microsoft-prod.deb \
+    && dpkg -i /tmp/packages-microsoft-prod.deb \
+    && rm -f /tmp/packages-microsoft-prod.deb \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends powershell \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python packaging baseline.
+RUN python -m pip install --upgrade pip setuptools wheel
+
+# Install project dependencies first for Docker layer caching.
+# The uploaded snapshot's requirements.txt includes:
+#   psutil==7.2.2
+#   Mathics3==10.0.0
+#   tenseal>=0.3.15
+COPY requirements.txt pyproject.toml ./
+
+RUN python -m pip install -r requirements.txt \
+    && python -m pip install "openai>=1.0.0" "playwright>=1.40.0"
+
+# Preinstall Chromium for the optional browser/widget harness.
+# This is intentionally done at image-build time so runtime verification can run
+# with --network none.
+RUN python -m playwright install --with-deps chromium
+
+# Add a small built-in smoke script that should finish quickly.
+RUN cat > /usr/local/bin/main-computer-fast-check <<'PY' \
+    && chmod +x /usr/local/bin/main-computer-fast-check
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import importlib
+import shutil
+import subprocess
+import sys
+
+print("python", sys.version.split()[0])
+
+for module in ("psutil", "mathics", "tenseal"):
+    importlib.import_module(module)
+    print(module, "import ok")
+
+pwsh = shutil.which("pwsh")
+if not pwsh:
+    raise SystemExit("pwsh not found")
+
+completed = subprocess.run(
+    [pwsh, "-NoLogo", "-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"],
+    text=True,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    timeout=10,
+    check=True,
+)
+print("pwsh", completed.stdout.strip())
+
+try:
+    importlib.import_module("main_computer")
+    print("main_computer import ok")
+except ModuleNotFoundError:
+    print("main_computer not importable yet; mount repo at /workspace or install package")
+PY
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
+CMD ["main-computer-fast-check"]

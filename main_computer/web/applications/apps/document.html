@@ -1,0 +1,172 @@
+<div class="document-app" id="document-app" aria-label="Document editor">
+            <div class="document-shell app-widget" data-widget-label="Document Editor">
+              <aside class="document-library" id="document-library" aria-label="Pretty Docs library" aria-hidden="true">
+                <div class="document-library-head">
+                  <strong>Pretty Docs</strong>
+                  <div class="document-library-head-actions">
+                    <button type="button" id="document-library-refresh">Refresh</button>
+                    <button type="button" id="document-library-close">Close</button>
+                  </div>
+                </div>
+                <div class="document-library-status" id="document-library-status">Loading pretty docs...</div>
+                <div class="document-library-list" id="document-library-list">
+                  <div class="document-library-empty">No pretty docs found.</div>
+                </div>
+              </aside>
+              <div class="document-library-scrim" id="document-library-scrim" hidden></div>
+              <div class="document-workspace">
+                <div class="document-head">
+                  <div>
+                    <strong>Document Editor</strong>
+                    <span>Editable writing workspace for notes and drafts.</span>
+                  </div>
+                  <div class="document-head-actions">
+                    <button class="document-library-toggle" type="button" id="document-library-toggle" aria-expanded="false" aria-controls="document-library">Pretty Docs</button>
+                    <button class="document-ai-toggle" type="button" id="document-ai-toggle" aria-expanded="false" aria-controls="document-ai-pane">Document AI</button>
+                    <div class="document-status" id="document-status">document ready</div>
+                  </div>
+                </div>
+                <div class="document-current-path" id="document-current-path">local draft</div>
+                <div class="document-readonly-note" id="document-readonly-note">Backend draft storage is enabled. Edits auto-save to the server.</div>
+                <div class="document-draft-banner" id="document-draft-banner" hidden>Backend draft shown. Edits are saved on the server.</div>
+                <div class="document-draft-controls" aria-label="Backend draft controls">
+                  <span id="document-draft-state">loaded read-only doc</span>
+                  <span id="document-version-token"></span>
+                  <button type="button" id="document-reload-doc">Reload from disk</button>
+                  <button type="button" id="document-discard-draft">Discard draft</button>
+                </div>
+                <div class="document-toolbar document-page-toolbar" id="document-toolbar" aria-label="Document toolbar">
+                  <select id="document-format" aria-label="Block format">
+                    <option value="P">Paragraph</option>
+                    <option value="H1">Heading 1</option>
+                    <option value="H2">Heading 2</option>
+                    <option value="H3">Heading 3</option>
+                    <option value="BLOCKQUOTE">Quote</option>
+                  </select>
+                  <button type="button" data-document-command="bold">Bold</button>
+                  <button type="button" data-document-command="italic">Italic</button>
+                  <button type="button" data-document-command="underline">Underline</button>
+                  <button type="button" data-document-command="insertUnorderedList">Bullet List</button>
+                  <button type="button" data-document-command="insertOrderedList">Numbered List</button>
+                  <button type="button" data-document-command="removeFormat">Clear Format</button>
+                  <button type="button" id="document-insert-inline-math">Inline Math</button>
+                  <button type="button" id="document-insert-paragraph-math">Paragraph Math</button>
+                  <button type="button" id="document-toggle-math-layout">Switch Math Layout</button>
+                  <button type="button" id="document-add-hidden-plugin">Hidden Plugin</button>
+                  <button type="button" id="document-insert-scene">Scene Embed</button>
+                  <button type="button" id="document-export-epub">Export EPUB</button>
+                  <button type="button" id="document-export-pdf" title="Export a fast fixed-fit Chromium/vector PDF from the live document layout.">Export PDF</button>
+                  <details class="document-debug-tools" id="document-debug-tools">
+                    <summary aria-label="Show PDF debug tools">PDF debug tools</summary>
+                    <div class="document-debug-tools-body">
+                      <button type="button" id="document-export-pdf-vector" title="Debug comparison: use Chromium/vector PDF rendering.">Export Vector PDF</button>
+                      <button type="button" id="document-export-pdf-smoke">Save PDF Smoke</button>
+                      <button type="button" id="document-export-pdf-raster-smoke">Save Raster PDF Smoke</button>
+                      <button type="button" id="document-export-pdf-vector-fit-smoke" title="Compare live page PNGs against vector PDF setting candidates.">Save Vector Fit Smoke</button>
+                    </div>
+                  </details>
+                  <button class="document-layout-button" type="button" id="document-layout-button" aria-expanded="false" aria-controls="document-layout-popover">Page Layout</button>
+                  <div class="document-layout-popover" id="document-layout-popover" hidden>
+                    <div class="document-layout-grid">
+                      <label class="document-layout-field">Page preset
+                        <select id="document-layout-preset">
+                          <option value="letter">Letter</option>
+                          <option value="a4">A4</option>
+                          <option value="legal">Legal</option>
+                          <option value="screen">Screen</option>
+                          <option value="custom">Custom</option>
+                        </select>
+                      </label>
+                      <label class="document-layout-field">Width
+                        <input id="document-layout-width" type="number" min="320" max="2400" step="1">
+                      </label>
+                      <label class="document-layout-field">Height
+                        <input id="document-layout-height" type="number" min="480" max="3200" step="1">
+                      </label>
+                      <label class="document-layout-field">Top margin
+                        <input id="document-margin-top" type="number" min="0" max="480" step="1">
+                      </label>
+                      <label class="document-layout-field">Right margin
+                        <input id="document-margin-right" type="number" min="0" max="480" step="1">
+                      </label>
+                      <label class="document-layout-field">Bottom margin
+                        <input id="document-margin-bottom" type="number" min="0" max="480" step="1">
+                      </label>
+                      <label class="document-layout-field">Left margin
+                        <input id="document-margin-left" type="number" min="0" max="480" step="1">
+                      </label>
+                    </div>
+                    <fieldset class="document-layout-view">
+                      <legend>View</legend>
+                      <label><input id="document-view-paged" name="document-view-mode" type="radio" value="paged"> Paged</label>
+                      <label><input id="document-view-endless" name="document-view-mode" type="radio" value="endless"> Endless</label>
+                      <label><input id="document-show-page-breaks" type="checkbox"> Show page break guides</label>
+                    </fieldset>
+                    <div class="document-layout-actions">
+                      <button type="button" id="document-layout-cancel">Cancel</button>
+                      <button type="button" id="document-layout-apply">Apply</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="document-object-stage" id="document-object-stage">
+                  <aside class="document-plugin-rail" id="document-plugin-rail" aria-label="Editor-only hidden document plugins">
+                    <div class="document-plugin-rail-head">
+                      <strong>Plugins</strong>
+                      <span>editor rail</span>
+                    </div>
+                    <div class="document-plugin-markers" id="document-plugin-markers">
+                      <div class="document-plugin-empty">No hidden plugins yet.</div>
+                    </div>
+                  </aside>
+                  <div class="document-canvas" id="document-canvas">
+                    <div class="mc-page" id="document-page" data-document-page-index="1">
+                      <div class="mc-page-break-guide" aria-hidden="true"></div>
+                      <div class="mc-page-content document-editor" id="document-editor" contenteditable="true" role="textbox" aria-multiline="true" spellcheck="true"></div>
+                      <div class="mc-page-overlay-layer" contenteditable="false" aria-hidden="true"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="document-ai-scrim" id="document-ai-scrim" hidden></div>
+              <aside class="document-ai-pane" id="document-ai-pane" aria-label="Document AI" aria-hidden="true">
+                <div class="document-ai-head">
+                  <strong>Document AI</strong>
+                  <div class="document-ai-head-actions">
+                    <span id="document-ai-status">AI ready</span>
+                    <button type="button" id="document-ai-close">Close</button>
+                  </div>
+                </div>
+                <div class="document-ai-anchor-summary" id="document-ai-anchor-summary">No anchor locked.</div>
+                <div class="document-ai-actions">
+                  <button type="button" id="document-ai-lock-anchor">Lock anchor</button>
+                  <button type="button" id="document-ai-rebase">Refresh anchor</button>
+                </div>
+                <div class="document-ai-main" id="document-ai-main">
+                  <div class="document-ai-chip-row" aria-label="Document AI prompts">
+                    <button type="button" data-document-ai-chip="Improve clarity without changing meaning.">Improve</button>
+                    <button type="button" data-document-ai-chip="Fix grammar and punctuation.">Grammar</button>
+                    <button type="button" data-document-ai-chip="Make this shorter and sharper.">Shorten</button>
+                    <button type="button" data-document-ai-chip="Expand this with useful detail.">Expand</button>
+                    <button type="button" data-document-ai-chip="Continue from the caret.">Continue</button>
+                    <button type="button" data-document-ai-chip="Suggest an outline for the whole document.">Outline</button>
+                    <button type="button" data-document-ai-chip="Summarize the whole document.">Summarize</button>
+                    <button type="button" data-document-ai-chip="Rewrite in a professional tone.">Professional</button>
+                  </div>
+                  <div class="document-ai-messages" id="document-ai-messages" aria-label="Document AI messages"></div>
+                  <div class="document-ai-preview" id="document-ai-preview">Suggestions will appear here before they are applied.</div>
+                  <div class="document-ai-actions document-ai-preview-actions">
+                    <button type="button" id="document-ai-apply">Apply suggestion</button>
+                    <button type="button" id="document-ai-undo">Undo AI edit</button>
+                  </div>
+                  <div class="document-ai-threads" id="document-ai-threads" aria-label="Document AI threads"></div>
+                </div>
+                <div class="document-ai-composer">
+                  <textarea id="document-ai-prompt" placeholder="Ask for an edit, summary, continuation, or critique..."></textarea>
+                  <div class="document-ai-actions">
+                    <button type="button" id="document-ai-send">Ask AI</button>
+                    <button type="button" id="document-ai-cancel">Cancel</button>
+                  </div>
+                </div>
+              </aside>
+            </div>
+          </div>

@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Main Computer Applications</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm/css/xterm.css">
+  <link rel="stylesheet" href="https://unpkg.com/grapesjs/dist/css/grapes.min.css">
+  <script src="https://unpkg.com/grapesjs"></script>
+  <style>
+    <!-- @include applications/styles/base.css -->
+    <!-- @include applications/styles/app-layout.css -->
+    <!-- @include applications/styles/document.css -->
+    <!-- @include applications/styles/chat-console.css -->
+    <!-- @include applications/styles/calculator.css -->
+    <!-- @include applications/styles/spreadsheet.css -->
+    <!-- @include applications/styles/onlyoffice.css -->
+    <!-- @include applications/styles/file-explorer.css -->
+    <!-- @include applications/styles/terminal.css -->
+    <!-- @include applications/styles/task-manager.css -->
+    <!-- @include applications/styles/git-tools.css -->
+    <!-- @include applications/styles/layout-builder.css -->
+    <!-- @include applications/styles/website-builder.css -->
+    <!-- @include applications/styles/worker.css -->
+    <!-- @include applications/styles/game-editor.css -->
+    <!-- @include applications/styles/code-editor.css -->
+    <!-- @include applications/styles/status-and-responsive.css -->
+    <!-- @include applications/styles/activity-dock.css -->
+  </style>
+</head>
+<body>
+  <div class="viewport" data-mc-component-id="main-computer.applications" data-mc-component-kind="workspace" data-mc-component-label="Applications">
+    <header>
+      <h1>Main Computer Applications</h1>
+      <nav aria-label="Main routes">
+        <a class="nav-link" href="/graphical">Graphical View</a>
+        <a class="nav-link" href="/text">Text Console</a>
+        <a class="nav-link" href="/energy">Energy Credits</a>
+        <a class="nav-link" href="/revision">Revisions</a>
+        <a class="nav-link" href="/debug/graphical">Debug</a>
+        <button class="nav-link activity-nav-button" type="button" data-activity-open="live" data-mc-component-id="activity.nav.live" data-mc-component-kind="action" data-mc-component-label="Open Machine Activity">Activity</button>
+        <button class="nav-link activity-nav-button" type="button" data-activity-open="faults" data-mc-component-id="activity.nav.faults" data-mc-component-kind="action" data-mc-component-label="Open Machine Faults">Faults</button>
+      </nav>
+    </header>
+    <main>
+      <aside class="panel launcher" aria-label="Application launcher" data-mc-component-id="applications.launcher" data-mc-component-kind="panel" data-mc-component-label="Application Launcher" data-mc-feature-id="applications.launching">
+        <h2>Applications</h2>
+        <a class="app-card ready" href="/applications/webgl" data-app="webgl">
+          <strong>Game Surface</strong>
+          <span>isometric sprite-and-particle scene surface</span>
+        </a>
+        <a class="app-card active" href="/applications" data-app="calculator">
+          <strong>Calculator</strong>
+          <span>local arithmetic tool</span>
+        </a>
+        <a class="app-card ready" href="/applications/document" data-app="document">
+          <strong>Document Editor</strong>
+          <span>editable writing workspace</span>
+        </a>
+        <a class="app-card ready" href="/applications/spreadsheet" data-app="spreadsheet">
+          <strong>Spreadsheet</strong>
+          <span>editable sheet workspace</span>
+        </a>
+        <a class="app-card ready" href="/applications/onlyoffice" data-app="onlyoffice">
+          <strong>ONLYOFFICE</strong>
+          <span>native XLSX workbook editor</span>
+        </a>
+        <a class="app-card ready" href="/applications/task-manager" data-app="task-manager" data-activity-open="subprocesses">
+          <strong>Task Manager</strong>
+          <span>processes, server control, connections, and AI operations</span>
+        </a>
+        <a class="app-card ready" href="/applications/terminal" data-app="terminal" data-activity-open="subprocesses">
+          <strong>Terminal</strong>
+          <span>local command runner</span>
+        </a>
+        <a class="app-card ready" href="/applications/chat-console" data-app="chat-console" data-activity-open="snapshots">
+          <strong>Chat Console</strong>
+          <span>AI/code/Terminal/Mathics notebook cells</span>
+        </a>
+        <a class="app-card ready" href="/applications/git-tools" data-app="git-tools" data-activity-open="snapshots">
+          <strong>Git Tools</strong>
+          <span>git status, patch inbox, shims, and console actions</span>
+        </a>
+        <a class="app-card ready" href="/applications/code-editor" data-app="code-editor" data-activity-open="streams" data-mc-component-id="applications.card.code-editor" data-mc-component-kind="action" data-mc-component-label="Open Code Editor" data-mc-component-owner="applications.launcher" data-mc-feature-id="applications.launching">
+          <strong>Code Editor</strong>
+          <span>Aider action dock for future editor work</span>
+        </a>
+        <a class="app-card ready" href="/applications/file-explorer" data-app="file-explorer">
+          <strong>File Explorer</strong>
+          <span>browse system files and Main Computer assets</span>
+        </a>
+        <a class="app-card ready" href="/applications/game-editor" data-app="game-editor">
+          <strong>Game Editor</strong>
+          <span>repo-backed game development toolkit</span>
+        </a>
+        <a class="app-card ready" href="/applications/website-builder" data-app="website-builder">
+          <strong>Website Builder</strong>
+          <span>site manifests, editing, saving, and local Docker publishing</span>
+        </a>
+        <a class="app-card ready" href="/applications/worker" data-app="worker">
+          <strong>Worker</strong>
+          <span>configure remote AI use and local AI rentals</span>
+        </a>
+      </aside>
+
+      <section class="panel stage" aria-label="Active application" data-mc-component-id="applications.workspace" data-mc-component-kind="workspace" data-mc-component-label="Application Workspace">
+        <div class="stage-head">
+          <div class="stage-title">
+            <h2 id="active-app-title">Game Surface</h2>
+            <p id="active-app-summary">Isometric surface is ready.</p>
+          </div>
+          <div class="stage-advanced" id="stage-advanced" aria-label="Advanced application tools">
+            <button class="stage-advanced-toggle" id="stage-advanced-toggle" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="stage-advanced-pane" data-mc-component-id="applications.stage.advanced-toggle" data-mc-component-kind="action" data-mc-component-label="Toggle Advanced Tools">Advanced</button>
+            <div class="stage-advanced-pane" id="stage-advanced-pane" hidden role="dialog" aria-label="ONLYOFFICE advanced chat and add-ons" data-mc-component-id="onlyoffice.advanced.panel" data-mc-component-kind="panel" data-mc-component-label="ONLYOFFICE Advanced Panel" data-mc-component-owner="applications.workspace" data-mc-feature-id="onlyoffice.feature.advanced-chat">
+              <div class="stage-advanced-pane-head">
+                <div>
+                  <strong>Advanced</strong>
+                  <span>Chat Console plus JS, Python, and BASIC add-ons for the active workbook.</span>
+                </div>
+                <button type="button" id="stage-advanced-close" class="stage-advanced-close">Close</button>
+              </div>
+              <section class="stage-advanced-code" id="onlyoffice-advanced-code-panel" aria-label="Selected cell code add-on" data-mc-component-id="onlyoffice.advanced.code-panel" data-mc-component-kind="panel" data-mc-component-label="ONLYOFFICE Advanced Code Add-on" data-mc-component-owner="onlyoffice.advanced.panel" data-mc-feature-id="onlyoffice.feature.advanced-code-addons">
+                <div class="stage-advanced-code-head">
+                  <strong>Selected cell code add-on</strong>
+                  <span>Choose what the code area contains, then attach it to the selected ONLYOFFICE cell(s). Chat stays separate below.</span>
+                </div>
+                <fieldset class="stage-advanced-code-types" aria-label="Code area language">
+                  <legend>Code area contains</legend>
+                  <label><input type="radio" name="onlyoffice-advanced-code-type" value="javascript" data-stage-advanced-code-type="javascript" checked> JS add-on</label>
+                  <label><input type="radio" name="onlyoffice-advanced-code-type" value="python" data-stage-advanced-code-type="python"> Python add-on</label>
+                  <label><input type="radio" name="onlyoffice-advanced-code-type" value="basic" data-stage-advanced-code-type="basic"> BASIC add-on</label>
+                </fieldset>
+                <label class="stage-advanced-code-source" for="onlyoffice-advanced-code-source">
+                  <span>Code area</span>
+                  <textarea id="onlyoffice-advanced-code-source" spellcheck="false" placeholder="Write or paste JS, Python, or BASIC code for the selected ONLYOFFICE cell(s)."></textarea>
+                </label>
+                <div class="stage-advanced-code-actions">
+                  <button type="button" id="onlyoffice-advanced-attach-code">Attach to selected cell(s)</button>
+                  <output id="onlyoffice-advanced-code-status" role="status" aria-live="polite">Choose a code type, paste code, then attach it to the current ONLYOFFICE selection.</output>
+                </div>
+              </section>
+              <aside class="stage-advanced-chat" id="onlyoffice-advanced-chat-panel" aria-label="ONLYOFFICE advanced embedded Chat Console" data-chat-console-embed="onlyoffice" data-chat-console-active-app="onlyoffice" data-chat-console-id-prefix="onlyoffice-advanced-chat" data-chat-console-class-prefix="onlyoffice-advanced" data-chat-console-title="Advanced Chat Console" data-chat-console-subtitle="Embedded beside ONLYOFFICE. Use the notebook type tabs for AI, JS, Python, BASIC, and more." data-chat-console-notebook-id="onlyoffice-advanced-chat-notebook" data-chat-console-status-id="onlyoffice-advanced-chat-status" data-chat-console-thread-title="ONLYOFFICE Advanced Chat"></aside>
+            </div>
+          </div>
+          <div class="stage-status" id="gl-status">game surface loading</div>
+        </div>
+        <div class="canvas-wrap">
+          <!-- @include applications/apps/webgl.html -->
+          <!-- @include applications/apps/calculator.html -->
+          <!-- @include applications/apps/document.html -->
+          <!-- @include applications/apps/spreadsheet.html -->
+          <!-- @include applications/apps/onlyoffice.html -->
+          <!-- @include applications/apps/task-manager.html -->
+          <!-- @include applications/apps/terminal.html -->
+          <!-- @include applications/apps/chat-console.html -->
+          <!-- @include applications/apps/git-tools.html -->
+          <!-- @include applications/apps/code-editor.html -->
+          <!-- @include applications/apps/file-explorer.html -->
+          <!-- @include applications/apps/layout-builder.html -->
+          <!-- @include applications/apps/website-builder.html -->
+          <!-- @include applications/apps/worker.html -->
+          <div class="stub-message" id="stub-message">Select an application tab to open it.</div>
+        </div>
+        <div class="demo-controls" id="demo-controls"></div>
+      </section>
+
+      <aside class="panel status machine-activity-dock" id="machine-activity-dock" aria-label="Machine activity" data-mc-component-id="machine.activity.dock" data-mc-component-kind="panel" data-mc-component-label="Machine Activity Dock" data-default-filter="live">
+        <div class="machine-activity-rail">
+          <button class="machine-activity-toggle" id="activity-dock-toggle" type="button" aria-expanded="false" data-activity-open="live" data-mc-component-id="machine.activity.toggle" data-mc-component-kind="action" data-mc-component-label="Toggle Machine Activity Dock">Open Activity</button>
+          <div class="machine-activity-heartbeat" id="machine-activity-heartbeat" role="status" aria-live="polite" data-mc-component-id="machine.activity.heartbeat" data-mc-component-kind="status" data-mc-component-label="Machine Activity Heartbeat">heartbeat starting</div>
+        </div>
+        <div class="machine-activity-body" id="machine-activity-body">
+          <div class="machine-activity-header">
+            <div>
+              <h2>Machine Activity</h2>
+              <p id="machine-activity-summary">Live machine activity, hidden work, and faults surface here.</p>
+            </div>
+            <button class="machine-activity-close" id="activity-dock-close" type="button" data-mc-component-id="machine.activity.close" data-mc-component-kind="action" data-mc-component-label="Collapse Machine Activity Dock">Collapse</button>
+          </div>
+
+          <div class="machine-activity-filters" id="machine-activity-filters" aria-label="Machine activity filters" data-mc-component-id="machine.activity.filters" data-mc-component-kind="controls" data-mc-component-label="Machine Activity Filters">
+            <button type="button" data-activity-filter="live" class="active">Live</button>
+            <button type="button" data-activity-filter="faults">Faults</button>
+            <button type="button" data-activity-filter="subprocesses">Subprocesses</button>
+            <button type="button" data-activity-filter="streams">Streams</button>
+            <button type="button" data-activity-filter="ai">AI</button>
+            <button type="button" data-activity-filter="fixtures">Fixtures</button>
+            <button type="button" data-activity-filter="snapshots">Snapshots</button>
+            <button type="button" data-activity-filter="meta">Meta</button>
+          </div>
+          <div class="machine-activity-ai-session" id="machine-activity-ai-session" hidden></div>
+
+          <div class="machine-activity-status-grid">
+            <div class="status-card machine-activity-card">
+              <strong>Active</strong>
+              <p id="active-app-state">Game surface renders the selected project.</p>
+            </div>
+            <div class="status-card machine-activity-card">
+              <strong>Activity Filter</strong>
+              <p id="machine-activity-filter-state">live</p>
+            </div>
+          </div>
+
+          <div class="machine-activity-log" id="machine-activity-events" role="log" aria-live="polite" data-mc-component-id="machine.activity.events" data-mc-component-kind="output" data-mc-component-label="Machine Activity Events"></div>
+
+          <details class="machine-activity-meta-shell" id="machine-activity-meta-shell">
+            <summary>Meta model</summary>
+            <pre id="machine-activity-meta" data-mc-component-id="machine.activity.meta" data-mc-component-kind="output" data-mc-component-label="Machine Activity Meta Model">{}</pre>
+          </details>
+
+          <div class="status-card machine-activity-stubbed">
+            <strong>Wrapped Compute Elements</strong>
+            <ul>
+              <li>Heartbeat emits live time-series activity.</li>
+              <li>Task Manager exposes process snapshots, server lifecycle, connections, and hardware rollups.</li>
+              <li>Terminal and Aider activity are represented as subprocess-capable streams.</li>
+              <li>Git Tools, File Explorer, Game Editor, Code Editor, Chat Console, Spreadsheet, Document Editor, and Calculator contribute fixtures and snapshots.</li>
+              <li>Future VLC/backend drivers can report hidden launch, control hook ready, stream hook ready, first frame captured, visible-window warnings, process exits, and stalls.</li>
+            </ul>
+          </div>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <section class="project-doc-display" id="project-doc-display" hidden aria-label="Project documentation display" data-mc-widget-id="project.documentation-display" data-mc-widget-kind="panel" data-mc-widget-class="overlay" data-mc-widget-label="Project Documentation Display" data-mc-component-id="project.documentation-display" data-mc-component-kind="panel" data-mc-component-label="Project Documentation Display" data-mc-component-owner="main-computer.applications" data-mc-feature-id="project.feature.documentation-display" data-mc-source="main_computer/web/applications/scripts/project-documentation-display.js; /api/applications/component-docs/read">
+    <div class="project-doc-display-header">
+      <div>
+        <strong>Project Documentation</strong>
+        <span id="project-doc-display-target">Alt+click any documented widget</span>
+      </div>
+      <button type="button" id="project-doc-display-close" data-mc-component-id="project.documentation-display.close" data-mc-component-kind="action" data-mc-component-label="Close Project Documentation Display" data-mc-component-owner="project.documentation-display" data-mc-feature-id="project.feature.documentation-display">Close</button>
+    </div>
+    <div class="project-doc-display-status" id="project-doc-display-status" data-mc-component-id="project.documentation-display.status" data-mc-component-kind="status" data-mc-component-label="Project Documentation Display Status" data-mc-component-owner="project.documentation-display" data-mc-feature-id="project.feature.documentation-display">idle</div>
+    <iframe id="project-doc-display-frame" title="Project documentation display" sandbox="" referrerpolicy="no-referrer" data-mc-component-id="project.documentation-display.frame" data-mc-component-kind="output" data-mc-component-label="Project Documentation HTML Frame" data-mc-component-owner="project.documentation-display" data-mc-feature-id="project.feature.documentation-display"></iframe>
+  </section>
+
+  <script>
+    <!-- @include applications/scripts/dom-bindings.js -->
+    <!-- @include applications/scripts/activity-dock.js -->
+    <!-- @include applications/scripts/desktop-icons.js -->
+    <!-- @include applications/scripts/widget-editor-core.js -->
+    <!-- @include applications/scripts/widget-editor-layout.js -->
+    <!-- @include applications/scripts/project-documentation-display.js -->
+    <!-- @include applications/scripts/scene-store.js -->
+    <!-- @include applications/scripts/scene-viewer.js -->
+    <!-- @include applications/scripts/app-routing.js -->
+    <!-- @include applications/scripts/webgl-desktop.js -->
+    <!-- @include applications/scripts/calculator.js -->
+    <!-- @include applications/scripts/chat-thread-store.js -->
+    <!-- @include applications/scripts/chat-thread-controller.js -->
+    <!-- @include applications/scripts/chat-console-state.js -->
+    <!-- @include applications/scripts/chat-console-code-runtime.js -->
+    <!-- @include applications/scripts/chat-console.js -->
+    <!-- @include applications/scripts/file-explorer.js -->
+    <!-- @include applications/scripts/code-editor-file-map.js -->
+    <!-- @include applications/scripts/code-editor-aider-output.js -->
+    <!-- @include applications/scripts/code-editor-aider-context.js -->
+    <!-- @include applications/scripts/code-editor-documentation-viewport.js -->
+    <!-- @include applications/scripts/code-editor-aider-actions.js -->
+    <!-- @include applications/scripts/game-editor.js -->
+    <!-- @include applications/scripts/document-store.js -->
+    <!-- @include applications/scripts/document-layout.js -->
+    <!-- @include applications/scripts/document-pagination.js -->
+    <!-- @include applications/scripts/document-objects.js -->
+    <!-- @include applications/scripts/document-scenes.js -->
+    <!-- @include applications/scripts/document-epub.js -->
+    <!-- @include applications/scripts/document-pdf.js -->
+    <!-- @include applications/scripts/document-ai.js -->
+    <!-- @include applications/scripts/document-app.js -->
+    <!-- @include applications/scripts/spreadsheet-revogrid-loader.js -->
+    <!-- @include applications/scripts/spreadsheet-hyperformula-loader.js -->
+    <!-- @include applications/scripts/spreadsheet-formula-engine.js -->
+    <!-- @include applications/scripts/spreadsheet-core.js -->
+    <!-- @include applications/scripts/spreadsheet-render.js -->
+    <!-- @include applications/scripts/spreadsheet-chart.js -->
+    <!-- @include applications/scripts/spreadsheet-code-runtime.js -->
+    <!-- @include applications/scripts/spreadsheet-chat-integration.js -->
+    <!-- @include applications/scripts/spreadsheet-ai-actions.js -->
+    <!-- @include applications/scripts/spreadsheet-app.js -->
+    <!-- @include applications/scripts/onlyoffice-app.js -->
+    <!-- @include applications/scripts/terminal.js -->
+    <!-- @include applications/scripts/task-manager.js -->
+    <!-- @include applications/scripts/git-tools.js -->
+    <!-- @include applications/scripts/website-builder.js -->
+    <!-- @include applications/scripts/worker.js -->
+    <!-- @include applications/scripts/boot.js -->
+  </script>
+</body>
+</html>

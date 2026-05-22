@@ -1,0 +1,41 @@
+[project]
+name = "main-computer-test"
+version = "0.1.0"
+description = "Test install of the main local AI computer router."
+requires-python = ">=3.10"
+dependencies = ["psutil>=5.9.0"]
+
+[project.optional-dependencies]
+openai = ["openai>=1.0.0"]
+harness = ["playwright>=1.40.0"]
+mathics = ["Mathics3==10.0.0"]
+
+[project.scripts]
+main-computer = "main_computer.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["main_computer*"]
+exclude = [
+  "tests*",
+  "pretty_docs*",
+  "debug_assets*",
+  "integrations*",
+  "energy_credits*",
+  "revision_control*",
+  "aider_web_context*",
+  "diagnostics_output*",
+  "diagnostics_output_*",
+  "harness_output*",
+  "harness_output_*",
+  "debug_asset_revisions*",
+  "main_computer_test*"
+]
+
+[tool.setuptools.package-data]
+main_computer = ["web/**/*.html", "web/**/*.css", "web/**/*.js", "web/**/*.map", "web/**/*.json", "web/**/*.md", "web/**/LICENSE"]
+
+[tool.pytest.ini_options]
+markers = [
+  "installed_functional: opt-in tests that build/install the package and drive the browser UI",
+  "onlyoffice_functional: installed-package ONLYOFFICE browser golden paths",
+]

@@ -1,0 +1,51 @@
+<div class="chat-console-app mc-app" id="chat-console-app" aria-label="Chat Console notebook">
+            <div class="chat-console-shell mc-shell app-widget" data-widget-label="Chat Console">
+              <header class="chat-console-header mc-panel-header">
+                <div>
+                  <strong>Chat Console</strong>
+                  <span>Typed notebook cells for AI, JavaScript, Python, BASIC, Terminal, Mathics, notes, and rich outputs.</span>
+                </div>
+                <div class="chat-console-save-status" id="chat-console-save-status">thread ready</div>
+              </header>
+              <div class="chat-console-thread-layout">
+                <aside class="chat-thread-rail" aria-label="Chat threads">
+                  <div class="chat-thread-rail-header">
+                    <div>
+                      <strong>Threads</strong>
+                      <span>browse, search, and load chats</span>
+                    </div>
+                    <button type="button" id="chat-thread-new">New chat</button>
+                  </div>
+                  <label class="chat-thread-search-label" for="chat-thread-search">Search chats</label>
+                  <input id="chat-thread-search" class="chat-thread-search" type="search" placeholder="Search title, code, outputs, variables..." autocomplete="off">
+                  <div class="chat-thread-list" id="chat-thread-list" role="list" aria-label="Saved chat threads"></div>
+                  <div class="chat-thread-actions" aria-label="Current thread actions">
+                    <button type="button" id="chat-thread-rename">Rename</button>
+                    <button type="button" id="chat-thread-clone">Clone</button>
+                    <button type="button" id="chat-thread-archive">Archive</button>
+                  </div>
+                </aside>
+                <section class="chat-thread-workspace" aria-label="Active chat thread">
+                  <div class="chat-thread-current-bar">
+                    <div>
+                      <strong id="chat-thread-active-title">Current thread</strong>
+                      <span id="chat-thread-active-meta">No thread selected</span>
+                    </div>
+                    <div class="chat-thread-current-actions">
+                      <button type="button" id="chat-thread-copy-link">Copy thread link</button>
+                    </div>
+                  </div>
+                  <div class="chat-console-notebook" id="chat-console-notebook" aria-label="Chat Console notebook cells"></div>
+                </section>
+              </div>
+            </div>
+            <script type="text/plain" id="chat-console-js-worker-source">
+<!-- @include applications/scripts/chat-console-js-worker.js -->
+            </script>
+            <script type="text/plain" id="chat-console-python-worker-source">
+<!-- @include applications/scripts/chat-console-python-worker.js -->
+            </script>
+            <script type="text/plain" id="chat-console-basic-worker-source">
+<!-- @include applications/scripts/chat-console-basic-worker.js -->
+            </script>
+          </div>

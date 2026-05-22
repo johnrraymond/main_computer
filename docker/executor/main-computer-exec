@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -u
+
+print_usage() {
+  cat >&2 <<'EOF'
+Usage:
+  main-computer-exec run --cwd /workspace --timeout-ms 30000 --artifact-dir /outputs -- <shell-command>
+EOF
+}
+
+if [[ "${1:-}" == "--version" ]]; then
+  echo "main-computer-exec 1"
+  exit 0
+fi
+
+if [[ "${1:-}" != "run" ]]; then
+  print_usage
+  exit 64
+fi
+shift
+
+cwd="/workspace"
+timeout_ms="60000"
+artifact_dir="/outputs"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --cwd)
+      [[ $# -ge 2 ]] || { echo "--cwd requires a value" >&2; exit 64; }
+      cwd="$2"
+      shift 2
+      ;;
+    --timeout-ms)
+      [[ $# -ge 2 ]] || { echo "--timeout-ms requires a value" >&2; exit 64; }
+      timeout_ms="$2"
+      shift 2
+      ;;
+    --artifact-dir)
+      [[ $# -ge 2 ]] || { echo "--artifact-dir requires a value" >&2; exit 64; }
+      artifact_dir="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      print_usage
+      exit 64
+      ;;
+  esac
+done
+
+if [[ $# -lt 1 ]]; then
+  echo "Missing shell command after --" >&2
+  print_usage
+  exit 64
+fi
+
+case "$cwd" in
+  /workspace|/workspace/*) ;;
+  *)
+    echo "--cwd must be /workspace or a child path" >&2
+    exit 64
+    ;;
+esac
+
+case "$artifact_dir" in
+  /outputs|/outputs/*) ;;
+  *)
+    echo "--artifact-dir must be /outputs or a child path" >&2
+    exit 64
+    ;;
+esac
+
+if [[ ! "$timeout_ms" =~ ^[0-9]+$ ]] || [[ "$timeout_ms" -lt 1 ]]; then
+  echo "--timeout-ms must be a positive integer" >&2
+  exit 64
+fi
+
+mkdir -p "$artifact_dir"
+cd "$cwd" || exit 72
+
+timeout_seconds=$(( (timeout_ms + 999) / 1000 ))
+command="$1"
+
+exec timeout --kill-after=5s "${timeout_seconds}s" /bin/bash -lc "$command"

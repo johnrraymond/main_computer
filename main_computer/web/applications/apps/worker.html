@@ -1,0 +1,277 @@
+<section class="worker-app mc-app" id="worker-app" aria-label="Worker configuration" data-mc-component-id="worker.root" data-mc-component-kind="app" data-mc-component-label="Worker" data-mc-component-owner="applications.workspace" data-mc-feature-id="worker.feature.configuration" data-mc-source="main_computer/web/applications/apps/worker.html; main_computer/web/applications/styles/worker.css; main_computer/web/applications/scripts/worker.js">
+  <div class="worker-shell mc-app-shell app-widget" data-widget-label="Worker">
+    <header class="worker-hero">
+      <div>
+        <strong>Worker</strong>
+        <span>Control when this computer uses remote AI and when approved hubs can rent its local AI.</span>
+      </div>
+      <div class="worker-status-strip" aria-label="Worker status summary">
+        <span>Local AI: Online</span>
+        <span id="worker-hub-count">2 hubs configured</span>
+        <span>Rentals: Configurable</span>
+      </div>
+    </header>
+
+    <div class="worker-workspace mc-app-workspace">
+      <aside class="worker-pane worker-hubs mc-app-pane" aria-label="Hub connections" data-mc-component-id="worker.hubs.panel" data-mc-component-kind="panel" data-mc-component-label="Hub Connections" data-mc-component-owner="worker.root" data-mc-feature-id="worker.feature.hubs">
+        <div class="worker-pane-head">
+          <div>
+            <h3>Hub Connections</h3>
+            <p>Add any number of hubs. Each hub can be used for remote AI, local AI rental, or both.</p>
+          </div>
+        </div>
+
+        <form class="worker-add-hub" id="worker-add-hub-form" aria-label="Add hub">
+          <label>
+            <span>Hub name</span>
+            <input id="worker-hub-name" type="text" value="Main Hub" autocomplete="off">
+          </label>
+          <label>
+            <span>Hub URL</span>
+            <input id="worker-hub-url" type="url" value="https://hub.example" autocomplete="off">
+          </label>
+          <label>
+            <span>Role</span>
+            <select id="worker-hub-role">
+              <option value="use-provide">Use + provide</option>
+              <option value="use-only">Use remote AI only</option>
+              <option value="provide-only">Provide local AI only</option>
+              <option value="disabled">Disabled</option>
+            </select>
+          </label>
+          <button type="submit">+ Add Hub</button>
+        </form>
+
+        <div class="worker-hub-list" id="worker-hub-list" aria-label="Configured hubs">
+          <article class="worker-hub-card">
+            <div>
+              <strong>Main Hub</strong>
+              <span>https://hub.example</span>
+            </div>
+            <div class="worker-hub-badges">
+              <span>Connected</span>
+              <span>Use + provide</span>
+            </div>
+          </article>
+          <article class="worker-hub-card">
+            <div>
+              <strong>Friend Hub</strong>
+              <span>https://friend-hub.local</span>
+            </div>
+            <div class="worker-hub-badges">
+              <span>Ready</span>
+              <span>Use only</span>
+            </div>
+          </article>
+        </div>
+      </aside>
+
+      <section class="worker-pane worker-remote mc-app-pane" aria-label="Use remote AI configuration" data-mc-component-id="worker.remote.panel" data-mc-component-kind="panel" data-mc-component-label="Use Remote AI" data-mc-component-owner="worker.root" data-mc-feature-id="worker.feature.remote-use">
+        <div class="worker-pane-head">
+          <div>
+            <h3>Use Remote AI</h3>
+            <p>Choose when local requests are allowed to ask hubs for help.</p>
+          </div>
+          <label class="worker-switch">
+            <input type="checkbox" id="worker-remote-enabled" checked>
+            <span>Allow remote AI</span>
+          </label>
+        </div>
+
+        <fieldset class="worker-card worker-radio-grid">
+          <legend>When should this computer use remote AI?</legend>
+          <label><input type="radio" name="worker-remote-mode" value="never"> Never</label>
+          <label><input type="radio" name="worker-remote-mode" value="ask"> Ask me first</label>
+          <label><input type="radio" name="worker-remote-mode" value="fallback" checked> When local AI cannot handle it</label>
+          <label><input type="radio" name="worker-remote-mode" value="prefer"> Prefer remote when cheaper or faster</label>
+        </fieldset>
+
+        <div class="worker-card">
+          <h4>Remote trigger rules</h4>
+          <label><input type="checkbox" checked> Local AI is unavailable</label>
+          <label><input type="checkbox" checked> Local AI is busy</label>
+          <label><input type="checkbox" checked> Requested model is not installed locally</label>
+          <label><input type="checkbox"> Requested model is too large for this machine</label>
+          <label><input type="checkbox"> Remote worker is cheaper</label>
+          <label><input type="checkbox"> Remote worker is likely faster</label>
+        </div>
+
+        <div class="worker-card worker-field-grid">
+          <h4>Spending limits</h4>
+          <label>
+            <span>Max credits per input token</span>
+            <input type="number" min="0" step="0.0001" value="0.0010">
+          </label>
+          <label>
+            <span>Max credits per output token</span>
+            <input type="number" min="0" step="0.0001" value="0.0020">
+          </label>
+          <label>
+            <span>Max credits per request</span>
+            <input type="number" min="0" step="0.01" value="10.00">
+          </label>
+          <label>
+            <span>Daily remote spend limit</span>
+            <input type="number" min="0" step="0.01" value="100.00">
+          </label>
+        </div>
+
+        <div class="worker-card">
+          <h4>Privacy</h4>
+          <label><input type="checkbox" checked> Ask before sending private files or local context to remote workers</label>
+          <label><input type="checkbox" checked> Do not use remote workers for private chats</label>
+        </div>
+      </section>
+
+      <section class="worker-pane worker-rental mc-app-pane" aria-label="Rent out local AI configuration" data-mc-component-id="worker.rental.panel" data-mc-component-kind="panel" data-mc-component-label="Rent Out My Local AI" data-mc-component-owner="worker.root" data-mc-feature-id="worker.feature.local-rental">
+        <div class="worker-pane-head">
+          <div>
+            <h3>Rent Out My Local AI</h3>
+            <p>Choose when hubs may send this machine paid AI requests.</p>
+          </div>
+          <label class="worker-switch">
+            <input type="checkbox" id="worker-rental-enabled" checked>
+            <span>Allow rentals</span>
+          </label>
+        </div>
+
+        <fieldset class="worker-card worker-radio-grid">
+          <legend>Allow rental jobs</legend>
+          <label><input type="radio" name="worker-rental-window" value="anytime"> Anytime</label>
+          <label><input type="radio" name="worker-rental-window" value="idle"> Only when machine is idle</label>
+          <label><input type="radio" name="worker-rental-window" value="outside-hours"> Only outside normal usage hours</label>
+          <label><input type="radio" name="worker-rental-window" value="idle-and-outside-hours" checked> Only when idle AND outside normal usage hours</label>
+        </fieldset>
+
+        <div class="worker-card worker-field-grid">
+          <h4>Idle detection</h4>
+          <label>
+            <span>Machine counts as idle after</span>
+            <input type="number" min="1" step="1" value="10">
+            <small>minutes</small>
+          </label>
+          <label>
+            <span>CPU below</span>
+            <input type="number" min="0" max="100" step="1" value="25">
+            <small>%</small>
+          </label>
+          <label>
+            <span>GPU below</span>
+            <input type="number" min="0" max="100" step="1" value="20">
+            <small>%</small>
+          </label>
+          <label class="worker-checkline"><input type="checkbox" checked> Require no keyboard or mouse activity</label>
+          <label class="worker-checkline"><input type="checkbox" checked> Pause rentals when on battery</label>
+          <label class="worker-checkline"><input type="checkbox" checked> Pause rentals when temperature is high</label>
+        </div>
+
+        <div class="worker-card worker-field-grid">
+          <h4>Normal usage hours</h4>
+          <label>
+            <span>Weekdays start</span>
+            <input type="time" value="08:00">
+          </label>
+          <label>
+            <span>Weekdays end</span>
+            <input type="time" value="18:00">
+          </label>
+          <label>
+            <span>Weekend policy</span>
+            <select>
+              <option>Use same hours</option>
+              <option>Rentals anytime</option>
+              <option>No rentals</option>
+              <option>Custom later</option>
+            </select>
+          </label>
+          <label>
+            <span>Timezone</span>
+            <select>
+              <option>Local timezone</option>
+              <option>UTC</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="worker-card worker-field-grid">
+          <h4>Model warmth</h4>
+          <label class="worker-checkline worker-wide">
+            <input type="checkbox" id="worker-lock-ai-model" checked>
+            Lock AI model when working so it stays loaded and avoids slow start.
+          </label>
+          <label>
+            <span>Keep model loaded after last job</span>
+            <input type="number" min="0" step="1" value="30">
+            <small>minutes</small>
+          </label>
+          <label>
+            <span>Model to keep warm</span>
+            <select>
+              <option>Use active job model</option>
+              <option>Prefer local default model</option>
+              <option>Do not preselect</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="worker-card worker-field-grid">
+          <h4>Local resource limits</h4>
+          <label>
+            <span>Max rental jobs at once</span>
+            <input type="number" min="1" step="1" value="1">
+          </label>
+          <label>
+            <span>Max GPU memory for rentals</span>
+            <input type="number" min="0" max="100" step="1" value="50">
+            <small>%</small>
+          </label>
+          <label>
+            <span>Max CPU for rentals</span>
+            <input type="number" min="0" max="100" step="1" value="50">
+            <small>%</small>
+          </label>
+          <label>
+            <span>Max job runtime</span>
+            <input type="number" min="1" step="1" value="10">
+            <small>minutes</small>
+          </label>
+          <label class="worker-checkline worker-wide"><input type="checkbox" checked> Keep local jobs higher priority than rental jobs</label>
+        </div>
+
+        <div class="worker-card worker-field-grid">
+          <h4>Pricing</h4>
+          <label>
+            <span>Charge per input token</span>
+            <input type="number" min="0" step="0.0001" value="0.0015">
+          </label>
+          <label>
+            <span>Charge per output token</span>
+            <input type="number" min="0" step="0.0001" value="0.0030">
+          </label>
+          <label>
+            <span>Minimum charge per request</span>
+            <input type="number" min="0" step="0.01" value="0.05">
+          </label>
+        </div>
+
+        <div class="worker-card worker-check-grid">
+          <h4>Allowed work</h4>
+          <label><input type="checkbox" checked> Text generation</label>
+          <label><input type="checkbox" checked> Embeddings</label>
+          <label><input type="checkbox"> Image generation</label>
+          <label><input type="checkbox"> Batch inference</label>
+          <label><input type="checkbox" disabled> Arbitrary code / containers</label>
+        </div>
+      </section>
+    </div>
+
+    <footer class="worker-actions" aria-label="Worker controls">
+      <output id="worker-save-status" role="status" aria-live="polite">Worker settings are local-only until the worker backend is connected.</output>
+      <div>
+        <button type="button" id="worker-save-settings">Save Worker Settings</button>
+        <button type="button" id="worker-pause-rentals">Pause Rentals</button>
+        <button type="button" id="worker-test-hubs">Test Hubs</button>
+      </div>
+    </footer>
+  </div>
+</section>

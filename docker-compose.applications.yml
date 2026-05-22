@@ -1,0 +1,132 @@
+name: main-computer-applications
+
+services:
+  # Application server: ONLYOFFICE Docs.
+  onlyoffice:
+    image: onlyoffice/documentserver:${MAIN_COMPUTER_ONLYOFFICE_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      JWT_ENABLED: ${MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED:-true}
+      JWT_SECRET: ${MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET:?MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET is required}
+    ports:
+      - "127.0.0.1:${MAIN_COMPUTER_ONLYOFFICE_PORT:-18084}:80"
+    volumes:
+      - onlyoffice-data:/var/www/onlyoffice/Data
+      - onlyoffice-logs:/var/log/onlyoffice
+      - onlyoffice-lib:/var/lib/onlyoffice
+      - onlyoffice-db:/var/lib/postgresql
+
+  # Application server: Coolify and its required application dependencies.
+  postgres:
+    container_name: ${COOLIFY_POSTGRES_CONTAINER_NAME:-mc-applications-coolify-db}
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USERNAME:?DB_USERNAME is required}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      POSTGRES_DB: ${DB_DATABASE:?DB_DATABASE is required}
+    volumes:
+      - ${COOLIFY_LOCAL_STATE:?COOLIFY_LOCAL_STATE is required}/postgres:/var/lib/postgresql/data
+    networks:
+      default:
+        aliases:
+          - coolify-db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    container_name: ${COOLIFY_REDIS_CONTAINER_NAME:-mc-applications-coolify-redis}
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --save 20 1 --loglevel warning --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    volumes:
+      - ${COOLIFY_LOCAL_STATE:?COOLIFY_LOCAL_STATE is required}/redis:/data
+    networks:
+      default:
+        aliases:
+          - coolify-redis
+    healthcheck:
+      test: ["CMD-SHELL", 'redis-cli -a "$$REDIS_PASSWORD" ping | grep PONG']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  soketi:
+    container_name: ${COOLIFY_SOKETI_CONTAINER_NAME:-mc-applications-coolify-realtime}
+    image: quay.io/soketi/soketi:${LATEST_REALTIME_VERSION:-1.4-16-debian}
+    restart: unless-stopped
+    environment:
+      SOKETI_DEBUG: "false"
+      SOKETI_DEFAULT_APP_ID: ${PUSHER_APP_ID:?PUSHER_APP_ID is required}
+      SOKETI_DEFAULT_APP_KEY: ${PUSHER_APP_KEY:?PUSHER_APP_KEY is required}
+      SOKETI_DEFAULT_APP_SECRET: ${PUSHER_APP_SECRET:?PUSHER_APP_SECRET is required}
+    networks:
+      default:
+        aliases:
+          - coolify-realtime
+    ports:
+      - "127.0.0.1:${SOKETI_PORT:-6001}:6001"
+      - "127.0.0.1:${SOKETI_TERMINAL_PORT:-6002}:6002"
+
+  coolify:
+    container_name: ${COOLIFY_CONTAINER_NAME:-mc-applications-coolify}
+    image: ${REGISTRY_URL:-ghcr.io}/coollabsio/coolify:${LATEST_IMAGE:-latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      soketi:
+        condition: service_started
+    env_file:
+      - ${COOLIFY_SOURCE_ENV_FILE:?COOLIFY_SOURCE_ENV_FILE is required}
+    environment:
+      APP_ENV: production
+      APP_NAME: ${APP_NAME:-Coolify}
+      APP_KEY: ${APP_KEY:?APP_KEY is required}
+      APP_ID: ${APP_ID:?APP_ID is required}
+      APP_URL: http://127.0.0.1:${APP_PORT:-8000}
+      DB_CONNECTION: pgsql
+      DB_HOST: ${DB_HOST:-postgres}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_DATABASE: ${DB_DATABASE:?DB_DATABASE is required}
+      DB_USERNAME: ${DB_USERNAME:?DB_USERNAME is required}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      PUSHER_APP_ID: ${PUSHER_APP_ID:?PUSHER_APP_ID is required}
+      PUSHER_APP_KEY: ${PUSHER_APP_KEY:?PUSHER_APP_KEY is required}
+      PUSHER_APP_SECRET: ${PUSHER_APP_SECRET:?PUSHER_APP_SECRET is required}
+      PUSHER_HOST: coolify-realtime
+      PUSHER_PORT: "6001"
+      PUSHER_SCHEME: http
+      ROOT_USERNAME: ${ROOT_USERNAME:?ROOT_USERNAME is required}
+      ROOT_USER_EMAIL: ${ROOT_USER_EMAIL:?ROOT_USER_EMAIL is required}
+      ROOT_USER_PASSWORD: ${ROOT_USER_PASSWORD:?ROOT_USER_PASSWORD is required}
+    ports:
+      - "127.0.0.1:${APP_PORT:-8000}:8080"
+    volumes:
+      - ${COOLIFY_LOCAL_STATE:?COOLIFY_LOCAL_STATE is required}/coolify:/var/www/html/storage/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  onlyoffice-data:
+  onlyoffice-logs:
+  onlyoffice-lib:
+  onlyoffice-db:
+
+networks:
+  default:
+    name: ${COOLIFY_NETWORK_NAME:-main-computer-applications}

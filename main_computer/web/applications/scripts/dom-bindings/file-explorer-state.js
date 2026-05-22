@@ -1,0 +1,9 @@
+    let fileExplorerRoot = null;
+    let fileExplorerNodes = new Map();
+    let fileExplorerOpen = new Set([""]);
+    let fileExplorerAutoLoaded = false;
+    let systemFileExplorerInitialized = false;
+    let systemFileExplorerRootsData = [];
+    let systemFileExplorerRootId = "";
+    let systemFileExplorerRelativePath = "";
+    let systemFileExplorerSelectedEntry = null;
