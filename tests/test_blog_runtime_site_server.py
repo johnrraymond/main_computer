@@ -440,6 +440,44 @@ def test_blog_posts_api_returns_published_posts_only(monkeypatch) -> None:
     assert all("limit=-1" in call for call in calls)
 
 
+def test_blog_posts_api_sorts_by_published_on_then_id(monkeypatch) -> None:
+    app = load_site_server(monkeypatch)
+    posts = [
+        {
+            "id": 1,
+            "status": "published",
+            "slug": "last-year",
+            "title": "Last Year",
+            "published_on": "2025-12-31",
+        },
+        {
+            "id": 2,
+            "status": "published",
+            "slug": "new-this-year",
+            "title": "New This Year",
+            "published_on": "2026-05-24",
+        },
+        {
+            "id": 3,
+            "status": "published",
+            "slug": "same-day-newer-id",
+            "title": "Same Day Newer Id",
+            "published_on": "2026-05-24",
+        },
+    ]
+
+    monkeypatch.setattr(app, "directus_json", lambda path, timeout=5.0: {"data": posts})
+
+    payload, status = app.blog_posts_payload("per_page=50")
+
+    assert status == app.HTTPStatus.OK
+    assert [post["slug"] for post in payload["posts"]] == [
+        "same-day-newer-id",
+        "new-this-year",
+        "last-year",
+    ]
+
+
 def test_blog_posts_api_searches_strictly_fuzzes_opt_in_and_paginates(monkeypatch) -> None:
     app = load_site_server(monkeypatch)
     calls: list[str] = []

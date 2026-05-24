@@ -107,7 +107,6 @@ def test_directus_blog_bootstrap_attaches_public_permissions_to_anonymous_policy
     assert "published_on" in posts_permission["fields"]
     assert "read_time_minutes" in posts_permission["fields"]
     assert "is_legacy" in posts_permission["fields"]
-    assert "published_at" in posts_permission["fields"]
     assert {"published_on", "read_time_minutes", "is_legacy"}.issubset(state["fields"])
     assert any("published_on%2Cread_time_minutes%2Cis_legacy" in path for path in state["anonymous_item_queries"])
 

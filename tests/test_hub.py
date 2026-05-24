@@ -858,6 +858,86 @@ class HubServerTests(unittest.TestCase):
         self.assertEqual(computer.provider.client_node_id, "client-01")
         self.assertTrue(computer.provider.high_security)
 
+    def test_hub_serves_admin_control_site_and_bootstrap_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as hub_tmp:
+            hub_config = MainComputerConfig(
+                workspace=Path(hub_tmp),
+                model="fake-model",
+                hub_root=Path(hub_tmp) / "hub-runtime",
+            )
+            hub = HubHttpServer(("127.0.0.1", 0), hub_config, verbose=False)
+            hub_thread = self._start_server(hub)
+            try:
+                hub_base = f"http://127.0.0.1:{hub.server_port}"
+
+                with urlopen(f"{hub_base}/admin", timeout=5) as response:
+                    html = response.read().decode("utf-8")
+                    content_type = response.headers.get("Content-Type", "")
+
+                self.assertIn("text/html", content_type)
+                self.assertIn("Main Computer Hub Control", html)
+                self.assertIn("/api/hub/v1/admin/bootstrap", html)
+                self.assertIn("Register worker", html)
+
+                with urlopen(f"{hub_base}/api/hub/v1/admin/bootstrap", timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertTrue(payload["ok"])
+                self.assertEqual(payload["service"], "main-computer-hub")
+                self.assertEqual(payload["api_version"], "v1")
+                self.assertIn("/admin", payload["admin_site"]["routes"])
+                self.assertEqual(payload["endpoints"]["worker_register"], "/api/hub/v1/workers/register")
+                self.assertEqual(payload["worker_count"], 0)
+                self.assertEqual(payload["request_count"], 0)
+            finally:
+                hub.shutdown()
+                hub.server_close()
+                hub_thread.join(timeout=2)
+
+    def test_admin_bootstrap_reflects_registered_workers_for_control_dashboard(self) -> None:
+        with tempfile.TemporaryDirectory() as hub_tmp:
+            hub_config = MainComputerConfig(
+                workspace=Path(hub_tmp),
+                model="fake-model",
+                hub_root=Path(hub_tmp) / "hub-runtime",
+            )
+            hub = HubHttpServer(("127.0.0.1", 0), hub_config, verbose=False)
+            hub_thread = self._start_server(hub)
+            try:
+                hub_base = f"http://127.0.0.1:{hub.server_port}"
+                register_request = Request(
+                    f"{hub_base}/api/hub/v1/workers/register",
+                    data=json.dumps(
+                        {
+                            "node_id": "GPU Admin Worker",
+                            "endpoint": "http://127.0.0.1:8771",
+                            "models": ["fake-model", "backup-model"],
+                            "max_concurrency": 3,
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(register_request, timeout=5) as response:
+                    registered = json.loads(response.read().decode("utf-8"))
+                self.assertTrue(registered["ok"])
+
+                with urlopen(f"{hub_base}/api/hub/v1/admin/bootstrap", timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertEqual(payload["worker_count"], 1)
+                worker = payload["workers"][0]
+                self.assertEqual(worker["node_id"], "gpu-admin-worker")
+                self.assertEqual(worker["models"], ["fake-model", "backup-model"])
+                self.assertEqual(worker["max_concurrency"], 3)
+                self.assertIn("fake-model", payload["models"])
+                self.assertEqual(payload["status"]["available_worker_count"], 1)
+            finally:
+                hub.shutdown()
+                hub.server_close()
+                hub_thread.join(timeout=2)
+
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,7 @@ from main_computer.hub_security import (
     generate_hub_session_keypair,
     hub_transport_is_encrypted_or_loopback,
 )
+from main_computer.hub_admin_site import HUB_ADMIN_ROUTES, build_admin_bootstrap_payload, render_hub_admin_html
 from main_computer.hub_plex_models import HubAIRequest, HubWorkerSummary
 from main_computer.hub_plex_service import AIRequestPlexService
 from main_computer.models import ChatAttachment, ChatMessage, ChatResponse
@@ -777,6 +778,21 @@ class _JsonHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _send_bytes(
+        self,
+        payload: bytes,
+        *,
+        content_type: str,
+        status: HTTPStatus = HTTPStatus.OK,
+        cache_control: str = "no-store",
+    ) -> None:
+        self.send_response(int(status))
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", cache_control)
+        self.end_headers()
+        self.wfile.write(payload)
+
 
 class HubHttpServer(ThreadingHTTPServer):
     def __init__(self, server_address: tuple[str, int], config: MainComputerConfig, *, verbose: bool = True) -> None:
@@ -807,6 +823,20 @@ class HubServerHandler(_JsonHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
+        if path in HUB_ADMIN_ROUTES:
+            html = render_hub_admin_html()
+            self._send_bytes(html.encode("utf-8"), content_type="text/html; charset=utf-8")
+            return
+        if path == "/api/hub/v1/admin/bootstrap":
+            self._send_json(
+                build_admin_bootstrap_payload(
+                    config=self.server.config,
+                    registry=self.server.registry,
+                    dispatcher=self.server.dispatcher,
+                    energy_ledger=self.server.energy_ledger,
+                )
+            )
+            return
         if path == "/api/hub/v1/health":
             self._send_json(
                 {
@@ -1233,10 +1263,12 @@ def serve_hub(config: MainComputerConfig, host: str = "127.0.0.1", port: int = D
     scheme_note = "https required for remote peers; local http is allowed for loopback development"
     print(f"Main Computer hub server: http://{host}:{server.server_port}")
     print(f"Hub security: high-security={config.hub_high_security} profile={HUB_SECURITY_PROFILE}; {scheme_note}")
+    print(f"Hub admin/control site: http://{host}:{server.server_port}/admin")
     print(
-        "Hub endpoints: GET /api/hub/status, GET /api/hub/payouts?node_id=..., "
-        "POST /api/hub/workers/register, POST /api/hub/upstreams/register, "
-        "POST /api/hub/sessions/start, POST /api/hub/sessions/chat, POST /api/hub/payouts/claim"
+        "Hub endpoints: GET /admin, GET /api/hub/v1/admin/bootstrap, GET /api/hub/status, "
+        "GET /api/hub/payouts?node_id=..., POST /api/hub/workers/register, "
+        "POST /api/hub/upstreams/register, POST /api/hub/sessions/start, "
+        "POST /api/hub/sessions/chat, POST /api/hub/payouts/claim"
     )
     try:
         server.serve_forever()

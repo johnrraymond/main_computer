@@ -17,7 +17,6 @@
       contentHash: "",
       runtime: null,
       chatController: null,
-      chatOpen: false,
       dirty: false,
       nodes: {}
     };
@@ -65,15 +64,6 @@
               <div class="game-editor-actions">
                 <button type="button" id="game-editor-save-project">Save Project</button>
                 <button type="button" id="game-editor-reset-project">Reset</button>
-                <button
-                  type="button"
-                  id="game-editor-chat-toggle"
-                  class="game-editor-chat-toggle"
-                  aria-haspopup="dialog"
-                  aria-expanded="false"
-                  aria-controls="game-editor-chat-popout">
-                  Game Assistant
-                </button>
               </div>
             </div>
 
@@ -140,39 +130,24 @@
             <output id="game-editor-status" class="game-editor-status" role="status" aria-live="polite">Project-backed scene editor is ready.</output>
           </section>
 
-          <div
-            id="game-editor-chat-popout"
-            class="game-editor-chat-popout"
-            hidden
-            role="dialog"
-            aria-label="Game Assistant"
-            aria-modal="false">
-            <div class="game-editor-chat-popout-head">
-              <div>
-                <strong>Game Assistant</strong>
-                <span>Project-scoped chat for the current game.</span>
-              </div>
-              <button type="button" id="game-editor-chat-close" class="game-editor-chat-close">Close</button>
-            </div>
-            <aside
-              id="game-editor-chat-panel"
-              class="game-editor-chat-panel"
-              data-chat-console-embed="game-editor"
-              data-chat-console-active-app="game-editor"
-              data-chat-console-id-prefix="game-editor-chat"
-              data-chat-console-class-prefix="game-editor"
-              data-chat-console-title="Game Assistant"
-              data-chat-console-subtitle="Ask about this project, scene, selected entity, scripts, and assets."
-              data-chat-console-notebook-id="game-editor-chat-notebook"
-              data-chat-console-status-id="game-editor-chat-status"
-              data-chat-console-thread-title="Game Builder Chat"
-              data-chat-console-target-kind="game-project"
-              data-chat-console-layout="full"
-              data-chat-console-show-thread-rail="1"
-              data-chat-console-show-current-thread-bar="1"
-              aria-label="Game Assistant embedded Chat Console">
-            </aside>
-          </div>
+          <aside
+            id="game-editor-chat-panel"
+            class="game-editor-chat-panel"
+            data-chat-console-embed="game-editor"
+            data-chat-console-active-app="game-editor"
+            data-chat-console-id-prefix="game-editor-chat"
+            data-chat-console-class-prefix="game-editor"
+            data-chat-console-title="Game Assistant"
+            data-chat-console-subtitle="Ask about this project, scene, selected entity, scripts, and assets."
+            data-chat-console-notebook-id="game-editor-chat-notebook"
+            data-chat-console-status-id="game-editor-chat-status"
+            data-chat-console-thread-title="Game Builder Chat"
+            data-chat-console-target-kind="game-project"
+            data-chat-console-layout="full"
+            data-chat-console-show-thread-rail="1"
+            data-chat-console-show-current-thread-bar="1"
+            aria-label="Game Assistant embedded Chat Console">
+          </aside>
         </section>
       `;
       gameEditorState.nodes = {
@@ -181,9 +156,6 @@
         projectName: gameEditorApp.querySelector("#game-editor-project-name"),
         saveProject: gameEditorApp.querySelector("#game-editor-save-project"),
         resetProject: gameEditorApp.querySelector("#game-editor-reset-project"),
-        chatToggle: gameEditorApp.querySelector("#game-editor-chat-toggle"),
-        chatClose: gameEditorApp.querySelector("#game-editor-chat-close"),
-        chatPopout: gameEditorApp.querySelector("#game-editor-chat-popout"),
         preview: gameEditorApp.querySelector("#game-editor-preview"),
         viewport: gameEditorApp.querySelector("#game-editor-webgl-viewport"),
         canvas: gameEditorApp.querySelector("#game-editor-webgl-canvas"),
@@ -215,8 +187,6 @@
       nodes.resetProject?.addEventListener("click", () => readGameEditorProject(gameEditorState.projectId, {reason: "reset"}).catch(reportGameEditorError));
       nodes.uploadAsset?.addEventListener("click", () => uploadGameEditorAsset().catch(reportGameEditorError));
       nodes.frameSelected?.addEventListener("click", frameSelectedGameEditorObject);
-      nodes.chatToggle?.addEventListener("click", () => setGameEditorChatOpen(!gameEditorState.chatOpen));
-      nodes.chatClose?.addEventListener("click", () => setGameEditorChatOpen(false, {mountChat: false}));
       nodes.projectName?.addEventListener("input", () => {
         if (!gameEditorState.project) return;
         gameEditorState.project.name = nodes.projectName.value;
@@ -443,20 +413,6 @@
       snapshot: gameEditorChatContextSnapshot
     };
 
-    function setGameEditorChatOpen(open, {mountChat = true} = {}) {
-      const shouldOpen = Boolean(open);
-      gameEditorState.chatOpen = shouldOpen;
-      const nodes = gameEditorState.nodes || {};
-      if (nodes.chatPopout) nodes.chatPopout.hidden = !shouldOpen;
-      if (nodes.chatToggle) nodes.chatToggle.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
-      if (shouldOpen && mountChat) {
-        mountGameEditorChat();
-        setGameEditorStatus("Game Assistant opened for the current project.");
-      } else if (!shouldOpen) {
-        setGameEditorStatus(gameEditorState.dirty ? "dirty - disk save needed" : "Project-backed scene editor is ready.");
-      }
-    }
-
     function mountGameEditorChat({force = false} = {}) {
       const panel = gameEditorState.nodes.chatPanel;
       if (!panel) return null;
@@ -508,15 +464,7 @@
       const current = safeGameEditorProjectId(gameEditorState.projectId);
       const panel = gameEditorState.nodes.chatPanel;
       if (panel) panel.dataset.chatConsoleTargetId = current;
-      if (!gameEditorState.chatOpen) {
-        if (previous !== current && gameEditorState.chatController) {
-          gameEditorState.chatController?.destroy?.();
-          gameEditorState.chatController = null;
-          if (panel) panel.dataset.chatConsoleEmbeddedShell = "";
-        }
-        return gameEditorState.chatController;
-      }
-      if (previous !== current) return mountGameEditorChat({force: true});
+      if (previous !== current && gameEditorState.chatController) return mountGameEditorChat({force: true});
       return mountGameEditorChat();
     }
 

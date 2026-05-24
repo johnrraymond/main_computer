@@ -20,9 +20,8 @@ DIRECTUS_PUBLIC_FIELDS = [
     "is_legacy",
     # Keep the legacy Blog fields public as compatibility-only fallbacks for
     # older local Directus installs and generated pages. The live Directus Blog
-    # contract reads dates from ``published_on``.
+    # contract uses ``published_on`` as the public publish-date field.
     "featured_image",
-    "published_at",
 ]
 DIRECTUS_FILE_FIELDS = ["id", "storage", "filename_download", "title", "type"]
 DIRECTUS_FIELD_DEFINITIONS: list[dict[str, Any]] = [
@@ -84,12 +83,6 @@ DIRECTUS_FIELD_DEFINITIONS: list[dict[str, Any]] = [
         "type": "uuid",
         "schema": {"type": "char", "max_length": 36, "is_nullable": True},
         "meta": {"interface": "input", "note": "Directus file id used by public Blog rendering."},
-    },
-    {
-        "field": "published_at",
-        "type": "string",
-        "schema": {"type": "varchar", "max_length": 64, "is_nullable": True},
-        "meta": {"interface": "datetime"},
     },
 ]
 
