@@ -269,8 +269,11 @@ def route_contract(html: str) -> dict[str, Any]:
     for needle in expected:
         require_contains("/applications/game-editor", html, needle)
 
-    require('data-chat-console-layout="compact"' not in html, "Game Editor route still advertises compact chat layout.")
-    require('data-chat-console-show-thread-rail="0"' not in html, "Game Editor route still hides the chat thread rail.")
+    game_panel = re.search(r'<aside\s+[^>]*id="game-editor-chat-panel"[^>]*>', html, re.S)
+    require(game_panel is not None, "Game Editor chat panel markup was not found.")
+    game_panel_markup = game_panel.group(0)
+    require('data-chat-console-layout="compact"' not in game_panel_markup, "Game Editor route still advertises compact chat layout.")
+    require('data-chat-console-show-thread-rail="0"' not in game_panel_markup, "Game Editor route still hides the chat thread rail.")
 
     return {"ok": True, "checked": len(expected)}
 

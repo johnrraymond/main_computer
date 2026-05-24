@@ -17,6 +17,7 @@
       contentHash: "",
       runtime: null,
       chatController: null,
+      chatOpen: false,
       dirty: false,
       nodes: {}
     };
@@ -64,6 +65,15 @@
               <div class="game-editor-actions">
                 <button type="button" id="game-editor-save-project">Save Project</button>
                 <button type="button" id="game-editor-reset-project">Reset</button>
+                <button
+                  type="button"
+                  id="game-editor-chat-toggle"
+                  class="game-editor-chat-toggle"
+                  aria-haspopup="dialog"
+                  aria-expanded="false"
+                  aria-controls="game-editor-chat-popout">
+                  Game Chat
+                </button>
               </div>
             </div>
 
@@ -130,27 +140,42 @@
             <output id="game-editor-status" class="game-editor-status" role="status" aria-live="polite">Project-backed scene editor is ready.</output>
           </section>
 
-          <aside
-            id="game-editor-chat-panel"
-            class="game-editor-chat-panel"
-            data-chat-console-embed="game-editor"
-            data-chat-console-active-app="game-editor"
-            data-chat-console-id-prefix="game-editor-chat"
-            data-chat-console-class-prefix="game-editor"
-            data-chat-console-title="Game Assistant"
-            data-chat-console-subtitle="Ask about this project, scene, selected entity, scripts, and assets."
-            data-chat-console-notebook-id="game-editor-chat-notebook"
-            data-chat-console-status-id="game-editor-chat-status"
-            data-chat-console-thread-title="Game Builder Chat"
-            data-chat-console-target-kind="game-project"
-            data-chat-console-layout="full"
-            data-chat-console-show-thread-rail="1"
-            data-chat-console-show-current-thread-bar="1"
-            aria-label="Game Assistant embedded Chat Console">
-          </aside>
+          <section
+            id="game-editor-chat-popout"
+            class="game-editor-chat-popout"
+            role="dialog"
+            aria-label="Game Assistant"
+            hidden>
+            <div class="game-editor-chat-popout-head">
+              <div>
+                <strong>Game Assistant</strong>
+                <span>Chat Console for the active game project, scene, selected entity, scripts, and assets.</span>
+              </div>
+              <button type="button" id="game-editor-chat-close" class="game-editor-chat-close">Close</button>
+            </div>
+            <aside
+              id="game-editor-chat-panel"
+              class="game-editor-chat-panel"
+              data-chat-console-embed="game-editor"
+              data-chat-console-active-app="game-editor"
+              data-chat-console-id-prefix="game-editor-chat"
+              data-chat-console-class-prefix="game-editor"
+              data-chat-console-title="Game Assistant"
+              data-chat-console-subtitle="Ask about this project, scene, selected entity, scripts, and assets."
+              data-chat-console-notebook-id="game-editor-chat-notebook"
+              data-chat-console-status-id="game-editor-chat-status"
+              data-chat-console-thread-title="Game Builder Chat"
+              data-chat-console-target-kind="game-project"
+              data-chat-console-layout="full"
+              data-chat-console-show-thread-rail="1"
+              data-chat-console-show-current-thread-bar="1"
+              aria-label="Game Assistant popout Chat Console">
+            </aside>
+          </section>
         </section>
       `;
       gameEditorState.nodes = {
+        shell: gameEditorApp.querySelector(".game-editor-shell"),
         projectList: gameEditorApp.querySelector("#game-editor-project-list"),
         refreshProjects: gameEditorApp.querySelector("#game-editor-refresh-projects"),
         projectName: gameEditorApp.querySelector("#game-editor-project-name"),
@@ -174,6 +199,9 @@
         assetUpload: gameEditorApp.querySelector("#game-editor-asset-upload"),
         uploadAsset: gameEditorApp.querySelector("#game-editor-upload-asset"),
         assetList: gameEditorApp.querySelector("#game-editor-asset-list"),
+        chatToggle: gameEditorApp.querySelector("#game-editor-chat-toggle"),
+        chatPopout: gameEditorApp.querySelector("#game-editor-chat-popout"),
+        chatClose: gameEditorApp.querySelector("#game-editor-chat-close"),
         chatPanel: gameEditorApp.querySelector("#game-editor-chat-panel"),
         status: gameEditorApp.querySelector("#game-editor-status")
       };
@@ -187,6 +215,23 @@
       nodes.resetProject?.addEventListener("click", () => readGameEditorProject(gameEditorState.projectId, {reason: "reset"}).catch(reportGameEditorError));
       nodes.uploadAsset?.addEventListener("click", () => uploadGameEditorAsset().catch(reportGameEditorError));
       nodes.frameSelected?.addEventListener("click", frameSelectedGameEditorObject);
+      nodes.chatToggle?.addEventListener("click", () => setGameEditorChatOpen(!gameEditorState.chatOpen));
+      nodes.chatClose?.addEventListener("click", () => {
+        setGameEditorChatOpen(false, {mountChat: false});
+        nodes.chatToggle?.focus();
+      });
+      document.addEventListener("click", (event) => {
+        if (!nodes.chatPopout || nodes.chatPopout.hidden) return;
+        const target = event.target;
+        if (!(target instanceof Node)) return;
+        if (nodes.chatPopout.contains(target) || nodes.chatToggle?.contains(target)) return;
+        setGameEditorChatOpen(false, {mountChat: false});
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape" || !nodes.chatPopout || nodes.chatPopout.hidden) return;
+        setGameEditorChatOpen(false, {mountChat: false});
+        nodes.chatToggle?.focus();
+      });
       nodes.projectName?.addEventListener("input", () => {
         if (!gameEditorState.project) return;
         gameEditorState.project.name = nodes.projectName.value;
@@ -235,6 +280,16 @@
           effectMultiplier: button.dataset.vfxPreset
         }));
       });
+    }
+
+    function setGameEditorChatOpen(open, {mountChat = true} = {}) {
+      const nodes = gameEditorState.nodes || {};
+      const shouldOpen = Boolean(open) && document.body.dataset.activeApp === "game-editor";
+      gameEditorState.chatOpen = shouldOpen;
+      if (nodes.chatPopout) nodes.chatPopout.hidden = !shouldOpen;
+      nodes.chatToggle?.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+      nodes.shell?.classList.toggle("chat-open", shouldOpen);
+      if (shouldOpen && mountChat) mountGameEditorChat();
     }
 
     function safeGameEditorProjectId(value = gameEditorState.projectId) {
@@ -464,6 +519,7 @@
       const current = safeGameEditorProjectId(gameEditorState.projectId);
       const panel = gameEditorState.nodes.chatPanel;
       if (panel) panel.dataset.chatConsoleTargetId = current;
+      if (!gameEditorState.chatOpen) return gameEditorState.chatController || null;
       if (previous !== current && gameEditorState.chatController) return mountGameEditorChat({force: true});
       return mountGameEditorChat();
     }
@@ -924,6 +980,7 @@
     }
 
     function disposeGameEditorSurface() {
+      setGameEditorChatOpen(false, {mountChat: false});
       if (gameEditorState.runtime?.dispose) {
         gameEditorState.runtime.dispose();
       }
