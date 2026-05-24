@@ -64,6 +64,7 @@ class GeneratedComposeService:
     directus_service: str = ""
     directus_internal_url: str = ""
     directus_public_url: str = ""
+    directus_managed: bool = False
     blog_enabled: bool = False
     blog_provider: str = ""
     blog_content_runtime: str = ""
@@ -83,6 +84,7 @@ class GeneratedDirectusService:
     admin_email_env: str
     admin_password_env: str
     secret_env: str
+    managed: bool = True
 
 
 def compose_project_name() -> str:
@@ -298,6 +300,25 @@ def _directus_local_connection_public_port(cms: dict[str, Any]) -> int | None:
     return port
 
 
+def _directus_default_service_name(site_id: object) -> str:
+    return validate_compose_service_name(f"{safe_image_slug(site_id)}-directus")
+
+
+def _directus_local_connection_mode(cms: dict[str, Any]) -> str:
+    connection = _directus_local_connection_from_cms(cms)
+    return str(connection.get("mode") or "").strip().lower().replace("-", "_")
+
+
+def _directus_local_connection_managed(site_id: object, cms: dict[str, Any], service_name: str) -> bool:
+    connection = _directus_local_connection_from_cms(cms)
+    if connection.get("managed") is False or connection.get("external") is True:
+        return False
+    mode = _directus_local_connection_mode(cms)
+    if mode == "use_existing" and service_name != _directus_default_service_name(site_id):
+        return False
+    return True
+
+
 def _ensure_directus_contract_for_blog(site_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Backfill the Directus CMS contract for older Blog manifests.
 
@@ -377,7 +398,7 @@ def _directus_service_host(site_id: str, cms: dict[str, Any]) -> str:
             hostname = ""
         if hostname:
             return validate_compose_service_name(hostname)
-    return validate_compose_service_name(f"{safe_image_slug(site_id)}-directus")
+    return _directus_default_service_name(site_id)
 
 
 def _directus_image(cms: dict[str, Any]) -> str:
@@ -543,6 +564,29 @@ def _docker_port_owners(port: int) -> list[str]:
     return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
 
 
+def _compose_service_from_container_name(container_name: str) -> str:
+    project_prefix = f"{compose_project_name()}-"
+    suffix = "-1"
+    if not container_name.startswith(project_prefix) or not container_name.endswith(suffix):
+        return ""
+    service_name = container_name[len(project_prefix) : -len(suffix)]
+    try:
+        return validate_compose_service_name(service_name)
+    except LocalPlatformComposeError:
+        return ""
+
+
+def _existing_directus_service_for_port(port: int) -> str:
+    for owner in _docker_port_owners(port):
+        if "directus/" not in owner.lower() and "directus:" not in owner.lower():
+            continue
+        name = owner.split(" ", 1)[0]
+        service = _compose_service_from_container_name(name)
+        if service:
+            return service
+    return ""
+
+
 def _port_owner_conflict_message(port: int, service_name: str) -> str:
     owners = _docker_port_owners(port)
     expected_name_fragment = f"-{service_name}-"
@@ -596,6 +640,26 @@ def directus_service_for_site(
     registry = registry or load_local_platform_registry(repo_root)
     cms = _cms_contract(manifest)
     service_name = _directus_service_host(site.id, cms)
+    connection = _directus_local_connection_from_cms(cms)
+    persisted_public_port = _directus_public_port_from_cms(cms)
+    if (
+        _directus_local_connection_mode(cms) == "use_existing"
+        and service_name == _directus_default_service_name(site.id)
+        and persisted_public_port is not None
+    ):
+        owner_service = _existing_directus_service_for_port(persisted_public_port)
+        if owner_service and owner_service != service_name:
+            service_name = owner_service
+            connection = {
+                **connection,
+                "service_name": owner_service,
+                "internal_url": f"http://{owner_service}:{DIRECTUS_INTERNAL_PORT}",
+                "managed": False,
+                "external": True,
+            }
+    managed = _directus_local_connection_managed(site.id, cms, service_name)
+    if connection.get("managed") is False or connection.get("external") is True:
+        managed = False
     storage = cms.get("storage")
     storage = storage if isinstance(storage, dict) else {}
     database_volume = _directus_volume(
@@ -606,8 +670,9 @@ def directus_service_for_site(
         _directus_local_connection_volume(cms, "uploads_volume") or storage.get("uploads_volume"),
         f"{site.id}_directus_uploads",
     )
-    public_port = _directus_host_port(repo_root, site, cms, service_name, registry)
-    connection = _directus_local_connection_from_cms(cms)
+    public_port = _directus_host_port(repo_root, site, cms, service_name, registry) if managed else (
+        _directus_public_port_from_cms(cms) or _directus_host_port(repo_root, site, cms, service_name, registry)
+    )
     internal_url = str(connection.get("internal_url") or "").strip() or f"http://{service_name}:{DIRECTUS_INTERNAL_PORT}"
     public_url = str(connection.get("public_url") or "").strip() or f"http://127.0.0.1:{public_port}"
     _persist_directus_urls(repo_root, site, manifest, internal_url=internal_url, public_url=public_url)
@@ -624,6 +689,7 @@ def directus_service_for_site(
         admin_email_env=f"${{{prefix}_DIRECTUS_ADMIN_EMAIL:-admin@example.com}}",
         admin_password_env=f"${{{prefix}_DIRECTUS_ADMIN_PASSWORD:-Admin-password-1!}}",
         secret_env=f"${{{prefix}_DIRECTUS_SECRET:-main-computer-local-{safe_image_slug(site.id)}-directus-secret}}",
+        managed=managed,
     )
 
 
@@ -642,7 +708,7 @@ def generated_directus_services(
         if directus_scope is not None and site.id not in directus_scope:
             continue
         directus = directus_service_for_site(repo_root, site, registry)
-        if directus is None:
+        if directus is None or not directus.managed:
             continue
         if directus.service in seen_services:
             raise LocalPlatformComposeError(f"Duplicate generated Directus service name: {directus.service}")
@@ -671,7 +737,11 @@ def directus_dependency_services_for_site(
 
 
 def cms_dependency_service_names_for_site(repo_root: Path, site_id: object) -> list[str]:
-    return [service.service for service in directus_dependency_services_for_site(repo_root, site_id)]
+    return [
+        service.service
+        for service in directus_dependency_services_for_site(repo_root, site_id)
+        if service.service and service.managed
+    ]
 
 
 def _normalize_site_id_scope(site_ids: object) -> set[str] | None:
@@ -726,6 +796,7 @@ def generated_compose_services(
                     directus_service=directus.service if directus else "",
                     directus_internal_url=directus.internal_url if directus else "",
                     directus_public_url=directus.public_url if directus else "",
+                    directus_managed=bool(directus and directus.managed),
                     blog_enabled=bool(directus and _blog_runtime_enabled(manifest)),
                     blog_provider="directus" if directus and _blog_runtime_enabled(manifest) else "",
                     blog_content_runtime="directus" if directus and _blog_runtime_enabled(manifest) else "",
@@ -801,7 +872,7 @@ def _render_service(service: GeneratedComposeService, repo_root: Path) -> list[s
         f"    image: {_yaml_string(service.image)}",
         "    restart: unless-stopped",
     ]
-    if service.directus_service:
+    if service.directus_service and service.directus_managed:
         lines.extend(
             [
                 "    depends_on:",

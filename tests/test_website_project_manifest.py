@@ -170,6 +170,11 @@ def test_ensure_website_blog_page_creates_combined_page_and_assets(tmp_path: Pat
     assert 'data-mc-widget="blog-post-viewer"' in blog_html
     assert 'data-route-prefix="/blog/"' in blog_html
     assert 'data-mc-blog-route-mode="index"' in blog_html
+    assert 'data-page-size="50"' in blog_html
+    assert 'data-search-enabled="true"' in blog_html
+    assert "Allowed Fuzz" in blog_html
+    assert "Results per Page" in blog_html
+    assert "All</option>" not in blog_html
     style_css = (site_dir / "style.css").read_text(encoding="utf-8")
     script_js = (site_dir / "script.js").read_text(encoding="utf-8")
     assert "Main Computer blog widget styles" in style_css
@@ -177,12 +182,22 @@ def test_ensure_website_blog_page_creates_combined_page_and_assets(tmp_path: Pat
     assert "mcBlogPostViewerSelector" in script_js
     assert "mcBlogWidgetApplyGeneratedPageMode" in script_js
     assert "mcBlogWidgetSanitizeRichHtml" in script_js
+    assert "mcBlogWidgetRenderPagination" in script_js
+    assert "mcBlogMaxAllowedFuzz" in script_js
+    assert "listPath" in script_js
+    assert 'slug === "index.html" ? "" : slug' in script_js
+    assert 'replace(/\\/index\\.html$/i, "")' in script_js
     assert "mc-blog-article-presentation-v1" in style_css
     assert "mc-blog-index-grid-layout-v1" in style_css
+    assert "mc-blog-search-pagination-controls-v1" in style_css
     assert '.mc-section.mc-blog-widget[data-mc-widget="blog-list"]' in style_css
     assert "width: min(1120px, calc(100vw - 48px));" in style_css
     assert "padding: clamp(3rem, 7vw, 6rem) 0;" in style_css
     assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in style_css
+    assert ".mc-blog-widget__controls" in style_css
+    assert "flex-wrap: nowrap;" in style_css
+    assert "overflow-x: auto;" in style_css
+    assert '.mc-blog-widget__control input[type="number"]' in style_css
     assert "width: calc(100vw - 32px);" in style_css
     assert 'routeMode.mode === "detail"' in script_js
     assert 'routeMode.mode === "index"' in script_js
@@ -217,11 +232,15 @@ def test_ensure_website_blog_page_upgrades_stale_blog_widget_assets(tmp_path: Pa
     assert ".mc-blog-widget[hidden]" in style_css
     assert "mc-blog-article-presentation-v1" in style_css
     assert "mc-blog-index-grid-layout-v1" in style_css
+    assert "mc-blog-search-pagination-controls-v1" in style_css
     assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in style_css
     assert "window.oldBlogHydrator = true;" in script_js
     assert "mcBlogWidgetApplyRouteModeVisibility" in script_js
     assert "mcBlogWidgetApplyGeneratedPageMode(listWidgets, postViewers)" in script_js
     assert "mcBlogWidgetSanitizeRichHtml" in script_js
+    assert "mcBlogWidgetRenderPagination" in script_js
+    assert 'slug === "index.html" ? "" : slug' in script_js
+    assert "flex-wrap: nowrap;" in style_css
 
     css_count = style_css.count("Main Computer blog widget styles")
     js_count = script_js.count("const mcBlogWidgetSelector")
@@ -532,7 +551,10 @@ def test_website_publish_plan_is_manifest_driven_and_dry_run_safe(monkeypatch, t
     assert publish_plan["accepted_publish_target"]["site_slug"] == "johnrraymond"
     assert publish_plan["accepted_publish_target"]["source_path"] == "runtime/websites/hub-site"
     assert "johnrraymond-site:" in publish_plan["remote_coolify_compose"]
-    assert "/srv/main-computer/sites/johnrraymond:/usr/share/nginx/html:ro" in publish_plan["remote_coolify_compose"]
+    assert "image: 'python:3.12-slim'" in publish_plan["remote_coolify_compose"]
+    assert "/srv/main-computer/sites/johnrraymond:/app/sites/johnrraymond:ro" in publish_plan["remote_coolify_compose"]
+    assert "/app/sites/johnrraymond/.main-computer/runtime/app.py" in publish_plan["remote_coolify_compose"]
+    assert "      - '8080'" in publish_plan["remote_coolify_compose"]
     assert publish_plan["supported"] is True
 
     result = publish_website(tmp_path, "hub-site", lane="local", dry_run=True)
@@ -558,12 +580,45 @@ def _write_publish_command_stub(repo_root: Path) -> None:
     publish_script.write_text("print('publish stub')\n", encoding="utf-8")
 
 
+def _write_site_runtime_stub(repo_root: Path, body: str = "print('runtime')\n") -> None:
+    runtime = repo_root / "deploy" / "local-platform" / "site-server" / "app.py"
+    runtime.parent.mkdir(parents=True, exist_ok=True)
+    runtime.write_text(body, encoding="utf-8")
+
+
+def test_site_runtime_bundle_copies_current_runtime_inside_site_directory(tmp_path: Path) -> None:
+    list_website_projects(tmp_path)
+    _write_site_runtime_stub(tmp_path, "print('runtime v1')\n")
+
+    bundle = website_project_manifest.ensure_site_runtime_bundle(tmp_path, "hub-site")
+
+    entrypoint = tmp_path / "runtime" / "websites" / "hub-site" / ".main-computer" / "runtime" / "app.py"
+    metadata = tmp_path / "runtime" / "websites" / "hub-site" / ".main-computer" / "runtime" / "runtime.json"
+    assert bundle["ok"] is True
+    assert bundle["status"] == "created"
+    assert entrypoint.read_text(encoding="utf-8") == "print('runtime v1')\n"
+    payload = json.loads(metadata.read_text(encoding="utf-8"))
+    assert payload["runtime_id"] == "main-computer-site-runtime"
+    assert payload["source"] == "deploy/local-platform/site-server/app.py"
+    assert payload["entrypoint"] == ".main-computer/runtime/app.py"
+    assert "/api/site/blog/posts" in payload["api_routes"]
+
+    unchanged = website_project_manifest.ensure_site_runtime_bundle(tmp_path, "hub-site")
+    assert unchanged["status"] == "unchanged"
+
+    _write_site_runtime_stub(tmp_path, "print('runtime v2')\n")
+    updated = website_project_manifest.ensure_site_runtime_bundle(tmp_path, "hub-site")
+    assert updated["status"] == "updated"
+    assert entrypoint.read_text(encoding="utf-8") == "print('runtime v2')\n"
+
+
 def test_remote_publish_runs_saved_scp_command_and_never_generates_local_compose(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     list_website_projects(tmp_path)
     _write_publish_command_stub(tmp_path)
+    _write_site_runtime_stub(tmp_path)
     save_website_publish_target(
         tmp_path,
         "hub-site",
@@ -637,6 +692,14 @@ def test_remote_publish_runs_saved_scp_command_and_never_generates_local_compose
     assert captured["env"]["MAIN_COMPUTER_SSH_PASSWORD"] == "secret-password"
     assert result["publish_command"]["env"]["MAIN_COMPUTER_SSH_PASSWORD"] == "<set>"
     assert result["publish_command"]["returncode"] == 0
+    runtime_entrypoint = tmp_path / "runtime" / "websites" / "hub-site" / ".main-computer" / "runtime" / "app.py"
+    runtime_metadata = tmp_path / "runtime" / "websites" / "hub-site" / ".main-computer" / "runtime" / "runtime.json"
+    assert runtime_entrypoint.read_text(encoding="utf-8") == "print('runtime')\n"
+    metadata = json.loads(runtime_metadata.read_text(encoding="utf-8"))
+    assert metadata["runtime_id"] == "main-computer-site-runtime"
+    assert metadata["entrypoint"] == ".main-computer/runtime/app.py"
+    assert metadata["site_id"] == "hub-site"
+    assert result["site_runtime_bundle"]["ok"] is True
 
 
 def test_remote_publish_dry_run_keeps_publish_slug_and_source_site_separate(tmp_path: Path) -> None:
@@ -681,7 +744,10 @@ def test_remote_publish_dry_run_keeps_publish_slug_and_source_site_separate(tmp_
         "MAIN_COMPUTER_PUBLISH_SSH_PASSWORD": "<set>",
     }
     assert "johnrraymond-site:" in result["plan"]["remote_coolify_compose"]
-    assert "/srv/main-computer/sites/johnrraymond:/usr/share/nginx/html:ro" in result["plan"]["remote_coolify_compose"]
+    assert "image: 'python:3.12-slim'" in result["plan"]["remote_coolify_compose"]
+    assert "/srv/main-computer/sites/johnrraymond:/app/sites/johnrraymond:ro" in result["plan"]["remote_coolify_compose"]
+    assert "/app/sites/johnrraymond/.main-computer/runtime/app.py" in result["plan"]["remote_coolify_compose"]
+    assert "      - '8080'" in result["plan"]["remote_coolify_compose"]
     assert result["publish_command"]["dry_run"] is True
 
 
@@ -757,6 +823,7 @@ def test_remote_publish_cleans_stale_blog_artifacts_before_running_publish_comma
 ) -> None:
     list_website_projects(tmp_path)
     _write_publish_command_stub(tmp_path)
+    _write_site_runtime_stub(tmp_path)
     save_website_publish_target(
         tmp_path,
         "hub-site",
@@ -813,6 +880,7 @@ def test_remote_publish_command_failure_surfaces_stderr(
 ) -> None:
     list_website_projects(tmp_path)
     _write_publish_command_stub(tmp_path)
+    _write_site_runtime_stub(tmp_path)
     save_website_publish_target(
         tmp_path,
         "hub-site",
@@ -1322,6 +1390,73 @@ def test_directus_ping_verifier_accepts_plain_pong_response(monkeypatch) -> None
     assert result["status"] == 200
     assert result["body"] == "pong"
     assert result["attempts"] == 1
+
+
+
+
+def test_directus_use_existing_adopts_running_directus_owner_by_public_port(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    create_local_platform_website_project(tmp_path, "johnrraymond", "John R. Raymond")
+    site_path = tmp_path / "runtime" / "websites" / "johnrraymond" / "site.json"
+    manifest = json.loads(site_path.read_text(encoding="utf-8"))
+    manifest["backend"] = {
+        "cms": {
+            "provider": "directus",
+            "required": True,
+            "runtime": "deployed",
+            "service": {"kind": "directus"},
+            "storage": {},
+        }
+    }
+    site_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(
+        website_project_manifest,
+        "_docker_containers_publishing_port",
+        lambda port, timeout_s=4.0: {
+            "checked": True,
+            "owners": [
+                {
+                    "name": "main-computer-local-platform-hub-site-directus-1",
+                    "project": "main-computer-local-platform",
+                    "service": "hub-site-directus",
+                    "status": "running",
+                    "image": "directus/directus:11.5.1",
+                    "ports": ["127.0.0.1:28200->8055/tcp"],
+                }
+            ],
+            "error": "",
+        },
+    )
+
+    project = website_project_manifest.save_website_directus_connection(
+        tmp_path,
+        "johnrraymond",
+        {
+            "mode": "use_existing",
+            "service_name": "johnrraymond-directus",
+            "database_volume": "johnrraymond_directus_database",
+            "uploads_volume": "johnrraymond_directus_uploads",
+            "public_port": 28200,
+        },
+    )
+
+    connection = project.manifest["backend"]["cms"]["local_connection"]
+    service = project.manifest["backend"]["cms"]["service"]
+    assert connection["service_name"] == "hub-site-directus"
+    assert connection["managed"] is False
+    assert connection["external"] is True
+    assert connection["internal_url"] == "http://hub-site-directus:8055"
+    assert service["internal_url"] == "http://hub-site-directus:8055"
+    assert service["public_url"] == "http://127.0.0.1:28200"
+
+    plan = website_project_manifest._directus_runtime_action_plan(
+        project,
+        "main-computer-local-platform",
+    )
+    assert plan["required"] is False
+    assert "existing shared service" in plan["message"]
 
 
 def _configure_directus_connection_for_publish(tmp_path: Path, *, mode: str = "use_existing") -> None:

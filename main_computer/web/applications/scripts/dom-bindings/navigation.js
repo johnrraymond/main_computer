@@ -4,7 +4,7 @@
     const terminalAnalysis = document.querySelector("#terminal-analysis");
     const terminalAnalysisToggle = document.querySelector("#terminal-analysis-toggle");
     const appCopy = {
-      webgl: ["Game Surface", "Isometric surface is ready.", "Game surface renders the selected isometric sprite-and-particle scene."],
+      webgl: ["Game Surface", "Arcstorm finale surface is ready.", "Game surface renders the selected Arcstorm finale sprite/particle showcase."],
       calculator: ["Calculator", "Local arithmetic tool is ready.", "Calculator is running."],
       document: ["Document Editor", "Editable writing workspace is ready.", "Document Editor is running."],
       spreadsheet: ["Spreadsheet", "Editable sheet workspace is ready.", "Spreadsheet is running."],

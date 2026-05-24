@@ -458,16 +458,42 @@
                 <span>Optional. Used for the Visit button after Publish.</span>
               </label>
               <details class="website-builder-coolify-compose-details" open>
-                <summary>Remote Coolify nginx service</summary>
-                <p>Create a Docker Compose service like this in Coolify so the uploaded folder is served by nginx.</p>
+                <summary>Remote Coolify Python runtime service</summary>
+                <p>Create a Docker Compose service like this in Coolify so the uploaded folder is served by the Main Computer Python runtime.</p>
                 <pre id="website-builder-coolify-compose-example">services:
   johnrraymond-site:
-    image: 'nginx:alpine'
+    image: 'python:3.12-slim'
     restart: unless-stopped
+    working_dir: /app
+    command:
+      - python
+      - /app/sites/johnrraymond/.main-computer/runtime/app.py
+    environment:
+      SITE_ID: johnrraymond
+      SITE_NAME: johnrraymond
+      SITE_KIND: static-site
+      SITE_LANE: production
+      MC_SITE_ID: johnrraymond
+      MC_RUNTIME_LANE: production
+      CONTENT_ROOT: /app/sites
+      BLOG_ENABLED: 'true'
+      BLOG_PROVIDER: directus
+      BLOG_CONTENT_RUNTIME: directus
+      BLOG_COLLECTION: posts
+      DIRECTUS_URL: 'https://directus-johnrraymond.greatlibrary.io'
+      DIRECTUS_PUBLIC_URL: 'https://directus-johnrraymond.greatlibrary.io'
     volumes:
-      - '/srv/main-computer/sites/johnrraymond:/usr/share/nginx/html:ro'
+      - '/srv/main-computer/sites/johnrraymond:/app/sites/johnrraymond:ro'
     expose:
-      - '80'</pre>
+      - '8080'
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'python -c "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen(''http://127.0.0.1:8080/api/site/status'', timeout=5).status == 200 else 1)"'
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s</pre>
               </details>
               <details class="website-builder-publishing-implementation-details">
                 <summary>Command details</summary>

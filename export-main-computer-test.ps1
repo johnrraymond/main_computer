@@ -86,8 +86,22 @@ function Test-RepoPathAllowed {
     "runtime/main-computer-runtime.json"
   )
 
+  $allowedGeneratedPrefixes = @(
+    "runtime/websites/johnrraymond/"
+  )
+
   if ($allowedGeneratedExactPaths -contains $repoPath) {
     return $true
+  }
+
+  $isAllowedGeneratedPrefixPath = $false
+  foreach ($prefix in $allowedGeneratedPrefixes) {
+    $prefixRoot = $prefix.TrimEnd("/")
+
+    if ($repoPath -eq $prefixRoot -or $repoPath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+      $isAllowedGeneratedPrefixPath = $true
+      break
+    }
   }
 
   $blockedDirectoryNames = @(
@@ -164,18 +178,18 @@ function Test-RepoPathAllowed {
     ".pid"
   )
 
-  if ($blockedExactPaths -contains $repoPath) {
+  if (($blockedExactPaths -contains $repoPath) -and -not $isAllowedGeneratedPrefixPath) {
     return $false
   }
 
   foreach ($prefix in $blockedPrefixes) {
     $prefixRoot = $prefix.TrimEnd("/")
 
-    if ($repoPath -eq $prefixRoot) {
+    if (-not $isAllowedGeneratedPrefixPath -and $repoPath -eq $prefixRoot) {
       return $false
     }
 
-    if ($repoPath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    if (-not $isAllowedGeneratedPrefixPath -and $repoPath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
       return $false
     }
   }
@@ -342,8 +356,13 @@ function Assert-CleanExportStage {
     "runtime/main-computer-runtime.json"
   )
 
+  $allowedGeneratedPrefixes = @(
+    "runtime/websites/johnrraymond/"
+  )
+
   $allowedGeneratedParentDirs = @(
-    "runtime"
+    "runtime",
+    "runtime/websites"
   )
 
   $bad = New-Object System.Collections.Generic.List[string]
@@ -358,6 +377,16 @@ function Assert-CleanExportStage {
 
     if ($_.PSIsContainer -and ($allowedGeneratedParentDirs -contains $repoPath)) {
       return
+    }
+
+    $isAllowedGeneratedPrefixPath = $false
+    foreach ($prefix in $allowedGeneratedPrefixes) {
+      $prefixRoot = $prefix.TrimEnd("/")
+
+      if ($repoPath -eq $prefixRoot -or $repoPath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $isAllowedGeneratedPrefixPath = $true
+        break
+      }
     }
 
     $parts = $repoPath -split "/+"
@@ -376,7 +405,7 @@ function Assert-CleanExportStage {
     }
 
     foreach ($pattern in $badPatterns) {
-      if ($repoPath -eq $pattern.TrimEnd("/") -or $repoPath.StartsWith($pattern, [System.StringComparison]::OrdinalIgnoreCase)) {
+      if (-not $isAllowedGeneratedPrefixPath -and ($repoPath -eq $pattern.TrimEnd("/") -or $repoPath.StartsWith($pattern, [System.StringComparison]::OrdinalIgnoreCase))) {
         $bad.Add($repoPath)
         return
       }
@@ -479,6 +508,7 @@ $exportItems = @(
   "tools",
   "scripts",
   "runtime/main-computer-runtime.json",
+  "runtime/websites/johnrraymond",
   "diagnosis-docker-windows-host-paths-v5.ps1",
   "start.bat",
   "stop.bat",

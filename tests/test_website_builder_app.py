@@ -66,9 +66,13 @@ def test_website_builder_frontend_assets_define_save_and_publish_controls() -> N
     assert "Remote SSH host" in app
     assert "SSH password" in app
     assert "Remote root" in app
-    assert "Remote Coolify nginx service" in app
+    assert "Remote Coolify Python runtime service" in app
     assert "johnrraymond-site" in app
-    assert "/srv/main-computer/sites/johnrraymond:/usr/share/nginx/html:ro" in app
+    assert "image: 'python:3.12-slim'" in app
+    assert "/app/sites/johnrraymond/.main-computer/runtime/app.py" in app
+    assert "DIRECTUS_URL: 'https://directus-johnrraymond.greatlibrary.io'" in app
+    assert "/srv/main-computer/sites/johnrraymond:/app/sites/johnrraymond:ro" in app
+    assert "127.0.0.1:8080/api/site/status" in app
     assert "Published host / domain" in app
     assert "Blog / Directus" in app
     assert "Published Site Directus URL" in app

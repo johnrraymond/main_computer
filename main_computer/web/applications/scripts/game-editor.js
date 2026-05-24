@@ -92,6 +92,25 @@
               </section>
 
               <aside class="game-editor-inspector" aria-label="Entity inspector">
+                <div class="game-editor-vfx-controls" aria-label="Scene VFX controls">
+                  <div>
+                    <h3>VFX Density</h3>
+                    <p>Quickly scale particle counts and glow strength for the current scene.</p>
+                  </div>
+                  <label>
+                    <span>Particles <output id="game-editor-particle-density-value">2x</output></span>
+                    <input id="game-editor-particle-density" type="range" min="1" max="4" step="0.25" value="2" aria-label="Particle density multiplier">
+                  </label>
+                  <label>
+                    <span>Effects <output id="game-editor-effect-intensity-value">2x</output></span>
+                    <input id="game-editor-effect-intensity" type="range" min="1" max="4" step="0.25" value="2" aria-label="Effect intensity multiplier">
+                  </label>
+                  <div class="game-editor-vfx-presets" aria-label="VFX presets">
+                    <button type="button" data-vfx-preset="1">1x</button>
+                    <button type="button" data-vfx-preset="2">2x</button>
+                    <button type="button" data-vfx-preset="4">4x</button>
+                  </div>
+                </div>
                 <div class="game-editor-section-head">
                   <div>
                     <h3>Entities</h3>
@@ -175,6 +194,11 @@
         entityX: gameEditorApp.querySelector("#game-editor-entity-x"),
         entityColor: gameEditorApp.querySelector("#game-editor-entity-color"),
         entityAsset: gameEditorApp.querySelector("#game-editor-entity-asset"),
+        particleDensity: gameEditorApp.querySelector("#game-editor-particle-density"),
+        particleDensityValue: gameEditorApp.querySelector("#game-editor-particle-density-value"),
+        effectIntensity: gameEditorApp.querySelector("#game-editor-effect-intensity"),
+        effectIntensityValue: gameEditorApp.querySelector("#game-editor-effect-intensity-value"),
+        vfxPresetButtons: [...gameEditorApp.querySelectorAll("[data-vfx-preset]")],
         assetUpload: gameEditorApp.querySelector("#game-editor-asset-upload"),
         uploadAsset: gameEditorApp.querySelector("#game-editor-upload-asset"),
         assetList: gameEditorApp.querySelector("#game-editor-asset-list"),
@@ -232,6 +256,14 @@
         else delete object.props.asset;
         markGameEditorDirty("dirty - disk save needed");
         renderGameEditorPreview();
+      });
+      nodes.particleDensity?.addEventListener("input", () => updateGameEditorVfxSettings({particleMultiplier: nodes.particleDensity.value}));
+      nodes.effectIntensity?.addEventListener("input", () => updateGameEditorVfxSettings({effectMultiplier: nodes.effectIntensity.value}));
+      nodes.vfxPresetButtons?.forEach((button) => {
+        button.addEventListener("click", () => updateGameEditorVfxSettings({
+          particleMultiplier: button.dataset.vfxPreset,
+          effectMultiplier: button.dataset.vfxPreset
+        }));
       });
     }
 
@@ -572,15 +604,63 @@
     function displayObjectLabel(object, index = 0) {
       const label = String(object?.props?.label || "").trim();
       if (object?.id === "hero-sprite" && (!label || label === "Main Character")) return "Main Character";
-      if (object?.id === "hero-aura" && (!label || label === "Arc Halo")) return "Arc Halo";
+      if (object?.id === "hero-spell-aura" && (!label || label === "Hero Spell Swirl")) return "Hero Spell Swirl";
+      if (object?.id === "hero-rune-ring" && (!label || label === "Casting Rune Ring")) return "Casting Rune Ring";
       if (object?.id === "particle-player-core" && (!label || label === "Player Particle Core")) return "Particle Core";
-      if (object?.id === "player-capsule" && (!label || label === "Player Capsule")) return "Desktop Core";
       return label || titleFromSlug(object?.id || `entity-${index + 1}`);
     }
 
     function normalizeColor(value, fallback = "#61d394") {
       const clean = String(value || "").trim();
       return /^#[0-9a-fA-F]{6}$/.test(clean) ? clean : fallback;
+    }
+
+    function activeGameEditorSceneMetadata() {
+      const scene = activeGameEditorScene();
+      if (!scene) return null;
+      scene.metadata = scene.metadata && typeof scene.metadata === "object" ? scene.metadata : {};
+      scene.metadata.vfx = scene.metadata.vfx && typeof scene.metadata.vfx === "object" ? scene.metadata.vfx : {};
+      return scene.metadata;
+    }
+
+    function normalizeGameEditorVfxValue(value, fallback = 2) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return fallback;
+      return Math.min(4, Math.max(1, number));
+    }
+
+    function formatGameEditorMultiplier(value) {
+      const number = normalizeGameEditorVfxValue(value);
+      return `${Number.isInteger(number) ? number.toFixed(0) : number.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}x`;
+    }
+
+    function syncGameEditorVfxControls() {
+      const metadata = activeGameEditorSceneMetadata();
+      const nodes = gameEditorState.nodes;
+      const particleMultiplier = normalizeGameEditorVfxValue(metadata?.vfx?.particleMultiplier ?? metadata?.particleMultiplier ?? 2);
+      const effectMultiplier = normalizeGameEditorVfxValue(metadata?.vfx?.effectMultiplier ?? metadata?.effectMultiplier ?? 2);
+      if (nodes.particleDensity) nodes.particleDensity.value = String(particleMultiplier);
+      if (nodes.effectIntensity) nodes.effectIntensity.value = String(effectMultiplier);
+      if (nodes.particleDensityValue) nodes.particleDensityValue.textContent = formatGameEditorMultiplier(particleMultiplier);
+      if (nodes.effectIntensityValue) nodes.effectIntensityValue.textContent = formatGameEditorMultiplier(effectMultiplier);
+      nodes.vfxPresetButtons?.forEach((button) => {
+        const preset = normalizeGameEditorVfxValue(button.dataset.vfxPreset, 1);
+        const active = Math.abs(preset - particleMultiplier) < 0.01 && Math.abs(preset - effectMultiplier) < 0.01;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-pressed", active ? "true" : "false");
+      });
+    }
+
+    function updateGameEditorVfxSettings({particleMultiplier = null, effectMultiplier = null} = {}) {
+      const metadata = activeGameEditorSceneMetadata();
+      if (!metadata) return;
+      if (particleMultiplier !== null) metadata.vfx.particleMultiplier = normalizeGameEditorVfxValue(particleMultiplier);
+      if (effectMultiplier !== null) metadata.vfx.effectMultiplier = normalizeGameEditorVfxValue(effectMultiplier);
+      metadata.vfx.maxParticlesPerEmitter = Math.max(440, Number(metadata.vfx.maxParticlesPerEmitter) || 440);
+      syncGameEditorVfxControls();
+      markGameEditorDirty("dirty - VFX density changed");
+      renderGameEditorPreview();
+      syncGameEditorSceneStore({reason: "vfx-density"});
     }
 
     function activeGameEditorScene() {
@@ -726,6 +806,7 @@
         gameEditorState.nodes.projectName.value = displayProjectName(project);
       }
       syncGameEditorInspector();
+      syncGameEditorVfxControls();
       renderGameEditorProjectList();
       renderGameEditorEntityList();
       renderGameEditorAssets();
@@ -754,6 +835,7 @@
     }
 
     function syncGameEditorInspector() {
+      syncGameEditorVfxControls();
       const object = selectedGameEditorObject();
       const disabled = !object;
       const nodes = gameEditorState.nodes;

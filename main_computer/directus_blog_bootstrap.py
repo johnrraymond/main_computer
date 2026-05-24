@@ -15,6 +15,12 @@ DIRECTUS_PUBLIC_FIELDS = [
     "title",
     "excerpt",
     "body",
+    "published_on",
+    "read_time_minutes",
+    "is_legacy",
+    # Keep the legacy Blog fields public as compatibility-only fallbacks for
+    # older local Directus installs and generated pages. The live Directus Blog
+    # contract reads dates from ``published_on``.
     "featured_image",
     "published_at",
 ]
@@ -53,7 +59,25 @@ DIRECTUS_FIELD_DEFINITIONS: list[dict[str, Any]] = [
         "field": "body",
         "type": "text",
         "schema": {"type": "text", "is_nullable": False},
-        "meta": {"interface": "input-rich-text-html", "required": True},
+        "meta": {"interface": "input-multiline", "required": True},
+    },
+    {
+        "field": "published_on",
+        "type": "date",
+        "schema": {"type": "date", "is_nullable": True},
+        "meta": {"interface": "datetime", "note": "Public Blog publication date. Use this instead of Directus date_created."},
+    },
+    {
+        "field": "read_time_minutes",
+        "type": "integer",
+        "schema": {"type": "integer", "is_nullable": True},
+        "meta": {"interface": "input", "note": "Optional public read-time display, for example 7 min read."},
+    },
+    {
+        "field": "is_legacy",
+        "type": "string",
+        "schema": {"type": "varchar", "max_length": 32, "is_nullable": True},
+        "meta": {"interface": "select-dropdown", "options": {"choices": [{"text": "Yes", "value": "yes"}, {"text": "No", "value": "no"}]}},
     },
     {
         "field": "featured_image",
@@ -292,7 +316,7 @@ def _ensure_public_read_permissions(base_url: str, token: str, collection: str, 
 def _verify_anonymous_posts_read(base_url: str, collection: str, *, timeout_s: float) -> dict[str, Any]:
     query = urlencode(
         [
-            ("fields", "slug,status,title"),
+            ("fields", "slug,status,title,published_on,read_time_minutes,is_legacy"),
             ("sort", "slug"),
             ("filter[status][_eq]", "published"),
             ("limit", "5"),

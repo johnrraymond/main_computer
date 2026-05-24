@@ -47,7 +47,7 @@
         <h2>Applications</h2>
         <a class="app-card ready" href="/applications/webgl" data-app="webgl">
           <strong>Game Surface</strong>
-          <span>isometric sprite-and-particle scene surface</span>
+          <span>Arcstorm finale sprite/particle showcase</span>
         </a>
         <a class="app-card active" href="/applications" data-app="calculator">
           <strong>Calculator</strong>
@@ -107,7 +107,7 @@
         <div class="stage-head">
           <div class="stage-title">
             <h2 id="active-app-title">Game Surface</h2>
-            <p id="active-app-summary">Isometric surface is ready.</p>
+            <p id="active-app-summary">Arcstorm finale surface is ready.</p>
           </div>
           <div class="stage-advanced" id="stage-advanced" aria-label="Advanced application tools">
             <button class="stage-advanced-toggle" id="stage-advanced-toggle" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="stage-advanced-pane" data-mc-component-id="applications.stage.advanced-toggle" data-mc-component-kind="action" data-mc-component-label="Toggle Advanced Tools">Advanced</button>
@@ -161,7 +161,24 @@
           <!-- @include applications/apps/worker.html -->
           <div class="stub-message" id="stub-message">Select an application tab to open it.</div>
         </div>
-        <div class="demo-controls" id="demo-controls"></div>
+        <div class="demo-controls" id="demo-controls">
+          <div class="webgl-vfx-controls" aria-label="Game Surface VFX density controls">
+            <strong>VFX</strong>
+            <label>
+              <span>Particles <output id="webgl-particle-density-value">2x</output></span>
+              <input id="webgl-particle-density" type="range" min="1" max="4" step="0.25" value="2" aria-label="Game Surface particle density multiplier">
+            </label>
+            <label>
+              <span>Effects <output id="webgl-effect-intensity-value">2x</output></span>
+              <input id="webgl-effect-intensity" type="range" min="1" max="4" step="0.25" value="2" aria-label="Game Surface effect intensity multiplier">
+            </label>
+            <div class="webgl-vfx-presets" aria-label="Game Surface VFX presets">
+              <button type="button" data-webgl-vfx-preset="1">1x</button>
+              <button type="button" data-webgl-vfx-preset="2">2x</button>
+              <button type="button" data-webgl-vfx-preset="4">4x</button>
+            </div>
+          </div>
+        </div>
       </section>
 
       <aside class="panel status machine-activity-dock" id="machine-activity-dock" aria-label="Machine activity" data-mc-component-id="machine.activity.dock" data-mc-component-kind="panel" data-mc-component-label="Machine Activity Dock" data-default-filter="live">

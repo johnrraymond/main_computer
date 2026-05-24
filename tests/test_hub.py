@@ -11,7 +11,8 @@ from urllib.request import Request, urlopen
 from unittest.mock import patch
 
 from main_computer.config import MainComputerConfig
-from main_computer.hub import HubHttpServer, HubWorkerHttpServer
+from main_computer.hub import HubHttpServer, HubRegistry, HubWorkerHttpServer
+from main_computer.hub_plex_models import HubAIRequest
 from main_computer.hub_security import (
     decrypt_hub_envelope,
     derive_hub_session_key,
@@ -276,6 +277,360 @@ class HubServerTests(unittest.TestCase):
                 local.server_close()
                 upstream.server_close()
                 worker.server_close()
+
+    def test_hub_ai_request_dto_normalizes_prompt_payload(self) -> None:
+        request = HubAIRequest.from_payload(
+            {
+                "prompt": "hello api",
+                "model": "fake-model",
+                "client_node_id": "Client 01!",
+            }
+        )
+
+        self.assertEqual(request.messages, [{"role": "user", "content": "hello api", "attachments": []}])
+        self.assertEqual(request.model, "fake-model")
+        self.assertEqual(request.client_node_id, "client-01-")
+
+    def test_hub_v1_request_api_dispatches_and_tracks_status(self) -> None:
+        worker_calls: list[list[ChatMessage]] = []
+
+        def fake_worker_chat(messages: Sequence[ChatMessage]) -> ChatResponse:
+            worker_calls.append(list(messages))
+            return ChatResponse(content="v1 worker response", provider="fake-worker", model="fake-model")
+
+        with tempfile.TemporaryDirectory() as hub_tmp, tempfile.TemporaryDirectory() as worker_tmp:
+            hub_config = MainComputerConfig(
+                workspace=Path(hub_tmp),
+                model="fake-model",
+                hub_root=Path(hub_tmp) / "hub-runtime",
+                hub_credits_per_request=4,
+            )
+            worker_config = MainComputerConfig(
+                workspace=Path(worker_tmp),
+                model="fake-model",
+                hub_worker_node_id="V1 Worker",
+                hub_credits_per_request=4,
+            )
+            worker = HubWorkerHttpServer(("127.0.0.1", 0), worker_config, fake_worker_chat, verbose=False)
+            hub = HubHttpServer(("127.0.0.1", 0), hub_config, verbose=False)
+            worker_thread = self._start_server(worker)
+            hub_thread = self._start_server(hub)
+            try:
+                hub_base = f"http://127.0.0.1:{hub.server_port}"
+                worker_base = f"http://127.0.0.1:{worker.server_port}"
+
+                register_request = Request(
+                    f"{hub_base}/api/hub/v1/workers/register",
+                    data=json.dumps(
+                        {
+                            "node_id": "V1 Worker",
+                            "endpoint": worker_base,
+                            "model": "fake-model",
+                            "credits_per_request": 4,
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(register_request, timeout=5) as response:
+                    registered = json.loads(response.read().decode("utf-8"))
+                self.assertTrue(registered["ok"])
+
+                with urlopen(f"{hub_base}/api/hub/v1/workers", timeout=5) as response:
+                    workers = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(workers["worker_count"], 1)
+                self.assertEqual(workers["workers"][0]["node_id"], "v1-worker")
+                self.assertNotIn("endpoint", workers["workers"][0])
+
+                with urlopen(f"{hub_base}/api/hub/v1/models", timeout=5) as response:
+                    models = json.loads(response.read().decode("utf-8"))
+                self.assertIn("fake-model", models["models"])
+
+                submit_request = Request(
+                    f"{hub_base}/api/hub/v1/requests",
+                    data=json.dumps(
+                        {
+                            "client_node_id": "api-client",
+                            "model": "fake-model",
+                            "prompt": "hello from v1",
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(submit_request, timeout=5) as response:
+                    submitted = json.loads(response.read().decode("utf-8"))
+
+                request_status = submitted["request"]
+                self.assertEqual(request_status["state"], "completed")
+                self.assertEqual(request_status["selected_worker_node_id"], "v1-worker")
+                self.assertEqual(request_status["credits_queued"], 4)
+                self.assertEqual(request_status["security_mode"], "legacy-plaintext")
+                self.assertEqual(request_status["response"]["content"], "v1 worker response")
+                self.assertTrue(request_status["polling_url"].endswith(request_status["request_id"]))
+                self.assertEqual(worker_calls[0][-1].content, "hello from v1")
+
+                with urlopen(f"{hub_base}{request_status['polling_url']}", timeout=5) as response:
+                    polled = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(polled["request"]["request_id"], request_status["request_id"])
+                self.assertEqual(polled["request"]["state"], "completed")
+            finally:
+                hub.shutdown()
+                worker.shutdown()
+                hub_thread.join(timeout=5)
+                worker_thread.join(timeout=5)
+                hub.server_close()
+                worker.server_close()
+
+    def test_hub_v1_request_api_retries_unavailable_exact_worker_then_falls_back(self) -> None:
+        worker_calls: list[list[ChatMessage]] = []
+
+        def fallback_worker_chat(messages: Sequence[ChatMessage]) -> ChatResponse:
+            worker_calls.append(list(messages))
+            return ChatResponse(content="fallback response", provider="fallback-worker", model="fallback-model")
+
+        with tempfile.TemporaryDirectory() as hub_tmp, tempfile.TemporaryDirectory() as worker_tmp:
+            hub_config = MainComputerConfig(
+                workspace=Path(hub_tmp),
+                model="fake-model",
+                hub_root=Path(hub_tmp) / "hub-runtime",
+                hub_credits_per_request=2,
+            )
+            worker_config = MainComputerConfig(
+                workspace=Path(worker_tmp),
+                model="fallback-model",
+                hub_worker_node_id="Fallback Worker",
+                hub_credits_per_request=2,
+            )
+            worker = HubWorkerHttpServer(("127.0.0.1", 0), worker_config, fallback_worker_chat, verbose=False)
+            hub = HubHttpServer(("127.0.0.1", 0), hub_config, verbose=False)
+            worker_thread = self._start_server(worker)
+            hub_thread = self._start_server(hub)
+            try:
+                hub_base = f"http://127.0.0.1:{hub.server_port}"
+                worker_base = f"http://127.0.0.1:{worker.server_port}"
+
+                bad_worker_request = Request(
+                    f"{hub_base}/api/hub/v1/workers/register",
+                    data=json.dumps(
+                        {
+                            "node_id": "Bad Exact Worker",
+                            "endpoint": "http://127.0.0.1:1",
+                            "model": "fake-model",
+                            "credits_per_request": 2,
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(bad_worker_request, timeout=5):
+                    pass
+
+                fallback_register_request = Request(
+                    f"{hub_base}/api/hub/v1/workers/register",
+                    data=json.dumps(
+                        {
+                            "node_id": "Fallback Worker",
+                            "endpoint": worker_base,
+                            "model": "fallback-model",
+                            "credits_per_request": 2,
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(fallback_register_request, timeout=5):
+                    pass
+
+                submit_request = Request(
+                    f"{hub_base}/api/hub/v1/requests",
+                    data=json.dumps(
+                        {
+                            "client_node_id": "api-client",
+                            "model": "fake-model",
+                            "messages": [{"role": "user", "content": "retry me"}],
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(submit_request, timeout=5) as response:
+                    submitted = json.loads(response.read().decode("utf-8"))
+
+                request_status = submitted["request"]
+                self.assertEqual(request_status["state"], "completed")
+                self.assertEqual(request_status["selected_worker_node_id"], "fallback-worker")
+                self.assertEqual(request_status["response"]["content"], "fallback response")
+                self.assertEqual(request_status["response"]["metadata"]["hub"]["attempt"], 2)
+                self.assertEqual(worker_calls[0][-1].content, "retry me")
+
+                with urlopen(f"{hub_base}/api/hub/v1/workers?debug=1", timeout=5) as response:
+                    workers = json.loads(response.read().decode("utf-8"))
+                statuses = {worker["node_id"]: worker["status"] for worker in workers["workers"]}
+                self.assertEqual(statuses["bad-exact-worker"], "offline")
+                self.assertEqual(statuses["fallback-worker"], "available")
+            finally:
+                hub.shutdown()
+                worker.shutdown()
+                hub_thread.join(timeout=5)
+                worker_thread.join(timeout=5)
+                hub.server_close()
+                worker.server_close()
+
+    def test_hub_v1_heartbeat_metrics_idempotency_and_events(self) -> None:
+        worker_calls: list[list[ChatMessage]] = []
+
+        def fake_worker_chat(messages: Sequence[ChatMessage]) -> ChatResponse:
+            worker_calls.append(list(messages))
+            return ChatResponse(content="phase two response", provider="fake-worker", model="fake-model")
+
+        with tempfile.TemporaryDirectory() as hub_tmp, tempfile.TemporaryDirectory() as worker_tmp:
+            hub_config = MainComputerConfig(
+                workspace=Path(hub_tmp),
+                model="fake-model",
+                hub_root=Path(hub_tmp) / "hub-runtime",
+                hub_credits_per_request=6,
+            )
+            worker_config = MainComputerConfig(
+                workspace=Path(worker_tmp),
+                model="fake-model",
+                hub_worker_node_id="Heartbeat Worker",
+                hub_credits_per_request=6,
+            )
+            worker = HubWorkerHttpServer(("127.0.0.1", 0), worker_config, fake_worker_chat, verbose=False)
+            hub = HubHttpServer(("127.0.0.1", 0), hub_config, verbose=False)
+            worker_thread = self._start_server(worker)
+            hub_thread = self._start_server(hub)
+            try:
+                hub_base = f"http://127.0.0.1:{hub.server_port}"
+                worker_base = f"http://127.0.0.1:{worker.server_port}"
+
+                register_request = Request(
+                    f"{hub_base}/api/hub/v1/workers/register",
+                    data=json.dumps(
+                        {
+                            "node_id": "Heartbeat Worker",
+                            "endpoint": worker_base,
+                            "model": "fake-model",
+                            "models": ["fake-model", "vision-model"],
+                            "capabilities": {"gpu": "test-gpu", "vram_gb": 24},
+                            "credits_per_request": 6,
+                            "max_concurrency": 2,
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(register_request, timeout=5) as response:
+                    registered = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(registered["worker"]["models"], ["fake-model", "vision-model"])
+                self.assertEqual(registered["worker"]["max_concurrency"], 2)
+
+                heartbeat_request = Request(
+                    f"{hub_base}/api/hub/v1/workers/heartbeat-worker/heartbeat",
+                    data=json.dumps(
+                        {
+                            "status": "available",
+                            "queue_depth": 3,
+                            "active_requests": 0,
+                            "max_concurrency": 2,
+                            "capabilities": {"gpu": "test-gpu", "driver": "ok"},
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(heartbeat_request, timeout=5) as response:
+                    heartbeat = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(heartbeat["worker"]["queue_depth"], 3)
+                self.assertEqual(heartbeat["worker"]["capabilities"]["driver"], "ok")
+
+                with urlopen(f"{hub_base}/api/hub/v1/workers/heartbeat-worker?debug=1", timeout=5) as response:
+                    worker_status = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(worker_status["worker"]["node_id"], "heartbeat-worker")
+                self.assertEqual(worker_status["worker"]["max_concurrency"], 2)
+                self.assertEqual(worker_status["worker"]["capabilities"]["gpu"], "test-gpu")
+                self.assertIn("endpoint", worker_status["worker"])
+
+                submit_payload = {
+                    "client_node_id": "api-client",
+                    "model": "fake-model",
+                    "prompt": "phase two",
+                    "idempotency_key": "request-key-01",
+                    "deadline_seconds": 30,
+                    "metadata": {"max_retries": 1},
+                }
+                submit_request = Request(
+                    f"{hub_base}/api/hub/v1/requests",
+                    data=json.dumps(submit_payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(submit_request, timeout=5) as response:
+                    submitted = json.loads(response.read().decode("utf-8"))
+                status = submitted["request"]
+                self.assertEqual(status["state"], "completed")
+                self.assertEqual(status["idempotency_key"], "request-key-01")
+                self.assertEqual(status["selected_worker_node_id"], "heartbeat-worker")
+                self.assertTrue(status["deadline_at"])
+                self.assertEqual(status["response"]["content"], "phase two response")
+
+                duplicate_request = Request(
+                    f"{hub_base}/api/hub/v1/requests",
+                    data=json.dumps(submit_payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(duplicate_request, timeout=5) as response:
+                    duplicate = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(duplicate["request"]["request_id"], status["request_id"])
+                self.assertEqual(len(worker_calls), 1)
+
+                with urlopen(f"{hub_base}/api/hub/v1/requests/{status['request_id']}/events", timeout=5) as response:
+                    events = json.loads(response.read().decode("utf-8"))
+                event_types = [event["type"] for event in events["events"]]
+                self.assertIn("request.accepted", event_types)
+                self.assertIn("worker.selected", event_types)
+                self.assertIn("request.completed", event_types)
+
+                with urlopen(f"{hub_base}/api/hub/v1/requests?state=completed", timeout=5) as response:
+                    requests = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(requests["request_count"], 1)
+                self.assertEqual(requests["requests"][0]["request_id"], status["request_id"])
+
+                with urlopen(f"{hub_base}/api/hub/v1/metrics", timeout=5) as response:
+                    metrics = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(metrics["requests"]["by_state"]["completed"], 1)
+                self.assertEqual(metrics["workers"]["total"], 1)
+                self.assertEqual(metrics["workers"]["stale"], 0)
+            finally:
+                hub.shutdown()
+                worker.shutdown()
+                hub_thread.join(timeout=5)
+                worker_thread.join(timeout=5)
+                hub.server_close()
+                worker.server_close()
+
+    def test_hub_registry_excludes_stale_workers_until_heartbeat(self) -> None:
+        with tempfile.TemporaryDirectory() as hub_tmp:
+            registry = HubRegistry(Path(hub_tmp), allow_insecure_dev_network=False)
+            registry.register_worker(
+                node_id="Stale Worker",
+                endpoint="http://127.0.0.1:9999",
+                model="fake-model",
+                max_concurrency=1,
+            )
+
+            stale_count = registry.expire_stale_workers(stale_after_s=0)
+            self.assertGreaterEqual(stale_count, 1)
+            self.assertIsNone(registry.select_worker("fake-model"))
+            status = registry.status()
+            self.assertEqual(status["stale_worker_count"], 1)
+
+            heartbeat = registry.heartbeat_worker("stale-worker", status="available", queue_depth=0, active_requests=0)
+            self.assertFalse(heartbeat.stale)
+            self.assertEqual(heartbeat.status, "available")
+            self.assertIsNotNone(registry.select_worker("fake-model"))
 
     def test_hub_provider_defaults_to_temporary_key_encrypted_envelopes(self) -> None:
         captured: dict[str, object] = {}

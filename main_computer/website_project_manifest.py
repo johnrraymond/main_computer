@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import os
@@ -41,6 +42,7 @@ from main_computer.deployment_controllers import (
 
 SITE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$")
 DIRECTUS_VOLUME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
+DIRECTUS_SERVICE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,127}$")
 MAX_TEXT_FILE_BYTES = 2_000_000
 COMPOSE_PROJECT_NAME = "main-computer-local-platform"
 PUBLISH_LANE_ALIASES = {"local-prod": "local", "prod": "local", "production": "local"}
@@ -49,6 +51,11 @@ REMOTE_PUBLISH_MODES = {"scp", "local_server"}
 DEFAULT_REMOTE_PUBLISH_ROOT = "/srv/main-computer/sites"
 PUBLISH_SCP_SCRIPT = Path("deploy") / "coolify" / "push_site_scp.py"
 PUBLISH_LOCAL_SERVER_SCRIPT = Path("deploy") / "coolify" / "push_site_local.py"
+SITE_RUNTIME_SOURCE = Path("deploy") / "local-platform" / "site-server" / "app.py"
+SITE_RUNTIME_DIR = Path(".main-computer") / "runtime"
+SITE_RUNTIME_ENTRYPOINT = SITE_RUNTIME_DIR / "app.py"
+SITE_RUNTIME_METADATA = SITE_RUNTIME_DIR / "runtime.json"
+SITE_RUNTIME_ID = "main-computer-site-runtime"
 CURRENT_SITE_SCHEMA_VERSION = 2
 CURRENT_SITE_MODEL = "2.0"
 HOST_RUNTIME_SOURCE_KIND = "host_runtime_site"
@@ -116,6 +123,92 @@ def website_runtime_contract(*, default_lane: str = "local") -> dict[str, str]:
     return {
         "content_runtime": "deployed",
         "default_lane": str(default_lane or "local").strip() or "local",
+    }
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def site_runtime_bundle_plan(repo_root: Path, site_id: object) -> dict[str, Any]:
+    clean_site_id = validate_site_id(site_id)
+    source = (repo_root / SITE_RUNTIME_SOURCE).resolve()
+    site_root = safe_site_dir(repo_root, clean_site_id)
+    entrypoint = site_root / SITE_RUNTIME_ENTRYPOINT
+    metadata = site_root / SITE_RUNTIME_METADATA
+    source_exists = source.is_file()
+    current_exists = entrypoint.is_file()
+    source_sha = _file_sha256(source) if source_exists else ""
+    current_sha = _file_sha256(entrypoint) if current_exists else ""
+    return {
+        "runtime_id": SITE_RUNTIME_ID,
+        "site_id": clean_site_id,
+        "source": SITE_RUNTIME_SOURCE.as_posix(),
+        "entrypoint": SITE_RUNTIME_ENTRYPOINT.as_posix(),
+        "metadata": SITE_RUNTIME_METADATA.as_posix(),
+        "site_relative_entrypoint": f"runtime/websites/{clean_site_id}/{SITE_RUNTIME_ENTRYPOINT.as_posix()}",
+        "site_relative_metadata": f"runtime/websites/{clean_site_id}/{SITE_RUNTIME_METADATA.as_posix()}",
+        "source_exists": source_exists,
+        "current_exists": current_exists,
+        "source_sha256": source_sha,
+        "current_sha256": current_sha,
+        "needs_update": bool(source_exists and source_sha != current_sha),
+    }
+
+
+def ensure_site_runtime_bundle(repo_root: Path, site_id: object) -> dict[str, Any]:
+    plan = site_runtime_bundle_plan(repo_root, site_id)
+    if not plan["source_exists"]:
+        raise WebsiteProjectError(f"Site runtime source is missing: {plan['source']}")
+    site_root = safe_site_dir(repo_root, site_id)
+    source = (repo_root / SITE_RUNTIME_SOURCE).resolve()
+    entrypoint = site_root / SITE_RUNTIME_ENTRYPOINT
+    metadata = site_root / SITE_RUNTIME_METADATA
+
+    status = "unchanged"
+    if plan["needs_update"]:
+        status = "updated" if entrypoint.exists() else "created"
+        entrypoint.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, entrypoint)
+
+    runtime_payload = {
+        "runtime_id": SITE_RUNTIME_ID,
+        "site_id": plan["site_id"],
+        "entrypoint": SITE_RUNTIME_ENTRYPOINT.as_posix(),
+        "source": SITE_RUNTIME_SOURCE.as_posix(),
+        "sha256": plan["source_sha256"],
+        "packaged_at": utc_now(),
+        "api_routes": [
+            "/api/site/status",
+            "/api/site/blog/runtime",
+            "/api/site/blog/posts",
+            "/api/site/blog/posts/<slug>",
+        ],
+    }
+    existing_payload: dict[str, Any] = {}
+    if metadata.is_file():
+        try:
+            parsed = json.loads(metadata.read_text(encoding="utf-8"))
+            existing_payload = parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, OSError):
+            existing_payload = {}
+    comparable_existing = {key: value for key, value in existing_payload.items() if key != "packaged_at"}
+    comparable_new = {key: value for key, value in runtime_payload.items() if key != "packaged_at"}
+    if comparable_existing != comparable_new:
+        metadata.parent.mkdir(parents=True, exist_ok=True)
+        metadata.write_text(json.dumps(runtime_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        if status == "unchanged":
+            status = "metadata_updated"
+
+    refreshed = site_runtime_bundle_plan(repo_root, site_id)
+    return {
+        **refreshed,
+        "ok": True,
+        "status": status,
     }
 
 
@@ -557,9 +650,11 @@ BLOG_WIDGET_CSS_MARKER = "Main Computer blog widget styles"
 BLOG_WIDGET_ROUTE_MODE_CSS_MARKER = ".mc-blog-widget[hidden]"
 BLOG_WIDGET_ARTICLE_PRESENTATION_CSS_MARKER = "mc-blog-article-presentation-v1"
 BLOG_WIDGET_INDEX_GRID_CSS_MARKER = "mc-blog-index-grid-layout-v1"
+BLOG_WIDGET_SEARCH_PAGINATION_CSS_MARKER = "mc-blog-search-pagination-controls-v1"
 BLOG_WIDGET_JS_MARKER = "mcBlogWidgetSelector"
 BLOG_WIDGET_ROUTE_MODE_JS_MARKER = "mcBlogWidgetApplyRouteModeVisibility"
 BLOG_WIDGET_RICH_BODY_JS_MARKER = "mcBlogWidgetSanitizeRichHtml"
+BLOG_WIDGET_SEARCH_PAGINATION_JS_MARKER = "mcBlogWidgetRenderPagination"
 BLOG_PAGE_HTML_MARKER = "Main Computer generated blog page"
 BLOG_PLACEHOLDER_TEXT = "Blog posts will appear here when Blog is configured."
 BLOG_PUBLIC_FIELDS = [
@@ -569,8 +664,9 @@ BLOG_PUBLIC_FIELDS = [
     "title",
     "excerpt",
     "body",
-    "featured_image",
-    "published_at",
+    "published_on",
+    "read_time_minutes",
+    "is_legacy",
 ]
 BLOG_STALE_DEPLOYED_POSTS_JSON = "data/blog-posts.json"
 BLOG_STALE_DEPLOYED_POSTS_DIR = "data/blog-posts"
@@ -580,6 +676,7 @@ def blog_widget_styles() -> str:
     return """/* Main Computer blog widget styles */
 /* mc-blog-article-presentation-v1 */
 /* mc-blog-index-grid-layout-v1 */
+/* mc-blog-search-pagination-controls-v1 */
 .mc-blog-widget,
 .mc-blog-post-widget {
   background: #ffffff;
@@ -621,6 +718,101 @@ body[data-mc-blog-route-mode="detail"] main {
   gap: 1rem;
   align-items: end;
   margin-bottom: 1.5rem;
+}
+
+
+.mc-blog-widget__controls {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: .5rem;
+  align-items: end;
+  margin: -.25rem 0 1rem;
+  padding: .625rem .75rem;
+  overflow-x: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: .85rem;
+  background: #f8fafc;
+}
+
+.mc-blog-widget__control {
+  display: grid;
+  flex: 0 0 auto;
+  gap: .2rem;
+  min-width: 0;
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.mc-blog-widget__control:first-child {
+  flex: 1 1 16rem;
+  min-width: 12rem;
+}
+
+.mc-blog-widget__control span {
+  color: #64748b;
+  font-size: .68rem;
+  letter-spacing: .06em;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.mc-blog-widget__control input {
+  width: 100%;
+  min-height: 2.15rem;
+  padding: .4rem .55rem;
+  border: 1px solid #cbd5e1;
+  border-radius: .6rem;
+  color: #0f172a;
+  background: #ffffff;
+  font: inherit;
+}
+
+.mc-blog-widget__control input[type="number"] {
+  width: 6.25rem;
+}
+
+.mc-blog-widget__apply,
+.mc-blog-widget__page-link {
+  min-height: 2.15rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: .4rem .75rem;
+  border: 1px solid #2563eb;
+  border-radius: .6rem;
+  color: #ffffff;
+  background: #2563eb;
+  font-weight: 800;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.mc-blog-widget__page-link.is-disabled {
+  border-color: #cbd5e1;
+  color: #94a3b8;
+  background: #f8fafc;
+  cursor: default;
+}
+
+.mc-blog-widget__summary {
+  margin: 0 0 1rem;
+  color: #64748b;
+  font-size: .95rem;
+  font-weight: 700;
+}
+
+.mc-blog-widget__pagination {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .75rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 1.25rem;
+}
+
+.mc-blog-widget__page-status {
+  color: #475569;
+  font-weight: 800;
 }
 
 .mc-blog-widget__items {
@@ -686,8 +878,13 @@ body[data-mc-blog-route-mode="detail"] main {
   line-height: 1.6;
 }
 
+.mc-blog-card__meta,
+.mc-blog-post-widget__meta,
 .mc-blog-card__date,
-.mc-blog-post-widget__date {
+.mc-blog-card__read-time,
+.mc-blog-post-widget__date,
+.mc-blog-post-widget__read-time {
+  margin: 0;
   color: #64748b;
   font-size: .85rem;
   font-weight: 700;
@@ -844,6 +1041,8 @@ def blog_widget_hydrator_script() -> str:
   const mcBlogPostsEndpoint = "/api/site/blog/posts";
   const mcBlogPostEndpointBase = "/api/site/blog/posts/";
   const mcBlogDefaultPostBasePath = "/blog/";
+  const mcBlogDefaultPageSize = 50;
+  const mcBlogMaxAllowedFuzz = 5;
 
   function mcBlogWidgetEscapeHtml(value) {
     return String(value ?? "").replace(/[&<>"']/g, (character) => ({
@@ -855,11 +1054,37 @@ def blog_widget_hydrator_script() -> str:
     }[character]));
   }
 
+  function mcBlogWidgetPublishedDateValue(post) {
+    if (!post) return "";
+    return post.published_on || post.published_at || post.date_created || post.updated_at || "";
+  }
+
   function mcBlogWidgetFormatDate(value) {
     if (!value) return "";
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return String(value);
+    const text = String(value).trim();
+    const dateOnly = /^(\d{4})-(\d{2})-(\d{2})(?:$|T)/.exec(text);
+    const date = dateOnly
+      ? new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]))
+      : new Date(text);
+    if (Number.isNaN(date.getTime())) return text;
     return date.toLocaleDateString(undefined, {year: "numeric", month: "short", day: "numeric"});
+  }
+
+  function mcBlogWidgetFormatReadTime(value) {
+    const minutes = Number(value);
+    if (!Number.isFinite(minutes) || minutes <= 0) return "";
+    const rounded = Math.round(minutes);
+    return rounded + " min read";
+  }
+
+  function mcBlogWidgetMetaHtml(blockClass, post) {
+    const date = mcBlogWidgetFormatDate(mcBlogWidgetPublishedDateValue(post));
+    const readTime = mcBlogWidgetFormatReadTime(post && post.read_time_minutes);
+    const parts = [];
+    if (date) parts.push('<time class="' + blockClass + '__date">' + mcBlogWidgetEscapeHtml(date) + "</time>");
+    if (readTime) parts.push('<span class="' + blockClass + '__read-time">' + mcBlogWidgetEscapeHtml(readTime) + "</span>");
+    if (!parts.length) return "";
+    return parts.join('<span aria-hidden="true"> · </span>');
   }
 
   function mcBlogWidgetTextToParagraphs(value) {
@@ -963,13 +1188,182 @@ def blog_widget_hydrator_script() -> str:
     return base.replace(/\/?$/, "/") + encodedSlug;
   }
 
-  function mcBlogWidgetRenderPosts(widget, posts) {
+  function mcBlogWidgetClampInt(value, fallback, minimum, maximum) {
+    const parsed = Number.parseInt(String(value ?? ""), 10);
+    let next = Number.isFinite(parsed) ? parsed : fallback;
+    next = Math.max(minimum, next);
+    if (Number.isFinite(maximum)) next = Math.min(maximum, next);
+    return next;
+  }
+
+  function mcBlogWidgetDefaultPageSize(widget) {
+    return mcBlogWidgetClampInt(
+      widget.getAttribute("data-page-size") || widget.dataset.pageSize || widget.getAttribute("data-limit") || widget.dataset.limit,
+      mcBlogDefaultPageSize,
+      1
+    );
+  }
+
+  function mcBlogWidgetIsPagedList(widget) {
+    const explicit = String(widget.getAttribute("data-search-enabled") || widget.dataset.searchEnabled || widget.getAttribute("data-pagination-enabled") || widget.dataset.paginationEnabled || "").toLowerCase();
+    if (["1", "true", "yes", "on"].includes(explicit)) return true;
+    if (["0", "false", "no", "off"].includes(explicit)) return false;
+    const body = document.body;
+    return Boolean(body && body.hasAttribute("data-mc-generated-blog-page") && mcBlogWidgetIsOnRoute(widget));
+  }
+
+  function mcBlogWidgetListState(widget, paged) {
+    const params = new URLSearchParams(window.location.search || "");
+    const defaultPerPage = mcBlogWidgetDefaultPageSize(widget);
+    const routeInfo = mcBlogWidgetRouteInfo(widget);
+    const listPath = routeInfo.root || "/blog";
+    if (!paged) {
+      return {paged: false, query: "", fuzz: 0, page: 1, perPage: defaultPerPage, defaultPerPage, listPath};
+    }
+    const query = String(params.get("q") || params.get("search") || params.get("query") || "").trim();
+    const fuzz = mcBlogWidgetClampInt(params.get("fuzz") || params.get("allowed_fuzz") || params.get("allowedFuzz"), 0, 0, mcBlogMaxAllowedFuzz);
+    const page = mcBlogWidgetClampInt(params.get("page"), 1, 1);
+    const perPage = mcBlogWidgetClampInt(params.get("per_page") || params.get("perPage") || params.get("results_per_page"), defaultPerPage, 1);
+    return {paged: true, query, fuzz, page, perPage, defaultPerPage, listPath};
+  }
+
+  function mcBlogWidgetApiUrlForState(state) {
+    if (!state || !state.paged) return mcBlogPostsEndpoint;
+    const params = new URLSearchParams();
+    if (state.query) params.set("q", state.query);
+    if (state.fuzz > 0) params.set("fuzz", String(state.fuzz));
+    params.set("page", String(state.page || 1));
+    params.set("per_page", String(state.perPage || mcBlogDefaultPageSize));
+    const query = params.toString();
+    return mcBlogPostsEndpoint + (query ? "?" + query : "");
+  }
+
+  function mcBlogWidgetPageUrl(state, page) {
+    const params = new URLSearchParams(window.location.search || "");
+    ["q", "search", "query", "fuzz", "allowed_fuzz", "allowedFuzz", "page", "per_page", "perPage", "results_per_page", "limit"].forEach((name) => params.delete(name));
+    if (state.query) params.set("q", state.query);
+    if (state.fuzz > 0) params.set("fuzz", String(state.fuzz));
+    if (state.perPage !== state.defaultPerPage) params.set("per_page", String(state.perPage));
+    if (page > 1) params.set("page", String(page));
+    const query = params.toString();
+    const listPath = String((state && state.listPath) || window.location.pathname || "/blog").replace(/\/index\.html$/i, "").replace(/\/+$/g, "") || "/";
+    return listPath + (query ? "?" + query : "");
+  }
+
+  function mcBlogWidgetControlsState(widget, currentState) {
+    const form = widget.querySelector("[data-mc-blog-controls]");
+    if (!form) return {...currentState, page: 1};
+    const searchInput = form.querySelector("[data-mc-blog-search]");
+    const fuzzInput = form.querySelector("[data-mc-blog-fuzz]");
+    const perPageInput = form.querySelector("[data-mc-blog-per-page]");
+    return {
+      ...currentState,
+      query: String(searchInput ? searchInput.value : "").trim(),
+      fuzz: mcBlogWidgetClampInt(fuzzInput ? fuzzInput.value : 0, 0, 0, mcBlogMaxAllowedFuzz),
+      perPage: mcBlogWidgetClampInt(perPageInput ? perPageInput.value : currentState.defaultPerPage, currentState.defaultPerPage, 1),
+      page: 1
+    };
+  }
+
+  function mcBlogWidgetEnsureControls(widget, state) {
+    if (!state.paged) return;
+    let form = widget.querySelector("[data-mc-blog-controls]");
+    if (!form) {
+      form = document.createElement("form");
+      form.className = "mc-blog-widget__controls";
+      form.setAttribute("data-mc-blog-controls", "");
+      form.innerHTML = '<label class="mc-blog-widget__control"><span>Search</span><input type="search" name="q" autocomplete="off" data-mc-blog-search></label><label class="mc-blog-widget__control"><span>Allowed Fuzz</span><input type="number" name="fuzz" min="0" max="' + mcBlogMaxAllowedFuzz + '" step="1" value="0" data-mc-blog-fuzz></label><label class="mc-blog-widget__control"><span>Results per Page</span><input type="number" name="per_page" min="1" step="1" value="' + mcBlogDefaultPageSize + '" data-mc-blog-per-page></label><button class="mc-blog-widget__apply" type="submit">Apply</button>';
+      const header = widget.querySelector(".mc-blog-widget__header");
+      if (header && header.parentNode) {
+        header.insertAdjacentElement("afterend", form);
+      } else {
+        widget.insertAdjacentElement("afterbegin", form);
+      }
+    }
+    if (!form.dataset.mcBlogControlsBound) {
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const nextState = mcBlogWidgetControlsState(widget, state);
+        window.location.assign(mcBlogWidgetPageUrl(nextState, 1));
+      });
+      form.dataset.mcBlogControlsBound = "true";
+    }
+  }
+
+  function mcBlogWidgetUpdateControls(widget, state, pagination) {
+    if (!state.paged) return;
+    mcBlogWidgetEnsureControls(widget, state);
+    const form = widget.querySelector("[data-mc-blog-controls]");
+    if (form) {
+      const searchInput = form.querySelector("[data-mc-blog-search]");
+      const fuzzInput = form.querySelector("[data-mc-blog-fuzz]");
+      const perPageInput = form.querySelector("[data-mc-blog-per-page]");
+      if (searchInput) searchInput.value = state.query || "";
+      if (fuzzInput) {
+        fuzzInput.value = String(state.fuzz || 0);
+        fuzzInput.max = String((pagination && pagination.max_allowed_fuzz) || mcBlogMaxAllowedFuzz);
+      }
+      if (perPageInput) {
+        perPageInput.value = String((pagination && pagination.per_page) || state.perPage || state.defaultPerPage);
+        if (pagination && Number(pagination.total) > 0) {
+          perPageInput.max = String(pagination.total);
+        } else {
+          perPageInput.removeAttribute("max");
+        }
+      }
+    }
+    let summary = widget.querySelector("[data-mc-blog-summary]");
+    if (!summary) {
+      summary = document.createElement("p");
+      summary.className = "mc-blog-widget__summary";
+      summary.setAttribute("data-mc-blog-summary", "");
+      const form = widget.querySelector("[data-mc-blog-controls]");
+      if (form && form.parentNode) {
+        form.insertAdjacentElement("afterend", summary);
+      } else {
+        widget.insertAdjacentElement("afterbegin", summary);
+      }
+    }
+    const total = Number(pagination && pagination.total) || 0;
+    const page = Number(pagination && pagination.page) || 1;
+    const totalPages = Number(pagination && pagination.total_pages) || 1;
+    const suffix = state.query ? ' matching "' + state.query + '"' + (state.fuzz > 0 ? " with fuzz " + state.fuzz : "") : "";
+    summary.textContent = total + " post" + (total === 1 ? "" : "s") + suffix + " · page " + page + " of " + totalPages;
+  }
+
+  function mcBlogWidgetRenderPagination(widget, state, pagination) {
+    if (!state.paged) return;
+    let nav = widget.querySelector("[data-mc-blog-pagination]");
+    if (!nav) {
+      nav = document.createElement("nav");
+      nav.className = "mc-blog-widget__pagination";
+      nav.setAttribute("data-mc-blog-pagination", "");
+      nav.setAttribute("aria-label", "Blog pagination");
+      const target = widget.querySelector("[data-mc-blog-posts]") || widget;
+      target.insertAdjacentElement("afterend", nav);
+    }
+    const page = Number(pagination && pagination.page) || 1;
+    const totalPages = Number(pagination && pagination.total_pages) || 1;
+    const previousHtml = pagination && pagination.has_previous
+      ? '<a class="mc-blog-widget__page-link" href="' + mcBlogWidgetEscapeHtml(mcBlogWidgetPageUrl(state, page - 1)) + '">← Newer posts</a>'
+      : '<span class="mc-blog-widget__page-link is-disabled">← Newer posts</span>';
+    const nextHtml = pagination && pagination.has_next
+      ? '<a class="mc-blog-widget__page-link" href="' + mcBlogWidgetEscapeHtml(mcBlogWidgetPageUrl(state, page + 1)) + '">Older posts →</a>'
+      : '<span class="mc-blog-widget__page-link is-disabled">Older posts →</span>';
+    nav.innerHTML = previousHtml + '<span class="mc-blog-widget__page-status">Page ' + page + " of " + totalPages + "</span>" + nextHtml;
+  }
+
+  function mcBlogWidgetRenderPosts(widget, posts, pagination, state) {
     const target = widget.querySelector("[data-mc-blog-posts]") || widget;
-    const limit = Math.max(1, Number(widget.getAttribute("data-limit") || widget.dataset.limit || 3) || 3);
-    const visiblePosts = Array.isArray(posts) ? posts.slice(0, limit) : [];
+    const list = Array.isArray(posts) ? posts : [];
+    const limit = state && state.paged ? list.length : Math.max(1, Number(widget.getAttribute("data-limit") || widget.dataset.limit || 3) || 3);
+    const visiblePosts = state && state.paged ? list : list.slice(0, limit);
     if (!visiblePosts.length) {
       widget.dataset.blogState = "empty";
-      target.innerHTML = "";
+      const message = state && state.query ? "No posts matched your search." : "No published posts yet.";
+      target.innerHTML = '<article class="mc-blog-widget__placeholder" data-mc-blog-empty="true">' + mcBlogWidgetEscapeHtml(message) + "</article>";
+      mcBlogWidgetUpdateControls(widget, state || {paged: false}, pagination || {});
+      mcBlogWidgetRenderPagination(widget, state || {paged: false}, pagination || {});
       return;
     }
     widget.dataset.blogState = "ready";
@@ -977,22 +1371,37 @@ def blog_widget_hydrator_script() -> str:
       const title = mcBlogWidgetEscapeHtml(post.title || post.slug || "Untitled post");
       const excerpt = mcBlogWidgetEscapeHtml(post.excerpt || "");
       const href = mcBlogWidgetEscapeHtml(mcBlogWidgetPostHref(widget, post));
-      const date = mcBlogWidgetFormatDate(post.published_at || post.date_created || post.updated_at);
-      const dateHtml = date ? '<time class="mc-blog-card__date">' + mcBlogWidgetEscapeHtml(date) + "</time>" : "";
+      const metaHtml = mcBlogWidgetMetaHtml("mc-blog-card", post);
+      const metaBlockHtml = metaHtml ? '<p class="mc-blog-card__meta">' + metaHtml + "</p>" : "";
       const excerptHtml = excerpt ? '<p class="mc-blog-card__excerpt">' + excerpt + "</p>" : "";
-      return '<article class="mc-blog-card"><a class="mc-blog-card__title" href="' + href + '">' + title + "</a>" + excerptHtml + dateHtml + "</article>";
+      return '<article class="mc-blog-card"><h2><a class="mc-blog-card__title" href="' + href + '">' + title + "</a></h2>" + metaBlockHtml + excerptHtml + "</article>";
     }).join("");
+    mcBlogWidgetUpdateControls(widget, state || {paged: false}, pagination || {});
+    mcBlogWidgetRenderPagination(widget, state || {paged: false}, pagination || {});
   }
 
   async function mcBlogWidgetHydrateList(widget) {
+    const paged = mcBlogWidgetIsPagedList(widget);
+    const state = mcBlogWidgetListState(widget, paged);
+    mcBlogWidgetEnsureControls(widget, state);
     try {
       widget.dataset.blogState = "loading";
-      const response = await fetch(mcBlogPostsEndpoint, {headers: {"Accept": "application/json"}});
+      const response = await fetch(mcBlogWidgetApiUrlForState(state), {headers: {"Accept": "application/json"}});
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || payload.ok === false) {
         throw new Error(payload.error || "Blog posts are not available.");
       }
-      mcBlogWidgetRenderPosts(widget, payload.posts || []);
+      const pagination = payload.pagination || {
+        page: state.page,
+        per_page: state.perPage,
+        total: Array.isArray(payload.posts) ? payload.posts.length : 0,
+        total_pages: 1,
+        has_previous: false,
+        has_next: false,
+        default_per_page: state.defaultPerPage,
+        max_allowed_fuzz: mcBlogMaxAllowedFuzz
+      };
+      mcBlogWidgetRenderPosts(widget, payload.posts || [], pagination, state);
     } catch (error) {
       widget.dataset.blogState = "unavailable";
       const target = widget.querySelector("[data-mc-blog-posts]") || widget;
@@ -1017,7 +1426,8 @@ def blog_widget_hydrator_script() -> str:
     } catch {}
 
     if (path.startsWith(prefix)) {
-      return path.slice(prefix.length).replace(/^\/+|\/+$/g, "");
+      const slug = path.slice(prefix.length).replace(/^\/+|\/+$/g, "");
+      return slug === "index.html" ? "" : slug;
     }
     return "";
   }
@@ -1031,7 +1441,7 @@ def blog_widget_hydrator_script() -> str:
   }
 
   function mcBlogWidgetRouteInfo(widget) {
-    const configured = widget && (widget.getAttribute("data-route-prefix") || widget.dataset.routePrefix || "");
+    const configured = widget && (widget.getAttribute("data-route-prefix") || widget.dataset.routePrefix || widget.getAttribute("data-post-base-path") || widget.dataset.postBasePath || "");
     let prefix = String(configured || mcBlogDefaultPostBasePath || "/blog/").trim() || "/blog/";
     if (!prefix.startsWith("/")) prefix = "/" + prefix;
     prefix = prefix.replace(/\/?$/, "/");
@@ -1082,16 +1492,16 @@ def blog_widget_hydrator_script() -> str:
     const target = widget.querySelector("[data-mc-blog-post-viewer]") || widget;
     const title = mcBlogWidgetEscapeHtml(post.title || post.slug || "Untitled post");
     const excerpt = mcBlogWidgetEscapeHtml(post.excerpt || "");
-    const date = mcBlogWidgetFormatDate(post.published_at || post.date_created || post.updated_at);
+    const metaHtml = mcBlogWidgetMetaHtml("mc-blog-post-widget", post);
     const bodyHtml = mcBlogWidgetRenderBodyHtml(post.body || post.content || post.excerpt || "");
-    const dateHtml = date ? '<time class="mc-blog-post-widget__date">' + mcBlogWidgetEscapeHtml(date) + "</time>" : "";
+    const metaBlockHtml = metaHtml ? '<p class="mc-blog-post-widget__meta">' + metaHtml + "</p>" : "";
     const excerptHtml = excerpt ? '<p class="mc-blog-post-widget__excerpt">' + excerpt + "</p>" : "";
     const body = bodyHtml || "<p>This post does not have body content yet.</p>";
     widget.dataset.blogState = "ready";
     if (post.title || post.slug) {
       document.title = (post.title || post.slug || "Blog post") + " - Blog";
     }
-    target.innerHTML = '<article class="mc-blog-post-widget__article">' + dateHtml + '<h1>' + title + "</h1>" + excerptHtml + '<div class="mc-blog-post-widget__body">' + body + "</div></article>";
+    target.innerHTML = '<article class="mc-blog-post-widget__article">' + metaBlockHtml + '<h1>' + title + "</h1>" + excerptHtml + '<div class="mc-blog-post-widget__body">' + body + "</div></article>";
   }
 
   function mcBlogWidgetRenderPostMessage(widget, message, state) {
@@ -1167,6 +1577,7 @@ def _ensure_blog_widget_styles(css: str) -> str:
         and BLOG_WIDGET_ROUTE_MODE_CSS_MARKER in text
         and BLOG_WIDGET_ARTICLE_PRESENTATION_CSS_MARKER in text
         and BLOG_WIDGET_INDEX_GRID_CSS_MARKER in text
+        and BLOG_WIDGET_SEARCH_PAGINATION_CSS_MARKER in text
     ):
         return text
     return f"{text.rstrip()}\n\n{blog_widget_styles()}".lstrip()
@@ -1174,7 +1585,12 @@ def _ensure_blog_widget_styles(css: str) -> str:
 
 def _ensure_blog_widget_script(js: str) -> str:
     text = str(js or "")
-    if BLOG_WIDGET_JS_MARKER in text and BLOG_WIDGET_ROUTE_MODE_JS_MARKER in text and BLOG_WIDGET_RICH_BODY_JS_MARKER in text:
+    if (
+        BLOG_WIDGET_JS_MARKER in text
+        and BLOG_WIDGET_ROUTE_MODE_JS_MARKER in text
+        and BLOG_WIDGET_RICH_BODY_JS_MARKER in text
+        and BLOG_WIDGET_SEARCH_PAGINATION_JS_MARKER in text
+    ):
         return text
     return f"{text.rstrip()}\n\n{blog_widget_hydrator_script()}".lstrip()
 
@@ -1225,7 +1641,9 @@ def generated_blog_page_html(project: WebsiteProject, *, route: object = "/blog"
     <section class="mc-section mc-blog-widget"
              data-mc-widget="blog-list"
              data-source-ref="blog.posts"
-             data-limit="12"
+             data-page-size="50"
+             data-search-enabled="true"
+             data-pagination-enabled="true"
              data-post-base-path="{post_prefix}">
       <div class="mc-blog-widget__header">
         <div>
@@ -1233,6 +1651,22 @@ def generated_blog_page_html(project: WebsiteProject, *, route: object = "/blog"
           <h1>From the blog</h1>
         </div>
       </div>
+      <form class="mc-blog-widget__controls" data-mc-blog-controls>
+        <label class="mc-blog-widget__control">
+          <span>Search</span>
+          <input type="search" name="q" autocomplete="off" data-mc-blog-search>
+        </label>
+        <label class="mc-blog-widget__control">
+          <span>Allowed Fuzz</span>
+          <input type="number" name="fuzz" min="0" max="5" step="1" value="0" data-mc-blog-fuzz>
+        </label>
+        <label class="mc-blog-widget__control">
+          <span>Results per Page</span>
+          <input type="number" name="per_page" min="1" step="1" value="50" data-mc-blog-per-page>
+        </label>
+        <button class="mc-blog-widget__apply" type="submit">Apply</button>
+      </form>
+      <p class="mc-blog-widget__summary" data-mc-blog-summary></p>
       <div class="mc-blog-widget__items" data-mc-blog-posts>
         {rendered_posts}
       </div>
@@ -1269,6 +1703,35 @@ def _blog_text_to_paragraphs(value: object) -> str:
             continue
         paragraphs.append(f"<p>{_blog_html_text(clean).replace(chr(10), '<br>')}</p>")
     return "\n        ".join(paragraphs)
+
+
+def _blog_display_date(post: dict[str, Any]) -> str:
+    for field in ("published_on", "published_at", "date_created", "updated_at"):
+        value = str(post.get(field) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _blog_read_time_text(post: dict[str, Any]) -> str:
+    try:
+        minutes = int(float(str(post.get("read_time_minutes") or "0")))
+    except ValueError:
+        return ""
+    return f"{minutes} min read" if minutes > 0 else ""
+
+
+def _blog_meta_html(post: dict[str, Any], *, block_class: str) -> str:
+    parts: list[str] = []
+    date = _blog_html_text(_blog_display_date(post))
+    if date:
+        parts.append(f'<time class="{block_class}__date">{date}</time>')
+    read_time = _blog_html_text(_blog_read_time_text(post))
+    if read_time:
+        parts.append(f'<span class="{block_class}__read-time">{read_time}</span>')
+    if not parts:
+        return ""
+    return f'<p class="{block_class}__meta">' + '<span aria-hidden="true"> · </span>'.join(parts) + "</p>"
 
 
 def _slugify_blog_route_segment(value: object) -> str:
@@ -1523,13 +1986,13 @@ def _blog_index_cards_html(posts: list[dict[str, Any]] | None, *, post_prefix: s
         slug = str(post.get("slug") or "")
         title = _blog_html_text(post.get("title") or slug or "Untitled post")
         excerpt = _blog_html_text(post.get("excerpt") or "")
-        date = _blog_html_text(post.get("published_at") or "")
         href = _blog_html_text(f"{post_prefix}{slug}/")
+        meta_html = _blog_meta_html(post, block_class="mc-blog-card")
         excerpt_html = f'\n          <p class="mc-blog-card__excerpt">{excerpt}</p>' if excerpt else ""
-        date_html = f'\n          <time class="mc-blog-card__date">{date}</time>' if date else ""
+        meta_block_html = f"\n          {meta_html}" if meta_html else ""
         cards.append(
             f'''<article class="mc-blog-card" data-mc-blog-post="{_blog_html_text(slug)}">
-          <h2><a class="mc-blog-card__title" href="{href}">{title}</a></h2>{excerpt_html}{date_html}
+          <h2><a class="mc-blog-card__title" href="{href}">{title}</a></h2>{meta_block_html}{excerpt_html}
         </article>'''
         )
     return "\n        ".join(cards)
@@ -1541,12 +2004,12 @@ def generated_blog_post_page_html(project: WebsiteProject, post: dict[str, Any],
     escaped_name = html.escape(str(project.name or project.id), quote=True)
     title = _blog_html_text(post.get("title") or slug or "Untitled post")
     excerpt = _blog_html_text(post.get("excerpt") or "")
-    date = _blog_html_text(post.get("published_at") or "")
+    meta_html = _blog_meta_html(post, block_class="mc-blog-post-widget")
     body_html = _blog_text_to_paragraphs(post.get("body") or post.get("excerpt") or "")
     if not body_html:
         body_html = "<p>This post does not have body content yet.</p>"
     excerpt_html = f'\n        <p class="mc-blog-post-widget__excerpt">{excerpt}</p>' if excerpt else ""
-    date_html = f'\n        <time class="mc-blog-post-widget__date">{date}</time>' if date else ""
+    meta_block_html = f"\n        {meta_html}" if meta_html else ""
     return f'''<!doctype html>
 <html lang="en">
 <head>
@@ -1561,7 +2024,7 @@ def generated_blog_post_page_html(project: WebsiteProject, post: dict[str, Any],
   <main>
     <section class="mc-section mc-blog-post-widget" data-mc-widget="blog-post-static">
       <a class="mc-blog-post-widget__back" href="{_blog_html_text(clean_route)}">← Back to blog</a>
-      <article class="mc-blog-post-widget__article" data-mc-blog-post="{_blog_html_text(slug)}">{date_html}
+      <article class="mc-blog-post-widget__article" data-mc-blog-post="{_blog_html_text(slug)}">{meta_block_html}
         <h1>{title}</h1>{excerpt_html}
         <div class="mc-blog-post-widget__body">
         {body_html}
@@ -2630,6 +3093,28 @@ def _safe_directus_service_name(site_id: str) -> str:
     return f"{validate_site_id(site_id)}-directus"
 
 
+def _safe_directus_compose_service_name(value: object, *, fallback: str) -> str:
+    text = str(value or fallback).strip()
+    if not DIRECTUS_SERVICE_NAME_RE.fullmatch(text):
+        raise WebsiteProjectError("Directus service names must use lowercase letters, numbers, dots, underscores, or hyphens.")
+    return text
+
+
+def _main_computer_directus_owner_for_port(port: int, project_name: str) -> dict[str, Any] | None:
+    owners_result = _docker_containers_publishing_port(port)
+    owners = owners_result.get("owners") if isinstance(owners_result.get("owners"), list) else []
+    active_owners = [owner for owner in owners if isinstance(owner, dict) and _active_port_owner(owner)]
+    for owner in active_owners:
+        image = str(owner.get("image") or "").lower()
+        service = str(owner.get("service") or "").strip()
+        owner_project = str(owner.get("project") or "").strip()
+        if not service or "directus" not in image:
+            continue
+        if owner_project == project_name or _is_main_computer_local_platform_project(owner_project):
+            return owner
+    return None
+
+
 def _safe_directus_volume(value: object, fallback: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -2693,9 +3178,7 @@ def save_website_directus_connection(
         raise WebsiteProjectError("Overwriting Directus data requires explicit destructive_confirmation.")
 
     default_service = _safe_directus_service_name(clean_site_id)
-    service_name = str(payload.get("service_name") or default_service).strip()
-    if service_name != default_service:
-        raise WebsiteProjectError(f"Directus service for {clean_site_id} must be {default_service}.")
+    service_name = _safe_directus_compose_service_name(payload.get("service_name"), fallback=default_service)
 
     database_volume = _safe_directus_volume(
         payload.get("database_volume"),
@@ -2706,6 +3189,15 @@ def save_website_directus_connection(
         f"{clean_site_id}_directus_uploads",
     )
     public_port = _directus_public_port(payload.get("public_port"), 28200)
+    shared_existing_directus = False
+    if mode == "use_existing":
+        owner = _main_computer_directus_owner_for_port(public_port, compose_project_name())
+        owner_service = _safe_directus_compose_service_name(owner.get("service"), fallback=default_service) if owner else ""
+        if owner_service and owner_service != service_name:
+            service_name = owner_service
+        shared_existing_directus = bool(owner_service and owner_service != default_service)
+    elif service_name != default_service:
+        raise WebsiteProjectError(f"Directus service for {clean_site_id} must be {default_service} unless mode is use_existing.")
 
     manifest = dict(project.manifest)
     backend = manifest.get("backend") if isinstance(manifest.get("backend"), dict) else {}
@@ -2743,6 +3235,8 @@ def save_website_directus_connection(
         "public_port": public_port,
         "public_url": service["public_url"],
         "internal_url": service["internal_url"],
+        "managed": not shared_existing_directus,
+        "external": shared_existing_directus,
     }
     if mode == "overwrite_existing":
         local_connection.update(
@@ -2793,6 +3287,15 @@ def _set_publish_directus_url(manifest: dict[str, Any], value: object) -> None:
         publish["url"] = url
     else:
         publish.pop("url", None)
+
+
+def _publish_directus_url_from_manifest(manifest: dict[str, Any]) -> str:
+    backend = manifest.get("backend")
+    cms = backend.get("cms") if isinstance(backend, dict) else None
+    publish = cms.get("publish") if isinstance(cms, dict) else None
+    if not isinstance(publish, dict):
+        return ""
+    return str(publish.get("url") or publish.get("public_url") or publish.get("internal_url") or "").strip().rstrip("/")
 
 
 def save_website_publish_target(
@@ -2973,19 +3476,42 @@ def remote_publish_source_path(repo_root: Path, target: dict[str, Any], fallback
     )
 
 
-def remote_publish_compose_yaml(site_slug: object, remote_root: object = DEFAULT_REMOTE_PUBLISH_ROOT) -> str:
+def remote_publish_compose_yaml(
+    site_slug: object,
+    remote_root: object = DEFAULT_REMOTE_PUBLISH_ROOT,
+    *,
+    directus_url: object = "",
+) -> str:
     slug = validate_site_id(site_slug)
     root = validate_remote_publish_root(remote_root)
+    directus = str(directus_url or "").strip().rstrip("/")
+    directus_env = directus if directus else "${DIRECTUS_URL:-}"
     return "\n".join(
         [
             "services:",
             f"  {slug}-site:",
-            "    image: 'nginx:alpine'",
+            "    image: 'python:3.12-slim'",
             "    restart: unless-stopped",
+            "    working_dir: '/app'",
+            f"    command: ['python', '/app/sites/{slug}/.main-computer/runtime/app.py']",
+            "    environment:",
+            f"      SITE_ID: '{slug}'",
+            f"      SITE_NAME: '{slug}'",
+            "      SITE_KIND: 'static-site'",
+            "      SITE_LANE: 'production'",
+            f"      MC_SITE_ID: '{slug}'",
+            "      MC_RUNTIME_LANE: 'production'",
+            "      CONTENT_ROOT: '/app/sites'",
+            "      BLOG_ENABLED: 'true'",
+            "      BLOG_PROVIDER: 'directus'",
+            "      BLOG_CONTENT_RUNTIME: 'directus'",
+            "      BLOG_COLLECTION: 'posts'",
+            f"      DIRECTUS_URL: '{directus_env}'",
+            f"      DIRECTUS_PUBLIC_URL: '{directus_env}'",
             "    volumes:",
-            f"      - '{root}/{slug}:/usr/share/nginx/html:ro'",
+            f"      - '{root}/{slug}:/app/sites/{slug}:ro'",
             "    expose:",
-            "      - '80'",
+            "      - '8080'",
         ]
     )
 
@@ -3117,7 +3643,12 @@ def remote_publish_plan(repo_root: Path, site_id: object, lane: object = "remote
         "command_script_exists": script_exists,
         "command": _remote_publish_command(target, display=True),
         "env": _remote_publish_env_preview(target),
-        "remote_coolify_compose": remote_publish_compose_yaml(target["site_slug"], target.get("remote_root")),
+        "remote_coolify_compose": remote_publish_compose_yaml(
+            target["site_slug"],
+            target.get("remote_root"),
+            directus_url=_publish_directus_url_from_manifest(project.manifest),
+        ),
+        "site_runtime_bundle": site_runtime_bundle_plan(repo_root, project.id),
         "service": "",
         "url": str(target.get("domain") or ""),
         "status_url": "",
@@ -3228,6 +3759,28 @@ def publish_website_remote_deploy(
             "error": str(blog_artifact_cleanup.get("error") or blog_artifact_cleanup.get("message") or "Stale Blog artifact cleanup failed."),
         }
 
+    try:
+        site_runtime_bundle = ensure_site_runtime_bundle(repo_root, site_id)
+    except WebsiteProjectError as exc:
+        return {
+            "ok": False,
+            "dry_run": False,
+            "plan": plan,
+            "site": load_website_project(repo_root, site_id).to_dict(repo_root),
+            "returncode": 1,
+            "stdout": "",
+            "stderr": "",
+            "verified": False,
+            "blog_artifact_cleanup": blog_artifact_cleanup,
+            "site_runtime_bundle": {"ok": False, "error": str(exc)},
+            "publish_command": {
+                "ok": False,
+                "skipped": True,
+                "reason": "site_runtime_bundle_failed",
+            },
+            "error": str(exc),
+        }
+
     runtime_target = accepted_remote_publish_target(repo_root, load_website_project(repo_root, site_id))
     command = _remote_publish_command(runtime_target, display=False)
     completed = subprocess.run(
@@ -3250,6 +3803,7 @@ def publish_website_remote_deploy(
         "stderr": completed.stderr,
         "verified": ok and not verify,
         "blog_artifact_cleanup": blog_artifact_cleanup,
+        "site_runtime_bundle": site_runtime_bundle,
         "publish_command": {
             "ok": ok,
             "command": plan.get("command", []),
@@ -3730,6 +4284,17 @@ def _directus_runtime_action_plan(project: WebsiteProject, project_name: str) ->
 
     service = str(connection.get("service_name") or _safe_directus_service_name(project.id)).strip()
     mode = str(connection.get("mode") or "use_existing").strip().lower()
+    if connection.get("managed") is False or connection.get("external") is True:
+        return {
+            "required": False,
+            "service": service,
+            "mode": mode,
+            "reset_requested": False,
+            "container_reconcile": False,
+            "volume_reset": False,
+            "commands": [],
+            "message": "Directus is marked as an existing shared service; publish will not start, remove, or reset it.",
+        }
     database_volume = str(connection.get("database_volume") or f"{project.id}_directus_database").strip()
     uploads_volume = str(connection.get("uploads_volume") or f"{project.id}_directus_uploads").strip()
     reset_required = _directus_reset_required(connection)
@@ -4020,7 +4585,8 @@ def configure_website_directus_runtime(
     project_name = compose_project_name()
     compose_path = generated_compose_path(repo_root)
     dependency_services = directus_dependency_services_for_site(repo_root, project.id)
-    service_names = [service.service for service in dependency_services if service.service]
+    service_names = [service.service for service in dependency_services if service.service and getattr(service, "managed", True)]
+    all_service_names = [service.service for service in dependency_services if service.service]
     action_plan = _directus_runtime_action_plan(project, project_name)
     command = [
         "docker",
@@ -4040,13 +4606,14 @@ def configure_website_directus_runtime(
         "site_id": project.id,
         "compose_path": str(compose_path),
         "compose_project": project_name,
-        "services": service_names,
+        "services": all_service_names,
+        "managed_services": service_names,
         "command": command,
         "generated_compose": compose_result,
         "directus_runtime_action": {"ok": True, "required": False, "plan": action_plan},
         "site": project.to_dict(repo_root),
     }
-    if not service_names:
+    if not dependency_services:
         return {
             **base,
             "ok": False,
@@ -4080,25 +4647,33 @@ def configure_website_directus_runtime(
             "site": load_website_project(repo_root, project.id).to_dict(repo_root),
         }
 
-    completed = subprocess.run(
-        command,
-        cwd=repo_root,
-        text=True,
-        capture_output=True,
-        timeout=timeout_s,
-        check=False,
-    )
+    if command:
+        completed = subprocess.run(
+            command,
+            cwd=repo_root,
+            text=True,
+            capture_output=True,
+            timeout=timeout_s,
+            check=False,
+        )
+        returncode = completed.returncode
+        stdout = completed.stdout
+        stderr = completed.stderr
+    else:
+        returncode = 0
+        stdout = "No managed Directus service was started; using the existing shared Directus service."
+        stderr = ""
     result: dict[str, Any] = {
         **base,
-        "ok": completed.returncode == 0,
-        "returncode": completed.returncode,
-        "stdout": completed.stdout,
-        "stderr": completed.stderr,
+        "ok": returncode == 0,
+        "returncode": returncode,
+        "stdout": stdout,
+        "stderr": stderr,
         "verified": False,
         "site": load_website_project(repo_root, project.id).to_dict(repo_root),
     }
-    if completed.returncode != 0:
-        result["error"] = completed.stderr or completed.stdout or "Docker Compose could not start Directus."
+    if returncode != 0:
+        result["error"] = stderr or stdout or "Docker Compose could not start Directus."
         return result
 
     cms_results: list[dict[str, Any]] = []

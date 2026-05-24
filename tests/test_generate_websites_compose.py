@@ -11,6 +11,7 @@ import pytest
 from main_computer.local_platform_compose import (
     GENERATED_COMPOSE_RELATIVE_PATH,
     LocalPlatformComposeError,
+    cms_dependency_service_names_for_site,
     generated_compose_path,
     image_name_for_site_lane,
     render_generated_websites_compose,
@@ -510,6 +511,83 @@ def test_generated_compose_prefers_configured_local_directus_connection(
     assert "hub-site_directus_database_20260518182134:" in text
     persisted = json.loads(site_path.read_text(encoding="utf-8"))
     assert persisted["backend"]["cms"]["service"]["public_url"] == "http://127.0.0.1:28200"
+
+
+
+def test_generated_compose_reuses_existing_shared_directus_without_rendering_duplicate_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = default_registry_data()
+    _add_registry_site(data, "johnrraymond", 18118, 18119)
+    save_local_platform_registry(tmp_path, data)
+    site_dir = tmp_path / "runtime" / "websites" / "johnrraymond"
+    site_dir.mkdir(parents=True, exist_ok=True)
+    (site_dir / "site.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "id": "johnrraymond",
+                "name": "John R. Raymond",
+                "kind": "static-site",
+                "features": {
+                    "blog": {
+                        "selected": True,
+                        "enabled": True,
+                        "cms": "directus",
+                        "database": "sqlite",
+                    }
+                },
+                "backend": {
+                    "cms": {
+                        "provider": "directus",
+                        "required": True,
+                        "runtime": "deployed",
+                        "service": {
+                            "kind": "directus",
+                            "image": "directus/directus:11.5.1",
+                            "internal_url": "http://johnrraymond-directus:8055",
+                            "public_url": "http://127.0.0.1:28200",
+                        },
+                        "storage": {
+                            "database_volume": "johnrraymond_directus_database",
+                            "uploads_volume": "johnrraymond_directus_uploads",
+                        },
+                        "local_connection": {
+                            "mode": "use_existing",
+                            "service_name": "johnrraymond-directus",
+                            "public_port": 28200,
+                            "public_url": "http://127.0.0.1:28200",
+                            "internal_url": "http://johnrraymond-directus:8055",
+                        },
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("main_computer.local_platform_compose._host_port_can_bind", lambda port: int(port) != 28200)
+    monkeypatch.setattr(
+        "main_computer.local_platform_compose._docker_port_owners",
+        lambda port: [
+            "main-computer-local-platform-hub-site-directus-1 directus/directus:11.5.1 Up 4 days 127.0.0.1:28200->8055/tcp"
+        ],
+    )
+
+    result = write_generated_websites_compose(tmp_path)
+    text = generated_compose_path(tmp_path).read_text(encoding="utf-8")
+
+    assert result["cms_services"] == []
+    assert "\n  hub-site-directus:\n" not in text
+    assert "\n  johnrraymond-directus:\n" not in text
+    assert 'MC_DIRECTUS_SERVICE: "hub-site-directus"' in text
+    assert 'DIRECTUS_URL: "http://hub-site-directus:8055"' in text
+    assert 'DIRECTUS_PUBLIC_URL: "http://127.0.0.1:28200"' in text
+    assert 'BLOG_ENABLED: "true"' in text
+    assert cms_dependency_service_names_for_site(tmp_path, "johnrraymond") == []
+    john_section = text.split("  johnrraymond-dev:", 1)[1].split("\n\n", 1)[0]
+    assert "depends_on:" not in john_section
+
 
 def test_generated_compose_rejects_persisted_directus_port_owned_by_another_container(
     monkeypatch: pytest.MonkeyPatch,

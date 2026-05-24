@@ -33,6 +33,18 @@ class ExportMainComputerTestTests(unittest.TestCase):
         self.assertIn('"dev-chain-wallet-smoke-guide.py"', script)
         self.assertIn('"release_reports"', script)
 
+
+
+    def test_export_script_includes_johnrraymond_runtime_website_without_unblocking_all_runtime(self) -> None:
+        script = (ROOT / "export-main-computer-test.ps1").read_text(encoding="utf-8")
+
+        self.assertIn('"runtime/websites/johnrraymond"', script)
+        self.assertIn('"runtime/websites/johnrraymond/"', script)
+        self.assertIn('"runtime/"', script)
+        self.assertIn('$allowedGeneratedPrefixes', script)
+        self.assertIn('$isAllowedGeneratedPrefixPath', script)
+        self.assertIn('-and -not $isAllowedGeneratedPrefixPath', script)
+
     def test_export_script_prunes_generated_documentation_work_history(self) -> None:
         script = (ROOT / "export-main-computer-test.ps1").read_text(encoding="utf-8")
 
@@ -101,6 +113,24 @@ class ExportMainComputerTestTests(unittest.TestCase):
         self.assertIn("hero-sprite", webgl_project)
         self.assertIn("sprite-actor", webgl_project)
         self.assertIn("particle-emitter", webgl_project)
+        self.assertIn('"particleCount": 97', webgl_project)
+        self.assertIn('"particleMultiplier": 2', webgl_project)
+        self.assertIn('"effectMultiplier": 2', webgl_project)
+        self.assertIn('"moveSpeed": 3.15', webgl_project)
+        self.assertIn("left-click", webgl_project)
+        self.assertIn("movementBounds", webgl_project)
+        self.assertIn("spriteRig", webgl_project)
+        self.assertIn("parentId", webgl_project)
+        self.assertIn("spell-swirl", webgl_project)
+        self.assertIn("spell-bolt", webgl_project)
+        self.assertIn("impact-burst", webgl_project)
+        self.assertIn("nova-ring", webgl_project)
+        self.assertIn("starfall", webgl_project)
+        self.assertIn("Arcstorm Finale", webgl_project)
+        self.assertIn("phase-4-finale-showcase", webgl_project)
+        self.assertNotIn("mesh-actor", webgl_project)
+        self.assertNotIn("player-capsule", webgl_project)
+        self.assertNotIn("hero-mesh", webgl_project)
 
 
 if __name__ == "__main__":

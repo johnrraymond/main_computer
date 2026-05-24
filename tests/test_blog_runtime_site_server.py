@@ -23,6 +23,23 @@ def load_site_server(monkeypatch, *, content_runtime: str = "live"):
     return module
 
 
+def test_site_server_does_not_serve_packaged_runtime_files(monkeypatch, tmp_path: Path) -> None:
+    content_root = tmp_path / "runtime" / "websites"
+    site_dir = content_root / "runtime-site"
+    runtime_dir = site_dir / ".main-computer" / "runtime"
+    runtime_dir.mkdir(parents=True)
+    (site_dir / "index.html").write_text("<h1>ok</h1>", encoding="utf-8")
+    (runtime_dir / "app.py").write_text("print('secret runtime')\n", encoding="utf-8")
+    monkeypatch.setenv("SITE_ID", "runtime-site")
+    monkeypatch.setenv("CONTENT_ROOT", str(content_root))
+    app = load_site_server(monkeypatch)
+
+    assert app.safe_static_file("/index.html") == site_dir.resolve() / "index.html"
+    assert app.safe_static_file("/.main-computer/runtime/app.py") is None
+    assert app.safe_static_file("/.main-computer/runtime/runtime.json") is None
+    assert app.safe_static_file("/anything.py") is None
+
+
 def test_blog_runtime_queries_directus_through_published_only_boundary(monkeypatch) -> None:
     app = load_site_server(monkeypatch)
     calls: list[str] = []
@@ -38,8 +55,9 @@ def test_blog_runtime_queries_directus_through_published_only_boundary(monkeypat
                     "title": "Hello Directus",
                     "excerpt": "Directus powered",
                     "body": "Post body",
-                    "featured_image": "",
-                    "published_at": "2026-05-14T00:00:00Z",
+                    "published_on": "2026-05-14",
+                    "read_time_minutes": 7,
+                    "is_legacy": "yes",
                 }
             ]
         }
@@ -52,7 +70,14 @@ def test_blog_runtime_queries_directus_through_published_only_boundary(monkeypat
     assert posts[0]["slug"] == "hello-directus"
     assert post["title"] == "Hello Directus"
     assert all("filter%5Bstatus%5D%5B_eq%5D=published" in call for call in calls)
-    assert any("filter%5Bslug%5D%5B_eq%5D=hello-directus" in call for call in calls)
+    assert all("sort=-published_on%2C-id" in call for call in calls)
+    list_call = next(call for call in calls if "filter%5Bslug%5D%5B_eq%5D" not in call)
+    detail_call = next(call for call in calls if "filter%5Bslug%5D%5B_eq%5D=hello-directus" in call)
+    assert "published_on%2Cread_time_minutes%2Cis_legacy" in list_call
+    assert "body" not in list_call
+    assert "limit=-1" in list_call
+    assert "body" in detail_call
+    assert "limit=1" in detail_call
 
 
 def test_blog_runtime_status_reports_ready_without_exposing_directus_internal_url(monkeypatch) -> None:
@@ -130,8 +155,9 @@ def load_site_server_from_manifest(monkeypatch, tmp_path: Path):
               "title": "Hello Directus",
               "excerpt": "Directus powered",
               "body": "Post body",
-              "featured_image": null,
-              "published_at": "2026-05-14T00:00:00Z"
+              "published_on": "2026-05-14",
+              "read_time_minutes": 7,
+              "is_legacy": "yes"
             },
             {
               "status": "draft",
@@ -381,6 +407,8 @@ def test_blog_posts_api_returns_published_posts_only(monkeypatch) -> None:
 
     def fake_directus_json(path: str, timeout: float = 5.0) -> dict:
         calls.append(path)
+        assert "body" not in path
+        assert "limit=-1" in path
         return {
             "data": [
                 {
@@ -389,9 +417,9 @@ def test_blog_posts_api_returns_published_posts_only(monkeypatch) -> None:
                     "slug": "hello-directus",
                     "title": "Hello Directus",
                     "excerpt": "Directus powered",
-                    "body": "Post body",
-                    "featured_image": "",
-                    "published_at": "2026-05-14T00:00:00Z",
+                    "published_on": "2026-05-14",
+                    "read_time_minutes": 7,
+                    "is_legacy": "yes",
                 }
             ]
         }
@@ -405,7 +433,78 @@ def test_blog_posts_api_returns_published_posts_only(monkeypatch) -> None:
     assert payload["blog"]["ready"] is True
     assert payload["blog"]["state"] == "ready"
     assert payload["posts"][0]["slug"] == "hello-directus"
+    assert payload["posts"][0]["published_on"] == "2026-05-14"
+    assert payload["posts"][0]["read_time_minutes"] == 7
     assert all("filter%5Bstatus%5D%5B_eq%5D=published" in call for call in calls)
+    assert all("sort=-published_on%2C-id" in call for call in calls)
+    assert all("limit=-1" in call for call in calls)
+
+
+def test_blog_posts_api_searches_strictly_fuzzes_opt_in_and_paginates(monkeypatch) -> None:
+    app = load_site_server(monkeypatch)
+    calls: list[str] = []
+    posts = [
+        {
+            "id": 1,
+            "status": "published",
+            "slug": "library-notes",
+            "title": "Library Notes",
+            "excerpt": "Catalog updates",
+            "body": "A long entry about archives.",
+            "published_on": "2026-05-15",
+        },
+        {
+            "id": 2,
+            "status": "published",
+            "slug": "garden",
+            "title": "Garden",
+            "excerpt": "Soil and flowers",
+            "body": "A long entry about tomatoes.",
+            "published_on": "2026-05-14",
+        },
+        {
+            "id": 3,
+            "status": "published",
+            "slug": "zebra",
+            "title": "Zebra",
+            "excerpt": "Alphabet end",
+            "body": "A long entry about stripes.",
+            "published_on": "2026-05-13",
+        },
+    ]
+
+    def fake_directus_json(path: str, timeout: float = 5.0) -> dict:
+        calls.append(path)
+        return {"data": posts}
+
+    monkeypatch.setattr(app, "directus_json", fake_directus_json)
+
+    strict_payload, strict_status = app.blog_posts_payload("q=libary&fuzz=0")
+    fuzzy_payload, fuzzy_status = app.blog_posts_payload("q=libary&fuzz=1")
+    page_payload, page_status = app.blog_posts_payload("per_page=2&page=2")
+
+    assert strict_status == app.HTTPStatus.OK
+    assert strict_payload["posts"] == []
+    assert strict_payload["pagination"]["total"] == 0
+    assert fuzzy_status == app.HTTPStatus.OK
+    assert [post["slug"] for post in fuzzy_payload["posts"]] == ["library-notes"]
+    assert fuzzy_payload["search"] == {"query": "libary", "fuzz": 1}
+    assert page_status == app.HTTPStatus.OK
+    assert [post["slug"] for post in page_payload["posts"]] == ["zebra"]
+    assert page_payload["pagination"] == {
+        "page": 2,
+        "per_page": 2,
+        "total": 3,
+        "total_pages": 2,
+        "has_previous": True,
+        "has_next": False,
+        "default_per_page": 50,
+        "max_allowed_fuzz": 5,
+    }
+    assert any("body" in call for call in calls)
+    assert any("body" not in call for call in calls)
+    assert all("limit=-1" in call for call in calls)
+
 
 
 def test_blog_post_api_returns_one_published_post_and_404s_missing_or_draft(monkeypatch) -> None:
@@ -429,12 +528,14 @@ def test_blog_post_api_returns_one_published_post_and_404s_missing_or_draft(monk
     assert missing_status == app.HTTPStatus.NOT_FOUND
     assert missing_payload["post"] is None
     assert all("filter%5Bstatus%5D%5B_eq%5D=published" in call for call in calls)
+    assert all("body" in call for call in calls)
+    assert all("limit=1" in call for call in calls)
 
 
 def test_blog_api_routes_exist_but_blog_pages_are_not_site_server_owned(monkeypatch) -> None:
     app = load_site_server(monkeypatch)
     monkeypatch.setattr(app, "safe_static_file", lambda path: None)
-    monkeypatch.setattr(app, "blog_posts_payload", lambda: ({"ok": True, "posts": []}, app.HTTPStatus.OK))
+    monkeypatch.setattr(app, "blog_posts_payload", lambda raw_query="": ({"ok": True, "posts": []}, app.HTTPStatus.OK))
 
     calls: list[tuple[str, object, object]] = []
 

@@ -41,6 +41,130 @@
   padding: 14px;
 }
 
+.game-editor-vfx-controls {
+  display: grid;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, var(--mint, currentColor) 28%, transparent);
+  border-radius: 14px;
+  padding: 12px;
+  background:
+    radial-gradient(circle at 10% 0%, color-mix(in srgb, var(--mint, #7dd3fc) 14%, transparent), transparent 54%),
+    color-mix(in srgb, var(--surface, Canvas) 88%, transparent);
+}
+
+.game-editor-vfx-controls h3 {
+  margin: 0;
+  color: var(--mint, currentColor);
+  font-size: 0.9rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.game-editor-vfx-controls p {
+  margin: 0;
+  color: var(--muted, currentColor);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.game-editor-vfx-controls label {
+  display: grid;
+  gap: 6px;
+}
+
+.game-editor-vfx-controls label span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--ink, currentColor);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.game-editor-vfx-controls output {
+  min-width: 3.2rem;
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: color-mix(in srgb, var(--mint, #7dd3fc) 18%, transparent);
+  color: var(--mint, currentColor);
+  text-align: center;
+}
+
+.game-editor-vfx-controls input[type="range"] {
+  width: 100%;
+}
+
+.game-editor-vfx-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.game-editor-vfx-presets button {
+  padding: 6px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+}
+
+.webgl-vfx-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--mint, #7dd3fc) 30%, transparent);
+  border-radius: 999px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--panel, Canvas) 88%, transparent);
+}
+
+.webgl-vfx-controls strong {
+  color: var(--mint, #7dd3fc);
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.webgl-vfx-controls label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink, currentColor);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.webgl-vfx-controls output {
+  min-width: 2.8rem;
+  border-radius: 999px;
+  padding: 1px 7px;
+  background: color-mix(in srgb, var(--mint, #7dd3fc) 18%, transparent);
+  color: var(--mint, #7dd3fc);
+  text-align: center;
+}
+
+.webgl-vfx-controls input[type="range"] {
+  width: 96px;
+}
+
+.webgl-vfx-presets {
+  display: inline-flex;
+  gap: 5px;
+}
+
+.webgl-vfx-presets button {
+  padding: 5px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+}
+
+.game-editor-vfx-presets button.active,
+.webgl-vfx-presets button.active {
+  border-color: var(--mint, #7dd3fc);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--mint, #7dd3fc) 22%, transparent);
+}
+
 .game-editor-chat-popout {
   position: absolute;
   top: 56px;
@@ -313,6 +437,10 @@
   font-weight: 700;
   pointer-events: none;
   text-align: center;
+  transition:
+    left 320ms ease-out,
+    top 320ms ease-out,
+    transform 320ms ease-out;
 }
 
 .scene-object.selected {
@@ -341,6 +469,78 @@
   background: transparent;
   color: var(--mint, #7dd3fc);
   filter: drop-shadow(0 12px 22px rgba(2, 6, 23, 0.42));
+}
+
+.scene-surface[data-click-movement="enabled"] {
+  cursor: crosshair;
+}
+
+.scene-surface[data-click-movement="enabled"]::after {
+  content: "Left-click ground to move";
+  position: absolute;
+  left: 14px;
+  bottom: 12px;
+  z-index: 900;
+  padding: 6px 9px;
+  border: 1px solid color-mix(in srgb, var(--mint, #7dd3fc) 42%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, #020617 72%, transparent);
+  color: var(--ink, #f8fafc);
+  font-size: 0.72rem;
+  font-weight: 800;
+  pointer-events: none;
+}
+
+.scene-object--sprite-actor[data-scene-moving="true"] .scene-sprite-body {
+  animation-duration: 860ms;
+}
+
+.scene-object--sprite-actor[data-scene-moving="true"] .scene-sprite-trail {
+  opacity: 0.86;
+  width: 44%;
+}
+
+.scene-object--sprite-actor[data-scene-moving="true"] {
+  will-change: left, top;
+}
+
+.scene-movement-marker {
+  position: absolute;
+  width: var(--scene-tile-width, 92px);
+  height: var(--scene-tile-height, 46px);
+  border-radius: 999px;
+  pointer-events: none;
+  transform: translate(-50%, -50%) rotateX(66deg) rotateZ(45deg);
+  transform-origin: center;
+  box-shadow:
+    0 0 18px color-mix(in srgb, var(--mint, #7dd3fc) 38%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--mint, #7dd3fc) 72%, transparent);
+  opacity: 0.88;
+  animation: scene-movement-marker-pulse 900ms ease-out infinite alternate;
+}
+
+.scene-movement-marker span {
+  position: absolute;
+  inset: 7px;
+  border: 1px solid color-mix(in srgb, var(--mint, #7dd3fc) 62%, transparent);
+  border-radius: inherit;
+}
+
+.scene-movement-marker span + span {
+  inset: 16px;
+  opacity: 0.72;
+}
+
+@keyframes scene-movement-marker-pulse {
+  from {
+    transform: translate(-50%, -50%) rotateX(66deg) rotateZ(45deg) scale(0.82);
+    opacity: 0.55;
+  }
+
+  to {
+    transform: translate(-50%, -50%) rotateX(66deg) rotateZ(45deg) scale(1);
+    opacity: 0.95;
+  }
 }
 
 .scene-object--sprite-actor.selected {
@@ -548,31 +748,707 @@
   }
 }
 
-.scene-surface[data-scene-state="player-ready"] {
-  background: transparent;
+.scene-object--sprite-actor[data-sprite-rig] .scene-sprite-body {
+  width: 82%;
+  height: 84%;
 }
 
-.scene-object--player-capsule {
-  display: grid;
-  place-items: center;
-  border: 2px solid var(--mint, currentColor);
+.scene-sprite-rig-layer {
+  position: absolute;
+  pointer-events: none;
+}
+
+.scene-sprite-aura {
+  left: 50%;
+  top: 14%;
+  width: 96%;
+  height: 72%;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--mint, currentColor) 18%, transparent);
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--ink, currentColor) 28%, transparent),
-    0 10px 24px rgba(0, 0, 0, 0.28);
+  background:
+    radial-gradient(circle, color-mix(in srgb, var(--mint, #7dd3fc) 26%, transparent), transparent 62%);
+  filter: blur(2px);
+  opacity: 0.74;
+  transform: translateX(-50%);
+  animation: scene-sprite-aura-pulse 1600ms ease-in-out infinite alternate;
 }
 
-.scene-player-capsule-core {
+.scene-sprite-core-layer {
+  z-index: 3;
+}
+
+.scene-sprite-mantle {
+  left: 50%;
+  top: 22%;
   width: 42%;
+  height: 54%;
+  border-radius: 999px 999px 14px 14px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 22%, var(--mint, #7dd3fc)), color-mix(in srgb, var(--mint, #7dd3fc) 62%, transparent));
+  opacity: 0.62;
+  transform: translateX(-50%) skewX(-8deg);
+  z-index: 4;
+  mix-blend-mode: screen;
+}
+
+.scene-sprite-weapon-trail {
+  right: -18%;
+  top: 27%;
+  width: 56%;
   height: 18%;
   border-radius: 999px;
-  background: var(--ink, currentColor);
-  opacity: 0.9;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--mint, #7dd3fc) 80%, transparent), color-mix(in srgb, white 60%, transparent), transparent);
+  filter: blur(1px);
+  opacity: 0.78;
+  transform-origin: left center;
+  transform: rotate(-18deg);
+  z-index: 5;
+  animation: scene-sprite-trail-cast 900ms ease-in-out infinite alternate;
 }
 
-.document-scene-embed .scene-object--player-capsule {
+.scene-sprite-sparkles {
+  inset: 0;
+  z-index: 6;
+}
+
+.scene-sprite-sparkles::before,
+.scene-sprite-sparkles::after {
+  content: "";
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow:
+    18px 26px 0 -2px currentColor,
+    -16px 44px 0 -3px currentColor,
+    28px 68px 0 -2px currentColor;
+  opacity: 0.8;
+  animation: scene-sprite-sparkle-rise 1300ms ease-in-out infinite;
+}
+
+.scene-sprite-sparkles::before {
+  left: 24%;
+  top: 14%;
+}
+
+.scene-sprite-sparkles::after {
+  right: 24%;
+  top: 22%;
+  animation-delay: -620ms;
+}
+
+.scene-object--sprite-actor[data-spell-state="casting"] .scene-sprite-illustration,
+.scene-object--sprite-actor[data-spell-state="charged"] .scene-sprite-illustration {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.18),
+    inset 0 -10px 18px rgba(2, 6, 23, 0.28),
+    0 0 28px color-mix(in srgb, var(--mint, #7dd3fc) 42%, transparent);
+}
+
+.scene-object--sprite-actor[data-sprite-rig="void-silhouette"] .scene-sprite-aura {
+  filter: blur(3px) hue-rotate(32deg);
+}
+
+.scene-object--particle-emitter[data-parented-particle="true"] {
+  mix-blend-mode: screen;
+}
+
+.scene-object--particle-emitter[data-parented-particle="true"] .scene-object-label {
+  display: none;
+}
+
+.scene-particle-field[data-particle-motion="spell-swirl"],
+.scene-particle-field[data-particle-motion="rune-ring"] {
+  perspective: 900px;
+  transform-style: preserve-3d;
+}
+
+.scene-particle-orbit {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+  animation: scene-particle-spell-swirl var(--particle-duration, 2100ms) linear infinite;
+  animation-delay: var(--particle-delay, 0ms);
+}
+
+.scene-particle-field[data-particle-motion="rune-ring"] .scene-particle-orbit {
+  animation-name: scene-particle-rune-ring;
+}
+
+.scene-particle-orbit .scene-particle {
+  left: 0;
+  top: 0;
+  transform:
+    rotate(var(--particle-angle, 0deg))
+    translateX(var(--particle-radius-x, 42px))
+    translateY(calc(var(--particle-radius-y, 18px) * -1))
+    scale(0.92);
+  animation: scene-particle-twinkle 720ms ease-in-out infinite alternate;
+  animation-delay: var(--particle-delay, 0ms);
+}
+
+.scene-particle-field[data-particle-motion="spell-swirl"] .scene-particle-orbit .scene-particle {
+  box-shadow:
+    0 0 calc(var(--particle-size, 5px) * 2.4) currentColor,
+    0 0 calc(var(--particle-size, 5px) * 7) color-mix(in srgb, currentColor 62%, transparent);
+}
+
+.scene-particle-field[data-particle-motion="rune-ring"] .scene-particle-orbit .scene-particle {
+  border-radius: 3px;
+  transform:
+    rotate(var(--particle-angle, 0deg))
+    translateX(var(--particle-radius-x, 42px))
+    translateY(calc(var(--particle-radius-y, 18px) * -1))
+    rotate(45deg)
+    scale(0.86);
+}
+
+@keyframes scene-particle-spell-swirl {
+  from {
+    transform: translate(-50%, -50%) rotateZ(0turn) translateY(0) rotateX(62deg);
+  }
+
+  50% {
+    transform: translate(-50%, -50%) rotateZ(calc(.5turn * var(--particle-spin, 1))) translateY(calc(var(--particle-rise, 42px) * -1)) rotateX(62deg);
+  }
+
+  to {
+    transform: translate(-50%, -50%) rotateZ(calc(1turn * var(--particle-spin, 1))) translateY(0) rotateX(62deg);
+  }
+}
+
+@keyframes scene-particle-rune-ring {
+  from {
+    transform: translate(-50%, -50%) rotateZ(0turn) rotateX(72deg);
+  }
+
+  to {
+    transform: translate(-50%, -50%) rotateZ(calc(1turn * var(--particle-spin, 1))) rotateX(72deg);
+  }
+}
+
+@keyframes scene-particle-twinkle {
+  from {
+    opacity: calc(var(--particle-alpha, 0.7) * 0.55);
+    filter: brightness(0.9);
+  }
+
+  to {
+    opacity: var(--particle-alpha, 0.7);
+    filter: brightness(1.35);
+  }
+}
+
+@keyframes scene-sprite-aura-pulse {
+  from {
+    opacity: 0.46;
+    transform: translateX(-50%) scale(0.92);
+  }
+
+  to {
+    opacity: 0.86;
+    transform: translateX(-50%) scale(1.08);
+  }
+}
+
+@keyframes scene-sprite-trail-cast {
+  from {
+    opacity: 0.44;
+    transform: rotate(-24deg) scaleX(0.72);
+  }
+
+  to {
+    opacity: 0.88;
+    transform: rotate(-12deg) scaleX(1.12);
+  }
+}
+
+@keyframes scene-sprite-sparkle-rise {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.72);
+  }
+
+  45% {
+    opacity: 0.9;
+  }
+
+  to {
+    opacity: 0;
+    transform: translateY(-22px) scale(1.08);
+  }
+}
+
+
+
+
+/* Sprite/particle spell choreography */
+.scene-surface[data-rollout-phase="phase-4-finale-showcase"] .scene-stage-grid {
+  box-shadow:
+    0 24px 48px rgba(2, 6, 23, 0.45),
+    0 0 42px color-mix(in srgb, var(--mint, #7dd3fc) 10%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--line, currentColor) 22%, transparent);
+}
+
+.scene-sprite-afterimage {
+  left: 50%;
+  top: 12%;
+  width: 48%;
+  height: 70%;
+  border-radius: 999px 999px 14px 14px;
+  background: color-mix(in srgb, var(--mint, #7dd3fc) 30%, transparent);
+  filter: blur(1px);
+  opacity: 0.3;
+  transform: translateX(-74%) skewX(-12deg);
+  z-index: 1;
+  animation: scene-sprite-afterimage-flicker 950ms ease-in-out infinite alternate;
+}
+
+.scene-sprite-cast-flare {
+  left: 50%;
+  top: 34%;
+  width: 86%;
+  height: 26%;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle, color-mix(in srgb, white 64%, var(--mint, #7dd3fc)), color-mix(in srgb, var(--mint, #7dd3fc) 54%, transparent) 42%, transparent 72%);
+  opacity: 0.74;
+  transform: translateX(-50%) rotate(-10deg);
+  z-index: 7;
+  mix-blend-mode: screen;
+  animation: scene-sprite-cast-flare 720ms ease-in-out infinite alternate;
+}
+
+.scene-object--sprite-actor[data-spell-state="targeted"] .scene-sprite-afterimage {
+  background: color-mix(in srgb, #fb7185 45%, transparent);
+  transform: translateX(-32%) skewX(12deg);
+}
+
+.scene-object--particle-emitter[data-scene-anchor="linked-spell-path"],
+.scene-object[data-scene-anchor="linked-spell-path"] {
+  overflow: visible;
+  height: max(24px, var(--scene-path-height, 42px));
+  mix-blend-mode: screen;
+}
+
+.scene-object[data-scene-object-type="particle-emitter"][data-scene-anchor="linked-spell-path"] .scene-object-label {
+  display: none;
+}
+
+.scene-particle-field[data-particle-motion="spell-bolt"] {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 100%;
+  height: 0;
+  transform-style: preserve-3d;
+}
+
+.scene-particle--bolt {
+  left: 0;
+  top: 0;
+  width: calc(var(--particle-size, 4px) * 2.4);
+  height: var(--particle-size, 4px);
+  border-radius: 999px;
+  opacity: var(--particle-alpha, 0.7);
+  transform:
+    translateX(calc(var(--particle-progress, 0) * var(--scene-path-length, 180px)))
+    translateY(var(--particle-lane, 0px));
+  animation: scene-particle-bolt-run var(--particle-duration, 1300ms) linear infinite;
+  animation-delay: var(--particle-delay, 0ms);
+}
+
+.scene-particle-field[data-particle-motion="spell-bolt"]::before,
+.scene-particle-field[data-particle-motion="spell-bolt"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: -1px;
+  width: 100%;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, currentColor 18%, color-mix(in srgb, white 70%, currentColor), currentColor 82%, transparent);
+  opacity: 0.54;
+  filter: blur(1px);
+  animation: scene-particle-bolt-core 920ms ease-in-out infinite alternate;
+}
+
+.scene-particle-field[data-particle-motion="spell-bolt"]::after {
+  top: -8px;
+  height: 16px;
+  opacity: 0.22;
+  filter: blur(6px);
+}
+
+.scene-particle-field[data-particle-motion="impact-burst"] .scene-particle-orbit {
+  animation-name: scene-particle-impact-burst;
+  animation-timing-function: cubic-bezier(.12, .82, .18, 1);
+}
+
+.scene-particle-field[data-particle-motion="impact-burst"] .scene-particle-orbit .scene-particle {
+  box-shadow:
+    0 0 calc(var(--particle-size, 5px) * 2.6) currentColor,
+    0 0 calc(var(--particle-size, 5px) * 8) color-mix(in srgb, currentColor 58%, transparent);
+}
+
+@keyframes scene-sprite-afterimage-flicker {
+  from {
+    opacity: 0.16;
+    transform: translateX(-76%) skewX(-14deg) scale(0.96);
+  }
+
+  to {
+    opacity: 0.42;
+    transform: translateX(-70%) skewX(-9deg) scale(1.04);
+  }
+}
+
+@keyframes scene-sprite-cast-flare {
+  from {
+    opacity: 0.38;
+    transform: translateX(-50%) rotate(-18deg) scaleX(0.78);
+  }
+
+  to {
+    opacity: 0.86;
+    transform: translateX(-50%) rotate(-6deg) scaleX(1.08);
+  }
+}
+
+@keyframes scene-particle-bolt-core {
+  from {
+    opacity: 0.34;
+    transform: scaleX(0.92);
+  }
+
+  to {
+    opacity: 0.72;
+    transform: scaleX(1.02);
+  }
+}
+
+@keyframes scene-particle-bolt-run {
+  from {
+    opacity: 0;
+    transform:
+      translateX(0)
+      translateY(var(--particle-lane, 0px))
+      scaleX(0.3);
+  }
+
+  12% {
+    opacity: var(--particle-alpha, 0.7);
+  }
+
+  82% {
+    opacity: var(--particle-alpha, 0.7);
+  }
+
+  to {
+    opacity: 0;
+    transform:
+      translateX(var(--scene-path-length, 180px))
+      translateY(calc(var(--particle-lane, 0px) * -0.45))
+      scaleX(1.2);
+  }
+}
+
+@keyframes scene-particle-impact-burst {
+  from {
+    transform: translate(-50%, -50%) rotateZ(calc(var(--particle-phase, 0) * 1turn)) scale(0.16);
+    opacity: 0;
+  }
+
+  35% {
+    opacity: 1;
+  }
+
+  to {
+    transform:
+      translate(-50%, -50%)
+      rotateZ(calc((var(--particle-phase, 0) + 1) * 1turn * var(--particle-spin, 1)))
+      translateY(calc(var(--particle-rise, 36px) * -1))
+      scale(1.32);
+    opacity: 0;
+  }
+}
+
+
+
+.scene-surface[data-rollout-phase="phase-4-finale-showcase"] {
+  box-shadow:
+    inset 0 0 80px rgba(56, 189, 248, 0.12),
+    inset 0 -36px 120px rgba(250, 204, 21, 0.08);
+}
+
+.scene-surface[data-rollout-phase="phase-4-finale-showcase"] .scene-stage--isometric::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 50% 72%, rgba(250, 204, 21, 0.12), transparent 24%),
+    radial-gradient(circle at 42% 54%, rgba(56, 189, 248, 0.12), transparent 18%);
   pointer-events: none;
+  animation: scene-finale-camera-pulse 6400ms ease-in-out infinite;
+}
+
+.scene-choreography-overlay {
+  position: absolute;
+  inset: 12px 14px auto 14px;
+  z-index: 12;
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr);
+  gap: 8px 12px;
+  align-items: center;
+  pointer-events: none;
+  color: var(--ink, currentColor);
+  text-shadow: 0 1px 10px rgba(2, 6, 23, 0.72);
+}
+
+.scene-cast-clock {
+  grid-row: span 2;
+  width: 44px;
+  height: 44px;
+  border: 2px solid rgba(250, 204, 21, 0.72);
+  border-radius: 999px;
+  background:
+    conic-gradient(from 0turn, rgba(250, 204, 21, 0.9), rgba(56, 189, 248, 0.78), rgba(250, 204, 21, 0.9)),
+    rgba(15, 23, 42, 0.5);
+  box-shadow:
+    0 0 22px rgba(250, 204, 21, 0.26),
+    inset 0 0 0 9px rgba(2, 6, 23, 0.62);
+  animation: scene-cast-clock-spin var(--scene-choreo-duration, 6400ms) linear infinite;
+}
+
+.scene-choreography-title {
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  opacity: 0.92;
+}
+
+.scene-beat-rail {
+  position: relative;
+  min-height: 22px;
+  border-radius: 999px;
+  background:
+    linear-gradient(90deg, rgba(56, 189, 248, 0.28), rgba(250, 204, 21, 0.34), rgba(251, 113, 133, 0.24)),
+    rgba(15, 23, 42, 0.42);
+  box-shadow: inset 0 0 0 1px rgba(248, 250, 252, 0.12);
+  overflow: hidden;
+}
+
+.scene-beat-rail::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 22%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(248, 250, 252, 0.05), rgba(248, 250, 252, 0.52), rgba(248, 250, 252, 0.05));
+  animation: scene-beat-scan var(--scene-choreo-duration, 6400ms) linear infinite;
+}
+
+.scene-beat-marker {
+  position: absolute;
+  left: var(--scene-beat-at, 0%);
+  top: 50%;
+  min-width: max-content;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(2, 6, 23, 0.64);
+  border: 1px solid rgba(248, 250, 252, 0.16);
+  color: var(--ink, currentColor);
+  font-size: 0.62rem;
+  font-weight: 900;
+  transform: translate(-50%, -50%);
+  animation: scene-beat-marker-pop var(--scene-choreo-duration, 6400ms) ease-in-out infinite;
+  animation-delay: var(--scene-beat-delay, 0ms);
+}
+
+.scene-sprite-rig-layer[data-rig-layer="spell-wings"] {
+  position: absolute;
+  left: 50%;
+  top: 30%;
+  width: 112%;
+  height: 44%;
+  border-radius: 999px;
+  background:
+    radial-gradient(ellipse at 12% 50%, color-mix(in srgb, var(--mint, #7dd3fc) 44%, transparent), transparent 62%),
+    radial-gradient(ellipse at 88% 50%, color-mix(in srgb, var(--mint, #7dd3fc) 44%, transparent), transparent 62%);
+  filter: blur(2px);
+  opacity: 0.48;
+  transform: translateX(-50%) rotate(-8deg);
+  animation: scene-spell-wings 1600ms ease-in-out infinite alternate;
+}
+
+.scene-sprite-rig-layer[data-rig-layer="hit-flash"] {
+  position: absolute;
+  inset: 10% 18% 24% 18%;
+  border-radius: 16px;
+  background: radial-gradient(circle, rgba(248, 250, 252, 0.62), transparent 62%);
+  opacity: 0.3;
+  mix-blend-mode: screen;
+  animation: scene-hit-flash 1300ms steps(2, end) infinite;
+}
+
+.scene-particle-field[data-particle-motion="nova-ring"] .scene-particle-orbit,
+.scene-particle-field[data-particle-motion="shockwave-ring"] .scene-particle-orbit {
+  animation-name: scene-particle-nova-expand;
+  animation-duration: var(--particle-duration, 2200ms);
+  animation-delay: var(--particle-delay, 0ms);
+}
+
+.scene-particle-field[data-particle-motion="shockwave-ring"] {
+  transform: rotateX(64deg);
+}
+
+.scene-particle--nova-ring,
+.scene-particle--shockwave-ring {
+  box-shadow:
+    0 0 calc(var(--particle-size, 5px) * 3) currentColor,
+    0 0 calc(var(--particle-size, 5px) * 9) color-mix(in srgb, currentColor 62%, transparent);
+}
+
+.scene-particle-field--starfall .scene-particle--starfall {
+  left: calc(50% + var(--particle-x, 0px));
+  top: calc(50% + var(--particle-y, 0px));
+  animation: scene-particle-starfall var(--particle-duration, 2400ms) linear infinite;
+  animation-delay: var(--particle-delay, 0ms);
+}
+
+@keyframes scene-particle-starfall {
+  from {
+    transform: translate(-50%, -50%) translateY(calc(var(--particle-fall, 80px) * -0.65)) translateX(calc(var(--particle-drift, 0px) * -0.4)) scale(0.72);
+    opacity: 0;
+  }
+
+  18% {
+    opacity: var(--particle-alpha, 0.72);
+  }
+
+  to {
+    transform: translate(-50%, -50%) translateY(var(--particle-fall, 80px)) translateX(var(--particle-drift, 0px)) scale(1.18);
+    opacity: 0;
+  }
+}
+
+@keyframes scene-particle-nova-expand {
+  from {
+    transform:
+      rotate(var(--particle-angle, 0deg))
+      translateX(calc(var(--particle-radius-x, 0px) * 0.22))
+      translateY(calc(var(--particle-radius-y, 0px) * -0.22))
+      scale(0.44);
+    opacity: 0;
+  }
+
+  38% {
+    opacity: var(--particle-alpha, 0.76);
+  }
+
+  to {
+    transform:
+      rotate(var(--particle-angle, 0deg))
+      translateX(calc(var(--particle-radius-x, 0px) * var(--particle-expansion, 1.4)))
+      translateY(calc(var(--particle-radius-y, 0px) * var(--particle-expansion, 1.4) * -1))
+      scale(1.28);
+    opacity: 0;
+  }
+}
+
+@keyframes scene-cast-clock-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@keyframes scene-beat-scan {
+  from {
+    transform: translateX(-28%);
+  }
+
+  to {
+    transform: translateX(500%);
+  }
+}
+
+@keyframes scene-beat-marker-pop {
+  0%, 100% {
+    opacity: 0.72;
+    transform: translate(-50%, -50%) scale(0.92);
+  }
+
+  12% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.08);
+  }
+}
+
+@keyframes scene-finale-camera-pulse {
+  0%, 100% {
+    opacity: 0.46;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.85;
+    transform: scale(1.04);
+  }
+}
+
+@keyframes scene-spell-wings {
+  from {
+    opacity: 0.32;
+    transform: translateX(-50%) rotate(-10deg) scaleX(0.88);
+  }
+
+  to {
+    opacity: 0.62;
+    transform: translateX(-50%) rotate(7deg) scaleX(1.08);
+  }
+}
+
+@keyframes scene-hit-flash {
+  0%, 100% {
+    opacity: 0.08;
+  }
+
+  45% {
+    opacity: 0.52;
+  }
+}
+
+
+.scene-particle {
+  box-shadow:
+    0 0 calc(var(--particle-size, 5px) * 2 * var(--scene-effect-glow, 1)) currentColor,
+    0 0 calc(var(--particle-size, 5px) * 5 * var(--scene-effect-glow, 1)) color-mix(in srgb, currentColor 60%, transparent),
+    0 0 calc(var(--particle-size, 5px) * 6 * var(--scene-effect-intensity, 1)) color-mix(in srgb, currentColor 36%, transparent);
+  opacity: calc(var(--particle-alpha, 0.7) * var(--scene-effect-alpha, 1));
+}
+
+.scene-particle-field[data-particle-motion="spell-swirl"] .scene-particle-orbit .scene-particle,
+.scene-particle-field[data-particle-motion="rune-ring"] .scene-particle-orbit .scene-particle,
+.scene-particle-field[data-particle-motion="nova-ring"] .scene-particle,
+.scene-particle-field[data-particle-motion="shockwave-ring"] .scene-particle,
+.scene-particle-field[data-particle-motion="impact-burst"] .scene-particle {
+  filter:
+    saturate(calc(1 + var(--scene-effect-intensity, 1) * 0.18))
+    brightness(calc(1 + var(--scene-effect-intensity, 1) * 0.08));
+}
+
+.scene-surface[data-effect-multiplier="4.00"] .scene-stage-grid,
+.scene-surface[data-effect-multiplier="3.75"] .scene-stage-grid,
+.scene-surface[data-effect-multiplier="3.50"] .scene-stage-grid {
+  box-shadow:
+    0 24px 48px rgba(2, 6, 23, 0.45),
+    0 0 48px color-mix(in srgb, var(--mint, #7dd3fc) 18%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--line, currentColor) 22%, transparent);
 }
 
 @media (max-width: 980px) {

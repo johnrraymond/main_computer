@@ -5,8 +5,8 @@ import json
 import threading
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -25,6 +25,8 @@ from main_computer.hub_security import (
     generate_hub_session_keypair,
     hub_transport_is_encrypted_or_loopback,
 )
+from main_computer.hub_plex_models import HubAIRequest, HubWorkerSummary
+from main_computer.hub_plex_service import AIRequestPlexService
 from main_computer.models import ChatAttachment, ChatMessage, ChatResponse
 
 
@@ -33,6 +35,8 @@ DEFAULT_HUB_WORKER_PORT = 8771
 HUB_WORKER_CHAT_PATH = "/api/hub/worker/chat"
 HUB_WORKER_SESSION_START_PATH = "/api/hub/worker/sessions/start"
 HUB_WORKER_SESSION_CHAT_PATH = "/api/hub/worker/sessions/chat"
+HUB_WORKER_STALE_AFTER_SECONDS = 90.0
+HUB_WORKER_LEASE_SECONDS = 600.0
 
 
 def _utc_now() -> str:
@@ -108,10 +112,17 @@ class HubWorker:
     node_id: str
     endpoint: str
     model: str = ""
+    models: list[str] = field(default_factory=list)
     status: str = "available"
     credits_per_request: int = 1
     registered_at: str = ""
     last_seen_at: str = ""
+    capabilities: dict[str, Any] = field(default_factory=dict)
+    queue_depth: int = 0
+    active_requests: int = 0
+    max_concurrency: int = 1
+    lease_expires_at: str = ""
+    stale: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -131,29 +142,52 @@ class HubUpstream:
 
 
 class HubRegistry:
-    """Tiny JSON-backed worker registry used by the hub server.
+    """JSON-backed worker registry used by the hub server.
 
-    The registry stores routing metadata only. In high-security mode the hub
-    never receives prompt-bearing messages; it only brokers temporary public keys
-    and relays authenticated encrypted envelopes between requester and worker.
+    Phase 2 keeps this class as the stable compatibility surface and extends it
+    with worker heartbeats, leases, capacity metadata, and stale-worker
+    filtering. The registry still stores routing metadata only; in high-security
+    mode prompt-bearing data remains inside encrypted envelopes.
     """
 
     def __init__(self, root: Path, *, allow_insecure_dev_network: bool = False) -> None:
         self.root = root
         self.path = root / "hub_workers.json"
         self.allow_insecure_dev_network = bool(allow_insecure_dev_network)
+        self.worker_stale_after_s = HUB_WORKER_STALE_AFTER_SECONDS
+        self.worker_lease_s = HUB_WORKER_LEASE_SECONDS
         self._lock = threading.Lock()
         self.root.mkdir(parents=True, exist_ok=True)
 
     def status(self) -> dict[str, Any]:
+        self.expire_stale_workers()
         data = self._load()
+        workers = data.get("workers", [])
+        available_workers = [
+            worker
+            for worker in workers
+            if str(worker.get("status", "available")) in {"available", "configured"}
+            and not bool(worker.get("stale", False))
+            and int(worker.get("active_requests", 0) or 0) < int(worker.get("max_concurrency", 1) or 1)
+        ]
+        stale_workers = [
+            worker
+            for worker in workers
+            if bool(worker.get("stale", False)) or str(worker.get("status", "")).lower() == "stale"
+        ]
         return {
             "ok": True,
             "hub": data.get("hub", {}),
-            "workers": data.get("workers", []),
-            "worker_count": len(data.get("workers", [])),
+            "workers": workers,
+            "worker_count": len(workers),
+            "available_worker_count": len(available_workers),
+            "stale_worker_count": len(stale_workers),
             "upstream_hubs": data.get("upstream_hubs", []),
             "upstream_count": len(data.get("upstream_hubs", [])),
+            "leases": {
+                "worker_stale_after_seconds": self.worker_stale_after_s,
+                "worker_lease_seconds": self.worker_lease_s,
+            },
         }
 
     def register_worker(
@@ -162,7 +196,12 @@ class HubRegistry:
         node_id: str,
         endpoint: str,
         model: str = "",
+        models: list[str] | None = None,
+        capabilities: dict[str, Any] | None = None,
         credits_per_request: int = 1,
+        queue_depth: int = 0,
+        active_requests: int = 0,
+        max_concurrency: int = 1,
     ) -> HubWorker:
         clean_node_id = _clean_node_id(node_id, default="hub-worker")
         clean_endpoint = str(endpoint or "").strip().rstrip("/")
@@ -175,6 +214,12 @@ class HubRegistry:
         )
         now = _utc_now()
         credit_price = max(1, int(credits_per_request or 1))
+        clean_models = self._normalize_models(model=model, models=models)
+        primary_model = clean_models[0] if clean_models else str(model or "").strip()
+        clean_capabilities = dict(capabilities or {})
+        clean_max_concurrency = max(1, int(max_concurrency or 1))
+        clean_active = min(max(0, int(active_requests or 0)), clean_max_concurrency)
+        clean_queue_depth = max(0, int(queue_depth or 0))
         with self._lock:
             data = self._load()
             workers = [item for item in data["workers"] if item.get("node_id") != clean_node_id]
@@ -183,16 +228,101 @@ class HubRegistry:
             worker = HubWorker(
                 node_id=clean_node_id,
                 endpoint=clean_endpoint,
-                model=str(model or existing.get("model") or "").strip(),
-                status="available",
+                model=primary_model,
+                models=clean_models,
+                status="available" if clean_active < clean_max_concurrency else "busy",
                 credits_per_request=credit_price,
                 registered_at=registered_at,
                 last_seen_at=now,
+                capabilities=clean_capabilities,
+                queue_depth=clean_queue_depth,
+                active_requests=clean_active,
+                max_concurrency=clean_max_concurrency,
+                lease_expires_at=str(existing.get("lease_expires_at", "") or ""),
+                stale=False,
             )
             workers.append(worker.as_dict())
             data["workers"] = sorted(workers, key=lambda item: str(item.get("node_id", "")))
             self._save(data)
             return worker
+
+    def heartbeat_worker(
+        self,
+        node_id: str,
+        *,
+        status: str = "available",
+        model: str = "",
+        models: list[str] | None = None,
+        capabilities: dict[str, Any] | None = None,
+        queue_depth: int | None = None,
+        active_requests: int | None = None,
+        max_concurrency: int | None = None,
+    ) -> HubWorker:
+        clean_node_id = _clean_node_id(node_id, default="hub-worker")
+        now = _utc_now()
+        with self._lock:
+            data = self._load()
+            for item in data["workers"]:
+                if item.get("node_id") != clean_node_id:
+                    continue
+                current_max = max(1, int(item.get("max_concurrency", 1) or 1))
+                next_max = max(1, int(max_concurrency or current_max))
+                next_active = max(0, int(item.get("active_requests", 0) or 0)) if active_requests is None else max(0, int(active_requests or 0))
+                next_active = min(next_active, next_max)
+                clean_status = str(status or item.get("status") or "available").strip().lower()
+                if clean_status not in {"available", "configured", "busy", "offline", "draining"}:
+                    clean_status = "available"
+                if clean_status == "available" and next_active >= next_max:
+                    clean_status = "busy"
+                item["status"] = clean_status
+                item["last_seen_at"] = now
+                item["stale"] = False
+                item["queue_depth"] = max(0, int(item.get("queue_depth", 0) or 0)) if queue_depth is None else max(0, int(queue_depth or 0))
+                item["active_requests"] = next_active
+                item["max_concurrency"] = next_max
+                if capabilities is not None:
+                    item["capabilities"] = dict(capabilities)
+                if models is not None or model:
+                    clean_models = self._normalize_models(model=model or str(item.get("model", "")), models=models)
+                    item["models"] = clean_models
+                    item["model"] = clean_models[0] if clean_models else str(model or "")
+                worker = self._worker_from_payload(item)
+                self._save(data)
+                return worker
+        raise KeyError(f"Unknown hub worker: {clean_node_id}")
+
+    def get_worker(self, node_id: str) -> HubWorker | None:
+        clean_node_id = _clean_node_id(node_id, default="hub-worker")
+        self.expire_stale_workers()
+        data = self._load()
+        for item in data["workers"]:
+            if item.get("node_id") == clean_node_id:
+                return self._worker_from_payload(item)
+        return None
+
+    def expire_stale_workers(self, *, stale_after_s: float | None = None) -> int:
+        threshold = self.worker_stale_after_s if stale_after_s is None else max(0.0, float(stale_after_s))
+        now = datetime.now(tz=timezone.utc)
+        changed = 0
+        with self._lock:
+            data = self._load()
+            for worker in data["workers"]:
+                status = str(worker.get("status", "available")).lower()
+                if status in {"offline", "draining"}:
+                    continue
+                last_seen = self._parse_iso(str(worker.get("last_seen_at", "") or worker.get("registered_at", "")))
+                lease_expires = self._parse_iso(str(worker.get("lease_expires_at", "") or ""))
+                heartbeat_stale = last_seen is not None and (now - last_seen).total_seconds() > threshold
+                lease_stale = lease_expires is not None and lease_expires < now and int(worker.get("active_requests", 0) or 0) > 0
+                if heartbeat_stale or lease_stale:
+                    worker["status"] = "stale"
+                    worker["stale"] = True
+                    worker["active_requests"] = 0
+                    worker["lease_expires_at"] = ""
+                    changed += 1
+            if changed:
+                self._save(data)
+        return changed
 
     def register_upstream_hub(
         self,
@@ -263,41 +393,113 @@ class HubRegistry:
 
     def mark_worker(self, node_id: str, *, status: str) -> None:
         clean_node_id = _clean_node_id(node_id, default="hub-worker")
+        clean_status = str(status or "available").strip().lower()
+        if clean_status not in {"available", "configured", "busy", "offline", "stale", "draining"}:
+            clean_status = "available"
         with self._lock:
             data = self._load()
             changed = False
             for worker in data["workers"]:
                 if worker.get("node_id") == clean_node_id:
-                    worker["status"] = status
+                    worker["status"] = clean_status
                     worker["last_seen_at"] = _utc_now()
+                    worker["stale"] = clean_status == "stale"
+                    if clean_status in {"offline", "stale", "draining"}:
+                        worker["active_requests"] = 0
+                        worker["lease_expires_at"] = ""
                     changed = True
+            if changed:
+                self._save(data)
+
+    def lease_worker(
+        self,
+        model: str = "",
+        *,
+        request_id: str = "",
+        preferred_node_id: str = "",
+        lease_seconds: float | None = None,
+    ) -> HubWorker | None:
+        desired = str(model or "").strip()
+        preferred = _clean_node_id(preferred_node_id, default="") if preferred_node_id else ""
+        lease_s = self.worker_lease_s if lease_seconds is None else max(1.0, float(lease_seconds))
+        with self._lock:
+            self._expire_stale_workers_unlocked(self._load(), stale_after_s=self.worker_stale_after_s)
+            data = self._load()
+            candidates = [
+                item
+                for item in data["workers"]
+                if self._is_worker_lease_candidate(item, desired=desired, preferred_node_id=preferred, allow_model_fallback=False)
+            ]
+            if not candidates and desired and not preferred:
+                candidates = [
+                    item
+                    for item in data["workers"]
+                    if self._is_worker_lease_candidate(item, desired="", preferred_node_id="", allow_model_fallback=True)
+                ]
+            if not candidates:
+                return None
+            worker = sorted(
+                candidates,
+                key=lambda item: (
+                    max(0, int(item.get("queue_depth", 0) or 0)) + max(0, int(item.get("active_requests", 0) or 0)),
+                    str(item.get("last_seen_at", "") or item.get("registered_at", "")),
+                    str(item.get("node_id", "")),
+                ),
+            )[0]
+            max_concurrency = max(1, int(worker.get("max_concurrency", 1) or 1))
+            active = min(max_concurrency, max(0, int(worker.get("active_requests", 0) or 0)) + 1)
+            worker["active_requests"] = active
+            worker["status"] = "busy" if active >= max_concurrency else "available"
+            worker["lease_expires_at"] = (datetime.now(tz=timezone.utc) + timedelta(seconds=lease_s)).isoformat()
+            worker["last_seen_at"] = _utc_now()
+            worker["stale"] = False
+            if request_id:
+                worker["last_request_id"] = str(request_id)
+            self._save(data)
+            return self._worker_from_payload(worker)
+
+    def release_worker(self, node_id: str, *, request_id: str = "", success: bool = True) -> None:
+        clean_node_id = _clean_node_id(node_id, default="hub-worker")
+        with self._lock:
+            data = self._load()
+            changed = False
+            for worker in data["workers"]:
+                if worker.get("node_id") != clean_node_id:
+                    continue
+                max_concurrency = max(1, int(worker.get("max_concurrency", 1) or 1))
+                active = max(0, int(worker.get("active_requests", 0) or 0) - 1)
+                worker["active_requests"] = active
+                worker["status"] = "available" if success else "offline"
+                if active >= max_concurrency:
+                    worker["status"] = "busy"
+                if not success:
+                    worker["active_requests"] = 0
+                    worker["lease_expires_at"] = ""
+                elif active == 0:
+                    worker["lease_expires_at"] = ""
+                worker["last_seen_at"] = _utc_now()
+                worker["stale"] = False
+                if request_id:
+                    worker["last_request_id"] = str(request_id)
+                changed = True
             if changed:
                 self._save(data)
 
     def select_worker(self, model: str = "") -> HubWorker | None:
         desired = str(model or "").strip()
+        self.expire_stale_workers()
         data = self._load()
         available: list[HubWorker] = []
         for item in data["workers"]:
-            if str(item.get("status", "available")) not in {"available", "configured"}:
+            if not self._is_worker_lease_candidate(item, desired=desired, preferred_node_id="", allow_model_fallback=False):
                 continue
-            worker_model = str(item.get("model", "") or "")
-            if desired and worker_model and worker_model != desired:
-                continue
-            available.append(
-                HubWorker(
-                    node_id=str(item.get("node_id", "")),
-                    endpoint=str(item.get("endpoint", "")).rstrip("/"),
-                    model=worker_model,
-                    status=str(item.get("status", "available")),
-                    credits_per_request=max(1, int(item.get("credits_per_request", 1) or 1)),
-                    registered_at=str(item.get("registered_at", "")),
-                    last_seen_at=str(item.get("last_seen_at", "")),
-                )
-            )
+            available.append(self._worker_from_payload(item))
         if not available and desired:
             return self.select_worker("")
-        return sorted(available, key=lambda worker: worker.last_seen_at or worker.registered_at)[0] if available else None
+        return sorted(
+            available,
+            key=lambda worker: (worker.queue_depth + worker.active_requests, worker.last_seen_at or worker.registered_at),
+        )[0] if available else None
 
     def _load(self) -> dict[str, Any]:
         if self.path.exists():
@@ -324,15 +526,29 @@ class HubRegistry:
             node_id = _clean_node_id(str(item.get("node_id", "")), default="")
             if not node_id or not endpoint:
                 continue
+            models = self._normalize_models(model=str(item.get("model", "") or ""), models=item.get("models") if isinstance(item.get("models"), list) else None)
+            primary_model = models[0] if models else str(item.get("model", "") or "")
+            max_concurrency = max(1, int(item.get("max_concurrency", 1) or 1))
+            active_requests = min(max_concurrency, max(0, int(item.get("active_requests", 0) or 0)))
+            status = str(item.get("status", "available") or "available").lower()
+            if status not in {"available", "configured", "busy", "offline", "stale", "draining"}:
+                status = "available"
             normalized_workers.append(
                 {
                     "node_id": node_id,
                     "endpoint": endpoint,
-                    "model": str(item.get("model", "") or ""),
-                    "status": str(item.get("status", "available") or "available"),
+                    "model": primary_model,
+                    "models": models,
+                    "status": status,
                     "credits_per_request": max(1, int(item.get("credits_per_request", 1) or 1)),
                     "registered_at": str(item.get("registered_at") or created_at),
                     "last_seen_at": str(item.get("last_seen_at") or item.get("registered_at") or created_at),
+                    "capabilities": dict(item.get("capabilities", {})) if isinstance(item.get("capabilities"), dict) else {},
+                    "queue_depth": max(0, int(item.get("queue_depth", 0) or 0)),
+                    "active_requests": active_requests,
+                    "max_concurrency": max_concurrency,
+                    "lease_expires_at": str(item.get("lease_expires_at", "") or ""),
+                    "stale": bool(item.get("stale", False)) or status == "stale",
                 }
             )
         upstream_hubs = data.get("upstream_hubs") if isinstance(data.get("upstream_hubs"), list) else []
@@ -365,8 +581,104 @@ class HubRegistry:
             "upstream_hubs": sorted(normalized_upstreams, key=lambda item: item["node_id"]),
         }
 
+    def _expire_stale_workers_unlocked(self, data: dict[str, Any], *, stale_after_s: float) -> int:
+        threshold = max(0.0, float(stale_after_s))
+        now = datetime.now(tz=timezone.utc)
+        changed = 0
+        for worker in data["workers"]:
+            status = str(worker.get("status", "available")).lower()
+            if status in {"offline", "draining"}:
+                continue
+            last_seen = self._parse_iso(str(worker.get("last_seen_at", "") or worker.get("registered_at", "")))
+            lease_expires = self._parse_iso(str(worker.get("lease_expires_at", "") or ""))
+            heartbeat_stale = last_seen is not None and (now - last_seen).total_seconds() > threshold
+            lease_stale = lease_expires is not None and lease_expires < now and int(worker.get("active_requests", 0) or 0) > 0
+            if heartbeat_stale or lease_stale:
+                worker["status"] = "stale"
+                worker["stale"] = True
+                worker["active_requests"] = 0
+                worker["lease_expires_at"] = ""
+                changed += 1
+        if changed:
+            self._save(data)
+        return changed
+
+    def _is_worker_lease_candidate(
+        self,
+        item: dict[str, Any],
+        *,
+        desired: str,
+        preferred_node_id: str,
+        allow_model_fallback: bool,
+    ) -> bool:
+        status = str(item.get("status", "available")).lower()
+        if status not in {"available", "configured"}:
+            return False
+        if bool(item.get("stale", False)):
+            return False
+        active = max(0, int(item.get("active_requests", 0) or 0))
+        max_concurrency = max(1, int(item.get("max_concurrency", 1) or 1))
+        if active >= max_concurrency:
+            return False
+        node_id = str(item.get("node_id", ""))
+        if preferred_node_id and node_id != preferred_node_id:
+            return False
+        if not desired or allow_model_fallback:
+            return True
+        worker_models = [str(model).strip() for model in item.get("models", []) if str(model).strip()]
+        worker_model = str(item.get("model", "") or "").strip()
+        if worker_model and worker_model not in worker_models:
+            worker_models.append(worker_model)
+        return desired in worker_models
+
+    def _worker_from_payload(self, item: dict[str, Any]) -> HubWorker:
+        models = [str(model).strip() for model in item.get("models", []) if str(model).strip()]
+        model = str(item.get("model", "") or "")
+        if model and model not in models:
+            models.insert(0, model)
+        return HubWorker(
+            node_id=str(item.get("node_id", "")),
+            endpoint=str(item.get("endpoint", "")).rstrip("/"),
+            model=model,
+            models=models,
+            status=str(item.get("status", "available")),
+            credits_per_request=max(1, int(item.get("credits_per_request", 1) or 1)),
+            registered_at=str(item.get("registered_at", "")),
+            last_seen_at=str(item.get("last_seen_at", "")),
+            capabilities=dict(item.get("capabilities", {})) if isinstance(item.get("capabilities"), dict) else {},
+            queue_depth=max(0, int(item.get("queue_depth", 0) or 0)),
+            active_requests=max(0, int(item.get("active_requests", 0) or 0)),
+            max_concurrency=max(1, int(item.get("max_concurrency", 1) or 1)),
+            lease_expires_at=str(item.get("lease_expires_at", "") or ""),
+            stale=bool(item.get("stale", False)) or str(item.get("status", "")).lower() == "stale",
+        )
+
+    @staticmethod
+    def _normalize_models(*, model: str = "", models: list[str] | None = None) -> list[str]:
+        result: list[str] = []
+        for raw in [model, *(models or [])]:
+            clean = str(raw or "").strip()
+            if clean and clean not in result:
+                result.append(clean)
+        return result
+
+    @staticmethod
+    def _parse_iso(value: str) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
 
 class HubDispatcher:
+    """Compatibility facade around the hub AI request plexing service."""
+
     def __init__(
         self,
         registry: HubRegistry,
@@ -379,8 +691,13 @@ class HubDispatcher:
         self.ledger = ledger
         self.timeout_s = max(1.0, float(timeout_s or 600.0))
         self.allow_insecure_dev_network = bool(allow_insecure_dev_network)
-        self._secure_sessions: dict[str, dict[str, Any]] = {}
-        self._session_lock = threading.Lock()
+        self.plex_service = AIRequestPlexService(
+            registry,
+            ledger,
+            root=registry.root,
+            timeout_s=self.timeout_s,
+            allow_insecure_dev_network=self.allow_insecure_dev_network,
+        )
 
     def chat(
         self,
@@ -390,68 +707,31 @@ class HubDispatcher:
         client_node_id: str = "main-computer-client",
         hop_count: int = 0,
     ) -> ChatResponse:
-        request_payload = {
-            "messages": [chat_message_to_dict(message) for message in messages],
-            "model": model,
-            "client_node_id": client_node_id,
-        }
-        request_id = _stable_request_id(request_payload)
-        worker = self.registry.select_worker(model)
-        if worker is None:
-            return self._forward_to_upstream(
-                request_id=request_id,
-                messages=request_payload["messages"],
-                model=model,
-                client_node_id=client_node_id,
-                hop_count=hop_count,
-            )
-
-        payload = {
-            "request_id": request_id,
-            "model": model or worker.model,
-            "client_node_id": _clean_node_id(client_node_id, default="main-computer-client"),
-            "messages": request_payload["messages"],
-            "energy": {
-                "credits": worker.credits_per_request,
-                "settlement": "batched-worker-claim",
-                "memo": f"hub request {request_id}",
-            },
-        }
-        try:
-            response_payload = self._post_json(worker.endpoint + HUB_WORKER_CHAT_PATH, payload)
-            response = chat_response_from_dict(
-                response_payload,
-                default_provider="hub-worker",
-                default_model=worker.model or model or "hub-worker-model",
-            )
-        except Exception:
-            self.registry.mark_worker(worker.node_id, status="offline")
-            raise
-
-        energy_status = self.ledger.queue_worker_payout(
-            worker.node_id,
-            worker.credits_per_request,
-            memo=f"hub request {request_id}",
-            request_id=request_id,
+        request = HubAIRequest.from_messages(
+            list(messages),
+            model=model,
+            client_node_id=client_node_id,
+            hop_count=hop_count,
         )
-        self.registry.mark_worker(worker.node_id, status="available")
-        metadata = dict(response.metadata)
-        metadata["hub"] = {
-            "request_id": request_id,
-            "worker_node_id": worker.node_id,
-            "worker_endpoint": worker.endpoint,
-            "credits_queued": worker.credits_per_request,
-            "settlement": "batched-worker-claim",
-            "payout_queue": energy_status.get("payout_queue", {}),
-            "security_mode": "legacy-plaintext",
-            "hub_blind": False,
-        }
-        return ChatResponse(
-            content=response.content,
-            provider="hub",
-            model=response.model,
-            metadata=metadata,
-        )
+        return self.plex_service.dispatch_sync(request)
+
+    def submit(self, request: HubAIRequest) -> dict[str, Any]:
+        return self.plex_service.submit(request).as_dict()
+
+    def get_request_status(self, request_id: str) -> dict[str, Any]:
+        return self.plex_service.get_status(request_id).as_dict()
+
+    def cancel_request(self, request_id: str) -> dict[str, Any]:
+        return self.plex_service.cancel(request_id).as_dict()
+
+    def list_requests(self, *, limit: int = 100, states: set[str] | None = None) -> list[dict[str, Any]]:
+        return [status.as_dict() for status in self.plex_service.list_statuses(limit=limit, states=states)]
+
+    def get_request_events(self, request_id: str) -> list[dict[str, Any]]:
+        return self.plex_service.get_events(request_id)
+
+    def metrics(self) -> dict[str, Any]:
+        return self.plex_service.metrics()
 
     def start_secure_session(
         self,
@@ -461,368 +741,15 @@ class HubDispatcher:
         client_node_id: str = "main-computer-client",
         hop_count: int = 0,
     ) -> dict[str, Any]:
-        request_payload = {
-            "requester_public_key": requester_public_key,
-            "model": model,
-            "client_node_id": _clean_node_id(client_node_id, default="main-computer-client"),
-            "hop_count": hop_count,
-        }
-        request_id = _stable_request_id(request_payload)
-        worker = self.registry.select_worker(model)
-        if worker is None:
-            return self._start_upstream_secure_session(
-                request_id=request_id,
-                requester_public_key=requester_public_key,
-                model=model,
-                client_node_id=client_node_id,
-                hop_count=hop_count,
-            )
-
-        session_id = _stable_session_id(request_id, request_payload)
-        payload = {
-            "request_id": request_id,
-            "session_id": session_id,
-            "model": model or worker.model,
-            "client_node_id": request_payload["client_node_id"],
-            "requester_public_key": requester_public_key,
-            "energy": {
-                "credits": worker.credits_per_request,
-                "settlement": "batched-worker-claim",
-                "memo": f"hub request {request_id}",
-            },
-        }
-        try:
-            worker_session = self._post_json(worker.endpoint + HUB_WORKER_SESSION_START_PATH, payload)
-        except Exception:
-            self.registry.mark_worker(worker.node_id, status="offline")
-            raise
-
-        worker_public_key = str(worker_session.get("worker_public_key") or "")
-        if not worker_public_key:
-            raise RuntimeError("Hub worker did not return a temporary public key.")
-        with self._session_lock:
-            self._secure_sessions[session_id] = {
-                "kind": "worker",
-                "request_id": request_id,
-                "worker": worker.as_dict(),
-                "credits": worker.credits_per_request,
-                "created_at": _utc_now(),
-            }
-        self.registry.mark_worker(worker.node_id, status="available")
-        return {
-            "ok": True,
-            "mode": "high-security",
-            "session_id": session_id,
-            "request_id": request_id,
-            "worker_public_key": worker_public_key,
-            "encryption": {
-                "profile": HUB_SECURITY_PROFILE,
-                "temporary_public_keys": True,
-                "hub_blind": True,
-            },
-            "metadata": {
-                "hub": {
-                    "request_id": request_id,
-                    "worker_node_id": worker.node_id,
-                    "worker_endpoint": worker.endpoint,
-                    "credits_queued": worker.credits_per_request,
-                    "settlement": "batched-worker-claim",
-                    "security_mode": "high-security",
-                    "hub_blind": True,
-                    "encryption_profile": HUB_SECURITY_PROFILE,
-                }
-            },
-        }
+        return self.plex_service.start_secure_session(
+            requester_public_key=requester_public_key,
+            model=model,
+            client_node_id=client_node_id,
+            hop_count=hop_count,
+        )
 
     def secure_chat(self, *, session_id: str, request_id: str, envelope: dict[str, Any]) -> dict[str, Any]:
-        session = self._session(session_id)
-        stored_request_id = str(session.get("request_id", ""))
-        if stored_request_id and request_id and stored_request_id != request_id:
-            raise ValueError("Hub session request id mismatch.")
-        if session.get("kind") == "upstream":
-            return self._secure_chat_upstream(session=session, envelope=envelope)
-        return self._secure_chat_worker(session=session, envelope=envelope)
-
-    def _secure_chat_worker(self, *, session: dict[str, Any], envelope: dict[str, Any]) -> dict[str, Any]:
-        worker_data = dict(session.get("worker", {}))
-        worker = HubWorker(
-            node_id=str(worker_data.get("node_id", "")),
-            endpoint=str(worker_data.get("endpoint", "")).rstrip("/"),
-            model=str(worker_data.get("model", "")),
-            status=str(worker_data.get("status", "available")),
-            credits_per_request=max(1, int(worker_data.get("credits_per_request", session.get("credits", 1)) or 1)),
-            registered_at=str(worker_data.get("registered_at", "")),
-            last_seen_at=str(worker_data.get("last_seen_at", "")),
-        )
-        request_id = str(session.get("request_id", ""))
-        try:
-            worker_response = self._post_json(
-                worker.endpoint + HUB_WORKER_SESSION_CHAT_PATH,
-                {
-                    "session_id": session["session_id"],
-                    "request_id": request_id,
-                    "envelope": envelope,
-                },
-            )
-        except Exception:
-            self.registry.mark_worker(worker.node_id, status="offline")
-            raise
-
-        energy_status = self.ledger.queue_worker_payout(
-            worker.node_id,
-            worker.credits_per_request,
-            memo=f"hub request {request_id}",
-            request_id=request_id,
-        )
-        self.registry.mark_worker(worker.node_id, status="available")
-        hub_meta = {
-            "request_id": request_id,
-            "worker_node_id": worker.node_id,
-            "worker_endpoint": worker.endpoint,
-            "credits_queued": worker.credits_per_request,
-            "settlement": "batched-worker-claim",
-            "payout_queue": energy_status.get("payout_queue", {}),
-            "security_mode": "high-security",
-            "hub_blind": True,
-            "encryption_profile": HUB_SECURITY_PROFILE,
-        }
-        return {
-            "ok": True,
-            "mode": "high-security",
-            "session_id": session["session_id"],
-            "request_id": request_id,
-            "response_envelope": worker_response.get("response_envelope"),
-            "metadata": {"hub": hub_meta},
-        }
-
-    def _start_upstream_secure_session(
-        self,
-        *,
-        request_id: str,
-        requester_public_key: str,
-        model: str,
-        client_node_id: str,
-        hop_count: int,
-    ) -> dict[str, Any]:
-        if hop_count >= 8:
-            raise RuntimeError("Hub forwarding loop detected: hop limit exceeded.")
-        upstream = self.registry.select_upstream_hub()
-        if upstream is None:
-            raise RuntimeError("No hub workers or upstream hubs are registered or available.")
-
-        payload = {
-            "model": model,
-            "client_node_id": _clean_node_id(client_node_id, default="main-computer-client"),
-            "requester_public_key": requester_public_key,
-            "hop_count": hop_count + 1,
-            "forwarded_by": request_id,
-        }
-        try:
-            upstream_session = self._post_json(upstream.endpoint.rstrip("/") + "/api/hub/sessions/start", payload)
-        except Exception:
-            self.registry.mark_upstream_hub(upstream.node_id, status="offline")
-            raise
-
-        upstream_session_id = str(upstream_session.get("session_id", ""))
-        upstream_request_id = str(upstream_session.get("request_id", ""))
-        if not upstream_session_id or not upstream_request_id:
-            raise RuntimeError("Upstream hub did not return a complete high-security session.")
-        with self._session_lock:
-            self._secure_sessions[upstream_session_id] = {
-                "kind": "upstream",
-                "request_id": upstream_request_id,
-                "local_request_id": request_id,
-                "upstream": upstream.as_dict(),
-                "upstream_session_id": upstream_session_id,
-                "upstream_request_id": upstream_request_id,
-                "credits": upstream.credits_per_request,
-                "created_at": _utc_now(),
-            }
-        self.registry.mark_upstream_hub(upstream.node_id, status="available")
-        upstream_meta = {}
-        if isinstance(upstream_session.get("metadata"), dict):
-            upstream_meta = dict(upstream_session["metadata"].get("hub", {})) if isinstance(upstream_session["metadata"].get("hub"), dict) else {}
-        return {
-            "ok": True,
-            "mode": "high-security",
-            "session_id": upstream_session_id,
-            "request_id": upstream_request_id,
-            "worker_public_key": str(upstream_session.get("worker_public_key", "")),
-            "encryption": {
-                "profile": HUB_SECURITY_PROFILE,
-                "temporary_public_keys": True,
-                "hub_blind": True,
-            },
-            "metadata": {
-                "hub": {
-                    **upstream_meta,
-                    "request_id": upstream_request_id,
-                    "local_request_id": request_id,
-                    "upstream_hub_node_id": upstream.node_id,
-                    "upstream_hub_endpoint": upstream.endpoint,
-                    "forwarded": True,
-                    "credits_queued": upstream.credits_per_request,
-                    "settlement": "batched-worker-claim",
-                    "security_mode": "high-security",
-                    "hub_blind": True,
-                    "encryption_profile": HUB_SECURITY_PROFILE,
-                }
-            },
-        }
-
-    def _secure_chat_upstream(self, *, session: dict[str, Any], envelope: dict[str, Any]) -> dict[str, Any]:
-        upstream_data = dict(session.get("upstream", {}))
-        upstream = HubUpstream(
-            node_id=str(upstream_data.get("node_id", "")),
-            endpoint=str(upstream_data.get("endpoint", "")).rstrip("/"),
-            status=str(upstream_data.get("status", "available")),
-            credits_per_request=max(1, int(upstream_data.get("credits_per_request", session.get("credits", 1)) or 1)),
-            registered_at=str(upstream_data.get("registered_at", "")),
-            last_seen_at=str(upstream_data.get("last_seen_at", "")),
-        )
-        request_id = str(session.get("request_id", ""))
-        local_request_id = str(session.get("local_request_id", request_id))
-        try:
-            upstream_response = self._post_json(
-                upstream.endpoint.rstrip("/") + "/api/hub/sessions/chat",
-                {
-                    "session_id": str(session.get("upstream_session_id", "")),
-                    "request_id": str(session.get("upstream_request_id", "")),
-                    "envelope": envelope,
-                },
-            )
-        except Exception:
-            self.registry.mark_upstream_hub(upstream.node_id, status="offline")
-            raise
-
-        energy_status = self.ledger.queue_upstream_hub_payout(
-            upstream.node_id,
-            upstream.credits_per_request,
-            memo=f"hub upstream request {local_request_id}",
-            request_id=local_request_id,
-        )
-        self.registry.mark_upstream_hub(upstream.node_id, status="available")
-        upstream_meta = {}
-        if isinstance(upstream_response.get("metadata"), dict):
-            upstream_meta = dict(upstream_response["metadata"].get("hub", {})) if isinstance(upstream_response["metadata"].get("hub"), dict) else {}
-        hub_meta = {
-            **upstream_meta,
-            "request_id": request_id,
-            "upstream_hub_node_id": upstream.node_id,
-            "upstream_hub_endpoint": upstream.endpoint,
-            "forwarded": True,
-            "credits_queued": upstream.credits_per_request,
-            "settlement": "batched-worker-claim",
-            "payout_queue": energy_status.get("payout_queue", {}),
-            "security_mode": "high-security",
-            "hub_blind": True,
-            "encryption_profile": HUB_SECURITY_PROFILE,
-        }
-        return {
-            "ok": True,
-            "mode": "high-security",
-            "session_id": session["session_id"],
-            "request_id": request_id,
-            "response_envelope": upstream_response.get("response_envelope"),
-            "metadata": {"hub": hub_meta},
-        }
-
-    def _session(self, session_id: str) -> dict[str, Any]:
-        clean = str(session_id or "").strip()
-        with self._session_lock:
-            session = dict(self._secure_sessions.get(clean, {}))
-        if not session:
-            raise ValueError("Unknown or expired hub session.")
-        session["session_id"] = clean
-        return session
-
-    def _forward_to_upstream(
-        self,
-        *,
-        request_id: str,
-        messages: list[dict[str, Any]],
-        model: str,
-        client_node_id: str,
-        hop_count: int,
-    ) -> ChatResponse:
-        if hop_count >= 8:
-            raise RuntimeError("Hub forwarding loop detected: hop limit exceeded.")
-        upstream = self.registry.select_upstream_hub()
-        if upstream is None:
-            raise RuntimeError("No hub workers or upstream hubs are registered or available.")
-
-        payload = {
-            "model": model,
-            "client_node_id": _clean_node_id(client_node_id, default="main-computer-client"),
-            "messages": messages,
-            "hop_count": hop_count + 1,
-            "forwarded_by": request_id,
-            "high_security": False,
-        }
-        try:
-            response_payload = self._post_json(upstream.endpoint.rstrip("/") + "/api/hub/chat", payload)
-            response = chat_response_from_dict(
-                response_payload,
-                default_provider="upstream-hub",
-                default_model=model or "hub-forwarded-model",
-            )
-        except Exception:
-            self.registry.mark_upstream_hub(upstream.node_id, status="offline")
-            raise
-
-        energy_status = self.ledger.queue_upstream_hub_payout(
-            upstream.node_id,
-            upstream.credits_per_request,
-            memo=f"hub upstream request {request_id}",
-            request_id=request_id,
-        )
-        self.registry.mark_upstream_hub(upstream.node_id, status="available")
-        metadata = dict(response.metadata)
-        upstream_meta = dict(metadata.get("hub", {})) if isinstance(metadata.get("hub"), dict) else {}
-        metadata["hub"] = {
-            **upstream_meta,
-            "request_id": request_id,
-            "upstream_hub_node_id": upstream.node_id,
-            "upstream_hub_endpoint": upstream.endpoint,
-            "forwarded": True,
-            "credits_queued": upstream.credits_per_request,
-            "settlement": "batched-worker-claim",
-            "payout_queue": energy_status.get("payout_queue", {}),
-            "security_mode": "legacy-plaintext",
-            "hub_blind": False,
-        }
-        return ChatResponse(
-            content=response.content,
-            provider="hub",
-            model=response.model,
-            metadata=metadata,
-        )
-
-    def _post_json(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
-        _require_allowed_transport(
-            url,
-            role="Hub peer",
-            allow_insecure_dev_network=self.allow_insecure_dev_network,
-        )
-        request = Request(
-            url,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urlopen(request, timeout=self.timeout_s) as response:
-                data = json.loads(response.read().decode("utf-8"))
-        except HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Hub worker HTTP {exc.code}: {body}") from exc
-        except URLError as exc:
-            raise RuntimeError(f"Hub worker is unreachable: {exc}") from exc
-        if not isinstance(data, dict):
-            raise RuntimeError("Hub peer returned a non-object response.")
-        if data.get("error"):
-            raise RuntimeError(str(data["error"]))
-        return data
+        return self.plex_service.secure_chat(session_id=session_id, request_id=request_id, envelope=envelope)
 
 
 class _JsonHandler(BaseHTTPRequestHandler):
@@ -878,8 +805,21 @@ class HubServerHandler(_JsonHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path == "/api/hub/status":
+        path = parsed.path
+        query = parse_qs(parsed.query)
+        if path == "/api/hub/v1/health":
+            self._send_json(
+                {
+                    "ok": True,
+                    "service": "main-computer-hub",
+                    "api_version": "v1",
+                    "security_profile": HUB_SECURITY_PROFILE,
+                }
+            )
+            return
+        if path in {"/api/hub/status", "/api/hub/v1/status"}:
             status = self.server.registry.status()
+            status["api_version"] = "v1" if path.startswith("/api/hub/v1/") else "legacy"
             status["security"] = {
                 "high_security_default": self.server.config.hub_high_security,
                 "hub_blind_envelopes": self.server.config.hub_high_security,
@@ -890,8 +830,81 @@ class HubServerHandler(_JsonHandler):
             status["energy"] = self.server.energy_ledger.status()
             self._send_json(status)
             return
-        if parsed.path == "/api/hub/payouts":
-            node_id = parse_qs(parsed.query).get("node_id", [""])[0]
+        if path == "/api/hub/v1/metrics":
+            self._send_json(self.server.dispatcher.metrics())
+            return
+        if path == "/api/hub/v1/workers":
+            include_endpoint = str(query.get("debug", [""])[0]).lower() in {"1", "true", "yes"}
+            status = self.server.registry.status()
+            workers = [
+                HubWorkerSummary.from_worker_payload(worker, include_endpoint=include_endpoint).as_dict()
+                for worker in status.get("workers", [])
+                if isinstance(worker, dict)
+            ]
+            self._send_json(
+                {
+                    "ok": True,
+                    "workers": workers,
+                    "worker_count": len(workers),
+                    "available_worker_count": status.get("available_worker_count", 0),
+                    "stale_worker_count": status.get("stale_worker_count", 0),
+                }
+            )
+            return
+        if path.startswith("/api/hub/v1/workers/"):
+            worker_id = path.removeprefix("/api/hub/v1/workers/").strip("/")
+            if not worker_id or "/" in worker_id:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            include_endpoint = str(query.get("debug", [""])[0]).lower() in {"1", "true", "yes"}
+            worker = self.server.registry.get_worker(worker_id)
+            if worker is None:
+                self._send_json({"error": f"Unknown hub worker: {worker_id}"}, status=HTTPStatus.NOT_FOUND)
+                return
+            self._send_json({"ok": True, "worker": HubWorkerSummary.from_worker_payload(worker.as_dict(), include_endpoint=include_endpoint).as_dict()})
+            return
+        if path == "/api/hub/v1/models":
+            status = self.server.registry.status()
+            models = {
+                str(model).strip()
+                for worker in status.get("workers", [])
+                if isinstance(worker, dict)
+                for model in (worker.get("models") if isinstance(worker.get("models"), list) else [worker.get("model", "")])
+                if str(model).strip()
+            }
+            if self.server.config.model:
+                models.add(str(self.server.config.model))
+            self._send_json({"ok": True, "models": sorted(models)})
+            return
+        if path == "/api/hub/v1/requests":
+            states_param = str(query.get("state", [""])[0]).strip()
+            states = {item.strip() for item in states_param.split(",") if item.strip()} if states_param else None
+            limit = int(query.get("limit", ["100"])[0] or 100)
+            requests = self.server.dispatcher.list_requests(limit=limit, states=states)
+            self._send_json({"ok": True, "requests": requests, "request_count": len(requests)})
+            return
+        if path.startswith("/api/hub/v1/requests/") and path.endswith("/events"):
+            request_id = path.removeprefix("/api/hub/v1/requests/").removesuffix("/events").strip("/")
+            if not request_id or "/" in request_id:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            try:
+                self._send_json({"ok": True, "request_id": request_id, "events": self.server.dispatcher.get_request_events(request_id)})
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+            return
+        if path.startswith("/api/hub/v1/requests/"):
+            request_id = path.removeprefix("/api/hub/v1/requests/").strip("/")
+            if not request_id or "/" in request_id:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            try:
+                self._send_json({"ok": True, "request": self.server.dispatcher.get_request_status(request_id)})
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+            return
+        if path in {"/api/hub/payouts", "/api/hub/v1/payouts"}:
+            node_id = query.get("node_id", [""])[0]
             try:
                 self._send_json(self.server.energy_ledger.payout_summary(node_id))
             except Exception as exc:
@@ -903,18 +916,41 @@ class HubServerHandler(_JsonHandler):
         try:
             parsed = urlparse(self.path)
             path = parsed.path
-            if path == "/api/hub/workers/register":
+            if path in {"/api/hub/workers/register", "/api/hub/v1/workers/register"}:
                 body = self._read_json()
                 worker = self.server.registry.register_worker(
                     node_id=str(body.get("node_id", "")),
                     endpoint=str(body.get("endpoint", "")),
                     model=str(body.get("model", "")),
+                    models=[str(item) for item in body.get("models", [])] if isinstance(body.get("models"), list) else None,
+                    capabilities=dict(body.get("capabilities", {})) if isinstance(body.get("capabilities"), dict) else None,
                     credits_per_request=int(body.get("credits_per_request", self.server.config.hub_credits_per_request)),
+                    queue_depth=int(body.get("queue_depth", 0) or 0),
+                    active_requests=int(body.get("active_requests", 0) or 0),
+                    max_concurrency=int(body.get("max_concurrency", 1) or 1),
                 )
                 self.server.energy_ledger.register_node(worker.node_id, "gpu-worker", worker.endpoint)
                 self._send_json({"ok": True, "worker": worker.as_dict(), "hub": self.server.registry.status()})
                 return
-            if path == "/api/hub/upstreams/register":
+            if path.startswith("/api/hub/v1/workers/") and path.endswith("/heartbeat"):
+                body = self._read_json()
+                worker_id = path.removeprefix("/api/hub/v1/workers/").removesuffix("/heartbeat").strip("/")
+                if not worker_id or "/" in worker_id:
+                    self.send_error(HTTPStatus.NOT_FOUND)
+                    return
+                worker = self.server.registry.heartbeat_worker(
+                    worker_id,
+                    status=str(body.get("status", "available")),
+                    model=str(body.get("model", "")),
+                    models=[str(item) for item in body.get("models", [])] if isinstance(body.get("models"), list) else None,
+                    capabilities=dict(body.get("capabilities", {})) if isinstance(body.get("capabilities"), dict) else None,
+                    queue_depth=int(body.get("queue_depth")) if body.get("queue_depth") is not None else None,
+                    active_requests=int(body.get("active_requests")) if body.get("active_requests") is not None else None,
+                    max_concurrency=int(body.get("max_concurrency")) if body.get("max_concurrency") is not None else None,
+                )
+                self._send_json({"ok": True, "worker": worker.as_dict(), "hub": self.server.registry.status()})
+                return
+            if path in {"/api/hub/upstreams/register", "/api/hub/v1/upstreams/register"}:
                 body = self._read_json()
                 upstream = self.server.registry.register_upstream_hub(
                     node_id=str(body.get("node_id", "")),
@@ -951,7 +987,7 @@ class HubServerHandler(_JsonHandler):
                     )
                 )
                 return
-            if path == "/api/hub/payouts/claim":
+            if path in {"/api/hub/payouts/claim", "/api/hub/v1/payouts/claim"}:
                 body = self._read_json()
                 self._send_json(
                     self.server.energy_ledger.claim_payouts(
@@ -959,6 +995,23 @@ class HubServerHandler(_JsonHandler):
                         memo=str(body.get("memo", "")),
                     )
                 )
+                return
+            if path == "/api/hub/v1/requests":
+                body = self._read_json()
+                hub_request = HubAIRequest.from_payload(
+                    body,
+                    default_model=self.server.config.model,
+                    default_client_node_id=self.server.config.hub_client_node_id,
+                )
+                status_payload = self.server.dispatcher.submit(hub_request)
+                self._send_json({"ok": True, "request": status_payload})
+                return
+            if path.startswith("/api/hub/v1/requests/") and path.endswith("/cancel"):
+                request_id = path.removeprefix("/api/hub/v1/requests/").removesuffix("/cancel").strip("/")
+                if not request_id or "/" in request_id:
+                    self.send_error(HTTPStatus.NOT_FOUND)
+                    return
+                self._send_json({"ok": True, "request": self.server.dispatcher.cancel_request(request_id)})
                 return
             if path == "/api/hub/chat":
                 body = self._read_json()

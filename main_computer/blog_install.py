@@ -48,8 +48,9 @@ BLOG_PUBLIC_FIELDS = [
     "title",
     "excerpt",
     "body",
-    "featured_image",
-    "published_at",
+    "published_on",
+    "read_time_minutes",
+    "is_legacy",
 ]
 
 BLOG_ROUTES = {
@@ -1080,8 +1081,9 @@ export const blogRuntimeConfig = {
     "title",
     "excerpt",
     "body",
-    "featured_image",
-    "published_at"
+    "published_on",
+    "read_time_minutes",
+    "is_legacy"
   ],
   publishedFilter: {
     status: "published"
@@ -1098,7 +1100,7 @@ import { blogRuntimeConfig } from "./runtime-config.js";
 export function directusPostsQuery(slug = "") {
   const params = new URLSearchParams();
   params.set("fields", blogRuntimeConfig.publicFields.join(","));
-  params.set("sort", "-published_at");
+  params.set("sort", "-published_on,-id");
   params.set("filter[status][_eq]", "published");
   if (slug) params.set("filter[slug][_eq]", slug);
   return `/items/${blogRuntimeConfig.collection}?${params.toString()}`;

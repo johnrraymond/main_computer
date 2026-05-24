@@ -44,8 +44,9 @@ class ViewportApplicationsStaticCoreTests(unittest.TestCase):
     def test_applications_index_contains_core_and_game_hooks(self) -> None:
         self.assertIn("Main Computer Applications", APPLICATIONS_INDEX_HTML)
         self.assertIn("Game Surface", APPLICATIONS_INDEX_HTML)
-        self.assertIn("isometric sprite-and-particle scene surface", APPLICATIONS_INDEX_HTML)
-        self.assertIn("Isometric surface is ready.", APPLICATIONS_INDEX_HTML)
+        self.assertIn("Arcstorm finale sprite/particle showcase", APPLICATIONS_INDEX_HTML)
+        self.assertIn("Arcstorm finale surface is ready.", APPLICATIONS_INDEX_HTML)
+        self.assertIn('id="webgl-particle-density"', APPLICATIONS_INDEX_HTML)
         self.assertIn("Select an application tab to open it.", APPLICATIONS_INDEX_HTML)
         self.assertIn("Calculator", APPLICATIONS_INDEX_HTML)
         self.assertIn("Document Editor", APPLICATIONS_INDEX_HTML)

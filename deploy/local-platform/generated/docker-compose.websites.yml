@@ -3,294 +3,6 @@
 name: "main-computer-local-platform"
 
 services:
-  debug-golden-path-108968-1778826657-prod:
-    build:
-      context: "../site-server"
-    image: "main-computer-site-debug-golden-path-108968-1778826657-prod:latest"
-    restart: unless-stopped
-    environment:
-      SITE_ID: "debug-golden-path-108968-1778826657"
-      SITE_NAME: "Debug Golden Path 108968 1778826657"
-      SITE_KIND: "debug-site"
-      SITE_LANE: "local"
-      MC_SITE_ID: "debug-golden-path-108968-1778826657"
-      MC_RUNTIME_LANE: "local"
-      CONTENT_ROOT: "/app/runtime/websites"
-    volumes:
-      - "../../../runtime/websites:/app/runtime/websites:ro"
-    ports:
-      - "0.0.0.0:18100:8080"
-
-  debug-golden-path-108968-1778826657-dev:
-    build:
-      context: "../site-server"
-    image: "main-computer-site-debug-golden-path-108968-1778826657-dev:latest"
-    restart: unless-stopped
-    environment:
-      SITE_ID: "debug-golden-path-108968-1778826657"
-      SITE_NAME: "Debug Golden Path 108968 1778826657"
-      SITE_KIND: "debug-site"
-      SITE_LANE: "dev"
-      MC_SITE_ID: "debug-golden-path-108968-1778826657"
-      MC_RUNTIME_LANE: "dev"
-      CONTENT_ROOT: "/app/runtime/websites"
-    volumes:
-      - "../../../runtime/websites:/app/runtime/websites:ro"
-    ports:
-      - "0.0.0.0:18101:8080"
-
-  debug-golden-path-20260516-180439-718760500-prod:
-    build:
-      context: "../site-server"
-    image: "main-computer-site-debug-golden-path-20260516-180439-718760500-prod:latest"
-    restart: unless-stopped
-    environment:
-      SITE_ID: "debug-golden-path-20260516-180439-718760500"
-      SITE_NAME: "Debug Golden Path 20260516 180439 718760500"
-      SITE_KIND: "debug-site"
-      SITE_LANE: "local"
-      MC_SITE_ID: "debug-golden-path-20260516-180439-718760500"
-      MC_RUNTIME_LANE: "local"
-      CONTENT_ROOT: "/app/runtime/websites"
-    volumes:
-      - "../../../runtime/websites:/app/runtime/websites:ro"
-    ports:
-      - "0.0.0.0:18102:8080"
-
-  debug-golden-path-20260516-180439-718760500-dev:
-    build:
-      context: "../site-server"
-    image: "main-computer-site-debug-golden-path-20260516-180439-718760500-dev:latest"
-    restart: unless-stopped
-    environment:
-      SITE_ID: "debug-golden-path-20260516-180439-718760500"
-      SITE_NAME: "Debug Golden Path 20260516 180439 718760500"
-      SITE_KIND: "debug-site"
-      SITE_LANE: "dev"
-      MC_SITE_ID: "debug-golden-path-20260516-180439-718760500"
-      MC_RUNTIME_LANE: "dev"
-      CONTENT_ROOT: "/app/runtime/websites"
-    volumes:
-      - "../../../runtime/websites:/app/runtime/websites:ro"
-    ports:
-      - "0.0.0.0:18103:8080"
-
-  debug-golden-path-20260516-214249-141838200-prod:
-    build:
-      context: "../site-server"
-    image: "main-computer-site-debug-golden-path-20260516-214249-141838200-prod:latest"
-    restart: unless-stopped
-    environment:
-      SITE_ID: "debug-golden-path-20260516-214249-141838200"
-      SITE_NAME: "Debug Golden Path 20260516 214249 141838200"
-      SITE_KIND: "debug-site"
-      SITE_LANE: "local"
-      MC_SITE_ID: "debug-golden-path-20260516-214249-141838200"
-      MC_RUNTIME_LANE: "local"
-      CONTENT_ROOT: "/app/runtime/websites"
-    volumes:
-      - "../../../runtime/websites:/app/runtime/websites:ro"
-    ports:
-      - "0.0.0.0:18106:8080"
-
-  debug-golden-path-20260516-214249-141838200-dev:
-    build:
-      context: "../site-server"
-    image: "main-computer-site-debug-golden-path-20260516-214249-141838200-dev:latest"
-    restart: unless-stopped
-    environment:
-      SITE_ID: "debug-golden-path-20260516-214249-141838200"
-      SITE_NAME: "Debug Golden Path 20260516 214249 141838200"
-      SITE_KIND: "debug-site"
-      SITE_LANE: "dev"
-      MC_SITE_ID: "debug-golden-path-20260516-214249-141838200"
-      MC_RUNTIME_LANE: "dev"
-      CONTENT_ROOT: "/app/runtime/websites"
-    volumes:
-      - "../../../runtime/websites:/app/runtime/websites:ro"
-    ports:
-      - "0.0.0.0:18107:8080"
-
-  debug-golden-path-20260516-221514-640567400-prod:
-    build:
-      context: "../site-server"
-    image: "main-computer-site-debug-golden-path-20260516-221514-640567400-prod:latest"
-    restart: unless-stopped
-    environment:
-      SITE_ID: "debug-golden-path-20260516-221514-640567400"
-      SITE_NAME: "Debug Golden Path 20260516 221514 640567400"
-      SITE_KIND: "debug-site"
-      SITE_LANE: "local"
-      MC_SITE_ID: "debug-golden-path-20260516-221514-640567400"
-      MC_RUNTIME_LANE: "local"
-      CONTENT_ROOT: "/app/runtime/websites"
-    volumes:
-      - "../../../runtime/websites:/app/runtime/websites:ro"
-    ports:
-      - "0.0.0.0:18108:8080"
-
-  debug-golden-path-20260516-221514-640567400-dev:
-    build:
-      context: "../site-server"
-    image: "main-computer-site-debug-golden-path-20260516-221514-640567400-dev:latest"
-    restart: unless-stopped
-    environment:
-      SITE_ID: "debug-golden-path-20260516-221514-640567400"
-      SITE_NAME: "Debug Golden Path 20260516 221514 640567400"
-      SITE_KIND: "debug-site"
-      SITE_LANE: "dev"
-      MC_SITE_ID: "debug-golden-path-20260516-221514-640567400"
-      MC_RUNTIME_LANE: "dev"
-      CONTENT_ROOT: "/app/runtime/websites"
-    volumes:
-      - "../../../runtime/websites:/app/runtime/websites:ro"
-    ports:
-      - "0.0.0.0:18109:8080"
-
-  debug-golden-path-20260517-003728-557928600-prod:
-    build:
-      context: "../site-server"
-    image: "main-computer-site-debug-golden-path-20260517-003728-557928600-prod:latest"
-    restart: unless-stopped
-    environment:
-      SITE_ID: "debug-golden-path-20260517-003728-557928600"
-      SITE_NAME: "Debug Golden Path 20260517 003728 557928600"
-      SITE_KIND: "debug-site"
-      SITE_LANE: "local"
-      MC_SITE_ID: "debug-golden-path-20260517-003728-557928600"
-      MC_RUNTIME_LANE: "local"
-      CONTENT_ROOT: "/app/runtime/websites"
-    volumes:
-      - "../../../runtime/websites:/app/runtime/websites:ro"
-    ports:
-      - "0.0.0.0:18110:8080"
-
-  debug-golden-path-20260517-003728-557928600-dev:
-    build:
-      context: "../site-server"
-    image: "main-computer-site-debug-golden-path-20260517-003728-557928600-dev:latest"
-    restart: unless-stopped
-    environment:
-      SITE_ID: "debug-golden-path-20260517-003728-557928600"
-      SITE_NAME: "Debug Golden Path 20260517 003728 557928600"
-      SITE_KIND: "debug-site"
-      SITE_LANE: "dev"
-      MC_SITE_ID: "debug-golden-path-20260517-003728-557928600"
-      MC_RUNTIME_LANE: "dev"
-      CONTENT_ROOT: "/app/runtime/websites"
-    volumes:
-      - "../../../runtime/websites:/app/runtime/websites:ro"
-    ports:
-      - "0.0.0.0:18111:8080"
-
-  debug-golden-path-20260517-003746-325048800-prod:
-    build:
-      context: "../site-server"
-    image: "main-computer-site-debug-golden-path-20260517-003746-325048800-prod:latest"
-    restart: unless-stopped
-    environment:
-      SITE_ID: "debug-golden-path-20260517-003746-325048800"
-      SITE_NAME: "Debug Golden Path 20260517 003746 325048800"
-      SITE_KIND: "debug-site"
-      SITE_LANE: "local"
-      MC_SITE_ID: "debug-golden-path-20260517-003746-325048800"
-      MC_RUNTIME_LANE: "local"
-      CONTENT_ROOT: "/app/runtime/websites"
-    volumes:
-      - "../../../runtime/websites:/app/runtime/websites:ro"
-    ports:
-      - "0.0.0.0:18112:8080"
-
-  debug-golden-path-20260517-003746-325048800-dev:
-    build:
-      context: "../site-server"
-    image: "main-computer-site-debug-golden-path-20260517-003746-325048800-dev:latest"
-    restart: unless-stopped
-    environment:
-      SITE_ID: "debug-golden-path-20260517-003746-325048800"
-      SITE_NAME: "Debug Golden Path 20260517 003746 325048800"
-      SITE_KIND: "debug-site"
-      SITE_LANE: "dev"
-      MC_SITE_ID: "debug-golden-path-20260517-003746-325048800"
-      MC_RUNTIME_LANE: "dev"
-      CONTENT_ROOT: "/app/runtime/websites"
-    volumes:
-      - "../../../runtime/websites:/app/runtime/websites:ro"
-    ports:
-      - "0.0.0.0:18113:8080"
-
-  debug-golden-path-20260517-113705-499238400-prod:
-    build:
-      context: "../site-server"
-    image: "main-computer-site-debug-golden-path-20260517-113705-499238400-prod:latest"
-    restart: unless-stopped
-    environment:
-      SITE_ID: "debug-golden-path-20260517-113705-499238400"
-      SITE_NAME: "Debug Golden Path 20260517 113705 499238400"
-      SITE_KIND: "debug-site"
-      SITE_LANE: "local"
-      MC_SITE_ID: "debug-golden-path-20260517-113705-499238400"
-      MC_RUNTIME_LANE: "local"
-      CONTENT_ROOT: "/app/runtime/websites"
-    volumes:
-      - "../../../runtime/websites:/app/runtime/websites:ro"
-    ports:
-      - "0.0.0.0:18114:8080"
-
-  debug-golden-path-20260517-113705-499238400-dev:
-    build:
-      context: "../site-server"
-    image: "main-computer-site-debug-golden-path-20260517-113705-499238400-dev:latest"
-    restart: unless-stopped
-    environment:
-      SITE_ID: "debug-golden-path-20260517-113705-499238400"
-      SITE_NAME: "Debug Golden Path 20260517 113705 499238400"
-      SITE_KIND: "debug-site"
-      SITE_LANE: "dev"
-      MC_SITE_ID: "debug-golden-path-20260517-113705-499238400"
-      MC_RUNTIME_LANE: "dev"
-      CONTENT_ROOT: "/app/runtime/websites"
-    volumes:
-      - "../../../runtime/websites:/app/runtime/websites:ro"
-    ports:
-      - "0.0.0.0:18115:8080"
-
-  debug-golden-path-20260517-114249-939368700-prod:
-    build:
-      context: "../site-server"
-    image: "main-computer-site-debug-golden-path-20260517-114249-939368700-prod:latest"
-    restart: unless-stopped
-    environment:
-      SITE_ID: "debug-golden-path-20260517-114249-939368700"
-      SITE_NAME: "Debug Golden Path 20260517 114249 939368700"
-      SITE_KIND: "debug-site"
-      SITE_LANE: "local"
-      MC_SITE_ID: "debug-golden-path-20260517-114249-939368700"
-      MC_RUNTIME_LANE: "local"
-      CONTENT_ROOT: "/app/runtime/websites"
-    volumes:
-      - "../../../runtime/websites:/app/runtime/websites:ro"
-    ports:
-      - "0.0.0.0:18116:8080"
-
-  debug-golden-path-20260517-114249-939368700-dev:
-    build:
-      context: "../site-server"
-    image: "main-computer-site-debug-golden-path-20260517-114249-939368700-dev:latest"
-    restart: unless-stopped
-    environment:
-      SITE_ID: "debug-golden-path-20260517-114249-939368700"
-      SITE_NAME: "Debug Golden Path 20260517 114249 939368700"
-      SITE_KIND: "debug-site"
-      SITE_LANE: "dev"
-      MC_SITE_ID: "debug-golden-path-20260517-114249-939368700"
-      MC_RUNTIME_LANE: "dev"
-      CONTENT_ROOT: "/app/runtime/websites"
-    volumes:
-      - "../../../runtime/websites:/app/runtime/websites:ro"
-    ports:
-      - "0.0.0.0:18117:8080"
-
   hub-local:
     build:
       context: "../site-server"
@@ -340,6 +52,13 @@ services:
       MC_SITE_ID: "johnrraymond"
       MC_RUNTIME_LANE: "local"
       CONTENT_ROOT: "/app/runtime/websites"
+      MC_DIRECTUS_SERVICE: "hub-site-directus"
+      DIRECTUS_URL: "http://hub-site-directus:8055"
+      DIRECTUS_PUBLIC_URL: "http://127.0.0.1:28200"
+      BLOG_ENABLED: "true"
+      BLOG_PROVIDER: "directus"
+      BLOG_CONTENT_RUNTIME: "directus"
+      BLOG_COLLECTION: "posts"
     volumes:
       - "../../../runtime/websites:/app/runtime/websites:ro"
     ports:
@@ -358,6 +77,13 @@ services:
       MC_SITE_ID: "johnrraymond"
       MC_RUNTIME_LANE: "dev"
       CONTENT_ROOT: "/app/runtime/websites"
+      MC_DIRECTUS_SERVICE: "hub-site-directus"
+      DIRECTUS_URL: "http://hub-site-directus:8055"
+      DIRECTUS_PUBLIC_URL: "http://127.0.0.1:28200"
+      BLOG_ENABLED: "true"
+      BLOG_PROVIDER: "directus"
+      BLOG_CONTENT_RUNTIME: "directus"
+      BLOG_COLLECTION: "posts"
     volumes:
       - "../../../runtime/websites:/app/runtime/websites:ro"
     ports:

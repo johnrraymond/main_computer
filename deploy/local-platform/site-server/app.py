@@ -4,10 +4,11 @@ import html
 import json
 import mimetypes
 import os
+import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlencode, urlsplit
+from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -25,16 +26,25 @@ DIRECTUS_URL = os.environ.get("DIRECTUS_URL", "").strip().rstrip("/")
 DIRECTUS_PUBLIC_URL = os.environ.get("DIRECTUS_PUBLIC_URL", "").strip().rstrip("/")
 MC_SITE_ID = os.environ.get("MC_SITE_ID", SITE_ID).strip() or SITE_ID
 MC_RUNTIME_LANE = os.environ.get("MC_RUNTIME_LANE", SITE_LANE).strip() or SITE_LANE
-BLOG_PUBLIC_FIELDS = [
+BLOG_LIST_FIELDS = [
     "id",
     "status",
     "slug",
     "title",
     "excerpt",
-    "body",
-    "featured_image",
-    "published_at",
+    "published_on",
+    "read_time_minutes",
+    "is_legacy",
 ]
+BLOG_DETAIL_FIELDS = [
+    *BLOG_LIST_FIELDS,
+    "body",
+]
+BLOG_PUBLIC_FIELDS = BLOG_DETAIL_FIELDS
+BLOG_DIRECTUS_FETCH_LIMIT = -1
+BLOG_DEFAULT_PAGE_SIZE = 50
+BLOG_MAX_ALLOWED_FUZZ = 5
+BLOG_SEARCH_FIELDS = ("title", "excerpt", "body", "slug")
 BLOG_PLACEHOLDER_TEXT = "Blog posts will appear here when Blog is configured."
 
 
@@ -302,7 +312,7 @@ def directus_json(path: str, timeout: float = 5.0) -> dict[str, object]:
     )
     try:
         with urlopen(request, timeout=timeout) as response:
-            raw = response.read(512 * 1024).decode("utf-8", errors="replace")
+            raw = response.read().decode("utf-8", errors="replace")
     except HTTPError as exc:
         raw = exc.read(64 * 1024).decode("utf-8", errors="replace")
         message = raw.strip() or str(exc)
@@ -316,30 +326,167 @@ def directus_json(path: str, timeout: float = 5.0) -> dict[str, object]:
     return payload if isinstance(payload, dict) else {}
 
 
-def directus_posts_query(slug: str = "") -> str:
+def directus_posts_query(slug: str = "", *, include_body: bool = True, limit: int | None = None) -> str:
     collection = str(blog_runtime_config().get("collection") or "posts")
-    params = [
-        ("fields", ",".join(BLOG_PUBLIC_FIELDS)),
-        ("sort", "-published_at"),
+    fields = BLOG_DETAIL_FIELDS if include_body else BLOG_LIST_FIELDS
+    params: list[tuple[str, str]] = [
+        ("fields", ",".join(fields)),
+        ("sort", "-published_on,-id"),
         ("filter[status][_eq]", "published"),
     ]
+    if limit is not None:
+        params.append(("limit", str(limit)))
     if slug:
         params.append(("filter[slug][_eq]", slug))
     return f"/items/{collection}?" + urlencode(params)
 
 
-def list_published_posts() -> list[dict[str, object]]:
-    payload = directus_json(directus_posts_query())
+def list_published_posts(*, include_body: bool = False) -> list[dict[str, object]]:
+    payload = directus_json(directus_posts_query(include_body=include_body, limit=BLOG_DIRECTUS_FETCH_LIMIT))
     data = payload.get("data")
     return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
 
 
 def get_published_post_by_slug(slug: str) -> dict[str, object] | None:
-    payload = directus_json(directus_posts_query(slug))
+    payload = directus_json(directus_posts_query(slug, include_body=True, limit=1))
     data = payload.get("data")
     if isinstance(data, list) and data and isinstance(data[0], dict):
         return data[0]
     return None
+
+
+def _blog_first_param(params: dict[str, list[str]], *names: str) -> str:
+    for name in names:
+        values = params.get(name)
+        if values:
+            return str(values[0] or "").strip()
+    return ""
+
+
+def _blog_int_param(value: object, *, default: int, minimum: int, maximum: int | None = None) -> int:
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        parsed = default
+    parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
+
+
+def _blog_request_options(raw_query: str = "") -> dict[str, object]:
+    params = parse_qs(str(raw_query or ""), keep_blank_values=True)
+    query = _blog_first_param(params, "q", "search", "query")
+    return {
+        "query": query,
+        "fuzz": _blog_int_param(
+            _blog_first_param(params, "fuzz", "allowed_fuzz", "allowedFuzz"),
+            default=0,
+            minimum=0,
+            maximum=BLOG_MAX_ALLOWED_FUZZ,
+        ),
+        "page": _blog_int_param(_blog_first_param(params, "page"), default=1, minimum=1),
+        "per_page": _blog_int_param(
+            _blog_first_param(params, "per_page", "perPage", "results_per_page", "limit"),
+            default=BLOG_DEFAULT_PAGE_SIZE,
+            minimum=1,
+        ),
+    }
+
+
+def _blog_search_text(post: dict[str, object]) -> str:
+    return " ".join(str(post.get(field) or "") for field in BLOG_SEARCH_FIELDS)
+
+
+def _blog_normalized_text(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "").casefold()).strip()
+
+
+def _blog_tokens(value: object) -> list[str]:
+    return re.findall(r"[\w]+", _blog_normalized_text(value), flags=re.UNICODE)
+
+
+def _blog_edit_distance_at_most(left: str, right: str, limit: int) -> bool:
+    if left == right:
+        return True
+    if limit <= 0 or abs(len(left) - len(right)) > limit:
+        return False
+    previous = list(range(len(right) + 1))
+    for left_index, left_char in enumerate(left, start=1):
+        current = [left_index]
+        row_min = current[0]
+        for right_index, right_char in enumerate(right, start=1):
+            cost = 0 if left_char == right_char else 1
+            value = min(
+                previous[right_index] + 1,
+                current[right_index - 1] + 1,
+                previous[right_index - 1] + cost,
+            )
+            current.append(value)
+            row_min = min(row_min, value)
+        if row_min > limit:
+            return False
+        previous = current
+    return previous[-1] <= limit
+
+
+def _blog_matches_query(post: dict[str, object], query: str, fuzz: int) -> bool:
+    clean_query = _blog_normalized_text(query)
+    if not clean_query:
+        return True
+    haystack = _blog_normalized_text(_blog_search_text(post))
+    if clean_query in haystack:
+        return True
+    if fuzz <= 0:
+        return False
+
+    haystack_tokens = _blog_tokens(haystack)
+    if not haystack_tokens:
+        return False
+    query_tokens = _blog_tokens(clean_query)
+    if not query_tokens:
+        return False
+    return all(
+        any(_blog_edit_distance_at_most(query_token, candidate, fuzz) for candidate in haystack_tokens)
+        for query_token in query_tokens
+    )
+
+
+def _blog_published_sort_value(post: dict[str, object]) -> tuple[str, str]:
+    for field in ("published_on", "published_at", "date_created", "updated_at"):
+        value = str(post.get(field) or "").strip()
+        if value:
+            break
+    else:
+        value = ""
+    raw_id = post.get("id")
+    try:
+        id_value = f"{int(str(raw_id)) :020d}"
+    except (TypeError, ValueError):
+        id_value = str(raw_id or "")
+    return value, id_value
+
+
+def _blog_public_list_item(post: dict[str, object]) -> dict[str, object]:
+    return {field: post.get(field) for field in BLOG_LIST_FIELDS if field in post}
+
+
+def _blog_page_slice(posts: list[dict[str, object]], *, page: int, per_page: int) -> tuple[list[dict[str, object]], dict[str, object]]:
+    total = len(posts)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    clean_page = min(max(1, page), total_pages)
+    start = (clean_page - 1) * per_page
+    end = start + per_page
+    return posts[start:end], {
+        "page": clean_page,
+        "per_page": per_page,
+        "total": total,
+        "total_pages": total_pages,
+        "has_previous": clean_page > 1,
+        "has_next": clean_page < total_pages,
+        "default_per_page": BLOG_DEFAULT_PAGE_SIZE,
+        "max_allowed_fuzz": BLOG_MAX_ALLOWED_FUZZ,
+    }
 
 
 def _blog_public_state(
@@ -393,26 +540,48 @@ def blog_runtime_status_payload() -> dict[str, object]:
         return {"ok": False, "blog": _blog_public_state(error=str(exc))}
 
 
-def blog_posts_payload() -> tuple[dict[str, object], HTTPStatus]:
+def blog_posts_payload(raw_query: str = "") -> tuple[dict[str, object], HTTPStatus]:
+    options = _blog_request_options(raw_query)
+    query = str(options["query"])
+    fuzz = int(options["fuzz"])
+    page = int(options["page"])
+    per_page = int(options["per_page"])
+
     config = blog_runtime_config()
+    empty_pagination = {
+        "page": 1,
+        "per_page": per_page,
+        "total": 0,
+        "total_pages": 1,
+        "has_previous": False,
+        "has_next": False,
+        "default_per_page": BLOG_DEFAULT_PAGE_SIZE,
+        "max_allowed_fuzz": BLOG_MAX_ALLOWED_FUZZ,
+    }
+    search = {"query": query, "fuzz": fuzz}
     if not config.get("enabled"):
-        return {"ok": True, "blog": _blog_public_state(), "posts": []}, HTTPStatus.OK
+        return {"ok": True, "blog": _blog_public_state(), "posts": [], "pagination": empty_pagination, "search": search}, HTTPStatus.OK
 
     provider = str(config.get("provider") or "").lower()
     if provider != "directus":
         error = f"Unsupported blog provider: {config.get('provider') or 'none'}"
-        return {"ok": False, "blog": _blog_public_state(error=error), "posts": []}, HTTPStatus.BAD_GATEWAY
+        return {"ok": False, "blog": _blog_public_state(error=error), "posts": [], "pagination": empty_pagination, "search": search}, HTTPStatus.BAD_GATEWAY
 
     try:
-        posts = list_published_posts()
-        post_slugs = [str(item.get("slug") or "") for item in posts if item.get("slug")]
+        posts = list_published_posts(include_body=bool(query))
+        posts.sort(key=_blog_published_sort_value, reverse=True)
+        filtered_posts = [post for post in posts if _blog_matches_query(post, query, fuzz)]
+        page_posts, pagination = _blog_page_slice(filtered_posts, page=page, per_page=per_page)
+        post_slugs = [str(item.get("slug") or "") for item in filtered_posts if item.get("slug")]
         return {
             "ok": True,
             "blog": _blog_public_state(published_read_ok=True, post_slugs=post_slugs),
-            "posts": posts,
+            "posts": [_blog_public_list_item(post) for post in page_posts],
+            "pagination": pagination,
+            "search": search,
         }, HTTPStatus.OK
     except Exception as exc:
-        return {"ok": False, "blog": _blog_public_state(error=str(exc)), "posts": []}, HTTPStatus.BAD_GATEWAY
+        return {"ok": False, "blog": _blog_public_state(error=str(exc)), "posts": [], "pagination": empty_pagination, "search": search}, HTTPStatus.BAD_GATEWAY
 
 
 def blog_post_payload(slug: str) -> tuple[dict[str, object], HTTPStatus]:
@@ -462,6 +631,9 @@ def safe_static_file(raw_path: str) -> Path | None:
     decoded = unquote(raw_path).replace("\\", "/")
     parts = [part for part in decoded.split("/") if part and part != "."]
     if not parts or any(part == ".." for part in parts):
+        return None
+    blocked_names = {".main-computer", "__pycache__"}
+    if any(part in blocked_names or part.endswith(".py") or part.endswith(".pyc") for part in parts):
         return None
     root = site_dir().resolve()
 
@@ -526,7 +698,8 @@ class SiteServerHandler(BaseHTTPRequestHandler):
         self._send_bytes(json.dumps(payload, indent=2, sort_keys=True).encode("utf-8"), "application/json; charset=utf-8", status)
 
     def do_GET(self) -> None:
-        path = urlsplit(self.path).path
+        parsed_url = urlsplit(self.path)
+        path = parsed_url.path
         if path == "/":
             self._send_bytes(read_site_html().encode("utf-8"), "text/html; charset=utf-8")
             return
@@ -541,7 +714,7 @@ class SiteServerHandler(BaseHTTPRequestHandler):
             self._send_json(payload, HTTPStatus.OK if payload.get("ok") else HTTPStatus.BAD_GATEWAY)
             return
         if path.rstrip("/") == "/api/site/blog/posts":
-            payload, status = blog_posts_payload()
+            payload, status = blog_posts_payload(parsed_url.query)
             self._send_json(payload, status)
             return
         if path.startswith("/api/site/blog/posts/"):

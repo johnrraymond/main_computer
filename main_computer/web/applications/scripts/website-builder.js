@@ -529,15 +529,43 @@
     function websiteBuilderRemoteCoolifyCompose(visibleSetup = websiteBuilderPublishingVisibleSetup()) {
       const slug = String(visibleSetup.site_slug || "johnrraymond").trim() || "johnrraymond";
       const root = String(visibleSetup.remote_root || websiteBuilderDefaultRemoteRoot).trim().replace(/\/+$/, "") || websiteBuilderDefaultRemoteRoot;
+      const directusUrl = String(visibleSetup.publish_directus_url || "").trim().replace(/\/+$/, "");
+      const directusEnv = directusUrl || "${DIRECTUS_URL:-}";
       return [
         "services:",
         `  ${slug}-site:`,
-        "    image: 'nginx:alpine'",
+        "    image: 'python:3.12-slim'",
         "    restart: unless-stopped",
+        "    working_dir: /app",
+        "    command:",
+        "      - python",
+        `      - /app/sites/${slug}/.main-computer/runtime/app.py`,
+        "    environment:",
+        `      SITE_ID: ${slug}`,
+        `      SITE_NAME: ${slug}`,
+        "      SITE_KIND: static-site",
+        "      SITE_LANE: production",
+        `      MC_SITE_ID: ${slug}`,
+        "      MC_RUNTIME_LANE: production",
+        "      CONTENT_ROOT: /app/sites",
+        "      BLOG_ENABLED: 'true'",
+        "      BLOG_PROVIDER: directus",
+        "      BLOG_CONTENT_RUNTIME: directus",
+        "      BLOG_COLLECTION: posts",
+        `      DIRECTUS_URL: '${directusEnv}'`,
+        `      DIRECTUS_PUBLIC_URL: '${directusEnv}'`,
         "    volumes:",
-        `      - '${root}/${slug}:/usr/share/nginx/html:ro'`,
+        `      - '${root}/${slug}:/app/sites/${slug}:ro'`,
         "    expose:",
-        "      - '80'"
+        "      - '8080'",
+        "    healthcheck:",
+        "      test:",
+        "        - CMD-SHELL",
+        "        - 'python -c \"import sys, urllib.request; sys.exit(0 if urllib.request.urlopen(''http://127.0.0.1:8080/api/site/status'', timeout=5).status == 200 else 1)\"'",
+        "      interval: 10s",
+        "      timeout: 5s",
+        "      retries: 12",
+        "      start_period: 20s"
       ].join("\n");
     }
 
@@ -2131,6 +2159,7 @@ ${output}
       return `/* Main Computer blog widget styles */
 /* mc-blog-article-presentation-v1 */
 /* mc-blog-index-grid-layout-v1 */
+/* mc-blog-search-pagination-controls-v1 */
 .mc-blog-widget,
 .mc-blog-post-widget {
   background: #ffffff;
@@ -2172,6 +2201,101 @@ body[data-mc-blog-route-mode="detail"] main {
   gap: 1rem;
   align-items: end;
   margin-bottom: 1.5rem;
+}
+
+
+.mc-blog-widget__controls {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: .5rem;
+  align-items: end;
+  margin: -.25rem 0 1rem;
+  padding: .625rem .75rem;
+  overflow-x: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: .85rem;
+  background: #f8fafc;
+}
+
+.mc-blog-widget__control {
+  display: grid;
+  flex: 0 0 auto;
+  gap: .2rem;
+  min-width: 0;
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.mc-blog-widget__control:first-child {
+  flex: 1 1 16rem;
+  min-width: 12rem;
+}
+
+.mc-blog-widget__control span {
+  color: #64748b;
+  font-size: .68rem;
+  letter-spacing: .06em;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.mc-blog-widget__control input {
+  width: 100%;
+  min-height: 2.15rem;
+  padding: .4rem .55rem;
+  border: 1px solid #cbd5e1;
+  border-radius: .6rem;
+  color: #0f172a;
+  background: #ffffff;
+  font: inherit;
+}
+
+.mc-blog-widget__control input[type="number"] {
+  width: 6.25rem;
+}
+
+.mc-blog-widget__apply,
+.mc-blog-widget__page-link {
+  min-height: 2.15rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: .4rem .75rem;
+  border: 1px solid #2563eb;
+  border-radius: .6rem;
+  color: #ffffff;
+  background: #2563eb;
+  font-weight: 800;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.mc-blog-widget__page-link.is-disabled {
+  border-color: #cbd5e1;
+  color: #94a3b8;
+  background: #f8fafc;
+  cursor: default;
+}
+
+.mc-blog-widget__summary {
+  margin: 0 0 1rem;
+  color: #64748b;
+  font-size: .95rem;
+  font-weight: 700;
+}
+
+.mc-blog-widget__pagination {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .75rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 1.25rem;
+}
+
+.mc-blog-widget__page-status {
+  color: #475569;
+  font-weight: 800;
 }
 
 .mc-blog-widget__items {
@@ -2395,6 +2519,8 @@ body[data-mc-blog-route-mode="detail"] main {
   const mcBlogPostsEndpoint = "/api/site/blog/posts";
   const mcBlogPostEndpointBase = "/api/site/blog/posts/";
   const mcBlogDefaultPostBasePath = "/blog/";
+  const mcBlogDefaultPageSize = 50;
+  const mcBlogMaxAllowedFuzz = 5;
 
   function mcBlogWidgetEscapeHtml(value) {
     return String(value ?? "").replace(/[&<>"']/g, (character) => ({
@@ -2406,11 +2532,37 @@ body[data-mc-blog-route-mode="detail"] main {
     }[character]));
   }
 
+  function mcBlogWidgetPublishedDateValue(post) {
+    if (!post) return "";
+    return post.published_on || post.published_at || post.date_created || post.updated_at || "";
+  }
+
   function mcBlogWidgetFormatDate(value) {
     if (!value) return "";
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return String(value);
+    const text = String(value).trim();
+    const dateOnly = /^(\d{4})-(\d{2})-(\d{2})(?:$|T)/.exec(text);
+    const date = dateOnly
+      ? new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]))
+      : new Date(text);
+    if (Number.isNaN(date.getTime())) return text;
     return date.toLocaleDateString(undefined, {year: "numeric", month: "short", day: "numeric"});
+  }
+
+  function mcBlogWidgetFormatReadTime(value) {
+    const minutes = Number(value);
+    if (!Number.isFinite(minutes) || minutes <= 0) return "";
+    const rounded = Math.round(minutes);
+    return rounded + " min read";
+  }
+
+  function mcBlogWidgetMetaHtml(blockClass, post) {
+    const date = mcBlogWidgetFormatDate(mcBlogWidgetPublishedDateValue(post));
+    const readTime = mcBlogWidgetFormatReadTime(post && post.read_time_minutes);
+    const parts = [];
+    if (date) parts.push('<time class="' + blockClass + '__date">' + mcBlogWidgetEscapeHtml(date) + "</time>");
+    if (readTime) parts.push('<span class="' + blockClass + '__read-time">' + mcBlogWidgetEscapeHtml(readTime) + "</span>");
+    if (!parts.length) return "";
+    return parts.join('<span aria-hidden="true"> · </span>');
   }
 
   function mcBlogWidgetTextToParagraphs(value) {
@@ -2514,13 +2666,182 @@ body[data-mc-blog-route-mode="detail"] main {
     return base.replace(/\/?$/, "/") + encodedSlug;
   }
 
-  function mcBlogWidgetRenderPosts(widget, posts) {
+  function mcBlogWidgetClampInt(value, fallback, minimum, maximum) {
+    const parsed = Number.parseInt(String(value ?? ""), 10);
+    let next = Number.isFinite(parsed) ? parsed : fallback;
+    next = Math.max(minimum, next);
+    if (Number.isFinite(maximum)) next = Math.min(maximum, next);
+    return next;
+  }
+
+  function mcBlogWidgetDefaultPageSize(widget) {
+    return mcBlogWidgetClampInt(
+      widget.getAttribute("data-page-size") || widget.dataset.pageSize || widget.getAttribute("data-limit") || widget.dataset.limit,
+      mcBlogDefaultPageSize,
+      1
+    );
+  }
+
+  function mcBlogWidgetIsPagedList(widget) {
+    const explicit = String(widget.getAttribute("data-search-enabled") || widget.dataset.searchEnabled || widget.getAttribute("data-pagination-enabled") || widget.dataset.paginationEnabled || "").toLowerCase();
+    if (["1", "true", "yes", "on"].includes(explicit)) return true;
+    if (["0", "false", "no", "off"].includes(explicit)) return false;
+    const body = document.body;
+    return Boolean(body && body.hasAttribute("data-mc-generated-blog-page") && mcBlogWidgetIsOnRoute(widget));
+  }
+
+  function mcBlogWidgetListState(widget, paged) {
+    const params = new URLSearchParams(window.location.search || "");
+    const defaultPerPage = mcBlogWidgetDefaultPageSize(widget);
+    const routeInfo = mcBlogWidgetRouteInfo(widget);
+    const listPath = routeInfo.root || "/blog";
+    if (!paged) {
+      return {paged: false, query: "", fuzz: 0, page: 1, perPage: defaultPerPage, defaultPerPage, listPath};
+    }
+    const query = String(params.get("q") || params.get("search") || params.get("query") || "").trim();
+    const fuzz = mcBlogWidgetClampInt(params.get("fuzz") || params.get("allowed_fuzz") || params.get("allowedFuzz"), 0, 0, mcBlogMaxAllowedFuzz);
+    const page = mcBlogWidgetClampInt(params.get("page"), 1, 1);
+    const perPage = mcBlogWidgetClampInt(params.get("per_page") || params.get("perPage") || params.get("results_per_page"), defaultPerPage, 1);
+    return {paged: true, query, fuzz, page, perPage, defaultPerPage, listPath};
+  }
+
+  function mcBlogWidgetApiUrlForState(state) {
+    if (!state || !state.paged) return mcBlogPostsEndpoint;
+    const params = new URLSearchParams();
+    if (state.query) params.set("q", state.query);
+    if (state.fuzz > 0) params.set("fuzz", String(state.fuzz));
+    params.set("page", String(state.page || 1));
+    params.set("per_page", String(state.perPage || mcBlogDefaultPageSize));
+    const query = params.toString();
+    return mcBlogPostsEndpoint + (query ? "?" + query : "");
+  }
+
+  function mcBlogWidgetPageUrl(state, page) {
+    const params = new URLSearchParams(window.location.search || "");
+    ["q", "search", "query", "fuzz", "allowed_fuzz", "allowedFuzz", "page", "per_page", "perPage", "results_per_page", "limit"].forEach((name) => params.delete(name));
+    if (state.query) params.set("q", state.query);
+    if (state.fuzz > 0) params.set("fuzz", String(state.fuzz));
+    if (state.perPage !== state.defaultPerPage) params.set("per_page", String(state.perPage));
+    if (page > 1) params.set("page", String(page));
+    const query = params.toString();
+    const listPath = String((state && state.listPath) || window.location.pathname || "/blog").replace(/\/index\.html$/i, "").replace(/\/+$/g, "") || "/";
+    return listPath + (query ? "?" + query : "");
+  }
+
+  function mcBlogWidgetControlsState(widget, currentState) {
+    const form = widget.querySelector("[data-mc-blog-controls]");
+    if (!form) return {...currentState, page: 1};
+    const searchInput = form.querySelector("[data-mc-blog-search]");
+    const fuzzInput = form.querySelector("[data-mc-blog-fuzz]");
+    const perPageInput = form.querySelector("[data-mc-blog-per-page]");
+    return {
+      ...currentState,
+      query: String(searchInput ? searchInput.value : "").trim(),
+      fuzz: mcBlogWidgetClampInt(fuzzInput ? fuzzInput.value : 0, 0, 0, mcBlogMaxAllowedFuzz),
+      perPage: mcBlogWidgetClampInt(perPageInput ? perPageInput.value : currentState.defaultPerPage, currentState.defaultPerPage, 1),
+      page: 1
+    };
+  }
+
+  function mcBlogWidgetEnsureControls(widget, state) {
+    if (!state.paged) return;
+    let form = widget.querySelector("[data-mc-blog-controls]");
+    if (!form) {
+      form = document.createElement("form");
+      form.className = "mc-blog-widget__controls";
+      form.setAttribute("data-mc-blog-controls", "");
+      form.innerHTML = '<label class="mc-blog-widget__control"><span>Search</span><input type="search" name="q" autocomplete="off" data-mc-blog-search></label><label class="mc-blog-widget__control"><span>Allowed Fuzz</span><input type="number" name="fuzz" min="0" max="' + mcBlogMaxAllowedFuzz + '" step="1" value="0" data-mc-blog-fuzz></label><label class="mc-blog-widget__control"><span>Results per Page</span><input type="number" name="per_page" min="1" step="1" value="' + mcBlogDefaultPageSize + '" data-mc-blog-per-page></label><button class="mc-blog-widget__apply" type="submit">Apply</button>';
+      const header = widget.querySelector(".mc-blog-widget__header");
+      if (header && header.parentNode) {
+        header.insertAdjacentElement("afterend", form);
+      } else {
+        widget.insertAdjacentElement("afterbegin", form);
+      }
+    }
+    if (!form.dataset.mcBlogControlsBound) {
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const nextState = mcBlogWidgetControlsState(widget, state);
+        window.location.assign(mcBlogWidgetPageUrl(nextState, 1));
+      });
+      form.dataset.mcBlogControlsBound = "true";
+    }
+  }
+
+  function mcBlogWidgetUpdateControls(widget, state, pagination) {
+    if (!state.paged) return;
+    mcBlogWidgetEnsureControls(widget, state);
+    const form = widget.querySelector("[data-mc-blog-controls]");
+    if (form) {
+      const searchInput = form.querySelector("[data-mc-blog-search]");
+      const fuzzInput = form.querySelector("[data-mc-blog-fuzz]");
+      const perPageInput = form.querySelector("[data-mc-blog-per-page]");
+      if (searchInput) searchInput.value = state.query || "";
+      if (fuzzInput) {
+        fuzzInput.value = String(state.fuzz || 0);
+        fuzzInput.max = String((pagination && pagination.max_allowed_fuzz) || mcBlogMaxAllowedFuzz);
+      }
+      if (perPageInput) {
+        perPageInput.value = String((pagination && pagination.per_page) || state.perPage || state.defaultPerPage);
+        if (pagination && Number(pagination.total) > 0) {
+          perPageInput.max = String(pagination.total);
+        } else {
+          perPageInput.removeAttribute("max");
+        }
+      }
+    }
+    let summary = widget.querySelector("[data-mc-blog-summary]");
+    if (!summary) {
+      summary = document.createElement("p");
+      summary.className = "mc-blog-widget__summary";
+      summary.setAttribute("data-mc-blog-summary", "");
+      const form = widget.querySelector("[data-mc-blog-controls]");
+      if (form && form.parentNode) {
+        form.insertAdjacentElement("afterend", summary);
+      } else {
+        widget.insertAdjacentElement("afterbegin", summary);
+      }
+    }
+    const total = Number(pagination && pagination.total) || 0;
+    const page = Number(pagination && pagination.page) || 1;
+    const totalPages = Number(pagination && pagination.total_pages) || 1;
+    const suffix = state.query ? ' matching "' + state.query + '"' + (state.fuzz > 0 ? " with fuzz " + state.fuzz : "") : "";
+    summary.textContent = total + " post" + (total === 1 ? "" : "s") + suffix + " · page " + page + " of " + totalPages;
+  }
+
+  function mcBlogWidgetRenderPagination(widget, state, pagination) {
+    if (!state.paged) return;
+    let nav = widget.querySelector("[data-mc-blog-pagination]");
+    if (!nav) {
+      nav = document.createElement("nav");
+      nav.className = "mc-blog-widget__pagination";
+      nav.setAttribute("data-mc-blog-pagination", "");
+      nav.setAttribute("aria-label", "Blog pagination");
+      const target = widget.querySelector("[data-mc-blog-posts]") || widget;
+      target.insertAdjacentElement("afterend", nav);
+    }
+    const page = Number(pagination && pagination.page) || 1;
+    const totalPages = Number(pagination && pagination.total_pages) || 1;
+    const previousHtml = pagination && pagination.has_previous
+      ? '<a class="mc-blog-widget__page-link" href="' + mcBlogWidgetEscapeHtml(mcBlogWidgetPageUrl(state, page - 1)) + '">← Newer posts</a>'
+      : '<span class="mc-blog-widget__page-link is-disabled">← Newer posts</span>';
+    const nextHtml = pagination && pagination.has_next
+      ? '<a class="mc-blog-widget__page-link" href="' + mcBlogWidgetEscapeHtml(mcBlogWidgetPageUrl(state, page + 1)) + '">Older posts →</a>'
+      : '<span class="mc-blog-widget__page-link is-disabled">Older posts →</span>';
+    nav.innerHTML = previousHtml + '<span class="mc-blog-widget__page-status">Page ' + page + " of " + totalPages + "</span>" + nextHtml;
+  }
+
+  function mcBlogWidgetRenderPosts(widget, posts, pagination, state) {
     const target = widget.querySelector("[data-mc-blog-posts]") || widget;
-    const limit = Math.max(1, Number(widget.getAttribute("data-limit") || widget.dataset.limit || 3) || 3);
-    const visiblePosts = Array.isArray(posts) ? posts.slice(0, limit) : [];
+    const list = Array.isArray(posts) ? posts : [];
+    const limit = state && state.paged ? list.length : Math.max(1, Number(widget.getAttribute("data-limit") || widget.dataset.limit || 3) || 3);
+    const visiblePosts = state && state.paged ? list : list.slice(0, limit);
     if (!visiblePosts.length) {
       widget.dataset.blogState = "empty";
-      target.innerHTML = "";
+      const message = state && state.query ? "No posts matched your search." : "No published posts yet.";
+      target.innerHTML = '<article class="mc-blog-widget__placeholder" data-mc-blog-empty="true">' + mcBlogWidgetEscapeHtml(message) + "</article>";
+      mcBlogWidgetUpdateControls(widget, state || {paged: false}, pagination || {});
+      mcBlogWidgetRenderPagination(widget, state || {paged: false}, pagination || {});
       return;
     }
     widget.dataset.blogState = "ready";
@@ -2528,22 +2849,37 @@ body[data-mc-blog-route-mode="detail"] main {
       const title = mcBlogWidgetEscapeHtml(post.title || post.slug || "Untitled post");
       const excerpt = mcBlogWidgetEscapeHtml(post.excerpt || "");
       const href = mcBlogWidgetEscapeHtml(mcBlogWidgetPostHref(widget, post));
-      const date = mcBlogWidgetFormatDate(post.published_at || post.date_created || post.updated_at);
-      const dateHtml = date ? '<time class="mc-blog-card__date">' + mcBlogWidgetEscapeHtml(date) + "</time>" : "";
+      const metaHtml = mcBlogWidgetMetaHtml("mc-blog-card", post);
+      const metaBlockHtml = metaHtml ? '<p class="mc-blog-card__meta">' + metaHtml + "</p>" : "";
       const excerptHtml = excerpt ? '<p class="mc-blog-card__excerpt">' + excerpt + "</p>" : "";
-      return '<article class="mc-blog-card"><a class="mc-blog-card__title" href="' + href + '">' + title + "</a>" + excerptHtml + dateHtml + "</article>";
+      return '<article class="mc-blog-card"><h2><a class="mc-blog-card__title" href="' + href + '">' + title + "</a></h2>" + metaBlockHtml + excerptHtml + "</article>";
     }).join("");
+    mcBlogWidgetUpdateControls(widget, state || {paged: false}, pagination || {});
+    mcBlogWidgetRenderPagination(widget, state || {paged: false}, pagination || {});
   }
 
   async function mcBlogWidgetHydrateList(widget) {
+    const paged = mcBlogWidgetIsPagedList(widget);
+    const state = mcBlogWidgetListState(widget, paged);
+    mcBlogWidgetEnsureControls(widget, state);
     try {
       widget.dataset.blogState = "loading";
-      const response = await fetch(mcBlogPostsEndpoint, {headers: {"Accept": "application/json"}});
+      const response = await fetch(mcBlogWidgetApiUrlForState(state), {headers: {"Accept": "application/json"}});
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || payload.ok === false) {
         throw new Error(payload.error || "Blog posts are not available.");
       }
-      mcBlogWidgetRenderPosts(widget, payload.posts || []);
+      const pagination = payload.pagination || {
+        page: state.page,
+        per_page: state.perPage,
+        total: Array.isArray(payload.posts) ? payload.posts.length : 0,
+        total_pages: 1,
+        has_previous: false,
+        has_next: false,
+        default_per_page: state.defaultPerPage,
+        max_allowed_fuzz: mcBlogMaxAllowedFuzz
+      };
+      mcBlogWidgetRenderPosts(widget, payload.posts || [], pagination, state);
     } catch (error) {
       widget.dataset.blogState = "unavailable";
       const target = widget.querySelector("[data-mc-blog-posts]") || widget;
@@ -2568,7 +2904,8 @@ body[data-mc-blog-route-mode="detail"] main {
     } catch {}
 
     if (path.startsWith(prefix)) {
-      return path.slice(prefix.length).replace(/^\/+|\/+$/g, "");
+      const slug = path.slice(prefix.length).replace(/^\/+|\/+$/g, "");
+      return slug === "index.html" ? "" : slug;
     }
     return "";
   }
@@ -2582,7 +2919,7 @@ body[data-mc-blog-route-mode="detail"] main {
   }
 
   function mcBlogWidgetRouteInfo(widget) {
-    const configured = widget && (widget.getAttribute("data-route-prefix") || widget.dataset.routePrefix || "");
+    const configured = widget && (widget.getAttribute("data-route-prefix") || widget.dataset.routePrefix || widget.getAttribute("data-post-base-path") || widget.dataset.postBasePath || "");
     let prefix = String(configured || mcBlogDefaultPostBasePath || "/blog/").trim() || "/blog/";
     if (!prefix.startsWith("/")) prefix = "/" + prefix;
     prefix = prefix.replace(/\/?$/, "/");
@@ -2633,16 +2970,16 @@ body[data-mc-blog-route-mode="detail"] main {
     const target = widget.querySelector("[data-mc-blog-post-viewer]") || widget;
     const title = mcBlogWidgetEscapeHtml(post.title || post.slug || "Untitled post");
     const excerpt = mcBlogWidgetEscapeHtml(post.excerpt || "");
-    const date = mcBlogWidgetFormatDate(post.published_at || post.date_created || post.updated_at);
+    const metaHtml = mcBlogWidgetMetaHtml("mc-blog-post-widget", post);
     const bodyHtml = mcBlogWidgetRenderBodyHtml(post.body || post.content || post.excerpt || "");
-    const dateHtml = date ? '<time class="mc-blog-post-widget__date">' + mcBlogWidgetEscapeHtml(date) + "</time>" : "";
+    const metaBlockHtml = metaHtml ? '<p class="mc-blog-post-widget__meta">' + metaHtml + "</p>" : "";
     const excerptHtml = excerpt ? '<p class="mc-blog-post-widget__excerpt">' + excerpt + "</p>" : "";
     const body = bodyHtml || "<p>This post does not have body content yet.</p>";
     widget.dataset.blogState = "ready";
     if (post.title || post.slug) {
       document.title = (post.title || post.slug || "Blog post") + " - Blog";
     }
-    target.innerHTML = '<article class="mc-blog-post-widget__article">' + dateHtml + '<h1>' + title + "</h1>" + excerptHtml + '<div class="mc-blog-post-widget__body">' + body + "</div></article>";
+    target.innerHTML = '<article class="mc-blog-post-widget__article">' + metaBlockHtml + '<h1>' + title + "</h1>" + excerptHtml + '<div class="mc-blog-post-widget__body">' + body + "</div></article>";
   }
 
   function mcBlogWidgetRenderPostMessage(widget, message, state) {

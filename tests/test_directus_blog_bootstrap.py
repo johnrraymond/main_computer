@@ -30,6 +30,7 @@ def test_directus_blog_bootstrap_attaches_public_permissions_to_anonymous_policy
             {"id": "admin-access", "role": "admin-role", "user": None, "policy": "admin-policy"},
             {"id": "anon-access", "role": None, "user": None, "policy": "public-policy"},
         ],
+        "anonymous_item_queries": [],
     }
 
     def fake_request(
@@ -77,6 +78,7 @@ def test_directus_blog_bootstrap_attaches_public_permissions_to_anonymous_policy
             return True, 200, "{}", {"data": new_permission}
 
         if path.startswith("/items/posts?") and method == "GET" and not token:
+            state["anonymous_item_queries"].append(path)
             has_public_posts = any(
                 item.get("collection") == "posts"
                 and item.get("action") == "read"
@@ -102,6 +104,12 @@ def test_directus_blog_bootstrap_attaches_public_permissions_to_anonymous_policy
     assert {item["collection"] for item in state["permissions"]} == {"posts", "directus_files"}
     posts_permission = next(item for item in state["permissions"] if item["collection"] == "posts")
     assert posts_permission["permissions"] == {"status": {"_eq": "published"}}
+    assert "published_on" in posts_permission["fields"]
+    assert "read_time_minutes" in posts_permission["fields"]
+    assert "is_legacy" in posts_permission["fields"]
+    assert "published_at" in posts_permission["fields"]
+    assert {"published_on", "read_time_minutes", "is_legacy"}.issubset(state["fields"])
+    assert any("published_on%2Cread_time_minutes%2Cis_legacy" in path for path in state["anonymous_item_queries"])
 
 
 def test_directus_blog_bootstrap_refuses_unassigned_public_policy(monkeypatch) -> None:
