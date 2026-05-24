@@ -46,6 +46,8 @@ def test_website_builder_has_visual_canvas_assets_and_script_source_file() -> No
     assert 'data-source-ref="blog.posts"' in script
     assert "/api/site/blog/posts" in script
     assert "websiteBuilderEnsureBlogWidgetAssets" in script
+    assert 'cssText.includes("mc-blog-search-pagination-controls-v1")' in script
+    assert 'jsText.includes("mcBlogWidgetRenderPagination")' in script
     assert "editor.BlockManager" in script
     assert "assetManager: {assets: websiteBuilderDefaultAssets()}" in script
     assert "js: websiteBuilderJs?.value" in script

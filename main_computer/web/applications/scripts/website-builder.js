@@ -3056,7 +3056,8 @@ body[data-mc-blog-route-mode="detail"] main {
         !cssText.includes("Main Computer blog widget styles") ||
         !cssText.includes(".mc-blog-widget[hidden]") ||
         !cssText.includes("mc-blog-article-presentation-v1") ||
-        !cssText.includes("mc-blog-index-grid-layout-v1")
+        !cssText.includes("mc-blog-index-grid-layout-v1") ||
+        !cssText.includes("mc-blog-search-pagination-controls-v1")
       ) {
         nextPayload.css = `${cssText.trimEnd()}\n\n${websiteBuilderBlogWidgetStyles()}`.trimStart();
       }
@@ -3064,7 +3065,8 @@ body[data-mc-blog-route-mode="detail"] main {
       if (
         !jsText.includes("mcBlogWidgetSelector") ||
         !jsText.includes("mcBlogWidgetApplyRouteModeVisibility") ||
-        !jsText.includes("mcBlogWidgetSanitizeRichHtml")
+        !jsText.includes("mcBlogWidgetSanitizeRichHtml") ||
+        !jsText.includes("mcBlogWidgetRenderPagination")
       ) {
         nextPayload.js = `${jsText.trimEnd()}\n\n${websiteBuilderBlogWidgetHydratorScript()}`.trimStart();
       }

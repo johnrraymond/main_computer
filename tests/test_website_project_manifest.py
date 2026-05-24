@@ -252,6 +252,28 @@ def test_ensure_website_blog_page_upgrades_stale_blog_widget_assets(tmp_path: Pa
     assert (site_dir / "script.js").read_text(encoding="utf-8").count("const mcBlogWidgetSelector") == js_count
 
 
+def test_website_project_save_preserves_managed_blog_assets_when_homepage_has_no_widget(tmp_path: Path) -> None:
+    project = create_website_project(tmp_path, "writer-site", "Writer Site")
+    ensure_website_blog_page(tmp_path, project.id)
+
+    save_website_project_files(
+        tmp_path,
+        project.id,
+        html="<main><h1>Edited homepage</h1></main>",
+        css="body { color: rebeccapurple; }\n",
+        js="window.editorSaved = true;\n",
+        builder='{"engine": "grapesjs", "script": "script.js"}\n',
+    )
+
+    updated = read_website_project_files(tmp_path, project.id)
+    assert "<h1>Edited homepage</h1>" in updated["html"]
+    assert "body { color: rebeccapurple; }" in updated["css"]
+    assert "window.editorSaved = true;" in updated["js"]
+    assert "Main Computer blog widget styles" in updated["css"]
+    assert "mc-blog-search-pagination-controls-v1" in updated["css"]
+    assert "mcBlogWidgetRenderPagination" in updated["js"]
+
+
 def test_ensure_website_blog_page_upgrades_article_assets_missing_grid_layout_marker(tmp_path: Path) -> None:
     create_website_project(tmp_path, "writer-site", "Writer Site")
     site_dir = tmp_path / "runtime" / "websites" / "writer-site"
@@ -872,6 +894,60 @@ def test_remote_publish_cleans_stale_blog_artifacts_before_running_publish_comma
         "/srv/main-computer/sites",
     ]]
     assert result["blog_artifact_cleanup"]["removed"] == ["runtime/websites/hub-site/data/blog-posts.json"]
+
+
+def test_remote_publish_repairs_managed_blog_widget_assets_before_upload(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project = create_website_project(tmp_path, "writer-site", "Writer Site")
+    ensure_website_blog_page(tmp_path, project.id)
+    _write_publish_command_stub(tmp_path)
+    _write_site_runtime_stub(tmp_path)
+    save_website_publish_target(
+        tmp_path,
+        project.id,
+        "remote_prod",
+        site_slug="writer-site",
+        source_path="runtime/websites/writer-site",
+        remote_host="root@publish.greatlibrary.io",
+        remote_root="/srv/main-computer/sites",
+    )
+
+    site_dir = tmp_path / "runtime" / "websites" / "writer-site"
+    (site_dir / "style.css").write_text("body { color: rebeccapurple; }\n", encoding="utf-8")
+    (site_dir / "script.js").write_text("window.editorSaved = true;\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        website_project_manifest,
+        "cleanup_deployed_blog_content_artifacts",
+        lambda repo_root, site_id: {"ok": True, "removed": []},
+    )
+
+    captured_source_has_blog_css: list[bool] = []
+
+    def fake_run(command, *, cwd=None, text=False, capture_output=False, timeout=None, check=False, env=None):
+        captured_source_has_blog_css.append(
+            "mc-blog-search-pagination-controls-v1" in (site_dir / "style.css").read_text(encoding="utf-8")
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="uploaded\n", stderr="")
+
+    monkeypatch.setattr(website_project_manifest.subprocess, "run", fake_run)
+
+    result = publish_website(tmp_path, project.id, lane="remote_prod", verify=False)
+
+    style_css = (site_dir / "style.css").read_text(encoding="utf-8")
+    script_js = (site_dir / "script.js").read_text(encoding="utf-8")
+    assert result["ok"] is True
+    assert result["blog_widget_assets"]["required"] is True
+    assert result["blog_widget_assets"]["updated_style_css"] is True
+    assert result["blog_widget_assets"]["updated_script_js"] is True
+    assert captured_source_has_blog_css == [True]
+    assert "body { color: rebeccapurple; }" in style_css
+    assert "Main Computer blog widget styles" in style_css
+    assert "mc-blog-search-pagination-controls-v1" in style_css
+    assert "window.editorSaved = true;" in script_js
+    assert "mcBlogWidgetRenderPagination" in script_js
 
 
 def test_remote_publish_command_failure_surfaces_stderr(

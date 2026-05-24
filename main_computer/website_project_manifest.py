@@ -1605,6 +1605,107 @@ def _html_is_managed_blog_page(html: str) -> bool:
     return BLOG_PAGE_HTML_MARKER in text or 'data-mc-generated-blog-page="' in text
 
 
+def _managed_blog_page_configs(project: WebsiteProject) -> list[dict[str, Any]]:
+    configs: list[dict[str, Any]] = []
+    blog_page = project.manifest.get("blog_page")
+    if isinstance(blog_page, dict):
+        configs.append(blog_page)
+    features = project.manifest.get("features")
+    blog = features.get("blog") if isinstance(features, dict) else None
+    feature_page = blog.get("page") if isinstance(blog, dict) else None
+    if isinstance(feature_page, dict) and feature_page not in configs:
+        configs.append(feature_page)
+    return configs
+
+
+def _blog_page_path_from_config(repo_root: Path, project: WebsiteProject, config: dict[str, Any]) -> Path | None:
+    raw_path = str(config.get("path") or "").strip()
+    if raw_path:
+        clean_path = raw_path.replace("\\", "/").lstrip("/")
+        parts = Path(clean_path).parts
+        if not parts or any(part in {"", ".", ".."} for part in parts):
+            return None
+        try:
+            candidate = repo_root.joinpath(*parts)
+            candidate.relative_to(repo_root)
+        except (ValueError, OSError):
+            return None
+        return candidate
+
+    raw_route = str(config.get("route") or "").strip()
+    if raw_route:
+        try:
+            _clean_route, route_parts = _normalize_blog_route(raw_route)
+        except WebsiteProjectError:
+            return None
+        return project.path.joinpath(*route_parts, "index.html")
+    return None
+
+
+def _project_has_managed_blog_page(repo_root: Path, project: WebsiteProject) -> bool:
+    for config in _managed_blog_page_configs(project):
+        if config.get("managed") is not True:
+            continue
+        page_path = _blog_page_path_from_config(repo_root, project, config)
+        if page_path is None:
+            return True
+        page_html = _read_optional_text(page_path)
+        if not page_html:
+            return True
+        if _html_is_managed_blog_page(page_html) or _html_has_blog_list_and_viewer(page_html):
+            return True
+    return False
+
+
+def _project_needs_blog_widget_assets(repo_root: Path, project: WebsiteProject, html: str) -> bool:
+    return _html_has_blog_list_widget(html) or _project_has_managed_blog_page(repo_root, project)
+
+
+def ensure_website_blog_widget_assets(
+    repo_root: Path,
+    site_id: object,
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Ensure site-level CSS/JS still contains Blog widget runtime assets."""
+
+    project = load_website_project(repo_root, site_id)
+    html_for_detection = _read_optional_text(project.path / "index.html")
+    required = _project_needs_blog_widget_assets(repo_root, project, html_for_detection)
+    result: dict[str, Any] = {
+        "ok": True,
+        "site_id": project.id,
+        "required": bool(required),
+        "updated_assets": False,
+        "updated_style_css": False,
+        "updated_script_js": False,
+        "dry_run": bool(dry_run),
+    }
+    if not required:
+        result["skipped"] = True
+        result["reason"] = "blog_assets_not_required"
+        return result
+
+    css_path = project.path / "style.css"
+    js_path = project.path / "script.js"
+    previous_css = _read_optional_text(css_path)
+    previous_js = _read_optional_text(js_path)
+    next_css = _ensure_blog_widget_styles(previous_css)
+    next_js = _ensure_blog_widget_script(previous_js)
+    style_changed = next_css != previous_css
+    script_changed = next_js != previous_js
+
+    result["updated_assets"] = bool(style_changed or script_changed)
+    result["updated_style_css"] = bool(style_changed)
+    result["updated_script_js"] = bool(script_changed)
+    if not dry_run:
+        if style_changed:
+            css_path.write_text(next_css, encoding="utf-8")
+        if script_changed:
+            js_path.write_text(next_js, encoding="utf-8")
+    return result
+
+
 def _normalize_blog_route(route: object = "/blog") -> tuple[str, list[str]]:
     text = str(route or "/blog").strip() or "/blog"
     if not text.startswith("/"):
@@ -3057,7 +3158,7 @@ def save_website_project_files(
     js_text = _coerce_limited_text(js, "script.js") if js is not None else None
 
     html_for_detection = html_text if html_text is not None else _read_optional_text(project.path / "index.html")
-    needs_blog_assets = _html_has_blog_list_widget(html_for_detection)
+    needs_blog_assets = _project_needs_blog_widget_assets(repo_root, project, html_for_detection)
     if needs_blog_assets:
         if css_text is None:
             css_text = _read_optional_text(project.path / "style.css")
@@ -3737,6 +3838,29 @@ def publish_website_remote_deploy(
         }
 
     try:
+        blog_widget_assets = ensure_website_blog_widget_assets(repo_root, site_id)
+    except WebsiteProjectError as exc:
+        blog_widget_assets = {"ok": False, "error": str(exc)}
+    if not blog_widget_assets.get("ok"):
+        return {
+            "ok": False,
+            "dry_run": False,
+            "plan": plan,
+            "site": load_website_project(repo_root, site_id).to_dict(repo_root),
+            "returncode": 1,
+            "stdout": "",
+            "stderr": "",
+            "verified": False,
+            "blog_widget_assets": blog_widget_assets,
+            "publish_command": {
+                "ok": False,
+                "skipped": True,
+                "reason": "blog_widget_assets_failed",
+            },
+            "error": str(blog_widget_assets.get("error") or "Blog widget asset repair failed."),
+        }
+
+    try:
         blog_artifact_cleanup = cleanup_deployed_blog_content_artifacts(repo_root, site_id)
     except WebsiteProjectError as exc:
         blog_artifact_cleanup = {"ok": False, "error": str(exc)}
@@ -3750,6 +3874,7 @@ def publish_website_remote_deploy(
             "stdout": "",
             "stderr": "",
             "verified": False,
+            "blog_widget_assets": blog_widget_assets,
             "blog_artifact_cleanup": blog_artifact_cleanup,
             "publish_command": {
                 "ok": False,
@@ -3771,6 +3896,7 @@ def publish_website_remote_deploy(
             "stdout": "",
             "stderr": "",
             "verified": False,
+            "blog_widget_assets": blog_widget_assets,
             "blog_artifact_cleanup": blog_artifact_cleanup,
             "site_runtime_bundle": {"ok": False, "error": str(exc)},
             "publish_command": {
@@ -3802,6 +3928,7 @@ def publish_website_remote_deploy(
         "stdout": completed.stdout,
         "stderr": completed.stderr,
         "verified": ok and not verify,
+        "blog_widget_assets": blog_widget_assets,
         "blog_artifact_cleanup": blog_artifact_cleanup,
         "site_runtime_bundle": site_runtime_bundle,
         "publish_command": {
