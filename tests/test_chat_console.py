@@ -123,11 +123,14 @@ class ChatConsoleHelperTests(unittest.TestCase):
         self.assertIn("source.selected_output_variant_index = targetIndex", html)
         self.assertIn("thread_parent_output_cell_id: outputCell.id", html)
         self.assertIn("cell.promoted_from?.promoted_from_output_cell_id || null", html)
-        self.assertIn("chatConsoleState.cells.push(outputCell)", html)
-        self.assertIn("function ensureChatConsoleContinuationAfterOutput", html)
-        self.assertIn("ensureChatConsoleContinuationAfterOutput(outputCell, cell)", html)
-        self.assertIn("ensureChatConsoleContinuationAfterOutput(recoveredOutput, cell)", html)
-        self.assertIn("ensureChatConsoleContinuationAfterOutput(outputCell, cell);", html)
+        self.assertIn("function chatConsoleCanApplyEvaluationResult", html)
+        self.assertIn("function chatConsolePersistEvaluationOutputToThread", html)
+        self.assertIn("function chatConsoleApplyOrPersistEvaluationOutput", html)
+        self.assertIn("const evaluationThreadId = chatConsoleState?.id ||", html)
+        self.assertIn("chatConsoleNormalizeOutputForSource(outputCell, sourceCell, variantIndex)", html)
+        self.assertIn("ensureChatConsoleContinuationAfterOutput(outputCell, sourceCell)", html)
+        self.assertIn("chatConsoleApplyOrPersistEvaluationOutput(", html)
+        self.assertIn("store.saveThread(threadId, draft, {replace: true, makeActive: false})", html)
         self.assertNotIn("+ 1 + variantIndex", html)
 
     def test_frontend_copies_output_cells_as_structured_rich_blocks(self) -> None:
@@ -251,6 +254,15 @@ class ChatConsoleHelperTests(unittest.TestCase):
         self.assertIn("chatConsoleSetThreadUrl(chatConsoleState.id);", html)
         self.assertIn("chatConsoleMountThreadController();", html)
         self.assertIn("chatConsoleRenderThreadController()", html)
+
+    def test_chat_console_ai_subprocess_supports_mounted_scoped_context(self) -> None:
+        script = (APPLICATIONS_HTML.parent.parent / "chat_ai_subprocess.py").read_text(encoding="utf-8")
+        self.assertIn('scoped_context = command.get("scoped_context")', script)
+        self.assertIn("scoped_context_text = str(scoped_context.get", script)
+        self.assertIn("if scoped_context_text:", script)
+        self.assertIn('web_search_context, web_search_text = {"disabled": True, "reason": "mounted_editor_scope"}, ""', script)
+        self.assertIn('ChatMessage(role="system", content=scoped_context_text)', script)
+
 
     def test_mathics_result_to_parts_keeps_text_only_result(self) -> None:
         parts = mathics_result_to_parts({"ok": True, "result_text": "4", "messages": [], "graphics": []}, "2+2")

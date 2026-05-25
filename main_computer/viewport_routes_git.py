@@ -125,6 +125,26 @@ class ViewportGitRoutesMixin:
             self.server.signal("api-git-project-inspect-error", error=exc)
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
+    def _handle_git_project_archive_files_status(self) -> None:
+        try:
+            body = self._read_json()
+            self.server.signal("api-git-project-archive-files-status")
+            self._send_json(self.server.git_tools.git_project_archive_files_status(body))
+        except Exception as exc:
+            self.server.signal("api-git-project-archive-files-status-error", error=exc)
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+    def _handle_git_project_archive_files(self) -> None:
+        try:
+            body = self._read_json()
+            self.server.signal("api-git-project-archive-files", dry_run=bool(body.get("dry_run", True)))
+            result = self.server.git_tools.archive_git_project_files(body)
+            status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
+            self._send_json(result, status=status)
+        except Exception as exc:
+            self.server.signal("api-git-project-archive-files-error", error=exc)
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
     def _handle_git_project_action_run(self) -> None:
         try:
             body = self._read_json()

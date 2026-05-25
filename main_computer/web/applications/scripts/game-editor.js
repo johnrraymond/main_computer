@@ -220,6 +220,9 @@
         setGameEditorChatOpen(false, {mountChat: false});
         nodes.chatToggle?.focus();
       });
+      nodes.chatPopout?.addEventListener("click", (event) => {
+        event.stopPropagation();
+      });
       document.addEventListener("click", (event) => {
         if (!nodes.chatPopout || nodes.chatPopout.hidden) return;
         const target = event.target;
@@ -323,7 +326,7 @@
         target_kind: "game-project",
         target_id: target.id,
         linked_targets: [target],
-        game_builder_phase: "ui-context-only"
+        game_builder_phase: "scoped-editor-context"
       };
     }
 
@@ -515,6 +518,7 @@
             hint: "Route this AI request through the Game Editor edit pathway, locked to the active game project.",
             appliesTo: "ai",
             defaultEnabled: true,
+            endpoint: "/api/applications/game-editor/chat/edit",
             pathway: "game-editor-rag-edit-smoke",
             targetKind: "game-project",
             targetId: projectId,

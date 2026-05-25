@@ -92,6 +92,8 @@ class GameEditorFunctionalSceneTests(unittest.TestCase):
         self.assertIn("Game Assistant", html)
         self.assertIn("function setGameEditorChatOpen", html)
         self.assertIn("setGameEditorChatOpen(!gameEditorState.chatOpen)", html)
+        self.assertIn('nodes.chatPopout?.addEventListener("click", (event) => {', html)
+        self.assertIn("event.stopPropagation();", html)
         self.assertIn("window.MainComputerGameEditorContext", html)
         self.assertIn("getEmbeddedContext: gameEditorChatContextSnapshot", html)
         self.assertIn('id: "game-editor-edit"', html)

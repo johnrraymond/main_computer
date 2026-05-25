@@ -1247,6 +1247,13 @@ function gitProjectCardSelector(attr, value = "") {
 function gitProjectStepIsCommitCard(step = {}) {
   return Boolean(step.commit_review);
 }
+function gitProjectStepIsArchiveCard(step = {}) {
+  return gitProjectStepId(step) === "archive_files" || Boolean(step.archive_files);
+}
+function gitProjectArchiveCardTitle(step = {}) {
+  if (!gitProjectStepIsArchiveCard(step)) return "";
+  return String(step.archive_files?.title || step.label || "Archive Files...").trim();
+}
 function gitProjectCommitCardTitle(step = {}) {
   if (!gitProjectStepIsCommitCard(step)) return "";
   const review = step.commit_review || {};
@@ -1260,7 +1267,9 @@ function gitProjectVisibleStepLabel(step = {}) {
   return `${label} — ${commitTitle}`;
 }
 function gitProjectOpenCardButtonLabel(step = {}) {
-  return gitProjectStepIsCommitCard(step) ? "Open commit pane" : "Open card";
+  if (gitProjectStepIsCommitCard(step)) return "Open commit pane";
+  if (gitProjectStepIsArchiveCard(step)) return "Open archive pane";
+  return "Open card";
 }
 function gitProjectCommitCardAttachmentHtml(step = {}) {
   const commitTitle = gitProjectCommitCardTitle(step);
@@ -1271,6 +1280,7 @@ function gitProjectStepSupportsCardSubscreen(step = {}) {
   const id = gitProjectStepId(step);
   if (id === "update_gitignore_before_initial_commit") return true;
   if (id === "secrets_filter") return true;
+  if (gitProjectStepIsArchiveCard(step)) return true;
   if (gitProjectStepIsCommitCard(step)) return true;
   if (Array.isArray(step.paths) && step.paths.length) return true;
   if (step.gitignore_file && (Array.isArray(step.ignore_rules) || Array.isArray(step.questionable_ignore_rules))) return true;
@@ -4073,6 +4083,169 @@ function gitProjectBindSecretsFilterActions(container) {
     });
   });
 }
+
+function gitProjectArchiveRuntimePayload(workbench) {
+  const project = currentGitProject() || {};
+  return {
+    project_id: workbench?.dataset.gitArchiveProjectId || project.id || "",
+    project_path: workbench?.dataset.gitArchiveProjectPath || project.path || "",
+    repo_dir: workbench?.dataset.gitArchiveRepo || project.path || gitRepoDir?.value || ".",
+  };
+}
+
+function gitProjectArchiveWorkbenchHtml(step = {}) {
+  const runtime = step.runtime || gitProjectRuntimeContext();
+  const archive = step.archive_files || {};
+  const defaultBranch = archive.default_branch || "archive/files";
+  return `<div class="git-project-commit-workbench git-project-archive-workbench" data-git-archive-workbench data-git-archive-repo="${escapeHtml(runtime.repo || ".")}" data-git-archive-project-id="${escapeHtml(currentGitProject()?.id || "")}" data-git-archive-project-path="${escapeHtml(currentGitProject()?.path || runtime.repo || ".")}">
+    <section class="git-project-commit-header">
+      <div>
+        <span class="git-project-commit-eyebrow">archive branch file mover</span>
+        <h3>Archive Files...</h3>
+        <p>Runs <code>git status</code> when opened, splits files into staged / unstaged / untracked groups, and archives selected paths before removing them from the active working tree.</p>
+      </div>
+      <div class="git-project-commit-ready-summary" data-git-archive-summary>Open card to load status.</div>
+    </section>
+    <section class="git-project-commit-compose git-project-archive-compose">
+      <label>Archive branch<input data-git-archive-branch value="${escapeHtml(defaultBranch)}" placeholder="archive/files-YYYYMMDD-HHMMSS"></label>
+      <label>Archive commit message<input data-git-archive-message value="archive: preserve selected files" placeholder="archive: preserve selected files"></label>
+    </section>
+    <section class="git-project-commit-basket-controls">
+      <button type="button" data-git-archive-action="refresh">Refresh git status</button>
+      <button type="button" data-git-archive-action="select-all">Select all</button>
+      <button type="button" data-git-archive-action="select-none">Select none</button>
+      <button type="button" data-git-archive-action="dry-run">Preview archive</button>
+      <button type="button" class="danger" data-git-archive-action="archive">Archive selected files</button>
+    </section>
+    <section class="git-project-commit-center">
+      <div class="git-project-archive-status" data-git-archive-status>Loading git status…</div>
+      <div class="git-project-archive-groups" data-git-archive-groups></div>
+    </section>
+    <section class="git-project-commit-execution-pane-inline">
+      <strong>Archive output</strong>
+      <pre data-git-archive-output>Ready.</pre>
+    </section>
+  </div>`;
+}
+
+function gitProjectArchiveSelectedPaths(workbench) {
+  return Array.from(workbench?.querySelectorAll("[data-git-archive-path]:checked") || [])
+    .map((input) => input.dataset.gitArchivePath || "")
+    .filter(Boolean);
+}
+
+function gitProjectArchiveGroupHtml(title, groupKey, items = []) {
+  if (!items.length) {
+    return `<section class="git-project-archive-group"><div class="git-project-subscreen-panel-head"><strong>${escapeHtml(title)}</strong><span>0 files</span></div><p>No files in this group.</p></section>`;
+  }
+  return `<section class="git-project-archive-group" data-git-archive-group="${escapeHtml(groupKey)}">
+    <div class="git-project-subscreen-panel-head"><strong>${escapeHtml(title)}</strong><span>${items.length} file${items.length === 1 ? "" : "s"}</span></div>
+    <div class="git-project-archive-file-list">
+      ${items.map((item = {}) => `<label class="git-project-archive-file-row">
+        <input type="checkbox" data-git-archive-path="${escapeHtml(item.path || "")}" data-git-archive-group="${escapeHtml(groupKey)}">
+        <span><code>${escapeHtml(item.path || "")}</code><small>${escapeHtml(item.label || item.status_code || groupKey)}</small></span>
+      </label>`).join("")}
+    </div>
+  </section>`;
+}
+
+function gitProjectArchiveRenderStatus(workbench, data = {}) {
+  const groups = data.groups || {};
+  const counts = data.counts || {};
+  const summary = workbench?.querySelector("[data-git-archive-summary]");
+  const container = workbench?.querySelector("[data-git-archive-groups]");
+  const status = workbench?.querySelector("[data-git-archive-status]");
+  if (summary) summary.textContent = `Staged ${counts.staged || 0} · Unstaged ${counts.unstaged || 0} · Untracked ${counts.untracked || 0}`;
+  if (status) status.textContent = `Git status loaded from ${data.repo || "selected project"}.`;
+  if (container) {
+    container.innerHTML = [
+      gitProjectArchiveGroupHtml("Changes to be committed", "staged", Array.isArray(groups.staged) ? groups.staged : []),
+      gitProjectArchiveGroupHtml("Changes not staged for commit", "unstaged", Array.isArray(groups.unstaged) ? groups.unstaged : []),
+      gitProjectArchiveGroupHtml("Untracked files", "untracked", Array.isArray(groups.untracked) ? groups.untracked : []),
+    ].join("");
+  }
+}
+
+async function gitProjectArchiveRefresh(workbench) {
+  const status = workbench?.querySelector("[data-git-archive-status]");
+  const output = workbench?.querySelector("[data-git-archive-output]");
+  if (status) status.textContent = "Running git status…";
+  const data = await gitToolsRequest("/api/applications/git/project/archive-files/status", gitProjectArchiveRuntimePayload(workbench));
+  gitProjectArchiveRenderStatus(workbench, data);
+  if (output) output.textContent = data.short_status || "No changed files.";
+  return data;
+}
+
+async function gitProjectArchiveRun(workbench, dryRun = true) {
+  const paths = gitProjectArchiveSelectedPaths(workbench);
+  const output = workbench?.querySelector("[data-git-archive-output]");
+  const status = workbench?.querySelector("[data-git-archive-status]");
+  if (!paths.length) {
+    if (status) status.textContent = "Select at least one file to archive.";
+    return;
+  }
+  if (!dryRun && !window.confirm(`Archive ${paths.length} selected path(s) and remove them from this working branch?`)) {
+    if (status) status.textContent = "Archive cancelled.";
+    return;
+  }
+  const payload = {
+    ...gitProjectArchiveRuntimePayload(workbench),
+    paths,
+    archive_branch: workbench?.querySelector("[data-git-archive-branch]")?.value || "",
+    message: workbench?.querySelector("[data-git-archive-message]")?.value || "",
+    dry_run: dryRun,
+  };
+  if (status) status.textContent = dryRun ? "Previewing archive operation…" : "Archiving selected files…";
+  const data = await gitToolsRequest("/api/applications/git/project/archive-files", payload);
+  if (output) output.textContent = JSON.stringify(data, null, 2);
+  if (status) status.textContent = dryRun ? "Archive preview complete." : `Archived to ${data.archive_branch || "archive branch"}.`;
+  if (!dryRun) {
+    await gitProjectArchiveRefresh(workbench).catch(() => null);
+    await refreshGitStatus().catch(() => null);
+    await inspectSelectedGitProject({quiet: true}).catch(() => null);
+  }
+}
+
+function gitProjectInitializeArchiveWorkbenches(container) {
+  container?.querySelectorAll?.("[data-git-archive-workbench]").forEach((workbench) => {
+    if (workbench.dataset.gitArchiveReady === "true") return;
+    workbench.dataset.gitArchiveReady = "true";
+    workbench.addEventListener("click", (event) => {
+      const button = event.target?.closest?.("[data-git-archive-action]");
+      if (!button || !workbench.contains(button)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const action = button.dataset.gitArchiveAction || "";
+      if (action === "refresh") {
+        gitProjectArchiveRefresh(workbench).catch((error) => {
+          const output = workbench.querySelector("[data-git-archive-output]");
+          if (output) output.textContent = gitToolsOperationErrorText("Archive status failed", error);
+        });
+      } else if (action === "select-all") {
+        workbench.querySelectorAll("[data-git-archive-path]").forEach((input) => { input.checked = true; });
+      } else if (action === "select-none") {
+        workbench.querySelectorAll("[data-git-archive-path]").forEach((input) => { input.checked = false; });
+      } else if (action === "dry-run") {
+        gitProjectArchiveRun(workbench, true).catch((error) => {
+          const output = workbench.querySelector("[data-git-archive-output]");
+          if (output) output.textContent = gitToolsOperationErrorText("Archive dry run failed", error);
+        });
+      } else if (action === "archive") {
+        gitProjectArchiveRun(workbench, false).catch((error) => {
+          const output = workbench.querySelector("[data-git-archive-output]");
+          if (output) output.textContent = gitToolsOperationErrorText("Archive failed", error);
+        });
+      }
+    });
+    gitProjectArchiveRefresh(workbench).catch((error) => {
+      const output = workbench.querySelector("[data-git-archive-output]");
+      const status = workbench.querySelector("[data-git-archive-status]");
+      if (status) status.textContent = "Archive status failed.";
+      if (output) output.textContent = gitToolsOperationErrorText("Archive status failed", error);
+    });
+  });
+}
+
 function gitProjectCommitWorkbenchHtml(step = {}) {
   const review = step.commit_review || {};
   const runtime = step.runtime || gitProjectRuntimeContext();
@@ -4091,8 +4264,9 @@ function gitProjectCardSubscreenHtml(step = {}, actionKey = "") {
   const isGitignore = stepId === "update_gitignore_before_initial_commit" || (step.gitignore_file && (Array.isArray(step.ignore_rules) || Array.isArray(step.questionable_ignore_rules)));
   const isSecretsFilter = stepId === "secrets_filter";
   const isCommit = gitProjectStepIsCommitCard(step);
-  const isPathList = !isCommit && !isGitignore && Array.isArray(step.paths) && step.paths.length;
-  const dialogLabel = isCommit ? gitProjectCommitCardTitle(step) : (step.label || "Git project card");
+  const isArchive = gitProjectStepIsArchiveCard(step);
+  const isPathList = !isCommit && !isArchive && !isGitignore && Array.isArray(step.paths) && step.paths.length;
+  const dialogLabel = isCommit ? gitProjectCommitCardTitle(step) : (isArchive ? gitProjectArchiveCardTitle(step) : (step.label || "Git project card"));
 
   const body = isSecretsFilter
     ? gitProjectSecretsFilterWorkbenchHtml(step)
@@ -4100,7 +4274,9 @@ function gitProjectCardSubscreenHtml(step = {}, actionKey = "") {
       ? gitProjectIgnoreWorkbenchHtml(step)
       : isCommit
         ? gitProjectCommitWorkbenchHtml(step)
-        : isPathList
+        : isArchive
+          ? gitProjectArchiveWorkbenchHtml(step)
+          : isPathList
           ? `<section class="git-project-subscreen-panel">
               <div class="git-project-subscreen-panel-head">
                 <strong>${escapeHtml(step.label || "Paths")}</strong>
@@ -4126,7 +4302,7 @@ function gitProjectCardSubscreenHtml(step = {}, actionKey = "") {
         </div>
         <button type="button" class="git-project-card-subscreen-close" data-git-project-close-card="${escapeHtml(actionKey)}">Close</button>
       </header>
-      <div class="git-project-card-subscreen-body ${isSecretsFilter ? "is-secrets-filter" : isGitignore ? "is-gitignore" : isCommit ? "is-commit" : isPathList ? "is-path-list" : ""}">
+      <div class="git-project-card-subscreen-body ${isSecretsFilter ? "is-secrets-filter" : isGitignore ? "is-gitignore" : isCommit ? "is-commit" : isArchive ? "is-archive-files" : isPathList ? "is-path-list" : ""}">
         ${body}
       </div>
     </section>
@@ -4424,6 +4600,7 @@ function bindGitProjectCardSubscreen(container) {
   gitProjectInitializeGitignoreWorkbenches(container);
   gitProjectBindSecretsFilterActions(container);
   gitProjectInitializeCommitWorkbenches(container);
+  gitProjectInitializeArchiveWorkbenches(container);
 }
 function renderGitProjectInspection(data) {
   const project = data.project || {};
@@ -4692,7 +4869,7 @@ function renderGitProjectWizard(wizard, data = {}) {
       cardSubscreen ? `data-git-project-card-shell="${escapeHtml(actionKey)}"` : "",
       gitProjectMcComponentAttrs(stepComponentId, "panel", stepLabel, "git-tools.projects.wizard.queue"),
     ].filter(Boolean).join(" ");
-    const cardClass = `git-project-wizard-step tone-${escapeHtml(step.tone)} ${escapeHtml(step.uiLane || step.state || "planned")}${gitProjectStepIsCommitCard(step) ? " has-commit-workbench" : ""}${cardSubscreen ? " has-card-open-control" : ""}`;
+    const cardClass = `git-project-wizard-step tone-${escapeHtml(step.tone)} ${escapeHtml(step.uiLane || step.state || "planned")}${gitProjectStepIsCommitCard(step) ? " has-commit-workbench" : ""}${gitProjectStepIsArchiveCard(step) ? " has-archive-workbench" : ""}${cardSubscreen ? " has-card-open-control" : ""}`;
     const displayNumber = Number.isFinite(displayIndex) ? displayIndex + 1 : Number(step.order ?? 0) + 1;
     return `<div class="${cardClass}" ${cardAttrs}>
       <div class="git-project-wizard-step-title" ${gitProjectMcComponentAttrs(`${stepComponentId}.title`, "status", `${stepLabel} Title`, stepComponentId)}><strong>${displayNumber}. ${escapeHtml(stepLabel)}</strong><span>priority ${Number(step.weight || 0)} · ${escapeHtml(step.state || "planned")}${step.locked ? " · locked" : ""} · current status ${escapeHtml(step.status || "idle")}</span></div>

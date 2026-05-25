@@ -19,11 +19,19 @@ HUB_ADMIN_ROUTES = {
 }
 
 
-def build_admin_bootstrap_payload(*, config: Any, registry: Any, dispatcher: Any, energy_ledger: Any) -> dict[str, Any]:
+def build_admin_bootstrap_payload(
+    *,
+    config: Any,
+    registry: Any,
+    dispatcher: Any,
+    energy_ledger: Any,
+    credit_ledger: Any | None = None,
+) -> dict[str, Any]:
     """Return a single dashboard-friendly snapshot for the hub admin/control site."""
 
     status = registry.status()
     metrics = dispatcher.metrics()
+    credit_status = credit_ledger.status() if credit_ledger is not None else {"ok": False, "account_count": 0, "totals": {}}
     workers = [
         dict(worker)
         for worker in status.get("workers", [])
@@ -67,6 +75,7 @@ def build_admin_bootstrap_payload(*, config: Any, registry: Any, dispatcher: Any
             "allow_insecure_dev_network": bool(getattr(config, "hub_allow_insecure_dev_network", False)),
         },
         "energy": energy_ledger.status(),
+        "credits": credit_status,
         "endpoints": {
             "health": "/api/hub/v1/health",
             "status": "/api/hub/v1/status",
@@ -77,6 +86,12 @@ def build_admin_bootstrap_payload(*, config: Any, registry: Any, dispatcher: Any
             "requests": "/api/hub/v1/requests",
             "payouts": "/api/hub/v1/payouts",
             "payout_claim": "/api/hub/v1/payouts/claim",
+            "credits": "/api/hub/v1/credits",
+            "credit_accounts": "/api/hub/v1/credits/accounts",
+            "credit_balance": "/api/hub/v1/credits/balance",
+            "credit_transactions": "/api/hub/v1/credits/transactions",
+            "credit_purchases": "/api/hub/v1/credits/purchases",
+            "credit_admin_issue": "/api/hub/v1/credits/admin/issue",
         },
     }
 
@@ -232,6 +247,7 @@ def render_hub_admin_html(*, service_name: str = "Main Computer Hub Control") ->
       <article class=\"panel\"><div class=\"card-title\">Available</div><div id=\"availableCount\" class=\"card-value\">—</div></article>
       <article class=\"panel\"><div class=\"card-title\">Stale</div><div id=\"staleCount\" class=\"card-value\">—</div></article>
       <article class=\"panel\"><div class=\"card-title\">Tracked requests</div><div id=\"requestCount\" class=\"card-value\">—</div></article>
+      <article class=\"panel\"><div class=\"card-title\">Compute Credit accounts</div><div id=\"creditAccountCount\" class=\"card-value\">—</div></article>
     </section>
 
     <section class=\"two-col\">
@@ -277,6 +293,12 @@ def render_hub_admin_html(*, service_name: str = "Main Computer Hub Control") ->
           <button type=\"submit\">Submit request</button>
         </form>
       </article>
+    </section>
+
+    <section class=\"panel\">
+      <h2>Compute Credits</h2>
+      <p>Internal service-credit ledger for purchases, balances, and future request charging. This is off-chain hub accounting, not a public ERC-20 balance.</p>
+      <div id=\"creditSummary\">Loading…</div>
     </section>
 
     <section class=\"two-col\">
@@ -377,6 +399,18 @@ def render_hub_admin_html(*, service_name: str = "Main Computer Hub Control") ->
         }});
       }});
     }}
+    function renderCredits(data) {{
+      const credits = data.credits || {{}};
+      const totals = credits.totals || {{}};
+      $('creditSummary').innerHTML = `
+        <p><strong>Unit:</strong> ${{escapeHtml((credits.unit && credits.unit.name) || 'Compute Credits')}}</p>
+        <p><strong>Accounts:</strong> ${{Number(credits.account_count || 0)}}</p>
+        <p><strong>Available:</strong> ${{Number(totals.available_credits || 0)}}</p>
+        <p><strong>Held:</strong> ${{Number(totals.held_credits || 0)}}</p>
+        <p><strong>Purchased:</strong> ${{Number(totals.purchased_credits || 0)}}</p>
+        <p><strong>Transactions:</strong> ${{Number(credits.transaction_count || 0)}}</p>
+      `;
+    }}
     function renderSecurityEnergy(data) {{
       const security = data.security || {{}};
       const energy = data.energy || {{}};
@@ -397,8 +431,10 @@ def render_hub_admin_html(*, service_name: str = "Main Computer Hub Control") ->
         setText('availableCount', status.available_worker_count ?? metrics.available_worker_count ?? '0');
         setText('staleCount', status.stale_worker_count ?? metrics.stale_worker_count ?? '0');
         setText('requestCount', data.request_count ?? requests.length ?? '0');
+        setText('creditAccountCount', (data.credits && data.credits.account_count) ?? '0');
         renderWorkers(data.workers || []);
         renderRequests(requests);
+        renderCredits(data);
         renderSecurityEnergy(data);
         setText('lastUpdated', 'updated ' + new Date().toLocaleTimeString());
       }} catch (err) {{

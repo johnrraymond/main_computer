@@ -1471,6 +1471,98 @@ class GitToolsServiceTests(unittest.TestCase):
         self.assertEqual(finished.get("operation", {}).get("status"), "cancelled")
 
 
+    def _run_temp_git(self, repo: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+
+    def test_archive_files_status_splits_staged_unstaged_and_untracked_groups(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            self._run_temp_git(repo, ["init"])
+            self._run_temp_git(repo, ["config", "user.name", "Test User"])
+            self._run_temp_git(repo, ["config", "user.email", "test@example.invalid"])
+            (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+            self._run_temp_git(repo, ["add", "tracked.txt"])
+            self._run_temp_git(repo, ["commit", "-m", "initial"])
+            (repo / "staged_new.txt").write_text("staged\n", encoding="utf-8")
+            self._run_temp_git(repo, ["add", "staged_new.txt"])
+            (repo / "tracked.txt").write_text("changed\n", encoding="utf-8")
+            (repo / "untracked").mkdir()
+            (repo / "untracked" / "note.txt").write_text("untracked\n", encoding="utf-8")
+
+            service = self._service(repo)
+            status = service.git_project_archive_files_status({"repo_dir": str(repo)})
+
+            self.assertTrue(status["ok"])
+            self.assertIn("staged_new.txt", {item["path"] for item in status["groups"]["staged"]})
+            self.assertIn("tracked.txt", {item["path"] for item in status["groups"]["unstaged"]})
+            self.assertTrue(any(item["path"].startswith("untracked") for item in status["groups"]["untracked"]))
+            self.assertEqual(status["counts"]["staged"], 1)
+            self.assertEqual(status["counts"]["unstaged"], 1)
+            self.assertGreaterEqual(status["counts"]["untracked"], 1)
+
+    def test_archive_files_preserves_selected_status_groups_on_archive_branch_and_removes_them(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            self._run_temp_git(repo, ["init"])
+            self._run_temp_git(repo, ["config", "user.name", "Test User"])
+            self._run_temp_git(repo, ["config", "user.email", "test@example.invalid"])
+            (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+            self._run_temp_git(repo, ["add", "tracked.txt"])
+            self._run_temp_git(repo, ["commit", "-m", "initial"])
+            (repo / "staged_new.txt").write_text("staged\n", encoding="utf-8")
+            self._run_temp_git(repo, ["add", "staged_new.txt"])
+            (repo / "tracked.txt").write_text("changed\n", encoding="utf-8")
+            (repo / "untracked").mkdir()
+            (repo / "untracked" / "note.txt").write_text("untracked\n", encoding="utf-8")
+
+            service = self._service(repo)
+            preview = service.archive_git_project_files(
+                {
+                    "repo_dir": str(repo),
+                    "archive_branch": "archive/files-test",
+                    "message": "archive: selected files",
+                    "paths": ["staged_new.txt", "tracked.txt", "untracked"],
+                    "dry_run": True,
+                }
+            )
+            self.assertTrue(preview["ok"])
+            self.assertTrue(preview["dry_run"])
+            self.assertTrue((repo / "staged_new.txt").exists())
+
+            result = service.archive_git_project_files(
+                {
+                    "repo_dir": str(repo),
+                    "archive_branch": "archive/files-test",
+                    "message": "archive: selected files",
+                    "paths": ["staged_new.txt", "tracked.txt", "untracked"],
+                    "dry_run": False,
+                }
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertFalse(result["dry_run"])
+            self.assertTrue(result["archive_commit"])
+            self.assertFalse((repo / "staged_new.txt").exists())
+            self.assertFalse((repo / "tracked.txt").exists())
+            self.assertFalse((repo / "untracked").exists())
+
+            staged_blob = self._run_temp_git(repo, ["show", "archive/files-test:staged_new.txt"]).stdout
+            tracked_blob = self._run_temp_git(repo, ["show", "archive/files-test:tracked.txt"]).stdout
+            untracked_blob = self._run_temp_git(repo, ["show", "archive/files-test:untracked/note.txt"]).stdout
+            self.assertEqual(staged_blob, "staged\n")
+            self.assertEqual(tracked_blob, "changed\n")
+            self.assertEqual(untracked_blob, "untracked\n")
+
+
 
 if __name__ == "__main__":
     unittest.main()

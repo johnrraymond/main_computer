@@ -78,3 +78,29 @@ HubCreditSale.CreditPurchased
 
 Worker payout and reserve movement remain separate phases.
 
+## Hub Compute Credit settlement Phase 0
+
+The hub/worker paid-work settlement schema is documented in:
+
+```text
+pretty_docs/hub-compute-credit-settlement-phase0.md
+```
+
+Phase 0 defines backend accounting and privacy objects only:
+
+- `ChainEventRef`
+- `HubCreditAccount`
+- `CreditDeposit`
+- `HubCreditTransaction`
+- `HubCreditHold`
+- `RequestCharge`
+- `WorkerEarning`
+- `WorkerSettlementBatch`
+- `RequestReceipt`
+- `WorkerQualityReport`
+
+The chain remains a coarse funding and aggregate-settlement surface. Per-request
+charges, exact worker earnings, quality reports, and request-to-worker mappings
+remain inside the hub backend until later phases explicitly expose aggregate
+settlement roots or payout claims.
+

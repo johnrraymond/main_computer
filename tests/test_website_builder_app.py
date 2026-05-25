@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
 import py_compile
+import threading
 from pathlib import Path
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -202,11 +206,13 @@ def test_website_builder_backend_routes_are_wired() -> None:
     assert '"/api/applications/websites/site/save"' in routes
     assert '"/api/applications/websites/site/publish"' in routes
     assert '"/api/applications/websites/site/archive"' in routes
+    assert '"/api/applications/website-builder/chat/edit"' in routes
     assert '"/api/publishing/local-server/prepare"' not in routes
     assert "def _handle_websites_sites" in handlers
     assert "def _handle_websites_site_save" in handlers
     assert "def _handle_websites_site_publish" in handlers
     assert "def _handle_websites_site_archive" in handlers
+    assert "def _handle_website_builder_chat_edit" in handlers
     assert "def _handle_publishing_local_server_prepare" not in handlers
     assert "archive_website_project(" in handlers
     assert "create_local_platform_website_project(" in handlers
@@ -217,6 +223,102 @@ def test_website_builder_backend_routes_are_wired() -> None:
     assert "save_website_directus_connection(" in handlers
     assert "directus_connection" in handlers
 
+
+
+def test_website_builder_chat_edit_route_is_locked_to_site_scope(tmp_path) -> None:
+    from main_computer.config import MainComputerConfig
+    from main_computer.viewport import ViewportServer
+    from main_computer.website_project_manifest import list_website_projects
+
+    list_website_projects(tmp_path)
+    server = ViewportServer(("127.0.0.1", 0), MainComputerConfig(workspace=tmp_path), verbose=False)
+    server.debug_root = tmp_path
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    def post(path: str, payload: dict) -> dict:
+        request = Request(
+            base_url + path,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    try:
+        data = post(
+            "/api/applications/website-builder/chat/edit",
+            {
+                "thread_id": "test-website-chat",
+                "cell": {"id": "chat-website-scope", "type": "ai", "source": "What files can you see?"},
+                "embedded_context": {"active_app": "website-builder", "site_id": "hub-site", "target_kind": "website-project", "target_id": "hub-site"},
+                "embedded_context_source": {"active_app": "website-builder", "target_kind": "website-project", "target_id": "hub-site"},
+                "mount_plugins": [{"id": "website-builder-edit", "enabled": True, "target_id": "hub-site", "site_id": "hub-site", "allowed_write_paths": ["main_computer/router.py"]}],
+            },
+        )
+        assert data["ok"]
+        output = data["output_cell"]
+        assert output["metadata"]["editor_edit_mode"] == "website-builder"
+        assert output["metadata"]["site_id"] == "hub-site"
+        assert output["metadata"]["allowed_root"] == "runtime/websites/hub-site/"
+        content = "\n".join(str(part.get("content", "")) for part in output["parts"])
+        assert "runtime/websites/hub-site/site.json" in content
+        assert "proposal-only" in content
+        assert "main_computer/router.py" not in content
+        assert "main_computer_test" not in content
+        assert output["metadata"]["auto_apply"] is False
+
+        from main_computer.models import ChatResponse
+
+        class FakeMountedProvider:
+            name = "fake-mounted-provider"
+            model = "fake-mounted-model"
+
+        class FakeMountedComputer:
+            provider = FakeMountedProvider()
+
+            def chat_console_ai(self, source: str, attachments: list | None = None) -> ChatResponse:
+                return ChatResponse(
+                    content=f"inline scoped AI ran: {'Allowed root: `runtime/websites/hub-site/`' in source}",
+                    provider="fake-mounted-provider",
+                    model="fake-mounted-model",
+                )
+
+        server.computer = FakeMountedComputer()
+        ai_data = post(
+            "/api/applications/website-builder/chat/edit",
+            {
+                "thread_id": "test-website-chat",
+                "cell": {"id": "chat-website-ai", "type": "ai", "source": "Say hello from this website."},
+                "embedded_context": {"active_app": "website-builder", "site_id": "hub-site", "target_kind": "website-project", "target_id": "hub-site"},
+                "embedded_context_source": {"active_app": "website-builder", "target_kind": "website-project", "target_id": "hub-site"},
+                "mount_plugins": [{"id": "website-builder-edit", "enabled": True, "target_id": "hub-site", "site_id": "hub-site"}],
+            },
+        )
+        ai_content = "\n".join(str(part.get("content", "")) for part in ai_data["output_cell"]["parts"])
+        assert "inline scoped AI ran: True" in ai_content
+        assert ai_data["output_cell"]["metadata"]["scope_card"] is False
+
+        request = Request(
+            base_url + "/api/applications/website-builder/chat/edit",
+            data=json.dumps({
+                "cell": {"id": "chat-website-scope", "type": "ai", "source": "What files can you see?"},
+                "embedded_context": {"active_app": "website-builder", "site_id": "hub-site"},
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urlopen(request, timeout=5)
+            raise AssertionError("missing website-builder-edit plugin should fail")
+        except HTTPError as exc:
+            assert exc.code == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def test_website_builder_registry_lane_payload_uses_local_platform_manifest(tmp_path) -> None:

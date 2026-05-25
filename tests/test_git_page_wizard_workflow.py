@@ -507,6 +507,45 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
                 self.assertIn(css_snippet, GIT_TOOLS_CSS)
 
 
+    def test_archive_files_card_uses_commit_style_status_group_workbench(self) -> None:
+        expected_js = (
+            "function gitProjectStepIsArchiveCard(step = {})",
+            "function gitProjectArchiveWorkbenchHtml(step = {})",
+            "data-git-archive-workbench",
+            "Archive Files...",
+            "Changes to be committed",
+            "Changes not staged for commit",
+            "Untracked files",
+            '"/api/applications/git/project/archive-files/status"',
+            '"/api/applications/git/project/archive-files"',
+            "gitProjectInitializeArchiveWorkbenches(container)",
+        )
+        for snippet in expected_js:
+            with self.subTest(snippet=snippet):
+                self.assertIn(snippet, TASK_MANAGER_JS)
+
+        expected_backend = (
+            "def git_project_archive_files_status",
+            "def archive_git_project_files",
+            '"id": "archive_files"',
+            '"label": "Archive Files..."',
+            '"/api/applications/git/project/archive-files/status"',
+            '"/api/applications/git/project/archive-files"',
+        )
+        combined_backend = GIT_TOOLS_PY + VIEWPORT_ROUTES_GIT + VIEWPORT_ROUTE_DISPATCH
+        for snippet in expected_backend:
+            with self.subTest(backend_snippet=snippet):
+                self.assertIn(snippet, combined_backend)
+
+        for snippet in (
+            ".git-project-archive-workbench",
+            ".git-project-archive-groups",
+            ".git-project-archive-file-row",
+        ):
+            with self.subTest(css_snippet=snippet):
+                self.assertIn(snippet, GIT_TOOLS_CSS)
+
+
     def test_git_project_selector_api_routes_are_registered(self) -> None:
         expected_routes = (
             '"/api/applications/git/projects"',

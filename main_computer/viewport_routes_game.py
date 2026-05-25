@@ -1,6 +1,28 @@
 from __future__ import annotations
 
 from main_computer.viewport_state import *  # noqa: F401,F403
+import os
+
+from main_computer.chat_ai_subprocess import append_text_log, config_to_payload
+from main_computer.models import ChatResponse
+
+
+def _mounted_editor_should_inline_test_provider(provider: Any) -> bool:
+    module = str(getattr(getattr(provider, "__class__", None), "__module__", "") or "")
+    if not provider or module.startswith("main_computer.providers"):
+        return False
+    return os.environ.get("MAIN_COMPUTER_DISABLE_INLINE_TEST_PROVIDER", "").strip().lower() not in {"1", "true", "yes", "on"}
+
+
+def _mounted_editor_scope_query(source: str) -> bool:
+    text = re.sub(r"\s+", " ", str(source or "").strip().lower())
+    return (
+        "what files can you see" in text
+        or "which files can you see" in text
+        or "what can you see" in text
+        or text in {"scope", "show scope", "show me the scope"}
+        or ("visible" in text and "files" in text)
+    )
 
 class ViewportGameRoutesMixin:
     def _handle_game_editor_post(self) -> None:
@@ -12,6 +34,9 @@ class ViewportGameRoutesMixin:
                 return
             if route == "/api/applications/game-editor/project/read":
                 self._send_json(self._game_project_read_payload(str(body.get("project_id", "") or "")))
+                return
+            if route == "/api/applications/game-editor/chat/edit":
+                self._handle_game_editor_chat_edit(body)
                 return
             if route == "/api/applications/game-editor/project/write":
                 self._handle_game_project_write(body)
@@ -82,6 +107,257 @@ class ViewportGameRoutesMixin:
         except Exception as exc:
             self.server.signal("api-game-editor-error", route=self.path, error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+    def _game_chat_enabled_plugin(self, body: dict[str, Any], expected_id: str = "game-editor-edit") -> dict[str, Any]:
+        plugins = body.get("mount_plugins")
+        if not isinstance(plugins, list):
+            plugins = []
+        for plugin in plugins:
+            if isinstance(plugin, dict) and plugin.get("id") == expected_id and plugin.get("enabled") is not False:
+                return plugin
+        state = body.get("mount_plugin_state")
+        if isinstance(state, dict):
+            plugin_state = state.get(expected_id)
+            if isinstance(plugin_state, dict) and plugin_state.get("enabled") is not False:
+                return {"id": expected_id, "enabled": True}
+        raise ValueError("Game Editor edit chat requires the checked game-editor-edit mount plugin.")
+
+    def _game_chat_require_game_editor_mount(self, body: dict[str, Any]) -> None:
+        embedded = body.get("embedded_context") if isinstance(body.get("embedded_context"), dict) else {}
+        source = body.get("embedded_context_source") if isinstance(body.get("embedded_context_source"), dict) else {}
+        active_app = str(embedded.get("active_app") or source.get("active_app") or "").strip()
+        if active_app != "game-editor":
+            raise ValueError("Game Editor edit chat must come from a Game Editor embedded chat mount.")
+
+    def _game_chat_project_id(self, body: dict[str, Any], plugin: dict[str, Any]) -> str:
+        embedded = body.get("embedded_context") if isinstance(body.get("embedded_context"), dict) else {}
+        source = body.get("embedded_context_source") if isinstance(body.get("embedded_context_source"), dict) else {}
+        for value in (
+            embedded.get("project_id"),
+            embedded.get("target_id"),
+            source.get("target_id"),
+            body.get("project_id"),
+            body.get("target_id"),
+            plugin.get("project_id"),
+            plugin.get("target_id"),
+        ):
+            text = str(value or "").strip()
+            if text:
+                return self._game_project_id(text)
+        return self._default_game_project_id()
+
+    def _game_editor_visible_project_files(self, project_id: str, *, limit: int = 80) -> list[str]:
+        root = self._game_project_root(project_id)
+        visible: list[str] = []
+        project_file = root / "project.json"
+        if project_file.is_file():
+            visible.append(f"game_projects/{root.name}/project.json")
+        for folder in ("scripts", "data", "assets", "builds"):
+            folder_root = root / folder
+            if not folder_root.is_dir():
+                continue
+            for path in sorted(folder_root.rglob("*")):
+                if path.is_file():
+                    visible.append(f"game_projects/{root.name}/{path.relative_to(root).as_posix()}")
+                    if len(visible) >= limit:
+                        return visible
+        return visible
+
+    def _game_editor_scoped_chat_context(self, *, project_id: str, project_payload: dict[str, Any], files_payload: dict[str, Any], scripts_payload: dict[str, Any], visible_files: list[str]) -> str:
+        file_lines = "\n".join(f"- `{path}`" for path in visible_files) or "- No files are present in this game project yet."
+        active_scene = str(project_payload.get("project", {}).get("activeSceneId", "") or "")
+        return (
+            "You are answering inside the mounted Game Editor chat.\n"
+            f"You are scoped ONLY to the active game project `{project_id}`.\n"
+            f"Allowed root: `game_projects/{project_id}/`.\n"
+            "Do not claim access to repo files such as `main_computer/`, tests, tools, or other projects.\n"
+            "Do not propose or imply writes outside the allowed root.\n"
+            "This phase is proposal-only: no files may be modified.\n\n"
+            "Visible game-project files:\n"
+            f"{file_lines}\n\n"
+            f"Active scene: `{active_scene}`.\n"
+            f"Project file count: {len(visible_files)} visible files; {scripts_payload.get('count', 0)} scripts; {files_payload.get('count', 0)} project data/assets/build files.\n"
+        )
+
+    def _game_editor_scope_response(self, *, cell: dict[str, Any], source: str, project_id: str, project_payload: dict[str, Any], files_payload: dict[str, Any], scripts_payload: dict[str, Any], visible_files: list[str], run_id: str, thread_id: str) -> ChatResponse:
+        file_lines = "\n".join(f"- `{path}`" for path in visible_files) or "- No files are present in this game project yet."
+        content = (
+            f"I am scoped to the active Game Editor project `{project_id}` only.\n\n"
+            "Visible game-project files:\n"
+            f"{file_lines}\n\n"
+            "Scope lock:\n"
+            f"- Allowed root: `game_projects/{project_id}/`\n"
+            "- Server-derived write policy: proposal-only; no files were modified.\n"
+            "- Repo files such as `main_computer/`, tests, tools, and other projects are outside this mounted editor context.\n\n"
+            f"Active scene: `{project_payload.get('project', {}).get('activeSceneId', '')}`\n"
+            f"Project file count: {len(visible_files)} visible files; {scripts_payload.get('count', 0)} scripts; {files_payload.get('count', 0)} project data/assets/build files.\n\n"
+            "For ordinary questions, this mounted route now runs the AI with this scoped context instead of returning this static scope card."
+        )
+        return ChatResponse(
+            content=content,
+            provider="main-computer-mounted-editor",
+            model="game-editor-scoped-chat",
+            metadata={
+                "run_id": run_id,
+                "thread_id": thread_id,
+                "editor_edit_mode": "game-editor",
+                "project_id": project_id,
+                "allowed_root": f"game_projects/{project_id}/",
+                "visible_files": visible_files,
+                "prompt": source,
+                "auto_apply": False,
+                "scope_card": True,
+            },
+        )
+
+    def _game_editor_scoped_ai_response(self, *, body: dict[str, Any], cell: dict[str, Any], source: str, project_id: str, visible_files: list[str], run_id: str, thread_id: str, scoped_context: str) -> ChatResponse:
+        log_path = self._chat_console_session_log_path(run_id)
+        attachments = self._chat_console_evaluation_attachments(cell.get("attachments") if isinstance(cell.get("attachments"), list) else [])
+        append_text_log(
+            log_path,
+            "route accepted mounted Game Editor AI request",
+            run_id=run_id,
+            thread_id=thread_id,
+            project_id=project_id,
+            source_chars=len(source),
+            source=source,
+            visible_files=visible_files,
+            scoped_context_chars=len(scoped_context),
+        )
+        self.server.activity.record(
+            source="game-editor",
+            kind="ai",
+            time_model="parallel",
+            severity="info",
+            title="Game Editor scoped AI request queued",
+            message=source[:500],
+            status="running",
+            tags=["ai", "local-ai", "chat-console", "game-editor", "mounted-editor", "subprocess"],
+            data={
+                "run_id": run_id,
+                "thread_id": thread_id,
+                "activity_filter": "ai",
+                "editor_edit_mode": "game-editor",
+                "project_id": project_id,
+                "allowed_root": f"game_projects/{project_id}/",
+                "visible_files": visible_files,
+                "raw_thinking_exposed": False,
+                "running_text": "Game Editor scoped AI subprocess queued",
+                "rag_type": "game_editor_scoped_chat",
+            },
+        )
+        if _mounted_editor_should_inline_test_provider(getattr(getattr(self.server, "computer", None), "provider", None)):
+            inline_source = f"{scoped_context}\n\nUser request:\n{source}"
+            if hasattr(self.server.computer, "chat_console_ai"):
+                inline_response = self.server.computer.chat_console_ai(inline_source, attachments=attachments)
+            else:
+                inline_response = self.server.computer.chat(inline_source)
+            payload = {
+                "response": {
+                    "content": inline_response.content,
+                    "provider": inline_response.provider,
+                    "model": inline_response.model,
+                    "metadata": inline_response.metadata,
+                }
+            }
+        else:
+            payload = self.server.chat_ai_processes.run(
+                command={
+                    "mode": "chat_console_ai",
+                    "run_id": run_id,
+                    "source": source,
+                    "attachments": attachments,
+                    "config": config_to_payload(self.server.config),
+                    "scoped_context": {
+                        "label": "game-editor",
+                        "text": scoped_context,
+                    },
+                },
+                thread_id=thread_id,
+                log_file=log_path,
+                activity_bus=self.server.activity,
+                cwd=self.server.debug_root,
+            )
+        response_payload = payload.get("response") if isinstance(payload.get("response"), dict) else {}
+        response = ChatResponse(
+            content=str(response_payload.get("content") or ""),
+            provider=str(response_payload.get("provider") or getattr(getattr(self.server.computer, "provider", None), "name", "")),
+            model=str(response_payload.get("model") or getattr(getattr(self.server.computer, "provider", None), "model", "")),
+            metadata=response_payload.get("metadata") if isinstance(response_payload.get("metadata"), dict) else {},
+        )
+        append_text_log(
+            log_path,
+            "route completed mounted Game Editor AI request",
+            run_id=run_id,
+            thread_id=thread_id,
+            project_id=project_id,
+            response_chars=len(response.content),
+            provider=response.provider,
+            model=response.model,
+        )
+        return response
+
+    def _handle_game_editor_chat_edit(self, body: dict[str, Any]) -> None:
+        cell = body.get("cell") if isinstance(body.get("cell"), dict) else {}
+        cell_type, source = validate_evaluation_cell(cell)
+        if cell_type != "ai":
+            raise ValueError("Game Editor edit chat only accepts AI cells.")
+        plugin = self._game_chat_enabled_plugin(body)
+        self._game_chat_require_game_editor_mount(body)
+        project_id = self._game_chat_project_id(body, plugin)
+        project_payload = self._game_project_read_payload(project_id)
+        files_payload = self._game_files_payload(project_id)
+        scripts_payload = self._game_scripts_payload(project_id)
+        visible_files = self._game_editor_visible_project_files(project_id)
+        run_id = str(body.get("run_id") or cell.get("run_id") or f"game_editor_edit_{int(time.time() * 1000)}").strip()
+        thread_id = str(body.get("thread_id") or body.get("chat_thread_id") or "game-editor-chat").strip()
+        scoped_context = self._game_editor_scoped_chat_context(
+            project_id=project_id,
+            project_payload=project_payload,
+            files_payload=files_payload,
+            scripts_payload=scripts_payload,
+            visible_files=visible_files,
+        )
+        if _mounted_editor_scope_query(source):
+            response = self._game_editor_scope_response(
+                cell=cell,
+                source=source,
+                project_id=project_id,
+                project_payload=project_payload,
+                files_payload=files_payload,
+                scripts_payload=scripts_payload,
+                visible_files=visible_files,
+                run_id=run_id,
+                thread_id=thread_id,
+            )
+        else:
+            response = self._game_editor_scoped_ai_response(
+                body=body,
+                cell=cell,
+                source=source,
+                project_id=project_id,
+                visible_files=visible_files,
+                run_id=run_id,
+                thread_id=thread_id,
+                scoped_context=scoped_context,
+            )
+        output_cell = build_output_cell(cell, ai_response_to_parts(response), status="ok", provider=response.provider, model=response.model)
+        output_cell.setdefault("metadata", {})
+        output_cell["metadata"] = {
+            **(output_cell.get("metadata") if isinstance(output_cell.get("metadata"), dict) else {}),
+            "run_id": run_id,
+            "thread_id": thread_id,
+            "activity_filter": "ai",
+            "editor_edit_mode": "game-editor",
+            "project_id": project_id,
+            "allowed_root": f"game_projects/{project_id}/",
+            "visible_files": visible_files,
+            "auto_apply": False,
+            "scope_card": _mounted_editor_scope_query(source),
+        }
+        self.server.chat_ai_processes.remember_route_result(run_id=run_id, payload={"ok": True, "status": "completed", "output_cell": output_cell, "run_id": run_id, "thread_id": thread_id})
+        self.server.signal("api-game-editor-chat-edit", project_id=project_id, prompt_chars=len(source), visible_files=len(visible_files), scope_card=_mounted_editor_scope_query(source))
+        self._send_json({"ok": True, "status": "completed", "output_cell": output_cell, "run_id": run_id, "thread_id": thread_id})
 
     def _default_game_project_id(self) -> str:
         return "webgl-demo"

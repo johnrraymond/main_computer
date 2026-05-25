@@ -1164,6 +1164,80 @@
       const rawIndex = Number(source?.selected_output_variant_index ?? variants.length - 1);
       return Math.max(0, Math.min(Number.isFinite(rawIndex) ? rawIndex : variants.length - 1, Math.max(variants.length - 1, 0)));
     }
+
+    function chatConsoleCanApplyEvaluationResult(threadId, sourceCellId) {
+      return Boolean(
+        chatConsoleState?.id
+        && String(chatConsoleState.id) === String(threadId || "")
+        && chatConsoleState.cells?.some((candidate) => candidate.id === sourceCellId && candidate.type !== "output")
+      );
+    }
+    function chatConsoleNormalizeOutputForSource(outputCell, sourceCell, variantIndex) {
+      if (!outputCell || !sourceCell) return outputCell;
+      outputCell.id = outputCell.id || chatConsoleId("out");
+      outputCell.type = "output";
+      outputCell.source_cell_id = sourceCell.id;
+      outputCell.variant_index = variantIndex;
+      outputCell.variant_group_id = `variants-${sourceCell.id}`;
+      outputCell.thread_parent_output_cell_id = sourceCell.thread_parent_output_cell_id || null;
+      outputCell.thread_parent_cell_id = sourceCell.id;
+      return outputCell;
+    }
+    function chatConsoleAppendContinuationToState(state, outputCell, sourceCell) {
+      if (!state || !outputCell?.id || !sourceCell?.id) return null;
+      const hasChild = (state.cells || []).some((candidate) => candidate.type !== "output" && candidate.thread_parent_output_cell_id === outputCell.id);
+      if (hasChild) return null;
+      const cell = createChatConsoleCell(chatConsoleContinuationTypeForCell(sourceCell), "", {
+        thread_parent_output_cell_id: outputCell.id,
+        thread_parent_cell_id: outputCell.thread_parent_cell_id || outputCell.source_cell_id || sourceCell.id || null
+      });
+      state.cells.push(cell);
+      state.selected_cell_id = cell.id;
+      return cell;
+    }
+    function chatConsoleApplyEvaluationOutputToCurrentThread(sourceCell, outputCell, variantIndex, saveMessage) {
+      if (!chatConsoleState || !sourceCell || !outputCell) return false;
+      chatConsoleNormalizeOutputForSource(outputCell, sourceCell, variantIndex);
+      chatConsoleState.cells.push(outputCell);
+      sourceCell.output_variant_ids = [...(sourceCell.output_variant_ids || []), outputCell.id];
+      sourceCell.selected_output_variant_index = variantIndex;
+      sourceCell.status = outputCell.status === "error" ? "error" : "ok";
+      ensureChatConsoleContinuationAfterOutput(outputCell, sourceCell);
+      saveChatConsoleState(saveMessage || "cell evaluated");
+      return true;
+    }
+    function chatConsolePersistEvaluationOutputToThread(threadId, sourceCellId, outputCell, saveMessage) {
+      const store = chatConsoleThreadsApi();
+      if (!store?.get || !store?.saveThread || !threadId || !sourceCellId || !outputCell) return false;
+      const thread = store.get(threadId);
+      if (!thread?.id || !Array.isArray(thread.cells)) return false;
+      const draft = migrateChatConsoleState(JSON.parse(JSON.stringify(thread)));
+      const sourceCell = draft.cells.find((candidate) => candidate.id === sourceCellId && candidate.type !== "output");
+      if (!sourceCell) return false;
+      const savedOutput = JSON.parse(JSON.stringify(outputCell));
+      const variantIndex = (sourceCell.output_variant_ids || []).length;
+      chatConsoleNormalizeOutputForSource(savedOutput, sourceCell, variantIndex);
+      draft.cells.push(savedOutput);
+      sourceCell.output_variant_ids = [...(sourceCell.output_variant_ids || []), savedOutput.id];
+      sourceCell.selected_output_variant_index = variantIndex;
+      sourceCell.status = savedOutput.status === "error" ? "error" : "ok";
+      chatConsoleAppendContinuationToState(draft, savedOutput, sourceCell);
+      draft.updated_at = chatConsoleNow();
+      store.saveThread(threadId, draft, {replace: true, makeActive: false});
+      chatConsoleSetStatus(saveMessage || "AI output saved to its original chat thread");
+      renderChatConsoleThreadSelector();
+      return true;
+    }
+    function chatConsoleApplyOrPersistEvaluationOutput(evaluationThreadId, sourceCell, outputCell, variantIndex, saveMessage) {
+      if (chatConsoleCanApplyEvaluationResult(evaluationThreadId, sourceCell?.id || "")) {
+        return chatConsoleApplyEvaluationOutputToCurrentThread(sourceCell, outputCell, variantIndex, saveMessage);
+      }
+      if (chatConsolePersistEvaluationOutputToThread(evaluationThreadId, sourceCell?.id || "", outputCell, saveMessage)) {
+        return false;
+      }
+      chatConsoleSetStatus("AI output was not inserted because the active chat changed and the original thread is unavailable.");
+      return false;
+    }
     function isChatConsoleActiveOutput(cell) {
       const variants = getChatConsoleOutputVariants(cell.source_cell_id);
       if (variants.length <= 1) return true;
@@ -1533,6 +1607,7 @@
     }
 
     async function evaluateChatConsoleCell(cellId) {
+      const evaluationThreadId = chatConsoleState?.id || "";
       const cell = chatConsoleState.cells.find((item) => item.id === cellId);
       if (!cell || cell.type === "comment" || cell.type === "output") return;
       const startedRagAt = cell.type === "ai" ? chatConsoleRagAtOptions(cell) : {enabled: false};
@@ -1618,16 +1693,13 @@
           outputCell = data.output_cell;
           if (ragAt.enabled && data.run_id) chatConsoleSetStatus(`RAG-AT run ${data.run_id} complete; open Activity Monitor AI filter`);
         }
-        outputCell.variant_index = variantIndex;
-        outputCell.variant_group_id = `variants-${cell.id}`;
-        outputCell.thread_parent_output_cell_id = cell.thread_parent_output_cell_id || null;
-        outputCell.thread_parent_cell_id = cell.id;
-        chatConsoleState.cells.push(outputCell);
-        cell.output_variant_ids = [...(cell.output_variant_ids || []), outputCell.id];
-        cell.selected_output_variant_index = variantIndex;
-        cell.status = outputCell.status === "error" ? "error" : "ok";
-        ensureChatConsoleContinuationAfterOutput(outputCell, cell);
-        saveChatConsoleState(cell.type === "calculator" ? "calculator cell evaluated" : chatConsoleCodeCellTypes.has(cell.type) ? "code cell evaluated" : "cell evaluated");
+        chatConsoleApplyOrPersistEvaluationOutput(
+          evaluationThreadId,
+          cell,
+          outputCell,
+          variantIndex,
+          cell.type === "calculator" ? "calculator cell evaluated" : chatConsoleCodeCellTypes.has(cell.type) ? "code cell evaluated" : "cell evaluated"
+        );
       } catch (error) {
         const activeRequest = cell?.type === "ai" ? chatConsoleActiveAiRequests.get(cell.id) : null;
         const recoverableAiFetchLoss = Boolean(cell?.type === "ai" && activeRequest?.run_id && chatConsoleIsRecoverableFetchError(error));
@@ -1640,16 +1712,13 @@
               threadId: activeRequest.thread_id || chatConsoleState?.id || ""
             });
             if (recoveredOutput) {
-              recoveredOutput.variant_index = variantIndex;
-              recoveredOutput.variant_group_id = `variants-${cell.id}`;
-              recoveredOutput.thread_parent_output_cell_id = cell.thread_parent_output_cell_id || null;
-              recoveredOutput.thread_parent_cell_id = cell.id;
-              chatConsoleState.cells.push(recoveredOutput);
-              cell.output_variant_ids = [...(cell.output_variant_ids || []), recoveredOutput.id];
-              cell.selected_output_variant_index = variantIndex;
-              cell.status = recoveredOutput.status === "error" ? "error" : "ok";
-              ensureChatConsoleContinuationAfterOutput(recoveredOutput, cell);
-              saveChatConsoleState("cell evaluation recovered after fetch loss");
+              chatConsoleApplyOrPersistEvaluationOutput(
+                evaluationThreadId,
+                cell,
+                recoveredOutput,
+                variantIndex,
+                "cell evaluation recovered after fetch loss"
+              );
             } else {
               recoveryDeferred = true;
             }
@@ -1672,11 +1741,13 @@
             created_at: chatConsoleNow(),
             updated_at: chatConsoleNow()
           };
-          chatConsoleState.cells.push(outputCell);
-          cell.output_variant_ids = [...(cell.output_variant_ids || []), outputCell.id];
-          cell.selected_output_variant_index = cell.output_variant_ids.length - 1;
-          ensureChatConsoleContinuationAfterOutput(outputCell, cell);
-          saveChatConsoleState(recoverableAiFetchLoss ? "cell evaluation reconnect failed" : "cell evaluation failed");
+          chatConsoleApplyOrPersistEvaluationOutput(
+            evaluationThreadId,
+            cell,
+            outputCell,
+            outputCell.variant_index,
+            recoverableAiFetchLoss ? "cell evaluation reconnect failed" : "cell evaluation failed"
+          );
         }
       }
       if (cell?.type === "ai" && cell.status !== "running" && cell.status !== "reconnecting") chatConsoleActiveAiRequests.delete(cell.id);

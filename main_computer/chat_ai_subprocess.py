@@ -485,6 +485,8 @@ def _run_chat_console_ai_child(command: dict[str, Any], stdout: WorkerStdout, *,
     run_id = str(command.get("run_id") or "").strip()
     source = str(command.get("source") or "")
     attachments = command.get("attachments") if isinstance(command.get("attachments"), list) else []
+    scoped_context = command.get("scoped_context") if isinstance(command.get("scoped_context"), dict) else {}
+    scoped_context_text = str(scoped_context.get("text") or "").strip()
     config = config_from_payload(command.get("config") if isinstance(command.get("config"), dict) else {})
     append_text_log(
         log_file,
@@ -493,6 +495,9 @@ def _run_chat_console_ai_child(command: dict[str, Any], stdout: WorkerStdout, *,
         source_chars=len(source),
         source=source,
         attachments=attachments,
+        scoped_context_enabled=bool(scoped_context_text),
+        scoped_context_chars=len(scoped_context_text),
+        scoped_context_label=str(scoped_context.get("label") or ""),
         config=config_to_payload(config) if config is not None else {},
     )
 
@@ -528,14 +533,23 @@ def _run_chat_console_ai_child(command: dict[str, Any], stdout: WorkerStdout, *,
         }
     )
 
-    context_pack = computer.context_pack(source)
-    web_search_context, web_search_text = computer._web_search_context(source)
-    messages = [
-        ChatMessage(role="system", content=__import__("main_computer.router", fromlist=["SYSTEM_PROMPT"]).SYSTEM_PROMPT),
-        ChatMessage(role="system", content=context_pack.text),
-        *([ChatMessage(role="system", content=web_search_text)] if web_search_text else []),
-        *build_notebook_ai_messages(source, attachments),
-    ]
+    if scoped_context_text:
+        context_pack = None
+        web_search_context, web_search_text = {"disabled": True, "reason": "mounted_editor_scope"}, ""
+        messages = [
+            ChatMessage(role="system", content=__import__("main_computer.router", fromlist=["SYSTEM_PROMPT"]).SYSTEM_PROMPT),
+            ChatMessage(role="system", content=scoped_context_text),
+            *build_notebook_ai_messages(source, attachments),
+        ]
+    else:
+        context_pack = computer.context_pack(source)
+        web_search_context, web_search_text = computer._web_search_context(source)
+        messages = [
+            ChatMessage(role="system", content=__import__("main_computer.router", fromlist=["SYSTEM_PROMPT"]).SYSTEM_PROMPT),
+            ChatMessage(role="system", content=context_pack.text),
+            *([ChatMessage(role="system", content=web_search_text)] if web_search_text else []),
+            *build_notebook_ai_messages(source, attachments),
+        ]
     message_history = _message_history_payload(messages)
     append_text_log(
         log_file,

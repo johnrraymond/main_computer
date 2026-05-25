@@ -192,6 +192,72 @@ class ViewportGameEditorTests(unittest.TestCase):
         deleted = self.post("/api/applications/game-editor/asset/delete", {"project_id": "starter-game", "path": "renamed.js", "expected_content_hash": moved["content_hash"]})
         self.assertTrue(deleted["deleted"])
 
+    def test_game_editor_chat_edit_route_is_locked_to_project_scope(self) -> None:
+        data = self.post(
+            "/api/applications/game-editor/chat/edit",
+            {
+                "thread_id": "test-game-chat",
+                "cell": {"id": "chat-game-scope", "type": "ai", "source": "What files can you see?"},
+                "embedded_context": {"active_app": "game-editor", "project_id": "webgl-demo", "target_kind": "game-project", "target_id": "webgl-demo"},
+                "embedded_context_source": {"active_app": "game-editor", "target_kind": "game-project", "target_id": "webgl-demo"},
+                "mount_plugins": [{"id": "game-editor-edit", "enabled": True, "target_id": "webgl-demo", "project_id": "webgl-demo", "allowed_write_paths": ["main_computer/router.py"]}],
+            },
+        )
+        self.assertTrue(data["ok"])
+        output = data["output_cell"]
+        self.assertEqual(output["metadata"]["editor_edit_mode"], "game-editor")
+        self.assertEqual(output["metadata"]["project_id"], "webgl-demo")
+        self.assertEqual(output["metadata"]["allowed_root"], "game_projects/webgl-demo/")
+        text = "\n".join(str(part.get("content", "")) for part in output["parts"])
+        self.assertIn("game_projects/webgl-demo/project.json", text)
+        self.assertIn("proposal-only", text)
+        self.assertNotIn("main_computer/router.py", text)
+        self.assertNotIn("main_computer_test", text)
+        self.assertFalse(output["metadata"]["auto_apply"])
+
+        from main_computer.models import ChatResponse
+
+        class FakeMountedProvider:
+            name = "fake-mounted-provider"
+            model = "fake-mounted-model"
+
+        class FakeMountedComputer:
+            provider = FakeMountedProvider()
+
+            def chat_console_ai(self, source: str, attachments: list | None = None) -> ChatResponse:
+                return ChatResponse(
+                    content=f"inline scoped AI ran: {'Allowed root: `game_projects/webgl-demo/`' in source}",
+                    provider="fake-mounted-provider",
+                    model="fake-mounted-model",
+                )
+
+        self.server.computer = FakeMountedComputer()
+        ai_data = self.post(
+            "/api/applications/game-editor/chat/edit",
+            {
+                "thread_id": "test-game-chat",
+                "cell": {"id": "chat-game-ai", "type": "ai", "source": "Say hello from this game."},
+                "embedded_context": {"active_app": "game-editor", "project_id": "webgl-demo", "target_kind": "game-project", "target_id": "webgl-demo"},
+                "embedded_context_source": {"active_app": "game-editor", "target_kind": "game-project", "target_id": "webgl-demo"},
+                "mount_plugins": [{"id": "game-editor-edit", "enabled": True, "target_id": "webgl-demo", "project_id": "webgl-demo"}],
+            },
+        )
+        ai_text = "\n".join(str(part.get("content", "")) for part in ai_data["output_cell"]["parts"])
+        self.assertIn("inline scoped AI ran: True", ai_text)
+        self.assertFalse(ai_data["output_cell"]["metadata"]["scope_card"])
+
+        self.assertEqual(
+            self.post_error(
+                "/api/applications/game-editor/chat/edit",
+                {
+                    "cell": {"id": "chat-game-scope", "type": "ai", "source": "What files can you see?"},
+                    "embedded_context": {"active_app": "game-editor", "project_id": "webgl-demo"},
+                },
+            ).code,
+            400,
+        )
+
+
     def test_frontend_static_hooks_and_routes(self) -> None:
         self.assertIn('data-app="game-editor"', APPLICATIONS_INDEX_HTML)
         self.assertIn("Game Editor", APPLICATIONS_INDEX_HTML)
@@ -250,6 +316,8 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertIn("function refreshGameEditorChatMount", APPLICATIONS_INDEX_HTML)
         self.assertIn("function setGameEditorChatOpen", APPLICATIONS_INDEX_HTML)
         self.assertIn("setGameEditorChatOpen(!gameEditorState.chatOpen)", APPLICATIONS_INDEX_HTML)
+        self.assertIn('nodes.chatPopout?.addEventListener("click", (event) => {', APPLICATIONS_INDEX_HTML)
+        self.assertIn("event.stopPropagation();", APPLICATIONS_INDEX_HTML)
         self.assertIn("nodes.chatPopout.hidden = !shouldOpen", APPLICATIONS_INDEX_HTML)
         self.assertIn("return mountGameEditorChat();", APPLICATIONS_INDEX_HTML)
         self.assertIn('layout: "full"', APPLICATIONS_INDEX_HTML)
@@ -260,11 +328,12 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertIn('id: "game-editor-edit"', APPLICATIONS_INDEX_HTML)
         self.assertIn('label: "Edit this game"', APPLICATIONS_INDEX_HTML)
         self.assertIn("defaultEnabled: true", APPLICATIONS_INDEX_HTML)
+        self.assertIn('endpoint: "/api/applications/game-editor/chat/edit"', APPLICATIONS_INDEX_HTML)
         self.assertIn('pathway: "game-editor-rag-edit-smoke"', APPLICATIONS_INDEX_HTML)
         self.assertIn("function chatConsoleActiveMountPlugins", APPLICATIONS_INDEX_HTML)
         self.assertIn("function renderChatConsoleMountPluginControls", APPLICATIONS_INDEX_HTML)
         self.assertIn("payload.mount_plugins", APPLICATIONS_INDEX_HTML)
-        self.assertIn("game_builder_phase: \"ui-context-only\"", APPLICATIONS_INDEX_HTML)
+        self.assertIn("game_builder_phase: \"scoped-editor-context\"", APPLICATIONS_INDEX_HTML)
         self.assertIn("mutation_allowed: false", APPLICATIONS_INDEX_HTML)
         self.assertIn("/api/applications/game-editor/project/write", APPLICATIONS_INDEX_HTML)
         self.assertIn("/api/applications/game-editor/asset/upload", APPLICATIONS_INDEX_HTML)

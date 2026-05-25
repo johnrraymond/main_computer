@@ -26,6 +26,7 @@ from main_computer.hub_security import (
     hub_transport_is_encrypted_or_loopback,
 )
 from main_computer.hub_admin_site import HUB_ADMIN_ROUTES, build_admin_bootstrap_payload, render_hub_admin_html
+from main_computer.hub_credit_ledger import HubCreditLedger
 from main_computer.hub_plex_models import HubAIRequest, HubWorkerSummary
 from main_computer.hub_plex_service import AIRequestPlexService
 from main_computer.models import ChatAttachment, ChatMessage, ChatResponse
@@ -808,6 +809,7 @@ class HubHttpServer(ThreadingHTTPServer):
             allow_insecure_dev_network=config.hub_allow_insecure_dev_network,
         )
         self.energy_ledger = EnergyCreditLedger(hub_root / "energy_credits")
+        self.credit_ledger = HubCreditLedger(hub_root / "compute_credits")
         self.dispatcher = HubDispatcher(
             self.registry,
             self.energy_ledger,
@@ -834,6 +836,7 @@ class HubServerHandler(_JsonHandler):
                     registry=self.server.registry,
                     dispatcher=self.server.dispatcher,
                     energy_ledger=self.server.energy_ledger,
+                    credit_ledger=self.server.credit_ledger,
                 )
             )
             return
@@ -933,6 +936,37 @@ class HubServerHandler(_JsonHandler):
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
             return
+        if path == "/api/hub/v1/credits":
+            self._send_json(self.server.credit_ledger.status())
+            return
+        if path == "/api/hub/v1/credits/accounts":
+            limit = int(query.get("limit", ["100"])[0] or 100)
+            accounts = [account.as_dict() for account in self.server.credit_ledger.list_accounts(limit=limit)]
+            self._send_json({"ok": True, "accounts": accounts, "account_count": len(accounts)})
+            return
+        if path == "/api/hub/v1/credits/balance":
+            account_id = query.get("account_id", [self.server.config.hub_client_node_id])[0]
+            account = self.server.credit_ledger.get_account(account_id)
+            self._send_json({"ok": True, "account": account.as_dict(), "unit": self.server.credit_ledger.status()["unit"]})
+            return
+        if path == "/api/hub/v1/credits/transactions":
+            account_id = query.get("account_id", [""])[0]
+            limit = int(query.get("limit", ["100"])[0] or 100)
+            transactions = [
+                tx.as_dict()
+                for tx in self.server.credit_ledger.list_transactions(account_id=account_id, limit=limit)
+            ]
+            self._send_json({"ok": True, "transactions": transactions, "transaction_count": len(transactions)})
+            return
+        if path == "/api/hub/v1/credits/purchases":
+            account_id = query.get("account_id", [""])[0]
+            limit = int(query.get("limit", ["100"])[0] or 100)
+            purchases = [
+                purchase.as_dict()
+                for purchase in self.server.credit_ledger.list_purchases(account_id=account_id, limit=limit)
+            ]
+            self._send_json({"ok": True, "purchases": purchases, "purchase_count": len(purchases)})
+            return
         if path in {"/api/hub/payouts", "/api/hub/v1/payouts"}:
             node_id = query.get("node_id", [""])[0]
             try:
@@ -1025,6 +1059,17 @@ class HubServerHandler(_JsonHandler):
                         memo=str(body.get("memo", "")),
                     )
                 )
+                return
+            if path == "/api/hub/v1/credits/admin/issue":
+                body = self._read_json()
+                result = self.server.credit_ledger.issue(
+                    account_id=str(body.get("account_id", self.server.config.hub_client_node_id)),
+                    credits=int(body.get("credits", 0) or 0),
+                    memo=str(body.get("memo", "")),
+                    owner_address=str(body.get("owner_address", "")),
+                    metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
+                )
+                self._send_json(result)
                 return
             if path == "/api/hub/v1/requests":
                 body = self._read_json()

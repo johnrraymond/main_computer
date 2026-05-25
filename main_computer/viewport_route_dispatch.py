@@ -1114,6 +1114,9 @@ def dispatch_post(self) -> None:
     if route_path == "/api/applications/deployment/controller/save":
         self._handle_deployment_controller_save()
         return
+    if route_path == "/api/applications/website-builder/chat/edit":
+        self._handle_website_builder_chat_edit()
+        return
     if route_path == "/api/applications/websites/site/create":
         self._handle_websites_site_create()
         return
@@ -1203,6 +1206,12 @@ def dispatch_post(self) -> None:
         return
     if self.path == "/api/applications/git/project/inspect":
         self._handle_git_project_inspect()
+        return
+    if self.path == "/api/applications/git/project/archive-files/status":
+        self._handle_git_project_archive_files_status()
+        return
+    if self.path == "/api/applications/git/project/archive-files":
+        self._handle_git_project_archive_files()
         return
     if self.path == "/api/applications/git/project/action/run":
         self._handle_git_project_action_run()

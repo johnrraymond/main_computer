@@ -1715,6 +1715,28 @@ class GitToolsService:
                 "commands": [],
                 "state": "blocked",
             })
+        if git.get("is_git_repo") and git.get("has_head"):
+            archive_status = self._git_archive_file_status(Path(git.get("git_root") or project.get("path") or "."))
+            archive_count = sum(int(value or 0) for value in archive_status.get("counts", {}).values())
+            steps.append({
+                "id": "archive_files",
+                "order": len(steps),
+                "label": "Archive Files...",
+                "kind": "archive-files",
+                "why": "Select staged, unstaged, or untracked files from the current git status and move them into an archive branch before removing them from this working branch.",
+                "locked": bool(project.get("locked")),
+                "requires": ["has-head", "project-unlocked", "selected-files-reviewed"],
+                "paths": [],
+                "commands": [],
+                "state": "blocked" if bool(project.get("locked")) else ("planned" if archive_count else "completed"),
+                "archive_files": {
+                    "title": "Archive Files...",
+                    "description": "Runs git status on open, splits files into staged / unstaged / untracked groups, and archives selected files by status.",
+                    "groups": archive_status.get("groups", {}),
+                    "counts": archive_status.get("counts", {}),
+                    "default_branch": self._default_archive_branch_name(),
+                },
+            })
         steps.append({
             "id": "push-local-gitea",
             "order": len(steps),
@@ -2817,6 +2839,332 @@ service._git_project_run_security_filter_scan_stream(
                 "done": done,
                 "result": job.get("result"),
             }
+
+
+
+    @staticmethod
+    def _is_relative_to(path: Path, root: Path) -> bool:
+        try:
+            path.resolve().relative_to(root.resolve())
+            return True
+        except ValueError:
+            return False
+
+    def _git_archive_file_status(self, repo: Path) -> dict[str, Any]:
+        """Return git status split the way the Archive Files card presents it."""
+        result = self._run_git(repo, ["status", "--porcelain=v1"], check=False)
+        if result["returncode"] != 0:
+            raise RuntimeError(result["stdout"] or result.get("stderr") or "git status failed.")
+        groups: dict[str, list[dict[str, Any]]] = {"staged": [], "unstaged": [], "untracked": []}
+        seen: set[tuple[str, str]] = set()
+        for raw_line in result["stdout"].splitlines():
+            if not raw_line:
+                continue
+            code = raw_line[:2]
+            path_text = raw_line[3:] if len(raw_line) > 3 else ""
+            original_path = ""
+            if " -> " in path_text:
+                original_path, path_text = path_text.split(" -> ", 1)
+            path_text = path_text.strip().strip('"')
+            original_path = original_path.strip().strip('"')
+            if not path_text:
+                continue
+            entry = {
+                "path": path_text,
+                "original_path": original_path,
+                "status_code": code,
+                "label": self._git_archive_status_label(code),
+            }
+            x = code[0] if len(code) > 0 else " "
+            y = code[1] if len(code) > 1 else " "
+            if code == "??":
+                key = ("untracked", path_text)
+                if key not in seen:
+                    groups["untracked"].append({**entry, "group": "untracked", "label": "untracked"})
+                    seen.add(key)
+                continue
+            if x != " ":
+                key = ("staged", path_text)
+                if key not in seen:
+                    groups["staged"].append({**entry, "group": "staged", "index_status": x})
+                    seen.add(key)
+            if y != " ":
+                key = ("unstaged", path_text)
+                if key not in seen:
+                    groups["unstaged"].append({**entry, "group": "unstaged", "worktree_status": y})
+                    seen.add(key)
+        for group_items in groups.values():
+            group_items.sort(key=lambda item: item.get("path", ""))
+        return {
+            "ok": True,
+            "repo": str(repo),
+            "groups": groups,
+            "counts": {key: len(value) for key, value in groups.items()},
+            "short_status": result["stdout"],
+        }
+
+    @staticmethod
+    def _git_archive_status_label(code: str) -> str:
+        labels = {
+            "A": "added",
+            "M": "modified",
+            "D": "deleted",
+            "R": "renamed",
+            "C": "copied",
+            "U": "conflicted",
+            "?": "untracked",
+        }
+        if code == "??":
+            return "untracked"
+        parts = []
+        if len(code) > 0 and code[0] != " ":
+            parts.append(f"index {labels.get(code[0], code[0])}")
+        if len(code) > 1 and code[1] != " ":
+            parts.append(f"worktree {labels.get(code[1], code[1])}")
+        return ", ".join(parts) or code.strip() or "changed"
+
+    def git_project_archive_files_status(self, payload: dict[str, Any]) -> dict[str, Any]:
+        repo, _source, record = self._resolve_commit_job_repo_dir(payload if isinstance(payload, dict) else {})
+        status = self._git_archive_file_status(repo)
+        status["project_id"] = str(record.get("id") or "") if record else str((payload or {}).get("project_id") or "")
+        status["project_path"] = str(record.get("path") or repo) if record else str(repo)
+        status["default_branch"] = self._default_archive_branch_name()
+        return status
+
+    @staticmethod
+    def _default_archive_branch_name() -> str:
+        return time.strftime("archive/files-%Y%m%d-%H%M%S", time.gmtime())
+
+    def _normalize_archive_branch_name(self, value: str) -> str:
+        branch = str(value or "").strip().replace("\\", "/")
+        if not branch:
+            branch = self._default_archive_branch_name()
+        if branch.startswith("/") or branch.endswith("/") or ".." in branch.split("/"):
+            raise ValueError("Archive branch name is not safe.")
+        if not re.match(r"^[A-Za-z0-9._/-]+$", branch):
+            raise ValueError("Archive branch may only contain letters, numbers, '.', '_', '-', and '/'.")
+        if branch.startswith("-") or branch.endswith(".lock") or "//" in branch:
+            raise ValueError("Archive branch name is not safe.")
+        return branch
+
+    def _normalize_archive_paths(self, paths: Any) -> list[str]:
+        if not isinstance(paths, list):
+            raise ValueError("Archive file paths must be a list.")
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for item in paths:
+            path = str(item or "").replace("\\", "/").strip()
+            if not path or path in {".", "./"}:
+                continue
+            parts = Path(path).parts
+            if path.startswith("/") or ".." in parts or ".git" in parts:
+                raise ValueError(f"Unsafe archive path: {path}")
+            path = path.lstrip("./")
+            if path and path not in seen:
+                cleaned.append(path)
+                seen.add(path)
+        if not cleaned:
+            raise ValueError("Select at least one file or folder to archive.")
+        return cleaned
+
+    def _archive_status_by_path(self, status: dict[str, Any]) -> dict[str, set[str]]:
+        groups = status.get("groups") if isinstance(status.get("groups"), dict) else {}
+        result = {"staged": set(), "unstaged": set(), "untracked": set()}
+        for group in result:
+            for item in groups.get(group, []) if isinstance(groups.get(group, []), list) else []:
+                if isinstance(item, dict) and item.get("path"):
+                    result[group].add(str(item["path"]))
+        return result
+
+    def _git_archive_path_exists_in_worktree(self, repo: Path, path: str) -> bool:
+        return (repo / path).exists()
+
+    def _git_archive_path_is_tracked(self, repo: Path, path: str) -> bool:
+        result = self._run_git(repo, ["ls-files", "--error-unmatch", "--", path], check=False)
+        return result["returncode"] == 0
+
+    def _git_archive_apply_index_entry(self, repo: Path, env: dict[str, str], path: str, *, staged: bool) -> dict[str, Any]:
+        if staged:
+            ls = subprocess.run(
+                ["git", "ls-files", "-s", "--", path],
+                cwd=repo,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            line = (ls.stdout or "").splitlines()[:1]
+            if line:
+                parts = line[0].split(maxsplit=3)
+                if len(parts) >= 4 and parts[1] != "0" * 40:
+                    mode, blob, _stage, file_path = parts
+                    update = subprocess.run(
+                        ["git", "update-index", "--add", "--cacheinfo", mode, blob, file_path],
+                        cwd=repo,
+                        env=env,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    return {
+                        "path": path,
+                        "source": "index",
+                        "returncode": update.returncode,
+                        "stdout": update.stdout,
+                        "stderr": update.stderr,
+                    }
+        add = subprocess.run(
+            ["git", "add", "-f", "--", path],
+            cwd=repo,
+            env=env,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        return {
+            "path": path,
+            "source": "worktree",
+            "returncode": add.returncode,
+            "stdout": add.stdout,
+            "stderr": add.stderr,
+        }
+
+    def _run_git_raw(self, repo: Path, args: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            env=env,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    def archive_git_project_files(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("Archive files payload must be a JSON object.")
+        repo, repo_source, record = self._resolve_commit_job_repo_dir(payload)
+        branch = self._normalize_archive_branch_name(str(payload.get("archive_branch") or ""))
+        paths = self._normalize_archive_paths(payload.get("paths", []))
+        dry_run = bool(payload.get("dry_run", True))
+        message = str(payload.get("message") or f"archive: preserve {len(paths)} selected file(s)").strip()
+        if not message:
+            message = f"archive: preserve {len(paths)} selected file(s)"
+
+        status = self._git_archive_file_status(repo)
+        status_by_path = self._archive_status_by_path(status)
+        selected = []
+        for path in paths:
+            groups = [name for name, values in status_by_path.items() if path in values or any(item.startswith(path.rstrip('/') + '/') for item in values)]
+            if not groups:
+                exists = self._git_archive_path_exists_in_worktree(repo, path)
+                tracked = self._git_archive_path_is_tracked(repo, path)
+                if not exists and not tracked:
+                    raise ValueError(f"Selected path is not present in git status or the worktree: {path}")
+                groups = ["unstaged" if tracked else "untracked"]
+            selected.append({"path": path, "groups": groups})
+
+        commands = [
+            f"git status --porcelain=v1",
+            f"git read-tree {branch} || git read-tree HEAD",
+            f"git add/update-index -- {len(paths)} selected path(s)",
+            f"git commit-tree <archive-tree> -m {message!r}",
+            f"git update-ref refs/heads/{branch} <archive-commit>",
+            f"git rm/remove-from-worktree -- {len(paths)} selected path(s)",
+        ]
+
+        preview = {
+            "ok": True,
+            "dry_run": dry_run,
+            "repo": str(repo),
+            "repo_source": repo_source,
+            "project_id": str(record.get("id") or "") if record else str(payload.get("project_id") or ""),
+            "project_path": str(record.get("path") or repo) if record else str(repo),
+            "archive_branch": branch,
+            "message": message,
+            "selected": selected,
+            "groups": status.get("groups", {}),
+            "counts": status.get("counts", {}),
+            "commands": commands,
+        }
+        if dry_run:
+            return preview
+
+        with tempfile.TemporaryDirectory(prefix="mc-git-archive-index-") as temp_dir:
+            index_path = str(Path(temp_dir) / "archive.index")
+            env = {**os.environ, "GIT_INDEX_FILE": index_path}
+            branch_exists = self._run_git_raw(repo, ["rev-parse", "--verify", f"refs/heads/{branch}"], env=env)
+            parent = ""
+            if branch_exists.returncode == 0:
+                parent = branch_exists.stdout.strip()
+                read = self._run_git_raw(repo, ["read-tree", branch], env=env)
+            else:
+                head = self._run_git_raw(repo, ["rev-parse", "--verify", "HEAD"], env=env)
+                if head.returncode == 0:
+                    parent = head.stdout.strip()
+                    read = self._run_git_raw(repo, ["read-tree", "HEAD"], env=env)
+                else:
+                    read = self._run_git_raw(repo, ["read-tree", "--empty"], env=env)
+            if read.returncode != 0:
+                raise RuntimeError(read.stderr or read.stdout or "Unable to prepare temporary archive index.")
+
+            apply_results = []
+            for item in selected:
+                path = item["path"]
+                apply_result = self._git_archive_apply_index_entry(repo, env, path, staged="staged" in item["groups"])
+                apply_results.append(apply_result)
+                if apply_result["returncode"] != 0:
+                    raise RuntimeError(apply_result["stderr"] or apply_result["stdout"] or f"Unable to archive {path}")
+
+            tree = self._run_git_raw(repo, ["write-tree"], env=env)
+            if tree.returncode != 0:
+                raise RuntimeError(tree.stderr or tree.stdout or "Unable to write archive tree.")
+            tree_hash = tree.stdout.strip()
+            commit_args = ["commit-tree", tree_hash, "-m", message]
+            if parent:
+                commit_args[2:2] = ["-p", parent]
+            commit = self._run_git_raw(repo, commit_args, env=env)
+            if commit.returncode != 0:
+                raise RuntimeError(commit.stderr or commit.stdout or "Unable to create archive commit.")
+            commit_hash = commit.stdout.strip()
+            update = self._run_git_raw(repo, ["update-ref", f"refs/heads/{branch}", commit_hash], env=env)
+            if update.returncode != 0:
+                raise RuntimeError(update.stderr or update.stdout or "Unable to update archive branch.")
+
+        removed = []
+        for path in paths:
+            if self._git_archive_path_is_tracked(repo, path):
+                rm = self._run_git(repo, ["rm", "-r", "-f", "--", path], check=False)
+                if rm["returncode"] != 0:
+                    raise RuntimeError(rm["stdout"] or rm.get("stderr") or f"Unable to git rm {path}")
+                removed.append({"path": path, "mode": "git-rm"})
+            else:
+                target = (repo / path).resolve()
+                if not self._is_relative_to(target, repo):
+                    raise ValueError(f"Archive removal path escaped the repository: {path}")
+                if target.is_dir():
+                    shutil.rmtree(target)
+                    removed.append({"path": path, "mode": "rmtree"})
+                elif target.exists():
+                    target.unlink()
+                    removed.append({"path": path, "mode": "unlink"})
+
+        final_status = self._git_archive_file_status(repo)
+        return {
+            **preview,
+            "dry_run": False,
+            "archive_commit": commit_hash,
+            "apply_results": apply_results,
+            "removed": removed,
+            "post_status": final_status,
+        }
+
 
     def _repo_path_token_is_missing_or_current_dir(self, value: Any) -> bool:
         cleaned = self._clean_git_panel_path_token(str(value or "").strip())
