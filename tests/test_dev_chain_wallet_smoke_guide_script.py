@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_wallet_smoke_guide():
-    spec = importlib.util.spec_from_file_location("dev_chain_wallet_smoke_guide", ROOT / "dev-chain-wallet-smoke-guide.py")
+    spec = importlib.util.spec_from_file_location("dev_chain_wallet_smoke_guide", ROOT / "tools" / "dev-chain-wallet-smoke-guide.py")
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module

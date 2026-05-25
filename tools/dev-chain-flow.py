@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Run a native ENG payout flow against the current soft dev-chain deployment.
+Run a Compute Credits reserve payout flow against the current soft dev-chain deployment.
 
-This proves the deployed reserve can hold and move the native chain coin:
+This proves the deployed reserve can hold and move the native dev-chain value unit:
 
-  fund XLagBridgeReserve with native ENG
+  fund XLagBridgeReserve with native dev-chain value
   propose payout from O0
   second payout from O2
   mine the delay block
@@ -17,9 +17,10 @@ Run after a successful dev-chain reset/deploy/smoke:
   python .\\dev-chain-flow.py
 
 The script uses Anvil's unlocked dev accounts on the isolated soft chain. It does
-not use a token contract. ENG is the chain-native value unit, shaped like ETH:
+not use a token contract. Compute Credits are modeled as native dev-chain base
+units for this local settlement smoke path:
 
-  1 ENG = 10^18 base units
+  1 Compute Credit = 10^18 base units
 """
 
 from __future__ import annotations
@@ -37,16 +38,19 @@ from urllib.request import Request, urlopen
 from main_computer.prod_lock import require_unlocked_production_state
 
 
-ENG_WEI = 10**18
+COMPUTE_CREDIT_BASE_UNITS = 10**18
+ENG_WEI = COMPUTE_CREDIT_BASE_UNITS  # Deprecated compatibility alias.
 DEFAULT_DEPLOYMENT_FILE = Path("runtime/deployments/current.json")
 LEGACY_DEV_CHAIN_STATE_FILE = Path("runtime/dev-chain/latest.json")
 DEFAULT_STATE_FILE = DEFAULT_DEPLOYMENT_FILE
 DEFAULT_REPORT_FILE = Path("runtime/dev-chain/flow-latest.json")
 DEFAULT_RPC_URL = "http://127.0.0.1:18545"
 DEFAULT_CHAIN_ID = 42424242
-DEFAULT_FUND_ENG = "1"
-DEFAULT_PAYOUT_ENG = "0.125"
-DEFAULT_MEMO = "native ENG payout flow"
+DEFAULT_FUND_CREDITS = "1"
+DEFAULT_FUND_ENG = DEFAULT_FUND_CREDITS  # Deprecated compatibility alias.
+DEFAULT_PAYOUT_CREDITS = "0.125"
+DEFAULT_PAYOUT_ENG = DEFAULT_PAYOUT_CREDITS  # Deprecated compatibility alias.
+DEFAULT_MEMO = "compute credit reserve payout flow"
 EXECUTED_STATE = 4
 
 SELECTORS = {
@@ -138,30 +142,40 @@ def load_state(path: Path) -> tuple[dict[str, Any], dict[str, str]]:
     return state, env
 
 
-def parse_eng(value: str) -> int:
+def parse_compute_credits(value: str) -> int:
     text = str(value).strip()
     if not text:
-        raise ValueError("empty ENG amount")
+        raise ValueError("empty Compute Credits amount")
     try:
         amount = Decimal(text)
     except InvalidOperation as exc:
-        raise ValueError(f"invalid ENG amount: {value!r}") from exc
+        raise ValueError(f"invalid Compute Credits amount: {value!r}") from exc
     if amount <= 0:
-        raise ValueError("ENG amount must be positive")
-    scaled = amount * ENG_WEI
+        raise ValueError("Compute Credits amount must be positive")
+    scaled = amount * COMPUTE_CREDIT_BASE_UNITS
     if scaled != scaled.to_integral_value():
-        raise ValueError("ENG amount has more than 18 decimal places")
+        raise ValueError("Compute Credits amount has more than 18 decimal places")
     return int(scaled)
 
 
-def format_eng(amount_wei: int) -> str:
-    sign = "-" if amount_wei < 0 else ""
-    value = abs(int(amount_wei))
-    whole = value // ENG_WEI
-    fraction = value % ENG_WEI
+def parse_eng(value: str) -> int:
+    """Deprecated compatibility alias for pre-C0 operator scripts."""
+    return parse_compute_credits(value)
+
+
+def format_compute_credits(amount_base_units: int) -> str:
+    sign = "-" if amount_base_units < 0 else ""
+    value = abs(int(amount_base_units))
+    whole = value // COMPUTE_CREDIT_BASE_UNITS
+    fraction = value % COMPUTE_CREDIT_BASE_UNITS
     if fraction == 0:
-        return f"{sign}{whole} ENG"
-    return f"{sign}{whole}.{str(fraction).rjust(18, '0').rstrip('0')} ENG"
+        return f"{sign}{whole} Compute Credits"
+    return f"{sign}{whole}.{str(fraction).rjust(18, '0').rstrip('0')} Compute Credits"
+
+
+def format_eng(amount_wei: int) -> str:
+    """Deprecated compatibility alias for pre-C0 operator scripts."""
+    return format_compute_credits(amount_wei)
 
 
 def hex_quantity(value: int) -> str:
@@ -411,7 +425,7 @@ def run_flow(
         steps,
         "native-eng-balances-before",
         True,
-        f"reserve={format_eng(reserve_before)}, recipient={format_eng(recipient_before)}",
+        f"reserve={format_compute_credits(reserve_before)}, recipient={format_compute_credits(recipient_before)}",
         {"reserve_wei": reserve_before, "recipient_wei": recipient_before},
     )
 
@@ -437,7 +451,7 @@ def run_flow(
         rpc_func=rpc_func,
     )
     fund_receipt = wait_receipt(url, fund_tx, timeout=timeout, poll_s=poll_s, rpc_func=rpc_func)
-    append_step(steps, "fund-reserve", True, f"funded {format_eng(fund_wei)}", fund_receipt)
+    append_step(steps, "fund-reserve", True, f"funded {format_compute_credits(fund_wei)}", fund_receipt)
 
     current_block = int(str(rpc_func(url, "eth_blockNumber", [], timeout=timeout)), 16)
     expires_block = current_block + expires_blocks
@@ -454,7 +468,7 @@ def run_flow(
         rpc_func=rpc_func,
     )
     propose_receipt = wait_receipt(url, propose_tx, timeout=timeout, poll_s=poll_s, rpc_func=rpc_func)
-    append_step(steps, "propose-payout", True, f"proposal_id={proposal_id}, amount={format_eng(payout_wei)}", propose_receipt)
+    append_step(steps, "propose-payout", True, f"proposal_id={proposal_id}, amount={format_compute_credits(payout_wei)}", propose_receipt)
 
     next_id_after = call_uint(
         url,
@@ -517,16 +531,16 @@ def run_flow(
 
     append_step(
         steps,
-        "recipient-native-eng-received",
+        "recipient-compute-credit-received",
         recipient_delta == payout_wei,
-        f"delta={format_eng(recipient_delta)}, expected={format_eng(payout_wei)}",
+        f"delta={format_compute_credits(recipient_delta)}, expected={format_compute_credits(payout_wei)}",
         {"before_wei": recipient_before, "after_wei": recipient_after, "delta_wei": recipient_delta},
     )
     append_step(
         steps,
-        "reserve-native-eng-balance",
+        "reserve-compute-credit-balance",
         reserve_after == reserve_expected,
-        f"actual={format_eng(reserve_after)}, expected={format_eng(reserve_expected)}",
+        f"actual={format_compute_credits(reserve_after)}, expected={format_compute_credits(reserve_expected)}",
         {"before_wei": reserve_before, "after_wei": reserve_after, "expected_wei": reserve_expected},
     )
 
@@ -542,9 +556,9 @@ def run_flow(
         "recipient": recipient_address,
         "proposal_id": proposal_id,
         "fund_wei": fund_wei,
-        "fund_eng": format_eng(fund_wei),
+        "fund_credits": format_compute_credits(fund_wei),
         "payout_wei": payout_wei,
-        "payout_eng": format_eng(payout_wei),
+        "payout_credits": format_compute_credits(payout_wei),
         "reserve_balance_before_wei": reserve_before,
         "reserve_balance_after_wei": reserve_after,
         "recipient_balance_before_wei": recipient_before,
@@ -573,13 +587,13 @@ def write_report(path: Path, summary: dict[str, Any], steps: list[Step]) -> None
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run a native ENG payout flow on the soft dev-chain deployment.")
+    parser = argparse.ArgumentParser(description="Run a Compute Credits reserve payout flow on the soft dev-chain deployment.")
     parser.add_argument("--state-file", type=Path, default=DEFAULT_STATE_FILE)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT_FILE)
     parser.add_argument("--rpc-url", default=None)
     parser.add_argument("--chain-id", type=int, default=None)
-    parser.add_argument("--fund-eng", default=DEFAULT_FUND_ENG)
-    parser.add_argument("--payout-eng", default=DEFAULT_PAYOUT_ENG)
+    parser.add_argument("--fund-credits", "--fund-eng", dest="fund_credits", default=DEFAULT_FUND_CREDITS)
+    parser.add_argument("--payout-credits", "--payout-eng", dest="payout_credits", default=DEFAULT_PAYOUT_CREDITS)
     parser.add_argument("--recipient", default=None, help="Recipient address. Defaults to O3 from latest deploy state.")
     parser.add_argument("--memo", default=DEFAULT_MEMO)
     parser.add_argument("--expires-blocks", type=int, default=100)
@@ -609,11 +623,11 @@ def main(argv: list[str] | None = None) -> int:
             action="run dev-chain payout flow",
         )
         state, env = load_state(state_path)
-        fund_wei = parse_eng(args.fund_eng)
-        payout_wei = parse_eng(args.payout_eng)
+        fund_wei = parse_compute_credits(args.fund_credits)
+        payout_wei = parse_compute_credits(args.payout_credits)
 
-        log("Native ENG payout flow")
-        log("======================")
+        log("Compute Credits reserve payout flow")
+        log("===================================")
 
         ok, summary, steps = run_flow(
             state=state,
@@ -631,9 +645,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         write_report(report_path, summary, steps)
         if ok:
-            log("PASS: native ENG moved through the X-LAG reserve payout lifecycle.")
+            log("PASS: Compute Credits moved through the X-LAG reserve payout lifecycle.")
             return 0
-        log("FAIL: native ENG payout flow did not satisfy all checks.")
+        log("FAIL: Compute Credits reserve payout flow did not satisfy all checks.")
         return 1
     except Exception as exc:  # noqa: BLE001 - operator-facing script
         log()

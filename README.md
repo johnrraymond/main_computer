@@ -497,17 +497,24 @@ Available follow-up helpers in this snapshot:
 
 ```powershell
 python .\tools\dev-chain-flow.py
-python .\tools\dev-chain-ledger-bridge.py --register-node --node-id gpu-worker-01 --queue-eng 0.125
+python .\tools\dev-chain-ledger-bridge.py --register-node --node-id gpu-worker-01 --queue-credits 0.125
 python .\tools\dev-chain-wallet-smoke-guide.py
 ```
 
-The ENG reserve flow treats ENG as the chain-native value unit:
+The reserve flow treats Compute Credits as native dev-chain base units for local settlement smoke tests:
 
 ```text
-1 ENG = 1,000,000,000,000,000,000 base units
+1 Compute Credit = 1,000,000,000,000,000,000 base units
 ```
 
-No ENG token contract is deployed by the dev-chain tools.
+No public token contract is deployed by the dev-chain tools. Legacy `--queue-eng`, `--fund-eng`, and `--payout-eng` flags remain as deprecated operator aliases only.
+
+C0/C1 hub contract direction:
+
+- `ENG` language is deprecated because it collides with an existing token symbol namespace.
+- Users purchase **Compute Credits** rather than a public token.
+- `contracts/src/HubCreditSale.sol` is a purchase-intent receipt contract. It accepts native payment, forwards payment to treasury, and emits `CreditPurchased(...)` for the hub backend to index.
+- Compute Credits are still internal service credits in C1; worker payouts and transferable token behavior are later phases.
 
 ## Diagnostics and tests
 

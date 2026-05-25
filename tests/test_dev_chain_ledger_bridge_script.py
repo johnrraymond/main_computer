@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_script(name: str, file_name: str):
-    path = ROOT / file_name
+    path = ROOT / "tools" / file_name
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -51,7 +51,7 @@ def write_state(tmp_path: Path, flow) -> tuple[Path, str, list[str]]:
 def fake_flow_rpc(flow, reserve: str, offices: list[str], payout_amount: int):
     balances = {
         reserve: 0,
-        offices[3]: flow.parse_eng("10000"),
+        offices[3]: flow.parse_compute_credits("10000"),
     }
     block_number = {"value": 2}
     next_proposal_id = {"value": 1}
@@ -120,11 +120,11 @@ def fake_flow_rpc(flow, reserve: str, offices: list[str], payout_amount: int):
     return rpc
 
 
-def test_bridge_claims_spends_and_records_native_eng_audit(tmp_path) -> None:
+def test_bridge_claims_spends_and_records_compute_credit_audit(tmp_path) -> None:
     flow = load_flow()
     bridge = load_bridge()
     state_file, reserve, offices = write_state(tmp_path, flow)
-    payout_wei = flow.parse_eng("0.125")
+    payout_wei = flow.parse_compute_credits("0.125")
     report = tmp_path / "ledger-bridge-report.json"
 
     ok, payload = bridge.run_bridge(
@@ -137,9 +137,9 @@ def test_bridge_claims_spends_and_records_native_eng_audit(tmp_path) -> None:
         endpoint="local://gpu-worker-01",
         register_node=True,
         queue_wei=payout_wei,
-        fund_wei=flow.parse_eng("1"),
+        fund_wei=flow.parse_compute_credits("1"),
         recipient=None,
-        memo="unit native ENG bridge",
+        memo="unit compute credit bridge",
         expected_chain_id=None,
         rpc_url=None,
         timeout_s=1,
@@ -159,21 +159,21 @@ def test_bridge_claims_spends_and_records_native_eng_audit(tmp_path) -> None:
     assert kinds == [
         "hub_worker_payout_claim",
         "spend",
-        "native_eng_reserve_payout_executed",
+        "compute_credit_reserve_payout_executed",
     ]
 
     audit = ledger["transactions"][-1]
     assert audit["credits"] == 0
-    assert audit["native_eng"]["credits_reconciled"] == payout_wei
-    assert audit["native_eng"]["amount_eng_wei"] == payout_wei
-    assert audit["native_eng"]["recipient"] == offices[3]
-    assert audit["native_eng"]["contract_address"] == reserve
-    assert audit["native_eng"]["proposal_id"] == 1
+    assert audit["compute_credit_reserve"]["credits_reconciled"] == payout_wei
+    assert audit["compute_credit_reserve"]["amount_base_units"] == payout_wei
+    assert audit["compute_credit_reserve"]["recipient"] == offices[3]
+    assert audit["compute_credit_reserve"]["contract_address"] == reserve
+    assert audit["compute_credit_reserve"]["proposal_id"] == 1
 
 
 def test_bridge_parser_rejects_queue_amount_above_fund_amount() -> None:
     flow = load_flow()
-    assert flow.parse_eng("1") < flow.parse_eng("2")
+    assert flow.parse_compute_credits("1") < flow.parse_compute_credits("2")
 
 
 def test_bridge_defaults_to_app_facing_deployment_manifest() -> None:

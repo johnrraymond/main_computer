@@ -660,9 +660,9 @@ class ViewportEnergyRouteTests(unittest.TestCase):
         self.assertEqual(live["chain_id"], 42424242)
         self.assertEqual(live["block_number"], 123)
         self.assertEqual(live["reserve_balance_wei"], "5250000000000000000")
-        self.assertEqual(live["reserve_balance_eng"], "5.25")
+        self.assertEqual(live["reserve_balance_credits"], "5.25")
         self.assertEqual(live["max_payout_wei"], "1000000000000000000")
-        self.assertEqual(live["max_payout_eng"], "1")
+        self.assertEqual(live["max_payout_credits"], "1")
         self.assertEqual(live["payout_delay_blocks"], 1)
         self.assertEqual(live["reset_delay_blocks"], 1)
         self.assertEqual(live["next_proposal_id"], 7)
@@ -692,7 +692,7 @@ class ViewportEnergyRouteTests(unittest.TestCase):
         self.assertTrue(live["offices"][2]["matches_expected"])
         self.assertIsNone(live["error"])
 
-    def test_xlag_dev_faucet_sends_native_eng_from_local_faucet_account(self) -> None:
+    def test_xlag_dev_faucet_sends_native_dev_value_from_local_faucet_account(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             runtime_path = root / "runtime" / "deployments" / "current.json"
@@ -729,14 +729,14 @@ class ViewportEnergyRouteTests(unittest.TestCase):
             result = xlag_dev_faucet(
                 config,
                 chain,
-                {"address": "0x7777777777777777777777777777777777777777", "amount_eng": "0.25"},
+                {"address": "0x7777777777777777777777777777777777777777", "amount_credits": "0.25"},
                 remote_addr="127.0.0.1",
             )
 
             self.assertTrue(result["ok"])
             self.assertEqual(result["mode"], "local-dev-faucet")
             self.assertEqual(result["amount_wei"], "250000000000000000")
-            self.assertEqual(result["amount_eng"], "0.25")
+            self.assertEqual(result["amount_credits"], "0.25")
             self.assertEqual(result["to"], "0x7777777777777777777777777777777777777777")
             self.assertEqual(result["from"], "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266")
             self.assertEqual(chain.sent["from"], result["from"])
@@ -820,7 +820,7 @@ class ViewportEnergyRouteTests(unittest.TestCase):
                     data=json.dumps(
                         {
                             "address": "0x7777777777777777777777777777777777777777",
-                            "amount_eng": "1",
+                            "amount_credits": "1",
                         }
                     ).encode("utf-8"),
                     headers={"Content-Type": "application/json"},

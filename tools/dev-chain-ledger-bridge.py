@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """
-Bridge a local energy-payout entitlement into a native ENG reserve payout.
+Bridge a local worker-payout entitlement into a Compute Credits reserve payout.
 
 Run after a successful soft dev-chain deploy/smoke/flow:
 
-  python .\\dev-chain-ledger-bridge.py --register-node --node-id gpu-worker-01 --queue-eng 0.125
+  python .\\dev-chain-ledger-bridge.py --register-node --node-id gpu-worker-01 --queue-credits 0.125
 
-This script treats ENG as native to the energy chain:
+This script treats Compute Credits as native dev-chain base units for local
+settlement smoke tests:
 
-  1 ENG = 10^18 base units
+  1 Compute Credit = 10^18 base units
 
 The EnergyCreditLedger still stores integer "credits"; this bridge records those
-credits as native ENG base units for settlement. It intentionally does not deploy
-an ENG token contract.
+credits as native dev-chain base units for settlement. It intentionally does not
+deploy a public token contract.
 """
 
 from __future__ import annotations
@@ -32,8 +33,10 @@ from main_computer.prod_lock import require_unlocked_production_state
 DEFAULT_NODE_ID = "gpu-worker-01"
 DEFAULT_NODE_ROLE = "gpu-worker"
 DEFAULT_ENDPOINT = "local://gpu-worker-01"
-DEFAULT_QUEUE_ENG = "0.125"
-DEFAULT_FUND_ENG = "1"
+DEFAULT_QUEUE_CREDITS = "0.125"
+DEFAULT_QUEUE_ENG = DEFAULT_QUEUE_CREDITS  # Deprecated compatibility alias.
+DEFAULT_FUND_CREDITS = "1"
+DEFAULT_FUND_ENG = DEFAULT_FUND_CREDITS  # Deprecated compatibility alias.
 DEFAULT_DEPLOYMENT_FILE = Path("runtime/deployments/current.json")
 LEGACY_DEV_CHAIN_STATE_FILE = Path("runtime/dev-chain/latest.json")
 DEFAULT_STATE_FILE = DEFAULT_DEPLOYMENT_FILE
@@ -76,9 +79,13 @@ def resolve_state_file(root: Path, requested: Path) -> Path:
 
 
 def load_dev_chain_flow(repo: Path):
-    script = repo / "dev-chain-flow.py"
+    script = repo / "tools" / "dev-chain-flow.py"
     if not script.exists():
-        raise FileNotFoundError(f"missing {script}")
+        legacy_script = repo / "dev-chain-flow.py"
+        if legacy_script.exists():
+            script = legacy_script
+        else:
+            raise FileNotFoundError(f"missing {script}")
     spec = importlib.util.spec_from_file_location("dev_chain_flow_runtime", script)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"could not load {script}")
@@ -147,14 +154,14 @@ def run_bridge(
     ledger.queue_worker_payout(
         clean_node_id,
         queue_wei,
-        memo=f"native ENG reserve bridge intent: {flow.format_eng(queue_wei)}",
+        memo=f"compute credit reserve bridge intent: {flow.format_compute_credits(queue_wei)}",
         request_id=f"native-eng-{dt.datetime.now(dt.UTC).isoformat()}",
     )
     queued_status = ledger.status()
 
     claim = ledger.claim_payouts(
         clean_node_id,
-        memo=f"claim native ENG reserve payout entitlement: {flow.format_eng(queue_wei)}",
+        memo=f"claim compute credit reserve payout entitlement: {flow.format_compute_credits(queue_wei)}",
     )
     claimed_credits = int(claim.get("claimed_credits", 0) or 0)
     if claimed_credits != queue_wei:
@@ -179,7 +186,7 @@ def run_bridge(
     if not ok:
         payload = {
             "ok": False,
-            "reason": "native ENG reserve flow failed",
+            "reason": "compute credit reserve flow failed",
             "node_id": clean_node_id,
             "claimed_credits": claimed_credits,
             "chain_summary": chain_summary,
@@ -192,15 +199,15 @@ def run_bridge(
     ledger.spend(
         clean_node_id,
         queue_wei,
-        memo=f"reconcile local ENG claim to native reserve proposal {chain_summary['proposal_id']}",
+        memo=f"reconcile local compute credit claim to reserve proposal {chain_summary['proposal_id']}",
     )
     after_spend_status = ledger.status()
 
-    audit_status = ledger.record_native_eng_reserve_payout(
+    audit_status = ledger.record_compute_credit_reserve_payout(
         clean_node_id,
         queue_wei,
-        memo=f"native ENG reserve payout executed: proposal {chain_summary['proposal_id']}",
-        amount_eng_wei=int(chain_summary["payout_wei"]),
+        memo=f"compute credit reserve payout executed: proposal {chain_summary['proposal_id']}",
+        amount_base_units=int(chain_summary["payout_wei"]),
         recipient=str(chain_summary["recipient"]),
         contract_address=str(chain_summary["reserve"]),
         chain_id=int(chain_summary["chain_id"]),
@@ -209,7 +216,7 @@ def run_bridge(
     )
 
     after_balance = latest_balance(audit_status, clean_node_id)
-    audit_tx = recent_transaction(audit_status, "native_eng_reserve_payout_executed")
+    audit_tx = recent_transaction(audit_status, "compute_credit_reserve_payout_executed")
     payload = {
         "ok": True,
         "created_at": dt.datetime.now(dt.UTC).isoformat(),
@@ -217,9 +224,9 @@ def run_bridge(
         "ledger_root": str(ledger_root),
         "state_file": str(state_file),
         "queue_wei": queue_wei,
-        "queue_eng": flow.format_eng(queue_wei),
+        "queue_credits": flow.format_compute_credits(queue_wei),
         "fund_wei": fund_wei,
-        "fund_eng": flow.format_eng(fund_wei),
+        "fund_credits": flow.format_compute_credits(fund_wei),
         "balance_before": before_balance,
         "balance_after": after_balance,
         "claimed_credits": claimed_credits,
@@ -238,7 +245,7 @@ def run_bridge(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Bridge a local energy payout into a native ENG reserve payout.")
+    parser = argparse.ArgumentParser(description="Bridge a local worker payout into a Compute Credits reserve payout.")
     parser.add_argument("--ledger-root", type=Path, default=Path("energy_credits"))
     parser.add_argument("--state-file", type=Path, default=DEFAULT_STATE_FILE)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT_FILE)
@@ -246,10 +253,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--node-role", default=DEFAULT_NODE_ROLE)
     parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
     parser.add_argument("--register-node", action="store_true")
-    parser.add_argument("--queue-eng", default=DEFAULT_QUEUE_ENG, help="Native ENG payout entitlement to queue and settle.")
-    parser.add_argument("--fund-eng", default=DEFAULT_FUND_ENG, help="Native ENG amount used to fund the reserve for this flow.")
+    parser.add_argument("--queue-credits", "--queue-eng", dest="queue_credits", default=DEFAULT_QUEUE_CREDITS, help="Compute Credits payout entitlement to queue and settle.")
+    parser.add_argument("--fund-credits", "--fund-eng", dest="fund_credits", default=DEFAULT_FUND_CREDITS, help="Compute Credits amount used to fund the reserve for this flow.")
     parser.add_argument("--recipient", default=None, help="Recipient address. Defaults to O3 from latest deploy state.")
-    parser.add_argument("--memo", default="native ENG ledger bridge payout")
+    parser.add_argument("--memo", default="compute credit ledger bridge payout")
     parser.add_argument("--chain-id", type=int, default=None)
     parser.add_argument("--rpc-url", default=None)
     parser.add_argument("--timeout-s", type=float, default=20.0)
@@ -271,8 +278,8 @@ def main(argv: list[str] | None = None) -> int:
     log(f"Ledger root: {ledger_root}")
     log(f"Deploy state: {state_file}")
     log()
-    log("Native ENG ledger bridge")
-    log("========================")
+    log("Compute Credits ledger bridge")
+    log("=============================")
 
     try:
         require_unlocked_production_state(
@@ -283,11 +290,11 @@ def main(argv: list[str] | None = None) -> int:
             action="run dev-chain ledger bridge",
         )
         flow = load_dev_chain_flow(repo)
-        queue_wei = flow.parse_eng(args.queue_eng)
-        fund_wei = flow.parse_eng(args.fund_eng)
+        queue_wei = flow.parse_compute_credits(args.queue_credits)
+        fund_wei = flow.parse_compute_credits(args.fund_credits)
 
         if queue_wei > fund_wei:
-            parser.error("--queue-eng must be less than or equal to --fund-eng")
+            parser.error("--queue-credits must be less than or equal to --fund-credits")
 
         ok, payload = run_bridge(
             repo=repo,
@@ -308,7 +315,7 @@ def main(argv: list[str] | None = None) -> int:
             poll_s=args.poll_s,
         )
         if ok:
-            log("PASS: local energy payout was reconciled through native ENG reserve execution.")
+            log("PASS: local worker payout was reconciled through Compute Credits reserve execution.")
             return 0
         log(f"FAIL: bridge did not complete: {payload.get('reason', 'unknown error')}")
         return 1

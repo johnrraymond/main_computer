@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_dev_chain_flow():
-    spec = importlib.util.spec_from_file_location("dev_chain_flow", ROOT / "dev-chain-flow.py")
+    spec = importlib.util.spec_from_file_location("dev_chain_flow", ROOT / "tools" / "dev-chain-flow.py")
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -63,37 +63,37 @@ def test_production_shaped_deployment_helpers_are_supported() -> None:
     assert flow.deployment_address(state, "xlag-bridge-reserve") == reserve.lower()
 
 
-def test_native_eng_unit_helpers_are_integer_base_units() -> None:
+def test_compute_credit_unit_helpers_are_integer_base_units() -> None:
     flow = load_dev_chain_flow()
 
-    assert flow.parse_eng("1") == 10**18
-    assert flow.parse_eng("0.125") == 125_000_000_000_000_000
-    assert flow.format_eng(10**18) == "1 ENG"
-    assert flow.format_eng(125_000_000_000_000_000) == "0.125 ENG"
+    assert flow.parse_compute_credits("1") == 10**18
+    assert flow.parse_compute_credits("0.125") == 125_000_000_000_000_000
+    assert flow.format_compute_credits(10**18) == "1 Compute Credits"
+    assert flow.format_compute_credits(125_000_000_000_000_000) == "0.125 Compute Credits"
 
     try:
-        flow.parse_eng("0.0000000000000000001")
+        flow.parse_compute_credits("0.0000000000000000001")
     except ValueError as exc:
         assert "18 decimal" in str(exc)
     else:
-        raise AssertionError("expected over-precise ENG amount to fail")
+        raise AssertionError("expected over-precise Compute Credits amount to fail")
 
 
-def test_propose_payout_calldata_uses_native_eng_base_units() -> None:
+def test_propose_payout_calldata_uses_compute_credit_base_units() -> None:
     flow = load_dev_chain_flow()
     recipient = "0x90F79bf6EB2c4f870365E785982E1f101E93b906"
     data = flow.propose_payout_data(
         recipient=recipient,
-        amount_wei=flow.parse_eng("0.125"),
-        memo="native ENG payout flow",
+        amount_wei=flow.parse_compute_credits("0.125"),
+        memo="compute credit reserve payout flow",
         expires_block=123,
     )
 
     assert data.startswith("0x707216b1")
     assert data[10:74].endswith(recipient.lower().removeprefix("0x"))
-    assert flow.abi_uint(flow.parse_eng("0.125")) in data
+    assert flow.abi_uint(flow.parse_compute_credits("0.125")) in data
     assert flow.abi_uint(123) in data
-    assert "6e617469766520454e47207061796f757420666c6f77" in data
+    assert "636f6d70757465206372656469742072657365727665207061796f757420666c6f77" in data
 
 
 def test_run_flow_funds_proposes_seconds_mines_executes_and_verifies() -> None:
@@ -115,12 +115,12 @@ def test_run_flow_funds_proposes_seconds_mines_executes_and_verifies() -> None:
 
     balances = {
         reserve: 0,
-        offices[3]: flow.parse_eng("10000"),
+        offices[3]: flow.parse_compute_credits("10000"),
     }
     block_number = {"value": 2}
     next_proposal_id = {"value": 1}
     proposal_state = {"value": 1}
-    payout_amount = flow.parse_eng("0.125")
+    payout_amount = flow.parse_compute_credits("0.125")
     tx_counter = {"value": 0}
     receipts: dict[str, dict] = {}
     sent_methods: list[str] = []
@@ -194,9 +194,9 @@ def test_run_flow_funds_proposes_seconds_mines_executes_and_verifies() -> None:
         env={},
         rpc_url=None,
         expected_chain_id=None,
-        fund_wei=flow.parse_eng("1"),
+        fund_wei=flow.parse_compute_credits("1"),
         payout_wei=payout_amount,
-        memo="native ENG payout flow",
+        memo="compute credit reserve payout flow",
         recipient=None,
         expires_blocks=100,
         mine_extra_blocks=1,
@@ -209,14 +209,14 @@ def test_run_flow_funds_proposes_seconds_mines_executes_and_verifies() -> None:
     assert sent_methods == ["fund", "propose", "second", "execute"]
     assert summary["payout_wei"] == payout_amount
     assert summary["recipient_delta_wei"] == payout_amount
-    assert summary["reserve_balance_after_wei"] == flow.parse_eng("0.875")
+    assert summary["reserve_balance_after_wei"] == flow.parse_compute_credits("0.875")
     assert {step.name for step in steps} >= {
         "fund-reserve",
         "propose-payout",
         "second-payout",
         "execute-payout",
         "proposal-state-executed",
-        "recipient-native-eng-received",
+        "recipient-compute-credit-received",
     }
 
 

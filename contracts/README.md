@@ -51,3 +51,30 @@ Office reset flow:
 - The new address must be nonzero and unique.
 
 The backend never stores private keys, never signs transactions, and never moves native funds. Browser wallet users submit contract calls directly. Use separate browser profiles or windows to test O0-O3 because one wallet session usually exposes one active office account at a time.
+
+## Hub Credit Sale v0
+
+`src/HubCreditSale.sol` is the first purchase-intent contract for the hub/worker marketplace.
+
+It intentionally does **not** mint an ERC-20 token. Users purchase **Compute Credits** through a native-payment receipt flow. The contract forwards payment to a treasury address and emits `CreditPurchased(...)` so the hub backend can index the receipt into its internal service-credit ledger.
+
+This contract is C1 scope only:
+
+- accepts native payment for a configured `weiPerCredit` price
+- emits a purchase receipt with account, payer, credits granted, amount paid, and memo
+- supports owner-controlled pause, treasury rotation, and price update
+- does not settle worker payouts
+- does not represent Compute Credits as a transferable token
+- does not replace `XLagBridgeReserve`
+
+Expected backend flow:
+
+```text
+HubCreditSale.CreditPurchased
+  -> hub contract indexer
+  -> internal account credit ledger
+  -> user can spend Compute Credits on hub AI work
+```
+
+Worker payout and reserve movement remain separate phases.
+

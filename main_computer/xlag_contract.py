@@ -7,7 +7,8 @@ from main_computer.config import MainComputerConfig
 from main_computer.energy_chain import EnergyChainClient
 
 
-ENG_WEI = 10**18
+COMPUTE_CREDIT_BASE_UNITS = 10**18
+ENG_WEI = COMPUTE_CREDIT_BASE_UNITS  # Deprecated compatibility alias.
 
 _SELECTORS = {
     "XLagBridgeReserve.OFFICE_COUNT()": "05cdb182",
@@ -145,9 +146,11 @@ def xlag_contract_live_status(config: MainComputerConfig, client: EnergyChainCli
         live.update(
             {
                 "reserve_balance_wei": str(reserve_balance_wei),
-                "reserve_balance_eng": _format_eng(reserve_balance_wei),
+                "reserve_balance_credits": _format_compute_credits(reserve_balance_wei),
+                "reserve_balance_eng": _format_compute_credits(reserve_balance_wei),  # Deprecated compatibility key.
                 "max_payout_wei": str(max_payout_wei),
-                "max_payout_eng": _format_eng(max_payout_wei),
+                "max_payout_credits": _format_compute_credits(max_payout_wei),
+                "max_payout_eng": _format_compute_credits(max_payout_wei),  # Deprecated compatibility key.
                 "payout_delay_blocks": payout_delay_blocks,
                 "reset_delay_blocks": reset_delay_blocks,
                 "next_proposal_id": next_proposal_id,
@@ -184,9 +187,11 @@ def _empty_live_payload(
         "alpha_beta_lockout_has_code": None,
         "alpha_beta_lockout_code_bytes": None,
         "reserve_balance_wei": None,
-        "reserve_balance_eng": None,
+        "reserve_balance_credits": None,
+        "reserve_balance_eng": None,  # Deprecated compatibility key.
         "max_payout_wei": None,
-        "max_payout_eng": None,
+        "max_payout_credits": None,
+        "max_payout_eng": None,  # Deprecated compatibility key.
         "payout_delay_blocks": None,
         "reset_delay_blocks": None,
         "next_proposal_id": None,
@@ -425,11 +430,16 @@ def _clean_address(value: Any) -> str | None:
     return text.lower()
 
 
-def _format_eng(amount_wei: int) -> str:
-    sign = "-" if amount_wei < 0 else ""
-    value = abs(int(amount_wei))
-    whole, fractional = divmod(value, ENG_WEI)
+def _format_compute_credits(amount_base_units: int) -> str:
+    sign = "-" if amount_base_units < 0 else ""
+    value = abs(int(amount_base_units))
+    whole, fractional = divmod(value, COMPUTE_CREDIT_BASE_UNITS)
     if fractional == 0:
         return f"{sign}{whole}"
     fraction = str(fractional).rjust(18, "0").rstrip("0")
     return f"{sign}{whole}.{fraction}"
+
+
+def _format_eng(amount_wei: int) -> str:
+    """Deprecated compatibility alias for pre-C0 callers."""
+    return _format_compute_credits(amount_wei)

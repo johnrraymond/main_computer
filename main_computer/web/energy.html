@@ -290,11 +290,11 @@
             <div><strong>chain ok</strong><span id="xlag-any-user-frob-chain-ok" data-mc-widget-id="energy.xlag-any-user-frob-chain-ok" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="X-LAG Any User Frob Chain OK" data-mc-component-id="energy.xlag.any.user.frob.chain.ok" data-mc-component-kind="output" data-mc-component-label="X-LAG Any User Frob Chain OK" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract">unknown</span></div>
             <div><strong>available</strong><span id="xlag-any-user-frob-available" data-mc-widget-id="energy.xlag-any-user-frob-available" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="X-LAG Any User Frob Available" data-mc-component-id="energy.xlag.any.user.frob.available" data-mc-component-kind="output" data-mc-component-label="X-LAG Any User Frob Available" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract">unknown</span></div>
             <div><strong>nonce</strong><span id="xlag-any-user-frob-nonce" data-mc-widget-id="energy.xlag-any-user-frob-nonce" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="X-LAG Any User Frob Nonce" data-mc-component-id="energy.xlag.any.user.frob.nonce" data-mc-component-kind="output" data-mc-component-label="X-LAG Any User Frob Nonce" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract">unknown</span></div>
-            <div><strong>native ENG</strong><span id="xlag-any-user-frob-balance" data-mc-widget-id="energy.xlag-any-user-frob-balance" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="X-LAG Any User Frob Balance" data-mc-component-id="energy.xlag.any.user.frob.balance" data-mc-component-kind="output" data-mc-component-label="X-LAG Any User Frob Balance" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract">unknown</span></div>
+            <div><strong>native dev-chain value</strong><span id="xlag-any-user-frob-balance" data-mc-widget-id="energy.xlag-any-user-frob-balance" data-mc-widget-kind="output" data-mc-widget-class="output" data-mc-widget-label="X-LAG Any User Frob Balance" data-mc-component-id="energy.xlag.any.user.frob.balance" data-mc-component-kind="output" data-mc-component-label="X-LAG Any User Frob Balance" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract">unknown</span></div>
           </div>
           <h2>Dev Wallet Faucet</h2>
-          <p>Local-dev gas helper: fund the connected browser wallet with native ENG from the Anvil faucet account. No reserve funds or contract permissions are touched.</p>
-          <label>amount ENG<input id="xlag-dev-faucet-amount" data-mc-widget-id="energy.xlag-dev-faucet-amount" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="X-LAG Dev Faucet Amount" data-mc-component-id="energy.xlag.dev.faucet.amount" data-mc-component-kind="input" data-mc-component-label="X-LAG Dev Faucet Amount" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" value="1"></label>
+          <p>Local-dev gas helper: fund the connected browser wallet with native dev-chain value for Compute Credits testing from the Anvil faucet account. No reserve funds or contract permissions are touched.</p>
+          <label>amount credits<input id="xlag-dev-faucet-amount" data-mc-widget-id="energy.xlag-dev-faucet-amount" data-mc-widget-kind="input" data-mc-widget-class="input" data-mc-widget-label="X-LAG Dev Faucet Amount" data-mc-component-id="energy.xlag.dev.faucet.amount" data-mc-component-kind="input" data-mc-component-label="X-LAG Dev Faucet Amount" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" value="1"></label>
           <div class="actions">
             <button id="xlag-dev-faucet-fund" data-mc-widget-id="energy.xlag-dev-faucet-fund" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="X-LAG Dev Faucet Fund" data-mc-component-id="energy.xlag.dev.faucet.fund" data-mc-component-kind="action" data-mc-component-label="X-LAG Dev Faucet Fund" data-mc-component-owner="energy.xlag.contract.panel" data-mc-feature-id="energy.feature.xlag-contract" type="button">Fund Connected Wallet</button>
           </div>
@@ -453,7 +453,7 @@
         expectedHex: expected ? `0x${expected.toString(16)}` : "",
         rpcUrl: live.rpc_url || xlagStatus?.rpc_url || "http://127.0.0.1:18545",
         chainName: live.chain_name || "Main Computer Dev Chain",
-        currencySymbol: live.currency_symbol || "ENG"
+        currencySymbol: live.currency_symbol || "Compute Credits"
       };
     }
     function xlagSetWalletMessage(message, target = null) {
@@ -547,8 +547,8 @@
           const balanceEng = formatWeiToEng(balanceHex);
           detail.balanceWei = String(BigInt(balanceHex));
           detail.balanceEng = balanceEng;
-          xlagAnyUserFrobBalance.textContent = `${balanceEng} ENG`;
-          lines.push(`native balance: ${balanceEng} ENG`);
+          xlagAnyUserFrobBalance.textContent = `${balanceEng} Compute Credits`;
+          lines.push(`native balance: ${balanceEng} Compute Credits`);
         } else {
           xlagAnyUserFrobBalance.textContent = "not connected";
         }
@@ -850,7 +850,7 @@
       const guide = [
         "1) Run: python .\\dev-chain-wallet-smoke-guide.py --show-private-keys",
         `2) MetaMask RPC: ${live.rpc_url || "http://127.0.0.1:18545"}`,
-        `3) Chain ID: ${live.expected_chain_id || data.chain_id || "42424242"} / symbol ENG`,
+        `3) Chain ID: ${live.expected_chain_id || data.chain_id || "42424242"} / symbol Compute Credits`,
         "4) Import an O0/O1/O2/O3 dev office private key.",
         `5) Call ${smoke.function || "finalizeWalletSmokeTest(bytes32,string)"} from one office wallet.`,
         `selector ${smoke.selector || "0xaa46bd04"}`
@@ -924,19 +924,19 @@
       const account = xlagActiveAccount || await xlagConnectWallet();
       if (!account) throw new Error("Connect a browser wallet before using the dev faucet.");
       const amountEng = String(xlagDevFaucetAmount.value || "1").trim() || "1";
-      xlagSetWalletMessage(`requesting ${amountEng} ENG from local dev faucet...`, xlagDevFaucetStatus);
+      xlagSetWalletMessage(`requesting ${amountEng} Compute Credits from local dev faucet...`, xlagDevFaucetStatus);
       xlagWalletLog("info", "requesting local dev faucet funding", {account, amountEng});
       const response = await fetch("/api/xlag/dev/faucet", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({address: account, amount_eng: amountEng})
+        body: JSON.stringify({address: account, amount_credits: amountEng})
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       xlagWalletLastAction = `dev faucet sent ${data.tx_hash}`;
       xlagWalletLastError = "none";
       xlagDevFaucetStatus.textContent = [
-        `sent ${data.amount_eng || amountEng} ENG`,
+        `sent ${data.amount_credits || amountEng} Compute Credits`,
         `to ${data.to || account}`,
         `tx ${data.tx_hash}`,
         data.note || "local dev faucet transfer submitted"

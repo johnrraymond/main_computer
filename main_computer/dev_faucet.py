@@ -9,9 +9,9 @@ from main_computer.config import MainComputerConfig
 from main_computer.energy_chain import EnergyChainClient
 
 
-ENG_WEI = 10**18
-DEFAULT_FAUCET_AMOUNT_WEI = ENG_WEI
-MAX_FAUCET_AMOUNT_WEI = 10 * ENG_WEI
+COMPUTE_CREDIT_BASE_UNITS = 10**18
+DEFAULT_FAUCET_AMOUNT_WEI = COMPUTE_CREDIT_BASE_UNITS
+MAX_FAUCET_AMOUNT_WEI = 10 * COMPUTE_CREDIT_BASE_UNITS
 _ADDRESS_PREFIX = "0x"
 
 
@@ -28,7 +28,7 @@ def xlag_dev_faucet(
     *,
     remote_addr: str | None = None,
 ) -> dict[str, Any]:
-    """Fund a browser wallet with native ENG on a local dev chain.
+    """Fund a browser wallet with native dev-chain value for Compute Credits testing.
 
     This is deliberately a dev faucet, not a contract permission path. It sends
     native currency from the deterministic local Anvil faucet account through the
@@ -90,12 +90,12 @@ def xlag_dev_faucet(
         "from": faucet,
         "to": target,
         "amount_wei": str(amount_wei),
-        "amount_eng": _format_eng(amount_wei),
+        "amount_credits": _format_compute_credits(amount_wei),
         "target_balance_before_wei": str(balance_before),
-        "target_balance_before_eng": _format_eng(balance_before),
+        "target_balance_before_credits": _format_compute_credits(balance_before),
         "faucet_balance_before_wei": str(faucet_balance_before),
         "tx_hash": tx_hash,
-        "note": "Native ENG was sent from the local dev faucet account; no reserve funds or contract permissions were touched.",
+        "note": "Native dev-chain value was sent from the local dev faucet account for Compute Credits testing; no reserve funds or contract permissions were touched.",
     }
 
 
@@ -170,11 +170,16 @@ def _parse_amount_wei(payload: dict[str, Any]) -> int:
             amount = int(str(payload["amount_wei"]), 0)
         except ValueError as exc:
             raise DevFaucetError("amount_wei must be an integer.", status=400) from exc
+    elif payload.get("amount_credits") not in {None, ""}:
+        try:
+            amount = int(Decimal(str(payload["amount_credits"])) * COMPUTE_CREDIT_BASE_UNITS)
+        except (InvalidOperation, ValueError) as exc:
+            raise DevFaucetError("amount_credits must be a decimal number.", status=400) from exc
     elif payload.get("amount_eng") not in {None, ""}:
         try:
-            amount = int(Decimal(str(payload["amount_eng"])) * ENG_WEI)
+            amount = int(Decimal(str(payload["amount_eng"])) * COMPUTE_CREDIT_BASE_UNITS)
         except (InvalidOperation, ValueError) as exc:
-            raise DevFaucetError("amount_eng must be a decimal number.", status=400) from exc
+            raise DevFaucetError("amount_eng is deprecated; use amount_credits with a decimal number.", status=400) from exc
     else:
         amount = DEFAULT_FAUCET_AMOUNT_WEI
 
@@ -191,6 +196,11 @@ def _hex_to_int(value: Any) -> int:
     return int(value, 16)
 
 
-def _format_eng(wei: int) -> str:
-    value = Decimal(int(wei)) / Decimal(ENG_WEI)
+def _format_compute_credits(base_units: int) -> str:
+    value = Decimal(int(base_units)) / Decimal(COMPUTE_CREDIT_BASE_UNITS)
     return format(value.normalize(), "f")
+
+
+def _format_eng(wei: int) -> str:
+    """Deprecated compatibility alias for pre-C0 callers."""
+    return _format_compute_credits(wei)

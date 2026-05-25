@@ -134,7 +134,7 @@ def render_guide(state: dict[str, Any], *, smoke: str, reveal_keys: bool = False
     reserve = deployment_address(state, "xlag-bridge-reserve", "XLagBridgeReserve")
     offices = office_records(state)
     lines = [
-        "Native ENG wallet smoke guide",
+        "Compute Credits wallet smoke guide",
         "=============================",
         "",
         f"RPC URL: {chain_rpc_url(state)}",

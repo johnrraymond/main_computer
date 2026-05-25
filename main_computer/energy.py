@@ -184,6 +184,55 @@ class EnergyCreditLedger:
         self._save(data)
         return self.status()
 
+    def record_compute_credit_reserve_payout(
+        self,
+        node_id: str,
+        credits: int,
+        memo: str = "",
+        *,
+        amount_base_units: int,
+        recipient: str,
+        contract_address: str,
+        chain_id: int,
+        proposal_id: int,
+        tx_hashes: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Append an audit-only record for a Compute Credits reserve payout.
+
+        The local credit balance has already been reconciled by a matching
+        spend() call before this audit record is written. This transaction
+        therefore carries zero credits so balances are not changed twice, while
+        the extra ``compute_credit_reserve`` payload keeps the on-chain
+        settlement details machine-readable in ledger.json.
+        """
+
+        if credits <= 0:
+            raise ValueError("Credits must be positive.")
+        if amount_base_units <= 0:
+            raise ValueError("Compute Credits amount must be positive.")
+        data = self._load()
+        node_id = self._clean_id(node_id)
+        self._ensure_node(data, node_id)
+        tx = self._transaction(
+            "compute_credit_reserve_payout_executed",
+            node_id,
+            0,
+            memo or f"reconciled {credits} local credit base units to reserve payout",
+        )
+        tx_data = asdict(tx)
+        tx_data["compute_credit_reserve"] = {
+            "credits_reconciled": int(credits),
+            "amount_base_units": int(amount_base_units),
+            "recipient": str(recipient),
+            "contract_address": str(contract_address),
+            "chain_id": int(chain_id),
+            "proposal_id": int(proposal_id),
+            "tx_hashes": dict(tx_hashes or {}),
+        }
+        data["transactions"].append(tx_data)
+        self._save(data)
+        return self.status()
+
     def record_native_eng_reserve_payout(
         self,
         node_id: str,
@@ -197,41 +246,18 @@ class EnergyCreditLedger:
         proposal_id: int,
         tx_hashes: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Append an audit-only record for a native ENG reserve payout.
-
-        The local credit balance has already been reconciled by a matching
-        spend() call before this audit record is written. This transaction
-        therefore carries zero credits so balances are not changed twice, while
-        the extra ``native_eng`` payload keeps the on-chain settlement details
-        machine-readable in ledger.json.
-        """
-
-        if credits <= 0:
-            raise ValueError("Credits must be positive.")
-        if amount_eng_wei <= 0:
-            raise ValueError("Native ENG amount must be positive.")
-        data = self._load()
-        node_id = self._clean_id(node_id)
-        self._ensure_node(data, node_id)
-        tx = self._transaction(
-            "native_eng_reserve_payout_executed",
+        """Deprecated compatibility alias for pre-C0 reserve payout records."""
+        return self.record_compute_credit_reserve_payout(
             node_id,
-            0,
-            memo or f"reconciled {credits} local ENG base units to native reserve payout",
+            credits,
+            memo,
+            amount_base_units=amount_eng_wei,
+            recipient=recipient,
+            contract_address=contract_address,
+            chain_id=chain_id,
+            proposal_id=proposal_id,
+            tx_hashes=tx_hashes,
         )
-        tx_data = asdict(tx)
-        tx_data["native_eng"] = {
-            "credits_reconciled": int(credits),
-            "amount_eng_wei": int(amount_eng_wei),
-            "recipient": str(recipient),
-            "contract_address": str(contract_address),
-            "chain_id": int(chain_id),
-            "proposal_id": int(proposal_id),
-            "tx_hashes": dict(tx_hashes or {}),
-        }
-        data["transactions"].append(tx_data)
-        self._save(data)
-        return self.status()
 
     def _queue_payout(self, kind: str, node_id: str, credits: int, memo: str, request_id: str) -> dict[str, Any]:
         if credits <= 0:
@@ -300,7 +326,7 @@ class EnergyCreditLedger:
             "network": {
                 "name": str(network.get("name", "main-computer-local-energy")),
                 "chain": str(network.get("chain", "local-ethereum-style")),
-                "currency": str(network.get("currency", "ENG")),
+                "currency": str(network.get("currency", "Compute Credits")),
                 "created_at": str(network.get("created_at", created_at)),
             },
             "head": {
