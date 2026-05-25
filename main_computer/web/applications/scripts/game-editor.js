@@ -507,6 +507,34 @@
         buildThreadLink: buildGameEditorChatThreadLink,
         getEmbeddedContext: gameEditorChatContextSnapshot,
         buildThreadMetadata: gameEditorBuildChatThreadMetadata,
+        plugins: [
+          {
+            id: "game-editor-edit",
+            label: "Edit this game",
+            checkedLabel: "Editing this game",
+            hint: "Route this AI request through the Game Editor edit pathway, locked to the active game project.",
+            appliesTo: "ai",
+            defaultEnabled: true,
+            pathway: "game-editor-rag-edit-smoke",
+            targetKind: "game-project",
+            targetId: projectId,
+            lockedTarget: true,
+            buildPayload({embedded_context: embeddedContext, config}) {
+              const context = embeddedContext && typeof embeddedContext === "object" && !Array.isArray(embeddedContext) ? embeddedContext : {};
+              const lockedProjectId = safeGameEditorProjectId(context.project_id || config?.targetId || projectId);
+              return {
+                edit_mode: "game-project",
+                editor_edit_mode: "game-editor",
+                requested_pathway: "game-editor-rag-edit-smoke",
+                target_kind: "game-project",
+                target_id: lockedProjectId,
+                project_id: lockedProjectId,
+                locked_to_mount: true,
+                auto_apply: false
+              };
+            }
+          }
+        ],
         status(message) {
           if (message && panel) panel.dataset.chatStatus = message;
         }

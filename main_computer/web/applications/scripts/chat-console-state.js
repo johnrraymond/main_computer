@@ -45,6 +45,7 @@
         rag_assisted_thinking_options: {
           think: "low"
         },
+        mount_plugin_options: {},
         created_at: now,
         updated_at: now,
         ...extra
@@ -112,6 +113,9 @@
         }
         if (cell.type !== "output" && Object.prototype.hasOwnProperty.call(cell.rag_assisted_thinking_options, "docker_enabled")) {
           delete cell.rag_assisted_thinking_options.docker_enabled;
+        }
+        if (cell.type !== "output" && (!cell.mount_plugin_options || typeof cell.mount_plugin_options !== "object" || Array.isArray(cell.mount_plugin_options))) {
+          cell.mount_plugin_options = {};
         }
         return cell;
       });

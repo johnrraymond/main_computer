@@ -451,6 +451,120 @@
       }
     }
 
+    function chatConsoleNormalizeMountPlugin(plugin, index = 0) {
+      if (!plugin || typeof plugin !== "object" || Array.isArray(plugin)) return null;
+      const id = chatConsoleCssToken(plugin.id || plugin.name || `mount-plugin-${index + 1}`, "");
+      if (!id) return null;
+      const label = String(plugin.label || plugin.title || id).trim() || id;
+      const rawAppliesTo = plugin.appliesTo || plugin.cellType || plugin.cellTypes || "ai";
+      const appliesTo = Array.isArray(rawAppliesTo)
+        ? rawAppliesTo.map((item) => String(item || "").trim()).filter(Boolean)
+        : String(rawAppliesTo || "ai").trim();
+      return {
+        ...plugin,
+        id,
+        label,
+        checkedLabel: String(plugin.checkedLabel || plugin.enabledLabel || "").trim(),
+        hint: String(plugin.hint || plugin.description || "").trim(),
+        appliesTo,
+        defaultEnabled: chatConsoleBooleanOption(
+          plugin.defaultEnabled !== undefined ? plugin.defaultEnabled : plugin.defaultChecked,
+          false
+        ),
+        disabled: chatConsoleBooleanOption(plugin.disabled, false),
+        endpoint: String(plugin.endpoint || plugin.evaluateEndpoint || "").trim()
+      };
+    }
+
+    function chatConsoleActiveMountPlugins(session = chatConsoleActiveEmbeddedSessionForPayload()) {
+      const raw = session?.options?.plugins || session?.options?.mountPlugins || session?.config?.plugins || [];
+      if (!Array.isArray(raw)) return [];
+      return raw
+        .map((plugin, index) => chatConsoleNormalizeMountPlugin(plugin, index))
+        .filter(Boolean);
+    }
+
+    function chatConsoleMountPluginAppliesToCell(plugin, cell) {
+      if (!plugin || !cell || cell.type === "output") return false;
+      const appliesTo = plugin.appliesTo;
+      if (Array.isArray(appliesTo)) return appliesTo.includes(cell.type) || appliesTo.includes("*");
+      const text = String(appliesTo || "ai").trim();
+      return text === "*" || text === cell.type;
+    }
+
+    function chatConsoleMountPluginOptions(cell) {
+      return cell?.mount_plugin_options && typeof cell.mount_plugin_options === "object" && !Array.isArray(cell.mount_plugin_options)
+        ? cell.mount_plugin_options
+        : {};
+    }
+
+    function chatConsoleMountPluginOption(cell, plugin) {
+      const options = chatConsoleMountPluginOptions(cell);
+      const raw = options[plugin.id] && typeof options[plugin.id] === "object" && !Array.isArray(options[plugin.id]) ? options[plugin.id] : {};
+      const explicit = Object.prototype.hasOwnProperty.call(raw, "enabled");
+      return {
+        ...raw,
+        enabled: explicit ? Boolean(raw.enabled) : Boolean(plugin.defaultEnabled)
+      };
+    }
+
+    function chatConsoleMountPluginEnabledForCell(cell, plugin) {
+      return chatConsoleMountPluginOption(cell, plugin).enabled;
+    }
+
+    function updateChatConsoleMountPluginOption(cellId, pluginId, patch = {}) {
+      const cell = chatConsoleState.cells.find((item) => item.id === cellId);
+      if (!cell) return;
+      const current = chatConsoleMountPluginOptions(cell);
+      const nextForPlugin = {
+        ...(current[pluginId] && typeof current[pluginId] === "object" && !Array.isArray(current[pluginId]) ? current[pluginId] : {}),
+        ...patch
+      };
+      updateChatConsoleCell(cellId, {
+        mount_plugin_options: {
+          ...current,
+          [pluginId]: nextForPlugin
+        }
+      });
+      renderChatConsoleNotebook();
+    }
+
+    function chatConsoleEnabledMountPluginsForCell(cell, session = chatConsoleActiveEmbeddedSessionForPayload()) {
+      return chatConsoleActiveMountPlugins(session)
+        .filter((plugin) => chatConsoleMountPluginAppliesToCell(plugin, cell))
+        .filter((plugin) => chatConsoleMountPluginEnabledForCell(cell, plugin));
+    }
+
+    function chatConsoleBuildMountPluginPayload(plugin, cell, context = {}) {
+      const option = chatConsoleMountPluginOption(cell, plugin);
+      const base = {
+        id: plugin.id,
+        label: plugin.label,
+        enabled: Boolean(option.enabled)
+      };
+      if (plugin.pathway) base.pathway = String(plugin.pathway);
+      if (plugin.targetKind) base.target_kind = String(plugin.targetKind);
+      if (plugin.targetId) base.target_id = String(plugin.targetId);
+      if (plugin.lockedTarget !== undefined) base.locked_target = Boolean(plugin.lockedTarget);
+      if (plugin.endpoint) base.endpoint = plugin.endpoint;
+      if (typeof plugin.buildPayload === "function") {
+        try {
+          const extra = plugin.buildPayload({
+            ...context,
+            cell,
+            plugin,
+            option
+          });
+          if (extra && typeof extra === "object" && !Array.isArray(extra)) {
+            Object.assign(base, chatConsoleClonePayload(extra) || {});
+          }
+        } catch (error) {
+          console.warn("Chat Console mount plugin payload builder failed.", error);
+        }
+      }
+      return base;
+    }
+
     function chatConsoleEmbeddedContextSource(config = {}) {
       if (!config) return null;
       const source = {
@@ -1159,10 +1273,30 @@
       });
       renderChatConsoleNotebook();
     }
+    function renderChatConsoleMountPluginControls(cell) {
+      return chatConsoleActiveMountPlugins()
+        .filter((plugin) => chatConsoleMountPluginAppliesToCell(plugin, cell))
+        .map((plugin) => {
+          const option = chatConsoleMountPluginOption(cell, plugin);
+          const label = document.createElement("label");
+          label.className = `chat-rag-at-toggle chat-mount-plugin-toggle${option.enabled ? " enabled" : ""}`;
+          label.dataset.chatMountPluginId = plugin.id;
+          if (plugin.hint) label.title = plugin.hint;
+          const toggle = document.createElement("input");
+          toggle.type = "checkbox";
+          toggle.checked = option.enabled;
+          toggle.disabled = Boolean(plugin.disabled);
+          toggle.addEventListener("change", () => updateChatConsoleMountPluginOption(cell.id, plugin.id, {enabled: toggle.checked}));
+          label.append(toggle, document.createTextNode(` ${option.enabled && plugin.checkedLabel ? plugin.checkedLabel : plugin.label}`));
+          return label;
+        });
+    }
     function renderChatConsoleRagAtControls(cell) {
       const options = chatConsoleRagAtOptions(cell);
+      const mountPluginControls = renderChatConsoleMountPluginControls(cell);
+      const hasEnabledMountPlugin = mountPluginControls.some((control) => control.querySelector("input")?.checked);
       const wrap = document.createElement("div");
-      wrap.className = `chat-rag-at-controls${options.enabled ? " enabled" : ""}`;
+      wrap.className = `chat-rag-at-controls${options.enabled || hasEnabledMountPlugin ? " enabled" : ""}`;
 
       const toggleLabel = document.createElement("label");
       toggleLabel.className = "chat-rag-at-toggle";
@@ -1189,9 +1323,9 @@
 
       const hint = document.createElement("span");
       hint.className = "chat-rag-at-hint";
-      hint.textContent = options.enabled ? "AI activity; Docker follows global executor setting" : "off";
+      hint.textContent = options.enabled ? "AI activity; Docker follows global executor setting" : hasEnabledMountPlugin ? "mount plugin on" : "off";
 
-      wrap.append(toggleLabel, thinkLabel, hint);
+      wrap.append(toggleLabel, ...mountPluginControls, thinkLabel, hint);
       return wrap;
     }
     function renderChatConsoleInputCell(cell) {
@@ -1310,6 +1444,7 @@
       if (!cell || cell.type === "output") return;
       const duplicate = createChatConsoleCell(cell.type, cell.source || "", {
         attachments: JSON.parse(JSON.stringify(cell.attachments || [])),
+        mount_plugin_options: JSON.parse(JSON.stringify(cell.mount_plugin_options || {})),
         thread_parent_output_cell_id: cell.thread_parent_output_cell_id || null,
         thread_parent_cell_id: cell.thread_parent_cell_id || null
       });
@@ -1415,13 +1550,31 @@
           outputCell = await evaluateChatConsoleCodeCell({...cell, variant_index: variantIndex});
         } else {
           const ragAt = cell.type === "ai" ? startedRagAt : {enabled: false};
-          const endpoint = ragAt.enabled ? "/api/applications/chat-console/rag-assisted-thinking/evaluate" : "/api/applications/chat-console/cell/evaluate";
           const payload = {cell: {...cell, variant_index: variantIndex}, thread_id: chatConsoleState?.id || ""};
           const embeddedSession = chatConsoleActiveEmbeddedSessionForPayload();
           const embeddedSource = chatConsoleEmbeddedContextSource(embeddedSession?.config);
           const embeddedContext = chatConsoleReadEmbeddedContext(embeddedSession);
+          const activeMountPlugins = cell.type === "ai" ? chatConsoleEnabledMountPluginsForCell(cell, embeddedSession) : [];
+          const mountPluginContext = {
+            state: chatConsoleState,
+            thread_id: chatConsoleState?.id || "",
+            variant_index: variantIndex,
+            embedded_context: embeddedContext,
+            embedded_context_source: embeddedSource,
+            embedded_session: embeddedSession,
+            config: embeddedSession?.config || {}
+          };
           if (embeddedSource) payload.embedded_context_source = embeddedSource;
           if (embeddedContext !== null) payload.embedded_context = embeddedContext;
+          if (activeMountPlugins.length) {
+            payload.mount_plugins = activeMountPlugins.map((plugin) => chatConsoleBuildMountPluginPayload(plugin, cell, mountPluginContext));
+            payload.mount_plugin_state = payload.mount_plugins.reduce((acc, plugin) => {
+              acc[plugin.id] = {enabled: Boolean(plugin.enabled)};
+              return acc;
+            }, {});
+          }
+          const pluginEndpoint = activeMountPlugins.find((plugin) => plugin.endpoint)?.endpoint || "";
+          const endpoint = pluginEndpoint || (ragAt.enabled ? "/api/applications/chat-console/rag-assisted-thinking/evaluate" : "/api/applications/chat-console/cell/evaluate");
           const aiRunId = cell.type === "ai" ? (cell.run_id || startedRunId || `${ragAt.enabled ? "rag_assisted_thinking_v3" : "chat_ai"}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`) : "";
           if (aiRunId) {
             payload.run_id = aiRunId;
@@ -1435,7 +1588,7 @@
               title: ragAt.enabled ? "AI RAG request started" : "AI notebook request started",
               message: cell.source || "AI request",
               status: "running",
-              tags: ["ai", ragAt.enabled ? "rag" : "notebook", "thinking", "local-ai", "chat-console"],
+              tags: ["ai", ragAt.enabled ? "rag" : "notebook", activeMountPlugins.length ? "mount-plugin" : "", "thinking", "local-ai", "chat-console"].filter(Boolean),
               data: {
                 run_id: aiRunId,
                 cell_id: cell.id,
@@ -1445,7 +1598,8 @@
                 raw_thinking_exposed: false,
                 running_text: ragAt.enabled ? "RAG-AT request running" : "AI notebook request running",
                 rag_type: ragAt.enabled ? "chat_console_rag_at" : "chat_console_ai",
-                rag_types_seen: ragAt.enabled ? ["chat_console_rag_at"] : ["chat_console_ai"]
+                rag_types_seen: ragAt.enabled ? ["chat_console_rag_at"] : ["chat_console_ai"],
+                mount_plugins: activeMountPlugins.map((plugin) => plugin.id)
               }
             });
           }

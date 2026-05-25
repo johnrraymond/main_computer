@@ -324,11 +324,15 @@
       color: var(--ink);
     }
     .chat-rag-at-toggle,
+    .chat-mount-plugin-toggle,
     .chat-rag-at-field {
       display: inline-flex;
       align-items: center;
       gap: 4px;
       font-weight: 800;
+    }
+    .chat-mount-plugin-toggle.enabled {
+      color: var(--ink);
     }
     .chat-rag-at-field select {
       border: 1px solid var(--line);
