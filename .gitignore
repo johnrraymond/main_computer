@@ -188,6 +188,8 @@ hub_configuration.json
 main_computer/hallucination_profile.json
 greatlibrary_import_report.csv
 greatlibrary_import_report.json
+manifest.json
+reference.patch
 
 # Don't need js map files in the repo.
 *.js.map
