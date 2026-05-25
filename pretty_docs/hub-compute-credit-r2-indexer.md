@@ -82,6 +82,30 @@ Required checks include:
 - positive `payment_amount_base_units`
 - positive `credits_granted`
 
+
+## Operator smoke test
+
+After starting the local hub, run the scripted R2A smoke check:
+
+```powershell
+python scripts/smoke_r2a_credit_import.py --hub-url http://127.0.0.1:8770
+```
+
+The script uses a unique fake transaction hash by default so it can be run more
+than once against the same local ledger. It verifies:
+
+- the R2A indexer status endpoint is alive
+- the first normalized receipt import succeeds
+- the duplicate import returns `idempotent=true`
+- the duplicate import does not change account balance
+- the duplicate import does not change purchase or transaction counts
+- the purchase appears in `/api/hub/v1/credits/purchases`
+- the `deposit_indexed` transaction appears in `/api/hub/v1/credits/transactions`
+
+This is still a local-dev/operator smoke path only. It does not perform RPC
+sync, credit-card processing, fiat checkout, request charging, or worker
+settlement.
+
 ## Verification
 
 ```powershell
@@ -95,3 +119,22 @@ python tools/build_contracts.py --project contracts --test
 R2B can later connect this importer to RPC/event sync for
 `HubCreditSale.CreditPurchased`. The R2A endpoint is deliberately useful first
 as a deterministic, testable import seam.
+
+
+## Pre-R2B contract smoke
+
+Before adding RPC sync, run the contract-side smoke harness:
+
+```powershell
+python scripts/smoke_hub_credit_sale_container.py
+```
+
+This verifies the `HubCreditSale.CreditPurchased` event shape and then delegates
+to the repo's container-aware Foundry wrapper:
+
+```powershell
+python tools/build_contracts.py --project contracts --test
+```
+
+It is a pre-RPC check only. It does not index logs, maintain cursors, charge
+requests, or create a vault contract.

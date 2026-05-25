@@ -76,27 +76,64 @@ def seed_pip_from_wheel(venv_python: Path, venv_root: Path, wheel_path: Path) ->
     run_command([venv_python, "-m", "pip", "--version"], timeout_seconds=30)
 
 
+def _pip_base_args(venv_python: Path) -> list[Path | str]:
+    return [
+        venv_python,
+        "-m",
+        "pip",
+        "install",
+        "-vvv",
+        "--disable-pip-version-check",
+        "--no-input",
+        "--progress-bar",
+        "off",
+        "--timeout",
+        "30",
+        "--retries",
+        "2",
+    ]
+
+
 def pip_install_project(venv_python: Path, project_root: Path, log_path: Path) -> None:
+    requirements_path = project_root / "requirements.txt"
+    if requirements_path.exists():
+        requirements_log_path = log_path.with_name("pip-install-requirements.log")
+        print(f"Pip requirements log: {requirements_log_path}", flush=True)
+        run_command(
+            [
+                *_pip_base_args(venv_python),
+                "-r",
+                "requirements.txt",
+            ],
+            cwd=project_root,
+            timeout_seconds=1800,
+            log_path=requirements_log_path,
+        )
+    else:
+        print(f"No requirements.txt found at {requirements_path}; installing editable project only.", flush=True)
+
     print(f"Pip install log: {log_path}", flush=True)
     run_command(
         [
-            venv_python,
-            "-m",
-            "pip",
-            "install",
-            "-vvv",
-            "--disable-pip-version-check",
-            "--no-input",
-            "--progress-bar",
-            "off",
-            "--timeout",
-            "30",
-            "--retries",
-            "2",
+            *_pip_base_args(venv_python),
             "-e",
             ".",
         ],
         cwd=project_root,
         timeout_seconds=600,
         log_path=log_path,
+    )
+
+    pip_check_log_path = log_path.with_name("pip-check.log")
+    print(f"Pip check log: {pip_check_log_path}", flush=True)
+    run_command(
+        [
+            venv_python,
+            "-m",
+            "pip",
+            "check",
+        ],
+        cwd=project_root,
+        timeout_seconds=180,
+        log_path=pip_check_log_path,
     )
