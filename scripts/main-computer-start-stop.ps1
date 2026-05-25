@@ -1049,16 +1049,14 @@ function Add-PidsFromSupervisorState([hashtable]$Candidates, [object]$State) {
 function Get-MainComputerManagedPorts([object]$LaunchContext) {
   $ports = New-Object System.Collections.Generic.List[int]
 
+  # Only inspect ports assigned to the launch context being started/stopped.
+  # Debug and Safe installs must not kill an Unleashed/dev server just because
+  # it also looks like Main Computer. Unleashed still owns 8765/8766 and may
+  # replace a dev listener on those ports by design.
   foreach ($value in @(
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_CONTROL_PORT" "8765"),
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HEARTBEAT_PORT" "8766"),
-      "8765",
-      "8766",
-      "28865",
-      "28866",
-      "38865",
-      "38866",
-      "18765"
+      (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DOCKER_VIEWPORT_PORT" "")
     )) {
     try {
       $port = [int]$value
@@ -1175,10 +1173,10 @@ function Add-CurrentMainComputerProcessCandidates([hashtable]$Candidates, [strin
 
   foreach ($process in $processes) {
     $commandLine = [string]$process.CommandLine
-    if (Test-MainComputerServiceCommandLine $commandLine $RootPath) {
+    if ((Test-MainComputerServiceCommandLine $commandLine $RootPath) -and (Test-OwnedMainComputerPid ([int]$process.ProcessId) $RootPath $commandLine)) {
       $processName = [string]$process.Name
       if ($processName -match '^(python|pythonw)\.exe$') {
-        Add-PidCandidate $Candidates $process.ProcessId "current-main-computer-service" "live Main Computer service command line" 10 $true
+        Add-PidCandidate $Candidates $process.ProcessId "current-main-computer-service" "live Main Computer service command line for this tree" 10 $true
       }
     }
   }

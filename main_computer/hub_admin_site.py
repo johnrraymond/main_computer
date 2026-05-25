@@ -26,12 +26,14 @@ def build_admin_bootstrap_payload(
     dispatcher: Any,
     energy_ledger: Any,
     credit_ledger: Any | None = None,
+    credit_indexer: Any | None = None,
 ) -> dict[str, Any]:
     """Return a single dashboard-friendly snapshot for the hub admin/control site."""
 
     status = registry.status()
     metrics = dispatcher.metrics()
     credit_status = credit_ledger.status() if credit_ledger is not None else {"ok": False, "account_count": 0, "totals": {}}
+    credit_indexer_status = credit_indexer.status() if credit_indexer is not None else {"ok": False}
     workers = [
         dict(worker)
         for worker in status.get("workers", [])
@@ -76,6 +78,7 @@ def build_admin_bootstrap_payload(
         },
         "energy": energy_ledger.status(),
         "credits": credit_status,
+        "credit_indexer": credit_indexer_status,
         "endpoints": {
             "health": "/api/hub/v1/health",
             "status": "/api/hub/v1/status",
@@ -91,6 +94,8 @@ def build_admin_bootstrap_payload(
             "credit_balance": "/api/hub/v1/credits/balance",
             "credit_transactions": "/api/hub/v1/credits/transactions",
             "credit_purchases": "/api/hub/v1/credits/purchases",
+            "credit_indexer": "/api/hub/v1/credits/indexer",
+            "credit_purchase_import": "/api/hub/v1/credits/purchases/import",
             "credit_admin_issue": "/api/hub/v1/credits/admin/issue",
         },
     }
@@ -401,6 +406,7 @@ def render_hub_admin_html(*, service_name: str = "Main Computer Hub Control") ->
     }}
     function renderCredits(data) {{
       const credits = data.credits || {{}};
+      const indexer = data.credit_indexer || {{}};
       const totals = credits.totals || {{}};
       $('creditSummary').innerHTML = `
         <p><strong>Unit:</strong> ${{escapeHtml((credits.unit && credits.unit.name) || 'Compute Credits')}}</p>
@@ -409,6 +415,7 @@ def render_hub_admin_html(*, service_name: str = "Main Computer Hub Control") ->
         <p><strong>Held:</strong> ${{Number(totals.held_credits || 0)}}</p>
         <p><strong>Purchased:</strong> ${{Number(totals.purchased_credits || 0)}}</p>
         <p><strong>Transactions:</strong> ${{Number(credits.transaction_count || 0)}}</p>
+        <p><strong>Indexer:</strong> ${{escapeHtml(indexer.phase || 'not configured')}} / ${{escapeHtml(indexer.mode || 'manual')}}</p>
       `;
     }}
     function renderSecurityEnergy(data) {{

@@ -26,6 +26,7 @@ from main_computer.hub_security import (
     hub_transport_is_encrypted_or_loopback,
 )
 from main_computer.hub_admin_site import HUB_ADMIN_ROUTES, build_admin_bootstrap_payload, render_hub_admin_html
+from main_computer.hub_credit_indexer import HubCreditIndexer
 from main_computer.hub_credit_ledger import HubCreditLedger
 from main_computer.hub_plex_models import HubAIRequest, HubWorkerSummary
 from main_computer.hub_plex_service import AIRequestPlexService
@@ -810,6 +811,7 @@ class HubHttpServer(ThreadingHTTPServer):
         )
         self.energy_ledger = EnergyCreditLedger(hub_root / "energy_credits")
         self.credit_ledger = HubCreditLedger(hub_root / "compute_credits")
+        self.credit_indexer = HubCreditIndexer(self.credit_ledger)
         self.dispatcher = HubDispatcher(
             self.registry,
             self.energy_ledger,
@@ -837,6 +839,7 @@ class HubServerHandler(_JsonHandler):
                     dispatcher=self.server.dispatcher,
                     energy_ledger=self.server.energy_ledger,
                     credit_ledger=self.server.credit_ledger,
+                    credit_indexer=self.server.credit_indexer,
                 )
             )
             return
@@ -938,6 +941,9 @@ class HubServerHandler(_JsonHandler):
             return
         if path == "/api/hub/v1/credits":
             self._send_json(self.server.credit_ledger.status())
+            return
+        if path == "/api/hub/v1/credits/indexer":
+            self._send_json(self.server.credit_indexer.status())
             return
         if path == "/api/hub/v1/credits/accounts":
             limit = int(query.get("limit", ["100"])[0] or 100)
@@ -1059,6 +1065,10 @@ class HubServerHandler(_JsonHandler):
                         memo=str(body.get("memo", "")),
                     )
                 )
+                return
+            if path == "/api/hub/v1/credits/purchases/import":
+                body = self._read_json()
+                self._send_json(self.server.credit_indexer.import_purchase(body))
                 return
             if path == "/api/hub/v1/credits/admin/issue":
                 body = self._read_json()
