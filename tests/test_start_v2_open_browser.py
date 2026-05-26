@@ -42,3 +42,11 @@ def test_browser_helper_waits_for_http_readiness_before_opening() -> None:
     assert "$statusCode -ge 200 -and $statusCode -lt 500" in text
     assert "Start-Process $targetUrl" in text
     assert text.index("Wait-MainComputerBrowserReady") < text.index("Start-Process $targetUrl")
+
+def test_start_v2_uses_crlf_line_endings_for_cmd_label_goto() -> None:
+    data = (ROOT / "start_v2.bat").read_bytes()
+
+    assert b"\r\n" in data
+    assert data.count(b"\n") == data.count(b"\r\n")
+    assert b"\r\n:mc_skip_open_browser\r\n" in data
+

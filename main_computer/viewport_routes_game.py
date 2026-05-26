@@ -72,6 +72,9 @@ class ViewportGameRoutesMixin:
             if route == "/api/applications/game-editor/chat/edit":
                 self._handle_game_editor_chat_edit(body)
                 return
+            if route == "/api/applications/game-editor/chat/apply-rag-proposal":
+                self._handle_game_editor_rag_apply(body)
+                return
             if route == "/api/applications/game-editor/project/write":
                 self._handle_game_project_write(body)
                 return
@@ -1109,6 +1112,16 @@ class ViewportGameRoutesMixin:
                 }
                 for item in materialized
             ],
+            "apply_payloads": [
+                {
+                    "path": item.get("path"),
+                    "operation": item.get("operation"),
+                    "original_sha256": item.get("original_sha256"),
+                    "replacement_sha256": item.get("replacement_sha256"),
+                    "replacement_text": item.get("replacement_text"),
+                }
+                for item in materialized
+            ],
             "outputs": outputs,
             "model_proposal": proposal_payload,
             "warnings": warnings,
@@ -1256,6 +1269,137 @@ class ViewportGameRoutesMixin:
             model=response.model,
         )
         return response
+
+
+    def _game_editor_rag_repo_path(self, rel_path: str, evidence: dict[str, Any]) -> Path:
+        safe = self._game_editor_rag_safe_relpath(rel_path)
+        if not safe or not self._game_editor_rag_path_allowed(safe, evidence):
+            raise ValueError(f"RAG apply path is not allowed: {rel_path!r}")
+        target = (self.server.debug_root / safe).resolve()
+        root = self.server.debug_root.resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"RAG apply path escapes workspace: {rel_path!r}") from exc
+        return target
+
+    def _game_editor_rag_apply_payloads(self, *, project_id: str, payloads: list[Any]) -> dict[str, Any]:
+        context = self._game_editor_context_payload(
+            body={},
+            plugin={},
+            project_id=project_id,
+            project_payload=self._game_project_read_payload(project_id),
+            files_payload=self._game_files_payload(project_id),
+            scripts_payload=self._game_scripts_payload(project_id),
+            visible_files=self._game_editor_visible_project_files(project_id),
+        )
+        evidence = self._game_editor_golden_path_evidence(project_id=project_id, context=context)
+        issues: list[str] = []
+        warnings: list[str] = []
+        written: list[dict[str, Any]] = []
+
+        if not isinstance(payloads, list) or not payloads:
+            raise ValueError("payloads must be a non-empty list.")
+
+        for index, item in enumerate(payloads):
+            if not isinstance(item, dict):
+                issues.append(f"payloads[{index}] must be an object")
+                continue
+            rel_path = self._game_editor_rag_safe_relpath(str(item.get("path") or ""))
+            operation = str(item.get("operation") or "").strip().lower()
+            replacement_text = item.get("replacement_text")
+            if operation not in {"modify", "create"}:
+                issues.append(f"payloads[{index}] operation must be modify or create")
+                continue
+            if not isinstance(replacement_text, str):
+                issues.append(f"payloads[{index}] replacement_text must be a string")
+                continue
+            try:
+                target = self._game_editor_rag_repo_path(rel_path, evidence)
+            except Exception as exc:  # noqa: BLE001 - surfaced as validation feedback.
+                issues.append(f"payloads[{index}] {exc}")
+                continue
+
+            replacement_sha256 = self._game_editor_rag_sha256_text(replacement_text)
+            expected_replacement_sha256 = item.get("replacement_sha256")
+            if expected_replacement_sha256 and expected_replacement_sha256 != replacement_sha256:
+                issues.append(f"payloads[{index}] replacement_sha256 mismatch for {rel_path}")
+                continue
+
+            current_exists = target.exists()
+            if operation == "modify" and not current_exists:
+                issues.append(f"payloads[{index}] cannot modify missing file: {rel_path}")
+                continue
+            if operation == "create" and current_exists:
+                issues.append(f"payloads[{index}] cannot create existing file: {rel_path}")
+                continue
+
+            current_sha256 = None
+            if current_exists:
+                current_bytes = target.read_bytes()
+                current_sha256 = hashlib.sha256(current_bytes).hexdigest()
+            expected_original_sha256 = item.get("original_sha256")
+            if operation == "modify" and expected_original_sha256 != current_sha256:
+                issues.append(
+                    f"payloads[{index}] original_sha256 mismatch for {rel_path}: "
+                    f"expected {expected_original_sha256!r}, found {current_sha256!r}"
+                )
+                continue
+            if operation == "create" and expected_original_sha256 not in {None, ""}:
+                issues.append(f"payloads[{index}] create original_sha256 must be null for {rel_path}")
+                continue
+
+            if rel_path.endswith(".json"):
+                try:
+                    json.loads(replacement_text)
+                except json.JSONDecodeError as exc:
+                    issues.append(f"payloads[{index}] replacement JSON is invalid for {rel_path}: {exc}")
+                    continue
+
+            if not issues:
+                payload = replacement_text.encode("utf-8")
+                self._game_atomic_write(target, payload)
+                written.append(
+                    {
+                        "path": rel_path,
+                        "operation": operation,
+                        "original_sha256": current_sha256,
+                        "replacement_sha256": replacement_sha256,
+                        "written_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+                    }
+                )
+
+        ok = not issues
+        if ok:
+            self.server.signal(
+                "api-game-editor-rag-apply",
+                project_id=project_id,
+                files=[item["path"] for item in written],
+                count=len(written),
+            )
+        return {
+            "ok": ok,
+            "project_id": project_id,
+            "mode": "rag-validated-live-apply",
+            "allowed_root": evidence.get("allowed_root"),
+            "allowed_roots": evidence.get("allowed_roots"),
+            "allowed_editor_source_paths": evidence.get("allowed_editor_source_paths"),
+            "files": written,
+            "issues": issues,
+            "warnings": warnings,
+        }
+
+    def _handle_game_editor_rag_apply(self, body: dict[str, Any]) -> None:
+        plugin = self._game_chat_enabled_plugin(body)
+        self._game_chat_require_game_editor_mount(body)
+        project_id = self._game_chat_project_id(body, plugin)
+        payloads = body.get("payloads")
+        if payloads is None:
+            proposal = body.get("proposal") if isinstance(body.get("proposal"), dict) else {}
+            payloads = proposal.get("apply_payloads")
+        result = self._game_editor_rag_apply_payloads(project_id=project_id, payloads=payloads if isinstance(payloads, list) else [])
+        status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
+        self._send_json(result, status=status)
 
     def _handle_game_editor_chat_edit(self, body: dict[str, Any]) -> None:
         cell = body.get("cell") if isinstance(body.get("cell"), dict) else {}

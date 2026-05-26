@@ -201,9 +201,40 @@ class ViewportOnlyOfficeTests(unittest.TestCase):
         self.assertIn("function Test-FirewallRule", control)
         self.assertIn("function Test-OnlyOfficeBridgeConfigurationReady", control)
         self.assertIn("Portproxy already present:", control)
+        self.assertIn("Refreshing existing portproxy because its listener failed verification:", control)
+        self.assertIn("-Force:$forceCallbackProxyRefresh", control)
+        self.assertIn("-Force:$forceApiProxyRefresh", control)
         self.assertIn("Firewall rule already present:", control)
         self.assertIn("no elevated firewall or portproxy changes are needed", control)
         self.assertIn("Test-OnlyOfficeBridgeConfigurationReady $initialStatus", control)
+
+        wsl_curl_probe = control[
+            control.index("function Invoke-WslCurlProbe"):
+            control.index("function Get-LanExposureResults")
+        ]
+        self.assertIn("2>/dev/null; printf ' curl_exit=%s'", wsl_curl_probe)
+        self.assertNotIn("curl -sS", wsl_curl_probe)
+
+        status_probe = control[
+            control.index("function Get-OnlyOfficeBridgeStatus"):
+            control.index("function Write-OnlyOfficeBridgeStatus")
+        ]
+        self.assertIn("if ($callbackBridgeOpen)", status_probe)
+        self.assertIn("skipped because Windows cannot open the callback bridge listener", status_probe)
+
+        configuration_ready = control[
+            control.index("function Test-OnlyOfficeBridgeConfigurationReady"):
+            control.index("function Ensure-OnlyOfficeBridges")
+        ]
+        self.assertIn("$Status.callback_proxy.windows_bridge_open", configuration_ready)
+        self.assertIn("$Status.callback_proxy.wsl_probe.ok", configuration_ready)
+
+        set_portproxy = control[
+            control.index("function Set-PortProxyEntry"):
+            control.index("function Remove-PortProxyEntry")
+        ]
+        self.assertIn("[switch]$Force", set_portproxy)
+        self.assertIn("if ($present -and -not $Force)", set_portproxy)
 
         ensure_firewall = control[
             control.index("function Ensure-FirewallRule"):

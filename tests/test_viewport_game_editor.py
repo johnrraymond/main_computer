@@ -4,6 +4,7 @@ import base64
 import copy
 import io
 import json
+import hashlib
 import tempfile
 import threading
 import unittest
@@ -502,6 +503,81 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertEqual(_application_route_target("/apps/layout-builder"), "game-editor")
         self.assertEqual(_application_route_target("/app/layout-builder"), "game-editor")
         self.assertIsNone(_application_route_target("/applications/game-editor/unknown"))
+
+    def test_game_editor_rag_apply_validated_payload_writes_game_project(self) -> None:
+        project_file = self.root / "game_projects" / "webgl-demo" / "project.json"
+        project = json.loads(project_file.read_text(encoding="utf-8"))
+        old_color = project["scenes"][0]["objects"][5]["props"]["color"]
+        project["scenes"][0]["objects"][5]["props"]["color"] = "#ff0000"
+        replacement_text = json.dumps(project, ensure_ascii=False, indent=2) + "\n"
+
+        payload = {
+            "thread_id": "test-game-rag-apply",
+            "embedded_context": {"active_app": "game-editor", "project_id": "webgl-demo", "target_kind": "game-project", "target_id": "webgl-demo"},
+            "embedded_context_source": {"active_app": "game-editor", "target_kind": "game-project", "target_id": "webgl-demo"},
+            "mount_plugins": [{"id": "game-editor-edit", "enabled": True, "target_id": "webgl-demo", "project_id": "webgl-demo"}],
+            "payloads": [
+                {
+                    "path": "game_projects/webgl-demo/project.json",
+                    "operation": "modify",
+                    "original_sha256": hashlib.sha256(project_file.read_bytes()).hexdigest(),
+                    "replacement_sha256": hashlib.sha256(replacement_text.encode("utf-8")).hexdigest(),
+                    "replacement_text": replacement_text,
+                }
+            ],
+        }
+
+        data = self.post("/api/applications/game-editor/chat/apply-rag-proposal", payload)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["mode"], "rag-validated-live-apply")
+        self.assertEqual(data["files"][0]["path"], "game_projects/webgl-demo/project.json")
+        after = json.loads(project_file.read_text(encoding="utf-8"))
+        self.assertEqual(after["scenes"][0]["objects"][5]["props"]["color"], "#ff0000")
+        self.assertNotEqual(after["scenes"][0]["objects"][5]["props"]["color"], old_color)
+
+    def test_game_editor_rag_apply_rejects_stale_hash_and_out_of_scope_path(self) -> None:
+        project_file = self.root / "game_projects" / "webgl-demo" / "project.json"
+        before = project_file.read_text(encoding="utf-8")
+
+        stale = self.post_error(
+            "/api/applications/game-editor/chat/apply-rag-proposal",
+            {
+                "embedded_context": {"active_app": "game-editor", "project_id": "webgl-demo", "target_kind": "game-project", "target_id": "webgl-demo"},
+                "embedded_context_source": {"active_app": "game-editor", "target_kind": "game-project", "target_id": "webgl-demo"},
+                "mount_plugins": [{"id": "game-editor-edit", "enabled": True, "target_id": "webgl-demo", "project_id": "webgl-demo"}],
+                "payloads": [
+                    {
+                        "path": "game_projects/webgl-demo/project.json",
+                        "operation": "modify",
+                        "original_sha256": "not-the-current-hash",
+                        "replacement_sha256": hashlib.sha256(before.encode("utf-8")).hexdigest(),
+                        "replacement_text": before,
+                    }
+                ],
+            },
+        )
+        self.assertEqual(stale.code, 400)
+        self.assertEqual(project_file.read_text(encoding="utf-8"), before)
+
+        escaped = self.post_error(
+            "/api/applications/game-editor/chat/apply-rag-proposal",
+            {
+                "embedded_context": {"active_app": "game-editor", "project_id": "webgl-demo", "target_kind": "game-project", "target_id": "webgl-demo"},
+                "embedded_context_source": {"active_app": "game-editor", "target_kind": "game-project", "target_id": "webgl-demo"},
+                "mount_plugins": [{"id": "game-editor-edit", "enabled": True, "target_id": "webgl-demo", "project_id": "webgl-demo"}],
+                "payloads": [
+                    {
+                        "path": "main_computer/router.py",
+                        "operation": "modify",
+                        "original_sha256": None,
+                        "replacement_sha256": hashlib.sha256(b"").hexdigest(),
+                        "replacement_text": "",
+                    }
+                ],
+            },
+        )
+        self.assertEqual(escaped.code, 400)
+
 
 
 if __name__ == "__main__":

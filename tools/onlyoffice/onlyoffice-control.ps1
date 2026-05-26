@@ -334,12 +334,18 @@ function Set-PortProxyEntry {
     [Parameter(Mandatory = $true)][string]$ListenAddress,
     [Parameter(Mandatory = $true)][int]$ListenPort,
     [Parameter(Mandatory = $true)][string]$ConnectAddress,
-    [Parameter(Mandatory = $true)][int]$ConnectPort
+    [Parameter(Mandatory = $true)][int]$ConnectPort,
+    [switch]$Force
   )
 
-  if (Test-PortProxyEntry -ListenAddress $ListenAddress -ListenPort $ListenPort -ConnectAddress $ConnectAddress -ConnectPort $ConnectPort) {
+  $present = Test-PortProxyEntry -ListenAddress $ListenAddress -ListenPort $ListenPort -ConnectAddress $ConnectAddress -ConnectPort $ConnectPort
+  if ($present -and -not $Force) {
     Write-Host "Portproxy already present: $ListenAddress`:$ListenPort -> $ConnectAddress`:$ConnectPort"
     return
+  }
+
+  if ($present -and $Force) {
+    Write-Host "Refreshing existing portproxy because its listener failed verification: $ListenAddress`:$ListenPort -> $ConnectAddress`:$ConnectPort"
   }
 
   & netsh interface portproxy delete v4tov4 listenaddress=$ListenAddress listenport=$ListenPort 2>$null | Out-Null
@@ -441,8 +447,14 @@ function Invoke-WslCurlProbe {
   param([Parameter(Mandatory = $true)][string]$Url)
 
   $quotedUrl = Quote-Bash $Url
-  $script = "curl -sS --connect-timeout 3 --max-time 5 -o /dev/null -w 'http_code=%{http_code} remote=%{remote_ip} connect=%{time_connect} total=%{time_total}' $quotedUrl"
-  $output = (& wsl.exe -d $Distro -- bash -lc $script 2>$null) -join " "
+  $script = "curl -s --connect-timeout 3 --max-time 5 -o /dev/null -w 'http_code=%{http_code} remote=%{remote_ip} connect=%{time_connect} total=%{time_total}' $quotedUrl 2>/dev/null; printf ' curl_exit=%s' `$?"
+  $output = ""
+  try {
+    $output = (& wsl.exe -d $Distro -- bash -lc $script 2>$null) -join " "
+  } catch {
+    $output = $_.Exception.Message
+  }
+
   $ok = $false
   if ($output -match 'http_code=([0-9]{3})') {
     $code = [int]$matches[1]
@@ -631,7 +643,14 @@ function Get-OnlyOfficeBridgeStatus {
   $wslProbe = [pscustomobject]@{ ok = $false; output = "" }
   if ($wslGateway) {
     $callbackBridgeOpen = Test-TcpPortOpen -TargetHost $wslGateway -PortNumber $AppPort
-    $wslProbe = Invoke-WslCurlProbe "http://$wslGateway`:$AppPort/"
+    if ($callbackBridgeOpen) {
+      $wslProbe = Invoke-WslCurlProbe "http://$wslGateway`:$AppPort/"
+    } else {
+      $wslProbe = [pscustomobject]@{
+        ok = $false
+        output = "skipped because Windows cannot open the callback bridge listener"
+      }
+    }
   }
 
   $lanExposure = Get-LanExposureResults @($AppPort, $Port)
@@ -748,6 +767,8 @@ function Test-OnlyOfficeBridgeConfigurationReady {
     $Status.onlyoffice_api_proxy.present -and
     $Status.callback_proxy.present -and
     $Status.callback_firewall.present -and
+    $Status.callback_proxy.windows_bridge_open -and
+    $Status.callback_proxy.wsl_probe.ok -and
     $Status.private_ip_ready -and
     -not $Status.lan_exposed
   )
@@ -786,14 +807,22 @@ function Ensure-OnlyOfficeBridges {
 
   $wslIp = Get-WslOnlyOfficeIp
   $wslGateway = Get-WslGatewayIp
+  $forceApiProxyRefresh = [bool](
+    $initialStatus.onlyoffice_api_proxy.present -and
+    (-not $initialStatus.onlyoffice_api_proxy.healthcheck.ok -or -not $initialStatus.onlyoffice_api_proxy.api_js.ok)
+  )
+  $forceCallbackProxyRefresh = [bool](
+    $initialStatus.callback_proxy.present -and
+    (-not $initialStatus.callback_proxy.windows_bridge_open -or -not $initialStatus.callback_proxy.wsl_probe.ok)
+  )
 
   Write-Host "Ensuring Windows -> ONLYOFFICE API bridge:"
   Write-Host "  127.0.0.1:$Port -> $wslIp`:$Port"
-  Set-PortProxyEntry -ListenAddress "127.0.0.1" -ListenPort $Port -ConnectAddress $wslIp -ConnectPort $Port
+  Set-PortProxyEntry -ListenAddress "127.0.0.1" -ListenPort $Port -ConnectAddress $wslIp -ConnectPort $Port -Force:$forceApiProxyRefresh
 
   Write-Host "Ensuring ONLYOFFICE/WSL -> Main Computer callback bridge:"
   Write-Host "  $wslGateway`:$AppPort -> 127.0.0.1:$AppPort"
-  Set-PortProxyEntry -ListenAddress $wslGateway -ListenPort $AppPort -ConnectAddress "127.0.0.1" -ConnectPort $AppPort
+  Set-PortProxyEntry -ListenAddress $wslGateway -ListenPort $AppPort -ConnectAddress "127.0.0.1" -ConnectPort $AppPort -Force:$forceCallbackProxyRefresh
   Ensure-FirewallRule -DisplayName $script:OnlyOfficeCallbackFirewallRuleName -LocalAddress $wslGateway -LocalPort $AppPort
 
   $status = Get-OnlyOfficeBridgeStatus
