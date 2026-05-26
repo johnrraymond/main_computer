@@ -15,6 +15,7 @@ STATUS_AND_RESPONSIVE_CSS = (
 VIEWPORT_ROUTE_DISPATCH = (PROJECT_ROOT / "main_computer/viewport_route_dispatch.py").read_text(encoding="utf-8")
 VIEWPORT_ROUTES_GIT = (PROJECT_ROOT / "main_computer/viewport_routes_git.py").read_text(encoding="utf-8")
 GIT_TOOLS_PY = (PROJECT_ROOT / "main_computer/git_tools.py").read_text(encoding="utf-8")
+GIT_DIRTY_PY = (PROJECT_ROOT / "git_dirty.py").read_text(encoding="utf-8")
 TASK_MANAGER_JS = (PROJECT_ROOT / "main_computer/web/applications/scripts/task-manager.js").read_text(encoding="utf-8")
 
 
@@ -210,7 +211,7 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         )
         self.assertNotIn("const nextAction = readyActions.slice(0, 1);", APPLICATIONS_INDEX_HTML)
         self.assertIn(
-            'const actionRow = actionButton ? `<div class="git-project-action-row" ${gitProjectMcComponentAttrs(`${stepComponentId}.actions`, "toolbar", `${stepLabel} Actions`, stepComponentId)}>${actionButton}</div>` : "";',
+            "const closedSummary = gitProjectClosedCardSummaryHtml(step, stepComponentId, stepLabel);",
             APPLICATIONS_INDEX_HTML,
         )
         self.assertIn(
@@ -292,7 +293,7 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             "const groupComponentId = `git-tools.projects.wizard.section.${groupSlug}`;",
             'gitProjectMcComponentAttrs(groupComponentId, "panel", title, "git-tools.projects.wizard.queue")',
             'gitProjectMcComponentAttrs(stepComponentId, "panel", stepLabel, "git-tools.projects.wizard.queue")',
-            'data-mc-component-id="${escapeHtml(stepComponentId)}.why"',
+            'gitProjectMcComponentAttrs(`${stepComponentId}.mini-summary`, "status", `${stepLabel} Summary`, stepComponentId)',
             "const listComponentId = `git-tools.projects.${listScope}.list`;",
             "const projectActionAttrs = (action, label) => gitProjectMcComponentAttrs(",
             'data-git-project-action="select" data-project-id="${escapeHtml(project.id)}" ${projectActionAttrs("select", selected ? "Selected Button" : "Select Button")}',
@@ -328,6 +329,11 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             'data-git-secrets-action="merge_rule_choices"',
             'update_saved_rule_choices',
             'gitProjectStartSecretsFilterEventStream',
+            "function gitProjectWizardStepIsSecretsFilterCandidate(step = {})",
+            "function gitProjectNormalizeSecretsFilterStep(step = {})",
+            'label: "Review Security / Secrets"',
+            'if (gitProjectStepId(step) === "secrets_filter") return "Open Security Review";',
+            "Check selected files for API keys, usernames, credentials, tokens, private keys, generated artifacts, and risky content before committing.",
         )
         for snippet in expected_snippets:
             with self.subTest(snippet=snippet):
@@ -343,6 +349,35 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         self.assertNotIn("const savedSummary = model.saved_summary || summary;", APPLICATIONS_INDEX_HTML)
         self.assertNotIn('gitProjectSecretsFilterRuleRowsHtml(savedRules, {interactive: false', APPLICATIONS_INDEX_HTML)
 
+    def test_secrets_filter_card_is_preserved_as_standalone_action_queue_card(self) -> None:
+        expected_js = (
+            "function gitProjectWizardStepIsSecretsFilterCandidate(step = {})",
+            "function gitProjectNormalizeSecretsFilterStep(step = {})",
+            "const secretsFilterStep = actions.find(gitProjectWizardStepIsSecretsFilterCandidate) || null;",
+            "displayActions.push(gitProjectNormalizeSecretsFilterStep(step));",
+            "displayActions.splice(insertAt, 0, normalized);",
+            'label: "Review Security / Secrets"',
+            '"Open Security Review"',
+            "safety gate",
+            "secrets scan",
+        )
+        for snippet in expected_js:
+            with self.subTest(snippet=snippet):
+                self.assertIn(snippet, TASK_MANAGER_JS)
+
+    def test_dirty_planner_emits_standalone_secrets_filter_before_commit_cards(self) -> None:
+        expected_snippets = (
+            "security_candidate_paths: list[str] = []",
+            "for candidate_path in [*source_untracked, *staged]:",
+            'filter_step = step(\n                order,\n                "secrets_filter"',
+            'filter_step["secrets_filter"] = secrets_filter_payload(',
+            'track_step["commit_review"] = commit_review_payload(',
+            'commit_step["commit_review"] = commit_review_payload(',
+        )
+        for snippet in expected_snippets:
+            with self.subTest(snippet=snippet):
+                self.assertIn(snippet, GIT_DIRTY_PY)
+
 
 
     def test_commit_card_is_final_workbench_with_wunderbaum_file_tree(self) -> None:
@@ -355,6 +390,7 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             "function gitProjectCommitCenterHtml(step = {}, selectedPanel = \"gate_summary\")",
             "function gitProjectCommitComposeHtml(review = {})",
             "function gitProjectCommitGateSummaryHtml(review = {})",
+            "function gitProjectCommitSecuritySecretsPaneHtml(review = {})",
             "function gitProjectCommitStagePreviewHtml(step = {})",
             "function gitProjectCommitStageReviewStatusHtml()",
             "function gitProjectCommitStageReviewFlowHtml()",
@@ -422,6 +458,10 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             "✓ Changed",
             "Upstream gates",
             "Commit workflow",
+            "Security / Secrets review",
+            "data-git-commit-panel=\"security_secrets\"",
+            "This is a commit readiness summary. Open the Security / Secrets card to run or review the full scan before committing.",
+            "Blocked files stay out of the commit basket",
             "Secrets / Filter gate",
             ".gitignore gate",
             "git add -- <selected files>",
@@ -479,6 +519,9 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             ".git-project-commit-upstream-gate",
             ".git-project-commit-step-break",
             ".git-project-commit-gate-summary",
+            ".git-project-commit-security-secrets",
+            ".git-project-commit-security-grid",
+            ".git-project-commit-security-blocked",
             ".git-project-commit-stage-preview",
             ".git-project-commit-review-status",
             ".git-project-commit-review-flow",
@@ -545,6 +588,41 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             with self.subTest(css_snippet=snippet):
                 self.assertIn(snippet, GIT_TOOLS_CSS)
 
+
+    def test_action_queue_closed_cards_are_simple_launch_cards(self) -> None:
+        expected_snippets = (
+            "function gitProjectClosedCardPurpose(step = {})",
+            "function gitProjectClosedCardChips(step = {})",
+            "function gitProjectClosedCardSummaryHtml(step = {}, stepComponentId = \"\", stepLabel = \"\")",
+            "git-project-mini-action-card",
+            "git-project-mini-card-summary",
+            "git-project-mini-card-chips",
+            "Move selected work out of this branch without losing it.",
+            "Capture intentional work in a local commit.",
+        )
+        for snippet in expected_snippets:
+            with self.subTest(snippet=snippet):
+                self.assertIn(snippet, TASK_MANAGER_JS + GIT_TOOLS_CSS)
+
+        render_start = TASK_MANAGER_JS.index("const renderStepCard = (step, displayIndex) => {")
+        render_end = TASK_MANAGER_JS.index("  const renderStepGroup =", render_start)
+        render_step_card = TASK_MANAGER_JS[render_start:render_end]
+        forbidden_closed_card_snippets = (
+            "Command preview",
+            "pathSummary",
+            "renderGitProjectCommandBox",
+            "gitProjectCommitCardAttachmentHtml",
+            "${paths}",
+            "${commandPreview}",
+            "${commandBox}",
+            "${commitCardNote}",
+        )
+        for snippet in forbidden_closed_card_snippets:
+            with self.subTest(forbidden_closed_card_snippet=snippet):
+                self.assertNotIn(snippet, render_step_card)
+
+        self.assertIn("gitProjectClosedCardSummaryHtml(step, stepComponentId, stepLabel)", render_step_card)
+        self.assertIn("${cardSubscreen}", render_step_card)
 
     def test_git_project_selector_api_routes_are_registered(self) -> None:
         expected_routes = (

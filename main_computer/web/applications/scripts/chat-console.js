@@ -767,6 +767,8 @@
 
       const embeddedContext = chatConsoleReadEmbeddedContext(session);
       let threadId = String(options.threadId || options.getLinkedThreadId?.() || "");
+      let activeEmbeddedThreadId = threadId;
+      const embeddedLinkedThreadId = () => String(options.getLinkedThreadId?.() || host.dataset.linkedThreadId || activeEmbeddedThreadId || "").trim();
       let thread = threadId ? threadStore.get?.(threadId) : null;
       if (!thread) {
         thread = threadStore.getActive?.() || threadStore.list?.()[0] || threadStore.create?.({
@@ -775,6 +777,7 @@
           makeActive: false
         });
         threadId = thread?.id || "";
+        activeEmbeddedThreadId = threadId;
       }
       if (threadId && threadStore.setActive) threadStore.setActive(threadId);
       if (threadId) {
@@ -798,15 +801,18 @@
           copyLinkButton: host.querySelector("[data-chat-thread-copy-link]")
         },
         getActiveThreadId() {
-          return chatConsoleState?.id || options.getLinkedThreadId?.() || threadStore.getActive?.()?.id || "";
+          return embeddedLinkedThreadId() || chatConsoleState?.id || threadStore.getActive?.()?.id || "";
         },
         getActiveThread() {
-          return (chatConsoleState?.id && threadStore.get?.(chatConsoleState.id)) || threadStore.getActive?.() || chatConsoleState || null;
+          const linkedThreadId = embeddedLinkedThreadId();
+          return (linkedThreadId && threadStore.get?.(linkedThreadId)) || (chatConsoleState?.id && threadStore.get?.(chatConsoleState.id)) || threadStore.getActive?.() || chatConsoleState || null;
         },
         setActiveThreadId(nextThreadId, nextThread, context = {}) {
           const activeContext = chatConsoleReadEmbeddedContext(session);
+          activeEmbeddedThreadId = String(nextThreadId || "");
           const active = threadStore.setActive?.(nextThreadId) || nextThread || null;
           const saved = nextThreadId ? (chatConsoleApplyEmbeddedThreadMetadata(threadStore, nextThreadId, config, options, activeContext) || active) : active;
+          if (saved?.id) activeEmbeddedThreadId = String(saved.id);
           if (nextThreadId && options.setLinkedThreadId) options.setLinkedThreadId(nextThreadId, saved, {...context, embedded_context: activeContext});
           return saved;
         },
@@ -816,6 +822,7 @@
         afterThreadChange(nextThread, context = {}) {
           const activeContext = chatConsoleReadEmbeddedContext(session);
           const saved = nextThread?.id ? (chatConsoleApplyEmbeddedThreadMetadata(threadStore, nextThread.id, config, options, activeContext) || nextThread) : nextThread;
+          if (saved?.id) activeEmbeddedThreadId = String(saved.id);
           chatConsoleLoadThreadState(saved, context.message || "thread loaded", {syncUrl: false});
           if (saved?.id && options.setLinkedThreadId) options.setLinkedThreadId(saved.id, saved, {...context, embedded_context: activeContext});
         },

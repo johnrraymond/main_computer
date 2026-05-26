@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from collections.abc import Iterator
 from typing import Any
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from main_computer.catalog import ProjectCatalog
@@ -22,7 +23,7 @@ from main_computer.viewport import ViewportServer
 
 
 NORMAL_LEVELS = ("health", "server", "widgets", "live", "functional")
-SPECIAL_LEVELS = ("ollama-probe", "ollama-primer", "ollama-visibility")
+SPECIAL_LEVELS = ("level-1-telemetry", "ollama-probe", "ollama-primer", "ollama-visibility")
 LEVELS = (*NORMAL_LEVELS, *SPECIAL_LEVELS)
 
 
@@ -63,6 +64,10 @@ class DiagnosticRunner:
     def run(self, *, raise_on_failure: bool = True) -> dict[str, Any]:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         started = time.perf_counter()
+
+        if self.level == "level-1-telemetry":
+            self._run_level1_telemetry()
+            return self._finish_report(started, raise_on_failure=raise_on_failure)
 
         if self.level == "ollama-probe":
             with self._ollama_single_flight_lock():
@@ -177,6 +182,48 @@ class DiagnosticRunner:
                     )
                     raise TimeoutError(f"Timed out waiting for Ollama diagnostic lock: {lock_dir}")
                 time.sleep(0.5)
+
+    def _run_level1_telemetry(self) -> None:
+        try:
+            from main_computer.level1_telemetry import collect_level1_telemetry
+
+            known_ports = {
+                "app": 8765,
+                "heartbeat": 8766,
+                "hub": 8770,
+                "worker": 8771,
+                "ollama": int(urlsplit(self.config.ollama_base_url).port or 11434),
+                "gitea": 3000,
+                "blockchain": int(urlsplit(self.config.energy_chain_rpc_url or "http://127.0.0.1:8545").port or 8545),
+            }
+            report = collect_level1_telemetry(
+                Path.cwd(),
+                control_root=Path.cwd(),
+                known_ports=known_ports,
+            )
+            report_path = self.output_dir / "level1_telemetry_report.json"
+            report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+            self._record(
+                "level-1-telemetry-snapshot",
+                bool(report.get("ok")) and int(summary.get("process_count") or 0) > 0,
+                "level-1-telemetry",
+                {
+                    "report": str(report_path),
+                    "process_count": summary.get("process_count"),
+                    "connection_count": summary.get("connection_count"),
+                    "active_connection_count": summary.get("active_connection_count"),
+                    "known_port_listener_count": summary.get("known_port_listener_count"),
+                    "known_port_activity_count": summary.get("known_port_activity_count"),
+                    "known_port_time_wait_count": summary.get("known_port_time_wait_count"),
+                    "volatile_pid_count": summary.get("volatile_pid_count"),
+                    "service_summary": report.get("service_summary", []),
+                    "warnings": report.get("warnings", []),
+                    "observations": report.get("observations", []),
+                },
+            )
+        except Exception as exc:
+            self._record("level-1-telemetry-snapshot", False, "level-1-telemetry", str(exc))
 
     def _run_health(self) -> None:
         workspace_exists = self.config.workspace.exists() and self.config.workspace.is_dir()

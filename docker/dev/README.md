@@ -1,13 +1,17 @@
 # Dev Docker Stack
 
-This is the local-development Docker stack. It is deliberately separate from the
-future production executor/service split.
+This is the local-development Docker support stack. It is deliberately separate
+from the standalone hub deployment surface.
+
+The old dev-stack hub service has been removed. Use
+`deploy/coolify/hub/docker-compose.yml` for local hub container tests and for
+Coolify deployment. This file now keeps only supporting dev services such as
+Ollama, Anvil, optional workers, and executor image targets.
 
 ## What this brings up
 
 ```text
 docker-compose.dev.yml
-├─ hub              Main Computer hub broker on :8770
 ├─ hub-worker       optional Ollama-backed worker on :8771
 ├─ ollama           model server on :11434
 ├─ ethereum-dev     Anvil JSON-RPC dev chain on :8545
@@ -18,7 +22,13 @@ docker-compose.dev.yml
 ## Start the shared dev services
 
 ```powershell
-docker compose -f docker-compose.dev.yml up --build hub ollama ethereum-dev
+docker compose -f docker-compose.dev.yml up --build ollama ethereum-dev
+```
+
+## Start the standalone hub
+
+```powershell
+docker compose -f deploy/coolify/hub/docker-compose.yml up --build
 ```
 
 ## Pull a model into the Ollama container
@@ -76,9 +86,16 @@ powershell -ExecutionPolicy Bypass -File .\start-main-computer-docker-windows.ps
 
 ## Add the hub worker
 
+Start the standalone hub first, or point the worker at a remote hub with
+`MAIN_COMPUTER_HUB_URL`. The default is `http://host.docker.internal:8770`,
+which targets the standalone hub from inside Docker Desktop containers.
+
 ```powershell
 docker compose -f docker-compose.dev.yml --profile worker up --build hub-worker
 ```
+
+If the hub needs a different callback URL for the worker endpoint, set
+`MAIN_COMPUTER_HUB_WORKER_PUBLIC_ENDPOINT` before starting the worker.
 
 ## Add the shared local Gitea server
 
@@ -153,17 +170,16 @@ python -m main_computer.cli viewport --port 8765
 
 ## Hub client smoke
 
-After `hub` and `hub-worker` are running:
+After the standalone hub and `hub-worker` are running:
 
 ```powershell
 python -m main_computer.cli chat `
   --provider hub `
   --hub-url http://127.0.0.1:8770 `
-  "Say hello from the dev hub."
+  "Say hello from the standalone hub."
 ```
 
 ## Ethereum dev chain
 
-The `ethereum-dev` service runs Anvil on chain id `42424242`. The current hub
-still records local energy-credit transactions; the chain service is present so
-the next integration patch has a stable dev RPC endpoint to target.
+The `ethereum-dev` service runs Anvil on chain id `42424242`. It is a contract
+and indexer test dependency, not a runtime dependency of the standalone hub.

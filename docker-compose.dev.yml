@@ -30,7 +30,7 @@ services:
       MAIN_COMPUTER_PATH_MODE: ${MAIN_COMPUTER_PATH_MODE:-local}
       MAIN_COMPUTER_HOST_OS: ${MAIN_COMPUTER_HOST_OS:-auto}
       MAIN_COMPUTER_HOST_DRIVE_ROOT: ${MAIN_COMPUTER_HOST_DRIVE_ROOT:-/host}
-      MAIN_COMPUTER_HUB_URL: http://hub:8770
+      MAIN_COMPUTER_HUB_URL: ${MAIN_COMPUTER_HUB_URL:-http://host.docker.internal:8770}
       MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK: "1"
       MAIN_COMPUTER_HUB_CLIENT_NODE_ID: docker-dev-client
       MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL: http://ethereum-dev:8545
@@ -52,39 +52,11 @@ services:
       # and keeps the Docker viewport away from the local 8765 viewport.
       - "${MAIN_COMPUTER_DOCKER_VIEWPORT_PORT:-18765}:8765"
     depends_on:
-      - hub
       - ethereum-dev
 
-  hub:
-    <<: *main-computer-dev-image
-    command:
-      - python
-      - -m
-      - main_computer.cli
-      - hub
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8770"
-      - --hub-root
-      - /runtime/hub
-      - -noverbose
-    environment:
-      MAIN_COMPUTER_WORKSPACE: /workspace
-      MAIN_COMPUTER_HUB_ROOT: /runtime/hub
-      MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK: "1"
-      MAIN_COMPUTER_HUB_CREDITS_PER_REQUEST: ${MAIN_COMPUTER_HUB_CREDITS_PER_REQUEST:-1}
-      MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL: http://ethereum-dev:8545
-      MAIN_COMPUTER_ENERGY_CHAIN_ID: "42424242"
-    volumes:
-      - .:/workspace
-      - hub-runtime:/runtime/hub
-    ports:
-      - "${MAIN_COMPUTER_HUB_PORT:-8770}:8770"
-    depends_on:
-      - ethereum-dev
 
-  # Start with --profile worker after Ollama has the requested model available.
+  # Start with --profile worker after Ollama has the requested model available
+  # and a standalone hub is reachable at MAIN_COMPUTER_HUB_URL.
   hub-worker:
     <<: *main-computer-dev-image
     profiles: ["worker"]
@@ -102,9 +74,9 @@ services:
       - --port
       - "8771"
       - --hub-url
-      - http://hub:8770
+      - ${MAIN_COMPUTER_HUB_URL:-http://host.docker.internal:8770}
       - --public-endpoint
-      - http://hub-worker:8771
+      - ${MAIN_COMPUTER_HUB_WORKER_PUBLIC_ENDPOINT:-http://host.docker.internal:8771}
       - --hub-worker-node-id
       - docker-dev-worker-01
       - --hub-credits-per-request
@@ -121,7 +93,6 @@ services:
     ports:
       - "${MAIN_COMPUTER_HUB_WORKER_PORT:-8771}:8771"
     depends_on:
-      - hub
       - ollama
 
   ollama:
@@ -208,7 +179,6 @@ services:
 
 volumes:
   main-computer-dev-runtime:
-  hub-runtime:
   ollama-data:
   ethereum-dev-data:
   onlyoffice-data:

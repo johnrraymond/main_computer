@@ -1285,6 +1285,7 @@
       </section>
       <nav class="top-actions" aria-label="Related views">
         <button id="refresh-button" type="button">Refresh</button>
+        <button id="level-1-telemetry-button" type="button">Level 1 Telemetry</button>
         <button id="level-5-diagnostics-button" type="button">Level 5 Diagnostics</button>
         <button id="hard-halt-server-button" class="danger-button" type="button">Hard Halt Server</button>
         <a href="/text">Text Console</a>
@@ -1418,6 +1419,42 @@
       </div>
     </div>
 
+
+    <div id="telemetry-overlay" class="diagnostics-overlay" role="dialog" aria-modal="true" aria-labelledby="telemetry-title">
+      <div class="diagnostics-dialog">
+        <div class="diagnostics-head">
+          <div>
+            <h2 id="telemetry-title">Level 1 Telemetry</h2>
+            <span>Fast snapshot of the Main Computer process family: PIDs, ports, CPU, memory, threads, files, sockets, and process tree.</span>
+          </div>
+          <span id="telemetry-clock">idle</span>
+        </div>
+        <div id="telemetry-status" class="diagnostics-status" aria-live="polite">Open this panel to pull live telemetry from running Main Computer processes.</div>
+        <div class="diagnostics-content">
+          <section class="diagnostics-pane" aria-label="Level 1 telemetry summary">
+            <h3>Telemetry summary</h3>
+            <div id="telemetry-summary" class="diagnostics-summary">
+              <div class="metric shell-gray"><strong>--</strong><span>processes</span></div>
+              <div class="metric shell-gray"><strong>--</strong><span>listeners</span></div>
+              <div class="metric shell-gray"><strong>--</strong><span>active sockets</span></div>
+              <div class="metric shell-gray"><strong>--</strong><span>RSS total</span></div>
+            </div>
+            <div id="telemetry-services" class="diagnostics-findings"></div>
+            <div id="telemetry-observations" class="diagnostics-findings"></div>
+          </section>
+          <section class="diagnostics-pane" aria-label="Level 1 process telemetry">
+            <h3>Processes and raw payload</h3>
+            <div id="telemetry-processes" class="diagnostics-findings"></div>
+            <pre id="telemetry-json" class="diagnostics-stream"></pre>
+          </section>
+        </div>
+        <div class="diagnostics-actions">
+          <button id="telemetry-close-button" class="diagnostics-close" type="button">Close</button>
+          <button id="telemetry-run-button" class="diagnostics-run" type="button">Refresh Telemetry</button>
+        </div>
+      </div>
+    </div>
+
     <div id="diagnostics-overlay" class="diagnostics-overlay" role="dialog" aria-modal="true" aria-labelledby="diagnostics-title">
       <div class="diagnostics-dialog">
         <div class="diagnostics-head">
@@ -1456,7 +1493,8 @@
       timer: null,
       sanityStream: null,
       sanityDone: false,
-      sanityStartedAt: null
+      sanityStartedAt: null,
+      telemetryRunning: false
     };
 
     const byId = (id) => document.getElementById(id);
@@ -1652,6 +1690,164 @@
       renderPorts(payload);
       renderConfig(payload);
       renderActivity(payload);
+    }
+
+
+    function resetTelemetryModal() {
+      byId("telemetry-status").textContent = "Pulling Level 1 telemetry…";
+      byId("telemetry-clock").textContent = "running";
+      byId("telemetry-processes").textContent = "";
+      byId("telemetry-services").textContent = "";
+      byId("telemetry-observations").textContent = "";
+      byId("telemetry-json").textContent = "";
+      byId("telemetry-summary").innerHTML = `
+        <div class="metric shell-gray"><strong>--</strong><span>processes</span></div>
+        <div class="metric shell-gray"><strong>--</strong><span>listeners</span></div>
+        <div class="metric shell-gray"><strong>--</strong><span>active sockets</span></div>
+        <div class="metric shell-gray"><strong>--</strong><span>RSS total</span></div>
+      `;
+    }
+
+    function renderTelemetrySummary(payload) {
+      const summary = payload.summary || {};
+      const target = byId("telemetry-summary");
+      const warningCount = Number(summary.warning_count || 0);
+      const observationCount = Number(summary.observation_count || 0);
+      const processCount = Number(summary.process_count || 0);
+      const listenerCount = Number(summary.known_port_listener_count || 0);
+      const timeWaitCount = Number(summary.known_port_time_wait_count || 0);
+      const activeSockets = Number(summary.active_connection_count ?? summary.connection_count ?? 0);
+      const cards = [
+        ["processes", processCount, processCount ? "shell-green" : "shell-gold"],
+        ["listeners", listenerCount, listenerCount ? "shell-green" : "shell-gold"],
+        ["active sockets", activeSockets, "shell-cyan"],
+        ["TIME_WAIT", timeWaitCount, timeWaitCount ? "shell-gray" : "shell-green"],
+        ["RSS total", summary.total_rss_human || "0 B", "shell-gray"],
+        ["warnings", warningCount, warningCount ? "shell-gold" : "shell-green"]
+      ];
+      target.textContent = "";
+      cards.forEach(([label, value, shellClass]) => {
+        const card = document.createElement("div");
+        card.className = `metric ${shellClass}`;
+        const strong = document.createElement("strong");
+        strong.textContent = text(value);
+        const span = document.createElement("span");
+        span.textContent = label;
+        card.append(strong, span);
+        target.append(card);
+      });
+      const ports = Object.entries(payload.known_ports || {}).map(([name, port]) => `${name}:${port}`).join(" · ");
+      byId("telemetry-status").textContent = `Level 1 telemetry captured ${processCount} processes · ${listenerCount} listeners · ${observationCount} observations · ${ports || "no known ports"}`;
+    }
+
+    function renderTelemetryServices(payload) {
+      const target = byId("telemetry-services");
+      target.textContent = "";
+      const services = Array.isArray(payload.service_summary) ? payload.service_summary : [];
+      if (!services.length) {
+        const row = document.createElement("div");
+        row.className = "finding-row warning";
+        row.innerHTML = "<strong>No service summary</strong><span>No configured known ports were available for rollup.</span>";
+        target.append(row);
+        return;
+      }
+      services.forEach((service) => {
+        const row = document.createElement("div");
+        const state = service.state || "unknown";
+        row.className = `finding-row ${state === "listening" ? "pass" : "warn"}`;
+        const pids = Array.isArray(service.listener_pids) && service.listener_pids.length ? service.listener_pids.join(", ") : "none";
+        const findings = Array.isArray(service.findings) && service.findings.length ? ` · ${service.findings.join(", ")}` : "";
+        const heading = document.createElement("strong");
+        heading.textContent = `${service.service}:${service.port} · ${state}`;
+        const detail = document.createElement("span");
+        detail.textContent = `listeners ${service.listener_count || 0} · pids ${pids} · active ${service.active_activity_count || 0} · TIME_WAIT ${service.time_wait_count || 0}${findings}`;
+        const endpoints = document.createElement("span");
+        endpoints.textContent = Array.isArray(service.listener_endpoints) && service.listener_endpoints.length ? service.listener_endpoints.join(" · ") : "no listener endpoints";
+        row.append(heading, detail, endpoints);
+        target.append(row);
+      });
+    }
+
+    function renderTelemetryObservations(payload) {
+      const target = byId("telemetry-observations");
+      target.textContent = "";
+      const warnings = Array.isArray(payload.warnings) ? payload.warnings : [];
+      const observations = Array.isArray(payload.observations) ? payload.observations : [];
+      [...warnings.map((item) => ["warn", item]), ...observations.map((item) => ["info", item])].slice(0, 16).forEach(([kind, message]) => {
+        const row = document.createElement("div");
+        row.className = `finding-row ${kind}`;
+        const heading = document.createElement("strong");
+        heading.textContent = kind === "warn" ? "Warning" : "Observation";
+        const detail = document.createElement("span");
+        detail.textContent = message;
+        row.append(heading, detail);
+        target.append(row);
+      });
+    }
+
+    function renderTelemetryProcesses(payload) {
+      const target = byId("telemetry-processes");
+      target.textContent = "";
+      const processes = Array.isArray(payload.processes) ? payload.processes : [];
+      if (!processes.length) {
+        const row = document.createElement("div");
+        row.className = "finding-row warning";
+        row.innerHTML = "<strong>No process rows</strong><span>Telemetry did not find readable Main Computer processes.</span>";
+        target.append(row);
+        return;
+      }
+      processes.slice(0, 40).forEach((process) => {
+        const row = document.createElement("div");
+        row.className = "finding-row info";
+        const roles = Array.isArray(process.roles) && process.roles.length ? process.roles.join(", ") : "unclassified";
+        const ports = Array.isArray(process.known_ports) && process.known_ports.length
+          ? ` · ports ${process.known_ports.map((item) => `${item.service}:${item.port}`).join(", ")}`
+          : "";
+        const heading = document.createElement("strong");
+        heading.textContent = `${roles} · pid ${process.pid} · ${process.name || "process"}`;
+        const detail = document.createElement("span");
+        detail.textContent = `${process.memory_human || "memory n/a"} · CPU ${process.cpu_percent ?? "n/a"}% · threads ${process.num_threads ?? "n/a"}${ports}`;
+        const command = document.createElement("span");
+        command.textContent = process.command_preview || process.exe || "";
+        row.append(heading, detail, command);
+        target.append(row);
+      });
+    }
+
+    async function runLevel1Telemetry() {
+      if (state.telemetryRunning) return;
+      state.telemetryRunning = true;
+      const runButton = byId("telemetry-run-button");
+      runButton.disabled = true;
+      resetTelemetryModal();
+      try {
+        const response = await fetch("/api/control-panel/level-1-telemetry", {cache: "no-store"});
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        renderTelemetrySummary(payload);
+        renderTelemetryServices(payload);
+        renderTelemetryObservations(payload);
+        renderTelemetryProcesses(payload);
+        byId("telemetry-json").textContent = JSON.stringify(payload, null, 2);
+        byId("telemetry-clock").textContent = "complete";
+      } catch (error) {
+        byId("telemetry-status").innerHTML = `<span class="error">${text(error.message || error)}</span>`;
+        byId("telemetry-clock").textContent = "error";
+      } finally {
+        state.telemetryRunning = false;
+        runButton.disabled = false;
+      }
+    }
+
+    function openTelemetryDialog({autoRun = true} = {}) {
+      byId("telemetry-overlay").classList.add("open");
+      byId("telemetry-run-button").focus();
+      if (autoRun) runLevel1Telemetry();
+    }
+
+    function closeTelemetryDialog() {
+      byId("telemetry-overlay").classList.remove("open");
+      byId("telemetry-run-button").disabled = false;
     }
 
     function parseDiagnosticEvent(event) {
@@ -1868,7 +2064,13 @@
       }
     }
 
+    byId("level-1-telemetry-button").addEventListener("click", () => openTelemetryDialog({autoRun: true}));
     byId("level-5-diagnostics-button").addEventListener("click", () => openDiagnosticsDialog({autoRun: true}));
+    byId("telemetry-run-button").addEventListener("click", runLevel1Telemetry);
+    byId("telemetry-close-button").addEventListener("click", closeTelemetryDialog);
+    byId("telemetry-overlay").addEventListener("click", (event) => {
+      if (event.target === byId("telemetry-overlay")) closeTelemetryDialog();
+    });
     byId("diagnostics-run-button").addEventListener("click", runSystemSanity);
     byId("diagnostics-close-button").addEventListener("click", closeDiagnosticsDialog);
     byId("diagnostics-overlay").addEventListener("click", (event) => {
@@ -1882,6 +2084,7 @@
     });
     document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
+      if (byId("telemetry-overlay").classList.contains("open")) closeTelemetryDialog();
       if (byId("diagnostics-overlay").classList.contains("open")) closeDiagnosticsDialog();
       if (byId("hard-halt-overlay").classList.contains("open")) closeHardHaltDialog();
     });

@@ -414,6 +414,57 @@ def _control_panel_executor_graphical_status(
     }
 
 
+
+def _control_panel_known_ports(self) -> dict[str, int]:
+    server = self.server
+    config = server.config
+    app_port = int(getattr(server, "server_port", 8765))
+    git_tools = getattr(server, "git_tools", None)
+    gitea_web_url = str(getattr(git_tools, "GIT_SERVER_WEB_URL", "") or "http://localhost:3000/")
+    try:
+        heartbeat_port = int(os.environ.get("MAIN_COMPUTER_HEARTBEAT_PORT") or app_port + 1)
+    except (TypeError, ValueError):
+        heartbeat_port = app_port + 1
+    return {
+        "app": app_port,
+        "heartbeat": heartbeat_port,
+        "hub": 8770,
+        "worker": 8771,
+        "ollama": int(urlsplit(config.ollama_base_url).port or 11434),
+        "gitea": _control_panel_url_port(gitea_web_url, 3000),
+        "blockchain": int(urlsplit(config.energy_chain_rpc_url or "http://127.0.0.1:8545").port or 8545),
+    }
+
+
+def _handle_control_panel_level1_telemetry(self) -> None:
+    if not _hard_halt_client_is_local(self):
+        self.server.signal(
+            "api-control-panel-level1-telemetry-rejected",
+            reason="non-local-client",
+            client=self.client_address[0] if self.client_address else "",
+        )
+        self._send_json(
+            {"ok": False, "error": "Level 1 telemetry is only available to local viewport clients."},
+            HTTPStatus.FORBIDDEN,
+        )
+        return
+
+    try:
+        from main_computer.level1_telemetry import collect_level1_telemetry
+
+        self.server.signal("api-control-panel-level1-telemetry")
+        payload = collect_level1_telemetry(
+            self.server.debug_root,
+            control_root=getattr(self.server.task_manager, "control_root", self.server.debug_root),
+            known_ports=_control_panel_known_ports(self),
+            current_pid=os.getpid(),
+        )
+        self._send_json(payload)
+    except Exception as exc:
+        self.server.signal("api-control-panel-level1-telemetry-error", error=exc)
+        self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+
+
 def _control_panel_status(self) -> dict[str, object]:
     """Aggregate live machine/service status for the graphical control panel."""
 
@@ -427,16 +478,7 @@ def _control_panel_status(self) -> dict[str, object]:
         task_snapshot = {"ok": False, "error": str(exc), "overview": {}, "server": {}, "hardware": {}, "processes": [], "connections": []}
 
     app_port = int(getattr(server, "server_port", 8765))
-    git_tools = getattr(server, "git_tools", None)
-    gitea_web_url = str(getattr(git_tools, "GIT_SERVER_WEB_URL", "") or "http://localhost:3000/")
-    configured_ports = {
-        "app": app_port,
-        "hub": 8770,
-        "worker": 8771,
-        "ollama": int(urlsplit(config.ollama_base_url).port or 11434),
-        "gitea": _control_panel_url_port(gitea_web_url, 3000),
-        "blockchain": int(urlsplit(config.energy_chain_rpc_url or "http://127.0.0.1:8545").port or 8545),
-    }
+    configured_ports = _control_panel_known_ports(self)
     port_probes = {name: _control_panel_connect("127.0.0.1", port) for name, port in configured_ports.items()}
 
     hub_payload: dict[str, object]
@@ -865,6 +907,9 @@ def dispatch_get(self) -> None:
         return
     if route_path == "/api/control-panel/system-sanity/stream":
         _handle_control_panel_system_sanity_stream(self)
+        return
+    if route_path == "/api/control-panel/level-1-telemetry":
+        _handle_control_panel_level1_telemetry(self)
         return
     if route_path == "/applications/spreadsheet/smoke":
         self._handle_spreadsheet_smoke_page()

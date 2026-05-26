@@ -57,7 +57,6 @@ ACTION_CATALOG: list[dict[str, Any]] = [
     {"id": "start_tracking_real_work", "label": "Start tracking real work", "git_name": "git add", "kind": "preserve", "safe": True, "destructive": False, "reversible": True},
     {"id": "track_selected_files", "label": "Track selected files", "git_name": "add paths", "kind": "preserve", "safe": True, "destructive": False, "reversible": True},
     {"id": "track_all_safe_source_files", "label": "Track all safe source files", "git_name": "add safe group", "kind": "preserve", "safe": True, "destructive": False, "reversible": True},
-    {"id": "keep_changes_unstaged", "label": "Keep changes unstaged", "git_name": "leave as-is", "kind": "preserve", "safe": True, "destructive": False, "reversible": True},
     {"id": "keep_external_remote_as_origin", "label": "Keep external remote as origin", "git_name": "preserve origin", "kind": "remote", "safe": True, "destructive": False, "reversible": True},
     {"id": "add_local_server_remote", "label": "Add local server remote", "git_name": "add local remote", "kind": "remote", "safe": True, "destructive": False, "reversible": True},
     {"id": "switch_origin_to_local_server", "label": "Switch origin to local server", "git_name": "set origin", "kind": "remote", "safe": False, "destructive": False, "reversible": True},
@@ -891,7 +890,7 @@ def actions_for_file(rec: dict[str, Any]) -> list[str]:
     if rec.get("staged"):
         actions.append("unstage_selected_changes")
     if rec.get("unstaged") and not rec.get("untracked"):
-        actions += ["keep_changes_unstaged", "discard_selected_file_changes"]
+        actions.append("discard_selected_file_changes")
     return sorted(set(actions))
 
 
@@ -3389,14 +3388,6 @@ def commands_for_step(item: dict[str, Any], status: dict[str, Any], input_path: 
             destructive=False,
             note="Only run after reviewing staged changes.",
         ))
-    elif action_id == "keep_changes_unstaged":
-        commands.append(git_command(
-            repo,
-            ["diff", "--", *paths] if paths else ["diff"],
-            purpose="Review unstaged tracked changes without modifying them.",
-            template="git -C <repo> diff -- <paths>",
-            note=path_note,
-        ))
     elif action_id in {"ignore_generated_files", "ignore_local_environment_files", "ignore_selected_paths", "ignore_debug_output"}:
         commands.append(git_command(
             repo,
@@ -3710,6 +3701,15 @@ def make_plan(input_path: Path, *, include_actions: bool = False) -> dict[str, A
         unstaged = [f["path"] for f in files if f.get("unstaged") and not f.get("untracked")]
 
         repo_root_for_review = Path(detection.get("worktree_root") or input_path)
+        security_candidate_paths: list[str] = []
+        for candidate_path in [*source_untracked, *staged]:
+            if candidate_path not in security_candidate_paths:
+                security_candidate_paths.append(candidate_path)
+        security_candidate_path_set = set(security_candidate_paths)
+        security_candidate_files = [
+            f for f in files
+            if f.get("path") in security_candidate_path_set
+        ]
 
         if local_env:
             local_env_step = step(
@@ -3726,6 +3726,26 @@ def make_plan(input_path: Path, *, include_actions: bool = False) -> dict[str, A
                 questionable_paths=local_env,
             )
             steps.append(local_env_step)
+            order += 1
+
+        if security_candidate_paths:
+            filter_step = step(
+                order,
+                "secrets_filter",
+                "Secrets / Filter",
+                "Review security/privacy rule switches before commit. The backend owns policy merge, availability, and the later filter scan.",
+                paths=security_candidate_paths,
+            )
+            filter_step["source_config_test_candidates"] = source_untracked
+            filter_step["first_commit_candidate_groups"] = {
+                "source_config_test": source_untracked,
+                "staged": staged,
+            }
+            filter_step["secrets_filter"] = secrets_filter_payload(
+                repo_root_for_review,
+                security_candidate_files,
+            )
+            steps.append(filter_step)
             order += 1
 
         if source_untracked:
@@ -3778,9 +3798,6 @@ def make_plan(input_path: Path, *, include_actions: bool = False) -> dict[str, A
                 commit_identity=status.get("git_identity"),
             )
             steps.append(commit_step)
-            order += 1
-        if unstaged:
-            steps.append(step(order, "keep_changes_unstaged", "Keep or review unstaged tracked changes", "Tracked edits should be reviewed before revert or staging.", paths=unstaged))
             order += 1
         if generated:
             strategy = "preserve_then_clean_generated_noise" if strategy == "snapshot_then_classify" else strategy

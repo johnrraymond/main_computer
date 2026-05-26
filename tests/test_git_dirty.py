@@ -97,6 +97,8 @@ class GitDirtyPlannerTests(unittest.TestCase):
 
     def test_action_catalog_uses_readable_action_names(self) -> None:
         actions = {item["id"]: item for item in git_dirty.ACTION_CATALOG}
+        removed_action = "_".join(("keep", "changes", "unstaged"))
+        self.assertNotIn(removed_action, actions)
         for action_id in [
             "save_current_state",
             "preserve_local_only_files",
@@ -443,6 +445,33 @@ class GitDirtyPlannerTests(unittest.TestCase):
         self.assertTrue(by_path["src/app.py"]["unstaged"])
         self.assertEqual(by_path["src/new.py"]["status"], "untracked")
         self.assertTrue(by_path["src/new.py"]["untracked"])
+
+    def test_dirty_planner_does_not_emit_removed_unstaged_passthrough_card(self) -> None:
+        if shutil.which("git") is None:
+            self.skipTest("git executable is not available")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "config", "--local", "user.name", "Test User"], cwd=root, check=True)
+            subprocess.run(["git", "config", "--local", "user.email", "test@example.invalid"], cwd=root, check=True)
+            (root / "src").mkdir()
+            app_path = root / "src" / "app.py"
+            app_path.write_text("print('one')\n", encoding="utf-8")
+            subprocess.run(["git", "add", "src/app.py"], cwd=root, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=root, check=True, capture_output=True, text=True)
+            app_path.write_text("print('two')\n", encoding="utf-8")
+
+            plan = git_dirty.make_plan(root)
+
+        step_ids = [step["id"] for step in plan["steps"]]
+        removed_action = "_".join(("keep", "changes", "unstaged"))
+        self.assertNotIn(removed_action, step_ids)
+        possible_actions = {
+            action
+            for item in plan["status"]["dirty_things"]
+            for action in item.get("possible_actions", [])
+        }
+        self.assertNotIn(removed_action, possible_actions)
 
 
     def test_unborn_repo_with_generated_noise_prioritizes_gitignore_cleanup(self) -> None:

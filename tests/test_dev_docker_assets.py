@@ -11,7 +11,6 @@ def test_dev_docker_compose_defines_core_services() -> None:
 
     for service in (
         "main-computer:",
-        "hub:",
         "hub-worker:",
         "ollama:",
         "ethereum-dev:",
@@ -20,11 +19,17 @@ def test_dev_docker_compose_defines_core_services() -> None:
     ):
         assert service in compose
 
+    assert "\n  hub:\n" not in compose
+    assert "${MAIN_COMPUTER_HUB_PORT:-8770}:8770" not in compose
+    assert "MAIN_COMPUTER_HUB_URL: ${MAIN_COMPUTER_HUB_URL:-http://host.docker.internal:8770}" in compose
+    assert "- ${MAIN_COMPUTER_HUB_URL:-http://host.docker.internal:8770}" in compose
+    assert "- ${MAIN_COMPUTER_HUB_WORKER_PUBLIC_ENDPOINT:-http://host.docker.internal:8771}" in compose
+
     assert "docker/dev/app.Dockerfile" in compose
     assert "docker/executor/Dockerfile" in compose
     assert "MAIN_COMPUTER_EXECUTOR_ENABLED: \"0\"" in compose
     assert "MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL: http://ethereum-dev:8545" in compose
-    assert compose.count('MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK: "1"') >= 3
+    assert compose.count('MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK: "1"') >= 2
     assert "git-server:" not in compose
     assert "git-server-prod:" not in compose
     assert "gitea/gitea:1.24" not in compose
@@ -87,8 +92,8 @@ def test_export_includes_dev_docker_assets() -> None:
 def test_readme_points_to_dev_docker_stack() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "## Dev Docker Stack" in readme
-    assert "docker compose -f docker-compose.dev.yml up --build hub ollama ethereum-dev" in readme
+    assert "## Dev Docker stack" in readme
+    assert "docker compose -f docker-compose.dev.yml up --build ollama ethereum-dev" in readme
+    assert "deploy/coolify/hub/docker-compose.yml" in readme
     assert "docker compose -f docker-compose.gitea.yml up -d gitea" in readme
-    assert "Ctrl+Shift+G" in readme
-    assert "docker build -t main-computer-executor:latest -f docker/executor/Dockerfile ." in readme
+    assert "docker compose -f docker-compose.dev.yml --profile smoke run --rm executor-smoke" in readme

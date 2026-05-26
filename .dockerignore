@@ -44,3 +44,19 @@ pretty_docs/
 
 # Game build artifacts stay on the host bind mount.
 game_projects/*/builds/
+
+# Local/generated directories that should never enter Docker build contexts.
+release_reports/
+rag_smoke_logpack_runs/
+.proto-dev/
+.main_computer_browser_profile/
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.log
+
+# The Coolify hub Dockerfile also has a Dockerfile-specific ignore file:
+# deploy/coolify/hub/Dockerfile.dockerignore
+# That file narrows the remote-hub image context to pyproject/README/main_computer.

@@ -214,6 +214,13 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertNotIn("main_computer/router.py", text)
         self.assertNotIn("main_computer_test", text)
         self.assertFalse(output["metadata"]["auto_apply"])
+        self.assertEqual(output["metadata"]["editor_intent"], "scope")
+        context = output["metadata"]["game_context"]
+        self.assertEqual(context["active_project_id"], "webgl-demo")
+        self.assertEqual(context["project_manifest"]["path"], "game_projects/webgl-demo/project.json")
+        self.assertEqual(context["active_scene"]["id"], "default-empty-scene")
+        self.assertEqual(context["counts"]["scenes"], 1)
+        self.assertGreater(context["counts"]["active_scene_objects"], 0)
 
         from main_computer.models import ChatResponse
 
@@ -256,6 +263,148 @@ class ViewportGameEditorTests(unittest.TestCase):
             ).code,
             400,
         )
+
+
+    def test_game_editor_edit_requests_return_ai_backed_proposal_only_targets(self) -> None:
+        project_file = self.root / "game_projects" / "webgl-demo" / "project.json"
+        before = project_file.read_bytes()
+        ai_calls: list[str] = []
+
+        from main_computer.models import ChatResponse
+
+        class FakeMountedProvider:
+            name = "fake-mounted-provider"
+            model = "fake-mounted-model"
+
+        class FakeMountedComputer:
+            provider = FakeMountedProvider()
+
+            def chat_console_ai(self, source: str, attachments: list | None = None) -> ChatResponse:
+                ai_calls.append(source)
+                return ChatResponse(
+                    content="AI drafted a scoped proposal for the player jump without applying it.",
+                    provider="fake-mounted-provider",
+                    model="fake-mounted-model",
+                )
+
+        self.server.computer = FakeMountedComputer()
+
+        data = self.post(
+            "/api/applications/game-editor/chat/edit",
+            {
+                "thread_id": "test-game-proposal",
+                "cell": {"id": "chat-game-proposal", "type": "ai", "source": "Make the player jump higher and add a player controller script."},
+                "embedded_context": {
+                    "active_app": "game-editor",
+                    "project_id": "webgl-demo",
+                    "target_kind": "game-project",
+                    "target_id": "webgl-demo",
+                    "selected_object_id": "hero-sprite",
+                },
+                "embedded_context_source": {"active_app": "game-editor", "target_kind": "game-project", "target_id": "webgl-demo"},
+                "mount_plugins": [{"id": "game-editor-edit", "enabled": True, "target_id": "webgl-demo", "project_id": "webgl-demo"}],
+            },
+        )
+
+        self.assertEqual(len(ai_calls), 1)
+        self.assertIn("Game Editor edit proposal mode:", ai_calls[0])
+        self.assertIn("Server-scoped candidate file targets:", ai_calls[0])
+        self.assertIn("Make the player jump higher", ai_calls[0])
+        self.assertTrue(data["ok"])
+        output = data["output_cell"]
+        self.assertEqual(output["model"], "fake-mounted-model")
+        self.assertEqual(output["metadata"]["editor_intent"], "propose_edit")
+        self.assertEqual(output["metadata"]["allowed_root"], "game_projects/webgl-demo/")
+        self.assertFalse(output["metadata"]["auto_apply"])
+        self.assertFalse(output["metadata"]["scope_card"])
+
+        proposal = output["metadata"]["proposal"]
+        self.assertEqual(proposal["type"], "game-editor-file-proposal")
+        self.assertEqual(proposal["mode"], "proposal-only")
+        self.assertFalse(proposal["auto_apply"])
+        self.assertTrue(proposal["within_allowed_root"])
+        proposed_paths = [item["path"] for item in proposal["proposed_files"]]
+        self.assertIn("game_projects/webgl-demo/project.json", proposed_paths)
+        self.assertIn("game_projects/webgl-demo/scripts/player-controller.js", proposed_paths)
+        self.assertTrue(all(path.startswith("game_projects/webgl-demo/") for path in proposed_paths))
+        self.assertNotIn("main_computer/router.py", proposed_paths)
+
+        context = output["metadata"]["game_context"]
+        self.assertEqual(context["selected_object"]["id"], "hero-sprite")
+        self.assertEqual(context["active_scene"]["id"], "default-empty-scene")
+        text = "\n".join(str(part.get("content", "")) for part in output["parts"])
+        self.assertIn("Proposal only", text)
+        self.assertIn("no files were modified", text)
+        self.assertIn("game_projects/webgl-demo/project.json", text)
+        self.assertIn("game_projects/webgl-demo/scripts/player-controller.js", text)
+
+        self.assertEqual(project_file.read_bytes(), before)
+
+
+    def test_game_editor_color_edit_context_exposes_main_character_props(self) -> None:
+        project_file = self.root / "game_projects" / "webgl-demo" / "project.json"
+        before = project_file.read_bytes()
+        ai_calls: list[str] = []
+
+        from main_computer.models import ChatResponse
+
+        class FakeMountedProvider:
+            name = "fake-mounted-provider"
+            model = "fake-mounted-model"
+
+        class FakeMountedComputer:
+            provider = FakeMountedProvider()
+
+            def chat_console_ai(self, source: str, attachments: list | None = None) -> ChatResponse:
+                ai_calls.append(source)
+                return ChatResponse(
+                    content="AI proposed changing hero-sprite props.color from #7dd3fc to #ef4444 in project.json without applying it.",
+                    provider="fake-mounted-provider",
+                    model="fake-mounted-model",
+                )
+
+        self.server.computer = FakeMountedComputer()
+
+        data = self.post(
+            "/api/applications/game-editor/chat/edit",
+            {
+                "thread_id": "test-game-color-proposal",
+                "cell": {"id": "chat-game-color-proposal", "type": "ai", "source": "Change the main char's color red."},
+                "embedded_context": {
+                    "active_app": "game-editor",
+                    "project_id": "webgl-demo",
+                    "target_kind": "game-project",
+                    "target_id": "webgl-demo",
+                },
+                "embedded_context_source": {"active_app": "game-editor", "target_kind": "game-project", "target_id": "webgl-demo"},
+                "mount_plugins": [{"id": "game-editor-edit", "enabled": True, "target_id": "webgl-demo", "project_id": "webgl-demo"}],
+            },
+        )
+
+        self.assertEqual(len(ai_calls), 1)
+        self.assertIn("hero-sprite", ai_calls[0])
+        self.assertIn("Main Character", ai_calls[0])
+        self.assertIn("#7dd3fc", ai_calls[0])
+        self.assertIn("props.color", ai_calls[0])
+        self.assertIn("Editable object data lives in `project.json`", ai_calls[0])
+        self.assertTrue(data["ok"])
+
+        output = data["output_cell"]
+        self.assertEqual(output["metadata"]["editor_intent"], "propose_edit")
+        proposal = output["metadata"]["proposal"]
+        proposed_paths = [item["path"] for item in proposal["proposed_files"]]
+        self.assertIn("game_projects/webgl-demo/project.json", proposed_paths)
+        self.assertTrue(all(path.startswith("game_projects/webgl-demo/") for path in proposed_paths))
+        context = output["metadata"]["game_context"]
+        player = next(obj for obj in context["active_scene_objects"] if obj["id"] == "hero-sprite")
+        self.assertEqual(player["editable_props"]["label"], "Main Character")
+        self.assertEqual(player["editable_props"]["role"], "player")
+        self.assertEqual(player["editable_props"]["color"], "#7dd3fc")
+
+        text = "\n".join(str(part.get("content", "")) for part in output["parts"])
+        self.assertIn("hero-sprite props.color", text)
+        self.assertIn("no files were modified", text)
+        self.assertEqual(project_file.read_bytes(), before)
 
 
     def test_frontend_static_hooks_and_routes(self) -> None:
@@ -308,6 +457,8 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertIn('data-chat-console-target-kind="game-project"', APPLICATIONS_INDEX_HTML)
         self.assertIn('data-chat-console-layout="full"', APPLICATIONS_INDEX_HTML)
         self.assertIn('data-chat-console-show-thread-rail="1"', APPLICATIONS_INDEX_HTML)
+        self.assertIn("const embeddedLinkedThreadId", APPLICATIONS_INDEX_HTML)
+        self.assertIn("return embeddedLinkedThreadId() || chatConsoleState?.id", APPLICATIONS_INDEX_HTML)
         self.assertIn("grid-template-columns: minmax(220px, 280px) minmax(420px, 1fr);", APPLICATIONS_INDEX_HTML)
         self.assertIn("width: min(980px, calc(100% - 28px));", APPLICATIONS_INDEX_HTML)
         self.assertIn("function gameEditorChatContextSnapshot", APPLICATIONS_INDEX_HTML)

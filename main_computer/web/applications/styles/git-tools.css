@@ -1483,6 +1483,124 @@
   padding: 8px 10px;
 }
 
+.git-project-commit-security-secrets {
+  display: grid;
+  gap: 9px;
+  border-color: rgba(255, 213, 91, 0.28);
+  background: rgba(255, 213, 91, 0.045);
+}
+
+.git-project-commit-security-secrets.is-blocked {
+  border-color: rgba(255, 130, 92, 0.48);
+  background: rgba(255, 82, 61, 0.08);
+}
+
+.git-project-commit-security-secrets.is-passed {
+  border-color: rgba(117, 255, 188, 0.32);
+  background: rgba(39, 132, 82, 0.09);
+}
+
+.git-project-commit-security-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 7px;
+}
+
+.git-project-commit-security-tile {
+  display: grid;
+  gap: 4px;
+  border: 1px solid rgba(255, 213, 91, 0.24);
+  border-radius: 9px;
+  background: rgba(255,255,255,0.035);
+  padding: 8px;
+}
+
+.git-project-commit-security-tile.is-blocked {
+  border-color: rgba(255, 130, 92, 0.4);
+}
+
+.git-project-commit-security-tile.is-passed {
+  border-color: rgba(117, 255, 188, 0.25);
+}
+
+.git-project-commit-security-tile strong,
+.git-project-commit-security-blocked strong {
+  color: var(--gold);
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.git-project-commit-security-tile span {
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.git-project-commit-security-tile p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.git-project-commit-security-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.git-project-commit-security-counts span {
+  border: 1px solid rgba(255, 213, 91, 0.22);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.045);
+  color: var(--muted);
+  padding: 4px 7px;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.git-project-commit-security-blocked {
+  display: grid;
+  gap: 6px;
+}
+
+.git-project-commit-security-blocked ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.git-project-commit-security-blocked li {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 8px;
+  border: 1px solid rgba(255, 130, 92, 0.22);
+  border-radius: 8px;
+  background: rgba(255, 82, 61, 0.055);
+  padding: 6px 7px;
+  min-width: 0;
+}
+
+.git-project-commit-security-blocked code,
+.git-project-commit-security-blocked span {
+  overflow-wrap: anywhere;
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.git-project-commit-security-blocked code {
+  color: var(--cyan);
+}
+
+.git-project-commit-security-blocked span {
+  color: var(--muted);
+}
+
 .git-project-commit-compose .git-project-commit-field {
   display: grid;
   grid-template-columns: 92px minmax(0, 1fr);
@@ -3328,3 +3446,102 @@
     grid-template-columns: 1fr;
   }
 }
+
+.git-project-mini-action-card .git-project-wizard-step-title {
+  gap: 10px;
+}
+
+.git-project-mini-action-card .git-project-wizard-step-title strong {
+  max-width: min(780px, 100%);
+}
+
+.git-project-mini-card-state {
+  border: 1px solid rgba(255, 206, 77, 0.24);
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: rgba(255, 206, 77, 0.08);
+}
+
+.git-project-mini-card-summary {
+  display: grid;
+  gap: 8px;
+}
+
+.git-project-mini-card-summary p {
+  max-width: 72ch;
+  color: var(--ink);
+  line-height: 1.45;
+}
+
+.git-project-mini-card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.git-project-mini-card-chips span {
+  border: 1px solid rgba(255, 206, 77, 0.2);
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.16);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.git-project-mini-card-note {
+  border-left: 3px solid rgba(255, 206, 77, 0.45);
+  padding-left: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+
+/* Git Tools action queue cards: match the Local Gitea green/mint card family. */
+.git-project-wizard-plan .git-project-wizard-section,
+.git-project-wizard-plan .git-project-mini-action-card {
+  border-color: rgba(184, 255, 122, 0.32);
+  background:
+    linear-gradient(180deg, rgba(184, 255, 122, 0.075), rgba(0, 0, 0, 0.18)),
+    rgba(0, 0, 0, 0.28);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.git-project-wizard-plan .git-project-wizard-section-head strong,
+.git-project-wizard-plan .git-project-mini-action-card .git-project-wizard-step-title strong {
+  color: var(--gold);
+}
+
+.git-project-wizard-plan .git-project-wizard-section-head span,
+.git-project-wizard-plan .git-project-mini-card-state {
+  border-color: rgba(184, 255, 122, 0.35);
+  background: rgba(184, 255, 122, 0.08);
+  color: var(--mint);
+}
+
+.git-project-wizard-plan .git-project-mini-card-summary p {
+  color: var(--ink);
+}
+
+.git-project-wizard-plan .git-project-mini-card-chips span {
+  border-color: rgba(184, 255, 122, 0.26);
+  background: rgba(184, 255, 122, 0.055);
+  color: rgba(246, 232, 166, 0.78);
+}
+
+.git-project-wizard-plan .git-project-mini-card-note {
+  border-left-color: rgba(184, 255, 122, 0.42);
+}
+
+.git-project-wizard-plan .git-project-card-open-button {
+  border-color: rgba(184, 255, 122, 0.35);
+  background: rgba(184, 255, 122, 0.07);
+  color: var(--mint);
+}
+
+.git-project-wizard-plan .git-project-card-open-button:hover {
+  border-color: rgba(184, 255, 122, 0.72);
+  background: rgba(184, 255, 122, 0.12);
+}
+

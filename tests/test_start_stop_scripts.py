@@ -97,7 +97,8 @@ def test_dev_compose_file_is_template_for_profile_scoped_projects_and_ports() ->
 
     assert "name: ${MAIN_COMPUTER_DEV_COMPOSE_PROJECT:-main-computer-dev}" in compose
     assert "${MAIN_COMPUTER_DOCKER_VIEWPORT_PORT:-18765}:8765" in compose
-    assert "${MAIN_COMPUTER_HUB_PORT:-8770}:8770" in compose
+    assert "${MAIN_COMPUTER_HUB_PORT:-8770}:8770" not in compose
+    assert "\n  hub:\n" not in compose
     assert "${MAIN_COMPUTER_HUB_WORKER_PORT:-8771}:8771" in compose
     assert "${MAIN_COMPUTER_OLLAMA_HOST_PORT:-11434}:11434" in compose
     assert "${MAIN_COMPUTER_ETHEREUM_RPC_PORT:-8545}:8545" in compose

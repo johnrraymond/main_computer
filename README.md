@@ -214,12 +214,20 @@ wrapper placement is corrected.
 
 ## Dev Docker stack
 
-The development Compose stack is `docker-compose.dev.yml`.
+The development Compose stack is `docker-compose.dev.yml`. It no longer starts
+or defines the hub service; use `deploy/coolify/hub/docker-compose.yml` for the
+standalone hub container.
 
-Start shared services:
+Start shared dev support services:
 
 ```powershell
-docker compose -f docker-compose.dev.yml up --build hub ollama ethereum-dev
+docker compose -f docker-compose.dev.yml up --build ollama ethereum-dev
+```
+
+Start the standalone hub container:
+
+```powershell
+docker compose -f deploy/coolify/hub/docker-compose.yml up --build
 ```
 
 Pull the model used by the Compose worker default:
@@ -228,7 +236,8 @@ Pull the model used by the Compose worker default:
 docker compose -f docker-compose.dev.yml exec ollama ollama pull qwen2.5:1.5b
 ```
 
-Start the optional Ollama-backed hub worker:
+Start the optional Ollama-backed hub worker after the standalone hub is running,
+or set `MAIN_COMPUTER_HUB_URL` to a remote hub:
 
 ```powershell
 docker compose -f docker-compose.dev.yml --profile worker up --build hub-worker
@@ -343,8 +352,9 @@ python -m main_computer.cli hub-register-worker `
 ```
 
 The hub provider uses the energy-credit ledger shape for local payout records.
-High-security hub transport is enabled in config by default; the Docker dev stack
-sets `MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK=1` for its internal network.
+High-security hub transport is enabled in config by default. Use the standalone
+hub deployment surface under `deploy/coolify/hub/` for containerized hub runs;
+the dev Docker stack only provides optional workers and support services.
 
 ## ONLYOFFICE workbook editor
 

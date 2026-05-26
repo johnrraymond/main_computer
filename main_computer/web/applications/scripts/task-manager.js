@@ -1032,7 +1032,7 @@ async function runGitProjectAction(actionKey) {
 }
 function gitProjectFirstCommitGateOrder(step = {}) {
   const id = gitProjectStepId(step);
-  if (id === "update_gitignore_before_initial_commit") return 10;
+  if (id === "update_gitignore_before_initial_commit" || id === "ignore_generated_files" || id === "ignore_local_environment_files") return 10;
   if (id === "secrets_filter") return 20;
   if (["prepare_commit_snapshot", "create_initial_snapshot"].includes(id)) return 30;
   return Number.POSITIVE_INFINITY;
@@ -1267,6 +1267,7 @@ function gitProjectVisibleStepLabel(step = {}) {
   return `${label} — ${commitTitle}`;
 }
 function gitProjectOpenCardButtonLabel(step = {}) {
+  if (gitProjectStepId(step) === "secrets_filter") return "Open Security Review";
   if (gitProjectStepIsCommitCard(step)) return "Open commit pane";
   if (gitProjectStepIsArchiveCard(step)) return "Open archive pane";
   return "Open card";
@@ -1276,6 +1277,77 @@ function gitProjectCommitCardAttachmentHtml(step = {}) {
   if (!commitTitle) return "";
   return `<div class="git-project-step-note git-project-commit-card-note"><strong>Commit workbench attached here</strong><span>${escapeHtml(commitTitle)}</span></div>`;
 }
+function gitProjectClosedCardPurpose(step = {}) {
+  if (gitProjectStepIsArchiveCard(step)) {
+    return "Move selected work out of this branch without losing it. Open the card to load git status and choose staged, unstaged, or untracked files.";
+  }
+  if (gitProjectStepIsCommitCard(step)) {
+    return "Capture intentional work in a local commit. Open the card to review files, gates, identity, and the final commit message.";
+  }
+  const id = gitProjectStepId(step);
+  if (id === "update_gitignore_before_initial_commit") {
+    return "Review suggested ignore rules before taking a snapshot. Open the card to choose which rules to save.";
+  }
+  if (id === "secrets_filter") {
+    return "Check selected files for API keys, usernames, credentials, tokens, private keys, generated artifacts, and risky content before committing.";
+  }
+  if (Array.isArray(step.paths) && step.paths.length) {
+    return "Review the affected files for this action. Open the card to see the file list.";
+  }
+  return String(step.why || "Open the card to review this action.").trim() || "Open the card to review this action.";
+}
+
+function gitProjectClosedCardChips(step = {}) {
+  const chips = [];
+  if (gitProjectStepIsCommitCard(step)) {
+    const review = step.commit_review || {};
+    const groups = gitProjectCommitGroups(review);
+    const candidateCount = gitProjectCommitReviewCandidatePaths(review).length;
+    const selectedCount = groups.selected_by_default.filter((item = {}) => item.path).length;
+    if (candidateCount) chips.push(`${candidateCount} candidate file${candidateCount === 1 ? "" : "s"}`);
+    if (selectedCount) chips.push(`${selectedCount} preselected`);
+    const ready = gitProjectCommitReadySummary(review);
+    if (ready.branch) chips.push(`branch ${ready.branch}`);
+    chips.push("local commit");
+    return chips;
+  }
+  if (gitProjectStepIsArchiveCard(step)) {
+    chips.push("runs git status when opened");
+    chips.push("staged / unstaged / untracked");
+    chips.push("archives before removal");
+    return chips;
+  }
+  if (gitProjectStepId(step) === "secrets_filter") {
+    const model = step.secrets_filter || {};
+    const summary = model.summary || model.scan?.summary || {};
+    const enabled = Number(summary.enabled_rule_count || 0);
+    const findings = Number(summary.finding_count || summary.blocking || summary.critical || 0);
+    chips.push("safety gate");
+    chips.push("secrets scan");
+    if (enabled) chips.push(`${enabled} rules`);
+    if (findings) chips.push(`${findings} findings`);
+    return chips;
+  }
+  if (Array.isArray(step.paths) && step.paths.length) {
+    const count = step.paths.length;
+    chips.push(`${count} path${count === 1 ? "" : "s"}`);
+  }
+  if (step.locked) chips.push("locked");
+  if (step.state) chips.push(String(step.state));
+  return chips;
+}
+
+function gitProjectClosedCardSummaryHtml(step = {}, stepComponentId = "", stepLabel = "") {
+  const purpose = gitProjectClosedCardPurpose(step);
+  const chips = gitProjectClosedCardChips(step);
+  const reason = step.uiReason ? `<p class="git-project-mini-card-note">${escapeHtml(step.uiReason)}</p>` : "";
+  return `<div class="git-project-mini-card-summary" ${gitProjectMcComponentAttrs(`${stepComponentId}.mini-summary`, "status", `${stepLabel} Summary`, stepComponentId)}>
+    <p>${escapeHtml(purpose)}</p>
+    ${chips.length ? `<div class="git-project-mini-card-chips">${chips.map((chip) => `<span>${escapeHtml(chip)}</span>`).join("")}</div>` : ""}
+    ${reason}
+  </div>`;
+}
+
 function gitProjectStepSupportsCardSubscreen(step = {}) {
   const id = gitProjectStepId(step);
   if (id === "update_gitignore_before_initial_commit") return true;
@@ -1743,6 +1815,55 @@ function gitProjectCommitGateSummaryHtml(review = {}) {
   </section>`;
 }
 
+function gitProjectCommitSecuritySecretsPaneHtml(review = {}) {
+  const gates = gitProjectCommitGateSummary(review);
+  const secretsGate = gates.secrets_filter || {};
+  const gitignoreGate = gates.gitignore || {};
+  const groups = gitProjectCommitGroups(review);
+  const privacySummary = review.privacy_scan?.summary || {};
+  const blockedFiles = groups.blocked_possible_secrets.filter((item = {}) => item.path);
+  const reviewFiles = groups.review_before_selecting.filter((item = {}) => item.path);
+  const status = String(secretsGate.state || "unknown").toLowerCase();
+  const statusTone = status.replace(/[^a-z0-9_-]+/g, "-") || "unknown";
+  const countParts = [
+    `${blockedFiles.length} blocked file${blockedFiles.length === 1 ? "" : "s"}`,
+    `${reviewFiles.length} review file${reviewFiles.length === 1 ? "" : "s"}`,
+  ];
+  if (Number(privacySummary.blocking || 0)) countParts.push(`${Number(privacySummary.blocking || 0)} blocking finding${Number(privacySummary.blocking || 0) === 1 ? "" : "s"}`);
+  if (Number(privacySummary.critical || 0)) countParts.push(`${Number(privacySummary.critical || 0)} critical finding${Number(privacySummary.critical || 0) === 1 ? "" : "s"}`);
+  const blockedPreview = blockedFiles.slice(0, 6);
+  const extraBlocked = blockedFiles.length - blockedPreview.length;
+  return `<section class="git-project-commit-panel git-project-commit-security-secrets is-${escapeHtml(statusTone)}" data-git-commit-panel="security_secrets">
+    <div class="git-project-subscreen-panel-head">
+      <strong>Security / Secrets review</strong>
+      <span>${escapeHtml(status || "unknown")}</span>
+    </div>
+    <p class="git-project-muted">This is a commit readiness summary. Open the Security / Secrets card to run or review the full scan before committing.</p>
+    <div class="git-project-commit-security-grid">
+      <article class="git-project-commit-security-tile is-${escapeHtml(statusTone)}">
+        <strong>${escapeHtml(secretsGate.label || "Secrets / Filter")}</strong>
+        <span>${escapeHtml(secretsGate.state || "unknown")}</span>
+        <p>${escapeHtml(secretsGate.summary || "No secrets summary was returned by the planner.")}</p>
+      </article>
+      <article class="git-project-commit-security-tile is-${escapeHtml(String(gitignoreGate.state || "unknown").toLowerCase().replace(/[^a-z0-9_-]+/g, "-") || "unknown")}">
+        <strong>${escapeHtml(gitignoreGate.label || ".gitignore")}</strong>
+        <span>${escapeHtml(gitignoreGate.state || "unknown")}</span>
+        <p>${escapeHtml(gitignoreGate.summary || ".gitignore gate summary was not returned by the planner.")}</p>
+      </article>
+    </div>
+    <div class="git-project-commit-security-counts">
+      ${countParts.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
+    </div>
+    ${blockedPreview.length ? `<div class="git-project-commit-security-blocked">
+      <strong>Blocked files stay out of the commit basket</strong>
+      <ul>
+        ${blockedPreview.map((item = {}) => `<li><code>${escapeHtml(item.path || "")}</code><span>${escapeHtml(item.reason || item.risk || "requires review")}</span></li>`).join("")}
+        ${extraBlocked > 0 ? `<li><code>+${Number(extraBlocked)} more</code><span>Open the dedicated Secrets / Filter card for full scanner details.</span></li>` : ""}
+      </ul>
+    </div>` : ""}
+  </section>`;
+}
+
 function gitProjectCommitRepoIdentityHtml(review = {}) {
   const head = gitProjectCommitHead(review);
   const identity = gitProjectCommitIdentity(review);
@@ -1955,6 +2076,7 @@ function gitProjectCommitCreateHtml(step = {}) {
 function gitProjectCommitCenterHtml(step = {}, selectedPanel = "gate_summary") {
   const review = step.commit_review || {};
   return `<section class="git-project-commit-center">
+    ${gitProjectCommitSecuritySecretsPaneHtml(review)}
     ${gitProjectCommitComposeHtml(review)}
     ${gitProjectCommitBasketControlsHtml(review)}
     ${gitProjectCommitStagePreviewHtml(step)}
@@ -4669,6 +4791,11 @@ const GIT_PROJECT_GITIGNORE_REVIEW_LABELS = new Set([
   "ignore generated files",
   "ignore local environment files",
 ]);
+const GIT_PROJECT_SECRETS_FILTER_LABELS = new Set([
+  "secrets / filter",
+  "security / secrets",
+  "review security / secrets",
+]);
 function gitProjectNormalizedWizardLabel(value = "") {
   return String(value || "")
     .replace(/^\s*\d+\.\s*/, "")
@@ -4696,6 +4823,21 @@ function gitProjectWizardStepIsGitignoreReviewCandidate(step = {}) {
     GIT_PROJECT_GITIGNORE_REVIEW_IDS,
     GIT_PROJECT_GITIGNORE_REVIEW_LABELS
   );
+}
+function gitProjectWizardStepIsSecretsFilterCandidate(step = {}) {
+  const id = gitProjectStepId(step);
+  if (id === "secrets_filter") return true;
+  const label = gitProjectNormalizedWizardLabel(step.label || gitProjectVisibleStepLabel(step));
+  return GIT_PROJECT_SECRETS_FILTER_LABELS.has(label);
+}
+function gitProjectNormalizeSecretsFilterStep(step = {}) {
+  return {
+    ...step,
+    id: "secrets_filter",
+    label: "Review Security / Secrets",
+    why: step.why || "Check selected files for API keys, usernames, credentials, tokens, private keys, generated artifacts, and risky content before committing.",
+    kind: step.kind || "safety",
+  };
 }
 function gitProjectUniqueStrings(...groups) {
   const seen = new Set();
@@ -4772,9 +4914,13 @@ function gitProjectMergeGitignoreReviewSteps(steps = []) {
 function gitProjectWizardDisplayActions(actions = []) {
   const gitignoreCandidates = actions.filter(gitProjectWizardStepIsGitignoreReviewCandidate);
   const mergedGitignoreReview = gitProjectMergeGitignoreReviewSteps(gitignoreCandidates);
+  const secretsFilterStep = actions.find(gitProjectWizardStepIsSecretsFilterCandidate) || null;
   let insertedGitignoreReview = false;
-  return actions.reduce((displayActions, step) => {
+  let insertedSecretsFilter = false;
+
+  const displayActions = actions.reduce((displayActions, step) => {
     if (gitProjectWizardStepShouldHideInActionQueue(step)) return displayActions;
+
     if (gitProjectWizardStepIsGitignoreReviewCandidate(step)) {
       if (!insertedGitignoreReview && mergedGitignoreReview) {
         displayActions.push(mergedGitignoreReview);
@@ -4782,9 +4928,30 @@ function gitProjectWizardDisplayActions(actions = []) {
       }
       return displayActions;
     }
+
+    if (gitProjectWizardStepIsSecretsFilterCandidate(step)) {
+      if (!insertedSecretsFilter) {
+        displayActions.push(gitProjectNormalizeSecretsFilterStep(step));
+        insertedSecretsFilter = true;
+      }
+      return displayActions;
+    }
+
     displayActions.push(step);
     return displayActions;
   }, []);
+
+  if (!insertedSecretsFilter && secretsFilterStep) {
+    const insertAt = displayActions.findIndex((step) => gitProjectStepIsCommitCard(step));
+    const normalized = gitProjectNormalizeSecretsFilterStep(secretsFilterStep);
+    if (insertAt >= 0) {
+      displayActions.splice(insertAt, 0, normalized);
+    } else {
+      displayActions.push(normalized);
+    }
+  }
+
+  return displayActions;
 }
 
 function renderGitProjectWizard(wizard, data = {}) {
@@ -4846,40 +5013,25 @@ function renderGitProjectWizard(wizard, data = {}) {
     const actionKey = gitProjectActionKey(step, "wizard");
     const stepComponentId = gitProjectWizardStepComponentId(step, actionKey);
     const stepLabel = gitProjectVisibleStepLabel(step);
-    const commandPreview = Array.isArray(step.commands) && step.commands.length
-      ? `<details ${gitProjectMcComponentAttrs(`${stepComponentId}.command-preview`, "output", `${stepLabel} Command Preview`, stepComponentId)}><summary>Command preview (${step.commands.length})</summary><pre>${escapeHtml(step.commands.map(formatCommandForReport).join("\n"))}</pre></details>`
-      : "";
-    const stepPaths = Array.isArray(step.paths) ? step.paths : [];
-    const pathSummary = step.gitignore_path_summary || `Paths (${stepPaths.length})`;
-    const paths = stepPaths.length
-      ? `<details ${gitProjectMcComponentAttrs(`${stepComponentId}.paths`, "list", `${stepLabel} Paths`, stepComponentId)}><summary>${escapeHtml(pathSummary)}</summary><pre>${escapeHtml(stepPaths.slice(0, 80).join("\n"))}</pre></details>`
-      : "";
-    const commandBox = step.showRunner ? renderGitProjectCommandBox(step, actionKey) : "";
-    const actionButton = step.showRunner ? renderGitProjectActionButton(step, "wizard") : "";
     const cardSubscreen = gitProjectCardSubscreenHtml(step, actionKey);
     const openCardButton = cardSubscreen
       ? `<button type="button" class="git-project-card-open-button" data-git-project-open-card="${escapeHtml(actionKey)}">${escapeHtml(gitProjectOpenCardButtonLabel(step))}</button>`
       : "";
-    const actionRow = actionButton ? `<div class="git-project-action-row" ${gitProjectMcComponentAttrs(`${stepComponentId}.actions`, "toolbar", `${stepLabel} Actions`, stepComponentId)}>${actionButton}</div>` : "";
     const openCardCorner = openCardButton ? `<div class="git-project-card-open-corner" ${gitProjectMcComponentAttrs(`${stepComponentId}.open-card`, "toolbar", `${stepLabel} Open Card Control`, stepComponentId)}>${openCardButton}</div>` : "";
-    const reason = step.uiReason ? `<div class="git-project-step-note" ${gitProjectMcComponentAttrs(`${stepComponentId}.reason`, "status", `${stepLabel} Reason`, stepComponentId)}>${escapeHtml(step.uiReason)}</div>` : "";
-    const commitCardNote = gitProjectCommitCardAttachmentHtml(step);
+    const closedSummary = gitProjectClosedCardSummaryHtml(step, stepComponentId, stepLabel);
     const cardAttrs = [
       `data-priority-weight="${Number(step.weight || 0)}"`,
       cardSubscreen ? `data-git-project-card-shell="${escapeHtml(actionKey)}"` : "",
       gitProjectMcComponentAttrs(stepComponentId, "panel", stepLabel, "git-tools.projects.wizard.queue"),
     ].filter(Boolean).join(" ");
-    const cardClass = `git-project-wizard-step tone-${escapeHtml(step.tone)} ${escapeHtml(step.uiLane || step.state || "planned")}${gitProjectStepIsCommitCard(step) ? " has-commit-workbench" : ""}${gitProjectStepIsArchiveCard(step) ? " has-archive-workbench" : ""}${cardSubscreen ? " has-card-open-control" : ""}`;
+    const cardClass = `git-project-wizard-step git-project-mini-action-card tone-${escapeHtml(step.tone)} ${escapeHtml(step.uiLane || step.state || "planned")}${gitProjectStepIsCommitCard(step) ? " has-commit-workbench" : ""}${gitProjectStepIsArchiveCard(step) ? " has-archive-workbench" : ""}${cardSubscreen ? " has-card-open-control" : ""}`;
     const displayNumber = Number.isFinite(displayIndex) ? displayIndex + 1 : Number(step.order ?? 0) + 1;
     return `<div class="${cardClass}" ${cardAttrs}>
-      <div class="git-project-wizard-step-title" ${gitProjectMcComponentAttrs(`${stepComponentId}.title`, "status", `${stepLabel} Title`, stepComponentId)}><strong>${displayNumber}. ${escapeHtml(stepLabel)}</strong><span>priority ${Number(step.weight || 0)} · ${escapeHtml(step.state || "planned")}${step.locked ? " · locked" : ""} · current status ${escapeHtml(step.status || "idle")}</span></div>
-      <p data-mc-component-id="${escapeHtml(stepComponentId)}.why" data-mc-component-kind="status" data-mc-component-label="${escapeHtml(stepLabel)} Why" data-mc-component-owner="${escapeHtml(stepComponentId)}" data-mc-feature-id="git-tools.feature.projects">${escapeHtml(step.why || "")}</p>
-      ${reason}
-      ${actionRow}
-      ${commandBox}
-      ${paths}
-      ${commandPreview}
-      ${commitCardNote}
+      <div class="git-project-wizard-step-title" ${gitProjectMcComponentAttrs(`${stepComponentId}.title`, "status", `${stepLabel} Title`, stepComponentId)}>
+        <strong>${displayNumber}. ${escapeHtml(stepLabel)}</strong>
+        <span class="git-project-mini-card-state">${escapeHtml(step.status || step.state || "ready")}</span>
+      </div>
+      ${closedSummary}
       ${openCardCorner}
       ${cardSubscreen}
     </div>`;
