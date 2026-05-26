@@ -689,6 +689,8 @@ class HubDispatcher:
         *,
         timeout_s: float = 600.0,
         allow_insecure_dev_network: bool = False,
+        credit_ledger: HubCreditLedger | None = None,
+        default_credits_per_request: int = 1,
     ) -> None:
         self.registry = registry
         self.ledger = ledger
@@ -700,7 +702,12 @@ class HubDispatcher:
             root=registry.root,
             timeout_s=self.timeout_s,
             allow_insecure_dev_network=self.allow_insecure_dev_network,
+            credit_ledger=credit_ledger,
+            default_credits_per_request=default_credits_per_request,
         )
+
+    def quote(self, request: HubAIRequest) -> dict[str, Any]:
+        return self.plex_service.quote_request(request)
 
     def chat(
         self,
@@ -817,6 +824,8 @@ class HubHttpServer(ThreadingHTTPServer):
             self.energy_ledger,
             timeout_s=config.hub_timeout_s,
             allow_insecure_dev_network=config.hub_allow_insecure_dev_network,
+            credit_ledger=self.credit_ledger,
+            default_credits_per_request=config.hub_credits_per_request,
         )
 
 
@@ -919,6 +928,17 @@ class HubServerHandler(_JsonHandler):
             requests = self.server.dispatcher.list_requests(limit=limit, states=states)
             self._send_json({"ok": True, "requests": requests, "request_count": len(requests)})
             return
+        if path.startswith("/api/hub/v1/requests/") and path.endswith("/charges"):
+            request_id = path.removeprefix("/api/hub/v1/requests/").removesuffix("/charges").strip("/")
+            if not request_id or "/" in request_id:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            charges = [
+                charge.as_dict()
+                for charge in self.server.credit_ledger.list_charges(request_id=request_id)
+            ]
+            self._send_json({"ok": True, "request_id": request_id, "charges": charges, "charge_count": len(charges)})
+            return
         if path.startswith("/api/hub/v1/requests/") and path.endswith("/events"):
             request_id = path.removeprefix("/api/hub/v1/requests/").removesuffix("/events").strip("/")
             if not request_id or "/" in request_id:
@@ -972,6 +992,36 @@ class HubServerHandler(_JsonHandler):
                 for purchase in self.server.credit_ledger.list_purchases(account_id=account_id, limit=limit)
             ]
             self._send_json({"ok": True, "purchases": purchases, "purchase_count": len(purchases)})
+            return
+        if path == "/api/hub/v1/credits/holds":
+            account_id = query.get("account_id", [""])[0]
+            request_id = query.get("request_id", [""])[0]
+            active_only = str(query.get("active", [""])[0]).lower() in {"1", "true", "yes"}
+            limit = int(query.get("limit", ["100"])[0] or 100)
+            holds = [
+                hold.as_dict()
+                for hold in self.server.credit_ledger.list_holds(
+                    account_id=account_id,
+                    request_id=request_id,
+                    active_only=active_only,
+                    limit=limit,
+                )
+            ]
+            self._send_json({"ok": True, "holds": holds, "hold_count": len(holds)})
+            return
+        if path == "/api/hub/v1/credits/worker-earnings":
+            worker_node_id = query.get("worker_node_id", [""])[0]
+            request_id = query.get("request_id", [""])[0]
+            limit = int(query.get("limit", ["100"])[0] or 100)
+            earnings = [
+                earning.as_private_dict()
+                for earning in self.server.credit_ledger.list_worker_earnings(
+                    worker_node_id=worker_node_id,
+                    request_id=request_id,
+                    limit=limit,
+                )
+            ]
+            self._send_json({"ok": True, "worker_earnings": earnings, "worker_earning_count": len(earnings)})
             return
         if path in {"/api/hub/payouts", "/api/hub/v1/payouts"}:
             node_id = query.get("node_id", [""])[0]
@@ -1080,6 +1130,15 @@ class HubServerHandler(_JsonHandler):
                     metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
                 )
                 self._send_json(result)
+                return
+            if path == "/api/hub/v1/requests/quote":
+                body = self._read_json()
+                hub_request = HubAIRequest.from_payload(
+                    body,
+                    default_model=self.server.config.model,
+                    default_client_node_id=self.server.config.hub_client_node_id,
+                )
+                self._send_json(self.server.dispatcher.quote(hub_request))
                 return
             if path == "/api/hub/v1/requests":
                 body = self._read_json()

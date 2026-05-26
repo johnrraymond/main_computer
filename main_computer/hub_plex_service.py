@@ -288,14 +288,39 @@ class AIRequestPlexService:
         root: Path,
         timeout_s: float = 600.0,
         allow_insecure_dev_network: bool = False,
+        credit_ledger: Any | None = None,
+        default_credits_per_request: int = 1,
     ) -> None:
         self.registry = registry
         self.ledger = ledger
         self.timeout_s = max(1.0, float(timeout_s or 600.0))
         self.allow_insecure_dev_network = bool(allow_insecure_dev_network)
+        self.credit_ledger = credit_ledger
+        self.default_credits_per_request = max(1, int(default_credits_per_request or 1))
         self.request_store = RequestStateStore(root)
         self._secure_sessions: dict[str, dict[str, Any]] = {}
         self._session_lock = threading.Lock()
+
+    def quote_request(self, request: HubAIRequest) -> dict[str, Any]:
+        """Return the simple v0 paid request quote used by the mock-worker path."""
+
+        estimated = max(1, self.default_credits_per_request)
+        max_credits = max(0, int(request.max_credits or 0))
+        if max_credits <= 0:
+            max_credits = estimated
+        if max_credits < estimated:
+            raise ValueError(f"max_credits must be at least the quoted cost of {estimated}.")
+        return {
+            "ok": True,
+            "unit": "compute_credit",
+            "quote": {
+                "model": str(request.model or ""),
+                "estimated_credits": estimated,
+                "max_credits": max_credits,
+                "base_credits": self.default_credits_per_request,
+                "expires_at": (datetime.now(tz=timezone.utc) + timedelta(minutes=5)).isoformat(),
+            },
+        }
 
     def submit(self, request: HubAIRequest, *, polling_base_path: str = "/api/hub/v1/requests") -> HubRequestStatus:
         _response, status = self.dispatch_sync_with_status(request, polling_base_path=polling_base_path)
@@ -334,10 +359,13 @@ class AIRequestPlexService:
             hub_blind=False,
         )
         try:
+            if self._request_requires_paid_account(request):
+                self._ensure_paid_hold(record, request)
             response = self._dispatch_plaintext(record, request)
             status = self.get_status(request_id, polling_base_path=polling_base_path)
             return response, status
         except Exception as exc:
+            self._release_paid_hold_for_request(request_id, reason="dispatch_failed", error=str(exc))
             try:
                 self.request_store.update(
                     request_id,
@@ -360,7 +388,9 @@ class AIRequestPlexService:
     def cancel(self, request_id: str, *, polling_base_path: str = "/api/hub/v1/requests") -> HubRequestStatus:
         record = self.request_store.cancel(request_id)
         self._release_record_worker(record, success=False)
-        return HubRequestStatus.from_record(record, polling_url=f"{polling_base_path.rstrip('/')}/{record.request_id}")
+        self._release_paid_hold_for_request(record.request_id, reason="client_cancelled")
+        refreshed = self.request_store.get(record.request_id) or record
+        return HubRequestStatus.from_record(refreshed, polling_url=f"{polling_base_path.rstrip('/')}/{record.request_id}")
 
     def list_statuses(
         self,
@@ -536,6 +566,111 @@ class AIRequestPlexService:
         )
         return history
 
+    def _request_requires_paid_account(self, request: HubAIRequest) -> bool:
+        return bool(str(request.account_id or "").strip() or int(request.max_credits or 0) > 0)
+
+    def _ensure_paid_hold(self, record: HubRequestRecord, request: HubAIRequest) -> dict[str, Any]:
+        if self.credit_ledger is None:
+            raise ValueError("Paid request accounting is not available on this hub.")
+        if not request.account_id:
+            raise ValueError("account_id is required for paid requests.")
+        quote = self.quote_request(request)
+        max_credits = int(quote["quote"]["max_credits"])
+        hold_result = self.credit_ledger.create_hold(
+            account_id=request.account_id,
+            request_id=record.request_id,
+            credits=max_credits,
+            expires_at=record.deadline_at,
+            memo=f"paid request hold {record.request_id}",
+            metadata={"quote": quote["quote"], "idempotency_key": request.idempotency_key},
+        )
+        hold = dict(hold_result.get("hold", {}))
+        self.request_store.update(
+            record.request_id,
+            account_id=hold.get("account_id", request.account_id),
+            max_credits=max_credits,
+            hold_id=str(hold.get("hold_id", "")),
+            event_type="payment.hold.created",
+            event={
+                "account_id": hold.get("account_id", request.account_id),
+                "hold_id": hold.get("hold_id", ""),
+                "held_credits": hold.get("credits", max_credits),
+                "idempotent": bool(hold_result.get("idempotent", False)),
+            },
+        )
+        return hold_result
+
+    def _release_paid_hold_for_request(self, request_id: str, *, reason: str, error: str = "") -> None:
+        if self.credit_ledger is None:
+            return
+        record = self.request_store.get(request_id)
+        if record is None or not record.hold_id or record.charge_id:
+            return
+        try:
+            release = self.credit_ledger.release_hold(
+                hold_id=record.hold_id,
+                reason=reason,
+                memo=f"release paid request hold {record.request_id}: {reason}",
+                metadata={"error": error} if error else {},
+            )
+        except Exception:
+            return
+        hold = dict(release.get("hold", {}))
+        self.request_store.update(
+            record.request_id,
+            released_credits=max(0, int(hold.get("credits", record.max_credits) or 0)),
+            event_type="payment.hold.released",
+            event={
+                "account_id": record.account_id,
+                "hold_id": record.hold_id,
+                "reason": reason,
+                "error": error,
+            },
+        )
+
+    def _finalize_paid_request(
+        self,
+        *,
+        record: HubRequestRecord,
+        worker_node_id: str,
+        worker_credits: int,
+    ) -> dict[str, Any]:
+        if self.credit_ledger is None or not record.hold_id:
+            return {}
+        charge = self.credit_ledger.charge_hold(
+            hold_id=record.hold_id,
+            charged_credits=worker_credits,
+            worker_node_id=worker_node_id,
+            memo=f"paid request charge {record.request_id}",
+            metadata={"worker_node_id": worker_node_id},
+        )
+        charge_payload = dict(charge.get("charge", {}))
+        earning_payload = dict(charge.get("worker_earning") or {})
+        receipt = {
+            "request_id": record.request_id,
+            "account_id": charge_payload.get("account_id", record.account_id),
+            "hold_id": record.hold_id,
+            "charge_id": charge_payload.get("charge_id", ""),
+            "charged_credits": max(0, int(charge_payload.get("charged_credits", 0) or 0)),
+            "released_credits": max(0, int(charge_payload.get("released_credits", 0) or 0)),
+            "worker_earning_id": earning_payload.get("earning_id", ""),
+            "worker_commitment": earning_payload.get("worker_commitment", ""),
+            "created_at": charge_payload.get("created_at", utc_now()),
+            "unit": "compute_credit",
+        }
+        self.request_store.update(
+            record.request_id,
+            account_id=receipt["account_id"],
+            charge_id=receipt["charge_id"],
+            charged_credits=receipt["charged_credits"],
+            released_credits=receipt["released_credits"],
+            worker_earning_id=receipt["worker_earning_id"],
+            receipt=receipt,
+            event_type="payment.charge.created",
+            event=receipt,
+        )
+        return receipt
+
     def _create_record(
         self,
         *,
@@ -559,6 +694,8 @@ class AIRequestPlexService:
             deadline_at=self._deadline_at(request),
             max_retries=self._max_retries(request),
             requested_worker_node_id=clean_node_id(request.requested_worker_node_id, default="") if request.requested_worker_node_id else "",
+            account_id=clean_node_id(request.account_id, default="") if request.account_id else "",
+            max_credits=max(0, int(request.max_credits or 0)),
         )
         return self.request_store.create(record)
 
@@ -622,6 +759,11 @@ class AIRequestPlexService:
                 },
             }
             try:
+                paid_record = self.request_store.get(record.request_id) or current
+                if paid_record.hold_id and worker_credits > max(0, int(paid_record.max_credits or 0)):
+                    raise RuntimeError(
+                        f"Selected worker requires {worker_credits} credits but request only held {paid_record.max_credits}."
+                    )
                 self.request_store.update(
                     record.request_id,
                     state="running",
@@ -662,6 +804,12 @@ class AIRequestPlexService:
                     )
                 continue
 
+            latest_record = self.request_store.get(record.request_id) or record
+            receipt = self._finalize_paid_request(
+                record=latest_record,
+                worker_node_id=worker_node_id,
+                worker_credits=worker_credits,
+            )
             energy_status = self.ledger.queue_worker_payout(
                 worker_node_id,
                 worker_credits,
@@ -684,6 +832,8 @@ class AIRequestPlexService:
                 "hub_blind": False,
                 "attempt": attempt,
             }
+            if receipt:
+                metadata["hub"]["payment"] = dict(receipt)
             completed = ChatResponse(
                 content=response.content,
                 provider="hub",
@@ -702,6 +852,11 @@ class AIRequestPlexService:
                 },
                 response_summary=_short_response_summary(completed),
                 credits_queued=worker_credits,
+                charge_id=str(receipt.get("charge_id", "")) if receipt else "",
+                charged_credits=max(0, int(receipt.get("charged_credits", 0) or 0)) if receipt else 0,
+                released_credits=max(0, int(receipt.get("released_credits", 0) or 0)) if receipt else 0,
+                worker_earning_id=str(receipt.get("worker_earning_id", "")) if receipt else "",
+                receipt=dict(receipt),
                 error="",
                 terminal_reason="completed",
                 event_type="request.completed",

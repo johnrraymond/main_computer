@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from main_computer.diagnostics import LEVELS
-from main_computer.level1_telemetry import collect_level1_telemetry, _service_summary
+from main_computer.level1_telemetry import collect_level1_telemetry
 
 
 class Level1TelemetryTests(unittest.TestCase):
@@ -28,52 +28,37 @@ class Level1TelemetryTests(unittest.TestCase):
         self.assertIn("summary", report)
         self.assertIn("processes", report)
         self.assertIn("pid_files", report)
+        self.assertIn("pid_file_health", report)
+        self.assertIn("operator_summary", report)
+        self.assertIn("service_summary", report)
+        self.assertIn("role_summary", report)
+        self.assertIn("top_processes", report)
+        self.assertIn("port_activity", report)
+        self.assertIn("port_listeners", report)
         self.assertEqual(report["known_ports"]["app"], 8765)
+        self.assertIn("known_port_time_wait_count", report["summary"])
+        self.assertIn("active_known_port_activity_count", report["summary"])
         self.assertTrue(any(row.get("pid") == os.getpid() for row in report["processes"]))
         current = next(row for row in report["processes"] if row.get("pid") == os.getpid())
         self.assertIn("viewport-current", current.get("roles", []))
         self.assertIn("memory_human", current)
         self.assertIn("command_preview", current)
 
+    def test_collect_level1_telemetry_service_summary_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = collect_level1_telemetry(
+                root,
+                control_root=root,
+                known_ports={"app": 8765, "worker": 8771},
+                current_pid=os.getpid(),
+            )
 
-    def test_service_summary_separates_listeners_from_time_wait_noise(self) -> None:
-        summary = _service_summary(
-            {"app": 8765},
-            [
-                {
-                    "service": "app",
-                    "port": 8765,
-                    "pid": 123,
-                    "status": "LISTEN",
-                    "local": "127.0.0.1:8765",
-                    "remote": "",
-                }
-            ],
-            [
-                {
-                    "service": "app",
-                    "port": 8765,
-                    "pid": 123,
-                    "status": "LISTEN",
-                    "local": "127.0.0.1:8765",
-                    "remote": "",
-                },
-                {
-                    "service": "app",
-                    "port": 8765,
-                    "pid": None,
-                    "status": "TIME_WAIT",
-                    "local": "127.0.0.1:8765",
-                    "remote": "127.0.0.1:60000",
-                },
-            ],
-        )
-
-        self.assertEqual(summary[0]["listener_count"], 1)
-        self.assertEqual(summary[0]["activity_count"], 2)
-        self.assertEqual(summary[0]["time_wait_count"], 1)
-        self.assertEqual(summary[0]["active_activity_count"], 1)
-        self.assertEqual(summary[0]["state"], "listening")
+        services = {row["service"]: row for row in report["service_summary"]}
+        self.assertEqual(services["app"]["port"], 8765)
+        self.assertIn(services["worker"]["state"], {"listening", "active-no-listener", "not-observed"})
+        self.assertIsInstance(report["operator_summary"]["attention"], list)
+        self.assertIsInstance(report["operator_summary"]["next_checks"], list)
 
     def test_collect_level1_telemetry_handles_missing_psutil_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -82,6 +67,7 @@ class Level1TelemetryTests(unittest.TestCase):
 
         self.assertIn("capabilities", report)
         self.assertIn("warnings", report)
+        self.assertIn("observations", report)
         self.assertIsInstance(report["summary"]["process_count"], int)
 
 

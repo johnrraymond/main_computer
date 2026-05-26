@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import os
-import socket
-import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,9 +25,9 @@ SERVICE_MARKERS = {
     "blockchain": ("anvil", "geth", "hardhat", "ganache"),
     "onlyoffice": ("onlyoffice", "documentserver", "converter", "docservice"),
     "docker": ("docker", "dockerd", "com.docker"),
-    "wsl": ("wsl", "wslhost", "wslservice"),
+    "wsl": ("wsl", "wslhost", "wslservice", "wslrelay", "vmmemwsl"),
 }
-NOISY_CONNECTION_STATUSES = {"TIME_WAIT"}
+PRIMARY_SERVICE_ROLES = ("app", "heartbeat", "hub", "worker", "ollama", "gitea", "blockchain")
 
 
 def collect_level1_telemetry(
@@ -44,7 +42,7 @@ def collect_level1_telemetry(
     """Collect a fast cross-process telemetry snapshot for Main Computer.
 
     Level 1 intentionally answers "what is running right now?" instead of
-    running the deeper Level 5 sanity checks.  It keeps process environment
+    running the deeper Level 5 sanity checks. It keeps process environment
     variables out of the payload and focuses on process, port, CPU, memory,
     handle, file, and socket telemetry that can be rendered safely in the
     local control panel.
@@ -54,56 +52,27 @@ def collect_level1_telemetry(
     control_root = (control_root or _control_root_from_env() or repo_root).expanduser().resolve()
     known_ports = {str(name): int(port) for name, port in (known_ports or {}).items() if _is_int_like(port)}
     started_at = datetime.now(timezone.utc)
+    current_pid = int(current_pid or os.getpid())
 
     pid_file_rows = _read_pid_files(control_root)
     warnings: list[str] = []
     observations: list[str] = []
+
     if psutil is None:
         warnings.append("psutil is not installed; process-level telemetry is unavailable.")
-        return {
-            "ok": False,
-            "level": "level-1-telemetry",
-            "updated_at": started_at.isoformat(),
-            "repo_root": str(repo_root),
-            "control_root": str(control_root),
-            "current_pid": current_pid or os.getpid(),
-            "capabilities": {
-                "psutil": False,
-                "process_details": False,
-                "connections": False,
-            },
-            "summary": {
-                "process_count": 0,
-                "connection_count": 0,
-                "active_connection_count": 0,
-                "known_port_listener_count": 0,
-                "known_port_activity_count": 0,
-                "known_port_time_wait_count": 0,
-                "pid_file_count": len(pid_file_rows),
-                "volatile_pid_count": 0,
-                "total_rss": 0,
-                "total_rss_human": "0 B",
-                "warning_count": len(warnings),
-                "observation_count": len(observations),
-            },
-            "known_ports": known_ports,
-            "pid_files": pid_file_rows,
-            "pid_file_health": [],
-            "service_summary": [],
-            "port_listeners": [],
-            "port_activity": [],
-            "processes": [],
-            "process_tree": [],
-            "notable_processes": {"top_memory": [], "top_cpu": [], "top_io_write": []},
-            "connections": [],
-            "connection_status_counts": {},
-            "warnings": warnings,
-            "observations": observations,
-        }
+        return _empty_report(
+            repo_root=repo_root,
+            control_root=control_root,
+            known_ports=known_ports,
+            current_pid=current_pid,
+            started_at=started_at,
+            pid_file_rows=pid_file_rows,
+            warnings=warnings,
+            observations=observations,
+        )
 
     pid_sources: dict[int, set[str]] = {}
     role_sources: dict[int, set[str]] = {}
-    current_pid = int(current_pid or os.getpid())
     _add_pid(pid_sources, role_sources, current_pid, "current-process", "viewport-current")
 
     for row in pid_file_rows:
@@ -112,8 +81,8 @@ def collect_level1_telemetry(
             role = "heartbeat" if "heartbeat" in str(row.get("name", "")).lower() else "viewport"
             _add_pid(pid_sources, role_sources, pid, f"pid-file:{row.get('name')}", role)
 
-    port_activity_rows, port_pid_roles = _discover_port_processes(known_ports)
-    port_listener_rows = [row for row in port_activity_rows if _is_listen(row)]
+    port_activity, port_pid_roles = _discover_port_processes(known_ports)
+    port_listeners = [row for row in port_activity if str(row.get("status") or "").upper() == "LISTEN"]
     for pid, roles in port_pid_roles.items():
         for role in roles:
             _add_pid(pid_sources, role_sources, pid, f"known-port:{role}", role)
@@ -125,20 +94,15 @@ def collect_level1_telemetry(
 
     _expand_with_relatives(pid_sources, role_sources)
 
+    volatile_pid_count = 0
     processes: list[dict[str, Any]] = []
-    volatile_pids: list[dict[str, Any]] = []
     for pid in sorted(pid_sources):
         try:
             proc = psutil.Process(pid)
             proc.status()
         except Exception:
-            volatile_pids.append(
-                {
-                    "pid": pid,
-                    "roles": sorted(role_sources.get(pid, set())),
-                    "sources": sorted(pid_sources.get(pid, set())),
-                }
-            )
+            volatile_pid_count += 1
+            observations.append(f"PID {pid} was discovered but disappeared or became unreadable during the snapshot.")
             continue
         try:
             processes.append(
@@ -148,13 +112,11 @@ def collect_level1_telemetry(
                     sources=sorted(pid_sources.get(pid, set())),
                     roles=sorted(role_sources.get(pid, set())),
                     known_ports=known_ports,
+                    current_pid=current_pid,
                 )
             )
         except Exception as exc:
             warnings.append(f"PID {pid} telemetry failed: {exc}")
-
-    if volatile_pids:
-        observations.append(f"{len(volatile_pids)} discovered PIDs exited or became unreadable during the snapshot.")
 
     processes.sort(key=_process_sort_key)
     if len(processes) > process_limit:
@@ -162,25 +124,33 @@ def collect_level1_telemetry(
         processes = processes[:process_limit]
 
     relevant_pids = {int(row["pid"]) for row in processes if isinstance(row.get("pid"), int)}
-    connection_rows, connection_status_counts = _connection_payloads(relevant_pids, known_ports, limit=connection_limit)
+    port_listeners = [
+        row for row in port_listeners if row.get("pid") in relevant_pids or row.get("pid") is None
+    ]
+    port_activity = [
+        row for row in port_activity if row.get("pid") in relevant_pids or row.get("pid") is None
+    ]
+    connection_rows = _connection_payloads(relevant_pids, known_ports, limit=connection_limit)
     total_rss = sum(int(row.get("memory_rss") or 0) for row in processes)
-    port_activity_status_counts = _status_counts(port_activity_rows)
-    active_connection_count = _active_status_count(connection_status_counts)
-    active_known_port_activity_count = _active_row_count(port_activity_rows)
-    service_summary = _service_summary(known_ports, port_listener_rows, port_activity_rows)
-    pid_file_health = _pid_file_health(pid_file_rows, processes, volatile_pids)
-
-    for row in pid_file_health:
-        if row.get("state") == "stale":
-            warnings.append(f"{row.get('name')} points at unreadable PID {row.get('pid')}.")
-    for service in service_summary:
-        for finding in service.get("findings", []):
-            if finding == "multiple-listener-pids":
-                observations.append(
-                    f"{service.get('service')} has listeners on multiple PIDs: {', '.join(str(pid) for pid in service.get('listener_pids', []))}."
-                )
-            elif finding == "any-address-listener":
-                observations.append(f"{service.get('service')} has at least one listener bound to an all-interfaces address.")
+    active_connection_count = sum(1 for row in connection_rows if _is_active_socket_status(row.get("status")))
+    active_known_port_activity_count = sum(1 for row in port_activity if _is_active_socket_status(row.get("status")))
+    known_port_time_wait_count = sum(1 for row in port_activity if str(row.get("status") or "").upper() == "TIME_WAIT")
+    service_summary = _service_summary(known_ports, port_activity)
+    pid_file_health = _pid_file_health(pid_file_rows, relevant_pids)
+    role_summary = _role_summary(processes)
+    top_processes = _top_processes(processes)
+    operator_summary = _operator_summary(
+        service_summary=service_summary,
+        top_processes=top_processes,
+        summary_values={
+            "process_count": len(processes),
+            "known_port_listener_count": len(port_listeners),
+            "known_port_time_wait_count": known_port_time_wait_count,
+            "total_rss_human": _human_bytes(total_rss),
+        },
+        warnings=warnings,
+        observations=observations,
+    )
 
     return {
         "ok": True,
@@ -198,12 +168,12 @@ def collect_level1_telemetry(
             "process_count": len(processes),
             "connection_count": len(connection_rows),
             "active_connection_count": active_connection_count,
-            "known_port_listener_count": len(port_listener_rows),
-            "known_port_activity_count": len(port_activity_rows),
-            "known_port_time_wait_count": int(port_activity_status_counts.get("TIME_WAIT", 0)),
+            "known_port_listener_count": len(port_listeners),
+            "known_port_activity_count": len(port_activity),
+            "known_port_time_wait_count": known_port_time_wait_count,
             "active_known_port_activity_count": active_known_port_activity_count,
             "pid_file_count": len(pid_file_rows),
-            "volatile_pid_count": len(volatile_pids),
+            "volatile_pid_count": volatile_pid_count,
             "total_rss": total_rss,
             "total_rss_human": _human_bytes(total_rss),
             "warning_count": len(warnings),
@@ -212,16 +182,78 @@ def collect_level1_telemetry(
         "known_ports": known_ports,
         "pid_files": pid_file_rows,
         "pid_file_health": pid_file_health,
+        "operator_summary": operator_summary,
         "service_summary": service_summary,
-        "port_listeners": port_listener_rows,
-        "port_activity": port_activity_rows,
-        "port_activity_status_counts": dict(port_activity_status_counts),
+        "role_summary": role_summary,
+        "top_processes": top_processes,
+        "port_listeners": port_listeners,
+        "port_activity": port_activity,
+        "port_activity_status_counts": dict(Counter(str(row.get("status") or "UNKNOWN") for row in port_activity)),
         "process_tree": _process_tree(processes),
         "processes": processes,
-        "notable_processes": _notable_processes(processes),
-        "volatile_pids": volatile_pids,
         "connections": connection_rows,
-        "connection_status_counts": dict(connection_status_counts),
+        "warnings": warnings,
+        "observations": observations,
+    }
+
+
+def _empty_report(
+    *,
+    repo_root: Path,
+    control_root: Path,
+    known_ports: dict[str, int],
+    current_pid: int,
+    started_at: datetime,
+    pid_file_rows: list[dict[str, Any]],
+    warnings: list[str],
+    observations: list[str],
+) -> dict[str, Any]:
+    summary = {
+        "process_count": 0,
+        "connection_count": 0,
+        "active_connection_count": 0,
+        "known_port_listener_count": 0,
+        "known_port_activity_count": 0,
+        "known_port_time_wait_count": 0,
+        "active_known_port_activity_count": 0,
+        "pid_file_count": len(pid_file_rows),
+        "volatile_pid_count": 0,
+        "total_rss": 0,
+        "total_rss_human": "0 B",
+        "warning_count": len(warnings),
+        "observation_count": len(observations),
+    }
+    return {
+        "ok": False,
+        "level": "level-1-telemetry",
+        "updated_at": started_at.isoformat(),
+        "repo_root": str(repo_root),
+        "control_root": str(control_root),
+        "current_pid": current_pid,
+        "capabilities": {
+            "psutil": False,
+            "process_details": False,
+            "connections": False,
+        },
+        "summary": summary,
+        "known_ports": known_ports,
+        "pid_files": pid_file_rows,
+        "pid_file_health": _pid_file_health(pid_file_rows, set()),
+        "operator_summary": {
+            "state": "degraded",
+            "headline": "psutil is unavailable, so Level 1 cannot inspect running processes.",
+            "next_checks": ["Install psutil in the Python environment that runs Main Computer."],
+            "attention": warnings[:8],
+        },
+        "service_summary": _service_summary(known_ports, []),
+        "role_summary": [],
+        "top_processes": [],
+        "port_listeners": [],
+        "port_activity": [],
+        "port_activity_status_counts": {},
+        "process_tree": [],
+        "processes": [],
+        "connections": [],
         "warnings": warnings,
         "observations": observations,
     }
@@ -267,6 +299,29 @@ def _read_pid_files(control_root: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _pid_file_health(pid_file_rows: list[dict[str, Any]], live_pids: set[int]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in pid_file_rows:
+        pid = row.get("pid")
+        if not row.get("exists"):
+            state = "missing"
+        elif not isinstance(pid, int):
+            state = "unreadable"
+        elif pid in live_pids:
+            state = "readable"
+        else:
+            state = "stale-or-not-observed"
+        rows.append(
+            {
+                "name": row.get("name"),
+                "pid": pid,
+                "state": state,
+                "exists": bool(row.get("exists")),
+            }
+        )
+    return rows
+
+
 def _add_pid(
     pid_sources: dict[int, set[str]],
     role_sources: dict[int, set[str]],
@@ -293,19 +348,22 @@ def _discover_port_processes(known_ports: dict[str, int]) -> tuple[list[dict[str
         return rows, roles
     for conn in connections:
         local = getattr(conn, "laddr", None)
+        remote = getattr(conn, "raddr", None)
         local_port = getattr(local, "port", None)
-        if local_port not in port_to_name:
+        remote_port = getattr(remote, "port", None)
+        matched_port = local_port if local_port in port_to_name else remote_port if remote_port in port_to_name else None
+        if matched_port is None:
             continue
         pid = getattr(conn, "pid", None)
-        status = str(getattr(conn, "status", "") or "").upper()
-        service = port_to_name[int(local_port)]
+        status = str(getattr(conn, "status", "") or "")
+        service = port_to_name[int(matched_port)]
         row = {
             "service": service,
-            "port": int(local_port),
+            "port": int(matched_port),
             "pid": int(pid) if pid else None,
             "status": status,
             "local": _format_address(local),
-            "remote": _format_address(getattr(conn, "raddr", None)),
+            "remote": _format_address(remote),
         }
         rows.append(row)
         if pid:
@@ -313,8 +371,7 @@ def _discover_port_processes(known_ports: dict[str, int]) -> tuple[list[dict[str
     rows.sort(
         key=lambda item: (
             item.get("service") or "",
-            item.get("status") != "LISTEN",
-            item.get("status") or "",
+            _socket_status_sort(str(item.get("status") or "")),
             item.get("pid") or 0,
             item.get("local") or "",
             item.get("remote") or "",
@@ -393,6 +450,7 @@ def _process_payload(
     sources: list[str],
     roles: list[str],
     known_ports: dict[str, int],
+    current_pid: int,
 ) -> dict[str, Any]:
     with proc.oneshot():
         pid = int(proc.pid)
@@ -430,7 +488,7 @@ def _process_payload(
         "username": str(username or ""),
         "roles": roles,
         "sources": sources,
-        "is_current_process": pid == os.getpid(),
+        "is_current_process": pid == current_pid,
         "is_repo_process": _path_contains(cwd, repo_root) or _path_contains(cmdline, repo_root),
         "created_at": _format_epoch(create_time),
         "cwd": str(cwd or ""),
@@ -477,29 +535,23 @@ def _process_known_ports(proc: Any, known_ports: dict[str, int]) -> list[dict[st
                 {
                     "service": port_to_name[port],
                     "port": port,
-                    "status": str(getattr(conn, "status", "") or "").upper(),
+                    "status": str(getattr(conn, "status", "") or ""),
                     "local": _format_address(local),
                     "remote": _format_address(remote),
                 }
             )
-    rows.sort(key=lambda item: (item.get("service") or "", item.get("status") != "LISTEN", item.get("status") or ""))
     return rows[:20]
 
 
-def _connection_payloads(
-    relevant_pids: set[int],
-    known_ports: dict[str, int],
-    *,
-    limit: int,
-) -> tuple[list[dict[str, Any]], Counter[str]]:
+def _connection_payloads(relevant_pids: set[int], known_ports: dict[str, int], *, limit: int) -> list[dict[str, Any]]:
     if psutil is None:
-        return [], Counter()
+        return []
     rows: list[dict[str, Any]] = []
     port_to_name = {port: name for name, port in known_ports.items()}
     try:
         connections = psutil.net_connections(kind="inet")
     except Exception:
-        return rows, Counter()
+        return rows
     for conn in connections:
         pid = getattr(conn, "pid", None)
         local = getattr(conn, "laddr", None)
@@ -513,14 +565,180 @@ def _connection_payloads(
             {
                 "pid": int(pid) if pid else None,
                 "service": port_to_name.get(int(matched_port), "") if matched_port is not None else "",
-                "status": str(getattr(conn, "status", "") or "").upper(),
+                "status": str(getattr(conn, "status", "") or ""),
                 "local": _format_address(local),
                 "remote": _format_address(remote),
             }
         )
-    status_counts = _status_counts(rows)
-    rows.sort(key=lambda item: (item.get("service") or "", item.get("status") != "LISTEN", item.get("status") or "", item.get("pid") or 0, item.get("local") or ""))
-    return rows[:limit], status_counts
+    rows.sort(key=lambda item: (item.get("service") or "", _socket_status_sort(str(item.get("status") or "")), item.get("pid") or 0, item.get("local") or ""))
+    return rows[:limit]
+
+
+def _service_summary(known_ports: dict[str, int], port_activity: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for service, port in sorted(known_ports.items(), key=lambda item: (item[0], item[1])):
+        activity = [row for row in port_activity if row.get("service") == service and int(row.get("port") or -1) == int(port)]
+        listeners = [row for row in activity if str(row.get("status") or "").upper() == "LISTEN"]
+        active = [row for row in activity if _is_active_socket_status(row.get("status"))]
+        status_counts = Counter(str(row.get("status") or "UNKNOWN") for row in activity)
+        listener_pids = sorted({int(row["pid"]) for row in listeners if isinstance(row.get("pid"), int)})
+        listener_endpoints = sorted({str(row.get("local") or "") for row in listeners if row.get("local")})
+        findings: list[str] = []
+        if len(listener_pids) > 1:
+            findings.append("multiple-listener-pids")
+        if any(_is_any_address(endpoint) for endpoint in listener_endpoints):
+            findings.append("any-address-listener")
+        if listeners:
+            state = "listening"
+        elif active:
+            state = "active-no-listener"
+        else:
+            state = "not-observed"
+        rows.append(
+            {
+                "service": service,
+                "port": int(port),
+                "state": state,
+                "listener_count": len(listeners),
+                "listener_pids": listener_pids,
+                "listener_endpoints": listener_endpoints,
+                "activity_count": len(activity),
+                "active_activity_count": len(active),
+                "time_wait_count": int(status_counts.get("TIME_WAIT", 0)),
+                "status_counts": dict(status_counts),
+                "findings": findings,
+            }
+        )
+    return rows
+
+
+def _role_summary(processes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[str, dict[str, Any]] = {}
+    for process in processes:
+        for role in _summary_roles(process):
+            bucket = buckets.setdefault(
+                role,
+                {
+                    "role": role,
+                    "process_count": 0,
+                    "rss": 0,
+                    "thread_count": 0,
+                    "pids": [],
+                    "top_process": None,
+                },
+            )
+            bucket["process_count"] += 1
+            bucket["rss"] += int(process.get("memory_rss") or 0)
+            bucket["thread_count"] += int(process.get("num_threads") or 0)
+            bucket["pids"].append(process.get("pid"))
+            top = bucket.get("top_process")
+            if not top or int(process.get("memory_rss") or 0) > int(top.get("memory_rss") or 0):
+                bucket["top_process"] = _process_brief(process)
+    rows = []
+    for role, bucket in buckets.items():
+        row = dict(bucket)
+        row["rss_human"] = _human_bytes(row["rss"])
+        row["pids"] = sorted(pid for pid in row["pids"] if isinstance(pid, int))[:24]
+        rows.append(row)
+    rows.sort(key=lambda row: (-int(row.get("rss") or 0), str(row.get("role") or "")))
+    return rows
+
+
+def _summary_roles(process: dict[str, Any]) -> list[str]:
+    roles = {str(role) for role in process.get("roles", []) if role}
+    result: list[str] = []
+    for role in ("viewport-current", "viewport", "heartbeat", "app", "hub", "worker", "ollama", "gitea", "blockchain", "docker", "wsl", "main-computer"):
+        if role in roles:
+            result.append(role)
+    if process.get("is_repo_process") and "repo-process" not in result:
+        result.append("repo-process")
+    return result or ["support"]
+
+
+def _top_processes(processes: list[dict[str, Any]], *, limit: int = 12) -> list[dict[str, Any]]:
+    rows = sorted(processes, key=lambda row: int(row.get("memory_rss") or 0), reverse=True)
+    return [_process_brief(row) for row in rows[:limit]]
+
+
+def _process_brief(process: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "pid": process.get("pid"),
+        "name": process.get("name"),
+        "roles": process.get("roles", []),
+        "memory_rss": process.get("memory_rss"),
+        "memory_human": process.get("memory_human"),
+        "cpu_percent": process.get("cpu_percent"),
+        "num_threads": process.get("num_threads"),
+        "known_port_count": len(process.get("known_ports") or []),
+        "command_preview": process.get("command_preview") or process.get("exe") or "",
+    }
+
+
+def _operator_summary(
+    *,
+    service_summary: list[dict[str, Any]],
+    top_processes: list[dict[str, Any]],
+    summary_values: dict[str, Any],
+    warnings: list[str],
+    observations: list[str],
+) -> dict[str, Any]:
+    attention: list[str] = []
+    next_checks: list[str] = []
+
+    if warnings:
+        attention.extend(warnings[:6])
+
+    missing_required = [
+        row.get("service")
+        for row in service_summary
+        if row.get("service") in {"app", "heartbeat"} and row.get("state") != "listening"
+    ]
+    if missing_required:
+        attention.append(f"Required service listeners missing: {', '.join(str(name) for name in missing_required)}.")
+        next_checks.append("Restart the viewport/heartbeat pair or run Level 5 if the listener does not return.")
+
+    for row in service_summary:
+        findings = set(row.get("findings") or [])
+        service = str(row.get("service") or "")
+        if "multiple-listener-pids" in findings:
+            attention.append(f"{service} port {row.get('port')} has multiple listener PIDs: {row.get('listener_pids')}.")
+        if "any-address-listener" in findings:
+            next_checks.append(f"Check whether {service} should be bound to all interfaces or loopback only.")
+
+    for process in top_processes[:4]:
+        rss = int(process.get("memory_rss") or 0)
+        if rss >= 1024 * 1024 * 1024:
+            attention.append(f"High-memory process: {process.get('name')} pid {process.get('pid')} uses {process.get('memory_human')}.")
+            break
+
+    if not attention:
+        attention.append(
+            f"No Level 1 hard warnings. {summary_values.get('known_port_listener_count', 0)} known-port listeners and "
+            f"{summary_values.get('known_port_time_wait_count', 0)} TIME_WAIT rows observed."
+        )
+
+    if not next_checks and observations:
+        next_checks.append("Review observations for transient process churn, but no hard Level 1 warning was raised.")
+    if not next_checks:
+        next_checks.append("Use Level 5 Diagnostics only if a service is unreachable or a Level 1 warning appears.")
+
+    state = "ok"
+    if warnings or missing_required:
+        state = "degraded"
+    elif any("multiple-listener-pids" in set(row.get("findings") or []) for row in service_summary):
+        state = "attention"
+
+    headline = (
+        f"{summary_values.get('process_count', 0)} processes · "
+        f"{summary_values.get('known_port_listener_count', 0)} listeners · "
+        f"{summary_values.get('total_rss_human', '0 B')} RSS"
+    )
+    return {
+        "state": state,
+        "headline": headline,
+        "attention": attention[:12],
+        "next_checks": _dedupe(next_checks)[:8],
+    }
 
 
 def _process_tree(processes: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -542,127 +760,6 @@ def _process_tree(processes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         }
 
     return [node(pid) for pid in sorted(children.get(None, []))]
-
-
-def _pid_file_health(
-    pid_files: list[dict[str, Any]],
-    processes: list[dict[str, Any]],
-    volatile_pids: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    readable_pids = {int(row["pid"]) for row in processes if isinstance(row.get("pid"), int)}
-    volatile = {int(row["pid"]) for row in volatile_pids if isinstance(row.get("pid"), int)}
-    rows: list[dict[str, Any]] = []
-    for item in pid_files:
-        pid = item.get("pid")
-        if not item.get("exists"):
-            state = "missing"
-        elif not isinstance(pid, int):
-            state = "invalid"
-        elif pid in readable_pids:
-            state = "readable"
-        elif pid in volatile:
-            state = "stale"
-        else:
-            state = "unresolved"
-        rows.append(
-            {
-                "name": item.get("name"),
-                "pid": pid,
-                "state": state,
-                "exists": bool(item.get("exists")),
-            }
-        )
-    return rows
-
-
-def _service_summary(
-    known_ports: dict[str, int],
-    port_listeners: list[dict[str, Any]],
-    port_activity: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for service, port in sorted(known_ports.items(), key=lambda item: item[0]):
-        listeners = [row for row in port_listeners if row.get("service") == service and row.get("port") == port]
-        activity = [row for row in port_activity if row.get("service") == service and row.get("port") == port]
-        listener_pids = sorted({int(row["pid"]) for row in listeners if isinstance(row.get("pid"), int)})
-        listener_endpoints = sorted({str(row.get("local") or "") for row in listeners if row.get("local")})
-        status_counts = _status_counts(activity)
-        findings: list[str] = []
-        if len(listener_pids) > 1:
-            findings.append("multiple-listener-pids")
-        if any(_is_any_address(endpoint) for endpoint in listener_endpoints):
-            findings.append("any-address-listener")
-        if listeners:
-            state = "listening"
-        elif _active_row_count(activity):
-            state = "active-without-listener"
-        else:
-            state = "not-observed"
-        rows.append(
-            {
-                "service": service,
-                "port": port,
-                "state": state,
-                "listener_count": len(listeners),
-                "listener_pids": listener_pids,
-                "listener_endpoints": listener_endpoints,
-                "activity_count": len(activity),
-                "active_activity_count": _active_row_count(activity),
-                "time_wait_count": int(status_counts.get("TIME_WAIT", 0)),
-                "status_counts": dict(status_counts),
-                "findings": findings,
-            }
-        )
-    return rows
-
-
-def _notable_processes(processes: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
-    def brief(row: dict[str, Any]) -> dict[str, Any]:
-        io = row.get("io") if isinstance(row.get("io"), dict) else {}
-        return {
-            "pid": row.get("pid"),
-            "name": row.get("name"),
-            "roles": row.get("roles", []),
-            "memory_human": row.get("memory_human"),
-            "memory_rss": row.get("memory_rss"),
-            "cpu_percent": row.get("cpu_percent"),
-            "num_threads": row.get("num_threads"),
-            "write_bytes": io.get("write_bytes"),
-            "command_preview": row.get("command_preview"),
-        }
-
-    return {
-        "top_memory": [brief(row) for row in sorted(processes, key=lambda row: int(row.get("memory_rss") or 0), reverse=True)[:8]],
-        "top_cpu": [brief(row) for row in sorted(processes, key=lambda row: float(row.get("cpu_percent") or 0), reverse=True)[:8]],
-        "top_io_write": [
-            brief(row)
-            for row in sorted(
-                processes,
-                key=lambda row: int((row.get("io") if isinstance(row.get("io"), dict) else {}).get("write_bytes") or 0),
-                reverse=True,
-            )[:8]
-        ],
-    }
-
-
-def _is_listen(row: dict[str, Any]) -> bool:
-    return str(row.get("status") or "").upper() == "LISTEN"
-
-
-def _status_counts(rows: list[dict[str, Any]]) -> Counter[str]:
-    return Counter(str(row.get("status") or "UNKNOWN").upper() for row in rows)
-
-
-def _active_status_count(status_counts: Counter[str] | dict[str, int]) -> int:
-    return sum(int(count) for status, count in status_counts.items() if str(status).upper() not in NOISY_CONNECTION_STATUSES)
-
-
-def _active_row_count(rows: list[dict[str, Any]]) -> int:
-    return sum(1 for row in rows if str(row.get("status") or "").upper() not in NOISY_CONNECTION_STATUSES)
-
-
-def _is_any_address(endpoint: str) -> bool:
-    return endpoint.startswith("0.0.0.0:") or endpoint.startswith(":::") or endpoint.startswith("[::]:")
 
 
 def _safe_call(func: Any, fallback: Any) -> Any:
@@ -737,6 +834,40 @@ def _human_bytes(value: int | float | None) -> str:
     return f"{amount:.1f} TB"
 
 
+def _socket_status_sort(status: str) -> int:
+    status = status.upper()
+    if status == "LISTEN":
+        return 0
+    if status == "ESTABLISHED":
+        return 1
+    if status in {"SYN_SENT", "SYN_RECV"}:
+        return 2
+    if status in {"CLOSE_WAIT", "FIN_WAIT1", "FIN_WAIT2"}:
+        return 3
+    if status == "TIME_WAIT":
+        return 4
+    return 5
+
+
+def _is_active_socket_status(status: object) -> bool:
+    return str(status or "").upper() not in {"", "NONE", "TIME_WAIT"}
+
+
+def _is_any_address(endpoint: str) -> bool:
+    value = str(endpoint or "").strip().lower()
+    return value.startswith("0.0.0.0:") or value.startswith(":::") or value.startswith("[::]:")
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
 def _process_sort_key(row: dict[str, Any]) -> tuple[int, int, int]:
     role_order = {
         "viewport-current": 0,
@@ -749,6 +880,8 @@ def _process_sort_key(row: dict[str, Any]) -> tuple[int, int, int]:
         "gitea": 7,
         "blockchain": 8,
         "executor": 9,
+        "docker": 10,
+        "wsl": 11,
     }
     roles = row.get("roles") if isinstance(row.get("roles"), list) else []
     first_role = min((role_order.get(str(role), 50) for role in roles), default=50)

@@ -212,14 +212,11 @@ class DiagnosticRunner:
                     "report": str(report_path),
                     "process_count": summary.get("process_count"),
                     "connection_count": summary.get("connection_count"),
-                    "active_connection_count": summary.get("active_connection_count"),
                     "known_port_listener_count": summary.get("known_port_listener_count"),
-                    "known_port_activity_count": summary.get("known_port_activity_count"),
                     "known_port_time_wait_count": summary.get("known_port_time_wait_count"),
-                    "volatile_pid_count": summary.get("volatile_pid_count"),
-                    "service_summary": report.get("service_summary", []),
+                    "observation_count": summary.get("observation_count"),
+                    "operator_summary": report.get("operator_summary", {}),
                     "warnings": report.get("warnings", []),
-                    "observations": report.get("observations", []),
                 },
             )
         except Exception as exc:

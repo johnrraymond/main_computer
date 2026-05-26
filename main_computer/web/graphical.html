@@ -1435,15 +1435,19 @@
             <h3>Telemetry summary</h3>
             <div id="telemetry-summary" class="diagnostics-summary">
               <div class="metric shell-gray"><strong>--</strong><span>processes</span></div>
-              <div class="metric shell-gray"><strong>--</strong><span>listeners</span></div>
-              <div class="metric shell-gray"><strong>--</strong><span>active sockets</span></div>
+              <div class="metric shell-gray"><strong>--</strong><span>connections</span></div>
               <div class="metric shell-gray"><strong>--</strong><span>RSS total</span></div>
+              <div class="metric shell-gray"><strong>--</strong><span>warnings</span></div>
             </div>
-            <div id="telemetry-services" class="diagnostics-findings"></div>
-            <div id="telemetry-observations" class="diagnostics-findings"></div>
           </section>
           <section class="diagnostics-pane" aria-label="Level 1 process telemetry">
-            <h3>Processes and raw payload</h3>
+            <h3>Operator view</h3>
+            <div id="telemetry-operator" class="diagnostics-findings"></div>
+            <h3>Services</h3>
+            <div id="telemetry-services" class="diagnostics-findings"></div>
+            <h3>Process groups</h3>
+            <div id="telemetry-groups" class="diagnostics-findings"></div>
+            <h3>Top processes and raw payload</h3>
             <div id="telemetry-processes" class="diagnostics-findings"></div>
             <pre id="telemetry-json" class="diagnostics-stream"></pre>
           </section>
@@ -1696,34 +1700,36 @@
     function resetTelemetryModal() {
       byId("telemetry-status").textContent = "Pulling Level 1 telemetry…";
       byId("telemetry-clock").textContent = "running";
-      byId("telemetry-processes").textContent = "";
+      byId("telemetry-operator").textContent = "";
       byId("telemetry-services").textContent = "";
-      byId("telemetry-observations").textContent = "";
+      byId("telemetry-groups").textContent = "";
+      byId("telemetry-processes").textContent = "";
       byId("telemetry-json").textContent = "";
       byId("telemetry-summary").innerHTML = `
         <div class="metric shell-gray"><strong>--</strong><span>processes</span></div>
         <div class="metric shell-gray"><strong>--</strong><span>listeners</span></div>
         <div class="metric shell-gray"><strong>--</strong><span>active sockets</span></div>
         <div class="metric shell-gray"><strong>--</strong><span>RSS total</span></div>
+        <div class="metric shell-gray"><strong>--</strong><span>attention</span></div>
       `;
     }
 
     function renderTelemetrySummary(payload) {
       const summary = payload.summary || {};
+      const operator = payload.operator_summary || {};
       const target = byId("telemetry-summary");
       const warningCount = Number(summary.warning_count || 0);
       const observationCount = Number(summary.observation_count || 0);
+      const attentionCount = warningCount || observationCount;
       const processCount = Number(summary.process_count || 0);
       const listenerCount = Number(summary.known_port_listener_count || 0);
-      const timeWaitCount = Number(summary.known_port_time_wait_count || 0);
-      const activeSockets = Number(summary.active_connection_count ?? summary.connection_count ?? 0);
+      const activeKnown = Number(summary.active_known_port_activity_count || 0);
       const cards = [
         ["processes", processCount, processCount ? "shell-green" : "shell-gold"],
-        ["listeners", listenerCount, listenerCount ? "shell-green" : "shell-gold"],
-        ["active sockets", activeSockets, "shell-cyan"],
-        ["TIME_WAIT", timeWaitCount, timeWaitCount ? "shell-gray" : "shell-green"],
+        ["listeners", listenerCount, listenerCount ? "shell-cyan" : "shell-gold"],
+        ["active sockets", activeKnown, "shell-cyan"],
         ["RSS total", summary.total_rss_human || "0 B", "shell-gray"],
-        ["warnings", warningCount, warningCount ? "shell-gold" : "shell-green"]
+        ["attention", attentionCount, warningCount ? "shell-gold" : "shell-green"]
       ];
       target.textContent = "";
       cards.forEach(([label, value, shellClass]) => {
@@ -1737,7 +1743,36 @@
         target.append(card);
       });
       const ports = Object.entries(payload.known_ports || {}).map(([name, port]) => `${name}:${port}`).join(" · ");
-      byId("telemetry-status").textContent = `Level 1 telemetry captured ${processCount} processes · ${listenerCount} listeners · ${observationCount} observations · ${ports || "no known ports"}`;
+      byId("telemetry-status").textContent = `${operator.headline || `Level 1 telemetry captured ${processCount} processes`} · ${ports || "no known ports"}`;
+    }
+
+    function addFinding(target, level, heading, detail, extra = "") {
+      const row = document.createElement("div");
+      row.className = `finding-row ${level}`;
+      const strong = document.createElement("strong");
+      strong.textContent = heading;
+      const span = document.createElement("span");
+      span.textContent = detail;
+      row.append(strong, span);
+      if (extra) {
+        const extraSpan = document.createElement("span");
+        extraSpan.textContent = extra;
+        row.append(extraSpan);
+      }
+      target.append(row);
+    }
+
+    function renderTelemetryOperator(payload) {
+      const target = byId("telemetry-operator");
+      target.textContent = "";
+      const operator = payload.operator_summary || {};
+      const state = operator.state || "unknown";
+      const level = state === "degraded" ? "warning" : state === "attention" ? "info" : "success";
+      addFinding(target, level, `State: ${state}`, operator.headline || "No operator summary was returned.");
+      (operator.attention || []).slice(0, 8).forEach((item) => addFinding(target, level, "Attention", text(item)));
+      (operator.next_checks || []).slice(0, 6).forEach((item) => addFinding(target, "info", "Next check", text(item)));
+      (payload.observations || []).slice(0, 4).forEach((item) => addFinding(target, "info", "Observation", text(item)));
+      (payload.warnings || []).slice(0, 4).forEach((item) => addFinding(target, "warning", "Warning", text(item)));
     }
 
     function renderTelemetryServices(payload) {
@@ -1745,72 +1780,47 @@
       target.textContent = "";
       const services = Array.isArray(payload.service_summary) ? payload.service_summary : [];
       if (!services.length) {
-        const row = document.createElement("div");
-        row.className = "finding-row warning";
-        row.innerHTML = "<strong>No service summary</strong><span>No configured known ports were available for rollup.</span>";
-        target.append(row);
+        addFinding(target, "warning", "No service rows", "Telemetry did not return a service rollup.");
         return;
       }
       services.forEach((service) => {
-        const row = document.createElement("div");
-        const state = service.state || "unknown";
-        row.className = `finding-row ${state === "listening" ? "pass" : "warn"}`;
-        const pids = Array.isArray(service.listener_pids) && service.listener_pids.length ? service.listener_pids.join(", ") : "none";
         const findings = Array.isArray(service.findings) && service.findings.length ? ` · ${service.findings.join(", ")}` : "";
-        const heading = document.createElement("strong");
-        heading.textContent = `${service.service}:${service.port} · ${state}`;
-        const detail = document.createElement("span");
-        detail.textContent = `listeners ${service.listener_count || 0} · pids ${pids} · active ${service.active_activity_count || 0} · TIME_WAIT ${service.time_wait_count || 0}${findings}`;
-        const endpoints = document.createElement("span");
-        endpoints.textContent = Array.isArray(service.listener_endpoints) && service.listener_endpoints.length ? service.listener_endpoints.join(" · ") : "no listener endpoints";
-        row.append(heading, detail, endpoints);
-        target.append(row);
+        const pids = Array.isArray(service.listener_pids) && service.listener_pids.length ? `pids ${service.listener_pids.join(", ")}` : "no listener pid";
+        const detail = `${service.state || "unknown"} · listeners ${service.listener_count || 0} · active ${service.active_activity_count || 0} · TIME_WAIT ${service.time_wait_count || 0} · ${pids}${findings}`;
+        const level = service.state === "listening" ? (findings ? "info" : "success") : "warning";
+        addFinding(target, level, `${service.service}:${service.port}`, detail);
       });
     }
 
-    function renderTelemetryObservations(payload) {
-      const target = byId("telemetry-observations");
+    function renderTelemetryGroups(payload) {
+      const target = byId("telemetry-groups");
       target.textContent = "";
-      const warnings = Array.isArray(payload.warnings) ? payload.warnings : [];
-      const observations = Array.isArray(payload.observations) ? payload.observations : [];
-      [...warnings.map((item) => ["warn", item]), ...observations.map((item) => ["info", item])].slice(0, 16).forEach(([kind, message]) => {
-        const row = document.createElement("div");
-        row.className = `finding-row ${kind}`;
-        const heading = document.createElement("strong");
-        heading.textContent = kind === "warn" ? "Warning" : "Observation";
-        const detail = document.createElement("span");
-        detail.textContent = message;
-        row.append(heading, detail);
-        target.append(row);
+      const groups = Array.isArray(payload.role_summary) ? payload.role_summary : [];
+      if (!groups.length) {
+        addFinding(target, "info", "No process groups", "No grouped process summary was returned.");
+        return;
+      }
+      groups.slice(0, 12).forEach((group) => {
+        const top = group.top_process ? ` · top ${group.top_process.name || "process"} pid ${group.top_process.pid}` : "";
+        addFinding(target, "info", group.role || "group", `${group.process_count || 0} processes · ${group.rss_human || "0 B"} RSS · ${group.thread_count || 0} threads${top}`);
       });
     }
 
     function renderTelemetryProcesses(payload) {
       const target = byId("telemetry-processes");
       target.textContent = "";
-      const processes = Array.isArray(payload.processes) ? payload.processes : [];
+      const topProcesses = Array.isArray(payload.top_processes) ? payload.top_processes : [];
+      const processes = topProcesses.length ? topProcesses : (Array.isArray(payload.processes) ? payload.processes : []);
       if (!processes.length) {
-        const row = document.createElement("div");
-        row.className = "finding-row warning";
-        row.innerHTML = "<strong>No process rows</strong><span>Telemetry did not find readable Main Computer processes.</span>";
-        target.append(row);
+        addFinding(target, "warning", "No process rows", "Telemetry did not find readable Main Computer processes.");
         return;
       }
-      processes.slice(0, 40).forEach((process) => {
-        const row = document.createElement("div");
-        row.className = "finding-row info";
+      processes.slice(0, 16).forEach((process) => {
         const roles = Array.isArray(process.roles) && process.roles.length ? process.roles.join(", ") : "unclassified";
-        const ports = Array.isArray(process.known_ports) && process.known_ports.length
-          ? ` · ports ${process.known_ports.map((item) => `${item.service}:${item.port}`).join(", ")}`
-          : "";
-        const heading = document.createElement("strong");
-        heading.textContent = `${roles} · pid ${process.pid} · ${process.name || "process"}`;
-        const detail = document.createElement("span");
-        detail.textContent = `${process.memory_human || "memory n/a"} · CPU ${process.cpu_percent ?? "n/a"}% · threads ${process.num_threads ?? "n/a"}${ports}`;
-        const command = document.createElement("span");
-        command.textContent = process.command_preview || process.exe || "";
-        row.append(heading, detail, command);
-        target.append(row);
+        const ports = Number(process.known_port_count || 0) ? ` · known ports ${process.known_port_count}` : "";
+        const heading = `${roles} · pid ${process.pid} · ${process.name || "process"}`;
+        const detail = `${process.memory_human || "memory n/a"} · CPU ${process.cpu_percent ?? "n/a"}% · threads ${process.num_threads ?? "n/a"}${ports}`;
+        addFinding(target, "info", heading, detail, process.command_preview || process.exe || "");
       });
     }
 
@@ -1825,8 +1835,9 @@
         const payload = await response.json();
         if (!response.ok || !payload.ok) throw new Error(payload.error || `HTTP ${response.status}`);
         renderTelemetrySummary(payload);
+        renderTelemetryOperator(payload);
         renderTelemetryServices(payload);
-        renderTelemetryObservations(payload);
+        renderTelemetryGroups(payload);
         renderTelemetryProcesses(payload);
         byId("telemetry-json").textContent = JSON.stringify(payload, null, 2);
         byId("telemetry-clock").textContent = "complete";

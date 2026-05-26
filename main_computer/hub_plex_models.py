@@ -87,6 +87,8 @@ class HubAIRequest:
     idempotency_key: str = ""
     deadline_seconds: float = 0.0
     requested_worker_node_id: str = ""
+    account_id: str = ""
+    max_credits: int = 0
 
     @classmethod
     def from_messages(
@@ -100,6 +102,8 @@ class HubAIRequest:
         idempotency_key: str = "",
         deadline_seconds: float = 0.0,
         requested_worker_node_id: str = "",
+        account_id: str = "",
+        max_credits: int = 0,
     ) -> "HubAIRequest":
         return cls(
             messages=[chat_message_to_payload(message) for message in messages],
@@ -110,6 +114,8 @@ class HubAIRequest:
             idempotency_key=str(idempotency_key or "").strip(),
             deadline_seconds=max(0.0, float(deadline_seconds or 0.0)),
             requested_worker_node_id=clean_node_id(requested_worker_node_id, default="") if requested_worker_node_id else "",
+            account_id=clean_node_id(account_id, default="") if account_id else "",
+            max_credits=max(0, int(max_credits or 0)),
         )
 
     @classmethod
@@ -133,6 +139,11 @@ class HubAIRequest:
         requested_worker_node_id = str(
             payload.get("worker_node_id") or payload.get("requested_worker_node_id") or metadata.get("worker_node_id") or ""
         ).strip()
+        account_id = str(payload.get("account_id") or metadata.get("account_id") or "").strip()
+        try:
+            max_credits = int(payload.get("max_credits") or metadata.get("max_credits") or 0)
+        except (TypeError, ValueError):
+            max_credits = 0
         try:
             deadline_seconds = float(payload.get("deadline_seconds") or payload.get("timeout_seconds") or metadata.get("deadline_seconds") or 0.0)
         except (TypeError, ValueError):
@@ -146,6 +157,8 @@ class HubAIRequest:
             idempotency_key=idempotency_key,
             deadline_seconds=max(0.0, deadline_seconds),
             requested_worker_node_id=clean_node_id(requested_worker_node_id, default="") if requested_worker_node_id else "",
+            account_id=clean_node_id(account_id, default="") if account_id else "",
+            max_credits=max(0, max_credits),
         )
 
     def as_payload(self) -> dict[str, Any]:
@@ -158,6 +171,8 @@ class HubAIRequest:
             "idempotency_key": str(self.idempotency_key or "").strip(),
             "deadline_seconds": max(0.0, float(self.deadline_seconds or 0.0)),
             "requested_worker_node_id": clean_node_id(self.requested_worker_node_id, default="") if self.requested_worker_node_id else "",
+            "account_id": clean_node_id(self.account_id, default="") if self.account_id else "",
+            "max_credits": max(0, int(self.max_credits or 0)),
         }
 
 
@@ -276,6 +291,14 @@ class HubRequestRecord:
     attempt_history: list[dict[str, Any]] = field(default_factory=list)
     terminal_reason: str = ""
     requested_worker_node_id: str = ""
+    account_id: str = ""
+    max_credits: int = 0
+    hold_id: str = ""
+    charge_id: str = ""
+    charged_credits: int = 0
+    released_credits: int = 0
+    worker_earning_id: str = ""
+    receipt: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -302,6 +325,14 @@ class HubRequestRecord:
             "attempt_history": [dict(item) for item in self.attempt_history],
             "terminal_reason": self.terminal_reason,
             "requested_worker_node_id": self.requested_worker_node_id,
+            "account_id": self.account_id,
+            "max_credits": max(0, int(self.max_credits or 0)),
+            "hold_id": self.hold_id,
+            "charge_id": self.charge_id,
+            "charged_credits": max(0, int(self.charged_credits or 0)),
+            "released_credits": max(0, int(self.released_credits or 0)),
+            "worker_earning_id": self.worker_earning_id,
+            "receipt": dict(self.receipt),
         }
 
     @classmethod
@@ -333,6 +364,14 @@ class HubRequestRecord:
             attempt_history=[dict(item) for item in payload.get("attempt_history", []) if isinstance(item, dict)],
             terminal_reason=str(payload.get("terminal_reason", "") or ""),
             requested_worker_node_id=str(payload.get("requested_worker_node_id", "") or ""),
+            account_id=str(payload.get("account_id", "") or ""),
+            max_credits=max(0, int(payload.get("max_credits", 0) or 0)),
+            hold_id=str(payload.get("hold_id", "") or ""),
+            charge_id=str(payload.get("charge_id", "") or ""),
+            charged_credits=max(0, int(payload.get("charged_credits", 0) or 0)),
+            released_credits=max(0, int(payload.get("released_credits", 0) or 0)),
+            worker_earning_id=str(payload.get("worker_earning_id", "") or ""),
+            receipt=dict(payload.get("receipt", {})) if isinstance(payload.get("receipt"), dict) else {},
         )
 
 
@@ -361,6 +400,14 @@ class HubRequestStatus:
     attempt_history: list[dict[str, Any]] = field(default_factory=list)
     terminal_reason: str = ""
     requested_worker_node_id: str = ""
+    account_id: str = ""
+    max_credits: int = 0
+    hold_id: str = ""
+    charge_id: str = ""
+    charged_credits: int = 0
+    released_credits: int = 0
+    worker_earning_id: str = ""
+    receipt: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_record(cls, record: HubRequestRecord, *, polling_url: str = "") -> "HubRequestStatus":
@@ -388,6 +435,14 @@ class HubRequestStatus:
             attempt_history=[dict(item) for item in record.attempt_history],
             terminal_reason=record.terminal_reason,
             requested_worker_node_id=record.requested_worker_node_id,
+            account_id=record.account_id,
+            max_credits=record.max_credits,
+            hold_id=record.hold_id,
+            charge_id=record.charge_id,
+            charged_credits=record.charged_credits,
+            released_credits=record.released_credits,
+            worker_earning_id=record.worker_earning_id,
+            receipt=dict(record.receipt),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -413,7 +468,16 @@ class HubRequestStatus:
             "attempt_history": [dict(item) for item in self.attempt_history],
             "terminal_reason": self.terminal_reason,
             "requested_worker_node_id": self.requested_worker_node_id,
+            "account_id": self.account_id,
+            "max_credits": max(0, int(self.max_credits or 0)),
+            "hold_id": self.hold_id,
+            "charge_id": self.charge_id,
+            "charged_credits": max(0, int(self.charged_credits or 0)),
+            "released_credits": max(0, int(self.released_credits or 0)),
+            "worker_earning_id": self.worker_earning_id,
         }
+        if self.receipt:
+            data["receipt"] = dict(self.receipt)
         if self.response is not None:
             data["response"] = dict(self.response)
         if self.polling_url:
