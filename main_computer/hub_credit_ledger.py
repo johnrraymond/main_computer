@@ -268,6 +268,185 @@ class HubCreditLedger:
             earnings = [earning for earning in earnings if earning.request_id == clean_request]
         return sorted(earnings, key=lambda item: item.created_at, reverse=True)[:clean_limit]
 
+    def bridge_reconciliation_totals(self, account_id: str) -> dict[str, Any]:
+        clean_id = clean_account_id(account_id)
+        data = self._load()
+        transactions = [_transaction_from_dict(item) for item in data["transactions"]]
+        rectifications = [
+            tx for tx in transactions
+            if tx.account_id == clean_id and tx.transaction_type == "bridge_spend_rectified"
+        ]
+        withdrawals = [
+            tx for tx in transactions
+            if tx.account_id == clean_id and tx.transaction_type == "withdrawal_released"
+        ]
+        return {
+            "ok": True,
+            "account_id": clean_id,
+            "rectified_credits": sum(tx.credits for tx in rectifications),
+            "withdrawn_credits": sum(tx.credits for tx in withdrawals),
+            "rectification_count": len(rectifications),
+            "withdrawal_count": len(withdrawals),
+            "rectifications": [tx.as_dict() for tx in rectifications],
+            "withdrawals": [tx.as_dict() for tx in withdrawals],
+        }
+
+    def record_bridge_reconciliation(
+        self,
+        *,
+        account_id: str,
+        rectified_credits: int = 0,
+        withdrawn_credits: int = 0,
+        rectification_id: str = "",
+        withdrawal_id: str = "",
+        recipient_address: str = "",
+        memo: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Record bridge escrow reconciliation that has already landed on-chain.
+
+        Rectification records do not change the hub balance because finalized
+        charges already moved requester credits into spent credits.  Withdrawal
+        records reduce available credits so funds released from escrow cannot be
+        privately spent again inside the hub.
+        """
+
+        clean_id = clean_account_id(account_id)
+        clean_rectified = positive_int(rectified_credits)
+        clean_withdrawn = positive_int(withdrawn_credits)
+        if clean_rectified <= 0 and clean_withdrawn <= 0:
+            raise ValueError("rectified_credits or withdrawn_credits must be positive.")
+        now = utc_now()
+        base_metadata = dict(metadata or {})
+        txs: list[HubCreditTransaction] = []
+
+        with self._lock:
+            data = self._load_unlocked()
+            account = self._ensure_account_unlocked(data, clean_id, now=now)
+
+            existing_transactions = [_transaction_from_dict(item) for item in data["transactions"]]
+            existing_rectification = None
+            if clean_rectified > 0 and rectification_id:
+                existing_rectification = next(
+                    (
+                        tx for tx in existing_transactions
+                        if tx.account_id == clean_id
+                        and tx.transaction_type == "bridge_spend_rectified"
+                        and str(tx.metadata.get("rectification_id", "")) == str(rectification_id)
+                    ),
+                    None,
+                )
+            existing_withdrawal = None
+            if clean_withdrawn > 0 and withdrawal_id:
+                existing_withdrawal = next(
+                    (
+                        tx for tx in existing_transactions
+                        if tx.account_id == clean_id
+                        and tx.transaction_type == "withdrawal_released"
+                        and str(tx.metadata.get("withdrawal_id", "")) == str(withdrawal_id)
+                    ),
+                    None,
+                )
+
+            if clean_rectified > 0 and existing_rectification is None:
+                rectification_tx = HubCreditTransaction(
+                    transaction_id=stable_id(
+                        "ctx",
+                        {
+                            "type": "bridge_spend_rectified",
+                            "account_id": clean_id,
+                            "rectification_id": rectification_id,
+                            "credits": clean_rectified,
+                        },
+                    ),
+                    account_id=clean_id,
+                    transaction_type="bridge_spend_rectified",
+                    credits=clean_rectified,
+                    created_at=now,
+                    memo=memo or "bridge spend rectified on-chain",
+                    metadata={
+                        **base_metadata,
+                        "rectification_id": str(rectification_id or ""),
+                    },
+                )
+                data["transactions"].append(rectification_tx.as_dict())
+                txs.append(rectification_tx)
+
+            if clean_withdrawn > 0 and existing_withdrawal is None:
+                if account.available_credits < clean_withdrawn:
+                    raise ValueError(
+                        f"Cannot record withdrawal of {clean_withdrawn} credits for {clean_id}; "
+                        f"only {account.available_credits} credits are available in the hub ledger."
+                    )
+                account = HubCreditAccount(
+                    account_id=account.account_id,
+                    owner_address=account.owner_address,
+                    available_credits=account.available_credits - clean_withdrawn,
+                    held_credits=account.held_credits,
+                    spent_credits=account.spent_credits,
+                    earned_credits=account.earned_credits,
+                    created_at=account.created_at,
+                    updated_at=now,
+                    metadata=account.metadata,
+                )
+                withdrawal_tx = HubCreditTransaction(
+                    transaction_id=stable_id(
+                        "ctx",
+                        {
+                            "type": "withdrawal_released",
+                            "account_id": clean_id,
+                            "withdrawal_id": withdrawal_id,
+                            "credits": clean_withdrawn,
+                        },
+                    ),
+                    account_id=clean_id,
+                    transaction_type="withdrawal_released",
+                    credits=clean_withdrawn,
+                    created_at=now,
+                    memo=memo or "bridge escrow withdrawal released on-chain",
+                    metadata={
+                        **base_metadata,
+                        "withdrawal_id": str(withdrawal_id or ""),
+                        "recipient_address": str(recipient_address or ""),
+                    },
+                )
+                data["transactions"].append(withdrawal_tx.as_dict())
+                data["accounts"][account.account_id] = account.as_dict()
+                txs.append(withdrawal_tx)
+            elif clean_withdrawn <= 0:
+                data["accounts"][account.account_id] = account.as_dict()
+
+            self._save_unlocked(data)
+            bridge_txs = [_transaction_from_dict(item) for item in data["transactions"]]
+            bridge_rectifications = [
+                tx for tx in bridge_txs
+                if tx.account_id == clean_id and tx.transaction_type == "bridge_spend_rectified"
+            ]
+            bridge_withdrawals = [
+                tx for tx in bridge_txs
+                if tx.account_id == clean_id and tx.transaction_type == "withdrawal_released"
+            ]
+            return {
+                "ok": True,
+                "idempotent": bool(
+                    (clean_rectified <= 0 or existing_rectification is not None)
+                    and (clean_withdrawn <= 0 or existing_withdrawal is not None)
+                ),
+                "account": account.as_dict(),
+                "transactions": [tx.as_dict() for tx in txs],
+                "bridge_reconciliation": {
+                    "ok": True,
+                    "account_id": clean_id,
+                    "rectified_credits": sum(tx.credits for tx in bridge_rectifications),
+                    "withdrawn_credits": sum(tx.credits for tx in bridge_withdrawals),
+                    "rectification_count": len(bridge_rectifications),
+                    "withdrawal_count": len(bridge_withdrawals),
+                    "rectifications": [tx.as_dict() for tx in bridge_rectifications],
+                    "withdrawals": [tx.as_dict() for tx in bridge_withdrawals],
+                },
+                "ledger": self._status_from_data(data),
+            }
+
     def issue(
         self,
         *,

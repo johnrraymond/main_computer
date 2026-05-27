@@ -1008,6 +1008,24 @@ class HubServerHandler(_JsonHandler):
             ]
             self._send_json({"ok": True, "transactions": transactions, "transaction_count": len(transactions)})
             return
+        if path == "/api/hub/v1/credits/charges":
+            account_id = query.get("account_id", [""])[0]
+            request_id = query.get("request_id", [""])[0]
+            limit = int(query.get("limit", ["100"])[0] or 100)
+            charges = [
+                charge.as_dict()
+                for charge in self.server.credit_ledger.list_charges(
+                    account_id=account_id,
+                    request_id=request_id,
+                    limit=limit,
+                )
+            ]
+            self._send_json({"ok": True, "charges": charges, "charge_count": len(charges)})
+            return
+        if path == "/api/hub/v1/credits/bridge-reconciliation":
+            account_id = query.get("account_id", [""])[0]
+            self._send_json(self.server.credit_ledger.bridge_reconciliation_totals(account_id))
+            return
         if path in {"/api/hub/v1/credits/deposits", "/api/hub/v1/credits/purchases"}:
             account_id = query.get("account_id", [""])[0]
             limit = int(query.get("limit", ["100"])[0] or 100)
@@ -1194,6 +1212,20 @@ class HubServerHandler(_JsonHandler):
             if path in {"/api/hub/v1/credits/deposits/import", "/api/hub/v1/credits/purchases/import"}:
                 body = self._read_json()
                 self._send_json(self.server.credit_indexer.import_deposit(body))
+                return
+            if path == "/api/hub/v1/credits/bridge-reconciliation/record":
+                body = self._read_json()
+                result = self.server.credit_ledger.record_bridge_reconciliation(
+                    account_id=str(body.get("account_id", "")),
+                    rectified_credits=int(body.get("rectified_credits", 0) or 0),
+                    withdrawn_credits=int(body.get("withdrawn_credits", 0) or 0),
+                    rectification_id=str(body.get("rectification_id", "")),
+                    withdrawal_id=str(body.get("withdrawal_id", "")),
+                    recipient_address=str(body.get("recipient_address", "")),
+                    memo=str(body.get("memo", "")),
+                    metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
+                )
+                self._send_json(result)
                 return
             if path == "/api/hub/v1/credits/admin/issue":
                 body = self._read_json()

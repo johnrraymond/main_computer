@@ -18,6 +18,8 @@ CREDIT_TRANSACTION_TYPES = {
     "hold_released",
     "request_charged",
     "worker_earned",
+    "bridge_spend_rectified",
+    "withdrawal_released",
     "refund_issued",
     "batch_settled",
     "admin_adjustment",

@@ -117,6 +117,14 @@ MAX_SITE_RECORDS = 120
 MAX_FILE_COUNT = 24
 MAX_TOTAL_REPLACEMENT_CHARS = 500_000
 
+# Prompt budgets. The full evidence object remains available to deterministic
+# validation/materialization; these only govern what is sent to the AI.
+MAX_ROUTE_SITE_RECORDS = 80
+MAX_ROUTE_VISIBLE_FILES = 80
+MAX_ROUTE_ANCHOR_CHARS = 700
+MAX_PROPOSAL_SITE_FILE_CHARS = 6_000
+MAX_PROPOSAL_BUILDER_SNIPPET_CHARS = 7_000
+
 BUILDER_ALLOWLIST_EXPLICIT = [
     "main_computer/web/applications/scripts/website-builder.js",
     "main_computer/web/applications/styles/website-builder.css",
@@ -569,8 +577,189 @@ def build_evidence(repo: Path, site_id: str) -> dict[str, Any]:
     }
 
 
-def route_prompt(user_prompt: str, evidence: dict[str, Any]) -> str:
-    """Ask the model to choose mounted-chat behavior from scoped evidence.
+def json_char_count(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, indent=2))
+
+
+def truncate_text(value: Any, limit: int) -> str:
+    text = str(value or "")
+    if limit <= 0 or len(text) <= limit:
+        return text
+    omitted = len(text) - limit
+    return text[:limit] + f"\n/* ... truncated {omitted} chars ... */"
+
+
+def compact_record(record: dict[str, Any], *, anchor_limit: int = MAX_ROUTE_ANCHOR_CHARS) -> dict[str, Any]:
+    compact: dict[str, Any] = {}
+    for key, value in record.items():
+        if key == "exact_anchor" and isinstance(value, str):
+            compact[key] = truncate_text(value, anchor_limit)
+            compact["exact_anchor_chars"] = len(value)
+            compact["exact_anchor_truncated"] = len(value) > anchor_limit
+        else:
+            compact[key] = value
+    return compact
+
+
+def site_summary_for_router(site: dict[str, Any]) -> dict[str, Any]:
+    """Compact enough for intent routing; it carries editable labels/text but no full files."""
+    return {
+        "site_id": site.get("site_id"),
+        "site_root": site.get("site_root"),
+        "site_manifest_summary": site.get("site_manifest_summary"),
+        "visible_site_files": list(site.get("visible_site_files") or [])[:MAX_ROUTE_VISIBLE_FILES],
+        "site_file_summaries": [
+            {
+                "path": item.get("path"),
+                "sha256": item.get("sha256"),
+                "chars": item.get("chars"),
+                "truncated": item.get("truncated"),
+            }
+            for item in (site.get("site_files") or [])
+            if isinstance(item, dict)
+        ],
+        "editable_site_records": [
+            compact_record(record)
+            for record in (site.get("editable_site_records") or [])[:MAX_ROUTE_SITE_RECORDS]
+            if isinstance(record, dict)
+        ],
+    }
+
+
+def builder_summary_for_router(builder: dict[str, Any]) -> dict[str, Any]:
+    """Router needs to know builder-code evidence exists, not read all snippets."""
+    return {
+        "builder_allowlist": builder.get("builder_allowlist"),
+        "builder_file_summaries": [
+            {
+                "path": item.get("path"),
+                "sha256": item.get("sha256"),
+                "chars": item.get("chars"),
+                "snippet_chars": item.get("snippet_chars"),
+            }
+            for item in (builder.get("builder_files") or [])
+            if isinstance(item, dict)
+        ],
+    }
+
+
+def build_route_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Evidence sent only to the AI intent router.
+
+    This is intentionally much smaller than proposal evidence. The router is not
+    allowed to choose final paths or edits; it only chooses answer/scope/clarify/
+    propose_edit. Full evidence remains on the server side for validation.
+    """
+    return {
+        "mode": MODE,
+        "evidence_profile": "router-compact",
+        "site_id": evidence.get("site_id"),
+        "allowed_roots": evidence.get("allowed_roots"),
+        "builder_allowlist": evidence.get("builder_allowlist"),
+        "site": site_summary_for_router(evidence.get("site") or {}),
+        "builder": builder_summary_for_router(evidence.get("builder") or {}),
+        "instructions": {
+            "router_only": True,
+            "do_not_choose_final_file_paths": True,
+            "model_may_reason": True,
+            "server_validates": True,
+            "raw_omission_does_not_delete": True,
+        },
+    }
+
+
+def compact_site_for_proposal(site: dict[str, Any], *, include_file_text: bool) -> dict[str, Any]:
+    files: list[dict[str, Any]] = []
+    for item in site.get("site_files") or []:
+        if not isinstance(item, dict):
+            continue
+        file_record = {
+            "path": item.get("path"),
+            "sha256": item.get("sha256"),
+            "chars": item.get("chars"),
+            "truncated": bool(item.get("truncated") or False),
+        }
+        if include_file_text:
+            text = str(item.get("text") or "")
+            file_record["text"] = truncate_text(text, MAX_PROPOSAL_SITE_FILE_CHARS)
+            file_record["text_chars_in_prompt"] = min(len(text), MAX_PROPOSAL_SITE_FILE_CHARS)
+            file_record["text_truncated_for_prompt"] = len(text) > MAX_PROPOSAL_SITE_FILE_CHARS
+        files.append(file_record)
+
+    return {
+        "site_id": site.get("site_id"),
+        "site_root": site.get("site_root"),
+        "site_manifest_summary": site.get("site_manifest_summary"),
+        "visible_site_files": list(site.get("visible_site_files") or [])[:MAX_ROUTE_VISIBLE_FILES],
+        "site_files": files,
+        "editable_site_records": [
+            compact_record(record, anchor_limit=MAX_PROPOSAL_SITE_FILE_CHARS)
+            for record in (site.get("editable_site_records") or [])[:MAX_SITE_RECORDS]
+            if isinstance(record, dict)
+        ],
+    }
+
+
+def compact_builder_for_proposal(builder: dict[str, Any], *, include_snippets: bool) -> dict[str, Any]:
+    files: list[dict[str, Any]] = []
+    for item in builder.get("builder_files") or []:
+        if not isinstance(item, dict):
+            continue
+        file_record = {
+            "path": item.get("path"),
+            "sha256": item.get("sha256"),
+            "chars": item.get("chars"),
+            "snippet_chars": item.get("snippet_chars"),
+        }
+        if include_snippets:
+            snippet = str(item.get("snippet") or "")
+            file_record["snippet"] = truncate_text(snippet, MAX_PROPOSAL_BUILDER_SNIPPET_CHARS)
+            file_record["snippet_chars_in_prompt"] = min(len(snippet), MAX_PROPOSAL_BUILDER_SNIPPET_CHARS)
+            file_record["snippet_truncated_for_prompt"] = len(snippet) > MAX_PROPOSAL_BUILDER_SNIPPET_CHARS
+        files.append(file_record)
+
+    return {
+        "builder_allowlist": builder.get("builder_allowlist"),
+        "builder_files": files,
+    }
+
+
+def build_proposal_evidence(evidence: dict[str, Any], route_decision: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Evidence sent to the proposal model after the AI router chooses propose_edit.
+
+    The target kind from the router is only a context-shaping hint. It never grants
+    write authority; materialize_proposal() still validates paths, exact old values,
+    hashes, and replacement payloads against the full current repo.
+    """
+    target_kind = str((route_decision or {}).get("target_kind") or "mixed")
+    include_site_text = target_kind in {"website", "mixed", "none", ""}
+    include_builder_snippets = target_kind in {"website-builder", "mixed", "none", ""}
+
+    return {
+        "mode": MODE,
+        "evidence_profile": f"proposal-target-{target_kind or 'mixed'}",
+        "site_id": evidence.get("site_id"),
+        "allowed_roots": evidence.get("allowed_roots"),
+        "builder_allowlist": evidence.get("builder_allowlist"),
+        "site": compact_site_for_proposal(evidence.get("site") or {}, include_file_text=include_site_text),
+        "builder": compact_builder_for_proposal(evidence.get("builder") or {}, include_snippets=include_builder_snippets),
+        "instructions": evidence.get("instructions"),
+    }
+
+
+def prompt_evidence_stats(label: str, evidence: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "label": label,
+        "chars": json_char_count(evidence),
+        "site_chars": json_char_count(evidence.get("site") or {}),
+        "builder_chars": json_char_count(evidence.get("builder") or {}),
+        "site_records": len(((evidence.get("site") or {}).get("editable_site_records") or [])),
+        "builder_files": len(((evidence.get("builder") or {}).get("builder_files") or (evidence.get("builder") or {}).get("builder_file_summaries") or [])),
+    }
+
+
+def route_prompt(user_prompt: str, route_evidence: dict[str, Any]) -> str:
+    """Ask the model to choose mounted-chat behavior from compact scoped evidence.
 
     This deliberately avoids a server-side edit-keyword pre-router. The model can
     decide whether the user wants an answer, a clarification, a scope card, or an
@@ -578,13 +767,6 @@ def route_prompt(user_prompt: str, evidence: dict[str, Any]) -> str:
     ask for a candidate proposal; every path and byte change is still validated by
     materialize_proposal() before anything can be applied.
     """
-    compact_evidence = {
-        "site": evidence["site"],
-        "builder": evidence["builder"],
-        "allowed_roots": evidence["allowed_roots"],
-        "builder_allowlist": evidence["builder_allowlist"],
-        "instructions": evidence["instructions"],
-    }
     return (
         "You are the Website Builder mounted-chat AI route decision engine.\n"
         "Return JSON only. Do not include Markdown.\n\n"
@@ -617,7 +799,7 @@ def route_prompt(user_prompt: str, evidence: dict[str, Any]) -> str:
         '  "warnings": []\n'
         "}\n\n"
         f"User prompt:\n{user_prompt}\n\n"
-        f"Evidence JSON:\n{json.dumps(compact_evidence, ensure_ascii=False, indent=2)}\n"
+        f"Evidence JSON:\n{json.dumps(route_evidence, ensure_ascii=False, indent=2)}\n"
     )
 
 
@@ -721,14 +903,7 @@ def non_edit_report(
 
 
 
-def proposal_prompt(user_prompt: str, evidence: dict[str, Any]) -> str:
-    compact_evidence = {
-        "site": evidence["site"],
-        "builder": evidence["builder"],
-        "allowed_roots": evidence["allowed_roots"],
-        "builder_allowlist": evidence["builder_allowlist"],
-        "instructions": evidence["instructions"],
-    }
+def proposal_prompt(user_prompt: str, proposal_evidence: dict[str, Any]) -> str:
     return (
         "You are the Website Builder mounted-chat structured proposal engine.\n"
         "Return JSON only. Do not include Markdown.\n\n"
@@ -757,7 +932,7 @@ def proposal_prompt(user_prompt: str, evidence: dict[str, Any]) -> str:
         "- For create_files, path must not exist and must be under the active site root.\n"
         "- Do not propose deletes.\n\n"
         f"User prompt:\n{user_prompt}\n\n"
-        f"Evidence JSON:\n{json.dumps(compact_evidence, ensure_ascii=False, indent=2)}\n"
+        f"Evidence JSON:\n{json.dumps(proposal_evidence, ensure_ascii=False, indent=2)}\n"
     )
 
 
@@ -1454,15 +1629,16 @@ def run_once(
 
     with StageTimer(verbose, "build scoped Website Builder evidence"):
         evidence = build_evidence(repo, site_id)
+    with StageTimer(verbose, "build compact AI router evidence"):
+        route_evidence = build_route_evidence(evidence)
     with StageTimer(verbose, "build AI router prompt"):
-        route_prompt_text = route_prompt(prompt, evidence)
+        route_prompt_text = route_prompt(prompt, route_evidence)
     write_json(output_dir / "prompt.json", {"prompt": prompt, "route_prompt": route_prompt_text})
     write_json(output_dir / "evidence.json", evidence)
-    verbose_log(
-        verbose,
-        f"evidence_records={len(evidence.get('records') or [])} builder_files={len(evidence.get('builder_allowlist') or [])}",
-        level=2,
-    )
+    write_json(output_dir / "route_evidence.json", route_evidence)
+    verbose_log(verbose, f"full_evidence_chars={json_char_count(evidence)}")
+    verbose_log(verbose, f"route_evidence_stats={prompt_evidence_stats('router', route_evidence)}")
+    verbose_log(verbose, f"route_prompt_chars={len(route_prompt_text)}")
 
     if route_file:
         route_decision = json.loads(Path(route_file).read_text(encoding="utf-8"))
@@ -1495,8 +1671,13 @@ def run_once(
             route_validation=route_validation,
         )
 
+    with StageTimer(verbose, "build compact AI proposal evidence"):
+        proposal_evidence = build_proposal_evidence(evidence, route_decision)
     with StageTimer(verbose, "build AI proposal prompt"):
-        proposal_prompt_text = proposal_prompt(prompt, evidence)
+        proposal_prompt_text = proposal_prompt(prompt, proposal_evidence)
+    write_json(output_dir / "proposal_evidence.json", proposal_evidence)
+    verbose_log(verbose, f"proposal_evidence_stats={prompt_evidence_stats('proposal', proposal_evidence)}")
+    verbose_log(verbose, f"proposal_prompt_chars={len(proposal_prompt_text)}")
     if proposal_file:
         proposal = json.loads(Path(proposal_file).read_text(encoding="utf-8"))
         proposal_source = f"file:{proposal_file}"
@@ -1655,6 +1836,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Override timeout in seconds for the AI edit-proposal call only.",
     )
     parser.add_argument(
+        "--route-site-records",
+        type=int,
+        default=None,
+        help=f"Maximum editable site records included in the AI router prompt. Default: {MAX_ROUTE_SITE_RECORDS}.",
+    )
+    parser.add_argument(
+        "--route-anchor-chars",
+        type=int,
+        default=None,
+        help=f"Maximum chars of each exact HTML/CSS anchor included in the AI router prompt. Default: {MAX_ROUTE_ANCHOR_CHARS}.",
+    )
+    parser.add_argument(
+        "--proposal-site-file-chars",
+        type=int,
+        default=None,
+        help=f"Maximum chars from each site file included in AI proposal evidence. Default: {MAX_PROPOSAL_SITE_FILE_CHARS}.",
+    )
+    parser.add_argument(
+        "--proposal-builder-snippet-chars",
+        type=int,
+        default=None,
+        help=f"Maximum chars from each builder source snippet included in AI proposal evidence. Default: {MAX_PROPOSAL_BUILDER_SNIPPET_CHARS}.",
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="count",
@@ -1664,10 +1869,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def apply_prompt_budget_args(args: argparse.Namespace) -> None:
+    global MAX_ROUTE_SITE_RECORDS
+    global MAX_ROUTE_ANCHOR_CHARS
+    global MAX_PROPOSAL_SITE_FILE_CHARS
+    global MAX_PROPOSAL_BUILDER_SNIPPET_CHARS
+
+    if args.route_site_records is not None:
+        require(args.route_site_records >= 0, "--route-site-records must be >= 0")
+        MAX_ROUTE_SITE_RECORDS = int(args.route_site_records)
+    if args.route_anchor_chars is not None:
+        require(args.route_anchor_chars >= 0, "--route-anchor-chars must be >= 0")
+        MAX_ROUTE_ANCHOR_CHARS = int(args.route_anchor_chars)
+    if args.proposal_site_file_chars is not None:
+        require(args.proposal_site_file_chars >= 0, "--proposal-site-file-chars must be >= 0")
+        MAX_PROPOSAL_SITE_FILE_CHARS = int(args.proposal_site_file_chars)
+    if args.proposal_builder_snippet_chars is not None:
+        require(args.proposal_builder_snippet_chars >= 0, "--proposal-builder-snippet-chars must be >= 0")
+        MAX_PROPOSAL_BUILDER_SNIPPET_CHARS = int(args.proposal_builder_snippet_chars)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     try:
+        apply_prompt_budget_args(args)
         repo = detect_repo_root_arg(args.repo)
         site_id = select_site_id(repo, args.site_id)
         if args.offline_self_check:
