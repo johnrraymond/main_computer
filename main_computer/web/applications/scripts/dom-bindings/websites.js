@@ -46,6 +46,11 @@
     const websiteBuilderPreviewDev = document.querySelector("#website-builder-preview-dev");
     const websiteBuilderPreviewRefresh = document.querySelector("#website-builder-preview-refresh");
     const websiteBuilderPreviewOpen = document.querySelector("#website-builder-preview-open");
+    const websiteBuilderChatToggle = document.querySelector("#website-builder-chat-toggle");
+    const websiteBuilderChatClose = document.querySelector("#website-builder-chat-close");
+    const websiteBuilderChatPopout = document.querySelector("#website-builder-chat-popout");
+    const websiteBuilderChatPanel = document.querySelector("#website-builder-chat-panel");
+    const websiteBuilderChatStatus = document.querySelector("#website-builder-chat-status");
     const websiteBuilderWorkspaceTabs = document.querySelectorAll("[data-website-builder-tab]");
     const websiteBuilderWorkspacePanels = document.querySelectorAll("[data-website-builder-panel]");
     const websiteBuilderFileTabs = document.querySelectorAll("[data-website-builder-file]");

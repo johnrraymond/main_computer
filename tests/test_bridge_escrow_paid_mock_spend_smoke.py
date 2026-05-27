@@ -106,6 +106,13 @@ class BridgeEscrowPaidMockSpendSmokeTests(unittest.TestCase):
             )
             self.assertEqual(imported["account"]["available_credits"], 100_000_000)
 
+    def test_paid_mock_spend_script_bootstraps_repo_root_for_path_invocation(self) -> None:
+        source = (REPO_ROOT / "scripts/run_bridge_escrow_paid_mock_spend_smoke.py").read_text(encoding="utf-8")
+
+        self.assertIn("REPO_ROOT = Path(__file__).resolve().parents[1]", source)
+        self.assertIn("sys.path.insert(0, str(REPO_ROOT))", source)
+        self.assertLess(source.index("sys.path.insert(0, str(REPO_ROOT))"), source.index("from main_computer.config"))
+
     def test_phase1_smoke_spends_four_atom_funded_requesters_and_rejects_unfunded(self) -> None:
         smoke = load_script("scripts/run_bridge_escrow_paid_mock_spend_smoke.py")
 

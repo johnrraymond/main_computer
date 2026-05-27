@@ -20,6 +20,8 @@
       publishedRemoteProdUrls: {},
       localPrepareResult: null,
       pendingPublishingResource: {},
+      chatController: null,
+      chatOpen: false,
       blogRuntimeWizard: {
         open: false,
         loading: false,
@@ -44,6 +46,8 @@
         resolve: null
       }
     };
+
+    const websiteBuilderLinkedChatThreads = new Map();
 
     const websiteBuilderDefaultRemoteRoot = "/srv/main-computer/sites";
 
@@ -3643,6 +3647,221 @@ body {
       updateWebsiteBuilderArchiveControl();
     }
 
+    function safeWebsiteBuilderChatSiteId(value = websiteBuilderStateModel.selectedSiteId) {
+      const clean = String(value || "hub-site").replace(/\\/g, "/").split("/").filter(Boolean).join("-");
+      return clean.replace(/[^a-zA-Z0-9_.-]/g, "-") || "hub-site";
+    }
+
+    function websiteBuilderSitePath(siteId = websiteBuilderStateModel.selectedSiteId) {
+      return `runtime/websites/${safeWebsiteBuilderChatSiteId(siteId)}`;
+    }
+
+    function websiteBuilderChatThreadKey(siteId = websiteBuilderStateModel.selectedSiteId) {
+      return `website-project:${safeWebsiteBuilderChatSiteId(siteId)}`;
+    }
+
+    function websiteBuilderChatLinkedTarget(context = null) {
+      const siteId = safeWebsiteBuilderChatSiteId(context?.site_id || context?.target_id || websiteBuilderStateModel.selectedSiteId);
+      return {
+        app: "website-builder",
+        kind: "website-project",
+        id: siteId,
+        path: websiteBuilderSitePath(siteId)
+      };
+    }
+
+    function websiteBuilderChatContextSnapshot() {
+      const siteId = safeWebsiteBuilderChatSiteId();
+      const site = websiteBuilderStateModel.selectedSite || {};
+      return {
+        app: "website-builder",
+        active_app: "website-builder",
+        target_kind: "website-project",
+        target_id: siteId,
+        site_id: siteId,
+        project_id: siteId,
+        site_path: websiteBuilderSitePath(siteId),
+        allowed_root: `${websiteBuilderSitePath(siteId)}/`,
+        allowed_paths: [
+          `${websiteBuilderSitePath(siteId)}/site.json`,
+          `${websiteBuilderSitePath(siteId)}/index.html`,
+          `${websiteBuilderSitePath(siteId)}/style.css`,
+          `${websiteBuilderSitePath(siteId)}/script.js`,
+          `${websiteBuilderSitePath(siteId)}/builder.json`,
+          `${websiteBuilderSitePath(siteId)}/assets/**`,
+          `${websiteBuilderSitePath(siteId)}/data/**`,
+          `${websiteBuilderSitePath(siteId)}/blog/**`
+        ],
+        edit_mode: "proposal-only-context",
+        dirty: Boolean(websiteBuilderStateModel.dirty),
+        preview_mode: String(websiteBuilderStateModel.previewMode || "draft"),
+        active_tab: String(websiteBuilderStateModel.activeTab || "design"),
+        active_file: String(websiteBuilderStateModel.activeFile || "html"),
+        site: {
+          id: siteId,
+          name: String(site.name || siteId),
+          kind: String(site.kind || "site"),
+          lane: String(site.lane || "")
+        }
+      };
+    }
+
+    function websiteBuilderBuildChatThreadMetadata(context = null) {
+      const target = websiteBuilderChatLinkedTarget(context);
+      return {
+        origin_app: "website-builder",
+        embedded_chat: true,
+        target_kind: "website-project",
+        target_id: target.id,
+        linked_targets: [target],
+        website_builder_phase: "mounted-rag-proposal"
+      };
+    }
+
+    function findWebsiteBuilderLinkedChatThread(store, siteId = websiteBuilderStateModel.selectedSiteId) {
+      const key = websiteBuilderChatThreadKey(siteId);
+      const linkedId = websiteBuilderLinkedChatThreads.get(key);
+      let thread = linkedId ? store?.get?.(linkedId) : null;
+      if (thread) return thread;
+      const target = websiteBuilderChatLinkedTarget({site_id: siteId});
+      thread = (store?.list?.() || []).find((candidate) => {
+        const metadata = candidate?.metadata || {};
+        const linkedTargets = Array.isArray(metadata.linked_targets) ? metadata.linked_targets : [];
+        return metadata.origin_app === "website-builder" && linkedTargets.some((linked) => (
+          linked?.kind === "website-project"
+          && String(linked?.id || "") === target.id
+          && String(linked?.path || "") === target.path
+        ));
+      }) || null;
+      if (thread?.id) websiteBuilderLinkedChatThreads.set(key, thread.id);
+      return thread;
+    }
+
+    function ensureWebsiteBuilderLinkedChatThread() {
+      const store = window.MainComputerChatThreads;
+      if (!store?.load) return null;
+      store.load();
+      const siteId = safeWebsiteBuilderChatSiteId();
+      let thread = findWebsiteBuilderLinkedChatThread(store, siteId);
+      if (!thread && store?.create) {
+        thread = store.create({
+          title: "Website Builder Chat",
+          metadata: websiteBuilderBuildChatThreadMetadata(websiteBuilderChatContextSnapshot()),
+          makeActive: false
+        });
+      }
+      if (thread?.id) websiteBuilderLinkedChatThreads.set(websiteBuilderChatThreadKey(siteId), thread.id);
+      return thread || null;
+    }
+
+    function getWebsiteBuilderLinkedChatThreadId() {
+      const key = websiteBuilderChatThreadKey();
+      return websiteBuilderLinkedChatThreads.get(key) || "";
+    }
+
+    function setWebsiteBuilderLinkedChatThreadId(threadId, thread, context = {}) {
+      const id = String(threadId || thread?.id || "");
+      if (!id) return;
+      websiteBuilderLinkedChatThreads.set(websiteBuilderChatThreadKey(), id);
+      if (websiteBuilderChatPanel) {
+        websiteBuilderChatPanel.dataset.linkedThreadId = id;
+        websiteBuilderChatPanel.dataset.chatConsoleTargetId = safeWebsiteBuilderChatSiteId();
+        if (context?.reason) websiteBuilderChatPanel.dataset.linkReason = String(context.reason);
+      }
+    }
+
+    function buildWebsiteBuilderChatThreadLink(thread) {
+      const url = new URL(window.location.href);
+      url.pathname = `/applications/website-builder/${safeWebsiteBuilderChatSiteId()}`;
+      url.searchParams.set("thread", thread?.id || getWebsiteBuilderLinkedChatThreadId());
+      return url.toString();
+    }
+
+    function mountWebsiteBuilderChat({force = false} = {}) {
+      if (!websiteBuilderChatPanel || !window.MainComputerChatConsole?.mountEmbedded) return null;
+      const siteId = safeWebsiteBuilderChatSiteId();
+      websiteBuilderChatPanel.dataset.chatConsoleTargetId = siteId;
+      if (force && websiteBuilderStateModel.chatController?.destroy) {
+        websiteBuilderStateModel.chatController.destroy();
+        websiteBuilderStateModel.chatController = null;
+      }
+      const thread = ensureWebsiteBuilderLinkedChatThread();
+      websiteBuilderStateModel.chatController = window.MainComputerChatConsole.mountEmbedded(websiteBuilderChatPanel, {
+        embedId: "website-builder",
+        activeApp: "website-builder",
+        idPrefix: "website-builder-mounted-chat",
+        classPrefix: "website-builder-chat",
+        title: "Website Builder Chat",
+        subtitle: "Editing this website",
+        initialStatus: "proposal-only",
+        targetKind: "website-project",
+        targetId: siteId,
+        layout: "full",
+        showThreadRail: true,
+        showCurrentThreadBar: true,
+        threadId: thread?.id || getWebsiteBuilderLinkedChatThreadId(),
+        getLinkedThreadId: getWebsiteBuilderLinkedChatThreadId,
+        setLinkedThreadId: setWebsiteBuilderLinkedChatThreadId,
+        buildThreadLink: buildWebsiteBuilderChatThreadLink,
+        getEmbeddedContext: websiteBuilderChatContextSnapshot,
+        buildThreadMetadata: websiteBuilderBuildChatThreadMetadata,
+        plugins: [
+          {
+            id: "website-builder-edit",
+            label: "Edit this website",
+            checkedLabel: "Editing this website",
+            hint: "Route this AI request through the Website Builder RAG proposal pathway, locked to the active site and builder allowlist.",
+            appliesTo: "ai",
+            defaultEnabled: true,
+            endpoint: "/api/applications/website-builder/chat",
+            pathway: "website-builder-rag-edit-proposal",
+            targetKind: "website-project",
+            targetId: siteId,
+            lockedTarget: true,
+            buildPayload({embedded_context: embeddedContext, config}) {
+              const context = embeddedContext && typeof embeddedContext === "object" && !Array.isArray(embeddedContext) ? embeddedContext : {};
+              const lockedSiteId = safeWebsiteBuilderChatSiteId(context.site_id || context.target_id || config?.targetId || siteId);
+              return {
+                edit_mode: "website-project",
+                editor_edit_mode: "website-builder",
+                requested_pathway: "website-builder-rag-edit-proposal",
+                target_kind: "website-project",
+                target_id: lockedSiteId,
+                project_id: lockedSiteId,
+                site_id: lockedSiteId,
+                locked_to_mount: true,
+                auto_apply: false,
+                live_apply: false
+              };
+            }
+          }
+        ],
+        status(message) {
+          if (websiteBuilderChatStatus && message) websiteBuilderChatStatus.textContent = message;
+          if (websiteBuilderChatPanel && message) websiteBuilderChatPanel.dataset.chatStatus = message;
+        }
+      });
+      return websiteBuilderStateModel.chatController;
+    }
+
+    function refreshWebsiteBuilderChatMount(previousSiteId = websiteBuilderStateModel.selectedSiteId) {
+      const previous = safeWebsiteBuilderChatSiteId(previousSiteId);
+      const current = safeWebsiteBuilderChatSiteId();
+      if (websiteBuilderChatPanel) websiteBuilderChatPanel.dataset.chatConsoleTargetId = current;
+      if (!websiteBuilderStateModel.chatOpen) return websiteBuilderStateModel.chatController || null;
+      if (previous !== current && websiteBuilderStateModel.chatController) return mountWebsiteBuilderChat({force: true});
+      return mountWebsiteBuilderChat();
+    }
+
+    function setWebsiteBuilderChatOpen(open, {mountChat = true} = {}) {
+      const shouldOpen = Boolean(open) && document.body.dataset.activeApp === "website-builder";
+      websiteBuilderStateModel.chatOpen = shouldOpen;
+      if (websiteBuilderChatPopout) websiteBuilderChatPopout.hidden = !shouldOpen;
+      websiteBuilderChatToggle?.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+      websiteBuilderApp?.classList.toggle("chat-open", shouldOpen);
+      if (shouldOpen && mountChat) mountWebsiteBuilderChat();
+    }
+
     async function loadWebsiteBuilderSites({selectFirst = false, replaceRoute = false} = {}) {
       const routeSiteId = websiteBuilderSiteIdFromPath(window.location.pathname);
       if (!websiteBuilderStateModel.selectedSiteId && routeSiteId) {
@@ -3672,6 +3891,7 @@ body {
 
     async function selectWebsiteBuilderSite(siteId, {skipRender = false, syncRoute = true, replaceRoute = false} = {}) {
       if (!siteId) return;
+      const previousSiteId = websiteBuilderStateModel.selectedSiteId;
       websiteBuilderStateModel.selectedSiteId = siteId;
       if (syncRoute && normalizeWebsiteBuilderRouteSiteId(siteId)) {
         syncWebsiteBuilderRoute(siteId, {replace: replaceRoute});
@@ -3699,6 +3919,7 @@ body {
       updateWebsiteBuilderInspector();
       renderWebsiteBuilderBackendView();
       renderWebsiteBuilderPublishTargetControls(site);
+      refreshWebsiteBuilderChatMount(previousSiteId);
     }
 
     async function saveWebsiteBuilderSite() {
@@ -4289,6 +4510,23 @@ body {
 
     websiteBuilderRefresh?.addEventListener("click", () => {
       loadWebsiteBuilderSites().catch((error) => setWebsiteBuilderLog(`Refresh failed: ${error.message}`));
+    });
+    websiteBuilderChatToggle?.addEventListener("click", () => setWebsiteBuilderChatOpen(!websiteBuilderStateModel.chatOpen));
+    websiteBuilderChatClose?.addEventListener("click", () => {
+      setWebsiteBuilderChatOpen(false, {mountChat: false});
+      websiteBuilderChatToggle?.focus();
+    });
+    document.addEventListener("click", (event) => {
+      if (!websiteBuilderChatPopout || websiteBuilderChatPopout.hidden) return;
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (websiteBuilderChatPopout.contains(target) || websiteBuilderChatToggle?.contains(target)) return;
+      setWebsiteBuilderChatOpen(false, {mountChat: false});
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || !websiteBuilderChatPopout || websiteBuilderChatPopout.hidden) return;
+      setWebsiteBuilderChatOpen(false, {mountChat: false});
+      websiteBuilderChatToggle?.focus();
     });
     websiteBuilderArchive?.addEventListener("click", () => {
       archiveWebsiteBuilderSite().catch((error) => setWebsiteBuilderLog(`Archive failed: ${error.message}`));

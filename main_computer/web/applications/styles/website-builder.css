@@ -18,6 +18,7 @@
 }
 
 .website-builder-main {
+  position: relative;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   gap: 0.85rem;
@@ -125,6 +126,59 @@
   border-color: rgba(248, 113, 113, 0.6) !important;
   color: #fee2e2 !important;
 }
+
+
+.website-builder-chat-toggle {
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.28), rgba(129, 140, 248, 0.28)) !important;
+  border-color: rgba(125, 211, 252, 0.55) !important;
+  color: #e0f2fe !important;
+}
+
+.website-builder-chat-popout {
+  position: absolute;
+  z-index: 40;
+  top: 5.5rem;
+  right: 1rem;
+  bottom: 1rem;
+  width: min(680px, calc(100% - 2rem));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0.65rem;
+  padding: 0.85rem;
+  border: 1px solid rgba(125, 211, 252, 0.35);
+  border-radius: 22px;
+  background: rgba(2, 6, 23, 0.96);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.45);
+}
+
+.website-builder-chat-popout[hidden] {
+  display: none;
+}
+
+.website-builder-chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.website-builder-chat-head h4,
+.website-builder-chat-head p {
+  margin: 0;
+}
+
+.website-builder-chat-panel {
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 18px;
+  background: rgba(15, 23, 42, 0.88);
+}
+
+.website-builder-chat-panel .chat-console-shell {
+  height: 100%;
+}
+
 
 .website-builder-actions button,
 .website-builder-tabs button,

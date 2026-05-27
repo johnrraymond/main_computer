@@ -42,6 +42,9 @@ def test_website_builder_frontend_assets_define_save_and_publish_controls() -> N
     assert "website-builder-visit-dev-card" in app
     assert "website-builder-visit-remote-prod-card" in app
     assert "website-builder-preview-frame" in app
+    assert "website-builder-chat-toggle" in app
+    assert "website-builder-chat-panel" in app
+    assert "data-chat-console-embed=\"website-builder\"" in app
     assert "website-builder-preview-draft" in app
     assert "website-builder-preview-local" in app
     assert "website-builder-preview-dev" in app
@@ -129,6 +132,9 @@ def test_website_builder_frontend_assets_define_save_and_publish_controls() -> N
     assert "Deploy URL" in app
     assert "buildWebsiteBuilderDraftDocument" in script
     assert "setWebsiteBuilderDraftPreview" in script
+    assert "mountWebsiteBuilderChat" in script
+    assert "website-builder-edit" in script
+    assert "/api/applications/website-builder/chat" in script
     assert "setWebsiteBuilderPublishedPreview" in script
     assert "/api/applications/websites/site/save" in script
     assert "/api/applications/websites/site/create" in script
@@ -183,6 +189,8 @@ def test_website_builder_layout_uses_two_column_workspace_with_rail_manager() ->
     assert "syncWebsiteBuilderSiteSelect" in script
     assert "selectWebsiteBuilderWorkspaceTab" in script
     assert "websiteBuilderSiteSelect" in bindings
+    assert "websiteBuilderChatToggle" in bindings
+    assert ".website-builder-chat-popout" in css
     assert "websiteBuilderVisitLocal" in bindings
     assert "websiteBuilderVisitDev" in bindings
     assert "websiteBuilderVisitRemoteProd" in bindings
@@ -206,6 +214,7 @@ def test_website_builder_backend_routes_are_wired() -> None:
     assert '"/api/applications/websites/site/save"' in routes
     assert '"/api/applications/websites/site/publish"' in routes
     assert '"/api/applications/websites/site/archive"' in routes
+    assert '"/api/applications/website-builder/chat"' in routes
     assert '"/api/applications/website-builder/chat/edit"' in routes
     assert '"/api/publishing/local-server/prepare"' not in routes
     assert "def _handle_websites_sites" in handlers
@@ -315,6 +324,122 @@ def test_website_builder_chat_edit_route_is_locked_to_site_scope(tmp_path) -> No
             raise AssertionError("missing website-builder-edit plugin should fail")
         except HTTPError as exc:
             assert exc.code == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+
+def test_website_builder_chat_edit_route_materializes_proposal_payloads(tmp_path) -> None:
+    from main_computer.config import MainComputerConfig
+    from main_computer.models import ChatResponse
+    from main_computer.viewport import ViewportServer
+    from main_computer.website_project_manifest import list_website_projects
+
+    list_website_projects(tmp_path)
+    for rel in (
+        "main_computer/web/applications/scripts/website-builder.js",
+        "main_computer/web/applications/styles/website-builder.css",
+        "main_computer/viewport_routes_applications.py",
+        "main_computer/viewport_route_dispatch.py",
+        "main_computer/website_project_manifest.py",
+    ):
+        source = ROOT / rel
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    server = ViewportServer(("127.0.0.1", 0), MainComputerConfig(workspace=tmp_path), verbose=False)
+    server.debug_root = tmp_path
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    class FakeMountedProvider:
+        name = "fake-mounted-provider"
+        model = "fake-mounted-model"
+
+    class FakeMountedComputer:
+        provider = FakeMountedProvider()
+
+        def chat_console_ai(self, source: str, attachments: list | None = None) -> ChatResponse:
+            assert "Return JSON only" in source
+            assert "builder_allowlist" in source
+            proposal = {
+                "ok": True,
+                "mode": "website_builder_rag_edit_proposal",
+                "target_kind": "website",
+                "target_id": "hub-site",
+                "summary": "Shorten the active site hero headline.",
+                "grounding": [
+                    {
+                        "evidence_type": "site_file",
+                        "path": "runtime/websites/hub-site/index.html",
+                        "exact_value": "<h1>Hub Site</h1>",
+                        "reason": "The active site hero headline is editable HTML text.",
+                    }
+                ],
+                "json_edits": [],
+                "text_replacements": [
+                    {
+                        "path": "runtime/websites/hub-site/index.html",
+                        "old_text": "<h1>Hub Site</h1>",
+                        "new_text": "<h1>Welcome to Arcstorm</h1>",
+                        "replace_all": False,
+                        "reason": "Update the hero headline copy.",
+                    }
+                ],
+                "create_files": [],
+                "warnings": [],
+            }
+            return ChatResponse(content=json.dumps(proposal), provider="fake-mounted-provider", model="fake-mounted-model")
+
+    server.computer = FakeMountedComputer()
+
+    def post(path: str, payload: dict) -> dict:
+        request = Request(
+            base_url + path,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    try:
+        data = post(
+            "/api/applications/website-builder/chat",
+            {
+                "thread_id": "test-website-chat",
+                "cell": {"id": "chat-website-proposal", "type": "ai", "source": "change the hero headline to Welcome to Arcstorm"},
+                "embedded_context": {"active_app": "website-builder", "site_id": "hub-site", "target_kind": "website-project", "target_id": "hub-site"},
+                "embedded_context_source": {"active_app": "website-builder", "target_kind": "website-project", "target_id": "hub-site"},
+                "mount_plugins": [{"id": "website-builder-edit", "enabled": True, "target_id": "hub-site", "site_id": "hub-site"}],
+            },
+        )
+        assert data["ok"]
+        metadata = data["output_cell"]["metadata"]
+        proposal = metadata["proposal"]
+        assert metadata["editor_intent"] == "propose_edit"
+        assert metadata["auto_apply"] is False
+        assert metadata["apply_result"] is None
+        assert metadata["allowed_roots"] == ["runtime/websites/hub-site/"]
+        assert "main_computer/web/applications/scripts/website-builder.js" in metadata["builder_allowlist"]
+
+        assert proposal["type"] == "website-builder-rag-proposal"
+        assert proposal["mode"] == "proposal-only"
+        assert proposal["validation"]["ok"] is True
+        assert proposal["apply_payloads"][0]["path"] == "runtime/websites/hub-site/index.html"
+        assert proposal["apply_payloads"][0]["operation"] == "modify"
+        assert proposal["apply_payloads"][0]["replacement_text"].count("Welcome to Arcstorm") == 1
+        assert "original_sha256" in proposal["apply_payloads"][0]
+        assert "replacement_sha256" in proposal["apply_payloads"][0]
+        assert proposal["outputs"]["manifest"].endswith("manifest.json")
+        assert proposal["outputs"]["reference_patch"].endswith("reference.patch")
+
+        on_disk = (tmp_path / "runtime" / "websites" / "hub-site" / "index.html").read_text(encoding="utf-8")
+        assert "<h1>Hub Site</h1>" in on_disk
+        assert "Welcome to Arcstorm" not in on_disk
     finally:
         server.shutdown()
         server.server_close()

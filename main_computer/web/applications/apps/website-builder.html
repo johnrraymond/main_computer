@@ -20,8 +20,31 @@
           <button type="button" id="website-builder-publish-remote" disabled title="Configure publishing targets before using this action.">Publish</button>
           <button type="button" class="website-builder-visit-button" id="website-builder-visit-remote-prod" disabled>Visit</button>
         </span>
+        <button type="button" id="website-builder-chat-toggle" class="website-builder-chat-toggle" aria-haspopup="dialog" aria-expanded="false" aria-controls="website-builder-chat-popout">Chat</button>
       </div>
     </header>
+
+    <section class="website-builder-chat-popout" id="website-builder-chat-popout" role="dialog" aria-label="Website Builder mounted chat" hidden>
+      <header class="website-builder-chat-head">
+        <div>
+          <p class="eyebrow">Mounted Chat</p>
+          <h4>Editing this website</h4>
+          <p id="website-builder-chat-status">Proposal-only RAG editor is ready.</p>
+        </div>
+        <button type="button" id="website-builder-chat-close" aria-label="Close Website Builder chat">Close</button>
+      </header>
+      <div
+        class="website-builder-chat-panel"
+        id="website-builder-chat-panel"
+        data-chat-console-embed="website-builder"
+        data-chat-console-active-app="website-builder"
+        data-chat-console-target-kind="website-project"
+        data-chat-console-target-id=""
+        data-chat-console-title="Website Builder Chat"
+        data-chat-console-subtitle="Editing this website"
+        data-chat-console-initial-status="proposal-only"
+      ></div>
+    </section>
 
     <nav class="website-builder-tabs" aria-label="Website Builder modes">
       <button class="active" type="button" data-website-builder-tab="design">Design</button>

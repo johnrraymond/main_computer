@@ -15,6 +15,12 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+
 from main_computer.config import MainComputerConfig
 from main_computer.hub import HubWorkerHttpServer
 from main_computer.models import ChatMessage, ChatResponse

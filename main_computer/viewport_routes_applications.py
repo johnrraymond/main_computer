@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
+import time
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
@@ -34,6 +37,13 @@ from main_computer.website_project_manifest import (
 from main_computer.viewport_state import *  # noqa: F401,F403
 from main_computer.chat_ai_subprocess import append_text_log, config_to_payload
 from main_computer.models import ChatResponse
+from main_computer.rag_website_builder_real_edit_smoke import (
+    build_evidence as build_website_builder_rag_evidence,
+    discover_builder_allowlist as discover_website_builder_rag_allowlist,
+    materialize_proposal as materialize_website_builder_rag_proposal,
+    proposal_prompt as website_builder_rag_proposal_prompt,
+    write_materialized_bundle as write_website_builder_rag_bundle,
+)
 
 
 def _mounted_editor_should_inline_test_provider(provider: Any) -> bool:
@@ -52,6 +62,37 @@ def _mounted_editor_scope_query(source: str) -> bool:
         or text in {"scope", "show scope", "show me the scope"}
         or ("visible" in text and "files" in text)
     )
+
+
+def _mounted_editor_edit_request(source: str) -> bool:
+    text = re.sub(r"\s+", " ", str(source or "").strip().lower())
+    if not text or _mounted_editor_scope_query(text):
+        return False
+    edit_verbs = {
+        "add",
+        "adjust",
+        "change",
+        "create",
+        "decrease",
+        "delete",
+        "edit",
+        "fix",
+        "generate",
+        "increase",
+        "insert",
+        "make",
+        "modify",
+        "move",
+        "remove",
+        "rename",
+        "replace",
+        "set",
+        "tune",
+        "update",
+    }
+    if re.search(r"\b(" + "|".join(sorted(edit_verbs)) + r")\b", text):
+        return True
+    return bool(re.search(r"\b(higher|lower|faster|slower|brighter|darker|bigger|smaller|stronger|weaker)\b", text))
 
 
 def _website_publish_nested_error(value: object) -> str:
@@ -300,32 +341,57 @@ class ViewportApplicationRoutesMixin:
                         return visible
         return visible
 
+    def _website_builder_builder_allowlist(self) -> list[str]:
+        try:
+            return [str(path) for path in discover_website_builder_rag_allowlist(Path(self.server.debug_root))]
+        except Exception:
+            candidates = [
+                "main_computer/web/applications/scripts/website-builder.js",
+                "main_computer/web/applications/styles/website-builder.css",
+                "main_computer/viewport_routes_applications.py",
+                "main_computer/website_project_manifest.py",
+                "main_computer/rag_website_builder_real_edit_smoke.py",
+                "tests/test_website_builder_app.py",
+            ]
+            return [path for path in candidates if (Path(self.server.debug_root) / path).is_file()]
+
     def _website_builder_scoped_chat_context(self, *, site_id: str, project: Any, payload: dict[str, Any], visible_files: list[str]) -> str:
         file_lines = "\n".join(f"- `{path}`" for path in visible_files) or "- No files are present in this website project yet."
+        builder_lines = "\n".join(f"- `{path}`" for path in self._website_builder_builder_allowlist()) or "- No Website Builder implementation files were discovered."
         return (
             "You are answering inside the mounted Website Builder chat.\n"
-            f"You are scoped ONLY to the active website `{site_id}`.\n"
+            f"Active site id: `{site_id}`.\n"
+            f"Allowed site root: `runtime/websites/{site_id}/`.\n"
             f"Allowed root: `runtime/websites/{site_id}/`.\n"
-            "Do not claim access to repo files such as `main_computer/`, tests, tools, or other sites.\n"
-            "Do not propose or imply writes outside the allowed root.\n"
-            "This phase is proposal-only: no files may be modified.\n\n"
+            "Allowed builder implementation files are exact-match allowlist entries only.\n"
+            "Do not claim repo-wide access. Do not trust client-provided paths as authority.\n"
+            "For edit requests, the route uses evidence -> AI structured proposal -> deterministic validation -> full replacement payloads.\n"
+            "This mounted phase is proposal-only: no files may be modified live.\n\n"
             "Visible website-project files:\n"
             f"{file_lines}\n\n"
+            "Visible Website Builder implementation allowlist:\n"
+            f"{builder_lines}\n\n"
             f"Site kind: `{project.kind}`; lane: `{project.lane}`; HTML bytes: {len(payload.get('html') or '')}; CSS bytes: {len(payload.get('css') or '')}; JS bytes: {len(payload.get('js') or '')}.\n"
         )
 
     def _website_builder_scope_response(self, *, source: str, site_id: str, project: Any, payload: dict[str, Any], visible_files: list[str], run_id: str, thread_id: str) -> ChatResponse:
         file_lines = "\n".join(f"- `{path}`" for path in visible_files) or "- No files are present in this website project yet."
+        builder_allowlist = self._website_builder_builder_allowlist()
+        builder_lines = "\n".join(f"- `{path}`" for path in builder_allowlist) or "- No Website Builder implementation files were discovered."
         content = (
-            f"I am scoped to the active Website Builder site `{site_id}` only.\n\n"
+            f"I am scoped to the active Website Builder site `{site_id}` plus an exact Website Builder implementation allowlist.\n\n"
             "Visible website-project files:\n"
             f"{file_lines}\n\n"
+            "Visible Website Builder implementation allowlist:\n"
+            f"{builder_lines}\n\n"
             "Scope lock:\n"
-            f"- Allowed root: `runtime/websites/{site_id}/`\n"
+            f"- Allowed site root: `runtime/websites/{site_id}/`\n"
+            "- Builder edits must match one of the listed allowlist paths exactly.\n"
+            "- Client-provided paths are treated as hints only; the server derives and validates scope.\n"
             "- Server-derived write policy: proposal-only; no files were modified.\n"
-            "- Repo files such as `main_computer/`, tests, tools, and other sites are outside this mounted editor context.\n\n"
+            "- Repo-wide files, tools, historical patch reports, and other sites are outside this mounted editor context.\n\n"
             f"Site kind: `{project.kind}`; lane: `{project.lane}`; HTML bytes: {len(payload.get('html') or '')}; CSS bytes: {len(payload.get('css') or '')}; JS bytes: {len(payload.get('js') or '')}.\n\n"
-            "For ordinary questions, this mounted route now runs the AI with this scoped context instead of returning this static scope card."
+            "For edit requests, this route returns deterministic validation metadata and materialized replacement payloads for review."
         )
         return ChatResponse(
             content=content,
@@ -335,8 +401,11 @@ class ViewportApplicationRoutesMixin:
                 "run_id": run_id,
                 "thread_id": thread_id,
                 "editor_edit_mode": "website-builder",
+                "editor_intent": "scope",
                 "site_id": site_id,
                 "allowed_root": f"runtime/websites/{site_id}/",
+                "allowed_roots": [f"runtime/websites/{site_id}/"],
+                "builder_allowlist": builder_allowlist,
                 "visible_files": visible_files,
                 "prompt": source,
                 "auto_apply": False,
@@ -431,6 +500,212 @@ class ViewportApplicationRoutesMixin:
         )
         return response
 
+    def _website_builder_parse_jsonish(self, source: str) -> dict[str, Any]:
+        text = str(source or "").strip()
+        if not text:
+            raise ValueError("AI response was empty; expected Website Builder proposal JSON.")
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, dict):
+                return payload
+        except json.JSONDecodeError:
+            pass
+        if "```" in text:
+            text = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.IGNORECASE)
+            text = re.sub(r"\s*```$", "", text.strip())
+            try:
+                payload = json.loads(text)
+                if isinstance(payload, dict):
+                    return payload
+            except json.JSONDecodeError:
+                pass
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end >= start:
+            payload = json.loads(text[start : end + 1])
+            if isinstance(payload, dict):
+                return payload
+        raise ValueError("AI response did not contain a JSON object proposal.")
+
+    def _website_builder_write_rag_outputs(self, *, site_id: str, evidence: dict[str, Any], proposal: dict[str, Any], materialized: list[Any], validation: dict[str, Any]) -> dict[str, str]:
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        output_dir = Path(self.server.debug_root) / "diagnostics_output" / "website_builder_mount_rag_proposals" / f"{site_id}_{stamp}"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        manifest = write_website_builder_rag_bundle(Path(self.server.debug_root), output_dir, materialized)
+
+        def write_json(path: Path, payload: Any) -> None:
+            path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+        write_json(output_dir / "evidence.json", evidence)
+        write_json(output_dir / "proposal.json", proposal)
+        write_json(output_dir / "validation.json", validation)
+        return {
+            "output_dir": str(output_dir),
+            "manifest": str(output_dir / "manifest.json"),
+            "reference_patch": str(output_dir / "reference.patch"),
+            "payload_root": str(output_dir / "files"),
+            "manifest_mode": str(manifest.get("mode") or ""),
+        }
+
+    def _website_builder_materialized_file_dicts(self, materialized: list[Any], *, include_text: bool) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for item in materialized:
+            row = {
+                "path": str(getattr(item, "path", "")),
+                "operation": str(getattr(item, "operation", "")),
+                "original_sha256": getattr(item, "original_sha256", None),
+                "replacement_sha256": getattr(item, "replacement_sha256", None),
+            }
+            if include_text:
+                row["replacement_text"] = str(getattr(item, "replacement_text", ""))
+            rows.append(row)
+        return rows
+
+    def _website_builder_proposal_response(
+        self,
+        *,
+        cell: dict[str, Any],
+        source: str,
+        site_id: str,
+        visible_files: list[str],
+        run_id: str,
+        thread_id: str,
+    ) -> ChatResponse:
+        evidence = build_website_builder_rag_evidence(Path(self.server.debug_root), site_id)
+        prompt_text = website_builder_rag_proposal_prompt(source, evidence)
+        ai_response = self._website_builder_scoped_ai_response(
+            cell=cell,
+            source=source,
+            site_id=site_id,
+            visible_files=visible_files,
+            run_id=run_id,
+            thread_id=thread_id,
+            scoped_context=prompt_text,
+        )
+
+        warnings = [
+            "The mounted Website Builder route used the golden-path RAG shape: scoped evidence, AI structured proposal, deterministic validation, and materialized full replacement payloads.",
+            "Proposal-only mode: no files were modified.",
+        ]
+        proposal_payload: dict[str, Any] | None = None
+        materialized: list[Any] = []
+        validation: dict[str, Any] = {"ok": False, "issues": [], "warnings": []}
+        outputs: dict[str, str] = {}
+
+        try:
+            proposal_payload = self._website_builder_parse_jsonish(ai_response.content)
+            materialized, validation = materialize_website_builder_rag_proposal(Path(self.server.debug_root), evidence, proposal_payload)
+            if validation.get("ok"):
+                outputs = self._website_builder_write_rag_outputs(
+                    site_id=site_id,
+                    evidence=evidence,
+                    proposal=proposal_payload,
+                    materialized=materialized,
+                    validation=validation,
+                )
+        except Exception as exc:  # noqa: BLE001 - return deterministic validation feedback to the mounted chat UI.
+            validation = {"ok": False, "issues": [str(exc)], "warnings": []}
+            materialized = []
+
+        if validation.get("warnings"):
+            warnings.extend(str(item) for item in validation.get("warnings", []) if str(item).strip())
+
+        materialized_files = self._website_builder_materialized_file_dicts(materialized, include_text=False)
+        apply_payloads = self._website_builder_materialized_file_dicts(materialized, include_text=True)
+        proposed_files = [
+            {
+                "path": item["path"],
+                "operation": item["operation"],
+                "reason": "Validated and materialized from the AI proposal.",
+                "exists": item["operation"] == "modify",
+                "original_sha256": item.get("original_sha256"),
+                "replacement_sha256": item.get("replacement_sha256"),
+            }
+            for item in materialized_files
+        ]
+
+        if proposed_files:
+            file_lines = "\n".join(
+                f"- `{item['path']}` ({item['operation']}): replacement `{item.get('replacement_sha256')}`"
+                for item in proposed_files
+            )
+        else:
+            file_lines = "- No replacement payloads were materialized."
+
+        validation_text = "passed" if validation.get("ok") else "failed"
+        issue_lines = "\n".join(f"- {issue}" for issue in validation.get("issues", []) if str(issue).strip())
+        output_lines = ""
+        if outputs:
+            output_lines = (
+                "\nReview artifacts:\n"
+                f"- Manifest: `{outputs.get('manifest')}`\n"
+                f"- Reference patch: `{outputs.get('reference_patch')}`\n"
+            )
+        content = (
+            "Proposal only — Website Builder golden-path RAG; no files were modified.\n\n"
+            f"Deterministic validation: **{validation_text}**.\n\n"
+            "Validated/materialized file targets for review:\n"
+            f"{file_lines}\n"
+            f"{output_lines}\n"
+            "Review notes:\n"
+            + "\n".join(f"- {warning}" for warning in warnings)
+        )
+        if issue_lines:
+            content += f"\n\nValidation issues:\n{issue_lines}"
+        ai_content = str(ai_response.content or "").strip()
+        if ai_content:
+            content += f"\n\nAI structured proposal/raw response:\n```json\n{ai_content}\n```"
+
+        proposal = {
+            "version": 1,
+            "type": "website-builder-rag-proposal",
+            "mode": "proposal-only",
+            "rag_backed": True,
+            "ai_backed": True,
+            "auto_apply": False,
+            "site_id": site_id,
+            "allowed_root": evidence.get("site", {}).get("site_root"),
+            "allowed_roots": evidence.get("allowed_roots"),
+            "builder_allowlist": evidence.get("builder_allowlist"),
+            "prompt": source,
+            "validation": validation,
+            "proposed_files": proposed_files,
+            "materialized_files": materialized_files,
+            "apply_payloads": apply_payloads,
+            "outputs": outputs,
+            "model_proposal": proposal_payload,
+            "warnings": warnings,
+            "evidence_summary": {
+                "site_files": len(evidence.get("site", {}).get("site_files", [])),
+                "editable_site_records": len(evidence.get("site", {}).get("editable_site_records", [])),
+                "builder_source_files": len(evidence.get("builder", {}).get("builder_files", [])),
+            },
+        }
+
+        response_metadata = ai_response.metadata if isinstance(ai_response.metadata, dict) else {}
+        return ChatResponse(
+            content=content,
+            provider=ai_response.provider,
+            model=ai_response.model,
+            metadata={
+                **response_metadata,
+                "run_id": run_id,
+                "thread_id": thread_id,
+                "editor_edit_mode": "website-builder",
+                "editor_intent": "propose_edit",
+                "site_id": site_id,
+                "allowed_root": evidence.get("site", {}).get("site_root"),
+                "allowed_roots": evidence.get("allowed_roots"),
+                "builder_allowlist": evidence.get("builder_allowlist"),
+                "visible_files": visible_files,
+                "prompt": source,
+                "auto_apply": False,
+                "apply_result": None,
+                "scope_card": False,
+                "proposal": proposal,
+            },
+        )
+
     def _handle_website_builder_chat_edit(self) -> None:
         try:
             body = self._read_json()
@@ -447,12 +722,23 @@ class ViewportApplicationRoutesMixin:
             run_id = str(body.get("run_id") or cell.get("run_id") or f"website_builder_edit_{int(time.time() * 1000)}").strip()
             thread_id = str(body.get("thread_id") or body.get("chat_thread_id") or "website-builder-chat").strip()
             scoped_context = self._website_builder_scoped_chat_context(site_id=site_id, project=project, payload=payload, visible_files=visible_files)
-            if _mounted_editor_scope_query(source):
+            scope_card = _mounted_editor_scope_query(source)
+            proposal_request = _mounted_editor_edit_request(source)
+            if scope_card:
                 response = self._website_builder_scope_response(
                     source=source,
                     site_id=site_id,
                     project=project,
                     payload=payload,
+                    visible_files=visible_files,
+                    run_id=run_id,
+                    thread_id=thread_id,
+                )
+            elif proposal_request:
+                response = self._website_builder_proposal_response(
+                    cell=cell,
+                    source=source,
+                    site_id=site_id,
                     visible_files=visible_files,
                     run_id=run_id,
                     thread_id=thread_id,
@@ -469,20 +755,27 @@ class ViewportApplicationRoutesMixin:
                 )
             output_cell = build_output_cell(cell, ai_response_to_parts(response), status="ok", provider=response.provider, model=response.model)
             output_cell.setdefault("metadata", {})
+            response_metadata = response.metadata if isinstance(response.metadata, dict) else {}
+            editor_intent = str(response_metadata.get("editor_intent") or ("scope" if scope_card else "propose_edit" if proposal_request else "answer"))
             output_cell["metadata"] = {
                 **(output_cell.get("metadata") if isinstance(output_cell.get("metadata"), dict) else {}),
+                **response_metadata,
                 "run_id": run_id,
                 "thread_id": thread_id,
                 "activity_filter": "ai",
                 "editor_edit_mode": "website-builder",
+                "editor_intent": editor_intent,
                 "site_id": site_id,
-                "allowed_root": f"runtime/websites/{site_id}/",
+                "allowed_root": response_metadata.get("allowed_root") or f"runtime/websites/{site_id}/",
+                "allowed_roots": response_metadata.get("allowed_roots") if isinstance(response_metadata.get("allowed_roots"), list) else [f"runtime/websites/{site_id}/"],
+                "builder_allowlist": response_metadata.get("builder_allowlist") if isinstance(response_metadata.get("builder_allowlist"), list) else self._website_builder_builder_allowlist(),
                 "visible_files": visible_files,
                 "auto_apply": False,
-                "scope_card": _mounted_editor_scope_query(source),
+                "apply_result": None,
+                "scope_card": scope_card,
             }
             self.server.chat_ai_processes.remember_route_result(run_id=run_id, payload={"ok": True, "status": "completed", "output_cell": output_cell, "run_id": run_id, "thread_id": thread_id})
-            self.server.signal("api-website-builder-chat-edit", site_id=site_id, prompt_chars=len(source), visible_files=len(visible_files), scope_card=_mounted_editor_scope_query(source))
+            self.server.signal("api-website-builder-chat-edit", site_id=site_id, prompt_chars=len(source), visible_files=len(visible_files), scope_card=scope_card, proposal_request=proposal_request)
             self._send_json({"ok": True, "status": "completed", "output_cell": output_cell, "run_id": run_id, "thread_id": thread_id})
         except WebsiteProjectError as exc:
             self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
