@@ -358,7 +358,10 @@ def build_import_payload(
         "payer_address": str(requester["address"]),
         "payment_asset": "native",
         "payment_amount_base_units": int(requester["deposit_units"]),
-        "credits_granted": int(requester["deposit_credits"]),
+        # Import credit atoms into the hub ledger.  The manifest keeps
+        # deposit_credits as a human-readable amount, while deposit_units is the
+        # integer atom amount used by paid request accounting.
+        "credits_granted": int(requester["deposit_units"]),
         "memo": f"bridge escrow multi-wallet smoke deposit for {requester['account_id']}",
     }
 
@@ -399,8 +402,11 @@ def import_deposit_twice(
     require(isinstance(first_account, dict), f"first import for {requester['account_id']} missing account")
     require(isinstance(first_deposit, dict), f"first import for {requester['account_id']} missing deposit")
     require(
-        clean_int(first_deposit.get("credits_granted")) == requester["deposit_credits"],
-        f"unexpected credits_granted for {requester['account_id']}",
+        clean_int(first_deposit.get("credits_granted")) == requester["deposit_units"],
+        (
+            f"unexpected credits_granted for {requester['account_id']}; "
+            f"expected atom units={requester['deposit_units']}"
+        ),
     )
     deposit_id = str(first_deposit.get("deposit_id") or "")
     require(deposit_id.startswith("dep_"), f"unexpected deposit_id for {requester['account_id']}: {deposit_id!r}")
@@ -423,13 +429,13 @@ def import_deposit_twice(
     after_available = clean_int(second_account.get("available_credits"), default=-1)
     if first_idempotent:
         require(
-            after_available >= requester["deposit_credits"],
-            f"existing imported balance for {requester['account_id']} is below expected deposit credits",
+            after_available >= requester["deposit_units"],
+            f"existing imported balance for {requester['account_id']} is below expected atom-unit deposit",
         )
     else:
         require(
-            after_available >= before_available + requester["deposit_credits"],
-            f"fresh import did not increase available credits for {requester['account_id']}",
+            after_available >= before_available + requester["deposit_units"],
+            f"fresh import did not increase available atom units for {requester['account_id']}",
         )
 
     query = urlencode({"account_id": requester["account_id"]})
@@ -454,7 +460,10 @@ def import_deposit_twice(
         "duplicate_import_idempotent": True,
         "before_available_credits": before_available,
         "after_available_credits": after_available,
-        "credits_granted": requester["deposit_credits"],
+        "before_available_units": before_available,
+        "after_available_units": after_available,
+        "deposit_credits": requester["deposit_credits"],
+        "credits_granted": requester["deposit_units"],
         "payment_amount_base_units": requester["deposit_units"],
     }
 
@@ -592,7 +601,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Smoke-test multi-wallet bridge escrow funding prep. By default this imports "
             "normalized escrow deposit receipts for the top four requester wallets into the "
-            "hub bridge ledger. Pass --send-chain-deposits to also submit escrow deposits "
+            "hub bridge ledger as integer credit atoms. Pass --send-chain-deposits to also submit escrow deposits "
             "to a deployed HubCreditBridgeEscrow contract first."
         )
     )
