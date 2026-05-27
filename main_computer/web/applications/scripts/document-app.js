@@ -208,6 +208,7 @@
         documentToggleMathLayout?.addEventListener("click", toggleSelectedDocumentMathLayout);
         documentAddHiddenPlugin?.addEventListener("click", createHiddenDocumentPlugin);
         documentInsertScene?.addEventListener("click", promptAndInsertDocumentScene);
+        documentInsertGameScene?.addEventListener("click", promptAndInsertDocumentGameScenePlugin);
         documentExportEpub?.addEventListener("click", exportCurrentDocumentAsEpub);
         documentExportPdf?.addEventListener("click", exportCurrentDocumentAsPdf);
         documentExportPdfVector?.addEventListener("click", exportCurrentDocumentAsVectorPdf);

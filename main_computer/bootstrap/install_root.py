@@ -512,15 +512,15 @@ def is_managed_install_root(path: Path) -> bool:
 def default_install_root(repo_root: Path, runtime_profile: str, mode_key: str) -> Path:
     """Return the managed code install root for the Python-owned bootstrap.
 
-    The Python installer should install the project into a known managed
-    location rather than leaving the runnable/status files in the temporary
-    source checkout that launched the bootstrap.
+    The managed slot is intentionally mode-scoped, not checkout-name scoped.
+    A source directory named ``main_computer_test`` is still just the source tree;
+    it must not leak ``test`` or ``dev`` into installed stack identity.  An
+    env-free source checkout and an env-free unleashed install therefore share
+    the same Docker-facing identity: ``main-computer-unleashed``.
     """
 
-    repo_name = safe_name(repo_root.resolve().name) or "main-computer"
-    profile_name = safe_name(runtime_profile) or "test"
-    mode_name = safe_name(mode_key) or "unleashed"
-    return managed_installs_root() / f"{repo_name}-{profile_name}-{mode_name}"
+    mode_name = safe_name(mode_key).replace("_", "-") or "unleashed"
+    return managed_installs_root() / f"main-computer-{mode_name}"
 
 
 def safe_name(value: str) -> str:

@@ -1,4 +1,4 @@
-name: main-computer-local-platform
+name: main-computer-local-platform-unleashed
 
 x-site-server-common: &site-server-common
   build:

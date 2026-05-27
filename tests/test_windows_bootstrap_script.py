@@ -419,7 +419,7 @@ def test_dev_checkout_runner_mirrors_installed_runner_without_install_root() -> 
     assert "Local Coolify for mode" in runner
     assert "WSL distro for mode" in runner
     assert "main-computer-onlyoffice-$Key" in runner
-    assert "$localPlatformProject = \"$localPlatformPrefix$localPlatformInstance$localPlatformSuffix\"" in runner
+    assert '$localPlatformProject = "main-computer-local-platform-$modeSegment"' in runner
     assert "MainComputer-$instanceName-$DistributionSuffix" in runner
     assert "dev-control.ps1" in runner
     assert "proto-dev\\proto-dev.ps1" in runner
@@ -478,7 +478,7 @@ def test_windows_bootstrapper_seeds_mode_scoped_local_server_publishing() -> Non
     assert "Initialize-LocalServerPublishingIfRequested" in script
     assert '"publish",' in script
     assert '"--dry-run"' in script
-    assert "$localPlatformProjectName = \"$localPlatformPrefix$localPlatformInstance$localPlatformSuffix\"" in script
+    assert '$localPlatformProjectName = "main-computer-local-platform-$modeSegment"' in script
 
 
 def test_windows_bootstrapper_starts_install_scoped_local_coolify() -> None:
@@ -1135,13 +1135,13 @@ def test_python_bootstrap_starts_install_scoped_services_and_prints_urls() -> No
     assert '"coolify_state_root": state_root / "coolify-local-docker"' in cli
 
 
-def test_python_bootstrapper_writes_profile_scoped_dev_template_ports_and_projects() -> None:
+def test_python_bootstrapper_writes_mode_scoped_template_ports_and_projects() -> None:
     cli = (ROOT / "main_computer" / "bootstrap" / "cli.py").read_text(encoding="utf-8")
 
     assert '"instance_name": instance_name' in cli
     assert '"install_tree_id": safe_name(install_root.name).replace("_", "-")' in cli
-    assert '"dev_compose_project": _mode_scoped_dev_compose_project(instance_segment, key)' in cli
-    assert '"local_server_project": _mode_scoped_local_platform_project(instance_segment, key)' in cli
+    assert '"dev_compose_project": _mode_scoped_dev_compose_project(instance_name, key)' in cli
+    assert '"local_server_project": _mode_scoped_local_platform_project(instance_name, key)' in cli
     assert '"docker_viewport_port": defaults["docker_viewport_port"]' in cli
     assert '"hub_port": defaults["hub_port"]' in cli
     assert '"ethereum_rpc_port": defaults["ethereum_rpc_port"]' in cli
@@ -1163,22 +1163,53 @@ def test_python_bootstrapper_writes_profile_scoped_dev_template_ports_and_projec
     assert 'env.pop("MAIN_COMPUTER_COOLIFY_LOCAL_TOKEN", None)' in cli
 
 
-def test_python_bootstrap_scopes_local_platform_project_to_instance() -> None:
-    from main_computer.bootstrap.cli import _mode_scoped_local_platform_project
+def test_python_bootstrap_uses_mode_scoped_docker_projects_without_checkout_identity() -> None:
+    from main_computer.bootstrap.cli import (
+        _mode_scoped_coolify_project,
+        _mode_scoped_dev_compose_project,
+        _mode_scoped_local_platform_project,
+    )
 
-    project = _mode_scoped_local_platform_project("main-computer-debug20", "debug")
-    assert project == "main-computer-local-platform-main-computer-debug20-debug"
-    assert project != "main-computer-local-platform-debug"
+    for polluted_instance in [
+        "main-computer-test",
+        "main-computer-test-debug",
+        "main-computer-test-test-debug",
+        "main-computer-debug20",
+        "x" * 100,
+    ]:
+        assert _mode_scoped_dev_compose_project(polluted_instance, "debug") == "main-computer-debug"
+        assert (
+            _mode_scoped_local_platform_project(polluted_instance, "debug")
+            == "main-computer-local-platform-debug"
+        )
+        assert _mode_scoped_coolify_project(polluted_instance, "debug") == "main-computer-coolify-debug"
 
-    long_project = _mode_scoped_local_platform_project("x" * 100, "unleashed")
-    assert long_project.startswith("main-computer-local-platform-")
-    assert long_project.endswith("-unleashed")
-    assert len(long_project) <= 63
+    assert _mode_scoped_dev_compose_project("anything", "unleashed") == "main-computer-unleashed"
+    assert (
+        _mode_scoped_local_platform_project("anything", "unleashed")
+        == "main-computer-local-platform-unleashed"
+    )
 
 
-def test_python_bootstrap_default_instance_name_comes_from_install_tree() -> None:
+def test_python_bootstrap_default_identity_does_not_leak_checkout_profile_or_mode_labels() -> None:
     from main_computer.bootstrap.cli import default_instance_name
 
+    assert (
+        default_instance_name(
+            "test",
+            "debug",
+            FIXTURE_MANAGED_INSTALLS_ROOT / "main_computer_test-test-debug",
+        )
+        == "main-computer"
+    )
+    assert (
+        default_instance_name(
+            "prod",
+            "safe",
+            FIXTURE_MANAGED_INSTALLS_ROOT / "main-computer-safe",
+        )
+        == "main-computer"
+    )
     assert (
         default_instance_name(
             "test",
@@ -1186,12 +1217,4 @@ def test_python_bootstrap_default_instance_name_comes_from_install_tree() -> Non
             FIXTURE_WINDOWS_ROOT / "main_computer_debug17",
         )
         == "main-computer-debug17"
-    )
-    assert (
-        default_instance_name(
-            "prod",
-            "safe",
-            FIXTURE_MANAGED_INSTALLS_ROOT / "safe",
-        )
-        == "main-computer-prod-safe"
     )

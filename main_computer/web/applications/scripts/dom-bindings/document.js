@@ -26,6 +26,7 @@
     const documentToggleMathLayout = document.querySelector("#document-toggle-math-layout");
     const documentAddHiddenPlugin = document.querySelector("#document-add-hidden-plugin");
     const documentInsertScene = document.querySelector("#document-insert-scene");
+    const documentInsertGameScene = document.querySelector("#document-insert-game-scene");
     const documentExportEpub = document.querySelector("#document-export-epub");
     const documentExportPdf = document.querySelector("#document-export-pdf");
     const documentExportPdfVector = document.querySelector("#document-export-pdf-vector");

@@ -72,7 +72,7 @@ def _write_site_manifest(repo_root: Path, site_id: str, *, name: str, kind: str 
 def test_generated_compose_file_renders_seeded_hub_and_blog_services(tmp_path: Path) -> None:
     text = render_generated_websites_compose(tmp_path)
 
-    assert 'name: "main-computer-local-platform"' in text
+    assert 'name: "main-computer-local-platform-unleashed"' in text
     assert "hub-local:" in text
     assert "hub-dev:" in text
     assert "blog-local:" in text

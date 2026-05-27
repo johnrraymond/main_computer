@@ -56,7 +56,3 @@ rag_smoke_logpack_runs/
 *.tgz
 *.7z
 *.log
-
-# The Coolify hub Dockerfile also has a Dockerfile-specific ignore file:
-# deploy/coolify/hub/Dockerfile.dockerignore
-# That file narrows the remote-hub image context to pyproject/README/main_computer.

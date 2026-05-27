@@ -1,48 +1,54 @@
 # Dev Docker Stack
 
-This is the local-development Docker support stack. It is deliberately separate
-from the standalone hub deployment surface.
+This is the local-development Docker support stack. It deliberately does not
+wrap the hub runtime in Docker.
 
-The old dev-stack hub service has been removed. Use
-`deploy/coolify/hub/docker-compose.yml` for local hub container tests and for
-Coolify deployment. This file now keeps only supporting dev services such as
-Ollama, Anvil, optional workers, and executor image targets.
+The old dev-stack hub service has been removed, and this stack no longer
+includes an Ollama service. Run the hub on the host or point workers at a
+remote hub; run Ollama on the host or point workers at a remote model server.
+This stack keeps only supporting dev services such as Anvil, optional workers,
+ONLYOFFICE, and executor image targets.
 
 ## What this brings up
 
 ```text
 docker-compose.dev.yml
 ├─ hub-worker       optional Ollama-backed worker on :8771
-├─ ollama           model server on :11434
 ├─ ethereum-dev     Anvil JSON-RPC dev chain on :8545
 ├─ main-computer    optional viewport container on :8765
+├─ onlyoffice       optional ONLYOFFICE Docs service
 └─ executor-image   build target for the existing DockerExecutor image
 ```
 
-## Start the shared dev services
+## Start the shared dev chain service
 
 ```powershell
-docker compose -f docker-compose.dev.yml up --build ollama ethereum-dev
+docker compose -f docker-compose.dev.yml up --build ethereum-dev
 ```
 
-## Start the standalone hub
+## Start the hub on the host
 
 ```powershell
-docker compose -f deploy/coolify/hub/docker-compose.yml up --build
+$env:MAIN_COMPUTER_HUB_ROOT = "runtime\hub"
+python -m main_computer.cli hub --host 127.0.0.1 --port 8770
 ```
 
-## Pull a model into the Ollama container
+## Pull a model into host or remote Ollama
 
 ```powershell
-docker compose -f docker-compose.dev.yml exec ollama ollama pull qwen2.5:1.5b
+ollama pull qwen2.5:1.5b
 ```
 
 Or choose another model:
 
 ```powershell
 $env:MAIN_COMPUTER_MODEL = "gemma4:26b"
-docker compose -f docker-compose.dev.yml exec ollama ollama pull $env:MAIN_COMPUTER_MODEL
+ollama pull $env:MAIN_COMPUTER_MODEL
 ```
+
+The Docker worker defaults to `http://host.docker.internal:11434` for Ollama.
+Set `MAIN_COMPUTER_DOCKER_OLLAMA_BASE_URL` before starting the worker when the
+model server is somewhere else.
 
 
 ## Start the viewport in Docker on a Windows host
@@ -86,9 +92,9 @@ powershell -ExecutionPolicy Bypass -File .\start-main-computer-docker-windows.ps
 
 ## Add the hub worker
 
-Start the standalone hub first, or point the worker at a remote hub with
+Start the host hub first, or point the worker at a remote hub with
 `MAIN_COMPUTER_HUB_URL`. The default is `http://host.docker.internal:8770`,
-which targets the standalone hub from inside Docker Desktop containers.
+which targets a host-running hub from inside Docker Desktop containers.
 
 ```powershell
 docker compose -f docker-compose.dev.yml --profile worker up --build hub-worker
@@ -170,16 +176,16 @@ python -m main_computer.cli viewport --port 8765
 
 ## Hub client smoke
 
-After the standalone hub and `hub-worker` are running:
+After the host/remote hub and `hub-worker` are running:
 
 ```powershell
 python -m main_computer.cli chat `
   --provider hub `
   --hub-url http://127.0.0.1:8770 `
-  "Say hello from the standalone hub."
+  "Say hello from the host hub."
 ```
 
 ## Ethereum dev chain
 
 The `ethereum-dev` service runs Anvil on chain id `42424242`. It is a contract
-and indexer test dependency, not a runtime dependency of the standalone hub.
+and indexer test dependency, not a runtime dependency of the host hub.

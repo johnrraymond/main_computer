@@ -92,10 +92,10 @@ def test_v2_batch_files_are_location_aware_and_do_not_require_env_files() -> Non
     assert 'treeKind -eq "installed"' in helper
 
 
-def test_dev_compose_file_is_template_for_profile_scoped_projects_and_ports() -> None:
+def test_dev_compose_file_defaults_to_unleashed_project_and_mode_ports() -> None:
     compose = (ROOT / "docker-compose.dev.yml").read_text(encoding="utf-8")
 
-    assert "name: ${MAIN_COMPUTER_DEV_COMPOSE_PROJECT:-main-computer-dev}" in compose
+    assert "name: main-computer-unleashed" in compose
     assert "${MAIN_COMPUTER_DOCKER_VIEWPORT_PORT:-18765}:8765" in compose
     assert "${MAIN_COMPUTER_HUB_PORT:-8770}:8770" not in compose
     assert "\n  hub:\n" not in compose
@@ -109,7 +109,7 @@ def test_dev_compose_file_is_template_for_profile_scoped_projects_and_ports() ->
     assert "${MAIN_COMPUTER_ETHEREUM_RPC_PORT:-8545}:8545" in compose
 
 
-def test_v2_helper_uses_profile_scoped_non_gitea_docker_projects() -> None:
+def test_v2_helper_uses_mode_scoped_non_gitea_docker_projects() -> None:
     helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
 
     assert "MAIN_COMPUTER_GITEA_SCOPE" in helper
@@ -120,6 +120,9 @@ def test_v2_helper_uses_profile_scoped_non_gitea_docker_projects() -> None:
     assert ("MAIN_COMPUTER_" + "OLLAMA_HOST_PORT") not in helper
     assert "MAIN_COMPUTER_LOCAL_PLATFORM_COMPOSE_PROJECT" in helper
     assert "MAIN_COMPUTER_APPLICATIONS_COMPOSE_PROJECT" in helper
+    assert "main-computer-unleashed" in helper
+    assert "main-computer-local-platform-unleashed" in helper
+    assert '"main-computer-dev"' not in helper
     assert 'Get-EnvFirstValue @("MAIN_COMPUTER_APPLICATIONS_COMPOSE_PROJECT") "main-computer-applications"' in helper
     assert '"MAIN_COMPUTER_COOLIFY_PROJECT", "COOLIFY_COMPOSE_PROJECT", "COMPOSE_PROJECT_NAME"' in helper
     assert 'Get-EnvFirstValue @("MAIN_COMPUTER_APPLICATIONS_COMPOSE_PROJECT", "MAIN_COMPUTER_COOLIFY_PROJECT", "COMPOSE_PROJECT_NAME")' not in helper

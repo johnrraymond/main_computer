@@ -214,29 +214,35 @@ wrapper placement is corrected.
 
 ## Dev Docker stack
 
-The development Compose stack is `docker-compose.dev.yml`. It no longer starts
-or defines the hub service; use `deploy/coolify/hub/docker-compose.yml` for the
-standalone hub container.
+The development Compose stack is `docker-compose.dev.yml`. It does not start
+or define the hub service, and it no longer includes an Ollama service. Treat
+the hub and model server as host or remote services while using Docker only for
+support services, optional workers, and image build targets. A production hub
+container/deployer can be added later without making the development hub state
+live inside a hidden Docker volume.
 
-Start shared dev support services:
-
-```powershell
-docker compose -f docker-compose.dev.yml up --build ollama ethereum-dev
-```
-
-Start the standalone hub container:
+Start the shared dev chain support service:
 
 ```powershell
-docker compose -f deploy/coolify/hub/docker-compose.yml up --build
+docker compose -f docker-compose.dev.yml up --build ethereum-dev
 ```
 
-Pull the model used by the Compose worker default:
+Start the hub locally from the host when backend hub state needs to be visible
+and disposable:
 
 ```powershell
-docker compose -f docker-compose.dev.yml exec ollama ollama pull qwen2.5:1.5b
+$env:MAIN_COMPUTER_HUB_ROOT = "runtime\hub"
+python -m main_computer.cli hub --host 127.0.0.1 --port 8770
 ```
 
-Start the optional Ollama-backed hub worker after the standalone hub is running,
+Pull the model used by the Compose worker default into the host or remote Ollama
+service:
+
+```powershell
+ollama pull qwen2.5:1.5b
+```
+
+Start the optional Ollama-backed hub worker after the host/remote hub is running,
 or set `MAIN_COMPUTER_HUB_URL` to a remote hub:
 
 ```powershell
@@ -352,9 +358,10 @@ python -m main_computer.cli hub-register-worker `
 ```
 
 The hub provider uses the energy-credit ledger shape for local payout records.
-High-security hub transport is enabled in config by default. Use the standalone
-hub deployment surface under `deploy/coolify/hub/` for containerized hub runs;
-the dev Docker stack only provides optional workers and support services.
+High-security hub transport is enabled in config by default. The dev Docker
+stack only provides optional workers and support services; do not treat it as
+the hub runtime. Build a dedicated production deployer/container when the hub
+deployment surface is needed again.
 
 ## ONLYOFFICE workbook editor
 

@@ -22,7 +22,7 @@ from main_computer.local_platform_registry import (
 )
 
 
-COMPOSE_PROJECT_NAME = "main-computer-local-platform"
+COMPOSE_PROJECT_NAME = "main-computer-local-platform-unleashed"
 ENV_COMPOSE_PROJECT = "MAIN_COMPUTER_LOCAL_PLATFORM_COMPOSE_PROJECT"
 ENV_GENERATED_COMPOSE_PATH = "MAIN_COMPUTER_LOCAL_PLATFORM_GENERATED_COMPOSE_PATH"
 GENERATED_COMPOSE_RELATIVE_PATH = PurePosixPath("deploy/local-platform/generated/docker-compose.websites.yml")

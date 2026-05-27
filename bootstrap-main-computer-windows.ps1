@@ -643,11 +643,9 @@ function Resolve-MainComputerInstanceName {
         return (ConvertTo-MainComputerInstanceSegment -Value $InstanceName)
     }
 
-    $leaf = Split-Path -Leaf ([System.IO.Path]::GetFullPath($Root).TrimEnd([char[]]@('\', '/')))
-    if ([string]::IsNullOrWhiteSpace($leaf)) {
-        $leaf = "main-computer"
-    }
-    return (ConvertTo-MainComputerInstanceSegment -Value $leaf)
+    # The source checkout folder name is not runtime identity.  A checkout named
+    # main_computer_test must not leak "test" into installed Docker/WSL names.
+    return "main-computer"
 }
 
 function Resolve-MainComputerInstanceStoreRoot {
@@ -703,22 +701,9 @@ function New-ModeIsolationProfile {
 
     $instanceRoot = Join-Path $InstanceStoreRoot $InstallInstanceName
     $stateRoot = Join-Path $instanceRoot $Key
-    $coolifyInstance = ConvertTo-MainComputerInstanceSegment -Value $InstallInstanceName
-    $coolifyProjectName = "main-computer-coolify-$coolifyInstance-$Key"
-    $localPlatformInstance = ConvertTo-MainComputerInstanceSegment -Value $InstallInstanceName
-    $localPlatformPrefix = "main-computer-local-platform-"
-    $localPlatformSuffix = "-$Key"
-    $localPlatformMaxInstanceLength = 63 - $localPlatformPrefix.Length - $localPlatformSuffix.Length
-    if ($localPlatformMaxInstanceLength -lt 1) {
-        $localPlatformMaxInstanceLength = 1
-    }
-    if ($localPlatformInstance.Length -gt $localPlatformMaxInstanceLength) {
-        $localPlatformInstance = $localPlatformInstance.Substring(0, $localPlatformMaxInstanceLength).Trim("-")
-    }
-    if ([string]::IsNullOrWhiteSpace($localPlatformInstance)) {
-        $localPlatformInstance = "main-computer"
-    }
-    $localPlatformProjectName = "$localPlatformPrefix$localPlatformInstance$localPlatformSuffix"
+    $modeSegment = ConvertTo-MainComputerInstanceSegment -Value $Key
+    $coolifyProjectName = "main-computer-coolify-$modeSegment"
+    $localPlatformProjectName = "main-computer-local-platform-$modeSegment"
     $coolifyPort = switch ($Key) {
         "debug" { 27056 }
         "safe" { 37056 }

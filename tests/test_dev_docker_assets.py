@@ -12,7 +12,6 @@ def test_dev_docker_compose_defines_core_services() -> None:
     for service in (
         "main-computer:",
         "hub-worker:",
-        "ollama:",
         "ethereum-dev:",
         "executor-image:",
         "executor-smoke:",
@@ -20,6 +19,7 @@ def test_dev_docker_compose_defines_core_services() -> None:
         assert service in compose
 
     assert "\n  hub:\n" not in compose
+    assert "\n  ollama:\n" not in compose
     assert "${MAIN_COMPUTER_HUB_PORT:-8770}:8770" not in compose
     assert "MAIN_COMPUTER_HUB_URL: ${MAIN_COMPUTER_HUB_URL:-http://host.docker.internal:8770}" in compose
     assert "- ${MAIN_COMPUTER_HUB_URL:-http://host.docker.internal:8770}" in compose
@@ -89,11 +89,25 @@ def test_export_includes_dev_docker_assets() -> None:
     assert "\"docker\"" in script
 
 
+def test_root_dockerignore_excludes_large_local_artifacts() -> None:
+    text = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+
+    assert "release_reports/" in text
+    assert "diagnostics_output*/" in text
+    assert "runtime/" in text
+    assert "revision_control/" in text
+    assert ".proto-dev/" in text
+    assert ".main_computer_browser_profile/" in text
+    assert "*.zip" in text
+    assert "deploy/coolify/hub/Dockerfile.dockerignore" not in text
+
+
 def test_readme_points_to_dev_docker_stack() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "## Dev Docker stack" in readme
-    assert "docker compose -f docker-compose.dev.yml up --build ollama ethereum-dev" in readme
-    assert "deploy/coolify/hub/docker-compose.yml" in readme
+    assert "docker compose -f docker-compose.dev.yml up --build ethereum-dev" in readme
+    assert "python -m main_computer.cli hub --host 127.0.0.1 --port 8770" in readme
+    assert "deploy/coolify/hub/docker-compose.yml" not in readme
     assert "docker compose -f docker-compose.gitea.yml up -d gitea" in readme
     assert "docker compose -f docker-compose.dev.yml --profile smoke run --rm executor-smoke" in readme

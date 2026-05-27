@@ -148,17 +148,27 @@ def build_parser() -> argparse.ArgumentParser:
 def default_instance_name(runtime_profile: str, mode_key: str, install_root: Path) -> str:
     """Return the default local identity for an installed tree.
 
-    The v2 launcher model is deliberately location-aware: each install tree
-    should own its non-Gitea Docker projects, WSL distribution, state root, and
-    managed venv.  Deriving the default identity from the install directory keeps
-    explicit targets such as ``main_computer_debug17`` from colliding with another
-    debug install.  Operators can still pass ``--instance-name`` when they want a
-    specific stable identity independent of the path.
+    The default identity is product-scoped instead of checkout-name scoped.
+    Directory labels such as ``test`` or legacy generated suffixes such as
+    ``test-debug`` are build/source details, not runtime identity.  Explicit
+    ``--instance-name`` still bypasses this helper when an operator needs a
+    custom instance.
     """
 
     raw_install_root = os.fspath(install_root)
     install_leaf_text = raw_install_root.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
     install_leaf = safe_name(install_leaf_text).replace("_", "-")
+    profile_name = safe_name(runtime_profile).replace("_", "-") or "test"
+    mode_name = safe_name(mode_key).replace("_", "-") or "unleashed"
+
+    generated_suffix = f"-{profile_name}-{mode_name}"
+    if install_leaf.endswith(generated_suffix):
+        install_leaf = install_leaf[: -len(generated_suffix)].strip("-")
+
+    mode_suffix = f"-{mode_name}"
+    if install_leaf.endswith(mode_suffix):
+        install_leaf = install_leaf[: -len(mode_suffix)].strip("-")
+
     generic_names = {
         "",
         "debug",
@@ -173,9 +183,7 @@ def default_instance_name(runtime_profile: str, mode_key: str, install_root: Pat
     if install_leaf and install_leaf not in generic_names:
         return install_leaf
 
-    profile_name = safe_name(runtime_profile).replace("_", "-") or "test"
-    mode_name = safe_name(mode_key).replace("_", "-") or "unleashed"
-    return f"main-computer-{profile_name}-{mode_name}"
+    return "main-computer"
 
 
 def _env_path(name: str) -> Path | None:
@@ -284,35 +292,37 @@ def _docker_name(value: str, *, max_length: int = 63, fallback: str = "main-comp
     return candidate or fallback
 
 
+def _docker_mode_key(mode_key: str) -> str:
+    return _docker_name(mode_key, max_length=32, fallback="unleashed")
+
+
 def _mode_scoped_coolify_project(instance_name: str, mode_key: str) -> str:
-    prefix = "main-computer-coolify-"
-    suffix = f"-{mode_key}"
-    max_instance_length = max(1, 63 - len(prefix) - len(suffix))
-    instance_segment = _docker_name(instance_name, max_length=max_instance_length, fallback="main-computer")
-    return _docker_name(f"{prefix}{instance_segment}{suffix}", max_length=63, fallback=f"main-computer-coolify-{mode_key}")
+    del instance_name
+    mode_segment = _docker_mode_key(mode_key)
+    return _docker_name(
+        f"main-computer-coolify-{mode_segment}",
+        max_length=63,
+        fallback="main-computer-coolify-unleashed",
+    )
 
 
 def _mode_scoped_dev_compose_project(instance_name: str, mode_key: str) -> str:
-    prefix = "main-computer-dev-"
-    suffix = f"-{mode_key}"
-    max_instance_length = max(1, 63 - len(prefix) - len(suffix))
-    instance_segment = _docker_name(instance_name, max_length=max_instance_length, fallback="main-computer")
+    del instance_name
+    mode_segment = _docker_mode_key(mode_key)
     return _docker_name(
-        f"{prefix}{instance_segment}{suffix}",
+        f"main-computer-{mode_segment}",
         max_length=63,
-        fallback=f"main-computer-dev-{mode_key}",
+        fallback="main-computer-unleashed",
     )
 
 
 def _mode_scoped_local_platform_project(instance_name: str, mode_key: str) -> str:
-    prefix = "main-computer-local-platform-"
-    suffix = f"-{mode_key}"
-    max_instance_length = max(1, 63 - len(prefix) - len(suffix))
-    instance_segment = _docker_name(instance_name, max_length=max_instance_length, fallback="main-computer")
+    del instance_name
+    mode_segment = _docker_mode_key(mode_key)
     return _docker_name(
-        f"{prefix}{instance_segment}{suffix}",
+        f"main-computer-local-platform-{mode_segment}",
         max_length=63,
-        fallback=f"main-computer-local-platform-{mode_key}",
+        fallback="main-computer-local-platform-unleashed",
     )
 
 
@@ -326,8 +336,6 @@ def build_mode_profiles(
     active_venv_python: Path,
 ) -> dict[str, dict[str, object]]:
     """Build the runner's three-mode profile table from the regular installer shape."""
-
-    instance_segment = _docker_name(instance_name, max_length=40)
 
     profiles: dict[str, dict[str, object]] = {}
     for key in ("unleashed", "debug", "safe"):
@@ -369,19 +377,19 @@ def build_mode_profiles(
             "executor_root": state_root / "executor",
             "wsl_runtime_root": state_root / "wsl",
             "onlyoffice_port": defaults["onlyoffice_port"],
-            "dev_compose_project": _mode_scoped_dev_compose_project(instance_segment, key),
+            "dev_compose_project": _mode_scoped_dev_compose_project(instance_name, key),
             "docker_viewport_port": defaults["docker_viewport_port"],
             "hub_port": defaults["hub_port"],
             "hub_worker_port": defaults["hub_worker_port"],
             "ethereum_rpc_port": defaults["ethereum_rpc_port"],
             "onlyoffice_project": f"main-computer-onlyoffice-{key}",
-            "local_server_project": _mode_scoped_local_platform_project(instance_segment, key),
+            "local_server_project": _mode_scoped_local_platform_project(instance_name, key),
             "local_server_registry": state_root / "local-platform" / "sites.json",
             "local_server_compose": state_root / "local-platform" / "docker-compose.websites.yml",
             "local_server_port_start": defaults["local_server_port_start"],
             "local_server_generated_port_start": defaults["local_server_generated_port_start"],
             "local_server_generated_port_end": defaults["local_server_generated_port_end"],
-            "coolify_project": _mode_scoped_coolify_project(instance_segment, key),
+            "coolify_project": _mode_scoped_coolify_project(instance_name, key),
             "coolify_state_root": state_root / "coolify-local-docker",
             "coolify_port": coolify_ports["app"],
             "coolify_soketi_port": coolify_ports["soketi"],

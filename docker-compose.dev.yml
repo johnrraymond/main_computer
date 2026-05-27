@@ -1,4 +1,4 @@
-name: ${MAIN_COMPUTER_DEV_COMPOSE_PROJECT:-main-computer-dev}
+name: main-computer-unleashed
 
 x-main-computer-dev-image: &main-computer-dev-image
   image: main-computer-dev:latest
@@ -55,8 +55,8 @@ services:
       - ethereum-dev
 
 
-  # Start with --profile worker after the host Ollama install has the
-  # requested model available and a standalone hub is reachable at
+  # Start with --profile worker after the host or remote Ollama service has
+  # the requested model available and a host/remote hub is reachable at
   # MAIN_COMPUTER_HUB_URL.
   hub-worker:
     <<: *main-computer-dev-image

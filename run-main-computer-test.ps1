@@ -184,25 +184,12 @@ function New-DevModeProfile {
         [Parameter(Mandatory = $true)][int]$CoolifySoketiTerminalPort
     )
 
-    $leaf = Split-Path -Leaf ([System.IO.Path]::GetFullPath($script:RepoRoot).TrimEnd([char[]]@('\', '/')))
-    $instanceName = ConvertTo-MainComputerInstanceSegment -Value $leaf
+    $instanceName = "main-computer"
     $storeRoot = Resolve-DevStateStoreRoot -Root $script:RepoRoot -InstanceName $instanceName
     $stateRoot = Join-Path $storeRoot $Key
     $python = Resolve-DevPythonPath
-    $localPlatformPrefix = "main-computer-local-platform-"
-    $localPlatformSuffix = "-$Key"
-    $localPlatformMaxInstanceLength = 63 - $localPlatformPrefix.Length - $localPlatformSuffix.Length
-    if ($localPlatformMaxInstanceLength -lt 1) {
-        $localPlatformMaxInstanceLength = 1
-    }
-    $localPlatformInstance = $instanceName
-    if ($localPlatformInstance.Length -gt $localPlatformMaxInstanceLength) {
-        $localPlatformInstance = $localPlatformInstance.Substring(0, $localPlatformMaxInstanceLength).Trim("-")
-    }
-    if ([string]::IsNullOrWhiteSpace($localPlatformInstance)) {
-        $localPlatformInstance = "main-computer"
-    }
-    $localPlatformProject = "$localPlatformPrefix$localPlatformInstance$localPlatformSuffix"
+    $modeSegment = ConvertTo-MainComputerInstanceSegment -Value $Key
+    $localPlatformProject = "main-computer-local-platform-$modeSegment"
 
     return [pscustomobject]@{
         Key = $Key
@@ -226,7 +213,7 @@ function New-DevModeProfile {
         LocalServerPortStart = $LocalServerPortStart
         LocalServerGeneratedPortStart = $LocalServerGeneratedPortStart
         LocalServerGeneratedPortEnd = $LocalServerGeneratedPortEnd
-        CoolifyProject = "main-computer-coolify-$instanceName-$Key"
+        CoolifyProject = "main-computer-coolify-$modeSegment"
         CoolifyStateRoot = Join-Path $stateRoot "coolify-local-docker"
         CoolifyPort = $CoolifyPort
         CoolifySoketiPort = $CoolifySoketiPort

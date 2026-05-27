@@ -205,9 +205,9 @@ function Get-ModeDefaultEnvironment([string]$RootPath, [string]$Mode) {
     MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL = "http://127.0.0.1:18084"
     MAIN_COMPUTER_ONLYOFFICE_INTERNAL_URL = "http://127.0.0.1:18084"
     MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET = "main-computer-onlyoffice-local-secret"
-    MAIN_COMPUTER_DEV_COMPOSE_PROJECT = "main-computer-dev"
-    MAIN_COMPUTER_EXECUTOR_COMPOSE_PROJECT = "main-computer-dev"
-    MAIN_COMPUTER_BLOCKCHAIN_COMPOSE_PROJECT = "main-computer-dev"
+    MAIN_COMPUTER_DEV_COMPOSE_PROJECT = "main-computer-unleashed"
+    MAIN_COMPUTER_EXECUTOR_COMPOSE_PROJECT = "main-computer-unleashed"
+    MAIN_COMPUTER_BLOCKCHAIN_COMPOSE_PROJECT = "main-computer-unleashed"
     MAIN_COMPUTER_DOCKER_VIEWPORT_PORT = "18765"
     MAIN_COMPUTER_HUB_PORT = "8770"
     MAIN_COMPUTER_HUB_WORKER_PORT = "8771"
@@ -581,12 +581,12 @@ function New-StartSession(
     "main-computer-applications"
 
   $devComposeProject = Get-SafeDockerName `
-    (Get-EnvFirstValue @("MAIN_COMPUTER_DEV_COMPOSE_PROJECT", "MAIN_COMPUTER_EXECUTOR_COMPOSE_PROJECT", "MAIN_COMPUTER_BLOCKCHAIN_COMPOSE_PROJECT") "main-computer-dev") `
-    "main-computer-dev"
+    (Get-EnvFirstValue @("MAIN_COMPUTER_DEV_COMPOSE_PROJECT", "MAIN_COMPUTER_EXECUTOR_COMPOSE_PROJECT", "MAIN_COMPUTER_BLOCKCHAIN_COMPOSE_PROJECT") "main-computer-unleashed") `
+    "main-computer-unleashed"
 
   $localPlatformProject = Get-SafeDockerName `
-    (Get-EnvFirstValue @("MAIN_COMPUTER_LOCAL_PLATFORM_COMPOSE_PROJECT") "main-computer-local-platform") `
-    "main-computer-local-platform"
+    (Get-EnvFirstValue @("MAIN_COMPUTER_LOCAL_PLATFORM_COMPOSE_PROJECT") "main-computer-local-platform-unleashed") `
+    "main-computer-local-platform-unleashed"
 
   $applicationsEnv = Join-Path $RootPath "runtime\applications_service\applications.env"
   $devCompose = Join-Path $RootPath "docker-compose.dev.yml"
@@ -663,7 +663,7 @@ function New-StartSession(
     )
     docker_stacks = @(
       [ordered]@{
-        name = "executor-and-blockchain-dev"
+        name = "executor-and-blockchain-unleashed"
         docker_command = "docker"
         compose_file = $devCompose
         project_name = $devComposeProject
@@ -1422,17 +1422,17 @@ function Get-DockerStacks([string]$RootPath, [object]$Session) {
     "main-computer-applications"
 
   $devComposeProject = Get-SafeDockerName `
-    (Get-EnvFirstValue @("MAIN_COMPUTER_DEV_COMPOSE_PROJECT", "MAIN_COMPUTER_EXECUTOR_COMPOSE_PROJECT", "MAIN_COMPUTER_BLOCKCHAIN_COMPOSE_PROJECT") "main-computer-dev") `
-    "main-computer-dev"
+    (Get-EnvFirstValue @("MAIN_COMPUTER_DEV_COMPOSE_PROJECT", "MAIN_COMPUTER_EXECUTOR_COMPOSE_PROJECT", "MAIN_COMPUTER_BLOCKCHAIN_COMPOSE_PROJECT") "main-computer-unleashed") `
+    "main-computer-unleashed"
 
   $localPlatformProject = Get-SafeDockerName `
-    (Get-EnvFirstValue @("MAIN_COMPUTER_LOCAL_PLATFORM_COMPOSE_PROJECT") "main-computer-local-platform") `
-    "main-computer-local-platform"
+    (Get-EnvFirstValue @("MAIN_COMPUTER_LOCAL_PLATFORM_COMPOSE_PROJECT") "main-computer-local-platform-unleashed") `
+    "main-computer-local-platform-unleashed"
   $localPlatformCompose = Get-EnvFirstValue @("MAIN_COMPUTER_LOCAL_PLATFORM_GENERATED_COMPOSE_PATH") ""
 
   return @(
     [pscustomobject]@{
-      name = "executor-and-blockchain-dev"
+      name = "executor-and-blockchain-unleashed"
       docker_command = "docker"
       compose_file = Join-Path $RootPath "docker-compose.dev.yml"
       project_name = $devComposeProject

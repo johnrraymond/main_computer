@@ -44,7 +44,8 @@ SITE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$")
 DIRECTUS_VOLUME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
 DIRECTUS_SERVICE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,127}$")
 MAX_TEXT_FILE_BYTES = 2_000_000
-COMPOSE_PROJECT_NAME = "main-computer-local-platform"
+COMPOSE_PROJECT_NAME = "main-computer-local-platform-unleashed"
+LEGACY_COMPOSE_PROJECT_NAME = "main-computer-local-platform"
 PUBLISH_LANE_ALIASES = {"local-prod": "local", "prod": "local", "production": "local"}
 REMOTE_PUBLISH_LANE_NAMES = {"publish", "remote", "remote-prod", "remote_prod"}
 REMOTE_PUBLISH_MODES = {"scp", "local_server"}
@@ -4181,7 +4182,11 @@ def _owner_display(owner: dict[str, Any]) -> str:
 
 
 def _is_main_computer_local_platform_project(project_name: str) -> bool:
-    return project_name == COMPOSE_PROJECT_NAME or project_name.startswith(f"{COMPOSE_PROJECT_NAME}-")
+    known_projects = (COMPOSE_PROJECT_NAME, LEGACY_COMPOSE_PROJECT_NAME)
+    return any(
+        project_name == known_project or project_name.startswith(f"{known_project}-")
+        for known_project in known_projects
+    )
 
 
 def _site_web_port_preflight(port: object, service: str, project_name: str) -> dict[str, Any]:

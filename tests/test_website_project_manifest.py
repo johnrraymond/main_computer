@@ -518,9 +518,9 @@ def test_website_publish_plan_is_manifest_driven_and_dry_run_safe(monkeypatch, t
     plan = website_publish_plan(tmp_path, "hub-site", "local")
     assert plan["service"] == "hub-local"
     assert plan["url"] == "http://localhost:18080/"
-    assert plan["compose_project"] == "main-computer-local-platform"
+    assert plan["compose_project"] == "main-computer-local-platform-unleashed"
     assert "-p" in plan["command"]
-    assert "main-computer-local-platform" in plan["command"]
+    assert "main-computer-local-platform-unleashed" in plan["command"]
     assert "--force-recreate" not in plan["command"]
     assert plan["recreate_required"] is False
     assert plan["command"][-1] == "hub-local"
@@ -999,8 +999,8 @@ def test_website_publish_plan_marks_expected_site_port_owner_reconcilable(
             "owners": [
                 {
                     "id": "abc123",
-                    "name": "main-computer-local-platform-hub-local-1",
-                    "project": "main-computer-local-platform",
+                    "name": "main-computer-local-platform-unleashed-hub-local-1",
+                    "project": "main-computer-local-platform-unleashed",
                     "service": "hub-local",
                     "status": "running",
                     "image": "main-computer-site-hub-site-prod:latest",
@@ -1038,8 +1038,8 @@ def test_publish_website_repairs_stale_local_platform_site_port_owner_before_com
             "owners": [
                 {
                     "id": "def456",
-                    "name": "main-computer-local-platform-unleashed-hub-local-1",
-                    "project": "main-computer-local-platform-unleashed",
+                    "name": "main-computer-local-platform-hub-local-1",
+                    "project": "main-computer-local-platform",
                     "service": "hub-local",
                     "status": "running",
                     "image": "main-computer-site-hub-site-prod:latest",
@@ -1051,7 +1051,7 @@ def test_publish_website_repairs_stale_local_platform_site_port_owner_before_com
 
     def fake_run_docker_mutation(command: list[str], timeout_s: float = 15.0) -> dict[str, object]:
         docker_commands.append(command)
-        assert command == ["docker", "rm", "-f", "main-computer-local-platform-unleashed-hub-local-1"]
+        assert command == ["docker", "rm", "-f", "main-computer-local-platform-hub-local-1"]
         state["removed"] = True
         return {"ok": True, "returncode": 0, "stdout": "", "stderr": ""}
 
@@ -1070,9 +1070,9 @@ def test_publish_website_repairs_stale_local_platform_site_port_owner_before_com
     assert result["ok"] is True
     assert result["returncode"] == 0
     assert result["site_web_port_repair"]["removed_containers"] == [
-        "main-computer-local-platform-unleashed-hub-local-1"
+        "main-computer-local-platform-hub-local-1"
     ]
-    assert docker_commands == [["docker", "rm", "-f", "main-computer-local-platform-unleashed-hub-local-1"]]
+    assert docker_commands == [["docker", "rm", "-f", "main-computer-local-platform-hub-local-1"]]
     assert result["plan"]["site_web_port_preflight"]["status"] == "available"
 
 
@@ -1573,8 +1573,8 @@ def test_directus_reuse_removes_stale_container_but_keeps_volumes(
             "checked": True,
             "owners": [
                 {
-                    "name": "main-computer-local-platform-unleashed-zzzzz-directus-1",
-                    "project": "main-computer-local-platform-unleashed",
+                    "name": "main-computer-local-platform-zzzzz-directus-1",
+                    "project": "main-computer-local-platform",
                     "service": "zzzzz-directus",
                     "status": "running",
                 }
@@ -1593,13 +1593,13 @@ def test_directus_reuse_removes_stale_container_but_keeps_volumes(
     result = website_project_manifest._apply_directus_runtime_action(
         tmp_path,
         "zzzzz",
-        "main-computer-local-platform",
+        "main-computer-local-platform-unleashed",
     )
 
     assert result["ok"] is True
-    assert result["removed_containers"] == ["main-computer-local-platform-unleashed-zzzzz-directus-1"]
+    assert result["removed_containers"] == ["main-computer-local-platform-zzzzz-directus-1"]
     assert result["removed_volumes"] == []
-    assert commands == [["docker", "rm", "-f", "main-computer-local-platform-unleashed-zzzzz-directus-1"]]
+    assert commands == [["docker", "rm", "-f", "main-computer-local-platform-zzzzz-directus-1"]]
 
 
 def test_directus_overwrite_removes_matching_containers_and_selected_volumes(
@@ -1640,7 +1640,7 @@ def test_directus_overwrite_removes_matching_containers_and_selected_volumes(
     result = website_project_manifest._apply_directus_runtime_action(
         tmp_path,
         "zzzzz",
-        "main-computer-local-platform",
+        "main-computer-local-platform-unleashed",
     )
 
     assert result["ok"] is True
