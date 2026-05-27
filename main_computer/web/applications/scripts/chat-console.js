@@ -1211,6 +1211,18 @@
       sourceCell.status = outputCell.status === "error" ? "error" : "ok";
       ensureChatConsoleContinuationAfterOutput(outputCell, sourceCell);
       saveChatConsoleState(saveMessage || "cell evaluated");
+      try {
+        window.dispatchEvent(new CustomEvent("main-computer-chat-console-output-applied", {
+          detail: {
+            thread_id: chatConsoleState.id,
+            source_cell_id: sourceCell.id,
+            output_cell: outputCell,
+            metadata: outputCell.metadata || {}
+          }
+        }));
+      } catch {
+        // Embedded hosts may choose to ignore chat output lifecycle notifications.
+      }
       return true;
     }
     function chatConsolePersistEvaluationOutputToThread(threadId, sourceCellId, outputCell, saveMessage) {

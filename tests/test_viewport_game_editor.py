@@ -504,6 +504,91 @@ class ViewportGameEditorTests(unittest.TestCase):
         self.assertEqual(_application_route_target("/app/layout-builder"), "game-editor")
         self.assertIsNone(_application_route_target("/applications/game-editor/unknown"))
 
+    def test_game_editor_chat_edit_auto_applies_validated_rag_payloads(self) -> None:
+        project_file = self.root / "game_projects" / "webgl-demo" / "project.json"
+        before_project = json.loads(project_file.read_text(encoding="utf-8"))
+        old_color = before_project["scenes"][0]["objects"][5]["props"]["color"]
+
+        from main_computer.models import ChatResponse
+
+        class FakeMountedProvider:
+            name = "fake-mounted-provider"
+            model = "fake-mounted-model"
+
+        class FakeMountedComputer:
+            provider = FakeMountedProvider()
+
+            def chat_console_ai(self, source: str, attachments: list | None = None) -> ChatResponse:
+                return ChatResponse(
+                    content=json.dumps(
+                        {
+                            "ok": True,
+                            "mode": "game_editor_rag_edit_proposal",
+                            "target_kind": "game-project-plus-editor",
+                            "target_id": "webgl-demo",
+                            "allowed_roots": ["game_projects/webgl-demo/"],
+                            "summary": "Change the main enemy color to red.",
+                            "grounding": [
+                                {
+                                    "evidence_type": "scene_object",
+                                    "path": "game_projects/webgl-demo/project.json",
+                                    "json_pointer": "/scenes/0/objects/5/props/color",
+                                    "exact_value": old_color,
+                                    "reason": "The model selected the enemy object from the supplied RAG evidence.",
+                                }
+                            ],
+                            "json_edits": [
+                                {
+                                    "path": "game_projects/webgl-demo/project.json",
+                                    "json_pointer": "/scenes/0/objects/5/props/color",
+                                    "old_value": old_color,
+                                    "new_value": "#ff0000",
+                                    "reason": "Set the selected enemy color to red.",
+                                }
+                            ],
+                            "text_replacements": [],
+                            "create_files": [],
+                            "warnings": [],
+                        }
+                    ),
+                    provider="fake-mounted-provider",
+                    model="fake-mounted-model",
+                )
+
+        self.server.computer = FakeMountedComputer()
+
+        data = self.post(
+            "/api/applications/game-editor/chat/edit",
+            {
+                "thread_id": "test-game-auto-apply",
+                "auto_apply": True,
+                "live_apply": True,
+                "cell": {"id": "chat-game-auto-apply", "type": "ai", "source": "Change the main enemy's color red."},
+                "embedded_context": {
+                    "active_app": "game-editor",
+                    "project_id": "webgl-demo",
+                    "target_kind": "game-project",
+                    "target_id": "webgl-demo",
+                },
+                "embedded_context_source": {"active_app": "game-editor", "target_kind": "game-project", "target_id": "webgl-demo"},
+                "mount_plugins": [{"id": "game-editor-edit", "enabled": True, "target_id": "webgl-demo", "project_id": "webgl-demo", "auto_apply": True, "live_apply": True}],
+            },
+        )
+
+        self.assertTrue(data["ok"])
+        output = data["output_cell"]
+        self.assertEqual(output["metadata"]["editor_intent"], "apply_edit")
+        self.assertTrue(output["metadata"]["auto_apply"])
+        self.assertTrue(output["metadata"]["apply_result"]["ok"])
+        self.assertEqual(output["metadata"]["proposal"]["mode"], "applied")
+        after_project = json.loads(project_file.read_text(encoding="utf-8"))
+        self.assertEqual(after_project["scenes"][0]["objects"][5]["props"]["color"], "#ff0000")
+        self.assertNotEqual(after_project["scenes"][0]["objects"][5]["props"]["color"], old_color)
+        text = "\n".join(str(part.get("content", "")) for part in output["parts"])
+        self.assertIn("Applied", text)
+        self.assertIn("golden-path RAG wrote validated replacement files", text)
+
+
     def test_game_editor_rag_apply_validated_payload_writes_game_project(self) -> None:
         project_file = self.root / "game_projects" / "webgl-demo" / "project.json"
         project = json.loads(project_file.read_text(encoding="utf-8"))

@@ -1144,7 +1144,6 @@ def test_python_bootstrapper_writes_profile_scoped_dev_template_ports_and_projec
     assert '"local_server_project": _mode_scoped_local_platform_project(instance_segment, key)' in cli
     assert '"docker_viewport_port": defaults["docker_viewport_port"]' in cli
     assert '"hub_port": defaults["hub_port"]' in cli
-    assert '"ollama_host_port": defaults["ollama_host_port"]' in cli
     assert '"ethereum_rpc_port": defaults["ethereum_rpc_port"]' in cli
     assert 'env["MAIN_COMPUTER_INSTANCE_NAME"] = instance_name' in cli
     assert 'env["MAIN_COMPUTER_DEV_COMPOSE_PROJECT"] = dev_compose_project' in cli
@@ -1152,6 +1151,13 @@ def test_python_bootstrapper_writes_profile_scoped_dev_template_ports_and_projec
     assert 'env["MAIN_COMPUTER_BLOCKCHAIN_COMPOSE_PROJECT"] = dev_compose_project' in cli
     assert 'env["MAIN_COMPUTER_HUB_PORT"] = str(profile.get("hub_port", mode_defaults["hub_port"]))' in cli
     assert 'env["MAIN_COMPUTER_ETHEREUM_RPC_PORT"] = str(profile.get("ethereum_rpc_port", mode_defaults["ethereum_rpc_port"]))' in cli
+    assert 'env["OLLAMA_BASE_URL"] = "http://127.0.0.1:11434"' in cli
+    assert ("ollama" + "_host_port") not in cli
+    assert ("MAIN_COMPUTER_" + "OLLAMA_HOST_PORT") not in cli
+    assert ("Ollama" + "HostPort") not in cli
+    assert ("1" + "8034") not in cli
+    assert ("2" + "8034") not in cli
+    assert ("3" + "8034") not in cli
 
     assert 'base_env={}' in cli
     assert 'env.pop("MAIN_COMPUTER_COOLIFY_LOCAL_TOKEN", None)' in cli

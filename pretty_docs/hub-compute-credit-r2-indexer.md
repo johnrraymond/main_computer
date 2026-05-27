@@ -1,7 +1,7 @@
-# Hub Compute Credit R2A Indexer
+# Hub Compute Credit R2A Escrow Deposit Indexer
 
-R2A adds the first funding bridge between an on-chain funding receipt and the
-internal Compute Credit ledger.
+R2A adds the first funding bridge between an on-chain escrow deposit receipt and
+the internal Compute Credit ledger.
 
 This phase is intentionally narrow:
 
@@ -11,7 +11,7 @@ This phase is intentionally narrow:
 - no paid request charging
 - no worker earnings
 - no settlement batching
-- no new vault contract
+- no worker settlement contract
 
 The hub accepts a normalized receipt-shaped payload, validates it, converts it
 to a `ChainEventRef` plus `CreditDeposit`, and records it through
@@ -21,7 +21,7 @@ to a `ChainEventRef` plus `CreditDeposit`, and records it through
 
 ```text
 GET  /api/hub/v1/credits/indexer
-POST /api/hub/v1/credits/purchases/import
+POST /api/hub/v1/credits/deposits/import
 ```
 
 The status endpoint reports the R2A mode, the event family this import is
@@ -44,7 +44,7 @@ protects admin/import routes.
   "payment_asset": "native",
   "payment_amount_base_units": 1000000000000000000,
   "credits_granted": 100,
-  "memo": "dev-chain funding receipt"
+  "memo": "dev-chain escrow deposit receipt"
 }
 ```
 
@@ -98,8 +98,8 @@ than once against the same local ledger. It verifies:
 - the first normalized receipt import succeeds
 - the duplicate import returns `idempotent=true`
 - the duplicate import does not change account balance
-- the duplicate import does not change purchase or transaction counts
-- the purchase appears in `/api/hub/v1/credits/purchases`
+- the duplicate import does not change deposit or transaction counts
+- the deposit appears in `/api/hub/v1/credits/deposits`
 - the `deposit_indexed` transaction appears in `/api/hub/v1/credits/transactions`
 
 This is still a local-dev/operator smoke path only. It does not perform RPC
@@ -117,7 +117,7 @@ python tools/build_contracts.py --project contracts --test
 ## Next phase
 
 R2B can later connect this importer to RPC/event sync for
-`HubCreditSale.CreditPurchased`. The R2A endpoint is deliberately useful first
+`HubCreditBridgeEscrow.CreditDeposited`. The R2A endpoint is deliberately useful first
 as a deterministic, testable import seam.
 
 
@@ -126,10 +126,10 @@ as a deterministic, testable import seam.
 Before adding RPC sync, run the contract-side smoke harness:
 
 ```powershell
-python scripts/smoke_hub_credit_sale_container.py
+python scripts/smoke_hub_credit_bridge_escrow_container.py
 ```
 
-This verifies the `HubCreditSale.CreditPurchased` event shape and then delegates
+This verifies the `HubCreditBridgeEscrow.CreditDeposited`, `SpendRectified`, and `WithdrawalReleased` event shapes and then delegates
 to the repo's container-aware Foundry wrapper:
 
 ```powershell

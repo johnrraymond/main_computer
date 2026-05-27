@@ -83,9 +83,9 @@ def _build_payload(args: argparse.Namespace) -> dict[str, Any]:
 def _ledger_counts(result: dict[str, Any]) -> tuple[int, int]:
     ledger = result.get("ledger")
     _require(isinstance(ledger, dict), "import response did not include ledger summary")
-    purchase_count = int(ledger.get("purchase_count", -1))
+    deposit_count = int(ledger.get("deposit_count", ledger.get("purchase_count", -1)))
     transaction_count = int(ledger.get("transaction_count", -1))
-    return purchase_count, transaction_count
+    return deposit_count, transaction_count
 
 
 def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
@@ -100,15 +100,15 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
     _require(status.get("ok") is True, "indexer status did not return ok=true")
     _require(status.get("phase") == "R2A", f"expected phase R2A, got {status.get('phase')!r}")
     _require(
-        status.get("mode") == "manual-normalized-import",
-        f"expected manual-normalized-import mode, got {status.get('mode')!r}",
+        status.get("mode") in {"manual-normalized-escrow-import", "manual-normalized-import"},
+        f"expected manual-normalized-escrow-import mode, got {status.get('mode')!r}",
     )
     _require(status.get("credit_card_supported") is False, "R2A unexpectedly reports credit-card support")
     _require(status.get("rpc_sync_supported") is False, "R2A unexpectedly reports RPC sync support")
 
     first = _json_request(
         "POST",
-        f"{hub_url}/api/hub/v1/credits/purchases/import",
+        f"{hub_url}/api/hub/v1/credits/deposits/import",
         body=payload,
         timeout=args.timeout,
     )
@@ -126,7 +126,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
     _require(bool(first_deposit.get("account_id")), "import response did not include cleaned account_id")
     _require(int(first_deposit.get("credits_granted", 0)) == args.credits_granted, "unexpected credits_granted")
     first_balance = int(first_account.get("available_credits", -1))
-    first_purchase_count, first_transaction_count = _ledger_counts(first)
+    first_deposit_count, first_transaction_count = _ledger_counts(first)
     deposit_id = str(first_deposit.get("deposit_id", ""))
     event_uid = str(first.get("event_uid", ""))
     _require(deposit_id.startswith("dep_"), f"unexpected deposit_id: {deposit_id!r}")
@@ -134,7 +134,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
 
     second = _json_request(
         "POST",
-        f"{hub_url}/api/hub/v1/credits/purchases/import",
+        f"{hub_url}/api/hub/v1/credits/deposits/import",
         body=payload,
         timeout=args.timeout,
     )
@@ -151,10 +151,10 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
         int(second_account.get("available_credits", -1)) == first_balance,
         "duplicate import changed available_credits",
     )
-    second_purchase_count, second_transaction_count = _ledger_counts(second)
+    second_deposit_count, second_transaction_count = _ledger_counts(second)
     _require(
-        second_purchase_count == first_purchase_count,
-        "duplicate import changed purchase_count",
+        second_deposit_count == first_deposit_count,
+        "duplicate import changed deposit_count",
     )
     _require(
         second_transaction_count == first_transaction_count,
@@ -162,16 +162,16 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
     )
 
     query = urlencode({"account_id": second_deposit.get("account_id", args.account_id)})
-    purchases = _json_request(
+    deposits = _json_request(
         "GET",
-        f"{hub_url}/api/hub/v1/credits/purchases?{query}",
+        f"{hub_url}/api/hub/v1/credits/deposits?{query}",
         timeout=args.timeout,
     )
-    purchase_rows = purchases.get("purchases", [])
-    _require(isinstance(purchase_rows, list), "purchases endpoint did not return a purchases list")
+    deposit_rows = deposits.get("deposits", deposits.get("purchases", []))
+    _require(isinstance(deposit_rows, list), "deposits endpoint did not return a deposits list")
     _require(
-        any(isinstance(row, dict) and row.get("deposit_id") == deposit_id for row in purchase_rows),
-        "purchases endpoint did not include the imported deposit",
+        any(isinstance(row, dict) and row.get("deposit_id") == deposit_id for row in deposit_rows),
+        "deposits endpoint did not include the imported deposit",
     )
 
     transactions = _json_request(
@@ -199,7 +199,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
         "deposit_id": deposit_id,
         "event_uid": event_uid,
         "available_credits": first_balance,
-        "purchase_count": second_purchase_count,
+        "deposit_count": second_deposit_count,
         "transaction_count": second_transaction_count,
         "first_idempotent": bool(first.get("idempotent")),
         "duplicate_idempotent": bool(second.get("idempotent")),
@@ -209,7 +209,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Smoke-test the R2A manual normalized Compute Credit funding receipt import. "
+            "Smoke-test the R2A manual normalized Compute Credit escrow deposit receipt import. "
             "Start the hub first, then run this script."
         )
     )
@@ -258,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  deposit_id: {result['deposit_id']}")
         print(f"  event_uid: {result['event_uid']}")
         print(f"  available_credits: {result['available_credits']}")
-        print(f"  purchase_count: {result['purchase_count']}")
+        print(f"  deposit_count: {result['deposit_count']}")
         print(f"  transaction_count: {result['transaction_count']}")
         print(f"  duplicate_idempotent: {result['duplicate_idempotent']}")
     return 0

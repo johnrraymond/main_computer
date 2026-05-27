@@ -222,7 +222,7 @@
           "height": 142,
           "props": {
             "label": "Echo Wraith",
-            "color": "#38bdf8",
+            "color": "#ff0000",
             "z": 12,
             "bob": 8,
             "motion": "phase",

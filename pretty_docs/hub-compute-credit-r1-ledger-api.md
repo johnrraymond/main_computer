@@ -6,7 +6,7 @@ R1 introduces a live internal Compute Credit ledger for the hub API and admin
 control site. It does not index chain events, charge requests, or settle workers
 yet.
 
-The ledger is intentionally off-chain. On-chain purchase receipts and worker
+The ledger is intentionally off-chain. On-chain escrow deposit receipts and worker
 settlement batches will connect to it in later phases.
 
 ## Runtime storage
@@ -30,7 +30,7 @@ GET  /api/hub/v1/credits
 GET  /api/hub/v1/credits/accounts
 GET  /api/hub/v1/credits/balance?account_id=...
 GET  /api/hub/v1/credits/transactions?account_id=...
-GET  /api/hub/v1/credits/purchases?account_id=...
+GET  /api/hub/v1/credits/deposits?account_id=...
 POST /api/hub/v1/credits/admin/issue
 ```
 

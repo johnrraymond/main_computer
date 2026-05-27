@@ -522,9 +522,9 @@ No public token contract is deployed by the dev-chain tools. Legacy `--queue-eng
 C0/C1 hub contract direction:
 
 - `ENG` language is deprecated because it collides with an existing token symbol namespace.
-- Users purchase **Compute Credits** rather than a public token.
-- `contracts/src/HubCreditSale.sol` is a purchase-intent receipt contract. It accepts native payment, forwards payment to treasury, and emits `CreditPurchased(...)` for the hub backend to index.
-- Compute Credits are still internal service credits in C1; worker payouts and transferable token behavior are later phases.
+- Users escrow value for **Compute Credits** rather than receiving a public token.
+- `contracts/src/HubCreditBridgeEscrow.sol` is the active bridge escrow contract. It accepts native deposits, emits `CreditDeposited(...)`, allows the bridge controller to rectify aggregate internal spend, and releases reconciled unused escrow.
+- Compute Credits are still internal service credits in C1; per-request worker payouts and transferable token behavior are later phases.
 
 ## Diagnostics and tests
 

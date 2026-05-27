@@ -288,7 +288,7 @@ logic. Failed/cancelled/expired requests must release holds.
 
 ### Phase 3: purchase indexer
 
-Index `HubCreditSale` or future `HubCreditVault` events into internal deposits
+Index `HubCreditBridgeEscrow.CreditDeposited` events into internal deposits
 using `ChainEventRef` idempotency.
 
 ### Phase 4: worker settlement batches

@@ -52,28 +52,32 @@ Office reset flow:
 
 The backend never stores private keys, never signs transactions, and never moves native funds. Browser wallet users submit contract calls directly. Use separate browser profiles or windows to test O0-O3 because one wallet session usually exposes one active office account at a time.
 
-## Hub Credit Sale v0
+## Hub Credit Bridge Escrow v0
 
-`src/HubCreditSale.sol` is the first purchase-intent contract for the hub/worker marketplace.
+`src/HubCreditBridgeEscrow.sol` is the active contract-side surface for the paid hub/worker marketplace.
 
-It intentionally does **not** mint an ERC-20 token. Users purchase **Compute Credits** through a native-payment receipt flow. The contract forwards payment to a treasury address and emits `CreditPurchased(...)` so the hub backend can index the receipt into its internal service-credit ledger.
+It intentionally does **not** mint an ERC-20 token and does **not** emit one public chain transaction per AI request. Users deposit native value into escrow. The hub/bridge credits the user's internal Compute Credit account from the `CreditDeposited(...)` event, tracks request holds/charges privately, and only touches the chain again when aggregate spend must be rectified or unused escrow must be released.
 
 This contract is C1 scope only:
 
-- accepts native payment for a configured `weiPerCredit` price
-- emits a purchase receipt with account, payer, credits granted, amount paid, and memo
-- supports owner-controlled pause, treasury rotation, and price update
-- does not settle worker payouts
+- accepts native escrow deposits for a user/account
+- emits a deposit receipt with account, payer, amount units, and memo
+- lets the configured bridge controller rectify aggregate internal spend
+- lets the bridge controller release reconciled unused escrow back to a recipient
+- treats duplicate rectification/withdrawal ids as idempotent no-ops
+- does not settle workers per request
 - does not represent Compute Credits as a transferable token
 - does not replace `XLagBridgeReserve`
 
 Expected backend flow:
 
 ```text
-HubCreditSale.CreditPurchased
+HubCreditBridgeEscrow.CreditDeposited
   -> hub contract indexer
   -> internal account credit ledger
   -> user can spend Compute Credits on hub AI work
+  -> bridge rectifies aggregate internal spend when needed
+  -> bridge releases reconciled unused escrow on withdrawal
 ```
 
 Worker payout and reserve movement remain separate phases.

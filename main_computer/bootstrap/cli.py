@@ -32,7 +32,6 @@ MODE_DEFAULTS = {
         "docker_viewport_port": 18765,
         "hub_port": 18770,
         "hub_worker_port": 18771,
-        "ollama_host_port": 18034,
         "ethereum_rpc_port": 18545,
         "local_server_port_start": 18080,
         "local_server_generated_port_start": 18100,
@@ -49,7 +48,6 @@ MODE_DEFAULTS = {
         "docker_viewport_port": 28765,
         "hub_port": 28770,
         "hub_worker_port": 28771,
-        "ollama_host_port": 28034,
         "ethereum_rpc_port": 28545,
         "local_server_port_start": 28080,
         "local_server_generated_port_start": 28100,
@@ -66,7 +64,6 @@ MODE_DEFAULTS = {
         "docker_viewport_port": 38765,
         "hub_port": 38770,
         "hub_worker_port": 38771,
-        "ollama_host_port": 38034,
         "ethereum_rpc_port": 38545,
         "local_server_port_start": 38080,
         "local_server_generated_port_start": 38100,
@@ -376,7 +373,6 @@ def build_mode_profiles(
             "docker_viewport_port": defaults["docker_viewport_port"],
             "hub_port": defaults["hub_port"],
             "hub_worker_port": defaults["hub_worker_port"],
-            "ollama_host_port": defaults["ollama_host_port"],
             "ethereum_rpc_port": defaults["ethereum_rpc_port"],
             "onlyoffice_project": f"main-computer-onlyoffice-{key}",
             "local_server_project": _mode_scoped_local_platform_project(instance_segment, key),
@@ -406,7 +402,6 @@ def _mode_assignment(prefix: str, profile: dict[str, object]) -> str:
             f"${prefix}DockerViewportPort = {profile['docker_viewport_port']}",
             f"${prefix}HubPort = {profile['hub_port']}",
             f"${prefix}HubWorkerPort = {profile['hub_worker_port']}",
-            f"${prefix}OllamaHostPort = {profile['ollama_host_port']}",
             f"${prefix}EthereumRpcPort = {profile['ethereum_rpc_port']}",
             f"${prefix}Python = {ps_single_quoted(profile['python'])}",
             f"${prefix}Distribution = {ps_single_quoted(profile['distribution'])}",
@@ -517,10 +512,10 @@ function Resolve-RunnerMode {{
 
     $normalized = ($ModeName.Trim().ToLowerInvariant() -replace "\\s+", "-")
     switch ($normalized) {{
-        "unleashed" {{ return [pscustomobject]@{{ Key = "unleashed"; Label = "Unleashed Mode"; GuidanceLevel = "developer"; Port = $UnleashedPort; HeartbeatPort = $UnleashedHeartbeatPort; DevComposeProject = $UnleashedDevComposeProject; DockerViewportPort = $UnleashedDockerViewportPort; HubPort = $UnleashedHubPort; HubWorkerPort = $UnleashedHubWorkerPort; OllamaHostPort = $UnleashedOllamaHostPort; EthereumRpcPort = $UnleashedEthereumRpcPort; PythonPath = $UnleashedPython; Distribution = $UnleashedDistribution; ControlRoot = $UnleashedControlRoot; StateRoot = $UnleashedStateRoot; ExecutorRoot = $UnleashedExecutorRoot; WslRuntimeRoot = $UnleashedWslRuntimeRoot; OnlyOfficePort = $UnleashedOnlyOfficePort; OnlyOfficeProject = $UnleashedOnlyOfficeProject; LocalServerProject = $UnleashedLocalServerProject; LocalServerRegistry = $UnleashedLocalServerRegistry; LocalServerCompose = $UnleashedLocalServerCompose; LocalServerPortStart = $UnleashedLocalServerPortStart; LocalServerGeneratedPortStart = $UnleashedLocalServerGeneratedPortStart; LocalServerGeneratedPortEnd = $UnleashedLocalServerGeneratedPortEnd; CoolifyProject = $UnleashedCoolifyProject; CoolifyStateRoot = $UnleashedCoolifyStateRoot; CoolifyPort = $UnleashedCoolifyPort; CoolifySoketiPort = $UnleashedCoolifySoketiPort; CoolifySoketiTerminalPort = $UnleashedCoolifySoketiTerminalPort }} }}
+        "unleashed" {{ return [pscustomobject]@{{ Key = "unleashed"; Label = "Unleashed Mode"; GuidanceLevel = "developer"; Port = $UnleashedPort; HeartbeatPort = $UnleashedHeartbeatPort; DevComposeProject = $UnleashedDevComposeProject; DockerViewportPort = $UnleashedDockerViewportPort; HubPort = $UnleashedHubPort; HubWorkerPort = $UnleashedHubWorkerPort; EthereumRpcPort = $UnleashedEthereumRpcPort; PythonPath = $UnleashedPython; Distribution = $UnleashedDistribution; ControlRoot = $UnleashedControlRoot; StateRoot = $UnleashedStateRoot; ExecutorRoot = $UnleashedExecutorRoot; WslRuntimeRoot = $UnleashedWslRuntimeRoot; OnlyOfficePort = $UnleashedOnlyOfficePort; OnlyOfficeProject = $UnleashedOnlyOfficeProject; LocalServerProject = $UnleashedLocalServerProject; LocalServerRegistry = $UnleashedLocalServerRegistry; LocalServerCompose = $UnleashedLocalServerCompose; LocalServerPortStart = $UnleashedLocalServerPortStart; LocalServerGeneratedPortStart = $UnleashedLocalServerGeneratedPortStart; LocalServerGeneratedPortEnd = $UnleashedLocalServerGeneratedPortEnd; CoolifyProject = $UnleashedCoolifyProject; CoolifyStateRoot = $UnleashedCoolifyStateRoot; CoolifyPort = $UnleashedCoolifyPort; CoolifySoketiPort = $UnleashedCoolifySoketiPort; CoolifySoketiTerminalPort = $UnleashedCoolifySoketiTerminalPort }} }}
         "unleashed-mode" {{ return (Resolve-RunnerMode -ModeName "Unleashed") }}
-        "debug" {{ return [pscustomobject]@{{ Key = "debug"; Label = "Debug"; GuidanceLevel = "debug"; Port = $DebugPort; HeartbeatPort = $DebugHeartbeatPort; DevComposeProject = $DebugDevComposeProject; DockerViewportPort = $DebugDockerViewportPort; HubPort = $DebugHubPort; HubWorkerPort = $DebugHubWorkerPort; OllamaHostPort = $DebugOllamaHostPort; EthereumRpcPort = $DebugEthereumRpcPort; PythonPath = $DebugPython; Distribution = $DebugDistribution; ControlRoot = $DebugControlRoot; StateRoot = $DebugStateRoot; ExecutorRoot = $DebugExecutorRoot; WslRuntimeRoot = $DebugWslRuntimeRoot; OnlyOfficePort = $DebugOnlyOfficePort; OnlyOfficeProject = $DebugOnlyOfficeProject; LocalServerProject = $DebugLocalServerProject; LocalServerRegistry = $DebugLocalServerRegistry; LocalServerCompose = $DebugLocalServerCompose; LocalServerPortStart = $DebugLocalServerPortStart; LocalServerGeneratedPortStart = $DebugLocalServerGeneratedPortStart; LocalServerGeneratedPortEnd = $DebugLocalServerGeneratedPortEnd; CoolifyProject = $DebugCoolifyProject; CoolifyStateRoot = $DebugCoolifyStateRoot; CoolifyPort = $DebugCoolifyPort; CoolifySoketiPort = $DebugCoolifySoketiPort; CoolifySoketiTerminalPort = $DebugCoolifySoketiTerminalPort }} }}
-        "safe" {{ return [pscustomobject]@{{ Key = "safe"; Label = "Safe Mode"; GuidanceLevel = "guided"; Port = $SafePort; HeartbeatPort = $SafeHeartbeatPort; DevComposeProject = $SafeDevComposeProject; DockerViewportPort = $SafeDockerViewportPort; HubPort = $SafeHubPort; HubWorkerPort = $SafeHubWorkerPort; OllamaHostPort = $SafeOllamaHostPort; EthereumRpcPort = $SafeEthereumRpcPort; PythonPath = $SafePython; Distribution = $SafeDistribution; ControlRoot = $SafeControlRoot; StateRoot = $SafeStateRoot; ExecutorRoot = $SafeExecutorRoot; WslRuntimeRoot = $SafeWslRuntimeRoot; OnlyOfficePort = $SafeOnlyOfficePort; OnlyOfficeProject = $SafeOnlyOfficeProject; LocalServerProject = $SafeLocalServerProject; LocalServerRegistry = $SafeLocalServerRegistry; LocalServerCompose = $SafeLocalServerCompose; LocalServerPortStart = $SafeLocalServerPortStart; LocalServerGeneratedPortStart = $SafeLocalServerGeneratedPortStart; LocalServerGeneratedPortEnd = $SafeLocalServerGeneratedPortEnd; CoolifyProject = $SafeCoolifyProject; CoolifyStateRoot = $SafeCoolifyStateRoot; CoolifyPort = $SafeCoolifyPort; CoolifySoketiPort = $SafeCoolifySoketiPort; CoolifySoketiTerminalPort = $SafeCoolifySoketiTerminalPort }} }}
+        "debug" {{ return [pscustomobject]@{{ Key = "debug"; Label = "Debug"; GuidanceLevel = "debug"; Port = $DebugPort; HeartbeatPort = $DebugHeartbeatPort; DevComposeProject = $DebugDevComposeProject; DockerViewportPort = $DebugDockerViewportPort; HubPort = $DebugHubPort; HubWorkerPort = $DebugHubWorkerPort; EthereumRpcPort = $DebugEthereumRpcPort; PythonPath = $DebugPython; Distribution = $DebugDistribution; ControlRoot = $DebugControlRoot; StateRoot = $DebugStateRoot; ExecutorRoot = $DebugExecutorRoot; WslRuntimeRoot = $DebugWslRuntimeRoot; OnlyOfficePort = $DebugOnlyOfficePort; OnlyOfficeProject = $DebugOnlyOfficeProject; LocalServerProject = $DebugLocalServerProject; LocalServerRegistry = $DebugLocalServerRegistry; LocalServerCompose = $DebugLocalServerCompose; LocalServerPortStart = $DebugLocalServerPortStart; LocalServerGeneratedPortStart = $DebugLocalServerGeneratedPortStart; LocalServerGeneratedPortEnd = $DebugLocalServerGeneratedPortEnd; CoolifyProject = $DebugCoolifyProject; CoolifyStateRoot = $DebugCoolifyStateRoot; CoolifyPort = $DebugCoolifyPort; CoolifySoketiPort = $DebugCoolifySoketiPort; CoolifySoketiTerminalPort = $DebugCoolifySoketiTerminalPort }} }}
+        "safe" {{ return [pscustomobject]@{{ Key = "safe"; Label = "Safe Mode"; GuidanceLevel = "guided"; Port = $SafePort; HeartbeatPort = $SafeHeartbeatPort; DevComposeProject = $SafeDevComposeProject; DockerViewportPort = $SafeDockerViewportPort; HubPort = $SafeHubPort; HubWorkerPort = $SafeHubWorkerPort; EthereumRpcPort = $SafeEthereumRpcPort; PythonPath = $SafePython; Distribution = $SafeDistribution; ControlRoot = $SafeControlRoot; StateRoot = $SafeStateRoot; ExecutorRoot = $SafeExecutorRoot; WslRuntimeRoot = $SafeWslRuntimeRoot; OnlyOfficePort = $SafeOnlyOfficePort; OnlyOfficeProject = $SafeOnlyOfficeProject; LocalServerProject = $SafeLocalServerProject; LocalServerRegistry = $SafeLocalServerRegistry; LocalServerCompose = $SafeLocalServerCompose; LocalServerPortStart = $SafeLocalServerPortStart; LocalServerGeneratedPortStart = $SafeLocalServerGeneratedPortStart; LocalServerGeneratedPortEnd = $SafeLocalServerGeneratedPortEnd; CoolifyProject = $SafeCoolifyProject; CoolifyStateRoot = $SafeCoolifyStateRoot; CoolifyPort = $SafeCoolifyPort; CoolifySoketiPort = $SafeCoolifySoketiPort; CoolifySoketiTerminalPort = $SafeCoolifySoketiTerminalPort }} }}
         "safe-mode" {{ return (Resolve-RunnerMode -ModeName "Safe") }}
     }}
 
@@ -561,10 +556,9 @@ function Set-RunnerEnvironment {{
     $env:MAIN_COMPUTER_DOCKER_VIEWPORT_PORT = "$($SelectedMode.DockerViewportPort)"
     $env:MAIN_COMPUTER_HUB_PORT = "$($SelectedMode.HubPort)"
     $env:MAIN_COMPUTER_HUB_WORKER_PORT = "$($SelectedMode.HubWorkerPort)"
-    $env:MAIN_COMPUTER_OLLAMA_HOST_PORT = "$($SelectedMode.OllamaHostPort)"
     $env:MAIN_COMPUTER_ETHEREUM_RPC_PORT = "$($SelectedMode.EthereumRpcPort)"
     $env:MAIN_COMPUTER_HUB_URL = "http://127.0.0.1:$($SelectedMode.HubPort)"
-    $env:OLLAMA_BASE_URL = "http://127.0.0.1:$($SelectedMode.OllamaHostPort)"
+    $env:OLLAMA_BASE_URL = "http://127.0.0.1:11434"
     $env:MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL = "http://127.0.0.1:$($SelectedMode.EthereumRpcPort)"
     $env:MAIN_COMPUTER_ENERGY_CHAIN_ID = "42424242"
 
@@ -1278,10 +1272,9 @@ def _service_env(
     env["MAIN_COMPUTER_DOCKER_VIEWPORT_PORT"] = str(profile.get("docker_viewport_port", mode_defaults["docker_viewport_port"]))
     env["MAIN_COMPUTER_HUB_PORT"] = str(profile.get("hub_port", mode_defaults["hub_port"]))
     env["MAIN_COMPUTER_HUB_WORKER_PORT"] = str(profile.get("hub_worker_port", mode_defaults["hub_worker_port"]))
-    env["MAIN_COMPUTER_OLLAMA_HOST_PORT"] = str(profile.get("ollama_host_port", mode_defaults["ollama_host_port"]))
     env["MAIN_COMPUTER_ETHEREUM_RPC_PORT"] = str(profile.get("ethereum_rpc_port", mode_defaults["ethereum_rpc_port"]))
     env["MAIN_COMPUTER_HUB_URL"] = f"http://127.0.0.1:{env['MAIN_COMPUTER_HUB_PORT']}"
-    env["OLLAMA_BASE_URL"] = f"http://127.0.0.1:{env['MAIN_COMPUTER_OLLAMA_HOST_PORT']}"
+    env["OLLAMA_BASE_URL"] = "http://127.0.0.1:11434"
     env["MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL"] = f"http://127.0.0.1:{env['MAIN_COMPUTER_ETHEREUM_RPC_PORT']}"
     env["MAIN_COMPUTER_ENERGY_CHAIN_ID"] = "42424242"
 

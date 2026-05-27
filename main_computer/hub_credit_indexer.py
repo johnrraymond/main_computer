@@ -7,8 +7,8 @@ from main_computer.hub_credit_models import ChainEventRef, CreditDeposit, clean_
 
 
 HUB_CREDIT_INDEXER_PHASE = "R2A"
-HUB_CREDIT_INDEXER_MODE = "manual-normalized-import"
-HUB_CREDIT_INDEXER_EVENT = "HubCreditSale.CreditPurchased"
+HUB_CREDIT_INDEXER_MODE = "manual-normalized-escrow-import"
+HUB_CREDIT_INDEXER_EVENT = "HubCreditBridgeEscrow.CreditDeposited"
 
 
 def _require_string(payload: dict[str, Any], key: str) -> str:
@@ -68,11 +68,11 @@ def _clean_payment_asset(value: Any) -> str:
 
 
 class HubCreditIndexer:
-    """R2A manual funding receipt importer for the internal Compute Credit ledger.
+    """R2A manual escrow deposit importer for the internal Compute Credit ledger.
 
     This intentionally does not perform RPC calls, credit-card checkout, fiat
     processing, or request charging. It only validates a normalized on-chain
-    funding receipt and records it through HubCreditLedger idempotently.
+    escrow deposit receipt and records it through HubCreditLedger idempotently.
     """
 
     def __init__(self, ledger: HubCreditLedger) -> None:
@@ -92,21 +92,24 @@ class HubCreditIndexer:
             "ledger": {
                 "unit": ledger_status.get("unit", {}),
                 "account_count": ledger_status.get("account_count", 0),
+                "deposit_count": ledger_status.get("deposit_count", ledger_status.get("purchase_count", 0)),
                 "purchase_count": ledger_status.get("purchase_count", 0),
                 "transaction_count": ledger_status.get("transaction_count", 0),
                 "totals": ledger_status.get("totals", {}),
             },
             "endpoints": {
                 "status": "/api/hub/v1/credits/indexer",
-                "manual_import": "/api/hub/v1/credits/purchases/import",
-                "purchases": "/api/hub/v1/credits/purchases",
+                "manual_import": "/api/hub/v1/credits/deposits/import",
+                "deposits": "/api/hub/v1/credits/deposits",
+                "legacy_purchase_import": "/api/hub/v1/credits/purchases/import",
+                "legacy_purchases": "/api/hub/v1/credits/purchases",
                 "transactions": "/api/hub/v1/credits/transactions",
             },
         }
 
     def build_deposit(self, payload: dict[str, Any]) -> CreditDeposit:
         if not isinstance(payload, dict):
-            raise ValueError("purchase import payload must be a JSON object.")
+            raise ValueError("deposit import payload must be a JSON object.")
 
         account_id_raw = _require_string(payload, "account_id")
         account_id = clean_account_id(account_id_raw, default="")
@@ -128,10 +131,10 @@ class HubCreditIndexer:
             payment_amount_base_units=_require_positive_int(payload, "payment_amount_base_units"),
             credits_granted=_require_positive_int(payload, "credits_granted"),
             chain_event=event,
-            memo=str(payload.get("memo", "")).strip() or "funding receipt import",
+            memo=str(payload.get("memo", "")).strip() or "escrow deposit receipt import",
         )
 
-    def import_purchase(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def import_deposit(self, payload: dict[str, Any]) -> dict[str, Any]:
         deposit = self.build_deposit(payload)
         result = dict(self.ledger.record_deposit(deposit))
         result["indexer"] = self.status()
@@ -146,3 +149,7 @@ class HubCreditIndexer:
             if matching:
                 result["transaction"] = matching[0]
         return result
+
+    def import_purchase(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Backward-compatible alias for older R2A smoke helpers."""
+        return self.import_deposit(payload)

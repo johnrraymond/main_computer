@@ -14,7 +14,7 @@ from main_computer.hub_credit_indexer import HubCreditIndexer
 from main_computer.hub_credit_ledger import HubCreditLedger
 
 
-def normalized_purchase_payload(**overrides):
+def normalized_deposit_payload(**overrides):
     payload = {
         "chain_id": 42424242,
         "contract_address": "0x1111111111111111111111111111111111111111",
@@ -43,7 +43,7 @@ class HubCreditIndexerTests(unittest.TestCase):
             ledger = HubCreditLedger(Path(tmp))
             indexer = HubCreditIndexer(ledger)
 
-            result = indexer.import_purchase(normalized_purchase_payload())
+            result = indexer.import_deposit(normalized_deposit_payload())
 
             self.assertTrue(result["ok"])
             self.assertFalse(result["idempotent"])
@@ -51,42 +51,42 @@ class HubCreditIndexerTests(unittest.TestCase):
             self.assertEqual(result["deposit"]["credits_granted"], 100)
             self.assertEqual(result["account"]["available_credits"], 100)
             self.assertEqual(result["transaction"]["transaction_type"], "deposit_indexed")
-            self.assertEqual(ledger.status()["totals"]["purchased_credits"], 100)
+            self.assertEqual(ledger.status()["totals"]["deposited_credits"], 100)
 
     def test_same_event_imported_twice_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ledger = HubCreditLedger(Path(tmp))
             indexer = HubCreditIndexer(ledger)
-            payload = normalized_purchase_payload()
+            payload = normalized_deposit_payload()
 
-            first = indexer.import_purchase(payload)
-            second = indexer.import_purchase(payload)
+            first = indexer.import_deposit(payload)
+            second = indexer.import_deposit(payload)
 
             self.assertFalse(first["idempotent"])
             self.assertTrue(second["idempotent"])
             self.assertEqual(first["deposit"]["deposit_id"], second["deposit"]["deposit_id"])
             self.assertEqual(second["transaction"]["transaction_type"], "deposit_indexed")
             self.assertEqual(ledger.get_account("user-one").available_credits, 100)
-            self.assertEqual(ledger.status()["purchase_count"], 1)
+            self.assertEqual(ledger.status()["deposit_count"], 1)
             self.assertEqual(len(ledger.list_transactions(account_id="user-one")), 1)
 
     def test_malformed_event_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             indexer = HubCreditIndexer(HubCreditLedger(Path(tmp)))
 
-            bad_hash = normalized_purchase_payload(tx_hash="0x1234")
+            bad_hash = normalized_deposit_payload(tx_hash="0x1234")
             with self.assertRaisesRegex(ValueError, "tx_hash"):
-                indexer.import_purchase(bad_hash)
+                indexer.import_deposit(bad_hash)
 
-            bad_credits = normalized_purchase_payload(credits_granted=0)
+            bad_credits = normalized_deposit_payload(credits_granted=0)
             with self.assertRaisesRegex(ValueError, "credits_granted"):
-                indexer.import_purchase(bad_credits)
+                indexer.import_deposit(bad_credits)
 
-            missing_account = normalized_purchase_payload(account_id="")
+            missing_account = normalized_deposit_payload(account_id="")
             with self.assertRaisesRegex(ValueError, "account_id"):
-                indexer.import_purchase(missing_account)
+                indexer.import_deposit(missing_account)
 
-    def test_hub_api_import_exposes_purchases_transactions_and_bootstrap(self) -> None:
+    def test_hub_api_import_exposes_deposits_transactions_and_bootstrap(self) -> None:
         with tempfile.TemporaryDirectory() as hub_tmp:
             hub_config = MainComputerConfig(
                 workspace=Path(hub_tmp),
@@ -105,8 +105,8 @@ class HubCreditIndexerTests(unittest.TestCase):
                 self.assertFalse(indexer_status["credit_card_supported"])
 
                 import_request = Request(
-                    f"{hub_base}/api/hub/v1/credits/purchases/import",
-                    data=json.dumps(normalized_purchase_payload()).encode("utf-8"),
+                    f"{hub_base}/api/hub/v1/credits/deposits/import",
+                    data=json.dumps(normalized_deposit_payload()).encode("utf-8"),
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
@@ -117,8 +117,8 @@ class HubCreditIndexerTests(unittest.TestCase):
                 self.assertEqual(imported["account"]["available_credits"], 100)
 
                 duplicate_request = Request(
-                    f"{hub_base}/api/hub/v1/credits/purchases/import",
-                    data=json.dumps(normalized_purchase_payload()).encode("utf-8"),
+                    f"{hub_base}/api/hub/v1/credits/deposits/import",
+                    data=json.dumps(normalized_deposit_payload()).encode("utf-8"),
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
@@ -127,10 +127,10 @@ class HubCreditIndexerTests(unittest.TestCase):
                 self.assertTrue(duplicate["idempotent"])
                 self.assertEqual(duplicate["account"]["available_credits"], 100)
 
-                with urlopen(f"{hub_base}/api/hub/v1/credits/purchases?account_id=user-one", timeout=5) as response:
-                    purchases = json.loads(response.read().decode("utf-8"))
-                self.assertEqual(purchases["purchase_count"], 1)
-                self.assertEqual(purchases["purchases"][0]["credits_granted"], 100)
+                with urlopen(f"{hub_base}/api/hub/v1/credits/deposits?account_id=user-one", timeout=5) as response:
+                    deposits = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(deposits["deposit_count"], 1)
+                self.assertEqual(deposits["deposits"][0]["credits_granted"], 100)
 
                 with urlopen(f"{hub_base}/api/hub/v1/credits/transactions?account_id=user-one", timeout=5) as response:
                     transactions = json.loads(response.read().decode("utf-8"))
@@ -139,7 +139,7 @@ class HubCreditIndexerTests(unittest.TestCase):
 
                 with urlopen(f"{hub_base}/api/hub/v1/admin/bootstrap", timeout=5) as response:
                     bootstrap = json.loads(response.read().decode("utf-8"))
-                self.assertEqual(bootstrap["credits"]["totals"]["purchased_credits"], 100)
+                self.assertEqual(bootstrap["credits"]["totals"]["deposited_credits"], 100)
                 self.assertEqual(bootstrap["credit_indexer"]["phase"], "R2A")
             finally:
                 hub.shutdown()
@@ -158,8 +158,8 @@ class HubCreditIndexerTests(unittest.TestCase):
             try:
                 hub_base = f"http://127.0.0.1:{hub.server_port}"
                 bad_request = Request(
-                    f"{hub_base}/api/hub/v1/credits/purchases/import",
-                    data=json.dumps(normalized_purchase_payload(credits_granted=0)).encode("utf-8"),
+                    f"{hub_base}/api/hub/v1/credits/deposits/import",
+                    data=json.dumps(normalized_deposit_payload(credits_granted=0)).encode("utf-8"),
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )

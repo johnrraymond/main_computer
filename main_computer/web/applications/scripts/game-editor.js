@@ -534,7 +534,8 @@
                 target_id: lockedProjectId,
                 project_id: lockedProjectId,
                 locked_to_mount: true,
-                auto_apply: false
+                auto_apply: true,
+                live_apply: true
               };
             }
           }
@@ -775,6 +776,17 @@
       return gameEditorState;
     }
 
+    async function refreshGameEditorAfterRagApply(detail = {}) {
+      const metadata = detail?.output_cell?.metadata || detail?.metadata || {};
+      const applyResult = metadata.apply_result || metadata.proposal?.apply_result || null;
+      if (!applyResult?.ok) return;
+      if (String(metadata.editor_edit_mode || "") !== "game-editor") return;
+      const appliedProjectId = String(metadata.project_id || applyResult.project_id || "");
+      if (appliedProjectId && appliedProjectId !== String(gameEditorState.projectId || "")) return;
+      await readGameEditorProject(gameEditorState.projectId, {reason: "rag-apply"});
+      setGameEditorStatus("RAG edit applied and project reloaded");
+    }
+
     async function loadGameEditorAssets() {
       const data = await gameEditorPost("/api/applications/game-editor/assets", {project_id: gameEditorState.projectId});
       gameEditorState.assets = Array.isArray(data.assets) ? data.assets : [];
@@ -1005,6 +1017,9 @@
       if (!gameEditorApp) return gameEditorState;
       if (!gameEditorState.initialized) {
         buildGameEditorShell();
+        window.addEventListener("main-computer-chat-console-output-applied", (event) => {
+          refreshGameEditorAfterRagApply(event?.detail || {}).catch((error) => reportGameEditorError(error));
+        });
         gameEditorState.initialized = true;
       }
       await loadGameEditorProjects();

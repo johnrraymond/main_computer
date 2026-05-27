@@ -984,14 +984,22 @@ class HubServerHandler(_JsonHandler):
             ]
             self._send_json({"ok": True, "transactions": transactions, "transaction_count": len(transactions)})
             return
-        if path == "/api/hub/v1/credits/purchases":
+        if path in {"/api/hub/v1/credits/deposits", "/api/hub/v1/credits/purchases"}:
             account_id = query.get("account_id", [""])[0]
             limit = int(query.get("limit", ["100"])[0] or 100)
-            purchases = [
-                purchase.as_dict()
-                for purchase in self.server.credit_ledger.list_purchases(account_id=account_id, limit=limit)
+            deposits = [
+                deposit.as_dict()
+                for deposit in self.server.credit_ledger.list_deposits(account_id=account_id, limit=limit)
             ]
-            self._send_json({"ok": True, "purchases": purchases, "purchase_count": len(purchases)})
+            payload = {
+                "ok": True,
+                "deposits": deposits,
+                "deposit_count": len(deposits),
+                # Legacy aliases retained while older scripts/tests migrate.
+                "purchases": deposits,
+                "purchase_count": len(deposits),
+            }
+            self._send_json(payload)
             return
         if path == "/api/hub/v1/credits/holds":
             account_id = query.get("account_id", [""])[0]
@@ -1116,9 +1124,9 @@ class HubServerHandler(_JsonHandler):
                     )
                 )
                 return
-            if path == "/api/hub/v1/credits/purchases/import":
+            if path in {"/api/hub/v1/credits/deposits/import", "/api/hub/v1/credits/purchases/import"}:
                 body = self._read_json()
-                self._send_json(self.server.credit_indexer.import_purchase(body))
+                self._send_json(self.server.credit_indexer.import_deposit(body))
                 return
             if path == "/api/hub/v1/credits/admin/issue":
                 body = self._read_json()

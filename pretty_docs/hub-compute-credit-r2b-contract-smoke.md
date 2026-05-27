@@ -1,26 +1,37 @@
-# Hub Compute Credit R2B-0 Contract Smoke
+# Hub Compute Credit R2B-0 Bridge Escrow Contract Smoke
 
-R2B-0 is a pre-RPC safety step. It does not add hub RPC syncing, event cursors,
-request charging, worker earnings, settlement batching, or a new vault contract.
+R2B-0 is a pre-RPC safety step. It does not add hub RPC syncing, request
+charging, worker settlement batching, or UI integration.
 
-The goal is to verify that the existing `HubCreditSale` contract and its
-`CreditPurchased` receipt event are still stable before the hub starts decoding
-chain logs in R2B.
+The goal is to verify the active `HubCreditBridgeEscrow` contract and its
+bridge-controlled custody flow before the hub starts decoding chain logs in R2B.
+
+The contract model is:
+
+```text
+user deposits escrow once
+hub/bridge credits the internal Compute Credit account
+requests spend privately inside the bridge-side ledger
+bridge rectifies aggregate internal spend when needed
+bridge releases reconciled unused escrow
+```
+
+This deliberately avoids one public chain transaction per AI request.
 
 ## Smoke command
 
 From the repository root:
 
 ```powershell
-python scripts/smoke_hub_credit_sale_container.py
+python scripts/smoke_hub_credit_bridge_escrow_container.py
 ```
 
 The script:
 
 1. Finds the repository root.
-2. Statically validates the `HubCreditSale.CreditPurchased` event field order,
-   types, and indexed fields.
-3. Confirms the expected `HubCreditSale` unit tests are present.
+2. Statically validates the `CreditDeposited`, `SpendRectified`, and
+   `WithdrawalReleased` event field order, types, and indexed fields.
+3. Confirms the expected `HubCreditBridgeEscrow` unit tests are present.
 4. Runs the repo's container-aware Foundry wrapper:
 
 ```powershell
@@ -36,51 +47,47 @@ the normal containerized Forge workflow.
 Static/event-shape check only:
 
 ```powershell
-python scripts/smoke_hub_credit_sale_container.py --skip-forge
+python scripts/smoke_hub_credit_bridge_escrow_container.py --skip-forge
 ```
 
-Run with a clean Foundry build first:
+Run with a clean contract build:
 
 ```powershell
-python scripts/smoke_hub_credit_sale_container.py --clean
+python scripts/smoke_hub_credit_bridge_escrow_container.py --clean
 ```
 
-Disable Docker fallback, useful when confirming local `forge` is installed:
+Disable Docker fallback:
 
 ```powershell
-python scripts/smoke_hub_credit_sale_container.py --no-docker
+python scripts/smoke_hub_credit_bridge_escrow_container.py --no-docker
 ```
 
-## Reports
+## Smoke report
 
 The script writes:
 
 ```text
-runtime/contract_smoke/hub_credit_sale_smoke.json
-runtime/contract_smoke/hub_credit_sale_build_report.json
+runtime/contract_smoke/hub_credit_bridge_escrow_smoke.json
+runtime/contract_smoke/hub_credit_bridge_escrow_build_report.json
 ```
 
-These files are runtime diagnostics and should not be treated as source files.
+## Contract acceptance behavior
 
-## Expected event shape
-
-R2B log decoding should continue to target:
+The contract smoke must prove:
 
 ```text
-CreditPurchased(bytes32,address,address,uint256,uint256,string)
+requester deposits 100 credits worth of escrow
+bridge rectifies 5 credits of aggregate spend
+contract withdrawable amount becomes 95
+bridge rectifies another 0.5 credits of aggregate spend
+contract withdrawable amount becomes 94.5
+bridge releases 94.5 back to requester
+duplicate rectification id does not double-count
+duplicate withdrawal id does not double-pay
+non-bridge wallet cannot rectify spend
+non-bridge wallet cannot release withdrawal
 ```
 
-with fields:
-
-```text
-bytes32 indexed purchaseId
-address indexed account
-address indexed payer
-uint256 creditsGranted
-uint256 amountPaidWei
-string memo
-```
-
-This smoke check intentionally does not compute or import ledger credits. R2A
-already proves the normalized receipt import path. R2B-0 only verifies that the
-contract-side receipt source is still ready for a future RPC/event-sync patch.
+In the dev-chain smoke, one Compute Credit is represented with 18-decimal native
+base units. Production economics can change later without changing the accounting
+shape.

@@ -51,7 +51,7 @@ class HubCreditLedgerTests(unittest.TestCase):
             payment_amount_base_units=1000,
             credits_granted=25,
             chain_event=event,
-            memo="contract purchase",
+            memo="contract escrow deposit",
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -62,10 +62,10 @@ class HubCreditLedgerTests(unittest.TestCase):
             self.assertFalse(first["idempotent"])
             self.assertTrue(second["idempotent"])
             self.assertEqual(ledger.get_account("buyer").available_credits, 25)
-            self.assertEqual(ledger.status()["purchase_count"], 1)
+            self.assertEqual(ledger.status()["deposit_count"], 1)
             self.assertEqual(len(ledger.list_transactions(account_id="buyer")), 1)
 
-    def test_hub_credit_api_exposes_balances_transactions_purchases_and_bootstrap(self) -> None:
+    def test_hub_credit_api_exposes_balances_transactions_deposits_and_bootstrap(self) -> None:
         with tempfile.TemporaryDirectory() as hub_tmp:
             hub_config = MainComputerConfig(
                 workspace=Path(hub_tmp),
@@ -115,9 +115,9 @@ class HubCreditLedgerTests(unittest.TestCase):
                 self.assertEqual(transactions["transaction_count"], 1)
                 self.assertEqual(transactions["transactions"][0]["transaction_type"], "admin_adjustment")
 
-                with urlopen(f"{hub_base}/api/hub/v1/credits/purchases", timeout=5) as response:
-                    purchases = json.loads(response.read().decode("utf-8"))
-                self.assertEqual(purchases["purchase_count"], 0)
+                with urlopen(f"{hub_base}/api/hub/v1/credits/deposits", timeout=5) as response:
+                    deposits = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(deposits["deposit_count"], 0)
 
                 with urlopen(f"{hub_base}/api/hub/v1/admin/bootstrap", timeout=5) as response:
                     bootstrap = json.loads(response.read().decode("utf-8"))

@@ -35,7 +35,7 @@ services:
       MAIN_COMPUTER_HUB_CLIENT_NODE_ID: docker-dev-client
       MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL: http://ethereum-dev:8545
       MAIN_COMPUTER_ENERGY_CHAIN_ID: "42424242"
-      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_BASE_URL: "${MAIN_COMPUTER_DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
       MAIN_COMPUTER_EXECUTOR_ENABLED: "0"
       MAIN_COMPUTER_EXECUTOR_IMAGE: main-computer-executor:latest
       MAIN_COMPUTER_EXECUTOR_ROOT: /workspace/runtime/executor
@@ -55,8 +55,9 @@ services:
       - ethereum-dev
 
 
-  # Start with --profile worker after Ollama has the requested model available
-  # and a standalone hub is reachable at MAIN_COMPUTER_HUB_URL.
+  # Start with --profile worker after the host Ollama install has the
+  # requested model available and a standalone hub is reachable at
+  # MAIN_COMPUTER_HUB_URL.
   hub-worker:
     <<: *main-computer-dev-image
     profiles: ["worker"]
@@ -85,22 +86,13 @@ services:
     environment:
       MAIN_COMPUTER_PROVIDER: ollama
       MAIN_COMPUTER_MODEL: ${MAIN_COMPUTER_MODEL:-qwen2.5:1.5b}
-      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_BASE_URL: "${MAIN_COMPUTER_DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
       MAIN_COMPUTER_OLLAMA_TIMEOUT_S: ${MAIN_COMPUTER_OLLAMA_TIMEOUT_S:-600}
       MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK: "1"
     volumes:
       - .:/workspace
     ports:
       - "${MAIN_COMPUTER_HUB_WORKER_PORT:-8771}:8771"
-    depends_on:
-      - ollama
-
-  ollama:
-    image: ollama/ollama:latest
-    volumes:
-      - ollama-data:/root/.ollama
-    ports:
-      - "${MAIN_COMPUTER_OLLAMA_HOST_PORT:-11434}:11434"
 
   ethereum-dev:
     image: ghcr.io/foundry-rs/foundry:latest
@@ -179,7 +171,6 @@ services:
 
 volumes:
   main-computer-dev-runtime:
-  ollama-data:
   ethereum-dev-data:
   onlyoffice-data:
   onlyoffice-logs:

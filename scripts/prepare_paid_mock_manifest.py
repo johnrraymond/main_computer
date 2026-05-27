@@ -96,7 +96,21 @@ def clean_id(value: str, *, default: str) -> str:
 
 
 def contract_from_state(state: dict[str, Any]) -> str:
-    wanted = {"hubcreditsale", "hub-credit-sale", "credit-sale", "creditsale"}
+    escrow_names = {
+        "hubcreditbridgeescrow",
+        "hub-credit-bridge-escrow",
+        "credit-bridge-escrow",
+        "bridge-escrow",
+        "credit-escrow",
+    }
+    legacy_sale_names = {
+        "hubcreditsale",
+        "hub-credit-sale",
+        "credit-sale",
+        "creditsale",
+    }
+
+    candidates: list[tuple[bool, str]] = []
 
     for container_name in ("contracts", "deployments"):
         container = state.get(container_name)
@@ -118,14 +132,29 @@ def contract_from_state(state: dict[str, Any]) -> str:
                 ).strip().lower()
 
             found = normalize_address(address)
-            if found and (
-                key_text in wanted
-                or any(name in key_text for name in wanted)
-                or any(name in target for name in wanted)
-            ):
-                return found
+            if not found:
+                continue
 
-    return ""
+            is_escrow = (
+                key_text in escrow_names
+                or any(name in key_text for name in escrow_names)
+                or any(name in target for name in escrow_names)
+            )
+            is_legacy_sale = (
+                key_text in legacy_sale_names
+                or any(name in key_text for name in legacy_sale_names)
+                or any(name in target for name in legacy_sale_names)
+            )
+
+            if is_escrow or is_legacy_sale:
+                candidates.append((is_escrow, found))
+
+    for is_escrow, address in candidates:
+        if is_escrow:
+            return address
+
+    return candidates[0][1] if candidates else ""
+
 
 
 def offices_from_state(state: dict[str, Any]) -> list[dict[str, str]]:
@@ -315,7 +344,7 @@ def build_funding_payload(
 
     seed = "|".join(
         [
-            "paid-mock-r2a",
+            "paid-mock-escrow-deposit",
             str(chain_id),
             normalize_address(contract_address),
             normalize_address(requester["address"]),
@@ -373,7 +402,7 @@ def import_credits_to_hub(
 
     first = http_json(
         "POST",
-        f"{hub_url}/api/hub/v1/credits/purchases/import",
+        f"{hub_url}/api/hub/v1/credits/deposits/import",
         body=payload,
         timeout=args.timeout,
         extra_headers=headers,
@@ -384,7 +413,7 @@ def import_credits_to_hub(
 
     second = http_json(
         "POST",
-        f"{hub_url}/api/hub/v1/credits/purchases/import",
+        f"{hub_url}/api/hub/v1/credits/deposits/import",
         body=payload,
         timeout=args.timeout,
         extra_headers=headers,
@@ -406,9 +435,9 @@ def import_credits_to_hub(
     account = balance.get("account") if isinstance(balance.get("account"), dict) else {}
     available = int(account.get("available_credits", 0) or 0)
 
-    purchases = http_json(
+    deposits = http_json(
         "GET",
-        f"{hub_url}/api/hub/v1/credits/purchases?{query}",
+        f"{hub_url}/api/hub/v1/credits/deposits?{query}",
         timeout=args.timeout,
         extra_headers=headers,
     )
@@ -432,7 +461,7 @@ def import_credits_to_hub(
         ),
         "event_uid": str(second.get("event_uid") or first.get("event_uid") or ""),
         "available_credits": available,
-        "purchase_count": int(purchases.get("purchase_count", 0) or 0),
+        "deposit_count": int(deposits.get("deposit_count", deposits.get("purchase_count", 0)) or 0),
         "transaction_count": int(transactions.get("transaction_count", 0) or 0),
     }
 
@@ -497,7 +526,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Prepare a temporary paid mock-worker dev manifest with requester, "
             "worker, and bridge wallets. Optionally verifies dev-chain balances "
-            "and imports requester Compute Credits through R2A."
+            "and imports requester Compute Credits through a bridge escrow deposit receipt."
         )
     )
 
@@ -657,7 +686,7 @@ def main(argv: list[str] | None = None) -> int:
         "imported": False,
         "reason": (
             "not requested; pass --import-credits to fund requester Compute Credits "
-            "through R2A"
+            "through a bridge escrow deposit receipt"
         ),
     }
 
@@ -699,7 +728,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "hub": {
             "url": args.hub_url.rstrip("/"),
-            "r2a_import_endpoint": "/api/hub/v1/credits/purchases/import",
+            "escrow_deposit_import_endpoint": "/api/hub/v1/credits/deposits/import",
         },
         "chain": {
             "rpc_url": rpc_url,

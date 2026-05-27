@@ -146,6 +146,7 @@ class HubCreditLedger:
             "schema_version": CREDIT_LEDGER_VERSION,
             "store_version": HUB_CREDIT_LEDGER_STORE_VERSION,
             "account_count": len(accounts),
+            "deposit_count": len(deposits),
             "purchase_count": len(deposits),
             "transaction_count": len(transactions),
             "hold_count": len(holds),
@@ -157,12 +158,14 @@ class HubCreditLedger:
                 "held_credits": sum(account.held_credits for account in accounts),
                 "spent_credits": sum(account.spent_credits for account in accounts),
                 "earned_credits": sum(account.earned_credits for account in accounts),
+                "deposited_credits": sum(deposit.credits_granted for deposit in deposits),
                 "purchased_credits": sum(deposit.credits_granted for deposit in deposits),
                 "active_held_credits": sum(hold.credits for hold in holds if hold.status == "held"),
                 "charged_credits": sum(charge.charged_credits for charge in charges),
                 "worker_earned_credits": sum(earning.credits for earning in worker_earnings),
             },
             "recent_transactions": [tx.as_dict() for tx in transactions[-max(0, int(recent_limit or 0)):]][::-1],
+            "recent_deposits": [deposit.as_dict() for deposit in deposits[-max(0, int(recent_limit or 0)):]][::-1],
             "recent_purchases": [deposit.as_dict() for deposit in deposits[-max(0, int(recent_limit or 0)):]][::-1],
             "recent_holds": [hold.as_dict() for hold in holds[-max(0, int(recent_limit or 0)):]][::-1],
             "recent_charges": [charge.as_dict() for charge in charges[-max(0, int(recent_limit or 0)):]][::-1],
@@ -195,14 +198,18 @@ class HubCreditLedger:
             transactions = [tx for tx in transactions if tx.account_id == clean_id]
         return sorted(transactions, key=lambda item: item.created_at, reverse=True)[:clean_limit]
 
-    def list_purchases(self, *, account_id: str = "", limit: int = 100) -> list[CreditDeposit]:
+    def list_deposits(self, *, account_id: str = "", limit: int = 100) -> list[CreditDeposit]:
         clean_id = clean_account_id(account_id, default="") if account_id else ""
         clean_limit = min(500, max(1, int(limit or 100)))
         data = self._load()
-        purchases = [_deposit_from_dict(item) for item in data["deposits"].values()]
+        deposits = [_deposit_from_dict(item) for item in data["deposits"].values()]
         if clean_id:
-            purchases = [purchase for purchase in purchases if purchase.account_id == clean_id]
-        return sorted(purchases, key=lambda item: item.created_at, reverse=True)[:clean_limit]
+            deposits = [deposit for deposit in deposits if deposit.account_id == clean_id]
+        return sorted(deposits, key=lambda item: item.created_at, reverse=True)[:clean_limit]
+
+    def list_purchases(self, *, account_id: str = "", limit: int = 100) -> list[CreditDeposit]:
+        """Backward-compatible alias for deposit listings."""
+        return self.list_deposits(account_id=account_id, limit=limit)
 
     def list_holds(
         self,
@@ -845,6 +852,7 @@ class HubCreditLedger:
             "schema_version": CREDIT_LEDGER_VERSION,
             "store_version": HUB_CREDIT_LEDGER_STORE_VERSION,
             "account_count": len(accounts),
+            "deposit_count": len(deposits),
             "purchase_count": len(deposits),
             "transaction_count": len(data["transactions"]),
             "hold_count": len(holds),
@@ -856,6 +864,7 @@ class HubCreditLedger:
                 "held_credits": sum(account.held_credits for account in accounts),
                 "spent_credits": sum(account.spent_credits for account in accounts),
                 "earned_credits": sum(account.earned_credits for account in accounts),
+                "deposited_credits": sum(deposit.credits_granted for deposit in deposits),
                 "purchased_credits": sum(deposit.credits_granted for deposit in deposits),
                 "active_held_credits": sum(hold.credits for hold in holds if hold.status == "held"),
                 "charged_credits": sum(charge.charged_credits for charge in charges),

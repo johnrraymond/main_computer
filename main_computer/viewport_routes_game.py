@@ -999,6 +999,17 @@ class ViewportGameRoutesMixin:
         write(output_dir / "reference.patch", "\n".join(part for part in diff_parts if part))
         return {"output_dir": str(output_dir), "manifest": str(output_dir / "manifest.json"), "reference_patch": str(output_dir / "reference.patch")}
 
+    def _game_editor_rag_auto_apply_requested(self, *, body: dict[str, Any], plugin: dict[str, Any]) -> bool:
+        """Return true only when the mounted Game Editor plugin explicitly requests live apply."""
+        candidates = [
+            body.get("auto_apply"),
+            body.get("live_apply"),
+            body.get("apply"),
+            plugin.get("auto_apply") if isinstance(plugin, dict) else None,
+            plugin.get("live_apply") if isinstance(plugin, dict) else None,
+        ]
+        return any(value is True or str(value).strip().lower() in {"1", "true", "yes", "apply", "live"} for value in candidates)
+
     def _game_editor_proposal_response(
         self,
         *,
@@ -1025,11 +1036,14 @@ class ViewportGameRoutesMixin:
             scoped_context=golden_context,
         )
 
+        requested_auto_apply = self._game_editor_rag_auto_apply_requested(body=body, plugin=self._game_chat_enabled_plugin(body))
         warnings = [
-            "Proposal-only mode: no files were modified.",
-            "The mounted Game Editor route used the golden-path RAG proposal pipeline: evidence, AI proposal, deterministic validation, and materialized replacement payloads for review.",
-            "Apply remains a separate explicit step.",
+            "The mounted Game Editor route used the golden-path RAG pipeline: evidence, AI proposal, deterministic validation, materialized replacement payloads, and guarded apply when requested.",
         ]
+        if requested_auto_apply:
+            warnings.append("Auto-apply requested: validated replacements will be written only after deterministic validation passes.")
+        else:
+            warnings.append("Proposal-only mode: no files were modified.")
         proposal_payload: dict[str, Any] | None = None
         materialized: list[dict[str, Any]] = []
         validation: dict[str, Any] = {"ok": False, "issues": [], "warnings": []}
@@ -1091,10 +1105,10 @@ class ViewportGameRoutesMixin:
         proposal = {
             "version": 3,
             "type": "game-editor-file-proposal",
-            "mode": "proposal-only",
+            "mode": "pending-apply" if requested_auto_apply else "proposal-only",
             "rag_backed": True,
             "ai_backed": True,
-            "auto_apply": False,
+            "auto_apply": requested_auto_apply,
             "project_id": project_id,
             "allowed_root": evidence.get("allowed_root"),
             "allowed_roots": evidence.get("allowed_roots"),
@@ -1134,6 +1148,21 @@ class ViewportGameRoutesMixin:
             "game_context": self._game_editor_context_summary(context),
         }
 
+        apply_result: dict[str, Any] | None = None
+        if requested_auto_apply and validation.get("ok") and proposal.get("apply_payloads"):
+            apply_result = self._game_editor_rag_apply_payloads(project_id=project_id, payloads=proposal.get("apply_payloads") if isinstance(proposal.get("apply_payloads"), list) else [])
+            proposal["apply_result"] = apply_result
+            proposal["mode"] = "applied" if apply_result.get("ok") else "apply-failed"
+            warnings.append(
+                "Applied validated RAG replacement payloads to the workspace."
+                if apply_result.get("ok")
+                else "Auto-apply was requested, but the guarded apply step failed; source files were not fully updated."
+            )
+        elif requested_auto_apply and not validation.get("ok"):
+            warnings.append("Auto-apply was requested, but deterministic validation failed; no files were modified.")
+        elif requested_auto_apply and not proposal.get("apply_payloads"):
+            warnings.append("Auto-apply was requested, but no replacement payloads were materialized; no files were modified.")
+
         ai_content = str(ai_response.content or "").strip()
         validation_text = "passed" if validation.get("ok") else "failed"
         issue_lines = "\n".join(f"- {issue}" for issue in validation.get("issues", []) if str(issue).strip())
@@ -1145,13 +1174,30 @@ class ViewportGameRoutesMixin:
                 f"- Reference patch: `{outputs.get('reference_patch')}`\n"
             )
 
+        if apply_result:
+            apply_text = "applied" if apply_result.get("ok") else "apply failed"
+            apply_lines = "\n".join(
+                f"- `{item.get('path')}` ({item.get('operation')}): wrote `{item.get('written_sha256')}`"
+                for item in apply_result.get("files", [])
+                if isinstance(item, dict)
+            ) or "- No files were written."
+            heading = (
+                "Applied — golden-path RAG wrote validated replacement files.\n\n"
+                if apply_result.get("ok")
+                else "Apply failed — golden-path RAG did not complete the write.\n\n"
+            )
+            apply_section = f"Apply result: **{apply_text}**.\n{apply_lines}\n\n"
+        else:
+            heading = "Proposal only — golden-path RAG; no files were modified.\n\n"
+            apply_section = ""
         content = (
-            "Proposal only — golden-path RAG; no files were modified.\n\n"
-            f"Deterministic validation: **{validation_text}**.\n\n"
-            "Validated/materialized file targets for review:\n"
-            f"{file_lines}\n"
-            f"{output_lines}\n"
-            "Review notes:\n"
+            heading
+            + f"Deterministic validation: **{validation_text}**.\n\n"
+            + apply_section
+            + "Validated/materialized file targets for review:\n"
+            + f"{file_lines}\n"
+            + f"{output_lines}\n"
+            + "Review notes:\n"
             + "\n".join(f"- {warning}" for warning in warnings)
         )
         if issue_lines:
@@ -1169,14 +1215,15 @@ class ViewportGameRoutesMixin:
                 "run_id": run_id,
                 "thread_id": thread_id,
                 "editor_edit_mode": "game-editor",
-                "editor_intent": "propose_edit",
+                "editor_intent": "apply_edit" if apply_result and apply_result.get("ok") else "propose_edit",
                 "project_id": project_id,
                 "allowed_root": evidence.get("allowed_root"),
                 "allowed_roots": evidence.get("allowed_roots"),
                 "allowed_editor_source_paths": evidence.get("allowed_editor_source_paths"),
                 "visible_files": context.get("visible_files", []),
                 "prompt": source,
-                "auto_apply": False,
+                "auto_apply": requested_auto_apply,
+                "apply_result": apply_result,
                 "scope_card": False,
                 "proposal": proposal,
                 "game_context": self._game_editor_context_summary(context),
@@ -1473,7 +1520,8 @@ class ViewportGameRoutesMixin:
             "project_id": project_id,
             "allowed_root": f"game_projects/{project_id}/",
             "visible_files": visible_files,
-            "auto_apply": False,
+            "auto_apply": bool(response_metadata.get("auto_apply", False)),
+            "apply_result": response_metadata.get("apply_result") if isinstance(response_metadata.get("apply_result"), dict) else None,
             "scope_card": scope_card,
             "game_context": self._game_editor_context_summary(context),
         }
