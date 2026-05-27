@@ -400,6 +400,140 @@ function Get-ControlRoot([string]$RootPath, [object]$LaunchContext) {
   return $controlRoot
 }
 
+function Test-MainComputerTcpPortOpen([int]$Port) {
+  try {
+    $client = [System.Net.Sockets.TcpClient]::new()
+    try {
+      $async = $client.BeginConnect("127.0.0.1", $Port, $null, $null)
+      if (-not $async.AsyncWaitHandle.WaitOne(500, $false)) {
+        return $false
+      }
+      $client.EndConnect($async)
+      return $true
+    } finally {
+      $client.Close()
+    }
+  } catch {
+    return $false
+  }
+}
+
+function Get-MainComputerGiteaPort([object]$LaunchContext) {
+  $rootUrl = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_GITEA_ROOT_URL" "http://127.0.0.1:3000/"
+  try {
+    $uri = [uri]$rootUrl
+    if ($uri.Port -gt 0) {
+      return [int]$uri.Port
+    }
+  } catch {}
+
+  $portText = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_GITEA_HTTP_PORT" "3000"
+  try {
+    return [int]$portText
+  } catch {
+    return 3000
+  }
+}
+
+function Start-MainComputerGiteaIfMissing([string]$RootPath, [object]$LaunchContext) {
+  $giteaPort = Get-MainComputerGiteaPort $LaunchContext
+  $projectName = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_GITEA_COMPOSE_PROJECT" "main-computer-gitea"
+  $composePath = Join-Path $RootPath "docker-compose.gitea.yml"
+
+  if (Test-MainComputerTcpPortOpen -Port $giteaPort) {
+    Write-Host ("Shared Gitea already present on port {0}; installer/start path will not recreate it." -f $giteaPort)
+    return [ordered]@{
+      ok = $true
+      state = "already-present"
+      installed = $false
+      compose_project = $projectName
+      compose_file = $composePath
+      port = $giteaPort
+    }
+  }
+
+  if ($NoDocker) {
+    return [ordered]@{
+      ok = $false
+      state = "docker-disabled"
+      installed = $false
+      compose_project = $projectName
+      compose_file = $composePath
+      port = $giteaPort
+      message = "Docker startup was disabled; shared Gitea cannot be prepared."
+    }
+  }
+
+  if (-not (Test-Path -LiteralPath $composePath -PathType Leaf)) {
+    return [ordered]@{
+      ok = $false
+      state = "missing-compose"
+      installed = $false
+      compose_project = $projectName
+      compose_file = $composePath
+      port = $giteaPort
+      message = "docker-compose.gitea.yml is missing."
+    }
+  }
+
+  $docker = Get-Command "docker" -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($null -eq $docker) {
+    return [ordered]@{
+      ok = $false
+      state = "missing-docker"
+      installed = $false
+      compose_project = $projectName
+      compose_file = $composePath
+      port = $giteaPort
+      message = "Docker CLI is not available; shared Gitea cannot be prepared."
+    }
+  }
+
+  $containerIds = @(& $docker.Source compose --project-name $projectName -f $composePath ps -a -q gitea 2>$null)
+  $containerExists = ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace(($containerIds -join "").Trim()))
+
+  if ($containerExists) {
+    Write-Host ("Shared Gitea container already exists but is not reachable on port {0}; starting existing container without reinstalling." -f $giteaPort)
+    $arguments = @("compose", "--project-name", $projectName, "-f", $composePath, "start", "gitea")
+    $stateOnSuccess = "started-existing"
+    $stateOnFailure = "start-existing-failed"
+    $installed = $false
+  } else {
+    Write-Host ("Shared Gitea not found on this machine; installing machine-wide Gitea with docker-compose.gitea.yml.")
+    $arguments = @("compose", "--project-name", $projectName, "-f", $composePath, "up", "-d", "gitea")
+    $stateOnSuccess = "installed-missing"
+    $stateOnFailure = "install-missing-failed"
+    $installed = $true
+  }
+
+  & $docker.Source @arguments
+  $exitCode = $LASTEXITCODE
+  return [ordered]@{
+    ok = ($exitCode -eq 0)
+    state = $(if ($exitCode -eq 0) { $stateOnSuccess } else { $stateOnFailure })
+    installed = ($installed -and $exitCode -eq 0)
+    container_exists = $containerExists
+    compose_project = $projectName
+    compose_file = $composePath
+    port = $giteaPort
+    command = @($docker.Source) + $arguments
+    exit_code = $exitCode
+  }
+}
+
+function Write-MainComputerGiteaWarning([object]$GiteaStart) {
+  $state = ConvertTo-StringValue (Get-ObjectPropertyValue $GiteaStart "state" "unknown") "unknown"
+  Write-Warning ("Shared Gitea preparation failed ({0}). Continuing Main Computer startup; Local Gitea publishing may be unavailable." -f $state)
+  $message = ConvertTo-StringValue (Get-ObjectPropertyValue $GiteaStart "message" "") ""
+  if (-not [string]::IsNullOrWhiteSpace($message)) {
+    Write-Warning ("Shared Gitea error: {0}" -f $message)
+  }
+  $exitCode = Get-ObjectPropertyValue $GiteaStart "exit_code" $null
+  if ($null -ne $exitCode) {
+    Write-Warning ("Shared Gitea command exit code: {0}" -f $exitCode)
+  }
+}
+
 
 function Invoke-MainComputerPythonTool {
   param(
@@ -574,6 +708,7 @@ function New-StartSession(
   [string]$StderrPath,
   [string[]]$LauncherArgs,
   [string]$StartedByName,
+  [object]$GiteaStart,
   [object]$LocalPlatformStart
 ) {
   $applicationsProject = Get-SafeDockerName `
@@ -612,6 +747,7 @@ function New-StartSession(
       context_file = [string]$LaunchContext.context_file
     }
     environment = $LaunchContext.environment
+    gitea = $GiteaStart
     local_platform = $LocalPlatformStart
     managed_pid_files = @(
       (Join-Path $RootPath ".main_computer_service_supervisor.pid"),
@@ -794,6 +930,30 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName) {
   $argString = Join-CommandLine $launcherArgs
 
   try {
+    $giteaStart = Start-MainComputerGiteaIfMissing $RootPath $launchContext
+  } catch {
+    $giteaStart = [ordered]@{
+      ok = $false
+      state = "exception"
+      message = $_.Exception.Message
+      compose_project = $env:MAIN_COMPUTER_GITEA_COMPOSE_PROJECT
+      compose_file = (Join-Path $RootPath "docker-compose.gitea.yml")
+    }
+  }
+  if ($null -eq $giteaStart) {
+    $giteaStart = [ordered]@{
+      ok = $false
+      state = "unknown"
+      message = "Start-MainComputerGiteaIfMissing returned no status."
+      compose_project = $env:MAIN_COMPUTER_GITEA_COMPOSE_PROJECT
+      compose_file = (Join-Path $RootPath "docker-compose.gitea.yml")
+    }
+  }
+  if (-not $giteaStart.ok) {
+    Write-MainComputerGiteaWarning $giteaStart
+  }
+
+  try {
     $localPlatformStart = Start-MainComputerLocalPlatform $RootPath $pythonCommand
   } catch {
     $localPlatformStart = [ordered]@{
@@ -826,7 +986,7 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName) {
     -RedirectStandardError $stderr `
     -PassThru
 
-  $session = New-StartSession $RootPath $launchContext $process.Id $stdout $stderr $launcherArgs $StartedByName $localPlatformStart
+  $session = New-StartSession $RootPath $launchContext $process.Id $stdout $stderr $launcherArgs $StartedByName $giteaStart $localPlatformStart
   $sessionPath = Get-StartSessionPath $RootPath
   Write-JsonFile $sessionPath $session
 

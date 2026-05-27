@@ -34,7 +34,24 @@ DEFAULT_MANIFEST = Path("runtime/hub/bridge_escrow_dev_manifest.json")
 DEFAULT_REPORT = Path("runtime/hub/bridge_escrow_withdrawal_reconciliation_smoke.json")
 DEFAULT_CHARGE_CREDITS = "5.5"
 DEFAULT_HOLD_SLACK_CREDITS = "0.5"
+PLACEHOLDER_CONTRACT_ADDRESS = "0x1111111111111111111111111111111111111111"
+DEFAULT_DEV_CHAIN_ID = 42424242
+CONTRACT_SOURCE_SPEC = "src/HubCreditBridgeEscrow.sol:HubCreditBridgeEscrow"
 FOUNDRY_IMAGE = "ghcr.io/foundry-rs/foundry:stable"
+
+# Standard deterministic Anvil/Foundry dev wallets. These are DEV ONLY and are
+# used here only as a fallback for the local Phase 3 smoke when a manifest was
+# prepared without --include-private-keys.
+DEFAULT_DEV_PRIVATE_KEYS_BY_ADDRESS = {
+    "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266": "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+    "0x70997970c51812dc3a010c7d01b50e0d17dc79c8": "0x59c6995e998f97a5a0044966f094538c9e4361d023d65a14d6007a1df0863d9",
+    "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc": "0x5de4111afa1a4b582f56a49c1b5f05b7ec3a943b11f071d72da14ef03ea64d35",
+    "0x90f79bf6eb2c4f870365e785982e1f101e93b906": "0x7c8521182947f3db6289eedbc2ba5d66237bca6d0f79f0a2d4c10c86184a8e24",
+    "0x15d34aaf54267db7d7c367839aaf71a00a2c6a65": "0x47e179ec19748826f25cc1a5af897a1c59b64f10c1ee5638b0767f467bdca11f",
+    "0x9965507d1a55bcc2695c58ba16fb37d819b0a4dc": "0x8b3a350cf5c34c9194ca3a545d1f0b8a7a754e03d6f34e7e65ac8068bddb2ba",
+    "0x976ea74026e726554db657fa54763abd0c3a0aa9": "0x92db14eec9e8c55da9ff8d83cf66f3e4b0b6c323ca2f0ce7857f1e46c29306d9",
+    "0x14dc79964da2c08b23698b3d3cc7ca32193d9955": "0x4bbbf28a99f03eec7f5efcd9b8f57b887db5e72ab5d3e5b3687dfc6801434c2e",
+}
 
 
 class SmokeFailure(RuntimeError):
@@ -81,6 +98,18 @@ def clean_worker_id(value: str, *, default: str = "hub-worker") -> str:
 def bytes32_id(*parts: Any) -> str:
     seed = json.dumps([str(part) for part in parts], sort_keys=True, separators=(",", ":")).encode("utf-8")
     return "0x" + hashlib.sha256(seed).hexdigest()
+
+
+
+def normalize_evm_address(value: Any) -> str:
+    text = str(value or "").strip()
+    if text.startswith("0x") and len(text) == 42 and all(ch in "0123456789abcdefABCDEF" for ch in text[2:]):
+        return "0x" + text[2:].lower()
+    return ""
+
+
+def is_placeholder_contract_address(value: Any) -> bool:
+    return normalize_evm_address(value) == PLACEHOLDER_CONTRACT_ADDRESS
 
 
 def read_json_file(path: Path) -> dict[str, Any]:
@@ -211,14 +240,10 @@ def chain_config(manifest: dict[str, Any], args: argparse.Namespace) -> dict[str
     chain = manifest.get("chain") if isinstance(manifest.get("chain"), dict) else {}
     rpc_url = str(args.rpc_url or chain.get("rpc_url") or "http://127.0.0.1:18545").strip()
     chain_id = int(args.chain_id or clean_int(chain.get("chain_id"), default=0))
-    contract_address = str(args.contract_address or chain.get("contract_address") or "").strip()
+    contract_address = normalize_evm_address(args.contract_address or chain.get("contract_address"))
     require(rpc_url, "chain.rpc_url is required")
     require(chain_id > 0, "chain.chain_id is required")
-    require(contract_address.startswith("0x") and len(contract_address) == 42, "chain.contract_address must be an EVM address")
-    require(
-        contract_address.lower() != "0x1111111111111111111111111111111111111111",
-        "chain.contract_address is the placeholder address; deploy HubCreditBridgeEscrow first",
-    )
+    require(contract_address, "chain.contract_address must be a 20-byte 0x-prefixed EVM address")
     return {"rpc_url": rpc_url, "chain_id": chain_id, "contract_address": contract_address}
 
 
@@ -236,6 +261,11 @@ def env_or_manifest_private_key(actor: dict[str, Any]) -> str:
         env_key = str(os.environ.get(env_name, "")).strip()
         if env_key.startswith("0x") and len(env_key) == 66:
             return env_key
+    if str(os.environ.get("MAIN_COMPUTER_DISABLE_DETERMINISTIC_DEV_KEY_FALLBACK", "")).strip().lower() not in {"1", "true", "yes"}:
+        address = normalize_evm_address(actor.get("address"))
+        dev_key = DEFAULT_DEV_PRIVATE_KEYS_BY_ADDRESS.get(address, "")
+        if dev_key:
+            return dev_key
     return ""
 
 
@@ -287,6 +317,37 @@ def cast_command(base_args: list[str], *, repo_root: Path, rpc_url: str, no_dock
         *base_args,
     ]
     return docker_args, rewritten_rpc
+
+
+def forge_command(base_args: list[str], *, repo_root: Path, rpc_url: str, no_docker: bool) -> tuple[list[str], str, Path]:
+    contracts_root = repo_root / "contracts"
+    forge = shutil.which("forge")
+    if forge:
+        return [forge, *base_args], rpc_url, contracts_root
+
+    docker = shutil.which("docker")
+    if not docker or no_docker:
+        raise SmokeFailure("Neither local forge nor Docker is available to deploy HubCreditBridgeEscrow.")
+
+    rewritten_rpc = docker_rpc_url(rpc_url)
+    docker_args = [
+        docker,
+        "run",
+        "--rm",
+        "-e",
+        "NO_COLOR=1",
+        "-e",
+        "CLICOLOR=0",
+        "-v",
+        f"{docker_mount_path(repo_root)}:/workspace",
+        "-w",
+        "/workspace/contracts",
+        "--entrypoint",
+        "forge",
+        FOUNDRY_IMAGE,
+        *base_args,
+    ]
+    return docker_args, rewritten_rpc, contracts_root
 
 
 def run_command(command: list[str], *, cwd: Path, timeout: float) -> subprocess.CompletedProcess[str]:
@@ -355,6 +416,107 @@ def parse_cast_tx(stdout: str, *, fallback_hash: str = "") -> dict[str, Any]:
     if not tx_hash:
         tx_hash = fallback_hash or "0x" + "0" * 64
     return {"tx_hash": tx_hash, "block_number": block_number, "raw": decoded if isinstance(decoded, dict) else None}
+
+
+def _find_address_in_json(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in ("deployedTo", "deployed_to", "contractAddress", "contract_address", "address"):
+            found = normalize_evm_address(value.get(key))
+            if found:
+                return found
+        for child in value.values():
+            found = _find_address_in_json(child)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_address_in_json(child)
+            if found:
+                return found
+    return ""
+
+
+def parse_deployed_contract_address(stdout: str) -> str:
+    text = stdout or ""
+    try:
+        decoded = json.loads(text)
+    except json.JSONDecodeError:
+        decoded = None
+    found = _find_address_in_json(decoded)
+    if found:
+        return found
+
+    for pattern in (
+        r"Deployed to:\s*(0x[0-9a-fA-F]{40})",
+        r"Contract Address:\s*(0x[0-9a-fA-F]{40})",
+        r"contractAddress\s*[:=]\s*\"?(0x[0-9a-fA-F]{40})",
+        r"deployedTo\s*[:=]\s*\"?(0x[0-9a-fA-F]{40})",
+    ):
+        match = re.search(pattern, text)
+        if match:
+            return normalize_evm_address(match.group(1))
+    return ""
+
+
+def update_manifest_contract_address(manifest_path: Path, contract_address: str) -> bool:
+    if not manifest_path.exists():
+        return False
+    manifest = read_json_file(manifest_path)
+    chain = manifest.get("chain")
+    if not isinstance(chain, dict):
+        manifest["chain"] = {}
+        chain = manifest["chain"]
+    previous = normalize_evm_address(chain.get("contract_address"))
+    chain["contract_address"] = normalize_evm_address(contract_address)
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return previous != chain["contract_address"]
+
+
+def deploy_bridge_escrow_contract(
+    *,
+    chain: dict[str, Any],
+    bridge: dict[str, Any],
+    repo_root: Path,
+    no_docker: bool,
+    timeout: float,
+) -> dict[str, Any]:
+    private_key = env_or_manifest_private_key(bridge)
+    require(
+        bool(private_key),
+        (
+            "bridge controller private key is required to auto-deploy HubCreditBridgeEscrow. "
+            "Regenerate the manifest with --include-private-keys, set MAIN_COMPUTER_BRIDGE_CONTROLLER_PRIVATE_KEY, "
+            "or leave deterministic dev-key fallback enabled for the local Anvil wallets."
+        ),
+    )
+    bridge_address = normalize_evm_address(bridge.get("address"))
+    require(bridge_address, "bridge controller address is required to deploy HubCreditBridgeEscrow")
+    args = [
+        "create",
+        CONTRACT_SOURCE_SPEC,
+        "--constructor-args",
+        bridge_address,
+        "--private-key",
+        private_key,
+        "--rpc-url",
+        chain["rpc_url"],
+        "--json",
+    ]
+    command, actual_rpc_url, cwd = forge_command(args, repo_root=repo_root, rpc_url=chain["rpc_url"], no_docker=no_docker)
+    if actual_rpc_url != chain["rpc_url"]:
+        command = [actual_rpc_url if item == chain["rpc_url"] else item for item in command]
+    result = run_command(command, cwd=cwd, timeout=timeout)
+    if result.returncode != 0:
+        raise SmokeFailure(f"forge create HubCreditBridgeEscrow failed with exit code {result.returncode}: {tail(result.stderr or result.stdout)}")
+    contract_address = parse_deployed_contract_address(result.stdout)
+    require(contract_address, f"could not parse deployed HubCreditBridgeEscrow address from forge output: {tail(result.stdout)}")
+    return {
+        "ok": True,
+        "contract_address": contract_address,
+        "bridge_controller": bridge_address,
+        "stdout_tail": tail(result.stdout),
+        "stderr_tail": tail(result.stderr),
+    }
 
 
 def cast_call_uint(
@@ -697,7 +859,8 @@ def run_private_spend_if_needed(
 
 
 def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
-    manifest = read_json_file(Path(args.manifest))
+    manifest_path = Path(args.manifest)
+    manifest = read_json_file(manifest_path)
     requester = manifest_requester(manifest, index=args.requester_index)
     worker = manifest_worker(manifest)
     bridge = manifest_bridge(manifest)
@@ -706,6 +869,28 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
     scale = credit_unit_scale(manifest, override=args.credit_unit_scale)
     charge_units = decimal_credit_to_units(args.charge_credits, scale=scale)
     hold_units = charge_units + decimal_credit_to_units(args.hold_slack_credits, scale=scale)
+
+    deployed_contract: dict[str, Any] | None = None
+    if is_placeholder_contract_address(chain["contract_address"]):
+        require(
+            not args.no_auto_deploy_contract,
+            (
+                "chain.contract_address is the placeholder address. "
+                "Run without --no-auto-deploy-contract to let this smoke deploy HubCreditBridgeEscrow, "
+                "or pass --contract-address for an existing deployment."
+            ),
+        )
+        log("Manifest has placeholder escrow contract address; auto-deploying HubCreditBridgeEscrow for this Phase 3 smoke.")
+        deployed_contract = deploy_bridge_escrow_contract(
+            chain=chain,
+            bridge=bridge,
+            repo_root=REPO_ROOT,
+            no_docker=args.no_docker,
+            timeout=args.command_timeout,
+        )
+        chain["contract_address"] = deployed_contract["contract_address"]
+        manifest.setdefault("chain", {})["contract_address"] = chain["contract_address"]
+        deployed_contract["manifest_updated"] = update_manifest_contract_address(manifest_path, chain["contract_address"])
 
     report: dict[str, Any] = {
         "ok": False,
@@ -722,6 +907,9 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
         "steps": [],
         "started_at": time.time(),
     }
+    if deployed_contract:
+        report["deployed_contract"] = deployed_contract
+        report["steps"].append({"name": "auto_deploy_contract", "ok": True, "contract_address": chain["contract_address"]})
 
     log("Bridge escrow withdrawal reconciliation smoke")
     log(f"  hub:       {hub_url}")
@@ -1086,6 +1274,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rectification-id", default="")
     parser.add_argument("--withdrawal-id", default="")
     parser.add_argument("--send-chain-deposit", action="store_true")
+    parser.add_argument(
+        "--no-auto-deploy-contract",
+        action="store_true",
+        help=(
+            "Fail instead of deploying HubCreditBridgeEscrow when the manifest still has the placeholder "
+            f"{PLACEHOLDER_CONTRACT_ADDRESS} contract address."
+        ),
+    )
     parser.add_argument("--no-hub-import", action="store_true")
     parser.add_argument("--skip-private-spend", action="store_true")
     parser.add_argument("--force-new-spend", action="store_true")

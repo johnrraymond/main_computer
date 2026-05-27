@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +12,16 @@ from main_computer.hub_credit_withdrawal import (
     sum_active_hold_units,
     sum_finalized_charge_units,
 )
+
+
+def load_phase3_smoke_module():
+    module_path = Path(__file__).resolve().parents[1] / "scripts" / "run_bridge_escrow_withdrawal_reconciliation_smoke.py"
+    spec = importlib.util.spec_from_file_location("phase3_withdrawal_smoke", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class BridgeEscrowWithdrawalReconciliationTests(unittest.TestCase):
@@ -122,6 +134,48 @@ class BridgeEscrowWithdrawalReconciliationTests(unittest.TestCase):
         self.assertIn("withdrawn", overdrawn.block_reason)
         self.assertFalse(spent_plus_withdrawn_too_high.can_withdraw)
         self.assertIn("exceed", spent_plus_withdrawn_too_high.block_reason)
+
+    def test_smoke_allows_placeholder_contract_for_auto_deploy_path(self) -> None:
+        smoke = load_phase3_smoke_module()
+        args = argparse.Namespace(rpc_url="", chain_id=0, contract_address="")
+        chain = smoke.chain_config(
+            {
+                "chain": {
+                    "rpc_url": "http://127.0.0.1:18545",
+                    "chain_id": 42424242,
+                    "contract_address": smoke.PLACEHOLDER_CONTRACT_ADDRESS,
+                }
+            },
+            args,
+        )
+
+        self.assertEqual(chain["contract_address"], smoke.PLACEHOLDER_CONTRACT_ADDRESS)
+        self.assertTrue(smoke.is_placeholder_contract_address(chain["contract_address"]))
+
+    def test_smoke_parses_forge_deployment_address_outputs(self) -> None:
+        smoke = load_phase3_smoke_module()
+        expected = "0x1234567890abcdef1234567890abcdef12345678"
+
+        self.assertEqual(
+            smoke.parse_deployed_contract_address('{"deployedTo":"0x1234567890ABCDEF1234567890abcdef12345678"}'),
+            expected,
+        )
+        self.assertEqual(
+            smoke.parse_deployed_contract_address(f"Deployed to: {expected}\nTransaction hash: 0x" + "a" * 64),
+            expected,
+        )
+
+    def test_smoke_can_use_deterministic_dev_key_fallback_for_local_anvil_actor(self) -> None:
+        smoke = load_phase3_smoke_module()
+        key = smoke.env_or_manifest_private_key(
+            {
+                "address": "0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc",
+                "private_key": "",
+                "private_key_env": "",
+            }
+        )
+
+        self.assertEqual(key, "0x8b3a350cf5c34c9194ca3a545d1f0b8a7a754e03d6f34e7e65ac8068bddb2ba")
 
     def test_ledger_records_bridge_rectification_and_withdrawal_idempotently(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

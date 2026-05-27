@@ -653,6 +653,64 @@ class GitToolsServiceTests(unittest.TestCase):
         self.assertTrue(captured["allow_failure"])
         self.assertEqual(captured["timeout"], 12)
 
+    def test_git_server_start_skips_install_when_http_service_is_present(self) -> None:
+        service = self._service()
+        service._git_server_http_is_present = lambda: True  # type: ignore[method-assign]
+
+        def fail_compose(args: list[str], *, allow_failure: bool = False, timeout: int = 30) -> dict[str, object]:
+            raise AssertionError(f"docker compose should not be called when Gitea is already reachable: {args!r}")
+
+        service._run_docker_compose = fail_compose  # type: ignore[method-assign]
+        result = service._ensure_git_server_started_if_missing(timeout=12)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["state"], "already-present")
+        self.assertFalse(result["installed"])
+
+    def test_git_server_start_uses_start_for_existing_container_and_up_only_when_missing(self) -> None:
+        service = self._service()
+        service._git_server_http_is_present = lambda: False  # type: ignore[method-assign]
+        calls: list[list[str]] = []
+
+        def fake_existing(args: list[str], *, allow_failure: bool = False, timeout: int = 30) -> dict[str, object]:
+            calls.append(args)
+            if args == ["ps", service.GIT_SERVER_SERVICE]:
+                return {"command": ["docker", "compose", *args], "returncode": 0, "stdout": "STATUS\nExited\n", "stderr": ""}
+            if args == ["ps", "-a", "-q", service.GIT_SERVER_SERVICE]:
+                return {"command": ["docker", "compose", *args], "returncode": 0, "stdout": "abc123\n", "stderr": ""}
+            if args == ["start", service.GIT_SERVER_SERVICE]:
+                return {"command": ["docker", "compose", *args], "returncode": 0, "stdout": "gitea\n", "stderr": ""}
+            raise AssertionError(args)
+
+        service._run_docker_compose = fake_existing  # type: ignore[method-assign]
+        existing = service._ensure_git_server_started_if_missing(timeout=12)
+
+        self.assertTrue(existing["ok"], existing)
+        self.assertEqual(existing["state"], "started-existing")
+        self.assertFalse(existing["installed"])
+        self.assertEqual(calls[-1], ["start", service.GIT_SERVER_SERVICE])
+        self.assertNotIn(["up", "-d", service.GIT_SERVER_SERVICE], calls)
+
+        calls.clear()
+
+        def fake_missing(args: list[str], *, allow_failure: bool = False, timeout: int = 30) -> dict[str, object]:
+            calls.append(args)
+            if args == ["ps", service.GIT_SERVER_SERVICE]:
+                return {"command": ["docker", "compose", *args], "returncode": 0, "stdout": "STATUS\n", "stderr": ""}
+            if args == ["ps", "-a", "-q", service.GIT_SERVER_SERVICE]:
+                return {"command": ["docker", "compose", *args], "returncode": 0, "stdout": "", "stderr": ""}
+            if args == ["up", "-d", service.GIT_SERVER_SERVICE]:
+                return {"command": ["docker", "compose", *args], "returncode": 0, "stdout": "created\n", "stderr": ""}
+            raise AssertionError(args)
+
+        service._run_docker_compose = fake_missing  # type: ignore[method-assign]
+        missing = service._ensure_git_server_started_if_missing(timeout=12)
+
+        self.assertTrue(missing["ok"], missing)
+        self.assertEqual(missing["state"], "installed-missing")
+        self.assertTrue(missing["installed"])
+        self.assertEqual(calls[-1], ["up", "-d", service.GIT_SERVER_SERVICE])
+
     def test_git_server_capabilities_are_exposed_without_running_docker(self) -> None:
         capabilities = self.service.capabilities()["git_server"]
         self.assertTrue(capabilities["available"])

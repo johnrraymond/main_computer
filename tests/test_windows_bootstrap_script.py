@@ -389,6 +389,9 @@ def test_installed_runner_has_fast_mode_environment_check_and_shared_gitea_polic
         assert "machine-wide Gitea" in source
         assert "MAIN_COMPUTER_GITEA_SCOPE" in source
         assert "MAIN_COMPUTER_GITEA_COMPOSE_PROJECT" in source
+        assert "Ensure-SharedGiteaInstalledIfMissing" in source
+        assert "installer/start path will not recreate it" in source
+        assert "ps -a -q gitea" in source
         assert "ONLYOFFICE for mode" in source
         assert "Local Coolify for mode" in source
         assert "WSL distro for mode" in source
@@ -415,6 +418,9 @@ def test_dev_checkout_runner_mirrors_installed_runner_without_install_root() -> 
     assert "machine-wide Gitea" in runner
     assert "MAIN_COMPUTER_GITEA_SCOPE" in runner
     assert "main-computer-gitea" in runner
+    assert "Ensure-SharedGiteaInstalledIfMissing" in runner
+    assert "installer/start path will not recreate it" in runner
+    assert "ps -a -q gitea" in runner
     assert "ONLYOFFICE for mode" in runner
     assert "Local Coolify for mode" in runner
     assert "WSL distro for mode" in runner
@@ -427,13 +433,18 @@ def test_dev_checkout_runner_mirrors_installed_runner_without_install_root() -> 
     assert "main-computer-install.json" not in runner
 
 
-def test_start_bat_starts_shared_gitea_before_runner() -> None:
+def test_start_helper_installs_shared_gitea_only_when_missing_before_runner() -> None:
     script = (ROOT / "start.bat").read_text(encoding="utf-8")
+    helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
 
-    assert "Starting shared Gitea Git service" in script
-    assert "docker-compose.gitea.yml" in script
-    assert "compose --project-name main-computer-gitea -f $compose up -d gitea" in script
-    assert script.index("Starting shared Gitea Git service") < script.index("if defined MC_RUNNER")
+    assert "scripts\\main-computer-start-stop.ps1" in script
+    assert "Start-MainComputerGiteaIfMissing" in helper
+    assert "Shared Gitea already present on port" in helper
+    assert "installer/start path will not recreate it" in helper
+    assert "ps -a -q gitea" in helper
+    assert '"start", "gitea"' in helper
+    assert '"up", "-d", "gitea"' in helper
+    assert helper.index("$giteaStart = Start-MainComputerGiteaIfMissing") < helper.index("$localPlatformStart = Start-MainComputerLocalPlatform")
 
 
 def test_onlyoffice_control_waits_for_docker_readiness_with_compose_project() -> None:

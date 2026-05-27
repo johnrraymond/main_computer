@@ -126,6 +126,12 @@ def test_v2_helper_uses_mode_scoped_non_gitea_docker_projects() -> None:
     assert 'Get-EnvFirstValue @("MAIN_COMPUTER_APPLICATIONS_COMPOSE_PROJECT") "main-computer-applications"' in helper
     assert '"MAIN_COMPUTER_COOLIFY_PROJECT", "COOLIFY_COMPOSE_PROJECT", "COMPOSE_PROJECT_NAME"' in helper
     assert 'Get-EnvFirstValue @("MAIN_COMPUTER_APPLICATIONS_COMPOSE_PROJECT", "MAIN_COMPUTER_COOLIFY_PROJECT", "COMPOSE_PROJECT_NAME")' not in helper
+    assert "function Start-MainComputerGiteaIfMissing" in helper
+    assert "Shared Gitea already present on port" in helper
+    assert "installer/start path will not recreate it" in helper
+    assert "ps -a -q gitea" in helper
+    assert '"start", "gitea"' in helper
+    assert '"up", "-d", "gitea"' in helper
     assert "function Start-MainComputerLocalPlatform" in helper
     assert '"local-platform"' in helper
     assert '"--project-name", $devComposeProject' in helper
@@ -135,6 +141,8 @@ def test_v2_helper_uses_mode_scoped_non_gitea_docker_projects() -> None:
 def test_v2_local_platform_publish_failure_warns_and_allows_supervisor_start() -> None:
     helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
 
+    assert "function Write-MainComputerGiteaWarning" in helper
+    assert "Shared Gitea preparation failed" in helper
     assert "function Write-MainComputerLocalPlatformWarning" in helper
     assert 'Write-Warning ("Local platform startup failed ({0}). Continuing Main Computer startup; local hub/blog website containers may be unavailable."' in helper
     assert 'try {\n    $localPlatformStart = Start-MainComputerLocalPlatform $RootPath $pythonCommand' in helper

@@ -785,6 +785,46 @@ function Get-ConfiguredGiteaPort {{
     return 3000
 }}
 
+function Ensure-SharedGiteaInstalledIfMissing {{
+    $giteaPort = Get-ConfiguredGiteaPort
+    if (Test-LocalTcpPortOpen -Port $giteaPort) {{
+        Write-Host ("Shared Gitea already present on port {{0}}; installer/start path will not recreate it." -f $giteaPort)
+        return
+    }}
+
+    $compose = Join-Path $InstallRoot "docker-compose.gitea.yml"
+    if (-not (Test-Path -LiteralPath $compose -PathType Leaf)) {{
+        Write-Warning "Shared Gitea compose file is missing: $compose"
+        return
+    }}
+
+    $docker = Get-Command "docker" -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $docker) {{
+        Write-Warning "Docker CLI is not available; shared Gitea cannot be prepared."
+        return
+    }}
+
+    $projectName = $env:MAIN_COMPUTER_GITEA_COMPOSE_PROJECT
+    if ([string]::IsNullOrWhiteSpace($projectName)) {{
+        $projectName = "main-computer-gitea"
+    }}
+
+    $containerIds = @(& $docker.Source compose --project-name $projectName -f $compose ps -a -q gitea 2>$null)
+    $containerExists = ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace(($containerIds -join "").Trim()))
+    if ($containerExists) {{
+        Write-Host ("Shared Gitea container already exists but is not reachable on port {{0}}; starting existing container without reinstalling." -f $giteaPort)
+        & $docker.Source compose --project-name $projectName -f $compose start gitea
+    }}
+    else {{
+        Write-Host "Shared Gitea not found on this machine; installing machine-wide Gitea with docker-compose.gitea.yml."
+        & $docker.Source compose --project-name $projectName -f $compose up -d gitea
+    }}
+
+    if ($LASTEXITCODE -ne 0) {{
+        Write-Warning ("Shared Gitea preparation returned exit code {{0}}; Local Gitea publishing may be unavailable." -f $LASTEXITCODE)
+    }}
+}}
+
 function Invoke-InstalledModeCheck {{
     param(
         [Parameter(Mandatory = $true)]$SelectedMode,
@@ -1098,6 +1138,7 @@ if ($Action -eq "check") {{
 
 if (@("start", "run", "restart", "install", "install-run") -contains $Action) {{
     Invoke-InstalledModeCheck -SelectedMode $selectedMode -Soft | Out-Null
+    Ensure-SharedGiteaInstalledIfMissing
     Request-ExistingAppShutdown -SelectedMode $selectedMode
 }}
 

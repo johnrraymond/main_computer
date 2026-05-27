@@ -525,18 +525,36 @@ class GitToolsService:
         if not base_status["docker_available"]:
             return self._docker_unavailable_payload(base_status, action=cleaned)
 
-        result = self._run_docker_compose(commands[cleaned], allow_failure=True, timeout=90)
-        payload = {
-            "ok": result["returncode"] == 0,
-            "action": cleaned,
-            "command": result["command"],
-            "result": result,
-            "service": self.GIT_SERVER_SERVICE,
-            "profile": "",
-            "compose_project": self.GIT_SERVER_COMPOSE_PROJECT,
-            "web_url": self.GIT_SERVER_WEB_URL,
-            "clone_examples": self.git_server_capabilities()["clone_examples"],
-        }
+        if cleaned == "start":
+            start = self._ensure_git_server_started_if_missing(timeout=90)
+            result = start["result"]
+            payload = {
+                "ok": bool(start["ok"]),
+                "action": cleaned,
+                "command": result["command"],
+                "result": result,
+                "service": self.GIT_SERVER_SERVICE,
+                "profile": "",
+                "compose_project": self.GIT_SERVER_COMPOSE_PROJECT,
+                "web_url": self.GIT_SERVER_WEB_URL,
+                "clone_examples": self.git_server_capabilities()["clone_examples"],
+                "state": start["state"],
+                "installed": start["installed"],
+                "container_exists": start["container_exists"],
+            }
+        else:
+            result = self._run_docker_compose(commands[cleaned], allow_failure=True, timeout=90)
+            payload = {
+                "ok": result["returncode"] == 0,
+                "action": cleaned,
+                "command": result["command"],
+                "result": result,
+                "service": self.GIT_SERVER_SERVICE,
+                "profile": "",
+                "compose_project": self.GIT_SERVER_COMPOSE_PROJECT,
+                "web_url": self.GIT_SERVER_WEB_URL,
+                "clone_examples": self.git_server_capabilities()["clone_examples"],
+            }
         if cleaned != "logs":
             payload["status"] = self.git_server_status()
         if result["returncode"] != 0:
@@ -824,17 +842,23 @@ class GitToolsService:
         if not base_status["docker_available"]:
             return {**self._docker_unavailable_payload(base_status, action="setup-local"), "steps": steps}
 
-        start = self._run_docker_compose(
-            ["up", "-d", self.GIT_SERVER_SERVICE],
-            allow_failure=True,
-            timeout=120,
+        start = self._ensure_git_server_started_if_missing(timeout=120)
+        steps.append(
+            {
+                "name": "start-git-server",
+                "ok": bool(start["ok"]),
+                "state": start["state"],
+                "installed": start["installed"],
+                "container_exists": start["container_exists"],
+                "result": start["result"],
+            }
         )
-        steps.append({"name": "start-git-server", "ok": start["returncode"] == 0, "result": start})
-        if start["returncode"] != 0:
+        if not start["ok"]:
+            result = start["result"]
             return {
                 **base_status,
                 "ok": False,
-                "error": start["stderr"] or start["stdout"] or "Could not start the local Git server.",
+                "error": result["stderr"] or result["stdout"] or "Could not start the local Git server.",
                 "steps": steps,
             }
 
@@ -3914,6 +3938,73 @@ service._git_project_run_security_filter_scan_stream(
         if "running" in combined or " up " in f" {combined} ":
             return True
         return False
+
+    def _compose_service_container_exists(self, ps: dict[str, Any] | None) -> bool:
+        if not ps or ps.get("returncode") != 0:
+            return False
+        return bool(str(ps.get("stdout", "")).strip())
+
+    def _git_server_http_is_present(self, *, timeout: float = 0.75) -> bool:
+        try:
+            request = urllib.request.Request(self.GIT_SERVER_WEB_URL, method="GET")
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return 200 <= response.status < 500
+        except Exception:
+            return False
+
+    def _ensure_git_server_started_if_missing(self, *, timeout: int = 90) -> dict[str, Any]:
+        """Start existing Gitea containers and create the shared stack only when absent.
+
+        The managed local Git server is a machine-wide service. Avoid `up -d`
+        against an already-created Gitea container because that can look like an
+        install/update path. Use the narrower `start` path when the container
+        already exists, and reserve `up -d` for the first install/create.
+        """
+
+        if self._git_server_http_is_present():
+            return {
+                "ok": True,
+                "state": "already-present",
+                "installed": False,
+                "container_exists": None,
+                "result": {
+                    "command": [],
+                    "returncode": 0,
+                    "stdout": f"Gitea already reachable at {self.GIT_SERVER_WEB_URL}; skipping install.",
+                    "stderr": "",
+                },
+            }
+
+        running = self._run_docker_compose(["ps", self.GIT_SERVER_SERVICE], allow_failure=True, timeout=30)
+        if self._compose_service_is_running(running):
+            return {
+                "ok": True,
+                "state": "already-running",
+                "installed": False,
+                "container_exists": True,
+                "result": running,
+            }
+
+        existing = self._run_docker_compose(["ps", "-a", "-q", self.GIT_SERVER_SERVICE], allow_failure=True, timeout=30)
+        container_exists = self._compose_service_container_exists(existing)
+        if container_exists:
+            result = self._run_docker_compose(["start", self.GIT_SERVER_SERVICE], allow_failure=True, timeout=timeout)
+            state = "started-existing" if result["returncode"] == 0 else "start-existing-failed"
+            installed = False
+        else:
+            result = self._run_docker_compose(["up", "-d", self.GIT_SERVER_SERVICE], allow_failure=True, timeout=timeout)
+            state = "installed-missing" if result["returncode"] == 0 else "install-missing-failed"
+            installed = result["returncode"] == 0
+
+        return {
+            "ok": result["returncode"] == 0,
+            "state": state,
+            "installed": installed,
+            "container_exists": container_exists,
+            "existence_check": existing,
+            "running_check": running,
+            "result": result,
+        }
 
     def _git_server_logs_tail(self, *, limit: int = 160) -> dict[str, Any]:
         return self._run_docker_compose(["logs", "--tail", str(limit), self.GIT_SERVER_SERVICE], allow_failure=True, timeout=45)

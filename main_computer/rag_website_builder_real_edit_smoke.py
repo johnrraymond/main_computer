@@ -68,6 +68,9 @@ ROUTER_MODE = "website_builder_rag_route_decision"
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "gemma4:26b"
 DEFAULT_OLLAMA_TIMEOUT_SECONDS = 600.0
+DEFAULT_ROUTER_NUM_PREDICT = 320
+DEFAULT_PROPOSAL_NUM_PREDICT = 2200
+DEFAULT_THINK_MODE = "false"
 
 TEXT_FILE_EXTENSIONS = {
     ".css",
@@ -119,9 +122,9 @@ MAX_TOTAL_REPLACEMENT_CHARS = 500_000
 
 # Prompt budgets. The full evidence object remains available to deterministic
 # validation/materialization; these only govern what is sent to the AI.
-MAX_ROUTE_SITE_RECORDS = 80
-MAX_ROUTE_VISIBLE_FILES = 80
-MAX_ROUTE_ANCHOR_CHARS = 700
+MAX_ROUTE_SITE_RECORDS = 8
+MAX_ROUTE_VISIBLE_FILES = 8
+MAX_ROUTE_ANCHOR_CHARS = 80
 MAX_PROPOSAL_SITE_FILE_CHARS = 6_000
 MAX_PROPOSAL_BUILDER_SNIPPET_CHARS = 7_000
 
@@ -602,70 +605,99 @@ def compact_record(record: dict[str, Any], *, anchor_limit: int = MAX_ROUTE_ANCH
 
 
 def site_summary_for_router(site: dict[str, Any]) -> dict[str, Any]:
-    """Compact enough for intent routing; it carries editable labels/text but no full files."""
+    """Tiny router evidence: enough to infer intent, not enough to plan writes.
+
+    The router should not receive proposal-grade files or replacement anchors.
+    It only needs to know what app/site is mounted and a small set of visible
+    text labels so it can distinguish answer/scope/clarify/propose_edit.
+    """
+    text_records: list[dict[str, Any]] = []
+    for record in (site.get("editable_site_records") or [])[:MAX_ROUTE_SITE_RECORDS]:
+        if not isinstance(record, dict):
+            continue
+        value = record.get("exact_value")
+        if value is None:
+            value = record.get("exact_anchor")
+        text = str(value or "").strip()
+        if not text:
+            continue
+        text_records.append(
+            {
+                "record_type": record.get("record_type"),
+                "path": record.get("path"),
+                "json_pointer": record.get("json_pointer", ""),
+                "key": record.get("key", ""),
+                "visible_or_editable_text": truncate_text(text, MAX_ROUTE_ANCHOR_CHARS),
+                "original_chars": len(text),
+            }
+        )
+
+    manifest = site.get("site_manifest_summary") if isinstance(site.get("site_manifest_summary"), dict) else {}
     return {
         "site_id": site.get("site_id"),
         "site_root": site.get("site_root"),
-        "site_manifest_summary": site.get("site_manifest_summary"),
-        "visible_site_files": list(site.get("visible_site_files") or [])[:MAX_ROUTE_VISIBLE_FILES],
-        "site_file_summaries": [
-            {
-                "path": item.get("path"),
-                "sha256": item.get("sha256"),
-                "chars": item.get("chars"),
-                "truncated": item.get("truncated"),
-            }
-            for item in (site.get("site_files") or [])
-            if isinstance(item, dict)
-        ],
-        "editable_site_records": [
-            compact_record(record)
-            for record in (site.get("editable_site_records") or [])[:MAX_ROUTE_SITE_RECORDS]
-            if isinstance(record, dict)
-        ],
+        "manifest": {
+            "id": manifest.get("id"),
+            "name": manifest.get("name"),
+            "kind": manifest.get("kind"),
+            "lane": manifest.get("lane"),
+            "required_files": (manifest.get("artifacts") or {}).get("required_files")
+            if isinstance(manifest.get("artifacts"), dict)
+            else None,
+        },
+        "visible_or_editable_text_records": text_records,
     }
+
 
 
 def builder_summary_for_router(builder: dict[str, Any]) -> dict[str, Any]:
-    """Router needs to know builder-code evidence exists, not read all snippets."""
+    """Tiny builder evidence for routing only.
+
+    The router needs to know that Website Builder implementation edits are in
+    scope, but it should not receive source snippets until the proposal stage.
+    """
     return {
-        "builder_allowlist": builder.get("builder_allowlist"),
-        "builder_file_summaries": [
-            {
-                "path": item.get("path"),
-                "sha256": item.get("sha256"),
-                "chars": item.get("chars"),
-                "snippet_chars": item.get("snippet_chars"),
-            }
+        "allowlisted_builder_paths": [
+            item.get("path")
             for item in (builder.get("builder_files") or [])
-            if isinstance(item, dict)
+            if isinstance(item, dict) and item.get("path")
         ],
     }
 
 
-def build_route_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
-    """Evidence sent only to the AI intent router.
 
-    This is intentionally much smaller than proposal evidence. The router is not
-    allowed to choose final paths or edits; it only chooses answer/scope/clarify/
-    propose_edit. Full evidence remains on the server side for validation.
+def build_route_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Small evidence sent only to the AI intent router.
+
+    This intentionally differs from proposal evidence. The router does not choose
+    final files, text replacements, JSON pointers, or write operations. It only
+    chooses whether the mounted chat should answer, show scope, clarify, or attempt
+    a validated edit proposal.
     """
     return {
         "mode": MODE,
-        "evidence_profile": "router-compact",
+        "evidence_profile": "router-tiny",
         "site_id": evidence.get("site_id"),
-        "allowed_roots": evidence.get("allowed_roots"),
-        "builder_allowlist": evidence.get("builder_allowlist"),
+        "zones": {
+            "active_website": {
+                "editable": True,
+                "root": (evidence.get("site") or {}).get("site_root"),
+            },
+            "website_builder_implementation": {
+                "editable": True,
+                "allowlist_count": len(((evidence.get("builder") or {}).get("builder_files") or [])),
+            },
+        },
         "site": site_summary_for_router(evidence.get("site") or {}),
         "builder": builder_summary_for_router(evidence.get("builder") or {}),
-        "instructions": {
+        "server_contract": {
             "router_only": True,
-            "do_not_choose_final_file_paths": True,
-            "model_may_reason": True,
-            "server_validates": True,
-            "raw_omission_does_not_delete": True,
+            "router_does_not_choose_paths": True,
+            "proposal_stage_gets_focused_evidence_only_if_needed": True,
+            "server_validates_paths_old_values_hashes_and_writes": True,
         },
     }
+
 
 
 def compact_site_for_proposal(site: dict[str, Any], *, include_file_text: bool) -> dict[str, Any]:
@@ -748,59 +780,59 @@ def build_proposal_evidence(evidence: dict[str, Any], route_decision: dict[str, 
 
 
 def prompt_evidence_stats(label: str, evidence: dict[str, Any]) -> dict[str, Any]:
+    site = evidence.get("site") or {}
+    builder = evidence.get("builder") or {}
+    site_records = (
+        site.get("editable_site_records")
+        or site.get("visible_or_editable_text_records")
+        or []
+    )
+    builder_files = (
+        builder.get("builder_files")
+        or builder.get("builder_file_summaries")
+        or builder.get("allowlisted_builder_paths")
+        or []
+    )
     return {
         "label": label,
         "chars": json_char_count(evidence),
-        "site_chars": json_char_count(evidence.get("site") or {}),
-        "builder_chars": json_char_count(evidence.get("builder") or {}),
-        "site_records": len(((evidence.get("site") or {}).get("editable_site_records") or [])),
-        "builder_files": len(((evidence.get("builder") or {}).get("builder_files") or (evidence.get("builder") or {}).get("builder_file_summaries") or [])),
+        "site_chars": json_char_count(site),
+        "builder_chars": json_char_count(builder),
+        "site_records": len(site_records),
+        "builder_files": len(builder_files),
     }
 
 
-def route_prompt(user_prompt: str, route_evidence: dict[str, Any]) -> str:
-    """Ask the model to choose mounted-chat behavior from compact scoped evidence.
 
-    This deliberately avoids a server-side edit-keyword pre-router. The model can
-    decide whether the user wants an answer, a clarification, a scope card, or an
-    edit proposal attempt. The server only treats "propose_edit" as permission to
-    ask for a candidate proposal; every path and byte change is still validated by
-    materialize_proposal() before anything can be applied.
-    """
-    return (
-        "You are the Website Builder mounted-chat AI route decision engine.\n"
-        "Return JSON only. Do not include Markdown.\n\n"
-        "Your job is to decide what kind of mounted-chat response should happen next.\n"
-        "Do not propose file edits in this router response. Do not choose final file paths.\n"
-        "Use the active website evidence and Website Builder allowlist evidence to infer intent.\n\n"
-        "Allowed intents:\n"
-        '- "answer": answer a question without changing files.\n'
-        '- "scope": summarize what this mounted chat can see/edit.\n'
-        '- "clarify": ask a clarifying question before any edit proposal.\n'
-        '- "propose_edit": the user is asking for a website or Website Builder code change; the next step should ask for a structured proposal.\n\n'
-        "Important rules:\n"
-        "- Do not rely on hardcoded phrases. Infer from the full request and evidence.\n"
-        "- If carrying out the request would change active website or Website Builder state, choose propose_edit.\n"
-        "- If the user asks a general question that does not require changing files, choose answer.\n"
-        "- If the requested change cannot be grounded to the active site or builder allowlist, choose clarify.\n"
-        "- This router does not grant write authority. The server validates every later path, old value, JSON pointer, hash, and operation.\n\n"
-        "Return this JSON shape:\n"
-        "{\n"
-        '  "ok": true,\n'
-        f'  "mode": "{ROUTER_MODE}",\n'
-        '  "intent": "answer|scope|clarify|propose_edit",\n'
-        '  "target_kind": "website|website-builder|mixed|none",\n'
-        '  "confidence": 0.0,\n'
-        '  "summary": "...",\n'
-        '  "answer": "...",\n'
-        '  "clarification_question": "...",\n'
-        '  "proposal_hint": "...",\n'
-        '  "reasons": ["..."],\n'
-        '  "warnings": []\n'
-        "}\n\n"
-        f"User prompt:\n{user_prompt}\n\n"
-        f"Evidence JSON:\n{json.dumps(route_evidence, ensure_ascii=False, indent=2)}\n"
+def route_prompt(user_prompt: str, route_evidence: dict[str, Any]) -> str:
+    """Ask the model to choose mounted-chat behavior from tiny scoped evidence."""
+    user_payload = {
+        "user_prompt": user_prompt,
+        "router_evidence": route_evidence,
+        "return_json_schema": {
+            "ok": True,
+            "mode": ROUTER_MODE,
+            "intent": "answer|scope|clarify|propose_edit",
+            "target_kind": "website|website-builder|mixed|none",
+            "confidence": 0.0,
+            "summary": "short reason",
+            "answer": "only for intent=answer",
+            "clarification_question": "only for intent=clarify",
+            "proposal_hint": "only for intent=propose_edit",
+            "reasons": ["brief"],
+            "warnings": [],
+        },
+    }
+    instructions = (
+        "Decide the next step for a mounted Website Builder chat. "
+        "Return JSON only. Do not propose edits here. Do not choose file paths. "
+        "Choose propose_edit only when the user is asking to change the active website "
+        "or the Website Builder implementation. Choose answer for ordinary questions. "
+        "Choose scope for capability/scope questions. Choose clarify when the requested "
+        "change is too ambiguous to ground. The server validates all later writes."
     )
+    return instructions + "\n\n" + json.dumps(user_payload, ensure_ascii=False, separators=(",", ":"))
+
 
 
 def validate_route_decision(route: dict[str, Any]) -> dict[str, Any]:
@@ -944,20 +976,48 @@ def call_ollama(
     timeout: float,
     stage: str,
     verbose: int = 0,
+    num_predict: int,
+    think_mode: str,
 ) -> dict[str, Any]:
-    payload = {
+    """Call Ollama in the same bounded JSON/chat style used by the Game Editor smoke.
+
+    The previous Website Builder router used /api/generate without a num_predict cap.
+    On some local models that can spin for a very long time even for a small router
+    decision. The golden-path Game Editor smoke uses /api/chat, JSON mode, and a
+    bounded num_predict option, so this smoke follows that shape.
+    """
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a JSON-only assistant for a mounted Website Builder RAG smoke. "
+                "Return one valid JSON object and no Markdown."
+            ),
+        },
+        {"role": "user", "content": prompt},
+    ]
+    payload: dict[str, Any] = {
         "model": model,
-        "prompt": prompt,
+        "messages": messages,
         "stream": False,
         "format": "json",
-        "options": {"temperature": 0.1},
+        "options": {
+            "temperature": 0.0,
+            "num_predict": int(num_predict),
+        },
     }
-    url = base_url.rstrip("/") + "/api/generate"
+    if think_mode != "omit":
+        payload["think"] = {"false": False, "true": True}.get(think_mode, think_mode)
+
+    url = base_url.rstrip("/") + "/api/chat"
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     verbose_log(
         verbose,
-        f"AI {stage}: POST {url} model={model!r} timeout={float(timeout):.1f}s prompt_chars={len(prompt)}",
+        (
+            f"AI {stage}: POST {url} model={model!r} timeout={float(timeout):.1f}s "
+            f"prompt_chars={len(prompt)} num_predict={int(num_predict)} think_mode={think_mode!r}"
+        ),
     )
     started = time.monotonic()
     try:
@@ -966,21 +1026,29 @@ def call_ollama(
     except (TimeoutError, socket.timeout) as exc:
         elapsed = time.monotonic() - started
         timeout_flag = "--router-timeout" if stage == "router" else "--proposal-timeout"
+        predict_flag = "--router-num-predict" if stage == "router" else "--proposal-num-predict"
         raise SmokeFailure(
             f"Ollama {stage} timed out after {elapsed:.1f}s "
             f"(configured timeout {float(timeout):.1f}s) at {url}. "
-            f"Increase {timeout_flag} <seconds> or --ollama-timeout <seconds>, "
+            f"Try increasing {timeout_flag} <seconds>, lowering {predict_flag}, "
             "or use --offline-fixture / --route-file / --proposal-file for deterministic debugging."
         ) from exc
     except urllib.error.URLError as exc:
         raise SmokeFailure(f"Ollama {stage} request failed at {url}: {exc}") from exc
+
     elapsed = time.monotonic() - started
     verbose_log(verbose, f"AI {stage}: response received in {elapsed:.2f}s raw_chars={len(raw)}")
     try:
         envelope = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise SmokeFailure(f"Ollama {stage} did not return a JSON envelope: {raw[:500]!r}") from exc
-    text = str(envelope.get("response") or "").strip()
+
+    message = envelope.get("message") if isinstance(envelope, dict) else None
+    if isinstance(message, dict):
+        text = str(message.get("content") or "").strip()
+    else:
+        text = str(envelope.get("response") or "").strip()
+
     start = text.find("{")
     end = text.rfind("}")
     require(start >= 0 and end >= start, f"Model {stage} did not return JSON object: {text[:500]!r}")
@@ -990,6 +1058,7 @@ def call_ollama(
         raise SmokeFailure(f"Model {stage} returned malformed JSON object: {text[:800]!r}") from exc
     verbose_log(verbose, f"AI {stage}: parsed keys={sorted(parsed.keys())}", level=2)
     return parsed
+
 
 
 def extract_requested_value(prompt: str, fallback: str) -> str:
@@ -1613,6 +1682,9 @@ def run_once(
     ollama_timeout: float,
     router_timeout: float | None,
     proposal_timeout: float | None,
+    router_num_predict: int,
+    proposal_num_predict: int,
+    think_mode: str,
     apply_mode: str,
     yes_really_write_source: bool,
     verbose: int,
@@ -1626,6 +1698,7 @@ def run_once(
     verbose_log(verbose, f"apply_mode={apply_mode}")
     verbose_log(verbose, f"ollama_model={ollama_model!r} base_url={ollama_base_url}")
     verbose_log(verbose, f"router_timeout={effective_router_timeout:.1f}s proposal_timeout={effective_proposal_timeout:.1f}s")
+    verbose_log(verbose, f"router_num_predict={router_num_predict} proposal_num_predict={proposal_num_predict} think_mode={think_mode!r}")
 
     with StageTimer(verbose, "build scoped Website Builder evidence"):
         evidence = build_evidence(repo, site_id)
@@ -1647,7 +1720,16 @@ def run_once(
         route_decision = offline_fixture_route(prompt, evidence)
         route_source = "offline-fixture"
     else:
-        route_decision = call_ollama(route_prompt_text, base_url=ollama_base_url, model=ollama_model, timeout=effective_router_timeout, stage="router", verbose=verbose)
+        route_decision = call_ollama(
+            route_prompt_text,
+            base_url=ollama_base_url,
+            model=ollama_model,
+            timeout=effective_router_timeout,
+            stage="router",
+            verbose=verbose,
+            num_predict=router_num_predict,
+            think_mode=think_mode,
+        )
         route_source = f"ollama-router:{ollama_model}"
 
     route_validation = validate_route_decision(route_decision)
@@ -1685,7 +1767,16 @@ def run_once(
         proposal = offline_fixture_proposal(prompt, evidence)
         proposal_source = "offline-fixture"
     else:
-        proposal = call_ollama(proposal_prompt_text, base_url=ollama_base_url, model=ollama_model, timeout=effective_proposal_timeout, stage="proposal", verbose=verbose)
+        proposal = call_ollama(
+            proposal_prompt_text,
+            base_url=ollama_base_url,
+            model=ollama_model,
+            timeout=effective_proposal_timeout,
+            stage="proposal",
+            verbose=verbose,
+            num_predict=proposal_num_predict,
+            think_mode=think_mode,
+        )
         proposal_source = f"ollama-proposal:{ollama_model}"
 
     prompt_record = {
@@ -1772,6 +1863,9 @@ def offline_self_check(repo: Path, site_id: str, args: argparse.Namespace) -> di
             ollama_timeout=args.ollama_timeout,
             router_timeout=args.router_timeout,
             proposal_timeout=args.proposal_timeout,
+            router_num_predict=args.router_num_predict,
+            proposal_num_predict=args.proposal_num_predict,
+            think_mode=args.think_mode,
             apply_mode="temp-copy",
             yes_really_write_source=False,
             verbose=args.verbose,
@@ -1834,6 +1928,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Override timeout in seconds for the AI edit-proposal call only.",
+    )
+    parser.add_argument(
+        "--router-num-predict",
+        type=int,
+        default=DEFAULT_ROUTER_NUM_PREDICT,
+        help=f"Maximum output tokens for the AI route-decision call. Default: {DEFAULT_ROUTER_NUM_PREDICT}.",
+    )
+    parser.add_argument(
+        "--proposal-num-predict",
+        type=int,
+        default=DEFAULT_PROPOSAL_NUM_PREDICT,
+        help=f"Maximum output tokens for the AI edit-proposal call. Default: {DEFAULT_PROPOSAL_NUM_PREDICT}.",
+    )
+    parser.add_argument(
+        "--think-mode",
+        choices=["omit", "false", "true", "low", "medium", "high"],
+        default=DEFAULT_THINK_MODE,
+        help="Ollama think setting. Default disables thinking when the model supports it.",
     )
     parser.add_argument(
         "--route-site-records",
@@ -1925,6 +2037,9 @@ def main(argv: list[str] | None = None) -> int:
             ollama_timeout=args.ollama_timeout,
             router_timeout=args.router_timeout,
             proposal_timeout=args.proposal_timeout,
+            router_num_predict=args.router_num_predict,
+            proposal_num_predict=args.proposal_num_predict,
+            think_mode=args.think_mode,
             apply_mode=apply_mode,
             yes_really_write_source=args.yes_really_write_source,
             verbose=args.verbose,
