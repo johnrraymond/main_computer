@@ -20,6 +20,7 @@ from main_computer.governance import bridge_governance_status
 from main_computer.models import ChatMessage, ChatResponse
 from main_computer.revision import DebugAssetRevisionControl, RevisionControl
 from main_computer.viewport import APPLICATIONS_INDEX_HTML, DEBUG_GRAPHICAL_INDEX_HTML, DEBUG_TEXT_INDEX_HTML, ENERGY_INDEX_HTML, GRAPHICAL_INDEX_HTML, REVISION_INDEX_HTML, TEXT_INDEX_HTML, ViewportHandler, ViewportServer, _application_route_target, serve
+from main_computer.service_control import pending_control_requests
 from main_computer.viewport_route_dispatch import _control_panel_url_port
 
 
@@ -116,10 +117,10 @@ class ViewportStaticPageTests(unittest.TestCase):
         self.assertIn("diagnostics-summary", GRAPHICAL_INDEX_HTML)
         self.assertIn("diagnostics-findings", GRAPHICAL_INDEX_HTML)
         self.assertIn('id="hard-halt-server-button"', GRAPHICAL_INDEX_HTML)
-        self.assertIn("Hard Halt Server", GRAPHICAL_INDEX_HTML)
-        self.assertIn("/system/hard-halt", GRAPHICAL_INDEX_HTML)
-        self.assertIn("This will immediately stop the local viewport server.", GRAPHICAL_INDEX_HTML)
-        self.assertIn("Use this after applying a local patch", GRAPHICAL_INDEX_HTML)
+        self.assertIn("Shutdown System", GRAPHICAL_INDEX_HTML)
+        self.assertIn("/system/shutdown", GRAPHICAL_INDEX_HTML)
+        self.assertIn("stop Main Computer services", GRAPHICAL_INDEX_HTML)
+        self.assertIn("without auto-restart", GRAPHICAL_INDEX_HTML)
         self.assertNotIn("Buddhabrot client render", GRAPHICAL_INDEX_HTML)
         self.assertNotIn("fractal-selector", GRAPHICAL_INDEX_HTML)
         self.assertNotIn("Bridge Control Viewport", GRAPHICAL_INDEX_HTML)
@@ -399,6 +400,69 @@ class ViewportStaticPageTests(unittest.TestCase):
             server.shutdown()
             thread.join(timeout=5)
             server.server_close()
+
+
+    def test_system_shutdown_endpoint_queues_supervisor_shutdown_without_app_halt_when_supervised(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_dir = root / "runtime" / "service_supervisor"
+            state_dir.mkdir(parents=True)
+            (state_dir / "state.json").write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "state": "supervising",
+                        "service": {"pid": 12345},
+                        "children": {"app": {"state": "running", "pid": 23456}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = MainComputerConfig(workspace=Path.cwd().parent)
+            server = ViewportServer(("127.0.0.1", 0), config, verbose=False)
+            server.debug_root = root
+            requested: list[str] = []
+
+            def fake_request_hard_halt(*, source: str = "unknown") -> None:
+                requested.append(source)
+
+            server.request_hard_halt = fake_request_hard_halt  # type: ignore[method-assign]
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base = f"http://127.0.0.1:{server.server_port}"
+
+                with self.assertRaises(HTTPError) as get_error:
+                    urlopen(f"{base}/system/shutdown", timeout=5)
+                self.assertEqual(get_error.exception.code, 405)
+
+                request = Request(
+                    f"{base}/system/shutdown",
+                    data=b"{}",
+                    method="POST",
+                    headers={"Content-Type": "application/json"},
+                )
+                with urlopen(request, timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                    self.assertEqual(response.status, 200)
+
+                self.assertTrue(payload["ok"])
+                self.assertEqual(
+                    "Main Computer system shutdown requested. Supervised services will stop instead of restarting.",
+                    payload["message"],
+                )
+                self.assertFalse(payload["fallback_to_viewport_halt"])
+                self.assertEqual([], requested)
+
+                queued = pending_control_requests(root, channel="supervisor")
+                self.assertEqual(1, len(queued))
+                self.assertEqual("shutdown", queued[0].action)
+                self.assertEqual("system", queued[0].target)
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
 
 
     def test_server_emits_signals_by_default(self) -> None:

@@ -17,6 +17,8 @@ from main_computer.service_supervisor import load_service_supervisor_state
 
 HARD_HALT_PATH = "/system/hard-halt"
 HARD_HALT_MESSAGE = "Viewport server hard halt requested. Restart the server to load patched code."
+SYSTEM_SHUTDOWN_PATH = "/system/shutdown"
+SYSTEM_SHUTDOWN_MESSAGE = "Main Computer system shutdown requested. Supervised services will stop instead of restarting."
 
 
 def _hard_halt_client_is_local(self) -> bool:
@@ -48,6 +50,46 @@ def _send_hard_halt_method_not_allowed(self) -> None:
         self.server.signal("client-disconnected", path=self.path, error=exc)
 
 
+def _send_system_shutdown_method_not_allowed(self) -> None:
+    payload = json.dumps(
+        {
+            "ok": False,
+            "error": "System shutdown requires POST.",
+            "allowed_methods": ["POST"],
+        },
+        ensure_ascii=False,
+        indent=2,
+    ).encode("utf-8")
+    try:
+        self.send_response(HTTPStatus.METHOD_NOT_ALLOWED)
+        self.send_header("Allow", "POST")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+    except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError) as exc:
+        self.server.signal("client-disconnected", path=self.path, error=exc)
+
+
+def _supervisor_state_looks_active(state: dict[str, Any]) -> bool:
+    if not isinstance(state, dict):
+        return False
+    if state.get("state") in {"missing", "corrupt", "invalid", "unreadable"}:
+        return False
+    service = state.get("service") if isinstance(state.get("service"), dict) else {}
+    try:
+        pid = int(service.get("pid") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    return pid > 0 and str(state.get("state") or "").lower() in {
+        "starting",
+        "supervising",
+        "degraded",
+        "restarting",
+        "stopping",
+    }
+
+
 def _handle_hard_halt_post(self) -> None:
     if not _hard_halt_client_is_local(self):
         self.server.signal(
@@ -76,6 +118,55 @@ def _handle_hard_halt_post(self) -> None:
     except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError) as exc:
         self.server.signal("client-disconnected", path=self.path, error=exc)
     self.server.request_hard_halt(source="system-hard-halt-endpoint")
+
+
+def _handle_system_shutdown_post(self) -> None:
+    if not _hard_halt_client_is_local(self):
+        self.server.signal(
+            "api-system-shutdown-rejected",
+            reason="non-local-client",
+            client=self.client_address[0] if self.client_address else "",
+        )
+        self._send_json(
+            {
+                "ok": False,
+                "error": "System shutdown is only available to local viewport clients.",
+            },
+            HTTPStatus.FORBIDDEN,
+        )
+        return
+
+    root = self.server.debug_root
+    queued = enqueue_supervisor_action(
+        root,
+        action="shutdown",
+        target="system",
+        source="viewport-system-shutdown",
+        parameters={"path": SYSTEM_SHUTDOWN_PATH},
+    )
+    supervisor = load_service_supervisor_state(root)
+    fallback_to_viewport_halt = not _supervisor_state_looks_active(supervisor)
+    self.server.signal(
+        "api-system-shutdown-queued",
+        request=queued.get("request", {}).get("id"),
+        fallback_to_viewport_halt=fallback_to_viewport_halt,
+    )
+    self._send_json(
+        {
+            "ok": True,
+            "message": SYSTEM_SHUTDOWN_MESSAGE,
+            "queued": queued,
+            "supervisor": supervisor,
+            "control": control_status(root),
+            "fallback_to_viewport_halt": fallback_to_viewport_halt,
+        }
+    )
+    try:
+        self.wfile.flush()
+    except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError) as exc:
+        self.server.signal("client-disconnected", path=self.path, error=exc)
+    if fallback_to_viewport_halt:
+        self.server.request_hard_halt(source="system-shutdown-endpoint-unsupervised")
 
 
 def _handle_supervisor_status_get(self) -> None:
@@ -902,6 +993,10 @@ def dispatch_get(self) -> None:
         self.server.signal("api-hard-halt-method-rejected", method="GET")
         _send_hard_halt_method_not_allowed(self)
         return
+    if route_path == SYSTEM_SHUTDOWN_PATH:
+        self.server.signal("api-system-shutdown-method-rejected", method="GET")
+        _send_system_shutdown_method_not_allowed(self)
+        return
     if route_path == "/api/control-panel/supervisor/status":
         _handle_supervisor_status_get(self)
         return
@@ -1119,6 +1214,9 @@ def dispatch_post(self) -> None:
     route_path = urlsplit(self.path).path
     if route_path == HARD_HALT_PATH:
         _handle_hard_halt_post(self)
+        return
+    if route_path == SYSTEM_SHUTDOWN_PATH:
+        _handle_system_shutdown_post(self)
         return
     if route_path == "/api/control-panel/supervisor/action":
         _handle_supervisor_action_post(self)

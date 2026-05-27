@@ -286,6 +286,8 @@ class ServiceSupervisor:
         self._children: dict[str, ChildRuntime] = {}
         self._last_state: dict[str, Any] = {}
         self._self_restart_requested = False
+        self._shutdown_requested = False
+        self._shutdown_reason = ""
         self._replacement_started = False
 
     def supervise(self, *, max_loops: int | None = None) -> dict[str, Any]:
@@ -323,6 +325,12 @@ class ServiceSupervisor:
                         self._start_child(spec, restart_count=restart_count, last_exit_code=int(exit_code))
 
                 self._process_control_queue()
+                if self._shutdown_requested:
+                    state = self._write_supervisor_state(state="stopping", pid_claim=pid_claim, ok=False)
+                    self._emit("service supervisor shutdown requested", reason=self._shutdown_reason or "control-request")
+                    self._stop_children()
+                    state = self._write_supervisor_state(state="stopped", pid_claim=pid_claim, ok=True)
+                    return state
                 if self._self_restart_requested:
                     state = self._write_supervisor_state(state="restarting", pid_claim=pid_claim, ok=False)
                     self._start_replacement_supervisor()
@@ -365,6 +373,27 @@ class ServiceSupervisor:
         target = str(payload.get("target") or "").strip().lower()
         source = str(payload.get("source") or "unknown").strip() or "unknown"
         parameters = payload.get("parameters") if isinstance(payload.get("parameters"), dict) else {}
+
+        if action in {"shutdown", "stop", "halt"}:
+            if target not in {"", "system", "all", "services", "children", "supervisor", "service-supervisor"}:
+                return {
+                    "ok": False,
+                    "state": "unknown-target",
+                    "message": f"unknown supervisor shutdown target: {target}",
+                    "action": action,
+                    "target": target,
+                    "allowed_targets": ["system", "all", "services", "children", "supervisor"],
+                }
+            self._shutdown_requested = True
+            self._shutdown_reason = f"{action}:{target or 'system'} from {source}"
+            return {
+                "ok": True,
+                "state": "accepted",
+                "message": "supervisor system shutdown accepted",
+                "action": action,
+                "target": target or "system",
+                "source": source,
+            }
 
         if action != "restart":
             return {
@@ -610,13 +639,14 @@ class ServiceSupervisor:
         return runtime
 
     def _stop_children(self) -> None:
-        for child in list(self._children.values()):
+        for name, child in list(self._children.items()):
             try:
                 self.process_terminator(int(child.process.pid))
             except Exception as exc:  # pragma: no cover - defensive shutdown path
                 self._emit("child stop failed", child=child.spec.name, pid=child.process.pid, error=str(exc))
             finally:
                 child.close_logs()
+                self._children.pop(name, None)
 
     def _write_supervisor_state(
         self,

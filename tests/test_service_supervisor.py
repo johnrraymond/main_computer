@@ -437,6 +437,41 @@ def test_supervisor_control_queue_accepts_self_restart(tmp_path: Path) -> None:
 
 
 
+def test_supervisor_control_queue_can_shutdown_all_children_without_restart(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    starts_by_module: dict[str, int] = {}
+    terminated: list[int] = []
+
+    def factory(command: list[str], cwd: Path, stdout: Path, stderr: Path) -> FakeProcess:
+        module = command[2]
+        starts_by_module[module] = starts_by_module.get(module, 0) + 1
+        return FakeProcess([None])
+
+    enqueue_supervisor_action(repo, action="shutdown", target="system", source="test")
+
+    supervisor = ServiceSupervisor(
+        root=repo,
+        python_command="python",
+        sleep_func=lambda _: None,
+        output_func=None,
+        process_terminator=terminated.append,
+        process_factory=factory,
+    )
+    state = supervisor.supervise(max_loops=3)
+
+    assert state["ok"] is True
+    assert state["state"] == "stopped"
+    assert state["children"] == {}
+    assert starts_by_module["main_computer.app_control"] == 1
+    assert starts_by_module["main_computer.executor_service"] == 1
+    assert starts_by_module["main_computer.applications_service"] == 1
+    assert starts_by_module["main_computer.blockchain_service"] == 1
+    assert len(terminated) == 4
+    assert pending_control_requests(repo, channel="supervisor") == []
+
+
+
 def test_supervisor_passes_environment_control_port_to_app_child(tmp_path: Path, monkeypatch) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

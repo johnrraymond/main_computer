@@ -1287,7 +1287,7 @@
         <button id="refresh-button" type="button">Refresh</button>
         <button id="level-1-telemetry-button" type="button">Level 1 Telemetry</button>
         <button id="level-5-diagnostics-button" type="button">Level 5 Diagnostics</button>
-        <button id="hard-halt-server-button" class="danger-button" type="button">Hard Halt Server</button>
+        <button id="hard-halt-server-button" class="danger-button" type="button">Shutdown System</button>
         <a href="/text">Text Console</a>
         <a href="/applications">Applications</a>
         <a href="/energy">Energy Credits</a>
@@ -1403,17 +1403,17 @@
         <div class="hard-halt-head">
           <div class="hard-halt-mark" aria-hidden="true">!</div>
           <div>
-            <h2 id="hard-halt-title">Hard Halt Server</h2>
-            <span>Local development recovery control</span>
+            <h2 id="hard-halt-title">Shutdown Main Computer</h2>
+            <span>Stop supervised services without auto-restart</span>
           </div>
         </div>
         <div class="hard-halt-body">
-          <p class="hard-halt-warning">This will immediately stop the local viewport server. Any browser tabs connected to it will stop responding until you restart the server.</p>
-          <p class="hard-halt-note">Use this after applying a local patch when the browser still appears to be served by stale Python code.</p>
+          <p class="hard-halt-warning">This will ask the service supervisor to stop Main Computer services and not restart the viewport/app child.</p>
+          <p class="hard-halt-note">Use this when you want the supervised system to stay down. For a viewport-only restart, use the supervisor controls for the app service.</p>
         </div>
         <div class="hard-halt-actions">
           <button id="hard-halt-cancel-button" class="hard-halt-cancel" type="button">Cancel</button>
-          <button id="hard-halt-confirm-button" class="hard-halt-confirm" type="button">Hard Halt Server</button>
+          <button id="hard-halt-confirm-button" class="hard-halt-confirm" type="button">Shutdown System</button>
         </div>
         <div id="hard-halt-result" class="hard-halt-result" aria-live="polite"></div>
       </div>
@@ -2028,13 +2028,13 @@
       byId("hard-halt-overlay").classList.remove("open");
     }
 
-    async function requestHardHaltServer() {
+    async function requestSystemShutdown() {
       const confirmButton = byId("hard-halt-confirm-button");
       const result = byId("hard-halt-result");
       confirmButton.disabled = true;
-      result.textContent = "Requesting hard halt…";
+      result.textContent = "Requesting system shutdown…";
       try {
-        const response = await fetch("/system/hard-halt", {
+        const response = await fetch("/system/shutdown", {
           method: "POST",
           headers: {
             "Accept": "application/json",
@@ -2042,7 +2042,7 @@
           },
           body: JSON.stringify({
             source: "graphical-head",
-            action: "hard-halt-server",
+            action: "shutdown-system",
             requested_at: new Date().toISOString()
           })
         });
@@ -2051,9 +2051,9 @@
           ? await response.json()
           : {message: await response.text()};
         if (!response.ok) throw new Error(payload.error || payload.message || `HTTP ${response.status}`);
-        result.textContent = payload.message || "Hard halt requested. Restart the server to load patched code.";
+        result.textContent = payload.message || "System shutdown requested. Supervised services will stop instead of restarting.";
       } catch (error) {
-        result.textContent = `Hard halt request failed: ${error.message || error}`;
+        result.textContent = `System shutdown request failed: ${error.message || error}`;
       } finally {
         confirmButton.disabled = false;
       }
@@ -2089,7 +2089,7 @@
     });
     byId("hard-halt-server-button").addEventListener("click", openHardHaltDialog);
     byId("hard-halt-cancel-button").addEventListener("click", closeHardHaltDialog);
-    byId("hard-halt-confirm-button").addEventListener("click", requestHardHaltServer);
+    byId("hard-halt-confirm-button").addEventListener("click", requestSystemShutdown);
     byId("hard-halt-overlay").addEventListener("click", (event) => {
       if (event.target === byId("hard-halt-overlay")) closeHardHaltDialog();
     });
