@@ -8,13 +8,16 @@ Purpose:
     active Website Builder site
       + allowlisted Website Builder implementation files
       -> scoped editable evidence
-      -> AI structured proposal JSON, or deterministic offline fixture
+      -> AI route decision JSON, or deterministic offline fixture
+      -> AI structured proposal JSON only when the router chooses propose_edit
       -> deterministic server-side validation
       -> full replacement payload materialization
       -> explicit apply into a minimal temp apply root by default
       -> post-apply hash verification
 
-The model may infer from evidence. The model is not the verifier.
+The model may infer both route intent and edit intent from evidence.
+The server is still the verifier: route decisions choose only answer/propose/clarify/scope,
+while deterministic validation owns paths, old values, hashes, and writes.
 
 Typical runs from the repository root:
 
@@ -28,6 +31,11 @@ Typical runs from the repository root:
   python main_computer/rag_website_builder_real_edit_smoke.py ^
     --site-id johnrraymond ^
     --prompt "fix the Website Builder preview refresh bug"
+
+  python main_computer/rag_website_builder_real_edit_smoke.py ^
+    --prompt "how tall are you?" ^
+    --verbose ^
+    --router-timeout 600
 
 By default this smoke writes only to diagnostics_output/.../applied_repo.
 It never mutates the source repository unless both --apply-live and
@@ -45,6 +53,7 @@ import os
 import re
 import sys
 import time
+import socket
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -55,8 +64,10 @@ from typing import Any
 
 MODE = "rag_website_builder_real_edit_smoke"
 PROPOSAL_MODE = "website_builder_rag_edit_proposal"
+ROUTER_MODE = "website_builder_rag_route_decision"
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "gemma4:26b"
+DEFAULT_OLLAMA_TIMEOUT_SECONDS = 600.0
 
 TEXT_FILE_EXTENSIONS = {
     ".css",
@@ -75,6 +86,33 @@ TEXT_FILE_EXTENSIONS = {
 PRIMARY_SITE_FILES = ["site.json", "builder.json", "index.html", "style.css", "script.js"]
 MAX_TEXT_FILE_CHARS = 18_000
 MAX_BUILDER_SNIPPET_CHARS = 7_000
+
+
+def eprint(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
+
+
+def verbose_log(verbose: int, message: str, *, level: int = 1) -> None:
+    if int(verbose or 0) >= level:
+        eprint(f"[{MODE}] {message}")
+
+
+class StageTimer:
+    def __init__(self, verbose: int, label: str) -> None:
+        self.verbose = int(verbose or 0)
+        self.label = label
+        self.started = 0.0
+
+    def __enter__(self) -> "StageTimer":
+        self.started = time.monotonic()
+        verbose_log(self.verbose, f"START {self.label}")
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        elapsed = time.monotonic() - self.started
+        status = "FAIL" if exc_type else "DONE"
+        verbose_log(self.verbose, f"{status} {self.label} in {elapsed:.2f}s")
+
 MAX_SITE_RECORDS = 120
 MAX_FILE_COUNT = 24
 MAX_TOTAL_REPLACEMENT_CHARS = 500_000
@@ -531,6 +569,158 @@ def build_evidence(repo: Path, site_id: str) -> dict[str, Any]:
     }
 
 
+def route_prompt(user_prompt: str, evidence: dict[str, Any]) -> str:
+    """Ask the model to choose mounted-chat behavior from scoped evidence.
+
+    This deliberately avoids a server-side edit-keyword pre-router. The model can
+    decide whether the user wants an answer, a clarification, a scope card, or an
+    edit proposal attempt. The server only treats "propose_edit" as permission to
+    ask for a candidate proposal; every path and byte change is still validated by
+    materialize_proposal() before anything can be applied.
+    """
+    compact_evidence = {
+        "site": evidence["site"],
+        "builder": evidence["builder"],
+        "allowed_roots": evidence["allowed_roots"],
+        "builder_allowlist": evidence["builder_allowlist"],
+        "instructions": evidence["instructions"],
+    }
+    return (
+        "You are the Website Builder mounted-chat AI route decision engine.\n"
+        "Return JSON only. Do not include Markdown.\n\n"
+        "Your job is to decide what kind of mounted-chat response should happen next.\n"
+        "Do not propose file edits in this router response. Do not choose final file paths.\n"
+        "Use the active website evidence and Website Builder allowlist evidence to infer intent.\n\n"
+        "Allowed intents:\n"
+        '- "answer": answer a question without changing files.\n'
+        '- "scope": summarize what this mounted chat can see/edit.\n'
+        '- "clarify": ask a clarifying question before any edit proposal.\n'
+        '- "propose_edit": the user is asking for a website or Website Builder code change; the next step should ask for a structured proposal.\n\n'
+        "Important rules:\n"
+        "- Do not rely on hardcoded phrases. Infer from the full request and evidence.\n"
+        "- If carrying out the request would change active website or Website Builder state, choose propose_edit.\n"
+        "- If the user asks a general question that does not require changing files, choose answer.\n"
+        "- If the requested change cannot be grounded to the active site or builder allowlist, choose clarify.\n"
+        "- This router does not grant write authority. The server validates every later path, old value, JSON pointer, hash, and operation.\n\n"
+        "Return this JSON shape:\n"
+        "{\n"
+        '  "ok": true,\n'
+        f'  "mode": "{ROUTER_MODE}",\n'
+        '  "intent": "answer|scope|clarify|propose_edit",\n'
+        '  "target_kind": "website|website-builder|mixed|none",\n'
+        '  "confidence": 0.0,\n'
+        '  "summary": "...",\n'
+        '  "answer": "...",\n'
+        '  "clarification_question": "...",\n'
+        '  "proposal_hint": "...",\n'
+        '  "reasons": ["..."],\n'
+        '  "warnings": []\n'
+        "}\n\n"
+        f"User prompt:\n{user_prompt}\n\n"
+        f"Evidence JSON:\n{json.dumps(compact_evidence, ensure_ascii=False, indent=2)}\n"
+    )
+
+
+def validate_route_decision(route: dict[str, Any]) -> dict[str, Any]:
+    issues: list[str] = []
+    if not isinstance(route, dict):
+        return {"ok": False, "issues": ["route decision must be a JSON object"]}
+    if route.get("ok") is not True:
+        issues.append("route ok must be true")
+    if route.get("mode") != ROUTER_MODE:
+        issues.append(f"route mode must be {ROUTER_MODE}")
+    intent = route.get("intent")
+    if intent not in {"answer", "scope", "clarify", "propose_edit"}:
+        issues.append("route intent must be one of answer, scope, clarify, propose_edit")
+    target_kind = route.get("target_kind")
+    if target_kind not in {"website", "website-builder", "mixed", "none"}:
+        issues.append("route target_kind must be one of website, website-builder, mixed, none")
+    confidence = route.get("confidence", 0)
+    if not isinstance(confidence, (int, float)):
+        issues.append("route confidence must be numeric")
+    if "warnings" in route and not isinstance(route.get("warnings"), list):
+        issues.append("route warnings must be a list")
+    if "reasons" in route and not isinstance(route.get("reasons"), list):
+        issues.append("route reasons must be a list")
+    if intent == "answer" and not str(route.get("answer") or route.get("summary") or "").strip():
+        issues.append("answer route must include answer or summary text")
+    if intent == "clarify" and not str(route.get("clarification_question") or route.get("summary") or "").strip():
+        issues.append("clarify route must include clarification_question or summary text")
+    return {"ok": not issues, "issues": issues}
+
+
+def offline_fixture_route(prompt: str, evidence: dict[str, Any]) -> dict[str, Any]:
+    """Deterministic route decision used only with --offline-fixture/--offline-self-check.
+
+    The live/default smoke uses the AI router. Offline fixture mode intentionally
+    chooses the edit path because its purpose is to exercise deterministic
+    validation/materialization/apply without requiring Ollama.
+    """
+    return {
+        "ok": True,
+        "mode": ROUTER_MODE,
+        "intent": "propose_edit",
+        "target_kind": "mixed",
+        "confidence": 1.0,
+        "summary": "Offline fixture mode selected the edit-proposal path.",
+        "answer": "",
+        "clarification_question": "",
+        "proposal_hint": "Use the deterministic offline proposal fixture for this smoke prompt.",
+        "reasons": [
+            "The caller selected --offline-fixture or --offline-self-check.",
+            "Offline fixture mode does not use keyword routing or live AI.",
+        ],
+        "warnings": [],
+    }
+
+
+def non_edit_report(
+    *,
+    repo: Path,
+    site_id: str,
+    evidence: dict[str, Any],
+    prompt: str,
+    output_dir: Path,
+    route_decision: dict[str, Any],
+    route_source: str,
+    route_validation: dict[str, Any],
+) -> dict[str, Any]:
+    intent = str(route_decision.get("intent") or "")
+    response_text = (
+        str(route_decision.get("answer") or "").strip()
+        or str(route_decision.get("clarification_question") or "").strip()
+        or str(route_decision.get("summary") or "").strip()
+    )
+    report = {
+        "ok": True,
+        "mode": MODE,
+        "repo": str(repo),
+        "site_id": site_id,
+        "site_root": evidence["site"]["site_root"],
+        "prompt": prompt,
+        "route_source": route_source,
+        "route": route_decision,
+        "route_validation": route_validation,
+        "proposal_source": None,
+        "summary": route_decision.get("summary"),
+        "response": response_text,
+        "validation": {
+            "ok": True,
+            "skipped": f"route intent was {intent}; no proposal was materialized.",
+            "issues": [],
+            "warnings": [],
+            "materialized_files": [],
+        },
+        "manifest": {"files": []},
+        "apply": {"mode": "none", "ok": True, "applied_root": None, "files": []},
+        "warnings": route_decision.get("warnings", []),
+        "output_dir": str(output_dir),
+    }
+    write_json(output_dir / "report.json", report)
+    return report
+
+
+
 def proposal_prompt(user_prompt: str, evidence: dict[str, Any]) -> str:
     compact_evidence = {
         "site": evidence["site"],
@@ -571,7 +761,15 @@ def proposal_prompt(user_prompt: str, evidence: dict[str, Any]) -> str:
     )
 
 
-def call_ollama(prompt: str, *, base_url: str, model: str, timeout: float) -> dict[str, Any]:
+def call_ollama(
+    prompt: str,
+    *,
+    base_url: str,
+    model: str,
+    timeout: float,
+    stage: str,
+    verbose: int = 0,
+) -> dict[str, Any]:
     payload = {
         "model": model,
         "prompt": prompt,
@@ -582,17 +780,41 @@ def call_ollama(prompt: str, *, base_url: str, model: str, timeout: float) -> di
     url = base_url.rstrip("/") + "/api/generate"
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    verbose_log(
+        verbose,
+        f"AI {stage}: POST {url} model={model!r} timeout={float(timeout):.1f}s prompt_chars={len(prompt)}",
+    )
+    started = time.monotonic()
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8", errors="replace")
+    except (TimeoutError, socket.timeout) as exc:
+        elapsed = time.monotonic() - started
+        timeout_flag = "--router-timeout" if stage == "router" else "--proposal-timeout"
+        raise SmokeFailure(
+            f"Ollama {stage} timed out after {elapsed:.1f}s "
+            f"(configured timeout {float(timeout):.1f}s) at {url}. "
+            f"Increase {timeout_flag} <seconds> or --ollama-timeout <seconds>, "
+            "or use --offline-fixture / --route-file / --proposal-file for deterministic debugging."
+        ) from exc
     except urllib.error.URLError as exc:
-        raise SmokeFailure(f"Ollama request failed at {url}: {exc}") from exc
-    envelope = json.loads(raw)
+        raise SmokeFailure(f"Ollama {stage} request failed at {url}: {exc}") from exc
+    elapsed = time.monotonic() - started
+    verbose_log(verbose, f"AI {stage}: response received in {elapsed:.2f}s raw_chars={len(raw)}")
+    try:
+        envelope = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SmokeFailure(f"Ollama {stage} did not return a JSON envelope: {raw[:500]!r}") from exc
     text = str(envelope.get("response") or "").strip()
     start = text.find("{")
     end = text.rfind("}")
-    require(start >= 0 and end >= start, f"Model did not return JSON object: {text[:500]!r}")
-    return json.loads(text[start : end + 1])
+    require(start >= 0 and end >= start, f"Model {stage} did not return JSON object: {text[:500]!r}")
+    try:
+        parsed = json.loads(text[start : end + 1])
+    except json.JSONDecodeError as exc:
+        raise SmokeFailure(f"Model {stage} returned malformed JSON object: {text[:800]!r}") from exc
+    verbose_log(verbose, f"AI {stage}: parsed keys={sorted(parsed.keys())}", level=2)
+    return parsed
 
 
 def extract_requested_value(prompt: str, fallback: str) -> str:
@@ -1208,19 +1430,73 @@ def run_once(
     site_id: str,
     prompt: str,
     output_dir: Path,
+    route_file: str | None,
     proposal_file: str | None,
     offline_fixture: bool,
     ollama_base_url: str,
     ollama_model: str,
     ollama_timeout: float,
+    router_timeout: float | None,
+    proposal_timeout: float | None,
     apply_mode: str,
     yes_really_write_source: bool,
+    verbose: int,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
+    effective_router_timeout = float(router_timeout if router_timeout is not None else ollama_timeout)
+    effective_proposal_timeout = float(proposal_timeout if proposal_timeout is not None else ollama_timeout)
+    verbose_log(verbose, f"repo={repo}")
+    verbose_log(verbose, f"site_id={site_id}")
+    verbose_log(verbose, f"output_dir={output_dir}")
+    verbose_log(verbose, f"apply_mode={apply_mode}")
+    verbose_log(verbose, f"ollama_model={ollama_model!r} base_url={ollama_base_url}")
+    verbose_log(verbose, f"router_timeout={effective_router_timeout:.1f}s proposal_timeout={effective_proposal_timeout:.1f}s")
 
-    evidence = build_evidence(repo, site_id)
-    prompt_text = proposal_prompt(prompt, evidence)
+    with StageTimer(verbose, "build scoped Website Builder evidence"):
+        evidence = build_evidence(repo, site_id)
+    with StageTimer(verbose, "build AI router prompt"):
+        route_prompt_text = route_prompt(prompt, evidence)
+    write_json(output_dir / "prompt.json", {"prompt": prompt, "route_prompt": route_prompt_text})
+    write_json(output_dir / "evidence.json", evidence)
+    verbose_log(
+        verbose,
+        f"evidence_records={len(evidence.get('records') or [])} builder_files={len(evidence.get('builder_allowlist') or [])}",
+        level=2,
+    )
 
+    if route_file:
+        route_decision = json.loads(Path(route_file).read_text(encoding="utf-8"))
+        route_source = f"file:{route_file}"
+    elif offline_fixture:
+        route_decision = offline_fixture_route(prompt, evidence)
+        route_source = "offline-fixture"
+    else:
+        route_decision = call_ollama(route_prompt_text, base_url=ollama_base_url, model=ollama_model, timeout=effective_router_timeout, stage="router", verbose=verbose)
+        route_source = f"ollama-router:{ollama_model}"
+
+    route_validation = validate_route_decision(route_decision)
+    write_json(output_dir / "route.json", route_decision)
+    write_json(output_dir / "route_validation.json", route_validation)
+    require(route_validation.get("ok") is True, "Route decision validation failed; see route_validation.json.")
+    verbose_log(
+        verbose,
+        f"AI router decision: intent={route_decision.get('intent')!r} target_kind={route_decision.get('target_kind')!r} confidence={route_decision.get('confidence')!r}",
+    )
+
+    if route_decision.get("intent") != "propose_edit":
+        return non_edit_report(
+            repo=repo,
+            site_id=site_id,
+            evidence=evidence,
+            prompt=prompt,
+            output_dir=output_dir,
+            route_decision=route_decision,
+            route_source=route_source,
+            route_validation=route_validation,
+        )
+
+    with StageTimer(verbose, "build AI proposal prompt"):
+        proposal_prompt_text = proposal_prompt(prompt, evidence)
     if proposal_file:
         proposal = json.loads(Path(proposal_file).read_text(encoding="utf-8"))
         proposal_source = f"file:{proposal_file}"
@@ -1228,38 +1504,49 @@ def run_once(
         proposal = offline_fixture_proposal(prompt, evidence)
         proposal_source = "offline-fixture"
     else:
-        proposal = call_ollama(prompt_text, base_url=ollama_base_url, model=ollama_model, timeout=ollama_timeout)
-        proposal_source = f"ollama:{ollama_model}"
+        proposal = call_ollama(proposal_prompt_text, base_url=ollama_base_url, model=ollama_model, timeout=effective_proposal_timeout, stage="proposal", verbose=verbose)
+        proposal_source = f"ollama-proposal:{ollama_model}"
 
-    write_json(output_dir / "prompt.json", {"prompt": prompt, "proposal_prompt": prompt_text})
-    write_json(output_dir / "evidence.json", evidence)
+    prompt_record = {
+        "prompt": prompt,
+        "route_prompt": route_prompt_text,
+        "proposal_prompt": proposal_prompt_text,
+    }
+    write_json(output_dir / "prompt.json", prompt_record)
     write_json(output_dir / "proposal.json", proposal)
 
-    materialized, validation = materialize_proposal(repo, evidence, proposal)
+    with StageTimer(verbose, "deterministic proposal validation and materialization"):
+        materialized, validation = materialize_proposal(repo, evidence, proposal)
     write_json(output_dir / "validation.json", validation)
     require(validation.get("ok") is True, "Proposal validation failed; see validation.json.")
+    verbose_log(verbose, f"materialized_files={len(materialized)} warnings={len(validation.get('warnings') or [])}")
 
-    manifest = write_materialized_bundle(repo, output_dir, materialized)
-    apply_report = apply_materialized_files(
-        repo=repo,
-        output_dir=output_dir,
-        materialized=materialized,
-        apply_mode=apply_mode,
-        yes_really_write_source=yes_really_write_source,
-    )
+    with StageTimer(verbose, "write materialized bundle"):
+        manifest = write_materialized_bundle(repo, output_dir, materialized)
+    with StageTimer(verbose, f"apply materialized files mode={apply_mode}"):
+        apply_report = apply_materialized_files(
+            repo=repo,
+            output_dir=output_dir,
+            materialized=materialized,
+            apply_mode=apply_mode,
+            yes_really_write_source=yes_really_write_source,
+        )
     report = {
         "ok": True,
         "mode": MODE,
         "repo": str(repo),
         "site_id": site_id,
         "site_root": evidence["site"]["site_root"],
+        "route_source": route_source,
+        "route": route_decision,
+        "route_validation": route_validation,
         "proposal_source": proposal_source,
         "output_dir": str(output_dir),
         "summary": proposal.get("summary"),
         "manifest": manifest,
         "validation": validation,
         "apply": apply_report,
-        "warnings": validation.get("warnings", []),
+        "warnings": list(route_decision.get("warnings", [])) + list(validation.get("warnings", [])),
     }
     write_json(output_dir / "report.json", report)
     return report
@@ -1296,13 +1583,17 @@ def offline_self_check(repo: Path, site_id: str, args: argparse.Namespace) -> di
             site_id=site_id,
             prompt=prompt,
             output_dir=base_output / label,
+            route_file=None,
             proposal_file=None,
             offline_fixture=True,
             ollama_base_url=args.ollama_base_url,
             ollama_model=args.ollama_model,
             ollama_timeout=args.ollama_timeout,
+            router_timeout=args.router_timeout,
+            proposal_timeout=args.proposal_timeout,
             apply_mode="temp-copy",
             yes_really_write_source=False,
+            verbose=args.verbose,
         )
         reports.append(report)
     summary = {
@@ -1314,6 +1605,8 @@ def offline_self_check(repo: Path, site_id: str, args: argparse.Namespace) -> di
             {
                 "label": label,
                 "output_dir": report["output_dir"],
+                "route_intent": report.get("route", {}).get("intent"),
+                "route_source": report.get("route_source"),
                 "touched_files": [item["path"] for item in report["manifest"]["files"]],
                 "apply_mode": report["apply"]["mode"],
             }
@@ -1331,6 +1624,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--site-id", help="Active Website Builder site id. Defaults to first runtime/websites/*/site.json.")
     parser.add_argument("--prompt", help="Natural-language edit request.")
     parser.add_argument("--prompt-file", help="Read natural-language edit request from a file.")
+    parser.add_argument("--route-file", help="Use an existing route decision JSON instead of calling the AI router.")
     parser.add_argument("--proposal-file", help="Use an existing proposal JSON instead of calling a model.")
     parser.add_argument("--offline-fixture", action="store_true", help="Use deterministic built-in proposal fixture.")
     parser.add_argument("--offline-self-check", action="store_true", help="Run site + builder deterministic checks.")
@@ -1340,7 +1634,33 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--yes-really-write-source", action="store_true", help="Required with --apply-live.")
     parser.add_argument("--ollama-base-url", default=DEFAULT_OLLAMA_BASE_URL)
     parser.add_argument("--ollama-model", default=DEFAULT_OLLAMA_MODEL)
-    parser.add_argument("--ollama-timeout", type=float, default=180.0)
+    parser.add_argument(
+        "--ollama-timeout",
+        "--ai-timeout",
+        dest="ollama_timeout",
+        type=float,
+        default=DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+        help="Default AI request timeout in seconds. Also available as --ai-timeout.",
+    )
+    parser.add_argument(
+        "--router-timeout",
+        type=float,
+        default=None,
+        help="Override timeout in seconds for the AI route-decision call only.",
+    )
+    parser.add_argument(
+        "--proposal-timeout",
+        type=float,
+        default=None,
+        help="Override timeout in seconds for the AI edit-proposal call only.",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="Print stage-by-stage diagnostics to stderr. Use -vv for extra detail.",
+    )
     return parser
 
 
@@ -1371,13 +1691,17 @@ def main(argv: list[str] | None = None) -> int:
             site_id=site_id,
             prompt=prompt,
             output_dir=output_dir,
+            route_file=args.route_file,
             proposal_file=args.proposal_file,
             offline_fixture=args.offline_fixture,
             ollama_base_url=args.ollama_base_url,
             ollama_model=args.ollama_model,
             ollama_timeout=args.ollama_timeout,
+            router_timeout=args.router_timeout,
+            proposal_timeout=args.proposal_timeout,
             apply_mode=apply_mode,
             yes_really_write_source=args.yes_really_write_source,
+            verbose=args.verbose,
         )
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0
