@@ -11,7 +11,7 @@ Purpose:
       -> AI structured proposal JSON, or deterministic offline fixture
       -> deterministic server-side validation
       -> full replacement payload materialization
-      -> explicit apply into a temp repo copy by default
+      -> explicit apply into a minimal temp apply root by default
       -> post-apply hash verification
 
 The model may infer from evidence. The model is not the verifier.
@@ -43,7 +43,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import sys
 import time
 import urllib.error
@@ -1095,18 +1094,66 @@ def write_materialized_bundle(repo: Path, output_dir: Path, materialized: list[M
     return manifest
 
 
-def copy_repo_to_apply_root(repo: Path, output_dir: Path) -> Path:
+def prepare_minimal_apply_root(repo: Path, output_dir: Path, materialized: list[MaterializedFile]) -> Path:
+    """Create a tiny apply root containing only files touched by this run.
+
+    Earlier versions copied the entire repository before applying replacement
+    payloads. On long-lived Windows worktrees that can recurse into historical
+    diagnostics or patch-report folders and fail with path-length errors before
+    the smoke reaches the actual validation target. The smoke only needs to
+    verify stale-hash checks and final replacement hashes for the touched files,
+    so temp-copy mode intentionally mirrors only those files.
+    """
     apply_root = output_dir / "applied_repo"
+
     if apply_root.exists():
-        shutil.rmtree(apply_root)
+        # Avoid relying on a full recursive remove: stale failed runs on Windows
+        # can contain paths that are too long to traverse. Use a fresh sibling
+        # when the preferred directory cannot be removed cheaply.
+        try:
+            for child in apply_root.iterdir():
+                if child.is_file() or child.is_symlink():
+                    child.unlink()
+                else:
+                    import shutil as _shutil
+                    _shutil.rmtree(child)
+            apply_root.rmdir()
+        except Exception:
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            apply_root = output_dir / f"applied_repo_{stamp}"
+            require(not apply_root.exists(), f"Apply root already exists: {apply_root}")
 
-    def ignore(dir_path: str, names: list[str]) -> set[str]:
-        ignored = {".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
-        if Path(dir_path).resolve() == output_dir.resolve():
-            ignored.add("applied_repo")
-        return {name for name in names if name in ignored}
+    apply_root.mkdir(parents=True, exist_ok=True)
 
-    shutil.copytree(repo, apply_root, ignore=ignore)
+    mirrored: set[str] = set()
+    for item in materialized:
+        rel = item.path
+        rel_path = Path(rel)
+        require(not rel_path.is_absolute(), f"Apply path must be repo-relative: {rel}")
+        require(".." not in rel_path.parts, f"Apply path may not traverse upward: {rel}")
+
+        target = apply_root / rel_path
+        if item.operation == "modify":
+            source = repo / rel_path
+            require(source.is_file(), f"Source file missing for temp apply: {rel}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            write_text(target, read_text(source))
+            mirrored.add(rel)
+        elif item.operation == "create":
+            require(not (repo / rel_path).exists(), f"Create target already exists in source repo: {rel}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            raise SmokeFailure(f"Unsupported operation for temp apply: {item.operation}")
+
+    write_json(
+        output_dir / "apply_root_manifest.json",
+        {
+            "mode": "minimal-temp-apply-root",
+            "root": str(apply_root),
+            "mirrored_files": sorted(mirrored),
+            "note": "Only touched files are mirrored; no full repository copy is performed.",
+        },
+    )
     return apply_root
 
 
@@ -1125,7 +1172,7 @@ def apply_materialized_files(
         require(yes_really_write_source, "--apply-live requires --yes-really-write-source.")
         apply_root = repo
     elif apply_mode == "temp-copy":
-        apply_root = copy_repo_to_apply_root(repo, output_dir)
+        apply_root = prepare_minimal_apply_root(repo, output_dir, materialized)
     else:
         raise SmokeFailure(f"Unknown apply mode: {apply_mode}")
 
