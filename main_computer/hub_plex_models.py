@@ -7,11 +7,14 @@ from main_computer.models import ChatAttachment, ChatMessage, ChatResponse
 
 
 REQUEST_STATES = {
+    "submitted",
+    "held",
     "queued",
     "leasing_worker",
     "dispatching",
     "running",
     "retrying",
+    "leased",
     "completed",
     "failed",
     "cancelled",
@@ -299,6 +302,9 @@ class HubRequestRecord:
     released_credits: int = 0
     worker_earning_id: str = ""
     receipt: dict[str, Any] = field(default_factory=dict)
+    request_payload: dict[str, Any] = field(default_factory=dict)
+    lease_id: str = ""
+    lease_expires_at: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -333,6 +339,9 @@ class HubRequestRecord:
             "released_credits": max(0, int(self.released_credits or 0)),
             "worker_earning_id": self.worker_earning_id,
             "receipt": dict(self.receipt),
+            "request_payload": dict(self.request_payload),
+            "lease_id": self.lease_id,
+            "lease_expires_at": self.lease_expires_at,
         }
 
     @classmethod
@@ -372,6 +381,9 @@ class HubRequestRecord:
             released_credits=max(0, int(payload.get("released_credits", 0) or 0)),
             worker_earning_id=str(payload.get("worker_earning_id", "") or ""),
             receipt=dict(payload.get("receipt", {})) if isinstance(payload.get("receipt"), dict) else {},
+            request_payload=dict(payload.get("request_payload", {})) if isinstance(payload.get("request_payload"), dict) else {},
+            lease_id=str(payload.get("lease_id", "") or ""),
+            lease_expires_at=str(payload.get("lease_expires_at", "") or ""),
         )
 
 
@@ -408,6 +420,9 @@ class HubRequestStatus:
     released_credits: int = 0
     worker_earning_id: str = ""
     receipt: dict[str, Any] = field(default_factory=dict)
+    request_payload: dict[str, Any] = field(default_factory=dict)
+    lease_id: str = ""
+    lease_expires_at: str = ""
 
     @classmethod
     def from_record(cls, record: HubRequestRecord, *, polling_url: str = "") -> "HubRequestStatus":
@@ -443,6 +458,8 @@ class HubRequestStatus:
             released_credits=record.released_credits,
             worker_earning_id=record.worker_earning_id,
             receipt=dict(record.receipt),
+            lease_id=record.lease_id,
+            lease_expires_at=record.lease_expires_at,
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -475,6 +492,8 @@ class HubRequestStatus:
             "charged_credits": max(0, int(self.charged_credits or 0)),
             "released_credits": max(0, int(self.released_credits or 0)),
             "worker_earning_id": self.worker_earning_id,
+            "lease_id": self.lease_id,
+            "lease_expires_at": self.lease_expires_at,
         }
         if self.receipt:
             data["receipt"] = dict(self.receipt)

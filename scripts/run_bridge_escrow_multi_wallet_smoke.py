@@ -427,10 +427,17 @@ def import_deposit_twice(
     require(second_deposit.get("deposit_id") == deposit_id, f"duplicate import changed deposit_id for {requester['account_id']}")
 
     after_available = clean_int(second_account.get("available_credits"), default=-1)
+    after_held = clean_int(second_account.get("held_credits"), default=0)
+    after_spent = clean_int(second_account.get("spent_credits"), default=0)
     if first_idempotent:
+        # Existing receipts may already have been partially spent by later
+        # paid-request smokes.  For --allow-existing, validate that the
+        # receipt itself is the atom-unit receipt we expect and that the
+        # account's known credit columns still reconcile to at least the
+        # original deposit amount.
         require(
-            after_available >= requester["deposit_units"],
-            f"existing imported balance for {requester['account_id']} is below expected atom-unit deposit",
+            after_available + after_held + after_spent >= requester["deposit_units"],
+            f"existing imported atom-unit deposit for {requester['account_id']} no longer reconciles",
         )
     else:
         require(

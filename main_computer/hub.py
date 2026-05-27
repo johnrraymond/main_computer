@@ -315,7 +315,10 @@ class HubRegistry:
                     continue
                 last_seen = self._parse_iso(str(worker.get("last_seen_at", "") or worker.get("registered_at", "")))
                 lease_expires = self._parse_iso(str(worker.get("lease_expires_at", "") or ""))
-                heartbeat_stale = last_seen is not None and (now - last_seen).total_seconds() > threshold
+                heartbeat_age = (now - last_seen).total_seconds() if last_seen is not None else None
+                heartbeat_stale = heartbeat_age is not None and (
+                    heartbeat_age > threshold or (threshold == 0 and heartbeat_age >= 0)
+                )
                 lease_stale = lease_expires is not None and lease_expires < now and int(worker.get("active_requests", 0) or 0) > 0
                 if heartbeat_stale or lease_stale:
                     worker["status"] = "stale"
@@ -728,6 +731,27 @@ class HubDispatcher:
     def submit(self, request: HubAIRequest) -> dict[str, Any]:
         return self.plex_service.submit(request).as_dict()
 
+    def submit_worker_pull(self, request: HubAIRequest) -> dict[str, Any]:
+        return self.plex_service.submit_worker_pull(request).as_dict()
+
+    def poll_worker(self, *, worker_node_id: str, lease_seconds: float | None = None) -> dict[str, Any]:
+        return self.plex_service.poll_worker(worker_node_id=worker_node_id, lease_seconds=lease_seconds)
+
+    def submit_worker_result(
+        self,
+        *,
+        worker_node_id: str,
+        request_id: str,
+        lease_id: str,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self.plex_service.submit_worker_result(
+            worker_node_id=worker_node_id,
+            request_id=request_id,
+            lease_id=lease_id,
+            result=result,
+        )
+
     def get_request_status(self, request_id: str) -> dict[str, Any]:
         return self.plex_service.get_status(request_id).as_dict()
 
@@ -1060,6 +1084,23 @@ class HubServerHandler(_JsonHandler):
                 self.server.energy_ledger.register_node(worker.node_id, "gpu-worker", worker.endpoint)
                 self._send_json({"ok": True, "worker": worker.as_dict(), "hub": self.server.registry.status()})
                 return
+            if path in {"/api/hub/v1/workers/heartbeat", "/api/hub/workers/heartbeat"}:
+                body = self._read_json()
+                worker_id = str(body.get("worker_node_id") or body.get("node_id") or "").strip()
+                if not worker_id:
+                    raise ValueError("worker_node_id is required.")
+                worker = self.server.registry.heartbeat_worker(
+                    worker_id,
+                    status=str(body.get("status", "available")),
+                    model=str(body.get("model", "")),
+                    models=[str(item) for item in body.get("models", [])] if isinstance(body.get("models"), list) else None,
+                    capabilities=dict(body.get("capabilities", {})) if isinstance(body.get("capabilities"), dict) else None,
+                    queue_depth=int(body.get("queue_depth")) if body.get("queue_depth") is not None else None,
+                    active_requests=int(body.get("active_requests")) if body.get("active_requests") is not None else None,
+                    max_concurrency=int(body.get("max_concurrency")) if body.get("max_concurrency") is not None else None,
+                )
+                self._send_json({"ok": True, "worker": worker.as_dict(), "hub": self.server.registry.status()})
+                return
             if path.startswith("/api/hub/v1/workers/") and path.endswith("/heartbeat"):
                 body = self._read_json()
                 worker_id = path.removeprefix("/api/hub/v1/workers/").removesuffix("/heartbeat").strip("/")
@@ -1077,6 +1118,32 @@ class HubServerHandler(_JsonHandler):
                     max_concurrency=int(body.get("max_concurrency")) if body.get("max_concurrency") is not None else None,
                 )
                 self._send_json({"ok": True, "worker": worker.as_dict(), "hub": self.server.registry.status()})
+                return
+            if path in {"/api/hub/v1/workers/poll", "/api/hub/workers/poll"}:
+                body = self._read_json()
+                worker_id = str(body.get("worker_node_id") or body.get("node_id") or "").strip()
+                if not worker_id:
+                    raise ValueError("worker_node_id is required.")
+                self._send_json(
+                    self.server.dispatcher.poll_worker(
+                        worker_node_id=worker_id,
+                        lease_seconds=float(body.get("lease_seconds")) if body.get("lease_seconds") is not None else None,
+                    )
+                )
+                return
+            if path in {"/api/hub/v1/workers/results", "/api/hub/workers/results"}:
+                body = self._read_json()
+                result = body.get("result") if isinstance(body.get("result"), dict) else body.get("response")
+                if not isinstance(result, dict):
+                    raise ValueError("result or response object is required.")
+                self._send_json(
+                    self.server.dispatcher.submit_worker_result(
+                        worker_node_id=str(body.get("worker_node_id") or body.get("node_id") or ""),
+                        request_id=str(body.get("request_id", "")),
+                        lease_id=str(body.get("lease_id", "")),
+                        result=result,
+                    )
+                )
                 return
             if path in {"/api/hub/upstreams/register", "/api/hub/v1/upstreams/register"}:
                 body = self._read_json()
@@ -1155,7 +1222,12 @@ class HubServerHandler(_JsonHandler):
                     default_model=self.server.config.model,
                     default_client_node_id=self.server.config.hub_client_node_id,
                 )
-                status_payload = self.server.dispatcher.submit(hub_request)
+                metadata = dict(hub_request.metadata)
+                execution_mode = str(body.get("execution_mode") or metadata.get("execution_mode") or "").strip().lower()
+                if execution_mode in {"worker_pull_v0", "worker-pull-v0", "worker_pull", "worker-pull"} or metadata.get("worker_pull_v0") is True:
+                    status_payload = self.server.dispatcher.submit_worker_pull(hub_request)
+                else:
+                    status_payload = self.server.dispatcher.submit(hub_request)
                 self._send_json({"ok": True, "request": status_payload})
                 return
             if path.startswith("/api/hub/v1/requests/") and path.endswith("/cancel"):
@@ -1388,8 +1460,9 @@ def serve_hub(config: MainComputerConfig, host: str = "127.0.0.1", port: int = D
     print(f"Hub admin/control site: http://{host}:{server.server_port}/admin")
     print(
         "Hub endpoints: GET /admin, GET /api/hub/v1/admin/bootstrap, GET /api/hub/status, "
-        "GET /api/hub/payouts?node_id=..., POST /api/hub/workers/register, "
-        "POST /api/hub/upstreams/register, POST /api/hub/sessions/start, "
+        "GET /api/hub/payouts?node_id=..., POST /api/hub/v1/workers/register, "
+        "POST /api/hub/v1/workers/heartbeat, POST /api/hub/v1/workers/poll, "
+        "POST /api/hub/v1/workers/results, POST /api/hub/sessions/start, "
         "POST /api/hub/sessions/chat, POST /api/hub/payouts/claim"
     )
     try:

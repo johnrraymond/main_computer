@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import py_compile
 import threading
@@ -48,6 +49,11 @@ def test_website_builder_frontend_assets_define_save_and_publish_controls() -> N
     assert "website-builder-preview-draft" in app
     assert "website-builder-preview-local" in app
     assert "website-builder-preview-dev" in app
+    assert "website-builder-rag-edit-proposal" in script
+    assert "auto_apply: true" in script
+    assert "live_apply: true" in script
+    assert "refreshWebsiteBuilderAfterRagApply" in script
+    assert "main-computer-chat-console-output-applied" in script
     assert "Deploy" in app
     assert "Local Server" in app
     assert "Publishing" in app
@@ -440,6 +446,230 @@ def test_website_builder_chat_edit_route_materializes_proposal_payloads(tmp_path
         on_disk = (tmp_path / "runtime" / "websites" / "hub-site" / "index.html").read_text(encoding="utf-8")
         assert "<h1>Hub Site</h1>" in on_disk
         assert "Welcome to Arcstorm" not in on_disk
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+
+def test_website_builder_rag_apply_validated_payload_writes_site_file_and_rejects_unsafe_payloads(tmp_path) -> None:
+    from main_computer.config import MainComputerConfig
+    from main_computer.viewport import ViewportServer
+    from main_computer.website_project_manifest import list_website_projects
+
+    list_website_projects(tmp_path)
+    for rel in (
+        "main_computer/web/applications/scripts/website-builder.js",
+        "main_computer/web/applications/styles/website-builder.css",
+        "main_computer/viewport_routes_applications.py",
+        "main_computer/viewport_route_dispatch.py",
+        "main_computer/website_project_manifest.py",
+    ):
+        source = ROOT / rel
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+    server = ViewportServer(("127.0.0.1", 0), MainComputerConfig(workspace=tmp_path), verbose=False)
+    server.debug_root = tmp_path
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    def post(path: str, payload: dict) -> dict:
+        request = Request(
+            base_url + path,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def post_error(path: str, payload: dict) -> HTTPError:
+        request = Request(
+            base_url + path,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urlopen(request, timeout=5)
+            raise AssertionError("request should have failed")
+        except HTTPError as exc:
+            return exc
+
+    try:
+        index_file = tmp_path / "runtime" / "websites" / "hub-site" / "index.html"
+        before = index_file.read_text(encoding="utf-8")
+        replacement = before.replace("<h1>Hub Site</h1>", "<h1>Welcome to Arcstorm</h1>", 1)
+        payload = {
+            "thread_id": "test-website-rag-apply",
+            "embedded_context": {"active_app": "website-builder", "site_id": "hub-site", "target_kind": "website-project", "target_id": "hub-site"},
+            "embedded_context_source": {"active_app": "website-builder", "target_kind": "website-project", "target_id": "hub-site"},
+            "mount_plugins": [{"id": "website-builder-edit", "enabled": True, "target_id": "hub-site", "site_id": "hub-site"}],
+            "payloads": [
+                {
+                    "path": "runtime/websites/hub-site/index.html",
+                    "operation": "modify",
+                    "original_sha256": hashlib.sha256(before.encode("utf-8")).hexdigest(),
+                    "replacement_sha256": hashlib.sha256(replacement.encode("utf-8")).hexdigest(),
+                    "replacement_text": replacement,
+                }
+            ],
+        }
+
+        data = post("/api/applications/website-builder/chat/apply-rag-proposal", payload)
+        assert data["ok"]
+        assert data["mode"] == "rag-validated-live-apply"
+        assert data["files"][0]["path"] == "runtime/websites/hub-site/index.html"
+        assert "Welcome to Arcstorm" in index_file.read_text(encoding="utf-8")
+
+        stale = post_error(
+            "/api/applications/website-builder/chat/apply-rag-proposal",
+            {
+                **payload,
+                "payloads": [
+                    {
+                        "path": "runtime/websites/hub-site/index.html",
+                        "operation": "modify",
+                        "original_sha256": "not-the-current-hash",
+                        "replacement_sha256": hashlib.sha256(before.encode("utf-8")).hexdigest(),
+                        "replacement_text": before,
+                    }
+                ],
+            },
+        )
+        assert stale.code == 400
+        assert "Welcome to Arcstorm" in index_file.read_text(encoding="utf-8")
+
+        escaped = post_error(
+            "/api/applications/website-builder/chat/apply-rag-proposal",
+            {
+                **payload,
+                "payloads": [
+                    {
+                        "path": "main_computer/router.py",
+                        "operation": "modify",
+                        "original_sha256": None,
+                        "replacement_sha256": hashlib.sha256(b"").hexdigest(),
+                        "replacement_text": "",
+                    }
+                ],
+            },
+        )
+        assert escaped.code == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+
+def test_website_builder_chat_edit_auto_applies_validated_payloads(tmp_path) -> None:
+    from main_computer.config import MainComputerConfig
+    from main_computer.models import ChatResponse
+    from main_computer.viewport import ViewportServer
+    from main_computer.website_project_manifest import list_website_projects
+
+    list_website_projects(tmp_path)
+    for rel in (
+        "main_computer/web/applications/scripts/website-builder.js",
+        "main_computer/web/applications/styles/website-builder.css",
+        "main_computer/viewport_routes_applications.py",
+        "main_computer/viewport_route_dispatch.py",
+        "main_computer/website_project_manifest.py",
+    ):
+        source = ROOT / rel
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+    index_file = tmp_path / "runtime" / "websites" / "hub-site" / "index.html"
+    before = index_file.read_text(encoding="utf-8")
+
+    class FakeMountedProvider:
+        name = "fake-mounted-provider"
+        model = "fake-mounted-model"
+
+    class FakeMountedComputer:
+        provider = FakeMountedProvider()
+
+        def chat_console_ai(self, source: str, attachments: list | None = None) -> ChatResponse:
+            assert "Return JSON only" in source
+            proposal = {
+                "ok": True,
+                "mode": "website_builder_rag_edit_proposal",
+                "target_kind": "website",
+                "target_id": "hub-site",
+                "summary": "Update the active site hero headline.",
+                "grounding": [
+                    {
+                        "evidence_type": "site_file",
+                        "path": "runtime/websites/hub-site/index.html",
+                        "exact_value": "<h1>Hub Site</h1>",
+                        "reason": "The active site hero headline is editable HTML text.",
+                    }
+                ],
+                "json_edits": [],
+                "text_replacements": [
+                    {
+                        "path": "runtime/websites/hub-site/index.html",
+                        "old_text": "<h1>Hub Site</h1>",
+                        "new_text": "<h1>Welcome to Arcstorm</h1>",
+                        "replace_all": False,
+                        "reason": "Update the hero headline copy.",
+                    }
+                ],
+                "create_files": [],
+                "warnings": [],
+            }
+            return ChatResponse(content=json.dumps(proposal), provider="fake-mounted-provider", model="fake-mounted-model")
+
+    server = ViewportServer(("127.0.0.1", 0), MainComputerConfig(workspace=tmp_path), verbose=False)
+    server.debug_root = tmp_path
+    server.computer = FakeMountedComputer()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    def post(path: str, payload: dict) -> dict:
+        request = Request(
+            base_url + path,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    try:
+        data = post(
+            "/api/applications/website-builder/chat",
+            {
+                "thread_id": "test-website-auto-apply",
+                "auto_apply": True,
+                "live_apply": True,
+                "cell": {"id": "chat-website-auto-apply", "type": "ai", "source": "change the hero headline to Welcome to Arcstorm"},
+                "embedded_context": {"active_app": "website-builder", "site_id": "hub-site", "target_kind": "website-project", "target_id": "hub-site"},
+                "embedded_context_source": {"active_app": "website-builder", "target_kind": "website-project", "target_id": "hub-site"},
+                "mount_plugins": [{"id": "website-builder-edit", "enabled": True, "target_id": "hub-site", "site_id": "hub-site", "auto_apply": True, "live_apply": True}],
+            },
+        )
+
+        assert data["ok"]
+        output = data["output_cell"]
+        assert output["metadata"]["editor_intent"] == "apply_edit"
+        assert output["metadata"]["auto_apply"] is True
+        assert output["metadata"]["apply_result"]["ok"] is True
+        assert output["metadata"]["proposal"]["mode"] == "applied"
+        after = index_file.read_text(encoding="utf-8")
+        assert "Welcome to Arcstorm" in after
+        assert after != before
+        content = "\n".join(str(part.get("content", "")) for part in output["parts"])
+        assert "Applied" in content
+        assert "Website Builder golden-path RAG wrote validated replacement files" in content
     finally:
         server.shutdown()
         server.server_close()

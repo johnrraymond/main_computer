@@ -1257,6 +1257,9 @@ def dispatch_post(self) -> None:
     if route_path == "/api/applications/deployment/controller/save":
         self._handle_deployment_controller_save()
         return
+    if route_path == "/api/applications/website-builder/chat/apply-rag-proposal":
+        self._handle_website_builder_rag_apply()
+        return
     if route_path in {"/api/applications/website-builder/chat", "/api/applications/website-builder/chat/edit"}:
         self._handle_website_builder_chat_edit()
         return

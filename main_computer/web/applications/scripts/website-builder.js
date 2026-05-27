@@ -22,6 +22,7 @@
       pendingPublishingResource: {},
       chatController: null,
       chatOpen: false,
+      ragApplyListenerBound: false,
       blogRuntimeWizard: {
         open: false,
         loading: false,
@@ -3830,8 +3831,8 @@ body {
                 project_id: lockedSiteId,
                 site_id: lockedSiteId,
                 locked_to_mount: true,
-                auto_apply: false,
-                live_apply: false
+                auto_apply: true,
+                live_apply: true
               };
             }
           }
@@ -3920,6 +3921,24 @@ body {
       renderWebsiteBuilderBackendView();
       renderWebsiteBuilderPublishTargetControls(site);
       refreshWebsiteBuilderChatMount(previousSiteId);
+    }
+
+    async function refreshWebsiteBuilderAfterRagApply(detail = {}) {
+      const metadata = detail?.output_cell?.metadata || detail?.metadata || {};
+      const applyResult = metadata.apply_result || metadata.proposal?.apply_result || null;
+      if (!applyResult?.ok) return;
+      if (String(metadata.editor_edit_mode || "") !== "website-builder") return;
+      const appliedSiteId = safeWebsiteBuilderChatSiteId(metadata.site_id || applyResult.site_id || "");
+      if (appliedSiteId && appliedSiteId !== safeWebsiteBuilderChatSiteId(websiteBuilderStateModel.selectedSiteId)) return;
+      const files = Array.isArray(applyResult.files) ? applyResult.files : [];
+      const touchedSiteFiles = files.some((item) => String(item?.path || "").startsWith(`${websiteBuilderSitePath(websiteBuilderStateModel.selectedSiteId)}/`));
+      if (touchedSiteFiles) {
+        await selectWebsiteBuilderSite(websiteBuilderStateModel.selectedSiteId, {syncRoute: false});
+        setWebsiteBuilderLog("Website Builder RAG edit applied and preview reloaded", files.map((item) => item?.path).filter(Boolean).join("\n"));
+      } else {
+        refreshWebsiteBuilderPreview();
+        setWebsiteBuilderLog("Website Builder implementation edit applied. Reload the browser tab to run changed builder code.", files.map((item) => item?.path).filter(Boolean).join("\n"));
+      }
     }
 
     async function saveWebsiteBuilderSite() {
@@ -4496,6 +4515,12 @@ body {
       selectWebsiteBuilderSourceFile(websiteBuilderStateModel.activeFile);
       setWebsiteBuilderPreviewDevice(websiteBuilderStateModel.previewDevice);
       renderWebsiteBuilderBackendView();
+      if (!websiteBuilderStateModel.ragApplyListenerBound) {
+        window.addEventListener("main-computer-chat-console-output-applied", (event) => {
+          refreshWebsiteBuilderAfterRagApply(event?.detail || {}).catch((error) => setWebsiteBuilderLog(`RAG apply refresh failed: ${error.message}`));
+        });
+        websiteBuilderStateModel.ragApplyListenerBound = true;
+      }
       if (!websiteBuilderStateModel.deploymentControllersLoaded) {
         loadWebsiteBuilderDeploymentControllers().catch((error) => setWebsiteBuilderLog(`Failed to load deployment targets: ${error.message}`));
       }

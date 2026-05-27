@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import tempfile
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -561,9 +563,223 @@ class ViewportApplicationRoutesMixin:
             rows.append(row)
         return rows
 
+    def _website_builder_rag_auto_apply_requested(self, *, body: dict[str, Any], plugin: dict[str, Any]) -> bool:
+        """Return true only when the mounted Website Builder plugin explicitly requests live apply."""
+        candidates = [
+            body.get("auto_apply"),
+            body.get("live_apply"),
+            body.get("apply"),
+            plugin.get("auto_apply") if isinstance(plugin, dict) else None,
+            plugin.get("live_apply") if isinstance(plugin, dict) else None,
+        ]
+        return any(value is True or str(value).strip().lower() in {"1", "true", "yes", "apply", "live"} for value in candidates)
+
+    def _website_builder_rag_safe_relpath(self, raw: object) -> str:
+        text = str(raw or "").replace("\\", "/").strip().lstrip("/")
+        parts = [part for part in text.split("/") if part and part != "."]
+        if not parts or any(part == ".." for part in parts):
+            raise ValueError(f"Unsafe RAG apply path: {raw!r}")
+        return "/".join(parts)
+
+    def _website_builder_rag_path_allowed(self, rel_path: str, evidence: dict[str, Any]) -> bool:
+        safe = self._website_builder_rag_safe_relpath(rel_path)
+        site_root = str(evidence.get("site", {}).get("site_root") or "").rstrip("/")
+        builder_allowlist = {str(item) for item in evidence.get("builder_allowlist") or []}
+        return bool(
+            (site_root and (safe == site_root or safe.startswith(site_root + "/")))
+            or safe in builder_allowlist
+        )
+
+    def _website_builder_rag_repo_path(self, rel_path: str, evidence: dict[str, Any]) -> Path:
+        safe = self._website_builder_rag_safe_relpath(rel_path)
+        if not self._website_builder_rag_path_allowed(safe, evidence):
+            raise ValueError(f"RAG apply path is not allowed: {safe!r}")
+        target = (Path(self.server.debug_root) / safe).resolve()
+        root = Path(self.server.debug_root).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"RAG apply path escapes workspace: {safe!r}") from exc
+        return target
+
+    def _website_builder_rag_sha256_text(self, text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def _website_builder_atomic_write(self, path: Path, data: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False) as handle:
+            temp_path = Path(handle.name)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+
+    def _website_builder_append_rag_apply_log(self, *, site_id: str, written: list[dict[str, Any]], warnings: list[str]) -> None:
+        try:
+            log_dir = Path(self.server.debug_root) / "diagnostics_output" / "website_builder_rag_apply"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            entry = {
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "site_id": site_id,
+                "files": written,
+                "warnings": warnings,
+            }
+            with (log_dir / "apply_log.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(entry, sort_keys=True) + "\n")
+        except Exception:
+            # Logging must not turn an already-validated write into a failed user edit.
+            pass
+
+    def _website_builder_rag_apply_payloads(self, *, site_id: str, payloads: list[Any]) -> dict[str, Any]:
+        evidence = build_website_builder_rag_evidence(Path(self.server.debug_root), site_id)
+        issues: list[str] = []
+        warnings: list[str] = []
+        write_plan: list[dict[str, Any]] = []
+        written: list[dict[str, Any]] = []
+
+        if not isinstance(payloads, list) or not payloads:
+            raise ValueError("payloads must be a non-empty list.")
+
+        for index, item in enumerate(payloads):
+            if not isinstance(item, dict):
+                issues.append(f"payloads[{index}] must be an object")
+                continue
+            try:
+                rel_path = self._website_builder_rag_safe_relpath(item.get("path"))
+            except Exception as exc:  # noqa: BLE001 - surfaced as validation feedback.
+                issues.append(f"payloads[{index}] {exc}")
+                continue
+
+            operation = str(item.get("operation") or "").strip().lower()
+            replacement_text = item.get("replacement_text")
+            if operation not in {"modify", "create"}:
+                issues.append(f"payloads[{index}] operation must be modify or create")
+                continue
+            if not isinstance(replacement_text, str):
+                issues.append(f"payloads[{index}] replacement_text must be a string")
+                continue
+
+            try:
+                target = self._website_builder_rag_repo_path(rel_path, evidence)
+            except Exception as exc:  # noqa: BLE001 - surfaced as validation feedback.
+                issues.append(f"payloads[{index}] {exc}")
+                continue
+
+            replacement_sha256 = self._website_builder_rag_sha256_text(replacement_text)
+            expected_replacement_sha256 = item.get("replacement_sha256")
+            if expected_replacement_sha256 and expected_replacement_sha256 != replacement_sha256:
+                issues.append(f"payloads[{index}] replacement_sha256 mismatch for {rel_path}")
+                continue
+
+            current_exists = target.exists()
+            if operation == "modify" and not current_exists:
+                issues.append(f"payloads[{index}] cannot modify missing file: {rel_path}")
+                continue
+            if operation == "create" and current_exists:
+                issues.append(f"payloads[{index}] cannot create existing file: {rel_path}")
+                continue
+
+            current_sha256 = None
+            if current_exists:
+                current_sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
+            expected_original_sha256 = item.get("original_sha256")
+            if operation == "modify" and expected_original_sha256 != current_sha256:
+                issues.append(
+                    f"payloads[{index}] original_sha256 mismatch for {rel_path}: "
+                    f"expected {expected_original_sha256!r}, found {current_sha256!r}"
+                )
+                continue
+            if operation == "create" and expected_original_sha256 not in {None, ""}:
+                issues.append(f"payloads[{index}] create original_sha256 must be null for {rel_path}")
+                continue
+
+            if rel_path.endswith(".json"):
+                try:
+                    json.loads(replacement_text)
+                except json.JSONDecodeError as exc:
+                    issues.append(f"payloads[{index}] replacement JSON is invalid for {rel_path}: {exc}")
+                    continue
+
+            write_plan.append(
+                {
+                    "path": rel_path,
+                    "target": target,
+                    "operation": operation,
+                    "original_sha256": current_sha256,
+                    "replacement_sha256": replacement_sha256,
+                    "replacement_text": replacement_text,
+                }
+            )
+
+        if issues:
+            return {
+                "ok": False,
+                "site_id": site_id,
+                "mode": "rag-validated-live-apply",
+                "allowed_root": evidence.get("site", {}).get("site_root"),
+                "allowed_roots": evidence.get("allowed_roots"),
+                "builder_allowlist": evidence.get("builder_allowlist"),
+                "files": [],
+                "issues": issues,
+                "warnings": warnings,
+            }
+
+        for item in write_plan:
+            target = item["target"]
+            self._website_builder_atomic_write(target, str(item["replacement_text"]).encode("utf-8"))
+            written.append(
+                {
+                    "path": item["path"],
+                    "operation": item["operation"],
+                    "original_sha256": item["original_sha256"],
+                    "replacement_sha256": item["replacement_sha256"],
+                    "written_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+                }
+            )
+
+        self._website_builder_append_rag_apply_log(site_id=site_id, written=written, warnings=warnings)
+        self.server.signal(
+            "api-website-builder-rag-apply",
+            site_id=site_id,
+            files=[item["path"] for item in written],
+            count=len(written),
+        )
+        return {
+            "ok": True,
+            "site_id": site_id,
+            "mode": "rag-validated-live-apply",
+            "allowed_root": evidence.get("site", {}).get("site_root"),
+            "allowed_roots": evidence.get("allowed_roots"),
+            "builder_allowlist": evidence.get("builder_allowlist"),
+            "files": written,
+            "issues": issues,
+            "warnings": warnings,
+        }
+
+    def _handle_website_builder_rag_apply(self) -> None:
+        try:
+            body = self._read_json()
+            plugin = self._website_builder_chat_enabled_plugin(body)
+            self._website_builder_chat_require_mount(body)
+            site_id = self._website_builder_chat_site_id(body, plugin)
+            payloads = body.get("payloads")
+            if payloads is None:
+                proposal = body.get("proposal") if isinstance(body.get("proposal"), dict) else {}
+                payloads = proposal.get("apply_payloads")
+            result = self._website_builder_rag_apply_payloads(site_id=site_id, payloads=payloads if isinstance(payloads, list) else [])
+            status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
+            self._send_json(result, status=status)
+        except WebsiteProjectError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self.server.signal("api-website-builder-rag-apply-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
     def _website_builder_proposal_response(
         self,
         *,
+        body: dict[str, Any],
+        plugin: dict[str, Any],
         cell: dict[str, Any],
         source: str,
         site_id: str,
@@ -583,10 +799,14 @@ class ViewportApplicationRoutesMixin:
             scoped_context=prompt_text,
         )
 
+        requested_auto_apply = self._website_builder_rag_auto_apply_requested(body=body, plugin=plugin)
         warnings = [
-            "The mounted Website Builder route used the golden-path RAG shape: scoped evidence, AI structured proposal, deterministic validation, and materialized full replacement payloads.",
-            "Proposal-only mode: no files were modified.",
+            "The mounted Website Builder route used the golden-path RAG shape: scoped evidence, AI structured proposal, deterministic validation, materialized full replacement payloads, and guarded apply when requested.",
         ]
+        if requested_auto_apply:
+            warnings.append("Auto-apply requested: validated replacements will be written only after deterministic validation passes.")
+        else:
+            warnings.append("Proposal-only mode: no files were modified.")
         proposal_payload: dict[str, Any] | None = None
         materialized: list[Any] = []
         validation: dict[str, Any] = {"ok": False, "issues": [], "warnings": []}
@@ -632,37 +852,13 @@ class ViewportApplicationRoutesMixin:
         else:
             file_lines = "- No replacement payloads were materialized."
 
-        validation_text = "passed" if validation.get("ok") else "failed"
-        issue_lines = "\n".join(f"- {issue}" for issue in validation.get("issues", []) if str(issue).strip())
-        output_lines = ""
-        if outputs:
-            output_lines = (
-                "\nReview artifacts:\n"
-                f"- Manifest: `{outputs.get('manifest')}`\n"
-                f"- Reference patch: `{outputs.get('reference_patch')}`\n"
-            )
-        content = (
-            "Proposal only — Website Builder golden-path RAG; no files were modified.\n\n"
-            f"Deterministic validation: **{validation_text}**.\n\n"
-            "Validated/materialized file targets for review:\n"
-            f"{file_lines}\n"
-            f"{output_lines}\n"
-            "Review notes:\n"
-            + "\n".join(f"- {warning}" for warning in warnings)
-        )
-        if issue_lines:
-            content += f"\n\nValidation issues:\n{issue_lines}"
-        ai_content = str(ai_response.content or "").strip()
-        if ai_content:
-            content += f"\n\nAI structured proposal/raw response:\n```json\n{ai_content}\n```"
-
         proposal = {
-            "version": 1,
+            "version": 2,
             "type": "website-builder-rag-proposal",
-            "mode": "proposal-only",
+            "mode": "pending-apply" if requested_auto_apply else "proposal-only",
             "rag_backed": True,
             "ai_backed": True,
-            "auto_apply": False,
+            "auto_apply": requested_auto_apply,
             "site_id": site_id,
             "allowed_root": evidence.get("site", {}).get("site_root"),
             "allowed_roots": evidence.get("allowed_roots"),
@@ -682,6 +878,64 @@ class ViewportApplicationRoutesMixin:
             },
         }
 
+        apply_result: dict[str, Any] | None = None
+        if requested_auto_apply and validation.get("ok") and apply_payloads:
+            apply_result = self._website_builder_rag_apply_payloads(site_id=site_id, payloads=apply_payloads)
+            proposal["apply_result"] = apply_result
+            proposal["mode"] = "applied" if apply_result.get("ok") else "apply-failed"
+            warnings.append(
+                "Applied validated Website Builder RAG replacement payloads to the workspace."
+                if apply_result.get("ok")
+                else "Auto-apply was requested, but the guarded apply step failed; source files were not fully updated."
+            )
+        elif requested_auto_apply and not validation.get("ok"):
+            warnings.append("Auto-apply was requested, but deterministic validation failed; no files were modified.")
+        elif requested_auto_apply and not apply_payloads:
+            warnings.append("Auto-apply was requested, but no replacement payloads were materialized; no files were modified.")
+
+        validation_text = "passed" if validation.get("ok") else "failed"
+        issue_lines = "\n".join(f"- {issue}" for issue in validation.get("issues", []) if str(issue).strip())
+        output_lines = ""
+        if outputs:
+            output_lines = (
+                "\nReview artifacts:\n"
+                f"- Manifest: `{outputs.get('manifest')}`\n"
+                f"- Reference patch: `{outputs.get('reference_patch')}`\n"
+            )
+
+        if apply_result:
+            apply_text = "applied" if apply_result.get("ok") else "apply failed"
+            apply_lines = "\n".join(
+                f"- `{item.get('path')}` ({item.get('operation')}): wrote `{item.get('written_sha256')}`"
+                for item in apply_result.get("files", [])
+                if isinstance(item, dict)
+            ) or "- No files were written."
+            heading = (
+                "Applied — Website Builder golden-path RAG wrote validated replacement files.\n\n"
+                if apply_result.get("ok")
+                else "Apply failed — Website Builder golden-path RAG did not complete the write.\n\n"
+            )
+            apply_section = f"Apply result: **{apply_text}**.\n{apply_lines}\n\n"
+        else:
+            heading = "Proposal only — Website Builder golden-path RAG; no files were modified.\n\n"
+            apply_section = ""
+
+        content = (
+            heading
+            + f"Deterministic validation: **{validation_text}**.\n\n"
+            + apply_section
+            + "Validated/materialized file targets for review:\n"
+            + f"{file_lines}\n"
+            + f"{output_lines}\n"
+            + "Review notes:\n"
+            + "\n".join(f"- {warning}" for warning in warnings)
+        )
+        if issue_lines:
+            content += f"\n\nValidation issues:\n{issue_lines}"
+        ai_content = str(ai_response.content or "").strip()
+        if ai_content:
+            content += f"\n\nAI structured proposal/raw response:\n```json\n{ai_content}\n```"
+
         response_metadata = ai_response.metadata if isinstance(ai_response.metadata, dict) else {}
         return ChatResponse(
             content=content,
@@ -692,15 +946,15 @@ class ViewportApplicationRoutesMixin:
                 "run_id": run_id,
                 "thread_id": thread_id,
                 "editor_edit_mode": "website-builder",
-                "editor_intent": "propose_edit",
+                "editor_intent": "apply_edit" if apply_result and apply_result.get("ok") else "propose_edit",
                 "site_id": site_id,
                 "allowed_root": evidence.get("site", {}).get("site_root"),
                 "allowed_roots": evidence.get("allowed_roots"),
                 "builder_allowlist": evidence.get("builder_allowlist"),
                 "visible_files": visible_files,
                 "prompt": source,
-                "auto_apply": False,
-                "apply_result": None,
+                "auto_apply": requested_auto_apply,
+                "apply_result": apply_result,
                 "scope_card": False,
                 "proposal": proposal,
             },
@@ -736,6 +990,8 @@ class ViewportApplicationRoutesMixin:
                 )
             elif proposal_request:
                 response = self._website_builder_proposal_response(
+                    body=body,
+                    plugin=plugin,
                     cell=cell,
                     source=source,
                     site_id=site_id,
@@ -770,8 +1026,8 @@ class ViewportApplicationRoutesMixin:
                 "allowed_roots": response_metadata.get("allowed_roots") if isinstance(response_metadata.get("allowed_roots"), list) else [f"runtime/websites/{site_id}/"],
                 "builder_allowlist": response_metadata.get("builder_allowlist") if isinstance(response_metadata.get("builder_allowlist"), list) else self._website_builder_builder_allowlist(),
                 "visible_files": visible_files,
-                "auto_apply": False,
-                "apply_result": None,
+                "auto_apply": bool(response_metadata.get("auto_apply")),
+                "apply_result": response_metadata.get("apply_result"),
                 "scope_card": scope_card,
             }
             self.server.chat_ai_processes.remember_route_result(run_id=run_id, payload={"ok": True, "status": "completed", "output_cell": output_cell, "run_id": run_id, "thread_id": thread_id})

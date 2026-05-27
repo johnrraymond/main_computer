@@ -44,6 +44,16 @@ def stable_session_id(request_id: str, payload: dict[str, Any]) -> str:
     return "sess_" + hashlib.sha256(request_id.encode("utf-8") + seed + stamp).hexdigest()[:24]
 
 
+
+def stable_lease_id(request_id: str, worker_node_id: str) -> str:
+    seed = json.dumps(
+        {"request_id": str(request_id or ""), "worker_node_id": str(worker_node_id or ""), "stamp": time.time_ns()},
+        ensure_ascii=False,
+        sort_keys=True,
+    ).encode("utf-8")
+    return "lease_" + hashlib.sha256(seed).hexdigest()[:24]
+
+
 def idempotent_request_id(client_node_id: str, idempotency_key: str) -> str:
     seed = json.dumps(
         {
@@ -247,7 +257,7 @@ class RequestStateStore:
         by_state: dict[str, int] = {}
         for record in records:
             by_state[record.state] = by_state.get(record.state, 0) + 1
-        active_states = {"queued", "leasing_worker", "dispatching", "running", "retrying"}
+        active_states = {"submitted", "held", "queued", "leasing_worker", "dispatching", "running", "retrying", "leased"}
         terminal_states = {"completed", "failed", "cancelled", "expired"}
         return {
             "requests": {
@@ -325,6 +335,299 @@ class AIRequestPlexService:
     def submit(self, request: HubAIRequest, *, polling_base_path: str = "/api/hub/v1/requests") -> HubRequestStatus:
         _response, status = self.dispatch_sync_with_status(request, polling_base_path=polling_base_path)
         return status
+
+
+    def submit_worker_pull(
+        self,
+        request: HubAIRequest,
+        *,
+        polling_base_path: str = "/api/hub/v1/requests",
+    ) -> HubRequestStatus:
+        """Accept a paid request for outbound worker-pull leasing.
+
+        This path is intentionally opt-in for Worker Pull v0. It creates the
+        paid hold before the request becomes visible to worker polling.
+        """
+
+        if not self._request_requires_paid_account(request):
+            raise ValueError("Worker Pull v0 requires a paid account_id and max_credits hold.")
+        normalized = request.as_payload()
+        existing = self._idempotent_record(request)
+        if existing is not None:
+            return HubRequestStatus.from_record(existing, polling_url=f"{polling_base_path.rstrip('/')}/{existing.request_id}")
+
+        request_id = (
+            idempotent_request_id(request.client_node_id, request.idempotency_key)
+            if request.idempotency_key
+            else stable_request_id(normalized)
+        )
+        record = self._create_record(
+            request_id=request_id,
+            request=request,
+            security_mode="legacy-plaintext-worker-pull-v0",
+            hub_blind=False,
+            initial_state="submitted",
+            initial_event_type="request.submitted",
+        )
+        try:
+            self._ensure_paid_hold(record, request)
+            held = self.request_store.get(request_id) or record
+            self.request_store.update(
+                request_id,
+                state="held",
+                event_type="request.held",
+                event={"account_id": held.account_id, "hold_id": held.hold_id},
+            )
+            self.request_store.update(
+                request_id,
+                state="queued",
+                event_type="request.queued",
+                event={"worker_pull_v0": True, "held": True},
+            )
+            queued = self.request_store.get(request_id) or record
+            return HubRequestStatus.from_record(queued, polling_url=f"{polling_base_path.rstrip('/')}/{request_id}")
+        except Exception as exc:
+            self._release_paid_hold_for_request(request_id, reason="worker_pull_submit_failed", error=str(exc))
+            try:
+                self.request_store.update(
+                    request_id,
+                    state="failed",
+                    error=str(exc),
+                    terminal_reason="worker_pull_submit_failed",
+                    event_type="request.failed",
+                    event={"error": str(exc)},
+                )
+            except Exception:
+                pass
+            raise
+
+    def poll_worker(
+        self,
+        *,
+        worker_node_id: str,
+        lease_seconds: float | None = None,
+        polling_base_path: str = "/api/hub/v1/requests",
+    ) -> dict[str, Any]:
+        """Return one held queued request as a worker-pull lease, if available."""
+
+        clean_worker_id = clean_node_id(worker_node_id, default="hub-worker")
+        self._expire_worker_pull_leases()
+        worker = self.registry.get_worker(clean_worker_id) if hasattr(self.registry, "get_worker") else None
+        if worker is None:
+            raise KeyError(f"Unknown hub worker: {clean_worker_id}")
+
+        candidates = sorted(
+            self.request_store.list(limit=500, states={"queued"}),
+            key=lambda item: item.created_at or item.updated_at,
+        )
+        for record in candidates:
+            if not record.hold_id or record.charge_id:
+                continue
+            if record.requested_worker_node_id and record.requested_worker_node_id != clean_worker_id:
+                continue
+            if not self._worker_can_run_record(worker, record):
+                continue
+            leased_worker = self.registry.lease_worker(
+                record.model,
+                request_id=record.request_id,
+                preferred_node_id=clean_worker_id,
+                lease_seconds=lease_seconds or self.timeout_s,
+            ) if hasattr(self.registry, "lease_worker") else worker
+            if leased_worker is None:
+                return {"ok": True, "lease": None}
+            worker_node_id = str(_item_value(leased_worker, "node_id", clean_worker_id))
+            worker_credits = max(1, int(_item_value(leased_worker, "credits_per_request", 1) or 1))
+            if worker_credits > max(0, int(record.max_credits or 0)):
+                self._release_paid_hold_for_request(
+                    record.request_id,
+                    reason="worker_pull_worker_price_exceeds_hold",
+                    error=f"Worker requires {worker_credits} credits but request held {record.max_credits}.",
+                )
+                self.request_store.update(
+                    record.request_id,
+                    state="failed",
+                    error=f"Worker requires {worker_credits} credits but request held {record.max_credits}.",
+                    terminal_reason="worker_price_exceeds_hold",
+                    event_type="request.failed",
+                    event={"worker_node_id": worker_node_id, "credits_per_request": worker_credits},
+                )
+                self._release_record_worker(
+                    HubRequestRecord.from_dict({**record.as_dict(), "selected_worker_node_id": worker_node_id}),
+                    success=False,
+                )
+                continue
+            lease_id = stable_lease_id(record.request_id, worker_node_id)
+            expires_at = (datetime.now(tz=timezone.utc) + timedelta(seconds=max(1.0, float(lease_seconds or self.timeout_s)))).isoformat()
+            request_payload = dict(record.request_payload)
+            attempt_history = self._record_attempt(
+                record,
+                attempt=max(1, len(record.attempt_history) + 1),
+                worker_node_id=worker_node_id,
+                worker_model=str(_item_value(leased_worker, "model", "") or record.model),
+            )
+            self.request_store.update(
+                record.request_id,
+                state="leased",
+                selected_worker_node_id=worker_node_id,
+                lease_id=lease_id,
+                lease_expires_at=expires_at,
+                credits_queued=worker_credits,
+                attempt_history=attempt_history,
+                event_type="worker_pull.lease.granted",
+                event={"worker_node_id": worker_node_id, "lease_id": lease_id, "expires_at": expires_at},
+            )
+            lease = {
+                "lease_id": lease_id,
+                "request_id": record.request_id,
+                "model": str(request_payload.get("model") or record.model),
+                "messages": [dict(item) for item in request_payload.get("messages", []) if isinstance(item, dict)],
+                "mock_provider_config": dict(request_payload.get("metadata", {}).get("mock_provider_config", {}))
+                if isinstance(request_payload.get("metadata"), dict)
+                and isinstance(request_payload.get("metadata", {}).get("mock_provider_config"), dict)
+                else {},
+                "expires_at": expires_at,
+            }
+            return {
+                "ok": True,
+                "lease": lease,
+                "request": HubRequestStatus.from_record(
+                    self.request_store.get(record.request_id) or record,
+                    polling_url=f"{polling_base_path.rstrip('/')}/{record.request_id}",
+                ).as_dict(),
+            }
+        return {"ok": True, "lease": None}
+
+    def submit_worker_result(
+        self,
+        *,
+        worker_node_id: str,
+        request_id: str,
+        lease_id: str,
+        result: dict[str, Any],
+        polling_base_path: str = "/api/hub/v1/requests",
+    ) -> dict[str, Any]:
+        """Accept a worker-pull result and finalize paid accounting exactly once."""
+
+        self._expire_worker_pull_leases()
+        clean_worker_id = clean_node_id(worker_node_id, default="hub-worker")
+        clean_request_id = str(request_id or "").strip()
+        clean_lease_id = str(lease_id or "").strip()
+        if not clean_request_id or not clean_lease_id:
+            raise ValueError("request_id and lease_id are required.")
+        record = self.request_store.get(clean_request_id)
+        if record is None:
+            raise KeyError(f"Unknown hub request: {clean_request_id}")
+        if record.state == "completed" or record.charge_id:
+            raise ValueError("Worker result was already accepted for this request.")
+        if record.state != "leased":
+            raise ValueError(f"Request is not leased; current state is {record.state}.")
+        if record.lease_id != clean_lease_id:
+            raise ValueError("Worker result lease_id does not match the active lease.")
+        if record.selected_worker_node_id != clean_worker_id:
+            raise ValueError("Worker result was submitted by the wrong worker.")
+        lease_deadline = parse_utc(record.lease_expires_at)
+        if lease_deadline is not None and lease_deadline < datetime.now(tz=timezone.utc):
+            self.request_store.update(
+                record.request_id,
+                state="queued",
+                selected_worker_node_id="",
+                lease_id="",
+                lease_expires_at="",
+                event_type="worker_pull.lease.expired",
+                event={"lease_id": clean_lease_id, "worker_node_id": clean_worker_id},
+            )
+            self._release_record_worker(record, success=True)
+            raise ValueError("Worker result lease has expired.")
+        if not isinstance(result, dict):
+            raise ValueError("result must be a JSON object.")
+        status = str(result.get("status") or "success").strip().lower()
+        if status not in {"success", "ok", "completed"}:
+            error = str(result.get("error") or result.get("message") or "worker result reported failure")
+            self._release_paid_hold_for_request(record.request_id, reason="worker_pull_result_failed", error=error)
+            self._release_record_worker(record, success=False)
+            failed = self.request_store.update(
+                record.request_id,
+                state="failed",
+                error=error,
+                terminal_reason="worker_result_failed",
+                lease_id="",
+                lease_expires_at="",
+                event_type="request.failed",
+                event={"worker_node_id": clean_worker_id, "lease_id": clean_lease_id, "error": error},
+            )
+            return {"ok": False, "request": HubRequestStatus.from_record(failed, polling_url=f"{polling_base_path.rstrip('/')}/{record.request_id}").as_dict()}
+
+        response_payload = result.get("response") if isinstance(result.get("response"), dict) else result
+        response = chat_response_from_payload(
+            response_payload,
+            default_provider="hub-worker-pull",
+            default_model=record.model or "hub-worker-model",
+        )
+        worker_credits = max(1, int(record.credits_queued or result.get("charged_credits") or 1))
+        if worker_credits > max(0, int(record.max_credits or 0)):
+            raise ValueError(f"Worker result charge {worker_credits} exceeds held max_credits {record.max_credits}.")
+        latest_record = self.request_store.get(record.request_id) or record
+        receipt = self._finalize_paid_request(
+            record=latest_record,
+            worker_node_id=clean_worker_id,
+            worker_credits=worker_credits,
+        )
+        energy_status = self.ledger.queue_worker_payout(
+            clean_worker_id,
+            worker_credits,
+            memo=f"hub worker-pull request {record.request_id}",
+            request_id=record.request_id,
+        )
+        self._release_record_worker(record, success=True)
+        metadata = dict(response.metadata)
+        metadata["hub"] = {
+            "request_id": record.request_id,
+            "worker_node_id": clean_worker_id,
+            "credits_queued": worker_credits,
+            "settlement": "batched-worker-claim",
+            "payout_queue": energy_status.get("payout_queue", {}),
+            "security_mode": "legacy-plaintext-worker-pull-v0",
+            "hub_blind": False,
+            "worker_pull_v0": True,
+            "lease_id": clean_lease_id,
+        }
+        if receipt:
+            metadata["hub"]["payment"] = dict(receipt)
+        completed = ChatResponse(
+            content=response.content,
+            provider="hub",
+            model=response.model,
+            metadata=metadata,
+        )
+        completed_record = self.request_store.update(
+            record.request_id,
+            state="completed",
+            selected_worker_node_id=clean_worker_id,
+            response={
+                "content": completed.content,
+                "provider": completed.provider,
+                "model": completed.model,
+                "metadata": completed.metadata,
+            },
+            response_summary=_short_response_summary(completed),
+            credits_queued=worker_credits,
+            charge_id=str(receipt.get("charge_id", "")) if receipt else "",
+            charged_credits=max(0, int(receipt.get("charged_credits", 0) or 0)) if receipt else 0,
+            released_credits=max(0, int(receipt.get("released_credits", 0) or 0)) if receipt else 0,
+            worker_earning_id=str(receipt.get("worker_earning_id", "")) if receipt else "",
+            receipt=dict(receipt),
+            error="",
+            terminal_reason="completed",
+            event_type="request.completed",
+            event={"worker_node_id": clean_worker_id, "lease_id": clean_lease_id, "worker_pull_v0": True},
+        )
+        return {
+            "ok": True,
+            "request": HubRequestStatus.from_record(
+                completed_record,
+                polling_url=f"{polling_base_path.rstrip('/')}/{record.request_id}",
+            ).as_dict(),
+        }
 
     def dispatch_sync(self, request: HubAIRequest) -> ChatResponse:
         response, _status = self.dispatch_sync_with_status(request)
@@ -678,24 +981,28 @@ class AIRequestPlexService:
         request: HubAIRequest,
         security_mode: str,
         hub_blind: bool,
+        initial_state: str = "queued",
+        initial_event_type: str = "request.accepted",
     ) -> HubRequestRecord:
         now = utc_now()
+        normalized_payload = request.as_payload()
         record = HubRequestRecord(
             request_id=request_id,
             client_node_id=clean_node_id(request.client_node_id, default="main-computer-client"),
             model=str(request.model or ""),
-            state="queued",
+            state=initial_state,
             created_at=now,
             updated_at=now,
             security_mode=security_mode,
             hub_blind=hub_blind,
-            events=[{"type": "request.accepted", "state": "queued", "created_at": now}],
+            events=[{"type": initial_event_type, "state": initial_state, "created_at": now}],
             idempotency_key=str(request.idempotency_key or "").strip(),
             deadline_at=self._deadline_at(request),
             max_retries=self._max_retries(request),
             requested_worker_node_id=clean_node_id(request.requested_worker_node_id, default="") if request.requested_worker_node_id else "",
             account_id=clean_node_id(request.account_id, default="") if request.account_id else "",
             max_credits=max(0, int(request.max_credits or 0)),
+            request_payload=normalized_payload,
         )
         return self.request_store.create(record)
 
@@ -874,6 +1181,38 @@ class AIRequestPlexService:
         if last_error is not None:
             raise RuntimeError(f"Worker dispatch failed and no upstream hub is available: {last_error}") from last_error
         raise RuntimeError("No hub workers or upstream hubs are registered or available.")
+
+    def _worker_can_run_record(self, worker: Any, record: HubRequestRecord) -> bool:
+        desired = str(record.model or "").strip()
+        if not desired:
+            return True
+        payload = _public_payload(worker)
+        models = [str(item).strip() for item in payload.get("models", []) if str(item).strip()] if isinstance(payload.get("models"), list) else []
+        model = str(payload.get("model", "") or "").strip()
+        if model and model not in models:
+            models.append(model)
+        return not models or desired in models
+
+    def _expire_worker_pull_leases(self) -> int:
+        now = datetime.now(tz=timezone.utc)
+        changed = 0
+        for record in self.request_store.list(limit=500, states={"leased"}):
+            deadline = parse_utc(record.lease_expires_at)
+            if deadline is None or deadline >= now:
+                continue
+            self.request_store.update(
+                record.request_id,
+                state="queued",
+                selected_worker_node_id="",
+                lease_id="",
+                lease_expires_at="",
+                event_type="worker_pull.lease.expired",
+                event={"lease_id": record.lease_id, "worker_node_id": record.selected_worker_node_id},
+            )
+            self._release_record_worker(record, success=True)
+            changed += 1
+        return changed
+
     def _start_secure_session_for_record(
         self,
         *,
