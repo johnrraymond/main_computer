@@ -39,11 +39,15 @@ from main_computer.website_project_manifest import (
 from main_computer.viewport_state import *  # noqa: F401,F403
 from main_computer.chat_ai_subprocess import append_text_log, config_to_payload
 from main_computer.models import ChatResponse
-from main_computer.rag_website_builder_real_edit_smoke import (
+from main_computer.website_builder_rag_pipeline import (
     build_evidence as build_website_builder_rag_evidence,
+    build_proposal_evidence as build_website_builder_rag_proposal_evidence,
+    build_route_evidence as build_website_builder_rag_route_evidence,
     discover_builder_allowlist as discover_website_builder_rag_allowlist,
     materialize_proposal as materialize_website_builder_rag_proposal,
     proposal_prompt as website_builder_rag_proposal_prompt,
+    route_prompt as website_builder_rag_route_prompt,
+    validate_route_decision as validate_website_builder_rag_route_decision,
     write_materialized_bundle as write_website_builder_rag_bundle,
 )
 
@@ -509,30 +513,55 @@ class ViewportApplicationRoutesMixin:
         return response
 
     def _website_builder_parse_jsonish(self, source: str) -> dict[str, Any]:
-        text = str(source or "").strip()
-        if not text:
-            raise ValueError("AI response was empty; expected Website Builder proposal JSON.")
-        try:
-            payload = json.loads(text)
+        """Return the first valid JSON object from an AI JSON-ish response.
+
+        Local models sometimes obey "JSON only" imperfectly by adding a second JSON
+        object, wrapping the object in a JSON string, or surrounding it with fences.
+        The caller still validates the returned object deterministically, so this
+        parser's job is limited to recovering a candidate object without treating
+        trailing model chatter as write authority.
+        """
+
+        def normalize_text(value: Any) -> str:
+            return str(value or "").strip().lstrip("\ufeff").strip()
+
+        def parse_candidate(value: Any, *, depth: int = 0) -> dict[str, Any] | None:
+            if depth > 2:
+                return None
+            candidate = normalize_text(value)
+            if not candidate:
+                return None
+            if "```" in candidate:
+                candidate = re.sub(r"^```(?:json)?\s*", "", candidate.strip(), flags=re.IGNORECASE)
+                candidate = re.sub(r"\s*```$", "", candidate.strip())
+                candidate = normalize_text(candidate)
+            try:
+                payload = json.loads(candidate)
+            except json.JSONDecodeError:
+                payload = None
             if isinstance(payload, dict):
                 return payload
-        except json.JSONDecodeError:
-            pass
-        if "```" in text:
-            text = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.IGNORECASE)
-            text = re.sub(r"\s*```$", "", text.strip())
-            try:
-                payload = json.loads(text)
+            if isinstance(payload, str):
+                nested = parse_candidate(payload, depth=depth + 1)
+                if nested is not None:
+                    return nested
+            decoder = json.JSONDecoder()
+            for match in re.finditer(r"\{", candidate):
+                try:
+                    payload, _end = decoder.raw_decode(candidate[match.start() :])
+                except json.JSONDecodeError:
+                    continue
                 if isinstance(payload, dict):
                     return payload
-            except json.JSONDecodeError:
-                pass
-        start = text.find("{")
-        end = text.rfind("}")
-        if start >= 0 and end >= start:
-            payload = json.loads(text[start : end + 1])
-            if isinstance(payload, dict):
-                return payload
+                if isinstance(payload, str):
+                    nested = parse_candidate(payload, depth=depth + 1)
+                    if nested is not None:
+                        return nested
+            return None
+
+        payload = parse_candidate(source)
+        if isinstance(payload, dict):
+            return payload
         raise ValueError("AI response did not contain a JSON object proposal.")
 
     def _website_builder_write_rag_outputs(self, *, site_id: str, evidence: dict[str, Any], proposal: dict[str, Any], materialized: list[Any], validation: dict[str, Any]) -> dict[str, str]:
@@ -792,9 +821,17 @@ class ViewportApplicationRoutesMixin:
         visible_files: list[str],
         run_id: str,
         thread_id: str,
+        evidence: dict[str, Any] | None = None,
+        route_decision: dict[str, Any] | None = None,
+        route_validation: dict[str, Any] | None = None,
     ) -> ChatResponse:
-        evidence = build_website_builder_rag_evidence(Path(self.server.debug_root), site_id)
-        prompt_text = website_builder_rag_proposal_prompt(source, evidence)
+        evidence = evidence or build_website_builder_rag_evidence(Path(self.server.debug_root), site_id)
+        proposal_evidence = (
+            build_website_builder_rag_proposal_evidence(evidence, route_decision, user_prompt=source)
+            if route_decision
+            else evidence
+        )
+        prompt_text = website_builder_rag_proposal_prompt(source, proposal_evidence)
         ai_response = self._website_builder_scoped_ai_response(
             cell=cell,
             source=source,
@@ -877,10 +914,14 @@ class ViewportApplicationRoutesMixin:
             "outputs": outputs,
             "model_proposal": proposal_payload,
             "warnings": warnings,
+            "route_decision": route_decision,
+            "route_validation": route_validation,
             "evidence_summary": {
                 "site_files": len(evidence.get("site", {}).get("site_files", [])),
                 "editable_site_records": len(evidence.get("site", {}).get("editable_site_records", [])),
                 "builder_source_files": len(evidence.get("builder", {}).get("builder_files", [])),
+                "proposal_site_files": len((proposal_evidence.get("site", {}) if isinstance(proposal_evidence.get("site"), dict) else {}).get("site_files", [])) if isinstance(proposal_evidence, dict) else 0,
+                "proposal_builder_files": len((proposal_evidence.get("builder", {}) if isinstance(proposal_evidence.get("builder"), dict) else {}).get("builder_files", [])) if isinstance(proposal_evidence, dict) else 0,
             },
         }
 
@@ -962,7 +1003,157 @@ class ViewportApplicationRoutesMixin:
                 "auto_apply": requested_auto_apply,
                 "apply_result": apply_result,
                 "scope_card": False,
+                "website_builder_route_decision": route_decision,
+                "website_builder_route_validation": route_validation,
                 "proposal": proposal,
+            },
+        )
+
+    def _website_builder_routed_chat_response(
+        self,
+        *,
+        body: dict[str, Any],
+        plugin: dict[str, Any],
+        cell: dict[str, Any],
+        source: str,
+        site_id: str,
+        project: Any,
+        payload: dict[str, Any],
+        visible_files: list[str],
+        run_id: str,
+        thread_id: str,
+    ) -> ChatResponse:
+        """Run Website Builder mounted chat through the AI router first.
+
+        The router decides only the high-level intent. It never chooses write paths,
+        never bypasses validation, and never applies changes. When the router chooses
+        propose_edit, the proposal stage receives focused evidence and the existing
+        deterministic materializer/validator still owns path, hash, and exact-value
+        checks before any live write can happen.
+        """
+        evidence = build_website_builder_rag_evidence(Path(self.server.debug_root), site_id)
+        route_evidence = build_website_builder_rag_route_evidence(evidence)
+        route_prompt_text = website_builder_rag_route_prompt(source, route_evidence)
+        route_ai_response = self._website_builder_scoped_ai_response(
+            cell=cell,
+            source=source,
+            site_id=site_id,
+            visible_files=visible_files,
+            run_id=f"{run_id}_route",
+            thread_id=thread_id,
+            scoped_context=route_prompt_text,
+        )
+
+        route_decision: dict[str, Any] | None = None
+        route_validation: dict[str, Any] = {"ok": False, "issues": [], "warnings": []}
+        try:
+            route_decision = self._website_builder_parse_jsonish(route_ai_response.content)
+            route_validation = validate_website_builder_rag_route_decision(route_decision)
+        except Exception as exc:  # noqa: BLE001 - surface JSON/router errors as chat metadata.
+            route_validation = {"ok": False, "issues": [str(exc)], "warnings": []}
+
+        if not route_validation.get("ok"):
+            issues = [str(issue) for issue in route_validation.get("issues", []) if str(issue).strip()]
+            issue_lines = "\n".join(f"- {issue}" for issue in issues) or "- Unknown route validation failure."
+            return ChatResponse(
+                content=(
+                    "Website Builder AI router failed before proposal/apply.\n\n"
+                    "No files were modified.\n\n"
+                    f"Route validation issues:\n{issue_lines}\n\n"
+                    "The mounted route now requires a valid JSON route decision before it can answer, clarify, or propose edits."
+                ),
+                provider=route_ai_response.provider,
+                model=route_ai_response.model,
+                metadata={
+                    "run_id": run_id,
+                    "thread_id": thread_id,
+                    "editor_edit_mode": "website-builder",
+                    "editor_intent": "route_error",
+                    "site_id": site_id,
+                    "allowed_root": evidence.get("site", {}).get("site_root"),
+                    "allowed_roots": evidence.get("allowed_roots"),
+                    "builder_allowlist": evidence.get("builder_allowlist"),
+                    "visible_files": visible_files,
+                    "prompt": source,
+                    "auto_apply": False,
+                    "apply_result": None,
+                    "scope_card": False,
+                    "website_builder_route_decision": route_decision,
+                    "website_builder_route_validation": route_validation,
+                    "route_prompt_chars": len(route_prompt_text),
+                },
+            )
+
+        intent = str((route_decision or {}).get("intent") or "").strip()
+        if intent == "propose_edit":
+            return self._website_builder_proposal_response(
+                body=body,
+                plugin=plugin,
+                cell=cell,
+                source=source,
+                site_id=site_id,
+                visible_files=visible_files,
+                run_id=run_id,
+                thread_id=thread_id,
+                evidence=evidence,
+                route_decision=route_decision,
+                route_validation=route_validation,
+            )
+
+        if intent == "scope":
+            scoped = self._website_builder_scope_response(
+                source=source,
+                site_id=site_id,
+                project=project,
+                payload=payload,
+                visible_files=visible_files,
+                run_id=run_id,
+                thread_id=thread_id,
+            )
+            scoped_metadata = scoped.metadata if isinstance(scoped.metadata, dict) else {}
+            return ChatResponse(
+                content=scoped.content,
+                provider=scoped.provider,
+                model=scoped.model,
+                metadata={
+                    **scoped_metadata,
+                    "website_builder_route_decision": route_decision,
+                    "website_builder_route_validation": route_validation,
+                    "route_prompt_chars": len(route_prompt_text),
+                    "scope_card": True,
+                },
+            )
+
+        response_text = (
+            str((route_decision or {}).get("answer") or "").strip()
+            or str((route_decision or {}).get("clarification_question") or "").strip()
+            or str((route_decision or {}).get("summary") or "").strip()
+        )
+        if not response_text:
+            response_text = "I could not determine a useful response from the Website Builder route decision."
+
+        heading = "Clarification needed" if intent == "clarify" else "Website Builder answer"
+        return ChatResponse(
+            content=f"{heading} — {response_text}",
+            provider=route_ai_response.provider,
+            model=route_ai_response.model,
+            metadata={
+                "run_id": run_id,
+                "thread_id": thread_id,
+                "editor_edit_mode": "website-builder",
+                "editor_intent": intent if intent in {"answer", "clarify"} else "answer",
+                "site_id": site_id,
+                "allowed_root": evidence.get("site", {}).get("site_root"),
+                "allowed_roots": evidence.get("allowed_roots"),
+                "builder_allowlist": evidence.get("builder_allowlist"),
+                "visible_files": visible_files,
+                "prompt": source,
+                "auto_apply": False,
+                "apply_result": None,
+                "scope_card": False,
+                "website_builder_route_decision": route_decision,
+                "website_builder_route_validation": route_validation,
+                "route_prompt_chars": len(route_prompt_text),
             },
         )
 
@@ -981,44 +1172,24 @@ class ViewportApplicationRoutesMixin:
             visible_files = self._website_builder_visible_site_files(project)
             run_id = str(body.get("run_id") or cell.get("run_id") or f"website_builder_edit_{int(time.time() * 1000)}").strip()
             thread_id = str(body.get("thread_id") or body.get("chat_thread_id") or "website-builder-chat").strip()
-            scoped_context = self._website_builder_scoped_chat_context(site_id=site_id, project=project, payload=payload, visible_files=visible_files)
-            scope_card = _mounted_editor_scope_query(source)
-            proposal_request = _mounted_editor_edit_request(source)
-            if scope_card:
-                response = self._website_builder_scope_response(
-                    source=source,
-                    site_id=site_id,
-                    project=project,
-                    payload=payload,
-                    visible_files=visible_files,
-                    run_id=run_id,
-                    thread_id=thread_id,
-                )
-            elif proposal_request:
-                response = self._website_builder_proposal_response(
-                    body=body,
-                    plugin=plugin,
-                    cell=cell,
-                    source=source,
-                    site_id=site_id,
-                    visible_files=visible_files,
-                    run_id=run_id,
-                    thread_id=thread_id,
-                )
-            else:
-                response = self._website_builder_scoped_ai_response(
-                    cell=cell,
-                    source=source,
-                    site_id=site_id,
-                    visible_files=visible_files,
-                    run_id=run_id,
-                    thread_id=thread_id,
-                    scoped_context=scoped_context,
-                )
+            response = self._website_builder_routed_chat_response(
+                body=body,
+                plugin=plugin,
+                cell=cell,
+                source=source,
+                site_id=site_id,
+                project=project,
+                payload=payload,
+                visible_files=visible_files,
+                run_id=run_id,
+                thread_id=thread_id,
+            )
             output_cell = build_output_cell(cell, ai_response_to_parts(response), status="ok", provider=response.provider, model=response.model)
             output_cell.setdefault("metadata", {})
             response_metadata = response.metadata if isinstance(response.metadata, dict) else {}
-            editor_intent = str(response_metadata.get("editor_intent") or ("scope" if scope_card else "propose_edit" if proposal_request else "answer"))
+            editor_intent = str(response_metadata.get("editor_intent") or "answer")
+            scope_card = bool(response_metadata.get("scope_card"))
+            proposal_request = editor_intent in {"propose_edit", "apply_edit"}
             output_cell["metadata"] = {
                 **(output_cell.get("metadata") if isinstance(output_cell.get("metadata"), dict) else {}),
                 **response_metadata,
@@ -1037,7 +1208,15 @@ class ViewportApplicationRoutesMixin:
                 "scope_card": scope_card,
             }
             self.server.chat_ai_processes.remember_route_result(run_id=run_id, payload={"ok": True, "status": "completed", "output_cell": output_cell, "run_id": run_id, "thread_id": thread_id})
-            self.server.signal("api-website-builder-chat-edit", site_id=site_id, prompt_chars=len(source), visible_files=len(visible_files), scope_card=scope_card, proposal_request=proposal_request)
+            self.server.signal(
+                "api-website-builder-chat-edit",
+                site_id=site_id,
+                prompt_chars=len(source),
+                visible_files=len(visible_files),
+                scope_card=scope_card,
+                proposal_request=proposal_request,
+                route_intent=editor_intent,
+            )
             self._send_json({"ok": True, "status": "completed", "output_cell": output_cell, "run_id": run_id, "thread_id": thread_id})
         except WebsiteProjectError as exc:
             self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)

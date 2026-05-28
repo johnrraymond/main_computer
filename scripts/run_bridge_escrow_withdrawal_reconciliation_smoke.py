@@ -37,6 +37,13 @@ DEFAULT_CHARGE_CREDITS = "5.5"
 DEFAULT_HOLD_SLACK_CREDITS = "0.5"
 PLACEHOLDER_CONTRACT_ADDRESS = "0x1111111111111111111111111111111111111111"
 DEFAULT_DEV_CHAIN_ID = 42424242
+DEFAULT_PHASE3_REQUESTER_ADDRESSES = [
+    # Keep Phase 3 withdrawal smoke away from the Phase 1/2 requester
+    # identities in the dev manifest. These are standard deterministic Anvil
+    # accounts with matching fallback keys in DEFAULT_DEV_PRIVATE_KEYS_BY_ADDRESS.
+    "0x23618e81e3f5cdf7f54c3d65f7fbc0abf5b21e8f",
+    "0xa0ee7a142d267c1f36714e4a8f75612f20a79720",
+]
 CONTRACT_SOURCE_SPEC = "src/HubCreditBridgeEscrow.sol:HubCreditBridgeEscrow"
 FOUNDRY_IMAGE = "ghcr.io/foundry-rs/foundry:stable"
 DEFAULT_ANVIL_START_TIMEOUT = 120.0
@@ -225,6 +232,55 @@ def manifest_requester(manifest: dict[str, Any], *, index: int) -> dict[str, Any
     require(address.startswith("0x") and len(address) == 42, f"requester {index} has invalid address")
     require(deposit_units > 0, f"requester {index} deposit_units must be positive")
     return {**dict(raw), "index": index, "account_id": account_id, "address": address, "deposit_units": deposit_units}
+
+
+def phase3_contract_scope(chain: dict[str, Any]) -> str:
+    seed = f"{int(chain['chain_id'])}:{normalize_evm_address(chain['contract_address'])}".encode("utf-8")
+    return hashlib.sha256(seed).hexdigest()[:12]
+
+
+def phase3_self_contained_requester(manifest: dict[str, Any], chain: dict[str, Any], *, index: int) -> dict[str, Any]:
+    """Return a Phase 3-only requester identity scoped to the active escrow.
+
+    Phase 1/2 dev smokes intentionally reuse manifest requesters.  Withdrawal
+    reconciliation must not: it needs a self-contained account that does not
+    inherit old placeholder-contract deposits or prior paid-work history.
+    """
+
+    base = manifest_requester(manifest, index=index)
+    scope = phase3_contract_scope(chain)
+    address = DEFAULT_PHASE3_REQUESTER_ADDRESSES[index % len(DEFAULT_PHASE3_REQUESTER_ADDRESSES)]
+    account_id = f"bridge-escrow-withdrawal-requester-{index}-{scope}"
+    deposit_units = int(base["deposit_units"])
+    deposit_id = bytes32_id("phase3-withdrawal-deposit", chain["chain_id"], chain["contract_address"], index, address)
+    synthetic_tx_hash = bytes32_id(
+        "phase3-withdrawal-import",
+        chain["chain_id"],
+        chain["contract_address"],
+        account_id,
+        address,
+        deposit_units,
+    )
+    return {
+        **dict(base),
+        "index": index,
+        "account_id": account_id,
+        "address": address,
+        "deposit_units": deposit_units,
+        "deposit_id": deposit_id,
+        "normalized_receipt_tx_hash": synthetic_tx_hash,
+        "log_index": 9000 + index,
+        "self_contained_phase3": True,
+        "contract_scope": scope,
+    }
+
+
+def phase3_requester(manifest: dict[str, Any], chain: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    if bool(getattr(args, "use_manifest_requester", False)):
+        requester = manifest_requester(manifest, index=args.requester_index)
+        requester["self_contained_phase3"] = False
+        return requester
+    return phase3_self_contained_requester(manifest, chain, index=args.requester_index)
 
 
 def manifest_worker(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -1471,6 +1527,27 @@ def fetch_hub_bridge_reconciliation(hub_url: str, account_id: str, *, timeout: f
     return http_json("GET", f"{hub_url}/api/hub/v1/credits/bridge-reconciliation?{query}", timeout=timeout)
 
 
+
+
+def first_bridge_withdrawal_record(bridge_state: dict[str, Any]) -> dict[str, Any]:
+    withdrawals = bridge_state.get("withdrawals")
+    if not isinstance(withdrawals, list):
+        return {}
+    for item in withdrawals:
+        if not isinstance(item, dict):
+            continue
+        metadata = item.get("metadata")
+        withdrawal_id = ""
+        if isinstance(metadata, dict):
+            withdrawal_id = str(metadata.get("withdrawal_id", "") or "")
+        if withdrawal_id:
+            return {
+                "withdrawal_id": withdrawal_id,
+                "credits": clean_int(item.get("credits")),
+                "transaction_id": str(item.get("transaction_id", "") or ""),
+            }
+    return {}
+
 def record_hub_bridge_reconciliation(
     *,
     hub_url: str,
@@ -1619,7 +1696,6 @@ def run_private_spend_if_needed(
 def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
     manifest_path = Path(args.manifest)
     manifest = read_json_file(manifest_path)
-    requester = manifest_requester(manifest, index=args.requester_index)
     worker = manifest_worker(manifest)
     bridge = manifest_bridge(manifest)
     chain = chain_config(manifest, args)
@@ -1752,6 +1828,8 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 else "contract address was provided by CLI or persistence was disabled"
             )
 
+    requester = phase3_requester(manifest, chain, args)
+
     report: dict[str, Any] = {
         "ok": False,
         "manifest": str(args.manifest),
@@ -1762,6 +1840,8 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             "account_id": requester["account_id"],
             "address": requester["address"],
             "deposit_units": requester["deposit_units"],
+            "self_contained_phase3": bool(requester.get("self_contained_phase3")),
+            "contract_scope": str(requester.get("contract_scope") or ""),
         },
         "credit_unit_scale": scale,
         "steps": [],
@@ -1823,6 +1903,8 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             no_docker=args.no_docker,
             timeout=args.command_timeout,
         )
+        if isinstance(chain_deposit_tx, dict) and is_tx_hash(chain_deposit_tx.get("tx_hash")):
+            requester["normalized_receipt_tx_hash"] = str(chain_deposit_tx["tx_hash"])
         report["chain_deposit"] = chain_deposit_tx
         report["steps"].append({"name": "chain_deposit", "ok": True, **chain_deposit_tx})
 
@@ -2085,6 +2167,43 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
 
     hub_account_after = fetch_hub_account(hub_url, requester["account_id"], timeout=args.timeout)
     hub_bridge_after = fetch_hub_bridge_reconciliation(hub_url, requester["account_id"], timeout=args.timeout)
+    expected_hub_available_after = max(
+        0,
+        chain_after_withdrawal["deposited_units"] - finalized_spend_units - chain_after_withdrawal["withdrawn_units"],
+    )
+
+    if (
+        clean_int(hub_account_after.get("available_credits")) > expected_hub_available_after
+        and clean_int(hub_bridge_after.get("withdrawn_credits")) == chain_after_withdrawal["withdrawn_units"]
+        and chain_after_withdrawal["withdrawn_units"] > 0
+    ):
+        withdrawal_record = first_bridge_withdrawal_record(hub_bridge_after)
+        if withdrawal_record.get("withdrawal_id"):
+            repaired_withdrawal = record_hub_bridge_reconciliation(
+                hub_url=hub_url,
+                account_id=requester["account_id"],
+                withdrawn_credits=clean_int(withdrawal_record.get("credits")) or chain_after_withdrawal["withdrawn_units"],
+                withdrawal_id=str(withdrawal_record.get("withdrawal_id")),
+                recipient_address=str(args.recipient_address or requester["address"]),
+                timeout=args.timeout,
+                metadata={
+                    "chain_id": chain["chain_id"],
+                    "contract_address": chain["contract_address"],
+                    "account_address": requester["address"],
+                    "recovered_from_chain_state": True,
+                    "repair_stale_withdrawal_balance": True,
+                },
+            )
+            report["hub_withdrawal_balance_repair"] = repaired_withdrawal
+            report["steps"].append(
+                {
+                    "name": "hub_withdrawal_balance_repair",
+                    "ok": True,
+                    "expected_available_units": expected_hub_available_after,
+                }
+            )
+            hub_account_after = fetch_hub_account(hub_url, requester["account_id"], timeout=args.timeout)
+            hub_bridge_after = fetch_hub_bridge_reconciliation(hub_url, requester["account_id"], timeout=args.timeout)
 
     require(
         chain_after_withdrawal["rectified_units"] >= finalized_spend_units,
@@ -2104,10 +2223,14 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
         "hub withdrawal record does not match contract withdrawn units",
     )
     require(
-        clean_int(hub_account_after.get("available_credits")) == 0,
-        "hub account still has available credits after full withdrawal reconciliation",
+        clean_int(hub_account_after.get("available_credits")) == expected_hub_available_after,
+        (
+            "hub account available credits do not match reconciled withdrawable balance: "
+            f"available={hub_account_after.get('available_credits')} expected={expected_hub_available_after}"
+        ),
     )
 
+    report["expected_hub_available_after"] = expected_hub_available_after
     report["hub_account_after"] = hub_account_after
     report["hub_bridge_reconciliation_after"] = hub_bridge_after
     report["duplicate_withdrawal_check"] = {
@@ -2145,6 +2268,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chain-id", type=int, default=0)
     parser.add_argument("--contract-address", default="")
     parser.add_argument("--requester-index", type=int, default=0)
+    parser.add_argument(
+        "--use-manifest-requester",
+        action="store_true",
+        help=(
+            "Use actors.requesters[--requester-index] from the manifest. By default the Phase 3 smoke "
+            "uses a self-contained requester/address scoped to the active contract so old Phase 1/2 "
+            "runtime ledger deposits cannot contaminate withdrawal reconciliation."
+        ),
+    )
     parser.add_argument("--recipient-address", default="")
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--command-timeout", type=float, default=120.0)

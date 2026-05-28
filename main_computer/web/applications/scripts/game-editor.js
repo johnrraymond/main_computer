@@ -58,10 +58,20 @@
 
           <section class="game-editor-main" aria-label="Scene editor">
             <div class="game-editor-toolbar">
-              <label>
+              <label class="game-editor-project-name-field">
                 <span>Project name</span>
                 <input id="game-editor-project-name" autocomplete="off">
               </label>
+              <div class="game-editor-scene-tools" aria-label="Scene controls">
+                <label class="game-editor-scene-select-field">
+                  <span>Scene</span>
+                  <select id="game-editor-scene-select" aria-label="Select project scene"></select>
+                </label>
+                <div class="game-editor-scene-actions" aria-label="Scene actions">
+                  <button type="button" id="game-editor-new-scene">New Scene</button>
+                  <button type="button" id="game-editor-archive-scene">Archive Scene</button>
+                </div>
+              </div>
               <div class="game-editor-actions">
                 <button type="button" id="game-editor-save-project">Save Project</button>
                 <button type="button" id="game-editor-reset-project">Reset</button>
@@ -179,6 +189,9 @@
         projectList: gameEditorApp.querySelector("#game-editor-project-list"),
         refreshProjects: gameEditorApp.querySelector("#game-editor-refresh-projects"),
         projectName: gameEditorApp.querySelector("#game-editor-project-name"),
+        sceneSelect: gameEditorApp.querySelector("#game-editor-scene-select"),
+        newScene: gameEditorApp.querySelector("#game-editor-new-scene"),
+        archiveScene: gameEditorApp.querySelector("#game-editor-archive-scene"),
         saveProject: gameEditorApp.querySelector("#game-editor-save-project"),
         resetProject: gameEditorApp.querySelector("#game-editor-reset-project"),
         preview: gameEditorApp.querySelector("#game-editor-preview"),
@@ -241,6 +254,11 @@
         markGameEditorDirty("dirty - disk save needed");
         renderGameEditorProjectList();
       });
+      nodes.sceneSelect?.addEventListener("change", () => {
+        selectGameEditorScene(nodes.sceneSelect.value, {markDirty: true, reason: "scene-select"});
+      });
+      nodes.newScene?.addEventListener("click", () => createGameEditorProjectScene());
+      nodes.archiveScene?.addEventListener("click", () => archiveGameEditorProjectScene());
       nodes.entityName?.addEventListener("input", () => {
         const object = selectedGameEditorObject();
         if (!object) return;
@@ -302,6 +320,71 @@
 
     function gameEditorProjectPath(projectId = gameEditorState.projectId) {
       return `game_projects/${safeGameEditorProjectId(projectId)}`;
+    }
+
+    function normalizeGameEditorSceneId(sceneId = "", fallback = "default-empty-scene") {
+      const clean = String(sceneId || fallback || "default-empty-scene").trim();
+      return clean || "default-empty-scene";
+    }
+
+    function slugifyGameEditorSceneName(value = "", fallback = "new-scene") {
+      const slug = String(value || fallback || "new-scene")
+        .trim()
+        .toLowerCase()
+        .replace(/['"]/g, "")
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+      return slug || fallback || "new-scene";
+    }
+
+    function archivedGameEditorProjectScenes(project = gameEditorState.project) {
+      if (!project) return [];
+      project.archivedScenes = Array.isArray(project.archivedScenes) ? project.archivedScenes : [];
+      return project.archivedScenes;
+    }
+
+    function allGameEditorProjectScenes(project = gameEditorState.project) {
+      return [
+        ...gameEditorProjectScenes(project),
+        ...archivedGameEditorProjectScenes(project)
+      ];
+    }
+
+    function uniqueGameEditorSceneId(name = "New Scene", project = gameEditorState.project) {
+      const base = slugifyGameEditorSceneName(name, "new-scene");
+      const existing = new Set(allGameEditorProjectScenes(project).map((scene) => String(scene?.id || "")));
+      let candidate = base;
+      let index = 2;
+      while (existing.has(candidate)) {
+        candidate = `${base}-${index}`;
+        index += 1;
+      }
+      return candidate;
+    }
+
+    function readGameEditorRouteParams() {
+      try {
+        const params = new URLSearchParams(window.location.search || "");
+        return {
+          projectId: safeGameEditorProjectId(params.get("project") || gameEditorState.projectId),
+          sceneId: params.get("scene") ? normalizeGameEditorSceneId(params.get("scene")) : ""
+        };
+      } catch {
+        return {projectId: safeGameEditorProjectId(gameEditorState.projectId), sceneId: ""};
+      }
+    }
+
+    function updateGameEditorRouteParams({projectId = gameEditorState.projectId, sceneId = gameEditorState.selectedSceneId} = {}) {
+      try {
+        if (!window.history?.replaceState) return;
+        const url = new URL(window.location.href);
+        url.pathname = "/applications/game-editor";
+        url.searchParams.set("project", safeGameEditorProjectId(projectId));
+        url.searchParams.set("scene", normalizeGameEditorSceneId(sceneId, activeGameEditorScene()?.id || "default-empty-scene"));
+        window.history.replaceState(window.history.state, "", url.toString());
+      } catch {
+        // Route updates are convenience only; editor state remains authoritative.
+      }
     }
 
     function gameEditorChatThreadKey(projectId = gameEditorState.projectId) {
@@ -388,6 +471,7 @@
       url.pathname = "/applications/game-editor";
       url.searchParams.set("thread", thread?.id || getGameEditorLinkedChatThreadId());
       url.searchParams.set("project", safeGameEditorProjectId(gameEditorState.projectId));
+      url.searchParams.set("scene", String(gameEditorState.selectedSceneId || activeGameEditorScene()?.id || "default-empty-scene"));
       return url.toString();
     }
 
@@ -415,7 +499,7 @@
         edit_mode: "read-only-context",
         dirty: Boolean(gameEditorState.dirty),
         content_hash: String(gameEditorState.contentHash || ""),
-        active_scene_id: String(gameEditorState.selectedSceneId || scene?.id || project.activeSceneId || "default-empty-scene"),
+        active_scene_id: String(scene?.id || gameEditorState.selectedSceneId || project.activeSceneId || "default-empty-scene"),
         selected_entity_id: String(gameEditorState.selectedObjectId || selected?.id || ""),
         project: {
           id: projectId,
@@ -426,7 +510,7 @@
         scenes: (Array.isArray(project.scenes) ? project.scenes : []).map((candidate) => ({
           id: String(candidate?.id || ""),
           name: String(candidate?.name || ""),
-          active: String(candidate?.id || "") === String(gameEditorState.selectedSceneId || project.activeSceneId || ""),
+          active: String(candidate?.id || "") === String(scene?.id || gameEditorState.selectedSceneId || project.activeSceneId || ""),
           object_count: Array.isArray(candidate?.objects) ? candidate.objects.length : 0
         })),
         active_scene: scene ? {
@@ -638,6 +722,12 @@
       return name || titleFromSlug(id);
     }
 
+    function displaySceneLabel(scene, index = 0) {
+      const id = normalizeGameEditorSceneId(scene?.id, `scene-${index + 1}`);
+      const name = String(scene?.name || "").trim();
+      return name && name !== id ? `${name} (${id})` : titleFromSlug(id);
+    }
+
     function displayObjectLabel(object, index = 0) {
       const label = String(object?.props?.label || "").trim();
       if (object?.id === "hero-sprite" && (!label || label === "Main Character")) return "Main Character";
@@ -700,11 +790,127 @@
       syncGameEditorSceneStore({reason: "vfx-density"});
     }
 
+    function gameEditorProjectScenes(project = gameEditorState.project) {
+      return Array.isArray(project?.scenes) ? project.scenes : [];
+    }
+
     function activeGameEditorScene() {
       const project = gameEditorState.project;
-      const scenes = Array.isArray(project?.scenes) ? project.scenes : [];
-      const selected = String(project?.activeSceneId || gameEditorState.selectedSceneId || "default-empty-scene");
-      return scenes.find((scene) => scene?.id === selected) || scenes[0] || window.MainComputerSceneStore?.defaultScene?.();
+      const scenes = gameEditorProjectScenes(project);
+      const selected = normalizeGameEditorSceneId(gameEditorState.selectedSceneId || project?.activeSceneId || scenes[0]?.id);
+      return scenes.find((scene) => String(scene?.id || "") === selected)
+        || scenes.find((scene) => String(scene?.id || "") === String(project?.activeSceneId || ""))
+        || scenes[0]
+        || window.MainComputerSceneStore?.defaultScene?.();
+    }
+
+    function selectGameEditorScene(sceneId, {markDirty = false, reason = "scene-select", updateRoute = true} = {}) {
+      const project = gameEditorState.project;
+      const scenes = gameEditorProjectScenes(project);
+      const selected = normalizeGameEditorSceneId(sceneId, project?.activeSceneId || scenes[0]?.id);
+      const scene = scenes.find((candidate) => String(candidate?.id || "") === selected) || scenes[0] || null;
+      if (!project || !scene) {
+        setGameEditorStatus("no project scene is available");
+        return null;
+      }
+      gameEditorState.selectedSceneId = normalizeGameEditorSceneId(scene.id);
+      project.activeSceneId = gameEditorState.selectedSceneId;
+      const objects = Array.isArray(scene.objects) ? scene.objects : [];
+      scene.objects = objects;
+      gameEditorState.selectedObjectId = objects[0]?.id || "";
+      if (gameEditorApp) gameEditorApp.dataset.selectedSceneId = gameEditorState.selectedSceneId;
+      if (gameEditorState.nodes.sceneSelect) gameEditorState.nodes.sceneSelect.value = gameEditorState.selectedSceneId;
+      if (markDirty) {
+        gameEditorState.dirty = true;
+        setGameEditorStatus(`dirty - active scene changed to ${displaySceneLabel(scene)}`);
+      }
+      renderGameEditorSceneSelect();
+      syncGameEditorInspector();
+      renderGameEditorEntityList();
+      renderGameEditorAssets();
+      renderGameEditorPreview();
+      syncGameEditorSceneStore({reason});
+      if (updateRoute) updateGameEditorRouteParams();
+      return scene;
+    }
+
+    function blankGameEditorProjectScene(name = "New Scene") {
+      const cleanName = String(name || "New Scene").trim() || "New Scene";
+      const sceneId = uniqueGameEditorSceneId(cleanName);
+      const starter = window.MainComputerSceneStore?.defaultScene?.() || {};
+      const metadata = starter.metadata && typeof starter.metadata === "object"
+        ? cloneGameEditorData(starter.metadata)
+        : {};
+      metadata.starter = false;
+      metadata.createdIn = "game-editor";
+      metadata.createdAt = new Date().toISOString();
+      return {
+        id: sceneId,
+        name: cleanName,
+        version: 1,
+        background: starter.background || "radial-gradient(circle at 50% 20%, rgba(125, 211, 252, 0.18), rgba(15, 23, 42, 0.94) 58%, #020617 100%)",
+        objects: [],
+        metadata
+      };
+    }
+
+    function createGameEditorProjectScene() {
+      const project = gameEditorState.project;
+      if (!project) {
+        setGameEditorStatus("load a game project before creating a scene");
+        return null;
+      }
+      project.scenes = gameEditorProjectScenes(project);
+      const defaultName = `Scene ${project.scenes.length + 1}`;
+      const promptedName = window.prompt?.("New scene name", defaultName);
+      if (promptedName === null) return null;
+      const scene = blankGameEditorProjectScene(promptedName || defaultName);
+      project.scenes.push(scene);
+      const selected = selectGameEditorScene(scene.id, {markDirty: true, reason: "new-scene"});
+      setGameEditorStatus(`dirty - new scene created: ${displaySceneLabel(scene)}`);
+      syncGameEditorSceneActionControls();
+      return selected;
+    }
+
+    function archiveGameEditorProjectScene() {
+      const project = gameEditorState.project;
+      const scenes = gameEditorProjectScenes(project);
+      if (!project || !scenes.length) {
+        setGameEditorStatus("load a game project before archiving a scene");
+        return null;
+      }
+      if (scenes.length <= 1) {
+        setGameEditorStatus("cannot archive the only scene in a project");
+        syncGameEditorSceneActionControls();
+        return null;
+      }
+      const scene = activeGameEditorScene();
+      const sceneIndex = scenes.findIndex((candidate) => String(candidate?.id || "") === String(scene?.id || gameEditorState.selectedSceneId || ""));
+      if (!scene || sceneIndex < 0) {
+        setGameEditorStatus("select a project scene before archiving");
+        return null;
+      }
+      const ok = window.confirm ? window.confirm(`Archive scene "${displaySceneLabel(scene, sceneIndex)}"?`) : true;
+      if (!ok) return null;
+      const [archivedScene] = scenes.splice(sceneIndex, 1);
+      const archived = cloneGameEditorData(archivedScene);
+      archived.metadata = archived.metadata && typeof archived.metadata === "object" ? archived.metadata : {};
+      archived.metadata.archived = true;
+      archived.metadata.archivedAt = new Date().toISOString();
+      archived.metadata.archivedFromProject = safeGameEditorProjectId(gameEditorState.projectId);
+      project.archivedScenes = archivedGameEditorProjectScenes(project)
+        .filter((candidate) => String(candidate?.id || "") !== String(archived.id || ""));
+      project.archivedScenes.push(archived);
+      const nextScene = scenes[Math.min(sceneIndex, scenes.length - 1)] || scenes[0] || null;
+      if (nextScene) {
+        gameEditorState.selectedSceneId = normalizeGameEditorSceneId(nextScene.id);
+        project.activeSceneId = gameEditorState.selectedSceneId;
+      }
+      gameEditorState.dirty = true;
+      const selected = selectGameEditorScene(gameEditorState.selectedSceneId, {markDirty: false, reason: "archive-scene"});
+      setGameEditorStatus(`dirty - archived ${displaySceneLabel(archived)}; active scene is ${displaySceneLabel(selected)}`);
+      syncGameEditorSceneActionControls();
+      return archived;
     }
 
     function sceneObjects() {
@@ -757,20 +963,29 @@
       }
     }
 
-    async function readGameEditorProject(projectId, {reason = "load"} = {}) {
+    async function readGameEditorProject(projectId, {reason = "load", sceneId = ""} = {}) {
       const previousProjectId = gameEditorState.projectId;
-      const data = await gameEditorPost("/api/applications/game-editor/project/read", {project_id: projectId || gameEditorState.projectId});
-      gameEditorState.projectId = String(data.project_id || projectId || gameEditorState.projectId);
+      const requestedProjectId = projectId || gameEditorState.projectId;
+      const data = await gameEditorPost("/api/applications/game-editor/project/read", {project_id: requestedProjectId});
+      gameEditorState.projectId = String(data.project_id || requestedProjectId || gameEditorState.projectId);
       gameEditorState.project = data.project;
       gameEditorState.contentHash = String(data.content_hash || "");
       gameEditorState.dirty = false;
+      const projectChanged = safeGameEditorProjectId(previousProjectId) !== safeGameEditorProjectId(gameEditorState.projectId);
+      const scenes = gameEditorProjectScenes();
+      const requestedSceneId = sceneId
+        ? normalizeGameEditorSceneId(sceneId)
+        : normalizeGameEditorSceneId(projectChanged ? gameEditorState.project?.activeSceneId : gameEditorState.selectedSceneId, gameEditorState.project?.activeSceneId || scenes[0]?.id);
+      gameEditorState.selectedSceneId = requestedSceneId;
       const scene = activeGameEditorScene();
-      gameEditorState.selectedSceneId = String(scene?.id || "default-empty-scene");
+      gameEditorState.selectedSceneId = normalizeGameEditorSceneId(scene?.id, gameEditorState.project?.activeSceneId || scenes[0]?.id);
+      if (gameEditorState.project) gameEditorState.project.activeSceneId = gameEditorState.selectedSceneId;
       const objects = sceneObjects();
       gameEditorState.selectedObjectId = objects[0]?.id || "";
       await loadGameEditorAssets();
-      syncGameEditorSceneStore();
+      syncGameEditorSceneStore({reason});
       renderGameEditorProject();
+      updateGameEditorRouteParams();
       refreshGameEditorChatMount(previousProjectId);
       setGameEditorStatus(reason === "reset" ? "project reloaded" : "project loaded");
       return gameEditorState;
@@ -803,7 +1018,7 @@
         button.textContent = displayProjectName(project);
         button.dataset.projectId = project.id;
         button.className = project.id === gameEditorState.projectId ? "active" : "";
-        button.addEventListener("click", () => readGameEditorProject(project.id).catch(reportGameEditorError));
+        button.addEventListener("click", () => readGameEditorProject(project.id, {reason: "project-switch"}).catch(reportGameEditorError));
         list.append(button);
       });
       if (!list.childElementCount) {
@@ -853,12 +1068,53 @@
       if (gameEditorState.nodes.projectName) {
         gameEditorState.nodes.projectName.value = displayProjectName(project);
       }
+      renderGameEditorSceneSelect();
       syncGameEditorInspector();
       syncGameEditorVfxControls();
       renderGameEditorProjectList();
       renderGameEditorEntityList();
       renderGameEditorAssets();
       renderGameEditorPreview();
+    }
+
+    function renderGameEditorSceneSelect() {
+      const select = gameEditorState.nodes.sceneSelect;
+      if (!select) return;
+      const scenes = gameEditorProjectScenes();
+      select.replaceChildren();
+      scenes.forEach((scene, index) => {
+        const option = document.createElement("option");
+        option.value = normalizeGameEditorSceneId(scene?.id, `scene-${index + 1}`);
+        option.textContent = displaySceneLabel(scene, index);
+        select.append(option);
+      });
+      if (!select.childElementCount) {
+        const option = document.createElement("option");
+        option.value = "default-empty-scene";
+        option.textContent = "Default Empty Scene";
+        select.append(option);
+      }
+      select.value = [...select.options].some((option) => option.value === gameEditorState.selectedSceneId)
+        ? gameEditorState.selectedSceneId
+        : select.options[0]?.value || "";
+      select.disabled = scenes.length === 0;
+      syncGameEditorSceneActionControls();
+    }
+
+    function syncGameEditorSceneActionControls() {
+      const nodes = gameEditorState.nodes || {};
+      const scenes = gameEditorProjectScenes();
+      const hasProject = Boolean(gameEditorState.project);
+      if (nodes.newScene) {
+        nodes.newScene.disabled = !hasProject;
+        nodes.newScene.title = hasProject ? "Create a blank scene in this project." : "Load a project before creating a scene.";
+      }
+      if (nodes.archiveScene) {
+        nodes.archiveScene.disabled = !hasProject || scenes.length <= 1;
+        nodes.archiveScene.title = scenes.length <= 1
+          ? "A project must keep at least one active scene."
+          : "Move the selected scene into this project's archivedScenes list.";
+      }
     }
 
     function renderGameEditorEntityList() {
@@ -1022,6 +1278,9 @@
         });
         gameEditorState.initialized = true;
       }
+      const route = readGameEditorRouteParams();
+      gameEditorState.projectId = route.projectId || gameEditorState.projectId;
+      if (route.sceneId) gameEditorState.selectedSceneId = route.sceneId;
       await loadGameEditorProjects();
       return gameEditorState;
     }

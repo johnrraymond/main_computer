@@ -201,6 +201,7 @@
           const url = new URL(window.location.href);
           url.pathname = "/applications/game-editor";
           url.searchParams.set("project", projectId);
+          url.searchParams.set("scene", sceneId);
           window.location.href = url.toString();
         });
         actions.append(refresh, openEditor);
@@ -233,11 +234,17 @@
         element.removeAttribute("title");
       }
 
+      function gameProjectSceneCandidates(project) {
+        const scenes = Array.isArray(project?.scenes) ? project.scenes : [];
+        const archivedScenes = Array.isArray(project?.archivedScenes) ? project.archivedScenes : [];
+        return {scenes, archivedScenes, allScenes: [...scenes, ...archivedScenes]};
+      }
+
       function resolveLiveGameEditorScene(projectId, sceneId) {
         const state = window.gameEditorState;
         if (!state?.project || normalizeGameSceneProjectId(state.projectId) !== normalizeGameSceneProjectId(projectId)) return null;
-        const scenes = Array.isArray(state.project.scenes) ? state.project.scenes : [];
-        const scene = scenes.find((candidate) => String(candidate?.id || "") === String(sceneId)) || scenes[0] || null;
+        const {scenes, allScenes} = gameProjectSceneCandidates(state.project);
+        const scene = allScenes.find((candidate) => String(candidate?.id || "") === String(sceneId)) || scenes[0] || null;
         if (!scene) return null;
         return window.MainComputerSceneStore?.normalizeScene?.(JSON.parse(JSON.stringify(scene)), scene.id) || JSON.parse(JSON.stringify(scene));
       }
@@ -265,9 +272,9 @@
       }
 
       function sceneFromGameProject(project, sceneId) {
-        const scenes = Array.isArray(project?.scenes) ? project.scenes : [];
+        const {scenes, allScenes} = gameProjectSceneCandidates(project);
         const requested = normalizeGameSceneId(sceneId, project?.activeSceneId || scenes[0]?.id);
-        const scene = scenes.find((candidate) => String(candidate?.id || "") === requested)
+        const scene = allScenes.find((candidate) => String(candidate?.id || "") === requested)
           || scenes.find((candidate) => String(candidate?.id || "") === String(project?.activeSceneId || ""))
           || scenes[0]
           || null;

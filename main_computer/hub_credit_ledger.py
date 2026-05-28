@@ -16,6 +16,7 @@ from main_computer.hub_credit_models import (
     HubCreditTransaction,
     RequestCharge,
     WorkerEarning,
+    WorkerClaim,
     clean_account_id,
     clean_worker_id,
     make_worker_commitment,
@@ -118,6 +119,23 @@ def _earning_from_dict(payload: dict[str, Any]) -> WorkerEarning:
     )
 
 
+def _claim_from_dict(payload: dict[str, Any]) -> WorkerClaim:
+    earning_ids = payload.get("earning_ids")
+    if not isinstance(earning_ids, list):
+        earning_ids = []
+    return WorkerClaim(
+        claim_id=str(payload.get("claim_id", "")),
+        worker_node_id=str(payload.get("worker_node_id", "")),
+        claimed_credits=positive_int(payload.get("claimed_credits")),
+        earning_ids=[str(item) for item in earning_ids],
+        status=str(payload.get("status", "claimed")),
+        idempotency_key=str(payload.get("idempotency_key", "")),
+        settlement_tx_hash=str(payload.get("settlement_tx_hash", "")),
+        created_at=str(payload.get("created_at", "")),
+        metadata=_copy_dict(payload.get("metadata")),
+    )
+
+
 class HubCreditLedger:
     """JSON-backed internal Compute Credit ledger.
 
@@ -140,6 +158,7 @@ class HubCreditLedger:
         holds = [_hold_from_dict(item) for item in data["holds"].values()]
         charges = [_charge_from_dict(item) for item in data["charges"].values()]
         worker_earnings = [_earning_from_dict(item) for item in data["worker_earnings"].values()]
+        worker_claims = [_claim_from_dict(item) for item in data["worker_claims"].values()]
         return {
             "ok": True,
             "unit": {"name": CREDIT_UNIT_NAME, "key": CREDIT_UNIT_KEY},
@@ -153,6 +172,7 @@ class HubCreditLedger:
             "active_hold_count": sum(1 for hold in holds if hold.status == "held"),
             "charge_count": len(charges),
             "worker_earning_count": len(worker_earnings),
+            "worker_claim_count": len(worker_claims),
             "totals": {
                 "available_credits": sum(account.available_credits for account in accounts),
                 "held_credits": sum(account.held_credits for account in accounts),
@@ -163,6 +183,7 @@ class HubCreditLedger:
                 "active_held_credits": sum(hold.credits for hold in holds if hold.status == "held"),
                 "charged_credits": sum(charge.charged_credits for charge in charges),
                 "worker_earned_credits": sum(earning.credits for earning in worker_earnings),
+                "worker_claimed_credits": sum(claim.claimed_credits for claim in worker_claims if claim.status in {"claimed", "settled"}),
             },
             "recent_transactions": [tx.as_dict() for tx in transactions[-max(0, int(recent_limit or 0)):]][::-1],
             "recent_deposits": [deposit.as_dict() for deposit in deposits[-max(0, int(recent_limit or 0)):]][::-1],
@@ -172,6 +193,10 @@ class HubCreditLedger:
             "recent_worker_earnings": [
                 earning.as_private_dict()
                 for earning in worker_earnings[-max(0, int(recent_limit or 0)):]
+            ][::-1],
+            "recent_worker_claims": [
+                claim.as_dict()
+                for claim in worker_claims[-max(0, int(recent_limit or 0)):]
             ][::-1],
         }
 
@@ -268,28 +293,189 @@ class HubCreditLedger:
             earnings = [earning for earning in earnings if earning.request_id == clean_request]
         return sorted(earnings, key=lambda item: item.created_at, reverse=True)[:clean_limit]
 
+
+    def list_worker_claims(
+        self,
+        *,
+        worker_node_id: str = "",
+        limit: int = 100,
+    ) -> list[WorkerClaim]:
+        clean_worker = clean_worker_id(worker_node_id, default="") if worker_node_id else ""
+        clean_limit = min(500, max(1, int(limit or 100)))
+        data = self._load()
+        claims = [_claim_from_dict(item) for item in data["worker_claims"].values()]
+        if clean_worker:
+            claims = [claim for claim in claims if claim.worker_node_id == clean_worker]
+        return sorted(claims, key=lambda item: item.created_at, reverse=True)[:clean_limit]
+
+    def worker_claim_totals(self, worker_node_id: str) -> dict[str, Any]:
+        if not str(worker_node_id or "").strip():
+            raise ValueError("worker_node_id is required.")
+        clean_worker = clean_worker_id(worker_node_id)
+        data = self._load()
+        return self._worker_claim_totals_from_data(data, clean_worker)
+
+    def record_worker_claim(
+        self,
+        *,
+        worker_node_id: str,
+        earning_ids: list[str] | None = None,
+        claim_credits: int | None = None,
+        idempotency_key: str = "",
+        memo: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not str(worker_node_id or "").strip():
+            raise ValueError("worker_node_id is required.")
+        clean_worker = clean_worker_id(worker_node_id)
+        clean_key = str(idempotency_key or "").strip()
+        explicit_earning_ids = earning_ids is not None
+        requested_ids = [str(item or "").strip() for item in (earning_ids or []) if str(item or "").strip()]
+        if len(requested_ids) != len(set(requested_ids)):
+            raise ValueError("earning_ids must not contain duplicates.")
+        requested_claim_credits = None if claim_credits is None else positive_int(claim_credits)
+        now = utc_now()
+
+        with self._lock:
+            data = self._load_unlocked()
+
+            if clean_key:
+                for item in data["worker_claims"].values():
+                    if not isinstance(item, dict):
+                        continue
+                    claim = _claim_from_dict(item)
+                    if claim.worker_node_id == clean_worker and claim.idempotency_key == clean_key:
+                        return {
+                            "ok": True,
+                            "idempotent": True,
+                            "claim": claim.as_dict(),
+                            "claimed_credits": claim.claimed_credits,
+                            "claimed_count": len(claim.earning_ids),
+                            "worker_claim_totals": self._worker_claim_totals_from_data(data, clean_worker),
+                            "ledger": self._status_from_data(data),
+                        }
+
+            before = self._worker_claim_totals_from_data(data, clean_worker)
+            claimable_ids = [str(item) for item in before["claimable_earning_ids"]]
+            selected_ids = requested_ids if explicit_earning_ids else claimable_ids
+            if not selected_ids:
+                if requested_claim_credits not in (None, 0):
+                    raise ValueError("claim_credits cannot be positive when no earnings are claimable.")
+                return {
+                    "ok": True,
+                    "idempotent": False,
+                    "claim": None,
+                    "claimed_credits": 0,
+                    "claimed_count": 0,
+                    "worker_claim_totals": before,
+                    "ledger": self._status_from_data(data),
+                }
+
+            earnings_by_id = {
+                earning.earning_id: earning
+                for earning in (_earning_from_dict(item) for item in data["worker_earnings"].values())
+            }
+            already_claimed_ids = set(before["claimed_earning_ids"])
+            selected_earnings: list[WorkerEarning] = []
+            for earning_id in selected_ids:
+                earning = earnings_by_id.get(earning_id)
+                if earning is None:
+                    raise KeyError(f"Unknown worker earning: {earning_id}")
+                if earning.worker_node_id != clean_worker:
+                    raise ValueError(f"Earning {earning_id} belongs to another worker.")
+                if earning.status != "earned":
+                    raise ValueError(f"Earning {earning_id} is not finalized/earned; status is {earning.status}.")
+                if earning_id in already_claimed_ids:
+                    raise ValueError(f"Earning {earning_id} has already been claimed.")
+                selected_earnings.append(earning)
+
+            credits = sum(earning.credits for earning in selected_earnings)
+            if requested_claim_credits is not None and requested_claim_credits != credits:
+                raise ValueError(f"claim_credits mismatch: requested {requested_claim_credits}, selected earnings total {credits}.")
+            if credits <= 0:
+                return {
+                    "ok": True,
+                    "idempotent": False,
+                    "claim": None,
+                    "claimed_credits": 0,
+                    "claimed_count": 0,
+                    "worker_claim_totals": before,
+                    "ledger": self._status_from_data(data),
+                }
+
+            claim = WorkerClaim(
+                claim_id="",
+                worker_node_id=clean_worker,
+                claimed_credits=credits,
+                earning_ids=selected_ids,
+                idempotency_key=clean_key,
+                created_at=now,
+                metadata=dict(metadata or {}),
+            )
+            data["worker_claims"][claim.claim_id] = claim.as_dict()
+            claim_tx = HubCreditTransaction(
+                transaction_id=stable_id("ctx", {"type": "worker_claimed", "claim_id": claim.claim_id}),
+                account_id=clean_worker,
+                transaction_type="worker_claimed",
+                credits=credits,
+                created_at=now,
+                worker_node_id=clean_worker,
+                memo=memo or f"worker claimed {len(selected_ids)} earning(s)",
+                metadata={
+                    **dict(metadata or {}),
+                    "claim_id": claim.claim_id,
+                    "earning_ids": selected_ids,
+                    "idempotency_key": clean_key,
+                },
+            )
+            data["transactions"].append(claim_tx.as_dict())
+            self._save_unlocked(data)
+            return {
+                "ok": True,
+                "idempotent": False,
+                "claim": claim.as_dict(),
+                "claimed_credits": credits,
+                "claimed_count": len(selected_ids),
+                "transaction": claim_tx.as_dict(),
+                "worker_claim_totals": self._worker_claim_totals_from_data(data, clean_worker),
+                "ledger": self._status_from_data(data),
+            }
+
+
     def bridge_reconciliation_totals(self, account_id: str) -> dict[str, Any]:
         clean_id = clean_account_id(account_id)
-        data = self._load()
-        transactions = [_transaction_from_dict(item) for item in data["transactions"]]
-        rectifications = [
-            tx for tx in transactions
-            if tx.account_id == clean_id and tx.transaction_type == "bridge_spend_rectified"
-        ]
-        withdrawals = [
-            tx for tx in transactions
-            if tx.account_id == clean_id and tx.transaction_type == "withdrawal_released"
-        ]
-        return {
-            "ok": True,
-            "account_id": clean_id,
-            "rectified_credits": sum(tx.credits for tx in rectifications),
-            "withdrawn_credits": sum(tx.credits for tx in withdrawals),
-            "rectification_count": len(rectifications),
-            "withdrawal_count": len(withdrawals),
-            "rectifications": [tx.as_dict() for tx in rectifications],
-            "withdrawals": [tx.as_dict() for tx in withdrawals],
-        }
+        now = utc_now()
+        with self._lock:
+            data = self._load_unlocked()
+            account, repaired_account, expected_available = self._repair_bridge_withdrawal_available_unlocked(
+                data,
+                clean_id,
+                now=now,
+            )
+            if repaired_account:
+                self._save_unlocked(data)
+            transactions = [_transaction_from_dict(item) for item in data["transactions"]]
+            rectifications = [
+                tx for tx in transactions
+                if tx.account_id == clean_id and tx.transaction_type == "bridge_spend_rectified"
+            ]
+            withdrawals = [
+                tx for tx in transactions
+                if tx.account_id == clean_id and tx.transaction_type == "withdrawal_released"
+            ]
+            return {
+                "ok": True,
+                "account_id": clean_id,
+                "rectified_credits": sum(tx.credits for tx in rectifications),
+                "withdrawn_credits": sum(tx.credits for tx in withdrawals),
+                "rectification_count": len(rectifications),
+                "withdrawal_count": len(withdrawals),
+                "expected_available_credits": expected_available,
+                "account_repaired": repaired_account,
+                "account": account.as_dict(),
+                "rectifications": [tx.as_dict() for tx in rectifications],
+                "withdrawals": [tx.as_dict() for tx in withdrawals],
+            }
 
     def record_bridge_reconciliation(
         self,
@@ -415,6 +601,14 @@ class HubCreditLedger:
                 txs.append(withdrawal_tx)
             elif clean_withdrawn <= 0:
                 data["accounts"][account.account_id] = account.as_dict()
+
+            account, repaired_account, _expected_available = self._repair_bridge_withdrawal_available_unlocked(
+                data,
+                clean_id,
+                now=now,
+            )
+            if repaired_account:
+                base_metadata.setdefault("hub_available_repaired", True)
 
             self._save_unlocked(data)
             bridge_txs = [_transaction_from_dict(item) for item in data["transactions"]]
@@ -981,6 +1175,131 @@ class HubCreditLedger:
         data["transactions"].append(earning_tx.as_dict())
         return candidate
 
+
+    def _worker_claim_totals_from_data(self, data: dict[str, Any], worker_node_id: str) -> dict[str, Any]:
+        clean_worker = clean_worker_id(worker_node_id)
+        earnings = [
+            _earning_from_dict(item)
+            for item in data["worker_earnings"].values()
+            if isinstance(item, dict)
+        ]
+        worker_earnings = [earning for earning in earnings if earning.worker_node_id == clean_worker]
+        finalized_earnings = [earning for earning in worker_earnings if earning.status == "earned"]
+        claims = [
+            _claim_from_dict(item)
+            for item in data["worker_claims"].values()
+            if isinstance(item, dict)
+        ]
+        worker_claims = [
+            claim
+            for claim in claims
+            if claim.worker_node_id == clean_worker and claim.status in {"claimed", "settled"}
+        ]
+
+        claimed_earning_ids: set[str] = set()
+        for claim in worker_claims:
+            claimed_earning_ids.update(claim.earning_ids)
+        finalized_by_id = {earning.earning_id: earning for earning in finalized_earnings}
+        claimable_earnings = [
+            earning
+            for earning in sorted(finalized_earnings, key=lambda item: item.created_at)
+            if earning.earning_id not in claimed_earning_ids
+        ]
+        claimed_finalized_ids = [
+            earning_id
+            for earning_id in sorted(claimed_earning_ids)
+            if earning_id in finalized_by_id
+        ]
+        already_claimed_units = sum(finalized_by_id[earning_id].credits for earning_id in claimed_finalized_ids)
+        claimable_units = sum(earning.credits for earning in claimable_earnings)
+
+        return {
+            "ok": True,
+            "worker_node_id": clean_worker,
+            "finalized_earning_units": sum(earning.credits for earning in finalized_earnings),
+            "claimable_units": claimable_units,
+            "already_claimed_units": already_claimed_units,
+            "earning_count": len(finalized_earnings),
+            "claim_count": len(worker_claims),
+            "claimable_earning_ids": [earning.earning_id for earning in claimable_earnings],
+            "claimed_earning_ids": claimed_finalized_ids,
+            "can_claim": claimable_units > 0,
+            "block_reason": "" if claimable_units > 0 else "no_finalized_unclaimed_worker_earnings",
+            "earnings": [earning.as_private_dict() for earning in sorted(worker_earnings, key=lambda item: item.created_at)],
+            "claims": [claim.as_dict() for claim in sorted(worker_claims, key=lambda item: item.created_at)],
+        }
+
+
+    def _account_bridge_funding_credits_unlocked(self, data: dict[str, Any], account_id: str) -> int:
+        """Return durable requester-side funding credits for bridge reconciliation.
+
+        This intentionally derives the funding base from immutable ledger records,
+        not from account.available_credits, because available_credits may be stale
+        after an interrupted withdrawal reconciliation.
+        """
+
+        clean_id = clean_account_id(account_id)
+        transactions = [_transaction_from_dict(item) for item in data["transactions"]]
+        funded_from_transactions = sum(
+            tx.credits
+            for tx in transactions
+            if tx.account_id == clean_id and tx.transaction_type in {"admin_adjustment", "deposit_indexed"}
+        )
+        if funded_from_transactions > 0:
+            return funded_from_transactions
+        deposits = [_deposit_from_dict(item) for item in data["deposits"].values()]
+        return sum(deposit.credits_granted for deposit in deposits if deposit.account_id == clean_id)
+
+    def _repair_bridge_withdrawal_available_unlocked(
+        self,
+        data: dict[str, Any],
+        account_id: str,
+        *,
+        now: str,
+    ) -> tuple[HubCreditAccount, bool, int]:
+        """Repair stale requester availability after an already-recorded withdrawal.
+
+        Phase 3 smokes are intentionally rerunnable.  A prior run may have landed
+        the withdrawal on-chain and recorded a withdrawal_released transaction, but
+        crashed or ran older code before account.available_credits was debited.  In
+        that state the transaction history is the durable source of truth.  This
+        helper only lowers an over-stated available balance; it never mints or
+        raises credits.
+        """
+
+        clean_id = clean_account_id(account_id)
+        account = self._ensure_account_unlocked(data, clean_id, now=now)
+        transactions = [_transaction_from_dict(item) for item in data["transactions"]]
+        withdrawn_credits = sum(
+            tx.credits
+            for tx in transactions
+            if tx.account_id == clean_id and tx.transaction_type == "withdrawal_released"
+        )
+        if withdrawn_credits <= 0:
+            return account, False, account.available_credits
+
+        funded_credits = self._account_bridge_funding_credits_unlocked(data, clean_id)
+        expected_available = max(
+            0,
+            funded_credits - account.spent_credits - account.held_credits - withdrawn_credits,
+        )
+        if account.available_credits <= expected_available:
+            return account, False, expected_available
+
+        repaired = HubCreditAccount(
+            account_id=account.account_id,
+            owner_address=account.owner_address,
+            available_credits=expected_available,
+            held_credits=account.held_credits,
+            spent_credits=account.spent_credits,
+            earned_credits=account.earned_credits,
+            created_at=account.created_at,
+            updated_at=now,
+            metadata=account.metadata,
+        )
+        data["accounts"][clean_id] = repaired.as_dict()
+        return repaired, True, expected_available
+
     def _ensure_account_unlocked(
         self,
         data: dict[str, Any],
@@ -1025,6 +1344,7 @@ class HubCreditLedger:
         holds = [_hold_from_dict(item) for item in data["holds"].values()]
         charges = [_charge_from_dict(item) for item in data["charges"].values()]
         worker_earnings = [_earning_from_dict(item) for item in data["worker_earnings"].values()]
+        worker_claims = [_claim_from_dict(item) for item in data["worker_claims"].values()]
         return {
             "ok": True,
             "unit": {"name": CREDIT_UNIT_NAME, "key": CREDIT_UNIT_KEY},
@@ -1038,6 +1358,7 @@ class HubCreditLedger:
             "active_hold_count": sum(1 for hold in holds if hold.status == "held"),
             "charge_count": len(charges),
             "worker_earning_count": len(worker_earnings),
+            "worker_claim_count": len(worker_claims),
             "totals": {
                 "available_credits": sum(account.available_credits for account in accounts),
                 "held_credits": sum(account.held_credits for account in accounts),
@@ -1048,6 +1369,7 @@ class HubCreditLedger:
                 "active_held_credits": sum(hold.credits for hold in holds if hold.status == "held"),
                 "charged_credits": sum(charge.charged_credits for charge in charges),
                 "worker_earned_credits": sum(earning.credits for earning in worker_earnings),
+                "worker_claimed_credits": sum(claim.claimed_credits for claim in worker_claims if claim.status in {"claimed", "settled"}),
             },
         }
 
@@ -1135,6 +1457,18 @@ class HubCreditLedger:
                 continue
             worker_earnings[earning.earning_id or str(earning_id)] = earning.as_private_dict()
 
+
+        raw_claims = data.get("worker_claims") if isinstance(data.get("worker_claims"), dict) else {}
+        worker_claims = {}
+        for claim_id, item in raw_claims.items():
+            if not isinstance(item, dict):
+                continue
+            try:
+                claim = _claim_from_dict(item)
+            except Exception:
+                continue
+            worker_claims[claim.claim_id or str(claim_id)] = claim.as_dict()
+
         return {
             "version": HUB_CREDIT_LEDGER_STORE_VERSION,
             "accounts": accounts,
@@ -1143,6 +1477,7 @@ class HubCreditLedger:
             "holds": holds,
             "charges": charges,
             "worker_earnings": worker_earnings,
+            "worker_claims": worker_claims,
             "settlement_batches": data.get("settlement_batches") if isinstance(data.get("settlement_batches"), dict) else {},
             "reports": data.get("reports") if isinstance(data.get("reports"), dict) else {},
         }

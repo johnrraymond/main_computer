@@ -22,11 +22,13 @@ CREDIT_TRANSACTION_TYPES = {
     "withdrawal_released",
     "refund_issued",
     "batch_settled",
+    "worker_claimed",
     "admin_adjustment",
 }
 
 CREDIT_HOLD_STATUSES = {"held", "released", "charged", "expired", "cancelled"}
 WORKER_EARNING_STATUSES = {"earned", "batched", "claimed", "paid", "cancelled"}
+WORKER_CLAIM_STATUSES = {"claimed", "settled", "void"}
 WORKER_BATCH_STATUSES = {"draft", "opened", "approved", "settled", "cancelled"}
 QUALITY_REPORT_STATUSES = {"submitted", "reviewing", "accepted", "rejected", "actioned"}
 
@@ -342,6 +344,42 @@ class WorkerEarning:
             "batch_id": self.batch_id,
             "created_at": self.created_at,
         }
+
+
+@dataclass(frozen=True)
+class WorkerClaim:
+    claim_id: str
+    worker_node_id: str
+    claimed_credits: int
+    earning_ids: list[str] = field(default_factory=list)
+    status: str = "claimed"
+    idempotency_key: str = ""
+    settlement_tx_hash: str = ""
+    created_at: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        clean_status = str(self.status or "claimed").strip()
+        if clean_status not in WORKER_CLAIM_STATUSES:
+            raise ValueError(f"Unsupported worker claim status: {clean_status}")
+        clean_worker = clean_worker_id(self.worker_node_id)
+        clean_earning_ids = [str(item or "").strip() for item in (self.earning_ids or []) if str(item or "").strip()]
+        object.__setattr__(self, "worker_node_id", clean_worker)
+        object.__setattr__(self, "earning_ids", clean_earning_ids)
+        object.__setattr__(self, "claimed_credits", positive_int(self.claimed_credits))
+        object.__setattr__(self, "status", clean_status)
+        object.__setattr__(self, "idempotency_key", str(self.idempotency_key or "").strip())
+        object.__setattr__(self, "settlement_tx_hash", str(self.settlement_tx_hash or "").strip())
+        object.__setattr__(self, "claim_id", self.claim_id or stable_id("wclaim", {
+            "worker_node_id": clean_worker,
+            "earning_ids": clean_earning_ids,
+            "claimed_credits": positive_int(self.claimed_credits),
+            "idempotency_key": str(self.idempotency_key or "").strip(),
+        }))
+        object.__setattr__(self, "created_at", self.created_at or utc_now())
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)

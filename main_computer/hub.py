@@ -920,6 +920,13 @@ class HubServerHandler(_JsonHandler):
                 }
             )
             return
+        if path in {"/api/hub/v1/workers/claims", "/api/hub/v1/credits/worker-claims"}:
+            worker_node_id = query.get("worker_node_id", [""])[0] or query.get("node_id", [""])[0]
+            try:
+                self._send_json(self.server.credit_ledger.worker_claim_totals(worker_node_id))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
         if path.startswith("/api/hub/v1/workers/"):
             worker_id = path.removeprefix("/api/hub/v1/workers/").strip("/")
             if not worker_id or "/" in worker_id:
@@ -1209,6 +1216,20 @@ class HubServerHandler(_JsonHandler):
                     )
                 )
                 return
+            if path in {"/api/hub/v1/workers/claims", "/api/hub/v1/credits/worker-claims/record"}:
+                body = self._read_json()
+                raw_earning_ids = body.get("earning_ids")
+                earning_ids = [str(item) for item in raw_earning_ids] if isinstance(raw_earning_ids, list) else None
+                result = self.server.credit_ledger.record_worker_claim(
+                    worker_node_id=str(body.get("worker_node_id") or body.get("node_id") or ""),
+                    earning_ids=earning_ids,
+                    claim_credits=int(body["claim_credits"]) if body.get("claim_credits") is not None else None,
+                    idempotency_key=str(body.get("idempotency_key", "")),
+                    memo=str(body.get("memo", "")),
+                    metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
+                )
+                self._send_json(result)
+                return
             if path in {"/api/hub/v1/credits/deposits/import", "/api/hub/v1/credits/purchases/import"}:
                 body = self._read_json()
                 self._send_json(self.server.credit_indexer.import_deposit(body))
@@ -1494,8 +1515,8 @@ def serve_hub(config: MainComputerConfig, host: str = "127.0.0.1", port: int = D
         "Hub endpoints: GET /admin, GET /api/hub/v1/admin/bootstrap, GET /api/hub/status, "
         "GET /api/hub/payouts?node_id=..., POST /api/hub/v1/workers/register, "
         "POST /api/hub/v1/workers/heartbeat, POST /api/hub/v1/workers/poll, "
-        "POST /api/hub/v1/workers/results, POST /api/hub/sessions/start, "
-        "POST /api/hub/sessions/chat, POST /api/hub/payouts/claim"
+        "POST /api/hub/v1/workers/results, GET/POST /api/hub/v1/workers/claims, "
+        "POST /api/hub/sessions/start, POST /api/hub/sessions/chat, POST /api/hub/payouts/claim"
     )
     try:
         server.serve_forever()

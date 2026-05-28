@@ -13,6 +13,7 @@ from main_computer.hub_credit_models import (
     RequestCharge,
     RequestReceipt,
     WorkerEarning,
+    WorkerClaim,
     WorkerQualityReport,
     WorkerSettlementBatch,
     make_report_token,
@@ -176,6 +177,24 @@ class HubCreditModelTests(unittest.TestCase):
         self.assertNotIn("worker_node_id", public)
         self.assertNotIn("request_id", public)
         self.assertEqual(public["worker_commitment"], "wcom_public")
+
+    def test_worker_claim_serializes_earning_ids_and_idempotency_key(self) -> None:
+        claim = WorkerClaim(
+            claim_id="",
+            worker_node_id="GPU Worker 01",
+            claimed_credits=17,
+            earning_ids=["earn_a", "earn_b"],
+            idempotency_key="claim-key",
+            metadata={"phase": 4},
+        )
+
+        payload = claim.as_dict()
+        self.assertTrue(payload["claim_id"].startswith("wclaim_"))
+        self.assertEqual(payload["worker_node_id"], "gpu-worker-01")
+        self.assertEqual(payload["claimed_credits"], 17)
+        self.assertEqual(payload["earning_ids"], ["earn_a", "earn_b"])
+        self.assertEqual(payload["idempotency_key"], "claim-key")
+        self.assertEqual(payload["status"], "claimed")
 
     def test_settlement_batch_truncates_public_value_and_carries_dust(self) -> None:
         published, dust = truncate_for_settlement(1237, bucket_size=100)

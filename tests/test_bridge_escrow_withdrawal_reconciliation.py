@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,6 +27,85 @@ def load_phase3_smoke_module():
 
 
 class BridgeEscrowWithdrawalReconciliationTests(unittest.TestCase):
+
+    def test_phase3_default_requester_is_self_contained_and_not_manifest_requester(self) -> None:
+        smoke = load_phase3_smoke_module()
+        manifest = {
+            "actors": {
+                "requesters": [
+                    {
+                        "account_id": "bridge-escrow-requester-0",
+                        "address": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+                        "deposit_units": 100_000_000,
+                    }
+                ]
+            }
+        }
+        chain = {"chain_id": 42424242, "contract_address": "0x9baab117304f7d6517048e371025db8f89a8dbe5"}
+        args = argparse.Namespace(requester_index=0, use_manifest_requester=False)
+
+        requester = smoke.phase3_requester(manifest, chain, args)
+
+        self.assertTrue(requester["self_contained_phase3"])
+        self.assertNotEqual(requester["account_id"], "bridge-escrow-requester-0")
+        self.assertTrue(requester["account_id"].startswith("bridge-escrow-withdrawal-requester-0-"))
+        self.assertEqual(requester["address"], "0x23618e81e3f5cdf7f54c3d65f7fbc0abf5b21e8f")
+        self.assertEqual(requester["deposit_units"], 100_000_000)
+        self.assertRegex(requester["deposit_id"], r"^0x[0-9a-f]{64}$")
+        self.assertRegex(requester["normalized_receipt_tx_hash"], r"^0x[0-9a-f]{64}$")
+
+    def test_phase3_requester_can_opt_back_into_manifest_requester(self) -> None:
+        smoke = load_phase3_smoke_module()
+        manifest = {
+            "actors": {
+                "requesters": [
+                    {
+                        "account_id": "bridge-escrow-requester-0",
+                        "address": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+                        "deposit_units": 100_000_000,
+                    }
+                ]
+            }
+        }
+        chain = {"chain_id": 42424242, "contract_address": "0x9baab117304f7d6517048e371025db8f89a8dbe5"}
+        args = argparse.Namespace(requester_index=0, use_manifest_requester=True)
+
+        requester = smoke.phase3_requester(manifest, chain, args)
+
+        self.assertFalse(requester["self_contained_phase3"])
+        self.assertEqual(requester["account_id"], "bridge-escrow-requester-0")
+        self.assertEqual(requester["address"], "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266")
+
+    def test_phase3_self_contained_requester_is_contract_scoped(self) -> None:
+        smoke = load_phase3_smoke_module()
+        manifest = {
+            "actors": {
+                "requesters": [
+                    {
+                        "account_id": "bridge-escrow-requester-0",
+                        "address": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+                        "deposit_units": 100_000_000,
+                    }
+                ]
+            }
+        }
+        args = argparse.Namespace(requester_index=0, use_manifest_requester=False)
+
+        requester_a = smoke.phase3_requester(
+            manifest,
+            {"chain_id": 42424242, "contract_address": "0x9baab117304f7d6517048e371025db8f89a8dbe5"},
+            args,
+        )
+        requester_b = smoke.phase3_requester(
+            manifest,
+            {"chain_id": 42424242, "contract_address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            args,
+        )
+
+        self.assertNotEqual(requester_a["account_id"], requester_b["account_id"])
+        self.assertNotEqual(requester_a["deposit_id"], requester_b["deposit_id"])
+        self.assertNotEqual(requester_a["normalized_receipt_tx_hash"], requester_b["normalized_receipt_tx_hash"])
+
     def test_phase3_smoke_validates_transaction_hashes(self) -> None:
         smoke = load_phase3_smoke_module()
 
@@ -458,6 +538,72 @@ class BridgeEscrowWithdrawalReconciliationTests(unittest.TestCase):
             totals = ledger.bridge_reconciliation_totals("requester")
             self.assertEqual(totals["rectified_credits"], 5_500_000)
             self.assertEqual(totals["withdrawn_credits"], 94_500_000)
+
+    def test_bridge_reconciliation_totals_repairs_stale_withdrawal_available_balance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = HubCreditLedger(Path(tmp) / "compute_credits")
+            ledger.issue(account_id="requester", credits=100_000_000, owner_address="0xabc", memo="fund")
+            hold = ledger.create_hold(account_id="requester", request_id="req-1", credits=17_000_000)["hold"]
+            ledger.charge_hold(hold_id=hold["hold_id"], charged_credits=16_500_000, worker_node_id="worker-1")
+            ledger.record_bridge_reconciliation(
+                account_id="requester",
+                rectified_credits=16_500_000,
+                rectification_id="0x" + "a" * 64,
+                memo="rectified on-chain",
+            )
+            ledger.record_bridge_reconciliation(
+                account_id="requester",
+                withdrawn_credits=83_500_000,
+                withdrawal_id="0x" + "b" * 64,
+                recipient_address="0xdef",
+                memo="released on-chain",
+            )
+
+            # Simulate an interrupted or older Phase 3 run: the withdrawal record
+            # exists, but account.available_credits was left at the original
+            # funded amount.
+            raw = json.loads(ledger.path.read_text(encoding="utf-8"))
+            raw["accounts"]["requester"]["available_credits"] = 100_000_000
+            ledger.path.write_text(json.dumps(raw), encoding="utf-8")
+            self.assertEqual(ledger.get_account("requester").available_credits, 100_000_000)
+
+            totals = ledger.bridge_reconciliation_totals("requester")
+
+            self.assertTrue(totals["account_repaired"])
+            self.assertEqual(totals["expected_available_credits"], 0)
+            self.assertEqual(totals["withdrawn_credits"], 83_500_000)
+            self.assertEqual(ledger.get_account("requester").available_credits, 0)
+
+    def test_duplicate_withdrawal_record_repairs_stale_available_balance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = HubCreditLedger(Path(tmp) / "compute_credits")
+            ledger.issue(account_id="requester", credits=100_000_000, owner_address="0xabc", memo="fund")
+            hold = ledger.create_hold(account_id="requester", request_id="req-1", credits=17_000_000)["hold"]
+            ledger.charge_hold(hold_id=hold["hold_id"], charged_credits=16_500_000, worker_node_id="worker-1")
+            withdrawal_id = "0x" + "b" * 64
+            ledger.record_bridge_reconciliation(
+                account_id="requester",
+                withdrawn_credits=83_500_000,
+                withdrawal_id=withdrawal_id,
+                recipient_address="0xdef",
+                memo="released on-chain",
+            )
+
+            raw = json.loads(ledger.path.read_text(encoding="utf-8"))
+            raw["accounts"]["requester"]["available_credits"] = 100_000_000
+            ledger.path.write_text(json.dumps(raw), encoding="utf-8")
+
+            result = ledger.record_bridge_reconciliation(
+                account_id="requester",
+                withdrawn_credits=83_500_000,
+                withdrawal_id=withdrawal_id,
+                recipient_address="0xdef",
+                memo="released on-chain",
+            )
+
+            self.assertTrue(result["idempotent"])
+            self.assertEqual(result["bridge_reconciliation"]["withdrawn_credits"], 83_500_000)
+            self.assertEqual(ledger.get_account("requester").available_credits, 0)
 
 
 if __name__ == "__main__":

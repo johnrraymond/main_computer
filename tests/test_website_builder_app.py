@@ -29,6 +29,28 @@ def test_website_builder_app_is_registered_in_applications_shell() -> None:
     assert '"website-builder"' in route_state
 
 
+
+def test_website_builder_jsonish_parser_accepts_first_object_and_wrapped_json() -> None:
+    from main_computer.viewport_routes_applications import ViewportApplicationRoutesMixin
+
+    parser_owner = ViewportApplicationRoutesMixin()
+
+    first = parser_owner._website_builder_parse_jsonish(
+        '{"ok": true, "mode": "website_builder_rag_route_decision", "intent": "answer"}\n'
+        '{"ok": true, "mode": "ignored_second_object"}'
+    )
+    assert first["intent"] == "answer"
+
+    wrapped = parser_owner._website_builder_parse_jsonish(
+        json.dumps('{"ok": true, "mode": "website_builder_rag_route_decision", "intent": "propose_edit"}')
+    )
+    assert wrapped["intent"] == "propose_edit"
+
+    fenced = parser_owner._website_builder_parse_jsonish(
+        '```json\n{"ok": true, "mode": "website_builder_rag_route_decision", "intent": "scope"}\n```'
+    )
+    assert fenced["intent"] == "scope"
+
 def test_website_builder_frontend_assets_define_save_and_publish_controls() -> None:
     app = (ROOT / "main_computer" / "web" / "applications" / "apps" / "website-builder.html").read_text(encoding="utf-8")
     script = (ROOT / "main_computer" / "web" / "applications" / "scripts" / "website-builder.js").read_text(encoding="utf-8")
@@ -248,11 +270,52 @@ def test_website_builder_chat_edit_route_is_locked_to_site_scope(tmp_path) -> No
     from main_computer.website_project_manifest import list_website_projects
 
     list_website_projects(tmp_path)
+    for rel in (
+        "main_computer/web/applications/scripts/website-builder.js",
+        "main_computer/web/applications/styles/website-builder.css",
+        "main_computer/viewport_routes_applications.py",
+        "main_computer/viewport_route_dispatch.py",
+        "main_computer/website_project_manifest.py",
+    ):
+        source = ROOT / rel
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
     server = ViewportServer(("127.0.0.1", 0), MainComputerConfig(workspace=tmp_path), verbose=False)
     server.debug_root = tmp_path
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    from main_computer.models import ChatResponse
+
+    class FakeMountedProvider:
+        name = "fake-mounted-provider"
+        model = "fake-mounted-model"
+
+    class FakeMountedComputer:
+        provider = FakeMountedProvider()
+
+        def chat_console_ai(self, source: str, attachments: list | None = None) -> ChatResponse:
+            if "website_builder_rag_route_decision" in source or "Decide only the next high-level action" in source:
+                intent = "scope" if "What files can you see?" in source else "answer"
+                route = {
+                    "ok": True,
+                    "mode": "website_builder_rag_route_decision",
+                    "intent": intent,
+                    "target_kind": "website" if intent == "scope" else "none",
+                    "confidence": 1.0,
+                    "summary": "Fake route decision for mounted Website Builder test.",
+                    "answer": "inline scoped AI ran: True" if intent == "answer" else "",
+                    "clarification_question": "",
+                    "proposal_hint": "",
+                    "reasons": ["test fixture"],
+                    "warnings": [],
+                }
+                return ChatResponse(content=json.dumps(route), provider="fake-mounted-provider", model="fake-mounted-model")
+            raise AssertionError("Website Builder mounted route should call the AI router before any other AI request in this test.")
+
+    server.computer = FakeMountedComputer()
 
     def post(path: str, payload: dict) -> dict:
         request = Request(
@@ -287,23 +350,6 @@ def test_website_builder_chat_edit_route_is_locked_to_site_scope(tmp_path) -> No
         assert "main_computer_test" not in content
         assert output["metadata"]["auto_apply"] is False
 
-        from main_computer.models import ChatResponse
-
-        class FakeMountedProvider:
-            name = "fake-mounted-provider"
-            model = "fake-mounted-model"
-
-        class FakeMountedComputer:
-            provider = FakeMountedProvider()
-
-            def chat_console_ai(self, source: str, attachments: list | None = None) -> ChatResponse:
-                return ChatResponse(
-                    content=f"inline scoped AI ran: {'Allowed root: `runtime/websites/hub-site/`' in source}",
-                    provider="fake-mounted-provider",
-                    model="fake-mounted-model",
-                )
-
-        server.computer = FakeMountedComputer()
         ai_data = post(
             "/api/applications/website-builder/chat/edit",
             {
@@ -372,6 +418,21 @@ def test_website_builder_chat_edit_route_materializes_proposal_payloads(tmp_path
 
         def chat_console_ai(self, source: str, attachments: list | None = None) -> ChatResponse:
             assert "Return JSON only" in source
+            if "website_builder_rag_route_decision" in source or "Decide only the next high-level action" in source:
+                route = {
+                    "ok": True,
+                    "mode": "website_builder_rag_route_decision",
+                    "intent": "propose_edit",
+                    "target_kind": "website",
+                    "confidence": 1.0,
+                    "summary": "The user requested a Website Builder content edit.",
+                    "answer": "",
+                    "clarification_question": "",
+                    "proposal_hint": "Update the active site hero headline.",
+                    "reasons": ["test fixture"],
+                    "warnings": [],
+                }
+                return ChatResponse(content=json.dumps(route), provider="fake-mounted-provider", model="fake-mounted-model")
             assert "builder_allowlist" in source
             proposal = {
                 "ok": True,
@@ -419,7 +480,7 @@ def test_website_builder_chat_edit_route_materializes_proposal_payloads(tmp_path
             "/api/applications/website-builder/chat",
             {
                 "thread_id": "test-website-chat",
-                "cell": {"id": "chat-website-proposal", "type": "ai", "source": "change the hero headline to Welcome to Arcstorm"},
+                "cell": {"id": "chat-website-proposal", "type": "ai", "source": "Can you capitalize hub site in the main div?"},
                 "embedded_context": {"active_app": "website-builder", "site_id": "hub-site", "target_kind": "website-project", "target_id": "hub-site"},
                 "embedded_context_source": {"active_app": "website-builder", "target_kind": "website-project", "target_id": "hub-site"},
                 "mount_plugins": [{"id": "website-builder-edit", "enabled": True, "target_id": "hub-site", "site_id": "hub-site"}],
@@ -429,6 +490,7 @@ def test_website_builder_chat_edit_route_materializes_proposal_payloads(tmp_path
         metadata = data["output_cell"]["metadata"]
         proposal = metadata["proposal"]
         assert metadata["editor_intent"] == "propose_edit"
+        assert metadata["website_builder_route_decision"]["intent"] == "propose_edit"
         assert metadata["auto_apply"] is False
         assert metadata["apply_result"] is None
         assert metadata["allowed_roots"] == ["runtime/websites/hub-site/"]
@@ -600,6 +662,21 @@ def test_website_builder_chat_edit_auto_applies_validated_payloads(tmp_path) -> 
 
         def chat_console_ai(self, source: str, attachments: list | None = None) -> ChatResponse:
             assert "Return JSON only" in source
+            if "website_builder_rag_route_decision" in source or "Decide only the next high-level action" in source:
+                route = {
+                    "ok": True,
+                    "mode": "website_builder_rag_route_decision",
+                    "intent": "propose_edit",
+                    "target_kind": "website",
+                    "confidence": 1.0,
+                    "summary": "The user requested a Website Builder content edit.",
+                    "answer": "",
+                    "clarification_question": "",
+                    "proposal_hint": "Update the active site hero headline.",
+                    "reasons": ["test fixture"],
+                    "warnings": [],
+                }
+                return ChatResponse(content=json.dumps(route), provider="fake-mounted-provider", model="fake-mounted-model")
             proposal = {
                 "ok": True,
                 "mode": "website_builder_rag_edit_proposal",
@@ -683,7 +760,7 @@ def test_website_builder_chat_edit_auto_applies_validated_payloads(tmp_path) -> 
 def test_website_builder_rag_smoke_requires_explicit_site_id_when_multiple_projects(tmp_path) -> None:
     import pytest
 
-    from main_computer.rag_website_builder_real_edit_smoke import SmokeFailure, select_site_id
+    from main_computer.website_builder_rag_pipeline import SmokeFailure, select_site_id
 
     for site_id in ("hub-site", "johnrraymond"):
         site_root = tmp_path / "runtime" / "websites" / site_id

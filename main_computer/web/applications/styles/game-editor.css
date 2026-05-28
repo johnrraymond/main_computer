@@ -280,6 +280,41 @@
   gap: 12px;
 }
 
+.game-editor-toolbar {
+  align-items: end;
+  flex-wrap: wrap;
+}
+
+.game-editor-toolbar label {
+  flex: 1 1 180px;
+}
+
+.game-editor-project-name-field {
+  flex-basis: 260px;
+}
+
+.game-editor-scene-tools {
+  flex: 1 1 360px;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.game-editor-scene-select-field {
+  min-width: 180px;
+}
+
+.game-editor-scene-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.game-editor-scene-actions button {
+  white-space: nowrap;
+}
+
 .game-editor-section-head h3,
 .game-editor-preview-head h3 {
   margin: 0;
@@ -301,6 +336,7 @@
 }
 
 .game-editor-toolbar input,
+.game-editor-toolbar select,
 .game-editor-inspector input,
 .game-editor-inspector select {
   width: 100%;
@@ -318,6 +354,7 @@
 .game-editor-project-list button,
 .game-editor-entity-list button,
 .game-editor-actions button,
+.game-editor-scene-actions button,
 .game-editor-sidebar button,
 #game-editor-frame-selected {
   cursor: pointer;
@@ -331,12 +368,17 @@
   border: 1px solid color-mix(in srgb, var(--line, currentColor) 70%, transparent);
   border-radius: 12px;
   background: color-mix(in srgb, var(--surface, Canvas) 90%, transparent);
+  color: var(--ink, currentColor);
+  -webkit-text-fill-color: var(--ink, currentColor);
   text-align: left;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
 }
 
 .game-editor-project-list button.active,
 .game-editor-entity-list button.active {
   border-color: var(--mint, currentColor);
+  color: #fff4bf;
+  -webkit-text-fill-color: #fff4bf;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--mint, currentColor) 22%, transparent);
 }
 
@@ -468,6 +510,14 @@
   padding: 0 4px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.game-editor-webgl-canvas .scene-object-label {
+  border-radius: 4px;
+  background: rgba(2, 6, 23, 0.72);
+  color: var(--ink, currentColor);
+  -webkit-text-fill-color: var(--ink, currentColor);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
 }
 
 .scene-surface[data-scene-state="isometric-sprite-scene"] {
