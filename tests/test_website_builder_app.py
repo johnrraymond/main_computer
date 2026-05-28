@@ -71,9 +71,9 @@ def test_website_builder_frontend_assets_define_save_and_publish_controls() -> N
     assert "website-builder-preview-draft" in app
     assert "website-builder-preview-local" in app
     assert "website-builder-preview-dev" in app
-    assert "website-builder-rag-edit-proposal" in script
-    assert "auto_apply: true" in script
-    assert "live_apply: true" in script
+    assert "website-builder-generated-editor-proposal" in script
+    assert "auto_apply: false" in script
+    assert "live_apply: false" in script
     assert "refreshWebsiteBuilderAfterRagApply" in script
     assert "main-computer-chat-console-output-applied" in script
     assert "Select a website to use chat." in script
@@ -264,7 +264,7 @@ def test_website_builder_backend_routes_are_wired() -> None:
 
 
 
-def test_website_builder_chat_edit_route_is_locked_to_site_scope(tmp_path) -> None:
+def test_website_builder_chat_edit_route_is_locked_to_site_scope(tmp_path, monkeypatch) -> None:
     from main_computer.config import MainComputerConfig
     from main_computer.viewport import ViewportServer
     from main_computer.website_project_manifest import list_website_projects
@@ -287,35 +287,28 @@ def test_website_builder_chat_edit_route_is_locked_to_site_scope(tmp_path) -> No
     thread.start()
     base_url = f"http://127.0.0.1:{server.server_address[1]}"
 
-    from main_computer.models import ChatResponse
+    import main_computer.viewport_routes_applications as route_module
 
-    class FakeMountedProvider:
-        name = "fake-mounted-provider"
-        model = "fake-mounted-model"
+    def fake_generated_editor_pipeline(**kwargs):
+        prompt = str(kwargs.get("user_prompt") or "")
+        if "What files can you see?" in prompt:
+            answer = "The selected staged website evidence includes runtime/websites/hub-site/site.json and index.html."
+            evidence_files = ["site.json", "index.html"]
+        else:
+            answer = "inline generated-editor ran: True"
+            evidence_files = ["index.html"]
+        return {
+            "ok": True,
+            "terminal_state": "grounded_info_answer",
+            "observed_terminal_class": "info",
+            "answer": answer,
+            "evidence_files": evidence_files,
+            "replacement_payloads": [],
+            "artifact": None,
+            "live_write": False,
+        }
 
-    class FakeMountedComputer:
-        provider = FakeMountedProvider()
-
-        def chat_console_ai(self, source: str, attachments: list | None = None) -> ChatResponse:
-            if "website_builder_rag_route_decision" in source or "Decide only the next high-level action" in source:
-                intent = "scope" if "What files can you see?" in source else "answer"
-                route = {
-                    "ok": True,
-                    "mode": "website_builder_rag_route_decision",
-                    "intent": intent,
-                    "target_kind": "website" if intent == "scope" else "none",
-                    "confidence": 1.0,
-                    "summary": "Fake route decision for mounted Website Builder test.",
-                    "answer": "inline scoped AI ran: True" if intent == "answer" else "",
-                    "clarification_question": "",
-                    "proposal_hint": "",
-                    "reasons": ["test fixture"],
-                    "warnings": [],
-                }
-                return ChatResponse(content=json.dumps(route), provider="fake-mounted-provider", model="fake-mounted-model")
-            raise AssertionError("Website Builder mounted route should call the AI router before any other AI request in this test.")
-
-    server.computer = FakeMountedComputer()
+    monkeypatch.setattr(route_module, "run_website_builder_generated_editor_pipeline", fake_generated_editor_pipeline)
 
     def post(path: str, payload: dict) -> dict:
         request = Request(
@@ -345,7 +338,7 @@ def test_website_builder_chat_edit_route_is_locked_to_site_scope(tmp_path) -> No
         assert output["metadata"]["allowed_root"] == "runtime/websites/hub-site/"
         content = "\n".join(str(part.get("content", "")) for part in output["parts"])
         assert "runtime/websites/hub-site/site.json" in content
-        assert "proposal-only" in content
+        assert "No replacement payloads were produced" in content
         assert "main_computer/router.py" not in content
         assert "main_computer_test" not in content
         assert output["metadata"]["auto_apply"] is False
@@ -361,7 +354,7 @@ def test_website_builder_chat_edit_route_is_locked_to_site_scope(tmp_path) -> No
             },
         )
         ai_content = "\n".join(str(part.get("content", "")) for part in ai_data["output_cell"]["parts"])
-        assert "inline scoped AI ran: True" in ai_content
+        assert "inline generated-editor ran: True" in ai_content
         assert ai_data["output_cell"]["metadata"]["scope_card"] is False
 
         request = Request(
@@ -385,11 +378,11 @@ def test_website_builder_chat_edit_route_is_locked_to_site_scope(tmp_path) -> No
 
 
 
-def test_website_builder_chat_edit_route_materializes_proposal_payloads(tmp_path) -> None:
+def test_website_builder_chat_edit_route_surfaces_generated_editor_artifact(tmp_path, monkeypatch) -> None:
     from main_computer.config import MainComputerConfig
-    from main_computer.models import ChatResponse
     from main_computer.viewport import ViewportServer
     from main_computer.website_project_manifest import list_website_projects
+    import main_computer.viewport_routes_applications as route_module
 
     list_website_projects(tmp_path)
     for rel in (
@@ -403,67 +396,38 @@ def test_website_builder_chat_edit_route_materializes_proposal_payloads(tmp_path
         target = tmp_path / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+    captured: dict[str, object] = {}
+
+    def fake_generated_editor_pipeline(**kwargs):
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "terminal_state": "promotable_edit_artifact",
+            "observed_terminal_class": "edit",
+            "artifact": {
+                "path": str(tmp_path / "diagnostics_output" / "rag_website_builder_real_edit_snapshot_patch.zip"),
+                "mode": "snapshot_zip",
+                "promotable": True,
+                "replacement_files": [{"path": "index.html", "exists": True, "artifact_member": "selected_site_workspace/index.html"}],
+                "dry_run_command": "python new_patch.py artifact.zip --dry-run",
+            },
+            "dry_run": {
+                "ok": True,
+                "command": "python new_patch.py artifact.zip --dry-run",
+                "cwd": str(tmp_path / "diagnostics_output" / "selected_site_workspace"),
+            },
+            "changed_files": ["index.html"],
+            "live_write": False,
+        }
+
+    monkeypatch.setattr(route_module, "run_website_builder_generated_editor_pipeline", fake_generated_editor_pipeline)
+
     server = ViewportServer(("127.0.0.1", 0), MainComputerConfig(workspace=tmp_path), verbose=False)
     server.debug_root = tmp_path
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base_url = f"http://127.0.0.1:{server.server_address[1]}"
-
-    class FakeMountedProvider:
-        name = "fake-mounted-provider"
-        model = "fake-mounted-model"
-
-    class FakeMountedComputer:
-        provider = FakeMountedProvider()
-
-        def chat_console_ai(self, source: str, attachments: list | None = None) -> ChatResponse:
-            assert "Return JSON only" in source
-            if "website_builder_rag_route_decision" in source or "Decide only the next high-level action" in source:
-                route = {
-                    "ok": True,
-                    "mode": "website_builder_rag_route_decision",
-                    "intent": "propose_edit",
-                    "target_kind": "website",
-                    "confidence": 1.0,
-                    "summary": "The user requested a Website Builder content edit.",
-                    "answer": "",
-                    "clarification_question": "",
-                    "proposal_hint": "Update the active site hero headline.",
-                    "reasons": ["test fixture"],
-                    "warnings": [],
-                }
-                return ChatResponse(content=json.dumps(route), provider="fake-mounted-provider", model="fake-mounted-model")
-            assert "builder_allowlist" in source
-            proposal = {
-                "ok": True,
-                "mode": "website_builder_rag_edit_proposal",
-                "target_kind": "website",
-                "target_id": "hub-site",
-                "summary": "Shorten the active site hero headline.",
-                "grounding": [
-                    {
-                        "evidence_type": "site_file",
-                        "path": "runtime/websites/hub-site/index.html",
-                        "exact_value": "<h1>Hub Site</h1>",
-                        "reason": "The active site hero headline is editable HTML text.",
-                    }
-                ],
-                "json_edits": [],
-                "text_replacements": [
-                    {
-                        "path": "runtime/websites/hub-site/index.html",
-                        "old_text": "<h1>Hub Site</h1>",
-                        "new_text": "<h1>Welcome to Arcstorm</h1>",
-                        "replace_all": False,
-                        "reason": "Update the hero headline copy.",
-                    }
-                ],
-                "create_files": [],
-                "warnings": [],
-            }
-            return ChatResponse(content=json.dumps(proposal), provider="fake-mounted-provider", model="fake-mounted-model")
-
-    server.computer = FakeMountedComputer()
 
     def post(path: str, payload: dict) -> dict:
         request = Request(
@@ -489,23 +453,28 @@ def test_website_builder_chat_edit_route_materializes_proposal_payloads(tmp_path
         assert data["ok"]
         metadata = data["output_cell"]["metadata"]
         proposal = metadata["proposal"]
+        content = "\n".join(str(part.get("content", "")) for part in data["output_cell"]["parts"])
+
         assert metadata["editor_intent"] == "propose_edit"
-        assert metadata["website_builder_route_decision"]["intent"] == "propose_edit"
+        assert metadata["generated_editor_pipeline"] is True
         assert metadata["auto_apply"] is False
         assert metadata["apply_result"] is None
+        assert metadata["live_write"] is False
         assert metadata["allowed_roots"] == ["runtime/websites/hub-site/"]
-        assert "main_computer/web/applications/scripts/website-builder.js" in metadata["builder_allowlist"]
-
-        assert proposal["type"] == "website-builder-rag-proposal"
+        assert metadata["builder_allowlist"] == []
+        assert metadata["changed_files"] == ["index.html"]
+        assert metadata["dry_run"]["ok"] is True
+        assert proposal["type"] == "website-builder-generated-editor-artifact"
         assert proposal["mode"] == "proposal-only"
-        assert proposal["validation"]["ok"] is True
-        assert proposal["apply_payloads"][0]["path"] == "runtime/websites/hub-site/index.html"
-        assert proposal["apply_payloads"][0]["operation"] == "modify"
-        assert proposal["apply_payloads"][0]["replacement_text"].count("Welcome to Arcstorm") == 1
-        assert "original_sha256" in proposal["apply_payloads"][0]
-        assert "replacement_sha256" in proposal["apply_payloads"][0]
-        assert proposal["outputs"]["manifest"].endswith("manifest.json")
-        assert proposal["outputs"]["reference_patch"].endswith("reference.patch")
+        assert proposal["apply_payloads"] == []
+        assert proposal["artifact"]["promotable"] is True
+        assert "Generated-editor Website Builder edit proposal produced" in content
+        assert "No live website files were written" in content
+        assert "new_patch.py dry-run" in content
+
+        assert captured["site_id"] == "hub-site"
+        assert str(captured["site_root"]).endswith("runtime/websites/hub-site")
+        assert captured["user_prompt"] == "Can you capitalize hub site in the main div?"
 
         on_disk = (tmp_path / "runtime" / "websites" / "hub-site" / "index.html").read_text(encoding="utf-8")
         assert "<h1>Hub Site</h1>" in on_disk
@@ -514,7 +483,6 @@ def test_website_builder_chat_edit_route_materializes_proposal_payloads(tmp_path
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
-
 
 
 def test_website_builder_rag_apply_validated_payload_writes_site_file_and_rejects_unsafe_payloads(tmp_path) -> None:
@@ -631,11 +599,11 @@ def test_website_builder_rag_apply_validated_payload_writes_site_file_and_reject
 
 
 
-def test_website_builder_chat_edit_auto_applies_validated_payloads(tmp_path) -> None:
+def test_website_builder_chat_edit_ignores_auto_apply_for_generated_editor_preview(tmp_path, monkeypatch) -> None:
     from main_computer.config import MainComputerConfig
-    from main_computer.models import ChatResponse
     from main_computer.viewport import ViewportServer
     from main_computer.website_project_manifest import list_website_projects
+    import main_computer.viewport_routes_applications as route_module
 
     list_website_projects(tmp_path)
     for rel in (
@@ -653,62 +621,26 @@ def test_website_builder_chat_edit_auto_applies_validated_payloads(tmp_path) -> 
     index_file = tmp_path / "runtime" / "websites" / "hub-site" / "index.html"
     before = index_file.read_text(encoding="utf-8")
 
-    class FakeMountedProvider:
-        name = "fake-mounted-provider"
-        model = "fake-mounted-model"
+    def fake_generated_editor_pipeline(**kwargs):
+        return {
+            "ok": True,
+            "terminal_state": "promotable_edit_artifact",
+            "observed_terminal_class": "edit",
+            "artifact": {
+                "path": str(tmp_path / "diagnostics_output" / "rag_website_builder_real_edit_snapshot_patch.zip"),
+                "mode": "snapshot_zip",
+                "promotable": True,
+                "replacement_files": [{"path": "index.html", "exists": True}],
+            },
+            "dry_run": {"ok": True, "command": "python new_patch.py artifact.zip --dry-run", "cwd": str(tmp_path)},
+            "changed_files": ["index.html"],
+            "live_write": False,
+        }
 
-    class FakeMountedComputer:
-        provider = FakeMountedProvider()
-
-        def chat_console_ai(self, source: str, attachments: list | None = None) -> ChatResponse:
-            assert "Return JSON only" in source
-            if "website_builder_rag_route_decision" in source or "Decide only the next high-level action" in source:
-                route = {
-                    "ok": True,
-                    "mode": "website_builder_rag_route_decision",
-                    "intent": "propose_edit",
-                    "target_kind": "website",
-                    "confidence": 1.0,
-                    "summary": "The user requested a Website Builder content edit.",
-                    "answer": "",
-                    "clarification_question": "",
-                    "proposal_hint": "Update the active site hero headline.",
-                    "reasons": ["test fixture"],
-                    "warnings": [],
-                }
-                return ChatResponse(content=json.dumps(route), provider="fake-mounted-provider", model="fake-mounted-model")
-            proposal = {
-                "ok": True,
-                "mode": "website_builder_rag_edit_proposal",
-                "target_kind": "website",
-                "target_id": "hub-site",
-                "summary": "Update the active site hero headline.",
-                "grounding": [
-                    {
-                        "evidence_type": "site_file",
-                        "path": "runtime/websites/hub-site/index.html",
-                        "exact_value": "<h1>Hub Site</h1>",
-                        "reason": "The active site hero headline is editable HTML text.",
-                    }
-                ],
-                "json_edits": [],
-                "text_replacements": [
-                    {
-                        "path": "runtime/websites/hub-site/index.html",
-                        "old_text": "<h1>Hub Site</h1>",
-                        "new_text": "<h1>Welcome to Arcstorm</h1>",
-                        "replace_all": False,
-                        "reason": "Update the hero headline copy.",
-                    }
-                ],
-                "create_files": [],
-                "warnings": [],
-            }
-            return ChatResponse(content=json.dumps(proposal), provider="fake-mounted-provider", model="fake-mounted-model")
+    monkeypatch.setattr(route_module, "run_website_builder_generated_editor_pipeline", fake_generated_editor_pipeline)
 
     server = ViewportServer(("127.0.0.1", 0), MainComputerConfig(workspace=tmp_path), verbose=False)
     server.debug_root = tmp_path
-    server.computer = FakeMountedComputer()
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base_url = f"http://127.0.0.1:{server.server_address[1]}"
@@ -739,22 +671,20 @@ def test_website_builder_chat_edit_auto_applies_validated_payloads(tmp_path) -> 
 
         assert data["ok"]
         output = data["output_cell"]
-        assert output["metadata"]["editor_intent"] == "apply_edit"
-        assert output["metadata"]["auto_apply"] is True
-        assert output["metadata"]["apply_result"]["ok"] is True
-        assert output["metadata"]["proposal"]["mode"] == "applied"
+        assert output["metadata"]["editor_intent"] == "propose_edit"
+        assert output["metadata"]["auto_apply"] is False
+        assert output["metadata"]["apply_result"] is None
+        assert output["metadata"]["live_write"] is False
+        assert output["metadata"]["proposal"]["mode"] == "proposal-only"
         after = index_file.read_text(encoding="utf-8")
-        assert "Welcome to Arcstorm" in after
-        assert after != before
+        assert after == before
         content = "\n".join(str(part.get("content", "")) for part in output["parts"])
-        assert "Applied" in content
-        assert "Website Builder golden-path RAG wrote validated replacement files" in content
+        assert "No live website files were written" in content
+        assert "Review the generated replacement before applying" in content
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
-
-
 
 
 def test_website_builder_rag_smoke_requires_explicit_site_id_when_multiple_projects(tmp_path) -> None:

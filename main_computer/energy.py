@@ -7,6 +7,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from main_computer.hub_credit_models import (
+    DEFAULT_WORKER_PAYOUT_PRECISION_PLACES,
+    normalize_worker_payout_precision_places,
+    truncate_worker_payout_for_precision,
+)
+
 
 @dataclass(frozen=True)
 class EnergyNode:
@@ -44,15 +50,16 @@ class EnergyCreditLedger:
         self.path = root / "ledger.json"
         self.root.mkdir(parents=True, exist_ok=True)
 
-    def status(self) -> dict[str, Any]:
+    def status(self, *, exact: bool = False, precision_places: Any = None) -> dict[str, Any]:
         data = self._load()
+        precision = normalize_worker_payout_precision_places(precision_places)
         return {
             "network": data["network"],
             "head": data["head"],
             "nodes": data["nodes"],
             "balances": self._balances(data),
-            "payout_queue": self._payout_queue_status(data),
-            "transactions": data["transactions"][-25:],
+            "payout_queue": self._payout_queue_status(data, exact=exact, precision_places=precision),
+            "transactions": self._sanitize_transactions(data["transactions"][-25:], exact=exact, precision_places=precision),
         }
 
     def register_node(self, node_id: str, role: str, endpoint: str) -> dict[str, Any]:
@@ -118,36 +125,62 @@ class EnergyCreditLedger:
         self._save(data)
         return self.status()
 
-    def payout_summary(self, node_id: str) -> dict[str, Any]:
+    def payout_summary(self, node_id: str, *, exact: bool = False, precision_places: Any = None) -> dict[str, Any]:
         data = self._load()
         node_id = self._clean_id(node_id)
         self._ensure_node(data, node_id)
+        precision = normalize_worker_payout_precision_places(precision_places)
         pending = [item for item in data["pending_payouts"] if item.get("node_id") == node_id]
-        return {
+        exact_credits = sum(int(item.get("credits", 0) or 0) for item in pending)
+        published_credits, dust_credits, precision, bucket_size = truncate_worker_payout_for_precision(
+            exact_credits,
+            precision_places=precision,
+        )
+        payload = {
             "ok": True,
             "node_id": node_id,
-            "pending_credits": sum(int(item.get("credits", 0) or 0) for item in pending),
+            "pending_credits": exact_credits if exact else published_credits,
+            "pending_credits_published": published_credits,
             "pending_count": len(pending),
-            "pending_payouts": pending[-100:],
-            "ledger": self.status(),
+            "pending_payouts": [
+                self._sanitize_payout(item, exact=exact, precision_places=precision)
+                for item in pending[-100:]
+            ],
+            "privacy": self._privacy_context(
+                exact=exact,
+                precision_places=precision,
+                rounding_bucket_credits=bucket_size,
+            ),
+            "ledger": self.status(exact=exact, precision_places=precision),
         }
+        if exact:
+            payload["pending_credits_exact"] = exact_credits
+            payload["bridge_retained_credits_if_claimed"] = dust_credits
+        return payload
 
-    def claim_payouts(self, node_id: str, memo: str = "") -> dict[str, Any]:
+    def claim_payouts(self, node_id: str, memo: str = "", *, exact: bool = False, precision_places: Any = None) -> dict[str, Any]:
         """Bridge all queued credits for a worker/upstream node as one claim."""
         data = self._load()
         node_id = self._clean_id(node_id)
         self._ensure_node(data, node_id)
+        precision = normalize_worker_payout_precision_places(precision_places)
         selected = [item for item in data["pending_payouts"] if item.get("node_id") == node_id]
         if not selected:
             return {
                 "ok": True,
                 "node_id": node_id,
                 "claimed_credits": 0,
+                "claimed_credits_published": 0,
                 "claimed_count": 0,
-                "ledger": self.status(),
+                "privacy": self._privacy_context(exact=exact, precision_places=precision),
+                "ledger": self.status(exact=exact, precision_places=precision),
             }
 
         credits = sum(int(item.get("credits", 0) or 0) for item in selected)
+        published_credits, dust_credits, precision, bucket_size = truncate_worker_payout_for_precision(
+            credits,
+            precision_places=precision,
+        )
         kinds = {str(item.get("kind", "")) for item in selected}
         if kinds == {"hub_upstream_payout_queued"}:
             kind = "hub_upstream_payout_claim"
@@ -161,14 +194,27 @@ class EnergyCreditLedger:
         selected_ids = {str(item.get("payout_id", "")) for item in selected}
         data["pending_payouts"] = [item for item in data["pending_payouts"] if str(item.get("payout_id", "")) not in selected_ids]
         self._save(data)
-        return {
+        transaction = asdict(tx)
+        if not exact:
+            transaction = self._sanitize_transaction(transaction, exact=False, precision_places=precision)
+        payload = {
             "ok": True,
             "node_id": node_id,
-            "claimed_credits": credits,
+            "claimed_credits": credits if exact else published_credits,
+            "claimed_credits_published": published_credits,
             "claimed_count": len(selected),
-            "transaction": asdict(tx),
-            "ledger": self.status(),
+            "transaction": transaction,
+            "privacy": self._privacy_context(
+                exact=exact,
+                precision_places=precision,
+                rounding_bucket_credits=bucket_size,
+            ),
+            "ledger": self.status(exact=exact, precision_places=precision),
         }
+        if exact:
+            payload["claimed_credits_exact"] = credits
+            payload["bridge_retained_credits_if_claimed"] = dust_credits
+        return payload
 
     def spend(self, node_id: str, credits: int, memo: str = "") -> dict[str, Any]:
         if credits <= 0:
@@ -349,21 +395,127 @@ class EnergyCreditLedger:
             balances[node_id] = balances.get(node_id, 0) + int(tx.get("credits", 0))
         return balances
 
-    def _payout_queue_status(self, data: dict[str, Any]) -> dict[str, Any]:
-        balances: dict[str, int] = {}
+    def _payout_queue_status(self, data: dict[str, Any], *, exact: bool = False, precision_places: Any = None) -> dict[str, Any]:
+        precision = normalize_worker_payout_precision_places(precision_places)
+        balances_exact: dict[str, int] = {}
         counts: dict[str, int] = {}
         for item in data["pending_payouts"]:
             node_id = str(item.get("node_id", ""))
             credits = int(item.get("credits", 0) or 0)
-            balances[node_id] = balances.get(node_id, 0) + credits
+            balances_exact[node_id] = balances_exact.get(node_id, 0) + credits
             counts[node_id] = counts.get(node_id, 0) + 1
-        return {
+        balances: dict[str, int] = {}
+        dust_by_node: dict[str, int] = {}
+        for node_id, exact_credits in balances_exact.items():
+            published, dust, precision, bucket_size = truncate_worker_payout_for_precision(
+                exact_credits,
+                precision_places=precision,
+            )
+            balances[node_id] = exact_credits if exact else published
+            dust_by_node[node_id] = dust
+        status = {
             "pending_count": len(data["pending_payouts"]),
             "balances": balances,
             "counts": counts,
-            "recent": data["pending_payouts"][-25:],
+            "recent": [
+                self._sanitize_payout(item, exact=exact, precision_places=precision)
+                for item in data["pending_payouts"][-25:]
+            ],
             "settlement": "batched-worker-claim",
+            "privacy": self._privacy_context(exact=exact, precision_places=precision),
         }
+        if exact:
+            status["balances_exact"] = balances_exact
+            status["bridge_retained_credits_if_claimed_by_node"] = dust_by_node
+        return status
+
+    def _privacy_context(
+        self,
+        *,
+        exact: bool = False,
+        precision_places: Any = None,
+        rounding_bucket_credits: int | None = None,
+    ) -> dict[str, Any]:
+        precision = normalize_worker_payout_precision_places(precision_places)
+        if rounding_bucket_credits is None:
+            _published, _dust, precision, bucket_size = truncate_worker_payout_for_precision(0, precision_places=precision)
+        else:
+            bucket_size = max(1, int(rounding_bucket_credits or 1))
+        return {
+            "exact_amounts_visible": bool(exact),
+            "exact_amounts_hidden": not bool(exact),
+            "precision_places": precision,
+            "rounding_bucket_credits": bucket_size,
+            "rounding": "floor_to_precision",
+            "request_links_redacted": not bool(exact),
+        }
+
+    def _sanitize_payout(self, item: dict[str, Any], *, exact: bool = False, precision_places: Any = None) -> dict[str, Any]:
+        payout = dict(item)
+        precision = normalize_worker_payout_precision_places(precision_places)
+        credits = int(payout.get("credits", 0) or 0)
+        published, dust, precision, bucket_size = truncate_worker_payout_for_precision(
+            credits,
+            precision_places=precision,
+        )
+        if exact:
+            payout["credits_exact"] = credits
+            payout["credits_published"] = published
+            payout["bridge_retained_credits_if_claimed"] = dust
+            payout["privacy"] = self._privacy_context(
+                exact=True,
+                precision_places=precision,
+                rounding_bucket_credits=bucket_size,
+            )
+            return payout
+        payout["credits"] = published
+        payout["credits_published"] = published
+        payout["memo"] = "privacy-redacted"
+        payout["request_id"] = ""
+        payout["privacy"] = self._privacy_context(
+            exact=False,
+            precision_places=precision,
+            rounding_bucket_credits=bucket_size,
+        )
+        return payout
+
+    def _sanitize_transaction(self, item: dict[str, Any], *, exact: bool = False, precision_places: Any = None) -> dict[str, Any]:
+        tx = dict(item)
+        kind = str(tx.get("kind", ""))
+        if "payout" not in kind:
+            return tx
+        precision = normalize_worker_payout_precision_places(precision_places)
+        credits = int(tx.get("credits", 0) or 0)
+        published, dust, precision, bucket_size = truncate_worker_payout_for_precision(
+            credits,
+            precision_places=precision,
+        )
+        if exact:
+            tx["credits_exact"] = credits
+            tx["credits_published"] = published
+            tx["bridge_retained_credits_if_claimed"] = dust
+            tx["privacy"] = self._privacy_context(
+                exact=True,
+                precision_places=precision,
+                rounding_bucket_credits=bucket_size,
+            )
+            return tx
+        tx["credits"] = published
+        tx["credits_published"] = published
+        tx["memo"] = "privacy-redacted"
+        tx["privacy"] = self._privacy_context(
+            exact=False,
+            precision_places=precision,
+            rounding_bucket_credits=bucket_size,
+        )
+        return tx
+
+    def _sanitize_transactions(self, items: list[dict[str, Any]], *, exact: bool = False, precision_places: Any = None) -> list[dict[str, Any]]:
+        return [
+            self._sanitize_transaction(item, exact=exact, precision_places=precision_places)
+            for item in items
+            if isinstance(item, dict)
+        ]
 
     def _ensure_node(self, data: dict[str, Any], node_id: str) -> None:
         if node_id == data["head"]["node_id"]:

@@ -13,6 +13,7 @@ from main_computer.config import MainComputerConfig
 from main_computer.hub import HubHttpServer
 from main_computer.hub_credit_ledger import HubCreditLedger
 from main_computer.hub_credit_models import WorkerEarning, make_worker_commitment
+from main_computer.hub_plex_models import HubRequestRecord, HubRequestStatus
 
 
 def post_json(url: str, payload: dict, *, timeout: float = 5.0, allow_error: bool = False) -> dict:
@@ -239,7 +240,15 @@ class WorkerSettlementClaimTests(unittest.TestCase):
         )
         claim_id = claimed["claim"]["claim_id"]
 
-        totals = get_json(f"{hub_base}/api/hub/v1/workers/settlements?{urlencode({'worker_node_id': worker})}")
+        public_totals = get_json(f"{hub_base}/api/hub/v1/workers/settlements?{urlencode({'worker_node_id': worker})}")
+        self.assertEqual(public_totals["precision_places"], 2)
+        self.assertEqual(public_totals["rounding_bucket_credits"], 10_000)
+        self.assertNotIn("settleable_units_exact", public_totals)
+        self.assertNotIn("settleable_dust_units", public_totals)
+        self.assertEqual(public_totals["settleable_units_published"], 5_550_000)
+        self.assertTrue(public_totals["privacy"]["exact_amounts_hidden"])
+
+        totals = get_json(f"{hub_base}/api/hub/v1/workers/settlements?{urlencode({'worker_node_id': worker, 'audit': '1'})}")
         self.assertEqual(totals["precision_places"], 2)
         self.assertEqual(totals["rounding_bucket_credits"], 10_000)
         self.assertEqual(totals["settleable_units_exact"], 5_555_555)
@@ -259,6 +268,154 @@ class WorkerSettlementClaimTests(unittest.TestCase):
         self.assertEqual(batch["dust_credits"], 5_555)
         self.assertEqual(batch["bridge_retained_credits"], 5_555)
         self.assertEqual(batch["batch"]["precision_places"], 2)
+
+
+    def test_phase6_public_payout_surfaces_hide_high_precision_worker_amounts(self) -> None:
+        hub, hub_base = self._start_hub(credits_per_request=5_500_123)
+        requester = "phase6-privacy-requester"
+        worker = "phase6-privacy-worker"
+        exact_units = 5_500_123
+        published_units = 5_500_000
+        hub.credit_ledger.issue(account_id=requester, credits=100_000_000, memo="phase6 privacy test")
+
+        post_json(
+            f"{hub_base}/api/hub/v1/workers/register",
+            {
+                "node_id": worker,
+                "endpoint": "http://127.0.0.1:1",
+                "model": "mock-fast-chat",
+                "models": ["mock-fast-chat"],
+                "credits_per_request": exact_units,
+                "capabilities": {"provider": "mock", "worker_pull_v0": True},
+            },
+        )
+        submitted = post_json(
+            f"{hub_base}/api/hub/v1/requests",
+            {
+                "account_id": requester,
+                "client_node_id": requester,
+                "model": "mock-fast-chat",
+                "prompt": "phase6 privacy settlement",
+                "max_credits": 6_000_000,
+                "execution_mode": "worker_pull_v0",
+                "metadata": {"worker_pull_v0": True, "mock_provider_config": {"answer": "phase6 answer"}},
+                "idempotency_key": "phase6-privacy-request",
+            },
+        )["request"]
+        self.assertEqual(submitted["state"], "queued")
+        lease = post_json(f"{hub_base}/api/hub/v1/workers/poll", {"worker_node_id": worker})["lease"]
+        completed = post_json(
+            f"{hub_base}/api/hub/v1/workers/results",
+            {
+                "worker_node_id": worker,
+                "request_id": lease["request_id"],
+                "lease_id": lease["lease_id"],
+                "result": {
+                    "status": "success",
+                    "response": {"content": "phase6 answer", "provider": "mock-worker", "model": "mock-fast-chat"},
+                },
+            },
+        )["request"]
+        self.assertEqual(completed["charged_credits"], exact_units)
+
+        payout_queue_json = json.dumps(completed["response"]["metadata"]["hub"]["payout_queue"], sort_keys=True)
+        self.assertNotIn(str(exact_units), payout_queue_json)
+        self.assertIn(str(published_units), payout_queue_json)
+
+        with urlopen(f"{hub_base}/api/hub/status", timeout=5) as response:
+            public_status = json.loads(response.read().decode("utf-8"))
+        public_energy_json = json.dumps(public_status["energy"], sort_keys=True)
+        self.assertNotIn(str(exact_units), public_energy_json)
+        self.assertIn(str(published_units), public_energy_json)
+        self.assertTrue(public_status["energy"]["payout_queue"]["privacy"]["exact_amounts_hidden"])
+
+        with urlopen(f"{hub_base}/api/hub/payouts?{urlencode({'node_id': worker})}", timeout=5) as response:
+            public_payouts = json.loads(response.read().decode("utf-8"))
+        public_payouts_json = json.dumps(public_payouts, sort_keys=True)
+        self.assertNotIn(str(exact_units), public_payouts_json)
+        self.assertEqual(public_payouts["pending_credits"], published_units)
+        self.assertTrue(public_payouts["privacy"]["exact_amounts_hidden"])
+
+        with urlopen(f"{hub_base}/api/hub/payouts?{urlencode({'node_id': worker, 'audit': '1'})}", timeout=5) as response:
+            audit_payouts = json.loads(response.read().decode("utf-8"))
+        audit_payouts_json = json.dumps(audit_payouts, sort_keys=True)
+        self.assertIn(str(exact_units), audit_payouts_json)
+        self.assertEqual(audit_payouts["pending_credits_exact"], exact_units)
+
+        claim = post_json(
+            f"{hub_base}/api/hub/v1/workers/claims",
+            {"worker_node_id": worker, "idempotency_key": "phase6-privacy-claim"},
+        )
+        claim_id = claim["claim"]["claim_id"]
+
+        public_totals = get_json(f"{hub_base}/api/hub/v1/workers/settlements?{urlencode({'worker_node_id': worker})}")
+        public_totals_json = json.dumps(public_totals, sort_keys=True)
+        self.assertNotIn(str(exact_units), public_totals_json)
+        self.assertEqual(public_totals["settleable_units_published"], published_units)
+        self.assertTrue(public_totals["privacy"]["exact_amounts_hidden"])
+
+        audit_totals = get_json(f"{hub_base}/api/hub/v1/workers/settlements?{urlencode({'worker_node_id': worker, 'audit': '1'})}")
+        self.assertIn(str(exact_units), json.dumps(audit_totals, sort_keys=True))
+        self.assertEqual(audit_totals["settleable_units_exact"], exact_units)
+        self.assertEqual(audit_totals["settleable_units_published"], published_units)
+        self.assertEqual(audit_totals["settleable_dust_units"], 123)
+
+        batch = post_json(
+            f"{hub_base}/api/hub/v1/workers/settlements/batches",
+            {"worker_node_id": worker, "claim_ids": [claim_id], "idempotency_key": "phase6-privacy-batch"},
+        )
+        self.assertEqual(batch["total_credits_published"], published_units)
+        self.assertEqual(batch["dust_credits"], 123)
+
+
+    def test_request_status_sanitizes_legacy_exact_payout_queue_metadata(self) -> None:
+        exact_units = 5_500_123
+        published_units = 5_500_000
+        record = HubRequestRecord(
+            request_id="hub_legacy_privacy",
+            client_node_id="requester",
+            model="mock-fast-chat",
+            state="completed",
+            response={
+                "content": "answer",
+                "provider": "hub",
+                "model": "mock-fast-chat",
+                "metadata": {
+                    "hub": {
+                        "payout_queue": {
+                            "pending_count": 1,
+                            "balances": {"worker": exact_units},
+                            "counts": {"worker": 1},
+                            "recent": [
+                                {
+                                    "payout_id": "payout_legacy",
+                                    "kind": "hub_worker_payout_queued",
+                                    "node_id": "worker",
+                                    "credits": exact_units,
+                                    "memo": "hub worker-pull request hub_secret",
+                                    "request_id": "hub_secret",
+                                    "created_at": "2026-05-28T00:00:00+00:00",
+                                }
+                            ],
+                            "settlement": "batched-worker-claim",
+                        }
+                    }
+                },
+            },
+        )
+
+        status = HubRequestStatus.from_record(record).as_dict()
+        payout_queue = status["response"]["metadata"]["hub"]["payout_queue"]
+        rendered = json.dumps(payout_queue, sort_keys=True)
+
+        self.assertNotIn(str(exact_units), rendered)
+        self.assertIn(str(published_units), rendered)
+        self.assertEqual(payout_queue["balances"]["worker"], published_units)
+        self.assertEqual(payout_queue["recent"][0]["credits"], published_units)
+        self.assertEqual(payout_queue["recent"][0]["request_id"], "")
+        self.assertEqual(payout_queue["recent"][0]["memo"], "privacy-redacted")
+        self.assertTrue(payout_queue["privacy"]["exact_amounts_hidden"])
+
 
     def test_worker_claim_api_records_idempotent_claim(self) -> None:
         hub, hub_base = self._start_hub()

@@ -135,18 +135,31 @@ class HubServerTests(unittest.TestCase):
                 with urlopen(f"{hub_base}/api/hub/status", timeout=5) as response:
                     status = json.loads(response.read().decode("utf-8"))
                 self.assertEqual(status["energy"]["balances"]["gpu-worker-01"], 0)
-                self.assertEqual(status["energy"]["payout_queue"]["balances"]["gpu-worker-01"], 3)
+                self.assertEqual(status["energy"]["payout_queue"]["balances"]["gpu-worker-01"], 0)
+                self.assertTrue(status["energy"]["payout_queue"]["privacy"]["exact_amounts_hidden"])
                 self.assertEqual(status["energy"]["payout_queue"]["recent"][-1]["kind"], "hub_worker_payout_queued")
+                self.assertEqual(status["energy"]["payout_queue"]["recent"][-1]["credits"], 0)
+                self.assertEqual(status["energy"]["payout_queue"]["recent"][-1]["request_id"], "")
                 self.assertTrue(status["security"]["high_security_default"])
+
+                with urlopen(f"{hub_base}/api/hub/status?audit=1", timeout=5) as response:
+                    audit_status = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(audit_status["energy"]["payout_queue"]["balances"]["gpu-worker-01"], 3)
 
                 with urlopen(f"{hub_base}/api/hub/payouts?node_id=gpu-worker-01", timeout=5) as response:
                     payout_summary = json.loads(response.read().decode("utf-8"))
-                self.assertEqual(payout_summary["pending_credits"], 3)
+                self.assertEqual(payout_summary["pending_credits"], 0)
+                self.assertTrue(payout_summary["privacy"]["exact_amounts_hidden"])
                 self.assertEqual(payout_summary["pending_count"], 1)
+
+                with urlopen(f"{hub_base}/api/hub/payouts?node_id=gpu-worker-01&audit=1", timeout=5) as response:
+                    audit_payout_summary = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(audit_payout_summary["pending_credits"], 3)
+                self.assertEqual(audit_payout_summary["pending_credits_exact"], 3)
 
                 claim_request = Request(
                     f"{hub_base}/api/hub/payouts/claim",
-                    data=json.dumps({"node_id": "gpu-worker-01"}).encode("utf-8"),
+                    data=json.dumps({"node_id": "gpu-worker-01", "exact": True}).encode("utf-8"),
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
@@ -261,12 +274,20 @@ class HubServerTests(unittest.TestCase):
                     local_status = json.loads(response.read().decode("utf-8"))
                 self.assertEqual(local_status["upstream_count"], 1)
                 self.assertEqual(local_status["energy"]["balances"]["upstream-hub-01"], 0)
-                self.assertEqual(local_status["energy"]["payout_queue"]["balances"]["upstream-hub-01"], 2)
+                self.assertEqual(local_status["energy"]["payout_queue"]["balances"]["upstream-hub-01"], 0)
+                self.assertTrue(local_status["energy"]["payout_queue"]["privacy"]["exact_amounts_hidden"])
+                with urlopen(f"{local_base}/api/hub/status?audit=1", timeout=5) as response:
+                    local_audit_status = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(local_audit_status["energy"]["payout_queue"]["balances"]["upstream-hub-01"], 2)
 
                 with urlopen(f"{upstream_base}/api/hub/status", timeout=5) as response:
                     upstream_status = json.loads(response.read().decode("utf-8"))
                 self.assertEqual(upstream_status["energy"]["balances"]["gpu-worker-02"], 0)
-                self.assertEqual(upstream_status["energy"]["payout_queue"]["balances"]["gpu-worker-02"], 5)
+                self.assertEqual(upstream_status["energy"]["payout_queue"]["balances"]["gpu-worker-02"], 0)
+                self.assertTrue(upstream_status["energy"]["payout_queue"]["privacy"]["exact_amounts_hidden"])
+                with urlopen(f"{upstream_base}/api/hub/status?audit=1", timeout=5) as response:
+                    upstream_audit_status = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(upstream_audit_status["energy"]["payout_queue"]["balances"]["gpu-worker-02"], 5)
             finally:
                 local.shutdown()
                 upstream.shutdown()

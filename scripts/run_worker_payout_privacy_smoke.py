@@ -74,6 +74,18 @@ def assert_equal(name: str, actual: object, expected: object) -> None:
         raise AssertionError(f"{name}: expected {expected!r}, got {actual!r}")
 
 
+def assert_not_contains(name: str, payload: object, needle: int) -> None:
+    rendered = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    if str(needle) in rendered:
+        raise AssertionError(f"{name}: privacy-safe payload leaked exact amount {needle}")
+
+
+def assert_contains(name: str, payload: object, needle: int) -> None:
+    rendered = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    if str(needle) not in rendered:
+        raise AssertionError(f"{name}: expected audit payload to contain exact amount {needle}")
+
+
 def rounded_down(value: int, precision_places: int) -> tuple[int, int, int]:
     precision = max(0, min(6, int(precision_places)))
     bucket = 10 ** (6 - precision)
@@ -82,13 +94,13 @@ def rounded_down(value: int, precision_places: int) -> tuple[int, int, int]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Phase 5 worker settlement payout rounding smoke.")
+    parser = argparse.ArgumentParser(description="Phase 6 privacy-safe worker payout surface smoke.")
     parser.add_argument("--hub-url", default="http://127.0.0.1:8770", help="Running hub base URL.")
     parser.add_argument("--scope", default="", help="Fresh deterministic namespace for this smoke run.")
     parser.add_argument("--worker-index", type=int, default=0)
     parser.add_argument("--requester-index", type=int, default=0)
     parser.add_argument("--json", action="store_true", help="Print the full JSON report.")
-    parser.add_argument("--report-path", default="runtime/hub/worker_settlement_rounding_smoke.json")
+    parser.add_argument("--report-path", default="runtime/hub/worker_payout_privacy_smoke.json")
     parser.add_argument("--credits", type=int, default=100_000_000)
     parser.add_argument("--max-credits", type=int, default=6_000_000)
     parser.add_argument("--worker-credits", type=int, default=5_500_123)
@@ -97,12 +109,12 @@ def main(argv: list[str] | None = None) -> int:
 
     hub_url = args.hub_url.rstrip("/")
     scope = clean_scope(args.scope or f"local-{int(time.time())}")
-    requester = f"phase5-worker-rounding-requester-{args.requester_index}-{scope}"
-    worker = f"paid-mock-worker-phase5-rounding-{args.worker_index}-{scope}"
-    request_key = f"phase5-worker-rounding-request-{scope}"
-    claim_key = f"phase5-worker-rounding-claim-{scope}"
-    batch_key = f"phase5-worker-rounding-batch-{scope}"
-    settle_key = f"phase5-worker-rounding-settle-{scope}"
+    requester = f"phase6-payout-privacy-requester-{args.requester_index}-{scope}"
+    worker = f"paid-mock-worker-phase6-privacy-{args.worker_index}-{scope}"
+    request_key = f"phase6-payout-privacy-request-{scope}"
+    claim_key = f"phase6-payout-privacy-claim-{scope}"
+    batch_key = f"phase6-payout-privacy-batch-{scope}"
+    settle_key = f"phase6-payout-privacy-settle-{scope}"
     report_path = Path(args.report_path)
 
     expected_published, expected_dust, expected_bucket = rounded_down(args.worker_credits, args.precision_places)
@@ -110,11 +122,11 @@ def main(argv: list[str] | None = None) -> int:
     steps: list[dict] = []
     report: dict = {
         "ok": False,
-        "phase": "phase5-worker-settlement-rounding",
+        "phase": "phase6-worker-payout-privacy-surfaces",
         "hub_url": hub_url,
         "scope": scope,
-        "requester": {"account_id": requester, "self_contained_phase5": True},
-        "worker": {"node_id": worker, "self_contained_phase5": True},
+        "requester": {"account_id": requester, "self_contained_phase6": True},
+        "worker": {"node_id": worker, "self_contained_phase6": True},
         "precision_places": args.precision_places,
         "rounding_bucket_credits": expected_bucket,
         "steps": steps,
@@ -132,8 +144,8 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "account_id": requester,
                     "credits": args.credits,
-                    "memo": "phase5 worker settlement rounding smoke funding",
-                    "metadata": {"phase5_worker_settlement_rounding": True, "scope": scope},
+                    "memo": "phase6 worker payout privacy smoke funding",
+                    "metadata": {"phase6_worker_payout_privacy": True, "scope": scope},
                 },
             ),
         )
@@ -141,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
 
         registered = add_step(
             steps,
-            "register phase5 precision worker",
+            "register phase6 privacy worker",
             post_json(
                 f"{hub_url}/api/hub/v1/workers/register",
                 {
@@ -154,13 +166,12 @@ def main(argv: list[str] | None = None) -> int:
                     "capabilities": {
                         "provider": "mock",
                         "worker_pull_v0": True,
-                        "phase5_worker_settlement_rounding": True,
+                        "phase6_worker_payout_privacy": True,
                     },
                 },
             ),
         )
         assert_equal("register worker ok", registered.get("ok"), True)
-        assert_equal("worker precision default", int(registered.get("worker", {}).get("settlement_precision_places", -1)), args.precision_places)
 
         add_step(
             steps,
@@ -180,13 +191,13 @@ def main(argv: list[str] | None = None) -> int:
                     "account_id": requester,
                     "client_node_id": requester,
                     "model": "mock-fast-chat",
-                    "prompt": "phase5 worker settlement rounding smoke",
+                    "prompt": "phase6 worker payout privacy smoke",
                     "max_credits": args.max_credits,
                     "execution_mode": "worker_pull_v0",
                     "metadata": {
                         "worker_pull_v0": True,
-                        "phase5_worker_settlement_rounding": True,
-                        "mock_provider_config": {"answer": "phase5 worker rounding answer"},
+                        "phase6_worker_payout_privacy": True,
+                        "mock_provider_config": {"answer": "phase6 worker privacy answer"},
                     },
                     "idempotency_key": request_key,
                 },
@@ -215,10 +226,10 @@ def main(argv: list[str] | None = None) -> int:
                         "result": {
                             "status": "success",
                             "response": {
-                                "content": "phase5 worker rounding answer",
+                                "content": "phase6 worker privacy answer",
                                 "provider": "mock-worker",
                                 "model": "mock-fast-chat",
-                                "metadata": {"phase5_worker_settlement_rounding": True},
+                                "metadata": {"phase6_worker_payout_privacy": True},
                             },
                         },
                     },
@@ -231,17 +242,35 @@ def main(argv: list[str] | None = None) -> int:
         if not earning_id:
             raise AssertionError("completed request did not expose worker_earning_id")
 
-        earnings = add_step(
+        payout_queue = (completed.get("response") or {}).get("metadata", {}).get("hub", {}).get("payout_queue", {})
+        add_step(steps, "check response payout queue privacy", {"ok": True, "payout_queue": payout_queue})
+        assert_not_contains("response payout_queue", payout_queue, args.worker_credits)
+        assert_contains("response payout_queue rounded", payout_queue, expected_published)
+
+        public_status = add_step(steps, "query normal hub status", get_json(f"{hub_url}/api/hub/status"))
+        assert_not_contains("normal hub status energy", public_status.get("energy", {}), args.worker_credits)
+        assert_contains("normal hub status rounded energy", public_status.get("energy", {}), expected_published)
+        assert_equal("normal hub energy privacy", public_status["energy"]["payout_queue"]["privacy"]["exact_amounts_hidden"], True)
+
+        audit_status = add_step(steps, "query audit hub status", get_json(f"{hub_url}/api/hub/status?{urlencode({'audit': '1'})}"))
+        assert_contains("audit hub status energy", audit_status.get("energy", {}), args.worker_credits)
+
+        public_payouts = add_step(
             steps,
-            "verify worker earning",
-            get_json(
-                f"{hub_url}/api/hub/v1/credits/worker-earnings?{urlencode({'worker_node_id': worker, 'request_id': request_id})}"
-            ),
+            "query normal legacy payout summary",
+            get_json(f"{hub_url}/api/hub/payouts?{urlencode({'node_id': worker})}"),
         )
-        matching = [item for item in earnings.get("worker_earnings", []) if item.get("earning_id") == earning_id]
-        if len(matching) != 1:
-            raise AssertionError(f"expected exactly one matching worker earning for {earning_id}, got {len(matching)}")
-        assert_equal("earning credits", int(matching[0].get("credits", 0)), args.worker_credits)
+        assert_equal("normal payout published credits", int(public_payouts.get("pending_credits", -1)), expected_published)
+        assert_not_contains("normal legacy payout summary", public_payouts, args.worker_credits)
+        assert_equal("normal payout privacy", public_payouts["privacy"]["exact_amounts_hidden"], True)
+
+        audit_payouts = add_step(
+            steps,
+            "query audit legacy payout summary",
+            get_json(f"{hub_url}/api/hub/payouts?{urlencode({'node_id': worker, 'audit': '1'})}"),
+        )
+        assert_equal("audit payout exact credits", int(audit_payouts.get("pending_credits_exact", -1)), args.worker_credits)
+        assert_contains("audit legacy payout summary", audit_payouts, args.worker_credits)
 
         claim = add_step(
             steps,
@@ -251,28 +280,39 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "worker_node_id": worker,
                     "idempotency_key": claim_key,
-                    "memo": "phase5 worker rounding claim",
-                    "metadata": {"phase5_worker_settlement_rounding": True, "scope": scope},
+                    "memo": "phase6 worker privacy claim",
+                    "metadata": {"phase6_worker_payout_privacy": True, "scope": scope},
                 },
             ),
         )
         assert_equal("claim ok", claim.get("ok"), True)
         claim_id = str((claim.get("claim") or {}).get("claim_id") or "")
         if not claim_id:
-            # Same-scope reruns return the original claim through idempotency, so claim is still present.
             raise AssertionError("claim response did not include a claim_id")
-        assert_equal("claimed exact worker credits", int(claim.get("claimed_credits", 0)), args.worker_credits)
 
-        settlement_before = add_step(
+        public_settlement = add_step(
             steps,
-            "query rounded settlement before batch",
+            "query normal worker settlement",
+            get_json(f"{hub_url}/api/hub/v1/workers/settlements?{urlencode({'worker_node_id': worker})}"),
+        )
+        assert_not_contains("normal worker settlement", public_settlement, args.worker_credits)
+        assert_equal("normal settlement privacy", public_settlement["privacy"]["exact_amounts_hidden"], True)
+
+        audit_settlement = add_step(
+            steps,
+            "query audit worker settlement",
             get_json(f"{hub_url}/api/hub/v1/workers/settlements?{urlencode({'worker_node_id': worker, 'audit': '1'})}"),
         )
-        assert_equal("settlement precision", int(settlement_before.get("precision_places", -1)), args.precision_places)
-        if int(settlement_before.get("settleable_units_exact", 0)) > 0:
-            assert_equal("settleable exact", int(settlement_before.get("settleable_units_exact", 0)), args.worker_credits)
-            assert_equal("settleable published", int(settlement_before.get("settleable_units_published", 0)), expected_published)
-            assert_equal("settleable dust", int(settlement_before.get("settleable_dust_units", 0)), expected_dust)
+        same_scope_already_batched = int(audit_settlement.get("settleable_units_exact", 0)) == 0 and int(
+            audit_settlement.get("settled_units_exact", 0)
+        ) == args.worker_credits
+        if same_scope_already_batched:
+            assert_equal("normal settlement published after prior run", int(public_settlement.get("settled_units_published", -1)), expected_published)
+        else:
+            assert_equal("normal settlement published", int(public_settlement.get("settleable_units_published", -1)), expected_published)
+            assert_equal("audit settlement exact", int(audit_settlement.get("settleable_units_exact", -1)), args.worker_credits)
+            assert_equal("audit settlement published", int(audit_settlement.get("settleable_units_published", -1)), expected_published)
+            assert_equal("audit settlement dust", int(audit_settlement.get("settleable_dust_units", -1)), expected_dust)
 
         batch = add_step(
             steps,
@@ -283,7 +323,7 @@ def main(argv: list[str] | None = None) -> int:
                     "worker_node_id": worker,
                     "idempotency_key": batch_key,
                     "bridge_account_id": "bridge-worker-payout-dust",
-                    "metadata": {"phase5_worker_settlement_rounding": True, "scope": scope},
+                    "metadata": {"phase6_worker_payout_privacy": True, "scope": scope},
                 },
             ),
         )
@@ -294,7 +334,6 @@ def main(argv: list[str] | None = None) -> int:
         assert_equal("batch exact", int(batch_payload.get("total_credits_exact", 0)), args.worker_credits)
         assert_equal("batch published", int(batch_payload.get("total_credits_published", 0)), expected_published)
         assert_equal("batch dust", int(batch_payload.get("dust_credits", 0)), expected_dust)
-        assert_equal("batch bridge retained", int(batch_payload.get("metadata", {}).get("bridge_retained_credits", -1)), expected_dust)
 
         settled = add_step(
             steps,
@@ -303,9 +342,9 @@ def main(argv: list[str] | None = None) -> int:
                 f"{hub_url}/api/hub/v1/workers/settlements/batches/settle",
                 {
                     "batch_id": batch_payload["batch_id"],
-                    "settlement_reference": f"phase5-rounded-payout-{scope}",
+                    "settlement_reference": f"phase6-rounded-payout-{scope}",
                     "idempotency_key": settle_key,
-                    "metadata": {"phase5_worker_settlement_rounding": True, "scope": scope},
+                    "metadata": {"phase6_worker_payout_privacy": True, "scope": scope},
                 },
             ),
         )
@@ -320,7 +359,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"{hub_url}/api/hub/v1/workers/settlements/batches/settle",
                 {
                     "batch_id": batch_payload["batch_id"],
-                    "settlement_reference": f"phase5-rounded-payout-{scope}",
+                    "settlement_reference": f"phase6-rounded-payout-{scope}",
                     "idempotency_key": settle_key,
                 },
             ),
@@ -328,15 +367,22 @@ def main(argv: list[str] | None = None) -> int:
         assert_equal("duplicate settle ok", duplicate_settle.get("ok"), True)
         assert_equal("duplicate settle additional", int(duplicate_settle.get("additional_settled_credits", -1)), 0)
 
-        settlement_after = add_step(
+        public_after = add_step(
             steps,
-            "query rounded settlement after settle",
+            "query normal worker settlement after settle",
+            get_json(f"{hub_url}/api/hub/v1/workers/settlements?{urlencode({'worker_node_id': worker})}"),
+        )
+        assert_not_contains("normal worker settlement after settle", public_after, args.worker_credits)
+        assert_equal("normal settled published after", int(public_after.get("settled_units_published", -1)), expected_published)
+
+        audit_after = add_step(
+            steps,
+            "query audit worker settlement after settle",
             get_json(f"{hub_url}/api/hub/v1/workers/settlements?{urlencode({'worker_node_id': worker, 'audit': '1'})}"),
         )
-        assert_equal("settleable after", int(settlement_after.get("settleable_units_exact", 0)), 0)
-        assert_equal("settled exact after", int(settlement_after.get("settled_units_exact", 0)), args.worker_credits)
-        assert_equal("settled published after", int(settlement_after.get("settled_units_published", 0)), expected_published)
-        assert_equal("bridge retained after", int(settlement_after.get("bridge_retained_units", -1)), expected_dust)
+        assert_equal("audit settled exact after", int(audit_after.get("settled_units_exact", -1)), args.worker_credits)
+        assert_equal("audit settled published after", int(audit_after.get("settled_units_published", -1)), expected_published)
+        assert_equal("audit bridge retained after", int(audit_after.get("bridge_retained_units", -1)), expected_dust)
 
         report.update(
             {
@@ -348,12 +394,12 @@ def main(argv: list[str] | None = None) -> int:
                     "charged_units": int(completed.get("charged_credits", 0)),
                     "worker_earning_id": earning_id,
                 },
-                "worker_earning_units_exact": args.worker_credits,
-                "claimed_units_exact": int(claim.get("claimed_credits", 0)),
-                "payout_units_published": expected_published,
+                "exact_worker_earning_units": args.worker_credits,
+                "visible_worker_payout_units": expected_published,
                 "bridge_retained_units": expected_dust,
+                "normal_surfaces_leak_exact_amount": False,
+                "admin_audit_reconciles_exact_amount": True,
                 "settlement_batch_id": batch_payload["batch_id"],
-                "settlement_idempotent": bool(settled.get("idempotent", False)),
                 "duplicate_settlement_additional_units": int(duplicate_settle.get("additional_settled_credits", -1)),
             }
         )
@@ -363,9 +409,9 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
         else:
             print(
-                "ok phase5 worker settlement rounding: "
-                f"exact={args.worker_credits} published={expected_published} "
-                f"bridge_retained={expected_dust} duplicate_additional=0"
+                "ok phase6 worker payout privacy: "
+                f"exact={args.worker_credits} visible={expected_published} "
+                f"bridge_retained={expected_dust} normal_leak=false duplicate_additional=0"
             )
         return 0
     except Exception as exc:
@@ -375,7 +421,7 @@ def main(argv: list[str] | None = None) -> int:
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
         if args.json:
             print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
-        print(f"phase5 worker settlement rounding smoke failed: {exc}", file=sys.stderr)
+        print(f"phase6 worker payout privacy smoke failed: {exc}", file=sys.stderr)
         return 1
 
 
