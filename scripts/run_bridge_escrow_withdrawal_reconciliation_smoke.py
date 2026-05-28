@@ -923,10 +923,23 @@ def parse_uint_output(stdout: str) -> int:
     text = str(stdout or "").strip()
     if not text:
         return 0
+
+    # Foundry/Cast may append a display-only scientific-notation hint after
+    # large integers, e.g. ``16500000 [1.65e7]``.  The first token is the exact
+    # uint value; bracketed display sugar must not become the parsed result.
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        match = re.match(r"^(0x[0-9a-fA-F]+|\d+)\b", stripped)
+        if match:
+            value = match.group(1)
+            return int(value, 16) if value.startswith("0x") else int(value)
+
     tokens = re.findall(r"0x[0-9a-fA-F]+|\b\d+\b", text)
     if not tokens:
         raise SmokeFailure(f"could not parse uint from cast output: {text[:500]!r}")
-    value = tokens[-1]
+    value = tokens[0]
     return int(value, 16) if value.startswith("0x") else int(value)
 
 

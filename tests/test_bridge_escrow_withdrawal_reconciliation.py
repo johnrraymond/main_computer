@@ -201,6 +201,14 @@ class BridgeEscrowWithdrawalReconciliationTests(unittest.TestCase):
             expected,
         )
 
+    def test_smoke_parses_cast_uint_output_with_scientific_display_hint(self) -> None:
+        smoke = load_phase3_smoke_module()
+
+        self.assertEqual(smoke.parse_uint_output("100000000 [1e8]\n"), 100_000_000)
+        self.assertEqual(smoke.parse_uint_output("16500000 [1.65e7]\n"), 16_500_000)
+        self.assertEqual(smoke.parse_uint_output("83500000 [8.35e7]\n"), 83_500_000)
+        self.assertEqual(smoke.parse_uint_output("0x10\n"), 16)
+
     def test_smoke_can_use_deterministic_dev_key_fallback_for_local_anvil_actor(self) -> None:
         smoke = load_phase3_smoke_module()
         key = smoke.env_or_manifest_private_key(
