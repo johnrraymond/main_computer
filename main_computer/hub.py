@@ -28,6 +28,10 @@ from main_computer.hub_security import (
 from main_computer.hub_admin_site import HUB_ADMIN_ROUTES, build_admin_bootstrap_payload, render_hub_admin_html
 from main_computer.hub_credit_indexer import HubCreditIndexer
 from main_computer.hub_credit_ledger import HubCreditLedger
+from main_computer.hub_credit_models import (
+    DEFAULT_WORKER_PAYOUT_PRECISION_PLACES,
+    normalize_worker_payout_precision_places,
+)
 from main_computer.hub_plex_models import HubAIRequest, HubWorkerSummary
 from main_computer.hub_plex_service import AIRequestPlexService
 from main_computer.models import ChatAttachment, ChatMessage, ChatResponse
@@ -118,6 +122,7 @@ class HubWorker:
     models: list[str] = field(default_factory=list)
     status: str = "available"
     credits_per_request: int = 1
+    settlement_precision_places: int = DEFAULT_WORKER_PAYOUT_PRECISION_PLACES
     registered_at: str = ""
     last_seen_at: str = ""
     capabilities: dict[str, Any] = field(default_factory=dict)
@@ -137,6 +142,7 @@ class HubUpstream:
     endpoint: str
     status: str = "available"
     credits_per_request: int = 1
+    settlement_precision_places: int = DEFAULT_WORKER_PAYOUT_PRECISION_PLACES
     registered_at: str = ""
     last_seen_at: str = ""
 
@@ -202,6 +208,7 @@ class HubRegistry:
         models: list[str] | None = None,
         capabilities: dict[str, Any] | None = None,
         credits_per_request: int = 1,
+        settlement_precision_places: int | None = None,
         queue_depth: int = 0,
         active_requests: int = 0,
         max_concurrency: int = 1,
@@ -220,6 +227,13 @@ class HubRegistry:
         clean_models = self._normalize_models(model=model, models=models)
         primary_model = clean_models[0] if clean_models else str(model or "").strip()
         clean_capabilities = dict(capabilities or {})
+        precision_source = (
+            settlement_precision_places
+            if settlement_precision_places is not None
+            else clean_capabilities.get("settlement_precision_places", clean_capabilities.get("payout_precision_places", None))
+        )
+        clean_settlement_precision = normalize_worker_payout_precision_places(precision_source)
+        clean_capabilities.setdefault("settlement_precision_places", clean_settlement_precision)
         clean_max_concurrency = max(1, int(max_concurrency or 1))
         clean_active = min(max(0, int(active_requests or 0)), clean_max_concurrency)
         clean_queue_depth = max(0, int(queue_depth or 0))
@@ -235,6 +249,7 @@ class HubRegistry:
                 models=clean_models,
                 status="available" if clean_active < clean_max_concurrency else "busy",
                 credits_per_request=credit_price,
+                settlement_precision_places=clean_settlement_precision,
                 registered_at=registered_at,
                 last_seen_at=now,
                 capabilities=clean_capabilities,
@@ -547,6 +562,15 @@ class HubRegistry:
                     "models": models,
                     "status": status,
                     "credits_per_request": max(1, int(item.get("credits_per_request", 1) or 1)),
+                    "settlement_precision_places": normalize_worker_payout_precision_places(
+                        item.get("settlement_precision_places")
+                        if item.get("settlement_precision_places") is not None
+                        else (
+                            item.get("capabilities", {}).get("settlement_precision_places")
+                            if isinstance(item.get("capabilities"), dict)
+                            else None
+                        )
+                    ),
                     "registered_at": str(item.get("registered_at") or created_at),
                     "last_seen_at": str(item.get("last_seen_at") or item.get("registered_at") or created_at),
                     "capabilities": dict(item.get("capabilities", {})) if isinstance(item.get("capabilities"), dict) else {},
@@ -649,6 +673,15 @@ class HubRegistry:
             models=models,
             status=str(item.get("status", "available")),
             credits_per_request=max(1, int(item.get("credits_per_request", 1) or 1)),
+            settlement_precision_places=normalize_worker_payout_precision_places(
+                item.get("settlement_precision_places")
+                if item.get("settlement_precision_places") is not None
+                else (
+                    item.get("capabilities", {}).get("settlement_precision_places")
+                    if isinstance(item.get("capabilities"), dict)
+                    else None
+                )
+            ),
             registered_at=str(item.get("registered_at", "")),
             last_seen_at=str(item.get("last_seen_at", "")),
             capabilities=dict(item.get("capabilities", {})) if isinstance(item.get("capabilities"), dict) else {},
@@ -856,6 +889,14 @@ class HubHttpServer(ThreadingHTTPServer):
 class HubServerHandler(_JsonHandler):
     server: HubHttpServer
 
+    def _worker_settlement_precision_places(self, worker_node_id: str, explicit: Any = None) -> int:
+        if explicit is not None and str(explicit).strip() != "":
+            return normalize_worker_payout_precision_places(explicit)
+        worker = self.server.registry.get_worker(worker_node_id) if worker_node_id else None
+        if worker is not None:
+            return normalize_worker_payout_precision_places(getattr(worker, "settlement_precision_places", None))
+        return DEFAULT_WORKER_PAYOUT_PRECISION_PLACES
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
@@ -924,6 +965,14 @@ class HubServerHandler(_JsonHandler):
             worker_node_id = query.get("worker_node_id", [""])[0] or query.get("node_id", [""])[0]
             try:
                 self._send_json(self.server.credit_ledger.worker_claim_totals(worker_node_id))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if path in {"/api/hub/v1/workers/settlements", "/api/hub/v1/credits/worker-settlements"}:
+            worker_node_id = query.get("worker_node_id", [""])[0] or query.get("node_id", [""])[0]
+            try:
+                precision = self._worker_settlement_precision_places(worker_node_id, query.get("precision_places", [None])[0])
+                self._send_json(self.server.credit_ledger.worker_settlement_totals(worker_node_id, precision_places=precision))
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -1102,6 +1151,7 @@ class HubServerHandler(_JsonHandler):
                     models=[str(item) for item in body.get("models", [])] if isinstance(body.get("models"), list) else None,
                     capabilities=dict(body.get("capabilities", {})) if isinstance(body.get("capabilities"), dict) else None,
                     credits_per_request=int(body.get("credits_per_request", self.server.config.hub_credits_per_request)),
+                    settlement_precision_places=body.get("settlement_precision_places"),
                     queue_depth=int(body.get("queue_depth", 0) or 0),
                     active_requests=int(body.get("active_requests", 0) or 0),
                     max_concurrency=int(body.get("max_concurrency", 1) or 1),
@@ -1226,6 +1276,37 @@ class HubServerHandler(_JsonHandler):
                     claim_credits=int(body["claim_credits"]) if body.get("claim_credits") is not None else None,
                     idempotency_key=str(body.get("idempotency_key", "")),
                     memo=str(body.get("memo", "")),
+                    metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
+                )
+                self._send_json(result)
+                return
+            if path in {"/api/hub/v1/workers/settlements/batches", "/api/hub/v1/credits/worker-settlements/batches"}:
+                body = self._read_json()
+                worker_node_id = str(body.get("worker_node_id") or body.get("node_id") or "")
+                raw_claim_ids = body.get("claim_ids")
+                claim_ids = [str(item) for item in raw_claim_ids] if isinstance(raw_claim_ids, list) else None
+                precision = self._worker_settlement_precision_places(worker_node_id, body.get("precision_places"))
+                result = self.server.credit_ledger.create_worker_settlement_batch(
+                    worker_node_id=worker_node_id,
+                    claim_ids=claim_ids,
+                    precision_places=precision,
+                    idempotency_key=str(body.get("idempotency_key", "")),
+                    bridge_account_id=str(body.get("bridge_account_id", "bridge-worker-payout-dust")),
+                    metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
+                )
+                self._send_json(result)
+                return
+            if path in {
+                "/api/hub/v1/workers/settlements/batches/settle",
+                "/api/hub/v1/workers/settlements/settle",
+                "/api/hub/v1/credits/worker-settlements/batches/settle",
+            }:
+                body = self._read_json()
+                result = self.server.credit_ledger.settle_worker_settlement_batch(
+                    batch_id=str(body.get("batch_id", "")),
+                    settlement_reference=str(body.get("settlement_reference", body.get("reference", ""))),
+                    settlement_tx_hash=str(body.get("settlement_tx_hash", body.get("tx_hash", ""))),
+                    idempotency_key=str(body.get("idempotency_key", "")),
                     metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
                 )
                 self._send_json(result)
@@ -1516,6 +1597,7 @@ def serve_hub(config: MainComputerConfig, host: str = "127.0.0.1", port: int = D
         "GET /api/hub/payouts?node_id=..., POST /api/hub/v1/workers/register, "
         "POST /api/hub/v1/workers/heartbeat, POST /api/hub/v1/workers/poll, "
         "POST /api/hub/v1/workers/results, GET/POST /api/hub/v1/workers/claims, "
+        "GET /api/hub/v1/workers/settlements, POST /api/hub/v1/workers/settlements/batches, "
         "POST /api/hub/sessions/start, POST /api/hub/sessions/chat, POST /api/hub/payouts/claim"
     )
     try:

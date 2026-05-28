@@ -11,6 +11,9 @@ from typing import Any
 CREDIT_UNIT_NAME = "Compute Credits"
 CREDIT_UNIT_KEY = "compute_credit"
 CREDIT_LEDGER_VERSION = "hub-credit-ledger-v0"
+CREDIT_BASE_UNITS_PER_CREDIT = 1_000_000
+DEFAULT_WORKER_PAYOUT_PRECISION_PLACES = 3
+MAX_WORKER_PAYOUT_PRECISION_PLACES = 6
 
 CREDIT_TRANSACTION_TYPES = {
     "deposit_indexed",
@@ -122,6 +125,37 @@ def truncate_for_settlement(value: int, *, bucket_size: int) -> tuple[int, int]:
     clean_bucket = max(1, int(bucket_size or 1))
     published = (clean_value // clean_bucket) * clean_bucket
     return published, clean_value - published
+
+
+def normalize_worker_payout_precision_places(value: Any = None) -> int:
+    """Return a safe public payout precision in decimal credit places.
+
+    Compute credits are represented internally as millionth-credit units.  The
+    default public worker payout precision is 3 decimal places, so exact worker
+    claim amounts such as 5.500123 credits are exported as 5.500 credits and the
+    remaining 0.000123 credits stay in the bridge/reserve account.
+    """
+
+    if value is None or value == "":
+        return DEFAULT_WORKER_PAYOUT_PRECISION_PLACES
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_WORKER_PAYOUT_PRECISION_PLACES
+    return min(MAX_WORKER_PAYOUT_PRECISION_PLACES, max(0, parsed))
+
+
+def worker_payout_bucket_size_for_precision(value: Any = None) -> int:
+    precision = normalize_worker_payout_precision_places(value)
+    scale = MAX_WORKER_PAYOUT_PRECISION_PLACES - precision
+    return 10 ** max(0, scale)
+
+
+def truncate_worker_payout_for_precision(value: int, *, precision_places: Any = None) -> tuple[int, int, int, int]:
+    precision = normalize_worker_payout_precision_places(precision_places)
+    bucket_size = worker_payout_bucket_size_for_precision(precision)
+    published, dust = truncate_for_settlement(value, bucket_size=bucket_size)
+    return published, dust, precision, bucket_size
 
 
 def _asdict(value: Any) -> dict[str, Any]:
@@ -393,6 +427,14 @@ class WorkerSettlementBatch:
     worker_count: int
     batch_root: str = ""
     status: str = "draft"
+    worker_node_id: str = ""
+    claim_ids: list[str] = field(default_factory=list)
+    precision_places: int = DEFAULT_WORKER_PAYOUT_PRECISION_PLACES
+    rounding_bucket_credits: int = 0
+    bridge_account_id: str = "bridge-worker-payout-dust"
+    settlement_reference: str = ""
+    settlement_tx_hash: str = ""
+    settled_at: str = ""
     created_at: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -400,12 +442,37 @@ class WorkerSettlementBatch:
         clean_status = str(self.status or "draft").strip()
         if clean_status not in WORKER_BATCH_STATUSES:
             raise ValueError(f"Unsupported worker batch status: {clean_status}")
-        object.__setattr__(self, "batch_id", self.batch_id or stable_id("batch", {"window_start": self.window_start, "window_end": self.window_end, "total": self.total_credits_published}))
+        precision = normalize_worker_payout_precision_places(self.precision_places)
+        bucket_size = positive_int(self.rounding_bucket_credits, default=worker_payout_bucket_size_for_precision(precision))
+        if bucket_size <= 0:
+            bucket_size = worker_payout_bucket_size_for_precision(precision)
+        claim_ids = [str(item or "").strip() for item in (self.claim_ids or []) if str(item or "").strip()]
+        object.__setattr__(
+            self,
+            "batch_id",
+            self.batch_id or stable_id(
+                "batch",
+                {
+                    "window_start": self.window_start,
+                    "window_end": self.window_end,
+                    "total": self.total_credits_published,
+                    "claim_ids": claim_ids,
+                },
+            ),
+        )
         object.__setattr__(self, "total_credits_exact", positive_int(self.total_credits_exact))
         object.__setattr__(self, "total_credits_published", positive_int(self.total_credits_published))
         object.__setattr__(self, "dust_credits", positive_int(self.dust_credits))
         object.__setattr__(self, "worker_count", positive_int(self.worker_count))
         object.__setattr__(self, "status", clean_status)
+        object.__setattr__(self, "worker_node_id", clean_worker_id(self.worker_node_id, default="") if self.worker_node_id else "")
+        object.__setattr__(self, "claim_ids", claim_ids)
+        object.__setattr__(self, "precision_places", precision)
+        object.__setattr__(self, "rounding_bucket_credits", bucket_size)
+        object.__setattr__(self, "bridge_account_id", clean_account_id(self.bridge_account_id, default="bridge-worker-payout-dust"))
+        object.__setattr__(self, "settlement_reference", str(self.settlement_reference or "").strip())
+        object.__setattr__(self, "settlement_tx_hash", str(self.settlement_tx_hash or "").strip())
+        object.__setattr__(self, "settled_at", str(self.settled_at or "").strip())
         object.__setattr__(self, "created_at", self.created_at or utc_now())
 
     @classmethod
@@ -415,11 +482,21 @@ class WorkerSettlementBatch:
         window_start: str,
         window_end: str,
         exact_total: int,
-        bucket_size: int,
         worker_count: int,
+        bucket_size: int | None = None,
         batch_root: str = "",
+        worker_node_id: str = "",
+        claim_ids: list[str] | None = None,
+        precision_places: int | None = None,
+        bridge_account_id: str = "bridge-worker-payout-dust",
+        status: str = "draft",
+        metadata: dict[str, Any] | None = None,
     ) -> "WorkerSettlementBatch":
-        published, dust = truncate_for_settlement(exact_total, bucket_size=bucket_size)
+        precision = normalize_worker_payout_precision_places(precision_places)
+        clean_bucket = positive_int(bucket_size, default=worker_payout_bucket_size_for_precision(precision))
+        if clean_bucket <= 0:
+            clean_bucket = worker_payout_bucket_size_for_precision(precision)
+        published, dust = truncate_for_settlement(exact_total, bucket_size=clean_bucket)
         return cls(
             batch_id="",
             window_start=window_start,
@@ -429,11 +506,17 @@ class WorkerSettlementBatch:
             dust_credits=dust,
             worker_count=worker_count,
             batch_root=batch_root,
+            status=status,
+            worker_node_id=worker_node_id,
+            claim_ids=list(claim_ids or []),
+            precision_places=precision,
+            rounding_bucket_credits=clean_bucket,
+            bridge_account_id=bridge_account_id,
+            metadata=dict(metadata or {}),
         )
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
-
 
 @dataclass(frozen=True)
 class RequestReceipt:

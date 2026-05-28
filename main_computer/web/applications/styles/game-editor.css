@@ -738,6 +738,22 @@
   outline-offset: 10px;
 }
 
+.scene-webgl-particle-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 85;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  mix-blend-mode: screen;
+  contain: strict;
+}
+
+.scene-surface[data-scene-particle-renderer="webgl"] .scene-object--particle-emitter-webgl {
+  filter: none;
+  mix-blend-mode: normal;
+}
+
 .scene-particle-field {
   position: absolute;
   inset: 0;
