@@ -4,6 +4,10 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from main_computer.models import ChatAttachment, ChatMessage, ChatResponse
+from main_computer.hub_credit_models import (
+    DEFAULT_WORKER_PAYOUT_PRECISION_PLACES,
+    normalize_worker_payout_precision_places,
+)
 
 
 REQUEST_STATES = {
@@ -211,6 +215,7 @@ class HubWorkerSummary:
     models: list[str] = field(default_factory=list)
     status: str = "available"
     credits_per_request: int = 1
+    settlement_precision_places: int = DEFAULT_WORKER_PAYOUT_PRECISION_PLACES
     registered_at: str = ""
     last_seen_at: str = ""
     endpoint: str = ""
@@ -237,6 +242,15 @@ class HubWorkerSummary:
             models=models,
             status=str(payload.get("status", "available") or "available"),
             credits_per_request=max(1, int(payload.get("credits_per_request", 1) or 1)),
+            settlement_precision_places=normalize_worker_payout_precision_places(
+                payload.get("settlement_precision_places")
+                if payload.get("settlement_precision_places") is not None
+                else (
+                    payload.get("capabilities", {}).get("settlement_precision_places")
+                    if isinstance(payload.get("capabilities"), dict)
+                    else None
+                )
+            ),
             registered_at=str(payload.get("registered_at", "")),
             last_seen_at=str(payload.get("last_seen_at", "") or payload.get("last_heartbeat_at", "")),
             endpoint=str(payload.get("endpoint", "")) if include_endpoint else "",
@@ -255,6 +269,7 @@ class HubWorkerSummary:
             "models": list(self.models),
             "status": self.status,
             "credits_per_request": self.credits_per_request,
+            "settlement_precision_places": self.settlement_precision_places,
             "registered_at": self.registered_at,
             "last_seen_at": self.last_seen_at,
             "capabilities": dict(self.capabilities),

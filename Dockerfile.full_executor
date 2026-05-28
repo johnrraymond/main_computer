@@ -51,7 +51,6 @@ RUN apt-get update \
         procps \
         python3-dev \
         ripgrep \
-        rsync \
         tar \
         tini \
         tree \

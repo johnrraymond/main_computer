@@ -150,6 +150,116 @@ class WorkerSettlementClaimTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 reloaded.record_worker_claim(worker_node_id="worker-one", earning_ids=[pending.earning_id], idempotency_key="pending")
 
+    def test_high_precision_worker_claim_payout_is_rounded_for_settlement_and_dust_stays_in_bridge_account(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = HubCreditLedger(Path(tmp))
+            earning = ledger.record_worker_earning(
+                worker_node_id="Precision Worker",
+                request_id="high-precision-req",
+                credits=5_500_123,
+            )
+            claim = ledger.record_worker_claim(
+                worker_node_id="precision-worker",
+                earning_ids=[earning["worker_earning"]["earning_id"]],
+                idempotency_key="precision-claim",
+            )
+            claim_id = claim["claim"]["claim_id"]
+
+            totals = ledger.worker_settlement_totals("precision-worker")
+            self.assertEqual(totals["precision_places"], 3)
+            self.assertEqual(totals["rounding_bucket_credits"], 1_000)
+            self.assertEqual(totals["settleable_units_exact"], 5_500_123)
+            self.assertEqual(totals["settleable_units_published"], 5_500_000)
+            self.assertEqual(totals["settleable_dust_units"], 123)
+            self.assertEqual(totals["bridge_retained_units_if_settled"], 123)
+
+            batch = ledger.create_worker_settlement_batch(
+                worker_node_id="precision-worker",
+                idempotency_key="precision-batch",
+            )
+            self.assertTrue(batch["ok"])
+            self.assertFalse(batch["idempotent"])
+            self.assertEqual(batch["total_credits_exact"], 5_500_123)
+            self.assertEqual(batch["total_credits_published"], 5_500_000)
+            self.assertEqual(batch["dust_credits"], 123)
+            self.assertEqual(batch["bridge_retained_credits"], 123)
+            self.assertEqual(batch["batch"]["claim_ids"], [claim_id])
+            self.assertEqual(batch["batch"]["precision_places"], 3)
+            self.assertEqual(batch["batch"]["rounding_bucket_credits"], 1_000)
+            self.assertEqual(batch["worker_settlement_totals"]["settleable_units_exact"], 0)
+
+            settled = ledger.settle_worker_settlement_batch(
+                batch_id=batch["batch"]["batch_id"],
+                settlement_reference="operator-paid-rounded",
+                idempotency_key="precision-settle",
+            )
+            self.assertTrue(settled["ok"])
+            self.assertFalse(settled["idempotent"])
+            self.assertEqual(settled["settled_credits"], 5_500_000)
+            self.assertEqual(settled["additional_settled_credits"], 5_500_000)
+            self.assertEqual(settled["bridge_retained_credits"], 123)
+            self.assertEqual(settled["transaction"]["credits"], 5_500_000)
+            self.assertEqual(settled["transaction"]["metadata"]["total_credits_exact"], 5_500_123)
+            self.assertEqual(settled["transaction"]["metadata"]["bridge_retained_credits"], 123)
+            self.assertEqual(ledger.list_worker_claims(worker_node_id="precision-worker")[0].status, "settled")
+
+            duplicate = ledger.settle_worker_settlement_batch(
+                batch_id=batch["batch"]["batch_id"],
+                settlement_reference="operator-paid-rounded",
+                idempotency_key="precision-settle",
+            )
+            self.assertTrue(duplicate["idempotent"])
+            self.assertEqual(duplicate["additional_settled_credits"], 0)
+            self.assertEqual(duplicate["bridge_retained_credits"], 123)
+
+    def test_worker_settlement_api_uses_worker_precision_default(self) -> None:
+        hub, hub_base = self._start_hub()
+        worker = "precision-default-worker"
+        registered = post_json(
+            f"{hub_base}/api/hub/v1/workers/register",
+            {
+                "node_id": worker,
+                "endpoint": "http://127.0.0.1:1",
+                "model": "mock-fast-chat",
+                "models": ["mock-fast-chat"],
+                "credits_per_request": 5_555_555,
+                "settlement_precision_places": 2,
+                "capabilities": {"provider": "mock", "worker_pull_v0": True},
+            },
+        )
+        self.assertEqual(registered["worker"]["settlement_precision_places"], 2)
+        earning = hub.credit_ledger.record_worker_earning(worker_node_id=worker, request_id="precision-api-req", credits=5_555_555)
+        claimed = post_json(
+            f"{hub_base}/api/hub/v1/workers/claims",
+            {
+                "worker_node_id": worker,
+                "earning_ids": [earning["worker_earning"]["earning_id"]],
+                "idempotency_key": "precision-api-claim",
+            },
+        )
+        claim_id = claimed["claim"]["claim_id"]
+
+        totals = get_json(f"{hub_base}/api/hub/v1/workers/settlements?{urlencode({'worker_node_id': worker})}")
+        self.assertEqual(totals["precision_places"], 2)
+        self.assertEqual(totals["rounding_bucket_credits"], 10_000)
+        self.assertEqual(totals["settleable_units_exact"], 5_555_555)
+        self.assertEqual(totals["settleable_units_published"], 5_550_000)
+        self.assertEqual(totals["settleable_dust_units"], 5_555)
+
+        batch = post_json(
+            f"{hub_base}/api/hub/v1/workers/settlements/batches",
+            {
+                "worker_node_id": worker,
+                "idempotency_key": "precision-api-batch",
+            },
+        )
+        self.assertEqual(batch["batch"]["claim_ids"], [claim_id])
+        self.assertEqual(batch["total_credits_exact"], 5_555_555)
+        self.assertEqual(batch["total_credits_published"], 5_550_000)
+        self.assertEqual(batch["dust_credits"], 5_555)
+        self.assertEqual(batch["bridge_retained_credits"], 5_555)
+        self.assertEqual(batch["batch"]["precision_places"], 2)
+
     def test_worker_claim_api_records_idempotent_claim(self) -> None:
         hub, hub_base = self._start_hub()
         earning = hub.credit_ledger.record_worker_earning(worker_node_id="API Worker", request_id="api-req-1", credits=21)

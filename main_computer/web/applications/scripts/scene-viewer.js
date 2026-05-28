@@ -689,6 +689,422 @@
         element.append(label);
       }
 
+
+      function sceneWebglParticlesRequested(scene, options = {}) {
+        const metadata = scene?.metadata && typeof scene.metadata === "object" ? scene.metadata : {};
+        const vfx = metadata.vfx && typeof metadata.vfx === "object" ? metadata.vfx : {};
+        const explicit = options.particleRenderer ?? options.particleRenderMode ?? vfx.particleRenderer ?? metadata.particleRenderer;
+        if (explicit === false) return false;
+        const mode = String(explicit || "webgl").trim().toLowerCase();
+        return mode !== "dom" && mode !== "html" && mode !== "css";
+      }
+
+      function sceneColorRgb(color) {
+        const clean = normalizeSceneColor(color, "#7dd3fc");
+        return {
+          r: parseInt(clean.slice(1, 3), 16) / 255,
+          g: parseInt(clean.slice(3, 5), 16) / 255,
+          b: parseInt(clean.slice(5, 7), 16) / 255
+        };
+      }
+
+      function sceneWebglShader(gl, type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          const log = gl.getShaderInfoLog(shader) || "Unknown shader compile failure";
+          gl.deleteShader(shader);
+          throw new Error(log);
+        }
+        return shader;
+      }
+
+      function sceneWebglProgram(gl, vertexSource, fragmentSource) {
+        const vertex = sceneWebglShader(gl, gl.VERTEX_SHADER, vertexSource);
+        const fragment = sceneWebglShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
+        const program = gl.createProgram();
+        gl.attachShader(program, vertex);
+        gl.attachShader(program, fragment);
+        gl.linkProgram(program);
+        gl.deleteShader(vertex);
+        gl.deleteShader(fragment);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+          const log = gl.getProgramInfoLog(program) || "Unknown program link failure";
+          gl.deleteProgram(program);
+          throw new Error(log);
+        }
+        return program;
+      }
+
+      class SceneWebglParticleLayer {
+        constructor(canvas) {
+          this.canvas = canvas;
+          this.gl = canvas.getContext("webgl", {
+            alpha: true,
+            antialias: false,
+            depth: false,
+            preserveDrawingBuffer: false,
+            premultipliedAlpha: true
+          }) || canvas.getContext("experimental-webgl", {
+            alpha: true,
+            antialias: false,
+            depth: false,
+            preserveDrawingBuffer: false,
+            premultipliedAlpha: true
+          });
+          if (!this.gl) throw new Error("WebGL particle layer unavailable");
+          this.strideFloats = 16;
+          this.floatSize = Float32Array.BYTES_PER_ELEMENT;
+          this.strideBytes = this.strideFloats * this.floatSize;
+          this.maxDpr = 2;
+          this.particles = [];
+          this.particleCount = 0;
+          this.animationFrame = 0;
+          this.disposed = false;
+          this.startedAt = 0;
+          this.compile();
+          this.buffer = this.gl.createBuffer();
+          this.resizeObserver = typeof ResizeObserver === "function"
+            ? new ResizeObserver(() => this.resize())
+            : null;
+          this.resizeObserver?.observe?.(canvas);
+          canvas.addEventListener("webglcontextlost", this.handleContextLost = (event) => {
+            event.preventDefault();
+            this.dispose();
+          });
+        }
+
+        compile() {
+          const vertexSource = `
+            precision mediump float;
+            attribute vec2 a_origin;
+            attribute vec2 a_vector;
+            attribute vec4 a_color;
+            attribute vec4 a_particle;
+            attribute vec4 a_timing;
+            uniform vec2 u_resolution;
+            uniform float u_time;
+            uniform float u_dpr;
+            varying vec4 v_color;
+            varying float v_core;
+            const float PI = 3.14159265359;
+
+            float saturate(float value) {
+              return clamp(value, 0.0, 1.0);
+            }
+
+            float fadeLoop(float p) {
+              return smoothstep(0.0, 0.16, p) * (1.0 - smoothstep(0.78, 1.0, p));
+            }
+
+            void main() {
+              float duration = max(120.0, a_timing.x);
+              float p = fract(((u_time * 1000.0) + a_timing.y) / duration);
+              float motion = a_particle.w;
+              float pulse = 0.5 + 0.5 * sin((p + a_particle.z * 0.013) * PI * 2.0);
+              float alpha = a_particle.y * (0.62 + pulse * 0.38);
+              float scale = 0.82 + pulse * 0.44;
+              vec2 pos = a_origin + a_vector;
+
+              if (motion > 0.5 && motion < 1.5) {
+                vec2 path = a_vector;
+                vec2 normal = normalize(vec2(-path.y, path.x) + vec2(0.0001, 0.0001));
+                pos = a_origin + path * p + normal * a_timing.z * mix(1.0, -0.45, p);
+                alpha = a_particle.y * fadeLoop(p);
+                scale = 1.25;
+              } else if (motion > 1.5 && motion < 2.5) {
+                pos = a_origin + a_vector + vec2(mix(a_timing.w * -0.4, a_timing.w, p), mix(a_timing.z * -0.65, a_timing.z, p));
+                alpha = a_particle.y * fadeLoop(p);
+                scale = mix(0.72, 1.18, p);
+              } else if (motion > 2.5 && motion < 4.5) {
+                float spin = a_timing.w < 0.0 ? -1.0 : 1.0;
+                float rise = abs(a_timing.w);
+                float angle = a_timing.z + spin * p * PI * 2.0;
+                pos = a_origin + vec2(cos(angle) * a_vector.x, sin(angle) * a_vector.y * -1.0 - sin(p * PI) * rise);
+                alpha = a_particle.y * (0.54 + pulse * 0.46);
+                scale = 0.84 + pulse * 0.28;
+              } else if (motion > 4.5) {
+                float expansion = max(0.3, a_timing.w);
+                float eased = smoothstep(0.0, 1.0, p);
+                float ring = mix(0.22, expansion, eased);
+                pos = a_origin + vec2(cos(a_timing.z) * a_vector.x * ring, sin(a_timing.z) * a_vector.y * -ring);
+                alpha = a_particle.y * fadeLoop(p);
+                scale = mix(0.44, 1.28, eased);
+              }
+
+              vec2 clip = (pos / max(vec2(1.0), u_resolution)) * 2.0 - 1.0;
+              gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+              gl_PointSize = max(2.0, a_particle.x * scale * u_dpr);
+              v_color = vec4(a_color.rgb, a_color.a * alpha);
+              v_core = motion > 2.5 && motion < 3.5 ? 0.62 : 0.44;
+            }`;
+
+          const fragmentSource = `
+            precision mediump float;
+            varying vec4 v_color;
+            varying float v_core;
+
+            void main() {
+              vec2 coord = gl_PointCoord * 2.0 - 1.0;
+              float radius = dot(coord, coord);
+              float soft = smoothstep(1.0, v_core, radius);
+              float core = smoothstep(0.34, 0.0, radius);
+              float alpha = (1.0 - soft) * v_color.a;
+              vec3 color = v_color.rgb + core * 0.38;
+              if (alpha <= 0.01) discard;
+              gl_FragColor = vec4(color, alpha);
+            }`;
+
+          this.program = sceneWebglProgram(this.gl, vertexSource, fragmentSource);
+          this.locations = {
+            origin: this.gl.getAttribLocation(this.program, "a_origin"),
+            vector: this.gl.getAttribLocation(this.program, "a_vector"),
+            color: this.gl.getAttribLocation(this.program, "a_color"),
+            particle: this.gl.getAttribLocation(this.program, "a_particle"),
+            timing: this.gl.getAttribLocation(this.program, "a_timing"),
+            resolution: this.gl.getUniformLocation(this.program, "u_resolution"),
+            time: this.gl.getUniformLocation(this.program, "u_time"),
+            dpr: this.gl.getUniformLocation(this.program, "u_dpr")
+          };
+        }
+
+        addParticle(originX, originY, vectorX, vectorY, color, alpha, size, seed, motion, duration, delay, paramA = 0, paramB = 0) {
+          this.particles.push(
+            originX, originY,
+            vectorX, vectorY,
+            color.r, color.g, color.b, 1,
+            size, alpha, seed, motion,
+            duration, delay, paramA, paramB
+          );
+        }
+
+        addEmitter(object, scene, projected) {
+          const color = sceneColorRgb(object.props?.color);
+          const baseCount = Math.round(numericSceneProp(object.props?.particleCount, 32, 4, 300));
+          const count = scaledParticleCount(scene, baseCount);
+          const effectScale = particleEffectScale(scene);
+          const size = numericSceneProp(object.props?.particleSize, 5, 2, 18) * Math.min(1.7, 0.88 + effectScale.intensity * 0.16);
+          const spread = numericSceneProp(object.props?.spread, 1, 0.2, 2.8);
+          const width = Math.max(1, Number(projected.width) || Number(object.width) || 1);
+          const height = Math.max(1, Number(projected.height) || Number(object.height) || 1);
+          const seed = Math.abs(particleHash(object.id || object.props?.label || "particle-emitter"));
+          const motionName = String(object.props?.motion || "orbit");
+          const projection = sceneProjection(scene);
+          const orbitRadius = numericSceneProp(object.props?.orbitRadius, Math.min(width, height) * 0.38, 8, 220);
+          const verticalLift = numericSceneProp(object.props?.verticalLift, height * 0.32, 0, 220);
+          const pulseDelay = numericSceneProp(object.props?.pulseDelay, 0, -10000, 10000);
+          const alphaScale = effectScale.alpha;
+          let originX = projected.left + width / 2;
+          let originY = projected.top + height / 2;
+
+          if (projected.anchor === "linked-spell-path" && Number.isFinite(projected.sourceLeft) && Number.isFinite(projected.sourceTop)) {
+            originX = Number(projected.sourceLeft);
+            originY = Number(projected.sourceTop);
+          } else if (projection === "isometric") {
+            originX = Number(projected.left) || 0;
+            originY = (Number(projected.top) || 0) - height * 0.32;
+          }
+
+          if (motionName === "spell-bolt") {
+            const targetX = Number(projected.targetLeft);
+            const targetY = Number(projected.targetTop);
+            const pathX = Number.isFinite(targetX) ? targetX - originX : width;
+            const pathY = Number.isFinite(targetY) ? targetY - originY : 0;
+            for (let index = 0; index < count; index += 1) {
+              const particleSize = Math.max(2, size * (0.78 + ((seed + index * 19) % 6) / 16)) * 2.1;
+              const duration = 980 + ((seed + index * 71) % 860);
+              const delay = -((seed + index * 137) % duration) + pulseDelay;
+              const lane = (((index % 7) - 3) * 3.2 * spread);
+              const alpha = Math.min(1, (0.5 + ((index % 9) / 18)) * alphaScale);
+              this.addParticle(originX, originY, pathX, pathY, color, alpha, particleSize, seed + index, 1, duration, delay, lane, 0);
+            }
+            return;
+          }
+
+          if (motionName === "starfall") {
+            for (let index = 0; index < count; index += 1) {
+              const x = (((seed + index * 61) % 1000) / 1000 - 0.5) * width * spread;
+              const y = (((seed + index * 37) % 1000) / 1000 - 0.5) * height * 0.38;
+              const fall = verticalLift * (0.72 + ((index % 9) / 10));
+              const drift = (((index % 7) - 3) * 8 * spread);
+              const particleSize = Math.max(2, size * (0.8 + ((seed + index * 13) % 7) / 18));
+              const duration = 1500 + ((seed + index * 109) % 1900);
+              const delay = -((seed + index * 151) % duration) + pulseDelay;
+              const alpha = Math.min(1, (0.38 + ((index % 8) / 12)) * alphaScale);
+              this.addParticle(originX, originY, x, y, color, alpha, particleSize, seed + index, 2, duration, delay, fall, drift);
+            }
+            return;
+          }
+
+          const orbitMotions = new Set(["spell-swirl", "rune-ring", "orbit"]);
+          for (let index = 0; index < count; index += 1) {
+            const particleSize = Math.max(2, size * (0.72 + ((seed + index * 17) % 7) / 18));
+            const duration = motionName === "impact-burst"
+              ? 900 + ((seed + index * 83) % 900)
+              : motionName === "nova-ring" || motionName === "shockwave-ring"
+                ? 1700 + ((seed + index * 73) % 1300)
+                : 1400 + ((seed + index * 113) % 2200);
+            const delay = -((seed + index * 89) % duration) + pulseDelay;
+            const alpha = Math.min(1, (0.42 + (((seed + index * 31) % 46) / 100)) * alphaScale);
+            if (orbitMotions.has(motionName) || motionName === "impact-burst" || motionName === "nova-ring" || motionName === "shockwave-ring") {
+              const angleRad = (index * (Math.PI * 2 / Math.max(1, count)) + (seed % 360) * (Math.PI / 180));
+              const lane = motionName === "impact-burst"
+                ? 0.5 + ((index % 9) * 0.08)
+                : motionName === "nova-ring" || motionName === "shockwave-ring"
+                  ? 0.58 + ((index % 11) * 0.06)
+                  : 0.68 + ((index % 5) * 0.09);
+              const radiusX = orbitRadius * spread * lane;
+              const radiusY = (motionName === "rune-ring" || motionName === "shockwave-ring" ? orbitRadius * 0.26 : orbitRadius * 0.48) * spread * lane;
+              if (motionName === "impact-burst" || motionName === "nova-ring" || motionName === "shockwave-ring") {
+                const expansion = motionName === "impact-burst"
+                  ? 1.02 + ((index % 8) / 12)
+                  : 1.12 + ((index % 9) / 12);
+                this.addParticle(originX, originY, radiusX, radiusY, color, alpha, particleSize * 1.15, seed + index, 5, duration, delay, angleRad, expansion);
+              } else {
+                const rise = verticalLift * (0.24 + (index % 7) / 9) * (index % 2 ? -1 : 1);
+                this.addParticle(originX, originY, radiusX, radiusY, color, alpha, particleSize, seed + index, motionName === "rune-ring" ? 3 : 4, duration, delay, angleRad, rise);
+              }
+            } else {
+              const angle = (index * 137.508 + seed) * (Math.PI / 180);
+              const radius = Math.sqrt((index + 1) / count) * spread;
+              const x = Math.cos(angle) * width * 0.42 * radius;
+              const y = Math.sin(angle) * height * 0.42 * radius;
+              this.addParticle(originX, originY, x, y, color, alpha, particleSize, seed + index, 0, duration, delay, 0, 0);
+            }
+          }
+        }
+
+        upload() {
+          const gl = this.gl;
+          this.data = new Float32Array(this.particles);
+          this.particleCount = this.data.length / this.strideFloats;
+          gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+          gl.bufferData(gl.ARRAY_BUFFER, this.data, gl.STATIC_DRAW);
+          this.canvas.dataset.webglParticleCount = String(this.particleCount);
+        }
+
+        resize() {
+          if (this.disposed) return;
+          const rect = this.canvas.getBoundingClientRect();
+          const dpr = Math.max(1, Math.min(this.maxDpr, window.devicePixelRatio || 1));
+          const width = Math.max(1, Math.round((rect.width || this.canvas.clientWidth || 1) * dpr));
+          const height = Math.max(1, Math.round((rect.height || this.canvas.clientHeight || 1) * dpr));
+          if (this.canvas.width !== width || this.canvas.height !== height) {
+            this.canvas.width = width;
+            this.canvas.height = height;
+          }
+          this.dpr = dpr;
+          this.gl.viewport(0, 0, width, height);
+        }
+
+        bindAttributes() {
+          const gl = this.gl;
+          const {locations} = this;
+          gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+          const attrs = [
+            [locations.origin, 2, 0],
+            [locations.vector, 2, 2],
+            [locations.color, 4, 4],
+            [locations.particle, 4, 8],
+            [locations.timing, 4, 12]
+          ];
+          attrs.forEach(([location, size, offsetFloats]) => {
+            if (location < 0) return;
+            gl.enableVertexAttribArray(location);
+            gl.vertexAttribPointer(location, size, gl.FLOAT, false, this.strideBytes, offsetFloats * this.floatSize);
+          });
+        }
+
+        render(now = performance.now()) {
+          if (this.disposed) return;
+          const gl = this.gl;
+          this.resize();
+          gl.clearColor(0, 0, 0, 0);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          if (this.particleCount > 0) {
+            gl.useProgram(this.program);
+            this.bindAttributes();
+            gl.uniform2f(this.locations.resolution, this.canvas.width / this.dpr, this.canvas.height / this.dpr);
+            gl.uniform1f(this.locations.time, (now - this.startedAt) / 1000);
+            gl.uniform1f(this.locations.dpr, this.dpr);
+            gl.disable(gl.DEPTH_TEST);
+            gl.enable(gl.BLEND);
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+            gl.drawArrays(gl.POINTS, 0, this.particleCount);
+          }
+          this.animationFrame = requestAnimationFrame((nextNow) => this.render(nextNow));
+        }
+
+        start() {
+          if (this.disposed) return;
+          this.upload();
+          this.startedAt = performance.now();
+          this.render(this.startedAt);
+        }
+
+        dispose() {
+          if (this.disposed) return;
+          this.disposed = true;
+          if (this.animationFrame) cancelAnimationFrame(this.animationFrame);
+          this.resizeObserver?.disconnect?.();
+          try {
+            this.gl?.deleteBuffer?.(this.buffer);
+            this.gl?.deleteProgram?.(this.program);
+          } catch (error) {
+            // Context may already be lost; disposal is best-effort.
+          }
+        }
+      }
+
+      function createSceneWebglParticleLayer(container, scene, options = {}) {
+        if (!sceneWebglParticlesRequested(scene, options)) return null;
+        if (typeof document === "undefined") return null;
+        const hasParticleEmitters = Array.isArray(scene?.objects) && scene.objects.some((object) => object?.type === "particle-emitter");
+        if (!hasParticleEmitters) return null;
+        const canvas = document.createElement("canvas");
+        canvas.className = "scene-webgl-particle-canvas";
+        canvas.dataset.sceneParticleRenderer = "webgl";
+        canvas.setAttribute("aria-hidden", "true");
+        try {
+          const layer = new SceneWebglParticleLayer(canvas);
+          container.append(canvas);
+          container.dataset.sceneParticleRenderer = "webgl";
+          return layer;
+        } catch (error) {
+          canvas.remove();
+          container.dataset.sceneParticleRenderer = "dom";
+          return null;
+        }
+      }
+
+      function renderWebglParticleEmitterMarker(element, object, scene, projected, particleLayer) {
+        element.classList.add("scene-object--particle-emitter", "scene-object--particle-emitter-webgl");
+        element.dataset.sceneParticleEmitter = "true";
+        element.dataset.sceneParticleRenderer = "webgl";
+        element.dataset.particleMotion = String(object.props?.motion || "orbit");
+        if (object.parentId || object.props?.parentId) element.dataset.parentedParticle = "true";
+        if (object.props?.targetId) element.dataset.targetParticle = String(object.props.targetId);
+        element.setAttribute("role", "img");
+        element.setAttribute("aria-label", String(object.props?.label || "Particle Emitter"));
+        const color = normalizeSceneColor(object.props?.color, "#7dd3fc");
+        const baseCount = Math.round(numericSceneProp(object.props?.particleCount, 32, 4, 300));
+        const count = scaledParticleCount(scene, baseCount);
+        const effectScale = particleEffectScale(scene);
+        element.style.setProperty("--mint", color);
+        element.style.setProperty("--particle-color", color);
+        element.style.setProperty("--scene-effect-intensity", effectScale.intensity.toFixed(2));
+        element.style.setProperty("--scene-effect-glow", effectScale.glow.toFixed(2));
+        element.style.setProperty("--scene-effect-alpha", effectScale.alpha.toFixed(2));
+        element.dataset.particleCount = String(count);
+        element.dataset.baseParticleCount = String(baseCount);
+        if (sceneProjection(scene) === "isometric" && String(object.props?.motion || "orbit") !== "spell-bolt") {
+          element.style.transform = "translate(-50%, -82%)";
+        }
+        particleLayer?.addEmitter?.(object, scene, projected);
+      }
+
+
       function renderParticleEmitter(element, object, scene) {
         element.classList.add("scene-object--particle-emitter");
         element.dataset.sceneParticleEmitter = "true";
@@ -1232,7 +1648,11 @@
         if (projected.transform) element.style.transform = projected.transform;
         element.dataset.sceneAnchor = projected.anchor;
         if (objectType === "particle-emitter") {
-          renderParticleEmitter(element, object, scene);
+          if (options.particleLayer) {
+            renderWebglParticleEmitterMarker(element, object, scene, projected, options.particleLayer);
+          } else {
+            renderParticleEmitter(element, object, scene);
+          }
         } else if (objectType === "sprite-actor") {
           renderSpriteActor(element, object);
         } else if (object.props?.label) {
@@ -1252,6 +1672,10 @@
 
       function renderSceneSurface(container, sceneOrId, options = {}) {
         if (!container) return null;
+        if (container.__mainComputerWebglParticleLayer) {
+          container.__mainComputerWebglParticleLayer.dispose();
+          container.__mainComputerWebglParticleLayer = null;
+        }
         const scene = resolveScene(sceneOrId);
         const projection = sceneProjection(scene);
         const metrics = sceneProjectionMetrics(scene);
@@ -1282,10 +1706,14 @@
           container.style.removeProperty("background");
         }
         renderSceneBackdrop(container, scene);
+        const particleLayer = options.renderObjects === false ? null : createSceneWebglParticleLayer(container, scene, options);
+        container.__mainComputerWebglParticleLayer = particleLayer;
         renderSceneChoreographyOverlay(container, scene);
         renderSceneMovementMarker(container, scene, options);
         if (options.renderObjects !== false) {
-          scene.objects.forEach((object) => renderSceneObject(container, object, scene, options));
+          const renderOptions = particleLayer ? {...options, particleLayer} : options;
+          scene.objects.forEach((object) => renderSceneObject(container, object, scene, renderOptions));
+          particleLayer?.start?.();
         }
         bindSceneClickMovement(container, scene, options);
         return {
@@ -1297,6 +1725,10 @@
               container.__mainComputerClickMovementHandler = null;
             }
             stopSceneMovement(container);
+            if (container.__mainComputerWebglParticleLayer) {
+              container.__mainComputerWebglParticleLayer.dispose();
+              container.__mainComputerWebglParticleLayer = null;
+            }
             container.replaceChildren();
           }
         };

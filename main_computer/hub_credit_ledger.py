@@ -17,11 +17,15 @@ from main_computer.hub_credit_models import (
     RequestCharge,
     WorkerEarning,
     WorkerClaim,
+    WorkerSettlementBatch,
     clean_account_id,
     clean_worker_id,
     make_worker_commitment,
     positive_int,
     stable_id,
+    truncate_worker_payout_for_precision,
+    worker_payout_bucket_size_for_precision,
+    normalize_worker_payout_precision_places,
     utc_now,
 )
 
@@ -136,6 +140,36 @@ def _claim_from_dict(payload: dict[str, Any]) -> WorkerClaim:
     )
 
 
+def _batch_from_dict(payload: dict[str, Any]) -> WorkerSettlementBatch:
+    claim_ids = payload.get("claim_ids")
+    if not isinstance(claim_ids, list):
+        claim_ids = []
+    return WorkerSettlementBatch(
+        batch_id=str(payload.get("batch_id", "")),
+        window_start=str(payload.get("window_start", "")),
+        window_end=str(payload.get("window_end", "")),
+        total_credits_exact=positive_int(payload.get("total_credits_exact")),
+        total_credits_published=positive_int(payload.get("total_credits_published")),
+        dust_credits=positive_int(payload.get("dust_credits")),
+        worker_count=positive_int(payload.get("worker_count")),
+        batch_root=str(payload.get("batch_root", "")),
+        status=str(payload.get("status", "draft")),
+        worker_node_id=str(payload.get("worker_node_id", "")),
+        claim_ids=[str(item) for item in claim_ids],
+        precision_places=normalize_worker_payout_precision_places(payload.get("precision_places")),
+        rounding_bucket_credits=positive_int(
+            payload.get("rounding_bucket_credits"),
+            default=worker_payout_bucket_size_for_precision(payload.get("precision_places")),
+        ),
+        bridge_account_id=str(payload.get("bridge_account_id", "bridge-worker-payout-dust")),
+        settlement_reference=str(payload.get("settlement_reference", "")),
+        settlement_tx_hash=str(payload.get("settlement_tx_hash", "")),
+        settled_at=str(payload.get("settled_at", "")),
+        created_at=str(payload.get("created_at", "")),
+        metadata=_copy_dict(payload.get("metadata")),
+    )
+
+
 class HubCreditLedger:
     """JSON-backed internal Compute Credit ledger.
 
@@ -159,6 +193,7 @@ class HubCreditLedger:
         charges = [_charge_from_dict(item) for item in data["charges"].values()]
         worker_earnings = [_earning_from_dict(item) for item in data["worker_earnings"].values()]
         worker_claims = [_claim_from_dict(item) for item in data["worker_claims"].values()]
+        settlement_batches = [_batch_from_dict(item) for item in data["settlement_batches"].values()]
         return {
             "ok": True,
             "unit": {"name": CREDIT_UNIT_NAME, "key": CREDIT_UNIT_KEY},
@@ -173,6 +208,7 @@ class HubCreditLedger:
             "charge_count": len(charges),
             "worker_earning_count": len(worker_earnings),
             "worker_claim_count": len(worker_claims),
+            "worker_settlement_batch_count": len(settlement_batches),
             "totals": {
                 "available_credits": sum(account.available_credits for account in accounts),
                 "held_credits": sum(account.held_credits for account in accounts),
@@ -184,6 +220,10 @@ class HubCreditLedger:
                 "charged_credits": sum(charge.charged_credits for charge in charges),
                 "worker_earned_credits": sum(earning.credits for earning in worker_earnings),
                 "worker_claimed_credits": sum(claim.claimed_credits for claim in worker_claims if claim.status in {"claimed", "settled"}),
+                "worker_settlement_exact_credits": sum(batch.total_credits_exact for batch in settlement_batches if batch.status == "settled"),
+                "worker_settlement_published_credits": sum(batch.total_credits_published for batch in settlement_batches if batch.status == "settled"),
+                "worker_settlement_dust_credits": sum(batch.dust_credits for batch in settlement_batches if batch.status == "settled"),
+                "bridge_retained_worker_payout_dust_credits": sum(batch.dust_credits for batch in settlement_batches if batch.status == "settled"),
             },
             "recent_transactions": [tx.as_dict() for tx in transactions[-max(0, int(recent_limit or 0)):]][::-1],
             "recent_deposits": [deposit.as_dict() for deposit in deposits[-max(0, int(recent_limit or 0)):]][::-1],
@@ -197,6 +237,10 @@ class HubCreditLedger:
             "recent_worker_claims": [
                 claim.as_dict()
                 for claim in worker_claims[-max(0, int(recent_limit or 0)):]
+            ][::-1],
+            "recent_worker_settlement_batches": [
+                batch.as_dict()
+                for batch in settlement_batches[-max(0, int(recent_limit or 0)):]
             ][::-1],
         }
 
@@ -307,6 +351,278 @@ class HubCreditLedger:
         if clean_worker:
             claims = [claim for claim in claims if claim.worker_node_id == clean_worker]
         return sorted(claims, key=lambda item: item.created_at, reverse=True)[:clean_limit]
+
+    def list_worker_settlement_batches(
+        self,
+        *,
+        worker_node_id: str = "",
+        limit: int = 100,
+    ) -> list[WorkerSettlementBatch]:
+        clean_worker = clean_worker_id(worker_node_id, default="") if worker_node_id else ""
+        clean_limit = min(500, max(1, int(limit or 100)))
+        data = self._load()
+        batches = [_batch_from_dict(item) for item in data["settlement_batches"].values()]
+        if clean_worker:
+            batches = [batch for batch in batches if batch.worker_node_id == clean_worker]
+        return sorted(batches, key=lambda item: item.created_at, reverse=True)[:clean_limit]
+
+    def worker_settlement_totals(
+        self,
+        worker_node_id: str,
+        *,
+        precision_places: int | None = None,
+    ) -> dict[str, Any]:
+        if not str(worker_node_id or "").strip():
+            raise ValueError("worker_node_id is required.")
+        clean_worker = clean_worker_id(worker_node_id)
+        data = self._load()
+        return self._worker_settlement_totals_from_data(data, clean_worker, precision_places=precision_places)
+
+    def create_worker_settlement_batch(
+        self,
+        *,
+        worker_node_id: str,
+        claim_ids: list[str] | None = None,
+        precision_places: int | None = None,
+        idempotency_key: str = "",
+        bridge_account_id: str = "bridge-worker-payout-dust",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not str(worker_node_id or "").strip():
+            raise ValueError("worker_node_id is required.")
+        clean_worker = clean_worker_id(worker_node_id)
+        clean_key = str(idempotency_key or "").strip()
+        explicit_claim_ids = claim_ids is not None
+        requested_claim_ids = [str(item or "").strip() for item in (claim_ids or []) if str(item or "").strip()]
+        if len(requested_claim_ids) != len(set(requested_claim_ids)):
+            raise ValueError("claim_ids must not contain duplicates.")
+        precision = normalize_worker_payout_precision_places(precision_places)
+        bucket_size = worker_payout_bucket_size_for_precision(precision)
+        now = utc_now()
+
+        with self._lock:
+            data = self._load_unlocked()
+
+            if clean_key:
+                for item in data["settlement_batches"].values():
+                    if not isinstance(item, dict):
+                        continue
+                    batch = _batch_from_dict(item)
+                    if batch.worker_node_id == clean_worker and str(batch.metadata.get("idempotency_key", "")) == clean_key:
+                        return {
+                            "ok": True,
+                            "idempotent": True,
+                            "batch": batch.as_dict(),
+                            "worker_settlement_totals": self._worker_settlement_totals_from_data(data, clean_worker, precision_places=precision),
+                            "ledger": self._status_from_data(data),
+                        }
+
+            before = self._worker_settlement_totals_from_data(data, clean_worker, precision_places=precision)
+            settleable_ids = [str(item) for item in before["settleable_claim_ids"]]
+            selected_ids = requested_claim_ids if explicit_claim_ids else settleable_ids
+            if not selected_ids:
+                return {
+                    "ok": True,
+                    "idempotent": False,
+                    "batch": None,
+                    "batch_claim_count": 0,
+                    "total_credits_exact": 0,
+                    "total_credits_published": 0,
+                    "dust_credits": 0,
+                    "bridge_retained_credits": 0,
+                    "worker_settlement_totals": before,
+                    "ledger": self._status_from_data(data),
+                }
+
+            claims_by_id = {
+                claim.claim_id: claim
+                for claim in (_claim_from_dict(item) for item in data["worker_claims"].values())
+            }
+            already_batched_ids = set(before["batched_claim_ids"])
+            selected_claims: list[WorkerClaim] = []
+            for claim_id in selected_ids:
+                claim = claims_by_id.get(claim_id)
+                if claim is None:
+                    raise KeyError(f"Unknown worker claim: {claim_id}")
+                if claim.worker_node_id != clean_worker:
+                    raise ValueError(f"Claim {claim_id} belongs to another worker.")
+                if claim.status != "claimed":
+                    raise ValueError(f"Claim {claim_id} is not settleable; status is {claim.status}.")
+                if claim_id in already_batched_ids:
+                    raise ValueError(f"Claim {claim_id} is already included in a settlement batch.")
+                selected_claims.append(claim)
+
+            exact_total = sum(claim.claimed_credits for claim in selected_claims)
+            published, dust, precision, bucket_size = truncate_worker_payout_for_precision(exact_total, precision_places=precision)
+            batch = WorkerSettlementBatch(
+                batch_id="",
+                window_start=selected_claims[0].created_at if selected_claims else now,
+                window_end=now,
+                total_credits_exact=exact_total,
+                total_credits_published=published,
+                dust_credits=dust,
+                worker_count=1 if selected_claims else 0,
+                status="opened",
+                worker_node_id=clean_worker,
+                claim_ids=selected_ids,
+                precision_places=precision,
+                rounding_bucket_credits=bucket_size,
+                bridge_account_id=bridge_account_id,
+                created_at=now,
+                metadata={
+                    **dict(metadata or {}),
+                    "idempotency_key": clean_key,
+                    "payout_rounding": "floor_to_precision",
+                    "bridge_retained_credits": dust,
+                },
+            )
+            data["settlement_batches"][batch.batch_id] = batch.as_dict()
+            self._save_unlocked(data)
+            return {
+                "ok": True,
+                "idempotent": False,
+                "batch": batch.as_dict(),
+                "batch_claim_count": len(selected_ids),
+                "total_credits_exact": exact_total,
+                "total_credits_published": published,
+                "dust_credits": dust,
+                "bridge_retained_credits": dust,
+                "worker_settlement_totals": self._worker_settlement_totals_from_data(data, clean_worker, precision_places=precision),
+                "ledger": self._status_from_data(data),
+            }
+
+    def settle_worker_settlement_batch(
+        self,
+        *,
+        batch_id: str,
+        settlement_reference: str = "",
+        settlement_tx_hash: str = "",
+        idempotency_key: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        clean_batch_id = str(batch_id or "").strip()
+        if not clean_batch_id:
+            raise ValueError("batch_id is required.")
+        clean_key = str(idempotency_key or "").strip()
+        now = utc_now()
+
+        with self._lock:
+            data = self._load_unlocked()
+            payload = data["settlement_batches"].get(clean_batch_id)
+            if not isinstance(payload, dict):
+                raise KeyError(f"Unknown worker settlement batch: {clean_batch_id}")
+            batch = _batch_from_dict(payload)
+            if batch.status == "settled":
+                return {
+                    "ok": True,
+                    "idempotent": True,
+                    "batch": batch.as_dict(),
+                    "settled_credits": batch.total_credits_published,
+                    "additional_settled_credits": 0,
+                    "bridge_retained_credits": batch.dust_credits,
+                    "worker_settlement_totals": self._worker_settlement_totals_from_data(data, batch.worker_node_id, precision_places=batch.precision_places),
+                    "ledger": self._status_from_data(data),
+                }
+            if batch.status == "cancelled":
+                raise ValueError(f"Cannot settle cancelled worker settlement batch {clean_batch_id}.")
+
+            updated_batch = WorkerSettlementBatch(
+                batch_id=batch.batch_id,
+                window_start=batch.window_start,
+                window_end=batch.window_end,
+                total_credits_exact=batch.total_credits_exact,
+                total_credits_published=batch.total_credits_published,
+                dust_credits=batch.dust_credits,
+                worker_count=batch.worker_count,
+                batch_root=batch.batch_root,
+                status="settled",
+                worker_node_id=batch.worker_node_id,
+                claim_ids=batch.claim_ids,
+                precision_places=batch.precision_places,
+                rounding_bucket_credits=batch.rounding_bucket_credits,
+                bridge_account_id=batch.bridge_account_id,
+                settlement_reference=settlement_reference or batch.settlement_reference,
+                settlement_tx_hash=settlement_tx_hash or batch.settlement_tx_hash,
+                settled_at=now,
+                created_at=batch.created_at,
+                metadata={
+                    **dict(batch.metadata or {}),
+                    **dict(metadata or {}),
+                    "settle_idempotency_key": clean_key,
+                    "bridge_retained_credits": batch.dust_credits,
+                },
+            )
+            data["settlement_batches"][updated_batch.batch_id] = updated_batch.as_dict()
+
+            updated_claims = []
+            for claim_id in batch.claim_ids:
+                claim_payload = data["worker_claims"].get(claim_id)
+                if not isinstance(claim_payload, dict):
+                    raise KeyError(f"Settlement batch references unknown worker claim: {claim_id}")
+                claim = _claim_from_dict(claim_payload)
+                if claim.worker_node_id != batch.worker_node_id:
+                    raise ValueError(f"Settlement batch claim {claim_id} belongs to another worker.")
+                if claim.status == "settled":
+                    updated_claims.append(claim)
+                    continue
+                if claim.status != "claimed":
+                    raise ValueError(f"Settlement batch claim {claim_id} is not claimed; status is {claim.status}.")
+                settled_claim = WorkerClaim(
+                    claim_id=claim.claim_id,
+                    worker_node_id=claim.worker_node_id,
+                    claimed_credits=claim.claimed_credits,
+                    earning_ids=claim.earning_ids,
+                    status="settled",
+                    idempotency_key=claim.idempotency_key,
+                    settlement_tx_hash=settlement_tx_hash or claim.settlement_tx_hash,
+                    created_at=claim.created_at,
+                    metadata={
+                        **dict(claim.metadata or {}),
+                        "settlement_batch_id": updated_batch.batch_id,
+                        "settled_at": now,
+                    },
+                )
+                data["worker_claims"][settled_claim.claim_id] = settled_claim.as_dict()
+                updated_claims.append(settled_claim)
+
+            settlement_tx = HubCreditTransaction(
+                transaction_id=stable_id("ctx", {"type": "batch_settled", "batch_id": updated_batch.batch_id}),
+                account_id=updated_batch.worker_node_id or "worker-settlement",
+                transaction_type="batch_settled",
+                credits=updated_batch.total_credits_published,
+                created_at=now,
+                worker_node_id=updated_batch.worker_node_id,
+                batch_id=updated_batch.batch_id,
+                memo=f"worker settlement batch {updated_batch.batch_id} settled",
+                metadata={
+                    **dict(metadata or {}),
+                    "idempotency_key": clean_key,
+                    "settlement_reference": settlement_reference or "",
+                    "settlement_tx_hash": settlement_tx_hash or "",
+                    "claim_ids": list(updated_batch.claim_ids),
+                    "total_credits_exact": updated_batch.total_credits_exact,
+                    "total_credits_published": updated_batch.total_credits_published,
+                    "dust_credits": updated_batch.dust_credits,
+                    "bridge_account_id": updated_batch.bridge_account_id,
+                    "bridge_retained_credits": updated_batch.dust_credits,
+                    "precision_places": updated_batch.precision_places,
+                    "rounding_bucket_credits": updated_batch.rounding_bucket_credits,
+                },
+            )
+            data["transactions"].append(settlement_tx.as_dict())
+            self._save_unlocked(data)
+            return {
+                "ok": True,
+                "idempotent": False,
+                "batch": updated_batch.as_dict(),
+                "claims": [claim.as_dict() for claim in updated_claims],
+                "transaction": settlement_tx.as_dict(),
+                "settled_credits": updated_batch.total_credits_published,
+                "additional_settled_credits": updated_batch.total_credits_published,
+                "bridge_retained_credits": updated_batch.dust_credits,
+                "worker_settlement_totals": self._worker_settlement_totals_from_data(data, updated_batch.worker_node_id, precision_places=updated_batch.precision_places),
+                "ledger": self._status_from_data(data),
+            }
 
     def worker_claim_totals(self, worker_node_id: str) -> dict[str, Any]:
         if not str(worker_node_id or "").strip():
@@ -1230,6 +1546,80 @@ class HubCreditLedger:
         }
 
 
+    def _worker_settlement_totals_from_data(
+        self,
+        data: dict[str, Any],
+        worker_node_id: str,
+        *,
+        precision_places: int | None = None,
+    ) -> dict[str, Any]:
+        clean_worker = clean_worker_id(worker_node_id)
+        precision = normalize_worker_payout_precision_places(precision_places)
+        bucket_size = worker_payout_bucket_size_for_precision(precision)
+        claims = [
+            _claim_from_dict(item)
+            for item in data["worker_claims"].values()
+            if isinstance(item, dict)
+        ]
+        worker_claims = [
+            claim
+            for claim in claims
+            if claim.worker_node_id == clean_worker and claim.status in {"claimed", "settled"}
+        ]
+        batches = [
+            _batch_from_dict(item)
+            for item in data["settlement_batches"].values()
+            if isinstance(item, dict)
+        ]
+        worker_batches = [batch for batch in batches if batch.worker_node_id == clean_worker]
+
+        batched_claim_ids: set[str] = set()
+        settled_claim_ids: set[str] = set()
+        for batch in worker_batches:
+            if batch.status != "cancelled":
+                batched_claim_ids.update(batch.claim_ids)
+            if batch.status == "settled":
+                settled_claim_ids.update(batch.claim_ids)
+
+        settleable_claims = [
+            claim
+            for claim in sorted(worker_claims, key=lambda item: item.created_at)
+            if claim.status == "claimed" and claim.claim_id not in batched_claim_ids
+        ]
+        exact_units = sum(claim.claimed_credits for claim in settleable_claims)
+        published_units, dust_units, precision, bucket_size = truncate_worker_payout_for_precision(
+            exact_units,
+            precision_places=precision,
+        )
+        settled_batches = [batch for batch in worker_batches if batch.status == "settled"]
+        open_batches = [batch for batch in worker_batches if batch.status not in {"settled", "cancelled"}]
+
+        return {
+            "ok": True,
+            "worker_node_id": clean_worker,
+            "precision_places": precision,
+            "rounding_bucket_credits": bucket_size,
+            "settleable_units_exact": exact_units,
+            "settleable_units_published": published_units,
+            "settleable_dust_units": dust_units,
+            "bridge_retained_units_if_settled": dust_units,
+            "settleable_claim_count": len(settleable_claims),
+            "settleable_claim_ids": [claim.claim_id for claim in settleable_claims],
+            "batched_claim_ids": sorted(batched_claim_ids),
+            "settled_claim_ids": sorted(settled_claim_ids),
+            "claimed_units_total": sum(claim.claimed_credits for claim in worker_claims),
+            "settled_units_exact": sum(batch.total_credits_exact for batch in settled_batches),
+            "settled_units_published": sum(batch.total_credits_published for batch in settled_batches),
+            "bridge_retained_units": sum(batch.dust_credits for batch in settled_batches),
+            "open_batch_count": len(open_batches),
+            "settled_batch_count": len(settled_batches),
+            "can_create_batch": exact_units > 0,
+            "block_reason": "" if exact_units > 0 else "no_claimed_unsettled_worker_claims",
+            "claims": [claim.as_dict() for claim in sorted(worker_claims, key=lambda item: item.created_at)],
+            "batches": [batch.as_dict() for batch in sorted(worker_batches, key=lambda item: item.created_at)],
+        }
+
+
     def _account_bridge_funding_credits_unlocked(self, data: dict[str, Any], account_id: str) -> int:
         """Return durable requester-side funding credits for bridge reconciliation.
 
@@ -1345,6 +1735,7 @@ class HubCreditLedger:
         charges = [_charge_from_dict(item) for item in data["charges"].values()]
         worker_earnings = [_earning_from_dict(item) for item in data["worker_earnings"].values()]
         worker_claims = [_claim_from_dict(item) for item in data["worker_claims"].values()]
+        settlement_batches = [_batch_from_dict(item) for item in data["settlement_batches"].values()]
         return {
             "ok": True,
             "unit": {"name": CREDIT_UNIT_NAME, "key": CREDIT_UNIT_KEY},
@@ -1359,6 +1750,7 @@ class HubCreditLedger:
             "charge_count": len(charges),
             "worker_earning_count": len(worker_earnings),
             "worker_claim_count": len(worker_claims),
+            "worker_settlement_batch_count": len(settlement_batches),
             "totals": {
                 "available_credits": sum(account.available_credits for account in accounts),
                 "held_credits": sum(account.held_credits for account in accounts),
@@ -1370,6 +1762,10 @@ class HubCreditLedger:
                 "charged_credits": sum(charge.charged_credits for charge in charges),
                 "worker_earned_credits": sum(earning.credits for earning in worker_earnings),
                 "worker_claimed_credits": sum(claim.claimed_credits for claim in worker_claims if claim.status in {"claimed", "settled"}),
+                "worker_settlement_exact_credits": sum(batch.total_credits_exact for batch in settlement_batches if batch.status == "settled"),
+                "worker_settlement_published_credits": sum(batch.total_credits_published for batch in settlement_batches if batch.status == "settled"),
+                "worker_settlement_dust_credits": sum(batch.dust_credits for batch in settlement_batches if batch.status == "settled"),
+                "bridge_retained_worker_payout_dust_credits": sum(batch.dust_credits for batch in settlement_batches if batch.status == "settled"),
             },
         }
 
@@ -1469,6 +1865,17 @@ class HubCreditLedger:
                 continue
             worker_claims[claim.claim_id or str(claim_id)] = claim.as_dict()
 
+        raw_batches = data.get("settlement_batches") if isinstance(data.get("settlement_batches"), dict) else {}
+        settlement_batches = {}
+        for batch_id, item in raw_batches.items():
+            if not isinstance(item, dict):
+                continue
+            try:
+                batch = _batch_from_dict(item)
+            except Exception:
+                continue
+            settlement_batches[batch.batch_id or str(batch_id)] = batch.as_dict()
+
         return {
             "version": HUB_CREDIT_LEDGER_STORE_VERSION,
             "accounts": accounts,
@@ -1478,6 +1885,6 @@ class HubCreditLedger:
             "charges": charges,
             "worker_earnings": worker_earnings,
             "worker_claims": worker_claims,
-            "settlement_batches": data.get("settlement_batches") if isinstance(data.get("settlement_batches"), dict) else {},
+            "settlement_batches": settlement_batches,
             "reports": data.get("reports") if isinstance(data.get("reports"), dict) else {},
         }

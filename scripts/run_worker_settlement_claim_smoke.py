@@ -263,11 +263,20 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
         claimed_units = int(claimed.get("claimed_credits", 0))
+        record_worker_claim_idempotent = bool(claimed.get("idempotent", False))
+        same_scope_rerun = claimable_before == 0
         if claimable_before:
             assert_equal("claimed units", claimed_units, args.worker_credits)
             assert_equal("claimed count", int(claimed.get("claimed_count", 0)), 1)
+            assert_equal("fresh claim is not idempotent", record_worker_claim_idempotent, False)
+            claim_additional_units_this_run = claimed_units
         else:
-            assert_equal("rerun claimed units", claimed_units, 0)
+            # A same-scope rerun POSTs the same idempotency key after the claim already
+            # exists. The API correctly returns the original durable claim amount. That
+            # amount is not an additional payout/claim created by this run.
+            assert_equal("rerun claim is idempotent", record_worker_claim_idempotent, True)
+            assert_equal("rerun returned original claim units", claimed_units, args.worker_credits)
+            claim_additional_units_this_run = 0
 
         after = add_step(
             steps,
@@ -314,6 +323,9 @@ def main(argv: list[str] | None = None) -> int:
                 "claimable_before_units": claimable_before,
                 "claimed_units": claimed_units,
                 "claimable_after_units": int(after.get("claimable_units", 0)),
+                "claim_additional_units_this_run": claim_additional_units_this_run,
+                "record_worker_claim_idempotent": record_worker_claim_idempotent,
+                "same_scope_rerun": same_scope_rerun,
                 "duplicate_same_key_units": duplicate_same_units,
                 "duplicate_same_key_idempotent": bool(duplicate_same.get("idempotent", False)),
                 "duplicate_claim_additional_units": int(duplicate_new.get("claimed_credits", 0)),
