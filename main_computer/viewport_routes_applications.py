@@ -323,7 +323,13 @@ class ViewportApplicationRoutesMixin:
         projects = list_website_projects(self.server.debug_root)
         if not projects:
             raise WebsiteProjectError("No Website Builder sites are available.")
-        return projects[0].id
+        if len(projects) == 1:
+            return projects[0].id
+        available = ", ".join(project.id for project in projects)
+        raise WebsiteProjectError(
+            "Missing active Website Builder site id in mounted chat context; "
+            f"available site ids: {available}"
+        )
 
     def _website_builder_visible_site_files(self, project: Any, *, limit: int = 80) -> list[str]:
         root = project.path.resolve()

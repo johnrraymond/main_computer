@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -38,19 +39,24 @@ PLACEHOLDER_CONTRACT_ADDRESS = "0x1111111111111111111111111111111111111111"
 DEFAULT_DEV_CHAIN_ID = 42424242
 CONTRACT_SOURCE_SPEC = "src/HubCreditBridgeEscrow.sol:HubCreditBridgeEscrow"
 FOUNDRY_IMAGE = "ghcr.io/foundry-rs/foundry:stable"
+DEFAULT_ANVIL_START_TIMEOUT = 120.0
+ANVIL_DOCKER_CONTAINER_PREFIX = "main-computer-phase3-anvil"
+ANVIL_DOCKER_NETWORK_PREFIX = "main-computer-phase3-net"
 
 # Standard deterministic Anvil/Foundry dev wallets. These are DEV ONLY and are
 # used here only as a fallback for the local Phase 3 smoke when a manifest was
 # prepared without --include-private-keys.
 DEFAULT_DEV_PRIVATE_KEYS_BY_ADDRESS = {
     "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266": "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
-    "0x70997970c51812dc3a010c7d01b50e0d17dc79c8": "0x59c6995e998f97a5a0044966f094538c9e4361d023d65a14d6007a1df0863d9",
-    "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc": "0x5de4111afa1a4b582f56a49c1b5f05b7ec3a943b11f071d72da14ef03ea64d35",
-    "0x90f79bf6eb2c4f870365e785982e1f101e93b906": "0x7c8521182947f3db6289eedbc2ba5d66237bca6d0f79f0a2d4c10c86184a8e24",
-    "0x15d34aaf54267db7d7c367839aaf71a00a2c6a65": "0x47e179ec19748826f25cc1a5af897a1c59b64f10c1ee5638b0767f467bdca11f",
-    "0x9965507d1a55bcc2695c58ba16fb37d819b0a4dc": "0x8b3a350cf5c34c9194ca3a545d1f0b8a7a754e03d6f34e7e65ac8068bddb2ba",
-    "0x976ea74026e726554db657fa54763abd0c3a0aa9": "0x92db14eec9e8c55da9ff8d83cf66f3e4b0b6c323ca2f0ce7857f1e46c29306d9",
-    "0x14dc79964da2c08b23698b3d3cc7ca32193d9955": "0x4bbbf28a99f03eec7f5efcd9b8f57b887db5e72ab5d3e5b3687dfc6801434c2e",
+    "0x70997970c51812dc3a010c7d01b50e0d17dc79c8": "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+    "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc": "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a",
+    "0x90f79bf6eb2c4f870365e785982e1f101e93b906": "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6",
+    "0x15d34aaf54267db7d7c367839aaf71a00a2c6a65": "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a",
+    "0x9965507d1a55bcc2695c58ba16fb37d819b0a4dc": "0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba",
+    "0x976ea74026e726554db657fa54763abd0c3a0aa9": "0x92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e",
+    "0x14dc79964da2c08b23698b3d3cc7ca32193d9955": "0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356",
+    "0x23618e81e3f5cdf7f54c3d65f7fbc0abf5b21e8f": "0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
+    "0xa0ee7a142d267c1f36714e4a8f75612f20a79720": "0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6",
 }
 
 
@@ -106,6 +112,11 @@ def normalize_evm_address(value: Any) -> str:
     if text.startswith("0x") and len(text) == 42 and all(ch in "0123456789abcdefABCDEF" for ch in text[2:]):
         return "0x" + text[2:].lower()
     return ""
+
+
+def is_tx_hash(value: Any) -> bool:
+    text = str(value or "").strip()
+    return bool(re.fullmatch(r"0x[0-9a-fA-F]{64}", text))
 
 
 def is_placeholder_contract_address(value: Any) -> bool:
@@ -252,19 +263,23 @@ def hub_url_from_manifest(manifest: dict[str, Any], args: argparse.Namespace) ->
     return str(args.hub_url or hub.get("url") or "http://127.0.0.1:8770").rstrip("/")
 
 
+def is_private_key(value: str) -> bool:
+    return bool(re.fullmatch(r"0x[0-9a-fA-F]{64}", str(value or "").strip()))
+
+
 def env_or_manifest_private_key(actor: dict[str, Any]) -> str:
     key = str(actor.get("private_key", "") or "").strip()
-    if key.startswith("0x") and len(key) == 66:
+    if is_private_key(key):
         return key
     env_name = str(actor.get("private_key_env", "") or "").strip()
     if env_name:
         env_key = str(os.environ.get(env_name, "")).strip()
-        if env_key.startswith("0x") and len(env_key) == 66:
+        if is_private_key(env_key):
             return env_key
     if str(os.environ.get("MAIN_COMPUTER_DISABLE_DETERMINISTIC_DEV_KEY_FALLBACK", "")).strip().lower() not in {"1", "true", "yes"}:
         address = normalize_evm_address(actor.get("address"))
         dev_key = DEFAULT_DEV_PRIVATE_KEYS_BY_ADDRESS.get(address, "")
-        if dev_key:
+        if is_private_key(dev_key):
             return dev_key
     return ""
 
@@ -279,7 +294,9 @@ def docker_mount_path(path: Path) -> str:
     return text.replace("\\", "/")
 
 
-def docker_rpc_url(rpc_url: str) -> str:
+def docker_rpc_url(rpc_url: str, *, override: str = "") -> str:
+    if override:
+        return str(override)
     parsed = urlparse(rpc_url)
     if parsed.hostname in {"127.0.0.1", "localhost"}:
         netloc = "host.docker.internal"
@@ -289,7 +306,503 @@ def docker_rpc_url(rpc_url: str) -> str:
     return rpc_url
 
 
-def cast_command(base_args: list[str], *, repo_root: Path, rpc_url: str, no_docker: bool) -> tuple[list[str], str]:
+def rpc_url_with_port(rpc_url: str, port: int) -> str:
+    parsed = urlparse(rpc_url)
+    require(parsed.scheme in {"http", "https"}, f"expected http(s) RPC URL, got: {rpc_url!r}")
+    host = parsed.hostname or "127.0.0.1"
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = f"{host}:{int(port)}"
+    return urlunparse((parsed.scheme, netloc, parsed.path or "", parsed.params, parsed.query, parsed.fragment))
+
+
+def find_free_loopback_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def uses_dockerized_foundry_tool(tool: str, *, no_docker: bool) -> bool:
+    if shutil.which(tool):
+        return False
+    return bool(shutil.which("docker")) and not no_docker
+
+
+def docker_foundry_rpc_probe(
+    *,
+    chain: dict[str, Any],
+    repo_root: Path,
+    no_docker: bool,
+    timeout: float,
+) -> dict[str, Any]:
+    if not uses_dockerized_foundry_tool("forge", no_docker=no_docker):
+        return {"ok": True, "skipped": True, "reason": "local forge is available or Docker is disabled"}
+
+    docker = shutil.which("docker")
+    if not docker:
+        return {"ok": False, "skipped": True, "reason": "Docker is not available"}
+
+    rewritten_rpc = docker_rpc_url(
+        str(chain["rpc_url"]),
+        override=str(chain.get("docker_rpc_url") or ""),
+    )
+    command = [
+        docker,
+        "run",
+        "--rm",
+        *docker_network_args(str(chain.get("docker_network") or "")),
+        "-e",
+        "NO_COLOR=1",
+        "-e",
+        "CLICOLOR=0",
+        "--entrypoint",
+        "cast",
+        FOUNDRY_IMAGE,
+        "chain-id",
+        "--rpc-url",
+        rewritten_rpc,
+    ]
+    result = subprocess.run(
+        command,
+        cwd=str(repo_root),
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        timeout=timeout,
+    )
+    return {
+        "ok": result.returncode == 0,
+        "skipped": False,
+        "rpc_url": rewritten_rpc,
+        "docker_network": str(chain.get("docker_network") or ""),
+        "returncode": result.returncode,
+        "stdout_tail": tail(result.stdout, 500),
+        "stderr_tail": tail(result.stderr, 500),
+    }
+
+
+def attach_managed_anvil_to_chain(chain: dict[str, Any], managed: dict[str, Any] | None) -> None:
+    if not managed:
+        return
+    if managed.get("rpc_url"):
+        chain["rpc_url"] = str(managed.get("rpc_url"))
+    if managed.get("mode") == "docker":
+        chain["docker_network"] = str(managed.get("docker_network") or "")
+        chain["docker_rpc_url"] = str(managed.get("docker_rpc_url") or "")
+
+
+def rpc_json(rpc_url: str, method: str, params: list[Any] | None = None, *, timeout: float = 2.0) -> Any:
+    payload = json.dumps(
+        {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    request = Request(
+        rpc_url,
+        data=payload,
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urlopen(request, timeout=timeout) as response:
+        decoded = json.loads(response.read().decode("utf-8", errors="replace"))
+    if not isinstance(decoded, dict):
+        raise SmokeFailure(f"JSON-RPC {method} returned non-object response: {decoded!r}")
+    if decoded.get("error"):
+        raise SmokeFailure(f"JSON-RPC {method} returned error: {decoded['error']}")
+    return decoded.get("result")
+
+
+def rpc_is_reachable(rpc_url: str, *, timeout: float = 2.0) -> bool:
+    try:
+        rpc_json(rpc_url, "eth_chainId", timeout=timeout)
+        return True
+    except Exception:
+        return False
+
+
+def rpc_chain_id(rpc_url: str, *, timeout: float = 2.0) -> int:
+    result = rpc_json(rpc_url, "eth_chainId", timeout=timeout)
+    if isinstance(result, str) and result.startswith("0x"):
+        return int(result, 16)
+    return clean_int(result)
+
+
+def rpc_contract_code(rpc_url: str, contract_address: str, *, timeout: float = 2.0) -> str:
+    address = normalize_evm_address(contract_address)
+    if not address or is_placeholder_contract_address(address):
+        return "0x"
+    result = rpc_json(rpc_url, "eth_getCode", [address, "latest"], timeout=timeout)
+    return str(result or "0x")
+
+
+def rpc_contract_has_code(rpc_url: str, contract_address: str, *, timeout: float = 2.0) -> bool:
+    code = rpc_contract_code(rpc_url, contract_address, timeout=timeout)
+    return code not in {"", "0x", "0X"}
+
+
+def anvil_port_from_rpc_url(rpc_url: str) -> int:
+    parsed = urlparse(rpc_url)
+    require(parsed.scheme in {"http", "https"}, f"auto-started Anvil requires an http(s) RPC URL, got: {rpc_url!r}")
+    host = (parsed.hostname or "").lower()
+    require(
+        host in {"127.0.0.1", "localhost", "0.0.0.0"},
+        (
+            "auto-started Anvil only supports loopback RPC URLs. "
+            f"Use a running chain for non-loopback RPC URL {rpc_url!r}, or pass --no-auto-start-anvil."
+        ),
+    )
+    if parsed.port:
+        return int(parsed.port)
+    return 443 if parsed.scheme == "https" else 80
+
+
+def docker_anvil_container_name(*, port: int, chain_id: int) -> str:
+    return f"{ANVIL_DOCKER_CONTAINER_PREFIX}-{chain_id}-{port}"
+
+
+def docker_anvil_network_name(*, port: int, chain_id: int) -> str:
+    return f"{ANVIL_DOCKER_NETWORK_PREFIX}-{chain_id}-{port}"
+
+
+def docker_network_args(network_name: str) -> list[str]:
+    network = str(network_name or "").strip()
+    return ["--network", network] if network else []
+
+
+def ensure_docker_network(docker: str, network_name: str, *, timeout: float = 10.0) -> None:
+    network = str(network_name or "").strip()
+    if not network:
+        return
+    inspect = subprocess.run(
+        [docker, "network", "inspect", network],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        timeout=timeout,
+    )
+    if inspect.returncode == 0:
+        return
+    created = subprocess.run(
+        [docker, "network", "create", network],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        timeout=timeout,
+    )
+    if created.returncode != 0:
+        raise SmokeFailure(f"docker network create {network} failed: {tail(created.stderr or created.stdout)}")
+
+
+def docker_anvil_command(
+    *,
+    docker: str,
+    port: int,
+    chain_id: int,
+    container_name: str,
+    network_name: str = "",
+) -> list[str]:
+    return [
+        docker,
+        "run",
+        "--rm",
+        "-d",
+        "--name",
+        container_name,
+        *docker_network_args(network_name),
+        "-p",
+        f"127.0.0.1:{port}:8545",
+        "--entrypoint",
+        "anvil",
+        FOUNDRY_IMAGE,
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8545",
+        "--chain-id",
+        str(chain_id),
+    ]
+
+
+def stop_managed_anvil(managed: dict[str, Any], *, timeout: float = 10.0) -> dict[str, Any]:
+    if not managed:
+        return {"ok": True, "skipped": True}
+
+    mode = managed.get("mode")
+    if mode == "local":
+        process = managed.get("process")
+        if isinstance(process, subprocess.Popen):
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=timeout)
+            return {"ok": True, "mode": mode, "returncode": process.poll()}
+        return {"ok": True, "mode": mode, "skipped": True}
+
+    if mode == "docker":
+        docker = str(managed.get("docker") or shutil.which("docker") or "docker")
+        container_name = str(managed.get("container_name") or "")
+        network_name = str(managed.get("docker_network") or "")
+        stopped: subprocess.CompletedProcess[str] | None = None
+        if container_name:
+            stopped = subprocess.run(
+                [docker, "stop", container_name],
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                timeout=timeout,
+            )
+        network_removed = False
+        network_stderr = ""
+        if network_name:
+            removed = subprocess.run(
+                [docker, "network", "rm", network_name],
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                timeout=timeout,
+            )
+            network_removed = removed.returncode == 0
+            network_stderr = tail(removed.stderr or removed.stdout, 500)
+        if container_name:
+            return {
+                "ok": stopped is not None and stopped.returncode == 0,
+                "mode": mode,
+                "container_name": container_name,
+                "docker_network": network_name,
+                "network_removed": network_removed,
+                "stdout_tail": tail(stopped.stdout if stopped is not None else "", 500),
+                "stderr_tail": tail(stopped.stderr if stopped is not None else "", 500),
+                "network_stderr_tail": network_stderr,
+            }
+    return {"ok": False, "mode": mode, "reason": "unknown managed Anvil mode"}
+
+
+def start_managed_anvil(
+    *,
+    rpc_url: str,
+    chain_id: int,
+    repo_root: Path,
+    no_docker: bool,
+    start_timeout: float,
+    prefer_docker: bool = False,
+) -> dict[str, Any]:
+    port = anvil_port_from_rpc_url(rpc_url)
+    anvil = None if prefer_docker else shutil.which("anvil")
+    managed: dict[str, Any]
+
+    if anvil:
+        log_path = repo_root / "runtime" / "hub" / "bridge_escrow_withdrawal_reconciliation_anvil.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = log_path.open("ab")
+        command = [
+            anvil,
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--chain-id",
+            str(chain_id),
+        ]
+        log("$ " + " ".join(command))
+        process = subprocess.Popen(
+            command,
+            cwd=str(repo_root),
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+        )
+        managed = {
+            "ok": True,
+            "mode": "local",
+            "command": command,
+            "pid": process.pid,
+            "process": process,
+            "log_path": str(log_path),
+            "rpc_url": rpc_url,
+            "chain_id": chain_id,
+            "ephemeral": True,
+        }
+    else:
+        docker = shutil.which("docker")
+        if not docker or no_docker:
+            raise SmokeFailure(
+                f"No chain is reachable at {rpc_url}, and neither local anvil nor Docker is available to auto-start one. "
+                "Start Anvil manually or install Foundry/Docker."
+            )
+        container_name = docker_anvil_container_name(port=port, chain_id=chain_id)
+        network_name = docker_anvil_network_name(port=port, chain_id=chain_id)
+        subprocess.run(
+            [docker, "rm", "-f", container_name],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            timeout=10.0,
+        )
+        subprocess.run(
+            [docker, "network", "rm", network_name],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            timeout=10.0,
+        )
+        ensure_docker_network(docker, network_name)
+        command = docker_anvil_command(
+            docker=docker,
+            port=port,
+            chain_id=chain_id,
+            container_name=container_name,
+            network_name=network_name,
+        )
+        result = run_command(command, cwd=repo_root, timeout=start_timeout)
+        if result.returncode != 0:
+            raise SmokeFailure(f"dockerized Anvil start failed with exit code {result.returncode}: {tail(result.stderr or result.stdout)}")
+        managed = {
+            "ok": True,
+            "mode": "docker",
+            "command": command,
+            "container_name": container_name,
+            "container_id": result.stdout.strip(),
+            "docker": docker,
+            "docker_network": network_name,
+            "docker_rpc_url": f"http://{container_name}:8545",
+            "rpc_url": rpc_url,
+            "chain_id": chain_id,
+            "ephemeral": True,
+        }
+
+    deadline = time.monotonic() + max(1.0, start_timeout)
+    while time.monotonic() < deadline:
+        if managed.get("mode") == "local":
+            process = managed.get("process")
+            if isinstance(process, subprocess.Popen) and process.poll() is not None:
+                raise SmokeFailure(f"auto-started Anvil exited before becoming reachable with code {process.poll()}")
+        if rpc_is_reachable(rpc_url, timeout=1.0):
+            actual_chain_id = rpc_chain_id(rpc_url, timeout=2.0)
+            if actual_chain_id != int(chain_id):
+                stop_managed_anvil(managed)
+                raise SmokeFailure(f"auto-started Anvil chain id is {actual_chain_id}, expected {chain_id}")
+            return managed
+        time.sleep(0.25)
+
+    stop_managed_anvil(managed)
+    raise SmokeFailure(f"auto-started Anvil did not become reachable at {rpc_url} within {start_timeout:g} seconds")
+
+
+def ensure_chain_rpc_available(
+    *,
+    chain: dict[str, Any],
+    repo_root: Path,
+    no_docker: bool,
+    no_auto_start_anvil: bool,
+    start_timeout: float,
+) -> dict[str, Any] | None:
+    rpc_url = str(chain["rpc_url"])
+    if rpc_is_reachable(rpc_url, timeout=2.0):
+        actual_chain_id = rpc_chain_id(rpc_url, timeout=2.0)
+        require(
+            actual_chain_id == int(chain["chain_id"]),
+            f"chain RPC {rpc_url} is chain id {actual_chain_id}, expected {chain['chain_id']}",
+        )
+        return None
+
+    if no_auto_start_anvil:
+        raise SmokeFailure(
+            f"No dev chain is reachable at {rpc_url}. Start Anvil for chain id {chain['chain_id']} first, "
+            "or rerun without --no-auto-start-anvil to let this smoke start an ephemeral local Anvil."
+        )
+
+    log(
+        f"No dev chain is reachable at {rpc_url}; auto-starting ephemeral Anvil "
+        f"for chain id {chain['chain_id']}."
+    )
+    return start_managed_anvil(
+        rpc_url=rpc_url,
+        chain_id=int(chain["chain_id"]),
+        repo_root=repo_root,
+        no_docker=no_docker,
+        start_timeout=start_timeout,
+        prefer_docker=uses_dockerized_foundry_tool("forge", no_docker=no_docker),
+    )
+
+
+def start_isolated_docker_anvil_for_foundry(
+    *,
+    chain: dict[str, Any],
+    repo_root: Path,
+    no_docker: bool,
+    start_timeout: float,
+    reason: str,
+) -> dict[str, Any]:
+    if no_docker:
+        raise SmokeFailure(reason + " Docker is disabled, so the smoke cannot start an isolated Dockerized Anvil fallback.")
+    if not shutil.which("docker"):
+        raise SmokeFailure(reason + " Docker is not available, so the smoke cannot start an isolated Dockerized Anvil fallback.")
+
+    original_rpc_url = str(chain["rpc_url"])
+    fallback_rpc_url = rpc_url_with_port(original_rpc_url, find_free_loopback_port())
+    log(
+        reason
+        + " Auto-starting an isolated Dockerized Anvil dev chain for this smoke at "
+        + f"{fallback_rpc_url}."
+    )
+    managed = start_managed_anvil(
+        rpc_url=fallback_rpc_url,
+        chain_id=int(chain["chain_id"]),
+        repo_root=repo_root,
+        no_docker=no_docker,
+        start_timeout=start_timeout,
+        prefer_docker=True,
+    )
+    managed["fallback_reason"] = reason
+    managed["original_rpc_url"] = original_rpc_url
+    attach_managed_anvil_to_chain(chain, managed)
+    return managed
+
+
+def deployment_error_looks_like_rpc_connect_failure(error: Exception) -> bool:
+    text = str(error).lower()
+    needles = (
+        "connection refused",
+        "tcp connect error",
+        "error sending request",
+        "could not connect",
+        "connection reset",
+        "host.docker.internal",
+        "localhost:8545",
+        "127.0.0.1:8545",
+        "chain rpc is not reachable",
+    )
+    return any(needle in text for needle in needles)
+
+
+def should_persist_auto_deployed_contract(args: argparse.Namespace, *, chain_auto_started: bool) -> bool:
+    if bool(getattr(args, "no_persist_auto_deploy_contract", False)):
+        return False
+    if chain_auto_started and not bool(getattr(args, "persist_auto_started_contract_address", False)):
+        return False
+    if str(getattr(args, "contract_address", "") or "").strip():
+        return False
+    return True
+
+
+def cast_command(
+    base_args: list[str],
+    *,
+    repo_root: Path,
+    rpc_url: str,
+    no_docker: bool,
+    docker_network: str = "",
+    docker_rpc_url_override: str = "",
+    extra_env: dict[str, str] | None = None,
+) -> tuple[list[str], str]:
     cast = shutil.which("cast")
     if cast:
         return [cast, *base_args], rpc_url
@@ -298,15 +811,25 @@ def cast_command(base_args: list[str], *, repo_root: Path, rpc_url: str, no_dock
     if not docker or no_docker:
         raise SmokeFailure("Neither local cast nor Docker is available for chain-backed reconciliation.")
 
-    rewritten_rpc = docker_rpc_url(rpc_url)
+    rewritten_rpc = docker_rpc_url(rpc_url, override=docker_rpc_url_override)
+    docker_env: list[str] = []
+    for key, value in (extra_env or {}).items():
+        if value is not None and str(value) != "":
+            docker_env.extend(["-e", f"{key}={value}"])
     docker_args = [
         docker,
         "run",
         "--rm",
+        *docker_network_args(docker_network),
         "-e",
         "NO_COLOR=1",
         "-e",
         "CLICOLOR=0",
+        "-e",
+        f"ETH_RPC_URL={rewritten_rpc}",
+        "-e",
+        f"FOUNDRY_ETH_RPC_URL={rewritten_rpc}",
+        *docker_env,
         "-v",
         f"{docker_mount_path(repo_root)}:/workspace",
         "-w",
@@ -319,7 +842,15 @@ def cast_command(base_args: list[str], *, repo_root: Path, rpc_url: str, no_dock
     return docker_args, rewritten_rpc
 
 
-def forge_command(base_args: list[str], *, repo_root: Path, rpc_url: str, no_docker: bool) -> tuple[list[str], str, Path]:
+def forge_command(
+    base_args: list[str],
+    *,
+    repo_root: Path,
+    rpc_url: str,
+    no_docker: bool,
+    docker_network: str = "",
+    docker_rpc_url_override: str = "",
+) -> tuple[list[str], str, Path]:
     contracts_root = repo_root / "contracts"
     forge = shutil.which("forge")
     if forge:
@@ -329,15 +860,20 @@ def forge_command(base_args: list[str], *, repo_root: Path, rpc_url: str, no_doc
     if not docker or no_docker:
         raise SmokeFailure("Neither local forge nor Docker is available to deploy HubCreditBridgeEscrow.")
 
-    rewritten_rpc = docker_rpc_url(rpc_url)
+    rewritten_rpc = docker_rpc_url(rpc_url, override=docker_rpc_url_override)
     docker_args = [
         docker,
         "run",
         "--rm",
+        *docker_network_args(docker_network),
         "-e",
         "NO_COLOR=1",
         "-e",
         "CLICOLOR=0",
+        "-e",
+        f"ETH_RPC_URL={rewritten_rpc}",
+        "-e",
+        f"FOUNDRY_ETH_RPC_URL={rewritten_rpc}",
         "-v",
         f"{docker_mount_path(repo_root)}:/workspace",
         "-w",
@@ -350,8 +886,18 @@ def forge_command(base_args: list[str], *, repo_root: Path, rpc_url: str, no_doc
     return docker_args, rewritten_rpc, contracts_root
 
 
-def run_command(command: list[str], *, cwd: Path, timeout: float) -> subprocess.CompletedProcess[str]:
+def run_command(
+    command: list[str],
+    *,
+    cwd: Path,
+    timeout: float,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     log("$ " + " ".join(command))
+    env = None
+    if extra_env:
+        env = os.environ.copy()
+        env.update({key: str(value) for key, value in extra_env.items() if value is not None})
     result = subprocess.run(
         command,
         cwd=str(cwd),
@@ -360,6 +906,7 @@ def run_command(command: list[str], *, cwd: Path, timeout: float) -> subprocess.
         errors="replace",
         capture_output=True,
         timeout=timeout,
+        env=env,
     )
     if result.stdout:
         emit(result.stdout)
@@ -472,6 +1019,163 @@ def update_manifest_contract_address(manifest_path: Path, contract_address: str)
     return previous != chain["contract_address"]
 
 
+def append_constructor_address_arg(bytecode: str, address: str) -> str:
+    code = str(bytecode or "").strip()
+    require(re.fullmatch(r"0x[0-9a-fA-F]+", code or ""), "compiled creation bytecode must be 0x-prefixed hex")
+    account = normalize_evm_address(address)
+    require(account, f"constructor address must be a 20-byte EVM address, got {address!r}")
+    return code + account[2:].rjust(64, "0")
+
+
+def compile_contract_creation_bytecode(
+    *,
+    chain: dict[str, Any],
+    repo_root: Path,
+    no_docker: bool,
+    timeout: float,
+) -> str:
+    command, _actual_rpc_url, cwd = forge_command(
+        ["inspect", CONTRACT_SOURCE_SPEC, "bytecode"],
+        repo_root=repo_root,
+        rpc_url=str(chain.get("rpc_url") or "http://127.0.0.1:8545"),
+        no_docker=no_docker,
+        docker_network=str(chain.get("docker_network") or ""),
+        docker_rpc_url_override=str(chain.get("docker_rpc_url") or ""),
+    )
+    result = run_command(command, cwd=cwd, timeout=timeout)
+    if result.returncode != 0:
+        raise SmokeFailure(f"forge inspect HubCreditBridgeEscrow bytecode failed with exit code {result.returncode}: {tail(result.stderr or result.stdout)}")
+    matches = re.findall(r"0x[0-9a-fA-F]+", result.stdout or "")
+    require(matches, f"could not parse HubCreditBridgeEscrow creation bytecode from forge inspect output: {tail(result.stdout)}")
+    bytecode = max(matches, key=len)
+    require(len(bytecode) > 2, "compiled HubCreditBridgeEscrow creation bytecode is empty")
+    return bytecode
+
+
+def rpc_transaction_receipt(rpc_url: str, tx_hash: str, *, timeout: float = 30.0, poll_interval: float = 0.5) -> dict[str, Any]:
+    require(is_tx_hash(tx_hash), f"invalid transaction hash: {tx_hash!r}")
+    deadline = time.monotonic() + max(float(timeout), 0.1)
+    last_result: Any = None
+    while time.monotonic() <= deadline:
+        last_result = rpc_json(rpc_url, "eth_getTransactionReceipt", [tx_hash], timeout=min(2.0, max(float(timeout), 0.1)))
+        if isinstance(last_result, dict):
+            return dict(last_result)
+        time.sleep(max(float(poll_interval), 0.05))
+    raise SmokeFailure(f"timed out waiting for transaction receipt for {tx_hash}; last result={last_result!r}")
+
+
+def rpc_quantity(value: int) -> str:
+    require(int(value) >= 0, f"JSON-RPC quantity must be non-negative, got {value!r}")
+    return hex(int(value))
+
+
+def rpc_send_unlocked_transaction(
+    *,
+    chain: dict[str, Any],
+    sender_address: str,
+    to_address: str = "",
+    data: str = "0x",
+    value: int = 0,
+    timeout: float,
+) -> dict[str, Any]:
+    sender = normalize_evm_address(sender_address)
+    require(sender, "sender address is required for unlocked JSON-RPC transaction")
+    to = normalize_evm_address(to_address) if to_address else ""
+    require(re.fullmatch(r"0x[0-9a-fA-F]*", data or ""), "transaction data must be 0x-prefixed hex")
+    tx: dict[str, Any] = {"from": sender, "data": data or "0x"}
+    if to:
+        tx["to"] = to
+    if int(value) > 0:
+        tx["value"] = rpc_quantity(int(value))
+    tx_hash = rpc_json(chain["rpc_url"], "eth_sendTransaction", [tx], timeout=timeout)
+    require(isinstance(tx_hash, str) and tx_hash.startswith("0x") and len(tx_hash) == 66, f"eth_sendTransaction returned invalid tx hash: {tx_hash!r}")
+    receipt = rpc_transaction_receipt(chain["rpc_url"], tx_hash, timeout=timeout)
+    return {
+        "ok": True,
+        "mode": "unlocked-rpc",
+        "tx_hash": tx_hash,
+        "block_number": clean_int(receipt.get("blockNumber")),
+        "contract_address": normalize_evm_address(receipt.get("contractAddress")),
+        "receipt": receipt,
+    }
+
+
+def split_cast_send_args(base_args: list[str]) -> tuple[list[str], int]:
+    args = list(base_args)
+    value = 0
+    if "--value" in args:
+        idx = args.index("--value")
+        require(idx + 1 < len(args), "cast send --value requires an amount")
+        value = clean_int(args[idx + 1])
+        del args[idx : idx + 2]
+    return args, value
+
+
+def cast_calldata(
+    *,
+    chain: dict[str, Any],
+    base_args: list[str],
+    repo_root: Path,
+    no_docker: bool,
+    timeout: float,
+) -> str:
+    require(base_args, "cast calldata requires a function signature")
+    command, _actual_rpc_url = cast_command(
+        ["calldata", *base_args],
+        repo_root=repo_root,
+        rpc_url=chain["rpc_url"],
+        no_docker=no_docker,
+        docker_network=str(chain.get("docker_network") or ""),
+        docker_rpc_url_override=str(chain.get("docker_rpc_url") or ""),
+    )
+    result = run_command(command, cwd=repo_root, timeout=timeout)
+    if result.returncode != 0:
+        raise SmokeFailure(f"cast calldata failed with exit code {result.returncode}: {tail(result.stderr or result.stdout)}")
+    tokens = re.findall(r"0x[0-9a-fA-F]+", result.stdout or "")
+    require(tokens, f"cast calldata did not return hex calldata: {tail(result.stdout)}")
+    return tokens[-1]
+
+
+
+def cast_send_create_unlocked(
+    *,
+    chain: dict[str, Any],
+    creation_calldata: str,
+    sender_address: str,
+    repo_root: Path,
+    no_docker: bool,
+    timeout: float,
+) -> dict[str, Any]:
+    sender = normalize_evm_address(sender_address)
+    require(sender, "sender address is required for unlocked contract deployment")
+    require(re.fullmatch(r"0x[0-9a-fA-F]+", creation_calldata or ""), "contract creation calldata must be 0x-prefixed hex")
+    try:
+        result = rpc_send_unlocked_transaction(
+            chain=chain,
+            sender_address=sender,
+            data=creation_calldata,
+            timeout=timeout,
+        )
+    except Exception as exc:
+        raise SmokeFailure(
+            "eth_sendTransaction contract deployment with unlocked account failed: "
+            f"{exc}"
+        ) from exc
+
+    contract_address = normalize_evm_address(result.get("contract_address"))
+    require(contract_address, f"contract deployment receipt did not include a contractAddress: {result.get('receipt')!r}")
+    return {
+        "ok": True,
+        "mode": "unlocked-rpc",
+        "contract_address": contract_address,
+        "bridge_controller": sender,
+        "tx_hash": str(result["tx_hash"]),
+        "block_number": clean_int(result.get("block_number")),
+        "stdout_tail": "",
+        "stderr_tail": "",
+    }
+
+
 def deploy_bridge_escrow_contract(
     *,
     chain: dict[str, Any],
@@ -480,43 +1184,30 @@ def deploy_bridge_escrow_contract(
     no_docker: bool,
     timeout: float,
 ) -> dict[str, Any]:
-    private_key = env_or_manifest_private_key(bridge)
-    require(
-        bool(private_key),
-        (
-            "bridge controller private key is required to auto-deploy HubCreditBridgeEscrow. "
-            "Regenerate the manifest with --include-private-keys, set MAIN_COMPUTER_BRIDGE_CONTROLLER_PRIVATE_KEY, "
-            "or leave deterministic dev-key fallback enabled for the local Anvil wallets."
-        ),
-    )
     bridge_address = normalize_evm_address(bridge.get("address"))
     require(bridge_address, "bridge controller address is required to deploy HubCreditBridgeEscrow")
-    args = [
-        "create",
-        CONTRACT_SOURCE_SPEC,
-        "--constructor-args",
-        bridge_address,
-        "--private-key",
-        private_key,
-        "--rpc-url",
-        chain["rpc_url"],
-        "--json",
-    ]
-    command, actual_rpc_url, cwd = forge_command(args, repo_root=repo_root, rpc_url=chain["rpc_url"], no_docker=no_docker)
-    if actual_rpc_url != chain["rpc_url"]:
-        command = [actual_rpc_url if item == chain["rpc_url"] else item for item in command]
-    result = run_command(command, cwd=cwd, timeout=timeout)
-    if result.returncode != 0:
-        raise SmokeFailure(f"forge create HubCreditBridgeEscrow failed with exit code {result.returncode}: {tail(result.stderr or result.stdout)}")
-    contract_address = parse_deployed_contract_address(result.stdout)
-    require(contract_address, f"could not parse deployed HubCreditBridgeEscrow address from forge output: {tail(result.stdout)}")
-    return {
-        "ok": True,
-        "contract_address": contract_address,
-        "bridge_controller": bridge_address,
-        "stdout_tail": tail(result.stdout),
-        "stderr_tail": tail(result.stderr),
-    }
+    require(
+        rpc_is_reachable(chain["rpc_url"], timeout=2.0),
+        (
+            f"chain RPC is not reachable at {chain['rpc_url']} before contract deployment. "
+            "Start Anvil manually or rerun with auto-start enabled."
+        ),
+    )
+    bytecode = compile_contract_creation_bytecode(
+        chain=chain,
+        repo_root=repo_root,
+        no_docker=no_docker,
+        timeout=timeout,
+    )
+    creation_calldata = append_constructor_address_arg(bytecode, bridge_address)
+    return cast_send_create_unlocked(
+        chain=chain,
+        creation_calldata=creation_calldata,
+        sender_address=bridge_address,
+        repo_root=repo_root,
+        no_docker=no_docker,
+        timeout=timeout,
+    )
 
 
 def cast_call_uint(
@@ -536,7 +1227,14 @@ def cast_call_uint(
         "--rpc-url",
         chain["rpc_url"],
     ]
-    command, actual_rpc_url = cast_command(base_args, repo_root=repo_root, rpc_url=chain["rpc_url"], no_docker=no_docker)
+    command, actual_rpc_url = cast_command(
+        base_args,
+        repo_root=repo_root,
+        rpc_url=chain["rpc_url"],
+        no_docker=no_docker,
+        docker_network=str(chain.get("docker_network") or ""),
+        docker_rpc_url_override=str(chain.get("docker_rpc_url") or ""),
+    )
     if actual_rpc_url != chain["rpc_url"]:
         command = [actual_rpc_url if item == chain["rpc_url"] else item for item in command]
     result = run_command(command, cwd=repo_root, timeout=timeout)
@@ -595,31 +1293,76 @@ def cast_send(
     no_docker: bool,
     timeout: float,
     fallback_hash: str = "",
+    sender_address: str = "",
 ) -> dict[str, Any]:
-    args = [
-        "send",
-        chain["contract_address"],
-        *base_args,
-        "--private-key",
-        private_key,
-        "--rpc-url",
-        chain["rpc_url"],
-        "--json",
-    ]
-    command, actual_rpc_url = cast_command(args, repo_root=repo_root, rpc_url=chain["rpc_url"], no_docker=no_docker)
-    if actual_rpc_url != chain["rpc_url"]:
-        command = [actual_rpc_url if item == chain["rpc_url"] else item for item in command]
-    result = run_command(command, cwd=repo_root, timeout=timeout)
-    if result.returncode != 0:
-        raise SmokeFailure(f"cast send failed with exit code {result.returncode}: {tail(result.stderr or result.stdout)}")
-    parsed = parse_cast_tx(result.stdout, fallback_hash=fallback_hash)
-    return {
-        "ok": True,
-        "tx_hash": parsed["tx_hash"],
-        "block_number": parsed["block_number"],
-        "stdout_tail": tail(result.stdout),
-        "stderr_tail": tail(result.stderr),
-    }
+    sender = normalize_evm_address(sender_address)
+    failures: list[str] = []
+
+    if sender:
+        try:
+            tx_args, value = split_cast_send_args(base_args)
+            calldata = cast_calldata(
+                chain=chain,
+                base_args=tx_args,
+                repo_root=repo_root,
+                no_docker=no_docker,
+                timeout=timeout,
+            )
+            result = rpc_send_unlocked_transaction(
+                chain=chain,
+                sender_address=sender,
+                to_address=chain["contract_address"],
+                data=calldata,
+                value=value,
+                timeout=timeout,
+            )
+            return {
+                "ok": True,
+                "mode": "unlocked-rpc",
+                "tx_hash": str(result["tx_hash"]),
+                "block_number": clean_int(result.get("block_number")),
+                "stdout_tail": "",
+                "stderr_tail": "",
+            }
+        except Exception as exc:
+            failures.append(f"unlocked-rpc: {exc}")
+
+    if private_key:
+        args = [
+            "send",
+            chain["contract_address"],
+            *base_args,
+            "--private-key",
+            private_key,
+            "--rpc-url",
+            chain["rpc_url"],
+            "--json",
+        ]
+        command, actual_rpc_url = cast_command(
+            args,
+            repo_root=repo_root,
+            rpc_url=chain["rpc_url"],
+            no_docker=no_docker,
+            docker_network=str(chain.get("docker_network") or ""),
+            docker_rpc_url_override=str(chain.get("docker_rpc_url") or ""),
+        )
+        if actual_rpc_url != chain["rpc_url"]:
+            command = [actual_rpc_url if item == chain["rpc_url"] else item for item in command]
+        result = run_command(command, cwd=repo_root, timeout=timeout)
+        if result.returncode == 0:
+            parsed = parse_cast_tx(result.stdout, fallback_hash=fallback_hash)
+            return {
+                "ok": True,
+                "mode": "private-key",
+                "tx_hash": parsed["tx_hash"],
+                "block_number": parsed["block_number"],
+                "stdout_tail": tail(result.stdout),
+                "stderr_tail": tail(result.stderr),
+            }
+        failures.append(f"private-key exit {result.returncode}: {tail(result.stderr or result.stdout)}")
+
+    require(bool(sender or private_key), "cast send requires either an unlocked sender address or a private key")
+    raise SmokeFailure("cast send failed: " + " | ".join(failures))
 
 
 def send_chain_deposit_if_needed(
@@ -636,11 +1379,12 @@ def send_chain_deposit_if_needed(
 
     require(chain_deposited_units == 0, "chain already has a partial deposit; refusing to top up in Phase 3 smoke")
     private_key = env_or_manifest_private_key(requester)
+    requester_address = normalize_evm_address(requester.get("address"))
     require(
-        bool(private_key),
+        bool(private_key) or bool(requester_address),
         (
-            f"requester {requester['account_id']} has no private key in manifest/env. "
-            "Regenerate the manifest with --include-private-keys or set the requester private-key env var."
+            f"requester {requester['account_id']} has neither a usable private key nor an EVM address. "
+            "For the local dev smoke, Anvil's unlocked account is used when no private key is available."
         ),
     )
     deposit_id = str(requester.get("deposit_id") or "").strip()
@@ -658,6 +1402,7 @@ def send_chain_deposit_if_needed(
             str(requester["deposit_units"]),
         ],
         private_key=private_key,
+        sender_address=requester_address,
         repo_root=repo_root,
         no_docker=no_docker,
         timeout=timeout,
@@ -870,27 +1615,129 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
     charge_units = decimal_credit_to_units(args.charge_credits, scale=scale)
     hold_units = charge_units + decimal_credit_to_units(args.hold_slack_credits, scale=scale)
 
+    managed_anvil = ensure_chain_rpc_available(
+        chain=chain,
+        repo_root=REPO_ROOT,
+        no_docker=args.no_docker,
+        no_auto_start_anvil=args.no_auto_start_anvil,
+        start_timeout=args.anvil_start_timeout,
+    )
+
+    def register_managed_anvil(managed: dict[str, Any] | None) -> None:
+        if not managed:
+            return
+        import atexit
+
+        atexit.register(stop_managed_anvil, managed)
+        attach_managed_anvil_to_chain(chain, managed)
+
+    register_managed_anvil(managed_anvil)
+
     deployed_contract: dict[str, Any] | None = None
-    if is_placeholder_contract_address(chain["contract_address"]):
+    contract_address_is_placeholder = is_placeholder_contract_address(chain["contract_address"])
+    contract_code_missing = False
+    if not contract_address_is_placeholder:
+        contract_code_missing = not rpc_contract_has_code(chain["rpc_url"], chain["contract_address"], timeout=2.0)
+
+    docker_rpc_probe: dict[str, Any] | None = None
+    if contract_address_is_placeholder or contract_code_missing:
+        docker_rpc_probe = docker_foundry_rpc_probe(
+            chain=chain,
+            repo_root=REPO_ROOT,
+            no_docker=args.no_docker,
+            timeout=min(float(args.command_timeout), 30.0),
+        )
+        if not docker_rpc_probe.get("ok", False):
+            if args.no_auto_start_anvil:
+                raise SmokeFailure(
+                    "Dockerized Forge cannot reach the configured chain RPC "
+                    f"{docker_rpc_probe.get('rpc_url') or chain['rpc_url']}; "
+                    f"{tail(docker_rpc_probe.get('stderr_tail') or docker_rpc_probe.get('stdout_tail') or docker_rpc_probe.get('reason'), 500)}. "
+                    "Start a Docker-reachable dev chain, install local forge/cast, or rerun without --no-auto-start-anvil."
+                )
+            fallback_anvil = start_isolated_docker_anvil_for_foundry(
+                chain=chain,
+                repo_root=REPO_ROOT,
+                no_docker=args.no_docker,
+                start_timeout=args.anvil_start_timeout,
+                reason=(
+                    "Dockerized Forge cannot reach the configured chain RPC "
+                    f"{docker_rpc_probe.get('rpc_url') or chain['rpc_url']}."
+                ),
+            )
+            register_managed_anvil(fallback_anvil)
+            managed_anvil = fallback_anvil
+            docker_rpc_probe = docker_foundry_rpc_probe(
+                chain=chain,
+                repo_root=REPO_ROOT,
+                no_docker=args.no_docker,
+                timeout=min(float(args.command_timeout), 30.0),
+            )
+            require(
+                docker_rpc_probe.get("ok", False),
+                "Dockerized Forge still cannot reach the fallback Anvil RPC: "
+                + tail(docker_rpc_probe.get("stderr_tail") or docker_rpc_probe.get("stdout_tail") or "", 500),
+            )
+
+    if contract_address_is_placeholder or contract_code_missing:
         require(
             not args.no_auto_deploy_contract,
             (
-                "chain.contract_address is the placeholder address. "
+                "chain.contract_address is the placeholder address or has no contract code on the current chain. "
                 "Run without --no-auto-deploy-contract to let this smoke deploy HubCreditBridgeEscrow, "
                 "or pass --contract-address for an existing deployment."
             ),
         )
-        log("Manifest has placeholder escrow contract address; auto-deploying HubCreditBridgeEscrow for this Phase 3 smoke.")
-        deployed_contract = deploy_bridge_escrow_contract(
-            chain=chain,
-            bridge=bridge,
-            repo_root=REPO_ROOT,
-            no_docker=args.no_docker,
-            timeout=args.command_timeout,
-        )
+        if contract_address_is_placeholder:
+            log("Manifest has placeholder escrow contract address; auto-deploying HubCreditBridgeEscrow for this Phase 3 smoke.")
+        else:
+            log(
+                f"Configured escrow contract {chain['contract_address']} has no code on this chain; "
+                "auto-deploying a fresh HubCreditBridgeEscrow for this Phase 3 smoke."
+            )
+        try:
+            deployed_contract = deploy_bridge_escrow_contract(
+                chain=chain,
+                bridge=bridge,
+                repo_root=REPO_ROOT,
+                no_docker=args.no_docker,
+                timeout=args.command_timeout,
+            )
+        except SmokeFailure as exc:
+            if managed_anvil or args.no_auto_start_anvil or not deployment_error_looks_like_rpc_connect_failure(exc):
+                raise
+            fallback_anvil = start_isolated_docker_anvil_for_foundry(
+                chain=chain,
+                repo_root=REPO_ROOT,
+                no_docker=args.no_docker,
+                start_timeout=args.anvil_start_timeout,
+                reason=(
+                    "Contract deployment could not reach the configured chain RPC. "
+                    "This usually means Dockerized Forge cannot route to the host loopback RPC."
+                ),
+            )
+            register_managed_anvil(fallback_anvil)
+            managed_anvil = fallback_anvil
+            deployed_contract = deploy_bridge_escrow_contract(
+                chain=chain,
+                bridge=bridge,
+                repo_root=REPO_ROOT,
+                no_docker=args.no_docker,
+                timeout=args.command_timeout,
+            )
         chain["contract_address"] = deployed_contract["contract_address"]
-        manifest.setdefault("chain", {})["contract_address"] = chain["contract_address"]
-        deployed_contract["manifest_updated"] = update_manifest_contract_address(manifest_path, chain["contract_address"])
+        persist_deployed = should_persist_auto_deployed_contract(args, chain_auto_started=bool(managed_anvil))
+        deployed_contract["manifest_update_skipped"] = not persist_deployed
+        if persist_deployed:
+            manifest.setdefault("chain", {})["contract_address"] = chain["contract_address"]
+            deployed_contract["manifest_updated"] = update_manifest_contract_address(manifest_path, chain["contract_address"])
+        else:
+            deployed_contract["manifest_updated"] = False
+            deployed_contract["manifest_update_reason"] = (
+                "auto-started Anvil is ephemeral; not persisting contract address"
+                if managed_anvil
+                else "contract address was provided by CLI or persistence was disabled"
+            )
 
     report: dict[str, Any] = {
         "ok": False,
@@ -907,9 +1754,29 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
         "steps": [],
         "started_at": time.time(),
     }
+    if managed_anvil:
+        report["auto_started_anvil"] = {key: value for key, value in managed_anvil.items() if key != "process"}
+        report["steps"].append(
+            {
+                "name": "auto_start_anvil",
+                "ok": True,
+                "mode": managed_anvil.get("mode"),
+                "ephemeral": True,
+                "rpc_url": chain["rpc_url"],
+                "chain_id": chain["chain_id"],
+            }
+        )
     if deployed_contract:
         report["deployed_contract"] = deployed_contract
-        report["steps"].append({"name": "auto_deploy_contract", "ok": True, "contract_address": chain["contract_address"]})
+        report["steps"].append(
+            {
+                "name": "auto_deploy_contract",
+                "ok": True,
+                "contract_address": chain["contract_address"],
+                "manifest_updated": deployed_contract.get("manifest_updated"),
+                "manifest_update_skipped": deployed_contract.get("manifest_update_skipped"),
+            }
+        )
 
     log("Bridge escrow withdrawal reconciliation smoke")
     log(f"  hub:       {hub_url}")
@@ -1031,11 +1898,12 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
         raise SmokeFailure(f"withdrawal reconciliation blocked safely: {reconciliation.block_reason}")
 
     bridge_private_key = env_or_manifest_private_key(bridge)
+    bridge_address = normalize_evm_address(bridge.get("address"))
     require(
-        bool(bridge_private_key) or recoverable_already_withdrawn,
+        bool(bridge_private_key) or bool(bridge_address) or recoverable_already_withdrawn,
         (
-            "bridge controller private key is required for rectification/release. "
-            "Regenerate the manifest with --include-private-keys or set MAIN_COMPUTER_BRIDGE_CONTROLLER_PRIVATE_KEY."
+            "bridge controller private key or unlocked Anvil bridge-controller address is required "
+            "for rectification/release."
         ),
     )
 
@@ -1064,6 +1932,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 "phase3 withdrawal reconciliation",
             ],
             private_key=bridge_private_key,
+            sender_address=bridge_address,
             repo_root=REPO_ROOT,
             no_docker=args.no_docker,
             timeout=args.command_timeout,
@@ -1147,6 +2016,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 "phase3 withdrawal release",
             ],
             private_key=bridge_private_key,
+            sender_address=bridge_address,
             repo_root=REPO_ROOT,
             no_docker=args.no_docker,
             timeout=args.command_timeout,
@@ -1279,7 +2149,31 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Fail instead of deploying HubCreditBridgeEscrow when the manifest still has the placeholder "
-            f"{PLACEHOLDER_CONTRACT_ADDRESS} contract address."
+            f"{PLACEHOLDER_CONTRACT_ADDRESS} contract address or the configured address has no code."
+        ),
+    )
+    parser.add_argument(
+        "--no-auto-start-anvil",
+        action="store_true",
+        help="Fail when the configured RPC URL is unreachable instead of starting an ephemeral local Anvil dev chain.",
+    )
+    parser.add_argument(
+        "--anvil-start-timeout",
+        type=float,
+        default=DEFAULT_ANVIL_START_TIMEOUT,
+        help="Seconds to wait for an auto-started Anvil dev chain to become reachable.",
+    )
+    parser.add_argument(
+        "--no-persist-auto-deploy-contract",
+        action="store_true",
+        help="Do not write auto-deployed contract addresses back into the dev manifest.",
+    )
+    parser.add_argument(
+        "--persist-auto-started-contract-address",
+        action="store_true",
+        help=(
+            "Persist an auto-deployed contract address even when this smoke started an ephemeral Anvil chain. "
+            "Normally this should stay off because the contract disappears when the smoke exits."
         ),
     )
     parser.add_argument("--no-hub-import", action="store_true")

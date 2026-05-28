@@ -54,6 +54,8 @@ def test_website_builder_frontend_assets_define_save_and_publish_controls() -> N
     assert "live_apply: true" in script
     assert "refreshWebsiteBuilderAfterRagApply" in script
     assert "main-computer-chat-console-output-applied" in script
+    assert "Select a website to use chat." in script
+    assert "Website Builder chat requires an active site id." in script
     assert "Deploy" in app
     assert "Local Server" in app
     assert "Publishing" in app
@@ -670,6 +672,72 @@ def test_website_builder_chat_edit_auto_applies_validated_payloads(tmp_path) -> 
         content = "\n".join(str(part.get("content", "")) for part in output["parts"])
         assert "Applied" in content
         assert "Website Builder golden-path RAG wrote validated replacement files" in content
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+
+
+def test_website_builder_rag_smoke_requires_explicit_site_id_when_multiple_projects(tmp_path) -> None:
+    import pytest
+
+    from main_computer.rag_website_builder_real_edit_smoke import SmokeFailure, select_site_id
+
+    for site_id in ("hub-site", "johnrraymond"):
+        site_root = tmp_path / "runtime" / "websites" / site_id
+        site_root.mkdir(parents=True, exist_ok=True)
+        (site_root / "site.json").write_text(json.dumps({"id": site_id}), encoding="utf-8")
+
+    assert select_site_id(tmp_path, "johnrraymond") == "johnrraymond"
+    assert select_site_id(tmp_path, None, allow_ambiguous_default=True) == "hub-site"
+
+    with pytest.raises(SmokeFailure) as excinfo:
+        select_site_id(tmp_path, None)
+    message = str(excinfo.value)
+    assert "Multiple Website Builder sites are available" in message
+    assert "--site-id" in message
+    assert "hub-site" in message
+    assert "johnrraymond" in message
+
+
+def test_website_builder_mounted_chat_rejects_missing_site_id_when_multiple_projects(tmp_path) -> None:
+    from main_computer.config import MainComputerConfig
+    from main_computer.viewport import ViewportServer
+    from main_computer.website_project_manifest import create_website_project, list_website_projects
+
+    list_website_projects(tmp_path)
+    create_website_project(tmp_path, "johnrraymond", "John R Raymond")
+
+    server = ViewportServer(("127.0.0.1", 0), MainComputerConfig(workspace=tmp_path), verbose=False)
+    server.debug_root = tmp_path
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    request = Request(
+        base_url + "/api/applications/website-builder/chat",
+        data=json.dumps({
+            "cell": {"id": "chat-website-missing-site", "type": "ai", "source": "change the hero headline"},
+            "embedded_context": {"active_app": "website-builder", "target_kind": "website-project"},
+            "embedded_context_source": {"active_app": "website-builder", "target_kind": "website-project"},
+            "mount_plugins": [{"id": "website-builder-edit", "enabled": True}],
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        try:
+            urlopen(request, timeout=5)
+            raise AssertionError("missing site id should fail when multiple sites exist")
+        except HTTPError as exc:
+            assert exc.code == 400
+            body = exc.read().decode("utf-8")
+            assert "Missing active Website Builder site id" in body
+            assert "hub-site" in body
+            assert "johnrraymond" in body
     finally:
         server.shutdown()
         server.server_close()

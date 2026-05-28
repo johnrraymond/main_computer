@@ -68,7 +68,7 @@ ROUTER_MODE = "website_builder_rag_route_decision"
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "gemma4:26b"
 DEFAULT_OLLAMA_TIMEOUT_SECONDS = 600.0
-DEFAULT_ROUTER_NUM_PREDICT = 320
+DEFAULT_ROUTER_NUM_PREDICT = 420
 DEFAULT_PROPOSAL_NUM_PREDICT = 2200
 DEFAULT_THINK_MODE = "false"
 
@@ -122,11 +122,20 @@ MAX_TOTAL_REPLACEMENT_CHARS = 500_000
 
 # Prompt budgets. The full evidence object remains available to deterministic
 # validation/materialization; these only govern what is sent to the AI.
-MAX_ROUTE_SITE_RECORDS = 8
-MAX_ROUTE_VISIBLE_FILES = 8
+MAX_ROUTE_SITE_RECORDS = 0
+MAX_ROUTE_VISIBLE_FILES = 0
 MAX_ROUTE_ANCHOR_CHARS = 80
 MAX_PROPOSAL_SITE_FILE_CHARS = 6_000
 MAX_PROPOSAL_BUILDER_SNIPPET_CHARS = 7_000
+MAX_PROMPT_MATCH_CANDIDATES = 24
+MAX_PROMPT_MATCH_ANCHOR_CHARS = 900
+
+PROMPT_RETRIEVAL_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "could",
+    "for", "from", "how", "i", "in", "into", "is", "it", "me", "my", "of",
+    "on", "or", "please", "that", "the", "this", "to", "up", "we", "what",
+    "when", "where", "which", "with", "you", "your",
+}
 
 BUILDER_ALLOWLIST_EXPLICIT = [
     "main_computer/web/applications/scripts/website-builder.js",
@@ -235,14 +244,21 @@ def list_site_ids(repo: Path) -> list[str]:
     return ids
 
 
-def select_site_id(repo: Path, requested: str | None) -> str:
+def select_site_id(repo: Path, requested: str | None, *, allow_ambiguous_default: bool = False) -> str:
     if requested:
         site_id = validate_site_id(requested)
         require((repo / "runtime" / "websites" / site_id / "site.json").is_file(), f"Unknown website project: {site_id}")
         return site_id
     ids = list_site_ids(repo)
     require(bool(ids), "No Website Builder sites found under runtime/websites/.")
-    return ids[0]
+    if len(ids) == 1:
+        return ids[0]
+    if allow_ambiguous_default:
+        return ids[0]
+    raise SmokeFailure(
+        "Multiple Website Builder sites are available; pass --site-id explicitly. "
+        f"Available site ids: {', '.join(ids)}"
+    )
 
 
 def discover_builder_allowlist(repo: Path) -> list[str]:
@@ -605,11 +621,13 @@ def compact_record(record: dict[str, Any], *, anchor_limit: int = MAX_ROUTE_ANCH
 
 
 def site_summary_for_router(site: dict[str, Any]) -> dict[str, Any]:
-    """Tiny router evidence: enough to infer intent, not enough to plan writes.
+    """Tiny router evidence: mounted-app context only, not proof of file contents.
 
     The router should not receive proposal-grade files or replacement anchors.
-    It only needs to know what app/site is mounted and a small set of visible
-    text labels so it can distinguish answer/scope/clarify/propose_edit.
+    By default it receives no editable text records, because route selection must
+    not become accidental validation like "that exact string is not in my compact
+    context." The proposal stage receives focused evidence only after the router
+    chooses propose_edit, and deterministic validation checks the real files.
     """
     text_records: list[dict[str, Any]] = []
     for record in (site.get("editable_site_records") or [])[:MAX_ROUTE_SITE_RECORDS]:
@@ -693,6 +711,8 @@ def build_route_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
         "server_contract": {
             "router_only": True,
             "router_does_not_choose_paths": True,
+            "router_does_not_validate_exact_text_existence": True,
+            "absence_from_router_context_is_not_absence_from_the_site": True,
             "proposal_stage_gets_focused_evidence_only_if_needed": True,
             "server_validates_paths_old_values_hashes_and_writes": True,
         },
@@ -700,7 +720,96 @@ def build_route_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
 
 
 
-def compact_site_for_proposal(site: dict[str, Any], *, include_file_text: bool) -> dict[str, Any]:
+
+def normalized_text_key(value: Any) -> str:
+    """Normalize text for prompt-anchored retrieval only.
+
+    This is evidence retrieval, not intent routing and not validation. It helps the
+    proposal stage see exact editable values that correspond to fuzzy user wording
+    like "john r raymond" vs "johnrraymond". Deterministic validation still checks
+    the exact old_text/old_value against the current file.
+    """
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def simple_text_tokens(value: Any) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", str(value or "").lower())
+        if len(token) >= 2 and token not in PROMPT_RETRIEVAL_STOPWORDS
+    }
+
+
+def prompt_anchored_site_candidates(user_prompt: str, site: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return exact editable site records that appear related to the prompt.
+
+    The router deliberately receives no text records by default. Once the router
+    chooses propose_edit, the proposal stage benefits from small, exact anchors.
+    This function does not decide whether the prompt is an edit and does not grant
+    write authority. It only surfaces current exact values/anchors for the model;
+    materialize_proposal() remains the verifier.
+    """
+    prompt_key = normalized_text_key(user_prompt)
+    prompt_tokens = simple_text_tokens(user_prompt)
+    candidates: list[tuple[int, int, dict[str, Any]]] = []
+
+    for position, record in enumerate(site.get("editable_site_records") or []):
+        if not isinstance(record, dict):
+            continue
+        exact_value = record.get("exact_value")
+        exact_anchor = record.get("exact_anchor")
+        value_text = str(exact_value if exact_value is not None else exact_anchor or "").strip()
+        if not value_text:
+            continue
+
+        value_key = normalized_text_key(value_text)
+        anchor_key = normalized_text_key(exact_anchor or "")
+        value_tokens = simple_text_tokens(value_text)
+        score = 0
+        reasons: list[str] = []
+
+        if value_key and len(value_key) >= 3 and value_key in prompt_key:
+            score += 100
+            reasons.append("normalized editable value appears in prompt")
+        if prompt_key and len(prompt_key) >= 3 and prompt_key in value_key:
+            score += 80
+            reasons.append("prompt normalized text appears in editable value")
+        if anchor_key and len(anchor_key) >= 3 and anchor_key in prompt_key:
+            score += 60
+            reasons.append("normalized editable anchor appears in prompt")
+        overlap = sorted(value_tokens & prompt_tokens)
+        if overlap:
+            score += min(40, 8 * len(overlap))
+            reasons.append("token overlap: " + ", ".join(overlap[:6]))
+
+        if score <= 0:
+            continue
+
+        candidate = {
+            "record_type": record.get("record_type"),
+            "path": record.get("path"),
+            "json_pointer": record.get("json_pointer", ""),
+            "key": record.get("key", ""),
+            "tag": record.get("tag", ""),
+            "editable_as": record.get("editable_as"),
+            "exact_value": exact_value,
+            "exact_anchor": truncate_text(exact_anchor or "", MAX_PROMPT_MATCH_ANCHOR_CHARS),
+            "match_score": score,
+            "match_reasons": reasons,
+            "proposal_guidance": (
+                "Use exact_value for json_edits old_value. For HTML text_replacements, "
+                "use exact_anchor when changing element text while preserving tags, or "
+                "use an exact old_text substring that currently appears in the file."
+            ),
+        }
+        candidates.append((score, -position, candidate))
+
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [item[2] for item in candidates[:MAX_PROMPT_MATCH_CANDIDATES]]
+
+
+
+def compact_site_for_proposal(site: dict[str, Any], *, include_file_text: bool, user_prompt: str = "") -> dict[str, Any]:
     files: list[dict[str, Any]] = []
     for item in site.get("site_files") or []:
         if not isinstance(item, dict):
@@ -723,6 +832,7 @@ def compact_site_for_proposal(site: dict[str, Any], *, include_file_text: bool) 
         "site_root": site.get("site_root"),
         "site_manifest_summary": site.get("site_manifest_summary"),
         "visible_site_files": list(site.get("visible_site_files") or [])[:MAX_ROUTE_VISIBLE_FILES],
+        "prompt_anchored_site_candidates": prompt_anchored_site_candidates(user_prompt, site),
         "site_files": files,
         "editable_site_records": [
             compact_record(record, anchor_limit=MAX_PROPOSAL_SITE_FILE_CHARS)
@@ -756,7 +866,7 @@ def compact_builder_for_proposal(builder: dict[str, Any], *, include_snippets: b
     }
 
 
-def build_proposal_evidence(evidence: dict[str, Any], route_decision: dict[str, Any] | None = None) -> dict[str, Any]:
+def build_proposal_evidence(evidence: dict[str, Any], route_decision: dict[str, Any] | None = None, user_prompt: str = "") -> dict[str, Any]:
     """Evidence sent to the proposal model after the AI router chooses propose_edit.
 
     The target kind from the router is only a context-shaping hint. It never grants
@@ -773,7 +883,7 @@ def build_proposal_evidence(evidence: dict[str, Any], route_decision: dict[str, 
         "site_id": evidence.get("site_id"),
         "allowed_roots": evidence.get("allowed_roots"),
         "builder_allowlist": evidence.get("builder_allowlist"),
-        "site": compact_site_for_proposal(evidence.get("site") or {}, include_file_text=include_site_text),
+        "site": compact_site_for_proposal(evidence.get("site") or {}, include_file_text=include_site_text, user_prompt=user_prompt),
         "builder": compact_builder_for_proposal(evidence.get("builder") or {}, include_snippets=include_builder_snippets),
         "instructions": evidence.get("instructions"),
     }
@@ -799,6 +909,7 @@ def prompt_evidence_stats(label: str, evidence: dict[str, Any]) -> dict[str, Any
         "site_chars": json_char_count(site),
         "builder_chars": json_char_count(builder),
         "site_records": len(site_records),
+        "prompt_anchored_candidates": len((site.get("prompt_anchored_site_candidates") or [])),
         "builder_files": len(builder_files),
     }
 
@@ -824,12 +935,19 @@ def route_prompt(user_prompt: str, route_evidence: dict[str, Any]) -> str:
         },
     }
     instructions = (
-        "Decide the next step for a mounted Website Builder chat. "
+        "Decide only the next high-level action for a mounted Website Builder chat. "
         "Return JSON only. Do not propose edits here. Do not choose file paths. "
-        "Choose propose_edit only when the user is asking to change the active website "
-        "or the Website Builder implementation. Choose answer for ordinary questions. "
-        "Choose scope for capability/scope questions. Choose clarify when the requested "
-        "change is too ambiguous to ground. The server validates all later writes."
+        "This router is an intent classifier, not an evidence validator. "
+        "If the user is asking to change, transform, add, remove, restyle, rewrite, fix, "
+        "or otherwise modify the active website or the Website Builder implementation, "
+        "choose intent=propose_edit. Choose propose_edit even when the exact requested "
+        "text, component, CSS selector, or source symbol is not visible in this tiny "
+        "router context; the proposal stage gets focused evidence and the server will "
+        "validate exact paths, old values, hashes, and writes. "
+        "Never choose clarify merely because a requested string is absent from router_evidence. "
+        "Choose clarify only when the user's requested action itself is underspecified, "
+        "for example they want an edit but provide no target/change to attempt. "
+        "Choose answer for ordinary non-edit questions. Choose scope for capability/scope questions."
     )
     return instructions + "\n\n" + json.dumps(user_payload, ensure_ascii=False, separators=(",", ":"))
 
@@ -963,6 +1081,11 @@ def proposal_prompt(user_prompt: str, proposal_evidence: dict[str, Any]) -> str:
         "- For text_replacements, old_text must exactly occur in the current file.\n"
         "- For create_files, path must not exist and must be under the active site root.\n"
         "- Do not propose deletes.\n\n"
+        "Proposal evidence may include site.prompt_anchored_site_candidates. For wording transforms like "
+        "capitalize/titlecase/reword/shorten, prefer those exact candidates over copying approximate text "
+        "from the user prompt. If the user says `john r raymond` and evidence shows an exact editable value "
+        "or exact_anchor for that text, use the exact evidence value/anchor as old_value or old_text. "
+        "Never invent old_text; it must be a literal current substring of the target file.\n\n"
         f"User prompt:\n{user_prompt}\n\n"
         f"Evidence JSON:\n{json.dumps(proposal_evidence, ensure_ascii=False, indent=2)}\n"
     )
@@ -1668,6 +1791,55 @@ def apply_materialized_files(
     return {"mode": apply_mode, "ok": True, "applied_root": str(apply_root), "files": applied_files}
 
 
+
+def proposal_operation_summary(proposal: dict[str, Any]) -> dict[str, Any]:
+    def summarize_items(key: str) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for index, item in enumerate(proposal.get(key) or []):
+            if not isinstance(item, dict):
+                rows.append({"index": index, "type": type(item).__name__})
+                continue
+            row = {
+                "index": index,
+                "path": item.get("path"),
+                "reason": item.get("reason"),
+            }
+            if key == "json_edits":
+                row["json_pointer"] = item.get("json_pointer")
+                row["old_value"] = item.get("old_value")
+                row["new_value"] = item.get("new_value")
+            elif key == "text_replacements":
+                row["old_text_preview"] = truncate_text(item.get("old_text"), 220)
+                row["new_text_preview"] = truncate_text(item.get("new_text"), 220)
+                row["replace_all"] = item.get("replace_all")
+            elif key == "create_files":
+                row["content_chars"] = len(str(item.get("content") or ""))
+            rows.append(row)
+        return rows
+
+    return {
+        "summary": proposal.get("summary"),
+        "target_kind": proposal.get("target_kind"),
+        "target_id": proposal.get("target_id"),
+        "json_edits": summarize_items("json_edits"),
+        "text_replacements": summarize_items("text_replacements"),
+        "create_files": summarize_items("create_files"),
+    }
+
+
+def validation_failure_message(output_dir: Path, validation: dict[str, Any]) -> str:
+    issues = [str(issue) for issue in (validation.get("issues") or [])]
+    shown = "; ".join(issues[:6]) if issues else "unknown validation failure"
+    if len(issues) > 6:
+        shown += f"; ... {len(issues) - 6} more"
+    return (
+        "Proposal validation failed: "
+        + shown
+        + f". See {output_dir / 'validation.json'} and {output_dir / 'proposal.json'}."
+    )
+
+
+
 def run_once(
     *,
     repo: Path,
@@ -1754,7 +1926,7 @@ def run_once(
         )
 
     with StageTimer(verbose, "build compact AI proposal evidence"):
-        proposal_evidence = build_proposal_evidence(evidence, route_decision)
+        proposal_evidence = build_proposal_evidence(evidence, route_decision, user_prompt=prompt)
     with StageTimer(verbose, "build AI proposal prompt"):
         proposal_prompt_text = proposal_prompt(prompt, proposal_evidence)
     write_json(output_dir / "proposal_evidence.json", proposal_evidence)
@@ -1790,7 +1962,27 @@ def run_once(
     with StageTimer(verbose, "deterministic proposal validation and materialization"):
         materialized, validation = materialize_proposal(repo, evidence, proposal)
     write_json(output_dir / "validation.json", validation)
-    require(validation.get("ok") is True, "Proposal validation failed; see validation.json.")
+    if validation.get("ok") is not True:
+        failure_report = {
+            "ok": False,
+            "mode": MODE,
+            "repo": str(repo),
+            "site_id": site_id,
+            "site_root": evidence["site"]["site_root"],
+            "prompt": prompt,
+            "output_dir": str(output_dir),
+            "route_source": route_source,
+            "route": route_decision,
+            "route_validation": route_validation,
+            "proposal_source": proposal_source,
+            "proposal_operations": proposal_operation_summary(proposal),
+            "validation": validation,
+            "warnings": list(route_decision.get("warnings", [])) + list(validation.get("warnings", [])),
+        }
+        write_json(output_dir / "failure_report.json", failure_report)
+        for issue in (validation.get("issues") or [])[:12]:
+            verbose_log(verbose, f"validation issue: {issue}")
+        raise SmokeFailure(validation_failure_message(output_dir, validation))
     verbose_log(verbose, f"materialized_files={len(materialized)} warnings={len(validation.get('warnings') or [])}")
 
     with StageTimer(verbose, "write materialized bundle"):
@@ -1896,7 +2088,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Standalone Website Builder RAG real-edit smoke.")
     parser.add_argument("prompt_parts", nargs="*", help="Prompt text, if --prompt is not used.")
     parser.add_argument("--repo", help="Repository root. Defaults to walking up from cwd.")
-    parser.add_argument("--site-id", help="Active Website Builder site id. Defaults to first runtime/websites/*/site.json.")
+    parser.add_argument("--site-id", help="Active Website Builder site id. Required for prompt runs when multiple runtime/websites/*/site.json projects exist.")
     parser.add_argument("--prompt", help="Natural-language edit request.")
     parser.add_argument("--prompt-file", help="Read natural-language edit request from a file.")
     parser.add_argument("--route-file", help="Use an existing route decision JSON instead of calling the AI router.")
@@ -2007,7 +2199,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         apply_prompt_budget_args(args)
         repo = detect_repo_root_arg(args.repo)
-        site_id = select_site_id(repo, args.site_id)
+        site_id = select_site_id(repo, args.site_id, allow_ambiguous_default=args.offline_self_check)
         if args.offline_self_check:
             summary = offline_self_check(repo, site_id, args)
             print(json.dumps(summary, indent=2, sort_keys=True))

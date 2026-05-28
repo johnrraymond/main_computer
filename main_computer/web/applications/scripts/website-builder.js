@@ -3649,8 +3649,10 @@ body {
     }
 
     function safeWebsiteBuilderChatSiteId(value = websiteBuilderStateModel.selectedSiteId) {
-      const clean = String(value || "hub-site").replace(/\\/g, "/").split("/").filter(Boolean).join("-");
-      return clean.replace(/[^a-zA-Z0-9_.-]/g, "-") || "hub-site";
+      const raw = String(value || "").trim();
+      if (!raw) return "";
+      const clean = raw.replace(/\\/g, "/").split("/").filter(Boolean).join("-");
+      return clean.replace(/[^a-zA-Z0-9_.-]/g, "-") || "";
     }
 
     function websiteBuilderSitePath(siteId = websiteBuilderStateModel.selectedSiteId) {
@@ -3781,6 +3783,11 @@ body {
     function mountWebsiteBuilderChat({force = false} = {}) {
       if (!websiteBuilderChatPanel || !window.MainComputerChatConsole?.mountEmbedded) return null;
       const siteId = safeWebsiteBuilderChatSiteId();
+      if (!siteId) {
+        if (websiteBuilderChatStatus) websiteBuilderChatStatus.textContent = "Select a website to use chat.";
+        if (websiteBuilderChatPanel) websiteBuilderChatPanel.dataset.chatStatus = "missing-site";
+        return null;
+      }
       websiteBuilderChatPanel.dataset.chatConsoleTargetId = siteId;
       if (force && websiteBuilderStateModel.chatController?.destroy) {
         websiteBuilderStateModel.chatController.destroy();
@@ -3822,6 +3829,7 @@ body {
             buildPayload({embedded_context: embeddedContext, config}) {
               const context = embeddedContext && typeof embeddedContext === "object" && !Array.isArray(embeddedContext) ? embeddedContext : {};
               const lockedSiteId = safeWebsiteBuilderChatSiteId(context.site_id || context.target_id || config?.targetId || siteId);
+              if (!lockedSiteId) throw new Error("Website Builder chat requires an active site id.");
               return {
                 edit_mode: "website-project",
                 editor_edit_mode: "website-builder",
