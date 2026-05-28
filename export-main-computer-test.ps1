@@ -514,6 +514,8 @@ $exportItems = @(
   "stop.bat",
   "start_v2.bat",
   "stop_v2.bat",
+  "start.sh",
+  "stop.sh",
   "coolify_twiddle.py",
   "coolify_deploy_twiddle.py",
   ".gitignore",
