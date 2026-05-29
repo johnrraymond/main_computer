@@ -6,8 +6,14 @@
       grapesEditor: null,
       grapesReady: false,
       syncingGrapes: false,
+      theme: "theme-machine",
       lastSerializerReport: null,
       lastTestReport: null,
+      lastCssLawReport: null,
+      lastGraphReport: null,
+      lastAuditReport: null,
+      lastCommandPlan: null,
+      lastProjectSnapshot: null,
       lastSourceList: []
     };
 
@@ -17,6 +23,7 @@
       if (mcelSourceHtml && !mcelSourceHtml.value.trim()) {
         mcelSourceHtml.value = McelLabContract.defaultSource;
       }
+      populateMcelThemes();
       populateMcelScenarios();
       bindMcelLabControls();
       initMcelLabGrapes();
@@ -31,9 +38,22 @@
       mcelRepair?.addEventListener("click", () => repairMcelRuntime("manual-repair"));
       mcelReset?.addEventListener("click", resetMcelLab);
       mcelRunTests?.addEventListener("click", runMcelContractTests);
+      mcelRunAudit?.addEventListener("click", runMcelOperationalAudit);
       mcelApplyTraits?.addEventListener("click", applyMcelTraitsToSelectedSourceWidget);
       mcelLoadScenario?.addEventListener("click", loadSelectedMcelScenario);
       mcelScenarioSelect?.addEventListener("change", describeSelectedMcelScenario);
+      mcelThemeSelect?.addEventListener("change", () => changeMcelTheme("theme-select"));
+      mcelCommandPlan?.addEventListener("click", planMcelSemanticCommand);
+      mcelCommandApply?.addEventListener("click", applyMcelSemanticCommand);
+      mcelProjectSave?.addEventListener("click", saveMcelProject);
+      mcelProjectRestore?.addEventListener("click", restoreMcelProject);
+      mcelProjectExport?.addEventListener("click", exportMcelProject);
+      mcelCommandInput?.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          applyMcelSemanticCommand();
+        }
+      });
       mcelSourceHtml?.addEventListener("input", debounceMcelLabCompile);
       mcelRuntimePreview?.addEventListener("click", handleMcelRuntimeClick);
       document.querySelectorAll("[data-mcel-block]").forEach((button) => {
@@ -48,6 +68,18 @@
     function debounceMcelLabCompile() {
       clearTimeout(mcelLabCompileTimer);
       mcelLabCompileTimer = setTimeout(() => compileMcelLabSource("source-input"), 240);
+    }
+
+    function populateMcelThemes() {
+      if (!mcelThemeSelect || typeof McelLabStyleLaw === "undefined") return;
+      mcelThemeSelect.innerHTML = "";
+      McelLabStyleLaw.themes.forEach((theme) => {
+        const option = document.createElement("option");
+        option.value = theme;
+        option.textContent = theme;
+        mcelThemeSelect.appendChild(option);
+      });
+      mcelThemeSelect.value = McelLabStyleLaw.normalizeTheme(mcelLabState.theme);
     }
 
     function populateMcelScenarios() {
@@ -145,6 +177,7 @@
       }
       const compiled = McelLabEngine.compileSource(cleanSource, {reason});
       mcelRuntimePreview.innerHTML = compiled.runtimeHtml;
+      applyMcelRuntimeStyleLaw(reason);
       mcelLabState.lastSourceList = McelLabEditor.sourceList(cleanSource);
       mcelLabState.selectedIndex = Math.min(
         Math.max(mcelLabState.selectedIndex, 0),
@@ -157,6 +190,9 @@
       renderMcelSerializerDiff(serialization.serialized);
       renderMcelA11yReport();
       renderMcelDebugger();
+      renderMcelCssLawReport();
+      renderMcelGraphReport();
+      renderMcelProjectReport();
       renderMcelCompilerLog();
       syncMcelTraitControls();
       markSelectedMcelRuntimeElement();
@@ -182,9 +218,12 @@
       if (!mcelRuntimePreview) return;
       const repair = McelLabEngine.repairRuntimeRoot(mcelRuntimePreview, {reason});
       mcelLabState.compileEvents = [...mcelLabState.compileEvents, ...repair.events].slice(-64);
+      applyMcelRuntimeStyleLaw(reason);
       renderMcelRuntimeDom();
       renderMcelA11yReport();
       renderMcelDebugger();
+      renderMcelCssLawReport();
+      renderMcelGraphReport();
       renderMcelCompilerLog();
       markSelectedMcelRuntimeElement();
     }
@@ -193,9 +232,12 @@
       if (!mcelRuntimePreview) return;
       const result = McelLabEngine.damageRuntimeRoot(mcelRuntimePreview);
       mcelLabState.compileEvents = [...mcelLabState.compileEvents, ...result.events].slice(-64);
+      applyMcelRuntimeStyleLaw("damage");
       renderMcelRuntimeDom();
       renderMcelA11yReport();
       renderMcelDebugger();
+      renderMcelCssLawReport();
+      renderMcelGraphReport();
       renderMcelCompilerLog();
       markSelectedMcelRuntimeElement();
     }
@@ -206,10 +248,17 @@
       mcelLabState.compileEvents = [];
       mcelLabState.lastSerializerReport = null;
       mcelLabState.lastTestReport = null;
+      mcelLabState.lastGraphReport = null;
+      mcelLabState.lastAuditReport = null;
+      mcelLabState.lastCommandPlan = null;
+      mcelLabState.theme = "theme-machine";
+      if (mcelThemeSelect) mcelThemeSelect.value = "theme-machine";
       selectMcelSourceIndex(0, "reset");
       syncMcelGrapesFromSource();
       compileMcelLabSource("reset");
       renderMcelContractTests();
+      renderMcelGraphReport();
+      renderMcelAuditReport();
     }
 
     function runMcelContractTests() {
@@ -228,6 +277,150 @@
       ].slice(-64);
       renderMcelContractTests();
       renderMcelCompilerLog();
+    }
+
+    function runMcelOperationalAudit() {
+      if (typeof McelLabGraph === "undefined" || !mcelSourceHtml || !mcelRuntimePreview) return;
+      const report = McelLabGraph.audit(currentMcelSource(), mcelRuntimePreview, {reason: "manual-audit"});
+      mcelLabState.lastAuditReport = report;
+      mcelLabState.lastGraphReport = McelLabGraph.compactReport(currentMcelSource(), mcelRuntimePreview);
+      mcelLabState.compileEvents = [
+        ...mcelLabState.compileEvents,
+        {
+          level: report.failed ? "warning" : "success",
+          module: "audit",
+          code: report.failed ? "MCEL_OPERATIONAL_AUDIT_BLOCKED" : "MCEL_OPERATIONAL_AUDIT_CLEAN",
+          message: report.failed
+            ? `${report.failed} audit check(s) failed: ${report.issues.join(" ")}`
+            : `Operational graph clean with ${report.runtimeGraph.generatedPartCount} generated part(s) under provenance.`
+        }
+      ].slice(-64);
+      renderMcelGraphReport();
+      renderMcelAuditReport();
+      renderMcelCompilerLog();
+    }
+
+    function changeMcelTheme(reason = "theme") {
+      if (typeof McelLabStyleLaw !== "undefined") {
+        mcelLabState.theme = McelLabStyleLaw.normalizeTheme(mcelThemeSelect?.value || mcelLabState.theme);
+      } else {
+        mcelLabState.theme = mcelThemeSelect?.value || mcelLabState.theme;
+      }
+      mcelLabState.compileEvents = [
+        ...mcelLabState.compileEvents,
+        {level: "success", module: "style-law", code: "MCEL_THEME_CHANGED", message: `Theme changed to ${mcelLabState.theme} during ${reason}.`}
+      ].slice(-64);
+      applyMcelRuntimeStyleLaw(reason);
+      renderMcelRuntimeDom();
+      renderMcelCssLawReport();
+      renderMcelGraphReport();
+      renderMcelCompilerLog();
+    }
+
+    function applyMcelRuntimeStyleLaw(reason = "style-law") {
+      if (!mcelRuntimePreview || typeof McelLabStyleLaw === "undefined") return;
+      mcelLabState.theme = McelLabStyleLaw.normalizeTheme(mcelThemeSelect?.value || mcelLabState.theme);
+      if (mcelThemeSelect) mcelThemeSelect.value = mcelLabState.theme;
+      mcelLabState.lastCssLawReport = McelLabStyleLaw.applyRuntimeLaw(mcelRuntimePreview, {
+        theme: mcelLabState.theme,
+        reason
+      });
+    }
+
+    function planMcelSemanticCommand() {
+      if (typeof McelLabCommandSurface === "undefined") return null;
+      const command = mcelCommandInput?.value || "";
+      const plan = McelLabCommandSurface.plan(command, {
+        source: mcelSourceHtml?.value || "",
+        selectedIndex: mcelLabState.selectedIndex,
+        theme: mcelLabState.theme
+      });
+      mcelLabState.lastCommandPlan = plan;
+      renderMcelCommandReport();
+      return plan;
+    }
+
+    function applyMcelSemanticCommand() {
+      if (typeof McelLabCommandSurface === "undefined" || !mcelSourceHtml) return;
+      const plan = planMcelSemanticCommand();
+      if (!plan || !plan.ok) {
+        mcelLabState.compileEvents = [
+          ...mcelLabState.compileEvents,
+          {level: "warning", module: "command", code: "MCEL_COMMAND_REJECTED", message: (plan?.warnings || ["Command could not be planned."]).join(" ")}
+        ].slice(-64);
+        renderMcelCompilerLog();
+        return;
+      }
+      const applied = McelLabCommandSurface.apply(plan, {
+        source: mcelSourceHtml.value,
+        selectedIndex: mcelLabState.selectedIndex,
+        theme: mcelLabState.theme
+      });
+      mcelSourceHtml.value = applied.source;
+      mcelLabState.selectedIndex = applied.selectedIndex;
+      mcelLabState.theme = applied.theme;
+      if (mcelThemeSelect) mcelThemeSelect.value = mcelLabState.theme;
+      mcelLabState.compileEvents = [
+        ...mcelLabState.compileEvents,
+        ...applied.events,
+        {level: "success", module: "command", code: "MCEL_COMMAND_APPLIED", message: plan.summary.join("; ") || "Semantic command applied."}
+      ].slice(-64);
+      syncMcelGrapesFromSource();
+      compileMcelLabSource("semantic-command");
+
+      if (applied.actions.includes("serialize")) serializeMcelRuntime("semantic-command");
+      if (applied.actions.includes("damage")) damageMcelRuntime();
+      if (applied.actions.includes("repair")) repairMcelRuntime("semantic-command");
+      if (applied.actions.includes("test")) runMcelContractTests();
+      if (applied.actions.includes("graph")) renderMcelGraphReport();
+      if (applied.actions.includes("audit")) runMcelOperationalAudit();
+      if (applied.actions.includes("explain")) setMcelLabMode("runtime");
+
+      renderMcelCommandReport();
+    }
+
+    function currentMcelProjectState() {
+      return {
+        source: currentMcelSource(),
+        selectedIndex: mcelLabState.selectedIndex,
+        theme: mcelLabState.theme,
+        mode: mcelLabState.currentMode,
+        scenario: mcelScenarioSelect?.value || "round-trip",
+        lastSerializerClean: Boolean(mcelLabState.lastSerializerReport?.serializerClean)
+      };
+    }
+
+    function saveMcelProject() {
+      if (typeof McelLabProjectStore === "undefined") return;
+      const result = McelLabProjectStore.save(currentMcelProjectState());
+      mcelLabState.lastProjectSnapshot = result.snapshot;
+      if (mcelProjectStatus) mcelProjectStatus.textContent = result.message;
+      renderMcelProjectReport(result);
+    }
+
+    function restoreMcelProject() {
+      if (typeof McelLabProjectStore === "undefined" || !mcelSourceHtml) return;
+      const result = McelLabProjectStore.restore();
+      if (mcelProjectStatus) mcelProjectStatus.textContent = result.message;
+      if (result.ok && result.snapshot) {
+        mcelSourceHtml.value = result.snapshot.source || McelLabContract.defaultSource;
+        mcelLabState.selectedIndex = Number(result.snapshot.selectedIndex || 0);
+        mcelLabState.theme = result.snapshot.theme || "theme-machine";
+        if (mcelThemeSelect) mcelThemeSelect.value = mcelLabState.theme;
+        setMcelLabMode(result.snapshot.mode || "source");
+        syncMcelGrapesFromSource();
+        compileMcelLabSource("project-restore");
+      }
+      mcelLabState.lastProjectSnapshot = result.snapshot;
+      renderMcelProjectReport(result);
+    }
+
+    function exportMcelProject() {
+      if (typeof McelLabProjectStore === "undefined") return;
+      const text = McelLabProjectStore.exportText(currentMcelProjectState());
+      mcelLabState.lastProjectSnapshot = JSON.parse(text);
+      if (mcelProjectStatus) mcelProjectStatus.textContent = "Exported clean MCEL project snapshot into the Project State pane.";
+      if (mcelProjectReport) mcelProjectReport.textContent = text;
     }
 
     function applyMcelTraitsToSelectedSourceWidget() {
@@ -356,6 +549,45 @@
         "ROUND-TRIP STATUS",
         report.serializerClean ? "clean" : "warning"
       ].join("\n");
+    }
+
+    function renderMcelCssLawReport() {
+      if (!mcelCssLawReport) return;
+      mcelCssLawReport.textContent = mcelLabState.lastCssLawReport
+        ? JSON.stringify(mcelLabState.lastCssLawReport, null, 2)
+        : "CSS law has not been applied yet.";
+    }
+
+    function renderMcelGraphReport() {
+      if (!mcelGraphReport || typeof McelLabGraph === "undefined") return;
+      mcelLabState.lastGraphReport = McelLabGraph.compactReport(currentMcelSource(), mcelRuntimePreview);
+      mcelGraphReport.textContent = JSON.stringify(mcelLabState.lastGraphReport, null, 2);
+    }
+
+    function renderMcelAuditReport() {
+      if (!mcelAuditReport) return;
+      mcelAuditReport.textContent = mcelLabState.lastAuditReport
+        ? JSON.stringify(mcelLabState.lastAuditReport, null, 2)
+        : "Operational audit has not run yet.";
+    }
+
+    function renderMcelCommandReport() {
+      if (!mcelCommandReport) return;
+      if (!mcelLabState.lastCommandPlan) {
+        mcelCommandReport.textContent = "No semantic command has been planned yet.";
+        return;
+      }
+      mcelCommandReport.textContent = JSON.stringify(mcelLabState.lastCommandPlan, null, 2);
+    }
+
+    function renderMcelProjectReport(result = null) {
+      if (!mcelProjectReport || typeof McelLabProjectStore === "undefined") return;
+      const payload = result?.snapshot || mcelLabState.lastProjectSnapshot || McelLabProjectStore.snapshot(currentMcelProjectState());
+      mcelProjectReport.textContent = JSON.stringify({
+        storageKey: McelLabProjectStore.storageKey,
+        persisted: Boolean(result?.ok),
+        snapshot: payload
+      }, null, 2);
     }
 
     function renderMcelA11yReport() {

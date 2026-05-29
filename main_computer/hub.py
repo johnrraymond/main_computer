@@ -44,6 +44,82 @@ HUB_WORKER_SESSION_START_PATH = "/api/hub/worker/sessions/start"
 HUB_WORKER_SESSION_CHAT_PATH = "/api/hub/worker/sessions/chat"
 HUB_WORKER_STALE_AFTER_SECONDS = 90.0
 HUB_WORKER_LEASE_SECONDS = 600.0
+PHASE9_PRICING_MODE = "market_offer_fixed_per_call_v0"
+PHASE9_PRICING_TYPE = "fixed_per_call_v0"
+PHASE9_EXECUTION_MODE = "worker_pull_v0"
+
+
+def _phase9_offer_id(*, worker_node_id: str, models: list[str], credits_per_request: int, execution_mode: str) -> str:
+    seed = json.dumps(
+        {
+            "worker_node_id": str(worker_node_id or ""),
+            "models": sorted(str(model) for model in models if str(model).strip()),
+            "pricing_type": PHASE9_PRICING_TYPE,
+            "credits_per_request": max(0, int(credits_per_request or 0)),
+            "unit": "compute_credit",
+            "execution_mode": str(execution_mode or PHASE9_EXECUTION_MODE),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    ).encode("utf-8")
+    return "offer_" + hashlib.sha256(seed).hexdigest()[:24]
+
+
+def _phase9_worker_offer_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    capabilities = dict(payload.get("capabilities", {})) if isinstance(payload.get("capabilities"), dict) else {}
+    pricing = dict(capabilities.get("pricing", {})) if isinstance(capabilities.get("pricing"), dict) else {}
+    if bool(capabilities.get("phase9_unpriced", False)):
+        return {}
+    pricing_type = str(pricing.get("pricing_type") or pricing.get("type") or PHASE9_PRICING_TYPE).strip()
+    if pricing_type in {"", "none", "unpriced", "unpriced_v0"}:
+        return {}
+    try:
+        credits = int(pricing.get("credits_per_request", payload.get("credits_per_request", 0)) or 0)
+    except (TypeError, ValueError):
+        credits = 0
+    if credits <= 0:
+        return {}
+    models = [
+        str(model).strip()
+        for model in (payload.get("models") if isinstance(payload.get("models"), list) else [])
+        if str(model).strip()
+    ]
+    model = str(payload.get("model", "") or "").strip()
+    if model and model not in models:
+        models.insert(0, model)
+    if not models:
+        return {}
+    execution = dict(capabilities.get("execution", {})) if isinstance(capabilities.get("execution"), dict) else {}
+    execution_mode = str(
+        pricing.get("execution_mode")
+        or execution.get("mode")
+        or capabilities.get("execution_mode")
+        or PHASE9_EXECUTION_MODE
+    ).strip() or PHASE9_EXECUTION_MODE
+    return {
+        "offer_id": _phase9_offer_id(
+            worker_node_id=str(payload.get("node_id", "") or ""),
+            models=models,
+            credits_per_request=credits,
+            execution_mode=execution_mode,
+        ),
+        "worker_node_id": str(payload.get("node_id", "") or ""),
+        "seller_kind": "hub_connected_worker",
+        "models": models,
+        "capabilities": [str(item) for item in capabilities.get("capabilities", [])]
+        if isinstance(capabilities.get("capabilities"), list)
+        else ["chat.completions"],
+        "pricing_type": PHASE9_PRICING_TYPE,
+        "credits_per_request": credits,
+        "unit": "compute_credit",
+        "execution_mode": execution_mode,
+        "price_source": "worker_registration",
+        "settlement": {
+            "earning_mode": "worker_earning_v0",
+            "claim_mode": "worker_claim_v0",
+            "settlement_mode": "rounded_batch_v0",
+        },
+    }
 
 
 def _utc_now() -> str:
@@ -126,6 +202,7 @@ class HubWorker:
     registered_at: str = ""
     last_seen_at: str = ""
     capabilities: dict[str, Any] = field(default_factory=dict)
+    offer: dict[str, Any] = field(default_factory=dict)
     queue_depth: int = 0
     active_requests: int = 0
     max_concurrency: int = 1
@@ -133,7 +210,13 @@ class HubWorker:
     stale: bool = False
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        offer = dict(self.offer) if self.offer else _phase9_worker_offer_from_payload(data)
+        if offer:
+            data["offer"] = offer
+        else:
+            data.pop("offer", None)
+        return data
 
 
 @dataclass(frozen=True)
@@ -253,6 +336,15 @@ class HubRegistry:
                 registered_at=registered_at,
                 last_seen_at=now,
                 capabilities=clean_capabilities,
+                offer=_phase9_worker_offer_from_payload(
+                    {
+                        "node_id": clean_node_id,
+                        "model": primary_model,
+                        "models": clean_models,
+                        "credits_per_request": credit_price,
+                        "capabilities": clean_capabilities,
+                    }
+                ),
                 queue_depth=clean_queue_depth,
                 active_requests=clean_active,
                 max_concurrency=clean_max_concurrency,
@@ -554,33 +646,35 @@ class HubRegistry:
             status = str(item.get("status", "available") or "available").lower()
             if status not in {"available", "configured", "busy", "offline", "stale", "draining"}:
                 status = "available"
-            normalized_workers.append(
-                {
-                    "node_id": node_id,
-                    "endpoint": endpoint,
-                    "model": primary_model,
-                    "models": models,
-                    "status": status,
-                    "credits_per_request": max(1, int(item.get("credits_per_request", 1) or 1)),
-                    "settlement_precision_places": normalize_worker_payout_precision_places(
-                        item.get("settlement_precision_places")
-                        if item.get("settlement_precision_places") is not None
-                        else (
-                            item.get("capabilities", {}).get("settlement_precision_places")
-                            if isinstance(item.get("capabilities"), dict)
-                            else None
-                        )
-                    ),
-                    "registered_at": str(item.get("registered_at") or created_at),
-                    "last_seen_at": str(item.get("last_seen_at") or item.get("registered_at") or created_at),
-                    "capabilities": dict(item.get("capabilities", {})) if isinstance(item.get("capabilities"), dict) else {},
-                    "queue_depth": max(0, int(item.get("queue_depth", 0) or 0)),
-                    "active_requests": active_requests,
-                    "max_concurrency": max_concurrency,
-                    "lease_expires_at": str(item.get("lease_expires_at", "") or ""),
-                    "stale": bool(item.get("stale", False)) or status == "stale",
-                }
-            )
+            normalized_worker = {
+                "node_id": node_id,
+                "endpoint": endpoint,
+                "model": primary_model,
+                "models": models,
+                "status": status,
+                "credits_per_request": max(1, int(item.get("credits_per_request", 1) or 1)),
+                "settlement_precision_places": normalize_worker_payout_precision_places(
+                    item.get("settlement_precision_places")
+                    if item.get("settlement_precision_places") is not None
+                    else (
+                        item.get("capabilities", {}).get("settlement_precision_places")
+                        if isinstance(item.get("capabilities"), dict)
+                        else None
+                    )
+                ),
+                "registered_at": str(item.get("registered_at") or created_at),
+                "last_seen_at": str(item.get("last_seen_at") or item.get("registered_at") or created_at),
+                "capabilities": dict(item.get("capabilities", {})) if isinstance(item.get("capabilities"), dict) else {},
+                "queue_depth": max(0, int(item.get("queue_depth", 0) or 0)),
+                "active_requests": active_requests,
+                "max_concurrency": max_concurrency,
+                "lease_expires_at": str(item.get("lease_expires_at", "") or ""),
+                "stale": bool(item.get("stale", False)) or status == "stale",
+            }
+            offer = _phase9_worker_offer_from_payload(normalized_worker)
+            if offer:
+                normalized_worker["offer"] = offer
+            normalized_workers.append(normalized_worker)
         upstream_hubs = data.get("upstream_hubs") if isinstance(data.get("upstream_hubs"), list) else []
         normalized_upstreams: list[dict[str, Any]] = []
         for item in upstream_hubs:
@@ -685,6 +779,7 @@ class HubRegistry:
             registered_at=str(item.get("registered_at", "")),
             last_seen_at=str(item.get("last_seen_at", "")),
             capabilities=dict(item.get("capabilities", {})) if isinstance(item.get("capabilities"), dict) else {},
+            offer=dict(item.get("offer", {})) if isinstance(item.get("offer"), dict) else _phase9_worker_offer_from_payload(item),
             queue_depth=max(0, int(item.get("queue_depth", 0) or 0)),
             active_requests=max(0, int(item.get("active_requests", 0) or 0)),
             max_concurrency=max(1, int(item.get("max_concurrency", 1) or 1)),
@@ -1224,13 +1319,29 @@ class HubServerHandler(_JsonHandler):
             path = parsed.path
             if path in {"/api/hub/workers/register", "/api/hub/v1/workers/register"}:
                 body = self._read_json()
+                capabilities = dict(body.get("capabilities", {})) if isinstance(body.get("capabilities"), dict) else {}
+                pricing = dict(body.get("pricing", {})) if isinstance(body.get("pricing"), dict) else {}
+                execution = dict(body.get("execution", {})) if isinstance(body.get("execution"), dict) else {}
+                if pricing:
+                    capabilities["pricing"] = pricing
+                if execution:
+                    capabilities["execution"] = execution
+                if body.get("execution_mode") is not None:
+                    capabilities["execution_mode"] = str(body.get("execution_mode") or "")
+                raw_price = body.get("credits_per_request")
+                if raw_price is None and pricing:
+                    raw_price = pricing.get("credits_per_request")
+                pricing_type = str(pricing.get("pricing_type") or pricing.get("type") or "").strip().lower()
+                if pricing_type in {"none", "unpriced", "unpriced_v0"}:
+                    capabilities["phase9_unpriced"] = True
+                    raw_price = self.server.config.hub_credits_per_request
                 worker = self.server.registry.register_worker(
                     node_id=str(body.get("node_id", "")),
                     endpoint=str(body.get("endpoint", "")),
                     model=str(body.get("model", "")),
                     models=[str(item) for item in body.get("models", [])] if isinstance(body.get("models"), list) else None,
-                    capabilities=dict(body.get("capabilities", {})) if isinstance(body.get("capabilities"), dict) else None,
-                    credits_per_request=int(body.get("credits_per_request", self.server.config.hub_credits_per_request)),
+                    capabilities=capabilities,
+                    credits_per_request=int(raw_price if raw_price is not None else self.server.config.hub_credits_per_request),
                     settlement_precision_places=body.get("settlement_precision_places"),
                     queue_depth=int(body.get("queue_depth", 0) or 0),
                     active_requests=int(body.get("active_requests", 0) or 0),

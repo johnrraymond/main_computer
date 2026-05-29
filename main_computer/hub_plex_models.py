@@ -257,6 +257,9 @@ class HubAIRequest:
         if not messages:
             raise ValueError("At least one message is required.")
         metadata = dict(payload.get("metadata", {})) if isinstance(payload.get("metadata"), dict) else {}
+        for key in ("execution_mode", "pricing_mode", "quote_id"):
+            if payload.get(key) is not None and key not in metadata:
+                metadata[key] = payload.get(key)
         idempotency_key = str(payload.get("idempotency_key") or metadata.get("idempotency_key") or "").strip()
         requested_worker_node_id = str(
             payload.get("worker_node_id") or payload.get("requested_worker_node_id") or metadata.get("worker_node_id") or ""
@@ -335,6 +338,7 @@ class HubWorkerSummary:
     last_seen_at: str = ""
     endpoint: str = ""
     capabilities: dict[str, Any] = field(default_factory=dict)
+    offer: dict[str, Any] = field(default_factory=dict)
     queue_depth: int = 0
     active_requests: int = 0
     max_concurrency: int = 1
@@ -370,6 +374,7 @@ class HubWorkerSummary:
             last_seen_at=str(payload.get("last_seen_at", "") or payload.get("last_heartbeat_at", "")),
             endpoint=str(payload.get("endpoint", "")) if include_endpoint else "",
             capabilities=dict(payload.get("capabilities", {})) if isinstance(payload.get("capabilities"), dict) else {},
+            offer=dict(payload.get("offer", {})) if isinstance(payload.get("offer"), dict) else {},
             queue_depth=max(0, int(payload.get("queue_depth", 0) or 0)),
             active_requests=max(0, int(payload.get("active_requests", 0) or 0)),
             max_concurrency=max(1, int(payload.get("max_concurrency", 1) or 1)),
@@ -394,6 +399,8 @@ class HubWorkerSummary:
             "lease_expires_at": self.lease_expires_at,
             "stale": self.stale,
         }
+        if self.offer:
+            data["offer"] = dict(self.offer)
         if self.endpoint:
             data["endpoint"] = self.endpoint
         return data
@@ -588,6 +595,7 @@ class HubRequestStatus:
             released_credits=record.released_credits,
             worker_earning_id=record.worker_earning_id,
             receipt=dict(record.receipt),
+            request_payload=dict(record.request_payload),
             lease_id=record.lease_id,
             lease_expires_at=record.lease_expires_at,
         )
@@ -625,6 +633,36 @@ class HubRequestStatus:
             "lease_id": self.lease_id,
             "lease_expires_at": self.lease_expires_at,
         }
+        request_metadata = (
+            dict(self.request_payload.get("metadata", {}))
+            if isinstance(self.request_payload, dict) and isinstance(self.request_payload.get("metadata"), dict)
+            else {}
+        )
+        quote = dict(request_metadata.get("quote", {})) if isinstance(request_metadata.get("quote"), dict) else {}
+        selected_offer = (
+            dict(request_metadata.get("selected_offer", {}))
+            if isinstance(request_metadata.get("selected_offer"), dict)
+            else {}
+        )
+        if quote:
+            data["quote_id"] = str(quote.get("quote_id", ""))
+            data["pricing"] = {
+                "quoted_credits": max(0, int(quote.get("quoted_credits", quote.get("estimated_credits", 0)) or 0)),
+                "held_credits": max(0, int(request_metadata.get("held_credits", quote.get("quoted_credits", 0)) or 0)),
+                "charged_credits": max(0, int(self.charged_credits or 0)),
+                "unit": str(quote.get("unit", "compute_credit") or "compute_credit"),
+                "pricing_mode": str(quote.get("pricing_mode", request_metadata.get("pricing_mode", "")) or ""),
+                "execution_mode": str(quote.get("execution_mode", request_metadata.get("execution_mode", "")) or ""),
+            }
+        if selected_offer:
+            data["selected_offer"] = {
+                "offer_id": str(selected_offer.get("offer_id", "")),
+                "worker_node_id": str(selected_offer.get("worker_node_id", "")),
+                "credits_per_request": max(0, int(selected_offer.get("credits_per_request", 0) or 0)),
+                "unit": str(selected_offer.get("unit", "compute_credit") or "compute_credit"),
+                "execution_mode": str(selected_offer.get("execution_mode", "") or ""),
+                "price_source": str(selected_offer.get("price_source", "") or ""),
+            }
         if self.receipt:
             data["receipt"] = dict(self.receipt)
         if self.response is not None:

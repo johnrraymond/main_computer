@@ -21,6 +21,7 @@
     const mcelRepair = document.querySelector("#mcel-lab-repair");
     const mcelReset = document.querySelector("#mcel-lab-reset");
     const mcelRunTests = document.querySelector("#mcel-lab-run-tests");
+    const mcelRunAudit = document.querySelector("#mcel-lab-audit");
     const mcelApplyTraits = document.querySelector("#mcel-apply-traits");
     const mcelTraitKind = document.querySelector("#mcel-trait-kind");
     const mcelTraitFlow = document.querySelector("#mcel-trait-flow");
@@ -29,3 +30,16 @@
     const mcelTraitDensity = document.querySelector("#mcel-trait-density");
     const mcelTraitWords = document.querySelector("#mcel-trait-words");
     const mcelTraitConnects = document.querySelector("#mcel-trait-connects");
+    const mcelThemeSelect = document.querySelector("#mcel-theme-select");
+    const mcelCssLawReport = document.querySelector("#mcel-css-law-report");
+    const mcelGraphReport = document.querySelector("#mcel-graph-report");
+    const mcelAuditReport = document.querySelector("#mcel-audit-report");
+    const mcelCommandInput = document.querySelector("#mcel-command-input");
+    const mcelCommandPlan = document.querySelector("#mcel-command-plan");
+    const mcelCommandApply = document.querySelector("#mcel-command-apply");
+    const mcelCommandReport = document.querySelector("#mcel-command-report");
+    const mcelProjectSave = document.querySelector("#mcel-project-save");
+    const mcelProjectRestore = document.querySelector("#mcel-project-restore");
+    const mcelProjectExport = document.querySelector("#mcel-project-export");
+    const mcelProjectStatus = document.querySelector("#mcel-project-status");
+    const mcelProjectReport = document.querySelector("#mcel-project-report");
