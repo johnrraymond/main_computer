@@ -2929,10 +2929,11 @@ def sync_website_local_platform_manifest(
 ) -> WebsiteProject:
     project = load_website_project(repo_root, site_id)
     manifest = dict(project.manifest)
-    platform = manifest.get("local_platform")
-    if not isinstance(platform, dict):
-        platform = {}
+    existing_platform = manifest.get("local_platform")
+    platform = dict(existing_platform) if isinstance(existing_platform, dict) else {}
     platform.update(local_platform_manifest_from_registry_site(registry_site))
+    if isinstance(existing_platform, dict) and existing_platform == platform:
+        return project
     manifest["local_platform"] = platform
     manifest["updated_at"] = utc_now()
     write_json(project.path / "site.json", manifest)

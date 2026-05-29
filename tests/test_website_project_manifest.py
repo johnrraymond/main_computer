@@ -505,6 +505,18 @@ def test_local_platform_create_allocates_numbered_slug_for_archived_id(tmp_path:
     assert (tmp_path / "runtime" / "websites-archive" / "client-acme" / "site.json").exists()
 
 
+def test_website_publish_plan_does_not_touch_manifest_when_local_platform_is_current(tmp_path: Path) -> None:
+    create_local_platform_website_project(tmp_path, "client-acme", "Client Acme", regenerate_compose=False)
+    manifest_path = tmp_path / "runtime" / "websites" / "client-acme" / "site.json"
+    before = manifest_path.read_text(encoding="utf-8")
+
+    plan = website_publish_plan(tmp_path, "client-acme", "dev")
+
+    after = manifest_path.read_text(encoding="utf-8")
+    assert plan["service"] == "client-acme-dev"
+    assert after == before
+
+
 def test_website_publish_plan_is_manifest_driven_and_dry_run_safe(monkeypatch, tmp_path: Path) -> None:
     generated_prod_port, generated_dev_port = _find_free_generated_port_pair()
     monkeypatch.setenv("MAIN_COMPUTER_LOCAL_PLATFORM_SCAN_WSL_WEBSITES", "0")
