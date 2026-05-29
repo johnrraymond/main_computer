@@ -22,6 +22,9 @@
       pendingPublishingResource: {},
       chatController: null,
       chatOpen: false,
+      gitPanelOpen: false,
+      gitEdits: [],
+      gitSelectedCommit: "",
       ragApplyListenerBound: false,
       blogRuntimeWizard: {
         open: false,
@@ -140,6 +143,11 @@
         websiteBuilderPublishDev,
         websiteBuilderPublishRemote,
         websiteBuilderArchive,
+        websiteBuilderGitRefresh,
+        websiteBuilderGitReview,
+        websiteBuilderGitAcceptHead,
+        websiteBuilderGitRestoreSelected,
+        websiteBuilderGitRevertSelected,
         websiteBuilderPublishLocalCard,
         websiteBuilderPublishDevCard,
         websiteBuilderCoolifySave
@@ -148,6 +156,7 @@
       });
       updateWebsiteBuilderPublishingSetupControls();
       updateWebsiteBuilderArchiveControl();
+      updateWebsiteBuilderGitControl();
       if (label) setWebsiteBuilderLog(label);
     }
 
@@ -158,6 +167,49 @@
       websiteBuilderArchive.title = siteId === "hub-site"
         ? "Hub Site is protected and cannot be archived."
         : "Archive the selected website project.";
+    }
+
+    function updateWebsiteBuilderGitControl() {
+      const siteId = websiteBuilderStateModel.selectedSiteId || "";
+      const disabled = websiteBuilderStateModel.busy || !siteId;
+      const selectedCommit = websiteBuilderStateModel.gitSelectedCommit || "";
+      if (websiteBuilderGitToggle) {
+        websiteBuilderGitToggle.disabled = disabled;
+        websiteBuilderGitToggle.title = siteId
+          ? "Open Git commit history, restore, and patch-revert controls for this website."
+          : "Select a website before using Git controls.";
+        websiteBuilderGitToggle.setAttribute("aria-expanded", websiteBuilderStateModel.gitPanelOpen && !disabled ? "true" : "false");
+      }
+      if (websiteBuilderGitRefresh) websiteBuilderGitRefresh.disabled = disabled;
+      if (websiteBuilderGitAcceptHead) websiteBuilderGitAcceptHead.disabled = disabled;
+      if (websiteBuilderGitReview) websiteBuilderGitReview.disabled = disabled || !selectedCommit;
+      if (websiteBuilderGitRestoreSelected) websiteBuilderGitRestoreSelected.disabled = disabled || !selectedCommit;
+      if (websiteBuilderGitRevertSelected) websiteBuilderGitRevertSelected.disabled = disabled || !selectedCommit;
+      if (websiteBuilderGitPanel) {
+        websiteBuilderGitPanel.hidden = !websiteBuilderStateModel.gitPanelOpen || disabled;
+      }
+      if (websiteBuilderGitPath) {
+        websiteBuilderGitPath.textContent = siteId ? websiteBuilderSitePath(siteId) : "runtime/websites/—";
+      }
+      if (websiteBuilderGitSelected) {
+        websiteBuilderGitSelected.textContent = selectedCommit
+          ? `Selected commit: ${selectedCommit.slice(0, 12)}`
+          : "No Git commit selected.";
+      }
+    }
+
+    function setWebsiteBuilderGitPanelOpen(open) {
+      websiteBuilderStateModel.gitPanelOpen = Boolean(open);
+      updateWebsiteBuilderGitControl();
+      if (websiteBuilderGitOutput && websiteBuilderStateModel.gitPanelOpen && websiteBuilderStateModel.selectedSiteId) {
+        websiteBuilderGitOutput.textContent = `Git history controls are scoped to ${websiteBuilderSitePath()}.`;
+      }
+      if (websiteBuilderStateModel.gitPanelOpen && websiteBuilderStateModel.selectedSiteId) {
+        refreshWebsiteBuilderGitEdits({showOutput: true}).catch((error) => {
+          setWebsiteBuilderGitOutput(`Git history refresh failed: ${error.message || error}`);
+          setWebsiteBuilderBusy(false);
+        });
+      }
     }
 
     function markWebsiteBuilderDirty() {
@@ -3627,6 +3679,7 @@ body {
         websiteBuilderSiteList.append(empty);
         syncWebsiteBuilderSiteSelect();
         updateWebsiteBuilderArchiveControl();
+        updateWebsiteBuilderGitControl();
         return;
       }
       websiteBuilderStateModel.sites.forEach((site) => {
@@ -3646,6 +3699,7 @@ body {
       });
       syncWebsiteBuilderSiteSelect();
       updateWebsiteBuilderArchiveControl();
+      updateWebsiteBuilderGitControl();
     }
 
     function safeWebsiteBuilderChatSiteId(value = websiteBuilderStateModel.selectedSiteId) {
@@ -3657,6 +3711,297 @@ body {
 
     function websiteBuilderSitePath(siteId = websiteBuilderStateModel.selectedSiteId) {
       return `runtime/websites/${safeWebsiteBuilderChatSiteId(siteId)}`;
+    }
+
+    function websiteBuilderGitShellQuote(value) {
+      return `"${String(value || "").replace(/\\/g, "/").replace(/"/g, "\\\"")}"`;
+    }
+
+    function websiteBuilderGitCommandLine(command) {
+      if (Array.isArray(command)) {
+        return command.map((part) => {
+          const text = String(part ?? "");
+          return /[\s"'$`\\]/.test(text) ? websiteBuilderGitShellQuote(text) : text;
+        }).join(" ");
+      }
+      return String(command || "git");
+    }
+
+    function websiteBuilderGitCommandText(command, payload = {}) {
+      const parts = [`$ ${typeof command === "string" ? command : websiteBuilderGitCommandLine(command)}`];
+      const stdout = payload?.stdout || "";
+      const stderr = payload?.stderr || "";
+      if (stdout) parts.push(stdout.trimEnd());
+      if (stderr) parts.push(stderr.trimEnd());
+      if (payload?.error) parts.push(`ERROR: ${payload.error}`);
+      return parts.filter(Boolean).join("\n");
+    }
+
+    function websiteBuilderGitResponseText(payload, fallback = "No Git output.") {
+      const commands = Array.isArray(payload?.commands) ? payload.commands : [];
+      const output = commands.map((commandResult) => (
+        websiteBuilderGitCommandText(commandResult?.command || "git", commandResult)
+      )).filter(Boolean).join("\n\n");
+      const pieces = [
+        output,
+        payload?.summary || "",
+        payload?.error ? `ERROR: ${payload.error}` : "",
+        payload?.manual_hints || ""
+      ].filter(Boolean);
+      return pieces.join("\n\n") || fallback;
+    }
+
+    function websiteBuilderGitManualMergeHints(commit = websiteBuilderStateModel.gitSelectedCommit) {
+      const sitePath = websiteBuilderSitePath();
+      const target = commit || "<commit-sha>";
+      return [
+        "Manual merge hints:",
+        `git status --short -uall -- ${websiteBuilderGitShellQuote(sitePath)}`,
+        `git show --stat --patch ${target} -- ${websiteBuilderGitShellQuote(sitePath)}`,
+        `git restore --source=HEAD --worktree -- ${websiteBuilderGitShellQuote(sitePath)}`,
+        `git diff --binary ${target}^ ${target} -- ${websiteBuilderGitShellQuote(sitePath)} > website-builder-selected.patch`,
+        "git apply -R --3way website-builder-selected.patch",
+        `git add -- ${websiteBuilderGitShellQuote(sitePath)}`,
+        'git commit -m "Website Builder: revert selected site patch"',
+        "If Git reports conflicts, open the conflicted files, resolve conflict markers, run git add, then git commit. To abandon the manual attempt, run git merge --abort or git rebase --abort if one is active; otherwise restore the affected files from HEAD."
+      ].join("\n");
+    }
+
+    function setWebsiteBuilderGitOutput(text, detail = null) {
+      if (!websiteBuilderGitOutput) return;
+      const body = typeof text === "string" ? text : JSON.stringify(text, null, 2);
+      const suffix = detail ? `\n${typeof detail === "string" ? detail : JSON.stringify(detail, null, 2)}` : "";
+      websiteBuilderGitOutput.textContent = `${body}${suffix}`;
+    }
+
+    async function websiteBuilderSiteGitRequest(action, extra = {}) {
+      const siteId = websiteBuilderStateModel.selectedSiteId;
+      if (!siteId) throw new Error("Select a website first.");
+      const response = await fetch("/api/applications/websites/site/git", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          site_id: siteId,
+          action,
+          ...extra
+        })
+      });
+      const payload = await response.json().catch(() => ({}));
+      payload.http_status = response.status;
+      return payload;
+    }
+
+    function websiteBuilderGitCommitFiles(edit) {
+      const files = Array.isArray(edit?.files) ? edit.files : [];
+      return files.map((file) => {
+        const status = String(file?.status || "").trim();
+        const path = String(file?.path || "").trim();
+        return [status, path].filter(Boolean).join(" ");
+      }).filter(Boolean);
+    }
+
+    function websiteBuilderGitCommitLabel(edit) {
+      const subject = String(edit?.subject || "").trim() || "Git commit";
+      const short = String(edit?.short || edit?.commit || "").slice(0, 12);
+      const date = String(edit?.date || "").slice(0, 10);
+      return [short, date, subject].filter(Boolean).join(" · ");
+    }
+
+    function renderWebsiteBuilderGitEdits() {
+      if (!websiteBuilderGitEdits) return;
+      websiteBuilderGitEdits.textContent = "";
+      const edits = Array.isArray(websiteBuilderStateModel.gitEdits) ? websiteBuilderStateModel.gitEdits : [];
+      if (!websiteBuilderStateModel.selectedSiteId) {
+        const empty = document.createElement("p");
+        empty.textContent = "Select a website to review Git history.";
+        websiteBuilderGitEdits.append(empty);
+        return;
+      }
+      if (!edits.length) {
+        const empty = document.createElement("p");
+        empty.textContent = "No Git commits touching this website were found.";
+        websiteBuilderGitEdits.append(empty);
+        return;
+      }
+      edits.forEach((edit) => {
+        const commit = String(edit?.commit || "");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "website-builder-git-edit";
+        button.dataset.commit = commit;
+        button.setAttribute("role", "listitem");
+        if (commit === websiteBuilderStateModel.gitSelectedCommit) {
+          button.classList.add("active");
+        }
+        const status = document.createElement("span");
+        status.textContent = websiteBuilderGitCommitLabel(edit);
+        const path = document.createElement("strong");
+        const files = websiteBuilderGitCommitFiles(edit);
+        path.textContent = files.length ? files.slice(0, 4).join(" · ") : websiteBuilderSitePath();
+        if (files.length > 4) path.textContent += ` · +${files.length - 4} more`;
+        button.append(status, path);
+        button.addEventListener("click", () => {
+          selectWebsiteBuilderGitEdit(commit, {preview: true}).catch((error) => {
+            setWebsiteBuilderGitOutput(`Git patch review failed: ${error.message || error}`);
+            setWebsiteBuilderLog(`Git patch review failed: ${error.message || error}`);
+            setWebsiteBuilderBusy(false);
+          });
+        });
+        websiteBuilderGitEdits.append(button);
+      });
+    }
+
+    async function selectWebsiteBuilderGitEdit(commit, {preview = false} = {}) {
+      websiteBuilderStateModel.gitSelectedCommit = String(commit || "");
+      renderWebsiteBuilderGitEdits();
+      updateWebsiteBuilderGitControl();
+      if (preview && websiteBuilderStateModel.gitSelectedCommit) {
+        await runWebsiteBuilderGitReview();
+      }
+    }
+
+    async function refreshWebsiteBuilderGitEdits({showOutput = true} = {}) {
+      const siteId = websiteBuilderStateModel.selectedSiteId;
+      if (!siteId) throw new Error("Select a website first.");
+      const sitePath = websiteBuilderSitePath();
+      setWebsiteBuilderBusy(true, `Listing Git commits touching ${sitePath}...`);
+      try {
+        const payload = await websiteBuilderSiteGitRequest("history");
+        if (!payload.ok) {
+          setWebsiteBuilderGitOutput(websiteBuilderGitResponseText(payload, `Git history failed for ${sitePath}.`));
+          throw new Error(payload.error || "Git history failed.");
+        }
+        const edits = Array.isArray(payload.commits) ? payload.commits : [];
+        websiteBuilderStateModel.gitEdits = edits;
+        if (!edits.some((edit) => edit.commit === websiteBuilderStateModel.gitSelectedCommit)) {
+          websiteBuilderStateModel.gitSelectedCommit = edits[0]?.commit || "";
+        }
+        renderWebsiteBuilderGitEdits();
+        updateWebsiteBuilderGitControl();
+        if (showOutput) {
+          const dirtyNote = websiteBuilderStateModel.dirty
+            ? "\n\nNote: the Website Builder editor has unsaved changes; save before expecting Git history actions to include them."
+            : "";
+          const editSummary = edits.length
+            ? `Found ${edits.length} Git commit${edits.length === 1 ? "" : "s"} touching ${sitePath}. Click a commit to review its patch.`
+            : `No Git commits touching ${sitePath} were found.`;
+          setWebsiteBuilderGitOutput([
+            websiteBuilderGitResponseText(payload),
+            editSummary,
+            dirtyNote
+          ].filter(Boolean).join("\n\n"));
+          setWebsiteBuilderLog(`Listed Git history for ${siteId}.`);
+        }
+        return {payload, edits};
+      } finally {
+        setWebsiteBuilderBusy(false);
+      }
+    }
+
+    async function runWebsiteBuilderGitReview() {
+      const siteId = websiteBuilderStateModel.selectedSiteId;
+      if (!siteId) throw new Error("Select a website first.");
+      const commit = websiteBuilderStateModel.gitSelectedCommit;
+      if (!commit) throw new Error("Select a Git commit first.");
+      setWebsiteBuilderBusy(true, `Reviewing Git patch ${commit.slice(0, 12)} for ${websiteBuilderSitePath()}...`);
+      try {
+        const payload = await websiteBuilderSiteGitRequest("review", {commit});
+        const dirtyNote = websiteBuilderStateModel.dirty
+          ? "\n\nNote: the Website Builder editor has unsaved changes; save before applying Git history actions."
+          : "";
+        setWebsiteBuilderGitOutput([
+          websiteBuilderGitResponseText(payload, "No patch output."),
+          dirtyNote
+        ].filter(Boolean).join("\n\n"));
+        if (!payload.ok) throw new Error(payload.error || "Git patch review failed.");
+        setWebsiteBuilderLog(`Reviewed Git patch ${commit.slice(0, 12)} for ${siteId}.`);
+        return payload;
+      } finally {
+        setWebsiteBuilderBusy(false);
+      }
+    }
+
+    async function runWebsiteBuilderGitRestoreSelected() {
+      const siteId = websiteBuilderStateModel.selectedSiteId;
+      if (!siteId) throw new Error("Select a website first.");
+      const commit = websiteBuilderStateModel.gitSelectedCommit;
+      if (!commit) throw new Error("Select a Git commit first.");
+      const sitePath = websiteBuilderSitePath();
+      const confirmed = window.confirm(
+        `Restore ${sitePath} from commit ${commit.slice(0, 12)} so you can inspect it?\n\n` +
+        "This changes the working tree for this website path only. It does not move HEAD. Save or commit any current site edits first if you want to keep them."
+      );
+      if (!confirmed) {
+        setWebsiteBuilderGitOutput(`Restore canceled for ${commit.slice(0, 12)}.`);
+        return null;
+      }
+      setWebsiteBuilderBusy(true, `Restoring ${sitePath} from ${commit.slice(0, 12)} for inspection...`);
+      try {
+        const payload = await websiteBuilderSiteGitRequest("restore", {commit});
+        setWebsiteBuilderGitOutput(websiteBuilderGitResponseText(payload));
+        if (!payload.ok) throw new Error(payload.error || "Git restore failed.");
+        websiteBuilderStateModel.dirty = false;
+        await selectWebsiteBuilderSite(siteId, {syncRoute: false});
+        setWebsiteBuilderLog(`Restored ${siteId} from Git commit ${commit.slice(0, 12)} for inspection.`);
+        return payload;
+      } finally {
+        setWebsiteBuilderBusy(false);
+      }
+    }
+
+    async function runWebsiteBuilderGitAcceptHead() {
+      const siteId = websiteBuilderStateModel.selectedSiteId;
+      if (!siteId) throw new Error("Select a website first.");
+      if (websiteBuilderStateModel.dirty) {
+        setWebsiteBuilderGitOutput(`Saving ${siteId} before making the current site the new HEAD...`);
+        await saveWebsiteBuilderSite();
+      }
+      const sitePath = websiteBuilderSitePath();
+      setWebsiteBuilderBusy(true, `Making the current ${siteId} site state the new Git HEAD...`);
+      try {
+        const payload = await websiteBuilderSiteGitRequest("accept-head");
+        setWebsiteBuilderGitOutput(websiteBuilderGitResponseText(payload));
+        setWebsiteBuilderLog(payload.ok ? `Made current ${siteId} site state the new Git HEAD.` : `Git did not create a HEAD commit for ${siteId}.`, payload);
+        if (!payload.ok) throw new Error(payload.error || "Git commit failed.");
+        websiteBuilderStateModel.dirty = false;
+        await refreshWebsiteBuilderGitEdits({showOutput: false});
+        return payload;
+      } finally {
+        setWebsiteBuilderBusy(false);
+      }
+    }
+
+    async function runWebsiteBuilderGitRevertSelected() {
+      const siteId = websiteBuilderStateModel.selectedSiteId;
+      if (!siteId) throw new Error("Select a website first.");
+      const commit = websiteBuilderStateModel.gitSelectedCommit;
+      if (!commit) throw new Error("Select a Git commit patch first.");
+      const sitePath = websiteBuilderSitePath();
+      const confirmed = window.confirm(
+        `Revert only the selected patch ${commit.slice(0, 12)} against the actual HEAD for ${sitePath}?\n\n` +
+        "This first restores this website path to HEAD, then reverse-applies that commit's patch for this website. If Git cannot merge it cleanly, the panel will show manual terminal commands."
+      );
+      if (!confirmed) {
+        setWebsiteBuilderGitOutput(`Revert canceled for patch ${commit.slice(0, 12)}.`);
+        return null;
+      }
+      setWebsiteBuilderBusy(true, `Reverting selected Git patch ${commit.slice(0, 12)} against HEAD...`);
+      try {
+        const payload = await websiteBuilderSiteGitRequest("revert-patch", {commit});
+        setWebsiteBuilderGitOutput(websiteBuilderGitResponseText(payload));
+        if (payload.ok) {
+          websiteBuilderStateModel.dirty = false;
+          await selectWebsiteBuilderSite(siteId, {syncRoute: false});
+          await refreshWebsiteBuilderGitEdits({showOutput: false});
+          setWebsiteBuilderLog(`Reverse-applied Git patch ${commit.slice(0, 12)} for ${siteId}. Review it, then make current site HEAD if correct.`);
+        } else {
+          setWebsiteBuilderLog(`Git patch revert failed for ${commit.slice(0, 12)}. Manual merge is required.`, payload);
+          throw new Error(payload.error || "Git patch revert failed. Manual merge is required.");
+        }
+        return payload;
+      } finally {
+        setWebsiteBuilderBusy(false);
+      }
     }
 
     function websiteBuilderChatThreadKey(siteId = websiteBuilderStateModel.selectedSiteId) {
@@ -3894,6 +4239,7 @@ body {
         websiteBuilderStateModel.selectedSite = null;
         updateWebsiteBuilderInspector();
         updateWebsiteBuilderArchiveControl();
+        updateWebsiteBuilderGitControl();
       }
       setWebsiteBuilderLog(`Loaded ${websiteBuilderStateModel.sites.length} website project(s).`);
     }
@@ -3925,6 +4271,7 @@ body {
       if (!skipRender) renderWebsiteBuilderSites();
       syncWebsiteBuilderSiteSelect();
       updateWebsiteBuilderArchiveControl();
+      updateWebsiteBuilderGitControl();
       updateWebsiteBuilderInspector();
       renderWebsiteBuilderBackendView();
       renderWebsiteBuilderPublishTargetControls(site);
@@ -4563,6 +4910,42 @@ body {
     });
     websiteBuilderArchive?.addEventListener("click", () => {
       archiveWebsiteBuilderSite().catch((error) => setWebsiteBuilderLog(`Archive failed: ${error.message}`));
+    });
+    websiteBuilderGitToggle?.addEventListener("click", () => setWebsiteBuilderGitPanelOpen(!websiteBuilderStateModel.gitPanelOpen));
+    websiteBuilderGitRefresh?.addEventListener("click", () => {
+      refreshWebsiteBuilderGitEdits().catch((error) => {
+        setWebsiteBuilderGitOutput(`Git history refresh failed: ${error.message || error}`);
+        setWebsiteBuilderLog(`Git history refresh failed: ${error.message || error}`);
+        setWebsiteBuilderBusy(false);
+      });
+    });
+    websiteBuilderGitReview?.addEventListener("click", () => {
+      runWebsiteBuilderGitReview().catch((error) => {
+        setWebsiteBuilderGitOutput(`Git review failed: ${error.message || error}`);
+        setWebsiteBuilderLog(`Git review failed: ${error.message || error}`);
+        setWebsiteBuilderBusy(false);
+      });
+    });
+    websiteBuilderGitRestoreSelected?.addEventListener("click", () => {
+      runWebsiteBuilderGitRestoreSelected().catch((error) => {
+        setWebsiteBuilderGitOutput(`Git restore-to-inspect failed: ${error.message || error}`);
+        setWebsiteBuilderLog(`Git restore-to-inspect failed: ${error.message || error}`);
+        setWebsiteBuilderBusy(false);
+      });
+    });
+    websiteBuilderGitAcceptHead?.addEventListener("click", () => {
+      runWebsiteBuilderGitAcceptHead().catch((error) => {
+        setWebsiteBuilderGitOutput(`Git accept-as-HEAD failed: ${error.message || error}`);
+        setWebsiteBuilderLog(`Git accept-as-HEAD failed: ${error.message || error}`);
+        setWebsiteBuilderBusy(false);
+      });
+    });
+    websiteBuilderGitRevertSelected?.addEventListener("click", () => {
+      runWebsiteBuilderGitRevertSelected().catch((error) => {
+        setWebsiteBuilderGitOutput(`Git revert failed: ${error.message || error}`);
+        setWebsiteBuilderLog(`Git revert failed: ${error.message || error}`);
+        setWebsiteBuilderBusy(false);
+      });
     });
     websiteBuilderSave?.addEventListener("click", () => {
       saveWebsiteBuilderSite().catch((error) => setWebsiteBuilderLog(`Save failed: ${error.message}`));

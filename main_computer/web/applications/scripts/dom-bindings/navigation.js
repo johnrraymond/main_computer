@@ -17,6 +17,7 @@
       "file-explorer": ["File Explorer", "Read-only system file browser is ready.", "File Explorer is running read-only."],
       "game-editor": ["Game Editor", "Project-backed scene editor is ready.", "Game Editor is scene-backed."],
       "website-builder": ["Website Builder", "Manage site manifests, save website files, and publish local Docker lanes.", "Website Builder is running."],
+      "mcel-lab": ["MCEL Lab", "Semantic HTML compiler workbench is ready.", "MCEL Lab is proving source, runtime, serializer, and debugger contracts."],
       worker: ["Worker", "Configure remote AI use and local AI rental behavior.", "Worker configuration is ready."]
     };
     const desktopApps = [
@@ -30,9 +31,11 @@
       {app: "file-explorer", glyph: "F", title: "File Explorer", summary: "system files"},
       {app: "game-editor", glyph: "P", title: "Game Editor", summary: "scene builder"},
       {app: "website-builder", glyph: "W", title: "Website Builder", summary: "site manager"},
+      {app: "mcel-lab", glyph: "M", title: "MCEL Lab", summary: "semantic compiler"},
       {app: "worker", glyph: "A", title: "Worker", summary: "AI rental config"}
     ];
     const routeableApps = new Set(Object.keys(appCopy));
+    const applicationRouteAliases = {"layout-builder": "game-editor", "web-test-bed": "mcel-lab"};
     const websiteBuilderRouteSitePattern = /^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/;
 
     function normalizeWebsiteBuilderRouteSiteId(siteId = "") {

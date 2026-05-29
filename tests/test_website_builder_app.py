@@ -207,6 +207,18 @@ def test_website_builder_layout_uses_two_column_workspace_with_rail_manager() ->
     assert "website-builder-site-select" in app
     assert "website-builder-create-toggle" in app
     assert "website-builder-archive" in app
+    assert "website-builder-git-toggle" in app
+    assert "website-builder-git-panel" in app
+    assert "website-builder-git-refresh" in app
+    assert "website-builder-git-edits" in app
+    assert "website-builder-git-accept-head" in app
+    assert "website-builder-git-restore-selected" in app
+    assert "website-builder-git-revert-selected" in app
+    assert "Refresh history" in app
+    assert "Restore to inspect" in app
+    assert "Make current site HEAD" in app
+    assert "Revert patch from HEAD" in app
+    assert "Back up" not in app
     assert 'data-website-builder-tab="design"' in app
     assert 'data-website-builder-panel="source"' in app
     assert "grid-template-columns: minmax(720px, 1fr) 320px" in css
@@ -221,6 +233,21 @@ def test_website_builder_layout_uses_two_column_workspace_with_rail_manager() ->
     assert "websiteBuilderSiteSelect" in bindings
     assert "websiteBuilderChatToggle" in bindings
     assert ".website-builder-chat-popout" in css
+    assert ".website-builder-git-button" in css
+    assert ".website-builder-git-panel" in css
+    assert "websiteBuilderGitToggle" in bindings
+    assert "websiteBuilderGitRefresh" in bindings
+    assert "websiteBuilderGitAcceptHead" in bindings
+    assert "websiteBuilderGitRestoreSelected" in bindings
+    assert "websiteBuilderGitRevertSelected" in bindings
+    assert "refreshWebsiteBuilderGitEdits" in script
+    assert "runWebsiteBuilderGitRestoreSelected" in script
+    assert "runWebsiteBuilderGitAcceptHead" in script
+    assert "runWebsiteBuilderGitRevertSelected" in script
+    assert "runWebsiteBuilderGitBackup" not in script
+    assert "/api/applications/websites/site/git" in script
+    assert "git apply -R --3way" in script
+    assert "Manual merge hints:" in script
     assert "websiteBuilderVisitLocal" in bindings
     assert "websiteBuilderVisitDev" in bindings
     assert "websiteBuilderVisitRemoteProd" in bindings
@@ -244,6 +271,7 @@ def test_website_builder_backend_routes_are_wired() -> None:
     assert '"/api/applications/websites/site/save"' in routes
     assert '"/api/applications/websites/site/publish"' in routes
     assert '"/api/applications/websites/site/archive"' in routes
+    assert '"/api/applications/websites/site/git"' in routes
     assert '"/api/applications/website-builder/chat"' in routes
     assert '"/api/applications/website-builder/chat/edit"' in routes
     assert '"/api/publishing/local-server/prepare"' not in routes
@@ -251,6 +279,9 @@ def test_website_builder_backend_routes_are_wired() -> None:
     assert "def _handle_websites_site_save" in handlers
     assert "def _handle_websites_site_publish" in handlers
     assert "def _handle_websites_site_archive" in handlers
+    assert "def _handle_websites_site_git" in handlers
+    assert "_website_builder_git_log_entries" in handlers
+    assert "git apply -R --3way" in handlers
     assert "def _handle_website_builder_chat_edit" in handlers
     assert "def _handle_publishing_local_server_prepare" not in handlers
     assert "archive_website_project(" in handlers

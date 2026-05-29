@@ -3,6 +3,24 @@
 name: "main-computer-local-platform-unleashed"
 
 services:
+  johnrraymond-directus:
+    image: "directus/directus:11.5.1"
+    restart: unless-stopped
+    environment:
+      SECRET: "${JOHNRRAYMOND_DIRECTUS_SECRET:-main-computer-local-johnrraymond-directus-secret}"
+      ADMIN_EMAIL: "${JOHNRRAYMOND_DIRECTUS_ADMIN_EMAIL:-admin@example.com}"
+      ADMIN_PASSWORD: "${JOHNRRAYMOND_DIRECTUS_ADMIN_PASSWORD:-Admin-password-1!}"
+      DB_CLIENT: "sqlite3"
+      DB_FILENAME: "/directus/database/data.db"
+      STORAGE_LOCATIONS: "local"
+      STORAGE_LOCAL_ROOT: "/directus/uploads"
+      PUBLIC_URL: "http://127.0.0.1:28202"
+    volumes:
+      - "johnrraymond_directus_database:/directus/database"
+      - "johnrraymond_directus_uploads:/directus/uploads"
+    ports:
+      - "127.0.0.1:28202:8055"
+
   hub-local:
     build:
       context: "../site-server"
@@ -44,6 +62,8 @@ services:
       context: "../site-server"
     image: "main-computer-site-johnrraymond-prod:latest"
     restart: unless-stopped
+    depends_on:
+      - "johnrraymond-directus"
     environment:
       SITE_ID: "johnrraymond"
       SITE_NAME: "johnrraymond"
@@ -52,9 +72,9 @@ services:
       MC_SITE_ID: "johnrraymond"
       MC_RUNTIME_LANE: "local"
       CONTENT_ROOT: "/app/runtime/websites"
-      MC_DIRECTUS_SERVICE: "hub-site-directus"
-      DIRECTUS_URL: "http://hub-site-directus:8055"
-      DIRECTUS_PUBLIC_URL: "http://127.0.0.1:28200"
+      MC_DIRECTUS_SERVICE: "johnrraymond-directus"
+      DIRECTUS_URL: "http://johnrraymond-directus:8055"
+      DIRECTUS_PUBLIC_URL: "http://127.0.0.1:28202"
       BLOG_ENABLED: "true"
       BLOG_PROVIDER: "directus"
       BLOG_CONTENT_RUNTIME: "directus"
@@ -69,6 +89,8 @@ services:
       context: "../site-server"
     image: "main-computer-site-johnrraymond-dev:latest"
     restart: unless-stopped
+    depends_on:
+      - "johnrraymond-directus"
     environment:
       SITE_ID: "johnrraymond"
       SITE_NAME: "johnrraymond"
@@ -77,9 +99,9 @@ services:
       MC_SITE_ID: "johnrraymond"
       MC_RUNTIME_LANE: "dev"
       CONTENT_ROOT: "/app/runtime/websites"
-      MC_DIRECTUS_SERVICE: "hub-site-directus"
-      DIRECTUS_URL: "http://hub-site-directus:8055"
-      DIRECTUS_PUBLIC_URL: "http://127.0.0.1:28200"
+      MC_DIRECTUS_SERVICE: "johnrraymond-directus"
+      DIRECTUS_URL: "http://johnrraymond-directus:8055"
+      DIRECTUS_PUBLIC_URL: "http://127.0.0.1:28202"
       BLOG_ENABLED: "true"
       BLOG_PROVIDER: "directus"
       BLOG_CONTENT_RUNTIME: "directus"
@@ -124,3 +146,9 @@ services:
       - "../../../runtime/websites:/app/runtime/websites:ro"
     ports:
       - "0.0.0.0:18105:8080"
+
+volumes:
+  johnrraymond_directus_database:
+    name: "johnrraymond_directus_database"
+  johnrraymond_directus_uploads:
+    name: "johnrraymond_directus_uploads"

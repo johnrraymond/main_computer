@@ -1272,6 +1272,9 @@ def dispatch_post(self) -> None:
     if route_path == "/api/applications/websites/site/archive":
         self._handle_websites_site_archive()
         return
+    if route_path == "/api/applications/websites/site/git":
+        self._handle_websites_site_git()
+        return
     if route_path == "/api/applications/websites/site/publish-target":
         self._handle_websites_site_publish_target()
         return

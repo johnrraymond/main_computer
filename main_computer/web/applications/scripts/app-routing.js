@@ -4,7 +4,7 @@
       if (!parts.length) return "calculator";
       if (!["applications", "apps", "app"].includes(parts[0])) return "calculator";
       if (parts.length < 2) return "calculator";
-      const candidate = parts[1] === "layout-builder" ? "game-editor" : parts[1];
+      const candidate = applicationRouteAliases[parts[1]] || parts[1];
       return routeableApps.has(candidate) ? candidate : "calculator";
     }
 
@@ -143,6 +143,7 @@
       const isFileExplorer = normalizedApp === "file-explorer";
       const isGameEditor = normalizedApp === "game-editor";
       const isWebsiteBuilder = normalizedApp === "website-builder";
+      const isMcelLab = normalizedApp === "mcel-lab";
       const isWorker = normalizedApp === "worker";
       if (previousApp === "task-manager" && normalizedApp !== "task-manager") {
         stopTaskManagerAutoRefresh();
@@ -171,8 +172,9 @@
       systemFileExplorerApp.style.display = isFileExplorer ? "grid" : "none";
       gameEditorApp.style.display = isGameEditor ? "grid" : "none";
       if (websiteBuilderApp) websiteBuilderApp.style.display = isWebsiteBuilder ? "grid" : "none";
+      if (mcelLabApp) mcelLabApp.style.display = isMcelLab ? "grid" : "none";
       if (workerApp) workerApp.style.display = isWorker ? "grid" : "none";
-      stubMessage.style.display = isWebgl || isCalculator || isDocument || isSpreadsheet || isOnlyOffice || isTaskManager || isTerminal || isChatConsole || isGitTools || isCodeEditor || isFileExplorer || isGameEditor || isWebsiteBuilder || isWorker ? "none" : "grid";
+      stubMessage.style.display = isWebgl || isCalculator || isDocument || isSpreadsheet || isOnlyOffice || isTaskManager || isTerminal || isChatConsole || isGitTools || isCodeEditor || isFileExplorer || isGameEditor || isWebsiteBuilder || isMcelLab || isWorker ? "none" : "grid";
       demoControls.style.display = isWebgl ? "grid" : "none";
       layoutDesktopIcons(normalizedApp);
       if (isWebgl) {
@@ -251,6 +253,10 @@
         running = false;
         glStatus.textContent = "website builder ready";
         initWebsiteBuilderApp();
+      } else if (isMcelLab) {
+        running = false;
+        glStatus.textContent = "MCEL Lab ready";
+        initMcelLabApp();
       } else if (isWorker) {
         running = false;
         glStatus.textContent = "worker configuration ready";

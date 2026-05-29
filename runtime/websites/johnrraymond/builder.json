@@ -1,15 +1,15 @@
 {
   "blocks": [
     {
-      "text": "Main Computer Website Builder",
+      "text": "John R Raymond",
       "type": "eyebrow"
     },
     {
-      "text": "johnrraymond",
+      "text": "Author of The Scarab Cycle.",
       "type": "heading"
     },
     {
-      "text": "This static-site page is managed from Applications → Website Builder.",
+      "text": "Fiction, essays, notes, project updates, the Main Computer GitHub project, a Medium article on AI and computing sovereignty, and the on-site Overflow Blog.",
       "type": "paragraph"
     }
   ],
@@ -17,6 +17,6 @@
   "entry_html": "index.html",
   "script": "script.js",
   "stylesheet": "style.css",
-  "updated_at": "2026-05-24T22:17:54.140Z",
+  "updated_at": "2026-05-29T21:08:36.631Z",
   "version": 2
 }

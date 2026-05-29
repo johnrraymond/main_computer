@@ -21,6 +21,7 @@
     <!-- @include applications/styles/git-tools.css -->
     <!-- @include applications/styles/layout-builder.css -->
     <!-- @include applications/styles/website-builder.css -->
+    <!-- @include applications/styles/mcel-lab.css -->
     <!-- @include applications/styles/worker.css -->
     <!-- @include applications/styles/game-editor.css -->
     <!-- @include applications/styles/code-editor.css -->
@@ -97,6 +98,10 @@
           <strong>Website Builder</strong>
           <span>site manifests, editing, saving, and local Docker publishing</span>
         </a>
+        <a class="app-card ready" href="/applications/mcel-lab" data-app="mcel-lab">
+          <strong>MCEL Lab</strong>
+          <span>semantic HTML compiler, runtime DOM, serializer, and debugger workbench</span>
+        </a>
         <a class="app-card ready" href="/applications/worker" data-app="worker">
           <strong>Worker</strong>
           <span>configure remote AI use and local AI rentals</span>
@@ -158,6 +163,7 @@
           <!-- @include applications/apps/file-explorer.html -->
           <!-- @include applications/apps/layout-builder.html -->
           <!-- @include applications/apps/website-builder.html -->
+          <!-- @include applications/apps/mcel-lab.html -->
           <!-- @include applications/apps/worker.html -->
           <div class="stub-message" id="stub-message">Select an application tab to open it.</div>
         </div>
@@ -300,6 +306,12 @@
     <!-- @include applications/scripts/task-manager.js -->
     <!-- @include applications/scripts/git-tools.js -->
     <!-- @include applications/scripts/website-builder.js -->
+    <!-- @include applications/scripts/mcel-contract.js -->
+    <!-- @include applications/scripts/mcel-engine.js -->
+    <!-- @include applications/scripts/mcel-editor.js -->
+    <!-- @include applications/scripts/mcel-scenarios.js -->
+    <!-- @include applications/scripts/mcel-test-harness.js -->
+    <!-- @include applications/scripts/mcel-lab.js -->
     <!-- @include applications/scripts/worker.js -->
     <!-- @include applications/scripts/boot.js -->
   </script>

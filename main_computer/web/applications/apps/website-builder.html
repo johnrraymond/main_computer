@@ -610,6 +610,28 @@
         <button type="button" id="website-builder-create-toggle">+ New</button>
         <button type="button" id="website-builder-refresh">Refresh</button>
         <button type="button" class="website-builder-danger-button" id="website-builder-archive">Archive</button>
+        <button type="button" class="website-builder-git-button" id="website-builder-git-toggle" aria-expanded="false" aria-controls="website-builder-git-panel">Git</button>
+      </div>
+      <div class="website-builder-git-panel" id="website-builder-git-panel" hidden>
+        <div class="website-builder-git-panel-head">
+          <div>
+            <h4>Git history</h4>
+            <p>Pick a commit that touched this site, inspect it, make the current site HEAD, or reverse only that patch.</p>
+          </div>
+          <span id="website-builder-git-path">runtime/websites/—</span>
+        </div>
+        <div class="website-builder-git-actions">
+          <button type="button" id="website-builder-git-refresh">Refresh history</button>
+          <button type="button" id="website-builder-git-review">Review patch</button>
+          <button type="button" id="website-builder-git-restore-selected">Restore to inspect</button>
+          <button type="button" id="website-builder-git-accept-head">Make current site HEAD</button>
+          <button type="button" class="website-builder-git-undo-button" id="website-builder-git-revert-selected">Revert patch from HEAD</button>
+        </div>
+        <div class="website-builder-git-selected" id="website-builder-git-selected">No Git commit selected.</div>
+        <div class="website-builder-git-edit-list" id="website-builder-git-edits" role="list" aria-label="Website Git commit history">
+          <p>Open Git or click Refresh history to list commits touching this site.</p>
+        </div>
+        <pre id="website-builder-git-output" aria-live="polite">Git history controls are scoped to the selected website path only.</pre>
       </div>
       <div class="website-builder-create" id="website-builder-create-panel" hidden>
         <h4>New Website</h4>

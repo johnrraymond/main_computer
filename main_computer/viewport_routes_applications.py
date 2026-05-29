@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -1397,6 +1399,329 @@ class ViewportApplicationRoutesMixin:
         except Exception as exc:
             self.server.signal("api-website-builder-chat-edit-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+
+    def _website_builder_git_run(self, args: list[str], *, input_text: str | None = None) -> dict[str, Any]:
+        command = ["git", *args]
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=self.server.debug_root,
+                input=input_text,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=90,
+                check=False,
+            )
+            return {
+                "command": command,
+                "returncode": completed.returncode,
+                "stdout": completed.stdout or "",
+                "stderr": completed.stderr or "",
+                "ok": completed.returncode == 0,
+            }
+        except FileNotFoundError:
+            return {
+                "command": command,
+                "returncode": 127,
+                "stdout": "",
+                "stderr": "git is not available on this system.",
+                "ok": False,
+            }
+        except subprocess.TimeoutExpired as exc:
+            return {
+                "command": command,
+                "returncode": 124,
+                "stdout": exc.stdout or "",
+                "stderr": (exc.stderr or "") + "\nGit command timed out after 90 seconds.",
+                "ok": False,
+            }
+
+    def _website_builder_git_command_text(self, result: dict[str, Any]) -> str:
+        command = result.get("command")
+        if isinstance(command, list):
+            command_text = " ".join(str(part) for part in command)
+        else:
+            command_text = str(command or "git")
+        parts = [f"$ {command_text}"]
+        stdout = str(result.get("stdout") or "").rstrip()
+        stderr = str(result.get("stderr") or "").rstrip()
+        if stdout:
+            parts.append(stdout)
+        if stderr:
+            parts.append(stderr)
+        return "\n".join(parts)
+
+    def _website_builder_git_manual_hints(self, site_path: str, commit: str = "") -> str:
+        target = commit or "<commit-sha>"
+        return "\n".join(
+            [
+                "Manual merge hints:",
+                f"git status --short -uall -- \"{site_path}\"",
+                f"git show --stat --patch {target} -- \"{site_path}\"",
+                f"git restore --source=HEAD --worktree -- \"{site_path}\"",
+                f"git diff --binary {target}^ {target} -- \"{site_path}\" > website-builder-selected.patch",
+                "git apply -R --3way website-builder-selected.patch",
+                f"git add -- \"{site_path}\"",
+                "git commit -m \"Website Builder: revert selected site patch\"",
+                "If Git reports conflicts, open the conflicted files, resolve conflict markers, run git add, then git commit. To abandon the manual attempt, run git merge --abort or git rebase --abort if one is active; otherwise run git restore --source=HEAD --worktree -- the affected files.",
+            ]
+        )
+
+    def _website_builder_git_log_entries(self, stdout: str) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+        for raw_record in str(stdout or "").split("\x1e"):
+            record = raw_record.strip("\r\n")
+            if not record:
+                continue
+            lines = record.splitlines()
+            if not lines:
+                continue
+            fields = lines[0].split("\x1f")
+            if len(fields) < 5:
+                continue
+            files: list[dict[str, str]] = []
+            for line in lines[1:]:
+                clean = line.strip()
+                if not clean:
+                    continue
+                if "\t" in clean:
+                    status, file_path = clean.split("\t", 1)
+                else:
+                    status, file_path = "", clean
+                files.append({"status": status.strip(), "path": file_path.strip().replace("\\", "/")})
+            entries.append(
+                {
+                    "commit": fields[0],
+                    "short": fields[1],
+                    "date": fields[2],
+                    "author": fields[3],
+                    "subject": fields[4],
+                    "files": files,
+                }
+            )
+        return entries
+
+    def _website_builder_git_commit_parent(self, commit: str) -> tuple[str, dict[str, Any]]:
+        parents = self._website_builder_git_run(["rev-list", "--parents", "-n", "1", commit])
+        if not parents.get("ok"):
+            return "", parents
+        parts = str(parents.get("stdout") or "").strip().split()
+        if len(parts) >= 2:
+            return parts[1], parents
+        empty_tree = {
+            "command": ["git", "hash-object", "-t", "tree", "<empty-tree>"],
+            "returncode": 0,
+            "stdout": "4b825dc642cb6eb9a060e54bf8d69288fbee4904\n",
+            "stderr": "",
+            "ok": True,
+        }
+        return "4b825dc642cb6eb9a060e54bf8d69288fbee4904", empty_tree
+
+    def _handle_websites_site_git(self) -> None:
+        try:
+            body = self._read_json()
+            site_id = validate_site_id(body.get("site_id") or body.get("id"))
+            action = str(body.get("action") or "history").strip().lower()
+            site_path = f"runtime/websites/{site_id}"
+            project = load_website_project(self.server.debug_root, site_id)
+            commit = str(body.get("commit") or body.get("sha") or "").strip()
+            if commit and not re.fullmatch(r"[0-9A-Fa-f]{7,64}", commit):
+                raise WebsiteProjectError("Git commit must be a 7-64 character hexadecimal SHA.")
+            commands: list[dict[str, Any]] = []
+
+            if action in {"history", "list", "commits"}:
+                log = self._website_builder_git_run(
+                    [
+                        "log",
+                        "--date=iso-strict",
+                        "--pretty=format:%x1e%H%x1f%h%x1f%ci%x1f%an%x1f%s",
+                        "--name-status",
+                        "--",
+                        site_path,
+                    ]
+                )
+                commands.append(log)
+                if not log.get("ok"):
+                    self._send_json(
+                        {
+                            "ok": False,
+                            "site_id": site_id,
+                            "site_path": site_path,
+                            "error": str(log.get("stderr") or "Git history failed."),
+                            "commands": commands,
+                            "manual_hints": self._website_builder_git_manual_hints(site_path),
+                        },
+                        HTTPStatus.BAD_REQUEST,
+                    )
+                    return
+                commits = self._website_builder_git_log_entries(str(log.get("stdout") or ""))
+                self.server.signal("api-websites-site-git-history", site_id=site_id, count=len(commits))
+                self._send_json(
+                    {
+                        "ok": True,
+                        "site_id": site_id,
+                        "site_path": site_path,
+                        "project_path": str(project.path),
+                        "commits": commits,
+                        "commands": commands,
+                        "summary": f"Found {len(commits)} Git commit(s) touching {site_path}.",
+                    }
+                )
+                return
+
+            if action == "review":
+                if not commit:
+                    raise WebsiteProjectError("Select a Git commit to review.")
+                show = self._website_builder_git_run(["show", "--stat", "--patch", "--find-renames", "--find-copies", commit, "--", site_path])
+                commands.append(show)
+                self.server.signal("api-websites-site-git-review", site_id=site_id, commit=commit)
+                self._send_json(
+                    {
+                        "ok": bool(show.get("ok")),
+                        "site_id": site_id,
+                        "site_path": site_path,
+                        "commit": commit,
+                        "patch": str(show.get("stdout") or ""),
+                        "commands": commands,
+                        "manual_hints": "" if show.get("ok") else self._website_builder_git_manual_hints(site_path, commit),
+                        "error": "" if show.get("ok") else str(show.get("stderr") or "Git review failed."),
+                    },
+                    HTTPStatus.OK if show.get("ok") else HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            if action == "restore":
+                if not commit:
+                    raise WebsiteProjectError("Select a Git commit to restore for inspection.")
+                restore = self._website_builder_git_run(["restore", f"--source={commit}", "--worktree", "--", site_path])
+                status = self._website_builder_git_run(["status", "--short", "-uall", "--", site_path])
+                commands.extend([restore, status])
+                ok = bool(restore.get("ok") and status.get("ok"))
+                self.server.signal("api-websites-site-git-restore", site_id=site_id, commit=commit, ok=ok)
+                self._send_json(
+                    {
+                        "ok": ok,
+                        "site_id": site_id,
+                        "site_path": site_path,
+                        "commit": commit,
+                        "commands": commands,
+                        "summary": "Selected commit was restored into the working tree for inspection." if ok else "Could not restore the selected commit for inspection.",
+                        "manual_hints": "" if ok else self._website_builder_git_manual_hints(site_path, commit),
+                        "error": "" if ok else str(restore.get("stderr") or status.get("stderr") or "Git restore failed."),
+                    },
+                    HTTPStatus.OK if ok else HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            if action in {"accept-head", "accept", "commit"}:
+                add = self._website_builder_git_run(["add", "--", site_path])
+                message = str(body.get("message") or f"Website Builder: accept {site_id} site state").strip()
+                commit_result = self._website_builder_git_run(["commit", "-m", message, "--", site_path])
+                status = self._website_builder_git_run(["status", "--short", "-uall", "--", site_path])
+                commands.extend([add, commit_result, status])
+                ok = bool(add.get("ok") and commit_result.get("ok"))
+                self.server.signal("api-websites-site-git-accept-head", site_id=site_id, ok=ok)
+                self._send_json(
+                    {
+                        "ok": ok,
+                        "site_id": site_id,
+                        "site_path": site_path,
+                        "commands": commands,
+                        "summary": "Current website files are now recorded in a new HEAD commit." if ok else "Git did not create a new HEAD commit.",
+                        "manual_hints": "" if ok else self._website_builder_git_manual_hints(site_path),
+                        "error": "" if ok else str(commit_result.get("stderr") or commit_result.get("stdout") or add.get("stderr") or "Git commit failed."),
+                    },
+                    HTTPStatus.OK if ok else HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            if action in {"revert-patch", "revert"}:
+                if not commit:
+                    raise WebsiteProjectError("Select a Git commit patch to revert.")
+                reset = self._website_builder_git_run(["restore", "--source=HEAD", "--staged", "--worktree", "--", site_path])
+                commands.append(reset)
+                if not reset.get("ok"):
+                    self._send_json(
+                        {
+                            "ok": False,
+                            "site_id": site_id,
+                            "site_path": site_path,
+                            "commit": commit,
+                            "commands": commands,
+                            "summary": "Could not reset the selected site to HEAD before reverting the selected patch.",
+                            "manual_hints": self._website_builder_git_manual_hints(site_path, commit),
+                            "error": str(reset.get("stderr") or "Git restore to HEAD failed."),
+                        },
+                        HTTPStatus.BAD_REQUEST,
+                    )
+                    return
+
+                parent, parent_command = self._website_builder_git_commit_parent(commit)
+                commands.append(parent_command)
+                if not parent:
+                    self._send_json(
+                        {
+                            "ok": False,
+                            "site_id": site_id,
+                            "site_path": site_path,
+                            "commit": commit,
+                            "commands": commands,
+                            "summary": "Could not identify a parent tree for the selected commit.",
+                            "manual_hints": self._website_builder_git_manual_hints(site_path, commit),
+                            "error": str(parent_command.get("stderr") or "Git parent lookup failed."),
+                        },
+                        HTTPStatus.BAD_REQUEST,
+                    )
+                    return
+
+                diff = self._website_builder_git_run(["diff", "--binary", parent, commit, "--", site_path])
+                commands.append(diff)
+                if not diff.get("ok"):
+                    self._send_json(
+                        {
+                            "ok": False,
+                            "site_id": site_id,
+                            "site_path": site_path,
+                            "commit": commit,
+                            "commands": commands,
+                            "summary": "Could not build the selected commit patch.",
+                            "manual_hints": self._website_builder_git_manual_hints(site_path, commit),
+                            "error": str(diff.get("stderr") or "Git diff failed."),
+                        },
+                        HTTPStatus.BAD_REQUEST,
+                    )
+                    return
+
+                patch_text = str(diff.get("stdout") or "")
+                apply_result = self._website_builder_git_run(["apply", "-R", "--3way"], input_text=patch_text)
+                status = self._website_builder_git_run(["status", "--short", "-uall", "--", site_path])
+                commands.extend([apply_result, status])
+                ok = bool(apply_result.get("ok") and status.get("ok"))
+                self.server.signal("api-websites-site-git-revert-patch", site_id=site_id, commit=commit, ok=ok)
+                self._send_json(
+                    {
+                        "ok": ok,
+                        "site_id": site_id,
+                        "site_path": site_path,
+                        "commit": commit,
+                        "commands": commands,
+                        "summary": "Selected patch was reverse-applied against HEAD for this site path. Review it, then accept current site as HEAD when ready." if ok else "Selected patch could not be reverted cleanly against HEAD.",
+                        "manual_hints": "" if ok else self._website_builder_git_manual_hints(site_path, commit),
+                        "error": "" if ok else str(apply_result.get("stderr") or apply_result.get("stdout") or "Git apply failed."),
+                    },
+                    HTTPStatus.OK if ok else HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            raise WebsiteProjectError(f"Unsupported Website Builder Git action: {action}")
+        except WebsiteProjectError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self.server.signal("api-websites-site-git-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _handle_websites_site_create(self) -> None:
         try:

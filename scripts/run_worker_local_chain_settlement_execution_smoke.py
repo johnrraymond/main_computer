@@ -243,14 +243,24 @@ def load_env_file(path: Path) -> dict[str, str]:
 
 
 def resolve_state_file(root: Path, requested: Path) -> Path | None:
+    candidates = resolve_state_file_candidates(root, requested)
+    return candidates[0] if candidates else None
+
+
+def resolve_state_file_candidates(root: Path, requested: Path) -> list[Path]:
+    candidates: list[Path] = []
     path = requested if requested.is_absolute() else root / requested
     if path.exists():
-        return path
+        candidates.append(path)
+
     if requested == DEFAULT_STATE_FILE:
-        legacy = root / LEGACY_STATE_FILE
-        if legacy.exists():
-            return legacy
-    return None
+        for fallback in (
+            root / "runtime" / "deployments" / "dev" / "latest.json",
+            root / LEGACY_STATE_FILE,
+        ):
+            if fallback.exists() and fallback not in candidates:
+                candidates.append(fallback)
+    return candidates
 
 
 def load_state(path: Path | None) -> tuple[dict[str, Any], dict[str, str]]:
@@ -261,17 +271,53 @@ def load_state(path: Path | None) -> tuple[dict[str, Any], dict[str, str]]:
     return state, env
 
 
+def contract_address_from_state_env(state: dict[str, Any], env: dict[str, str]) -> str | None:
+    value = os.getenv("PHASE8_CONTRACT_ADDRESS") or env.get("MAIN_COMPUTER_XLAG_CONTRACT_ADDRESS") or deployment_address(state)
+    if not value:
+        return None
+    return normalize_address(str(value))
+
+
+def select_state(root: Path, requested: Path, contract_override: str | None = None) -> tuple[Path | None, dict[str, Any], dict[str, str], list[str]]:
+    candidates = resolve_state_file_candidates(root, requested)
+    loaded: list[tuple[Path, dict[str, Any], dict[str, str]]] = []
+    for path in candidates:
+        state, env = load_state(path)
+        loaded.append((path, state, env))
+        if contract_override or contract_address_from_state_env(state, env):
+            return path, state, env, [str(candidate) for candidate in candidates]
+
+    if loaded:
+        path, state, env = loaded[0]
+        return path, state, env, [str(candidate) for candidate in candidates]
+    return None, {}, {}, []
+
+
 def state_chain(state: dict[str, Any]) -> dict[str, Any]:
     value = state.get("chain")
     return value if isinstance(value, dict) else {}
 
 
+def deployment_collections_from_state(state: dict[str, Any]) -> list[dict[str, Any]]:
+    collections: list[dict[str, Any]] = []
+    for key in ("deployments", "contracts"):
+        value = state.get(key)
+        if isinstance(value, dict):
+            collections.append(value)
+
+    nested = state.get("deployment")
+    if isinstance(nested, dict):
+        for key in ("deployments", "contracts"):
+            value = nested.get(key)
+            if isinstance(value, dict):
+                collections.append(value)
+
+    return collections
+
+
 def deployments_from_state(state: dict[str, Any]) -> dict[str, Any]:
-    deployments = state.get("deployments")
-    if isinstance(deployments, dict):
-        return deployments
-    contracts = state.get("contracts")
-    return contracts if isinstance(contracts, dict) else {}
+    collections = deployment_collections_from_state(state)
+    return collections[0] if collections else {}
 
 
 def first_address(*values: Any) -> str | None:
@@ -282,15 +328,28 @@ def first_address(*values: Any) -> str | None:
 
 
 def deployment_address(state: dict[str, Any]) -> str | None:
-    deployments = deployments_from_state(state)
-    for key in ("xlag-bridge-reserve", "XLagBridgeReserve", "xlag"):
-        value = deployments.get(key)
-        if isinstance(value, dict):
-            address = first_address(value.get("address"), value.get("deployedTo"))
-            if address:
-                return address
-        elif isinstance(value, str):
-            return normalize_address(value)
+    preferred_keys = ("xlag-bridge-reserve", "XLagBridgeReserve", "xlag")
+    for deployments in deployment_collections_from_state(state):
+        for key in preferred_keys:
+            value = deployments.get(key)
+            if isinstance(value, dict):
+                address = first_address(value.get("address"), value.get("deployedTo"), value.get("deployed_to"))
+                if address:
+                    return address
+            elif isinstance(value, str):
+                return normalize_address(value)
+
+        for key, value in deployments.items():
+            key_text = str(key).lower()
+            target = str(value.get("target", "") if isinstance(value, dict) else "").lower()
+            if "xlagbridgereserve" not in key_text and "xlag-bridge-reserve" not in key_text and "xlagbridgereserve" not in target:
+                continue
+            if isinstance(value, dict):
+                address = first_address(value.get("address"), value.get("deployedTo"), value.get("deployed_to"))
+                if address:
+                    return address
+            elif isinstance(value, str):
+                return normalize_address(value)
     return None
 
 
@@ -353,13 +412,13 @@ def resolve_chain_id(state: dict[str, Any], env: dict[str, str], override: int |
 
 
 def resolve_contract_address(state: dict[str, Any], env: dict[str, str], override: str | None) -> str:
-    value = override or os.getenv("PHASE8_CONTRACT_ADDRESS") or env.get("MAIN_COMPUTER_XLAG_CONTRACT_ADDRESS") or deployment_address(state)
+    value = override or contract_address_from_state_env(state, env)
     if not value:
         raise RuntimeError(
             "No XLagBridgeReserve contract address was found. Run a local dev-chain deployment first "
             "(for example: python tools/dev-chain-reset.py --yes) or pass --contract-address."
         )
-    return normalize_address(value)
+    return normalize_address(str(value))
 
 
 def resolve_worker_payout_address(args: argparse.Namespace, offices: list[str]) -> str:
@@ -660,8 +719,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     root = find_repo_root(Path.cwd())
-    state_path = resolve_state_file(root, args.state_file)
-    state, env = load_state(state_path)
+    state_path, state, env, state_candidates = select_state(root, args.state_file, args.contract_address)
     hub_url = args.hub_url.rstrip("/")
     rpc_url = resolve_rpc_url(state, env, args.rpc_url)
     chain_id = resolve_chain_id(state, env, args.chain_id)
@@ -691,6 +749,7 @@ def main(argv: list[str] | None = None) -> int:
         "hub_url": hub_url,
         "scope": scope,
         "state_file": str(state_path) if state_path else None,
+        "state_candidates": state_candidates,
         "rpc_url": rpc_url,
         "chain_id": chain_id,
         "precision_places": args.precision_places,
