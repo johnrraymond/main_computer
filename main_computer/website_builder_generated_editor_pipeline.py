@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
@@ -810,11 +811,60 @@ def install_new_patch_tool(*, repo: Path, workspace: Path) -> dict[str, Any]:
     }
 
 
+def _copy_workspace_for_dry_run(*, workspace: Path, dry_run_root: Path) -> list[dict[str, Any]]:
+    """Copy the staged site into a short target root for new_patch.py dry-run.
+
+    new_patch.py writes reports beneath its target root.  The mounted UI can
+    produce deeply nested diagnostics paths on Windows, so running the dry-run
+    directly inside selected_site_workspace can exceed MAX_PATH while extracting
+    the snapshot.  This copy is a mechanical dry-run target only; it does not
+    choose files or edit content.
+    """
+
+    copied: list[dict[str, Any]] = []
+    for source in sorted(workspace.rglob("*"), key=lambda p: p.relative_to(workspace).as_posix()):
+        if not source.is_file():
+            continue
+        rel = source.relative_to(workspace).as_posix()
+        rel_lower = rel.lower()
+        if rel == "new_patch.py":
+            continue
+        if rel_lower.startswith("tools/patching/reports/"):
+            continue
+        destination = dry_run_root / rel
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        copied.append(
+            {
+                "path": rel,
+                "size": destination.stat().st_size,
+                "sha256": file_sha256(destination),
+            }
+        )
+    return copied
+
+
 def run_new_patch_dry_run(*, workspace: Path, artifact_path: Path) -> dict[str, Any]:
+    patch_tool = workspace / "new_patch.py"
+    if not patch_tool.is_file():
+        return {
+            "ok": False,
+            "returncode": 2,
+            "command": f"python new_patch.py {str(artifact_path)} --dry-run",
+            "cwd": str(workspace),
+            "dry_run_root": None,
+            "stdout": "",
+            "stderr": "new_patch.py is not installed in the staged workspace",
+        }
+
+    dry_run_root = Path(tempfile.mkdtemp(prefix="wb-ge-dryrun-")).resolve()
+    copied_files = _copy_workspace_for_dry_run(workspace=workspace, dry_run_root=dry_run_root)
+    shutil.copy2(patch_tool, dry_run_root / "new_patch.py")
+
     command = [sys.executable, "new_patch.py", str(artifact_path), "--dry-run"]
     proc = subprocess.run(
         command,
-        cwd=workspace,
+        cwd=dry_run_root,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -825,10 +875,297 @@ def run_new_patch_dry_run(*, workspace: Path, artifact_path: Path) -> dict[str, 
         "ok": proc.returncode == 0,
         "returncode": proc.returncode,
         "command": f"python new_patch.py {str(artifact_path)} --dry-run",
-        "cwd": str(workspace),
+        "cwd": str(dry_run_root),
+        "staged_workspace": str(workspace),
+        "dry_run_root": str(dry_run_root),
+        "dry_run_root_file_count": len(copied_files),
         "stdout": proc.stdout,
         "stderr": proc.stderr,
     }
+
+
+def ensure_promoted_replacement_payload_hash(
+    *,
+    promotion_report: dict[str, Any],
+    output_dir: Path,
+) -> dict[str, Any]:
+    """Make the materialized replacement bytes match the promoted text hash.
+
+    The generated-editor promotion helper records after_sha256 from the accepted
+    replacement string.  On Windows, Path.write_text() can translate LF to CRLF
+    when it materializes the replacement payload, which makes a later byte-hash
+    guard fail even though the model decision and promoted text are unchanged.
+    This helper is deliberately mechanical: it only rewrites the already
+    promoted replacement file when reading it as text yields the expected
+    promoted hash.  It does not choose a file, anchor, replacement, or semantic
+    outcome.
+    """
+
+    issues: list[str] = []
+    warnings: list[str] = []
+    report: dict[str, Any] = {
+        "ok": False,
+        "mode": "promoted_replacement_payload_integrity",
+        "replacement_file": None,
+        "expected_after_sha256": promotion_report.get("after_sha256"),
+        "initial_file_sha256": None,
+        "normalized_text_sha256": None,
+        "final_file_sha256": None,
+        "rewrote_payload_bytes": False,
+        "issues": issues,
+        "warnings": warnings,
+    }
+
+    replacement_file_raw = promotion_report.get("replacement_file")
+    expected_after_sha256 = promotion_report.get("after_sha256")
+    if not isinstance(replacement_file_raw, str) or not replacement_file_raw.strip():
+        issues.append("promotion replacement_file is missing")
+        write_json(output_dir / "replacement_payload_integrity.json", report)
+        return report
+    if not isinstance(expected_after_sha256, str) or not expected_after_sha256:
+        issues.append("promotion after_sha256 is missing")
+        write_json(output_dir / "replacement_payload_integrity.json", report)
+        return report
+
+    replacement_file = Path(replacement_file_raw).resolve()
+    report["replacement_file"] = str(replacement_file)
+    if not replacement_file.is_file():
+        issues.append("promotion replacement_file does not exist")
+        write_json(output_dir / "replacement_payload_integrity.json", report)
+        return report
+
+    try:
+        replacement_file.relative_to(output_dir.resolve())
+    except ValueError:
+        issues.append("promotion replacement_file is not inside this diagnostics output directory")
+        write_json(output_dir / "replacement_payload_integrity.json", report)
+        return report
+
+    initial_sha256 = file_sha256(replacement_file)
+    report["initial_file_sha256"] = initial_sha256
+    if initial_sha256 == expected_after_sha256:
+        report["ok"] = True
+        report["final_file_sha256"] = initial_sha256
+        write_json(output_dir / "replacement_payload_integrity.json", report)
+        return report
+
+    try:
+        text = replacement_file.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        issues.append("promotion replacement_file is not UTF-8 text")
+        write_json(output_dir / "replacement_payload_integrity.json", report)
+        return report
+
+    normalized_text_sha256 = sha256_text(text)
+    report["normalized_text_sha256"] = normalized_text_sha256
+    if normalized_text_sha256 != expected_after_sha256:
+        issues.append(
+            "promotion replacement_file content does not match promoted after_sha256 "
+            "even after text newline normalization"
+        )
+        write_json(output_dir / "replacement_payload_integrity.json", report)
+        return report
+
+    replacement_file.write_bytes(text.encode("utf-8"))
+    final_sha256 = file_sha256(replacement_file)
+    report["final_file_sha256"] = final_sha256
+    report["rewrote_payload_bytes"] = True
+    warnings.append("rewrote replacement payload bytes to preserve promoted LF text hash")
+
+    if final_sha256 != expected_after_sha256:
+        issues.append(
+            f"replacement payload hash still mismatches after normalization: expected "
+            f"{expected_after_sha256}, found {final_sha256}"
+        )
+    report["ok"] = not issues
+    write_json(output_dir / "replacement_payload_integrity.json", report)
+    return report
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temp_path.write_bytes(data)
+        temp_path.replace(path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+
+
+def apply_generated_editor_result_to_live_site(
+    *,
+    repo: Path,
+    site_id: str,
+    pipeline_report: dict[str, Any],
+    output_dir: Path,
+) -> dict[str, Any]:
+    """Apply a promotable generated-editor edit artifact to the live selected site.
+
+    This is a guarded live-write boundary.  It does not choose files or edits.
+    It only promotes the already verified generated-editor replacement payload
+    from the isolated staging run into runtime/websites/<site_id>/ after hash
+    and path checks pass.
+    """
+
+    issues: list[str] = []
+    warnings: list[str] = []
+    written: list[dict[str, Any]] = []
+    repo = repo.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        safe_site_id = validate_site_id(site_id)
+    except SmokeFailure as exc:
+        return {
+            "ok": False,
+            "mode": "generated-editor-live-apply",
+            "site_id": site_id,
+            "files": [],
+            "issues": [str(exc)],
+            "warnings": warnings,
+        }
+
+    live_site_root = (repo / "runtime" / "websites" / safe_site_id).resolve()
+    try:
+        live_site_root.relative_to(repo.resolve())
+    except ValueError:
+        issues.append("selected live site root escapes repository")
+    if not (live_site_root / "site.json").is_file():
+        issues.append(f"selected live site does not exist: {safe_site_id}")
+
+    if not (
+        isinstance(pipeline_report, dict)
+        and pipeline_report.get("ok") is True
+        and pipeline_report.get("terminal_state") == "promotable_edit_artifact"
+        and isinstance(pipeline_report.get("promotion"), dict)
+    ):
+        issues.append("generated-editor result is not a promotable edit artifact")
+
+    promotion = pipeline_report.get("promotion") if isinstance(pipeline_report.get("promotion"), dict) else {}
+    target_file = safe_site_relative_path(promotion.get("target_file"))
+    if target_file is None:
+        issues.append("promotion target_file is missing or unsafe")
+    replacement_file_raw = promotion.get("replacement_file")
+    replacement_file = Path(replacement_file_raw).resolve() if isinstance(replacement_file_raw, str) and replacement_file_raw.strip() else None
+    if replacement_file is None or not replacement_file.is_file():
+        issues.append("promotion replacement_file is missing")
+    else:
+        try:
+            replacement_file.relative_to(output_dir.resolve())
+        except ValueError:
+            issues.append("promotion replacement_file is not inside this diagnostics output directory")
+
+    before_sha256 = promotion.get("before_sha256")
+    after_sha256 = promotion.get("after_sha256")
+    if not isinstance(before_sha256, str) or not before_sha256:
+        issues.append("promotion before_sha256 is missing")
+    if not isinstance(after_sha256, str) or not after_sha256:
+        issues.append("promotion after_sha256 is missing")
+
+    artifact = pipeline_report.get("artifact") if isinstance(pipeline_report.get("artifact"), dict) else {}
+    replacement_entries = artifact.get("replacement_files") if isinstance(artifact.get("replacement_files"), list) else []
+    artifact_paths = {
+        str(item.get("path")).replace("\\", "/").strip().lstrip("/")
+        for item in replacement_entries
+        if isinstance(item, dict) and item.get("path")
+    }
+    if target_file is not None and target_file not in artifact_paths:
+        issues.append("promotion target_file is not present in artifact replacement_files")
+    if not isinstance(pipeline_report.get("dry_run"), dict) or pipeline_report["dry_run"].get("ok") is not True:
+        issues.append("generated-editor artifact did not pass new_patch.py dry-run")
+
+    if target_file is not None:
+        live_target = (live_site_root / target_file).resolve()
+        try:
+            live_target.relative_to(live_site_root)
+        except ValueError:
+            issues.append("live apply target escapes selected site root")
+    else:
+        live_target = live_site_root
+
+    if issues:
+        result = {
+            "ok": False,
+            "mode": "generated-editor-live-apply",
+            "site_id": safe_site_id,
+            "live_site_root": str(live_site_root),
+            "files": [],
+            "issues": issues,
+            "warnings": warnings,
+        }
+        write_json(output_dir / "live_apply_result.json", result)
+        return result
+
+    assert target_file is not None
+    assert replacement_file is not None
+    live_target = (live_site_root / target_file).resolve()
+    if not live_target.is_file():
+        issues.append(f"live target file does not exist: runtime/websites/{safe_site_id}/{target_file}")
+    else:
+        current_sha256 = file_sha256(live_target)
+        if current_sha256 != before_sha256:
+            issues.append(
+                "live target hash no longer matches staged original for "
+                f"runtime/websites/{safe_site_id}/{target_file}: expected {before_sha256}, found {current_sha256}"
+            )
+
+    replacement_sha256 = file_sha256(replacement_file)
+    if replacement_sha256 != after_sha256:
+        issues.append(
+            f"replacement payload hash mismatch for {target_file}: expected {after_sha256}, found {replacement_sha256}"
+        )
+
+    if issues:
+        result = {
+            "ok": False,
+            "mode": "generated-editor-live-apply",
+            "site_id": safe_site_id,
+            "live_site_root": str(live_site_root),
+            "files": [],
+            "issues": issues,
+            "warnings": warnings,
+        }
+        write_json(output_dir / "live_apply_result.json", result)
+        return result
+
+    replacement_bytes = replacement_file.read_bytes()
+    _atomic_write_bytes(live_target, replacement_bytes)
+    written_sha256 = file_sha256(live_target)
+    entry = {
+        "path": f"runtime/websites/{safe_site_id}/{target_file}",
+        "site_relative_path": target_file,
+        "operation": "modify",
+        "original_sha256": before_sha256,
+        "replacement_sha256": after_sha256,
+        "written_sha256": written_sha256,
+    }
+    written.append(entry)
+    if written_sha256 != after_sha256:
+        issues.append(f"written hash mismatch for {entry['path']}: expected {after_sha256}, found {written_sha256}")
+
+    result = {
+        "ok": not issues,
+        "mode": "generated-editor-live-apply",
+        "site_id": safe_site_id,
+        "live_site_root": str(live_site_root),
+        "files": written if not issues else [],
+        "issues": issues,
+        "warnings": warnings,
+        "artifact": pipeline_report.get("artifact"),
+        "dry_run": pipeline_report.get("dry_run"),
+    }
+    write_json(output_dir / "live_apply_result.json", result)
+
+    try:
+        log_dir = repo / "diagnostics_output" / "website_builder_generated_editor_apply"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with (log_dir / "apply_log.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({**result, "created_at": datetime.now().isoformat(timespec="seconds")}, sort_keys=True) + "\n")
+    except Exception:
+        pass
+
+    return result
 
 
 def zip_has_only_safe_members(zip_path: Path) -> tuple[bool, list[str]]:
@@ -1081,6 +1418,25 @@ def run_generated_editor_pipeline(
                 "ok": False,
                 "failed_stage": "promotion",
                 "reason": "; ".join(promotion_result.issues + (promotion_result.blocking_reasons or [])),
+            }
+        )
+        write_json(output_dir / "generated_editor_report.json", generated_editor_report)
+        return generated_editor_report
+
+    replacement_integrity_report = ensure_promoted_replacement_payload_hash(
+        promotion_report=promotion_report,
+        output_dir=output_dir,
+    )
+    promotion_report["replacement_payload_integrity"] = replacement_integrity_report
+    write_json(output_dir / "promotion_report.json", promotion_report)
+    generated_editor_report["promotion"] = promotion_report
+    if not replacement_integrity_report.get("ok"):
+        generated_editor_report.update(
+            {
+                "ok": False,
+                "failed_stage": "promotion_payload_integrity",
+                "reason": "; ".join(str(item) for item in replacement_integrity_report.get("issues", []))
+                or "promoted replacement payload hash check failed",
             }
         )
         write_json(output_dir / "generated_editor_report.json", generated_editor_report)

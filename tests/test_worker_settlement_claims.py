@@ -213,6 +213,231 @@ class WorkerSettlementClaimTests(unittest.TestCase):
             self.assertEqual(duplicate["additional_settled_credits"], 0)
             self.assertEqual(duplicate["bridge_retained_credits"], 123)
 
+    def test_operator_settlement_proof_records_rounded_payout_proof_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = HubCreditLedger(Path(tmp))
+            earning = ledger.record_worker_earning(
+                worker_node_id="Proof Worker",
+                request_id="proof-req",
+                credits=5_500_123,
+            )
+            claim = ledger.record_worker_claim(
+                worker_node_id="proof-worker",
+                earning_ids=[earning["worker_earning"]["earning_id"]],
+                idempotency_key="proof-claim",
+            )
+            batch = ledger.create_worker_settlement_batch(
+                worker_node_id="proof-worker",
+                claim_ids=[claim["claim"]["claim_id"]],
+                idempotency_key="proof-batch",
+            )["batch"]
+
+            with self.assertRaises(ValueError):
+                ledger.record_worker_settlement_proof(
+                    batch_id=batch["batch_id"],
+                    idempotency_key="missing-reference",
+                )
+
+            proof = ledger.record_worker_settlement_proof(
+                batch_id=batch["batch_id"],
+                settlement_reference="operator-wire-reference-001",
+                payout_rail="operator-manual",
+                operator_id="Settlement Operator",
+                settlement_proof={
+                    "executed_credits": 5_500_000,
+                    "bridge_retained_credits": 123,
+                    "receipt": "manual-ledger-row-001",
+                },
+                idempotency_key="operator-proof",
+                metadata={"phase7a_operator_settlement_proof": True},
+            )
+
+            self.assertTrue(proof["ok"])
+            self.assertFalse(proof["idempotent"])
+            self.assertEqual(proof["settled_credits"], 5_500_000)
+            self.assertEqual(proof["additional_settled_credits"], 5_500_000)
+            self.assertEqual(proof["bridge_retained_credits"], 123)
+            self.assertEqual(proof["batch"]["status"], "settled")
+            self.assertEqual(proof["batch"]["payout_rail"], "operator-manual")
+            self.assertEqual(proof["batch"]["operator_id"], "settlement-operator")
+            self.assertEqual(proof["batch"]["settlement_reference"], "operator-wire-reference-001")
+            self.assertTrue(proof["batch"]["settlement_proof_id"].startswith("proof_"))
+            self.assertEqual(len(proof["batch"]["settlement_proof_hash"]), 64)
+            self.assertEqual(proof["transaction"]["credits"], 5_500_000)
+            self.assertEqual(proof["transaction"]["metadata"]["settlement_proof_id"], proof["batch"]["settlement_proof_id"])
+            self.assertEqual(proof["transaction"]["metadata"]["settlement_proof_hash"], proof["batch"]["settlement_proof_hash"])
+
+            repeated = ledger.record_worker_settlement_proof(
+                batch_id=batch["batch_id"],
+                settlement_reference="operator-wire-reference-001",
+                payout_rail="operator-manual",
+                operator_id="Settlement Operator",
+                settlement_proof={"receipt": "manual-ledger-row-001"},
+                idempotency_key="operator-proof",
+            )
+            self.assertTrue(repeated["idempotent"])
+            self.assertEqual(repeated["additional_settled_credits"], 0)
+            self.assertEqual(repeated["batch"]["settlement_proof_id"], proof["batch"]["settlement_proof_id"])
+
+
+    def test_phase7b_chain_payout_execution_records_rounded_receipt_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = HubCreditLedger(Path(tmp))
+            earning = ledger.record_worker_earning(
+                worker_node_id="Chain Worker",
+                request_id="chain-req",
+                credits=5_500_123,
+            )
+            claim = ledger.record_worker_claim(
+                worker_node_id="chain-worker",
+                earning_ids=[earning["worker_earning"]["earning_id"]],
+                idempotency_key="chain-claim",
+            )
+            batch = ledger.create_worker_settlement_batch(
+                worker_node_id="chain-worker",
+                claim_ids=[claim["claim"]["claim_id"]],
+                idempotency_key="chain-batch",
+            )["batch"]
+
+            with self.assertRaises(ValueError):
+                ledger.record_worker_settlement_chain_execution(
+                    batch_id=batch["batch_id"],
+                    chain_id=42424242,
+                    contract_address="0x1111111111111111111111111111111111111111",
+                    recipient_address="0x2222222222222222222222222222222222222222",
+                    payout_units_executed=5_500_123,
+                    settlement_tx_hash="0x" + "a" * 64,
+                    proposal_id="bad-exact-overpay",
+                    idempotency_key="bad-exact-overpay",
+                )
+
+            receipt = ledger.record_worker_settlement_chain_execution(
+                batch_id=batch["batch_id"],
+                chain_id=42424242,
+                contract_address="0x1111111111111111111111111111111111111111",
+                recipient_address="0x2222222222222222222222222222222222222222",
+                payout_units_executed=5_500_000,
+                settlement_tx_hash="0x" + "a" * 64,
+                proposal_id="7",
+                block_number=12345,
+                payout_rail="xlag-bridge-reserve",
+                operator_id="Chain Operator",
+                idempotency_key="chain-execution",
+                metadata={"phase7b_chain_payout_execution": True},
+            )
+
+            self.assertTrue(receipt["ok"])
+            self.assertFalse(receipt["idempotent"])
+            self.assertEqual(receipt["settled_credits"], 5_500_000)
+            self.assertEqual(receipt["additional_settled_credits"], 5_500_000)
+            self.assertEqual(receipt["bridge_retained_credits"], 123)
+            self.assertEqual(receipt["batch"]["payout_rail"], "xlag-bridge-reserve")
+            self.assertEqual(receipt["batch"]["settlement_tx_hash"], "0x" + "a" * 64)
+            self.assertEqual(receipt["batch"]["operator_id"], "chain-operator")
+            self.assertEqual(receipt["chain_payout_execution"]["payout_units_executed"], 5_500_000)
+            self.assertEqual(receipt["chain_payout_execution"]["bridge_retained_credits"], 123)
+            self.assertEqual(receipt["transaction"]["metadata"]["payout_rail"], "xlag-bridge-reserve")
+            self.assertEqual(receipt["transaction"]["metadata"]["total_credits_exact"], 5_500_123)
+            self.assertEqual(receipt["transaction"]["metadata"]["total_credits_published"], 5_500_000)
+            self.assertEqual(receipt["transaction"]["metadata"]["settlement_tx_hash"], "0x" + "a" * 64)
+
+            repeated = ledger.record_worker_settlement_chain_execution(
+                batch_id=batch["batch_id"],
+                chain_id=42424242,
+                contract_address="0x1111111111111111111111111111111111111111",
+                recipient_address="0x2222222222222222222222222222222222222222",
+                payout_units_executed=5_500_000,
+                settlement_tx_hash="0x" + "a" * 64,
+                proposal_id="7",
+                block_number=12345,
+                payout_rail="xlag-bridge-reserve",
+                operator_id="Chain Operator",
+                idempotency_key="chain-execution",
+            )
+            self.assertTrue(repeated["idempotent"])
+            self.assertEqual(repeated["additional_settled_credits"], 0)
+
+            with self.assertRaises(ValueError):
+                ledger.record_worker_settlement_chain_execution(
+                    batch_id=batch["batch_id"],
+                    chain_id=42424242,
+                    contract_address="0x1111111111111111111111111111111111111111",
+                    recipient_address="0x2222222222222222222222222222222222222222",
+                    payout_units_executed=5_500_000,
+                    settlement_tx_hash="0x" + "b" * 64,
+                    proposal_id="8",
+                    payout_rail="xlag-bridge-reserve",
+                    idempotency_key="different-tx",
+                )
+
+    def test_phase7b_chain_payout_execution_api(self) -> None:
+        hub, hub_base = self._start_hub()
+        worker = "chain-api-worker"
+        earning = hub.credit_ledger.record_worker_earning(worker_node_id=worker, request_id="chain-api-req", credits=5_500_123)
+        claim = post_json(
+            f"{hub_base}/api/hub/v1/workers/claims",
+            {
+                "worker_node_id": worker,
+                "earning_ids": [earning["worker_earning"]["earning_id"]],
+                "idempotency_key": "chain-api-claim",
+            },
+        )
+        batch = post_json(
+            f"{hub_base}/api/hub/v1/workers/settlements/batches",
+            {
+                "worker_node_id": worker,
+                "claim_ids": [claim["claim"]["claim_id"]],
+                "idempotency_key": "chain-api-batch",
+            },
+        )
+
+        bad = post_json(
+            f"{hub_base}/api/hub/v1/workers/settlements/chain-executions",
+            {
+                "batch_id": batch["batch"]["batch_id"],
+                "chain_id": 42424242,
+                "contract_address": "0x1111111111111111111111111111111111111111",
+                "recipient_address": "0x2222222222222222222222222222222222222222",
+                "payout_units_executed": 5_500_123,
+                "settlement_tx_hash": "0x" + "c" * 64,
+            },
+            allow_error=True,
+        )
+        self.assertEqual(bad["_http_status"], 400)
+        self.assertIn("rounded published settlement amount", bad["error"])
+
+        receipt = post_json(
+            f"{hub_base}/api/hub/v1/workers/settlements/chain-executions",
+            {
+                "batch_id": batch["batch"]["batch_id"],
+                "chain_id": 42424242,
+                "contract_address": "0x1111111111111111111111111111111111111111",
+                "recipient_address": "0x2222222222222222222222222222222222222222",
+                "payout_units_executed": 5_500_000,
+                "settlement_tx_hash": "0x" + "c" * 64,
+                "proposal_id": "42",
+                "block_number": 777,
+                "payout_rail": "xlag-bridge-reserve",
+                "operator_id": "api-chain-operator",
+                "idempotency_key": "chain-api-execution",
+            },
+        )
+        self.assertTrue(receipt["ok"])
+        self.assertEqual(receipt["settled_credits"], 5_500_000)
+        self.assertEqual(receipt["chain_payout_execution"]["contract_address"], "0x1111111111111111111111111111111111111111")
+        self.assertEqual(receipt["chain_payout_execution"]["recipient_address"], "0x2222222222222222222222222222222222222222")
+        self.assertEqual(receipt["chain_payout_execution"]["payout_units_executed"], 5_500_000)
+        self.assertEqual(receipt["chain_payout_execution"]["bridge_retained_credits"], 123)
+        self.assertEqual(receipt["batch"]["settlement_tx_hash"], "0x" + "c" * 64)
+        self.assertEqual(receipt["batch"]["payout_rail"], "xlag-bridge-reserve")
+
+        public_after = get_json(f"{hub_base}/api/hub/v1/workers/settlements?{urlencode({'worker_node_id': worker})}")
+        public_after_json = json.dumps(public_after, sort_keys=True)
+        self.assertNotIn("5500123", public_after_json)
+        self.assertEqual(public_after["settled_units_published"], 5_500_000)
+        self.assertIn("settlement_proof_id", public_after["batches"][0])
+
+
     def test_worker_settlement_api_uses_worker_precision_default(self) -> None:
         hub, hub_base = self._start_hub()
         worker = "precision-default-worker"
@@ -268,6 +493,28 @@ class WorkerSettlementClaimTests(unittest.TestCase):
         self.assertEqual(batch["dust_credits"], 5_555)
         self.assertEqual(batch["bridge_retained_credits"], 5_555)
         self.assertEqual(batch["batch"]["precision_places"], 2)
+
+        proof = post_json(
+            f"{hub_base}/api/hub/v1/workers/settlements/proofs",
+            {
+                "batch_id": batch["batch"]["batch_id"],
+                "settlement_reference": "operator-proof-api-reference",
+                "payout_rail": "operator-manual",
+                "operator_id": "api-operator",
+                "settlement_proof": {"executed_credits": 5_550_000, "bridge_retained_credits": 5_555},
+                "idempotency_key": "precision-api-proof",
+            },
+        )
+        self.assertTrue(proof["ok"])
+        self.assertEqual(proof["settled_credits"], 5_550_000)
+        self.assertEqual(proof["batch"]["payout_rail"], "operator-manual")
+        self.assertEqual(proof["batch"]["operator_id"], "api-operator")
+        self.assertTrue(proof["batch"]["settlement_proof_id"].startswith("proof_"))
+
+        public_after = get_json(f"{hub_base}/api/hub/v1/workers/settlements?{urlencode({'worker_node_id': worker})}")
+        self.assertEqual(public_after["settled_units_published"], 5_550_000)
+        self.assertIn("settlement_proof_id", public_after["batches"][0])
+        self.assertNotIn("total_credits_exact", public_after["batches"][0])
 
 
     def test_phase6_public_payout_surfaces_hide_high_precision_worker_amounts(self) -> None:

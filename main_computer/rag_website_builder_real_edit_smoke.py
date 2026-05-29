@@ -8,7 +8,7 @@ workspace, asks the generated-editor model path to decide the terminal class and
 evidence from a bounded site index, and then treats --endstate only as the
 postcondition oracle.
 
-No live Website Builder source files are written by this smoke.
+Live Website Builder source files are written only when both --apply-live and --yes-really-write-source are passed.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from typing import Any
 try:
     from website_builder_generated_editor_pipeline import (
         MODE,
+        apply_generated_editor_result_to_live_site,
         SmokeFailure,
         default_output_dir,
         detect_repo_root_arg,
@@ -34,6 +35,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - package import fallback
     from main_computer.website_builder_generated_editor_pipeline import (
         MODE,
+        apply_generated_editor_result_to_live_site,
         SmokeFailure,
         default_output_dir,
         detect_repo_root_arg,
@@ -84,6 +86,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         required=True,
         choices=["edit", "info"],
         help="Postcondition oracle only. It is not passed to the generated-editor decision stage.",
+    )
+    parser.add_argument(
+        "--apply-live",
+        action="store_true",
+        help="After an edit terminal artifact passes, apply the promoted replacement payload to runtime/websites/<site_id>/.",
+    )
+    parser.add_argument(
+        "--yes-really-write-source",
+        action="store_true",
+        help="Required with --apply-live. Confirms that this smoke may write selected-site source files.",
     )
     parser.add_argument("--output-dir", help="Diagnostics output directory.")
     parser.add_argument("--ollama-base-url", default=DEFAULT_OLLAMA_BASE_URL)
@@ -156,7 +168,9 @@ def main(argv: list[str] | None = None) -> int:
             "prompt": prompt,
             "repo": str(repo),
             "output_dir": str(output_dir),
-            "live_write": False,
+            "live_write": bool(args.apply_live and args.yes_really_write_source),
+            "apply_live_requested": bool(args.apply_live),
+            "write_source_confirmation": bool(args.yes_really_write_source),
             "endstate_usage": "postcondition_oracle_only",
         }
         write_json(output_dir / "request.json", request_report)
@@ -167,6 +181,26 @@ def main(argv: list[str] | None = None) -> int:
                 endstate=args.endstate,
                 failed_stage="request_validation",
                 reason="Provide --prompt, --prompt-file, or positional prompt text.",
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 2
+
+        if args.apply_live and not args.yes_really_write_source:
+            result = failure_result(
+                output_dir=output_dir,
+                endstate=args.endstate,
+                failed_stage="live_apply_confirmation",
+                reason="--apply-live requires --yes-really-write-source.",
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 2
+
+        if args.apply_live and args.endstate != "edit":
+            result = failure_result(
+                output_dir=output_dir,
+                endstate=args.endstate,
+                failed_stage="live_apply_confirmation",
+                reason="--apply-live is only valid with --endstate edit.",
             )
             print(json.dumps(result, indent=2, sort_keys=True))
             return 2
@@ -203,6 +237,31 @@ def main(argv: list[str] | None = None) -> int:
             pipeline_report=pipeline_report,
             output_dir=output_dir,
         )
+
+        if exit_code == 0 and args.apply_live:
+            apply_result = apply_generated_editor_result_to_live_site(
+                repo=repo,
+                site_id=site_id,
+                pipeline_report=pipeline_report,
+                output_dir=output_dir,
+            )
+            final_result["live_apply"] = apply_result
+            final_result["live_write"] = bool(apply_result.get("ok"))
+            final_result["applied_files"] = apply_result.get("files", [])
+            if not apply_result.get("ok"):
+                final_result.update(
+                    {
+                        "ok": False,
+                        "failed_stage": "live_apply",
+                        "reason": "; ".join(str(item) for item in apply_result.get("issues", []))
+                        or "live apply failed",
+                    }
+                )
+                write_json(output_dir / "final_result.json", final_result)
+                print(json.dumps(final_result, indent=2, sort_keys=True))
+                return 1
+            write_json(output_dir / "final_result.json", final_result)
+
         print(json.dumps(final_result, indent=2, sort_keys=True))
         return exit_code
 

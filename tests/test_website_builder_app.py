@@ -71,9 +71,9 @@ def test_website_builder_frontend_assets_define_save_and_publish_controls() -> N
     assert "website-builder-preview-draft" in app
     assert "website-builder-preview-local" in app
     assert "website-builder-preview-dev" in app
-    assert "website-builder-generated-editor-proposal" in script
-    assert "auto_apply: false" in script
-    assert "live_apply: false" in script
+    assert "website-builder-generated-editor-live-apply" in script
+    assert "auto_apply: true" in script
+    assert "live_apply: true" in script
     assert "refreshWebsiteBuilderAfterRagApply" in script
     assert "main-computer-chat-console-output-applied" in script
     assert "Select a website to use chat." in script
@@ -266,6 +266,7 @@ def test_website_builder_backend_routes_are_wired() -> None:
 
 def test_website_builder_chat_edit_route_is_locked_to_site_scope(tmp_path, monkeypatch) -> None:
     from main_computer.config import MainComputerConfig
+    import main_computer.viewport_routes_applications as routes_applications
     from main_computer.viewport import ViewportServer
     from main_computer.website_project_manifest import list_website_projects
 
@@ -281,34 +282,34 @@ def test_website_builder_chat_edit_route_is_locked_to_site_scope(tmp_path, monke
         target = tmp_path / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
-    server = ViewportServer(("127.0.0.1", 0), MainComputerConfig(workspace=tmp_path), verbose=False)
-    server.debug_root = tmp_path
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    base_url = f"http://127.0.0.1:{server.server_address[1]}"
 
-    import main_computer.viewport_routes_applications as route_module
+    calls: list[dict] = []
 
     def fake_generated_editor_pipeline(**kwargs):
-        prompt = str(kwargs.get("user_prompt") or "")
-        if "What files can you see?" in prompt:
-            answer = "The selected staged website evidence includes runtime/websites/hub-site/site.json and index.html."
-            evidence_files = ["site.json", "index.html"]
-        else:
-            answer = "inline generated-editor ran: True"
-            evidence_files = ["index.html"]
+        calls.append(kwargs)
+        assert kwargs["repo"] == tmp_path.resolve()
+        assert kwargs["site_id"] == "hub-site"
+        assert kwargs["site_root"] == tmp_path / "runtime" / "websites" / "hub-site"
+        output_dir = kwargs["output_dir"]
+        output_dir.mkdir(parents=True, exist_ok=True)
         return {
             "ok": True,
             "terminal_state": "grounded_info_answer",
             "observed_terminal_class": "info",
-            "answer": answer,
-            "evidence_files": evidence_files,
+            "answer": "You are editing the website for hub-site.",
+            "evidence_files": ["builder.json", "index.html", "site.json"],
             "replacement_payloads": [],
             "artifact": None,
             "live_write": False,
         }
 
-    monkeypatch.setattr(route_module, "run_website_builder_generated_editor_pipeline", fake_generated_editor_pipeline)
+    monkeypatch.setattr(routes_applications, "run_website_builder_generated_editor_pipeline", fake_generated_editor_pipeline)
+
+    server = ViewportServer(("127.0.0.1", 0), MainComputerConfig(workspace=tmp_path), verbose=False)
+    server.debug_root = tmp_path
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
 
     def post(path: str, payload: dict) -> dict:
         request = Request(
@@ -334,28 +335,19 @@ def test_website_builder_chat_edit_route_is_locked_to_site_scope(tmp_path, monke
         assert data["ok"]
         output = data["output_cell"]
         assert output["metadata"]["editor_edit_mode"] == "website-builder"
+        assert output["metadata"]["editor_intent"] == "answer"
         assert output["metadata"]["site_id"] == "hub-site"
         assert output["metadata"]["allowed_root"] == "runtime/websites/hub-site/"
         content = "\n".join(str(part.get("content", "")) for part in output["parts"])
-        assert "runtime/websites/hub-site/site.json" in content
+        assert "Website Builder grounded answer" in content
+        assert "You are editing the website for hub-site." in content
+        assert "site.json" in content
         assert "No replacement payloads were produced" in content
         assert "main_computer/router.py" not in content
         assert "main_computer_test" not in content
-        assert output["metadata"]["auto_apply"] is False
-
-        ai_data = post(
-            "/api/applications/website-builder/chat/edit",
-            {
-                "thread_id": "test-website-chat",
-                "cell": {"id": "chat-website-ai", "type": "ai", "source": "Say hello from this website."},
-                "embedded_context": {"active_app": "website-builder", "site_id": "hub-site", "target_kind": "website-project", "target_id": "hub-site"},
-                "embedded_context_source": {"active_app": "website-builder", "target_kind": "website-project", "target_id": "hub-site"},
-                "mount_plugins": [{"id": "website-builder-edit", "enabled": True, "target_id": "hub-site", "site_id": "hub-site"}],
-            },
-        )
-        ai_content = "\n".join(str(part.get("content", "")) for part in ai_data["output_cell"]["parts"])
-        assert "inline generated-editor ran: True" in ai_content
-        assert ai_data["output_cell"]["metadata"]["scope_card"] is False
+        assert output["metadata"]["auto_apply"] is True
+        assert output["metadata"]["apply_result"] is None
+        assert calls and calls[0]["user_prompt"] == "What files can you see?"
 
         request = Request(
             base_url + "/api/applications/website-builder/chat/edit",
@@ -377,12 +369,11 @@ def test_website_builder_chat_edit_route_is_locked_to_site_scope(tmp_path, monke
         thread.join(timeout=2)
 
 
-
-def test_website_builder_chat_edit_route_surfaces_generated_editor_artifact(tmp_path, monkeypatch) -> None:
+def test_website_builder_chat_edit_route_applies_generated_editor_payloads_by_default(tmp_path, monkeypatch) -> None:
     from main_computer.config import MainComputerConfig
+    import main_computer.viewport_routes_applications as routes_applications
     from main_computer.viewport import ViewportServer
     from main_computer.website_project_manifest import list_website_projects
-    import main_computer.viewport_routes_applications as route_module
 
     list_website_projects(tmp_path)
     for rel in (
@@ -397,31 +388,39 @@ def test_website_builder_chat_edit_route_surfaces_generated_editor_artifact(tmp_
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
 
-    captured: dict[str, object] = {}
+    index_file = tmp_path / "runtime" / "websites" / "hub-site" / "index.html"
+    before = index_file.read_text(encoding="utf-8")
+    replacement = before.replace("<h1>Hub Site</h1>", "<h1>Welcome to Arcstorm</h1>", 1)
 
     def fake_generated_editor_pipeline(**kwargs):
-        captured.update(kwargs)
+        output_dir = kwargs["output_dir"]
+        replacement_file = output_dir / "13_replacement_files" / "index.html"
+        replacement_file.parent.mkdir(parents=True, exist_ok=True)
+        replacement_file.write_text(replacement, encoding="utf-8")
         return {
             "ok": True,
             "terminal_state": "promotable_edit_artifact",
             "observed_terminal_class": "edit",
+            "promotion": {
+                "ok": True,
+                "target_file": "index.html",
+                "replacement_file": str(replacement_file),
+                "before_sha256": hashlib.sha256(before.encode("utf-8")).hexdigest(),
+                "after_sha256": hashlib.sha256(replacement.encode("utf-8")).hexdigest(),
+            },
             "artifact": {
-                "path": str(tmp_path / "diagnostics_output" / "rag_website_builder_real_edit_snapshot_patch.zip"),
+                "path": str(output_dir / "rag_website_builder_real_edit_snapshot_patch.zip"),
                 "mode": "snapshot_zip",
                 "promotable": True,
-                "replacement_files": [{"path": "index.html", "exists": True, "artifact_member": "selected_site_workspace/index.html"}],
+                "replacement_files": [{"path": "index.html", "exists": True}],
                 "dry_run_command": "python new_patch.py artifact.zip --dry-run",
             },
-            "dry_run": {
-                "ok": True,
-                "command": "python new_patch.py artifact.zip --dry-run",
-                "cwd": str(tmp_path / "diagnostics_output" / "selected_site_workspace"),
-            },
+            "dry_run": {"ok": True, "command": "python new_patch.py artifact.zip --dry-run", "cwd": str(output_dir / "selected_site_workspace")},
             "changed_files": ["index.html"],
             "live_write": False,
         }
 
-    monkeypatch.setattr(route_module, "run_website_builder_generated_editor_pipeline", fake_generated_editor_pipeline)
+    monkeypatch.setattr(routes_applications, "run_website_builder_generated_editor_pipeline", fake_generated_editor_pipeline)
 
     server = ViewportServer(("127.0.0.1", 0), MainComputerConfig(workspace=tmp_path), verbose=False)
     server.debug_root = tmp_path
@@ -444,7 +443,7 @@ def test_website_builder_chat_edit_route_surfaces_generated_editor_artifact(tmp_
             "/api/applications/website-builder/chat",
             {
                 "thread_id": "test-website-chat",
-                "cell": {"id": "chat-website-proposal", "type": "ai", "source": "Can you capitalize hub site in the main div?"},
+                "cell": {"id": "chat-website-proposal", "type": "ai", "source": "Can you update the hero headline?"},
                 "embedded_context": {"active_app": "website-builder", "site_id": "hub-site", "target_kind": "website-project", "target_id": "hub-site"},
                 "embedded_context_source": {"active_app": "website-builder", "target_kind": "website-project", "target_id": "hub-site"},
                 "mount_plugins": [{"id": "website-builder-edit", "enabled": True, "target_id": "hub-site", "site_id": "hub-site"}],
@@ -453,32 +452,27 @@ def test_website_builder_chat_edit_route_surfaces_generated_editor_artifact(tmp_
         assert data["ok"]
         metadata = data["output_cell"]["metadata"]
         proposal = metadata["proposal"]
-        content = "\n".join(str(part.get("content", "")) for part in data["output_cell"]["parts"])
-
-        assert metadata["editor_intent"] == "propose_edit"
-        assert metadata["generated_editor_pipeline"] is True
-        assert metadata["auto_apply"] is False
-        assert metadata["apply_result"] is None
-        assert metadata["live_write"] is False
+        assert metadata["editor_intent"] == "apply_edit"
+        assert metadata["generated_editor_terminal_state"] == "promotable_edit_artifact"
+        assert metadata["auto_apply"] is True
+        assert metadata["apply_result"]["ok"] is True
         assert metadata["allowed_roots"] == ["runtime/websites/hub-site/"]
-        assert metadata["builder_allowlist"] == []
-        assert metadata["changed_files"] == ["index.html"]
-        assert metadata["dry_run"]["ok"] is True
-        assert proposal["type"] == "website-builder-generated-editor-artifact"
-        assert proposal["mode"] == "proposal-only"
-        assert proposal["apply_payloads"] == []
+        assert "main_computer/web/applications/scripts/website-builder.js" in metadata["builder_allowlist"]
+
+        assert proposal["type"] == "website-builder-generated-editor-result"
+        assert proposal["mode"] == "applied"
+        assert proposal["changed_files"] == ["index.html"]
         assert proposal["artifact"]["promotable"] is True
-        assert "Generated-editor Website Builder edit proposal produced" in content
-        assert "No live website files were written" in content
-        assert "new_patch.py dry-run" in content
+        assert proposal["dry_run"]["ok"] is True
 
-        assert captured["site_id"] == "hub-site"
-        assert str(captured["site_root"]).endswith("runtime/websites/hub-site")
-        assert captured["user_prompt"] == "Can you capitalize hub site in the main div?"
+        content = "\n".join(str(part.get("content", "")) for part in data["output_cell"]["parts"])
+        assert "Applied" in content
+        assert "runtime/websites/hub-site/index.html" in content
+        assert "Live files written" in content
 
-        on_disk = (tmp_path / "runtime" / "websites" / "hub-site" / "index.html").read_text(encoding="utf-8")
-        assert "<h1>Hub Site</h1>" in on_disk
-        assert "Welcome to Arcstorm" not in on_disk
+        on_disk = index_file.read_text(encoding="utf-8")
+        assert "Welcome to Arcstorm" in on_disk
+        assert "<h1>Hub Site</h1>" not in on_disk
     finally:
         server.shutdown()
         server.server_close()
@@ -599,11 +593,11 @@ def test_website_builder_rag_apply_validated_payload_writes_site_file_and_reject
 
 
 
-def test_website_builder_chat_edit_ignores_auto_apply_for_generated_editor_preview(tmp_path, monkeypatch) -> None:
+def test_website_builder_chat_edit_auto_applies_validated_payloads(tmp_path, monkeypatch) -> None:
     from main_computer.config import MainComputerConfig
+    import main_computer.viewport_routes_applications as routes_applications
     from main_computer.viewport import ViewportServer
     from main_computer.website_project_manifest import list_website_projects
-    import main_computer.viewport_routes_applications as route_module
 
     list_website_projects(tmp_path)
     for rel in (
@@ -620,24 +614,37 @@ def test_website_builder_chat_edit_ignores_auto_apply_for_generated_editor_previ
 
     index_file = tmp_path / "runtime" / "websites" / "hub-site" / "index.html"
     before = index_file.read_text(encoding="utf-8")
+    replacement = before.replace("<h1>Hub Site</h1>", "<h1>Welcome to Arcstorm</h1>", 1)
 
     def fake_generated_editor_pipeline(**kwargs):
+        output_dir = kwargs["output_dir"]
+        replacement_file = output_dir / "13_replacement_files" / "index.html"
+        replacement_file.parent.mkdir(parents=True, exist_ok=True)
+        replacement_file.write_text(replacement, encoding="utf-8")
         return {
             "ok": True,
             "terminal_state": "promotable_edit_artifact",
             "observed_terminal_class": "edit",
+            "promotion": {
+                "ok": True,
+                "target_file": "index.html",
+                "replacement_file": str(replacement_file),
+                "before_sha256": hashlib.sha256(before.encode("utf-8")).hexdigest(),
+                "after_sha256": hashlib.sha256(replacement.encode("utf-8")).hexdigest(),
+            },
             "artifact": {
-                "path": str(tmp_path / "diagnostics_output" / "rag_website_builder_real_edit_snapshot_patch.zip"),
+                "path": str(output_dir / "rag_website_builder_real_edit_snapshot_patch.zip"),
                 "mode": "snapshot_zip",
                 "promotable": True,
                 "replacement_files": [{"path": "index.html", "exists": True}],
+                "dry_run_command": "python new_patch.py artifact.zip --dry-run",
             },
-            "dry_run": {"ok": True, "command": "python new_patch.py artifact.zip --dry-run", "cwd": str(tmp_path)},
+            "dry_run": {"ok": True, "command": "python new_patch.py artifact.zip --dry-run", "cwd": str(output_dir / "selected_site_workspace")},
             "changed_files": ["index.html"],
             "live_write": False,
         }
 
-    monkeypatch.setattr(route_module, "run_website_builder_generated_editor_pipeline", fake_generated_editor_pipeline)
+    monkeypatch.setattr(routes_applications, "run_website_builder_generated_editor_pipeline", fake_generated_editor_pipeline)
 
     server = ViewportServer(("127.0.0.1", 0), MainComputerConfig(workspace=tmp_path), verbose=False)
     server.debug_root = tmp_path
@@ -671,16 +678,18 @@ def test_website_builder_chat_edit_ignores_auto_apply_for_generated_editor_previ
 
         assert data["ok"]
         output = data["output_cell"]
-        assert output["metadata"]["editor_intent"] == "propose_edit"
-        assert output["metadata"]["auto_apply"] is False
-        assert output["metadata"]["apply_result"] is None
-        assert output["metadata"]["live_write"] is False
-        assert output["metadata"]["proposal"]["mode"] == "proposal-only"
+        assert output["metadata"]["editor_intent"] == "apply_edit"
+        assert output["metadata"]["auto_apply"] is True
+        assert output["metadata"]["apply_result"]["ok"] is True
+        assert output["metadata"]["apply_result"]["mode"] == "generated-editor-live-apply"
+        assert output["metadata"]["proposal"]["mode"] == "applied"
+        assert output["metadata"]["apply_result"]["files"][0]["path"] == "runtime/websites/hub-site/index.html"
         after = index_file.read_text(encoding="utf-8")
-        assert after == before
+        assert "Welcome to Arcstorm" in after
+        assert after != before
         content = "\n".join(str(part.get("content", "")) for part in output["parts"])
-        assert "No live website files were written" in content
-        assert "Review the generated replacement before applying" in content
+        assert "Applied" in content
+        assert "Website Builder generated-editor edit wrote validated replacement files" in content
     finally:
         server.shutdown()
         server.server_close()

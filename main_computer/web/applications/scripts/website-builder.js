@@ -3695,7 +3695,7 @@ body {
           `${websiteBuilderSitePath(siteId)}/data/**`,
           `${websiteBuilderSitePath(siteId)}/blog/**`
         ],
-        edit_mode: "proposal-only-context",
+        edit_mode: "live-apply-context",
         dirty: Boolean(websiteBuilderStateModel.dirty),
         preview_mode: String(websiteBuilderStateModel.previewMode || "draft"),
         active_tab: String(websiteBuilderStateModel.activeTab || "design"),
@@ -3717,7 +3717,7 @@ body {
         target_kind: "website-project",
         target_id: target.id,
         linked_targets: [target],
-        website_builder_phase: "mounted-generated-editor-proposal"
+        website_builder_phase: "mounted-generated-editor-live-apply"
       };
     }
 
@@ -3801,7 +3801,7 @@ body {
         classPrefix: "website-builder-chat",
         title: "Website Builder Chat",
         subtitle: "Editing this website",
-        initialStatus: "generated-editor proposal-only",
+        initialStatus: "generated-editor live apply",
         targetKind: "website-project",
         targetId: siteId,
         layout: "full",
@@ -3822,7 +3822,7 @@ body {
             appliesTo: "ai",
             defaultEnabled: true,
             endpoint: "/api/applications/website-builder/chat",
-            pathway: "website-builder-generated-editor-proposal",
+            pathway: "website-builder-generated-editor-live-apply",
             targetKind: "website-project",
             targetId: siteId,
             lockedTarget: true,
@@ -3833,14 +3833,14 @@ body {
               return {
                 edit_mode: "website-project",
                 editor_edit_mode: "website-builder",
-                requested_pathway: "website-builder-generated-editor-proposal",
+                requested_pathway: "website-builder-generated-editor-live-apply",
                 target_kind: "website-project",
                 target_id: lockedSiteId,
                 project_id: lockedSiteId,
                 site_id: lockedSiteId,
                 locked_to_mount: true,
-                auto_apply: false,
-                live_apply: false
+                auto_apply: true,
+                live_apply: true
               };
             }
           }

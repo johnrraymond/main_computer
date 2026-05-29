@@ -89,7 +89,6 @@ diagnostics_output*/
 harness_output*/
 revision_control/
 energy_credits/
-runtime/
 rag_smoke_logpack_runs/
 ollama_prompt_space*/
 
@@ -137,7 +136,6 @@ main_computer/.main_computer_browser_profile/
 main-computer-env.ps1
 main-computer-install.json
 run-main-computer.ps1
-runtime/
 runtime/main-computer-install.json
 runtime/start_stop/main-computer-launcher.json
 
@@ -207,3 +205,15 @@ chat_console_shared_variables/
 contracts/cache/
 contracts/out/
 contracts/broadcast/
+
+# Selected runtime websites are intentionally source-controlled.
+# Keep this section last so these exceptions override broad generated-file rules
+# such as runtime/*, *.sqlite, media globs, and manifest.json.
+!runtime/
+runtime/*
+!runtime/websites/
+runtime/websites/*
+!runtime/websites/hub-site/
+!runtime/websites/hub-site/**
+!runtime/websites/johnrraymond/
+!runtime/websites/johnrraymond/**

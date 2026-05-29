@@ -939,6 +939,9 @@ class HubServerHandler(_JsonHandler):
                 "rounding_bucket_credits": int(batch.get("rounding_bucket_credits", payload.get("rounding_bucket_credits", 0)) or 0),
                 "settlement_reference": str(batch.get("settlement_reference", "")),
                 "settlement_tx_hash": str(batch.get("settlement_tx_hash", "")),
+                "payout_rail": str(batch.get("payout_rail", "")),
+                "operator_id": str(batch.get("operator_id", "")),
+                "settlement_proof_id": str(batch.get("settlement_proof_id", "")),
                 "created_at": str(batch.get("created_at", "")),
                 "settled_at": str(batch.get("settled_at", "")),
             }
@@ -1388,6 +1391,9 @@ class HubServerHandler(_JsonHandler):
                     batch_id=str(body.get("batch_id", "")),
                     settlement_reference=str(body.get("settlement_reference", body.get("reference", ""))),
                     settlement_tx_hash=str(body.get("settlement_tx_hash", body.get("tx_hash", ""))),
+                    payout_rail=str(body.get("payout_rail", "")),
+                    operator_id=str(body.get("operator_id", "")),
+                    settlement_proof=dict(body.get("settlement_proof", body.get("proof", {}))) if isinstance(body.get("settlement_proof", body.get("proof", {})), dict) else {},
                     idempotency_key=str(body.get("idempotency_key", "")),
                     metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
                 )
@@ -1418,6 +1424,48 @@ class HubServerHandler(_JsonHandler):
                     credits=int(body.get("credits", 0) or 0),
                     memo=str(body.get("memo", "")),
                     owner_address=str(body.get("owner_address", "")),
+                    metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
+                )
+                self._send_json(result)
+                return
+            if path in {
+                "/api/hub/v1/workers/settlements/chain-executions",
+                "/api/hub/v1/workers/settlements/batches/chain-execution",
+                "/api/hub/v1/credits/worker-settlements/chain-executions",
+            }:
+                body = self._read_json()
+                result = self.server.credit_ledger.record_worker_settlement_chain_execution(
+                    batch_id=str(body.get("batch_id", "")),
+                    chain_id=int(body.get("chain_id", 0) or 0),
+                    contract_address=str(body.get("contract_address", "")),
+                    recipient_address=str(body.get("recipient_address", body.get("worker_payout_address", ""))),
+                    payout_units_executed=int(body.get("payout_units_executed", body.get("executed_credits", 0)) or 0),
+                    settlement_tx_hash=str(body.get("settlement_tx_hash", body.get("tx_hash", ""))),
+                    proposal_id=str(body.get("proposal_id", "")),
+                    block_number=int(body.get("block_number", 0) or 0) if body.get("block_number") is not None else None,
+                    payout_rail=str(body.get("payout_rail", "xlag-bridge-reserve")),
+                    operator_id=str(body.get("operator_id", "")),
+                    settlement_reference=str(body.get("settlement_reference", body.get("reference", ""))),
+                    settlement_proof=dict(body.get("settlement_proof", body.get("proof", {}))) if isinstance(body.get("settlement_proof", body.get("proof", {})), dict) else {},
+                    idempotency_key=str(body.get("idempotency_key", "")),
+                    metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
+                )
+                self._send_json(result)
+                return
+            if path in {
+                "/api/hub/v1/workers/settlements/proofs",
+                "/api/hub/v1/workers/settlements/batches/proof",
+                "/api/hub/v1/credits/worker-settlements/proofs",
+            }:
+                body = self._read_json()
+                result = self.server.credit_ledger.record_worker_settlement_proof(
+                    batch_id=str(body.get("batch_id", "")),
+                    settlement_reference=str(body.get("settlement_reference", body.get("reference", ""))),
+                    settlement_tx_hash=str(body.get("settlement_tx_hash", body.get("tx_hash", ""))),
+                    payout_rail=str(body.get("payout_rail", "operator-manual")),
+                    operator_id=str(body.get("operator_id", "")),
+                    settlement_proof=dict(body.get("settlement_proof", body.get("proof", {}))) if isinstance(body.get("settlement_proof", body.get("proof", {})), dict) else {},
+                    idempotency_key=str(body.get("idempotency_key", "")),
                     metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
                 )
                 self._send_json(result)
@@ -1679,7 +1727,7 @@ def serve_hub(config: MainComputerConfig, host: str = "127.0.0.1", port: int = D
         "GET /api/hub/payouts?node_id=..., POST /api/hub/v1/workers/register, "
         "POST /api/hub/v1/workers/heartbeat, POST /api/hub/v1/workers/poll, "
         "POST /api/hub/v1/workers/results, GET/POST /api/hub/v1/workers/claims, "
-        "GET /api/hub/v1/workers/settlements, POST /api/hub/v1/workers/settlements/batches, "
+        "GET /api/hub/v1/workers/settlements, POST /api/hub/v1/workers/settlements/batches, POST /api/hub/v1/workers/settlements/proofs, POST /api/hub/v1/workers/settlements/chain-executions, "
         "POST /api/hub/sessions/start, POST /api/hub/sessions/chat, POST /api/hub/payouts/claim"
     )
     try:

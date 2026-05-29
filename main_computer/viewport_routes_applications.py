@@ -50,51 +50,13 @@ from main_computer.website_builder_rag_pipeline import (
     validate_route_decision as validate_website_builder_rag_route_decision,
     write_materialized_bundle as write_website_builder_rag_bundle,
 )
+
 from main_computer.website_builder_generated_editor_pipeline import (
+    apply_generated_editor_result_to_live_site as apply_website_builder_generated_editor_result_to_live_site,
     run_generated_editor_pipeline as run_website_builder_generated_editor_pipeline,
+    select_site as select_website_builder_generated_editor_site,
+    write_json as write_website_builder_generated_editor_json,
 )
-
-
-
-_WEBSITE_BUILDER_GENERATED_EDITOR_TERMINAL_NUM_PREDICT = 1400
-_WEBSITE_BUILDER_GENERATED_EDITOR_GROUNDING_NUM_PREDICT = 1600
-_WEBSITE_BUILDER_GENERATED_EDITOR_PATCH_NUM_PREDICT = 9000
-
-
-def _website_builder_ollama_generate_url(base_url: object) -> str:
-    text = str(base_url or "http://127.0.0.1:11434").strip().rstrip("/")
-    if not text:
-        text = "http://127.0.0.1:11434"
-    if text.endswith("/api/generate"):
-        return text
-    return f"{text}/api/generate"
-
-
-def _website_builder_ollama_think_mode(value: object) -> str:
-    if value is None:
-        return "omit"
-    if value is False:
-        return "false"
-    if value is True:
-        return "true"
-    normalized = str(value).strip().lower()
-    if normalized in {"", "none", "null", "omit", "default-empty"}:
-        return "omit"
-    if normalized in {"false", "off", "0", "no"}:
-        return "false"
-    if normalized in {"true", "on", "1", "yes"}:
-        return "true"
-    if normalized in {"low", "medium", "high"}:
-        return normalized
-    return "false"
-
-
-def _website_builder_generated_editor_output_dir(debug_root: Path, site_id: str, run_id: str) -> Path:
-    stamp = time.strftime("%Y%m%d_%H%M%S")
-    safe_site = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(site_id or "site"))
-    safe_run = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(run_id or "run"))[:80]
-    return debug_root / "diagnostics_output" / "website_builder_mount_generated_editor" / f"{safe_site}_{stamp}_{safe_run}"
-
 
 
 def _mounted_editor_should_inline_test_provider(provider: Any) -> bool:
@@ -644,7 +606,7 @@ class ViewportApplicationRoutesMixin:
         return rows
 
     def _website_builder_rag_auto_apply_requested(self, *, body: dict[str, Any], plugin: dict[str, Any]) -> bool:
-        """Return true only when the mounted Website Builder plugin explicitly requests live apply."""
+        """Return true only when the legacy mounted RAG plugin explicitly requests live apply."""
         candidates = [
             body.get("auto_apply"),
             body.get("live_apply"),
@@ -653,6 +615,37 @@ class ViewportApplicationRoutesMixin:
             plugin.get("live_apply") if isinstance(plugin, dict) else None,
         ]
         return any(value is True or str(value).strip().lower() in {"1", "true", "yes", "apply", "live"} for value in candidates)
+
+    def _website_builder_generated_editor_live_apply_requested(self, *, body: dict[str, Any], plugin: dict[str, Any]) -> bool:
+        """Default mounted generated-editor Website Builder chat to guarded live apply.
+
+        The generated-editor path still decides whether the prompt produced an
+        edit artifact, info answer, clarification, or plan.  This flag only
+        controls whether an already-promoted edit artifact should be copied into
+        the selected live site after dry-run/hash/path checks pass.  Callers may
+        opt out by explicitly sending auto_apply/live_apply/apply as false.
+        """
+
+        candidates = [
+            body.get("auto_apply"),
+            body.get("live_apply"),
+            body.get("apply"),
+            plugin.get("auto_apply") if isinstance(plugin, dict) else None,
+            plugin.get("live_apply") if isinstance(plugin, dict) else None,
+        ]
+        false_values = {"0", "false", "no", "off", "proposal", "proposal-only", "dry-run"}
+        true_values = {"1", "true", "yes", "on", "apply", "live", "live-apply"}
+        for value in candidates:
+            if value is False:
+                return False
+            if isinstance(value, str) and value.strip().lower() in false_values:
+                return False
+        for value in candidates:
+            if value is True:
+                return True
+            if isinstance(value, str) and value.strip().lower() in true_values:
+                return True
+        return True
 
     def _website_builder_rag_safe_relpath(self, raw: object) -> str:
         text = str(raw or "").replace("\\", "/").strip().lstrip("/")
@@ -1054,6 +1047,137 @@ class ViewportApplicationRoutesMixin:
             },
         )
 
+    def _website_builder_generated_editor_int(self, body: dict[str, Any], key: str, default: int) -> int:
+        try:
+            value = int(body.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return max(1, value)
+
+    def _website_builder_generated_editor_float(self, body: dict[str, Any], key: str, default: float) -> float:
+        try:
+            value = float(body.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return max(1.0, value)
+
+    def _website_builder_generated_editor_ollama_url(self, body: dict[str, Any]) -> str:
+        raw = str(
+            body.get("ollama_url")
+            or body.get("ollama_base_url")
+            or getattr(self.server.config, "ollama_base_url", "http://127.0.0.1:11434")
+            or "http://127.0.0.1:11434"
+        ).strip().rstrip("/")
+        if not raw:
+            raw = "http://127.0.0.1:11434"
+        if raw.endswith("/api/generate"):
+            return raw
+        return f"{raw}/api/generate"
+
+    def _website_builder_generated_editor_think_mode(self, body: dict[str, Any]) -> str:
+        raw = body.get("think_mode")
+        if raw is None:
+            raw = getattr(self.server.config, "ollama_think", False)
+        if raw is None:
+            return "omit"
+        if isinstance(raw, bool):
+            return "true" if raw else "false"
+        text = str(raw).strip().lower()
+        return text or "false"
+
+    def _website_builder_generated_editor_output_dir(self, *, repo: Path, run_id: str) -> Path:
+        safe_run_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(run_id or "website-builder-chat")).strip("._-")
+        if not safe_run_id:
+            safe_run_id = "website-builder-chat"
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        return repo / "diagnostics_output" / f"website_builder_generated_editor_mount-{stamp}-{safe_run_id[:60]}"
+
+    def _website_builder_generated_editor_response_content(
+        self,
+        *,
+        pipeline_report: dict[str, Any],
+        apply_requested: bool,
+        apply_result: dict[str, Any] | None,
+        output_dir: Path,
+        site_id: str,
+    ) -> str:
+        terminal_state = str(pipeline_report.get("terminal_state") or "")
+        observed_class = str(pipeline_report.get("observed_terminal_class") or "")
+        if pipeline_report.get("ok") is True and terminal_state == "promotable_edit_artifact":
+            artifact = pipeline_report.get("artifact") if isinstance(pipeline_report.get("artifact"), dict) else {}
+            changed_files = pipeline_report.get("changed_files") if isinstance(pipeline_report.get("changed_files"), list) else []
+            site_file_lines = "\n".join(
+                f"- `runtime/websites/{site_id}/{str(path).replace(chr(92), '/').lstrip('/')}`"
+                for path in changed_files
+            ) or "- No changed files were reported."
+            dry_run = pipeline_report.get("dry_run") if isinstance(pipeline_report.get("dry_run"), dict) else {}
+            artifact_path = str(artifact.get("path") or "")
+            dry_run_text = "passed" if dry_run.get("ok") else "not passed"
+            if apply_requested:
+                if apply_result and apply_result.get("ok"):
+                    applied_lines = "\n".join(
+                        f"- `{item.get('path')}` wrote `{item.get('written_sha256')}`"
+                        for item in apply_result.get("files", [])
+                        if isinstance(item, dict)
+                    ) or "- No files were reported as written."
+                    return (
+                        "Applied — Website Builder generated-editor edit wrote validated replacement files.\n\n"
+                        f"new_patch.py dry-run: **{dry_run_text}**.\n\n"
+                        "Live files written:\n"
+                        f"{applied_lines}\n\n"
+                        f"Artifact: `{artifact_path}`\n"
+                        f"Diagnostics: `{output_dir}`"
+                    )
+                issue_lines = "\n".join(f"- {issue}" for issue in (apply_result or {}).get("issues", []) if str(issue).strip()) or "- Unknown apply failure."
+                return (
+                    "Apply failed — Website Builder generated-editor produced an edit artifact, but guarded live apply did not complete.\n\n"
+                    f"new_patch.py dry-run: **{dry_run_text}**.\n\n"
+                    "Candidate files:\n"
+                    f"{site_file_lines}\n\n"
+                    "Apply issues:\n"
+                    f"{issue_lines}\n\n"
+                    f"Artifact: `{artifact_path}`\n"
+                    f"Diagnostics: `{output_dir}`"
+                )
+            return (
+                "Proposal only — Website Builder generated-editor edit artifact produced.\n\n"
+                f"new_patch.py dry-run: **{dry_run_text}**.\n\n"
+                "Changed files:\n"
+                f"{site_file_lines}\n\n"
+                "No live files were written because live apply was not requested.\n\n"
+                f"Artifact: `{artifact_path}`\n"
+                f"Diagnostics: `{output_dir}`"
+            )
+
+        if pipeline_report.get("ok") is True and terminal_state == "grounded_info_answer":
+            evidence_files = pipeline_report.get("evidence_files") if isinstance(pipeline_report.get("evidence_files"), list) else []
+            evidence_lines = "\n".join(f"- `{path}`" for path in evidence_files) or "- No evidence files were reported."
+            answer = str(pipeline_report.get("answer") or "").strip() or "No answer text was returned."
+            return (
+                "Website Builder grounded answer.\n\n"
+                f"{answer}\n\n"
+                "Evidence files:\n"
+                f"{evidence_lines}\n\n"
+                "No replacement payloads were produced. No live files were written."
+            )
+
+        if pipeline_report.get("ok") is True and observed_class in {"clarify", "plan"}:
+            answer = str(pipeline_report.get("answer") or "").strip() or str(pipeline_report.get("terminal_state") or observed_class)
+            return (
+                f"Website Builder generated-editor {observed_class} result.\n\n"
+                f"{answer}\n\n"
+                "No replacement payloads were produced. No live files were written."
+            )
+
+        reason = str(pipeline_report.get("reason") or "").strip() or "The generated-editor pipeline did not produce a terminal result."
+        failed_stage = str(pipeline_report.get("failed_stage") or "generated_editor_pipeline")
+        return (
+            "Website Builder generated-editor pipeline failed.\n\n"
+            f"Failed stage: `{failed_stage}`\n\n"
+            f"Reason: {reason}\n\n"
+            "No live files were written."
+        )
+
     def _website_builder_routed_chat_response(
         self,
         *,
@@ -1068,338 +1192,144 @@ class ViewportApplicationRoutesMixin:
         run_id: str,
         thread_id: str,
     ) -> ChatResponse:
-        """Run Website Builder mounted chat through the AI router first.
+        """Run mounted Website Builder chat through the generated-editor path.
 
-        The router decides only the high-level intent. It never chooses write paths,
-        never bypasses validation, and never applies changes. When the router chooses
-        propose_edit, the proposal stage receives focused evidence and the existing
-        deterministic materializer/validator still owns path, hash, and exact-value
-        checks before any live write can happen.
+        The mounted route intentionally does not pass an endstate oracle.  The
+        generated-editor terminal decision stage must decide whether the prompt
+        produced an edit, info answer, clarification, or plan.  This route may
+        only validate the observed terminal result and, when live apply is
+        explicitly requested, copy the already-promoted replacement payload into
+        the selected live site through guarded hash/path checks.
         """
-        evidence = build_website_builder_rag_evidence(Path(self.server.debug_root), site_id)
-        route_evidence = build_website_builder_rag_route_evidence(evidence)
-        route_prompt_text = website_builder_rag_route_prompt(source, route_evidence)
-        route_ai_response = self._website_builder_scoped_ai_response(
-            cell=cell,
-            source=source,
-            site_id=site_id,
-            visible_files=visible_files,
-            run_id=f"{run_id}_route",
-            thread_id=thread_id,
-            scoped_context=route_prompt_text,
-        )
 
-        route_decision: dict[str, Any] | None = None
-        route_validation: dict[str, Any] = {"ok": False, "issues": [], "warnings": []}
-        try:
-            route_decision = self._website_builder_parse_jsonish(route_ai_response.content)
-            route_validation = validate_website_builder_rag_route_decision(route_decision)
-        except Exception as exc:  # noqa: BLE001 - surface JSON/router errors as chat metadata.
-            route_validation = {"ok": False, "issues": [str(exc)], "warnings": []}
-
-        if not route_validation.get("ok"):
-            issues = [str(issue) for issue in route_validation.get("issues", []) if str(issue).strip()]
-            issue_lines = "\n".join(f"- {issue}" for issue in issues) or "- Unknown route validation failure."
-            return ChatResponse(
-                content=(
-                    "Website Builder AI router failed before proposal/apply.\n\n"
-                    "No files were modified.\n\n"
-                    f"Route validation issues:\n{issue_lines}\n\n"
-                    "The mounted route now requires a valid JSON route decision before it can answer, clarify, or propose edits."
-                ),
-                provider=route_ai_response.provider,
-                model=route_ai_response.model,
-                metadata={
-                    "run_id": run_id,
-                    "thread_id": thread_id,
-                    "editor_edit_mode": "website-builder",
-                    "editor_intent": "route_error",
-                    "site_id": site_id,
-                    "allowed_root": evidence.get("site", {}).get("site_root"),
-                    "allowed_roots": evidence.get("allowed_roots"),
-                    "builder_allowlist": evidence.get("builder_allowlist"),
-                    "visible_files": visible_files,
-                    "prompt": source,
-                    "auto_apply": False,
-                    "apply_result": None,
-                    "scope_card": False,
-                    "website_builder_route_decision": route_decision,
-                    "website_builder_route_validation": route_validation,
-                    "route_prompt_chars": len(route_prompt_text),
-                },
-            )
-
-        intent = str((route_decision or {}).get("intent") or "").strip()
-        if intent == "propose_edit":
-            return self._website_builder_proposal_response(
-                body=body,
-                plugin=plugin,
-                cell=cell,
-                source=source,
-                site_id=site_id,
-                visible_files=visible_files,
-                run_id=run_id,
-                thread_id=thread_id,
-                evidence=evidence,
-                route_decision=route_decision,
-                route_validation=route_validation,
-            )
-
-        if intent == "scope":
-            scoped = self._website_builder_scope_response(
-                source=source,
-                site_id=site_id,
-                project=project,
-                payload=payload,
-                visible_files=visible_files,
-                run_id=run_id,
-                thread_id=thread_id,
-            )
-            scoped_metadata = scoped.metadata if isinstance(scoped.metadata, dict) else {}
-            return ChatResponse(
-                content=scoped.content,
-                provider=scoped.provider,
-                model=scoped.model,
-                metadata={
-                    **scoped_metadata,
-                    "website_builder_route_decision": route_decision,
-                    "website_builder_route_validation": route_validation,
-                    "route_prompt_chars": len(route_prompt_text),
-                    "scope_card": True,
-                },
-            )
-
-        response_text = (
-            str((route_decision or {}).get("answer") or "").strip()
-            or str((route_decision or {}).get("clarification_question") or "").strip()
-            or str((route_decision or {}).get("summary") or "").strip()
-        )
-        if not response_text:
-            response_text = "I could not determine a useful response from the Website Builder route decision."
-
-        heading = "Clarification needed" if intent == "clarify" else "Website Builder answer"
-        return ChatResponse(
-            content=f"{heading} — {response_text}",
-            provider=route_ai_response.provider,
-            model=route_ai_response.model,
-            metadata={
+        repo = Path(self.server.debug_root).resolve()
+        selection = select_website_builder_generated_editor_site(repo, site_id)
+        selected_site_id = str(selection["site_id"])
+        output_dir = self._website_builder_generated_editor_output_dir(repo=repo, run_id=run_id)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        write_website_builder_generated_editor_json(
+            output_dir / "mounted_ui_request.json",
+            {
+                "mode": "website_builder_generated_editor_mounted_ui_request",
+                "site_id": selected_site_id,
                 "run_id": run_id,
                 "thread_id": thread_id,
-                "editor_edit_mode": "website-builder",
-                "editor_intent": intent if intent in {"answer", "clarify"} else "answer",
-                "site_id": site_id,
-                "allowed_root": evidence.get("site", {}).get("site_root"),
-                "allowed_roots": evidence.get("allowed_roots"),
-                "builder_allowlist": evidence.get("builder_allowlist"),
-                "visible_files": visible_files,
                 "prompt": source,
-                "auto_apply": False,
-                "apply_result": None,
-                "scope_card": False,
-                "website_builder_route_decision": route_decision,
-                "website_builder_route_validation": route_validation,
-                "route_prompt_chars": len(route_prompt_text),
+                "live_apply_requested": self._website_builder_generated_editor_live_apply_requested(body=body, plugin=plugin),
+                "visible_files": visible_files,
             },
         )
 
-    def _website_builder_generated_editor_chat_response(
-        self,
-        *,
-        body: dict[str, Any],
-        plugin: dict[str, Any],
-        cell: dict[str, Any],
-        source: str,
-        site_id: str,
-        project: Any,
-        payload: dict[str, Any],
-        visible_files: list[str],
-        run_id: str,
-        thread_id: str,
-    ) -> ChatResponse:
-        """Run mounted Website Builder chat through the generated-editor adapter.
-
-        The mounted UI does not provide an endstate oracle and this method does not
-        route by deterministic prompt heuristics.  The generated-editor pipeline
-        observes the terminal class from the model response, validates the evidence
-        it was given, and produces either a promotable staged artifact, a grounded
-        informational answer, or a nonterminal/failure report.  Live source writes
-        are intentionally not performed here.
-        """
-        del body, plugin, project, payload  # UI integration is preview/proposal-only for this first patch.
-
-        debug_root = Path(self.server.debug_root)
-        output_dir = _website_builder_generated_editor_output_dir(debug_root, site_id, run_id)
-        site_root = debug_root / "runtime" / "websites" / site_id
-        model = str(getattr(self.server.config, "model", "") or getattr(getattr(self.server, "computer", None), "provider", None) and getattr(getattr(self.server.computer, "provider", None), "model", "") or "gemma4:26b")
-        ollama_url = _website_builder_ollama_generate_url(getattr(self.server.config, "ollama_base_url", "http://127.0.0.1:11434"))
-        timeout_seconds = float(getattr(self.server.config, "ollama_timeout_s", 600.0) or 600.0)
-        think_mode = _website_builder_ollama_think_mode(getattr(self.server.config, "ollama_think", False))
-
+        model = str(body.get("model") or getattr(self.server.config, "model", "") or "gemma4:26b")
+        timeout_seconds = self._website_builder_generated_editor_float(
+            body,
+            "ai_timeout",
+            float(getattr(self.server.config, "ollama_timeout_s", 600.0) or 600.0),
+        )
         pipeline_report = run_website_builder_generated_editor_pipeline(
-            repo=debug_root,
-            site_id=site_id,
-            site_root=site_root,
+            repo=repo,
+            site_id=selected_site_id,
+            site_root=Path(selection["site_root"]),
             user_prompt=source,
             output_dir=output_dir,
             model=model,
-            ollama_url=ollama_url,
+            ollama_url=self._website_builder_generated_editor_ollama_url(body),
             timeout_seconds=timeout_seconds,
-            terminal_num_predict=_WEBSITE_BUILDER_GENERATED_EDITOR_TERMINAL_NUM_PREDICT,
-            grounding_num_predict=_WEBSITE_BUILDER_GENERATED_EDITOR_GROUNDING_NUM_PREDICT,
-            patch_num_predict=_WEBSITE_BUILDER_GENERATED_EDITOR_PATCH_NUM_PREDICT,
-            format_mode="none",
-            think_mode=think_mode,
-            max_index_files=40,
-            max_index_file_chars=24000,
-            excerpt_context_lines=24,
-            max_evidence_chars=18000,
+            terminal_num_predict=self._website_builder_generated_editor_int(body, "terminal_num_predict", 3000),
+            grounding_num_predict=self._website_builder_generated_editor_int(body, "grounding_num_predict", 1600),
+            patch_num_predict=self._website_builder_generated_editor_int(body, "patch_num_predict", 9000),
+            format_mode=str(body.get("format_mode") or "none"),
+            think_mode=self._website_builder_generated_editor_think_mode(body),
+            max_index_files=self._website_builder_generated_editor_int(body, "max_index_files", 80),
+            max_index_file_chars=self._website_builder_generated_editor_int(body, "max_index_file_chars", 12000),
+            excerpt_context_lines=self._website_builder_generated_editor_int(body, "excerpt_context_lines", 8),
+            max_evidence_chars=self._website_builder_generated_editor_int(body, "max_evidence_chars", 12000),
         )
 
-        terminal_state = str(pipeline_report.get("terminal_state") or "nonterminal_result")
+        apply_requested = self._website_builder_generated_editor_live_apply_requested(body=body, plugin=plugin)
+        apply_result: dict[str, Any] | None = None
+        if apply_requested and pipeline_report.get("ok") is True and pipeline_report.get("terminal_state") == "promotable_edit_artifact":
+            apply_result = apply_website_builder_generated_editor_result_to_live_site(
+                repo=repo,
+                site_id=selected_site_id,
+                pipeline_report=pipeline_report,
+                output_dir=output_dir,
+            )
+
+        terminal_state = str(pipeline_report.get("terminal_state") or "")
         observed_class = str(pipeline_report.get("observed_terminal_class") or "")
-        common_metadata = {
+        if apply_result and apply_result.get("ok"):
+            editor_intent = "apply_edit"
+        elif terminal_state == "promotable_edit_artifact" or observed_class == "edit":
+            editor_intent = "propose_edit"
+        elif terminal_state == "grounded_info_answer" or observed_class == "info":
+            editor_intent = "answer"
+        elif observed_class in {"clarify", "plan"}:
+            editor_intent = observed_class
+        else:
+            editor_intent = "generated_editor_error"
+
+        content = self._website_builder_generated_editor_response_content(
+            pipeline_report=pipeline_report,
+            apply_requested=apply_requested,
+            apply_result=apply_result,
+            output_dir=output_dir,
+            site_id=selected_site_id,
+        )
+        proposal = {
+            "version": 3,
+            "type": "website-builder-generated-editor-result",
+            "mode": "applied" if apply_result and apply_result.get("ok") else ("pending-apply" if terminal_state == "promotable_edit_artifact" and apply_requested else "proposal-only"),
+            "rag_backed": True,
+            "generated_editor_backed": True,
+            "auto_apply": apply_requested,
+            "site_id": selected_site_id,
+            "prompt": source,
+            "terminal_state": terminal_state,
+            "observed_terminal_class": observed_class,
+            "artifact": pipeline_report.get("artifact"),
+            "dry_run": pipeline_report.get("dry_run"),
+            "changed_files": pipeline_report.get("changed_files") if isinstance(pipeline_report.get("changed_files"), list) else [],
+            "evidence_files": pipeline_report.get("evidence_files") if isinstance(pipeline_report.get("evidence_files"), list) else [],
+            "apply_result": apply_result,
+            "diagnostics_output_dir": str(output_dir),
+        }
+        metadata = {
             "run_id": run_id,
             "thread_id": thread_id,
             "editor_edit_mode": "website-builder",
-            "generated_editor_pipeline": True,
-            "site_id": site_id,
-            "allowed_root": f"runtime/websites/{site_id}/",
-            "allowed_roots": [f"runtime/websites/{site_id}/"],
-            "builder_allowlist": [],
+            "editor_intent": editor_intent,
+            "site_id": selected_site_id,
+            "allowed_root": f"runtime/websites/{selected_site_id}/",
+            "allowed_roots": [f"runtime/websites/{selected_site_id}/"],
+            "builder_allowlist": self._website_builder_builder_allowlist(),
             "visible_files": visible_files,
             "prompt": source,
-            "auto_apply": False,
-            "apply_result": None,
+            "auto_apply": apply_requested,
+            "apply_result": apply_result,
             "scope_card": False,
-            "live_write": False,
-            "diagnostics_output_dir": str(output_dir),
-            "observed_terminal_class": observed_class,
-            "terminal_state": terminal_state,
-            "generated_editor_report": pipeline_report,
+            "generated_editor_terminal_state": terminal_state,
+            "generated_editor_observed_terminal_class": observed_class,
+            "generated_editor_ok": pipeline_report.get("ok") is True,
+            "generated_editor_failed_stage": pipeline_report.get("failed_stage"),
+            "generated_editor_reason": pipeline_report.get("reason"),
+            "generated_editor_diagnostics_output_dir": str(output_dir),
+            "proposal": proposal,
         }
-
-        if pipeline_report.get("ok") is True and terminal_state == "promotable_edit_artifact":
-            artifact = pipeline_report.get("artifact") if isinstance(pipeline_report.get("artifact"), dict) else {}
-            dry_run = pipeline_report.get("dry_run") if isinstance(pipeline_report.get("dry_run"), dict) else {}
-            changed_files = [str(item) for item in pipeline_report.get("changed_files", []) if str(item).strip()]
-            changed_lines = "\n".join(f"- `{path}`" for path in changed_files) or "- No changed files were reported."
-            artifact_path = str(artifact.get("path") or "")
-            dry_run_text = "passed" if dry_run.get("ok") else "not run"
-            content = (
-                "Generated-editor Website Builder edit proposal produced.\n\n"
-                "No live website files were written.\n\n"
-                "Changed files:\n"
-                f"{changed_lines}\n\n"
-                f"Artifact: `{artifact_path}`\n\n"
-                f"new_patch.py dry-run: **{dry_run_text}**\n"
-            )
-            if dry_run.get("command"):
-                content += f"\nDry-run command:\n`{dry_run.get('command')}`\n"
-            content += "\nReview the generated replacement before applying it to the live site."
-            proposal = {
-                "version": 3,
-                "type": "website-builder-generated-editor-artifact",
-                "mode": "proposal-only",
-                "rag_backed": True,
-                "generated_editor_backed": True,
-                "ai_backed": True,
-                "auto_apply": False,
-                "live_write": False,
-                "site_id": site_id,
-                "prompt": source,
-                "terminal_state": terminal_state,
-                "observed_terminal_class": observed_class,
-                "changed_files": changed_files,
-                "artifact": artifact,
-                "dry_run": dry_run,
-                "diagnostics_output_dir": str(output_dir),
-                "validation": {"ok": True, "terminal_state": terminal_state},
-                "apply_payloads": [],
-                "materialized_files": artifact.get("replacement_files") if isinstance(artifact.get("replacement_files"), list) else [],
-            }
-            return ChatResponse(
-                content=content,
-                provider="ollama",
-                model=model,
-                metadata={
-                    **common_metadata,
-                    "editor_intent": "propose_edit",
-                    "proposal": proposal,
-                    "artifact": artifact,
-                    "dry_run": dry_run,
-                    "changed_files": changed_files,
-                },
-            )
-
-        if pipeline_report.get("ok") is True and terminal_state == "grounded_info_answer":
-            evidence_files = [str(item) for item in pipeline_report.get("evidence_files", []) if str(item).strip()]
-            evidence_lines = "\n".join(f"- `{path}`" for path in evidence_files) or "- No evidence files were reported."
-            answer = str(pipeline_report.get("answer") or "").strip()
-            content = (
-                "Website Builder grounded answer.\n\n"
-                f"{answer}\n\n"
-                "Evidence files:\n"
-                f"{evidence_lines}\n\n"
-                "No replacement payloads were produced. No live files were written."
-            )
-            return ChatResponse(
-                content=content,
-                provider="ollama",
-                model=model,
-                metadata={
-                    **common_metadata,
-                    "editor_intent": "answer",
-                    "answer": answer,
-                    "evidence_files": evidence_files,
-                    "proposal": None,
-                },
-            )
-
-        if pipeline_report.get("ok") is True:
-            answer = str(pipeline_report.get("answer") or "").strip()
-            evidence_files = [str(item) for item in pipeline_report.get("evidence_files", []) if str(item).strip()]
-            if not answer:
-                answer = f"The generated-editor pipeline produced `{terminal_state}`."
-            content = (
-                "Website Builder generated-editor result.\n\n"
-                f"{answer}\n\n"
-                "No replacement payloads were produced. No live files were written."
-            )
-            return ChatResponse(
-                content=content,
-                provider="ollama",
-                model=model,
-                metadata={
-                    **common_metadata,
-                    "editor_intent": observed_class if observed_class in {"clarify", "plan", "answer"} else "answer",
-                    "answer": answer,
-                    "evidence_files": evidence_files,
-                    "proposal": None,
-                },
-            )
-
-        failed_stage = str(pipeline_report.get("failed_stage") or "generated_editor_pipeline")
-        reason = str(pipeline_report.get("reason") or "The generated-editor pipeline did not produce a terminal UI result.")
-        content = (
-            "Website Builder generated-editor pipeline did not produce an applyable result.\n\n"
-            "No live website files were written.\n\n"
-            f"Failed stage: `{failed_stage}`\n\n"
-            f"Reason: {reason}\n\n"
-            f"Diagnostics: `{output_dir}`"
+        self.server.signal(
+            "api-website-builder-generated-editor-chat",
+            site_id=selected_site_id,
+            terminal_state=terminal_state,
+            observed_class=observed_class,
+            live_apply=bool(apply_result and apply_result.get("ok")),
+            output_dir=str(output_dir),
         )
         return ChatResponse(
             content=content,
             provider="ollama",
             model=model,
-            metadata={
-                **common_metadata,
-                "editor_intent": "generated_editor_error",
-                "failed_stage": failed_stage,
-                "reason": reason,
-                "proposal": None,
-            },
+            metadata=metadata,
         )
-
 
     def _handle_website_builder_chat_edit(self) -> None:
         try:
@@ -1416,7 +1346,7 @@ class ViewportApplicationRoutesMixin:
             visible_files = self._website_builder_visible_site_files(project)
             run_id = str(body.get("run_id") or cell.get("run_id") or f"website_builder_edit_{int(time.time() * 1000)}").strip()
             thread_id = str(body.get("thread_id") or body.get("chat_thread_id") or "website-builder-chat").strip()
-            response = self._website_builder_generated_editor_chat_response(
+            response = self._website_builder_routed_chat_response(
                 body=body,
                 plugin=plugin,
                 cell=cell,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -31,6 +33,32 @@ from main_computer.hub_credit_models import (
 
 
 HUB_CREDIT_LEDGER_STORE_VERSION = "hub-credit-ledger-store-v1"
+
+
+_ETH_ADDRESS_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
+_ETH_TX_HASH_RE = re.compile(r"^0x[a-fA-F0-9]{64}$")
+
+
+def _clean_eth_address(value: Any, *, field_name: str) -> str:
+    text = str(value or "").strip().lower()
+    if not _ETH_ADDRESS_RE.fullmatch(text):
+        raise ValueError(f"{field_name} must be an Ethereum-style 0x address.")
+    return text
+
+
+def _clean_eth_tx_hash(value: Any, *, field_name: str = "settlement_tx_hash") -> str:
+    text = str(value or "").strip().lower()
+    if not _ETH_TX_HASH_RE.fullmatch(text):
+        raise ValueError(f"{field_name} must be an Ethereum-style 0x transaction hash.")
+    return text
+
+
+def _positive_chain_id(value: Any) -> int:
+    parsed = positive_int(value)
+    if parsed <= 0:
+        raise ValueError("chain_id must be a positive integer.")
+    return parsed
+
 
 
 def _copy_dict(value: Any) -> dict[str, Any]:
@@ -162,12 +190,56 @@ def _batch_from_dict(payload: dict[str, Any]) -> WorkerSettlementBatch:
             default=worker_payout_bucket_size_for_precision(payload.get("precision_places")),
         ),
         bridge_account_id=str(payload.get("bridge_account_id", "bridge-worker-payout-dust")),
+        payout_rail=str(payload.get("payout_rail", "")),
+        operator_id=str(payload.get("operator_id", "")),
         settlement_reference=str(payload.get("settlement_reference", "")),
         settlement_tx_hash=str(payload.get("settlement_tx_hash", "")),
+        settlement_proof_id=str(payload.get("settlement_proof_id", "")),
+        settlement_proof_hash=str(payload.get("settlement_proof_hash", "")),
         settled_at=str(payload.get("settled_at", "")),
         created_at=str(payload.get("created_at", "")),
         metadata=_copy_dict(payload.get("metadata")),
     )
+
+
+def _settlement_proof_identity(
+    *,
+    batch: WorkerSettlementBatch,
+    payout_rail: str = "",
+    operator_id: str = "",
+    settlement_reference: str = "",
+    settlement_tx_hash: str = "",
+    settlement_proof: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    clean_rail = str(payout_rail or batch.payout_rail or "operator-manual").strip() or "operator-manual"
+    clean_operator = clean_account_id(operator_id, default="") if operator_id else batch.operator_id
+    clean_reference = str(settlement_reference or batch.settlement_reference or "").strip()
+    clean_tx_hash = str(settlement_tx_hash or batch.settlement_tx_hash or "").strip()
+    clean_proof = dict(settlement_proof or {})
+    proof_payload = {
+        "batch_id": batch.batch_id,
+        "worker_node_id": batch.worker_node_id,
+        "claim_ids": list(batch.claim_ids),
+        "payout_rail": clean_rail,
+        "operator_id": clean_operator,
+        "settlement_reference": clean_reference,
+        "settlement_tx_hash": clean_tx_hash,
+        "total_credits_published": batch.total_credits_published,
+        "bridge_retained_credits": batch.dust_credits,
+        "proof": clean_proof,
+    }
+    canonical = json.dumps(proof_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    proof_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    proof_id = stable_id("proof", {"batch_id": batch.batch_id, "proof_hash": proof_hash})
+    return {
+        "payout_rail": clean_rail,
+        "operator_id": clean_operator,
+        "settlement_reference": clean_reference,
+        "settlement_tx_hash": clean_tx_hash,
+        "settlement_proof": clean_proof,
+        "settlement_proof_id": proof_id,
+        "settlement_proof_hash": proof_hash,
+    }
 
 
 class HubCreditLedger:
@@ -497,6 +569,9 @@ class HubCreditLedger:
         batch_id: str,
         settlement_reference: str = "",
         settlement_tx_hash: str = "",
+        payout_rail: str = "",
+        operator_id: str = "",
+        settlement_proof: dict[str, Any] | None = None,
         idempotency_key: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -526,6 +601,15 @@ class HubCreditLedger:
             if batch.status == "cancelled":
                 raise ValueError(f"Cannot settle cancelled worker settlement batch {clean_batch_id}.")
 
+            proof_fields = _settlement_proof_identity(
+                batch=batch,
+                payout_rail=payout_rail,
+                operator_id=operator_id,
+                settlement_reference=settlement_reference,
+                settlement_tx_hash=settlement_tx_hash,
+                settlement_proof=settlement_proof,
+            )
+
             updated_batch = WorkerSettlementBatch(
                 batch_id=batch.batch_id,
                 window_start=batch.window_start,
@@ -541,8 +625,12 @@ class HubCreditLedger:
                 precision_places=batch.precision_places,
                 rounding_bucket_credits=batch.rounding_bucket_credits,
                 bridge_account_id=batch.bridge_account_id,
-                settlement_reference=settlement_reference or batch.settlement_reference,
-                settlement_tx_hash=settlement_tx_hash or batch.settlement_tx_hash,
+                payout_rail=proof_fields["payout_rail"],
+                operator_id=proof_fields["operator_id"],
+                settlement_reference=proof_fields["settlement_reference"],
+                settlement_tx_hash=proof_fields["settlement_tx_hash"],
+                settlement_proof_id=proof_fields["settlement_proof_id"],
+                settlement_proof_hash=proof_fields["settlement_proof_hash"],
                 settled_at=now,
                 created_at=batch.created_at,
                 metadata={
@@ -550,6 +638,11 @@ class HubCreditLedger:
                     **dict(metadata or {}),
                     "settle_idempotency_key": clean_key,
                     "bridge_retained_credits": batch.dust_credits,
+                    "payout_rail": proof_fields["payout_rail"],
+                    "operator_id": proof_fields["operator_id"],
+                    "settlement_proof_id": proof_fields["settlement_proof_id"],
+                    "settlement_proof_hash": proof_fields["settlement_proof_hash"],
+                    "settlement_proof": proof_fields["settlement_proof"],
                 },
             )
             data["settlement_batches"][updated_batch.batch_id] = updated_batch.as_dict()
@@ -597,8 +690,12 @@ class HubCreditLedger:
                 metadata={
                     **dict(metadata or {}),
                     "idempotency_key": clean_key,
-                    "settlement_reference": settlement_reference or "",
-                    "settlement_tx_hash": settlement_tx_hash or "",
+                    "settlement_reference": proof_fields["settlement_reference"],
+                    "settlement_tx_hash": proof_fields["settlement_tx_hash"],
+                    "payout_rail": proof_fields["payout_rail"],
+                    "operator_id": proof_fields["operator_id"],
+                    "settlement_proof_id": proof_fields["settlement_proof_id"],
+                    "settlement_proof_hash": proof_fields["settlement_proof_hash"],
                     "claim_ids": list(updated_batch.claim_ids),
                     "total_credits_exact": updated_batch.total_credits_exact,
                     "total_credits_published": updated_batch.total_credits_published,
@@ -623,6 +720,170 @@ class HubCreditLedger:
                 "worker_settlement_totals": self._worker_settlement_totals_from_data(data, updated_batch.worker_node_id, precision_places=updated_batch.precision_places),
                 "ledger": self._status_from_data(data),
             }
+
+    def record_worker_settlement_proof(
+        self,
+        *,
+        batch_id: str,
+        settlement_reference: str = "",
+        settlement_tx_hash: str = "",
+        payout_rail: str = "operator-manual",
+        operator_id: str = "",
+        settlement_proof: dict[str, Any] | None = None,
+        idempotency_key: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Record an operator/manual payout proof for an opened settlement batch.
+
+        Phase 7a intentionally does not move funds on-chain.  It records the
+        durable proof that an operator payout rail executed the rounded published
+        batch amount, while exact claim and dust values remain audit-only.
+        """
+        if not str(settlement_reference or settlement_tx_hash or "").strip():
+            raise ValueError("settlement_reference or settlement_tx_hash is required.")
+        return self.settle_worker_settlement_batch(
+            batch_id=batch_id,
+            settlement_reference=settlement_reference,
+            settlement_tx_hash=settlement_tx_hash,
+            payout_rail=payout_rail or "operator-manual",
+            operator_id=operator_id,
+            settlement_proof=settlement_proof,
+            idempotency_key=idempotency_key,
+            metadata=metadata,
+        )
+
+    def record_worker_settlement_chain_execution(
+        self,
+        *,
+        batch_id: str,
+        chain_id: int,
+        contract_address: str,
+        recipient_address: str,
+        payout_units_executed: int,
+        settlement_tx_hash: str,
+        proposal_id: str = "",
+        block_number: int | None = None,
+        payout_rail: str = "xlag-bridge-reserve",
+        operator_id: str = "",
+        settlement_reference: str = "",
+        settlement_proof: dict[str, Any] | None = None,
+        idempotency_key: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Record a Phase 7b externally executed chain payout receipt.
+
+        The hub still does not sign or submit reserve transactions.  The chain
+        receipt must come from an external wallet/operator flow such as
+        XLagBridgeReserve propose/second/execute.  This method validates that the
+        executed chain payout amount matches the rounded published batch amount,
+        then records the durable settlement proof exactly once.
+        """
+        clean_batch_id = str(batch_id or "").strip()
+        if not clean_batch_id:
+            raise ValueError("batch_id is required.")
+        clean_chain_id = _positive_chain_id(chain_id)
+        clean_contract = _clean_eth_address(contract_address, field_name="contract_address")
+        clean_recipient = _clean_eth_address(recipient_address, field_name="recipient_address")
+        clean_tx_hash = _clean_eth_tx_hash(settlement_tx_hash)
+        executed_units = positive_int(payout_units_executed)
+        if executed_units <= 0:
+            raise ValueError("payout_units_executed must be positive.")
+        clean_proposal_id = str(proposal_id or "").strip()
+        clean_rail = str(payout_rail or "xlag-bridge-reserve").strip() or "xlag-bridge-reserve"
+        clean_operator = clean_account_id(operator_id, default="") if operator_id else ""
+        clean_reference = str(settlement_reference or "").strip()
+        if not clean_reference:
+            proposal_label = clean_proposal_id or clean_tx_hash
+            clean_reference = f"{clean_rail}:{clean_chain_id}:{clean_contract}:{proposal_label}"
+        clean_key = str(idempotency_key or "").strip()
+        clean_metadata = dict(metadata or {}) if isinstance(metadata, dict) else {}
+        clean_block = positive_int(block_number) if block_number is not None else 0
+
+        data = self._load()
+        payload = data["settlement_batches"].get(clean_batch_id)
+        if not isinstance(payload, dict):
+            raise KeyError(f"Unknown worker settlement batch: {clean_batch_id}")
+        batch = _batch_from_dict(payload)
+        if executed_units != batch.total_credits_published:
+            raise ValueError(
+                "payout_units_executed must equal the rounded published settlement amount "
+                f"({batch.total_credits_published})."
+            )
+        if batch.status == "settled":
+            if batch.payout_rail and batch.payout_rail != clean_rail:
+                raise ValueError(f"Settlement batch {clean_batch_id} is already settled via {batch.payout_rail}.")
+            if batch.settlement_tx_hash and batch.settlement_tx_hash.lower() != clean_tx_hash:
+                raise ValueError(f"Settlement batch {clean_batch_id} is already settled with a different tx hash.")
+            return {
+                "ok": True,
+                "idempotent": True,
+                "batch": batch.as_dict(),
+                "settled_credits": batch.total_credits_published,
+                "additional_settled_credits": 0,
+                "bridge_retained_credits": batch.dust_credits,
+                "chain_payout_execution": {
+                    "chain_id": clean_chain_id,
+                    "contract_address": clean_contract,
+                    "recipient_address": clean_recipient,
+                    "payout_units_executed": executed_units,
+                    "bridge_retained_credits": batch.dust_credits,
+                    "proposal_id": clean_proposal_id,
+                    "settlement_tx_hash": clean_tx_hash,
+                    "block_number": clean_block,
+                    "payout_rail": clean_rail,
+                    "status": "already_recorded",
+                },
+                "worker_settlement_totals": self._worker_settlement_totals_from_data(
+                    data, batch.worker_node_id, precision_places=batch.precision_places
+                ),
+                "ledger": self._status_from_data(data),
+            }
+
+        chain_receipt = {
+            "phase": "phase7b-chain-payout-execution",
+            "chain_id": clean_chain_id,
+            "contract_address": clean_contract,
+            "recipient_address": clean_recipient,
+            "payout_units_executed": executed_units,
+            "bridge_retained_credits": batch.dust_credits,
+            "proposal_id": clean_proposal_id,
+            "settlement_tx_hash": clean_tx_hash,
+            "block_number": clean_block,
+            "payout_rail": clean_rail,
+            "rounded_public_payout": True,
+        }
+        proof_payload = {
+            **chain_receipt,
+            **(dict(settlement_proof or {}) if isinstance(settlement_proof, dict) else {}),
+        }
+        result = self.settle_worker_settlement_batch(
+            batch_id=clean_batch_id,
+            settlement_reference=clean_reference,
+            settlement_tx_hash=clean_tx_hash,
+            payout_rail=clean_rail,
+            operator_id=clean_operator,
+            settlement_proof=proof_payload,
+            idempotency_key=clean_key,
+            metadata={
+                **clean_metadata,
+                "phase7b_chain_payout_execution": True,
+                "chain_id": clean_chain_id,
+                "contract_address": clean_contract,
+                "recipient_address": clean_recipient,
+                "payout_units_executed": executed_units,
+                "proposal_id": clean_proposal_id,
+                "block_number": clean_block,
+            },
+        )
+        result["chain_payout_execution"] = {
+            **chain_receipt,
+            "settlement_reference": clean_reference,
+            "settlement_proof_id": result.get("batch", {}).get("settlement_proof_id", ""),
+            "settlement_proof_hash": result.get("batch", {}).get("settlement_proof_hash", ""),
+            "status": "recorded",
+        }
+        return result
+
 
     def worker_claim_totals(self, worker_node_id: str) -> dict[str, Any]:
         if not str(worker_node_id or "").strip():

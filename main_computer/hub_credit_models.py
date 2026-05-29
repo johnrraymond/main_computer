@@ -432,8 +432,12 @@ class WorkerSettlementBatch:
     precision_places: int = DEFAULT_WORKER_PAYOUT_PRECISION_PLACES
     rounding_bucket_credits: int = 0
     bridge_account_id: str = "bridge-worker-payout-dust"
+    payout_rail: str = ""
+    operator_id: str = ""
     settlement_reference: str = ""
     settlement_tx_hash: str = ""
+    settlement_proof_id: str = ""
+    settlement_proof_hash: str = ""
     settled_at: str = ""
     created_at: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -470,8 +474,12 @@ class WorkerSettlementBatch:
         object.__setattr__(self, "precision_places", precision)
         object.__setattr__(self, "rounding_bucket_credits", bucket_size)
         object.__setattr__(self, "bridge_account_id", clean_account_id(self.bridge_account_id, default="bridge-worker-payout-dust"))
+        object.__setattr__(self, "payout_rail", str(self.payout_rail or "").strip())
+        object.__setattr__(self, "operator_id", clean_account_id(self.operator_id, default="") if self.operator_id else "")
         object.__setattr__(self, "settlement_reference", str(self.settlement_reference or "").strip())
         object.__setattr__(self, "settlement_tx_hash", str(self.settlement_tx_hash or "").strip())
+        object.__setattr__(self, "settlement_proof_id", str(self.settlement_proof_id or "").strip())
+        object.__setattr__(self, "settlement_proof_hash", str(self.settlement_proof_hash or "").strip())
         object.__setattr__(self, "settled_at", str(self.settled_at or "").strip())
         object.__setattr__(self, "created_at", self.created_at or utc_now())
 
