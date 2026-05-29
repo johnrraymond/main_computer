@@ -50,6 +50,51 @@ from main_computer.website_builder_rag_pipeline import (
     validate_route_decision as validate_website_builder_rag_route_decision,
     write_materialized_bundle as write_website_builder_rag_bundle,
 )
+from main_computer.website_builder_generated_editor_pipeline import (
+    run_generated_editor_pipeline as run_website_builder_generated_editor_pipeline,
+)
+
+
+
+_WEBSITE_BUILDER_GENERATED_EDITOR_TERMINAL_NUM_PREDICT = 1400
+_WEBSITE_BUILDER_GENERATED_EDITOR_GROUNDING_NUM_PREDICT = 1600
+_WEBSITE_BUILDER_GENERATED_EDITOR_PATCH_NUM_PREDICT = 9000
+
+
+def _website_builder_ollama_generate_url(base_url: object) -> str:
+    text = str(base_url or "http://127.0.0.1:11434").strip().rstrip("/")
+    if not text:
+        text = "http://127.0.0.1:11434"
+    if text.endswith("/api/generate"):
+        return text
+    return f"{text}/api/generate"
+
+
+def _website_builder_ollama_think_mode(value: object) -> str:
+    if value is None:
+        return "omit"
+    if value is False:
+        return "false"
+    if value is True:
+        return "true"
+    normalized = str(value).strip().lower()
+    if normalized in {"", "none", "null", "omit", "default-empty"}:
+        return "omit"
+    if normalized in {"false", "off", "0", "no"}:
+        return "false"
+    if normalized in {"true", "on", "1", "yes"}:
+        return "true"
+    if normalized in {"low", "medium", "high"}:
+        return normalized
+    return "false"
+
+
+def _website_builder_generated_editor_output_dir(debug_root: Path, site_id: str, run_id: str) -> Path:
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    safe_site = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(site_id or "site"))
+    safe_run = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(run_id or "run"))[:80]
+    return debug_root / "diagnostics_output" / "website_builder_mount_generated_editor" / f"{safe_site}_{stamp}_{safe_run}"
+
 
 
 def _mounted_editor_should_inline_test_provider(provider: Any) -> bool:
@@ -1157,6 +1202,205 @@ class ViewportApplicationRoutesMixin:
             },
         )
 
+    def _website_builder_generated_editor_chat_response(
+        self,
+        *,
+        body: dict[str, Any],
+        plugin: dict[str, Any],
+        cell: dict[str, Any],
+        source: str,
+        site_id: str,
+        project: Any,
+        payload: dict[str, Any],
+        visible_files: list[str],
+        run_id: str,
+        thread_id: str,
+    ) -> ChatResponse:
+        """Run mounted Website Builder chat through the generated-editor adapter.
+
+        The mounted UI does not provide an endstate oracle and this method does not
+        route by deterministic prompt heuristics.  The generated-editor pipeline
+        observes the terminal class from the model response, validates the evidence
+        it was given, and produces either a promotable staged artifact, a grounded
+        informational answer, or a nonterminal/failure report.  Live source writes
+        are intentionally not performed here.
+        """
+        del body, plugin, project, payload  # UI integration is preview/proposal-only for this first patch.
+
+        debug_root = Path(self.server.debug_root)
+        output_dir = _website_builder_generated_editor_output_dir(debug_root, site_id, run_id)
+        site_root = debug_root / "runtime" / "websites" / site_id
+        model = str(getattr(self.server.config, "model", "") or getattr(getattr(self.server, "computer", None), "provider", None) and getattr(getattr(self.server.computer, "provider", None), "model", "") or "gemma4:26b")
+        ollama_url = _website_builder_ollama_generate_url(getattr(self.server.config, "ollama_base_url", "http://127.0.0.1:11434"))
+        timeout_seconds = float(getattr(self.server.config, "ollama_timeout_s", 600.0) or 600.0)
+        think_mode = _website_builder_ollama_think_mode(getattr(self.server.config, "ollama_think", False))
+
+        pipeline_report = run_website_builder_generated_editor_pipeline(
+            repo=debug_root,
+            site_id=site_id,
+            site_root=site_root,
+            user_prompt=source,
+            output_dir=output_dir,
+            model=model,
+            ollama_url=ollama_url,
+            timeout_seconds=timeout_seconds,
+            terminal_num_predict=_WEBSITE_BUILDER_GENERATED_EDITOR_TERMINAL_NUM_PREDICT,
+            grounding_num_predict=_WEBSITE_BUILDER_GENERATED_EDITOR_GROUNDING_NUM_PREDICT,
+            patch_num_predict=_WEBSITE_BUILDER_GENERATED_EDITOR_PATCH_NUM_PREDICT,
+            format_mode="none",
+            think_mode=think_mode,
+            max_index_files=40,
+            max_index_file_chars=24000,
+            excerpt_context_lines=24,
+            max_evidence_chars=18000,
+        )
+
+        terminal_state = str(pipeline_report.get("terminal_state") or "nonterminal_result")
+        observed_class = str(pipeline_report.get("observed_terminal_class") or "")
+        common_metadata = {
+            "run_id": run_id,
+            "thread_id": thread_id,
+            "editor_edit_mode": "website-builder",
+            "generated_editor_pipeline": True,
+            "site_id": site_id,
+            "allowed_root": f"runtime/websites/{site_id}/",
+            "allowed_roots": [f"runtime/websites/{site_id}/"],
+            "builder_allowlist": [],
+            "visible_files": visible_files,
+            "prompt": source,
+            "auto_apply": False,
+            "apply_result": None,
+            "scope_card": False,
+            "live_write": False,
+            "diagnostics_output_dir": str(output_dir),
+            "observed_terminal_class": observed_class,
+            "terminal_state": terminal_state,
+            "generated_editor_report": pipeline_report,
+        }
+
+        if pipeline_report.get("ok") is True and terminal_state == "promotable_edit_artifact":
+            artifact = pipeline_report.get("artifact") if isinstance(pipeline_report.get("artifact"), dict) else {}
+            dry_run = pipeline_report.get("dry_run") if isinstance(pipeline_report.get("dry_run"), dict) else {}
+            changed_files = [str(item) for item in pipeline_report.get("changed_files", []) if str(item).strip()]
+            changed_lines = "\n".join(f"- `{path}`" for path in changed_files) or "- No changed files were reported."
+            artifact_path = str(artifact.get("path") or "")
+            dry_run_text = "passed" if dry_run.get("ok") else "not run"
+            content = (
+                "Generated-editor Website Builder edit proposal produced.\n\n"
+                "No live website files were written.\n\n"
+                "Changed files:\n"
+                f"{changed_lines}\n\n"
+                f"Artifact: `{artifact_path}`\n\n"
+                f"new_patch.py dry-run: **{dry_run_text}**\n"
+            )
+            if dry_run.get("command"):
+                content += f"\nDry-run command:\n`{dry_run.get('command')}`\n"
+            content += "\nReview the generated replacement before applying it to the live site."
+            proposal = {
+                "version": 3,
+                "type": "website-builder-generated-editor-artifact",
+                "mode": "proposal-only",
+                "rag_backed": True,
+                "generated_editor_backed": True,
+                "ai_backed": True,
+                "auto_apply": False,
+                "live_write": False,
+                "site_id": site_id,
+                "prompt": source,
+                "terminal_state": terminal_state,
+                "observed_terminal_class": observed_class,
+                "changed_files": changed_files,
+                "artifact": artifact,
+                "dry_run": dry_run,
+                "diagnostics_output_dir": str(output_dir),
+                "validation": {"ok": True, "terminal_state": terminal_state},
+                "apply_payloads": [],
+                "materialized_files": artifact.get("replacement_files") if isinstance(artifact.get("replacement_files"), list) else [],
+            }
+            return ChatResponse(
+                content=content,
+                provider="ollama",
+                model=model,
+                metadata={
+                    **common_metadata,
+                    "editor_intent": "propose_edit",
+                    "proposal": proposal,
+                    "artifact": artifact,
+                    "dry_run": dry_run,
+                    "changed_files": changed_files,
+                },
+            )
+
+        if pipeline_report.get("ok") is True and terminal_state == "grounded_info_answer":
+            evidence_files = [str(item) for item in pipeline_report.get("evidence_files", []) if str(item).strip()]
+            evidence_lines = "\n".join(f"- `{path}`" for path in evidence_files) or "- No evidence files were reported."
+            answer = str(pipeline_report.get("answer") or "").strip()
+            content = (
+                "Website Builder grounded answer.\n\n"
+                f"{answer}\n\n"
+                "Evidence files:\n"
+                f"{evidence_lines}\n\n"
+                "No replacement payloads were produced. No live files were written."
+            )
+            return ChatResponse(
+                content=content,
+                provider="ollama",
+                model=model,
+                metadata={
+                    **common_metadata,
+                    "editor_intent": "answer",
+                    "answer": answer,
+                    "evidence_files": evidence_files,
+                    "proposal": None,
+                },
+            )
+
+        if pipeline_report.get("ok") is True:
+            answer = str(pipeline_report.get("answer") or "").strip()
+            evidence_files = [str(item) for item in pipeline_report.get("evidence_files", []) if str(item).strip()]
+            if not answer:
+                answer = f"The generated-editor pipeline produced `{terminal_state}`."
+            content = (
+                "Website Builder generated-editor result.\n\n"
+                f"{answer}\n\n"
+                "No replacement payloads were produced. No live files were written."
+            )
+            return ChatResponse(
+                content=content,
+                provider="ollama",
+                model=model,
+                metadata={
+                    **common_metadata,
+                    "editor_intent": observed_class if observed_class in {"clarify", "plan", "answer"} else "answer",
+                    "answer": answer,
+                    "evidence_files": evidence_files,
+                    "proposal": None,
+                },
+            )
+
+        failed_stage = str(pipeline_report.get("failed_stage") or "generated_editor_pipeline")
+        reason = str(pipeline_report.get("reason") or "The generated-editor pipeline did not produce a terminal UI result.")
+        content = (
+            "Website Builder generated-editor pipeline did not produce an applyable result.\n\n"
+            "No live website files were written.\n\n"
+            f"Failed stage: `{failed_stage}`\n\n"
+            f"Reason: {reason}\n\n"
+            f"Diagnostics: `{output_dir}`"
+        )
+        return ChatResponse(
+            content=content,
+            provider="ollama",
+            model=model,
+            metadata={
+                **common_metadata,
+                "editor_intent": "generated_editor_error",
+                "failed_stage": failed_stage,
+                "reason": reason,
+                "proposal": None,
+            },
+        )
+
+
     def _handle_website_builder_chat_edit(self) -> None:
         try:
             body = self._read_json()
@@ -1172,7 +1416,7 @@ class ViewportApplicationRoutesMixin:
             visible_files = self._website_builder_visible_site_files(project)
             run_id = str(body.get("run_id") or cell.get("run_id") or f"website_builder_edit_{int(time.time() * 1000)}").strip()
             thread_id = str(body.get("thread_id") or body.get("chat_thread_id") or "website-builder-chat").strip()
-            response = self._website_builder_routed_chat_response(
+            response = self._website_builder_generated_editor_chat_response(
                 body=body,
                 plugin=plugin,
                 cell=cell,

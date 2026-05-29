@@ -897,6 +897,76 @@ class HubServerHandler(_JsonHandler):
             return normalize_worker_payout_precision_places(getattr(worker, "settlement_precision_places", None))
         return DEFAULT_WORKER_PAYOUT_PRECISION_PLACES
 
+    def _exact_payouts_requested(self, query: dict[str, list[str]] | None = None, body: dict[str, Any] | None = None) -> bool:
+        values: list[Any] = []
+        if query:
+            for key in ("audit", "exact", "debug", "include_exact"):
+                values.extend(query.get(key, []))
+        if body:
+            for key in ("audit", "exact", "debug", "include_exact"):
+                if key in body:
+                    values.append(body.get(key))
+        return any(str(value).strip().lower() in {"1", "true", "yes", "audit", "exact"} for value in values)
+
+    def _public_worker_settlement_totals(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Return a worker settlement view safe for non-audit callers.
+
+        Exact claim and dust fields can correlate high-precision request prices to
+        worker payouts, so the default worker settlement surface publishes only
+        bucketed payout units and counts.  Audit callers can request the raw
+        ledger response explicitly with ?audit=1 / exact=true.
+        """
+
+        def sanitize_claim(claim: dict[str, Any]) -> dict[str, Any]:
+            clean = {
+                "claim_id": str(claim.get("claim_id", "")),
+                "worker_node_id": str(claim.get("worker_node_id", "")),
+                "status": str(claim.get("status", "")),
+                "created_at": str(claim.get("created_at", "")),
+                "earning_count": len(claim.get("earning_ids", [])) if isinstance(claim.get("earning_ids"), list) else 0,
+            }
+            return clean
+
+        def sanitize_batch(batch: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "batch_id": str(batch.get("batch_id", "")),
+                "worker_node_id": str(batch.get("worker_node_id", "")),
+                "status": str(batch.get("status", "")),
+                "claim_count": len(batch.get("claim_ids", [])) if isinstance(batch.get("claim_ids"), list) else 0,
+                "worker_count": int(batch.get("worker_count", 0) or 0),
+                "total_credits_published": int(batch.get("total_credits_published", 0) or 0),
+                "precision_places": int(batch.get("precision_places", payload.get("precision_places", DEFAULT_WORKER_PAYOUT_PRECISION_PLACES)) or 0),
+                "rounding_bucket_credits": int(batch.get("rounding_bucket_credits", payload.get("rounding_bucket_credits", 0)) or 0),
+                "settlement_reference": str(batch.get("settlement_reference", "")),
+                "settlement_tx_hash": str(batch.get("settlement_tx_hash", "")),
+                "created_at": str(batch.get("created_at", "")),
+                "settled_at": str(batch.get("settled_at", "")),
+            }
+
+        return {
+            "ok": bool(payload.get("ok", True)),
+            "worker_node_id": str(payload.get("worker_node_id", "")),
+            "precision_places": int(payload.get("precision_places", DEFAULT_WORKER_PAYOUT_PRECISION_PLACES) or 0),
+            "rounding_bucket_credits": int(payload.get("rounding_bucket_credits", 0) or 0),
+            "settleable_units_published": int(payload.get("settleable_units_published", 0) or 0),
+            "settleable_claim_count": int(payload.get("settleable_claim_count", 0) or 0),
+            "open_batch_count": int(payload.get("open_batch_count", 0) or 0),
+            "settled_batch_count": int(payload.get("settled_batch_count", 0) or 0),
+            "settled_units_published": int(payload.get("settled_units_published", 0) or 0),
+            "can_create_batch": bool(payload.get("can_create_batch", False)),
+            "block_reason": str(payload.get("block_reason", "")),
+            "claims": [sanitize_claim(claim) for claim in payload.get("claims", []) if isinstance(claim, dict)],
+            "batches": [sanitize_batch(batch) for batch in payload.get("batches", []) if isinstance(batch, dict)],
+            "privacy": {
+                "exact_amounts_hidden": True,
+                "exact_amounts_visible": False,
+                "exact_claim_amounts_hidden": True,
+                "bridge_dust_hidden": True,
+                "rounding": "floor_to_precision",
+                "audit_hint": "append ?audit=1 or exact=1 to view internal reconciliation fields",
+            },
+        }
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
@@ -937,7 +1007,8 @@ class HubServerHandler(_JsonHandler):
                 "transport": "https-required-except-loopback",
                 "allow_insecure_dev_network": self.server.config.hub_allow_insecure_dev_network,
             }
-            status["energy"] = self.server.energy_ledger.status()
+            exact_payouts = self._exact_payouts_requested(query)
+            status["energy"] = self.server.energy_ledger.status(exact=exact_payouts)
             self._send_json(status)
             return
         if path == "/api/hub/v1/metrics":
@@ -972,7 +1043,11 @@ class HubServerHandler(_JsonHandler):
             worker_node_id = query.get("worker_node_id", [""])[0] or query.get("node_id", [""])[0]
             try:
                 precision = self._worker_settlement_precision_places(worker_node_id, query.get("precision_places", [None])[0])
-                self._send_json(self.server.credit_ledger.worker_settlement_totals(worker_node_id, precision_places=precision))
+                totals = self.server.credit_ledger.worker_settlement_totals(worker_node_id, precision_places=precision)
+                if self._exact_payouts_requested(query):
+                    self._send_json(totals)
+                else:
+                    self._send_json(self._public_worker_settlement_totals(totals))
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -1132,7 +1207,9 @@ class HubServerHandler(_JsonHandler):
         if path in {"/api/hub/payouts", "/api/hub/v1/payouts"}:
             node_id = query.get("node_id", [""])[0]
             try:
-                self._send_json(self.server.energy_ledger.payout_summary(node_id))
+                exact_payouts = self._exact_payouts_requested(query)
+                precision = self._worker_settlement_precision_places(node_id, query.get("precision_places", [None])[0])
+                self._send_json(self.server.energy_ledger.payout_summary(node_id, exact=exact_payouts, precision_places=precision))
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -1259,10 +1336,15 @@ class HubServerHandler(_JsonHandler):
                 return
             if path in {"/api/hub/payouts/claim", "/api/hub/v1/payouts/claim"}:
                 body = self._read_json()
+                node_id = str(body.get("node_id", ""))
+                exact_payouts = self._exact_payouts_requested(body=body)
+                precision = self._worker_settlement_precision_places(node_id, body.get("precision_places"))
                 self._send_json(
                     self.server.energy_ledger.claim_payouts(
-                        node_id=str(body.get("node_id", "")),
+                        node_id=node_id,
                         memo=str(body.get("memo", "")),
+                        exact=exact_payouts,
+                        precision_places=precision,
                     )
                 )
                 return

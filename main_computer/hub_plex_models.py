@@ -7,6 +7,7 @@ from main_computer.models import ChatAttachment, ChatMessage, ChatResponse
 from main_computer.hub_credit_models import (
     DEFAULT_WORKER_PAYOUT_PRECISION_PLACES,
     normalize_worker_payout_precision_places,
+    truncate_worker_payout_for_precision,
 )
 
 
@@ -29,6 +30,120 @@ REQUEST_STATES = {
 def clean_node_id(value: str, *, default: str) -> str:
     text = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in str(value or "").strip().lower())
     return text or default
+
+
+def _public_payout_privacy_context(*, precision_places: Any = None, rounding_bucket_credits: int | None = None) -> dict[str, Any]:
+    precision = normalize_worker_payout_precision_places(precision_places)
+    if rounding_bucket_credits is None:
+        _published, _dust, precision, bucket_size = truncate_worker_payout_for_precision(0, precision_places=precision)
+    else:
+        bucket_size = max(1, int(rounding_bucket_credits or 1))
+    return {
+        "exact_amounts_visible": False,
+        "exact_amounts_hidden": True,
+        "precision_places": precision,
+        "rounding_bucket_credits": bucket_size,
+        "rounding": "floor_to_precision",
+        "request_links_redacted": True,
+    }
+
+
+def _privacy_precision_from_payload(payload: dict[str, Any], fallback: Any = None) -> int:
+    privacy = payload.get("privacy") if isinstance(payload.get("privacy"), dict) else {}
+    return normalize_worker_payout_precision_places(privacy.get("precision_places", fallback))
+
+
+def _public_payout_amount(value: Any, *, precision_places: Any = None) -> tuple[int, int, int, int]:
+    try:
+        units = int(value or 0)
+    except (TypeError, ValueError):
+        units = 0
+    return truncate_worker_payout_for_precision(max(0, units), precision_places=precision_places)
+
+
+def sanitize_public_payout_queue(payload: Any, *, precision_places: Any = None) -> Any:
+    """Return a payout queue payload safe for normal/non-audit responses.
+
+    Older completed request records may contain exact legacy ``payout_queue``
+    metadata.  Sanitizing at serialization time prevents same-scope/idempotent
+    request replays from leaking high-precision worker payout amounts even if
+    the stored request predates the privacy hardening patch.
+    """
+
+    if not isinstance(payload, dict):
+        return payload
+    precision = _privacy_precision_from_payload(payload, fallback=precision_places)
+    _published_zero, _dust_zero, precision, bucket_size = truncate_worker_payout_for_precision(0, precision_places=precision)
+    clean: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key in {
+            "balances_exact",
+            "bridge_retained_credits_if_claimed_by_node",
+            "credits_exact",
+            "bridge_retained_credits_if_claimed",
+        }:
+            continue
+        if key == "balances" and isinstance(value, dict):
+            balances: dict[str, int] = {}
+            for node_id, amount in value.items():
+                published, _dust, _precision, _bucket = _public_payout_amount(amount, precision_places=precision)
+                balances[str(node_id)] = published
+            clean[key] = balances
+            continue
+        if key == "recent" and isinstance(value, list):
+            recent: list[dict[str, Any]] = []
+            for item in value:
+                if not isinstance(item, dict):
+                    continue
+                payout = {
+                    "payout_id": str(item.get("payout_id", "")),
+                    "kind": str(item.get("kind", "")),
+                    "node_id": str(item.get("node_id", "")),
+                    "created_at": str(item.get("created_at", "")),
+                }
+                published, _dust, _precision, _bucket = _public_payout_amount(item.get("credits", 0), precision_places=precision)
+                payout["credits"] = published
+                payout["credits_published"] = published
+                payout["memo"] = "privacy-redacted"
+                payout["request_id"] = ""
+                payout["privacy"] = _public_payout_privacy_context(
+                    precision_places=precision,
+                    rounding_bucket_credits=bucket_size,
+                )
+                recent.append(payout)
+            clean[key] = recent
+            continue
+        if key == "privacy":
+            continue
+        clean[key] = value
+    clean["privacy"] = _public_payout_privacy_context(
+        precision_places=precision,
+        rounding_bucket_credits=bucket_size,
+    )
+    return clean
+
+
+def sanitize_hub_response_payload(payload: Any, *, precision_places: Any = None) -> Any:
+    """Sanitize worker payout metadata embedded inside a hub response payload."""
+
+    if not isinstance(payload, dict):
+        return payload
+    response = dict(payload)
+    metadata = response.get("metadata")
+    if not isinstance(metadata, dict):
+        return response
+    clean_metadata = dict(metadata)
+    hub = clean_metadata.get("hub")
+    if isinstance(hub, dict):
+        clean_hub = dict(hub)
+        if "payout_queue" in clean_hub:
+            clean_hub["payout_queue"] = sanitize_public_payout_queue(
+                clean_hub.get("payout_queue"),
+                precision_places=precision_places,
+            )
+        clean_metadata["hub"] = clean_hub
+    response["metadata"] = clean_metadata
+    return response
 
 
 def chat_message_to_payload(message: ChatMessage | dict[str, Any]) -> dict[str, Any]:
@@ -513,7 +628,7 @@ class HubRequestStatus:
         if self.receipt:
             data["receipt"] = dict(self.receipt)
         if self.response is not None:
-            data["response"] = dict(self.response)
+            data["response"] = sanitize_hub_response_payload(self.response)
         if self.polling_url:
             data["polling_url"] = self.polling_url
         return data

@@ -3717,7 +3717,7 @@ body {
         target_kind: "website-project",
         target_id: target.id,
         linked_targets: [target],
-        website_builder_phase: "mounted-rag-proposal"
+        website_builder_phase: "mounted-generated-editor-proposal"
       };
     }
 
@@ -3801,7 +3801,7 @@ body {
         classPrefix: "website-builder-chat",
         title: "Website Builder Chat",
         subtitle: "Editing this website",
-        initialStatus: "proposal-only",
+        initialStatus: "generated-editor proposal-only",
         targetKind: "website-project",
         targetId: siteId,
         layout: "full",
@@ -3818,11 +3818,11 @@ body {
             id: "website-builder-edit",
             label: "Edit this website",
             checkedLabel: "Editing this website",
-            hint: "Route this AI request through the Website Builder RAG proposal pathway, locked to the active site and builder allowlist.",
+            hint: "Route this AI request through the generated-editor Website Builder pathway, locked to the active selected site.",
             appliesTo: "ai",
             defaultEnabled: true,
             endpoint: "/api/applications/website-builder/chat",
-            pathway: "website-builder-rag-edit-proposal",
+            pathway: "website-builder-generated-editor-proposal",
             targetKind: "website-project",
             targetId: siteId,
             lockedTarget: true,
@@ -3833,14 +3833,14 @@ body {
               return {
                 edit_mode: "website-project",
                 editor_edit_mode: "website-builder",
-                requested_pathway: "website-builder-rag-edit-proposal",
+                requested_pathway: "website-builder-generated-editor-proposal",
                 target_kind: "website-project",
                 target_id: lockedSiteId,
                 project_id: lockedSiteId,
                 site_id: lockedSiteId,
                 locked_to_mount: true,
-                auto_apply: true,
-                live_apply: true
+                auto_apply: false,
+                live_apply: false
               };
             }
           }
@@ -3942,7 +3942,7 @@ body {
       const touchedSiteFiles = files.some((item) => String(item?.path || "").startsWith(`${websiteBuilderSitePath(websiteBuilderStateModel.selectedSiteId)}/`));
       if (touchedSiteFiles) {
         await selectWebsiteBuilderSite(websiteBuilderStateModel.selectedSiteId, {syncRoute: false});
-        setWebsiteBuilderLog("Website Builder RAG edit applied and preview reloaded", files.map((item) => item?.path).filter(Boolean).join("\n"));
+        setWebsiteBuilderLog("Website Builder edit applied and preview reloaded", files.map((item) => item?.path).filter(Boolean).join("\n"));
       } else {
         refreshWebsiteBuilderPreview();
         setWebsiteBuilderLog("Website Builder implementation edit applied. Reload the browser tab to run changed builder code.", files.map((item) => item?.path).filter(Boolean).join("\n"));
@@ -4525,7 +4525,7 @@ body {
       renderWebsiteBuilderBackendView();
       if (!websiteBuilderStateModel.ragApplyListenerBound) {
         window.addEventListener("main-computer-chat-console-output-applied", (event) => {
-          refreshWebsiteBuilderAfterRagApply(event?.detail || {}).catch((error) => setWebsiteBuilderLog(`RAG apply refresh failed: ${error.message}`));
+          refreshWebsiteBuilderAfterRagApply(event?.detail || {}).catch((error) => setWebsiteBuilderLog(`Generated-editor apply refresh failed: ${error.message}`));
         });
         websiteBuilderStateModel.ragApplyListenerBound = true;
       }

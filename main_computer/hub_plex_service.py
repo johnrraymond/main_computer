@@ -18,6 +18,7 @@ from main_computer.hub_plex_models import (
     HubRequestStatus,
     chat_response_from_payload,
     clean_node_id,
+    sanitize_hub_response_payload,
 )
 from main_computer.hub_security import HUB_SECURITY_PROFILE, hub_transport_is_encrypted_or_loopback
 from main_computer.models import ChatResponse
@@ -82,11 +83,12 @@ def parse_utc(value: str) -> datetime | None:
 def response_from_record(record: HubRequestRecord) -> ChatResponse | None:
     if not isinstance(record.response, dict):
         return None
+    response = sanitize_hub_response_payload(record.response)
     return ChatResponse(
-        content=str(record.response.get("content", "")),
-        provider=str(record.response.get("provider", "hub") or "hub"),
-        model=str(record.response.get("model", record.model) or record.model),
-        metadata=dict(record.response.get("metadata", {})) if isinstance(record.response.get("metadata"), dict) else {},
+        content=str(response.get("content", "")),
+        provider=str(response.get("provider", "hub") or "hub"),
+        model=str(response.get("model", record.model) or record.model),
+        metadata=dict(response.get("metadata", {})) if isinstance(response.get("metadata"), dict) else {},
     )
 
 
