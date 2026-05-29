@@ -16,6 +16,7 @@
       refreshTimer: null,
       refreshInFlight: false
     };
+    const chatConsoleNotebookRenderSignatures = new WeakMap();
 
     function chatConsoleThreadsApi() {
       return window.MainComputerChatThreads || null;
@@ -284,15 +285,15 @@
       } finally {
         chatConsoleThinkingState.refreshInFlight = false;
       }
-      if (chatConsoleHasWaitingCells()) renderChatConsoleNotebook();
+      if (chatConsoleHasWaitingCells()) renderChatConsoleThinkingActivityPanels();
     }
 
     function chatConsoleEnsureThinkingRefresh() {
       if (chatConsoleHasWaitingCells()) {
         if (!chatConsoleThinkingState.refreshTimer) {
           chatConsoleThinkingState.refreshTimer = setInterval(refreshChatConsoleThinkingActivity, CHAT_CONSOLE_THINKING_ACTIVITY_INTERVAL_MS);
+          refreshChatConsoleThinkingActivity().catch(() => {});
         }
-        refreshChatConsoleThinkingActivity().catch(() => {});
       } else if (chatConsoleThinkingState.refreshTimer) {
         clearInterval(chatConsoleThinkingState.refreshTimer);
         chatConsoleThinkingState.refreshTimer = null;
@@ -1062,6 +1063,48 @@
       return data;
     }
 
+    function findChatConsoleCellElement(target, cellId) {
+      if (!target || !cellId) return null;
+      return [...target.querySelectorAll("[data-cell-id]")].find((candidate) => candidate.dataset?.cellId === cellId) || null;
+    }
+
+    function chatConsoleRenderSignatureValue(value) {
+      try {
+        return JSON.stringify(value ?? null);
+      } catch {
+        return String(value ?? "");
+      }
+    }
+
+    function chatConsoleVisibleCellsForRender() {
+      const visibleCells = [];
+      getChatConsoleRootCells().forEach((cell) => collectChatConsoleCellAndSelectedContinuation(cell, visibleCells));
+      return visibleCells;
+    }
+
+    function chatConsoleCellRenderSignature(cell) {
+      return chatConsoleRenderSignatureValue({
+        id: cell.id,
+        type: cell.type,
+        status: cell.status || "",
+        source: cell.source || "",
+        run_id: cell.run_id || "",
+        source_cell_id: cell.source_cell_id || "",
+        thread_parent_output_cell_id: cell.thread_parent_output_cell_id || "",
+        selected_output_variant_index: Number(cell.selected_output_variant_index || 0),
+        output_variant_ids: cell.output_variant_ids || [],
+        parts: cell.parts || [],
+        attachments: cell.attachments || [],
+        rag_assisted_thinking: Boolean(cell.rag_assisted_thinking),
+        rag_assisted_thinking_options: cell.rag_assisted_thinking_options || {},
+        mount_plugin_options: cell.mount_plugin_options || {}
+      });
+    }
+
+    function chatConsoleNotebookRenderSignature() {
+      return chatConsoleRenderSignatureValue(chatConsoleVisibleCellsForRender().map(chatConsoleCellRenderSignature));
+    }
+
     function captureChatConsoleNotebookFocus(target) {
       const active = document.activeElement;
       if (!target || !active || active.tagName !== "TEXTAREA" || !target.contains(active)) return null;
@@ -1078,7 +1121,7 @@
     }
     function restoreChatConsoleNotebookFocus(target, focusState) {
       if (!target || !focusState?.cellId) return;
-      const cellElement = [...target.querySelectorAll("[data-cell-id]")].find((candidate) => candidate.dataset?.cellId === focusState.cellId);
+      const cellElement = findChatConsoleCellElement(target, focusState.cellId);
       const textarea = cellElement?.querySelector("textarea");
       if (!textarea) return;
       const length = textarea.value.length;
@@ -1099,18 +1142,23 @@
     }
     function renderChatConsoleNotebook() {
       if (!chatConsoleState) return;
+      const renderSignature = chatConsoleNotebookRenderSignature();
       chatConsoleNotebookTargets().forEach((target) => {
+        if (chatConsoleNotebookRenderSignatures.get(target) === renderSignature && target.querySelector("[data-cell-id]")) {
+          renderChatConsoleThinkingActivityPanels(target);
+          return;
+        }
         const focusState = captureChatConsoleNotebookFocus(target);
         target.innerHTML = "";
         renderChatConsoleVisibleThread(target);
+        chatConsoleNotebookRenderSignatures.set(target, renderSignature);
         restoreChatConsoleNotebookFocus(target, focusState);
       });
       chatConsoleEnsureThinkingRefresh();
     }
     function renderChatConsoleVisibleThread(target = activeChatConsoleNotebook()) {
       if (!target) return;
-      const visibleCells = [];
-      getChatConsoleRootCells().forEach((cell) => collectChatConsoleCellAndSelectedContinuation(cell, visibleCells));
+      const visibleCells = chatConsoleVisibleCellsForRender();
       target.append(renderChatConsoleInsertStrip(""));
       visibleCells.forEach((cell, index) => {
         target.append(renderChatConsoleCell(cell));
@@ -1118,6 +1166,32 @@
         if (cell.type === "output" && nextCell && nextCell.type !== "output") {
           target.append(renderChatConsoleInsertStrip(cell.id));
         }
+      });
+    }
+    function renderChatConsoleThinkingActivityPanels(target = null) {
+      const waitingCells = (chatConsoleState?.cells || []).filter((cell) => chatConsoleShouldShowThinking(cell));
+      if (!waitingCells.length) return;
+      const targets = target ? [target] : chatConsoleNotebookTargets();
+      targets.forEach((notebookTarget) => {
+        waitingCells.forEach((cell) => {
+          const cellElement = findChatConsoleCellElement(notebookTarget, cell.id);
+          if (!cellElement) return;
+
+          const tabs = cellElement.querySelector(".chat-cell-tabs");
+          if (tabs && !tabs.querySelector('[data-chat-cell-tab="thinking"]')) {
+            tabs.append(renderChatConsoleThinkingTab());
+          }
+
+          const existingPanel = cellElement.querySelector(".chat-thinking-frame");
+          const nextPanel = renderChatConsoleThinkingPanel(cell);
+          if (existingPanel) {
+            nextPanel.open = existingPanel.open;
+            existingPanel.replaceWith(nextPanel);
+          } else {
+            const controls = cellElement.querySelector(".chat-cell-controls");
+            if (controls) controls.before(nextPanel);
+          }
+        });
       });
     }
     function renderChatConsoleCellAndSelectedContinuation(cell, target = activeChatConsoleNotebook()) {
@@ -1304,15 +1378,18 @@
         tabs.append(button);
       });
       if (chatConsoleShouldShowThinking(cell)) {
-        const thinking = document.createElement("button");
-        thinking.type = "button";
-        thinking.className = "chat-cell-tab chat-cell-thinking-tab active";
-        thinking.textContent = "Thinking";
-        thinking.disabled = true;
-        thinking.dataset.chatCellTab = "thinking";
-        tabs.append(thinking);
+        tabs.append(renderChatConsoleThinkingTab());
       }
       return tabs;
+    }
+    function renderChatConsoleThinkingTab() {
+      const thinking = document.createElement("button");
+      thinking.type = "button";
+      thinking.className = "chat-cell-tab chat-cell-thinking-tab active";
+      thinking.textContent = "Thinking";
+      thinking.disabled = true;
+      thinking.dataset.chatCellTab = "thinking";
+      return thinking;
     }
     function renderChatConsoleInsertStrip(afterId = "") {
       const strip = document.createElement("div");
