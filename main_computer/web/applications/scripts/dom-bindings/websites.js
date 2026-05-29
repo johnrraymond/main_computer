@@ -1,6 +1,17 @@
     const websiteBuilderApp = document.querySelector("#website-builder-app");
     const websiteBuilderRefresh = document.querySelector("#website-builder-refresh");
     const websiteBuilderArchive = document.querySelector("#website-builder-archive");
+    const websiteBuilderGitToggle = document.querySelector("#website-builder-git-toggle");
+    const websiteBuilderGitPanel = document.querySelector("#website-builder-git-panel");
+    const websiteBuilderGitPath = document.querySelector("#website-builder-git-path");
+    const websiteBuilderGitRefresh = document.querySelector("#website-builder-git-refresh");
+    const websiteBuilderGitReview = document.querySelector("#website-builder-git-review");
+    const websiteBuilderGitAcceptHead = document.querySelector("#website-builder-git-accept-head");
+    const websiteBuilderGitRestoreSelected = document.querySelector("#website-builder-git-restore-selected");
+    const websiteBuilderGitRevertSelected = document.querySelector("#website-builder-git-revert-selected");
+    const websiteBuilderGitSelected = document.querySelector("#website-builder-git-selected");
+    const websiteBuilderGitEdits = document.querySelector("#website-builder-git-edits");
+    const websiteBuilderGitOutput = document.querySelector("#website-builder-git-output");
     const websiteBuilderSiteList = document.querySelector("#website-builder-site-list");
     const websiteBuilderSiteSelect = document.querySelector("#website-builder-site-select");
     const websiteBuilderSiteName = document.querySelector("#website-builder-site-name");

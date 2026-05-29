@@ -16,30 +16,14 @@
   "backend": {
     "cms": {
       "database_connection": "content",
-      "local_connection": {
-        "confirmed_at": "2026-05-23T18:59:20+00:00",
-        "database_volume": "hub-site_directus_database_20260519170018",
-        "external": true,
-        "internal_url": "http://hub-site-directus:8055",
-        "managed": false,
-        "mode": "use_existing",
-        "public_port": 28200,
-        "public_url": "http://127.0.0.1:28200",
-        "reset_requested": false,
-        "service_name": "hub-site-directus",
-        "uploads_volume": "hub-site_directus_uploads_20260519170018"
-      },
       "permissions": {
-        "last_verified_at": "2026-05-23T18:59:21+00:00",
+        "last_verified_at": "2026-05-29T17:55:53+00:00",
         "public_read_files": true,
         "public_read_published_posts": true,
         "status": "ready"
       },
       "permissions_status": "ready",
       "provider": "directus",
-      "publish": {
-        "url": "https://directus-johnrraymond.greatlibrary.io"
-      },
       "required": true,
       "runtime": "deployed",
       "schema": {
@@ -50,17 +34,17 @@
       "service": {
         "admin_secret_ref": "directus_admin_token",
         "image": "directus/directus:11.5.1",
-        "internal_url": "http://hub-site-directus:8055",
+        "internal_url": "http://johnrraymond-directus:8055",
         "kind": "directus",
-        "last_verified_at": "2026-05-23T18:59:21+00:00",
+        "last_verified_at": "2026-05-29T17:55:51+00:00",
         "ping_status": "ready",
-        "public_url": "http://127.0.0.1:28200",
+        "public_url": "http://127.0.0.1:28202",
         "status": "service_reachable"
       },
       "service_status": "ready",
       "storage": {
-        "database_volume": "johnrraymond_directus_database_20260522022038",
-        "uploads_volume": "johnrraymond_directus_uploads_20260522022038"
+        "database_volume": "johnrraymond_directus_database",
+        "uploads_volume": "johnrraymond_directus_uploads"
       },
       "uploads_status": "ready"
     },
@@ -93,52 +77,50 @@
           "collection": "posts",
           "ok": true,
           "provider": "directus",
-          "public_url": "http://127.0.0.1:28200",
-          "service": "hub-site-directus",
+          "public_url": "http://127.0.0.1:28202",
+          "service": "johnrraymond-directus",
           "steps": [
             {
-              "action": "reused",
+              "action": "created",
               "collection": "posts",
-              "message": "posts collection exists",
+              "message": "posts collection ready",
               "ok": true,
               "step": "schema.collection"
             },
             {
               "collection": "posts",
-              "created": [],
-              "message": "ensured posts fields",
-              "ok": true,
-              "reused": [
+              "created": [
                 "status",
                 "slug",
                 "title",
                 "excerpt",
                 "body",
-                "featured_image",
-                "published_at"
+                "published_on",
+                "read_time_minutes",
+                "is_legacy",
+                "featured_image"
               ],
+              "message": "ensured posts fields",
+              "ok": true,
+              "reused": [],
               "step": "schema.fields"
             },
             {
               "anonymous_policy": "abf8a154-5b1c-4a46-ac9c-7300570f4f17",
-              "message": "using Directus anonymous public policy abf8a154-5b1c-4a46-ac9c-7300570f4f17; listed Directus access rows from /access; updated permission posts:read; updated permission directus_files:read",
+              "message": "using Directus anonymous public policy abf8a154-5b1c-4a46-ac9c-7300570f4f17; listed Directus access rows from /access; created permission posts:read; created permission directus_files:read",
               "ok": true,
               "step": "permissions.public_read"
             },
             {
               "message": "anonymous posts read succeeded",
               "ok": true,
-              "post_slugs": [
-                "Making first post",
-                "goodone",
-                "item 4"
-              ],
+              "post_slugs": [],
               "step": "verify.anonymous_posts"
             }
           ]
         }
       ],
-      "updated_at": "2026-05-23T18:59:21+00:00"
+      "updated_at": "2026-05-29T17:55:53+00:00"
     },
     "feature": "blog",
     "install_order": [
@@ -151,13 +133,13 @@
       "ok": true,
       "published_read_ok": true,
       "route_ok": true,
-      "updated_at": "2026-05-24T17:46:34+00:00"
+      "updated_at": "2026-05-29T17:55:55+00:00"
     },
     "layers": {
       "blog": {
         "action": "pending_deploy",
         "status": "ready",
-        "updated_at": "2026-05-24T17:46:34+00:00",
+        "updated_at": "2026-05-29T17:55:55+00:00",
         "verification": {
           "draft_protected": true,
           "published_read_ok": true,
@@ -167,33 +149,33 @@
       "cms": {
         "action": "configured",
         "status": "ready",
-        "updated_at": "2026-05-24T17:46:34+00:00"
+        "updated_at": "2026-05-29T17:55:55+00:00"
       },
       "database": {
         "action": "reused",
         "status": "reused",
-        "updated_at": "2026-05-23T18:59:19+00:00"
+        "updated_at": "2026-05-29T17:55:22+00:00"
       }
     },
-    "runtime_config_written_at": "2026-05-24T17:46:34+00:00",
+    "runtime_config_written_at": "2026-05-29T17:55:55+00:00",
     "runtime_dependency_policy": "deploy_reuses_existing_dependencies_when_safe",
     "runtime_preparation": {
       "directus_service": {
-        "internal_url": "http://hub-site-directus:8055",
+        "internal_url": "http://johnrraymond-directus:8055",
         "permissions_status": "ready",
         "provider": "directus",
-        "public_url": "http://127.0.0.1:28200",
+        "public_url": "http://127.0.0.1:28202",
         "requested": true,
         "schema_status": "ready",
-        "service": "hub-site-directus",
+        "service": "johnrraymond-directus",
         "status": "ready",
-        "updated_at": "2026-05-23T18:59:21+00:00",
+        "updated_at": "2026-05-29T17:55:53+00:00",
         "verified": true
       },
       "sqlite_database": {
         "source": "runtime/websites/johnrraymond/data/content.sqlite",
         "status": "ready",
-        "updated_at": "2026-05-23T18:59:19+00:00",
+        "updated_at": "2026-05-29T17:55:22+00:00",
         "verified": true
       }
     },
@@ -210,7 +192,7 @@
     "post_route_prefix": "/blog/",
     "route": "/blog",
     "status": "ready",
-    "updated_at": "2026-05-24T17:46:25+00:00"
+    "updated_at": "2026-05-29T17:55:35+00:00"
   },
   "builder": {
     "engine": "grapesjs",
@@ -249,14 +231,14 @@
       "content_runtime": "directus",
       "database": "sqlite",
       "enabled": true,
-      "hydrated_at": "2026-05-24T17:46:34+00:00",
+      "hydrated_at": "2026-05-29T17:55:55+00:00",
       "install_order": [
         "database",
         "cms",
         "blog"
       ],
       "install_status": "ready",
-      "last_verified_at": "2026-05-24T17:46:34+00:00",
+      "last_verified_at": "2026-05-29T17:55:55+00:00",
       "page": {
         "managed": true,
         "mode": "list_and_detail",
@@ -264,7 +246,7 @@
         "post_route_prefix": "/blog/",
         "route": "/blog",
         "status": "ready",
-        "updated_at": "2026-05-24T17:46:25+00:00"
+        "updated_at": "2026-05-29T17:55:35+00:00"
       },
       "routes": {
         "index": "/blog",
@@ -288,7 +270,7 @@
     "lanes": {
       "dev": {
         "last_publish_verified": true,
-        "last_published_at": "2026-05-24T17:46:34+00:00",
+        "last_published_at": "2026-05-29T17:55:55+00:00",
         "last_published_service": "johnrraymond-dev",
         "last_published_url": "http://localhost:18119/",
         "port": 18119,
@@ -351,5 +333,5 @@
     "kind": "host_runtime_site",
     "path": "runtime/websites/johnrraymond"
   },
-  "updated_at": "2026-05-24T22:17:54+00:00"
+  "updated_at": "2026-05-29T21:08:36+00:00"
 }

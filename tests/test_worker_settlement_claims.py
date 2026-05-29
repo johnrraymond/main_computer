@@ -357,6 +357,54 @@ class WorkerSettlementClaimTests(unittest.TestCase):
             self.assertTrue(repeated["idempotent"])
             self.assertEqual(repeated["additional_settled_credits"], 0)
 
+            replay_mismatches = (
+                {
+                    "chain_id": 31337,
+                    "contract_address": "0x1111111111111111111111111111111111111111",
+                    "recipient_address": "0x2222222222222222222222222222222222222222",
+                    "proposal_id": "7",
+                    "block_number": 12345,
+                },
+                {
+                    "chain_id": 42424242,
+                    "contract_address": "0x3333333333333333333333333333333333333333",
+                    "recipient_address": "0x2222222222222222222222222222222222222222",
+                    "proposal_id": "7",
+                    "block_number": 12345,
+                },
+                {
+                    "chain_id": 42424242,
+                    "contract_address": "0x1111111111111111111111111111111111111111",
+                    "recipient_address": "0x4444444444444444444444444444444444444444",
+                    "proposal_id": "7",
+                    "block_number": 12345,
+                },
+                {
+                    "chain_id": 42424242,
+                    "contract_address": "0x1111111111111111111111111111111111111111",
+                    "recipient_address": "0x2222222222222222222222222222222222222222",
+                    "proposal_id": "8",
+                    "block_number": 12345,
+                },
+                {
+                    "chain_id": 42424242,
+                    "contract_address": "0x1111111111111111111111111111111111111111",
+                    "recipient_address": "0x2222222222222222222222222222222222222222",
+                    "proposal_id": "7",
+                    "block_number": 12346,
+                },
+            )
+            for mismatch in replay_mismatches:
+                with self.subTest(mismatch=mismatch), self.assertRaises(ValueError):
+                    ledger.record_worker_settlement_chain_execution(
+                        batch_id=batch["batch_id"],
+                        payout_units_executed=5_500_000,
+                        settlement_tx_hash="0x" + "a" * 64,
+                        payout_rail="xlag-bridge-reserve",
+                        idempotency_key="chain-execution",
+                        **mismatch,
+                    )
+
             with self.assertRaises(ValueError):
                 ledger.record_worker_settlement_chain_execution(
                     batch_id=batch["batch_id"],

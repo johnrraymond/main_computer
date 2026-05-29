@@ -10,6 +10,7 @@
     <!-- @include applications/scripts/dom-bindings/file-explorer.js -->
     <!-- @include applications/scripts/dom-bindings/game-editor.js -->
     <!-- @include applications/scripts/dom-bindings/websites.js -->
+    <!-- @include applications/scripts/dom-bindings/mcel-lab.js -->
     <!-- @include applications/scripts/dom-bindings/worker.js -->
     <!-- @include applications/scripts/dom-bindings/aider.js -->
     <!-- @include applications/scripts/dom-bindings/navigation.js -->

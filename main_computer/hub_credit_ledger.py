@@ -59,6 +59,37 @@ def _positive_chain_id(value: Any) -> int:
         raise ValueError("chain_id must be a positive integer.")
     return parsed
 
+def _require_same_chain_execution_field(
+    metadata: dict[str, Any],
+    field_name: str,
+    expected: Any,
+    *,
+    batch_id: str,
+) -> None:
+    """Require an idempotent chain receipt replay to match the stored receipt."""
+    if field_name not in metadata:
+        raise ValueError(
+            f"Settlement batch {batch_id} is already settled, but no stored chain receipt "
+            f"{field_name} is available for idempotent replay."
+        )
+    stored_raw = metadata.get(field_name)
+    if isinstance(expected, int):
+        stored = positive_int(stored_raw)
+        if stored != expected:
+            raise ValueError(
+                f"Settlement batch {batch_id} is already settled with a different chain receipt "
+                f"{field_name}."
+            )
+        return
+    stored = str(stored_raw or "").strip().lower()
+    incoming = str(expected or "").strip().lower()
+    if not stored or stored != incoming:
+        raise ValueError(
+            f"Settlement batch {batch_id} is already settled with a different chain receipt "
+            f"{field_name}."
+        )
+
+
 
 
 def _copy_dict(value: Any) -> dict[str, Any]:
@@ -812,8 +843,27 @@ class HubCreditLedger:
         if batch.status == "settled":
             if batch.payout_rail and batch.payout_rail != clean_rail:
                 raise ValueError(f"Settlement batch {clean_batch_id} is already settled via {batch.payout_rail}.")
-            if batch.settlement_tx_hash and batch.settlement_tx_hash.lower() != clean_tx_hash:
+            if not batch.settlement_tx_hash:
+                raise ValueError(f"Settlement batch {clean_batch_id} is already settled without a chain tx hash.")
+            if batch.settlement_tx_hash.lower() != clean_tx_hash:
                 raise ValueError(f"Settlement batch {clean_batch_id} is already settled with a different tx hash.")
+
+            stored_chain_metadata = _copy_dict(batch.metadata)
+            for field_name, expected in (
+                ("chain_id", clean_chain_id),
+                ("contract_address", clean_contract),
+                ("recipient_address", clean_recipient),
+                ("payout_units_executed", executed_units),
+                ("proposal_id", clean_proposal_id),
+                ("block_number", clean_block),
+            ):
+                _require_same_chain_execution_field(
+                    stored_chain_metadata,
+                    field_name,
+                    expected,
+                    batch_id=clean_batch_id,
+                )
+
             return {
                 "ok": True,
                 "idempotent": True,

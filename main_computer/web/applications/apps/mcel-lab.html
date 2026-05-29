@@ -1,0 +1,157 @@
+<section
+  class="mcel-lab-app mc-app-shell"
+  id="mcel-lab-app"
+  aria-label="MCEL Lab"
+  data-mc-component-id="mcel-lab.root"
+  data-mc-component-kind="workspace"
+  data-mc-component-label="MCEL Lab"
+  data-mc-widget-id="mcel-lab.root"
+  data-mc-widget-kind="workspace"
+  data-mc-widget-class="app"
+  data-mc-widget-label="MCEL Lab"
+  style="display: none;"
+>
+  <header class="mcel-lab-hero">
+    <div>
+      <p class="eyebrow">Web Test Bed / MCEL Lab</p>
+      <h3>Semantic HTML Compiler Workbench</h3>
+      <p>
+        Proves clean source HTML can compile into smart runtime DOM, survive editor
+        interaction, repair generated parts, and serialize back without wrapper rot.
+      </p>
+    </div>
+    <div class="mcel-lab-actions" role="group" aria-label="MCEL Lab primary actions">
+      <button type="button" id="mcel-lab-compile">Compile</button>
+      <button type="button" id="mcel-lab-serialize">Serialize</button>
+      <button type="button" id="mcel-lab-damage">Damage Runtime</button>
+      <button type="button" id="mcel-lab-repair">Repair</button>
+      <button type="button" id="mcel-lab-run-tests">Run Full Contract Suite</button>
+      <button type="button" id="mcel-lab-reset">Reset</button>
+    </div>
+  </header>
+
+  <nav class="mcel-lab-modes" aria-label="MCEL Lab modes">
+    <button class="active" type="button" data-mcel-mode="source">Source</button>
+    <button type="button" data-mcel-mode="editor">Editor</button>
+    <button type="button" data-mcel-mode="runtime">Runtime</button>
+    <button type="button" data-mcel-mode="diff">Diff</button>
+    <button type="button" data-mcel-mode="stress">Stress</button>
+    <button type="button" data-mcel-mode="a11y">A11y</button>
+  </nav>
+
+  <section class="mcel-lab-scenarios" aria-label="MCEL Lab scenarios">
+    <label>
+      Scenario
+      <select id="mcel-scenario-select" aria-label="MCEL scenario selector"></select>
+    </label>
+    <button type="button" id="mcel-load-scenario">Load Scenario</button>
+    <span id="mcel-scenario-description">Scenario library is loading.</span>
+  </section>
+
+  <div class="mcel-lab-workbench">
+    <section class="mcel-lab-pane mcel-lab-source-pane" aria-label="Source HTML">
+      <div class="mcel-lab-pane-head">
+        <strong>Source HTML</strong>
+        <span>canonical editable semantic source</span>
+      </div>
+      <textarea id="mcel-source-html" spellcheck="false" aria-label="MCEL source HTML"></textarea>
+    </section>
+
+    <section class="mcel-lab-pane mcel-lab-editor-pane" aria-label="GrapesJS semantic editor">
+      <div class="mcel-lab-pane-head">
+        <strong>GrapesJS Canvas</strong>
+        <span id="mcel-editor-status">semantic source editor booting</span>
+      </div>
+      <div class="mcel-lab-editor-layout">
+        <div class="mcel-lab-blocks" aria-label="MCEL source blocks">
+          <button type="button" data-mcel-block="panel">Panel</button>
+          <button type="button" data-mcel-block="hero">Hero Panel</button>
+          <button type="button" data-mcel-block="signal">Signal Panel</button>
+          <button type="button" data-mcel-block="work">Work Panel</button>
+          <button type="button" data-mcel-block="feed">Feed</button>
+          <button type="button" data-mcel-block="command-row">Command Row</button>
+          <button type="button" data-mcel-block="proof">Proof Surface</button>
+          <button type="button" data-mcel-block="smart-region">Smart Region</button>
+        </div>
+        <div class="mcel-lab-selection" id="mcel-selection-status">
+          Selected source widget: 1
+        </div>
+        <div class="mcel-lab-traits" aria-label="MCEL semantic traits">
+          <label>Kind <select id="mcel-trait-kind">
+            <option value="signal">signal</option>
+            <option value="work">work</option>
+            <option value="hero">hero</option>
+            <option value="article">article</option>
+            <option value="proof">proof</option>
+          </select></label>
+          <label>Flow <select id="mcel-trait-flow">
+            <option value="forward">forward</option>
+            <option value="reverse">reverse</option>
+            <option value="stack">stack</option>
+            <option value="split">split</option>
+          </select></label>
+          <label>Rank <select id="mcel-trait-rank">
+            <option value="primary">primary</option>
+            <option value="secondary">secondary</option>
+            <option value="minor">minor</option>
+          </select></label>
+          <label>State <select id="mcel-trait-state">
+            <option value="live">live</option>
+            <option value="idle">idle</option>
+            <option value="draft">draft</option>
+            <option value="warning">warning</option>
+          </select></label>
+          <label>Density <select id="mcel-trait-density">
+            <option value="auto">auto</option>
+            <option value="calm">calm</option>
+            <option value="dense">dense</option>
+            <option value="compressed">compressed</option>
+          </select></label>
+          <label>Words <input id="mcel-trait-words" value="argument stream volatile public"></label>
+          <label>Connects <input id="mcel-trait-connects" placeholder="optional target id"></label>
+          <button type="button" id="mcel-apply-traits">Apply traits to selected widget</button>
+        </div>
+        <div class="mcel-lab-grapes-shell">
+          <div id="mcel-grapes-host">
+            <div id="mcel-grapes"></div>
+          </div>
+          <div id="mcel-grapes-fallback">
+            GrapesJS is unavailable; semantic block insertion and trait editing remain active.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="mcel-lab-pane mcel-lab-runtime-pane" aria-label="Runtime DOM">
+      <div class="mcel-lab-pane-head">
+        <strong>Runtime DOM</strong>
+        <span>generated structure inspected</span>
+      </div>
+      <div id="mcel-runtime-preview" class="mcel-runtime-preview theme-machine" aria-label="Compiled MCEL preview"></div>
+      <pre id="mcel-runtime-dom" aria-label="Runtime DOM source"></pre>
+    </section>
+  </div>
+
+  <div class="mcel-lab-bottom">
+    <section class="mcel-lab-panel" aria-label="Compiler Log">
+      <h4>Compiler Log</h4>
+      <ol id="mcel-compiler-log"></ol>
+    </section>
+    <section class="mcel-lab-panel" aria-label="Serializer Diff">
+      <h4>Serializer Diff</h4>
+      <pre id="mcel-serializer-diff"></pre>
+    </section>
+    <section class="mcel-lab-panel" aria-label="Debugger">
+      <h4>Debugger</h4>
+      <pre id="mcel-debugger-output"></pre>
+    </section>
+    <section class="mcel-lab-panel" aria-label="A11y Report">
+      <h4>A11y Report</h4>
+      <pre id="mcel-a11y-report"></pre>
+    </section>
+    <section class="mcel-lab-panel" aria-label="Contract Tests">
+      <h4>Contract Tests</h4>
+      <pre id="mcel-test-report">Contract tests have not run yet.</pre>
+    </section>
+  </div>
+</section>

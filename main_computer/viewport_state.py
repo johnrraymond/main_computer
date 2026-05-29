@@ -215,10 +215,12 @@ APPLICATION_ROUTE_NAMES = {
     "file-explorer",
     "game-editor",
     "website-builder",
+    "mcel-lab",
     "worker",
 }
 APPLICATION_ROUTE_ALIASES = {
     "layout-builder": "game-editor",
+    "web-test-bed": "mcel-lab",
 }
 APPLICATION_ROUTE_DEFAULT = "calculator"
 APPLICATION_TASK_MANAGER_TABS = {
