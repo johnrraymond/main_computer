@@ -26,6 +26,10 @@
       <button type="button" id="mcel-lab-damage">Damage Runtime</button>
       <button type="button" id="mcel-lab-repair">Repair</button>
       <button type="button" id="mcel-lab-run-tests">Run Full Contract Suite</button>
+      <button type="button" id="mcel-lab-audit">Run Operational Audit</button>
+      <button type="button" id="mcel-project-save">Save Project</button>
+      <button type="button" id="mcel-project-restore">Restore Project</button>
+      <button type="button" id="mcel-project-export">Export Snapshot</button>
       <button type="button" id="mcel-lab-reset">Reset</button>
     </div>
   </header>
@@ -46,6 +50,30 @@
     </label>
     <button type="button" id="mcel-load-scenario">Load Scenario</button>
     <span id="mcel-scenario-description">Scenario library is loading.</span>
+  </section>
+
+  <section class="mcel-lab-operations" aria-label="MCEL Lab semantic operations">
+    <label>
+      Theme
+      <select id="mcel-theme-select" aria-label="MCEL theme selector">
+        <option value="theme-machine">theme-machine</option>
+        <option value="theme-basic">theme-basic</option>
+        <option value="theme-article">theme-article</option>
+        <option value="theme-debug">theme-debug</option>
+        <option value="theme-accessibility">theme-accessibility</option>
+      </select>
+    </label>
+    <label class="mcel-command-label">
+      Semantic Command
+      <input
+        id="mcel-command-input"
+        aria-label="MCEL semantic command"
+        placeholder="try: set flow reverse; insert proof; theme debug; serialize"
+      >
+    </label>
+    <button type="button" id="mcel-command-plan">Plan Command</button>
+    <button type="button" id="mcel-command-apply">Apply Command</button>
+    <span id="mcel-project-status">Project state is local to this browser until saved.</span>
   </section>
 
   <div class="mcel-lab-workbench">
@@ -148,6 +176,26 @@
     <section class="mcel-lab-panel" aria-label="A11y Report">
       <h4>A11y Report</h4>
       <pre id="mcel-a11y-report"></pre>
+    </section>
+    <section class="mcel-lab-panel" aria-label="CSS Law">
+      <h4>CSS Law</h4>
+      <pre id="mcel-css-law-report"></pre>
+    </section>
+    <section class="mcel-lab-panel" aria-label="Semantic Graph">
+      <h4>Semantic Graph</h4>
+      <pre id="mcel-graph-report">Semantic graph has not been built yet.</pre>
+    </section>
+    <section class="mcel-lab-panel" aria-label="Operational Audit">
+      <h4>Operational Audit</h4>
+      <pre id="mcel-audit-report">Operational audit has not run yet.</pre>
+    </section>
+    <section class="mcel-lab-panel" aria-label="Command Surface">
+      <h4>Command Surface</h4>
+      <pre id="mcel-command-report">No semantic command has been planned yet.</pre>
+    </section>
+    <section class="mcel-lab-panel" aria-label="Project State">
+      <h4>Project State</h4>
+      <pre id="mcel-project-report">Project has not been saved in this browser yet.</pre>
     </section>
     <section class="mcel-lab-panel" aria-label="Contract Tests">
       <h4>Contract Tests</h4>

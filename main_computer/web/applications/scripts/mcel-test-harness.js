@@ -3,6 +3,10 @@
       const engine = typeof McelLabEngine !== "undefined" ? McelLabEngine : window.McelLabEngine;
       const editor = typeof McelLabEditor !== "undefined" ? McelLabEditor : window.McelLabEditor;
       const scenarios = typeof McelLabScenarios !== "undefined" ? McelLabScenarios : window.McelLabScenarios;
+      const styleLaw = typeof McelLabStyleLaw !== "undefined" ? McelLabStyleLaw : window.McelLabStyleLaw;
+      const commandSurface = typeof McelLabCommandSurface !== "undefined" ? McelLabCommandSurface : window.McelLabCommandSurface;
+      const projectStore = typeof McelLabProjectStore !== "undefined" ? McelLabProjectStore : window.McelLabProjectStore;
+      const graph = typeof McelLabGraph !== "undefined" ? McelLabGraph : window.McelLabGraph;
       const {attributes} = contract;
 
       function runtimeRoot(html) {
@@ -86,6 +90,84 @@
           related?.getAttribute(attributes.relation) === "resolved",
           `relation=${related?.getAttribute(attributes.relation) || "missing"}`,
           "layout"
+        );
+
+        const styleRoot = runtimeRoot(compiled.runtimeHtml);
+        const styleReport = styleLaw.applyRuntimeLaw(styleRoot, {theme: "theme-debug"});
+        const styled = styleRoot.querySelector(`[${attributes.type}]`);
+        const styleSerialized = engine.serializeRuntimeRoot(styleRoot, {reason: "style-law-harness"});
+        record(
+          results,
+          "CSS law publishes runtime tokens without source pollution",
+          styleReport.theme === "theme-debug" &&
+            styled?.getAttribute(attributes.styleLaw) === "true" &&
+            !styleSerialized.serialized.includes(attributes.styleLaw) &&
+            !styleSerialized.serialized.includes(attributes.flowAxis),
+          `theme=${styleReport.theme}, elements=${styleReport.elementCount}`,
+          "style-law"
+        );
+
+        const graphReport = graph.compactReport(contract.defaultSource, styleRoot);
+        record(
+          results,
+          "semantic graph maps source/runtime nodes and generated parts",
+          graphReport.source.nodes === graphReport.runtime.nodes &&
+            graphReport.runtime.generatedParts > 0 &&
+            Array.isArray(graphReport.nodes),
+          `${graphReport.runtime.nodes} runtime node(s), ${graphReport.runtime.generatedParts} generated part(s)`,
+          "graph"
+        );
+
+        const auditReport = graph.audit(contract.defaultSource, null, {reason: "harness-audit"});
+        record(
+          results,
+          "operational audit blocks source/runtime/provenance regressions",
+          auditReport.status !== "blocked" &&
+            auditReport.failed === 0 &&
+            auditReport.runtimeGraph.generatedPartCount > 0,
+          `${auditReport.passed} audit check(s), status=${auditReport.status}`,
+          "audit"
+        );
+
+        const commandPlan = commandSurface.plan("set flow reverse; set state warning; theme debug; serialize", {
+          source: contract.defaultSource,
+          selectedIndex: 0,
+          theme: "theme-machine"
+        });
+        const commandApplied = commandSurface.apply(commandPlan, {
+          source: contract.defaultSource,
+          selectedIndex: 0,
+          theme: "theme-machine"
+        });
+        const commandTraits = editor.readTraits(commandApplied.source, {index: 0});
+        record(
+          results,
+          "semantic command surface mutates clean source contracts",
+          commandPlan.ok &&
+            commandTraits.flow === "reverse" &&
+            commandTraits.state === "warning" &&
+            commandApplied.theme === "theme-debug" &&
+            commandApplied.actions.includes("serialize"),
+          commandPlan.summary.join("; "),
+          "command"
+        );
+
+        const snapshot = projectStore.snapshot({
+          source: commandApplied.source,
+          selectedIndex: commandApplied.selectedIndex,
+          theme: commandApplied.theme,
+          mode: "diff",
+          scenario: "round-trip",
+          lastSerializerClean: true
+        });
+        record(
+          results,
+          "project snapshots persist clean semantic source only",
+          snapshot.source.includes(attributes.type) &&
+            !snapshot.source.includes(attributes.generated) &&
+            snapshot.note.includes("never generated runtime DOM"),
+          `version=${snapshot.version}, theme=${snapshot.theme}`,
+          "project"
         );
 
         const passed = results.filter((result) => result.passed).length;

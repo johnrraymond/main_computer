@@ -17,8 +17,20 @@
         relationCount: "data-mc-relation-count",
         clusterSize: "data-mc-cluster-size",
         sourceIndex: "data-mc-source-index",
-        editorSelected: "data-mc-editor-selected"
+        editorSelected: "data-mc-editor-selected",
+        theme: "data-mc-theme",
+        styleLaw: "data-mc-style-law",
+        flowAxis: "data-mc-flow-axis",
+        fieldPressure: "data-mc-field-pressure",
+        attention: "data-mc-attention",
+        relationMode: "data-mc-relation-mode",
+        artifactOwner: "data-mc-owner",
+        artifactOrigin: "data-mc-origin",
+        artifactReason: "data-mc-reason",
+        contractVersion: "data-mc-contract-version"
       });
+
+      const contractVersion = "mcel-lab.v0.5-operational-graph";
 
       const modes = Object.freeze(["source", "editor", "runtime", "diff", "stress", "a11y"]);
 
@@ -39,10 +51,28 @@
         attributes.relationCount,
         attributes.clusterSize,
         attributes.sourceIndex,
-        attributes.editorSelected
+        attributes.editorSelected,
+        attributes.theme,
+        attributes.styleLaw,
+        attributes.flowAxis,
+        attributes.fieldPressure,
+        attributes.attention,
+        attributes.relationMode,
+        attributes.artifactOwner,
+        attributes.artifactOrigin,
+        attributes.artifactReason,
+        attributes.contractVersion
       ]);
 
       const runtimeOwnedClasses = Object.freeze(["mc", "mcel-selected"]);
+
+      const themes = Object.freeze([
+        "theme-basic",
+        "theme-machine",
+        "theme-article",
+        "theme-debug",
+        "theme-accessibility"
+      ]);
 
       const schema = Object.freeze({
         panel: Object.freeze({
@@ -155,6 +185,8 @@
         defaults,
         runtimeOwnedAttributes,
         runtimeOwnedClasses,
+        themes,
+        contractVersion,
         schema,
         defaultSource,
         blockTemplates

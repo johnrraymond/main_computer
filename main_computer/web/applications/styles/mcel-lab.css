@@ -115,7 +115,9 @@
 #mcel-serializer-diff,
 #mcel-debugger-output,
 #mcel-a11y-report,
-#mcel-test-report {
+#mcel-test-report,
+#mcel-graph-report,
+#mcel-audit-report {
   width: 100%;
   min-width: 0;
   min-height: 0;
@@ -437,7 +439,9 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
   box-shadow: 0 0 0 6px rgba(115, 214, 255, 0.12);
 }
 
-#mcel-test-report {
+#mcel-test-report,
+#mcel-graph-report,
+#mcel-audit-report {
   line-height: 1.5;
 }
 
@@ -449,4 +453,162 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
   .mcel-lab-scenarios {
     grid-template-columns: 1fr;
   }
+}
+
+
+.mcel-lab-operations {
+  display: grid;
+  grid-template-columns: minmax(160px, 220px) minmax(280px, 1fr) auto auto minmax(260px, 0.75fr);
+  gap: 8px;
+  align-items: end;
+  padding: 9px;
+  border: 1px solid rgba(115, 214, 255, 0.2);
+  border-radius: 10px;
+  background:
+    linear-gradient(90deg, rgba(115, 214, 255, 0.06), transparent 45%),
+    #050706;
+}
+
+.mcel-lab-operations label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.mcel-lab-operations select,
+.mcel-lab-operations input {
+  min-width: 0;
+  border: 1px solid rgba(246, 199, 91, 0.24);
+  border-radius: 7px;
+  background: #030403;
+  color: var(--ink);
+  padding: 8px;
+  font-weight: 800;
+}
+
+.mcel-command-label {
+  min-width: 0;
+}
+
+#mcel-command-plan,
+#mcel-command-apply,
+#mcel-project-save,
+#mcel-project-restore,
+#mcel-project-export,
+#mcel-lab-audit {
+  min-height: 34px;
+  padding: 7px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+#mcel-project-status {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.mcel-lab-bottom {
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+}
+
+.mcel-runtime-preview.theme-basic {
+  background: #f7f4e8;
+  color: #111;
+}
+
+.mcel-runtime-preview.theme-basic .mc {
+  border-color: rgba(10, 10, 10, 0.24);
+  background: rgba(255, 255, 255, 0.86);
+  color: #111;
+}
+
+.mcel-runtime-preview.theme-article {
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.1), transparent),
+    #17120c;
+}
+
+.mcel-runtime-preview.theme-article .mc {
+  border-radius: 8px;
+  letter-spacing: 0;
+}
+
+.mcel-runtime-preview.theme-debug .mc {
+  outline: 1px dashed rgba(115, 214, 255, 0.55);
+  background-image:
+    linear-gradient(90deg, rgba(115, 214, 255, 0.08) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(246, 199, 91, 0.08) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+
+.mcel-runtime-preview.theme-accessibility .mc {
+  border-width: 3px;
+  box-shadow: none;
+}
+
+.mcel-runtime-preview .mc[data-mc-style-law="true"] {
+  font-weight: var(--mc-rank-weight);
+}
+
+.mcel-runtime-preview .mc[data-mc-attention="active"] {
+  filter: saturate(calc(1 + (var(--mc-state-pulse) * 0.08)));
+}
+
+.mcel-runtime-preview .mc[data-mc-field-pressure="high"] {
+  letter-spacing: 0.04em;
+}
+
+.mcel-runtime-preview .mc[data-mc-flow-axis="reverse-inline"] {
+  border-inline-start-color: var(--sky);
+}
+
+.mcel-runtime-preview .mc[data-mc-relation-mode="resolved"] {
+  box-shadow:
+    0 0 0 1px rgba(119, 255, 180, 0.34),
+    0 16px 48px rgba(119, 255, 180, 0.12);
+}
+
+.mcel-lab-panel[aria-label="CSS Law"],
+.mcel-lab-panel[aria-label="Command Surface"],
+.mcel-lab-panel[aria-label="Project State"],
+.mcel-lab-panel[aria-label="Semantic Graph"],
+.mcel-lab-panel[aria-label="Operational Audit"] {
+  min-height: 220px;
+}
+
+#mcel-css-law-report,
+#mcel-command-report,
+#mcel-project-report,
+#mcel-graph-report,
+#mcel-audit-report {
+  line-height: 1.45;
+}
+
+@media (max-width: 980px) {
+  .mcel-lab-operations {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+.mcel-runtime-preview [data-mc-origin="runtime"],
+.mcel-runtime-preview [data-mc-owner="mcel-part-manager"] {
+  border-color: rgba(115, 214, 255, 0.22);
+}
+
+.mcel-runtime-preview [data-mc-contract-version] {
+  --mc-contract-proof: 1;
+}
+
+.mcel-lab-panel[aria-label="Operational Audit"] {
+  border-color: rgba(174, 224, 111, 0.24);
+}
+
+.mcel-lab-panel[aria-label="Semantic Graph"] {
+  border-color: rgba(115, 214, 255, 0.24);
 }

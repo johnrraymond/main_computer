@@ -1,6 +1,6 @@
     const McelLabEngine = (() => {
       const contract = typeof McelLabContract !== "undefined" ? McelLabContract : window.McelLabContract;
-      const {attributes, defaults, runtimeOwnedAttributes, runtimeOwnedClasses, schema} = contract;
+      const {attributes, defaults, runtimeOwnedAttributes, runtimeOwnedClasses, schema, contractVersion} = contract;
 
       function logEvent(events, level, module, code, message) {
         events.push({level, module, code, message});
@@ -104,10 +104,25 @@
         return {state: "pending", count: 0};
       }
 
+
+
+      function reasonLabelForElement(element) {
+        return [
+          element.getAttribute(attributes.type) || defaults.type,
+          element.getAttribute(attributes.kind) || defaults.kind,
+          element.getAttribute(attributes.flow) || defaults.flow,
+          element.getAttribute(attributes.state) || defaults.state
+        ].join("/");
+      }
+
       function createGeneratedPart(part, element) {
         const node = element.ownerDocument.createElement("div");
         node.setAttribute(attributes.generated, "true");
         node.setAttribute(attributes.part, part);
+        node.setAttribute(attributes.artifactOwner, "mcel-part-manager");
+        node.setAttribute(attributes.artifactOrigin, "runtime");
+        node.setAttribute(attributes.artifactReason, `compile:${element.getAttribute(attributes.type) || defaults.type}:${part}`);
+        node.setAttribute(attributes.contractVersion, contractVersion || "mcel-lab");
         node.setAttribute("aria-hidden", "true");
         if (part === "meta") {
           node.textContent = [
@@ -147,6 +162,10 @@
         element.classList.add("mc", `mc-${type}`);
         element.setAttribute(attributes.enhanced, "true");
         element.setAttribute(attributes.sourceIndex, String(sourceIndex));
+        element.setAttribute(attributes.artifactOwner, "mcel-runtime-builder");
+        element.setAttribute(attributes.artifactOrigin, "source");
+        element.setAttribute(attributes.artifactReason, `enhanced:${reasonLabelForElement(element)}`);
+        element.setAttribute(attributes.contractVersion, contractVersion || "mcel-lab");
         element.setAttribute(attributes.computedDensity, density);
         element.setAttribute(attributes.neighborhood, neighborhood.neighborhood);
         element.setAttribute(attributes.clusterSize, String(neighborhood.clusterSize));
@@ -319,6 +338,10 @@
           connects: element.getAttribute(attributes.connects) || "",
           relation: element.getAttribute(attributes.relation) || "",
           relationCount: Number(element.getAttribute(attributes.relationCount) || "0"),
+          artifactOwner: element.getAttribute(attributes.artifactOwner) || "",
+          artifactOrigin: element.getAttribute(attributes.artifactOrigin) || "",
+          artifactReason: element.getAttribute(attributes.artifactReason) || "",
+          contractVersion: element.getAttribute(attributes.contractVersion) || "",
           neighborhood: element.getAttribute(attributes.neighborhood) || "isolated",
           clusterSize: Number(element.getAttribute(attributes.clusterSize) || "1"),
           generatedParts,

@@ -21,14 +21,22 @@ def test_mcel_lab_is_registered_as_separate_application() -> None:
     assert "<!-- @include applications/scripts/mcel-contract.js -->" in html
     assert "<!-- @include applications/scripts/mcel-engine.js -->" in html
     assert "<!-- @include applications/scripts/mcel-editor.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-style-law.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-command-surface.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-project-store.js -->" in html
     assert "<!-- @include applications/scripts/mcel-scenarios.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-graph.js -->" in html
     assert "<!-- @include applications/scripts/mcel-test-harness.js -->" in html
     assert "<!-- @include applications/scripts/mcel-lab.js -->" in html
     assert (
         html.index("mcel-contract.js")
         < html.index("mcel-engine.js")
         < html.index("mcel-editor.js")
+        < html.index("mcel-style-law.js")
+        < html.index("mcel-command-surface.js")
+        < html.index("mcel-project-store.js")
         < html.index("mcel-scenarios.js")
+        < html.index("mcel-graph.js")
         < html.index("mcel-test-harness.js")
         < html.index("mcel-lab.js")
     )
@@ -49,7 +57,12 @@ def test_mcel_lab_assets_define_round_trip_contract() -> None:
     contract = (WEB_APP / "scripts" / "mcel-contract.js").read_text(encoding="utf-8")
     engine = (WEB_APP / "scripts" / "mcel-engine.js").read_text(encoding="utf-8")
     editor = (WEB_APP / "scripts" / "mcel-editor.js").read_text(encoding="utf-8")
+    style_law = (WEB_APP / "scripts" / "mcel-style-law.js").read_text(encoding="utf-8")
+    command_surface = (WEB_APP / "scripts" / "mcel-command-surface.js").read_text(encoding="utf-8")
+    project_store = (WEB_APP / "scripts" / "mcel-project-store.js").read_text(encoding="utf-8")
+    graph = (WEB_APP / "scripts" / "mcel-graph.js").read_text(encoding="utf-8")
     scenarios = (WEB_APP / "scripts" / "mcel-scenarios.js").read_text(encoding="utf-8")
+    graph = (WEB_APP / "scripts" / "mcel-graph.js").read_text(encoding="utf-8")
     harness = (WEB_APP / "scripts" / "mcel-test-harness.js").read_text(encoding="utf-8")
     ui = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
     style = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
@@ -61,6 +74,13 @@ def test_mcel_lab_assets_define_round_trip_contract() -> None:
     assert "mcel-test-report" in app
     assert "mcel-scenario-select" in app
     assert "mcel-selection-status" in app
+    assert "mcel-theme-select" in app
+    assert "mcel-command-input" in app
+    assert "mcel-css-law-report" in app
+    assert "mcel-project-report" in app
+    assert "mcel-graph-report" in app
+    assert "mcel-audit-report" in app
+    assert "Run Operational Audit" in app
     assert "Apply traits to selected widget" in app
     assert "data-mcel-mode=\"stress\"" in app
     assert "data-mc-generated" in contract
@@ -75,7 +95,16 @@ def test_mcel_lab_assets_define_round_trip_contract() -> None:
     assert "sanitizeEditorHtml" in editor
     assert "applyTraits" in editor
     assert "insertBlock" in editor
+    assert "McelLabStyleLaw" in style_law
+    assert "applyRuntimeLaw" in style_law
+    assert "McelLabCommandSurface" in command_surface
+    assert "McelLabCommandSurface" in command_surface and "Semantic Command" in app
+    assert "McelLabProjectStore" in project_store
+    assert "never generated runtime DOM" in project_store
     assert "McelLabScenarios" in scenarios
+    assert "McelLabGraph" in graph
+    assert "graphFromSource" in graph
+    assert "operational-audit" in graph
     assert "Neighborhood Cluster" in scenarios
     assert "Relation Hooks" in scenarios
     assert "McelLabTestHarness" in harness
@@ -90,6 +119,10 @@ def test_mcel_lab_assets_define_round_trip_contract() -> None:
 def test_mcel_lab_has_low_debt_module_boundaries() -> None:
     contract = (WEB_APP / "scripts" / "mcel-contract.js").read_text(encoding="utf-8")
     engine = (WEB_APP / "scripts" / "mcel-engine.js").read_text(encoding="utf-8")
+    style_law = (WEB_APP / "scripts" / "mcel-style-law.js").read_text(encoding="utf-8")
+    command_surface = (WEB_APP / "scripts" / "mcel-command-surface.js").read_text(encoding="utf-8")
+    project_store = (WEB_APP / "scripts" / "mcel-project-store.js").read_text(encoding="utf-8")
+    graph = (WEB_APP / "scripts" / "mcel-graph.js").read_text(encoding="utf-8")
     ui = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
     bindings = (WEB_APP / "scripts" / "dom-bindings" / "mcel-lab.js").read_text(encoding="utf-8")
 
@@ -99,6 +132,7 @@ def test_mcel_lab_has_low_debt_module_boundaries() -> None:
     assert "window.McelLabEngine" in engine
     assert "const schema" in contract
     assert "const blockTemplates" in contract
+    assert "const themes" in contract
     assert "schemaFor(" in engine
     assert "removeRuntimeState(" in engine
     assert "generatedPartsCanonical" in engine
@@ -106,6 +140,14 @@ def test_mcel_lab_has_low_debt_module_boundaries() -> None:
     assert "mcelTestReport" in bindings
     assert "mcelScenarioSelect" in bindings
     assert "mcelSelectionStatus" in bindings
+    assert "mcelThemeSelect" in bindings
+    assert "mcelCommandInput" in bindings
+    assert "mcelProjectSave" in bindings
+    assert "const McelLabStyleLaw" in style_law
+    assert "const McelLabCommandSurface" in command_surface
+    assert "const McelLabProjectStore" in project_store
+    assert "const McelLabGraph" in graph
+    assert "compactReport" in graph
     assert "const mcelLabSchema" not in ui
     assert "function createMcelGeneratedPart" not in ui
 
@@ -114,6 +156,7 @@ def test_mcel_lab_third_slice_pushes_editor_contract_without_runtime_pollution()
     contract = (WEB_APP / "scripts" / "mcel-contract.js").read_text(encoding="utf-8")
     engine = (WEB_APP / "scripts" / "mcel-engine.js").read_text(encoding="utf-8")
     editor = (WEB_APP / "scripts" / "mcel-editor.js").read_text(encoding="utf-8")
+    graph = (WEB_APP / "scripts" / "mcel-graph.js").read_text(encoding="utf-8")
     harness = (WEB_APP / "scripts" / "mcel-test-harness.js").read_text(encoding="utf-8")
     ui = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
     style = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
@@ -131,3 +174,77 @@ def test_mcel_lab_third_slice_pushes_editor_contract_without_runtime_pollution()
     assert "markSelectedMcelRuntimeElement()" in ui
     assert ".mcel-lab-scenarios" in style
     assert '[data-mc-editor-selected="true"]' in style
+
+
+def test_mcel_lab_fourth_slice_adds_operational_surface_without_source_debt() -> None:
+    app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
+    contract = (WEB_APP / "scripts" / "mcel-contract.js").read_text(encoding="utf-8")
+    style_law = (WEB_APP / "scripts" / "mcel-style-law.js").read_text(encoding="utf-8")
+    command_surface = (WEB_APP / "scripts" / "mcel-command-surface.js").read_text(encoding="utf-8")
+    project_store = (WEB_APP / "scripts" / "mcel-project-store.js").read_text(encoding="utf-8")
+    graph = (WEB_APP / "scripts" / "mcel-graph.js").read_text(encoding="utf-8")
+    graph = (WEB_APP / "scripts" / "mcel-graph.js").read_text(encoding="utf-8")
+    harness = (WEB_APP / "scripts" / "mcel-test-harness.js").read_text(encoding="utf-8")
+    ui = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    style = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
+
+    assert "Semantic Command" in app
+    assert "Save Project" in app
+    assert "CSS Law" in app
+    assert 'theme: "data-mc-theme"' in contract
+    assert 'flowAxis: "data-mc-flow-axis"' in contract
+    assert "attributes.flowAxis" in contract
+    assert "applyRuntimeLaw" in style_law
+    assert "computeElementLaw" in style_law
+    assert "McelLabCommandSurface" in command_surface
+    assert "set-trait" in command_surface
+    assert "insert-block" in command_surface
+    assert "McelLabProjectStore" in project_store
+    assert "main-computer.mcel-lab.project.v1" in project_store
+    assert "CSS law publishes runtime tokens without source pollution" in harness
+    assert "semantic command surface mutates clean source contracts" in harness
+    assert "project snapshots persist clean semantic source only" in harness
+    assert "applyMcelRuntimeStyleLaw" in ui
+    assert "applyMcelSemanticCommand" in ui
+    assert "saveMcelProject" in ui
+    assert "theme-debug" in style
+    assert "data-mc-style-law" in style
+
+
+def test_mcel_lab_fifth_slice_adds_operational_graph_and_audit_provenance() -> None:
+    html = (ROOT / "main_computer" / "web" / "applications.html").read_text(encoding="utf-8")
+    app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
+    bindings = (WEB_APP / "scripts" / "dom-bindings" / "mcel-lab.js").read_text(encoding="utf-8")
+    contract = (WEB_APP / "scripts" / "mcel-contract.js").read_text(encoding="utf-8")
+    engine = (WEB_APP / "scripts" / "mcel-engine.js").read_text(encoding="utf-8")
+    graph = (WEB_APP / "scripts" / "mcel-graph.js").read_text(encoding="utf-8")
+    command_surface = (WEB_APP / "scripts" / "mcel-command-surface.js").read_text(encoding="utf-8")
+    harness = (WEB_APP / "scripts" / "mcel-test-harness.js").read_text(encoding="utf-8")
+    ui = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    style = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
+
+    assert "<!-- @include applications/scripts/mcel-graph.js -->" in html
+    assert html.index("mcel-scenarios.js") < html.index("mcel-graph.js") < html.index("mcel-test-harness.js")
+    assert "Run Operational Audit" in app
+    assert "Semantic Graph" in app
+    assert "Operational Audit" in app
+    assert "mcelRunAudit" in bindings
+    assert "mcelGraphReport" in bindings
+    assert "mcelAuditReport" in bindings
+    assert 'artifactOwner: "data-mc-owner"' in contract
+    assert 'contractVersion = "mcel-lab.v0.5-operational-graph"' in contract
+    assert "attributes.artifactOwner" in contract
+    assert 'node.setAttribute(attributes.artifactOwner, "mcel-part-manager")' in engine
+    assert 'node.setAttribute(attributes.artifactReason' in engine
+    assert 'element.setAttribute(attributes.artifactOwner, "mcel-runtime-builder")' in engine
+    assert "const McelLabGraph" in graph
+    assert "graphFromRuntime" in graph
+    assert "hasRuntimeAttributeLeakage" in graph
+    assert "generated parts carry provenance" in graph
+    assert 'audit: ["audit", "govern", "prove"]' in command_surface
+    assert "semantic graph maps source/runtime nodes and generated parts" in harness
+    assert "operational audit blocks source/runtime/provenance regressions" in harness
+    assert "runMcelOperationalAudit" in ui
+    assert "renderMcelGraphReport" in ui
+    assert "renderMcelAuditReport" in ui
+    assert 'data-mc-contract-version' in style

@@ -164,7 +164,7 @@ class BridgeEscrowWorkerPullV0Tests(unittest.TestCase):
         )["request"]
         self.assertEqual(completed["state"], "completed")
         self.assertEqual(completed["charged_credits"], 5_500_000)
-        self.assertEqual(completed["released_credits"], 500_000)
+        self.assertEqual(completed["released_credits"], 0)
         self.assertTrue(completed["worker_earning_id"])
         self.assertEqual(completed["response"]["content"], "worker pull answer")
         self.assertEqual(completed["response"]["metadata"]["hub"]["lease_id"], lease["lease_id"])

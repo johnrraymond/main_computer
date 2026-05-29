@@ -27,6 +27,114 @@ from main_computer.models import ChatResponse
 HUB_WORKER_CHAT_PATH = "/api/hub/worker/chat"
 HUB_WORKER_SESSION_START_PATH = "/api/hub/worker/sessions/start"
 HUB_WORKER_SESSION_CHAT_PATH = "/api/hub/worker/sessions/chat"
+PHASE9_PRICING_MODE = "market_offer_fixed_per_call_v0"
+PHASE9_PRICING_TYPE = "fixed_per_call_v0"
+PHASE9_EXECUTION_MODE = "worker_pull_v0"
+
+
+def phase9_offer_id(*, worker_node_id: str, models: list[str], credits_per_request: int, execution_mode: str) -> str:
+    seed = json.dumps(
+        {
+            "worker_node_id": str(worker_node_id or ""),
+            "models": sorted(str(model) for model in models if str(model).strip()),
+            "pricing_type": PHASE9_PRICING_TYPE,
+            "credits_per_request": max(0, int(credits_per_request or 0)),
+            "unit": "compute_credit",
+            "execution_mode": str(execution_mode or PHASE9_EXECUTION_MODE),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    ).encode("utf-8")
+    return "offer_" + hashlib.sha256(seed).hexdigest()[:24]
+
+
+def phase9_quote_id(*, account_id: str, idempotency_key: str, seed_payload: dict[str, Any]) -> str:
+    if idempotency_key:
+        seed = {"account_id": clean_node_id(account_id, default=""), "idempotency_key": str(idempotency_key or "").strip()}
+    else:
+        seed = {**dict(seed_payload), "stamp": time.time_ns()}
+    return "quote_" + hashlib.sha256(json.dumps(seed, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:24]
+
+
+def normalize_execution_mode(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("-", "_")
+    if text in {"worker_pull", "worker_pull_v0"}:
+        return PHASE9_EXECUTION_MODE
+    return text
+
+
+def market_worker_offer_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    worker = _public_payload(payload)
+    capabilities = dict(worker.get("capabilities", {})) if isinstance(worker.get("capabilities"), dict) else {}
+    pricing = dict(capabilities.get("pricing", {})) if isinstance(capabilities.get("pricing"), dict) else {}
+    existing_offer = dict(worker.get("offer", {})) if isinstance(worker.get("offer"), dict) else {}
+    if bool(capabilities.get("phase9_unpriced", False)):
+        return {}
+    pricing_type = str(
+        existing_offer.get("pricing_type") or pricing.get("pricing_type") or pricing.get("type") or PHASE9_PRICING_TYPE
+    ).strip()
+    if pricing_type in {"", "none", "unpriced", "unpriced_v0"}:
+        return {}
+    try:
+        credits = int(
+            existing_offer.get("credits_per_request")
+            or pricing.get("credits_per_request")
+            or worker.get("credits_per_request")
+            or 0
+        )
+    except (TypeError, ValueError):
+        credits = 0
+    if credits <= 0:
+        return {}
+    models = [
+        str(model).strip()
+        for model in (
+            existing_offer.get("models")
+            if isinstance(existing_offer.get("models"), list)
+            else worker.get("models") if isinstance(worker.get("models"), list) else []
+        )
+        if str(model).strip()
+    ]
+    model = str(worker.get("model", "") or "").strip()
+    if model and model not in models:
+        models.insert(0, model)
+    if not models:
+        return {}
+    execution = dict(capabilities.get("execution", {})) if isinstance(capabilities.get("execution"), dict) else {}
+    execution_mode = normalize_execution_mode(
+        existing_offer.get("execution_mode")
+        or pricing.get("execution_mode")
+        or execution.get("mode")
+        or capabilities.get("execution_mode")
+        or PHASE9_EXECUTION_MODE
+    )
+    worker_node_id = str(existing_offer.get("worker_node_id") or worker.get("node_id") or "")
+    return {
+        "offer_id": str(existing_offer.get("offer_id") or phase9_offer_id(
+            worker_node_id=worker_node_id,
+            models=models,
+            credits_per_request=credits,
+            execution_mode=execution_mode,
+        )),
+        "worker_node_id": worker_node_id,
+        "seller_kind": str(existing_offer.get("seller_kind") or "hub_connected_worker"),
+        "models": models,
+        "capabilities": list(existing_offer.get("capabilities", []))
+        if isinstance(existing_offer.get("capabilities"), list)
+        else ["chat.completions"],
+        "pricing_type": PHASE9_PRICING_TYPE,
+        "credits_per_request": credits,
+        "unit": "compute_credit",
+        "execution_mode": execution_mode,
+        "price_source": str(existing_offer.get("price_source") or "worker_registration"),
+        "settlement": dict(existing_offer.get("settlement", {}))
+        if isinstance(existing_offer.get("settlement"), dict)
+        else {
+            "earning_mode": "worker_earning_v0",
+            "claim_mode": "worker_claim_v0",
+            "settlement_mode": "rounded_batch_v0",
+        },
+    }
 
 
 def utc_now() -> str:
@@ -289,6 +397,73 @@ class RequestStateStore:
         )
 
 
+
+
+class QuoteStateStore:
+    """JSON-backed quote snapshots used for Phase 9 market-backed requests."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.path = root / "hub_quotes.json"
+        self._lock = threading.Lock()
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def create_or_get(self, quote: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        quote_id = str(quote.get("quote_id", "") or "").strip()
+        if not quote_id:
+            raise ValueError("quote_id is required.")
+        with self._lock:
+            data = self._load_unlocked()
+            existing = data.get(quote_id)
+            if isinstance(existing, dict):
+                return dict(existing), True
+            data[quote_id] = dict(quote)
+            self._save_unlocked(data)
+            return dict(quote), False
+
+    def get(self, quote_id: str) -> dict[str, Any] | None:
+        clean = str(quote_id or "").strip()
+        if not clean:
+            return None
+        with self._lock:
+            payload = self._load_unlocked().get(clean)
+        return dict(payload) if isinstance(payload, dict) else None
+
+    def find_by_idempotency_key(self, *, account_id: str, idempotency_key: str) -> dict[str, Any] | None:
+        clean_account = clean_node_id(account_id, default="") if account_id else ""
+        clean_key = str(idempotency_key or "").strip()
+        if not clean_key:
+            return None
+        with self._lock:
+            quotes = [
+                dict(payload)
+                for payload in self._load_unlocked().values()
+                if isinstance(payload, dict)
+                and str(payload.get("account_id", "")) == clean_account
+                and str(payload.get("idempotency_key", "")) == clean_key
+            ]
+        if not quotes:
+            return None
+        return sorted(quotes, key=lambda item: str(item.get("created_at", "")))[-1]
+
+    def _load_unlocked(self) -> dict[str, dict[str, Any]]:
+        if self.path.exists():
+            try:
+                data = json.loads(self.path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    records = data.get("quotes", data)
+                    if isinstance(records, dict):
+                        return {str(key): dict(value) for key, value in records.items() if isinstance(value, dict)}
+            except (OSError, json.JSONDecodeError):
+                pass
+        return {}
+
+    def _save_unlocked(self, records: dict[str, dict[str, Any]]) -> None:
+        self.path.write_text(
+            json.dumps({"quotes": records}, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
 class AIRequestPlexService:
     """Coordinates AI request routing from the hub API to worker machines."""
 
@@ -310,11 +485,21 @@ class AIRequestPlexService:
         self.credit_ledger = credit_ledger
         self.default_credits_per_request = max(1, int(default_credits_per_request or 1))
         self.request_store = RequestStateStore(root)
+        self.quote_store = QuoteStateStore(root)
         self._secure_sessions: dict[str, dict[str, Any]] = {}
         self._session_lock = threading.Lock()
 
     def quote_request(self, request: HubAIRequest) -> dict[str, Any]:
-        """Return the simple v0 paid request quote used by the mock-worker path."""
+        """Return a paid request quote.
+
+        Legacy callers without an explicit market/worker-pull pricing mode keep the
+        original default-price quote. Phase 9 callers get a durable quote backed by
+        a compatible priced worker seller offer.
+        """
+
+        if self._market_pricing_requested(request):
+            quote, idempotent = self._quote_market_paid_request(request)
+            return {"ok": True, "unit": "compute_credit", "quote": quote, "idempotent": idempotent}
 
         estimated = max(1, self.default_credits_per_request)
         max_credits = max(0, int(request.max_credits or 0))
@@ -438,7 +623,9 @@ class AIRequestPlexService:
             if leased_worker is None:
                 return {"ok": True, "lease": None}
             worker_node_id = str(_item_value(leased_worker, "node_id", clean_worker_id))
-            worker_credits = max(1, int(_item_value(leased_worker, "credits_per_request", 1) or 1))
+            selected_offer = self._record_selected_offer(record)
+            quoted_credits = self._record_quoted_credits(record)
+            worker_credits = quoted_credits or max(1, int(_item_value(leased_worker, "credits_per_request", 1) or 1))
             if worker_credits > max(0, int(record.max_credits or 0)):
                 self._release_paid_hold_for_request(
                     record.request_id,
@@ -489,6 +676,21 @@ class AIRequestPlexService:
                 else {},
                 "expires_at": expires_at,
             }
+            market_metadata = self._record_market_metadata(record)
+            if market_metadata:
+                lease["pricing"] = {
+                    "quoted_credits": worker_credits,
+                    "worker_earning_credits": worker_credits,
+                    "unit": "compute_credit",
+                    "pricing_mode": str(market_metadata.get("pricing_mode", PHASE9_PRICING_MODE) or PHASE9_PRICING_MODE),
+                    "execution_mode": str(market_metadata.get("execution_mode", PHASE9_EXECUTION_MODE) or PHASE9_EXECUTION_MODE),
+                }
+                if selected_offer:
+                    lease["selected_offer"] = {
+                        "offer_id": str(selected_offer.get("offer_id", "")),
+                        "worker_node_id": str(selected_offer.get("worker_node_id", "")),
+                        "credits_per_request": max(0, int(selected_offer.get("credits_per_request", 0) or 0)),
+                    }
             return {
                 "ok": True,
                 "lease": lease,
@@ -565,7 +767,8 @@ class AIRequestPlexService:
             default_provider="hub-worker-pull",
             default_model=record.model or "hub-worker-model",
         )
-        worker_credits = max(1, int(record.credits_queued or result.get("charged_credits") or 1))
+        quoted_credits = self._record_quoted_credits(record)
+        worker_credits = quoted_credits or max(1, int(record.credits_queued or result.get("charged_credits") or 1))
         if worker_credits > max(0, int(record.max_credits or 0)):
             raise ValueError(f"Worker result charge {worker_credits} exceeds held max_credits {record.max_credits}.")
         latest_record = self.request_store.get(record.request_id) or record
@@ -593,6 +796,22 @@ class AIRequestPlexService:
             "worker_pull_v0": True,
             "lease_id": clean_lease_id,
         }
+        market_metadata = self._record_market_metadata(record)
+        if market_metadata:
+            selected_offer = self._record_selected_offer(record)
+            metadata["hub"]["pricing"] = {
+                "quoted_credits": worker_credits,
+                "worker_earning_credits": worker_credits,
+                "unit": "compute_credit",
+                "pricing_mode": str(market_metadata.get("pricing_mode", PHASE9_PRICING_MODE) or PHASE9_PRICING_MODE),
+                "execution_mode": str(market_metadata.get("execution_mode", PHASE9_EXECUTION_MODE) or PHASE9_EXECUTION_MODE),
+            }
+            if selected_offer:
+                metadata["hub"]["selected_offer"] = {
+                    "offer_id": str(selected_offer.get("offer_id", "")),
+                    "worker_node_id": str(selected_offer.get("worker_node_id", "")),
+                    "credits_per_request": max(0, int(selected_offer.get("credits_per_request", 0) or 0)),
+                }
         if receipt:
             metadata["hub"]["payment"] = dict(receipt)
         completed = ChatResponse(
@@ -871,6 +1090,239 @@ class AIRequestPlexService:
         )
         return history
 
+    def _request_execution_mode(self, request: HubAIRequest) -> str:
+        metadata = dict(request.metadata) if isinstance(request.metadata, dict) else {}
+        return normalize_execution_mode(metadata.get("execution_mode"))
+
+    def _request_pricing_mode(self, request: HubAIRequest) -> str:
+        metadata = dict(request.metadata) if isinstance(request.metadata, dict) else {}
+        return str(metadata.get("pricing_mode") or "").strip()
+
+    def _market_pricing_requested(self, request: HubAIRequest) -> bool:
+        metadata = dict(request.metadata) if isinstance(request.metadata, dict) else {}
+        pricing_mode = str(metadata.get("pricing_mode") or "").strip()
+        execution_mode = normalize_execution_mode(metadata.get("execution_mode"))
+        return (
+            pricing_mode == PHASE9_PRICING_MODE
+            or (bool(str(metadata.get("execution_mode") or "").strip()) and execution_mode == PHASE9_EXECUTION_MODE)
+            or metadata.get("worker_pull_v0") is True
+            or bool(str(metadata.get("quote_id") or "").strip())
+        )
+
+    def _quote_market_paid_request(self, request: HubAIRequest) -> tuple[dict[str, Any], bool]:
+        account_id = clean_node_id(request.account_id, default="") if request.account_id else ""
+        if not account_id:
+            raise ValueError("account_id is required for market-backed paid AI quotes.")
+        model = str(request.model or "").strip()
+        if not model:
+            raise ValueError("model is required for market-backed paid AI quotes.")
+        max_credits = max(0, int(request.max_credits or 0))
+        if max_credits <= 0:
+            raise ValueError("max_credits must be positive for market-backed paid AI quotes.")
+        metadata = dict(request.metadata) if isinstance(request.metadata, dict) else {}
+        idempotency_key = str(request.idempotency_key or metadata.get("idempotency_key") or "").strip()
+        if idempotency_key:
+            existing = self.quote_store.find_by_idempotency_key(account_id=account_id, idempotency_key=idempotency_key)
+            if existing is not None:
+                return existing, True
+        execution_mode = normalize_execution_mode(metadata.get("execution_mode")) or PHASE9_EXECUTION_MODE
+        selected = self._select_market_worker_offer(
+            model=model,
+            max_credits=max_credits,
+            execution_mode=execution_mode,
+            requested_worker_node_id=request.requested_worker_node_id,
+        )
+        quoted_credits = max(0, int(selected.get("credits_per_request", 0) or 0))
+        if quoted_credits <= 0:
+            raise ValueError("Selected worker offer is not priced.")
+        if quoted_credits > max_credits:
+            raise ValueError(
+                f"Selected worker offer price {quoted_credits} exceeds requester max_credits {max_credits}."
+            )
+        now = utc_now()
+        seed_payload = {
+            "account_id": account_id,
+            "model": model,
+            "max_credits": max_credits,
+            "execution_mode": execution_mode,
+            "selected_offer_id": selected.get("offer_id", ""),
+            "quoted_credits": quoted_credits,
+        }
+        quote = {
+            "quote_id": phase9_quote_id(
+                account_id=account_id,
+                idempotency_key=idempotency_key,
+                seed_payload=seed_payload,
+            ),
+            "idempotency_key": idempotency_key,
+            "account_id": account_id,
+            "model": model,
+            "quoted_credits": quoted_credits,
+            "estimated_credits": quoted_credits,
+            "max_credits": max_credits,
+            "unit": "compute_credit",
+            "pricing_mode": PHASE9_PRICING_MODE,
+            "execution_mode": execution_mode,
+            "selected_offer": dict(selected),
+            "selected_offer_id": str(selected.get("offer_id", "")),
+            "selected_worker_node_id": str(selected.get("worker_node_id", "")),
+            "selected_offer_price_source": str(selected.get("price_source", "worker_registration") or "worker_registration"),
+            "created_at": now,
+            "expires_at": (datetime.now(tz=timezone.utc) + timedelta(minutes=5)).isoformat(),
+        }
+        stored, idempotent = self.quote_store.create_or_get(quote)
+        return stored, idempotent
+
+    def _select_market_worker_offer(
+        self,
+        *,
+        model: str,
+        max_credits: int,
+        execution_mode: str,
+        requested_worker_node_id: str = "",
+    ) -> dict[str, Any]:
+        status = self.registry.status() if hasattr(self.registry, "status") else {}
+        workers = status.get("workers", []) if isinstance(status, dict) else []
+        requested = clean_node_id(requested_worker_node_id, default="") if requested_worker_node_id else ""
+        compatible: list[dict[str, Any]] = []
+        unpriced_match = False
+        for worker in workers:
+            if not isinstance(worker, dict):
+                continue
+            if requested and str(worker.get("node_id", "")) != requested:
+                continue
+            state = str(worker.get("status", "available") or "available").lower()
+            if state not in {"available", "configured"} or bool(worker.get("stale", False)):
+                continue
+            offer = market_worker_offer_from_payload(worker)
+            if not offer:
+                if self._worker_payload_supports_model(worker, model):
+                    unpriced_match = True
+                continue
+            if normalize_execution_mode(offer.get("execution_mode")) != normalize_execution_mode(execution_mode):
+                continue
+            if model not in [str(item).strip() for item in offer.get("models", []) if str(item).strip()]:
+                continue
+            compatible.append(offer)
+        if not compatible:
+            if unpriced_match:
+                raise ValueError("Compatible worker exists but does not advertise a priced AI seller offer.")
+            raise ValueError("No compatible priced worker offer is available for this model and execution mode.")
+        selected = sorted(
+            compatible,
+            key=lambda offer: (
+                max(0, int(offer.get("credits_per_request", 0) or 0)),
+                str(offer.get("worker_node_id", "")),
+                str(offer.get("offer_id", "")),
+            ),
+        )[0]
+        if max_credits > 0 and int(selected.get("credits_per_request", 0) or 0) > max_credits:
+            raise ValueError(
+                f"Selected worker offer price {selected.get('credits_per_request')} exceeds requester max_credits {max_credits}."
+            )
+        return dict(selected)
+
+    def _worker_payload_supports_model(self, worker: dict[str, Any], model: str) -> bool:
+        desired = str(model or "").strip()
+        if not desired:
+            return True
+        models = [str(item).strip() for item in worker.get("models", []) if str(item).strip()] if isinstance(worker.get("models"), list) else []
+        worker_model = str(worker.get("model", "") or "").strip()
+        if worker_model and worker_model not in models:
+            models.append(worker_model)
+        return not models or desired in models
+
+    def _accepted_market_quote_for_request(self, request: HubAIRequest) -> dict[str, Any]:
+        metadata = dict(request.metadata) if isinstance(request.metadata, dict) else {}
+        quote_id = str(metadata.get("quote_id") or "").strip()
+        if quote_id:
+            quote = self.quote_store.get(quote_id)
+            if quote is None:
+                raise ValueError(f"Unknown market quote_id: {quote_id}")
+            self._validate_quote_matches_request(quote, request)
+            return quote
+        quote, _idempotent = self._quote_market_paid_request(request)
+        self._validate_quote_matches_request(quote, request)
+        return quote
+
+    def _validate_quote_matches_request(self, quote: dict[str, Any], request: HubAIRequest) -> None:
+        account_id = clean_node_id(request.account_id, default="") if request.account_id else ""
+        model = str(request.model or "").strip()
+        quoted_credits = max(0, int(quote.get("quoted_credits", quote.get("estimated_credits", 0)) or 0))
+        max_credits = max(0, int(request.max_credits or quote.get("max_credits", 0) or 0))
+        if str(quote.get("account_id", "")) != account_id:
+            raise ValueError("quote account_id does not match request account_id.")
+        if str(quote.get("model", "")) != model:
+            raise ValueError("quote model does not match request model.")
+        if quoted_credits <= 0:
+            raise ValueError("quote is not priced.")
+        if max_credits < quoted_credits:
+            raise ValueError(f"requester max_credits {max_credits} is below quoted_credits {quoted_credits}.")
+        if normalize_execution_mode(quote.get("execution_mode")) != (
+            normalize_execution_mode(request.metadata.get("execution_mode") if isinstance(request.metadata, dict) else "")
+            or PHASE9_EXECUTION_MODE
+        ):
+            raise ValueError("quote execution_mode does not match request execution_mode.")
+
+    def _record_market_acceptance(
+        self,
+        record: HubRequestRecord,
+        request: HubAIRequest,
+        quote: dict[str, Any],
+        *,
+        held_credits: int,
+    ) -> HubRequestRecord:
+        payload = dict(record.request_payload)
+        metadata = dict(payload.get("metadata", {})) if isinstance(payload.get("metadata"), dict) else {}
+        selected_offer = dict(quote.get("selected_offer", {})) if isinstance(quote.get("selected_offer"), dict) else {}
+        metadata.update(
+            {
+                "phase9_market_backed_paid_ai_request": True,
+                "pricing_mode": PHASE9_PRICING_MODE,
+                "execution_mode": normalize_execution_mode(quote.get("execution_mode")),
+                "quote": dict(quote),
+                "selected_offer": selected_offer,
+                "quoted_credits": max(0, int(quote.get("quoted_credits", 0) or 0)),
+                "held_credits": max(0, int(held_credits or 0)),
+                "accepted_at": utc_now(),
+            }
+        )
+        payload["metadata"] = metadata
+        return self.request_store.update(
+            record.request_id,
+            request_payload=payload,
+            requested_worker_node_id=str(quote.get("selected_worker_node_id") or selected_offer.get("worker_node_id") or ""),
+            event_type="phase9.market_quote.accepted",
+            event={
+                "quote_id": str(quote.get("quote_id", "")),
+                "offer_id": str(selected_offer.get("offer_id", "")),
+                "worker_node_id": str(selected_offer.get("worker_node_id", "")),
+                "quoted_credits": max(0, int(quote.get("quoted_credits", 0) or 0)),
+                "held_credits": max(0, int(held_credits or 0)),
+            },
+        )
+
+    def _record_market_metadata(self, record: HubRequestRecord) -> dict[str, Any]:
+        metadata = (
+            dict(record.request_payload.get("metadata", {}))
+            if isinstance(record.request_payload, dict) and isinstance(record.request_payload.get("metadata"), dict)
+            else {}
+        )
+        return metadata if metadata.get("phase9_market_backed_paid_ai_request") is True else {}
+
+    def _record_quoted_credits(self, record: HubRequestRecord) -> int:
+        metadata = self._record_market_metadata(record)
+        if not metadata:
+            return 0
+        quote = dict(metadata.get("quote", {})) if isinstance(metadata.get("quote"), dict) else {}
+        return max(0, int(quote.get("quoted_credits", metadata.get("quoted_credits", 0)) or 0))
+
+    def _record_selected_offer(self, record: HubRequestRecord) -> dict[str, Any]:
+        metadata = self._record_market_metadata(record)
+        if not metadata:
+            return {}
+        return dict(metadata.get("selected_offer", {})) if isinstance(metadata.get("selected_offer"), dict) else {}
+
     def _request_requires_paid_account(self, request: HubAIRequest) -> bool:
         return bool(str(request.account_id or "").strip() or int(request.max_credits or 0) > 0)
 
@@ -879,27 +1331,40 @@ class AIRequestPlexService:
             raise ValueError("Paid request accounting is not available on this hub.")
         if not request.account_id:
             raise ValueError("account_id is required for paid requests.")
-        quote = self.quote_request(request)
-        max_credits = int(quote["quote"]["max_credits"])
+        if self._market_pricing_requested(request):
+            quote = self._accepted_market_quote_for_request(request)
+            requester_max_credits = max(0, int(request.max_credits or quote.get("max_credits", 0) or 0))
+            held_credits = max(0, int(quote.get("quoted_credits", quote.get("estimated_credits", 0)) or 0))
+            if held_credits <= 0:
+                raise ValueError("Market-backed paid request quote must have positive quoted_credits.")
+            if requester_max_credits < held_credits:
+                raise ValueError(f"requester max_credits {requester_max_credits} is below quoted_credits {held_credits}.")
+            record = self._record_market_acceptance(record, request, quote, held_credits=held_credits)
+        else:
+            quote_response = self.quote_request(request)
+            quote = dict(quote_response["quote"])
+            requester_max_credits = max(0, int(quote.get("max_credits", request.max_credits) or request.max_credits or 0))
+            held_credits = requester_max_credits
         hold_result = self.credit_ledger.create_hold(
             account_id=request.account_id,
             request_id=record.request_id,
-            credits=max_credits,
+            credits=held_credits,
             expires_at=record.deadline_at,
             memo=f"paid request hold {record.request_id}",
-            metadata={"quote": quote["quote"], "idempotency_key": request.idempotency_key},
+            metadata={"quote": quote, "idempotency_key": request.idempotency_key},
         )
         hold = dict(hold_result.get("hold", {}))
         self.request_store.update(
             record.request_id,
             account_id=hold.get("account_id", request.account_id),
-            max_credits=max_credits,
+            max_credits=requester_max_credits,
             hold_id=str(hold.get("hold_id", "")),
             event_type="payment.hold.created",
             event={
                 "account_id": hold.get("account_id", request.account_id),
                 "hold_id": hold.get("hold_id", ""),
-                "held_credits": hold.get("credits", max_credits),
+                "held_credits": hold.get("credits", held_credits),
+                "quoted_credits": held_credits if self._market_pricing_requested(request) else 0,
                 "idempotent": bool(hold_result.get("idempotent", False)),
             },
         )
@@ -942,12 +1407,27 @@ class AIRequestPlexService:
     ) -> dict[str, Any]:
         if self.credit_ledger is None or not record.hold_id:
             return {}
+        market_metadata = self._record_market_metadata(record)
+        selected_offer = self._record_selected_offer(record)
+        quote = dict(market_metadata.get("quote", {})) if isinstance(market_metadata.get("quote"), dict) else {}
+        charge_metadata = {"worker_node_id": worker_node_id}
+        if market_metadata:
+            charge_metadata.update(
+                {
+                    "phase9_market_backed_paid_ai_request": True,
+                    "quote_id": str(quote.get("quote_id", "")),
+                    "offer_id": str(selected_offer.get("offer_id", "")),
+                    "pricing_mode": str(market_metadata.get("pricing_mode", PHASE9_PRICING_MODE) or PHASE9_PRICING_MODE),
+                    "source": "selected_worker_offer",
+                    "selected_offer_price_source": str(selected_offer.get("price_source", "worker_registration") or "worker_registration"),
+                }
+            )
         charge = self.credit_ledger.charge_hold(
             hold_id=record.hold_id,
             charged_credits=worker_credits,
             worker_node_id=worker_node_id,
             memo=f"paid request charge {record.request_id}",
-            metadata={"worker_node_id": worker_node_id},
+            metadata=charge_metadata,
         )
         charge_payload = dict(charge.get("charge", {}))
         earning_payload = dict(charge.get("worker_earning") or {})
@@ -963,6 +1443,15 @@ class AIRequestPlexService:
             "created_at": charge_payload.get("created_at", utc_now()),
             "unit": "compute_credit",
         }
+        if market_metadata:
+            receipt.update(
+                {
+                    "quote_id": str(quote.get("quote_id", "")),
+                    "offer_id": str(selected_offer.get("offer_id", "")),
+                    "pricing_mode": str(market_metadata.get("pricing_mode", PHASE9_PRICING_MODE) or PHASE9_PRICING_MODE),
+                    "selected_offer_price_source": str(selected_offer.get("price_source", "worker_registration") or "worker_registration"),
+                }
+            )
         self.request_store.update(
             record.request_id,
             account_id=receipt["account_id"],
@@ -1186,9 +1675,17 @@ class AIRequestPlexService:
 
     def _worker_can_run_record(self, worker: Any, record: HubRequestRecord) -> bool:
         desired = str(record.model or "").strip()
+        payload = _public_payload(worker)
+        market_metadata = self._record_market_metadata(record)
+        if market_metadata:
+            selected_offer = self._record_selected_offer(record)
+            selected_worker = str(selected_offer.get("worker_node_id") or market_metadata.get("selected_worker_node_id") or "").strip()
+            if selected_worker and str(payload.get("node_id", "")) != selected_worker:
+                return False
+            if not market_worker_offer_from_payload(payload):
+                return False
         if not desired:
             return True
-        payload = _public_payload(worker)
         models = [str(item).strip() for item in payload.get("models", []) if str(item).strip()] if isinstance(payload.get("models"), list) else []
         model = str(payload.get("model", "") or "").strip()
         if model and model not in models:

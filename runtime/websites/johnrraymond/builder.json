@@ -9,7 +9,7 @@
       "type": "heading"
     },
     {
-      "text": "Fiction, essays, notes, project updates, the Main Computer GitHub project, a Medium article on AI and computing sovereignty, and the on-site Overflow Blog.",
+      "text": "Fiction, essays, notes, project updates, the Main Computer GitHub project, a Medium article on AI and computing sovereignty, and the on-site Crank Files.",
       "type": "paragraph"
     }
   ],
@@ -17,6 +17,6 @@
   "entry_html": "index.html",
   "script": "script.js",
   "stylesheet": "style.css",
-  "updated_at": "2026-05-29T21:08:36.631Z",
+  "updated_at": "2026-05-29T21:37:51.207Z",
   "version": 2
 }
