@@ -16,6 +16,28 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
+
+def ensure_repo_root_on_sys_path() -> Path:
+    """Make direct execution from tools/ resolve the in-repo package.
+
+    Running ``python tools/dev-chain-reset.py`` puts the tools directory at
+    ``sys.path[0]``.  Add the repository root before importing ``main_computer``
+    so the documented Windows/PowerShell command works without requiring users
+    to preconfigure PYTHONPATH.
+    """
+
+    current = Path(__file__).resolve().parent
+    for candidate in (current, *current.parents):
+        if (candidate / "main_computer").is_dir():
+            root_text = str(candidate)
+            if root_text not in sys.path:
+                sys.path.insert(0, root_text)
+            return candidate
+    return current
+
+
+ensure_repo_root_on_sys_path()
+
 from main_computer.prod_lock import require_unlocked_production_state
 
 
