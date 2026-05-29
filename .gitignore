@@ -217,3 +217,8 @@ runtime/websites/*
 !runtime/websites/hub-site/**
 !runtime/websites/johnrraymond/
 !runtime/websites/johnrraymond/**
+
+# Disposable static route/publish probe pages under versioned runtime sites.
+# These are local diagnostics and should not be committed.
+runtime/websites/*/__*probe*/
+runtime/websites/*/__*probe*/**

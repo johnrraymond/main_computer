@@ -1,0 +1,354 @@
+{
+  "artifacts": {
+    "builder_state": "builder.json",
+    "entry_html": "index.html",
+    "manifest": "site.json",
+    "required_files": [
+      "site.json",
+      "index.html",
+      "style.css",
+      "script.js",
+      "builder.json"
+    ],
+    "script": "script.js",
+    "stylesheet": "style.css"
+  },
+  "backend": {
+    "cms": {
+      "database_connection": "content",
+      "local_connection": {
+        "confirmed_at": "2026-05-23T19:21:33+00:00",
+        "database_volume": "hub-site_directus_database_20260519170018",
+        "external": false,
+        "internal_url": "http://hub-site-directus:8055",
+        "managed": true,
+        "mode": "use_existing",
+        "public_port": 28200,
+        "public_url": "http://127.0.0.1:28200",
+        "reset_requested": false,
+        "service_name": "hub-site-directus",
+        "uploads_volume": "hub-site_directus_uploads_20260519170018"
+      },
+      "permissions": {
+        "last_verified_at": "2026-05-23T19:22:03+00:00",
+        "public_read_files": true,
+        "public_read_published_posts": true,
+        "status": "ready"
+      },
+      "permissions_status": "ready",
+      "provider": "directus",
+      "required": true,
+      "runtime": "deployed",
+      "schema": {
+        "collection": "posts",
+        "status": "ready"
+      },
+      "schema_status": "ready",
+      "service": {
+        "admin_secret_ref": "directus_admin_token",
+        "image": "directus/directus:11.5.1",
+        "internal_url": "http://hub-site-directus:8055",
+        "kind": "directus",
+        "last_verified_at": "2026-05-23T19:22:02+00:00",
+        "ping_status": "ready",
+        "public_url": "http://127.0.0.1:28200",
+        "status": "service_reachable"
+      },
+      "service_status": "ready",
+      "storage": {
+        "database_volume": "hub-site_directus_database_20260519170018",
+        "uploads_volume": "hub-site_directus_uploads_20260519170018"
+      },
+      "uploads_status": "ready"
+    },
+    "databases": {
+      "connections": {
+        "content": {
+          "adapter": "sqlite",
+          "artifact": "data/content.sqlite",
+          "existing_remote_behavior": "refuse_unknown",
+          "path": "./data/content.sqlite",
+          "protect_existing_deployed_database": true,
+          "publishable": true
+        }
+      }
+    }
+  },
+  "blog_install": {
+    "base_deploy_policy": "sqlite_source_seeded_once; deploy publishes unchanged artifacts only once",
+    "blog_source_files": [
+      "src/content/runtime-config.js",
+      "src/content/directus-client.js",
+      "src/blog/list-posts.js",
+      "src/blog/get-post-by-slug.js"
+    ],
+    "directus_bootstrap": {
+      "ok": true,
+      "results": [
+        {
+          "anonymous_policy": "abf8a154-5b1c-4a46-ac9c-7300570f4f17",
+          "collection": "posts",
+          "ok": true,
+          "provider": "directus",
+          "public_url": "http://127.0.0.1:28200",
+          "service": "hub-site-directus",
+          "steps": [
+            {
+              "action": "reused",
+              "collection": "posts",
+              "message": "posts collection exists",
+              "ok": true,
+              "step": "schema.collection"
+            },
+            {
+              "collection": "posts",
+              "created": [],
+              "message": "ensured posts fields",
+              "ok": true,
+              "reused": [
+                "status",
+                "slug",
+                "title",
+                "excerpt",
+                "body",
+                "published_on",
+                "read_time_minutes",
+                "is_legacy",
+                "featured_image",
+                "published_at"
+              ],
+              "step": "schema.fields"
+            },
+            {
+              "anonymous_policy": "abf8a154-5b1c-4a46-ac9c-7300570f4f17",
+              "message": "using Directus anonymous public policy abf8a154-5b1c-4a46-ac9c-7300570f4f17; listed Directus access rows from /access; updated permission posts:read; updated permission directus_files:read",
+              "ok": true,
+              "step": "permissions.public_read"
+            },
+            {
+              "message": "anonymous posts read succeeded",
+              "ok": true,
+              "post_slugs": [
+                "Making first post",
+                "goodone",
+                "item 4"
+              ],
+              "step": "verify.anonymous_posts"
+            }
+          ]
+        }
+      ],
+      "updated_at": "2026-05-23T19:22:03+00:00"
+    },
+    "feature": "blog",
+    "install_order": [
+      "database",
+      "cms",
+      "blog"
+    ],
+    "last_runtime_verification": {
+      "draft_protected": true,
+      "ok": true,
+      "published_read_ok": true,
+      "route_ok": true,
+      "updated_at": "2026-05-23T19:22:03+00:00"
+    },
+    "layers": {
+      "blog": {
+        "action": "pending_deploy",
+        "status": "ready",
+        "updated_at": "2026-05-23T19:22:03+00:00",
+        "verification": {
+          "draft_protected": true,
+          "published_read_ok": true,
+          "route_ok": true
+        }
+      },
+      "cms": {
+        "action": "configured",
+        "status": "ready",
+        "updated_at": "2026-05-23T19:22:03+00:00"
+      },
+      "database": {
+        "action": "reused",
+        "status": "reused",
+        "updated_at": "2026-05-23T19:21:33+00:00"
+      }
+    },
+    "runtime_config_written_at": "2026-05-23T19:22:03+00:00",
+    "runtime_dependency_policy": "deploy_reuses_existing_dependencies_when_safe",
+    "runtime_preparation": {
+      "directus_service": {
+        "internal_url": "http://hub-site-directus:8055",
+        "permissions_status": "ready",
+        "provider": "directus",
+        "public_url": "http://127.0.0.1:28200",
+        "requested": true,
+        "schema_status": "ready",
+        "service": "hub-site-directus",
+        "status": "ready",
+        "updated_at": "2026-05-23T19:22:03+00:00",
+        "verified": true
+      },
+      "sqlite_database": {
+        "source": "runtime/websites/hub-site/data/content.sqlite",
+        "status": "ready",
+        "updated_at": "2026-05-23T19:21:33+00:00",
+        "verified": true
+      }
+    },
+    "selected_stack": {
+      "blog": "blog",
+      "cms": "directus",
+      "database": "sqlite"
+    }
+  },
+  "blog_page": {
+    "managed": true,
+    "mode": "list_and_detail",
+    "path": "runtime/websites/hub-site/blog/index.html",
+    "post_route_prefix": "/blog/",
+    "route": "/blog",
+    "status": "ready",
+    "updated_at": "2026-05-23T19:21:55+00:00"
+  },
+  "builder": {
+    "engine": "grapesjs",
+    "entry_html": "index.html",
+    "script": "script.js",
+    "state_file": "builder.json",
+    "stylesheet": "style.css"
+  },
+  "created_at": "2026-05-14T19:37:47+00:00",
+  "deploy": {
+    "remote_target": null,
+    "target": "local-platform"
+  },
+  "description": "Public-facing hub, API, and landing surface for Main Computer.",
+  "features": {
+    "blog": {
+      "cms": "directus",
+      "content": {
+        "collection": "posts",
+        "draft_safe": true,
+        "provider": "directus",
+        "public_fields": [
+          "id",
+          "status",
+          "slug",
+          "title",
+          "excerpt",
+          "body",
+          "published_on",
+          "read_time_minutes",
+          "is_legacy"
+        ],
+        "published_filter": {
+          "status": "published"
+        }
+      },
+      "content_runtime": "deployed",
+      "database": "sqlite",
+      "enabled": true,
+      "hydrated_at": "2026-05-23T19:22:03+00:00",
+      "install_order": [
+        "database",
+        "cms",
+        "blog"
+      ],
+      "install_status": "ready",
+      "last_verified_at": "2026-05-23T19:22:03+00:00",
+      "page": {
+        "managed": true,
+        "mode": "list_and_detail",
+        "path": "runtime/websites/hub-site/blog/index.html",
+        "post_route_prefix": "/blog/",
+        "route": "/blog",
+        "status": "ready",
+        "updated_at": "2026-05-23T19:21:55+00:00"
+      },
+      "routes": {
+        "index": "/blog",
+        "post": "/blog/:slug"
+      },
+      "runtime_lane": "local",
+      "selected": true,
+      "source_files": [
+        "src/content/runtime-config.js",
+        "src/content/directus-client.js",
+        "src/blog/list-posts.js",
+        "src/blog/get-post-by-slug.js"
+      ]
+    }
+  },
+  "id": "hub-site",
+  "kind": "hub-site",
+  "lane": "local",
+  "local_platform": {
+    "dev_url": "http://127.0.0.1:18082/",
+    "lanes": {
+      "dev": {
+        "last_publish_verified": true,
+        "last_published_at": "2026-05-23T19:22:03+00:00",
+        "last_published_service": "hub-dev",
+        "last_published_url": "http://127.0.0.1:18082/",
+        "port": 18082,
+        "service": "hub-dev",
+        "status_url": "http://127.0.0.1:18082/api/site/status",
+        "url": "http://127.0.0.1:18082/"
+      },
+      "local": {
+        "port": 18080,
+        "service": "hub-local",
+        "status_url": "http://127.0.0.1:18080/api/site/status",
+        "url": "http://127.0.0.1:18080/"
+      }
+    },
+    "local_url": "http://127.0.0.1:18080/"
+  },
+  "name": "Hub Site",
+  "publish_targets": {
+    "local_prod": {
+      "controller_id": "",
+      "domain": "hub-site.localhost",
+      "environment": "local-prod",
+      "project": "hub-site"
+    },
+    "remote_prod": {
+      "accepted_at": "2026-05-21T04:21:47+00:00",
+      "application_uuid": "",
+      "controller_id": "coolify-local",
+      "domain": "http://127.0.0.1:18085/",
+      "environment": "production",
+      "project": "hub-site",
+      "resource_uuid": "v11lha4aoh6sd1msc0z6i7dc",
+      "service_uuid": "v11lha4aoh6sd1msc0z6i7dc",
+      "uuid": "v11lha4aoh6sd1msc0z6i7dc"
+    }
+  },
+  "runtime": {
+    "content_runtime": "deployed",
+    "default_lane": "local"
+  },
+  "runtime_config": {
+    "content": {
+      "cms_public_url_ref": "backend.cms.service.public_url",
+      "cms_url_ref": "backend.cms.service.internal_url",
+      "collection": "posts",
+      "content_runtime": "deployed",
+      "lane": "local",
+      "provider": "directus",
+      "published_filter": {
+        "status": "published"
+      },
+      "site_id": "hub-site"
+    }
+  },
+  "schema_version": 2,
+  "site_model": "2.0",
+  "source": {
+    "kind": "host_runtime_site",
+    "path": "runtime/websites/hub-site"
+  },
+  "updated_at": "2026-05-29T01:12:41+00:00"
+}

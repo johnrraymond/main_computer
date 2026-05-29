@@ -1,0 +1,22 @@
+{
+  "blocks": [
+    {
+      "text": "Main Computer Website Builder",
+      "type": "eyebrow"
+    },
+    {
+      "text": "johnrraymond",
+      "type": "heading"
+    },
+    {
+      "text": "This static-site page is managed from Applications → Website Builder.",
+      "type": "paragraph"
+    }
+  ],
+  "engine": "grapesjs",
+  "entry_html": "index.html",
+  "script": "script.js",
+  "stylesheet": "style.css",
+  "updated_at": "2026-05-24T22:17:54.140Z",
+  "version": 2
+}

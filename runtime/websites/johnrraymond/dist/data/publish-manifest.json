@@ -1,0 +1,33 @@
+{
+  "artifact_sha256": "071beebf7d6c170e9e02571a168750f18553fabcde37ac38964741ffb551f986",
+  "database": {
+    "adapter": "sqlite",
+    "artifact": "data/content.sqlite",
+    "connection": "content",
+    "protect_existing_deployed_database": true,
+    "publishable": true,
+    "source": "runtime/websites/johnrraymond/data/content.sqlite"
+  },
+  "generated_at": "2026-05-23T18:59:35+00:00",
+  "resources": [
+    {
+      "hash": "721782df311b23e2219f8eb8be00182a63ac3a71d96f5ce833c0eb9ef4668e4e",
+      "id": "blog_posts:post_001",
+      "kind": "record",
+      "publishedAt": "2026-01-01T00:00:00.000Z",
+      "recordId": "post_001",
+      "slug": "hello-blog",
+      "status": "published",
+      "table": "blog_posts",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    }
+  ],
+  "site": {
+    "id": "johnrraymond",
+    "name": "johnrraymond"
+  },
+  "target": {
+    "lane": "dev"
+  },
+  "version": 1
+}

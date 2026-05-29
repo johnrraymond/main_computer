@@ -1,0 +1,22 @@
+{
+  "blocks": [
+    {
+      "text": "Main Computer Website Builder",
+      "type": "eyebrow"
+    },
+    {
+      "text": "Hub Site",
+      "type": "heading"
+    },
+    {
+      "text": "This hub-site page is managed from Applications → Website Builder.",
+      "type": "paragraph"
+    }
+  ],
+  "engine": "grapesjs",
+  "entry_html": "index.html",
+  "script": "script.js",
+  "stylesheet": "style.css",
+  "updated_at": "2026-05-23T19:21:55.310Z",
+  "version": 2
+}
