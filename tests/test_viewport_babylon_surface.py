@@ -34,6 +34,9 @@ class ViewportSceneSurfaceTests(unittest.TestCase):
         self.assertIn("removeEventListener(\"pointerdown\", container.__mainComputerClickMovementHandler)", APPLICATIONS_INDEX_HTML)
         self.assertIn("startSceneMovement", APPLICATIONS_INDEX_HTML)
         self.assertIn("movementSpeed(scene)", APPLICATIONS_INDEX_HTML)
+        self.assertIn("emitterProjectionState(object, scene, projected)", APPLICATIONS_INDEX_HTML)
+        self.assertIn("updateEmitter(object, scene, projected)", APPLICATIONS_INDEX_HTML)
+        self.assertIn("bufferSubData(", APPLICATIONS_INDEX_HTML)
         self.assertNotIn("scene-click-move", APPLICATIONS_INDEX_HTML)
         self.assertNotIn("player-capsule", APPLICATIONS_INDEX_HTML)
         self.assertNotIn("mesh-actor", APPLICATIONS_INDEX_HTML)
@@ -45,12 +48,12 @@ class ViewportSceneSurfaceTests(unittest.TestCase):
         self.assertIn("function initWebgl(", APPLICATIONS_INDEX_HTML)
         self.assertIn("MainComputerSceneStore", APPLICATIONS_INDEX_HTML)
         self.assertIn("MainComputerSceneViewer", APPLICATIONS_INDEX_HTML)
+        self.assertIn("sceneWebglShader", APPLICATIONS_INDEX_HTML)
+        self.assertIn("sceneWebglProgram", APPLICATIONS_INDEX_HTML)
         self.assertNotIn("MainComputerBabylonPreview", APPLICATIONS_INDEX_HTML)
         self.assertNotIn("BABYLON", APPLICATIONS_INDEX_HTML)
         self.assertNotIn("MeshBuilder", APPLICATIONS_INDEX_HTML)
         self.assertNotIn("SceneLoader", APPLICATIONS_INDEX_HTML)
-        self.assertNotIn("compileShader", APPLICATIONS_INDEX_HTML)
-        self.assertNotIn("createProgram", APPLICATIONS_INDEX_HTML)
 
 
 if __name__ == "__main__":
