@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blog - johnrraymond</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/script.js" defer></script>
+</head>
+<body data-mc-generated-blog-page="list_and_detail" data-mc-blog-route-mode="index">
+  <!-- Main Computer generated blog page: list_and_detail -->
+  <main>
+    <section class="mc-section mc-blog-widget"
+             data-mc-widget="blog-list"
+             data-source-ref="blog.posts"
+             data-page-size="50"
+             data-search-enabled="true"
+             data-pagination-enabled="true"
+             data-post-base-path="/blog/">
+      <div class="mc-blog-widget__header">
+        <div>
+          <p class="mc-eyebrow">Latest posts</p>
+          <h1>From the blog</h1>
+        </div>
+      </div>
+      <form class="mc-blog-widget__controls" data-mc-blog-controls>
+        <label class="mc-blog-widget__control">
+          <span>Search</span>
+          <input type="search" name="q" autocomplete="off" data-mc-blog-search>
+        </label>
+        <label class="mc-blog-widget__control">
+          <span>Allowed Fuzz</span>
+          <input type="number" name="fuzz" min="0" max="5" step="1" value="0" data-mc-blog-fuzz>
+        </label>
+        <label class="mc-blog-widget__control">
+          <span>Results per Page</span>
+          <input type="number" name="per_page" min="1" step="1" value="50" data-mc-blog-per-page>
+        </label>
+        <button class="mc-blog-widget__apply" type="submit">Apply</button>
+      </form>
+      <p class="mc-blog-widget__summary" data-mc-blog-summary></p>
+      <div class="mc-blog-widget__items" data-mc-blog-posts>
+        <article class="mc-blog-widget__placeholder">
+          Blog posts will appear here when Blog is configured.
+        </article>
+      </div>
+    </section>
+
+    <section class="mc-section mc-blog-post-widget"
+             data-mc-widget="blog-post-viewer"
+             data-source-ref="blog.posts"
+             data-route-prefix="/blog/">
+      <a class="mc-blog-post-widget__back" href="/blog">← Back to blog</a>
+      <div data-mc-blog-post-viewer>
+        Open this page at /blog/&lt;slug&gt; to show a published post.
+      </div>
+    </section>
+  </main>
+</body>
+</html>
