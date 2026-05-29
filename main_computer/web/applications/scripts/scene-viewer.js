@@ -759,6 +759,7 @@
           this.strideBytes = this.strideFloats * this.floatSize;
           this.maxDpr = 2;
           this.particles = [];
+          this.emitters = new Map();
           this.particleCount = 0;
           this.animationFrame = 0;
           this.disposed = false;
@@ -869,34 +870,19 @@
           };
         }
 
-        addParticle(originX, originY, vectorX, vectorY, color, alpha, size, seed, motion, duration, delay, paramA = 0, paramB = 0) {
-          this.particles.push(
-            originX, originY,
-            vectorX, vectorY,
-            color.r, color.g, color.b, 1,
-            size, alpha, seed, motion,
-            duration, delay, paramA, paramB
-          );
+        emitterKey(object) {
+          return String(object?.id || object?.props?.label || "particle-emitter");
         }
 
-        addEmitter(object, scene, projected) {
-          const color = sceneColorRgb(object.props?.color);
-          const baseCount = Math.round(numericSceneProp(object.props?.particleCount, 32, 4, 300));
-          const count = scaledParticleCount(scene, baseCount);
-          const effectScale = particleEffectScale(scene);
-          const size = numericSceneProp(object.props?.particleSize, 5, 2, 18) * Math.min(1.7, 0.88 + effectScale.intensity * 0.16);
-          const spread = numericSceneProp(object.props?.spread, 1, 0.2, 2.8);
+        emitterProjectionState(object, scene, projected) {
           const width = Math.max(1, Number(projected.width) || Number(object.width) || 1);
           const height = Math.max(1, Number(projected.height) || Number(object.height) || 1);
-          const seed = Math.abs(particleHash(object.id || object.props?.label || "particle-emitter"));
           const motionName = String(object.props?.motion || "orbit");
           const projection = sceneProjection(scene);
-          const orbitRadius = numericSceneProp(object.props?.orbitRadius, Math.min(width, height) * 0.38, 8, 220);
-          const verticalLift = numericSceneProp(object.props?.verticalLift, height * 0.32, 0, 220);
-          const pulseDelay = numericSceneProp(object.props?.pulseDelay, 0, -10000, 10000);
-          const alphaScale = effectScale.alpha;
           let originX = projected.left + width / 2;
           let originY = projected.top + height / 2;
+          let pathX = 0;
+          let pathY = 0;
 
           if (projected.anchor === "linked-spell-path" && Number.isFinite(projected.sourceLeft) && Number.isFinite(projected.sourceTop)) {
             originX = Number(projected.sourceLeft);
@@ -909,8 +895,46 @@
           if (motionName === "spell-bolt") {
             const targetX = Number(projected.targetLeft);
             const targetY = Number(projected.targetTop);
-            const pathX = Number.isFinite(targetX) ? targetX - originX : width;
-            const pathY = Number.isFinite(targetY) ? targetY - originY : 0;
+            pathX = Number.isFinite(targetX) ? targetX - originX : width;
+            pathY = Number.isFinite(targetY) ? targetY - originY : 0;
+          }
+
+          return {width, height, originX, originY, pathX, pathY, motionName};
+        }
+
+        addParticle(originX, originY, vectorX, vectorY, color, alpha, size, seed, motion, duration, delay, paramA = 0, paramB = 0) {
+          this.particles.push(
+            originX, originY,
+            vectorX, vectorY,
+            color.r, color.g, color.b, 1,
+            size, alpha, seed, motion,
+            duration, delay, paramA, paramB
+          );
+        }
+
+        addEmitter(object, scene, projected) {
+          const startParticle = this.particles.length / this.strideFloats;
+          const color = sceneColorRgb(object.props?.color);
+          const baseCount = Math.round(numericSceneProp(object.props?.particleCount, 32, 4, 300));
+          const count = scaledParticleCount(scene, baseCount);
+          const effectScale = particleEffectScale(scene);
+          const size = numericSceneProp(object.props?.particleSize, 5, 2, 18) * Math.min(1.7, 0.88 + effectScale.intensity * 0.16);
+          const spread = numericSceneProp(object.props?.spread, 1, 0.2, 2.8);
+          const {width, height, originX, originY, pathX, pathY, motionName} = this.emitterProjectionState(object, scene, projected);
+          const seed = Math.abs(particleHash(object.id || object.props?.label || "particle-emitter"));
+          const orbitRadius = numericSceneProp(object.props?.orbitRadius, Math.min(width, height) * 0.38, 8, 220);
+          const verticalLift = numericSceneProp(object.props?.verticalLift, height * 0.32, 0, 220);
+          const pulseDelay = numericSceneProp(object.props?.pulseDelay, 0, -10000, 10000);
+          const alphaScale = effectScale.alpha;
+          const registerEmitter = () => {
+            this.emitters.set(this.emitterKey(object), {
+              startParticle,
+              particleCount: count,
+              motionName
+            });
+          };
+
+          if (motionName === "spell-bolt") {
             for (let index = 0; index < count; index += 1) {
               const particleSize = Math.max(2, size * (0.78 + ((seed + index * 19) % 6) / 16)) * 2.1;
               const duration = 980 + ((seed + index * 71) % 860);
@@ -919,6 +943,7 @@
               const alpha = Math.min(1, (0.5 + ((index % 9) / 18)) * alphaScale);
               this.addParticle(originX, originY, pathX, pathY, color, alpha, particleSize, seed + index, 1, duration, delay, lane, 0);
             }
+            registerEmitter();
             return;
           }
 
@@ -973,6 +998,55 @@
               this.addParticle(originX, originY, x, y, color, alpha, particleSize, seed + index, 0, duration, delay, 0, 0);
             }
           }
+          registerEmitter();
+        }
+
+        updateEmitter(object, scene, projected) {
+          if (this.disposed) return false;
+          const emitter = this.emitters.get(this.emitterKey(object));
+          if (!emitter || emitter.particleCount <= 0) return false;
+          const {originX, originY, pathX, pathY, motionName} = this.emitterProjectionState(object, scene, projected);
+          const startFloat = emitter.startParticle * this.strideFloats;
+          const endFloat = startFloat + emitter.particleCount * this.strideFloats;
+          const data = this.data && this.data.length === this.particles.length ? this.data : null;
+          let changed = false;
+          for (let offset = startFloat; offset < endFloat; offset += this.strideFloats) {
+            if (this.particles[offset] !== originX) {
+              this.particles[offset] = originX;
+              if (data) data[offset] = originX;
+              changed = true;
+            }
+            if (this.particles[offset + 1] !== originY) {
+              this.particles[offset + 1] = originY;
+              if (data) data[offset + 1] = originY;
+              changed = true;
+            }
+            if (motionName === "spell-bolt") {
+              if (this.particles[offset + 2] !== pathX) {
+                this.particles[offset + 2] = pathX;
+                if (data) data[offset + 2] = pathX;
+                changed = true;
+              }
+              if (this.particles[offset + 3] !== pathY) {
+                this.particles[offset + 3] = pathY;
+                if (data) data[offset + 3] = pathY;
+                changed = true;
+              }
+            }
+          }
+          if (!changed) return false;
+          if (data) {
+            this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.buffer);
+            this.gl.bufferSubData(
+              this.gl.ARRAY_BUFFER,
+              startFloat * this.floatSize,
+              data.subarray(startFloat, endFloat)
+            );
+          } else if (this.particleCount > 0) {
+            this.upload();
+          }
+          this.canvas.dataset.webglParticleLastUpdate = String(Date.now());
+          return true;
         }
 
         upload() {
@@ -1503,7 +1577,12 @@
           if (!sceneObjectDependsOnActor(object, actorId)) return;
           const element = container.querySelector(`[data-scene-object-id="${CSS.escape(String(object.id || ""))}"]`);
           if (!element) return;
-          applyProjectedElementPosition(element, projectSceneObject(object, scene));
+          const projected = projectSceneObject(object, scene);
+          applyProjectedElementPosition(element, projected);
+          if (object?.type === "particle-emitter") {
+            const particleLayer = container.__mainComputerWebglParticleLayer;
+            if (particleLayer?.updateEmitter) particleLayer.updateEmitter(object, scene, projected);
+          }
           element.dataset.sceneMoving = object === actor && actor?.props?.moveTarget ? "true" : "false";
         });
         updateSceneMovementMarker(container, scene, options);
