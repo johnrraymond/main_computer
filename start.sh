@@ -7,9 +7,9 @@ Usage: ./start.sh [--open-browser] [--host HOST] [--port PORT] [--wait-s SECONDS
 
 Start Main Computer from this source tree on Linux.
 
-This first Linux launcher starts the Python app/control supervisor in the
-background and writes logs under runtime/service_supervisor/. Docker stack
-startup/teardown remains owned by the Python services and existing tooling.
+This Linux launcher starts the Python app/control supervisor in the background
+and writes logs under runtime/service_supervisor/. Docker stack startup remains
+owned by the Python services and existing tooling.
 USAGE
 }
 
@@ -107,10 +107,48 @@ unset COMPOSE_PROJECT_NAME
 
 mkdir -p "$MC_ROOT/runtime/service_supervisor" "$MC_ROOT/runtime/start_stop"
 
+clear_stale_supervisor_shutdown_requests() {
+  "$MC_PYTHON" - "$MC_ROOT" <<'PY' || true
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1]).resolve()
+queue_dir = root / "runtime" / "service_control" / "supervisor" / "queue"
+if not queue_dir.exists():
+    raise SystemExit(0)
+
+removed = 0
+for path in sorted(queue_dir.glob("*.json")):
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        continue
+    action = str(payload.get("action") or "").strip().lower()
+    source = str(payload.get("source") or "").strip().lower()
+    if action in {"shutdown", "stop", "halt"} and source in {"stop.sh", "./stop.sh", "start.sh"}:
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            pass
+
+if removed:
+    print(f"Cleared {removed} stale supervisor shutdown request(s).")
+PY
+}
+
 if [ -f "$MC_ROOT/stop.sh" ]; then
   echo "Force-stopping current Main Computer app processes before launch; Docker stacks are left alone..."
   bash "$MC_ROOT/stop.sh" --no-docker --quiet || true
 fi
+
+# stop.sh can leave a shutdown request behind when no live supervisor was
+# available to consume it. Clear those stale requests before the new supervisor
+# starts, otherwise the fresh supervisor exits immediately with state=stopped.
+clear_stale_supervisor_shutdown_requests
 
 MC_STAMP="$(date -u +%Y%m%d-%H%M%S)"
 MC_STDOUT="$MC_ROOT/runtime/service_supervisor/service_supervisor-$MC_STAMP.stdout.log"
@@ -128,11 +166,10 @@ MC_STDERR="$MC_ROOT/runtime/service_supervisor/service_supervisor-$MC_STAMP.stde
 
 MC_LAUNCHER_PID=$!
 
-"$MC_PYTHON" - "$MC_ROOT" "$MC_LAUNCHER_PID" "$MC_STDOUT" "$MC_STDERR" "$MC_PYTHON" <<'PY'
+"$MC_PYTHON" - "$MC_ROOT" "$MC_LAUNCHER_PID" "$MC_STDOUT" "$MC_STDERR" "$MC_PYTHON" "$MC_HOST" "$MC_PORT" <<'PY'
 from __future__ import annotations
 
 import json
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -142,6 +179,8 @@ pid = int(sys.argv[2])
 stdout = Path(sys.argv[3]).resolve()
 stderr = Path(sys.argv[4]).resolve()
 python_command = sys.argv[5]
+host = sys.argv[6]
+port = sys.argv[7]
 
 runtime = root / "runtime" / "start_stop"
 runtime.mkdir(parents=True, exist_ok=True)
@@ -161,6 +200,10 @@ payload = {
             "main_computer.app_control",
             "--root",
             str(root),
+            "--host",
+            host,
+            "--port",
+            str(port),
             "--python-command",
             python_command,
             "bootstrap",
@@ -189,8 +232,58 @@ echo "stderr:           $MC_STDERR"
 echo
 echo "Waiting briefly for startup status..."
 
-if ! "$MC_PYTHON" -m main_computer.service_supervisor --root "$MC_ROOT" status --summary --wait-s "$MC_WAIT_SECONDS" --interval-s 2; then
+if ! (cd "$MC_ROOT" && "$MC_PYTHON" -m main_computer.service_supervisor --root "$MC_ROOT" status --summary --wait-s "$MC_WAIT_SECONDS" --interval-s 2); then
   echo "Startup was requested, but status did not report cleanly." >&2
+  exit 1
+fi
+
+if ! "$MC_PYTHON" - "$MC_ROOT" "$MC_STDERR" <<'PY'; then
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1]).resolve()
+stderr_path = Path(sys.argv[2])
+state_path = root / "runtime" / "service_supervisor" / "state.json"
+
+try:
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+except Exception as exc:
+    print(f"Supervisor did not write a readable state file: {state_path} ({exc})", file=sys.stderr)
+    raise SystemExit(1)
+
+service = state.get("service") if isinstance(state.get("service"), dict) else {}
+pid = service.get("pid")
+try:
+    pid_int = int(pid)
+except Exception:
+    pid_int = 0
+
+alive = False
+if pid_int > 0:
+    try:
+        os.kill(pid_int, 0)
+        alive = True
+    except PermissionError:
+        alive = True
+    except OSError:
+        alive = False
+
+state_name = str(state.get("state") or "").strip().lower()
+if state_name in {"stopped", "missing", "corrupt"} or not alive:
+    print(f"Supervisor exited before startup completed: state={state_name or 'unknown'} pid={pid or '?'}", file=sys.stderr)
+    if stderr_path.exists():
+        lines = stderr_path.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]
+        if lines:
+            print(f"Last stderr lines from {stderr_path}:", file=sys.stderr)
+            for line in lines:
+                print(line, file=sys.stderr)
+    raise SystemExit(1)
+PY
+  echo "Startup did not leave a live supervisor running." >&2
   exit 1
 fi
 

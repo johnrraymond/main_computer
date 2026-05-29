@@ -7,8 +7,8 @@ Usage: ./stop.sh [--no-docker] [--with-docker] [--quiet]
 
 Stop Main Computer app processes from this source tree on Linux.
 
-This first Linux stopper asks the Python service supervisor to shut down, then
-uses root-owned PID/state files as a fallback. Docker stacks are left alone;
+This Linux stopper asks the Python service supervisor to shut down, then uses
+root-owned PID/state files as a fallback. Docker stacks are left alone;
 --with-docker is accepted for command compatibility but is not implemented yet.
 USAGE
 }
@@ -187,6 +187,32 @@ def add_candidate(candidates: dict[int, dict[str, Any]], pid: int | None, role: 
     entry["order"] = min(int(entry.get("order", order)), order)
 
 
+def queued_stop_request(path: Path) -> bool:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    action = str(payload.get("action") or "").strip().lower()
+    source = str(payload.get("source") or "").strip().lower()
+    return action in {"shutdown", "stop", "halt"} and source in {"stop.sh", "./stop.sh", "start.sh"}
+
+
+def remove_queued_stop_requests() -> list[str]:
+    queue_dir = root / "runtime" / "service_control" / "supervisor" / "queue"
+    removed: list[str] = []
+    if not queue_dir.exists():
+        return removed
+    for path in sorted(queue_dir.glob("*.json")):
+        if not queued_stop_request(path):
+            continue
+        try:
+            path.unlink()
+            removed.append(str(path))
+        except OSError:
+            pass
+    return removed
+
+
 def enqueue_shutdown() -> bool:
     try:
         from main_computer.service_control import enqueue_supervisor_action
@@ -234,14 +260,16 @@ def collect_candidates() -> dict[int, dict[str, Any]]:
     return candidates
 
 
+def live_owned_pids() -> list[int]:
+    return [pid for pid in collect_candidates() if alive(pid) and owned_main_computer(pid)]
+
+
 def wait_for_graceful_stop(seconds: float = 30.0) -> None:
     deadline = time.time() + seconds
     while time.time() < deadline:
-        candidates = collect_candidates()
-        live_owned = [pid for pid in candidates if alive(pid) and owned_main_computer(pid)]
         state = read_json(root / "runtime" / "service_supervisor" / "state.json")
         state_text = state.get("state") if isinstance(state, dict) else None
-        if not live_owned or state_text == "stopped":
+        if not live_owned_pids() or state_text == "stopped":
             return
         time.sleep(1.0)
 
@@ -310,13 +338,15 @@ runtime = root / "runtime" / "start_stop"
 runtime.mkdir(parents=True, exist_ok=True)
 
 say("Requesting Main Computer supervisor shutdown...")
-queued = enqueue_shutdown()
+had_live_processes_before_queue = bool(live_owned_pids())
+queued = enqueue_shutdown() if had_live_processes_before_queue else False
 if queued:
     wait_for_graceful_stop(30.0)
 
 candidates = collect_candidates()
 results = terminate_candidates(candidates)
-removed = remove_stale_pid_files()
+removed_pid_files = remove_stale_pid_files()
+removed_queue_files = remove_queued_stop_requests()
 
 report = {
     "schema_version": 1,
@@ -325,8 +355,10 @@ report = {
     "with_docker_requested": with_docker,
     "docker_state": "left-alone",
     "queued_shutdown": queued,
+    "had_live_processes_before_queue": had_live_processes_before_queue,
     "process_results": results,
-    "removed_pid_files": removed,
+    "removed_pid_files": removed_pid_files,
+    "removed_queued_stop_requests": removed_queue_files,
     "stopped_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
 }
 report_path = runtime / f"stop-report-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}.json"
@@ -336,6 +368,8 @@ if not quiet:
     print("")
     print("Main Computer Linux stop completed.")
     print(f"Stop report: {report_path}")
+    if removed_queue_files:
+        print(f"Removed {len(removed_queue_files)} stale queued stop request(s).")
     if with_docker:
         print("Docker infrastructure was left running; Linux Docker teardown is not implemented in this script yet.")
 PY
