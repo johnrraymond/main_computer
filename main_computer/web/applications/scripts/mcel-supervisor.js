@@ -4,6 +4,8 @@
       const editor = typeof McelLabEditor !== "undefined" ? McelLabEditor : window.McelLabEditor;
       const styleLaw = typeof McelLabStyleLaw !== "undefined" ? McelLabStyleLaw : window.McelLabStyleLaw;
       const layoutLaw = typeof McelLabLayoutLaw !== "undefined" ? McelLabLayoutLaw : window.McelLabLayoutLaw;
+      const platformSpine = typeof McelLabPlatformSpine !== "undefined" ? McelLabPlatformSpine : window.McelLabPlatformSpine;
+      const browserRunner = typeof McelLabBrowserRunner !== "undefined" ? McelLabBrowserRunner : window.McelLabBrowserRunner;
       const graph = typeof McelLabGraph !== "undefined" ? McelLabGraph : window.McelLabGraph;
       const opsRunner = typeof McelLabOpsRunner !== "undefined" ? McelLabOpsRunner : window.McelLabOpsRunner;
       const {attributes, contractVersion} = contract;
@@ -62,12 +64,16 @@
         const evidenceClean = Boolean(state.evidencePacket?.hashes?.source && ["ready", "warming"].includes(state.evidencePacket?.readiness?.status));
         const compilerClean = Boolean(state.sourceElementCount > 0 && state.generatedPartCount >= state.sourceElementCount);
         const kernelClean = Boolean(state.kernelReport && state.kernelReport.status === "ready");
+        const platformClean = Boolean(state.platformReport && !state.platformReport.failed);
+        const browserProofClean = Boolean(state.browserProof && !state.browserProof.failed);
 
         const gates = [
           passGate("compiler", "Compiler", compilerClean, compilerClean ? `${state.sourceElementCount} source element(s), ${state.generatedPartCount} generated part(s)` : "compiler did not produce the expected runtime structure"),
           passGate("serializer", "Serializer Firewall", serializedClean, serializedClean ? "serialized output contains no runtime ownership markers" : "serialized output is not clean"),
           passGate("css-law", "CSS Law", cssClean, cssClean ? `${state.cssLawReport?.elementCount || 0} element(s) received runtime tokens` : "CSS law report is not clean"),
           passGate("layout-law", "Layout / Geometry Law", layoutClean, layoutClean ? `${state.layoutLawReport?.passed || 0}/${state.layoutLawReport?.elementCount || 0} element(s) passed scrollbar policy` : "layout/overflow proof is not clean"),
+          passGate("platform-spine", "Platform Spine", platformClean, platformClean ? `${state.platformReport?.moduleCount || 0} subsystem law(s) proved` : "platform subsystem laws failed or have not run"),
+          passGate("browser-semantic-proof", "Browser Semantic Proof", browserProofClean, browserProofClean ? `live geometry ${state.browserProof?.liveGeometry}` : "browser semantic proof failed or has not run"),
           passGate("a11y", "A11y", a11yClean, a11yClean ? "labels, order, and hidden decoration are valid" : "a11y report is not valid"),
           passGate("operational-audit", "Operational Audit", auditClean, auditClean ? "semantic graph and provenance are clean" : "audit failed or has not run"),
           passGate("contract-suite", "Contract Suite", testsClean, testsClean ? `${state.testReport.passed} passed / ${state.testReport.failed} failed` : "contract suite failed or has not run"),
@@ -100,6 +106,8 @@
         const root = runtimeRoot(compiled.runtimeHtml);
         const cssLawReport = styleLaw.applyRuntimeLaw(root, {theme, reason});
         const layoutLawReport = layoutLaw?.applyRuntimeLaw ? layoutLaw.applyRuntimeLaw(root, {reason}) : {layoutLawClean: true, warnings: [], passed: smartCount(root), elementCount: smartCount(root)};
+        const platformReport = platformSpine?.provePlatform ? platformSpine.provePlatform(root, {reason}) : null;
+        const browserProof = browserRunner?.observeAndProve ? browserRunner.observeAndProve(root, {reason}) : null;
         const serializer = engine.serializeRuntimeRoot(root, {reason: `${reason}:serializer-firewall`});
         const a11yReport = engine.computeA11y(root);
         const graphReport = graph.compactReport(source, root);
@@ -127,6 +135,8 @@
           serializerReport: serializer.report,
           cssLawReport,
           layoutLawReport,
+          platformReport,
+          browserProof,
           auditReport,
           testReport,
           matrixReport,
@@ -145,6 +155,8 @@
           serializerReport: serializer.report,
           cssLawReport,
           layoutLawReport,
+          platformReport,
+          browserProof,
           a11yReport,
           auditReport,
           testReport,
@@ -170,6 +182,8 @@
           serializerReport: serializer.report,
           cssLawReport,
           layoutLawReport,
+          platformReport,
+          browserProof,
           a11yReport,
           graphReport,
           auditReport,
@@ -183,6 +197,8 @@
           warnings: [
             ...serializer.report.warnings,
             ...(layoutLawReport.warnings || []),
+            ...(platformReport?.warnings || []),
+            ...(browserProof?.browserReport?.warnings || []),
             ...(auditReport.issues || []),
             ...(matrixReport?.warnings || []),
             ...(acidReport?.tests?.filter((test) => !test.passed).map((test) => `Acid: ${test.name}`) || []),

@@ -22,6 +22,9 @@
         lastSupervisorReport: null,
         lastKernelAudit: null,
         lastTraceabilityMap: null,
+        lastSubsumptionLattice: null,
+        lastWorkbenchPlan: null,
+        lastBrowserProof: null,
         lastCommandPlan: null,
         lastProjectSnapshot: null,
         lastSourceList: []
@@ -62,6 +65,9 @@
     const mcelAcidSelect = document.querySelector("#mcel-acid-select");
     const mcelRunKernel = document.querySelector("#mcel-lab-kernel");
     const mcelBuildTraceability = document.querySelector("#mcel-lab-traceability");
+    const mcelBuildSubsumption = document.querySelector("#mcel-lab-subsumption");
+    const mcelBuildWorkbench = document.querySelector("#mcel-lab-workbench");
+    const mcelRunBrowserProof = document.querySelector("#mcel-lab-browser-proof");
     const mcelApplyTraits = document.querySelector("#mcel-apply-traits");
     const mcelTraitKind = document.querySelector("#mcel-trait-kind");
     const mcelTraitFlow = document.querySelector("#mcel-trait-flow");
@@ -85,6 +91,9 @@
     const mcelKernelReport = document.querySelector("#mcel-kernel-report");
     const mcelTraceabilityReport = document.querySelector("#mcel-traceability-report");
     const mcelPriorArtReport = document.querySelector("#mcel-prior-art-report");
+    const mcelSubsumptionReport = document.querySelector("#mcel-subsumption-report");
+    const mcelWorkbenchReport = document.querySelector("#mcel-workbench-report");
+    const mcelBrowserProofReport = document.querySelector("#mcel-browser-proof-report");
     const mcelReadinessScore = document.querySelector("#mcel-readiness-score");
     const mcelReadinessCards = document.querySelector("#mcel-readiness-cards");
     const mcelCommandInput = document.querySelector("#mcel-command-input");

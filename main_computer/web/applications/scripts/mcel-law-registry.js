@@ -104,6 +104,9 @@
             "editor trait control",
             "graph/provenance ownership",
             "css/layout/a11y law",
+            "component/state/data/form/action/render law",
+            "browser semantic proof",
+            "performance/security budget",
             "acid/proof tests",
             "evidence packet / supervisor gate"
           ],

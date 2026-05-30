@@ -921,3 +921,14 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
 #mcel-acid-report {
   min-width: 42ch;
 }
+
+
+#mcel-subsumption-report,
+#mcel-workbench-report,
+#mcel-browser-proof-report {
+  min-height: 18rem;
+}
+
+.mcel-lab-panel[aria-label="Subsumption Lattice"] {
+  border-color: color-mix(in srgb, var(--accent, #7dd3fc) 42%, transparent);
+}

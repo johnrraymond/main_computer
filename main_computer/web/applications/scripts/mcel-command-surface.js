@@ -17,6 +17,17 @@
         graph: ["graph", "map"],
         audit: ["audit", "govern", "prove"],
         layout: ["layout", "geometry", "overflow-proof", "scroll-proof"],
+        component: ["component", "slot", "props", "react", "vue", "svelte"],
+        state: ["state", "store", "redux", "zustand", "replay"],
+        data: ["data", "query", "cache", "mutation", "tanstack", "swr"],
+        form: ["form", "validation", "dirty", "errors"],
+        action: ["action", "event", "swap", "htmx"],
+        render: ["render", "route", "hydration", "island", "next", "astro"],
+        a11y: ["a11y", "accessibility", "focus"],
+        performance: ["performance", "budget", "security", "lighthouse"],
+        subsumption: ["subsumption", "obsolete", "replace-frameworks", "rust-java", "platform-spine"],
+        workbench: ["workbench", "storybook", "scenario-blueprints"],
+        "browser-proof": ["browser-proof", "playwright", "conformance", "semantic-proof"],
         autopilot: ["autopilot", "full-proof", "prove-all", "quality-gate", "readiness"],
         kernel: ["kernel", "boot-audit", "module-audit"],
         traceability: ["traceability", "requirements", "developer-spec", "spec-map"],
@@ -52,7 +63,24 @@
             density: "allowedDensities",
             sizePolicy: "allowedSizePolicies",
             overflowPolicy: "allowedOverflowPolicies",
-            scrollPolicy: "allowedScrollPolicies"
+            scrollPolicy: "allowedScrollPolicies",
+            componentKind: "allowedComponentKinds",
+            stateOwner: "allowedStateOwners",
+            statePolicy: "allowedStatePolicies",
+            cachePolicy: "allowedCachePolicies",
+            syncPolicy: "allowedSyncPolicies",
+            validation: "allowedValidationPolicies",
+            dirtyPolicy: "allowedDirtyPolicies",
+            errorPolicy: "allowedErrorPolicies",
+            swapPolicy: "allowedSwapPolicies",
+            eventPolicy: "allowedEventPolicies",
+            renderMode: "allowedRenderModes",
+            hydration: "allowedHydrationPolicies",
+            islandPolicy: "allowedIslandPolicies",
+            focusPolicy: "allowedFocusPolicies",
+            a11yPolicy: "allowedA11yPolicies",
+            performanceBudget: "allowedPerformanceBudgets",
+            securityPolicy: "allowedSecurityPolicies"
           }[trait];
           (definition[key] || []).forEach((value) => union.add(value));
         });
@@ -107,7 +135,24 @@
           "density",
           "sizePolicy",
           "overflowPolicy",
-          "scrollPolicy"
+          "scrollPolicy",
+          "componentKind",
+          "stateOwner",
+          "statePolicy",
+          "cachePolicy",
+          "syncPolicy",
+          "validation",
+          "dirtyPolicy",
+          "errorPolicy",
+          "swapPolicy",
+          "eventPolicy",
+          "renderMode",
+          "hydration",
+          "islandPolicy",
+          "focusPolicy",
+          "a11yPolicy",
+          "performanceBudget",
+          "securityPolicy"
         ].forEach((trait) => {
           const value = detectTrait(tokens, trait, source);
           if (value) {
@@ -128,6 +173,66 @@
             result.summary.push(`set ${trait}=${explicit}`);
           }
         });
+
+        const namedTraits = [
+          ["componentName", "component"],
+          ["stateScope", "state\\s+scope"],
+          ["query", "query"],
+          ["mutation", "mutation"],
+          ["submit", "submit"],
+          ["action", "action"],
+          ["target", "target"],
+          ["route", "route"],
+          ["propContract", "prop(?:\\s+contract)?"]
+        ];
+        namedTraits.forEach(([trait, prefix]) => {
+          const explicit = compactValue(source, `(?:set\\s+)?${prefix}`);
+          if (explicit) {
+            record(result, "set-trait", {trait, value: explicit});
+            result.summary.push(`set ${trait}=${explicit}`);
+          }
+        });
+
+        if (tokens.includes("react") || tokens.includes("vue") || tokens.includes("svelte") || tokens.includes("component")) {
+          record(result, "set-trait", {trait: "componentKind", value: "component"});
+          result.summary.push("activate semantic component law");
+        }
+        if (tokens.includes("redux") || tokens.includes("zustand") || tokens.includes("state")) {
+          record(result, "set-trait", {trait: "stateOwner", value: "view"});
+          record(result, "set-trait", {trait: "statePolicy", value: "replayable"});
+          result.summary.push("activate state ownership law");
+        }
+        if (tokens.includes("tanstack") || tokens.includes("query") || tokens.includes("cache")) {
+          record(result, "set-trait", {trait: "cachePolicy", value: "stale-while-revalidate"});
+          record(result, "set-trait", {trait: "syncPolicy", value: "background"});
+          result.summary.push("activate data query/cache law");
+        }
+        if (tokens.includes("form") || tokens.includes("validation")) {
+          record(result, "set-trait", {trait: "validation", value: "schema"});
+          record(result, "set-trait", {trait: "dirtyPolicy", value: "warn"});
+          record(result, "set-trait", {trait: "errorPolicy", value: "inline-and-summary"});
+          result.summary.push("activate form validation law");
+        }
+        if (tokens.includes("htmx") || tokens.includes("swap")) {
+          record(result, "set-trait", {trait: "swapPolicy", value: "lawful-region"});
+          record(result, "set-trait", {trait: "eventPolicy", value: "audited"});
+          result.summary.push("activate action/swap law");
+        }
+        if (tokens.includes("next") || tokens.includes("astro") || tokens.includes("island") || tokens.includes("hydration")) {
+          record(result, "set-trait", {trait: "renderMode", value: "island"});
+          record(result, "set-trait", {trait: "hydration", value: "visible"});
+          result.summary.push("activate render/hydration law");
+        }
+        if (tokens.includes("a11y") || tokens.includes("accessibility") || tokens.includes("focus")) {
+          record(result, "set-trait", {trait: "a11yPolicy", value: "strict"});
+          record(result, "set-trait", {trait: "focusPolicy", value: "preserve"});
+          result.summary.push("activate a11y/focus law");
+        }
+        if (tokens.includes("performance") || tokens.includes("security") || tokens.includes("budget")) {
+          record(result, "set-trait", {trait: "performanceBudget", value: "small"});
+          record(result, "set-trait", {trait: "securityPolicy", value: "trusted"});
+          result.summary.push("activate performance/security law");
+        }
 
         if (tokens.includes("never") && tokens.includes("scroll")) {
           record(result, "set-trait", {trait: "scrollPolicy", value: "never"});

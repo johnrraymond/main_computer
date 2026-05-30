@@ -5,6 +5,9 @@
       const styleLaw = typeof McelLabStyleLaw !== "undefined" ? McelLabStyleLaw : window.McelLabStyleLaw;
       const layoutLaw = typeof McelLabLayoutLaw !== "undefined" ? McelLabLayoutLaw : window.McelLabLayoutLaw;
       const browserObserver = typeof McelLabBrowserObserver !== "undefined" ? McelLabBrowserObserver : window.McelLabBrowserObserver;
+      const platformSpine = typeof McelLabPlatformSpine !== "undefined" ? McelLabPlatformSpine : window.McelLabPlatformSpine;
+      const workbench = typeof McelLabWorkbench !== "undefined" ? McelLabWorkbench : window.McelLabWorkbench;
+      const browserRunner = typeof McelLabBrowserRunner !== "undefined" ? McelLabBrowserRunner : window.McelLabBrowserRunner;
       const commandSurface = typeof McelLabCommandSurface !== "undefined" ? McelLabCommandSurface : window.McelLabCommandSurface;
       const graph = typeof McelLabGraph !== "undefined" ? McelLabGraph : window.McelLabGraph;
       const opsRunner = typeof McelLabOpsRunner !== "undefined" ? McelLabOpsRunner : window.McelLabOpsRunner;
@@ -24,6 +27,7 @@
         const root = runtimeRoot(compiled.runtimeHtml);
         const cssLaw = options.applyLaws === false ? null : styleLaw?.applyRuntimeLaw?.(root, {theme: options.theme || "theme-machine", reason: options.reason || "mcel-core:compile"});
         const layoutReport = options.applyLaws === false ? null : layoutLaw?.applyRuntimeLaw?.(root, {reason: options.reason || "mcel-core:compile"});
+        const platformReport = options.applyLaws === false ? null : platformSpine?.applyPlatformLaws?.(root, {reason: options.reason || "mcel-core:compile"});
         return {
           ...compiled,
           sourceHtml: source,
@@ -31,7 +35,8 @@
           runtimeRoot: root,
           laws: {
             cssLaw,
-            layoutLaw: layoutReport
+            layoutLaw: layoutReport,
+            platform: platformReport
           }
         };
       }
@@ -56,14 +61,16 @@
         const runtime = typeof runtimeRootOrHtml === "string" ? runtimeRoot(runtimeRootOrHtml) : runtimeRootOrHtml;
         const graphAudit = graph?.audit ? graph.audit(sourceHtml, runtime, {reason: options.reason || "mcel-core:audit"}) : null;
         const layoutProof = runtime && layoutLaw?.proveRuntime ? layoutLaw.proveRuntime(runtime, {reason: options.reason || "mcel-core:audit"}) : null;
+        const platformProof = runtime && platformSpine?.provePlatform ? platformSpine.provePlatform(runtime, {reason: options.reason || "mcel-core:audit"}) : null;
         const lawProof = runtime && registry?.prove ? registry.prove(runtime, {reason: options.reason || "mcel-core:audit"}) : null;
         return {
           kind: "mcel-core-audit",
           contractVersion: contract.contractVersion,
           graphAudit,
           layoutProof,
+          platformProof,
           lawProof,
-          failed: Boolean(graphAudit?.failed || layoutProof?.failed || lawProof?.failed)
+          failed: Boolean(graphAudit?.failed || layoutProof?.failed || platformProof?.failed || lawProof?.failed)
         };
       }
 
@@ -106,6 +113,19 @@
         return supervisor?.runFullProof ? supervisor.runFullProof(options) : audit(options.source || contract.defaultSource, options.runtimeRoot || null, options);
       }
 
+      function buildSubsumptionLattice() {
+        return platformSpine?.buildSubsumptionLattice ? platformSpine.buildSubsumptionLattice() : null;
+      }
+
+      function buildWorkbenchPlan() {
+        return workbench?.buildWorkbenchPlan ? workbench.buildWorkbenchPlan() : null;
+      }
+
+      function runBrowserProof(runtimeRootOrHtml, options = {}) {
+        const root = typeof runtimeRootOrHtml === "string" ? runtimeRoot(runtimeRootOrHtml) : runtimeRootOrHtml;
+        return browserRunner?.observeAndProve ? browserRunner.observeAndProve(root, options) : null;
+      }
+
       return Object.freeze({
         version: contract.contractVersion,
         compile,
@@ -119,6 +139,12 @@
         runAcidTests,
         buildEvidencePacket,
         runProof,
+        buildSubsumptionLattice,
+        buildWorkbenchPlan,
+        runBrowserProof,
+        platform: platformSpine,
+        workbench,
+        browserRunner,
         laws: registry
       });
     })();

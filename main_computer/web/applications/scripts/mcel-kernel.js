@@ -64,11 +64,110 @@
           requirements: ["layout-overflow-law", "browser-observation"]
         },
         {
+          id: "component-law",
+          global: "McelLabComponentLaw",
+          label: "Component / Slot / Prop Law",
+          owns: ["semantic components", "slots", "prop contracts", "component framework replacement"],
+          dependsOn: ["McelLabContract", "McelLabLawRegistry"],
+          priorArt: ["React", "Vue", "Svelte", "Lit"],
+          requirements: ["component-subsumption", "law-registry"]
+        },
+        {
+          id: "state-law",
+          global: "McelLabStateLaw",
+          label: "State Ownership / Replay Law",
+          owns: ["state ownership", "scope", "replay", "mutation authority"],
+          dependsOn: ["McelLabContract", "McelLabLawRegistry"],
+          priorArt: ["Redux Toolkit", "Zustand", "XState"],
+          requirements: ["state-subsumption", "law-registry"]
+        },
+        {
+          id: "data-law",
+          global: "McelLabDataLaw",
+          label: "Data Query / Cache / Sync Law",
+          owns: ["query contracts", "cache policy", "mutation sync", "freshness"],
+          dependsOn: ["McelLabContract", "McelLabLawRegistry"],
+          priorArt: ["TanStack Query", "SWR", "Apollo Client"],
+          requirements: ["data-subsumption", "law-registry"]
+        },
+        {
+          id: "form-law",
+          global: "McelLabFormLaw",
+          label: "Form / Validation / Error Law",
+          owns: ["submit contracts", "validation", "dirty state", "error display"],
+          dependsOn: ["McelLabContract", "McelLabLawRegistry"],
+          priorArt: ["React Hook Form", "Formik"],
+          requirements: ["form-subsumption", "a11y"]
+        },
+        {
+          id: "action-law",
+          global: "McelLabActionLaw",
+          label: "Action / Event / Swap Law",
+          owns: ["semantic actions", "event ownership", "targeted swaps"],
+          dependsOn: ["McelLabContract", "McelLabLawRegistry"],
+          priorArt: ["htmx", "command palettes", "server actions"],
+          requirements: ["action-subsumption", "semantic-command-surface"]
+        },
+        {
+          id: "render-law",
+          global: "McelLabRenderLaw",
+          label: "Route / Render / Hydration Law",
+          owns: ["routes", "render modes", "hydration", "islands"],
+          dependsOn: ["McelLabContract", "McelLabLawRegistry"],
+          priorArt: ["Next.js", "Astro", "Nuxt", "SvelteKit"],
+          requirements: ["render-subsumption", "browser-observation"]
+        },
+        {
+          id: "a11y-law",
+          global: "McelLabA11yLaw",
+          label: "Accessibility / Focus Law",
+          owns: ["strict accessibility", "focus ownership", "generated decoration proof"],
+          dependsOn: ["McelLabContract", "McelLabLawRegistry"],
+          priorArt: ["WAI-ARIA APG", "focus-trap helpers"],
+          requirements: ["a11y-subsumption", "a11y"]
+        },
+        {
+          id: "performance-law",
+          global: "McelLabPerformanceLaw",
+          label: "Performance / Security Budget Law",
+          owns: ["performance budgets", "security policy", "hydration risk"],
+          dependsOn: ["McelLabContract", "McelLabLawRegistry"],
+          priorArt: ["Lighthouse", "bundle-budget plugins", "CSP"],
+          requirements: ["performance-subsumption", "zero-debt-governance"]
+        },
+        {
+          id: "platform-spine",
+          global: "McelLabPlatformSpine",
+          label: "Platform Spine / Subsumption Lattice",
+          owns: ["obsolete-library map", "axis matrix", "Rust/Java style safety doctrine"],
+          dependsOn: ["McelLabContract", "McelLabLawRegistry", "McelLabComponentLaw", "McelLabStateLaw", "McelLabDataLaw", "McelLabFormLaw", "McelLabActionLaw", "McelLabRenderLaw", "McelLabA11yLaw", "McelLabPerformanceLaw"],
+          priorArt: ["Java", "Rust", "C++", "full-stack frameworks"],
+          requirements: ["platform-spine", "subsumption-lattice"]
+        },
+        {
+          id: "workbench",
+          global: "McelLabWorkbench",
+          label: "Scenario Workbench",
+          owns: ["scenario blueprints", "evidence checklist", "Storybook replacement"],
+          dependsOn: ["McelLabContract", "McelLabScenarios", "McelLabPlatformSpine"],
+          priorArt: ["Storybook", "Chromatic", "fixture workbenches"],
+          requirements: ["workbench-subsumption", "ci-like-evidence"]
+        },
+        {
+          id: "browser-runner",
+          global: "McelLabBrowserRunner",
+          label: "Browser Semantic Runner",
+          owns: ["browser conformance manifest", "semantic proof over browser machine state"],
+          dependsOn: ["McelLabContract", "McelLabBrowserObserver", "McelLabPlatformSpine"],
+          priorArt: ["Playwright", "Cypress", "browser layout engines"],
+          requirements: ["browser-runner", "browser-observation"]
+        },
+        {
           id: "command-surface",
           global: "McelLabCommandSurface",
           label: "Semantic Command Surface",
           owns: ["deterministic command planning", "semantic operations"],
-          dependsOn: ["McelLabContract", "McelLabEditor", "McelLabStyleLaw"],
+          dependsOn: ["McelLabContract", "McelLabEditor", "McelLabStyleLaw", "McelLabPlatformSpine"],
           priorArt: ["Command palettes", "AI tool call planners"],
           requirements: ["ai-operability", "semantic-command-surface"]
         },
@@ -104,7 +203,7 @@
           global: "McelLabOpsRunner",
           label: "Operational Runner",
           owns: ["scenario matrix", "evidence packet", "readiness"],
-          dependsOn: ["McelLabContract", "McelLabEngine", "McelLabStyleLaw", "McelLabGraph"],
+          dependsOn: ["McelLabContract", "McelLabEngine", "McelLabStyleLaw", "McelLabGraph", "McelLabPlatformSpine"],
           priorArt: ["CI pipelines", "golden round-trip tests"],
           requirements: ["ci-like-evidence"]
         },
@@ -122,7 +221,7 @@
           global: "McelLabTestHarness",
           label: "Browser Contract Harness",
           owns: ["contract test suite", "regression probes"],
-          dependsOn: ["McelLabContract", "McelLabEngine", "McelLabEditor", "McelLabAcidTests"],
+          dependsOn: ["McelLabContract", "McelLabEngine", "McelLabEditor", "McelLabAcidTests", "McelLabPlatformSpine"],
           priorArt: ["unit tests", "integration harnesses"],
           requirements: ["contract-tests", "acid-tests"]
         },
@@ -131,7 +230,7 @@
           global: "McelLabSupervisor",
           label: "Autopilot Supervisor",
           owns: ["full proof", "quality gate", "supervised readiness"],
-          dependsOn: ["McelLabOpsRunner", "McelLabTestHarness", "McelLabAcidTests"],
+          dependsOn: ["McelLabOpsRunner", "McelLabTestHarness", "McelLabAcidTests", "McelLabPlatformSpine", "McelLabBrowserRunner"],
           priorArt: ["release gates", "supervisory control loops"],
           requirements: ["autopilot-proof"]
         },
@@ -149,7 +248,7 @@
           global: "MCEL",
           label: "Public MCEL Core API",
           owns: ["compile API", "serialize API", "repair API", "audit API", "inspection API"],
-          dependsOn: ["McelLabContract", "McelLabEngine", "McelLabEditor", "McelLabLayoutLaw", "McelLabSupervisor"],
+          dependsOn: ["McelLabContract", "McelLabEngine", "McelLabEditor", "McelLabLayoutLaw", "McelLabSupervisor", "McelLabPlatformSpine", "McelLabWorkbench", "McelLabBrowserRunner"],
           priorArt: ["Svelte", "Web Components", "CI pipelines"],
           requirements: ["public-core-api", "layout-overflow-law"]
         }
@@ -217,6 +316,36 @@
           mcelContract: "Compiler, repair, serializer, and supervisor stages expose explicit quality gates."
         },
         {
+          system: "Redux Toolkit / Zustand",
+          difficulty: "shared client state without mutation chaos",
+          lesson: "State must have explicit ownership, scope, and mutation paths.",
+          mcelContract: "State owner, state policy, replay, and derived runtime state are MCEL laws rather than framework stores."
+        },
+        {
+          system: "TanStack Query / SWR",
+          difficulty: "server state, cache invalidation, freshness, mutation, and offline sync",
+          lesson: "Data is not just fetch; it needs cache, freshness, sync, error, and mutation semantics.",
+          mcelContract: "Query/cache/mutation/sync are source policies with runtime freshness evidence."
+        },
+        {
+          system: "React Hook Form / Formik",
+          difficulty: "performant forms, validation, dirty state, and accessible errors",
+          lesson: "Form correctness spans state, validation, UX, and accessibility.",
+          mcelContract: "Submit, validation, dirty policy, and error policy are semantic form law."
+        },
+        {
+          system: "Next.js / Astro",
+          difficulty: "routes, rendering modes, hydration, islands, and delivery optimization",
+          lesson: "Application shape belongs above component code.",
+          mcelContract: "Route/render/hydration/island/cache policy is declared in source and proven by browser evidence."
+        },
+        {
+          system: "Playwright / Cypress",
+          difficulty: "real browser automation",
+          lesson: "The browser is the final machine; tests must see what it actually did.",
+          mcelContract: "Browser automation supplies machine state while MCEL laws decide meaning and pass/fail."
+        },
+        {
           system: "Yjs / CRDTs",
           difficulty: "durable collaborative source",
           lesson: "Shared state can be merged without one client corrupting another.",
@@ -231,6 +360,18 @@
         {id: "law-registry", label: "MCEL laws are registered and machine-auditable", owners: ["law-registry", "style-law", "layout-law"], evidence: ["McelLabLawRegistry", "register", "prove"]},
         {id: "browser-observation", label: "Runtime browser geometry is observed as machine state", owners: ["browser-observer"], evidence: ["observeElement", "scrollHeight", "getBoundingClientRect"]},
         {id: "layout-overflow-law", label: "Layout law proves overflow and scrollbar ownership", owners: ["layout-law", "browser-observer", "ops-runner", "supervisor"], evidence: ["data-mc-scroll-policy", "data-mc-overflow-computed", "layoutLawClean"]},
+        {id: "component-subsumption", label: "Semantic components replace framework component APIs", owners: ["component-law", "platform-spine", "core"], evidence: ["data-mc-component", "data-mc-slot", "component.slots.props.v1"]},
+        {id: "state-subsumption", label: "State ownership replaces client-state libraries", owners: ["state-law", "platform-spine"], evidence: ["data-mc-state-owner", "state.ownership.replay.v1"]},
+        {id: "data-subsumption", label: "Query/cache/sync law replaces server-state libraries", owners: ["data-law", "platform-spine"], evidence: ["data-mc-query", "data-mc-cache-policy", "data.query.cache.sync.v1"]},
+        {id: "form-subsumption", label: "Form law replaces form state/validation libraries", owners: ["form-law", "a11y-law"], evidence: ["data-mc-submit", "data-mc-validation", "form.validation.errors.v1"]},
+        {id: "action-subsumption", label: "Action/event/swap law replaces htmx-like glue", owners: ["action-law", "command-surface"], evidence: ["data-mc-action", "data-mc-swap-policy", "action.event.swap.v1"]},
+        {id: "render-subsumption", label: "Render/hydration law replaces meta-framework routing choices", owners: ["render-law", "browser-runner"], evidence: ["data-mc-render", "data-mc-hydration", "render.route.hydration.v1"]},
+        {id: "a11y-subsumption", label: "Accessibility and focus are first-class runtime law", owners: ["a11y-law", "engine"], evidence: ["data-mc-a11y-policy", "data-mc-focus-policy", "a11y.focus.semantic.v1"]},
+        {id: "performance-subsumption", label: "Performance/security budgets constrain runtime generation", owners: ["performance-law", "supervisor"], evidence: ["data-mc-performance-budget", "data-mc-security-policy", "performance.security.budget.v1"]},
+        {id: "platform-spine", label: "Subsumption lattice maps legacy library families to MCEL laws", owners: ["platform-spine", "kernel"], evidence: ["obsoleteLibraryMap", "buildSubsumptionLattice"]},
+        {id: "subsumption-lattice", label: "MCEL states explicit obsolete-library replacement claims", owners: ["platform-spine", "workbench"], evidence: ["mcel-subsumption-lattice", "axisOrder"]},
+        {id: "workbench-subsumption", label: "Workbench scenarios replace Storybook examples", owners: ["workbench", "ops-runner"], evidence: ["buildWorkbenchPlan", "scenarioBlueprints"]},
+        {id: "browser-runner", label: "Browser semantic runner replaces raw browser assertion suites", owners: ["browser-runner", "browser-observer"], evidence: ["observeAndProve", "buildConformanceManifest"]},
         {id: "public-core-api", label: "Reusable MCEL core API fronts the lab modules", owners: ["core"], evidence: ["MCEL.compile", "MCEL.serialize", "MCEL.audit"]},
         {id: "grapesjs-semantic-editing", label: "Editor manipulates semantic traits", owners: ["editor"], evidence: ["applyTraits", "insertBlock", "sanitizeEditorHtml"]},
         {id: "serializer-firewall", label: "Serializer strips generated parts", owners: ["engine", "editor"], evidence: ["serializeRuntimeRoot", "data-mc-generated"]},
@@ -360,7 +501,25 @@
           attrs.scrollOwner,
           attrs.layoutPressure,
           attrs.geometryProof,
-          attrs.keyboardScroll
+          attrs.keyboardScroll,
+          attrs.componentLaw,
+          attrs.slotLaw,
+          attrs.stateLaw,
+          attrs.dataLaw,
+          attrs.formLaw,
+          attrs.actionLaw,
+          attrs.renderLaw,
+          attrs.a11yLaw,
+          attrs.focusLaw,
+          attrs.performanceLaw,
+          attrs.securityLaw,
+          attrs.proofTier,
+          attrs.semanticRisk,
+          attrs.dependencyMode,
+          attrs.hydrationProof,
+          attrs.dataFreshness,
+          attrs.formValidity,
+          attrs.actionSafety
         ].filter(Boolean).some((attribute) => String(source || "").includes(attribute));
       }
 
@@ -382,6 +541,8 @@
           ll?.applyRuntimeLaw?.(root, {reason: "kernel-audit"});
         }
         const layoutReport = ll?.reportFor?.(root, {reason: "kernel-audit"}) || {layoutLawClean: true, warnings: []};
+        const platformProof = window.McelLabPlatformSpine?.provePlatform?.(root, {reason: "kernel-audit"}) || null;
+        const browserProof = window.McelLabBrowserRunner?.observeAndProve?.(root, {reason: "kernel-audit"}) || null;
         const serializer = e?.serializeRuntimeRoot?.(root, {reason: "kernel-audit"}) || {serialized: source, report: {serializerClean: !hasRuntimeLeak(source), warnings: []}};
         const traceability = buildTraceabilityMap({reason: options.reason || "kernel-audit"});
         const audit = gr?.audit?.(source, root, {reason: "kernel-audit"}) || null;
@@ -389,6 +550,8 @@
           serializerReport: serializer.report,
           cssLawReport: sl?.reportFor?.(root, {theme: options.theme || "theme-machine", reason: "kernel-audit"}),
           layoutLawReport: layoutReport,
+          platformReport: platformProof,
+          browserProof,
           a11yReport: e?.computeA11y?.(root),
           auditReport: audit,
           testReport: options.testReport || null,
@@ -442,6 +605,18 @@
             detail: layoutReport.layoutLawClean ? `${layoutReport.passed || 0}/${layoutReport.elementCount || 0} element(s) passed layout proof` : `${layoutReport.failed || 0} layout proof failure(s)`
           },
           {
+            key: "platform-spine",
+            label: "Platform Spine",
+            status: platformProof && !platformProof.failed ? "pass" : "fail",
+            detail: platformProof ? `${platformProof.moduleCount} subsystem law(s) proved` : "platform spine unavailable"
+          },
+          {
+            key: "browser-runner",
+            label: "Browser Semantic Runner",
+            status: browserProof && !browserProof.failed ? "pass" : "fail",
+            detail: browserProof ? `live geometry ${browserProof.liveGeometry}` : "browser semantic runner unavailable"
+          },
+          {
             key: "acid-tests",
             label: "Acid Test Surface",
             status: getGlobal("McelLabAcidTests") && (!options.acidReport || !options.acidReport.failed) ? "pass" : "fail",
@@ -477,6 +652,9 @@
           generatedPartCount: generatedCount(root),
           moduleGraph: modules,
           traceability,
+          platformProof,
+          browserProof,
+          subsumptionLattice: window.McelLabPlatformSpine?.buildSubsumptionLattice?.() || null,
           readiness,
           compiledEvents: compiled?.events || [],
           debtLedger: gates,
