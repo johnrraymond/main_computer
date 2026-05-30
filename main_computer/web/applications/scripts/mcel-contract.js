@@ -85,7 +85,7 @@
         contractVersion: "data-mc-contract-version"
       });
 
-      const contractVersion = "mcel-lab.v0.10-platform-spine";
+      const contractVersion = "mcel-lab.v0.11-ui-site-skeleton";
 
       const modes = Object.freeze(["source", "editor", "runtime", "diff", "stress", "a11y"]);
 
@@ -98,7 +98,7 @@
         density: "auto",
         sizePolicy: "adaptive",
         overflowPolicy: "contain",
-        scrollPolicy: "auto"
+        scrollPolicy: "external"
       });
 
       const runtimeOwnedAttributes = Object.freeze([
@@ -327,56 +327,137 @@
         })
       });
 
-      const defaultSource = `<section
-  data-mc="panel"
-  data-mc-kind="signal"
-  data-mc-flow="reverse"
+      const defaultSource = `<main
+  data-mc="smart-region"
+  data-mc-kind="article"
+  data-mc-flow="stack"
   data-mc-rank="primary"
   data-mc-state="live"
-  data-mc-density="auto"
-  data-mc-size-policy="adaptive"
-  data-mc-overflow-policy="contain"
-  data-mc-scroll-policy="auto"
-  data-mc-component="SignalPanel"
-  data-mc-component-kind="component"
-  data-mc-state-owner="view"
-  data-mc-state-policy="derived"
-  data-mc-render="island"
-  data-mc-hydration="visible"
-  data-mc-a11y-policy="strict"
-  data-mc-performance-budget="small"
-  data-mc-words="argument stream volatile public"
->
-  <h2>Crank Files</h2>
-  <p>Notes, arguments, and public signals.</p>
-</section>
-
-<section
-  id="runtime-proof"
-  data-mc="panel"
-  data-mc-kind="work"
-  data-mc-flow="forward"
-  data-mc-rank="secondary"
-  data-mc-state="idle"
   data-mc-density="calm"
-  data-mc-size-policy="adaptive"
+  data-mc-size-policy="fluid"
   data-mc-overflow-policy="delegate"
   data-mc-scroll-policy="external"
-  data-mc-component="RuntimeProof"
-  data-mc-component-kind="component"
-  data-mc-state-owner="session"
+  data-mc-component="NeighborhoodMarketSite"
+  data-mc-component-kind="page"
+  data-mc-state-owner="url"
   data-mc-state-policy="replayable"
-  data-mc-query="runtime.proofs"
-  data-mc-cache-policy="stale-while-revalidate"
-  data-mc-render="client"
-  data-mc-hydration="interaction"
+  data-mc-route="/"
+  data-mc-render="static"
+  data-mc-hydration="islands"
   data-mc-a11y-policy="strict"
-  data-mc-performance-budget="medium"
-  data-mc-words="compiler serializer repair"
+  data-mc-performance-budget="small"
+  data-mc-security-policy="trusted"
+  data-mc-words="minimal site skeleton emerges from simple semantic html"
 >
-  <h2>Runtime Proof</h2>
-  <p>The generated rail, copy lane, metadata, and field are disposable runtime parts.</p>
-</section>`;
+  <section
+    data-mc="panel"
+    data-mc-kind="hero"
+    data-mc-flow="split"
+    data-mc-rank="primary"
+    data-mc-state="live"
+    data-mc-density="calm"
+    data-mc-size-policy="fluid"
+    data-mc-overflow-policy="expand"
+    data-mc-scroll-policy="never"
+    data-mc-component="HeroSection"
+    data-mc-component-kind="layout"
+    data-mc-render="static"
+    data-mc-a11y-policy="strict"
+    data-mc-performance-budget="tiny"
+    data-mc-words="hero promise call to action"
+  >
+    <p data-mc-slot="meta">Neighborhood Cluster · Open today</p>
+    <h1 data-mc-slot="title">A useful local site from almost plain HTML.</h1>
+    <p data-mc-slot="body">MCEL turns simple semantic sections into a resilient product surface with layout, proof, state, actions, forms, and accessibility rules layered on top.</p>
+    <p data-mc-slot="actions"><a href="#join" data-mc-action="join-neighborhood" data-mc-event-policy="audited">Join the list</a></p>
+  </section>
+
+  <section
+    data-mc="feed"
+    data-mc-kind="signal"
+    data-mc-flow="stack"
+    data-mc-rank="secondary"
+    data-mc-state="live"
+    data-mc-density="auto"
+    data-mc-size-policy="fluid"
+    data-mc-overflow-policy="expand"
+    data-mc-scroll-policy="never"
+    data-mc-component="TrustCluster"
+    data-mc-component-kind="layout"
+    data-mc-a11y-policy="strict"
+    data-mc-performance-budget="tiny"
+    data-mc-words="cards hours delivery pickup trust"
+  >
+    <h2>Neighborhood Cluster</h2>
+    <article data-mc="panel" data-mc-kind="signal" data-mc-flow="stack" data-mc-rank="secondary" data-mc-state="live" data-mc-density="dense" data-mc-size-policy="adaptive" data-mc-overflow-policy="contain" data-mc-scroll-policy="auto" data-mc-component="TrustCard" data-mc-component-kind="component" data-mc-words="fresh daily">
+      <h3>Fresh daily</h3>
+      <p>Simple source becomes a polished card without hand-authored wrapper soup.</p>
+    </article>
+    <article data-mc="panel" data-mc-kind="work" data-mc-flow="stack" data-mc-rank="secondary" data-mc-state="idle" data-mc-density="dense" data-mc-size-policy="adaptive" data-mc-overflow-policy="contain" data-mc-scroll-policy="auto" data-mc-component="TrustCard" data-mc-component-kind="component" data-mc-words="pickup delivery">
+      <h3>Pickup + delivery</h3>
+      <p>The layout law expands content instead of making each card a scroll trap.</p>
+    </article>
+    <article data-mc="panel" data-mc-kind="proof" data-mc-flow="stack" data-mc-rank="secondary" data-mc-state="draft" data-mc-density="dense" data-mc-size-policy="adaptive" data-mc-overflow-policy="contain" data-mc-scroll-policy="auto" data-mc-component="TrustCard" data-mc-component-kind="component" data-mc-words="proof accessible">
+      <h3>Proof visible</h3>
+      <p>Runtime facts are generated, inspected, and stripped back out on serialize.</p>
+    </article>
+  </section>
+
+  <form
+    id="join"
+    data-mc="smart-region"
+    data-mc-kind="work"
+    data-mc-flow="split"
+    data-mc-rank="secondary"
+    data-mc-state="draft"
+    data-mc-density="auto"
+    data-mc-size-policy="fluid"
+    data-mc-overflow-policy="delegate"
+    data-mc-scroll-policy="external"
+    data-mc-component="SignupForm"
+    data-mc-component-kind="island"
+    data-mc-state-owner="view"
+    data-mc-state-policy="transactional"
+    data-mc-submit="lead.create"
+    data-mc-validation="native"
+    data-mc-dirty-policy="warn"
+    data-mc-error-policy="inline-and-summary"
+    data-mc-action="signup"
+    data-mc-event-policy="audited"
+    data-mc-render="island"
+    data-mc-hydration="interaction"
+    data-mc-focus-policy="preserve"
+    data-mc-a11y-policy="strict"
+    data-mc-performance-budget="small"
+    data-mc-words="signup form validated accessible"
+  >
+    <h2>Get the weekly market note.</h2>
+    <label>Email <input name="email" type="email" required placeholder="you@example.com"></label>
+    <button type="submit" data-mc-action="signup" data-mc-event-policy="audited">Notify me</button>
+  </form>
+
+  <section
+    data-mc="command-row"
+    data-mc-kind="work"
+    data-mc-flow="forward"
+    data-mc-rank="minor"
+    data-mc-state="live"
+    data-mc-density="compressed"
+    data-mc-size-policy="intrinsic"
+    data-mc-overflow-policy="clip"
+    data-mc-scroll-policy="never"
+    data-mc-component="FooterCta"
+    data-mc-component-kind="primitive"
+    data-mc-action="open-hours"
+    data-mc-event-policy="audited"
+    data-mc-a11y-policy="strict"
+    data-mc-performance-budget="tiny"
+    data-mc-words="footer command row hours contact"
+  >
+    <h2>Open 7am–7pm · 12th and Pine</h2>
+    <p>One semantic command row, zero nested scrollbars.</p>
+  </section>
+</main>`;
 
       const blockTemplates = Object.freeze({
         panel: `<section data-mc="panel" data-mc-kind="signal" data-mc-flow="forward" data-mc-rank="secondary" data-mc-state="draft" data-mc-density="auto" data-mc-size-policy="adaptive" data-mc-overflow-policy="contain" data-mc-scroll-policy="auto" data-mc-words="semantic source html">

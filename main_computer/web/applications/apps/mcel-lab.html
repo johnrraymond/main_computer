@@ -14,10 +14,10 @@
   <header class="mcel-lab-hero">
     <div>
       <p class="eyebrow">Web Test Bed / MCEL Lab</p>
-      <h3>Semantic HTML Compiler Workbench</h3>
+      <h3>Semantic Interface Forge</h3>
       <p>
-        Proves clean source HTML can compile into smart runtime DOM, survive editor
-        interaction, repair generated parts, and serialize back without wrapper rot.
+        Builds real user-facing layouts from simple semantic HTML, then proves the runtime
+        avoided wrapper rot, source pollution, accessibility leaks, and nested scrollbar traps.
       </p>
     </div>
     <div class="mcel-lab-actions" role="group" aria-label="MCEL Lab primary actions">
@@ -57,118 +57,192 @@
         <option value="theme-accessibility">theme-accessibility</option>
       </select>
     </label>
-    <span>Primary surface stays focused on source, semantic editor, and runtime output.</span>
+    <span>Primary surface stays product-first: the editor and the rendered site open in isolated modal surfaces instead of fighting the lab chrome.</span>
+    <div class="mcel-product-actions" role="group" aria-label="MCEL product surface actions">
+      <button type="button" id="mcel-open-editor-modal">Open Site Editor</button>
+      <button type="button" id="mcel-open-site-modal">Open Rendered Site</button>
+    </div>
+    <output id="mcel-site-frame-mini-status" class="mcel-site-frame-mini-status" aria-live="polite">
+      rendered-site iframe idle
+    </output>
   </section>
 
-  <div class="mcel-lab-workbench">
-    <section class="mcel-lab-pane mcel-lab-source-pane" aria-label="Source HTML">
-      <div class="mcel-lab-pane-head">
-        <strong>Source HTML</strong>
-        <span>canonical editable semantic source</span>
-      </div>
-      <textarea id="mcel-source-html" spellcheck="false" aria-label="MCEL source HTML"></textarea>
-    </section>
+  <section class="mcel-site-skeleton" aria-label="MCEL minimal site skeleton">
+    <div class="mcel-site-skeleton-copy">
+      <p class="eyebrow">Minimal site acid test</p>
+      <h4>Plain semantic source should become a usable site.</h4>
+      <p>
+        The default source is a small neighborhood site: hero, trust cluster, signup form,
+        and command row. Raw HTML would be under-designed; MCEL supplies layout intelligence,
+        proof metadata, and clean serialization.
+      </p>
+    </div>
+    <div id="mcel-ui-skeleton-summary" class="mcel-site-skeleton-cards" aria-live="polite">
+      <article><strong>Hero</strong><span>waiting for compile</span></article>
+      <article><strong>Cluster</strong><span>waiting for compile</span></article>
+      <article><strong>Form</strong><span>waiting for compile</span></article>
+      <article><strong>Command</strong><span>waiting for compile</span></article>
+    </div>
+    <div id="mcel-ui-skeleton-health" class="mcel-site-skeleton-health" data-status="pending">
+      Layout health is waiting for browser observation.
+    </div>
+  </section>
 
-    <section class="mcel-lab-pane mcel-lab-editor-pane" aria-label="GrapesJS semantic editor">
-      <div class="mcel-lab-pane-head">
-        <strong>GrapesJS Canvas</strong>
-        <span id="mcel-editor-status">semantic source editor booting</span>
-      </div>
-      <div class="mcel-lab-editor-layout">
-        <div class="mcel-lab-blocks" aria-label="MCEL source blocks">
-          <button type="button" data-mcel-block="panel">Panel</button>
-          <button type="button" data-mcel-block="hero">Hero Panel</button>
-          <button type="button" data-mcel-block="signal">Signal Panel</button>
-          <button type="button" data-mcel-block="work">Work Panel</button>
-          <button type="button" data-mcel-block="feed">Feed</button>
-          <button type="button" data-mcel-block="command-row">Command Row</button>
-          <button type="button" data-mcel-block="proof">Proof Surface</button>
-          <button type="button" data-mcel-block="smart-region">Smart Region</button>
-          <button type="button" data-mcel-block="component">Semantic Component</button>
-          <button type="button" data-mcel-block="form">Lawful Form</button>
-          <button type="button" data-mcel-block="route">Semantic Route</button>
-        </div>
-        <div class="mcel-lab-selection" id="mcel-selection-status">
-          Selected source widget: 1
-        </div>
-        <div class="mcel-lab-traits" aria-label="MCEL semantic traits">
-          <label>Kind <select id="mcel-trait-kind">
-            <option value="signal">signal</option>
-            <option value="work">work</option>
-            <option value="hero">hero</option>
-            <option value="article">article</option>
-            <option value="proof">proof</option>
-          </select></label>
-          <label>Flow <select id="mcel-trait-flow">
-            <option value="forward">forward</option>
-            <option value="reverse">reverse</option>
-            <option value="stack">stack</option>
-            <option value="split">split</option>
-          </select></label>
-          <label>Rank <select id="mcel-trait-rank">
-            <option value="primary">primary</option>
-            <option value="secondary">secondary</option>
-            <option value="minor">minor</option>
-          </select></label>
-          <label>State <select id="mcel-trait-state">
-            <option value="live">live</option>
-            <option value="idle">idle</option>
-            <option value="draft">draft</option>
-            <option value="warning">warning</option>
-          </select></label>
-          <label>Density <select id="mcel-trait-density">
-            <option value="auto">auto</option>
-            <option value="calm">calm</option>
-            <option value="dense">dense</option>
-            <option value="compressed">compressed</option>
-          </select></label>
-          <label>Size Policy <select id="mcel-trait-size-policy">
-            <option value="adaptive">adaptive</option>
-            <option value="fixed">fixed</option>
-            <option value="fluid">fluid</option>
-            <option value="intrinsic">intrinsic</option>
-          </select></label>
-          <label>Overflow Policy <select id="mcel-trait-overflow-policy">
-            <option value="visible">visible</option>
-            <option value="contain">contain</option>
-            <option value="clip">clip</option>
-            <option value="delegate">delegate</option>
-            <option value="paginate">paginate</option>
-            <option value="virtualize">virtualize</option>
-            <option value="expand">expand</option>
-            <option value="collapse">collapse</option>
-          </select></label>
-          <label>Scroll Policy <select id="mcel-trait-scroll-policy">
-            <option value="never">never</option>
-            <option value="auto">auto</option>
-            <option value="required">required</option>
-            <option value="external">external</option>
-            <option value="child-only">child-only</option>
-            <option value="viewport-only">viewport-only</option>
-          </select></label>
-          <label>Words <input id="mcel-trait-words" value="argument stream volatile public"></label>
-          <label>Connects <input id="mcel-trait-connects" placeholder="optional target id"></label>
-          <button type="button" id="mcel-apply-traits">Apply traits to selected widget</button>
-        </div>
-        <div class="mcel-lab-grapes-shell">
-          <div id="mcel-grapes-host">
-            <div id="mcel-grapes"></div>
-          </div>
-          <div id="mcel-grapes-fallback">
-            GrapesJS is unavailable; semantic block insertion and trait editing remain active.
-          </div>
-        </div>
-      </div>
-    </section>
+  <section id="mcel-runtime-measurement-well" class="mcel-runtime-measurement-well" aria-hidden="true">
+    <div id="mcel-runtime-preview" class="mcel-runtime-preview theme-machine" aria-label="Compiled MCEL preview"></div>
+  </section>
 
-    <section class="mcel-lab-pane mcel-lab-runtime-pane" aria-label="Runtime DOM">
-      <div class="mcel-lab-pane-head">
-        <strong>Runtime DOM</strong>
-        <span>generated structure inspected</span>
+  <div id="mcel-editor-modal" class="mcel-lab-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="mcel-editor-modal-title">
+    <div class="mcel-lab-modal-card mcel-lab-editor-modal-card" role="document">
+      <header class="mcel-lab-modal-head">
+        <div>
+          <p class="eyebrow">MCEL Site Editor</p>
+          <h4 id="mcel-editor-modal-title">Semantic source + GrapesJS, isolated from the rendered site.</h4>
+        </div>
+        <button type="button" class="mcel-modal-close" data-mcel-close-modal="editor">Close</button>
+      </header>
+
+      <div class="mcel-lab-workbench">
+        <section class="mcel-lab-pane mcel-lab-source-pane" aria-label="Source HTML">
+          <div class="mcel-lab-pane-head">
+            <strong>Source HTML</strong>
+            <span>canonical editable semantic source</span>
+          </div>
+          <textarea id="mcel-source-html" spellcheck="false" aria-label="MCEL source HTML"></textarea>
+        </section>
+
+        <section class="mcel-lab-pane mcel-lab-editor-pane" aria-label="GrapesJS semantic editor">
+          <div class="mcel-lab-pane-head">
+            <strong>GrapesJS Canvas</strong>
+            <span id="mcel-editor-status">semantic source editor booting</span>
+          </div>
+          <div class="mcel-lab-editor-layout">
+            <div class="mcel-lab-blocks" aria-label="MCEL source blocks">
+              <button type="button" data-mcel-block="panel">Panel</button>
+              <button type="button" data-mcel-block="hero">Hero Panel</button>
+              <button type="button" data-mcel-block="signal">Signal Panel</button>
+              <button type="button" data-mcel-block="work">Work Panel</button>
+              <button type="button" data-mcel-block="feed">Feed</button>
+              <button type="button" data-mcel-block="command-row">Command Row</button>
+              <button type="button" data-mcel-block="proof">Proof Surface</button>
+              <button type="button" data-mcel-block="smart-region">Smart Region</button>
+              <button type="button" data-mcel-block="component">Semantic Component</button>
+              <button type="button" data-mcel-block="form">Lawful Form</button>
+              <button type="button" data-mcel-block="route">Semantic Route</button>
+            </div>
+            <div class="mcel-lab-selection" id="mcel-selection-status">
+              Selected source widget: 1
+            </div>
+            <div class="mcel-lab-traits" aria-label="MCEL semantic traits">
+              <label>Kind <select id="mcel-trait-kind">
+                <option value="signal">signal</option>
+                <option value="work">work</option>
+                <option value="hero">hero</option>
+                <option value="article">article</option>
+                <option value="proof">proof</option>
+              </select></label>
+              <label>Flow <select id="mcel-trait-flow">
+                <option value="forward">forward</option>
+                <option value="reverse">reverse</option>
+                <option value="stack">stack</option>
+                <option value="split">split</option>
+              </select></label>
+              <label>Rank <select id="mcel-trait-rank">
+                <option value="primary">primary</option>
+                <option value="secondary">secondary</option>
+                <option value="minor">minor</option>
+              </select></label>
+              <label>State <select id="mcel-trait-state">
+                <option value="live">live</option>
+                <option value="idle">idle</option>
+                <option value="draft">draft</option>
+                <option value="warning">warning</option>
+              </select></label>
+              <label>Density <select id="mcel-trait-density">
+                <option value="auto">auto</option>
+                <option value="calm">calm</option>
+                <option value="dense">dense</option>
+                <option value="compressed">compressed</option>
+              </select></label>
+              <label>Size Policy <select id="mcel-trait-size-policy">
+                <option value="adaptive">adaptive</option>
+                <option value="fixed">fixed</option>
+                <option value="fluid">fluid</option>
+                <option value="intrinsic">intrinsic</option>
+              </select></label>
+              <label>Overflow Policy <select id="mcel-trait-overflow-policy">
+                <option value="visible">visible</option>
+                <option value="contain">contain</option>
+                <option value="clip">clip</option>
+                <option value="delegate">delegate</option>
+                <option value="paginate">paginate</option>
+                <option value="virtualize">virtualize</option>
+                <option value="expand">expand</option>
+                <option value="collapse">collapse</option>
+              </select></label>
+              <label>Scroll Policy <select id="mcel-trait-scroll-policy">
+                <option value="never">never</option>
+                <option value="auto">auto</option>
+                <option value="required">required</option>
+                <option value="external">external</option>
+                <option value="child-only">child-only</option>
+                <option value="viewport-only">viewport-only</option>
+              </select></label>
+              <label>Words <input id="mcel-trait-words" value="argument stream volatile public"></label>
+              <label>Connects <input id="mcel-trait-connects" placeholder="optional target id"></label>
+              <button type="button" id="mcel-apply-traits">Apply traits to selected widget</button>
+            </div>
+            <div class="mcel-lab-grapes-shell">
+              <div id="mcel-grapes-host">
+                <div id="mcel-grapes"></div>
+              </div>
+              <div id="mcel-grapes-fallback">
+                GrapesJS is unavailable; semantic block insertion and trait editing remain active.
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="mcel-lab-pane mcel-lab-runtime-pane" aria-label="Runtime DOM">
+          <div class="mcel-lab-pane-head">
+            <strong>Runtime DOM</strong>
+            <span>generated structure inspected from the hidden measurement surface</span>
+          </div>
+          <pre id="mcel-runtime-dom" aria-label="Runtime DOM source"></pre>
+        </section>
       </div>
-      <div id="mcel-runtime-preview" class="mcel-runtime-preview theme-machine" aria-label="Compiled MCEL preview"></div>
-      <pre id="mcel-runtime-dom" aria-label="Runtime DOM source"></pre>
-    </section>
+    </div>
+  </div>
+
+  <div id="mcel-site-modal" class="mcel-lab-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="mcel-site-modal-title">
+    <div class="mcel-lab-modal-card mcel-lab-site-modal-card" role="document">
+      <header class="mcel-lab-modal-head">
+        <div>
+          <p class="eyebrow">Rendered Site</p>
+          <h4 id="mcel-site-modal-title">The product surface renders inside an iframe, isolated from lab chrome.</h4>
+        </div>
+        <div class="mcel-site-frame-actions" role="group" aria-label="Rendered site iframe twiddle controls">
+          <button type="button" id="mcel-site-frame-resync">Resync iframe</button>
+          <button type="button" id="mcel-site-frame-rebuild">Rebuild iframe shell</button>
+          <button type="button" id="mcel-site-frame-clear">Clear srcdoc</button>
+          <button type="button" class="mcel-modal-close" data-mcel-close-modal="site">Close</button>
+        </div>
+      </header>
+      <section class="mcel-site-frame-twiddle" aria-label="Rendered site iframe lifecycle twiddle">
+        <div>
+          <strong>Iframe lifecycle twiddle</strong>
+          <span>Use this to verify whether reopen failures are modal state, iframe shell, or srcdoc refresh.</span>
+        </div>
+        <output id="mcel-site-frame-status" aria-live="polite">rendered-site iframe has not synced yet.</output>
+        <pre id="mcel-site-frame-log" aria-label="Rendered site iframe lifecycle log"></pre>
+      </section>
+      <iframe
+        id="mcel-site-frame"
+        class="mcel-site-frame"
+        title="Isolated MCEL rendered site"
+        sandbox=""
+      ></iframe>
+    </div>
   </div>
 
   <details id="mcel-diagnostics-drawer" class="mcel-lab-diagnostics" aria-label="MCEL diagnostic surfaces">

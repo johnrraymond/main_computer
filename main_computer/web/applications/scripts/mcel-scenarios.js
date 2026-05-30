@@ -9,19 +9,26 @@
           source: contract.defaultSource
         }),
         Object.freeze({
+          id: "minimal-site-skeleton",
+          label: "Minimal Site Skeleton",
+          mode: "runtime",
+          description: "A real hero, trust cluster, signup form, and command row emerge from simple semantic HTML.",
+          source: contract.defaultSource
+        }),
+        Object.freeze({
           id: "neighborhood",
           label: "Neighborhood Cluster",
           mode: "runtime",
-          description: "Three adjacent smart widgets compute cluster-start, cluster-middle, and cluster-end.",
-          source: `<section data-mc="panel" data-mc-kind="signal" data-mc-flow="forward" data-mc-rank="primary" data-mc-state="live" data-mc-density="auto" data-mc-words="cluster start signal">
+          description: "Three adjacent smart widgets compute cluster-start, cluster-middle, and cluster-end without accidental nested scrollbars.",
+          source: `<section data-mc="panel" data-mc-kind="signal" data-mc-flow="forward" data-mc-rank="primary" data-mc-state="live" data-mc-density="auto" data-mc-size-policy="fluid" data-mc-overflow-policy="expand" data-mc-scroll-policy="never" data-mc-words="cluster start signal">
   <h2>Cluster Start</h2>
   <p>The first smart element should know it starts a cluster.</p>
 </section>
-<section data-mc="panel" data-mc-kind="work" data-mc-flow="reverse" data-mc-rank="secondary" data-mc-state="draft" data-mc-density="auto" data-mc-words="cluster middle work">
+<section data-mc="panel" data-mc-kind="work" data-mc-flow="reverse" data-mc-rank="secondary" data-mc-state="draft" data-mc-density="auto" data-mc-size-policy="fluid" data-mc-overflow-policy="expand" data-mc-scroll-policy="never" data-mc-words="cluster middle work">
   <h2>Cluster Middle</h2>
   <p>The second smart element should know it sits inside the cluster.</p>
 </section>
-<section data-mc="proof-surface" data-mc-kind="proof" data-mc-flow="split" data-mc-rank="secondary" data-mc-state="idle" data-mc-density="auto" data-mc-words="cluster end proof">
+<section data-mc="proof-surface" data-mc-kind="proof" data-mc-flow="split" data-mc-rank="secondary" data-mc-state="idle" data-mc-density="auto" data-mc-size-policy="fluid" data-mc-overflow-policy="expand" data-mc-scroll-policy="never" data-mc-words="cluster end proof">
   <h2>Cluster End</h2>
   <p>The final smart element should know it closes the cluster.</p>
 </section>`
