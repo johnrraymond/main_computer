@@ -4,6 +4,7 @@
       const editor = typeof McelLabEditor !== "undefined" ? McelLabEditor : window.McelLabEditor;
       const scenarios = typeof McelLabScenarios !== "undefined" ? McelLabScenarios : window.McelLabScenarios;
       const styleLaw = typeof McelLabStyleLaw !== "undefined" ? McelLabStyleLaw : window.McelLabStyleLaw;
+      const layoutLaw = typeof McelLabLayoutLaw !== "undefined" ? McelLabLayoutLaw : window.McelLabLayoutLaw;
       const commandSurface = typeof McelLabCommandSurface !== "undefined" ? McelLabCommandSurface : window.McelLabCommandSurface;
       const projectStore = typeof McelLabProjectStore !== "undefined" ? McelLabProjectStore : window.McelLabProjectStore;
       const graph = typeof McelLabGraph !== "undefined" ? McelLabGraph : window.McelLabGraph;
@@ -77,14 +78,22 @@
           state: "warning",
           density: "dense",
           words: "selected widget edited",
-          connects: ""
+          connects: "",
+          sizePolicy: "fixed",
+          overflowPolicy: "delegate",
+          scrollPolicy: "external"
         });
         const traits = editor.readTraits(traitSource.source, {index: 1});
         record(
           results,
           "selection-aware traits update selected widget",
-          traits.kind === "work" && traits.state === "warning" && editor.readTraits(traitSource.source, {index: 0}).kind === "signal",
-          `selected index ${traits.index + 1}`,
+          traits.kind === "work" &&
+            traits.state === "warning" &&
+            traits.sizePolicy === "fixed" &&
+            traits.overflowPolicy === "delegate" &&
+            traits.scrollPolicy === "external" &&
+            editor.readTraits(traitSource.source, {index: 0}).kind === "signal",
+          `selected index ${traits.index + 1}; overflow=${traits.overflowPolicy}/${traits.scrollPolicy}`,
           "editor"
         );
 
@@ -113,6 +122,27 @@
             !styleSerialized.serialized.includes(attributes.flowAxis),
           `theme=${styleReport.theme}, elements=${styleReport.elementCount}`,
           "style-law"
+        );
+
+        const layoutSource = `<section data-mc="panel" data-mc-kind="proof" data-mc-flow="stack" data-mc-density="dense" data-mc-size-policy="fixed" data-mc-overflow-policy="clip" data-mc-scroll-policy="never"><h2>Layout Harness</h2><p>Never-scroll policy should become runtime-only geometry proof data, then vanish from serialized source.</p></section>`;
+        const layoutCompiled = engine.compileSource(layoutSource, {reason: "layout-law-harness"});
+        const layoutRoot = runtimeRoot(layoutCompiled.runtimeHtml);
+        const layoutReport = layoutLaw?.applyRuntimeLaw
+          ? layoutLaw.applyRuntimeLaw(layoutRoot, {theme: "theme-machine", reason: "layout-law-harness"})
+          : {layoutLawClean: false, warnings: ["layout law unavailable"]};
+        const layoutTarget = layoutRoot.querySelector(`[${attributes.type}]`);
+        const layoutSerialized = engine.serializeRuntimeRoot(layoutRoot, {reason: "layout-law-harness"});
+        record(
+          results,
+          "layout law proves overflow and scrollbar policy without source pollution",
+          layoutReport.layoutLawClean &&
+            layoutTarget?.getAttribute(attributes.geometryProof) === "pass" &&
+            layoutTarget?.getAttribute(attributes.scrollOwner) === "none" &&
+            layoutSerialized.report.serializerClean &&
+            !layoutSerialized.serialized.includes(attributes.geometryProof) &&
+            layoutSerialized.serialized.includes(attributes.scrollPolicy),
+          `layout=${layoutReport.layoutLawClean ? "clean" : "blocked"}, scrollOwner=${layoutTarget?.getAttribute(attributes.scrollOwner) || "missing"}`,
+          "layout-law"
         );
 
         const graphReport = graph.compactReport(contract.defaultSource, styleRoot);
@@ -223,9 +253,27 @@
           evidence.kind === "mcel-operational-evidence-packet" &&
             evidence.hashes.source.startsWith("fnv1a-") &&
             evidence.scenarioMatrix.caseCount === matrix.caseCount &&
-            evidence.readiness.cards.length >= 6,
+            evidence.layoutLaw?.layoutLawClean !== false &&
+            evidence.readiness.cards.length >= 7,
           `status=${evidence.readiness.status}, score=${evidence.readiness.score}`,
           "ops-runner"
+        );
+
+        const publicCompiled = window.MCEL?.compile?.(contract.defaultSource, {reason: "harness-public-core", theme: "theme-machine"});
+        const publicRoot = publicCompiled ? runtimeRoot(publicCompiled.runtimeHtml) : null;
+        const publicSerialized = publicRoot ? window.MCEL?.serialize?.(publicRoot, {reason: "harness-public-core"}) : null;
+        const publicAudit = window.MCEL?.audit?.(contract.defaultSource, publicRoot, {reason: "harness-public-core"});
+        const publicInspection = publicRoot ? window.MCEL?.inspect?.(publicRoot.querySelector(`[${attributes.type}]`), {root: publicRoot}) : null;
+        record(
+          results,
+          "public MCEL core API fronts compile/serialize/repair/audit/inspect",
+          Boolean(publicCompiled) &&
+            publicCompiled.sourceCount > 0 &&
+            publicSerialized?.report?.serializerClean &&
+            publicAudit?.status !== "blocked" &&
+            publicInspection?.geometryProof === "pass",
+          publicCompiled ? `source=${publicCompiled.sourceCount}, audit=${publicAudit?.status || "unknown"}` : "MCEL facade unavailable",
+          "core-api"
         );
 
         const kernelModule = kernel();

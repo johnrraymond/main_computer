@@ -56,7 +56,14 @@
           rank: element.getAttribute(attributes.rank) || "",
           state: element.getAttribute(attributes.state) || "",
           density: element.getAttribute(attributes.density) || "",
+          sizePolicy: element.getAttribute(attributes.sizePolicy) || "",
+          overflowPolicy: element.getAttribute(attributes.overflowPolicy) || "",
+          scrollPolicy: element.getAttribute(attributes.scrollPolicy) || "",
           computedDensity: element.getAttribute(attributes.computedDensity) || "",
+          layoutPressure: element.getAttribute(attributes.layoutPressure) || "",
+          scrollOwner: element.getAttribute(attributes.scrollOwner) || "",
+          overflowComputed: element.getAttribute(attributes.overflowComputed) || "",
+          geometryProof: element.getAttribute(attributes.geometryProof) || "",
           neighborhood: element.getAttribute(attributes.neighborhood) || "",
           clusterSize: Number(element.getAttribute(attributes.clusterSize) || "1"),
           relation: element.getAttribute(attributes.relation) || "",
@@ -233,7 +240,8 @@
             edges: runtimeGraph.edgeCount,
             generatedParts: runtimeGraph.generatedPartCount,
             unresolvedEdges: runtimeGraph.unresolvedEdgeCount,
-            orphanGeneratedParts: runtimeGraph.orphanGeneratedParts
+            orphanGeneratedParts: runtimeGraph.orphanGeneratedParts,
+            layoutProofed: runtimeGraph.nodes.filter((node) => node.geometryProof).length
           } : null,
           nodes: runtimeGraph?.nodes || sourceGraph.nodes,
           edges: runtimeGraph?.edges || sourceGraph.edges

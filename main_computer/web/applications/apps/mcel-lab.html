@@ -119,6 +119,30 @@
             <option value="dense">dense</option>
             <option value="compressed">compressed</option>
           </select></label>
+          <label>Size Policy <select id="mcel-trait-size-policy">
+            <option value="adaptive">adaptive</option>
+            <option value="fixed">fixed</option>
+            <option value="fluid">fluid</option>
+            <option value="intrinsic">intrinsic</option>
+          </select></label>
+          <label>Overflow Policy <select id="mcel-trait-overflow-policy">
+            <option value="visible">visible</option>
+            <option value="contain">contain</option>
+            <option value="clip">clip</option>
+            <option value="delegate">delegate</option>
+            <option value="paginate">paginate</option>
+            <option value="virtualize">virtualize</option>
+            <option value="expand">expand</option>
+            <option value="collapse">collapse</option>
+          </select></label>
+          <label>Scroll Policy <select id="mcel-trait-scroll-policy">
+            <option value="never">never</option>
+            <option value="auto">auto</option>
+            <option value="required">required</option>
+            <option value="external">external</option>
+            <option value="child-only">child-only</option>
+            <option value="viewport-only">viewport-only</option>
+          </select></label>
           <label>Words <input id="mcel-trait-words" value="argument stream volatile public"></label>
           <label>Connects <input id="mcel-trait-connects" placeholder="optional target id"></label>
           <button type="button" id="mcel-apply-traits">Apply traits to selected widget</button>
@@ -187,11 +211,12 @@
     <section class="mcel-lab-readiness" aria-label="MCEL operational readiness">
       <div class="mcel-readiness-head">
         <strong id="mcel-readiness-score">Operational readiness is warming.</strong>
-        <span>serializer · CSS law · a11y · audit · contract suite · scenario matrix · evidence · autopilot · kernel</span>
+        <span>serializer · CSS law · layout law · a11y · audit · contract suite · scenario matrix · evidence · autopilot · kernel</span>
       </div>
       <div id="mcel-readiness-cards" class="mcel-readiness-cards">
         <article data-status="pending"><strong>Serializer</strong><span>waiting for compile</span></article>
         <article data-status="pending"><strong>CSS Law</strong><span>waiting for runtime</span></article>
+        <article data-status="pending"><strong>Layout Law</strong><span>waiting for runtime</span></article>
         <article data-status="pending"><strong>A11y</strong><span>waiting for report</span></article>
         <article data-status="pending"><strong>Operational Audit</strong><span>not run</span></article>
         <article data-status="pending"><strong>Contract Suite</strong><span>not run</span></article>
@@ -221,6 +246,10 @@
     <section class="mcel-lab-panel" aria-label="CSS Law">
       <h4>CSS Law</h4>
       <pre id="mcel-css-law-report"></pre>
+    </section>
+    <section class="mcel-lab-panel" aria-label="Layout / Geometry Law">
+      <h4>Layout / Geometry Law</h4>
+      <pre id="mcel-layout-law-report">Layout law has not been applied yet.</pre>
     </section>
     <section class="mcel-lab-panel" aria-label="Semantic Graph">
       <h4>Semantic Graph</h4>

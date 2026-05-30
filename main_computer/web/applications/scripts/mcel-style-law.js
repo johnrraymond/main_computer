@@ -1,6 +1,7 @@
     var McelLabStyleLaw = (() => {
       const contract = typeof McelLabContract !== "undefined" ? McelLabContract : window.McelLabContract;
       const {attributes, defaults, themes: contractThemes} = contract;
+      const registry = typeof McelLabLawRegistry !== "undefined" ? McelLabLawRegistry : window.McelLabLawRegistry;
 
       const themes = Object.freeze(contractThemes || [
         "theme-basic",
@@ -128,6 +129,20 @@
 
       function reportFor(root, options = {}) {
         return applyRuntimeLaw(root, options);
+      }
+
+      if (registry?.register) {
+        registry.register({
+          id: "style.semantic-tokens.v1",
+          label: "CSS Law Runtime",
+          version: "v1",
+          reads: [attributes.kind, attributes.flow, attributes.rank, attributes.state, attributes.density, attributes.words, attributes.connects],
+          writesRuntimeOnly: [attributes.styleLaw, attributes.flowAxis, attributes.fieldPressure, attributes.attention, attributes.relationMode],
+          sourcePollutionForbidden: true,
+          compute: computeElementLaw,
+          apply: applyRuntimeLaw,
+          reportFor
+        });
       }
 
       return Object.freeze({

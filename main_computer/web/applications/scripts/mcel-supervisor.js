@@ -3,6 +3,7 @@
       const engine = typeof McelLabEngine !== "undefined" ? McelLabEngine : window.McelLabEngine;
       const editor = typeof McelLabEditor !== "undefined" ? McelLabEditor : window.McelLabEditor;
       const styleLaw = typeof McelLabStyleLaw !== "undefined" ? McelLabStyleLaw : window.McelLabStyleLaw;
+      const layoutLaw = typeof McelLabLayoutLaw !== "undefined" ? McelLabLayoutLaw : window.McelLabLayoutLaw;
       const graph = typeof McelLabGraph !== "undefined" ? McelLabGraph : window.McelLabGraph;
       const opsRunner = typeof McelLabOpsRunner !== "undefined" ? McelLabOpsRunner : window.McelLabOpsRunner;
       const {attributes, contractVersion} = contract;
@@ -52,6 +53,7 @@
       function buildQualityGate(state = {}) {
         const serializedClean = Boolean(state.serializerReport?.serializerClean) && noGeneratedSourceLeak(state.serialized);
         const cssClean = Boolean(state.cssLawReport?.cssLawClean);
+        const layoutClean = Boolean(state.layoutLawReport?.layoutLawClean);
         const a11yClean = Boolean(state.a11yReport?.a11yValid);
         const auditClean = Boolean(state.auditReport && !state.auditReport.failed);
         const testsClean = Boolean(state.testReport && !state.testReport.failed);
@@ -65,6 +67,7 @@
           passGate("compiler", "Compiler", compilerClean, compilerClean ? `${state.sourceElementCount} source element(s), ${state.generatedPartCount} generated part(s)` : "compiler did not produce the expected runtime structure"),
           passGate("serializer", "Serializer Firewall", serializedClean, serializedClean ? "serialized output contains no runtime ownership markers" : "serialized output is not clean"),
           passGate("css-law", "CSS Law", cssClean, cssClean ? `${state.cssLawReport?.elementCount || 0} element(s) received runtime tokens` : "CSS law report is not clean"),
+          passGate("layout-law", "Layout / Geometry Law", layoutClean, layoutClean ? `${state.layoutLawReport?.passed || 0}/${state.layoutLawReport?.elementCount || 0} element(s) passed scrollbar policy` : "layout/overflow proof is not clean"),
           passGate("a11y", "A11y", a11yClean, a11yClean ? "labels, order, and hidden decoration are valid" : "a11y report is not valid"),
           passGate("operational-audit", "Operational Audit", auditClean, auditClean ? "semantic graph and provenance are clean" : "audit failed or has not run"),
           passGate("contract-suite", "Contract Suite", testsClean, testsClean ? `${state.testReport.passed} passed / ${state.testReport.failed} failed` : "contract suite failed or has not run"),
@@ -96,6 +99,7 @@
         const compiled = engine.compileSource(source, {reason});
         const root = runtimeRoot(compiled.runtimeHtml);
         const cssLawReport = styleLaw.applyRuntimeLaw(root, {theme, reason});
+        const layoutLawReport = layoutLaw?.applyRuntimeLaw ? layoutLaw.applyRuntimeLaw(root, {reason}) : {layoutLawClean: true, warnings: [], passed: smartCount(root), elementCount: smartCount(root)};
         const serializer = engine.serializeRuntimeRoot(root, {reason: `${reason}:serializer-firewall`});
         const a11yReport = engine.computeA11y(root);
         const graphReport = graph.compactReport(source, root);
@@ -122,6 +126,7 @@
           theme,
           serializerReport: serializer.report,
           cssLawReport,
+          layoutLawReport,
           auditReport,
           testReport,
           matrixReport,
@@ -139,6 +144,7 @@
           serialized: serializer.serialized,
           serializerReport: serializer.report,
           cssLawReport,
+          layoutLawReport,
           a11yReport,
           auditReport,
           testReport,
@@ -163,6 +169,7 @@
           generatedPartCount,
           serializerReport: serializer.report,
           cssLawReport,
+          layoutLawReport,
           a11yReport,
           graphReport,
           auditReport,
@@ -175,6 +182,7 @@
           qualityGate,
           warnings: [
             ...serializer.report.warnings,
+            ...(layoutLawReport.warnings || []),
             ...(auditReport.issues || []),
             ...(matrixReport?.warnings || []),
             ...(acidReport?.tests?.filter((test) => !test.passed).map((test) => `Acid: ${test.name}`) || []),

@@ -67,6 +67,21 @@
 </section>`
         }),
         Object.freeze({
+          id: "layout-overflow-proof",
+          label: "Layout Overflow Proof",
+          mode: "runtime",
+          description: "Scroll and overflow policies compile into runtime-only geometry proof facts that serialize away.",
+          source: `<section data-mc="panel" data-mc-kind="proof" data-mc-flow="stack" data-mc-rank="primary" data-mc-state="live" data-mc-density="dense" data-mc-size-policy="fixed" data-mc-overflow-policy="clip" data-mc-scroll-policy="never" data-mc-words="no internal scrollbar geometry proof">
+  <h2>No Internal Scrollbar</h2>
+  <p>This source says internal scrollbars are illegal. The runtime may clip or escalate, but source cleanup must not retain observed geometry.</p>
+  <p>Extra copy creates layout pressure so the observer, law registry, a11y report, graph, evidence packet, and acid tests all have something to prove.</p>
+</section>
+<section data-mc="panel" data-mc-kind="work" data-mc-flow="stack" data-mc-rank="secondary" data-mc-state="draft" data-mc-density="comfortable" data-mc-size-policy="adaptive" data-mc-overflow-policy="delegate" data-mc-scroll-policy="external" data-mc-words="delegate scroll owner parent">
+  <h2>Delegated Overflow</h2>
+  <p>This source delegates scrolling to the surrounding surface rather than creating a nested trap.</p>
+</section>`
+        }),
+        Object.freeze({
           id: "invalid-schema",
           label: "Schema Normalization",
           mode: "stress",

@@ -11,6 +11,7 @@
         lastSerializerReport: null,
         lastTestReport: null,
         lastCssLawReport: null,
+        lastLayoutLawReport: null,
         lastGraphReport: null,
         lastAuditReport: null,
         lastMatrixReport: null,
@@ -67,10 +68,14 @@
     const mcelTraitRank = document.querySelector("#mcel-trait-rank");
     const mcelTraitState = document.querySelector("#mcel-trait-state");
     const mcelTraitDensity = document.querySelector("#mcel-trait-density");
+    const mcelTraitSizePolicy = document.querySelector("#mcel-trait-size-policy");
+    const mcelTraitOverflowPolicy = document.querySelector("#mcel-trait-overflow-policy");
+    const mcelTraitScrollPolicy = document.querySelector("#mcel-trait-scroll-policy");
     const mcelTraitWords = document.querySelector("#mcel-trait-words");
     const mcelTraitConnects = document.querySelector("#mcel-trait-connects");
     const mcelThemeSelect = document.querySelector("#mcel-theme-select");
     const mcelCssLawReport = document.querySelector("#mcel-css-law-report");
+    const mcelLayoutLawReport = document.querySelector("#mcel-layout-law-report");
     const mcelGraphReport = document.querySelector("#mcel-graph-report");
     const mcelAuditReport = document.querySelector("#mcel-audit-report");
     const mcelMatrixReport = document.querySelector("#mcel-matrix-report");

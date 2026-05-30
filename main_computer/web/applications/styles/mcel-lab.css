@@ -132,7 +132,8 @@
 #mcel-audit-report,
 #mcel-kernel-report,
 #mcel-traceability-report,
-#mcel-prior-art-report {
+#mcel-prior-art-report,
+#mcel-layout-law-report {
   width: 100%;
   min-width: 0;
   min-height: 0;
@@ -561,7 +562,8 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
 #mcel-audit-report,
 #mcel-kernel-report,
 #mcel-traceability-report,
-#mcel-prior-art-report {
+#mcel-prior-art-report,
+#mcel-layout-law-report {
   line-height: 1.5;
 }
 
@@ -694,7 +696,45 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
     0 16px 48px rgba(119, 255, 180, 0.12);
 }
 
+.mcel-runtime-preview .mc[data-mc-layout-law="true"] {
+  contain: layout paint;
+  overflow-wrap: anywhere;
+}
+
+.mcel-runtime-preview .mc[data-mc-scroll-owner="none"] {
+  overflow: clip;
+}
+
+.mcel-runtime-preview .mc[data-mc-scroll-owner="parent"],
+.mcel-runtime-preview .mc[data-mc-scroll-owner="viewport"] {
+  border-style: dashed;
+}
+
+.mcel-runtime-preview .mc[data-mc-scroll-owner="self"] {
+  max-block-size: min(44vh, 420px);
+  overflow: auto;
+}
+
+.mcel-runtime-preview .mc[data-mc-layout-pressure="high"],
+.mcel-runtime-preview .mc[data-mc-layout-pressure="critical"] {
+  outline: 1px solid rgba(255, 111, 111, 0.7);
+}
+
+.mcel-runtime-preview .mc[data-mc-geometry-proof="fail"]::after {
+  content: "LAYOUT PROOF FAIL";
+  justify-self: start;
+  width: fit-content;
+  padding: 3px 7px;
+  border: 1px solid rgba(255, 111, 111, 0.48);
+  border-radius: 999px;
+  color: var(--coral);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+}
+
 .mcel-lab-panel[aria-label="CSS Law"],
+.mcel-lab-panel[aria-label="Layout / Geometry Law"],
 .mcel-lab-panel[aria-label="Command Surface"],
 .mcel-lab-panel[aria-label="Project State"],
 .mcel-lab-panel[aria-label="Semantic Graph"],
@@ -703,6 +743,7 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
 }
 
 #mcel-css-law-report,
+#mcel-layout-law-report,
 #mcel-command-report,
 #mcel-project-report,
 #mcel-graph-report,
@@ -816,7 +857,8 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
 #mcel-acid-report,
 #mcel-kernel-report,
 #mcel-traceability-report,
-#mcel-prior-art-report {
+#mcel-prior-art-report,
+#mcel-layout-law-report {
   width: 100%;
   min-width: 0;
   min-height: 0;
