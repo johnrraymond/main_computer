@@ -1329,6 +1329,12 @@ def dispatch_post(self) -> None:
     if self.path == "/api/applications/task/ai":
         self._handle_task_ai()
         return
+    if self.path == "/api/applications/worker/register-offer":
+        self._handle_worker_offer_register()
+        return
+    if self.path == "/api/applications/worker/hub-health":
+        self._handle_worker_hub_health()
+        return
     if self.path == "/api/applications/git/status":
         self._handle_git_status()
         return

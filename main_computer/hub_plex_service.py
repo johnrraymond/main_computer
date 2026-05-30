@@ -722,7 +722,19 @@ class AIRequestPlexService:
         if record is None:
             raise KeyError(f"Unknown hub request: {clean_request_id}")
         if record.state == "completed" or record.charge_id:
-            raise ValueError("Worker result was already accepted for this request.")
+            if record.selected_worker_node_id and record.selected_worker_node_id != clean_worker_id:
+                raise ValueError("Worker result replay was submitted by the wrong worker.")
+            if record.lease_id and record.lease_id != clean_lease_id:
+                raise ValueError("Worker result replay lease_id does not match the accepted lease.")
+            return {
+                "ok": True,
+                "idempotent": True,
+                "duplicate_completion_additional_charge": 0,
+                "request": HubRequestStatus.from_record(
+                    record,
+                    polling_url=f"{polling_base_path.rstrip('/')}/{record.request_id}",
+                ).as_dict(),
+            }
         if record.state != "leased":
             raise ValueError(f"Request is not leased; current state is {record.state}.")
         if record.lease_id != clean_lease_id:
@@ -910,9 +922,11 @@ class AIRequestPlexService:
         return HubRequestStatus.from_record(record, polling_url=f"{polling_base_path.rstrip('/')}/{record.request_id}")
 
     def cancel(self, request_id: str, *, polling_base_path: str = "/api/hub/v1/requests") -> HubRequestStatus:
+        existing = self.request_store.get(request_id)
         record = self.request_store.cancel(request_id)
-        self._release_record_worker(record, success=False)
-        self._release_paid_hold_for_request(record.request_id, reason="client_cancelled")
+        if existing is not None and existing.state not in {"completed", "failed", "cancelled", "expired"}:
+            self._release_record_worker(existing, success=True)
+            self._release_paid_hold_for_request(record.request_id, reason="client_cancelled")
         refreshed = self.request_store.get(record.request_id) or record
         return HubRequestStatus.from_record(refreshed, polling_url=f"{polling_base_path.rstrip('/')}/{record.request_id}")
 

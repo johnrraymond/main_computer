@@ -1,4 +1,4 @@
-    const McelLabScenarios = (() => {
+    var McelLabScenarios = (() => {
       const contract = typeof McelLabContract !== "undefined" ? McelLabContract : window.McelLabContract;
       const scenarios = Object.freeze([
         Object.freeze({

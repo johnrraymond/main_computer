@@ -1,4 +1,4 @@
-    const McelLabCommandSurface = (() => {
+    var McelLabCommandSurface = (() => {
       const contract = typeof McelLabContract !== "undefined" ? McelLabContract : window.McelLabContract;
       const editor = typeof McelLabEditor !== "undefined" ? McelLabEditor : window.McelLabEditor;
       const styleLaw = typeof McelLabStyleLaw !== "undefined" ? McelLabStyleLaw : window.McelLabStyleLaw;
@@ -10,9 +10,16 @@
         repair: ["repair", "heal"],
         damage: ["damage", "break"],
         test: ["test", "suite", "contract"],
+        matrix: ["matrix", "coverage", "all-scenarios"],
+        acid: ["acid", "acid-test", "acid-tests", "stress-proof", "torture", "fuzz", "hostile"],
+        evidence: ["evidence", "packet"],
         explain: ["explain", "inspect", "debug"],
         graph: ["graph", "map"],
-        audit: ["audit", "govern", "prove"]
+        audit: ["audit", "govern", "prove"],
+        autopilot: ["autopilot", "full-proof", "prove-all", "quality-gate", "readiness"],
+        kernel: ["kernel", "boot-audit", "module-audit"],
+        traceability: ["traceability", "requirements", "developer-spec", "spec-map"],
+        "prior-art": ["prior-art", "precedent", "references", "reference-map"]
       });
 
       function words(input) {

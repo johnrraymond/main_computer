@@ -1,4 +1,4 @@
-    const McelLabContract = (() => {
+    var McelLabContract = (() => {
       const attributes = Object.freeze({
         type: "data-mc",
         kind: "data-mc-kind",

@@ -1,4 +1,4 @@
-    const McelLabProjectStore = (() => {
+    var McelLabProjectStore = (() => {
       const storageKey = "main-computer.mcel-lab.project.v1";
 
       function now() {

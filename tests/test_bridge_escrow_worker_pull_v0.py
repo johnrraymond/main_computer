@@ -180,9 +180,10 @@ class BridgeEscrowWorkerPullV0Tests(unittest.TestCase):
                     "response": {"content": "again", "provider": "mock-worker", "model": "mock-fast-chat"},
                 },
             },
-            allow_error=True,
         )
-        self.assertEqual(duplicate["_http_status"], 400)
+        self.assertTrue(duplicate["ok"])
+        self.assertTrue(duplicate["idempotent"])
+        self.assertEqual(duplicate["duplicate_completion_additional_charge"], 0)
 
         charges = get_json(f"{hub_base}/api/hub/v1/requests/{lease['request_id']}/charges")
         self.assertEqual(charges["charge_count"], 1)

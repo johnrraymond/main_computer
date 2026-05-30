@@ -32,7 +32,11 @@
     .worker-pane-head p,
     .worker-card small,
     .worker-hub-card span,
-    .worker-save-note {
+    .worker-save-note,
+    .worker-drawer summary small,
+    .worker-contract-summary dd,
+    .worker-registration-card dd,
+    .worker-registration-card p {
       color: var(--muted);
       line-height: 1.35;
     }
@@ -54,8 +58,9 @@
       padding: 7px 10px;
     }
     .worker-workspace {
-      grid-template-columns: minmax(230px, 0.8fr) minmax(280px, 1fr) minmax(360px, 1.35fr);
+      grid-template-columns: minmax(230px, 0.8fr) minmax(360px, 1.35fr) minmax(280px, 1fr);
       gap: 14px;
+      align-items: start;
     }
     .worker-pane {
       gap: 12px;
@@ -63,6 +68,16 @@
       border: 1px solid var(--line);
       border-radius: 12px;
       background: #0b0b09;
+    }
+    .worker-seller {
+      border-color: rgba(246, 199, 91, 0.36);
+      background:
+        linear-gradient(180deg, rgba(246, 199, 91, 0.07), transparent 170px),
+        #0b0b09;
+    }
+    .worker-buyer {
+      border-style: dashed;
+      opacity: 0.94;
     }
     .worker-pane-head {
       display: flex;
@@ -92,6 +107,9 @@
       border-radius: 10px;
       background: rgba(17, 17, 14, 0.96);
       padding: 12px;
+    }
+    .worker-primary-offer {
+      border-color: rgba(246, 199, 91, 0.4);
     }
     .worker-card {
       align-content: start;
@@ -138,7 +156,8 @@
       accent-color: var(--gold);
     }
     .worker-app input:focus,
-    .worker-app select:focus {
+    .worker-app select:focus,
+    .worker-drawer summary:focus {
       border-color: var(--sky);
       outline: 2px solid rgba(115, 214, 255, 0.25);
       outline-offset: 1px;
@@ -175,6 +194,11 @@
       color: var(--mint);
       padding: 8px 10px;
     }
+    .worker-switch-muted {
+      border-color: rgba(115, 214, 255, 0.22);
+      background: rgba(115, 214, 255, 0.06);
+      color: var(--sky);
+    }
     .worker-radio-grid,
     .worker-check-grid,
     .worker-field-grid {
@@ -192,6 +216,92 @@
     .worker-field-grid label small {
       margin-top: -4px;
       font-weight: 700;
+    }
+    .worker-contract-summary dl,
+    .worker-registration-card dl {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+    }
+    .worker-contract-summary dl div,
+    .worker-registration-card dl div {
+      display: grid;
+      grid-template-columns: minmax(100px, 0.5fr) minmax(0, 1fr);
+      gap: 10px;
+    }
+    .worker-contract-summary dt,
+    .worker-registration-card dt {
+      color: var(--mint);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .worker-contract-summary dd,
+    .worker-registration-card dd {
+      margin: 0;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+    .worker-registration-card {
+      border-color: rgba(115, 214, 255, 0.32);
+    }
+    .worker-registration-card.is-ok {
+      border-color: rgba(167, 216, 109, 0.45);
+      background: rgba(22, 37, 18, 0.5);
+    }
+    .worker-registration-card.is-error {
+      border-color: rgba(255, 107, 107, 0.42);
+      background: rgba(52, 14, 14, 0.44);
+    }
+    .worker-drawer {
+      display: grid;
+      gap: 10px;
+      border: 1px solid rgba(115, 214, 255, 0.24);
+      border-radius: 10px;
+      background: rgba(7, 10, 11, 0.86);
+      padding: 0;
+      overflow: hidden;
+    }
+    .worker-drawer summary {
+      display: grid;
+      gap: 5px;
+      cursor: pointer;
+      list-style: none;
+      padding: 11px 12px;
+      color: var(--sky);
+      font-weight: 900;
+    }
+    .worker-drawer summary::-webkit-details-marker {
+      display: none;
+    }
+    .worker-drawer summary::after {
+      content: "+ open drawer";
+      justify-self: start;
+      border: 1px solid rgba(115, 214, 255, 0.26);
+      border-radius: 999px;
+      color: var(--sky);
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: 0.04em;
+      padding: 3px 7px;
+      text-transform: uppercase;
+    }
+    .worker-drawer[open] {
+      padding-bottom: 10px;
+    }
+    .worker-drawer[open] summary::after {
+      content: "- hide drawer";
+    }
+    .worker-drawer[open] > .worker-card {
+      margin: 0 10px;
+    }
+    .worker-drawer-muted {
+      border-color: rgba(79, 73, 58, 0.82);
+      background: rgba(14, 14, 12, 0.72);
+    }
+    .worker-drawer-muted summary {
+      color: var(--muted);
     }
     .worker-actions {
       display: flex;
@@ -227,7 +337,8 @@
     }
     @media (max-width: 760px) {
       .worker-hero,
-      .worker-actions {
+      .worker-actions,
+      .worker-pane-head {
         display: grid;
       }
       .worker-status-strip {
@@ -236,9 +347,298 @@
       }
       .worker-radio-grid,
       .worker-check-grid,
-      .worker-field-grid {
+      .worker-field-grid,
+      .worker-contract-summary dl div,
+      .worker-registration-card dl div {
         grid-template-columns: 1fr;
       }
+      .worker-actions div,
+      .worker-actions button {
+        width: 100%;
+      }
+    }
+
+    /* Phase 13 layout correction: one Worker market surface with explicit sell-vs-buy tabs. */
+    .worker-app,
+    .worker-app * {
+      box-sizing: border-box;
+    }
+    .worker-app {
+      min-width: 0;
+      overflow: hidden;
+    }
+    .worker-shell {
+      display: grid;
+      grid-template-rows: auto auto auto;
+      gap: 14px;
+      min-height: 0;
+      height: auto;
+      container-type: inline-size;
+      overflow: auto;
+    }
+    .worker-hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 12px;
+    }
+    .worker-status-strip {
+      min-width: 0;
+      justify-content: flex-end;
+    }
+    .worker-workspace {
+      display: grid;
+      grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr);
+      grid-template-areas:
+        "tabs tabs"
+        "seller buyer"
+        "hubs hubs";
+      gap: 14px;
+      align-items: start;
+      min-height: 0;
+      height: auto;
+      overflow: visible;
+    }
+    .worker-market-tabs {
+      grid-area: tabs;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      min-width: 0;
+    }
+    .worker-market-tab {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+      border: 1px solid rgba(246, 199, 91, 0.32);
+      border-radius: 12px;
+      background:
+        linear-gradient(135deg, rgba(246, 199, 91, 0.1), rgba(115, 214, 255, 0.05)),
+        rgba(12, 12, 10, 0.96);
+      color: var(--ink);
+      padding: 12px;
+      text-decoration: none;
+    }
+    .worker-market-tab strong {
+      color: var(--gold);
+      font-size: 14px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .worker-market-tab span {
+      color: var(--muted);
+      font-weight: 800;
+    }
+    .worker-market-tab-remote {
+      border-color: rgba(115, 214, 255, 0.32);
+    }
+    .worker-hubs {
+      grid-area: hubs;
+    }
+    .worker-seller {
+      grid-area: seller;
+    }
+    .worker-buyer {
+      grid-area: buyer;
+    }
+    .worker-pane {
+      display: grid;
+      width: 100%;
+      min-width: 0;
+      max-height: none;
+      overflow: visible;
+    }
+    .worker-seller {
+      display: grid;
+      grid-template-columns: minmax(220px, 300px) minmax(360px, 1fr);
+      grid-template-areas:
+        "seller-head offer"
+        "advanced offer"
+        "contract contract"
+        "registration registration";
+      gap: 12px;
+      align-items: start;
+      min-height: 0;
+      height: auto;
+      border-color: rgba(246, 199, 91, 0.36);
+    }
+    .worker-seller > .worker-pane-head {
+      grid-area: seller-head;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 12px;
+      min-width: 0;
+    }
+    .worker-seller > .worker-primary-offer {
+      grid-area: offer;
+      min-width: 0;
+      width: 100%;
+    }
+    .worker-seller > .worker-drawer {
+      grid-area: advanced;
+      min-width: 0;
+    }
+    .worker-seller > .worker-contract-summary {
+      grid-area: contract;
+      min-width: 0;
+      width: 100%;
+      align-self: start;
+    }
+    .worker-seller > .worker-registration-card {
+      grid-area: registration;
+      min-width: 0;
+      width: 100%;
+      align-self: start;
+    }
+    .worker-primary-offer {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      align-content: start;
+      min-width: 0;
+    }
+    .worker-primary-offer > h4,
+    .worker-primary-offer > .worker-wide {
+      grid-column: 1 / -1;
+    }
+    .worker-primary-offer input,
+    .worker-primary-offer select {
+      min-width: 0;
+      width: 100%;
+    }
+    .worker-contract-summary dl,
+    .worker-registration-card dl {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 10px;
+      margin: 0;
+    }
+    .worker-contract-summary dl div,
+    .worker-registration-card dl div {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 3px;
+      min-width: 0;
+    }
+    .worker-contract-summary dt,
+    .worker-registration-card dt,
+    .worker-contract-summary dd,
+    .worker-registration-card dd {
+      overflow-wrap: normal;
+      word-break: normal;
+      white-space: normal;
+    }
+    .worker-contract-summary h4,
+    .worker-registration-card h4 {
+      margin-bottom: 8px;
+    }
+    .worker-registration-card p {
+      margin: 0 0 10px 0;
+    }
+    .worker-buyer {
+      border-style: solid;
+      border-color: rgba(115, 214, 255, 0.32);
+      opacity: 1;
+      background:
+        linear-gradient(180deg, rgba(115, 214, 255, 0.07), transparent 170px),
+        #0b0b09;
+    }
+    .worker-buyer .worker-pane-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+    }
+    .worker-remote-policy {
+      border-color: rgba(115, 214, 255, 0.34);
+    }
+    .worker-remote-flow ol {
+      display: grid;
+      gap: 7px;
+      margin: 0;
+      padding-left: 20px;
+      color: var(--muted);
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    .worker-remote-flow li::marker {
+      color: var(--sky);
+      font-weight: 900;
+    }
+    .worker-hubs .worker-hub-list {
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    }
+    .worker-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 0;
+    }
+    .worker-actions div {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .worker-actions button {
+      width: auto;
+      min-width: max-content;
+    }
+    @container (max-width: 1150px) {
+      .worker-workspace {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+          "tabs"
+          "seller"
+          "buyer"
+          "hubs";
+      }
+      .worker-seller {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+          "seller-head"
+          "offer"
+          "contract"
+          "registration"
+          "advanced";
+      }
+    }
+    @media (max-width: 1150px) {
+      .worker-workspace {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+          "tabs"
+          "seller"
+          "buyer"
+          "hubs";
+      }
+      .worker-seller {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+          "seller-head"
+          "offer"
+          "contract"
+          "registration"
+          "advanced";
+      }
+    }
+    @media (max-width: 760px) {
+      .worker-hero,
+      .worker-market-tabs,
+      .worker-buyer .worker-pane-head {
+        grid-template-columns: 1fr;
+      }
+      .worker-status-strip {
+        justify-content: flex-start;
+      }
+      .worker-primary-offer,
+      .worker-field-grid,
+      .worker-radio-grid,
+      .worker-check-grid,
+      .worker-contract-summary dl div,
+      .worker-registration-card dl div {
+        grid-template-columns: 1fr;
+      }
+      .worker-actions,
       .worker-actions div,
       .worker-actions button {
         width: 100%;

@@ -281,9 +281,10 @@ class Phase9MarketBackedPaidAIRequestTests(unittest.TestCase):
                     "response": {"content": "again", "provider": "mock-worker", "model": model},
                 },
             },
-            allow_error=True,
         )
-        self.assertEqual(replay_completion["_http_status"], 400)
+        self.assertTrue(replay_completion["ok"])
+        self.assertTrue(replay_completion["idempotent"])
+        self.assertEqual(replay_completion["duplicate_completion_additional_charge"], 0)
 
         charges = get_json(f"{hub_base}/api/hub/v1/requests/{lease['request_id']}/charges")
         self.assertEqual(charges["charge_count"], 1)

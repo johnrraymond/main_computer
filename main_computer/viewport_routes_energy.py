@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import ipaddress
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -124,6 +125,107 @@ class ViewportEnergyRoutesMixin:
             self.server.signal("api-hub-config-save-error", error=exc)
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
+    def _worker_ui_client_is_local(self) -> bool:
+        host = self.client_address[0] if self.client_address else ""
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return host.lower() in {"localhost"}
+
+    def _handle_worker_hub_health(self) -> None:
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Worker hub checks are only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                return
+            body = self._read_json()
+            hub_url = self._clean_hub_url(str(body.get("hub_url") or self.server.config.hub_url))
+            status = self._fetch_hub_status(hub_url)
+            self.server.signal("api-worker-hub-health", hub_url=hub_url, reachable=status.get("reachable"))
+            self._send_json({"ok": True, "hub_url": hub_url, "status": status, "reachable": bool(status.get("reachable"))})
+        except Exception as exc:
+            self.server.signal("api-worker-hub-health-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+    def _handle_worker_offer_register(self) -> None:
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Worker offer registration is only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                return
+            body = self._read_json()
+            hub_url = self._clean_hub_url(str(body.get("hub_url") or self.server.config.hub_url))
+            worker_payload = body.get("worker")
+            if not isinstance(worker_payload, dict):
+                raise ValueError("worker registration payload is required.")
+
+            models = [str(item).strip() for item in worker_payload.get("models", []) if str(item).strip()] if isinstance(worker_payload.get("models"), list) else []
+            model = str(worker_payload.get("model") or (models[0] if models else "")).strip()
+            if model and model not in models:
+                models.insert(0, model)
+            if not models:
+                raise ValueError("At least one worker model is required.")
+
+            pricing = dict(worker_payload.get("pricing", {})) if isinstance(worker_payload.get("pricing"), dict) else {}
+            try:
+                credits_per_request = int(pricing.get("credits_per_request", worker_payload.get("credits_per_request", 0)) or 0)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("credits_per_request must be a positive integer.") from exc
+            if credits_per_request <= 0:
+                raise ValueError("credits_per_request must be a positive integer.")
+
+            execution = dict(worker_payload.get("execution", {})) if isinstance(worker_payload.get("execution"), dict) else {}
+            execution_mode = str(execution.get("mode") or worker_payload.get("execution_mode") or "worker_pull_v0").strip() or "worker_pull_v0"
+            max_concurrency = max(1, int(execution.get("max_concurrency", worker_payload.get("max_concurrency", 1)) or 1))
+            capabilities = dict(worker_payload.get("capabilities", {})) if isinstance(worker_payload.get("capabilities"), dict) else {}
+            capabilities.setdefault("capabilities", ["chat.completions"])
+            capabilities["pricing"] = {
+                "pricing_type": str(pricing.get("pricing_type") or "fixed_per_call_v0"),
+                "credits_per_request": credits_per_request,
+                "unit": str(pricing.get("unit") or "compute_credit"),
+            }
+            capabilities["execution"] = {
+                "mode": execution_mode,
+                "max_concurrency": max_concurrency,
+            }
+            capabilities["phase12_worker_seller_offer_ui"] = True
+
+            payload = {
+                "node_id": str(worker_payload.get("node_id") or "").strip(),
+                "endpoint": self._clean_hub_url(str(worker_payload.get("endpoint") or "")),
+                "model": model,
+                "models": models,
+                "credits_per_request": credits_per_request,
+                "max_concurrency": max_concurrency,
+                "queue_depth": max(0, int(worker_payload.get("queue_depth", 0) or 0)),
+                "active_requests": max(0, int(worker_payload.get("active_requests", 0) or 0)),
+                "pricing": capabilities["pricing"],
+                "execution": capabilities["execution"],
+                "capabilities": capabilities,
+            }
+            if not payload["node_id"]:
+                raise ValueError("worker node_id is required.")
+
+            registration = self._post_worker_registration_to_hub(hub_url=hub_url, payload=payload)
+            worker = registration.get("worker") if isinstance(registration.get("worker"), dict) else {}
+            offer = worker.get("offer") if isinstance(worker.get("offer"), dict) else {}
+            self.server.signal(
+                "api-worker-offer-register",
+                hub_url=hub_url,
+                node_id=payload["node_id"],
+                offer_id=offer.get("offer_id", ""),
+            )
+            self._send_json(
+                {
+                    "ok": True,
+                    "hub_url": hub_url,
+                    "registration": registration,
+                    "worker": worker,
+                    "offer": offer,
+                }
+            )
+        except Exception as exc:
+            self.server.signal("api-worker-offer-register-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
     def _hub_config_payload(self) -> dict[str, Any]:
         saved = self._load_hub_config()
         hub_url = self._clean_hub_url(str(saved.get("hub_url") or self.server.config.hub_url))
@@ -220,6 +322,27 @@ class ViewportEnergyRoutesMixin:
             raise RuntimeError(f"Local hub is unreachable: {exc}") from exc
         if not isinstance(data, dict):
             raise RuntimeError("Local hub returned a non-object upstream registration response.")
+        if data.get("error"):
+            raise RuntimeError(str(data["error"]))
+        return data
+
+    def _post_worker_registration_to_hub(self, *, hub_url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        request = Request(
+            self._clean_hub_url(hub_url) + "/api/hub/v1/workers/register",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=5.0) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Hub returned HTTP {exc.code}: {body}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"Hub is unreachable: {exc}") from exc
+        if not isinstance(data, dict):
+            raise RuntimeError("Hub returned a non-object worker registration response.")
         if data.get("error"):
             raise RuntimeError(str(data["error"]))
         return data
