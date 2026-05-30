@@ -262,6 +262,12 @@ def test_mcel_lab_chromes_select_structural_chrome_family() -> None:
     assert "return applyStrictHierarchyHtml" in chrome_law
     assert "changed: false" in chrome_law
     assert "CHROME_GENERATED_ATTR = \"data-mcel-chrome-generated\"" in chrome_law
+    assert "CHROME_FRAME_ATTR = \"data-mcel-chrome-frame\"" in chrome_law
+    assert "CHROME_REGION_ROLE_ATTR = \"data-mcel-chrome-region-role\"" in chrome_law
+    assert "generatedObjectFrame" in chrome_law
+    assert 'generatedRegion("compact-summary", chrome, "header", "summary")' in chrome_law
+    assert 'generatedRegion("compact-body", chrome, "body")' in chrome_law
+    assert "panel.appendChild(child)" not in chrome_law
     assert "applyChromeHtml(runtimeHtml" in ui
     assert "changeMcelChrome" in ui
     assert "MCEL_CHROME_CHANGED" in ui
@@ -924,6 +930,10 @@ def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_on
     assert '"region-reflow"' in chrome_law
     assert 'element.setAttribute(FIT_REGION_ATTR, fit.region)' in chrome_law
     assert 'element.setAttribute(FIT_POLICY_ATTR, fit.policy)' in chrome_law
+    assert 'element.setAttribute(CHROME_FRAME_ATTR, frame)' in chrome_law
+    assert 'element.setAttribute(CHROME_REGION_ROLE_ATTR, role)' in chrome_law
+    assert '".mcel-chrome-compact-panel > [data-mcel-chrome-region-role=\\"body\\"]"' in chrome_law
+    assert '".mcel-chrome-journey-step > [data-mcel-chrome-frame]"' in chrome_law
 
     assert "observeChromeFit" in browser_observer
     assert "observeChromeComposition" in browser_observer
@@ -945,6 +955,10 @@ def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_on
     assert "data-mcel-composition-remedy" in ui
     assert "data-mcel-composition-warnings" in ui
     assert "mcelChromeCompositionScopeSelector" in ui
+    assert "[data-mcel-chrome-frame]" in ui
+    assert "[data-mcel-chrome-region-role]" in ui
+    assert ".mcel-chrome-compact-panel > .mc {" not in ui
+    assert ".mcel-chrome-journey-step > .mc {" not in ui
     assert ".mcel-chrome-cluster-grid" in ui
     assert ".mcel-chrome-spotlight-support" in ui
     assert ".mcel-chrome-journey-step" in ui

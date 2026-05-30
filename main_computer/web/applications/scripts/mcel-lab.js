@@ -1165,7 +1165,9 @@
         ".mcel-chrome-spotlight-primary",
         ".mcel-chrome-spotlight-support",
         ".mcel-chrome-journey-step",
-        ".mcel-chrome-compact-panel"
+        ".mcel-chrome-compact-panel",
+        "[data-mcel-chrome-frame]",
+        "[data-mcel-chrome-region-role]"
       ].join(", ");
     }
 
@@ -2288,12 +2290,17 @@
           gap: clamp(16px, 2.4vw, 28px);
           align-items: stretch;
         }
-        body[data-mcel-chrome="chrome-cluster-grid"] .mcel-chrome-cluster-grid > .mc {
+        body[data-mcel-chrome="chrome-cluster-grid"] .mcel-chrome-cluster-item {
+          min-block-size: 100%;
+          align-content: start;
+          --mcel-chrome-frame-gap: 0px;
+        }
+        body[data-mcel-chrome="chrome-cluster-grid"] .mcel-chrome-cluster-body > .mc {
           min-block-size: 100%;
           align-content: start;
         }
-        body[data-mcel-chrome="chrome-cluster-grid"] .mcel-chrome-cluster-grid > .mc h2,
-        body[data-mcel-chrome="chrome-cluster-grid"] .mcel-chrome-cluster-grid > .mc h3 {
+        body[data-mcel-chrome="chrome-cluster-grid"] .mcel-chrome-cluster-body > .mc h2,
+        body[data-mcel-chrome="chrome-cluster-grid"] .mcel-chrome-cluster-body > .mc h3 {
           font-size: clamp(1.2rem, 2.4vw, 2rem);
           line-height: 1.02;
         }
@@ -2304,10 +2311,20 @@
           gap: clamp(22px, 4vw, 52px);
           align-items: start;
         }
-        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-primary > .mc {
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-primary > .mcel-chrome-spotlight-item {
           min-block-size: clamp(360px, 52vw, 680px);
           align-content: center;
           padding: clamp(28px, 6vw, 76px);
+          border: 1px solid var(--site-line);
+          border-radius: var(--site-radius);
+          background: var(--site-card-soft);
+          box-shadow: var(--site-shadow);
+        }
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-primary .mcel-chrome-spotlight-body > .mc {
+          border: 0;
+          background: transparent;
+          box-shadow: none;
+          padding: 0;
         }
         body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-primary h1,
         body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-primary h2 {
@@ -2323,10 +2340,18 @@
           gap: 16px;
           min-width: 0;
         }
-        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mc {
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mcel-chrome-spotlight-item {
           padding: clamp(18px, 2.6vw, 30px);
-          border-color: var(--site-line);
+          border: 1px solid var(--site-line);
+          border-radius: var(--site-radius-sm);
           background: var(--site-card-soft);
+          box-shadow: var(--site-shadow);
+        }
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support .mcel-chrome-spotlight-body > .mc {
+          border: 0;
+          background: transparent;
+          box-shadow: none;
+          padding: 0;
         }
 
         body[data-mcel-chrome="chrome-journey"] .mcel-chrome-journey-shell {
@@ -2361,10 +2386,17 @@
           color: var(--site-accent);
           font-weight: 900;
         }
-        body[data-mcel-chrome="chrome-journey"] .mcel-chrome-journey-step > .mc {
+        body[data-mcel-chrome="chrome-journey"] .mcel-chrome-journey-step > .mcel-chrome-journey-body {
           min-width: 0;
           border-left: 3px solid var(--site-accent);
           border-radius: var(--site-radius-sm);
+          background: var(--site-card-soft);
+          box-shadow: var(--site-shadow);
+          overflow: clip;
+          padding: clamp(30px, 5vw, 72px);
+        }
+        body[data-mcel-chrome="chrome-journey"] .mcel-chrome-journey-content > .mc {
+          margin: 0;
         }
 
         body[data-mcel-chrome="chrome-compact-disclosure"] .mcel-chrome-compact-shell {
@@ -2384,21 +2416,22 @@
           border-radius: var(--site-radius-sm);
           background: var(--site-card-soft);
           box-shadow: var(--site-shadow);
+          padding: clamp(28px, 5vw, 70px) clamp(38px, 7vw, 112px) clamp(34px, 5.5vw, 78px);
+          --mcel-chrome-frame-gap: clamp(18px, 3vw, 38px);
         }
         body[data-mcel-chrome="chrome-compact-disclosure"] .mcel-chrome-compact-summary {
           cursor: pointer;
-          padding: clamp(16px, 2.4vw, 24px);
+          padding: 0;
           color: var(--site-ink);
           font-weight: 900;
           list-style-position: inside;
         }
-        body[data-mcel-chrome="chrome-compact-disclosure"] .mcel-chrome-compact-panel > .mc {
-          margin: 0;
-          border: 0;
+        body[data-mcel-chrome="chrome-compact-disclosure"] .mcel-chrome-compact-body {
           border-top: 1px solid var(--site-line);
-          border-radius: 0;
-          background: transparent;
-          box-shadow: none;
+          padding-block-start: clamp(18px, 3vw, 34px);
+        }
+        body[data-mcel-chrome="chrome-compact-disclosure"] .mcel-chrome-compact-body > .mc {
+          margin: 0;
         }
 
         body[data-mcel-chrome="chrome-cluster-grid"] [data-mcel-chrome-generated="true"],
@@ -2413,6 +2446,44 @@
         body[data-mcel-chrome="chrome-compact-disclosure"] [data-mcel-chrome-generated="true"],
         body[data-mcel-chrome="chrome-compact-disclosure"] [data-mcel-fit-region],
         body[data-mcel-chrome="chrome-compact-disclosure"] [data-mcel-fit-policy] {
+          min-inline-size: 0;
+          max-inline-size: 100%;
+          box-sizing: border-box;
+        }
+
+        body[data-mcel-chrome] [data-mcel-chrome-frame] {
+          display: grid;
+          grid-template-rows: auto minmax(0, auto);
+          row-gap: var(--mcel-chrome-frame-gap, clamp(14px, 2.4vw, 28px));
+          align-items: start;
+          min-inline-size: 0;
+          max-inline-size: 100%;
+          box-sizing: border-box;
+          isolation: isolate;
+        }
+        body[data-mcel-chrome] [data-mcel-chrome-region-role] {
+          min-inline-size: 0;
+          max-inline-size: 100%;
+          box-sizing: border-box;
+          position: relative;
+        }
+        body[data-mcel-chrome] [data-mcel-chrome-region-role="header"] {
+          grid-row: 1;
+          z-index: 2;
+          justify-self: center;
+          text-align: center;
+        }
+        body[data-mcel-chrome] [data-mcel-chrome-region-role="body"] {
+          grid-row: 2;
+          z-index: 1;
+          display: grid;
+          min-inline-size: 0;
+          align-items: stretch;
+        }
+        body[data-mcel-chrome] [data-mcel-chrome-frame] > [data-mcel-chrome-region-role="body"]:first-child {
+          grid-row: 1 / -1;
+        }
+        body[data-mcel-chrome] [data-mcel-chrome-region-role="body"] > * {
           min-inline-size: 0;
           max-inline-size: 100%;
           box-sizing: border-box;
@@ -2491,10 +2562,10 @@
           letter-spacing: -0.045em;
           text-wrap: balance;
         }
-        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-cluster-grid"] :is(form.mc, .mc[data-mc="command-row"], .mc[data-mc-component="TrustCluster"]),
-        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support :is(form.mc, .mc[data-mc="command-row"], .mc[data-mc-component="TrustCluster"]),
-        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-journey"] :is(form.mc, .mc[data-mc="command-row"], .mc[data-mc-component="TrustCluster"]),
-        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-compact-disclosure"] :is(form.mc, .mc[data-mc="command-row"], .mc[data-mc-component="TrustCluster"]) {
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-cluster-grid"] :is(form.mc, .mc[data-mc="command-row"], .mc[data-mc-component-kind="layout"]),
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support :is(form.mc, .mc[data-mc="command-row"], .mc[data-mc-component-kind="layout"]),
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-journey"] :is(form.mc, .mc[data-mc="command-row"], .mc[data-mc-component-kind="layout"]),
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-compact-disclosure"] :is(form.mc, .mc[data-mc="command-row"], .mc[data-mc-component-kind="layout"]) {
           grid-template-columns: minmax(0, 1fr);
           align-items: stretch;
         }
@@ -2510,10 +2581,10 @@
         body[data-mcel-fit-remediation~="object-grow"][data-mcel-chrome="chrome-cluster-grid"] .mcel-chrome-cluster-grid {
           grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
         }
-        body[data-mcel-fit-remediation~="object-grow"][data-mcel-chrome="chrome-cluster-grid"] .mcel-chrome-cluster-grid > .mc,
-        body[data-mcel-fit-remediation~="object-grow"][data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mc,
-        body[data-mcel-fit-remediation~="object-grow"][data-mcel-chrome="chrome-journey"] .mcel-chrome-journey-step > .mc,
-        body[data-mcel-fit-remediation~="object-grow"][data-mcel-chrome="chrome-compact-disclosure"] .mcel-chrome-compact-panel > .mc {
+        body[data-mcel-fit-remediation~="object-grow"][data-mcel-chrome="chrome-cluster-grid"] .mcel-chrome-cluster-grid > .mcel-chrome-cluster-item,
+        body[data-mcel-fit-remediation~="object-grow"][data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mcel-chrome-spotlight-item,
+        body[data-mcel-fit-remediation~="object-grow"][data-mcel-chrome="chrome-journey"] .mcel-chrome-journey-step > .mcel-chrome-journey-body,
+        body[data-mcel-fit-remediation~="object-grow"][data-mcel-chrome="chrome-compact-disclosure"] .mcel-chrome-compact-panel {
           min-block-size: max-content;
           align-content: start;
         }
@@ -2532,7 +2603,7 @@
           justify-self: start;
         }
         body[data-mcel-fit-remediation~="region-reflow"][data-mcel-chrome="chrome-compact-disclosure"] .mcel-chrome-compact-panel {
-          overflow: visible;
+          grid-template-rows: auto minmax(0, auto);
         }
 
         body[data-mcel-chrome="chrome-editorial-flow"] [data-mcel-chrome-generated="true"],
