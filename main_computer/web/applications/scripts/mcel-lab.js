@@ -1028,6 +1028,12 @@
           lastLength: 0,
           lastAt: null,
           lastReadyState: "unknown",
+          lastFitStatus: "unavailable",
+          lastFitViolations: 0,
+          lastFitCompositionWarnings: 0,
+          lastFitRemedies: "",
+          lastCompositionRemedies: "",
+          lastChromeFitReport: null,
           events: []
         };
       }
@@ -1061,6 +1067,321 @@
       scheduler(callback);
     }
 
+
+    function summarizeMcelChromeFitReport(report) {
+      if (!report) return "fit=unavailable";
+      const status = report.status || "unavailable";
+      const finalViolations = Number(report.finalViolations ?? report.violationCount ?? 0);
+      const finalCompositionWarnings = Number(report.finalCompositionWarnings ?? report.compositionWarningCount ?? 0);
+      const composition = finalCompositionWarnings > 0
+        ? ` · composition=${finalCompositionWarnings}`
+        : "";
+      const remedies = Array.isArray(report.appliedRemedies) && report.appliedRemedies.length
+        ? ` · remedies=${report.appliedRemedies.join("+")}`
+        : "";
+      const compositionRemedies = Array.isArray(report.appliedCompositionRemedies) && report.appliedCompositionRemedies.length
+        ? ` · compositionRemedies=${report.appliedCompositionRemedies.map((item) => item.remedy || item.problem).join("+")}`
+        : "";
+      return `fit=${status} · violations=${finalViolations}${composition}${remedies}${compositionRemedies}`;
+    }
+
+    function accessMcelSiteFrameDocument(frame) {
+      try {
+        return frame?.contentDocument || null;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    function clearMcelChromeFitRuntimeState(doc) {
+      const body = doc?.body;
+      const html = doc?.documentElement;
+      [body, html].filter(Boolean).forEach((element) => {
+        element.removeAttribute("data-mcel-fit-remediation");
+        element.removeAttribute("data-mcel-fit-status");
+        element.removeAttribute("data-mcel-fit-violations");
+        element.removeAttribute("data-mcel-composition-status");
+        element.removeAttribute("data-mcel-composition-warnings");
+        element.removeAttribute("data-mcel-composition-remediation");
+      });
+      doc?.querySelectorAll?.("[data-mcel-composition-remedy], [data-mcel-composition-warnings]").forEach((element) => {
+        element.removeAttribute("data-mcel-composition-remedy");
+        element.removeAttribute("data-mcel-composition-warnings");
+      });
+    }
+
+    function applyMcelChromeFitRuntimeState(doc, remedies = [], status = "probing", violationCount = 0, compositionWarningCount = 0) {
+      const body = doc?.body;
+      const html = doc?.documentElement;
+      const value = remedies.join(" ");
+      [body, html].filter(Boolean).forEach((element) => {
+        if (value) {
+          element.setAttribute("data-mcel-fit-remediation", value);
+        } else {
+          element.removeAttribute("data-mcel-fit-remediation");
+        }
+        element.setAttribute("data-mcel-fit-status", status);
+        element.setAttribute("data-mcel-fit-violations", String(violationCount));
+        element.setAttribute("data-mcel-composition-status", compositionWarningCount > 0 ? "warning" : "clean");
+        element.setAttribute("data-mcel-composition-warnings", String(compositionWarningCount));
+      });
+      // Force a synchronous style/layout pass so the next observation measures the
+      // browser's result of the chrome-approved remediation rather than queued CSS.
+      void doc?.documentElement?.offsetWidth;
+    }
+
+    function observeMcelChromeFit(doc, chrome) {
+      const contract = typeof McelLabChromeLaw !== "undefined" && McelLabChromeLaw.chromeFitContract
+        ? McelLabChromeLaw.chromeFitContract(chrome)
+        : {};
+      const compositionContract = typeof McelLabChromeLaw !== "undefined" && McelLabChromeLaw.chromeCompositionContract
+        ? McelLabChromeLaw.chromeCompositionContract(chrome)
+        : {};
+      return McelLabBrowserObserver.observeChromeFit(doc, {
+        chrome,
+        selectors: contract.observeSelectors || [],
+        hardObjectSelector: contract.hardObjectSelector,
+        tolerancePx: contract.tolerancePx || 2,
+        compositionContract
+      });
+    }
+
+    function mcelChromeGeometryFailureCount(report) {
+      return Number(report?.violationCount ?? report?.finalViolations ?? 0);
+    }
+
+    function mcelChromeCompositionWarningCount(report) {
+      return Number(report?.compositionWarningCount ?? report?.finalCompositionWarnings ?? 0);
+    }
+
+    function mcelChromeFitFailureCount(report) {
+      return mcelChromeGeometryFailureCount(report) + mcelChromeCompositionWarningCount(report);
+    }
+
+    function findMcelCompositionRemedyTarget(doc, warning = {}) {
+      const sourceIndex = String(warning.sourceIndex || "");
+      if (sourceIndex) {
+        const candidates = [...(doc?.querySelectorAll?.(".mcel-chrome-editorial-rail [data-mc-source-index]") || [])]
+          .filter((element) => element.getAttribute("data-mc-source-index") === sourceIndex);
+        const direct = candidates.find((element) => element.matches?.(".mc, [data-mc]"));
+        if (direct) return direct;
+        if (candidates.length) return candidates[0];
+      }
+      return null;
+    }
+
+    function applyMcelChromeCompositionRemedies(doc, warnings = []) {
+      const applied = [];
+      warnings.forEach((warning) => {
+        const remedy = warning?.remedy || (warning?.problem === "primary-control-width-collapsed-relative-to-input" ? "control-balance" : "");
+        if (!remedy) return;
+        const target = findMcelCompositionRemedyTarget(doc, warning);
+        if (!target) return;
+        const existing = new Set(String(target.getAttribute("data-mcel-composition-remedy") || "").split(/\s+/).filter(Boolean));
+        existing.add(remedy);
+        target.setAttribute("data-mcel-composition-remedy", [...existing].join(" "));
+        const existingWarnings = new Set(String(target.getAttribute("data-mcel-composition-warnings") || "").split(/\s+/).filter(Boolean));
+        if (warning.problem) existingWarnings.add(warning.problem);
+        target.setAttribute("data-mcel-composition-warnings", [...existingWarnings].join(" "));
+        applied.push({
+          problem: warning.problem || "",
+          remedy,
+          sourceIndex: warning.sourceIndex || "",
+          chromePart: warning.chromePart || "",
+          fitRegion: warning.fitRegion || ""
+        });
+      });
+      if (doc?.body) {
+        doc.body.setAttribute("data-mcel-composition-remediation", applied.length ? "active" : "none");
+      }
+      void doc?.documentElement?.offsetWidth;
+      return applied;
+    }
+
+    function runMcelSiteFrameChromeFit(reason = "chrome-fit") {
+      const frame = currentMcelSiteFrame();
+      const twiddle = ensureMcelSiteFrameTwiddle();
+      const chrome = frame?.dataset?.chrome || mcelLabState.chrome || "chrome-strict-hierarchy";
+      if (!frame || typeof McelLabBrowserObserver === "undefined" || typeof McelLabBrowserObserver.observeChromeFit !== "function") {
+        const unavailable = {
+          kind: "mcel-chrome-fit-report",
+          chrome,
+          status: "unavailable",
+          reason,
+          firstPassViolations: 0,
+          finalViolations: 0,
+          firstPassCompositionWarnings: 0,
+          finalCompositionWarnings: 0,
+          repaired: false,
+          appliedRemedies: [],
+          appliedCompositionRemedies: [],
+          compositionWarnings: [],
+          violations: [],
+          warnings: ["Chrome fit observer is unavailable."]
+        };
+        mcelLabState.lastChromeFitReport = unavailable;
+        twiddle.lastChromeFitReport = unavailable;
+        twiddle.lastFitStatus = "unavailable";
+        twiddle.lastFitViolations = 0;
+        twiddle.lastFitCompositionWarnings = 0;
+        twiddle.lastFitRemedies = "";
+        twiddle.lastCompositionRemedies = "";
+        renderMcelSiteFrameTwiddle(reason);
+        return unavailable;
+      }
+
+      const doc = accessMcelSiteFrameDocument(frame);
+      if (!doc?.body) {
+        const unavailable = {
+          kind: "mcel-chrome-fit-report",
+          chrome,
+          status: "unavailable",
+          reason,
+          firstPassViolations: 0,
+          finalViolations: 0,
+          firstPassCompositionWarnings: 0,
+          finalCompositionWarnings: 0,
+          repaired: false,
+          appliedRemedies: [],
+          appliedCompositionRemedies: [],
+          compositionWarnings: [],
+          violations: [],
+          warnings: ["Rendered iframe document is unavailable; check sandbox allow-same-origin."]
+        };
+        mcelLabState.lastChromeFitReport = unavailable;
+        twiddle.lastChromeFitReport = unavailable;
+        twiddle.lastFitStatus = "unavailable";
+        twiddle.lastFitViolations = 0;
+        twiddle.lastFitCompositionWarnings = 0;
+        twiddle.lastFitRemedies = "";
+        twiddle.lastCompositionRemedies = "";
+        frame.dataset.fitStatus = "unavailable";
+        frame.dataset.fitViolations = "0";
+        frame.dataset.fitCompositionWarnings = "0";
+        frame.dataset.compositionRemedies = "";
+        renderMcelSiteFrameTwiddle(reason);
+        return unavailable;
+      }
+
+      clearMcelChromeFitRuntimeState(doc);
+      const first = observeMcelChromeFit(doc, chrome);
+      const firstPassViolations = mcelChromeGeometryFailureCount(first);
+      const firstPassCompositionWarnings = mcelChromeCompositionWarningCount(first);
+      const firstPassFailures = mcelChromeFitFailureCount(first);
+      const plan = typeof McelLabChromeLaw !== "undefined" && McelLabChromeLaw.chromeRemediationPlan
+        ? McelLabChromeLaw.chromeRemediationPlan(chrome)
+        : {strategies: []};
+      const strategies = Array.isArray(plan.strategies) ? plan.strategies : [];
+      const appliedRemedies = [];
+      const appliedCompositionRemedies = [];
+      const passes = [{
+        stage: "prevent",
+        remedies: [],
+        compositionRemedies: [],
+        report: first
+      }];
+      let current = first;
+
+      const applyCompositionRemediesIfNeeded = (stage) => {
+        if (mcelChromeCompositionWarningCount(current) === 0) return false;
+        const applied = applyMcelChromeCompositionRemedies(doc, current.compositionWarnings || []);
+        if (!applied.length) return false;
+        applied.forEach((item) => appliedCompositionRemedies.push(item));
+        current = observeMcelChromeFit(doc, chrome);
+        passes.push({
+          stage,
+          remedies: [...appliedRemedies],
+          compositionRemedies: [...appliedCompositionRemedies],
+          report: current
+        });
+        return true;
+      };
+
+      applyCompositionRemediesIfNeeded("composition-remedy");
+
+      if (mcelChromeFitFailureCount(current) > 0 && mcelChromeGeometryFailureCount(current) > 0 && strategies.length) {
+        for (const strategy of strategies) {
+          if (!strategy?.id) continue;
+          appliedRemedies.push(strategy.id);
+          applyMcelChromeFitRuntimeState(
+            doc,
+            appliedRemedies,
+            "probing",
+            mcelChromeGeometryFailureCount(current),
+            mcelChromeCompositionWarningCount(current)
+          );
+          current = observeMcelChromeFit(doc, chrome);
+          passes.push({
+            stage: strategy.id,
+            remedies: [...appliedRemedies],
+            compositionRemedies: [...appliedCompositionRemedies],
+            report: current
+          });
+          applyCompositionRemediesIfNeeded(`composition-after-${strategy.id}`);
+          if (mcelChromeFitFailureCount(current) === 0) break;
+        }
+      }
+
+      const finalViolations = mcelChromeGeometryFailureCount(current);
+      const finalCompositionWarnings = mcelChromeCompositionWarningCount(current);
+      const finalFailures = finalViolations + finalCompositionWarnings;
+      const status = firstPassFailures === 0
+        ? "clean"
+        : (finalFailures === 0 ? "repaired" : "failed");
+      applyMcelChromeFitRuntimeState(doc, appliedRemedies, status, finalViolations, finalCompositionWarnings);
+
+      const finalReport = {
+        kind: "mcel-chrome-fit-report",
+        chrome,
+        status,
+        reason,
+        firstPassViolations,
+        firstPassCompositionWarnings,
+        firstPassFailures,
+        finalViolations,
+        finalCompositionWarnings,
+        finalFailures,
+        repaired: status === "repaired",
+        appliedRemedies,
+        appliedCompositionRemedies,
+        passes: passes.map((pass) => ({
+          stage: pass.stage,
+          remedies: pass.remedies,
+          compositionRemedies: pass.compositionRemedies || [],
+          violationCount: mcelChromeGeometryFailureCount(pass.report),
+          compositionWarningCount: mcelChromeCompositionWarningCount(pass.report),
+          failureCount: mcelChromeFitFailureCount(pass.report)
+        })),
+        violations: current.violations || [],
+        compositionWarnings: current.compositionWarnings || [],
+        compositionWarningCount: finalCompositionWarnings,
+        tolerancePx: current.tolerancePx || first.tolerancePx || 2,
+        warnings: current.warnings || []
+      };
+
+      mcelLabState.lastChromeFitReport = finalReport;
+      twiddle.lastChromeFitReport = finalReport;
+      twiddle.lastFitStatus = status;
+      twiddle.lastFitViolations = finalViolations;
+      twiddle.lastFitCompositionWarnings = finalCompositionWarnings;
+      twiddle.lastFitRemedies = appliedRemedies.join("+");
+      twiddle.lastCompositionRemedies = appliedCompositionRemedies.map((item) => item.remedy || item.problem).join("+");
+      frame.dataset.fitStatus = status;
+      frame.dataset.fitViolations = String(finalViolations);
+      frame.dataset.fitCompositionWarnings = String(finalCompositionWarnings);
+      frame.dataset.fitRemedies = appliedRemedies.join("+");
+      frame.dataset.compositionRemedies = twiddle.lastCompositionRemedies;
+      recordMcelSiteFrameTwiddle("chrome-fit", {
+        reason,
+        hash: frame.dataset.srcdocHash,
+        length: Number(frame.dataset.srcdocLength || 0),
+        fitStatus: status,
+        fitViolations: finalViolations,
+        fitCompositionWarnings: finalCompositionWarnings
+      });
+      return finalReport;
+    }
+
     function recordMcelSiteFrameTwiddle(action, details = {}) {
       const twiddle = ensureMcelSiteFrameTwiddle();
       const frame = currentMcelSiteFrame();
@@ -1073,7 +1394,10 @@
         generation: Number(frame?.dataset?.generation || twiddle.generation || 0),
         connected: Boolean(frame?.isConnected),
         modalHidden: mcelSiteModal?.getAttribute("aria-hidden") || "missing",
-        synced: frame?.dataset?.synced || "never"
+        synced: frame?.dataset?.synced || "never",
+        fitStatus: details.fitStatus || frame?.dataset?.fitStatus || twiddle.lastFitStatus || "unavailable",
+        fitViolations: Number(details.fitViolations ?? frame?.dataset?.fitViolations ?? twiddle.lastFitViolations ?? 0),
+        fitCompositionWarnings: Number(details.fitCompositionWarnings ?? frame?.dataset?.fitCompositionWarnings ?? twiddle.lastFitCompositionWarnings ?? 0)
       };
       twiddle.events = [...twiddle.events, event].slice(-10);
       twiddle.lastAt = event.at;
@@ -1099,6 +1423,7 @@
         `len=${srcdocLength}`,
         `theme=${mcelLabState.theme || "theme-machine"}`,
         `chrome=${mcelLabState.chrome || "chrome-strict-hierarchy"}`,
+        summarizeMcelChromeFitReport(twiddle.lastChromeFitReport || mcelLabState.lastChromeFitReport),
         `reason=${reason}`
       ].join(" · ");
       if (mcelSiteFrameStatus) {
@@ -1120,7 +1445,10 @@
             `generation=${event.generation}`,
             `connected=${event.connected}`,
             `modalHidden=${event.modalHidden}`,
-            `synced=${event.synced}`
+            `synced=${event.synced}`,
+            `fit=${event.fitStatus || "unavailable"}`,
+            `fitViolations=${event.fitViolations ?? 0}`,
+            `compositionWarnings=${event.fitCompositionWarnings ?? 0}`
           ].join(" | "))
           .join("\n") || "No iframe lifecycle events recorded yet.";
       }
@@ -1138,6 +1466,7 @@
         twiddle.loadCount += 1;
         twiddle.lastReadyState = readMcelSiteFrameReadyState(frame);
         recordMcelSiteFrameTwiddle("iframe-load", {reason: frame.dataset.synced || reason});
+        scheduleMcelSiteFrameWrite(() => runMcelSiteFrameChromeFit(frame.dataset.synced || reason || "iframe-load"));
         recordMcelEvent("ui", "MCEL_SITE_IFRAME_LOADED", `Rendered-site iframe loaded generation ${frame.dataset.generation || 0}.`);
       });
       frame.addEventListener("error", () => {
@@ -1175,7 +1504,7 @@
       replacement.id = "mcel-site-frame";
       replacement.className = "mcel-site-frame";
       replacement.title = "Isolated MCEL rendered site";
-      replacement.setAttribute("sandbox", "");
+      replacement.setAttribute("sandbox", "allow-same-origin");
       replacement.dataset.generation = String((Number(frame.dataset.generation || twiddle.generation || 0) || 0) + 1);
       replacement.dataset.synced = "fresh-shell";
       frame.replaceWith(replacement);
@@ -1879,6 +2208,106 @@
         body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail .mc[data-mc="command-row"] {
           grid-template-columns: minmax(0, 1fr);
         }
+
+        body[data-mcel-chrome="chrome-editorial-flow"] [data-mcel-chrome-generated="true"],
+        body[data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-region],
+        body[data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-policy] {
+          min-inline-size: 0;
+          max-inline-size: 100%;
+          box-sizing: border-box;
+        }
+        body[data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-policy="contain"] > * {
+          min-inline-size: 0;
+          max-inline-size: 100%;
+        }
+        body[data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-policy="contain"] img,
+        body[data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-policy="contain"] svg,
+        body[data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-policy="contain"] canvas,
+        body[data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-policy="contain"] video,
+        body[data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-policy="contain"] iframe,
+        body[data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-policy="contain"] table,
+        body[data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-policy="contain"] pre,
+        body[data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-policy="contain"] code,
+        body[data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-policy="contain"] input,
+        body[data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-policy="contain"] textarea,
+        body[data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-policy="contain"] select,
+        body[data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-policy="contain"] button {
+          max-inline-size: 100%;
+        }
+
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="control-balance"] input,
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="control-balance"] textarea,
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="control-balance"] select,
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="control-balance"] button {
+          inline-size: 100%;
+          max-inline-size: 100%;
+          min-inline-size: 0;
+          box-sizing: border-box;
+        }
+
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="control-balance"] button {
+          justify-self: stretch;
+          width: 100%;
+          white-space: normal;
+        }
+
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail form[data-mcel-composition-remedy~="control-balance"],
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="control-balance"] form {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr);
+          align-items: stretch;
+        }
+
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-region="narrow"] {
+          container-type: inline-size;
+          overflow-wrap: anywhere;
+        }
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-region="narrow"] h1,
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-region="narrow"] h2 {
+          max-inline-size: 100%;
+          font-size: clamp(1.55rem, 8cqi, 3rem);
+          line-height: 0.98;
+          letter-spacing: -0.052em;
+          text-wrap: balance;
+        }
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-region="narrow"] p {
+          max-inline-size: 100%;
+          line-height: 1.34;
+        }
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-region="narrow"] form.mc,
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-region="narrow"] .mc[data-mc="command-row"] {
+          grid-template-columns: minmax(0, 1fr);
+          align-items: stretch;
+        }
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-region="narrow"] label,
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-region="narrow"] input,
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-region="narrow"] button,
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-region="narrow"] a[data-mc-action] {
+          inline-size: 100%;
+          justify-self: stretch;
+          white-space: normal;
+        }
+
+        body[data-mcel-fit-remediation~="object-grow"][data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-shell {
+          grid-template-columns: minmax(0, 1.08fr) minmax(min(360px, 100%), 0.92fr);
+        }
+        body[data-mcel-fit-remediation~="object-grow"][data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-region="narrow"] > .mc {
+          min-block-size: max-content;
+          align-content: center;
+        }
+
+        body[data-mcel-fit-remediation~="object-reshape"][data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-region="narrow"] > .mc {
+          border-radius: min(var(--site-radius-sm), 18cqi);
+          padding: clamp(18px, 5cqi, 32px);
+        }
+
+        body[data-mcel-fit-remediation~="region-reflow"][data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-shell {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        body[data-mcel-fit-remediation~="region-reflow"][data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail {
+          position: static;
+        }
+
         @media (max-width: 860px) {
           body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-shell {
             grid-template-columns: 1fr;
@@ -1980,7 +2409,10 @@
         liveFrame.dataset.srcdocLength = String(documentHtml.length);
         liveFrame.dataset.chrome = mcelLabState.chrome || "chrome-strict-hierarchy";
         liveFrame.dataset.lastNonce = nonce;
-        recordMcelSiteFrameTwiddle("iframe-sync", {reason, hash: documentHash, length: documentHtml.length});
+        liveFrame.dataset.fitStatus = "pending";
+        liveFrame.dataset.fitViolations = "0";
+        liveFrame.dataset.fitRemedies = "";
+        recordMcelSiteFrameTwiddle("iframe-sync", {reason, hash: documentHash, length: documentHtml.length, fitStatus: "pending", fitViolations: 0});
       });
     }
 

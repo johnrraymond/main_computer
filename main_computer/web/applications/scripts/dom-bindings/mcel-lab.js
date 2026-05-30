@@ -29,6 +29,7 @@
         lastSiteSkeleton: null,
         lastCommandPlan: null,
         lastChromeReport: null,
+        lastChromeFitReport: null,
         lastProjectSnapshot: null,
         activeModal: null,
         siteFrameTwiddle: {
@@ -46,6 +47,10 @@
           lastLength: 0,
           lastAt: null,
           lastReadyState: "unknown",
+          lastFitStatus: "unavailable",
+          lastFitViolations: 0,
+          lastFitRemedies: "",
+          lastChromeFitReport: null,
           events: []
         },
         lastSourceList: []
