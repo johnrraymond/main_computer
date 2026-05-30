@@ -22,21 +22,42 @@ def test_chat_console_remote_worker_control_modal_hooks_busy_capacity() -> None:
     assert "snapshot.available_now === false" in source
 
 
-def test_chat_console_remote_worker_modal_is_phase_three_control_panel() -> None:
+def test_chat_console_remote_worker_modal_is_phase_four_assessment_panel() -> None:
     source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
 
-    assert "Phase 3 remote-worker controls" in source
+    assert "Phase 4 remote-worker assessment" in source
     assert "Remote Worker control" in source
     assert "Current Local AI Worker" in source
-    assert "Remote Hub / Workers" in source
-    assert "Hub worker information will appear here as the overflow pathway matures." in source
-    assert "Phase 3 records modal choices and binds this control to one pending local request." in source
-    assert "This panel refreshes the blocking local worker every 2 seconds." in source
+    assert "Remote Overflow Assessment" in source
+    assert "Diagnostic assessment cards" in source
+    assert "read-only remote-overflow assessment endpoint" in source
+    assert "This panel refreshes the blocking local worker every 2 seconds" in source
     assert "Blocking worker age" in source
     assert "Last checked" in source
-    assert "No credits are checked, held, or spent" in source
-    assert "no hub assessment or remote worker is contacted yet." in source
+    assert "No credits are held or spent" in source
+    assert "no mock submit, real hub request, or real remote worker is contacted yet." in source
     assert "data-chat-console-remote-worker-control-modal" in source
+    assert "data-chat-remote-overflow-assessment-grid" in source
+
+
+def test_chat_console_remote_worker_modal_calls_read_only_assessment_endpoint() -> None:
+    source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
+
+    assert "function chatConsoleFetchRemoteOverflowAssessment" in source
+    assert "function chatConsoleBuildRemoteOverflowAssessmentPayload" in source
+    assert "function chatConsoleRefreshRemoteOverflowAssessment" in source
+    assert "/api/applications/chat-console/ai/remote-overflow/assess" in source
+    assert "phase4_modal_assessment_cards" in source
+    assert "remote_overflow_enabled: true" in source
+    assert "no_credit_hold_created: true" in source
+    assert "no_credit_spent: true" in source
+    assert "real_remote_worker_contacted: false" in source
+    assert "private_worker_prices_exposed: false" in source
+    assert "chatConsoleRefreshRemoteOverflowAssessment({pendingRequest: boundPendingRequest, capacity})" in source
+    assert "await chatConsoleRefreshRemoteOverflowAssessment({pendingRequest, capacity: snapshot})" in source
+    assert "data-chat-remote-worker-status-card=\"assessment-summary\"" in source
+    assert "chatConsoleRenderRemoteOverflowAssessmentCards" in source
+    assert "lastAssessment" in source
 
 
 def test_chat_console_remote_worker_modal_has_large_selectable_options() -> None:

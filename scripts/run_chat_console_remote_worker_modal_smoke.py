@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-"""Static smoke for the Phase 3 busy-local Remote Worker control modal.
+"""Static smoke for the Phase 4 busy-local Remote Worker assessment modal.
 
 This smoke proves the Chat Console checks local AI capacity during AI request
-startup, opens the modal before the normal AI evaluation fetch, shows the
-two-card local/hub status grid, exposes large selectable option cards, and
-keeps the phase free of credit checks, real hub submit, or real remote worker
-contact. It also proves the modal polls every 2 seconds, binds to one pending
-request, and waits for a local-start lease before automated local retry.
+startup, opens the modal before the normal AI evaluation fetch, calls the
+read-only remote-overflow assessment endpoint, renders diagnostic cards, exposes
+large selectable option cards, and keeps the phase free of credit holds/spend,
+mock submit, real hub submit, or real remote worker contact. It also proves the
+modal polls every 2 seconds, binds to one pending request, and waits for a
+local-start lease before automated local retry.
 """
 
 from pathlib import Path
@@ -35,11 +36,11 @@ def main() -> int:
         "waiting for local AI slot before starting the pending local request",
         "local AI became available after wait-local close; acquiring pending request lease before starting locally",
         "local AI became available; acquiring pending request lease before starting locally",
-        "Phase 3 remote-worker controls",
+        "Phase 4 remote-worker assessment",
         "Current Local AI Worker",
-        "Remote Hub / Workers",
-        "Available workers",
-        "template / not checked yet",
+        "Remote Overflow Assessment",
+        "Diagnostic assessment cards",
+        "/api/applications/chat-console/ai/remote-overflow/assess",
         "Wait for Available Local Worker",
         "Use Remote Worker This Once",
         "Use Remote Worker When Needed for This Chat",
@@ -47,10 +48,10 @@ def main() -> int:
         "To turn this off later, open the Worker app and unselect this option.",
         "Remote worker when local AI is busy for this chat",
         "dataset.chatRemoteWorkerWhenBusyForChat",
-        "This panel refreshes the blocking local worker every 2 seconds.",
+        "This panel refreshes the blocking local worker every 2 seconds",
         "Blocking worker age",
         "Last checked",
-        "No credits are checked, held, or spent",
+        "No credits are held or spent",
         "pendingLocalRequests: new Map()",
         "localStartLease: null",
         "function chatConsoleTryAcquireLocalAiStartLease",
@@ -58,7 +59,16 @@ def main() -> int:
         "data-chat-remote-worker-pending-request-footer",
         "Unable to acquire local AI start lease",
         "local AI start lease is held",
-        "no hub assessment or remote worker is contacted yet",
+        "function chatConsoleFetchRemoteOverflowAssessment",
+        "function chatConsoleBuildRemoteOverflowAssessmentPayload",
+        "function chatConsoleRefreshRemoteOverflowAssessment",
+        "phase4_modal_assessment_cards",
+        "remote_overflow_enabled: true",
+        "no_credit_hold_created: true",
+        "real_remote_worker_contacted: false",
+        "private_worker_prices_exposed: false",
+        "data-chat-remote-overflow-assessment-grid",
+        "no mock submit, real hub request, or real remote worker is contacted yet",
     ]
     required_css = [
         ".chat-remote-worker-control-backdrop",
@@ -83,16 +93,20 @@ def main() -> int:
 
     print({
         "ok": True,
-        "phase": "remote worker modal request ownership controls",
+        "phase": "remote worker modal assessment cards",
+        "assessment_endpoint": "/api/applications/chat-console/ai/remote-overflow/assess",
         "capacity_endpoint": "/api/applications/chat-console/ai/capacity",
-        "status_cards": ["Current Local AI Worker", "Remote Hub / Workers"],
+        "status_cards": ["Current Local AI Worker", "Remote Overflow Assessment"],
         "selectable_options": [
             "Wait for Available Local Worker",
             "Use Remote Worker This Once",
             "Use Remote Worker When Needed for This Chat",
             "Always Use Remote Worker When Local AI Is Busy",
         ],
-        "credits_checked": False,
+        "credit_hold_created": False,
+        "credits_spent": False,
+        "mock_submit_called": False,
+        "real_hub_request_created": False,
         "remote_worker_contacted": False,
         "capacity_poll_interval_ms": 2000,
         "starts_local_after_capacity_available": True,
