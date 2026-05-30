@@ -264,6 +264,23 @@ class ViewportChatConsoleRoutesMixin:
             self.server.signal("api-chat-console-ai-run-result-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
+    def _handle_chat_console_ai_capacity(self) -> None:
+        try:
+            query = parse_qs(urlsplit(self.path).query)
+            thread_id = str((query.get("thread_id") or [""])[0] or "").strip()
+            try:
+                max_local_concurrency = int((query.get("max_local_concurrency") or ["1"])[0] or "1")
+            except (TypeError, ValueError):
+                max_local_concurrency = 1
+            result = self.server.chat_ai_processes.local_ai_capacity_snapshot(
+                thread_id=thread_id,
+                max_local_concurrency=max_local_concurrency,
+            )
+            self._send_json(result)
+        except Exception as exc:
+            self.server.signal("api-chat-console-ai-capacity-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
 
     def _chat_console_preview(self, value: Any, *, limit: int = 700) -> str:
         text = " ".join(str(value or "").replace("\r\n", "\n").replace("\r", "\n").split())

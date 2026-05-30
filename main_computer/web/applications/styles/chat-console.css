@@ -423,6 +423,9 @@
     .chat-thinking-card[data-category="ollama"] {
       border-left-color: var(--mint);
     }
+    .chat-thinking-card[data-category="capacity"] {
+      border-left-color: var(--sky);
+    }
     .chat-thinking-card[data-category="rag"],
     .chat-thinking-card[data-category="retrieval"] {
       border-left-color: #c6a7ff;

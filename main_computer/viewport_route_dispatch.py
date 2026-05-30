@@ -1175,6 +1175,9 @@ def dispatch_get(self) -> None:
     if self.path == "/api/hub/config":
         self._handle_hub_config_status()
         return
+    if urlsplit(self.path).path == "/api/applications/chat-console/ai/capacity":
+        self._handle_chat_console_ai_capacity()
+        return
     if urlsplit(self.path).path == "/api/applications/chat-console/ai/run-result":
         self._handle_chat_console_ai_run_result()
         return
