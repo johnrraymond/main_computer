@@ -82,6 +82,21 @@
 </section>`
         }),
         Object.freeze({
+          id: "platform-spine-subsumption",
+          label: "Platform Spine Subsumption",
+          mode: "runtime",
+          description: "One source surface activates component, state, data, form, action, render, accessibility, performance, and security laws to prove MCEL can replace framework stacks.",
+          source: `<section data-mc="panel" data-mc-kind="work" data-mc-flow="stack" data-mc-rank="primary" data-mc-state="live" data-mc-density="auto" data-mc-size-policy="adaptive" data-mc-overflow-policy="contain" data-mc-scroll-policy="auto" data-mc-component="ObsoleteFrameworkPanel" data-mc-component-kind="component" data-mc-state-owner="view" data-mc-state-scope="framework-replacement" data-mc-state-policy="replayable" data-mc-query="frameworks.status" data-mc-cache-policy="stale-while-revalidate" data-mc-mutation="frameworks.replace" data-mc-sync-policy="optimistic" data-mc-action="replace-legacy-framework" data-mc-target="obsolete-stack" data-mc-swap-policy="lawful-region" data-mc-event-policy="audited" data-mc-route="/mcel/subsumption" data-mc-render="island" data-mc-hydration="visible" data-mc-island="interactive" data-mc-focus-policy="preserve" data-mc-a11y-policy="strict" data-mc-performance-budget="small" data-mc-security-policy="trusted" data-mc-words="rust java cplusplus powers without sharp edges">
+  <h2 data-mc-slot="title">Framework Replacement Surface</h2>
+  <p data-mc-slot="body">This single semantic surface names the jobs usually delegated to React, Next, Tailwind, TanStack Query, form libraries, htmx, Storybook, and Playwright-only tests.</p>
+  <button type="button" data-mc-action="replace-legacy-framework" data-mc-event-policy="audited">Prove replacement</button>
+</section>
+<form data-mc="smart-region" data-mc-kind="work" data-mc-flow="stack" data-mc-rank="secondary" data-mc-state="draft" data-mc-density="calm" data-mc-size-policy="adaptive" data-mc-overflow-policy="contain" data-mc-scroll-policy="auto" data-mc-submit="framework.audit" data-mc-validation="schema" data-mc-dirty-policy="warn" data-mc-error-policy="inline-and-summary" data-mc-a11y-policy="strict" data-mc-performance-budget="small" data-mc-words="form validation dirty error proof">
+  <h2>Library-Killing Form</h2>
+  <label>Claim <input name="claim" required value="MCEL replaces glue libraries"></label>
+</form>`
+        }),
+        Object.freeze({
           id: "invalid-schema",
           label: "Schema Normalization",
           mode: "stress",

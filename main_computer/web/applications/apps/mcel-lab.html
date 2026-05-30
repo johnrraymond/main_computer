@@ -84,6 +84,9 @@
           <button type="button" data-mcel-block="command-row">Command Row</button>
           <button type="button" data-mcel-block="proof">Proof Surface</button>
           <button type="button" data-mcel-block="smart-region">Smart Region</button>
+          <button type="button" data-mcel-block="component">Semantic Component</button>
+          <button type="button" data-mcel-block="form">Lawful Form</button>
+          <button type="button" data-mcel-block="route">Semantic Route</button>
         </div>
         <div class="mcel-lab-selection" id="mcel-selection-status">
           Selected source widget: 1
@@ -189,6 +192,9 @@
       <button type="button" id="mcel-lab-autopilot">Run Autopilot Proof</button>
       <button type="button" id="mcel-lab-kernel">Run Kernel Audit</button>
       <button type="button" id="mcel-lab-traceability">Build Traceability Map</button>
+      <button type="button" id="mcel-lab-subsumption">Build Subsumption Lattice</button>
+      <button type="button" id="mcel-lab-workbench">Build Workbench Plan</button>
+      <button type="button" id="mcel-lab-browser-proof">Run Browser Semantic Proof</button>
       <button type="button" id="mcel-project-save">Save Project</button>
       <button type="button" id="mcel-project-restore">Restore Project</button>
       <button type="button" id="mcel-project-export">Export Snapshot</button>
@@ -211,12 +217,13 @@
     <section class="mcel-lab-readiness" aria-label="MCEL operational readiness">
       <div class="mcel-readiness-head">
         <strong id="mcel-readiness-score">Operational readiness is warming.</strong>
-        <span>serializer · CSS law · layout law · a11y · audit · contract suite · scenario matrix · evidence · autopilot · kernel</span>
+        <span>serializer · CSS law · layout law · platform spine · a11y · audit · contract suite · scenario matrix · evidence · autopilot · kernel</span>
       </div>
       <div id="mcel-readiness-cards" class="mcel-readiness-cards">
         <article data-status="pending"><strong>Serializer</strong><span>waiting for compile</span></article>
         <article data-status="pending"><strong>CSS Law</strong><span>waiting for runtime</span></article>
         <article data-status="pending"><strong>Layout Law</strong><span>waiting for runtime</span></article>
+        <article data-status="pending"><strong>Platform Spine</strong><span>waiting for subsystem laws</span></article>
         <article data-status="pending"><strong>A11y</strong><span>waiting for report</span></article>
         <article data-status="pending"><strong>Operational Audit</strong><span>not run</span></article>
         <article data-status="pending"><strong>Contract Suite</strong><span>not run</span></article>
@@ -286,6 +293,18 @@
     <section class="mcel-lab-panel" aria-label="Prior Art">
       <h4>Prior Art</h4>
       <pre id="mcel-prior-art-report">Prior art map has not been built yet.</pre>
+    </section>
+    <section class="mcel-lab-panel mcel-lab-panel-wide" aria-label="Subsumption Lattice">
+      <h4>Subsumption Lattice</h4>
+      <pre id="mcel-subsumption-report">Subsumption lattice has not been built yet.</pre>
+    </section>
+    <section class="mcel-lab-panel" aria-label="Workbench Plan">
+      <h4>Workbench Plan</h4>
+      <pre id="mcel-workbench-report">Workbench plan has not been built yet.</pre>
+    </section>
+    <section class="mcel-lab-panel" aria-label="Browser Semantic Proof">
+      <h4>Browser Semantic Proof</h4>
+      <pre id="mcel-browser-proof-report">Browser semantic proof has not run yet.</pre>
     </section>
     <section class="mcel-lab-panel" aria-label="Command Surface">
       <h4>Command Surface</h4>

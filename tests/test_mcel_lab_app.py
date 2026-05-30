@@ -315,7 +315,7 @@ def test_mcel_lab_fifth_slice_adds_operational_graph_and_audit_provenance() -> N
     assert "mcelGraphReport" in bindings
     assert "mcelAuditReport" in bindings
     assert 'artifactOwner: "data-mc-owner"' in contract
-    assert 'contractVersion = "mcel-lab.v0.9-layout-proof-core"' in contract
+    assert 'contractVersion = "mcel-lab.v0.10-platform-spine"' in contract
     assert "attributes.artifactOwner" in contract
     assert 'node.setAttribute(attributes.artifactOwner, "mcel-part-manager")' in engine
     assert 'node.setAttribute(attributes.artifactReason' in engine
@@ -658,3 +658,71 @@ def test_mcel_lab_ninth_slice_adds_layout_law_browser_observer_and_public_core_a
     assert "renderMcelLayoutLawReport" in ui
     assert "window.MCEL" in ui
     assert 'data-mc-scroll-owner="self"' in style
+
+
+
+def test_mcel_lab_tenth_slice_fleshes_out_platform_subsumption_spine() -> None:
+    html = (ROOT / "main_computer" / "web" / "applications.html").read_text(encoding="utf-8")
+    app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
+    bindings = (WEB_APP / "scripts" / "dom-bindings" / "mcel-lab.js").read_text(encoding="utf-8")
+    contract = (WEB_APP / "scripts" / "mcel-contract.js").read_text(encoding="utf-8")
+    engine = (WEB_APP / "scripts" / "mcel-engine.js").read_text(encoding="utf-8")
+    editor = (WEB_APP / "scripts" / "mcel-editor.js").read_text(encoding="utf-8")
+    command_surface = (WEB_APP / "scripts" / "mcel-command-surface.js").read_text(encoding="utf-8")
+    ops_runner = (WEB_APP / "scripts" / "mcel-ops-runner.js").read_text(encoding="utf-8")
+    supervisor = (WEB_APP / "scripts" / "mcel-supervisor.js").read_text(encoding="utf-8")
+    kernel = (WEB_APP / "scripts" / "mcel-kernel.js").read_text(encoding="utf-8")
+    core = (WEB_APP / "scripts" / "mcel-core.js").read_text(encoding="utf-8")
+    ui = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+
+    new_modules = [
+        "mcel-component-law.js",
+        "mcel-state-law.js",
+        "mcel-data-law.js",
+        "mcel-form-law.js",
+        "mcel-action-law.js",
+        "mcel-render-law.js",
+        "mcel-a11y-law.js",
+        "mcel-performance-law.js",
+        "mcel-platform-spine.js",
+        "mcel-workbench.js",
+        "mcel-browser-runner.js",
+    ]
+    for name in new_modules:
+        module_text = (WEB_APP / "scripts" / name).read_text(encoding="utf-8")
+        assert "<!-- @include applications/scripts/" + name + " -->" in html
+        assert "var McelLab" in module_text
+        assert "buildSubsumptionPlan" in module_text or "buildSubsumptionLattice" in module_text or "observeAndProve" in module_text or "buildWorkbenchPlan" in module_text
+
+    assert html.index("mcel-layout-law.js") < html.index("mcel-component-law.js") < html.index("mcel-platform-spine.js") < html.index("mcel-workbench.js") < html.index("mcel-browser-runner.js") < html.index("mcel-command-surface.js")
+    assert 'contractVersion = "mcel-lab.v0.10-platform-spine"' in contract
+    assert 'componentName: "data-mc-component"' in contract
+    assert 'stateOwner: "data-mc-state-owner"' in contract
+    assert 'query: "data-mc-query"' in contract
+    assert 'submit: "data-mc-submit"' in contract
+    assert 'renderMode: "data-mc-render"' in contract
+    assert 'a11yPolicy: "data-mc-a11y-policy"' in contract
+    assert 'performanceBudget: "data-mc-performance-budget"' in contract
+    assert "platformPolicies" in contract
+    assert "data-mc-component-law" in contract
+    assert "platform source policies survive while runtime proof facts are stripped" in engine
+    assert "componentName" in editor and "renderMode" in editor and "performanceBudget" in editor
+    assert "subsumption: [\"subsumption\", \"obsolete\", \"replace-frameworks\", \"rust-java\", \"platform-spine\"]" in command_surface
+    assert "tanstack" in command_surface and "react" in command_surface
+    assert "platformSpine" in ops_runner and "subsumptionLattice" in ops_runner
+    assert "Platform Spine" in supervisor and "Browser Semantic Proof" in supervisor
+    assert "component-subsumption" in kernel
+    assert "state-subsumption" in kernel
+    assert "data-subsumption" in kernel
+    assert "form-subsumption" in kernel
+    assert "render-subsumption" in kernel
+    assert "platform-spine" in kernel
+    assert "workbench-subsumption" in kernel
+    assert "browser-runner" in kernel
+    assert "buildSubsumptionLattice" in core and "buildWorkbenchPlan" in core and "runBrowserProof" in core
+    assert "Semantic Component" in app and "Lawful Form" in app and "Semantic Route" in app
+    assert "Build Subsumption Lattice" in app and "Build Workbench Plan" in app and "Run Browser Semantic Proof" in app
+    assert "mcelBuildSubsumption" in bindings and "mcelSubsumptionReport" in bindings
+    assert "buildMcelSubsumptionLattice" in ui
+    assert "renderMcelSubsumptionLattice" in ui
+    assert "runMcelBrowserSemanticProof" in ui

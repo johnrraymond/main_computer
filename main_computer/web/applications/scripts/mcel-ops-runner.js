@@ -4,6 +4,8 @@
       const editor = typeof McelLabEditor !== "undefined" ? McelLabEditor : window.McelLabEditor;
       const styleLaw = typeof McelLabStyleLaw !== "undefined" ? McelLabStyleLaw : window.McelLabStyleLaw;
       const layoutLaw = typeof McelLabLayoutLaw !== "undefined" ? McelLabLayoutLaw : window.McelLabLayoutLaw;
+      const platformSpine = typeof McelLabPlatformSpine !== "undefined" ? McelLabPlatformSpine : window.McelLabPlatformSpine;
+      const browserRunner = typeof McelLabBrowserRunner !== "undefined" ? McelLabBrowserRunner : window.McelLabBrowserRunner;
       const scenarios = typeof McelLabScenarios !== "undefined" ? McelLabScenarios : window.McelLabScenarios;
       const graph = typeof McelLabGraph !== "undefined" ? McelLabGraph : window.McelLabGraph;
       function testHarness() {
@@ -170,10 +172,14 @@
         const matrixClean = Boolean(state.matrixReport && !state.matrixReport.failed);
         const acidClean = Boolean(state.acidReport && !state.acidReport.failed);
         const kernelClean = Boolean(state.kernelReport && state.kernelReport.status === "ready");
+        const platformClean = Boolean(state.platformReport && !state.platformReport.failed);
+        const browserProofClean = Boolean(state.browserProof && !state.browserProof.failed);
         const cards = [
           {key: "serializer", label: "Serializer", status: serializerClean ? "pass" : "pending", detail: serializerClean ? "clean source output" : "needs serialization proof"},
           {key: "css-law", label: "CSS Law", status: cssLawClean ? "pass" : "pending", detail: cssLawClean ? `${state.cssLawReport?.elementCount || 0} runtime element(s)` : "runtime tokens pending"},
           {key: "layout-law", label: "Layout / Geometry Law", status: layoutLawClean ? "pass" : (state.layoutLawReport ? "fail" : "pending"), detail: state.layoutLawReport ? `${state.layoutLawReport.passed || 0}/${state.layoutLawReport.elementCount || 0} element(s)` : "overflow proof pending"},
+          {key: "platform-spine", label: "Platform Spine", status: platformClean ? "pass" : (state.platformReport ? "fail" : "pending"), detail: state.platformReport ? `${state.platformReport.moduleCount || 0} subsystem law(s)` : "component/state/data/form/action/render/a11y/perf proof pending"},
+          {key: "browser-proof", label: "Browser Semantic Proof", status: browserProofClean ? "pass" : (state.browserProof ? "fail" : "pending"), detail: state.browserProof ? `live geometry ${state.browserProof.liveGeometry}` : "live browser oracle pending"},
           {key: "a11y", label: "A11y", status: a11yValid ? "pass" : "pending", detail: a11yValid ? "labels and decoration valid" : "a11y report pending"},
           {key: "audit", label: "Operational Audit", status: auditClean ? "pass" : (state.auditReport ? "fail" : "pending"), detail: auditClean ? "provenance clean" : "run audit"},
           {key: "contract-suite", label: "Contract Suite", status: testsClean ? "pass" : (state.testReport ? "fail" : "pending"), detail: state.testReport ? `${state.testReport.passed}/${state.testReport.passed + state.testReport.failed} tests` : "not run"},
@@ -204,8 +210,11 @@
           root = runtimeRoot(compiled.runtimeHtml);
           styleLaw.applyRuntimeLaw(root, {theme: state.theme || "theme-machine", reason: "evidence-packet"});
           layoutLaw?.applyRuntimeLaw?.(root, {reason: "evidence-packet"});
+          platformSpine?.applyPlatformLaws?.(root, {reason: "evidence-packet"});
         }
         const layoutReport = layoutLaw?.reportFor ? layoutLaw.reportFor(root, {reason: "evidence-packet"}) : (state.layoutLawReport || {layoutLawClean: true, warnings: []});
+        const platformReport = platformSpine?.provePlatform ? platformSpine.provePlatform(root, {reason: "evidence-packet"}) : (state.platformReport || null);
+        const browserProof = browserRunner?.observeAndProve ? browserRunner.observeAndProve(root, {reason: "evidence-packet"}) : (state.browserProof || null);
         const serialized = engine.serializeRuntimeRoot(root, {reason: "evidence-packet"});
         const a11y = engine.computeA11y(root);
         const audit = graph.audit(source, root, {reason: "evidence-packet"});
@@ -218,6 +227,8 @@
           serializerReport: serialized.report,
           cssLawReport: cssLaw,
           layoutLawReport: layoutReport,
+          platformReport,
+          browserProof,
           a11yReport: a11y,
           auditReport: audit,
           testReport: tests,
@@ -249,6 +260,9 @@
           a11y,
           cssLaw,
           layoutLaw: layoutReport,
+          platformSpine: platformReport,
+          browserProof,
+          subsumptionLattice: platformSpine?.buildSubsumptionLattice ? platformSpine.buildSubsumptionLattice() : null,
           graph: compactGraph,
           audit: {
             passed: !audit.failed,
@@ -278,6 +292,8 @@
             "serializer strips runtime-owned artifacts",
             "CSS law publishes runtime tokens without mutating source",
             "layout/overflow law proves scrollbar ownership without mutating source",
+            "platform spine registers component/state/data/form/action/render/a11y/performance laws to obsolete legacy libraries",
+            "browser semantic runner treats Playwright-like automation as machine-state input while MCEL laws own truth",
             "operational audit checks graph and provenance contracts",
             "scenario matrix exercises every built-in scenario across every theme",
             "acid tests inject hostile runtime/editor/command/schema pressure without source corruption"
@@ -286,6 +302,8 @@
             ...(serialized.report?.warnings || []),
             ...(a11y.warnings || []),
             ...(layoutReport.warnings || []),
+            ...(platformReport?.warnings || []),
+            ...(browserProof?.browserReport?.warnings || []),
             ...(audit.issues || []),
             ...(!matrix ? ["scenario matrix has not been run for this evidence packet"] : []),
             ...(!state.acidReport ? ["acid tests have not been run for this evidence packet"] : [])

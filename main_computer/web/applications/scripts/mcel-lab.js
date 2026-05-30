@@ -9,6 +9,17 @@
         window.McelLabScenarios &&
         window.McelLabBrowserObserver &&
         window.McelLabLayoutLaw &&
+        window.McelLabComponentLaw &&
+        window.McelLabStateLaw &&
+        window.McelLabDataLaw &&
+        window.McelLabFormLaw &&
+        window.McelLabActionLaw &&
+        window.McelLabRenderLaw &&
+        window.McelLabA11yLaw &&
+        window.McelLabPerformanceLaw &&
+        window.McelLabPlatformSpine &&
+        window.McelLabWorkbench &&
+        window.McelLabBrowserRunner &&
         window.McelLabAcidTests &&
         window.McelLabSupervisor &&
         window.McelLabKernel &&
@@ -53,6 +64,9 @@
       mcelRunAutopilot?.addEventListener("click", () => runMcelAutopilotProof("manual-autopilot"));
       mcelRunKernel?.addEventListener("click", () => runMcelKernelAudit("manual-kernel-audit"));
       mcelBuildTraceability?.addEventListener("click", () => buildMcelTraceabilityMap("manual-traceability"));
+      mcelBuildSubsumption?.addEventListener("click", () => buildMcelSubsumptionLattice("manual-subsumption"));
+      mcelBuildWorkbench?.addEventListener("click", () => buildMcelWorkbenchPlan("manual-workbench"));
+      mcelRunBrowserProof?.addEventListener("click", () => runMcelBrowserSemanticProof("manual-browser-proof"));
       mcelApplyTraits?.addEventListener("click", applyMcelTraitsToSelectedSourceWidget);
       mcelLoadScenario?.addEventListener("click", loadSelectedMcelScenario);
       mcelScenarioSelect?.addEventListener("change", describeSelectedMcelScenario);
@@ -251,6 +265,9 @@
       renderMcelKernelAudit();
       renderMcelTraceabilityMap();
       renderMcelPriorArtReport();
+      renderMcelSubsumptionLattice();
+      renderMcelWorkbenchPlan();
+      renderMcelBrowserSemanticProof();
       renderMcelReadiness();
       renderMcelProjectReport();
       renderMcelCompilerLog();
@@ -405,6 +422,9 @@
       renderMcelKernelAudit();
       renderMcelTraceabilityMap();
       renderMcelPriorArtReport();
+      renderMcelSubsumptionLattice();
+      renderMcelWorkbenchPlan();
+      renderMcelBrowserSemanticProof();
       renderMcelReadiness();
       renderMcelCompilerLog();
       return report;
@@ -427,6 +447,59 @@
       renderMcelPriorArtReport();
       renderMcelCompilerLog();
       return map;
+    }
+
+    function buildMcelSubsumptionLattice(reason = "manual-subsumption") {
+      const lattice = window.MCEL?.buildSubsumptionLattice ? MCEL.buildSubsumptionLattice() : McelLabPlatformSpine?.buildSubsumptionLattice?.();
+      mcelLabState.lastSubsumptionLattice = lattice;
+      mcelLabState.compileEvents = [
+        ...mcelLabState.compileEvents,
+        {
+          level: lattice ? "success" : "warning",
+          module: "platform-spine",
+          code: lattice ? "MCEL_SUBSUMPTION_LATTICE_READY" : "MCEL_SUBSUMPTION_LATTICE_UNAVAILABLE",
+          message: lattice ? `Subsumption lattice maps ${lattice.obsoleteLibraryMap?.length || 0} obsolete library family claim(s).` : "Subsumption lattice is unavailable."
+        }
+      ].slice(-64);
+      renderMcelSubsumptionLattice();
+      renderMcelCompilerLog();
+      return lattice;
+    }
+
+    function buildMcelWorkbenchPlan(reason = "manual-workbench") {
+      const plan = window.MCEL?.buildWorkbenchPlan ? MCEL.buildWorkbenchPlan() : McelLabWorkbench?.buildWorkbenchPlan?.();
+      mcelLabState.lastWorkbenchPlan = plan;
+      mcelLabState.compileEvents = [
+        ...mcelLabState.compileEvents,
+        {
+          level: plan ? "success" : "warning",
+          module: "workbench",
+          code: plan ? "MCEL_WORKBENCH_PLAN_READY" : "MCEL_WORKBENCH_PLAN_UNAVAILABLE",
+          message: plan ? `Workbench plan tracks ${plan.requiredBlueprints?.length || 0} proof blueprint(s).` : "Workbench plan is unavailable."
+        }
+      ].slice(-64);
+      renderMcelWorkbenchPlan();
+      renderMcelCompilerLog();
+      return plan;
+    }
+
+    function runMcelBrowserSemanticProof(reason = "manual-browser-proof") {
+      const report = window.MCEL?.runBrowserProof
+        ? MCEL.runBrowserProof(mcelRuntimePreview, {reason})
+        : McelLabBrowserRunner?.observeAndProve?.(mcelRuntimePreview, {reason});
+      mcelLabState.lastBrowserProof = report;
+      mcelLabState.compileEvents = [
+        ...mcelLabState.compileEvents,
+        {
+          level: report && !report.failed ? "success" : "warning",
+          module: "browser-runner",
+          code: report && !report.failed ? "MCEL_BROWSER_SEMANTIC_PROOF_READY" : "MCEL_BROWSER_SEMANTIC_PROOF_BLOCKED",
+          message: report ? `Browser semantic proof observed ${report.elementCount || 0} element(s); liveGeometry=${report.liveGeometry}.` : "Browser semantic proof is unavailable."
+        }
+      ].slice(-64);
+      renderMcelBrowserSemanticProof();
+      renderMcelCompilerLog();
+      return report;
     }
 
     function runMcelScenarioMatrix() {
@@ -583,6 +656,9 @@
       renderMcelKernelAudit();
       renderMcelTraceabilityMap();
       renderMcelPriorArtReport();
+      renderMcelSubsumptionLattice();
+      renderMcelWorkbenchPlan();
+      renderMcelBrowserSemanticProof();
       renderMcelReadiness();
       renderMcelCompilerLog();
       return report;
@@ -615,6 +691,9 @@
       });
       if (typeof McelLabLayoutLaw !== "undefined") {
         mcelLabState.lastLayoutLawReport = McelLabLayoutLaw.applyRuntimeLaw(mcelRuntimePreview, {reason});
+      }
+      if (typeof McelLabPlatformSpine !== "undefined") {
+        McelLabPlatformSpine.applyPlatformLaws(mcelRuntimePreview, {reason});
       }
     }
 
@@ -900,6 +979,8 @@
         serializerReport: mcelLabState.lastSerializerReport,
         cssLawReport: mcelLabState.lastCssLawReport,
         layoutLawReport: mcelLabState.lastLayoutLawReport,
+        platformReport: mcelRuntimePreview && typeof McelLabPlatformSpine !== "undefined" ? McelLabPlatformSpine.provePlatform(mcelRuntimePreview, {reason: "readiness"}) : null,
+        browserProof: mcelLabState.lastBrowserProof,
         a11yReport: mcelRuntimePreview ? McelLabEngine.computeA11y(mcelRuntimePreview) : null,
         auditReport: mcelLabState.lastAuditReport,
         testReport: mcelLabState.lastTestReport,
@@ -958,6 +1039,27 @@
       mcelPriorArtReport.textContent = typeof McelLabKernel !== "undefined"
         ? McelLabKernel.priorArtText()
         : "Prior art map is unavailable.";
+    }
+
+    function renderMcelSubsumptionLattice() {
+      if (!mcelSubsumptionReport) return;
+      const lattice = mcelLabState.lastSubsumptionLattice || (typeof McelLabPlatformSpine !== "undefined" ? McelLabPlatformSpine.buildSubsumptionLattice() : null);
+      mcelSubsumptionReport.textContent = lattice ? JSON.stringify(lattice, null, 2) : "Subsumption lattice is unavailable.";
+    }
+
+    function renderMcelWorkbenchPlan() {
+      if (!mcelWorkbenchReport) return;
+      const plan = mcelLabState.lastWorkbenchPlan || (typeof McelLabWorkbench !== "undefined" ? McelLabWorkbench.buildWorkbenchPlan() : null);
+      mcelWorkbenchReport.textContent = plan ? JSON.stringify(plan, null, 2) : "Workbench plan is unavailable.";
+    }
+
+    function renderMcelBrowserSemanticProof() {
+      if (!mcelBrowserProofReport) return;
+      if (!mcelLabState.lastBrowserProof) {
+        mcelBrowserProofReport.textContent = "Browser semantic proof has not run yet.";
+        return;
+      }
+      mcelBrowserProofReport.textContent = JSON.stringify(mcelLabState.lastBrowserProof, null, 2);
     }
 
     function renderMcelReadiness() {

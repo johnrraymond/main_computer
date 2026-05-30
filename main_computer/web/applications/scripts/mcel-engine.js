@@ -63,6 +63,11 @@
         return value;
       }
 
+      function validateOptionalAttribute(element, events, attribute, allowed, fallback) {
+        if (!element.hasAttribute(attribute)) return "";
+        return validateAttribute(element, events, attribute, allowed, fallback);
+      }
+
       function validateElement(element, elementSchema, events) {
         validateAttribute(element, events, attributes.kind, elementSchema.allowedKinds, defaults.kind);
         validateAttribute(element, events, attributes.flow, elementSchema.allowedFlows, defaults.flow);
@@ -72,6 +77,23 @@
         validateAttribute(element, events, attributes.sizePolicy, elementSchema.allowedSizePolicies || ["adaptive"], defaults.sizePolicy);
         validateAttribute(element, events, attributes.overflowPolicy, elementSchema.allowedOverflowPolicies || ["contain"], defaults.overflowPolicy);
         validateAttribute(element, events, attributes.scrollPolicy, elementSchema.allowedScrollPolicies || ["auto"], defaults.scrollPolicy);
+        validateOptionalAttribute(element, events, attributes.componentKind, elementSchema.allowedComponentKinds || ["component"], "component");
+        validateOptionalAttribute(element, events, attributes.stateOwner, elementSchema.allowedStateOwners || ["none"], "none");
+        validateOptionalAttribute(element, events, attributes.statePolicy, elementSchema.allowedStatePolicies || ["local"], "local");
+        validateOptionalAttribute(element, events, attributes.cachePolicy, elementSchema.allowedCachePolicies || ["none"], "none");
+        validateOptionalAttribute(element, events, attributes.syncPolicy, elementSchema.allowedSyncPolicies || ["none"], "none");
+        validateOptionalAttribute(element, events, attributes.validation, elementSchema.allowedValidationPolicies || ["none"], "none");
+        validateOptionalAttribute(element, events, attributes.dirtyPolicy, elementSchema.allowedDirtyPolicies || ["none"], "none");
+        validateOptionalAttribute(element, events, attributes.errorPolicy, elementSchema.allowedErrorPolicies || ["inline"], "inline");
+        validateOptionalAttribute(element, events, attributes.swapPolicy, elementSchema.allowedSwapPolicies || ["none"], "none");
+        validateOptionalAttribute(element, events, attributes.eventPolicy, elementSchema.allowedEventPolicies || ["none"], "none");
+        validateOptionalAttribute(element, events, attributes.renderMode, elementSchema.allowedRenderModes || ["client"], "client");
+        validateOptionalAttribute(element, events, attributes.hydration, elementSchema.allowedHydrationPolicies || ["none"], "none");
+        validateOptionalAttribute(element, events, attributes.islandPolicy, elementSchema.allowedIslandPolicies || ["none"], "none");
+        validateOptionalAttribute(element, events, attributes.focusPolicy, elementSchema.allowedFocusPolicies || ["auto"], "auto");
+        validateOptionalAttribute(element, events, attributes.a11yPolicy, elementSchema.allowedA11yPolicies || ["auto"], "auto");
+        validateOptionalAttribute(element, events, attributes.performanceBudget, elementSchema.allowedPerformanceBudgets || ["none"], "none");
+        validateOptionalAttribute(element, events, attributes.securityPolicy, elementSchema.allowedSecurityPolicies || ["default"], "default");
       }
 
       function computedDensity(element) {
@@ -192,7 +214,7 @@
           "info",
           "runtime-builder",
           "MCEL_ELEMENT_ENHANCED",
-          `${type} enhanced as ${element.getAttribute(attributes.kind)}/${element.getAttribute(attributes.flow)}/${element.getAttribute(attributes.state)} with overflow=${element.getAttribute(attributes.overflowPolicy)} scroll=${element.getAttribute(attributes.scrollPolicy)}.`
+          `${type} enhanced as ${element.getAttribute(attributes.kind)}/${element.getAttribute(attributes.flow)}/${element.getAttribute(attributes.state)} with overflow=${element.getAttribute(attributes.overflowPolicy)} scroll=${element.getAttribute(attributes.scrollPolicy)} render=${element.getAttribute(attributes.renderMode) || "unset"} component=${element.getAttribute(attributes.componentName) || "anonymous"}.`
         );
       }
 
@@ -308,6 +330,14 @@
           }
           const scrollPolicy = element.getAttribute(attributes.scrollPolicy) || defaults.scrollPolicy;
           const overflowPolicy = element.getAttribute(attributes.overflowPolicy) || defaults.overflowPolicy;
+          const a11yPolicy = element.getAttribute(attributes.a11yPolicy) || "auto";
+          const focusPolicy = element.getAttribute(attributes.focusPolicy) || "auto";
+          if (a11yPolicy === "strict" && !heading && !element.getAttribute("aria-label")) {
+            report.warnings.push(`${element.getAttribute(attributes.type) || "element"} strict a11y policy requires a heading or aria-label.`);
+          }
+          if (focusPolicy === "trap" && !element.hasAttribute("tabindex")) {
+            report.focusWarnings.push(`${element.getAttribute(attributes.type) || "element"} traps focus but has no tabindex boundary.`);
+          }
           if (["required", "child-only", "external", "viewport-only"].includes(scrollPolicy) || ["delegate", "paginate", "virtualize"].includes(overflowPolicy)) {
             const label = heading?.textContent?.trim() || element.getAttribute("aria-label") || element.id || "";
             report.scrollRegions.push({
@@ -363,6 +393,26 @@
           scrollOwner: element.getAttribute(attributes.scrollOwner) || "",
           layoutPressure: element.getAttribute(attributes.layoutPressure) || "",
           geometryProof: element.getAttribute(attributes.geometryProof) || "",
+          componentName: element.getAttribute(attributes.componentName) || "",
+          componentKind: element.getAttribute(attributes.componentKind) || "",
+          stateOwner: element.getAttribute(attributes.stateOwner) || "",
+          stateScope: element.getAttribute(attributes.stateScope) || "",
+          statePolicy: element.getAttribute(attributes.statePolicy) || "",
+          query: element.getAttribute(attributes.query) || "",
+          cachePolicy: element.getAttribute(attributes.cachePolicy) || "",
+          syncPolicy: element.getAttribute(attributes.syncPolicy) || "",
+          submit: element.getAttribute(attributes.submit) || "",
+          validation: element.getAttribute(attributes.validation) || "",
+          action: element.getAttribute(attributes.action) || "",
+          target: element.getAttribute(attributes.target) || "",
+          renderMode: element.getAttribute(attributes.renderMode) || "",
+          hydration: element.getAttribute(attributes.hydration) || "",
+          a11yPolicy: element.getAttribute(attributes.a11yPolicy) || "",
+          focusPolicy: element.getAttribute(attributes.focusPolicy) || "",
+          performanceBudget: element.getAttribute(attributes.performanceBudget) || "",
+          securityPolicy: element.getAttribute(attributes.securityPolicy) || "",
+          proofTier: element.getAttribute(attributes.proofTier) || "",
+          semanticRisk: element.getAttribute(attributes.semanticRisk) || "",
           relation: element.getAttribute(attributes.relation) || "",
           relationCount: Number(element.getAttribute(attributes.relationCount) || "0"),
           artifactOwner: element.getAttribute(attributes.artifactOwner) || "",
@@ -470,6 +520,34 @@
           return {
             passed: first.getAttribute(attributes.relation) === "resolved" && first.getAttribute(attributes.relationCount) === "1",
             details: `relation=${first.getAttribute(attributes.relation)}`
+          };
+        });
+
+        test("platform source policies survive while runtime proof facts are stripped", () => {
+          const source = `<section data-mc="panel" data-mc-component="ProofCard" data-mc-component-kind="component" data-mc-state-owner="view" data-mc-state-policy="derived" data-mc-query="proof.cards" data-mc-cache-policy="stale-while-revalidate" data-mc-submit="proof.save" data-mc-validation="schema" data-mc-action="save-proof" data-mc-render="island" data-mc-hydration="visible" data-mc-a11y-policy="strict" data-mc-performance-budget="small"><h2>Platform</h2></section>`;
+          const compiled = compileSource(source, {reason: "platform-serializer-test"});
+          const root = makeRuntimeRoot(compiled.runtimeHtml);
+          const first = root.querySelector(`[${attributes.type}]`);
+          first.setAttribute(attributes.componentLaw, "true");
+          first.setAttribute(attributes.stateLaw, "owned");
+          first.setAttribute(attributes.dataLaw, "query");
+          first.setAttribute(attributes.formLaw, "valid");
+          first.setAttribute(attributes.actionLaw, "safe");
+          first.setAttribute(attributes.renderLaw, "island");
+          first.setAttribute(attributes.a11yLaw, "strict");
+          first.setAttribute(attributes.performanceLaw, "small");
+          first.setAttribute(attributes.proofTier, "platform-spine");
+          first.setAttribute(attributes.semanticRisk, "low");
+          const serialized = serializeRuntimeRoot(root, {reason: "platform-serializer-test"});
+          return {
+            passed: serialized.report.serializerClean &&
+              serialized.serialized.includes(attributes.componentName) &&
+              serialized.serialized.includes(attributes.renderMode) &&
+              serialized.serialized.includes(attributes.a11yPolicy) &&
+              !serialized.serialized.includes(attributes.componentLaw) &&
+              !serialized.serialized.includes(attributes.performanceLaw) &&
+              !serialized.serialized.includes(attributes.semanticRisk),
+            details: `serialized=${serialized.serialized}`
           };
         });
 
