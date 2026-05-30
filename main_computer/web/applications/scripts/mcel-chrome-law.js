@@ -18,6 +18,8 @@
       const CHROME_GENERATED_ATTR = "data-mcel-chrome-generated";
       const CHROME_PART_ATTR = "data-mcel-chrome-part";
       const CHROME_ID_ATTR = "data-mcel-chrome-id";
+      const CHROME_FRAME_ATTR = "data-mcel-chrome-frame";
+      const CHROME_REGION_ROLE_ATTR = "data-mcel-chrome-region-role";
       const FIT_REGION_ATTR = "data-mcel-fit-region";
       const FIT_POLICY_ATTR = "data-mcel-fit-policy";
       const FIT_REMEDIATION_ATTR = "data-mcel-fit-remediation";
@@ -147,8 +149,8 @@
           fitContract: chromeFitContractDefinition(),
           compositionContract: chromeCompositionContractDefinition(
             [
-              ".mcel-chrome-cluster-grid > .mc",
-              "[data-mcel-fit-region=\"grid\"] > .mc"
+              ".mcel-chrome-cluster-grid > [data-mcel-chrome-frame]",
+              "[data-mcel-fit-region=\"grid-body\"] > .mc"
             ],
             [
               "shape-interior-escape"
@@ -193,9 +195,9 @@
           fitContract: chromeFitContractDefinition(),
           compositionContract: chromeCompositionContractDefinition(
             [
-              ".mcel-chrome-spotlight-primary > .mc",
-              ".mcel-chrome-spotlight-support > .mc",
-              "[data-mcel-fit-region=\"narrow\"] > .mc"
+              ".mcel-chrome-spotlight-primary > [data-mcel-chrome-frame]",
+              ".mcel-chrome-spotlight-support > [data-mcel-chrome-frame]",
+              "[data-mcel-fit-region=\"spotlight-body\"] > .mc"
             ],
             [
               "primary-control-width-collapsed-relative-to-input",
@@ -242,8 +244,8 @@
           fitContract: chromeFitContractDefinition(),
           compositionContract: chromeCompositionContractDefinition(
             [
-              ".mcel-chrome-journey-step > .mc",
-              "[data-mcel-fit-region=\"sequence\"] > .mcel-chrome-journey-step"
+              ".mcel-chrome-journey-step > [data-mcel-chrome-frame]",
+              "[data-mcel-fit-region=\"sequence-content\"] > .mc"
             ],
             [
               "shape-interior-escape"
@@ -288,8 +290,8 @@
           fitContract: chromeFitContractDefinition(),
           compositionContract: chromeCompositionContractDefinition(
             [
-              ".mcel-chrome-compact-panel > .mc",
-              "[data-mcel-fit-region=\"disclosure\"] > details"
+              ".mcel-chrome-compact-panel > [data-mcel-chrome-region-role=\"body\"]",
+              "[data-mcel-fit-region=\"disclosure-body\"] > .mc"
             ],
             [
               "primary-control-width-collapsed-relative-to-input",
@@ -430,18 +432,25 @@
           "cluster-shell": {region: "shell", policy: "chrome-remediates"},
           "cluster-intro": {region: "wide", policy: "contain"},
           "cluster-grid": {region: "grid", policy: "contain"},
+          "cluster-item": {region: "grid-item", policy: "contain"},
+          "cluster-body": {region: "grid-body", policy: "contain"},
           "spotlight-shell": {region: "shell", policy: "chrome-remediates"},
           "spotlight-primary": {region: "wide", policy: "contain"},
           "spotlight-support": {region: "narrow", policy: "contain"},
+          "spotlight-item": {region: "spotlight-item", policy: "contain"},
+          "spotlight-body": {region: "spotlight-body", policy: "contain"},
           "journey-shell": {region: "shell", policy: "chrome-remediates"},
           "journey-intro": {region: "wide", policy: "contain"},
           "journey-sequence": {region: "sequence", policy: "contain"},
           "journey-step": {region: "sequence-item", policy: "contain"},
+          "journey-body": {region: "sequence-body", policy: "contain"},
+          "journey-content": {region: "sequence-content", policy: "contain"},
           "compact-shell": {region: "shell", policy: "chrome-remediates"},
           "compact-intro": {region: "wide", policy: "contain"},
           "compact-panels": {region: "disclosure", policy: "contain"},
           "compact-panel": {region: "disclosure-item", policy: "contain"},
-          "compact-summary": {region: "disclosure-summary", policy: "contain"}
+          "compact-summary": {region: "disclosure-summary", policy: "contain"},
+          "compact-body": {region: "disclosure-body", policy: "contain"}
         };
         return map[part] || {region: "flow", policy: "contain"};
       }
@@ -485,10 +494,42 @@
         return element;
       }
 
+      function markChromeFrame(element, frame = "object") {
+        element.setAttribute(CHROME_FRAME_ATTR, frame);
+        return element;
+      }
+
+      function markChromeRegion(element, role) {
+        element.setAttribute(CHROME_REGION_ROLE_ATTR, role);
+        return element;
+      }
+
+      function generatedRegion(part, chrome, role, tagName = "div") {
+        return markChromeRegion(generatedPart(part, chrome, tagName), role);
+      }
+
+      function generatedObjectFrame(part, chrome, children, options = {}) {
+        const frame = markChromeFrame(generatedPart(part, chrome, options.tagName || "div"), options.frame || "object");
+        const body = generatedRegion(options.bodyPart || `${part}-body`, chrome, "body");
+        children.filter(Boolean).forEach((child) => body.appendChild(child));
+        frame.appendChild(body);
+        return frame;
+      }
+
       function appendBucket(parent, part, children, chrome) {
         if (!children.length) return null;
         const bucket = generatedPart(part, chrome);
         children.forEach((child) => bucket.appendChild(child));
+        parent.appendChild(bucket);
+        return bucket;
+      }
+
+      function appendFramedBucket(parent, bucketPart, framePart, children, chrome, options = {}) {
+        if (!children.length) return null;
+        const bucket = generatedPart(bucketPart, chrome);
+        children.forEach((child) => {
+          bucket.appendChild(generatedObjectFrame(framePart, chrome, [child], options));
+        });
         parent.appendChild(bucket);
         return bucket;
       }
@@ -690,7 +731,7 @@
         const shell = generatedPart("cluster-shell", chrome);
         resetRootForChrome(root, generatedRuntimeParts, shell, chrome);
         appendBucket(shell, "cluster-intro", intro, chrome);
-        appendBucket(shell, "cluster-grid", items, chrome);
+        appendFramedBucket(shell, "cluster-grid", "cluster-item", items, chrome, {bodyPart: "cluster-body"});
 
         report.changed = true;
         report.generatedContainers = countGenerated(shell);
@@ -719,8 +760,8 @@
 
         const shell = generatedPart("spotlight-shell", chrome);
         resetRootForChrome(root, generatedRuntimeParts, shell, chrome);
-        appendBucket(shell, "spotlight-primary", [primary], chrome);
-        appendBucket(shell, "spotlight-support", support, chrome);
+        appendFramedBucket(shell, "spotlight-primary", "spotlight-item", [primary], chrome, {bodyPart: "spotlight-body", frame: "primary"});
+        appendFramedBucket(shell, "spotlight-support", "spotlight-item", support, chrome, {bodyPart: "spotlight-body", frame: "support"});
 
         report.changed = true;
         report.generatedContainers = countGenerated(shell);
@@ -751,7 +792,7 @@
         items.forEach((child, index) => {
           const step = generatedPart("journey-step", chrome);
           step.setAttribute("data-mcel-step", String(index + 1));
-          step.appendChild(child);
+          step.appendChild(generatedObjectFrame("journey-body", chrome, [child], {bodyPart: "journey-content", frame: "sequence-body"}));
           sequence.appendChild(step);
         });
         shell.appendChild(sequence);
@@ -783,11 +824,13 @@
         resetRootForChrome(root, generatedRuntimeParts, shell, chrome);
         appendBucket(shell, "compact-intro", intro, chrome);
         items.forEach((child, index) => {
-          const panel = generatedPart("compact-panel", chrome, "details");
-          const summary = generatedPart("compact-summary", chrome, "summary");
+          const panel = markChromeFrame(generatedPart("compact-panel", chrome, "details"), "disclosure");
+          const summary = generatedRegion("compact-summary", chrome, "header", "summary");
+          const body = generatedRegion("compact-body", chrome, "body");
           summary.textContent = labelForChild(child, `Panel ${index + 1}`);
+          body.appendChild(child);
           panel.appendChild(summary);
-          panel.appendChild(child);
+          panel.appendChild(body);
           if (index === 0) panel.open = true;
           panels.appendChild(panel);
         });
@@ -815,6 +858,8 @@
         CHROME_GENERATED_ATTR,
         CHROME_PART_ATTR,
         CHROME_ID_ATTR,
+        CHROME_FRAME_ATTR,
+        CHROME_REGION_ROLE_ATTR,
         FIT_REGION_ATTR,
         FIT_POLICY_ATTR,
         FIT_REMEDIATION_ATTR,
