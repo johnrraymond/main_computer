@@ -13,6 +13,9 @@
       ollamaModelsStatus: "not checked",
       ollamaModelsUpdatedAt: "",
       ollamaModelsLastFetchMs: 0,
+      localCapacityByThread: {},
+      localCapacityStatus: "not checked",
+      localCapacityUpdatedAt: "",
       refreshTimer: null,
       refreshInFlight: false
     };
@@ -55,6 +58,21 @@
 
     function chatConsoleThinkingRunId(cell) {
       return String(cell?.run_id || chatConsoleActiveAiRequests.get(cell?.id)?.run_id || "");
+    }
+
+    function chatConsoleThinkingThreadId(cell) {
+      return String(chatConsoleActiveAiRequests.get(cell?.id)?.thread_id || chatConsoleState?.id || "");
+    }
+
+    function chatConsoleThinkingThreadIds() {
+      const ids = new Set();
+      (chatConsoleState?.cells || [])
+        .filter((cell) => chatConsoleShouldShowThinking(cell))
+        .forEach((cell) => {
+          const threadId = chatConsoleThinkingThreadId(cell);
+          if (threadId) ids.add(threadId);
+        });
+      return [...ids];
     }
 
     function compactChatConsoleThinkingText(value, limit = 360) {
@@ -196,6 +214,44 @@
       return article;
     }
 
+    function renderChatConsoleLocalCapacityThinkingCard(cell) {
+      const threadId = chatConsoleThinkingThreadId(cell);
+      const snapshot = threadId ? chatConsoleThinkingState.localCapacityByThread?.[threadId] : null;
+      if (!threadId) {
+        return renderChatConsoleThinkingCard({
+          category: "capacity",
+          title: "Local AI capacity",
+          message: "Local capacity was not checked because the active chat thread id is not available yet.",
+          meta: "capacity skipped"
+        });
+      }
+      if (!snapshot) {
+        return renderChatConsoleThinkingCard({
+          category: "capacity",
+          title: "Local AI capacity",
+          message: "Checking whether local AI is already busy for this request.",
+          meta: chatConsoleThinkingState.localCapacityStatus || "not checked"
+        });
+      }
+      const card = Array.isArray(snapshot.cards)
+        ? snapshot.cards.find((item) => item && item.key === "local_capacity") || snapshot.cards[0]
+        : null;
+      const reason = String(snapshot.reason_code || card?.details?.reason_code || "");
+      const activeCount = Number(snapshot.active_run_count || card?.details?.active_run_count || 0);
+      const maxConcurrency = Number(snapshot.max_local_concurrency || card?.details?.max_local_concurrency || 1);
+      const updated = snapshot.updated_at ? new Date(snapshot.updated_at).toLocaleTimeString() : (chatConsoleThinkingState.localCapacityUpdatedAt ? new Date(chatConsoleThinkingState.localCapacityUpdatedAt).toLocaleTimeString() : "");
+      return renderChatConsoleThinkingCard({
+        category: "capacity",
+        title: card?.title || "Local AI capacity",
+        message: card?.message || snapshot.user_message || "Local AI capacity state is available.",
+        meta: [
+          reason,
+          `${activeCount} active / ${maxConcurrency} local slot${maxConcurrency === 1 ? "" : "s"}`,
+          updated ? `updated ${updated}` : ""
+        ].filter(Boolean).join(" | ")
+      });
+    }
+
     function renderChatConsoleThinkingPanel(cell) {
       const frame = document.createElement("details");
       frame.className = "chat-thinking-frame";
@@ -216,6 +272,7 @@
         message: compactChatConsoleThinkingText(cell.source || "Waiting for the current node/leaf result.", 420),
         meta: cell.type || "cell"
       }));
+      grid.append(renderChatConsoleLocalCapacityThinkingCard(cell));
       if (!events.length) {
         grid.append(renderChatConsoleThinkingCard({
           category: "waiting",
@@ -281,6 +338,45 @@
             chatConsoleThinkingState.ollamaModelsStatus = "unavailable";
             chatConsoleThinkingState.ollamaModelsUpdatedAt = chatConsoleNow();
           }
+        }
+        const capacityThreadIds = chatConsoleThinkingThreadIds();
+        if (capacityThreadIds.length) {
+          const capacityResults = await Promise.allSettled(capacityThreadIds.map((threadId) => {
+            const params = new URLSearchParams({
+              thread_id: threadId,
+              max_local_concurrency: "1"
+            });
+            return fetch(`/api/applications/chat-console/ai/capacity?${params.toString()}`, {cache: "no-store"})
+              .then((response) => response.ok ? response.json() : Promise.reject(new Error(`capacity HTTP ${response.status}`)));
+          }));
+          capacityResults.forEach((result, index) => {
+            const threadId = capacityThreadIds[index];
+            if (result.status === "fulfilled") {
+              chatConsoleThinkingState.localCapacityByThread[threadId] = result.value;
+            } else {
+              chatConsoleThinkingState.localCapacityByThread[threadId] = {
+                ok: false,
+                scope: "local-ai",
+                available_now: false,
+                busy: null,
+                reason_code: "capacity_check_unavailable",
+                user_message: `Local AI capacity check is unavailable: ${result.reason?.message || result.reason || "request failed"}`,
+                thread_id: threadId,
+                active_run_count: 0,
+                max_local_concurrency: 1,
+                cards: [{
+                  key: "local_capacity",
+                  title: "Local AI capacity",
+                  status: "warning",
+                  message: "Local AI capacity check is unavailable right now.",
+                  details: {reason_code: "capacity_check_unavailable"}
+                }],
+                updated_at: chatConsoleNow()
+              };
+            }
+          });
+          chatConsoleThinkingState.localCapacityStatus = "loaded";
+          chatConsoleThinkingState.localCapacityUpdatedAt = chatConsoleNow();
         }
       } finally {
         chatConsoleThinkingState.refreshInFlight = false;

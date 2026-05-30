@@ -1040,6 +1040,120 @@ class ChatAISubprocessManager:
     def is_active(self, thread_id: str) -> bool:
         return self._active_for(thread_id) is not None
 
+    def _live_active_snapshots_locked(self) -> list[dict[str, Any]]:
+        """Return live AI subprocess snapshots and prune finished entries.
+
+        This is the first backend capacity primitive for remote-overflow routing:
+        callers can tell whether local AI is already busy without trying to start
+        another model run and catching a conflict.
+        """
+
+        now = time.monotonic()
+        snapshots: list[dict[str, Any]] = []
+        stale_thread_ids: list[str] = []
+        for thread_id, active in list(self._active_by_thread.items()):
+            if active.process.poll() is None:
+                snapshots.append(
+                    {
+                        "thread_id": active.thread_id,
+                        "run_id": active.run_id,
+                        "pid": active.process.pid,
+                        "log_file": str(active.log_file),
+                        "started_at_monotonic": active.started_at,
+                        "age_s": round(max(0.0, now - active.started_at), 3),
+                        "stop_requested": bool(active.stop_requested),
+                    }
+                )
+            else:
+                stale_thread_ids.append(thread_id)
+        for thread_id in stale_thread_ids:
+            self._active_by_thread.pop(thread_id, None)
+        snapshots.sort(key=lambda item: (str(item.get("thread_id") or ""), str(item.get("run_id") or "")))
+        return snapshots
+
+    def active_runs_snapshot(self) -> dict[str, Any]:
+        """Return live local AI/RAG subprocesses in a JSON-safe shape."""
+
+        with self._lock:
+            active_runs = self._live_active_snapshots_locked()
+            return {
+                "ok": True,
+                "scope": "local-ai",
+                "active_run_count": len(active_runs),
+                "active_thread_ids": [str(item.get("thread_id") or "") for item in active_runs],
+                "active_runs": active_runs,
+                "updated_at": utc_now(),
+            }
+
+    def local_ai_capacity_snapshot(
+        self,
+        *,
+        thread_id: str = "",
+        max_local_concurrency: int = 1,
+    ) -> dict[str, Any]:
+        """Describe whether local AI can accept another request now.
+
+        The shape intentionally mirrors the future remote-overflow card pipeline:
+        it returns a machine-readable reason code, user-visible message, and
+        diagnostic cards. Later credit/hub checks can append their own cards
+        without changing this local-capacity contract.
+        """
+
+        clean_thread_id = str(thread_id or "").strip()
+        try:
+            capacity_limit = int(max_local_concurrency)
+        except (TypeError, ValueError):
+            capacity_limit = 1
+        capacity_limit = max(1, capacity_limit)
+
+        with self._lock:
+            active_runs = self._live_active_snapshots_locked()
+
+        matching_thread_active = any(str(item.get("thread_id") or "") == clean_thread_id for item in active_runs) if clean_thread_id else False
+        active_count = len(active_runs)
+        if matching_thread_active:
+            busy = True
+            reason_code = "thread_busy"
+            message = f"Local AI is already running for chat thread {clean_thread_id}."
+        elif active_count >= capacity_limit:
+            busy = True
+            reason_code = "local_concurrency_exhausted"
+            message = f"Local AI capacity is busy: {active_count} active run(s) for a limit of {capacity_limit}."
+        else:
+            busy = False
+            reason_code = "local_ai_available"
+            message = "Local AI capacity is available now."
+
+        card_status = "blocked" if busy else "pass"
+        return {
+            "ok": True,
+            "scope": "local-ai",
+            "available_now": not busy,
+            "busy": busy,
+            "reason_code": reason_code,
+            "user_message": message,
+            "thread_id": clean_thread_id,
+            "active_run_count": active_count,
+            "max_local_concurrency": capacity_limit,
+            "active_thread_ids": [str(item.get("thread_id") or "") for item in active_runs],
+            "active_runs": active_runs,
+            "cards": [
+                {
+                    "key": "local_capacity",
+                    "title": "Local AI capacity",
+                    "status": card_status,
+                    "message": message,
+                    "details": {
+                        "thread_id": clean_thread_id,
+                        "active_run_count": active_count,
+                        "max_local_concurrency": capacity_limit,
+                        "reason_code": reason_code,
+                    },
+                }
+            ],
+            "updated_at": utc_now(),
+        }
+
     def stop(self, *, thread_id: str = "", run_id: str = "", reason: str = "ui-stop") -> dict[str, Any]:
         with self._lock:
             candidates = list(self._active_by_thread.items())
