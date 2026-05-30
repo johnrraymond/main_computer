@@ -1109,20 +1109,28 @@ class ChatAISubprocessManager:
         with self._lock:
             active_runs = self._live_active_snapshots_locked()
 
-        matching_thread_active = any(str(item.get("thread_id") or "") == clean_thread_id for item in active_runs) if clean_thread_id else False
+        matching_active_run = (
+            next((item for item in active_runs if str(item.get("thread_id") or "") == clean_thread_id), None)
+            if clean_thread_id
+            else None
+        )
+        matching_thread_active = matching_active_run is not None
         active_count = len(active_runs)
+        primary_active_run = matching_active_run or (active_runs[0] if active_runs else None)
+        active_run_id = str((primary_active_run or {}).get("run_id") or "")
+        active_thread_id = str((primary_active_run or {}).get("thread_id") or "")
         if matching_thread_active:
             busy = True
             reason_code = "thread_busy"
-            message = f"Local AI is already running for chat thread {clean_thread_id}."
+            message = "This chat is currently using the local AI slot."
         elif active_count >= capacity_limit:
             busy = True
             reason_code = "local_concurrency_exhausted"
-            message = f"Local AI capacity is busy: {active_count} active run(s) for a limit of {capacity_limit}."
+            message = "Local AI has no free slot right now; another chat is using the local AI slot."
         else:
             busy = False
             reason_code = "local_ai_available"
-            message = "Local AI capacity is available now."
+            message = "This chat can use local AI now."
 
         card_status = "blocked" if busy else "pass"
         return {
@@ -1144,7 +1152,9 @@ class ChatAISubprocessManager:
                     "status": card_status,
                     "message": message,
                     "details": {
-                        "thread_id": clean_thread_id,
+                        "checked_thread_id": clean_thread_id,
+                        "active_thread_id": active_thread_id,
+                        "active_run_id": active_run_id,
                         "active_run_count": active_count,
                         "max_local_concurrency": capacity_limit,
                         "reason_code": reason_code,

@@ -216,13 +216,14 @@
 
     function renderChatConsoleLocalCapacityThinkingCard(cell) {
       const threadId = chatConsoleThinkingThreadId(cell);
+      const runId = chatConsoleThinkingRunId(cell);
       const snapshot = threadId ? chatConsoleThinkingState.localCapacityByThread?.[threadId] : null;
       if (!threadId) {
         return renderChatConsoleThinkingCard({
           category: "capacity",
           title: "Local AI capacity",
           message: "Local capacity was not checked because the active chat thread id is not available yet.",
-          meta: "capacity skipped"
+          meta: runId ? `run ${runId} | capacity skipped` : "capacity skipped"
         });
       }
       if (!snapshot) {
@@ -230,22 +231,45 @@
           category: "capacity",
           title: "Local AI capacity",
           message: "Checking whether local AI is already busy for this request.",
-          meta: chatConsoleThinkingState.localCapacityStatus || "not checked"
+          meta: [
+            runId ? `run ${runId}` : "",
+            `thread ${threadId}`,
+            chatConsoleThinkingState.localCapacityStatus || "not checked"
+          ].filter(Boolean).join(" | ")
         });
       }
       const card = Array.isArray(snapshot.cards)
         ? snapshot.cards.find((item) => item && item.key === "local_capacity") || snapshot.cards[0]
         : null;
       const reason = String(snapshot.reason_code || card?.details?.reason_code || "");
+      const activeRuns = Array.isArray(snapshot.active_runs) ? snapshot.active_runs : [];
+      const matchingActiveRun = activeRuns.find((item) => String(item?.thread_id || "") === threadId)
+        || (runId ? activeRuns.find((item) => String(item?.run_id || "") === runId) : null)
+        || activeRuns[0]
+        || null;
+      const activeRunId = String(card?.details?.active_run_id || matchingActiveRun?.run_id || "");
+      const activeThreadId = String(card?.details?.active_thread_id || matchingActiveRun?.thread_id || "");
       const activeCount = Number(snapshot.active_run_count || card?.details?.active_run_count || 0);
       const maxConcurrency = Number(snapshot.max_local_concurrency || card?.details?.max_local_concurrency || 1);
       const updated = snapshot.updated_at ? new Date(snapshot.updated_at).toLocaleTimeString() : (chatConsoleThinkingState.localCapacityUpdatedAt ? new Date(chatConsoleThinkingState.localCapacityUpdatedAt).toLocaleTimeString() : "");
+      let message = card?.message || snapshot.user_message || "Local AI capacity state is available.";
+      if (reason === "thread_busy") {
+        message = "This chat is currently using the local AI slot. Run id and thread id are separate identifiers.";
+      } else if (reason === "local_concurrency_exhausted") {
+        message = "Local AI has no free slot right now; see the active run/thread ids below.";
+      } else if (reason === "local_ai_available") {
+        message = "This chat can use local AI now.";
+      }
       return renderChatConsoleThinkingCard({
         category: "capacity",
         title: card?.title || "Local AI capacity",
-        message: card?.message || snapshot.user_message || "Local AI capacity state is available.",
+        message,
         meta: [
           reason,
+          runId ? `run ${runId}` : "",
+          activeRunId && activeRunId !== runId ? `active run ${activeRunId}` : "",
+          `thread ${threadId}`,
+          activeThreadId && activeThreadId !== threadId ? `active thread ${activeThreadId}` : "",
           `${activeCount} active / ${maxConcurrency} local slot${maxConcurrency === 1 ? "" : "s"}`,
           updated ? `updated ${updated}` : ""
         ].filter(Boolean).join(" | ")
