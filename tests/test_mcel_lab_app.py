@@ -873,3 +873,53 @@ def test_mcel_lab_eleventh_slice_makes_real_ui_skeleton_visible_and_scroll_safe(
     assert "lastSiteSkeleton" in bindings
     assert "iframe" in app and "sandbox" in app
     assert "isolated from lab chrome" in app
+
+
+def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_only() -> None:
+    app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
+    chrome_law = (WEB_APP / "scripts" / "mcel-chrome-law.js").read_text(encoding="utf-8")
+    browser_observer = (WEB_APP / "scripts" / "mcel-browser-observer.js").read_text(encoding="utf-8")
+    ui = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    bindings = (WEB_APP / "scripts" / "dom-bindings" / "mcel-lab.js").read_text(encoding="utf-8")
+
+    assert 'CHROME_ID_ATTR = "data-mcel-chrome-id"' in chrome_law
+    assert 'FIT_REGION_ATTR = "data-mcel-fit-region"' in chrome_law
+    assert 'FIT_POLICY_ATTR = "data-mcel-fit-policy"' in chrome_law
+    assert 'FIT_REMEDIATION_ATTR = "data-mcel-fit-remediation"' in chrome_law
+    assert "chromeFitContract" in chrome_law
+    assert "chromeCompositionContract" in chrome_law
+    assert "chromeRemediationPlan" in chrome_law
+    assert "compositionContract" in chrome_law
+    assert '"primary-control-width-collapsed-relative-to-input"' in chrome_law
+    assert '"control-balance"' in chrome_law
+    assert '"content-negotiate"' in chrome_law
+    assert '"object-grow"' in chrome_law
+    assert '"object-reshape"' in chrome_law
+    assert '"region-reflow"' in chrome_law
+    assert 'element.setAttribute(FIT_REGION_ATTR, fit.region)' in chrome_law
+    assert 'element.setAttribute(FIT_POLICY_ATTR, fit.policy)' in chrome_law
+
+    assert "observeChromeFit" in browser_observer
+    assert "observeChromeComposition" in browser_observer
+    assert "compositionWarnings" in browser_observer
+    assert '"mcel-chrome-fit-report"' in browser_observer
+    assert '"page-overflow"' in browser_observer
+    assert '"inline-overflow"' in browser_observer
+    assert '"child-escape"' in browser_observer
+    assert '"hard-object-overflow"' in browser_observer
+    assert "data-mcel-chrome-generated" in browser_observer
+
+    assert 'sandbox="allow-same-origin"' in app
+    assert "runMcelSiteFrameChromeFit" in ui
+    assert "data-mcel-fit-remediation" in ui
+    assert "data-mcel-composition-remedy" in ui
+    assert "data-mcel-composition-warnings" in ui
+    assert "control-balance" in ui
+    assert "firstPassCompositionWarnings" in ui
+    assert "finalCompositionWarnings" in ui
+    assert "mcelChromeFitFailureCount" in ui
+    assert "summarizeMcelChromeFitReport" in ui
+    assert 'fit=${status}' in ui
+    assert "lastChromeFitReport" in bindings
+    assert "lastChromeFitReport" in ui
+    assert 'body class="mcel-site-theme ${theme}" data-mcel-chrome="${chrome}"' in ui

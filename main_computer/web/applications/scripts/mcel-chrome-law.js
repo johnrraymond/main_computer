@@ -17,6 +17,10 @@
       const CHROME_ATTR = "data-mcel-chrome";
       const CHROME_GENERATED_ATTR = "data-mcel-chrome-generated";
       const CHROME_PART_ATTR = "data-mcel-chrome-part";
+      const CHROME_ID_ATTR = "data-mcel-chrome-id";
+      const FIT_REGION_ATTR = "data-mcel-fit-region";
+      const FIT_POLICY_ATTR = "data-mcel-fit-policy";
+      const FIT_REMEDIATION_ATTR = "data-mcel-fit-remediation";
       const CONTRACT_VERSION = "mcel.chrome.v1";
 
       const chromes = Object.freeze([
@@ -32,7 +36,20 @@
           kind: "structural-render",
           description: "Preserves the compiled MCEL hierarchy exactly; this is the baseline chrome and should not change current theme pixels.",
           preservesPixelBaseline: true,
-          restructuresHierarchy: false
+          restructuresHierarchy: false,
+          fitContract: Object.freeze({
+            observeSelectors: Object.freeze(["[data-mc]"]),
+            tolerancePx: 2,
+            genericFallback: false
+          }),
+          compositionContract: Object.freeze({
+            observeSelectors: Object.freeze([]),
+            warnings: Object.freeze([]),
+            remedies: Object.freeze({})
+          }),
+          remediation: Object.freeze({
+            strategies: Object.freeze([])
+          })
         }),
         "chrome-editorial-flow": Object.freeze({
           id: "chrome-editorial-flow",
@@ -41,7 +58,61 @@
           kind: "structural-render",
           description: "Realizes the same source as a magazine-like reading flow: lede, story body, and supporting action rail.",
           preservesPixelBaseline: false,
-          restructuresHierarchy: true
+          restructuresHierarchy: true,
+          fitContract: Object.freeze({
+            observeSelectors: Object.freeze([
+              "[data-mcel-chrome-generated=\"true\"]",
+              "[data-mcel-fit-region]",
+              "[data-mcel-fit-policy]",
+              "[data-mc]"
+            ]),
+            hardObjectSelector: "img,svg,canvas,video,iframe,table,pre,code,input,textarea,select,button",
+            tolerancePx: 2,
+            genericFallback: true
+          }),
+          compositionContract: Object.freeze({
+            observeSelectors: Object.freeze([
+              ".mcel-chrome-editorial-rail > .mc",
+              "[data-mcel-fit-region=\"narrow\"].mc",
+              "[data-mcel-fit-region=\"narrow\"] > .mc"
+            ]),
+            warnings: Object.freeze([
+              "primary-control-width-collapsed-relative-to-input"
+            ]),
+            remedies: Object.freeze({
+              "primary-control-width-collapsed-relative-to-input": "control-balance"
+            })
+          }),
+          remediation: Object.freeze({
+            order: Object.freeze([
+              "content-negotiate",
+              "object-grow",
+              "object-reshape",
+              "region-reflow"
+            ]),
+            strategies: Object.freeze([
+              Object.freeze({
+                id: "content-negotiate",
+                label: "Content negotiation",
+                meaning: "Scale, wrap, and stack children inside the chrome-owned object before changing the object."
+              }),
+              Object.freeze({
+                id: "object-grow",
+                label: "Object growth",
+                meaning: "Let the chrome-owned object claim more usable interior size when the shell can support it."
+              }),
+              Object.freeze({
+                id: "object-reshape",
+                label: "Object reshape",
+                meaning: "Allow Editorial Flow to relax decorative shape tokens when content cannot fit the original shape."
+              }),
+              Object.freeze({
+                id: "region-reflow",
+                label: "Region reflow",
+                meaning: "Move the supporting rail into normal flow as the chrome-level last resort."
+              })
+            ])
+          })
         })
       });
 
@@ -82,6 +153,48 @@
         return chromeDefinition(chrome).label;
       }
 
+      function chromeFitContract(chrome) {
+        const definition = chromeDefinition(chrome);
+        return definition.fitContract || {
+          observeSelectors: ["[data-mc]"],
+          hardObjectSelector: "img,svg,canvas,video,iframe,table,pre,code,input,textarea,select,button",
+          tolerancePx: 2,
+          genericFallback: false
+        };
+      }
+
+      function chromeCompositionContract(chrome) {
+        const definition = chromeDefinition(chrome);
+        const contract = definition.compositionContract || {};
+        return {
+          observeSelectors: Array.isArray(contract.observeSelectors) ? [...contract.observeSelectors] : [],
+          warnings: Array.isArray(contract.warnings) ? [...contract.warnings] : [],
+          remedies: contract.remedies && typeof contract.remedies === "object" ? {...contract.remedies} : {}
+        };
+      }
+
+      function chromeRemediationPlan(chrome) {
+        const definition = chromeDefinition(chrome);
+        const remediation = definition.remediation || {};
+        const strategies = Array.isArray(remediation.strategies) ? remediation.strategies : [];
+        return {
+          chrome: definition.id,
+          contractVersion: CONTRACT_VERSION,
+          order: Array.isArray(remediation.order) ? [...remediation.order] : strategies.map((strategy) => strategy.id),
+          strategies: strategies.map((strategy) => ({...strategy}))
+        };
+      }
+
+      function fitMetadataForPart(part) {
+        const map = {
+          "editorial-shell": {region: "shell", policy: "chrome-remediates"},
+          "editorial-lede": {region: "wide", policy: "contain"},
+          "editorial-body": {region: "flow", policy: "contain"},
+          "editorial-rail": {region: "narrow", policy: "contain"}
+        };
+        return map[part] || {region: "flow", policy: "contain"};
+      }
+
       function smartChildren(element) {
         return [...(element?.children || [])].filter((child) =>
           child.nodeType === 1 &&
@@ -106,9 +219,13 @@
       function generatedPart(part, chrome) {
         const element = document.createElement("div");
         element.className = `mcel-chrome-part mcel-chrome-${part}`;
+        const fit = fitMetadataForPart(part);
         element.setAttribute(CHROME_GENERATED_ATTR, "true");
         element.setAttribute(CHROME_PART_ATTR, part);
         element.setAttribute(CHROME_ATTR, chrome);
+        element.setAttribute(CHROME_ID_ATTR, chrome);
+        element.setAttribute(FIT_REGION_ATTR, fit.region);
+        element.setAttribute(FIT_POLICY_ATTR, fit.policy);
         element.setAttribute(attributes.artifactOwner, "mcel-chrome-law");
         element.setAttribute(attributes.artifactOrigin, "chrome-runtime");
         element.setAttribute(attributes.artifactReason, `chrome:${chrome}:${part}`);
@@ -240,12 +357,19 @@
         CHROME_ATTR,
         CHROME_GENERATED_ATTR,
         CHROME_PART_ATTR,
+        CHROME_ID_ATTR,
+        FIT_REGION_ATTR,
+        FIT_POLICY_ATTR,
+        FIT_REMEDIATION_ATTR,
         chromes,
         chromeAliases,
         chromeCatalog,
         normalizeChrome,
         chromeDefinition,
         chromeLabel,
+        chromeFitContract,
+        chromeCompositionContract,
+        chromeRemediationPlan,
         applyChromeHtml
       });
     })();
