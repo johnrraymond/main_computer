@@ -12,6 +12,7 @@ from main_computer.chat_ai_subprocess import (
     config_to_payload,
 )
 from main_computer.models import ChatResponse
+from main_computer.remote_overflow import RemoteOverflowDecisionEngine, MockHubAIOverflowProvider
 
 
 def _should_inline_test_provider(provider: Any) -> bool:
@@ -279,6 +280,77 @@ class ViewportChatConsoleRoutesMixin:
             self._send_json(result)
         except Exception as exc:
             self.server.signal("api-chat-console-ai-capacity-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+
+    def _chat_console_remote_overflow_engine(self) -> RemoteOverflowDecisionEngine:
+        def local_capacity_provider(*, thread_id: str = "", max_local_concurrency: int = 1) -> dict[str, Any]:
+            return self.server.chat_ai_processes.local_ai_capacity_snapshot(
+                thread_id=thread_id,
+                max_local_concurrency=max_local_concurrency,
+            )
+
+        return RemoteOverflowDecisionEngine(local_capacity_provider=local_capacity_provider)
+
+    def _handle_chat_console_remote_overflow_assess(self) -> None:
+        try:
+            body = self._read_json()
+            if not isinstance(body, dict):
+                raise ValueError("Remote overflow assessment requires a JSON object.")
+            assessment = self._chat_console_remote_overflow_engine().assess(body)
+            self.server.signal(
+                "api-chat-console-remote-overflow-assess",
+                action=assessment.action,
+                reason_code=assessment.reason_code,
+                authorization_required=assessment.authorization_required,
+            )
+            self._send_json({"ok": True, "remote_overflow": assessment.as_dict()})
+        except Exception as exc:
+            self.server.signal("api-chat-console-remote-overflow-assess-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+    def _handle_chat_console_remote_overflow_mock_submit(self) -> None:
+        try:
+            body = self._read_json()
+            if not isinstance(body, dict):
+                raise ValueError("Mock remote overflow submit requires a JSON object.")
+
+            engine = self._chat_console_remote_overflow_engine()
+            assessment = engine.assess(body)
+            result = MockHubAIOverflowProvider().run(body, assessment)
+            self.server.signal(
+                "api-chat-console-remote-overflow-mock-submit",
+                status=result.get("status"),
+                reason_code=assessment.reason_code,
+                simulated=bool((result.get("remote_overflow_result") or {}).get("simulated")),
+            )
+
+            remote_result = result.get("remote_overflow_result") if isinstance(result.get("remote_overflow_result"), dict) else {}
+            response_payload = remote_result.get("response") if isinstance(remote_result.get("response"), dict) else {}
+            cell = body.get("cell") if isinstance(body.get("cell"), dict) else {}
+            if result.get("ok") and cell:
+                response = ChatResponse(
+                    content=str(response_payload.get("content") or ""),
+                    provider=str(response_payload.get("provider") or "mock-hub-ai"),
+                    model=str(response_payload.get("model") or body.get("model") or "mock-overflow-model"),
+                    metadata=response_payload.get("metadata") if isinstance(response_payload.get("metadata"), dict) else {},
+                )
+                output_cell = build_output_cell(cell, ai_response_to_parts(response), status="ok", provider=response.provider, model=response.model)
+                output_cell.setdefault("metadata", {})
+                output_cell["metadata"] = {
+                    **(output_cell.get("metadata") if isinstance(output_cell.get("metadata"), dict) else {}),
+                    "remote_overflow": True,
+                    "simulated": True,
+                    "mock_hub_ai": True,
+                    "run_id": str(body.get("run_id") or ""),
+                    "thread_id": str(body.get("thread_id") or body.get("chat_thread_id") or ""),
+                }
+                result["output_cell"] = output_cell
+
+            status = HTTPStatus.OK if result.get("ok") else HTTPStatus.CONFLICT
+            self._send_json(result, status=status)
+        except Exception as exc:
+            self.server.signal("api-chat-console-remote-overflow-mock-submit-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
 
