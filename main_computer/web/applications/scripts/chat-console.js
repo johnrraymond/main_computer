@@ -19,6 +19,14 @@
       refreshTimer: null,
       refreshInFlight: false
     };
+    const chatConsoleRemoteWorkerControlState = {
+      modal: null,
+      lastCapacitySnapshot: null,
+      lastShownAt: "",
+      lastCellId: "",
+      lastRunId: "",
+      lastThreadId: ""
+    };
     const chatConsoleNotebookRenderSignatures = new WeakMap();
 
     function chatConsoleThreadsApi() {
@@ -46,6 +54,132 @@
       chatConsoleEmbeddedStatusNodes().forEach((node) => {
         node.textContent = message;
       });
+    }
+
+    function chatConsoleRemoteWorkerControlSummary(snapshot) {
+      const reason = String(snapshot?.reason_code || "local_ai_busy");
+      const count = Number(snapshot?.active_run_count || 0);
+      const activeThreadIds = Array.isArray(snapshot?.active_thread_ids) ? snapshot.active_thread_ids.filter(Boolean) : [];
+      const activeThreadText = activeThreadIds.length ? ` Active thread: ${activeThreadIds[0]}.` : "";
+      if (reason === "thread_busy") return "This chat is already using the local AI slot.";
+      if (reason === "local_concurrency_exhausted") return `Another local AI request is using the available slot${count ? ` (${count} active)` : ""}.${activeThreadText}`;
+      return snapshot?.user_message || "Local AI is busy right now.";
+    }
+
+    function chatConsoleHideRemoteWorkerControlModal(reason = "dismissed") {
+      const modal = chatConsoleRemoteWorkerControlState.modal || document.querySelector("[data-chat-console-remote-worker-control-modal]");
+      if (modal) modal.remove();
+      chatConsoleRemoteWorkerControlState.modal = null;
+      if (reason) chatConsoleSetStatus(`remote worker control ${reason}`);
+    }
+
+    function chatConsoleShowRemoteWorkerControlModal({cell, runId, threadId, capacity}) {
+      const existing = chatConsoleRemoteWorkerControlState.modal || document.querySelector("[data-chat-console-remote-worker-control-modal]");
+      if (existing) existing.remove();
+
+      const backdrop = document.createElement("div");
+      backdrop.className = "chat-remote-worker-control-backdrop";
+      backdrop.dataset.chatConsoleRemoteWorkerControlModal = "true";
+      backdrop.setAttribute("role", "presentation");
+
+      const modal = document.createElement("section");
+      modal.className = "chat-remote-worker-control-modal";
+      modal.setAttribute("role", "dialog");
+      modal.setAttribute("aria-modal", "true");
+      modal.setAttribute("aria-labelledby", "chat-remote-worker-control-title");
+      modal.setAttribute("aria-describedby", "chat-remote-worker-control-description");
+
+      const eyebrow = document.createElement("div");
+      eyebrow.className = "chat-remote-worker-control-eyebrow";
+      eyebrow.textContent = "Phase 1 busy-local trigger";
+
+      const title = document.createElement("h2");
+      title.id = "chat-remote-worker-control-title";
+      title.textContent = "Remote Worker control";
+
+      const description = document.createElement("p");
+      description.id = "chat-remote-worker-control-description";
+      description.textContent = "Local AI is busy. Remote worker controls will appear here next; this phase only proves that the UI opens immediately when the local AI slot is occupied.";
+
+      const reason = document.createElement("p");
+      reason.className = "chat-remote-worker-control-reason";
+      reason.textContent = chatConsoleRemoteWorkerControlSummary(capacity);
+
+      const diagnostics = document.createElement("dl");
+      diagnostics.className = "chat-remote-worker-control-diagnostics";
+      const items = [
+        ["Reason", capacity?.reason_code || "local_ai_busy"],
+        ["Active local AI runs", String(capacity?.active_run_count ?? "")],
+        ["Checked thread", threadId || capacity?.thread_id || ""],
+        ["Run", runId || cell?.run_id || ""]
+      ];
+      items.forEach(([label, value]) => {
+        const term = document.createElement("dt");
+        term.textContent = label;
+        const detail = document.createElement("dd");
+        detail.textContent = value || "not available";
+        diagnostics.append(term, detail);
+      });
+
+      const notice = document.createElement("p");
+      notice.className = "chat-remote-worker-control-notice";
+      notice.textContent = "No credits are checked, held, or spent in this Phase 1 modal. No remote worker is contacted yet.";
+
+      const actions = document.createElement("div");
+      actions.className = "chat-remote-worker-control-actions";
+      const close = chatConsoleButton("Close", () => chatConsoleHideRemoteWorkerControlModal("closed"));
+      close.className = "chat-remote-worker-control-close";
+      actions.append(close);
+
+      modal.append(eyebrow, title, description, reason, diagnostics, notice, actions);
+      backdrop.append(modal);
+      document.body.append(backdrop);
+      close.focus({preventScroll: true});
+
+      chatConsoleRemoteWorkerControlState.modal = backdrop;
+      chatConsoleRemoteWorkerControlState.lastCapacitySnapshot = capacity || null;
+      chatConsoleRemoteWorkerControlState.lastShownAt = chatConsoleNow();
+      chatConsoleRemoteWorkerControlState.lastCellId = cell?.id || "";
+      chatConsoleRemoteWorkerControlState.lastRunId = runId || cell?.run_id || "";
+      chatConsoleRemoteWorkerControlState.lastThreadId = threadId || "";
+      chatConsoleSetStatus("remote worker control opened because local AI is busy");
+      return backdrop;
+    }
+
+    async function chatConsoleFetchLocalAiCapacityNow(threadId) {
+      const cleanThreadId = String(threadId || "").trim();
+      const params = new URLSearchParams({
+        thread_id: cleanThreadId,
+        max_local_concurrency: "1"
+      });
+      const response = await fetch(`/api/applications/chat-console/ai/capacity?${params.toString()}`, {cache: "no-store"});
+      const snapshot = await response.json().catch(() => ({}));
+      if (!response.ok || snapshot.ok === false) throw new Error(snapshot.error || `capacity HTTP ${response.status}`);
+      if (cleanThreadId) {
+        chatConsoleThinkingState.localCapacityByThread[cleanThreadId] = snapshot;
+        chatConsoleThinkingState.localCapacityStatus = "loaded";
+        chatConsoleThinkingState.localCapacityUpdatedAt = chatConsoleNow();
+      }
+      return snapshot;
+    }
+
+    function chatConsoleShouldOpenRemoteWorkerControlForCapacity(snapshot) {
+      if (!snapshot || snapshot.ok === false) return false;
+      return snapshot.busy === true || snapshot.available_now === false || Number(snapshot.active_run_count || 0) >= Number(snapshot.max_local_concurrency || 1);
+    }
+
+    async function chatConsoleMaybeShowRemoteWorkerControlForBusyLocal({cell, runId, threadId}) {
+      if (!cell || cell.type !== "ai") return null;
+      try {
+        const snapshot = await chatConsoleFetchLocalAiCapacityNow(threadId);
+        if (chatConsoleShouldOpenRemoteWorkerControlForCapacity(snapshot)) {
+          chatConsoleShowRemoteWorkerControlModal({cell, runId, threadId, capacity: snapshot});
+        }
+        return snapshot;
+      } catch (error) {
+        chatConsoleSetStatus(`local AI capacity preflight unavailable: ${error.message || error}`);
+        return null;
+      }
     }
 
     function chatConsoleShouldShowThinking(cell) {
@@ -1898,6 +2032,13 @@
             payload.think = ragAt.think === "off" ? false : ragAt.think || "medium";
             payload.auto_apply = false;
             payload.queries = [cell.source || ""];
+          }
+          if (cell.type === "ai") {
+            await chatConsoleMaybeShowRemoteWorkerControlForBusyLocal({
+              cell,
+              runId: aiRunId,
+              threadId: payload.thread_id
+            });
           }
           const response = await fetch(endpoint, {
             method: "POST",
