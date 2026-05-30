@@ -21,6 +21,10 @@ def main() -> int:
         "/api/applications/chat-console/ai/capacity",
         "grid.append(renderChatConsoleLocalCapacityThinkingCard(cell));",
         "Local AI capacity",
+        "This chat is currently using the local AI slot. Run id and thread id are separate identifiers.",
+        "`run ${runId}`",
+        "`thread ${threadId}`",
+        "`active run ${activeRunId}`",
     ]
     missing_js = [item for item in required_js if item not in js]
     missing_css = ['.chat-thinking-card[data-category="capacity"]'] if '.chat-thinking-card[data-category="capacity"]' not in css else []

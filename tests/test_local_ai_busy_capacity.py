@@ -53,7 +53,12 @@ def test_local_ai_capacity_reports_thread_busy_before_remote_overflow() -> None:
     assert snapshot["reason_code"] == "thread_busy"
     assert snapshot["active_run_count"] == 1
     assert snapshot["active_thread_ids"] == ["thread-a"]
+    assert snapshot["user_message"] == "This chat is currently using the local AI slot."
     assert snapshot["cards"][0]["status"] == "blocked"
+    assert snapshot["cards"][0]["message"] == "This chat is currently using the local AI slot."
+    assert snapshot["cards"][0]["details"]["checked_thread_id"] == "thread-a"
+    assert snapshot["cards"][0]["details"]["active_thread_id"] == "thread-a"
+    assert snapshot["cards"][0]["details"]["active_run_id"] == "run-a"
 
 
 def test_local_ai_capacity_reports_global_concurrency_exhausted() -> None:
@@ -65,7 +70,11 @@ def test_local_ai_capacity_reports_global_concurrency_exhausted() -> None:
     assert snapshot["available_now"] is False
     assert snapshot["busy"] is True
     assert snapshot["reason_code"] == "local_concurrency_exhausted"
+    assert snapshot["user_message"] == "Local AI has no free slot right now; another chat is using the local AI slot."
     assert snapshot["active_run_count"] == 1
+    assert snapshot["cards"][0]["details"]["checked_thread_id"] == "thread-b"
+    assert snapshot["cards"][0]["details"]["active_thread_id"] == "thread-a"
+    assert snapshot["cards"][0]["details"]["active_run_id"] == "run-a"
 
 
 def test_local_ai_capacity_prunes_finished_runs() -> None:

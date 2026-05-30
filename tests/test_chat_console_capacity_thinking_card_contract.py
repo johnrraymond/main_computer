@@ -35,3 +35,14 @@ def test_chat_console_capacity_card_has_dedicated_thinking_style() -> None:
     css = CHAT_CONSOLE_CSS.read_text(encoding="utf-8")
 
     assert '.chat-thinking-card[data-category="capacity"]' in css
+
+
+def test_chat_console_capacity_card_labels_run_and_thread_separately() -> None:
+    source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
+
+    assert "This chat is currently using the local AI slot. Run id and thread id are separate identifiers." in source
+    assert "`run ${runId}`" in source
+    assert "`thread ${threadId}`" in source
+    assert "`active run ${activeRunId}`" in source
+    assert "`active thread ${activeThreadId}`" in source
+
