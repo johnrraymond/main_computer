@@ -514,7 +514,7 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
 
 .mcel-lab-primary-controls {
   display: grid;
-  grid-template-columns: minmax(180px, 260px) minmax(240px, 1fr) auto;
+  grid-template-columns: minmax(160px, 220px) minmax(160px, 220px) minmax(240px, 1fr) auto;
   gap: 8px;
   align-items: end;
   padding: 8px;

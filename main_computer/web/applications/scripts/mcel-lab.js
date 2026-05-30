@@ -7,6 +7,7 @@
         window.McelLabLawRegistry &&
         window.McelLabEditor &&
         window.McelLabScenarios &&
+        window.McelLabChromeLaw &&
         window.McelLabBrowserObserver &&
         window.McelLabLayoutLaw &&
         window.McelLabComponentLaw &&
@@ -41,6 +42,7 @@
         mcelSourceHtml.value = McelLabContract.defaultSource;
       }
       populateMcelThemes();
+      populateMcelChromes();
       populateMcelScenarios();
       populateMcelAcidCases();
       bindMcelLabControls();
@@ -72,6 +74,7 @@
       mcelLoadScenario?.addEventListener("click", loadSelectedMcelScenario);
       mcelScenarioSelect?.addEventListener("change", describeSelectedMcelScenario);
       mcelThemeSelect?.addEventListener("change", () => changeMcelTheme("theme-select"));
+      mcelChromeSelect?.addEventListener("change", () => changeMcelChrome("chrome-select"));
       mcelOpenEditorModal?.addEventListener("click", () => openMcelLabModal("editor"));
       mcelOpenSiteModal?.addEventListener("click", () => openMcelLabModal("site"));
       mcelSiteFrameResync?.addEventListener("click", () => syncMcelRenderedSiteFrame("twiddle-resync"));
@@ -157,6 +160,23 @@
         mcelThemeSelect.appendChild(option);
       });
       mcelThemeSelect.value = McelLabStyleLaw.normalizeTheme(mcelLabState.theme);
+    }
+
+    function populateMcelChromes() {
+      if (!mcelChromeSelect || typeof McelLabChromeLaw === "undefined") return;
+      const catalog = McelLabChromeLaw.chromeCatalog || McelLabChromeLaw.chromes.map((chrome) => ({id: chrome, label: chrome, description: ""}));
+      mcelChromeSelect.innerHTML = "";
+      catalog.forEach((chrome) => {
+        const option = document.createElement("option");
+        option.value = chrome.id;
+        option.textContent = chrome.label || chrome.id;
+        if (chrome.description) option.title = chrome.description;
+        if (chrome.kind) option.dataset.kind = chrome.kind;
+        if (chrome.restructuresHierarchy) option.dataset.restructuresHierarchy = "true";
+        mcelChromeSelect.appendChild(option);
+      });
+      mcelLabState.chrome = McelLabChromeLaw.normalizeChrome(mcelLabState.chrome);
+      mcelChromeSelect.value = mcelLabState.chrome;
     }
 
     function populateMcelScenarios() {
@@ -372,7 +392,9 @@
       mcelLabState.lastSupervisorReport = null;
       mcelLabState.lastCommandPlan = null;
       mcelLabState.theme = "theme-machine";
+      mcelLabState.chrome = "chrome-strict-hierarchy";
       if (mcelThemeSelect) mcelThemeSelect.value = "theme-machine";
+      if (mcelChromeSelect) mcelChromeSelect.value = "chrome-strict-hierarchy";
       selectMcelSourceIndex(0, "reset");
       syncMcelGrapesFromSource();
       compileMcelLabSource("reset");
@@ -717,6 +739,24 @@
       syncMcelRenderedSiteFrame("theme");
     }
 
+    function changeMcelChrome(reason = "chrome") {
+      if (typeof McelLabChromeLaw !== "undefined") {
+        mcelLabState.chrome = McelLabChromeLaw.normalizeChrome(mcelChromeSelect?.value || mcelLabState.chrome);
+      } else {
+        mcelLabState.chrome = mcelChromeSelect?.value || mcelLabState.chrome || "chrome-strict-hierarchy";
+      }
+      const label = typeof McelLabChromeLaw !== "undefined" && McelLabChromeLaw.chromeLabel
+        ? McelLabChromeLaw.chromeLabel(mcelLabState.chrome)
+        : mcelLabState.chrome;
+      if (mcelChromeSelect) mcelChromeSelect.value = mcelLabState.chrome;
+      mcelLabState.compileEvents = [
+        ...mcelLabState.compileEvents,
+        {level: "success", module: "chrome-law", code: "MCEL_CHROME_CHANGED", message: `Chrome changed to ${label} (${mcelLabState.chrome}) during ${reason}.`}
+      ].slice(-64);
+      renderMcelCompilerLog();
+      syncMcelRenderedSiteFrame("chrome");
+    }
+
     function applyMcelRuntimeStyleLaw(reason = "style-law") {
       if (!mcelRuntimePreview || typeof McelLabStyleLaw === "undefined") return;
       mcelLabState.theme = McelLabStyleLaw.normalizeTheme(mcelThemeSelect?.value || mcelLabState.theme);
@@ -801,6 +841,7 @@
         source: currentMcelSource(),
         selectedIndex: mcelLabState.selectedIndex,
         theme: mcelLabState.theme,
+        chrome: mcelLabState.chrome,
         mode: mcelLabState.currentMode,
         scenario: mcelScenarioSelect?.value || "round-trip",
         lastSerializerClean: Boolean(mcelLabState.lastSerializerReport?.serializerClean)
@@ -823,7 +864,11 @@
         mcelSourceHtml.value = result.snapshot.source || McelLabContract.defaultSource;
         mcelLabState.selectedIndex = Number(result.snapshot.selectedIndex || 0);
         mcelLabState.theme = result.snapshot.theme || "theme-machine";
+        mcelLabState.chrome = typeof McelLabChromeLaw !== "undefined"
+          ? McelLabChromeLaw.normalizeChrome(result.snapshot.chrome || "chrome-strict-hierarchy")
+          : (result.snapshot.chrome || "chrome-strict-hierarchy");
         if (mcelThemeSelect) mcelThemeSelect.value = mcelLabState.theme;
+        if (mcelChromeSelect) mcelChromeSelect.value = mcelLabState.chrome;
         setMcelLabMode(result.snapshot.mode || "source");
         syncMcelGrapesFromSource();
         compileMcelLabSource("project-restore");
@@ -1052,6 +1097,8 @@
         `clears=${twiddle.clearCount}`,
         `hash=${frame?.dataset?.srcdocHash || twiddle.lastHash || "none"}`,
         `len=${srcdocLength}`,
+        `theme=${mcelLabState.theme || "theme-machine"}`,
+        `chrome=${mcelLabState.chrome || "chrome-strict-hierarchy"}`,
         `reason=${reason}`
       ].join(" · ");
       if (mcelSiteFrameStatus) {
@@ -1726,7 +1773,122 @@
           font-weight: 900;
           text-transform: uppercase;
         }
+
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-runtime-preview {
+          max-inline-size: min(1120px, calc(100% - 48px));
+          padding-block: clamp(22px, 4vw, 54px);
+        }
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-runtime-preview > .mc {
+          display: block;
+          min-block-size: auto;
+          border: 0;
+          border-radius: 0;
+          background: transparent;
+          box-shadow: none;
+          padding: 0;
+        }
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-shell {
+          display: grid;
+          grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.65fr);
+          gap: clamp(24px, 4vw, 56px);
+          align-items: start;
+        }
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-lede,
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-body {
+          min-width: 0;
+        }
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-lede {
+          grid-column: 1 / -1;
+        }
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-body {
+          display: grid;
+          gap: clamp(18px, 3vw, 32px);
+        }
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail {
+          position: sticky;
+          top: 24px;
+          display: grid;
+          gap: 16px;
+          min-width: 0;
+        }
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-lede > .mc,
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-body > .mc,
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail > .mc {
+          border-color: var(--site-line);
+          background: transparent;
+          box-shadow: none;
+        }
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-lede > .mc[data-mc-kind="hero"] {
+          grid-template-columns: minmax(0, 1fr);
+          min-block-size: auto;
+          padding: clamp(28px, 6vw, 76px) 0 clamp(22px, 4vw, 44px);
+          border: 0;
+          border-bottom: 1px solid var(--site-line);
+          border-radius: 0;
+        }
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-runtime-preview .mc[data-mc-kind="hero"]::after {
+          display: none;
+        }
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-lede h1,
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-lede h2 {
+          max-inline-size: 14ch;
+          font-size: clamp(3.4rem, 12vw, 8.8rem);
+          line-height: 0.88;
+          letter-spacing: -0.075em;
+        }
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-lede p:not([data-mc-slot="meta"]):not([data-mc-slot="actions"]) {
+          max-inline-size: 62ch;
+          font-size: clamp(1.08rem, 2vw, 1.55rem);
+        }
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-body > .mc {
+          padding: clamp(20px, 3vw, 36px) 0;
+          border: 0;
+          border-top: 1px solid var(--site-line);
+          border-radius: 0;
+        }
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-runtime-preview .mc[data-mc-component="TrustCluster"] {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 14px;
+        }
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-runtime-preview .mc[data-mc-component="TrustCluster"] > h2 {
+          max-inline-size: 16ch;
+          font-size: clamp(2rem, 5vw, 4.2rem);
+          line-height: 0.95;
+          letter-spacing: -0.045em;
+        }
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-runtime-preview .mc[data-mc-component="TrustCluster"] > .mc {
+          min-block-size: auto;
+          padding: clamp(16px, 2vw, 24px) 0 clamp(16px, 2vw, 24px) clamp(18px, 3vw, 32px);
+          border: 0;
+          border-left: 3px solid var(--site-accent);
+          border-radius: 0;
+          background: transparent;
+        }
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-runtime-preview .mc[data-mc-component="TrustCluster"] > .mc h3 {
+          font-size: clamp(1.1rem, 2vw, 1.6rem);
+        }
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail > .mc {
+          padding: clamp(18px, 3vw, 28px);
+          border: 1px solid var(--site-line);
+          border-radius: var(--site-radius-sm);
+          background: var(--site-card-soft);
+        }
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail form.mc {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail .mc[data-mc="command-row"] {
+          grid-template-columns: minmax(0, 1fr);
+        }
         @media (max-width: 860px) {
+          body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-shell {
+            grid-template-columns: 1fr;
+          }
+          body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail {
+            position: static;
+          }
+          body[data-mcel-chrome="chrome-editorial-flow"] .mcel-runtime-preview {
+            max-inline-size: min(100% - 28px, 760px);
+          }
           .mcel-runtime-preview .mc[data-mc-kind="hero"],
           .mcel-runtime-preview form.mc,
           .mcel-runtime-preview .mc[data-mc="command-row"],
@@ -1750,18 +1912,27 @@
       const theme = typeof McelLabStyleLaw !== "undefined"
         ? McelLabStyleLaw.normalizeTheme(mcelLabState.theme)
         : (mcelLabState.theme || "theme-machine");
+      const chrome = typeof McelLabChromeLaw !== "undefined"
+        ? McelLabChromeLaw.normalizeChrome(mcelLabState.chrome)
+        : (mcelLabState.chrome || "chrome-strict-hierarchy");
+      const chromeResult = typeof McelLabChromeLaw !== "undefined"
+        ? McelLabChromeLaw.applyChromeHtml(runtimeHtml, {chrome, theme, reason})
+        : {html: runtimeHtml || "", report: {chrome, changed: false, visibleResponse: Boolean(runtimeHtml)}};
+      mcelLabState.chrome = chrome;
+      mcelLabState.lastChromeReport = chromeResult.report;
+      const renderedRuntimeHtml = chromeResult.html || runtimeHtml || "";
       return `<!doctype html>
-<html data-mcel-frame-generation="${nonce}" data-mcel-frame-reason="${reason}" data-mcel-frame-hash="${hash}" data-mcel-theme="${theme}">
+<html data-mcel-frame-generation="${nonce}" data-mcel-frame-reason="${reason}" data-mcel-frame-hash="${hash}" data-mcel-theme="${theme}" data-mcel-chrome="${chrome}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MCEL rendered site</title>
 <style>${isolatedSiteCss()}</style>
 </head>
-<body class="mcel-site-theme ${theme}">
-  <!-- MCEL iframe twiddle: reason=${reason}; nonce=${nonce}; hash=${hash}; theme=${theme} -->
-  <div class="mcel-runtime-preview ${theme}" data-mcel-theme="${theme}">
-    ${runtimeHtml || ""}
+<body class="mcel-site-theme ${theme}" data-mcel-chrome="${chrome}">
+  <!-- MCEL iframe twiddle: reason=${reason}; nonce=${nonce}; hash=${hash}; theme=${theme}; chrome=${chrome} -->
+  <div class="mcel-runtime-preview ${theme}" data-mcel-theme="${theme}" data-mcel-chrome="${chrome}">
+    ${renderedRuntimeHtml}
   </div>
 </body>
 </html>`;
@@ -1785,6 +1956,7 @@
       frame.dataset.srcdocHash = documentHash;
       frame.dataset.runtimeHash = runtimeHash;
       frame.dataset.srcdocLength = String(documentHtml.length);
+      frame.dataset.chrome = mcelLabState.chrome || "chrome-strict-hierarchy";
       frame.dataset.lastNonce = nonce;
       twiddle.lastReason = reason;
       twiddle.lastHash = documentHash;
@@ -1806,6 +1978,7 @@
         liveFrame.dataset.srcdocHash = documentHash;
         liveFrame.dataset.runtimeHash = runtimeHash;
         liveFrame.dataset.srcdocLength = String(documentHtml.length);
+        liveFrame.dataset.chrome = mcelLabState.chrome || "chrome-strict-hierarchy";
         liveFrame.dataset.lastNonce = nonce;
         recordMcelSiteFrameTwiddle("iframe-sync", {reason, hash: documentHash, length: documentHtml.length});
       });

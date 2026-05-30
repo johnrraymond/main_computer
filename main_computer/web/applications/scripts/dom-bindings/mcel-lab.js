@@ -8,6 +8,7 @@
         grapesReady: false,
         syncingGrapes: false,
         theme: "theme-machine",
+        chrome: "chrome-strict-hierarchy",
         lastSerializerReport: null,
         lastTestReport: null,
         lastCssLawReport: null,
@@ -27,6 +28,7 @@
         lastBrowserProof: null,
         lastSiteSkeleton: null,
         lastCommandPlan: null,
+        lastChromeReport: null,
         lastProjectSnapshot: null,
         activeModal: null,
         siteFrameTwiddle: {
@@ -112,6 +114,7 @@
     const mcelTraitWords = document.querySelector("#mcel-trait-words");
     const mcelTraitConnects = document.querySelector("#mcel-trait-connects");
     const mcelThemeSelect = document.querySelector("#mcel-theme-select");
+    const mcelChromeSelect = document.querySelector("#mcel-chrome-select");
     const mcelCssLawReport = document.querySelector("#mcel-css-law-report");
     const mcelLayoutLawReport = document.querySelector("#mcel-layout-law-report");
     const mcelGraphReport = document.querySelector("#mcel-graph-report");
