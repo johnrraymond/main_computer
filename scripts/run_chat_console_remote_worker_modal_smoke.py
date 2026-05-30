@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-"""Static smoke for the Phase 1 busy-local Remote Worker control modal.
+"""Static smoke for the Phase 2 busy-local Remote Worker control modal.
 
 This smoke proves the Chat Console checks local AI capacity during AI request
-startup and can open the Phase 1 modal before the normal AI evaluation fetch.
-It does not test credits, user choice, hub assessment, or mock submit.
+startup, opens the modal before the normal AI evaluation fetch, shows the
+two-card local/hub status grid, exposes large selectable option cards, and
+keeps the phase free of credit checks, real hub submit, or real remote worker
+contact.
 """
 
 from pathlib import Path
@@ -20,18 +22,33 @@ def main() -> int:
         "function chatConsoleMaybeShowRemoteWorkerControlForBusyLocal",
         "function chatConsoleFetchLocalAiCapacityNow",
         "function chatConsoleShowRemoteWorkerControlModal",
+        "function chatConsoleChooseRemoteWorkerControlOption",
+        "CHAT_CONSOLE_REMOTE_WORKER_CONTROL_CAPACITY_INTERVAL_MS",
         "/api/applications/chat-console/ai/capacity",
         "await chatConsoleMaybeShowRemoteWorkerControlForBusyLocal",
-        "Phase 1 busy-local trigger",
-        "Remote Worker control",
-        "No credits are checked, held, or spent in this Phase 1 modal.",
-        "No remote worker is contacted yet.",
+        "Phase 2 remote-worker controls",
+        "Current Local AI Worker",
+        "Remote Hub / Workers",
+        "Available workers",
+        "template / not checked yet",
+        "Wait for Available Local Worker",
+        "Use Remote Worker This Once",
+        "Use Remote Worker When Needed for This Chat",
+        "Always Use Remote Worker When Local AI Is Busy",
+        "To turn this off later, open the Worker app and unselect this option.",
+        "Remote worker when local AI is busy for this chat",
+        "dataset.chatRemoteWorkerWhenBusyForChat",
+        "No credits are checked, held, or spent",
+        "no hub assessment or remote worker is contacted yet",
     ]
     required_css = [
         ".chat-remote-worker-control-backdrop",
         ".chat-remote-worker-control-modal",
-        ".chat-remote-worker-control-diagnostics",
-        ".chat-remote-worker-control-actions",
+        ".chat-remote-worker-control-status-grid",
+        ".chat-remote-worker-control-status-card",
+        ".chat-remote-worker-control-option-grid",
+        ".chat-remote-worker-control-option-card",
+        ".chat-remote-worker-chat-toggle.enabled",
     ]
 
     missing_js = [item for item in required_js if item not in js]
@@ -46,8 +63,15 @@ def main() -> int:
 
     print({
         "ok": True,
-        "phase": "busy-local remote worker modal",
+        "phase": "remote worker modal controls",
         "capacity_endpoint": "/api/applications/chat-console/ai/capacity",
+        "status_cards": ["Current Local AI Worker", "Remote Hub / Workers"],
+        "selectable_options": [
+            "Wait for Available Local Worker",
+            "Use Remote Worker This Once",
+            "Use Remote Worker When Needed for This Chat",
+            "Always Use Remote Worker When Local AI Is Busy",
+        ],
         "credits_checked": False,
         "remote_worker_contacted": False,
     })

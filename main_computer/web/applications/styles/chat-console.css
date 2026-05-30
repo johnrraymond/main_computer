@@ -646,13 +646,22 @@
       backdrop-filter: blur(2px);
     }
     .chat-remote-worker-control-modal {
-      width: min(560px, 100%);
+      width: min(900px, 100%);
+      max-height: min(760px, calc(100vh - 48px));
+      overflow: auto;
       border: 1px solid var(--gold);
-      border-radius: 14px;
+      border-radius: 16px;
       background: #070806;
       color: var(--ink);
       padding: 18px;
       box-shadow: 0 22px 70px rgba(0, 0, 0, 0.58);
+    }
+    .chat-remote-worker-control-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 8px;
     }
     .chat-remote-worker-control-eyebrow {
       color: var(--muted);
@@ -663,54 +672,152 @@
       margin-bottom: 6px;
     }
     .chat-remote-worker-control-modal h2 {
-      margin: 0 0 8px;
+      margin: 0;
       color: var(--gold);
       font-size: 20px;
       text-transform: uppercase;
+    }
+    .chat-remote-worker-control-modal h3 {
+      margin: 0;
     }
     .chat-remote-worker-control-modal p {
       margin: 8px 0;
       color: var(--ink);
       line-height: 1.45;
     }
-    .chat-remote-worker-control-reason {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: rgba(255, 255, 255, 0.04);
-      padding: 10px;
-      font-weight: 800;
+    .chat-remote-worker-control-x {
+      min-width: 34px;
+      min-height: 34px;
+      border-radius: 999px;
+      padding: 0;
+      font-size: 20px;
+      line-height: 1;
     }
-    .chat-remote-worker-control-diagnostics {
+    .chat-remote-worker-control-status-grid,
+    .chat-remote-worker-control-option-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+    .chat-remote-worker-control-status-card,
+    .chat-remote-worker-control-option-card {
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: rgba(255, 255, 255, 0.04);
+      padding: 12px;
+    }
+    .chat-remote-worker-control-status-card {
+      min-height: 190px;
+    }
+    .chat-remote-worker-control-status-heading {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .chat-remote-worker-control-status-heading h3 {
+      color: var(--gold);
+      font-size: 14px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .chat-remote-worker-control-status-badge {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 3px 8px;
+      color: var(--ink);
+      background: #141410;
+      font-size: 11px;
+      font-weight: 900;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .chat-remote-worker-control-status-list {
       display: grid;
       grid-template-columns: max-content minmax(0, 1fr);
       gap: 6px 10px;
-      margin: 12px 0;
+      margin: 12px 0 0;
       border-top: 1px solid var(--line);
-      border-bottom: 1px solid var(--line);
-      padding: 10px 0;
+      padding-top: 10px;
     }
-    .chat-remote-worker-control-diagnostics dt {
+    .chat-remote-worker-control-status-list dt {
       color: var(--muted);
       font-size: 11px;
       font-weight: 900;
       letter-spacing: 0.04em;
       text-transform: uppercase;
     }
-    .chat-remote-worker-control-diagnostics dd {
+    .chat-remote-worker-control-status-list dd {
       margin: 0;
       min-width: 0;
       overflow-wrap: anywhere;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 12px;
     }
+    .chat-remote-worker-control-options-title {
+      color: var(--gold);
+      font-size: 13px;
+      font-weight: 900;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      margin-top: 18px !important;
+    }
+    .chat-remote-worker-control-option-card {
+      display: grid;
+      gap: 6px;
+      min-height: 150px;
+      color: var(--ink);
+      text-align: left;
+      cursor: pointer;
+    }
+    .chat-remote-worker-control-option-card:hover,
+    .chat-remote-worker-control-option-card:focus-visible {
+      border-color: var(--gold);
+      outline: none;
+      box-shadow: 0 0 0 2px rgba(230, 181, 74, 0.22);
+    }
+    .chat-remote-worker-control-option-card.default {
+      border-color: var(--gold);
+      background: rgba(230, 181, 74, 0.08);
+    }
+    .chat-remote-worker-control-option-kicker {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .chat-remote-worker-control-option-card strong {
+      color: var(--gold);
+      font-size: 15px;
+      line-height: 1.25;
+    }
+    .chat-remote-worker-control-option-description {
+      color: var(--ink);
+      line-height: 1.35;
+    }
+    .chat-remote-worker-control-option-card small {
+      color: var(--muted);
+      font-weight: 800;
+      line-height: 1.35;
+    }
     .chat-remote-worker-control-notice {
       color: var(--muted) !important;
       font-size: 12px;
       font-weight: 800;
+      margin-top: 14px !important;
     }
-    .chat-remote-worker-control-actions {
-      display: flex;
-      justify-content: flex-end;
-      gap: 8px;
-      margin-top: 14px;
+    .chat-remote-worker-chat-toggle.enabled {
+      border-color: var(--gold);
+      color: var(--gold);
     }
+    @media (max-width: 760px) {
+      .chat-remote-worker-control-status-grid,
+      .chat-remote-worker-control-option-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+

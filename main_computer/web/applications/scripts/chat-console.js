@@ -7,6 +7,7 @@
     const CHAT_CONSOLE_AI_RECONNECT_INTERVAL_MS = 1200;
     const CHAT_CONSOLE_THINKING_ACTIVITY_INTERVAL_MS = 5000;
     const CHAT_CONSOLE_THINKING_OLLAMA_INTERVAL_MS = 20000;
+    const CHAT_CONSOLE_REMOTE_WORKER_CONTROL_CAPACITY_INTERVAL_MS = 1000;
     const chatConsoleThinkingState = {
       events: [],
       ollamaModels: [],
@@ -21,11 +22,16 @@
     };
     const chatConsoleRemoteWorkerControlState = {
       modal: null,
+      capacityTimer: null,
+      escapeHandler: null,
+      capacityRefreshInFlight: false,
       lastCapacitySnapshot: null,
+      lastChoice: null,
       lastShownAt: "",
       lastCellId: "",
       lastRunId: "",
-      lastThreadId: ""
+      lastThreadId: "",
+      globalWhenBusyIntent: false
     };
     const chatConsoleNotebookRenderSignatures = new WeakMap();
 
@@ -56,6 +62,27 @@
       });
     }
 
+    function chatConsoleRemoteWorkerOptions(state = chatConsoleState) {
+      const options = state?.remote_worker_options;
+      return options && typeof options === "object" && !Array.isArray(options) ? options : {};
+    }
+
+    function chatConsoleRemoteWorkerWhenBusyForChatEnabled() {
+      return Boolean(chatConsoleRemoteWorkerOptions().when_busy_for_chat);
+    }
+
+    function chatConsoleSetRemoteWorkerWhenBusyForChat(enabled, message = "remote worker chat preference saved", options = {}) {
+      if (!chatConsoleState) return false;
+      chatConsoleState.remote_worker_options = {
+        ...chatConsoleRemoteWorkerOptions(),
+        when_busy_for_chat: Boolean(enabled),
+        updated_at: chatConsoleNow()
+      };
+      saveChatConsoleState(message);
+      if (options.render !== false) renderChatConsoleNotebook();
+      return true;
+    }
+
     function chatConsoleRemoteWorkerControlSummary(snapshot) {
       const reason = String(snapshot?.reason_code || "local_ai_busy");
       const count = Number(snapshot?.active_run_count || 0);
@@ -63,14 +90,221 @@
       const activeThreadText = activeThreadIds.length ? ` Active thread: ${activeThreadIds[0]}.` : "";
       if (reason === "thread_busy") return "This chat is already using the local AI slot.";
       if (reason === "local_concurrency_exhausted") return `Another local AI request is using the available slot${count ? ` (${count} active)` : ""}.${activeThreadText}`;
+      if (reason === "local_ai_available") return "Local AI is available now.";
       return snapshot?.user_message || "Local AI is busy right now.";
     }
 
+    function chatConsoleRemoteWorkerStatusItems(items) {
+      const list = document.createElement("dl");
+      list.className = "chat-remote-worker-control-status-list";
+      items.forEach(([label, value]) => {
+        const term = document.createElement("dt");
+        term.textContent = label;
+        const detail = document.createElement("dd");
+        detail.textContent = value || "not available";
+        list.append(term, detail);
+      });
+      return list;
+    }
+
+    function chatConsolePopulateRemoteWorkerStatusCard(card, {status, message, items = []}) {
+      if (!card) return;
+      const statusNode = card.querySelector("[data-chat-remote-worker-status]");
+      const messageNode = card.querySelector("[data-chat-remote-worker-message]");
+      const listNode = card.querySelector(".chat-remote-worker-control-status-list");
+      if (statusNode) statusNode.textContent = status || "Unknown";
+      if (messageNode) messageNode.textContent = message || "";
+      if (listNode) listNode.replaceWith(chatConsoleRemoteWorkerStatusItems(items));
+    }
+
+    function chatConsoleRemoteWorkerLocalStatus(capacity, threadId, runId) {
+      const activeRuns = Number(capacity?.active_run_count || 0);
+      const maxConcurrency = Number(capacity?.max_local_concurrency || 1);
+      const busy = chatConsoleShouldOpenRemoteWorkerControlForCapacity(capacity);
+      const activeThreadIds = Array.isArray(capacity?.active_thread_ids) ? capacity.active_thread_ids.filter(Boolean) : [];
+      const activeRunIds = Array.isArray(capacity?.active_runs)
+        ? capacity.active_runs.map((run) => run?.run_id || run?.id || "").filter(Boolean)
+        : [];
+      return {
+        status: busy ? "Busy" : "Available",
+        message: chatConsoleRemoteWorkerControlSummary(capacity),
+        items: [
+          ["Reason", capacity?.reason_code || (busy ? "local_ai_busy" : "local_ai_available")],
+          ["Active local AI runs", `${activeRuns} / ${maxConcurrency} local slot${maxConcurrency === 1 ? "" : "s"}`],
+          ["Checked thread", threadId || capacity?.thread_id || ""],
+          ["Run", runId || ""],
+          ["Blocking thread", activeThreadIds[0] || ""],
+          ["Blocking run", activeRunIds[0] || ""]
+        ]
+      };
+    }
+
+    function chatConsoleRemoteWorkerHubStatus() {
+      return {
+        status: "Template",
+        message: "Hub worker information will appear here as the overflow pathway matures.",
+        items: [
+          ["Available workers", "template / not checked yet"],
+          ["Hub mode", "Phase 2 control surface"],
+          ["Worker contact", "none"],
+          ["Credits", "not checked, held, or spent"]
+        ]
+      };
+    }
+
+    function chatConsoleRemoteWorkerStatusCard({kind, title, status, message, items}) {
+      const card = document.createElement("article");
+      card.className = "chat-remote-worker-control-status-card";
+      card.dataset.chatRemoteWorkerStatusCard = kind || "";
+      const heading = document.createElement("div");
+      heading.className = "chat-remote-worker-control-status-heading";
+      const titleNode = document.createElement("h3");
+      titleNode.textContent = title;
+      const badge = document.createElement("span");
+      badge.className = "chat-remote-worker-control-status-badge";
+      badge.dataset.chatRemoteWorkerStatus = "true";
+      badge.textContent = status || "Unknown";
+      heading.append(titleNode, badge);
+      const messageNode = document.createElement("p");
+      messageNode.dataset.chatRemoteWorkerMessage = "true";
+      messageNode.textContent = message || "";
+      card.append(heading, messageNode, chatConsoleRemoteWorkerStatusItems(items || []));
+      return card;
+    }
+
+    function chatConsoleUpdateRemoteWorkerControlLocalCard(capacity) {
+      chatConsoleRemoteWorkerControlState.lastCapacitySnapshot = capacity || null;
+      const modal = chatConsoleRemoteWorkerControlState.modal;
+      if (!modal) return;
+      const card = modal.querySelector('[data-chat-remote-worker-status-card="local"]');
+      const status = chatConsoleRemoteWorkerLocalStatus(
+        capacity,
+        chatConsoleRemoteWorkerControlState.lastThreadId,
+        chatConsoleRemoteWorkerControlState.lastRunId
+      );
+      chatConsolePopulateRemoteWorkerStatusCard(card, status);
+    }
+
+    function chatConsoleRemoteWorkerOptionCard({mode, title, kicker, description, details, defaultOption = false}) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `chat-remote-worker-control-option-card${defaultOption ? " default" : ""}`;
+      button.dataset.chatRemoteWorkerOption = mode;
+      button.addEventListener("click", () => chatConsoleChooseRemoteWorkerControlOption(mode, {reason: mode}));
+      const kickerNode = document.createElement("span");
+      kickerNode.className = "chat-remote-worker-control-option-kicker";
+      kickerNode.textContent = kicker || "";
+      const titleNode = document.createElement("strong");
+      titleNode.textContent = title;
+      const descriptionNode = document.createElement("span");
+      descriptionNode.className = "chat-remote-worker-control-option-description";
+      descriptionNode.textContent = description || "";
+      button.append(kickerNode, titleNode, descriptionNode);
+      if (details) {
+        const detailsNode = document.createElement("small");
+        detailsNode.textContent = details;
+        button.append(detailsNode);
+      }
+      return button;
+    }
+
+    function chatConsoleStopRemoteWorkerControlCapacityWatcher() {
+      if (chatConsoleRemoteWorkerControlState.capacityTimer) {
+        clearInterval(chatConsoleRemoteWorkerControlState.capacityTimer);
+        chatConsoleRemoteWorkerControlState.capacityTimer = null;
+      }
+      chatConsoleRemoteWorkerControlState.capacityRefreshInFlight = false;
+    }
+
+    async function chatConsoleRemoteWorkerControlCapacityTick() {
+      if (!chatConsoleRemoteWorkerControlState.modal || chatConsoleRemoteWorkerControlState.capacityRefreshInFlight) return;
+      const threadId = chatConsoleRemoteWorkerControlState.lastThreadId;
+      if (!threadId) return;
+      chatConsoleRemoteWorkerControlState.capacityRefreshInFlight = true;
+      try {
+        const snapshot = await chatConsoleFetchLocalAiCapacityNow(threadId);
+        chatConsoleUpdateRemoteWorkerControlLocalCard(snapshot);
+        if (!chatConsoleShouldOpenRemoteWorkerControlForCapacity(snapshot)) {
+          chatConsoleChooseRemoteWorkerControlOption("wait_local", {
+            auto: true,
+            reason: "local_ai_available",
+            closeReason: "auto-selected Wait for Available Local Worker because local AI became available"
+          });
+        }
+      } catch (error) {
+        chatConsoleSetStatus(`remote worker control capacity refresh failed: ${error.message || error}`);
+      } finally {
+        chatConsoleRemoteWorkerControlState.capacityRefreshInFlight = false;
+      }
+    }
+
+    function chatConsoleStartRemoteWorkerControlCapacityWatcher() {
+      chatConsoleStopRemoteWorkerControlCapacityWatcher();
+      chatConsoleRemoteWorkerControlState.capacityTimer = setInterval(
+        () => chatConsoleRemoteWorkerControlCapacityTick().catch(() => {}),
+        CHAT_CONSOLE_REMOTE_WORKER_CONTROL_CAPACITY_INTERVAL_MS
+      );
+    }
+
     function chatConsoleHideRemoteWorkerControlModal(reason = "dismissed") {
+      chatConsoleStopRemoteWorkerControlCapacityWatcher();
+      if (chatConsoleRemoteWorkerControlState.escapeHandler) {
+        document.removeEventListener("keydown", chatConsoleRemoteWorkerControlState.escapeHandler);
+        chatConsoleRemoteWorkerControlState.escapeHandler = null;
+      }
       const modal = chatConsoleRemoteWorkerControlState.modal || document.querySelector("[data-chat-console-remote-worker-control-modal]");
       if (modal) modal.remove();
       chatConsoleRemoteWorkerControlState.modal = null;
       if (reason) chatConsoleSetStatus(`remote worker control ${reason}`);
+    }
+
+    function chatConsoleRecordRemoteWorkerControlCellIntent(cellId, intent) {
+      const cell = chatConsoleState?.cells?.find((item) => item.id === cellId);
+      if (!cell) return false;
+      cell.remote_worker_overflow_intent = intent;
+      cell.updated_at = chatConsoleNow();
+      saveChatConsoleState("remote worker request intent saved");
+      return true;
+    }
+
+    function chatConsoleChooseRemoteWorkerControlOption(mode, context = {}) {
+      const now = chatConsoleNow();
+      const cellId = chatConsoleRemoteWorkerControlState.lastCellId;
+      const choice = {
+        mode,
+        selected_at: now,
+        auto: Boolean(context.auto),
+        reason: context.reason || mode,
+        thread_id: chatConsoleRemoteWorkerControlState.lastThreadId || "",
+        run_id: chatConsoleRemoteWorkerControlState.lastRunId || ""
+      };
+      chatConsoleRemoteWorkerControlState.lastChoice = choice;
+
+      if (mode === "use_remote_once") {
+        chatConsoleRecordRemoteWorkerControlCellIntent(cellId, {
+          mode: "once",
+          selected_at: now,
+          run_id: choice.run_id,
+          phase: "modal_controls_phase2"
+        });
+      } else if (mode === "use_remote_when_needed_for_chat") {
+        chatConsoleSetRemoteWorkerWhenBusyForChat(true, "remote worker chat preference enabled", {render: false});
+      } else if (mode === "always_when_busy") {
+        chatConsoleRemoteWorkerControlState.globalWhenBusyIntent = true;
+        try {
+          window.localStorage?.setItem?.("mainComputer.remoteWorker.alwaysWhenLocalAiBusy.intent", JSON.stringify({
+            enabled: true,
+            selected_at: now,
+            phase: "modal_controls_phase2"
+          }));
+        } catch {
+          // Local storage can be unavailable in hardened contexts; the modal still records the choice in memory.
+        }
+      }
+
+      chatConsoleHideRemoteWorkerControlModal(context.closeReason || mode);
+      if (mode === "use_remote_when_needed_for_chat" || mode === "use_remote_once") renderChatConsoleNotebook();
+      return choice;
     }
 
     function chatConsoleShowRemoteWorkerControlModal({cell, runId, threadId, capacity}) {
@@ -81,6 +315,11 @@
       backdrop.className = "chat-remote-worker-control-backdrop";
       backdrop.dataset.chatConsoleRemoteWorkerControlModal = "true";
       backdrop.setAttribute("role", "presentation");
+      backdrop.addEventListener("click", (event) => {
+        if (event.target === backdrop) {
+          chatConsoleChooseRemoteWorkerControlOption("wait_local", {reason: "backdrop_wait_local"});
+        }
+      });
 
       const modal = document.createElement("section");
       modal.className = "chat-remote-worker-control-modal";
@@ -89,52 +328,79 @@
       modal.setAttribute("aria-labelledby", "chat-remote-worker-control-title");
       modal.setAttribute("aria-describedby", "chat-remote-worker-control-description");
 
+      const header = document.createElement("div");
+      header.className = "chat-remote-worker-control-header";
+      const headingWrap = document.createElement("div");
       const eyebrow = document.createElement("div");
       eyebrow.className = "chat-remote-worker-control-eyebrow";
-      eyebrow.textContent = "Phase 1 busy-local trigger";
-
+      eyebrow.textContent = "Phase 2 remote-worker controls";
       const title = document.createElement("h2");
       title.id = "chat-remote-worker-control-title";
       title.textContent = "Remote Worker control";
+      headingWrap.append(eyebrow, title);
+      const close = chatConsoleButton("×", () => chatConsoleChooseRemoteWorkerControlOption("wait_local", {reason: "close_wait_local"}));
+      close.className = "chat-remote-worker-control-x";
+      close.setAttribute("aria-label", "Wait for Available Local Worker and close");
+      header.append(headingWrap, close);
 
       const description = document.createElement("p");
       description.id = "chat-remote-worker-control-description";
-      description.textContent = "Local AI is busy. Remote worker controls will appear here next; this phase only proves that the UI opens immediately when the local AI slot is occupied.";
+      description.textContent = "Local AI is busy. Review the current local worker and remote hub template, then choose how this request should wait or mark remote-worker intent.";
 
-      const reason = document.createElement("p");
-      reason.className = "chat-remote-worker-control-reason";
-      reason.textContent = chatConsoleRemoteWorkerControlSummary(capacity);
+      const statusGrid = document.createElement("div");
+      statusGrid.className = "chat-remote-worker-control-status-grid";
+      const localStatus = chatConsoleRemoteWorkerLocalStatus(capacity, threadId, runId || cell?.run_id || "");
+      const hubStatus = chatConsoleRemoteWorkerHubStatus();
+      statusGrid.append(
+        chatConsoleRemoteWorkerStatusCard({kind: "local", title: "Current Local AI Worker", ...localStatus}),
+        chatConsoleRemoteWorkerStatusCard({kind: "hub", title: "Remote Hub / Workers", ...hubStatus})
+      );
 
-      const diagnostics = document.createElement("dl");
-      diagnostics.className = "chat-remote-worker-control-diagnostics";
-      const items = [
-        ["Reason", capacity?.reason_code || "local_ai_busy"],
-        ["Active local AI runs", String(capacity?.active_run_count ?? "")],
-        ["Checked thread", threadId || capacity?.thread_id || ""],
-        ["Run", runId || cell?.run_id || ""]
-      ];
-      items.forEach(([label, value]) => {
-        const term = document.createElement("dt");
-        term.textContent = label;
-        const detail = document.createElement("dd");
-        detail.textContent = value || "not available";
-        diagnostics.append(term, detail);
-      });
+      const optionsTitle = document.createElement("h3");
+      optionsTitle.className = "chat-remote-worker-control-options-title";
+      optionsTitle.textContent = "Choose a path";
+
+      const optionsGrid = document.createElement("div");
+      optionsGrid.className = "chat-remote-worker-control-option-grid";
+      optionsGrid.append(
+        chatConsoleRemoteWorkerOptionCard({
+          mode: "wait_local",
+          kicker: "Default / safe",
+          title: "Wait for Available Local Worker",
+          description: "Close this control and keep local-first behavior.",
+          details: "This is also selected automatically when the blocking local AI call disappears.",
+          defaultOption: true
+        }),
+        chatConsoleRemoteWorkerOptionCard({
+          mode: "use_remote_once",
+          kicker: "This request",
+          title: "Use Remote Worker This Once",
+          description: "Mark this one blocked request for remote-worker overflow.",
+          details: "No chat or global setting is changed in this phase."
+        }),
+        chatConsoleRemoteWorkerOptionCard({
+          mode: "use_remote_when_needed_for_chat",
+          kicker: "This chat",
+          title: "Use Remote Worker When Needed for This Chat",
+          description: "Enable the visible chat option beside the RAG controls.",
+          details: "Uncheck that chat option later to back out."
+        }),
+        chatConsoleRemoteWorkerOptionCard({
+          mode: "always_when_busy",
+          kicker: "Global preference",
+          title: "Always Use Remote Worker When Local AI Is Busy",
+          description: "Record global remote-worker intent for busy-local overflow.",
+          details: "To turn this off later, open the Worker app and unselect this option."
+        })
+      );
 
       const notice = document.createElement("p");
       notice.className = "chat-remote-worker-control-notice";
-      notice.textContent = "No credits are checked, held, or spent in this Phase 1 modal. No remote worker is contacted yet.";
+      notice.textContent = "Phase 2 records modal choices only. No credits are checked, held, or spent; no hub assessment or remote worker is contacted yet.";
 
-      const actions = document.createElement("div");
-      actions.className = "chat-remote-worker-control-actions";
-      const close = chatConsoleButton("Close", () => chatConsoleHideRemoteWorkerControlModal("closed"));
-      close.className = "chat-remote-worker-control-close";
-      actions.append(close);
-
-      modal.append(eyebrow, title, description, reason, diagnostics, notice, actions);
+      modal.append(header, description, statusGrid, optionsTitle, optionsGrid, notice);
       backdrop.append(modal);
       document.body.append(backdrop);
-      close.focus({preventScroll: true});
 
       chatConsoleRemoteWorkerControlState.modal = backdrop;
       chatConsoleRemoteWorkerControlState.lastCapacitySnapshot = capacity || null;
@@ -142,6 +408,18 @@
       chatConsoleRemoteWorkerControlState.lastCellId = cell?.id || "";
       chatConsoleRemoteWorkerControlState.lastRunId = runId || cell?.run_id || "";
       chatConsoleRemoteWorkerControlState.lastThreadId = threadId || "";
+
+      chatConsoleRemoteWorkerControlState.escapeHandler = (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          chatConsoleChooseRemoteWorkerControlOption("wait_local", {reason: "escape_wait_local"});
+        }
+      };
+      document.addEventListener("keydown", chatConsoleRemoteWorkerControlState.escapeHandler);
+
+      const defaultOption = modal.querySelector('[data-chat-remote-worker-option="wait_local"]');
+      defaultOption?.focus?.({preventScroll: true});
+      chatConsoleStartRemoteWorkerControlCapacityWatcher();
       chatConsoleSetStatus("remote worker control opened because local AI is busy");
       return backdrop;
     }
@@ -1351,12 +1629,16 @@
         attachments: cell.attachments || [],
         rag_assisted_thinking: Boolean(cell.rag_assisted_thinking),
         rag_assisted_thinking_options: cell.rag_assisted_thinking_options || {},
-        mount_plugin_options: cell.mount_plugin_options || {}
+        mount_plugin_options: cell.mount_plugin_options || {},
+        remote_worker_overflow_intent: cell.remote_worker_overflow_intent || {}
       });
     }
 
     function chatConsoleNotebookRenderSignature() {
-      return chatConsoleRenderSignatureValue(chatConsoleVisibleCellsForRender().map(chatConsoleCellRenderSignature));
+      return chatConsoleRenderSignatureValue({
+        cells: chatConsoleVisibleCellsForRender().map(chatConsoleCellRenderSignature),
+        remote_worker_options: chatConsoleRemoteWorkerOptions()
+      });
     }
 
     function captureChatConsoleNotebookFocus(target) {
@@ -1719,8 +2001,9 @@
       const options = chatConsoleRagAtOptions(cell);
       const mountPluginControls = renderChatConsoleMountPluginControls(cell);
       const hasEnabledMountPlugin = mountPluginControls.some((control) => control.querySelector("input")?.checked);
+      const remoteWorkerChatEnabled = chatConsoleRemoteWorkerWhenBusyForChatEnabled();
       const wrap = document.createElement("div");
-      wrap.className = `chat-rag-at-controls${options.enabled || hasEnabledMountPlugin ? " enabled" : ""}`;
+      wrap.className = `chat-rag-at-controls${options.enabled || hasEnabledMountPlugin || remoteWorkerChatEnabled ? " enabled" : ""}`;
 
       const toggleLabel = document.createElement("label");
       toggleLabel.className = "chat-rag-at-toggle";
@@ -1729,6 +2012,18 @@
       toggle.checked = options.enabled;
       toggle.addEventListener("change", () => updateChatConsoleRagAtOptions(cell.id, {enabled: toggle.checked}));
       toggleLabel.append(toggle, document.createTextNode(" RAG-AT"));
+
+      const remoteWorkerLabel = document.createElement("label");
+      remoteWorkerLabel.className = `chat-rag-at-toggle chat-remote-worker-chat-toggle${remoteWorkerChatEnabled ? " enabled" : ""}`;
+      remoteWorkerLabel.title = "Use remote worker overflow when local AI is busy for this chat. Uncheck to back out.";
+      const remoteWorkerToggle = document.createElement("input");
+      remoteWorkerToggle.type = "checkbox";
+      remoteWorkerToggle.checked = remoteWorkerChatEnabled;
+      remoteWorkerToggle.dataset.chatRemoteWorkerWhenBusyForChat = "true";
+      remoteWorkerToggle.addEventListener("change", () => {
+        chatConsoleSetRemoteWorkerWhenBusyForChat(remoteWorkerToggle.checked, remoteWorkerToggle.checked ? "remote worker chat preference enabled" : "remote worker chat preference disabled");
+      });
+      remoteWorkerLabel.append(remoteWorkerToggle, document.createTextNode(" Remote worker when local AI is busy for this chat"));
 
       const thinkLabel = document.createElement("label");
       thinkLabel.className = "chat-rag-at-field";
@@ -1749,7 +2044,7 @@
       hint.className = "chat-rag-at-hint";
       hint.textContent = options.enabled ? "AI activity; Docker follows global executor setting" : hasEnabledMountPlugin ? "mount plugin on" : "off";
 
-      wrap.append(toggleLabel, ...mountPluginControls, thinkLabel, hint);
+      wrap.append(toggleLabel, ...mountPluginControls, remoteWorkerLabel, thinkLabel, hint);
       return wrap;
     }
     function renderChatConsoleInputCell(cell) {
@@ -2399,5 +2694,18 @@
         return chatConsoleReadEmbeddedContext(chatConsoleActiveEmbeddedSessionForPayload());
       },
       renderNotebook: renderChatConsoleNotebook,
-      addCell: addChatConsoleCell
+      addCell: addChatConsoleCell,
+      closeRemoteWorkerControl(reason = "programmatic_wait_local") {
+        return chatConsoleChooseRemoteWorkerControlOption("wait_local", {reason, closeReason: reason});
+      },
+      getRemoteWorkerControlState() {
+        return {
+          open: Boolean(chatConsoleRemoteWorkerControlState.modal),
+          lastChoice: chatConsoleRemoteWorkerControlState.lastChoice,
+          lastThreadId: chatConsoleRemoteWorkerControlState.lastThreadId,
+          lastRunId: chatConsoleRemoteWorkerControlState.lastRunId,
+          chatWhenBusy: chatConsoleRemoteWorkerWhenBusyForChatEnabled(),
+          globalWhenBusyIntent: Boolean(chatConsoleRemoteWorkerControlState.globalWhenBusyIntent)
+        };
+      }
     };
