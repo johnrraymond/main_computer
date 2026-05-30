@@ -37,7 +37,9 @@
       pendingLocalRequests: new Map(),
       localStartLease: null,
       resolveChoice: null,
-      globalWhenBusyIntent: false
+      globalWhenBusyIntent: null,
+      lastCloseReason: null,
+      lastIntent: null
     };
     const chatConsoleNotebookRenderSignatures = new WeakMap();
 
@@ -79,14 +81,80 @@
 
     function chatConsoleSetRemoteWorkerWhenBusyForChat(enabled, message = "remote worker chat preference saved", options = {}) {
       if (!chatConsoleState) return false;
-      chatConsoleState.remote_worker_options = {
+      const now = chatConsoleNow();
+      const nextOptions = {
         ...chatConsoleRemoteWorkerOptions(),
         when_busy_for_chat: Boolean(enabled),
-        updated_at: chatConsoleNow()
+        updated_at: now
       };
+      if (options.intent) {
+        nextOptions.when_busy_for_chat_intent = options.intent;
+      } else if (!enabled) {
+        nextOptions.when_busy_for_chat_intent = null;
+      }
+      if (!enabled) nextOptions.when_busy_for_chat_cleared_at = now;
+      if (options.closeReason) nextOptions.when_busy_for_chat_close_reason = options.closeReason;
+      chatConsoleState.remote_worker_options = nextOptions;
       saveChatConsoleState(message);
       if (options.render !== false) renderChatConsoleNotebook();
       return true;
+    }
+
+    function chatConsoleCanonicalRemoteWorkerIntentMode(mode) {
+      const raw = String(mode || "").trim();
+      const aliases = {
+        use_remote_once: "remote_once",
+        use_remote_when_needed_for_chat: "remote_when_needed_for_chat",
+        always_when_busy: "remote_when_needed_global",
+        remote_global: "remote_when_needed_global"
+      };
+      return aliases[raw] || raw || "wait_local";
+    }
+
+    function chatConsoleRemoteWorkerIntentScope(mode) {
+      if (mode === "remote_once" || mode === "wait_local") return "request";
+      if (mode === "remote_when_needed_for_chat") return "chat";
+      if (mode === "remote_when_needed_global") return "global";
+      return "request";
+    }
+
+    function chatConsoleBuildRemoteWorkerControlIntent({mode, pendingRequest = null, source = "modal_option", auto = false, reason = "", active = true} = {}) {
+      const canonicalMode = chatConsoleCanonicalRemoteWorkerIntentMode(mode);
+      const request = pendingRequest || chatConsolePendingLocalAiRequest();
+      return {
+        mode: canonicalMode,
+        scope: chatConsoleRemoteWorkerIntentScope(canonicalMode),
+        active: Boolean(active),
+        source,
+        selected_at: chatConsoleNow(),
+        pending_request_id: request?.id || "",
+        thread_id: request?.thread_id || "",
+        run_id: request?.run_id || "",
+        cell_id: request?.cell_id || "",
+        reason: reason || canonicalMode,
+        auto: Boolean(auto),
+        phase: "phase5_durable_intent",
+        remote_execution_started: false,
+        mock_remote_submit_started: false,
+        credit_hold_created: false,
+        credit_spent: false,
+        permanent_worker_setting_changed: false
+      };
+    }
+
+    function chatConsoleBuildRemoteWorkerControlCloseReason({reason = "dismissed", pendingRequest = null, source = "modal", auto = false} = {}) {
+      const request = pendingRequest || chatConsolePendingLocalAiRequest();
+      return {
+        reason: String(reason || "dismissed"),
+        source,
+        closed_at: chatConsoleNow(),
+        auto: Boolean(auto),
+        pending_request_id: request?.id || "",
+        thread_id: request?.thread_id || "",
+        run_id: request?.run_id || "",
+        cell_id: request?.cell_id || "",
+        phase: "phase5_durable_intent"
+      };
     }
 
     function chatConsoleCreatePendingLocalAiRequestId(runId) {
@@ -607,10 +675,11 @@
       if (reason) chatConsoleSetStatus(`remote worker control ${reason}`);
     }
 
-    function chatConsoleRecordRemoteWorkerControlCellIntent(cellId, intent) {
+    function chatConsoleRecordRemoteWorkerControlCellIntent(cellId, intent, closeReason = null) {
       const cell = chatConsoleState?.cells?.find((item) => item.id === cellId);
       if (!cell) return false;
       cell.remote_worker_overflow_intent = intent;
+      cell.remote_worker_overflow_close_reason = closeReason;
       cell.updated_at = chatConsoleNow();
       saveChatConsoleState("remote worker request intent saved");
       return true;
@@ -634,51 +703,63 @@
       const pendingRequestId = String(context.pendingRequestId || chatConsoleRemoteWorkerControlState.activePendingRequestId || "").trim();
       const pendingRequest = chatConsolePendingLocalAiRequest(pendingRequestId);
       if (!pendingRequest) return null;
+      const canonicalMode = chatConsoleCanonicalRemoteWorkerIntentMode(mode);
       const cellId = pendingRequest.cell_id || chatConsoleRemoteWorkerControlState.lastCellId;
+      const closeReason = chatConsoleBuildRemoteWorkerControlCloseReason({
+        reason: context.closeReason || context.reason || canonicalMode,
+        pendingRequest,
+        source: context.source || (context.auto ? "system" : "modal_option"),
+        auto: Boolean(context.auto)
+      });
+      const intent = chatConsoleBuildRemoteWorkerControlIntent({
+        mode: canonicalMode,
+        pendingRequest,
+        source: context.source || (context.auto ? "system" : "modal_option"),
+        auto: Boolean(context.auto),
+        reason: context.reason || canonicalMode
+      });
       const choice = {
-        mode,
+        mode: canonicalMode,
+        requested_mode: mode,
         selected_at: now,
         auto: Boolean(context.auto),
-        reason: context.reason || mode,
-        close_reason: context.closeReason || mode,
+        reason: context.reason || canonicalMode,
+        close_reason: closeReason.reason,
+        close_reason_details: closeReason,
         pending_request_id: pendingRequest.id,
         thread_id: pendingRequest.thread_id || "",
-        run_id: pendingRequest.run_id || ""
+        run_id: pendingRequest.run_id || "",
+        intent
       };
       chatConsoleRemoteWorkerControlState.lastChoice = choice;
+      chatConsoleRemoteWorkerControlState.lastIntent = intent;
+      chatConsoleRemoteWorkerControlState.lastCloseReason = closeReason;
       chatConsoleUpdatePendingLocalAiRequest(pendingRequest.id, {
-        status: mode === "wait_local" ? "waiting_local" : "intent_recorded",
-        close_reason: choice.close_reason,
+        status: canonicalMode === "wait_local" ? "waiting_local" : "intent_recorded",
+        close_reason: closeReason.reason,
+        remote_worker_overflow_close_reason: closeReason,
+        remote_worker_overflow_intent: intent,
         choice
       });
+      chatConsoleRecordRemoteWorkerControlCellIntent(cellId, intent, closeReason);
 
-      if (mode === "use_remote_once") {
-        chatConsoleRecordRemoteWorkerControlCellIntent(cellId, {
-          mode: "once",
-          selected_at: now,
-          run_id: choice.run_id,
-          pending_request_id: pendingRequest.id,
-          phase: "modal_controls_phase3"
+      if (canonicalMode === "remote_when_needed_for_chat" || mode === "use_remote_when_needed_for_chat") {
+        chatConsoleSetRemoteWorkerWhenBusyForChat(true, "remote worker chat preference enabled", {
+          render: false,
+          intent,
+          closeReason
         });
-      } else if (mode === "use_remote_when_needed_for_chat") {
-        chatConsoleSetRemoteWorkerWhenBusyForChat(true, "remote worker chat preference enabled", {render: false});
-      } else if (mode === "always_when_busy") {
-        chatConsoleRemoteWorkerControlState.globalWhenBusyIntent = true;
-        try {
-          window.localStorage?.setItem?.("mainComputer.remoteWorker.alwaysWhenLocalAiBusy.intent", JSON.stringify({
-            enabled: true,
-            selected_at: now,
-            pending_request_id: pendingRequest.id,
-            phase: "modal_controls_phase3"
-          }));
-        } catch {
-          // Local storage can be unavailable in hardened contexts; the modal still records the choice in memory.
-        }
+      } else if (canonicalMode === "remote_when_needed_global" || mode === "always_when_busy") {
+        chatConsoleRemoteWorkerControlState.globalWhenBusyIntent = {
+          intent,
+          close_reason: closeReason,
+          permanent_worker_setting_changed: false
+        };
       }
 
-      chatConsoleHideRemoteWorkerControlModal(context.closeReason || mode);
+      chatConsoleHideRemoteWorkerControlModal(closeReason.reason);
       chatConsoleResolveRemoteWorkerControlChoice(choice, pendingRequest.id);
-      if (mode === "use_remote_when_needed_for_chat" || mode === "use_remote_once") renderChatConsoleNotebook();
+      if (canonicalMode === "remote_when_needed_for_chat" || canonicalMode === "remote_once") renderChatConsoleNotebook();
       return choice;
     }
 
@@ -717,7 +798,7 @@
       const headingWrap = document.createElement("div");
       const eyebrow = document.createElement("div");
       eyebrow.className = "chat-remote-worker-control-eyebrow";
-      eyebrow.textContent = "Phase 4 remote-worker assessment";
+      eyebrow.textContent = "Phase 5 durable remote-worker intent";
       const title = document.createElement("h2");
       title.id = "chat-remote-worker-control-title";
       title.textContent = "Remote Worker control";
@@ -729,7 +810,7 @@
 
       const description = document.createElement("p");
       description.id = "chat-remote-worker-control-description";
-      description.textContent = "Local AI is busy. This panel shows the blocking local worker and a compact read-only remote-overflow assessment. No credits are held or spent, and no remote worker is contacted in this phase.";
+      description.textContent = "Local AI is busy. This panel shows the blocking local worker, a compact read-only remote-overflow assessment, and records the selected intent separately from the modal close reason. No credits are held or spent, and no remote worker is contacted in this phase.";
 
       const statusGrid = document.createElement("div");
       statusGrid.className = "chat-remote-worker-control-status-grid";
@@ -772,28 +853,28 @@
           mode: "use_remote_once",
           kicker: "This request",
           title: "Use Remote Worker This Once",
-          description: "Mark this one blocked request for remote-worker overflow.",
-          details: "No chat or global setting is changed in this phase."
+          description: "Record request-scoped remote-worker intent for this blocked request.",
+          details: "Phase 5 records intent only; no mock submit or real remote work starts yet, and no chat or global setting is changed."
         }),
         chatConsoleRemoteWorkerOptionCard({
           mode: "use_remote_when_needed_for_chat",
           kicker: "This chat",
           title: "Use Remote Worker When Needed for This Chat",
           description: "Enable the visible chat option beside the RAG controls.",
-          details: "Uncheck that chat option later to back out."
+          details: "Uncheck that chat option later to clear the chat-scoped intent."
         }),
         chatConsoleRemoteWorkerOptionCard({
           mode: "always_when_busy",
           kicker: "Global preference",
           title: "Always Use Remote Worker When Local AI Is Busy",
-          description: "Record global remote-worker intent for busy-local overflow.",
-          details: "To turn this off later, open the Worker app and unselect this option."
+          description: "Record non-permanent global remote-worker intent for busy-local overflow.",
+          details: "The Worker app global setting is not connected yet, so no permanent Worker setting is changed in this phase."
         })
       );
 
       const notice = document.createElement("p");
       notice.className = "chat-remote-worker-control-notice";
-      notice.textContent = "Phase 4 displays read-only diagnostic assessment cards and keeps the existing Phase 3 pending-request ownership and local-start lease. No credits are held or spent; no mock submit, real hub request, or real remote worker is contacted yet.";
+      notice.textContent = "Phase 5 records durable, inspectable intent and a separate close reason while keeping the read-only assessment, pending-request ownership, and local-start lease. No credits are held or spent; no mock submit, real hub request, permanent Worker setting, or real remote worker is contacted yet.";
 
       const pendingFooter = document.createElement("p");
       pendingFooter.className = "chat-remote-worker-control-pending-footer";
@@ -2469,7 +2550,21 @@
       remoteWorkerToggle.checked = remoteWorkerChatEnabled;
       remoteWorkerToggle.dataset.chatRemoteWorkerWhenBusyForChat = "true";
       remoteWorkerToggle.addEventListener("change", () => {
-        chatConsoleSetRemoteWorkerWhenBusyForChat(remoteWorkerToggle.checked, remoteWorkerToggle.checked ? "remote worker chat preference enabled" : "remote worker chat preference disabled");
+        const toggleIntent = chatConsoleBuildRemoteWorkerControlIntent({
+          mode: "remote_when_needed_for_chat",
+          source: "chat_request_pane_checkbox",
+          reason: remoteWorkerToggle.checked ? "chat_checkbox_enabled" : "chat_checkbox_disabled",
+          active: remoteWorkerToggle.checked
+        });
+        const toggleCloseReason = chatConsoleBuildRemoteWorkerControlCloseReason({
+          reason: remoteWorkerToggle.checked ? "chat_checkbox_enabled" : "chat_checkbox_disabled",
+          source: "chat_request_pane_checkbox"
+        });
+        chatConsoleSetRemoteWorkerWhenBusyForChat(
+          remoteWorkerToggle.checked,
+          remoteWorkerToggle.checked ? "remote worker chat preference enabled" : "remote worker chat preference disabled",
+          {intent: remoteWorkerToggle.checked ? toggleIntent : null, closeReason: toggleCloseReason}
+        );
       });
       remoteWorkerLabel.append(remoteWorkerToggle, document.createTextNode(" Remote worker when local AI is busy for this chat"));
 
@@ -3188,8 +3283,10 @@
           lastThreadId: chatConsoleRemoteWorkerControlState.lastThreadId,
           lastRunId: chatConsoleRemoteWorkerControlState.lastRunId,
           lastAssessment: chatConsoleRemoteWorkerControlState.lastAssessment,
+          lastIntent: chatConsoleRemoteWorkerControlState.lastIntent,
+          lastCloseReason: chatConsoleRemoteWorkerControlState.lastCloseReason,
           chatWhenBusy: chatConsoleRemoteWorkerWhenBusyForChatEnabled(),
-          globalWhenBusyIntent: Boolean(chatConsoleRemoteWorkerControlState.globalWhenBusyIntent)
+          globalWhenBusyIntent: chatConsoleRemoteWorkerControlState.globalWhenBusyIntent
         };
       }
     };

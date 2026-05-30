@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-"""Static smoke for the Phase 4 busy-local Remote Worker assessment modal.
+"""Static smoke for the Phase 5 busy-local Remote Worker durable intent modal.
 
 This smoke proves the Chat Console checks local AI capacity during AI request
 startup, opens the modal before the normal AI evaluation fetch, calls the
-read-only remote-overflow assessment endpoint, renders a compact assessment summary with collapsed diagnostic cards, exposes
+read-only remote-overflow assessment endpoint, renders a compact assessment summary with collapsed diagnostic cards, records durable selectable intent separately from close reasons, exposes
 large selectable option cards, and keeps the phase free of credit holds/spend,
 mock submit, real hub submit, or real remote worker contact. It also proves the
 modal polls every 2 seconds, binds to one pending request, and waits for a
@@ -36,7 +36,7 @@ def main() -> int:
         "waiting for local AI slot before starting the pending local request",
         "local AI became available after wait-local close; acquiring pending request lease before starting locally",
         "local AI became available; acquiring pending request lease before starting locally",
-        "Phase 4 remote-worker assessment",
+        "Phase 5 durable remote-worker intent",
         "Current Local AI Worker",
         "Remote Overflow Assessment",
         "Show diagnostic details",
@@ -45,10 +45,11 @@ def main() -> int:
         "Use Remote Worker This Once",
         "Use Remote Worker When Needed for This Chat",
         "Always Use Remote Worker When Local AI Is Busy",
-        "To turn this off later, open the Worker app and unselect this option.",
+        "The Worker app global setting is not connected yet, so no permanent Worker setting is changed in this phase.",
         "Remote worker when local AI is busy for this chat",
         "dataset.chatRemoteWorkerWhenBusyForChat",
         "compact read-only remote-overflow assessment",
+        "records the selected intent separately from the modal close reason",
         "Blocking worker age",
         "Last checked",
         "No credits are held or spent",
@@ -59,6 +60,18 @@ def main() -> int:
         "data-chat-remote-worker-pending-request-footer",
         "Unable to acquire local AI start lease",
         "local AI start lease is held",
+        "function chatConsoleCanonicalRemoteWorkerIntentMode",
+        "function chatConsoleBuildRemoteWorkerControlIntent",
+        "function chatConsoleBuildRemoteWorkerControlCloseReason",
+        "phase5_durable_intent",
+        "remote_worker_overflow_intent",
+        "remote_worker_overflow_close_reason",
+        "lastIntent",
+        "lastCloseReason",
+        "close_reason_details",
+        "remote_execution_started: false",
+        "mock_remote_submit_started: false",
+        "permanent_worker_setting_changed: false",
         "function chatConsoleFetchRemoteOverflowAssessment",
         "function chatConsoleBuildRemoteOverflowAssessmentPayload",
         "function chatConsoleRefreshRemoteOverflowAssessment",
@@ -97,7 +110,7 @@ def main() -> int:
 
     print({
         "ok": True,
-        "phase": "remote worker modal compact assessment",
+        "phase": "remote worker modal durable intent with compact assessment",
         "assessment_endpoint": "/api/applications/chat-console/ai/remote-overflow/assess",
         "capacity_endpoint": "/api/applications/chat-console/ai/capacity",
         "status_cards": ["Current Local AI Worker", "Remote Overflow Assessment"],
