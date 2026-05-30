@@ -31,6 +31,9 @@ def test_chat_console_remote_worker_modal_is_phase_two_control_panel() -> None:
     assert "Remote Hub / Workers" in source
     assert "Hub worker information will appear here as the overflow pathway matures." in source
     assert "Phase 2 records modal choices only." in source
+    assert "This panel refreshes the blocking local worker every 2 seconds." in source
+    assert "Blocking worker age" in source
+    assert "Last checked" in source
     assert "No credits are checked, held, or spent" in source
     assert "no hub assessment or remote worker is contacted yet." in source
     assert "data-chat-console-remote-worker-control-modal" in source
@@ -69,12 +72,12 @@ def test_chat_console_remote_worker_chat_choice_is_visible_and_reversible_like_r
 def test_chat_console_remote_worker_wait_is_default_and_auto_selected() -> None:
     source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
 
-    assert "CHAT_CONSOLE_REMOTE_WORKER_CONTROL_CAPACITY_INTERVAL_MS" in source
+    assert "CHAT_CONSOLE_REMOTE_WORKER_CONTROL_CAPACITY_INTERVAL_MS = 2000" in source
     assert "function chatConsoleStartRemoteWorkerControlCapacityWatcher" in source
     assert "function chatConsoleRemoteWorkerControlCapacityTick" in source
     assert 'chatConsoleChooseRemoteWorkerControlOption("wait_local"' in source
-    assert "auto-selected Wait for Available Local Worker because local AI became available" in source
-    assert "This is also selected automatically when the blocking local AI call disappears." in source
+    assert "auto-selected Wait for Available Local Worker because local AI became available; starting the pending request locally" in source
+    assert "If you leave this open, this is selected automatically when the blocking local AI call disappears and the pending request starts locally." in source
     assert "escape_wait_local" in source
     assert "close_wait_local" in source
     assert "backdrop_wait_local" in source
@@ -99,3 +102,23 @@ def test_chat_console_remote_worker_modal_has_styles() -> None:
     assert ".chat-remote-worker-control-option-card" in css
     assert ".chat-remote-worker-control-option-card.default" in css
     assert ".chat-remote-worker-chat-toggle.enabled" in css
+
+
+def test_chat_console_remote_worker_busy_preflight_waits_before_local_fetch() -> None:
+    source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
+
+    assert "const choice = await new Promise((resolve) => {" in source
+    assert "resolveChoice: resolve" in source
+    assert "chatConsoleResolveRemoteWorkerControlChoice(choice)" in source
+    assert "function chatConsoleWaitForLocalAiCapacityAvailable" in source
+    assert "function chatConsoleRemoteWorkerSleep" in source
+    assert "local AI became available; starting pending request locally" in source
+    assert "local AI is busy; waiting on Remote Worker control before starting the pending local request" in source
+    assert "waiting for local AI slot before starting the pending local request" in source
+    assert "local AI became available after wait-local close; starting pending request locally" in source
+
+    preflight_index = source.index("const remoteWorkerGate = await chatConsoleMaybeShowRemoteWorkerControlForBusyLocal")
+    local_start_index = source.index("local AI became available; starting pending request locally")
+    fetch_index = source.index("const response = await fetch(endpoint")
+    assert preflight_index < fetch_index
+    assert local_start_index < fetch_index

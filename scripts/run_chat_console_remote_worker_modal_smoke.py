@@ -6,7 +6,8 @@ This smoke proves the Chat Console checks local AI capacity during AI request
 startup, opens the modal before the normal AI evaluation fetch, shows the
 two-card local/hub status grid, exposes large selectable option cards, and
 keeps the phase free of credit checks, real hub submit, or real remote worker
-contact.
+contact. It also proves the modal polls every 2 seconds and waits to start
+the pending local request until local AI becomes available or the user chooses.
 """
 
 from pathlib import Path
@@ -23,9 +24,17 @@ def main() -> int:
         "function chatConsoleFetchLocalAiCapacityNow",
         "function chatConsoleShowRemoteWorkerControlModal",
         "function chatConsoleChooseRemoteWorkerControlOption",
-        "CHAT_CONSOLE_REMOTE_WORKER_CONTROL_CAPACITY_INTERVAL_MS",
+        "CHAT_CONSOLE_REMOTE_WORKER_CONTROL_CAPACITY_INTERVAL_MS = 2000",
         "/api/applications/chat-console/ai/capacity",
-        "await chatConsoleMaybeShowRemoteWorkerControlForBusyLocal",
+        "const remoteWorkerGate = await chatConsoleMaybeShowRemoteWorkerControlForBusyLocal",
+        "const choice = await new Promise((resolve) => {",
+        "resolveChoice: resolve",
+        "function chatConsoleWaitForLocalAiCapacityAvailable",
+        "function chatConsoleRemoteWorkerSleep",
+        "local AI is busy; waiting on Remote Worker control before starting the pending local request",
+        "waiting for local AI slot before starting the pending local request",
+        "local AI became available after wait-local close; starting pending request locally",
+        "local AI became available; starting pending request locally",
         "Phase 2 remote-worker controls",
         "Current Local AI Worker",
         "Remote Hub / Workers",
@@ -38,6 +47,9 @@ def main() -> int:
         "To turn this off later, open the Worker app and unselect this option.",
         "Remote worker when local AI is busy for this chat",
         "dataset.chatRemoteWorkerWhenBusyForChat",
+        "This panel refreshes the blocking local worker every 2 seconds.",
+        "Blocking worker age",
+        "Last checked",
         "No credits are checked, held, or spent",
         "no hub assessment or remote worker is contacted yet",
     ]
@@ -74,6 +86,8 @@ def main() -> int:
         ],
         "credits_checked": False,
         "remote_worker_contacted": False,
+        "capacity_poll_interval_ms": 2000,
+        "starts_local_after_capacity_available": True,
     })
     return 0
 

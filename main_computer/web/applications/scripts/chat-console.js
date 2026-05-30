@@ -7,7 +7,7 @@
     const CHAT_CONSOLE_AI_RECONNECT_INTERVAL_MS = 1200;
     const CHAT_CONSOLE_THINKING_ACTIVITY_INTERVAL_MS = 5000;
     const CHAT_CONSOLE_THINKING_OLLAMA_INTERVAL_MS = 20000;
-    const CHAT_CONSOLE_REMOTE_WORKER_CONTROL_CAPACITY_INTERVAL_MS = 1000;
+    const CHAT_CONSOLE_REMOTE_WORKER_CONTROL_CAPACITY_INTERVAL_MS = 2000;
     const chatConsoleThinkingState = {
       events: [],
       ollamaModels: [],
@@ -31,6 +31,7 @@
       lastCellId: "",
       lastRunId: "",
       lastThreadId: "",
+      resolveChoice: null,
       globalWhenBusyIntent: false
     };
     const chatConsoleNotebookRenderSignatures = new WeakMap();
@@ -121,10 +122,14 @@
       const activeRuns = Number(capacity?.active_run_count || 0);
       const maxConcurrency = Number(capacity?.max_local_concurrency || 1);
       const busy = chatConsoleShouldOpenRemoteWorkerControlForCapacity(capacity);
+      const activeRunList = Array.isArray(capacity?.active_runs) ? capacity.active_runs : [];
       const activeThreadIds = Array.isArray(capacity?.active_thread_ids) ? capacity.active_thread_ids.filter(Boolean) : [];
-      const activeRunIds = Array.isArray(capacity?.active_runs)
-        ? capacity.active_runs.map((run) => run?.run_id || run?.id || "").filter(Boolean)
-        : [];
+      const matchingRun = activeRunList.find((run) => String(run?.thread_id || "") === String(threadId || ""))
+        || activeRunList[0]
+        || null;
+      const activeRunIds = activeRunList.map((run) => run?.run_id || run?.id || "").filter(Boolean);
+      const ageSeconds = Number(matchingRun?.age_s || 0);
+      const checkedAt = capacity?.updated_at ? new Date(capacity.updated_at).toLocaleTimeString() : new Date().toLocaleTimeString();
       return {
         status: busy ? "Busy" : "Available",
         message: chatConsoleRemoteWorkerControlSummary(capacity),
@@ -132,9 +137,12 @@
           ["Reason", capacity?.reason_code || (busy ? "local_ai_busy" : "local_ai_available")],
           ["Active local AI runs", `${activeRuns} / ${maxConcurrency} local slot${maxConcurrency === 1 ? "" : "s"}`],
           ["Checked thread", threadId || capacity?.thread_id || ""],
-          ["Run", runId || ""],
-          ["Blocking thread", activeThreadIds[0] || ""],
-          ["Blocking run", activeRunIds[0] || ""]
+          ["Pending request run", runId || ""],
+          ["Blocking thread", matchingRun?.thread_id || activeThreadIds[0] || ""],
+          ["Blocking run", matchingRun?.run_id || activeRunIds[0] || ""],
+          ["Blocking PID", matchingRun?.pid ? String(matchingRun.pid) : ""],
+          ["Blocking worker age", ageSeconds ? `${ageSeconds.toFixed(1)}s` : ""],
+          ["Last checked", checkedAt]
         ]
       };
     }
@@ -228,7 +236,7 @@
           chatConsoleChooseRemoteWorkerControlOption("wait_local", {
             auto: true,
             reason: "local_ai_available",
-            closeReason: "auto-selected Wait for Available Local Worker because local AI became available"
+            closeReason: "auto-selected Wait for Available Local Worker because local AI became available; starting the pending request locally"
           });
         }
       } catch (error) {
@@ -267,6 +275,12 @@
       return true;
     }
 
+    function chatConsoleResolveRemoteWorkerControlChoice(choice) {
+      const resolver = chatConsoleRemoteWorkerControlState.resolveChoice;
+      chatConsoleRemoteWorkerControlState.resolveChoice = null;
+      if (typeof resolver === "function") resolver(choice);
+    }
+
     function chatConsoleChooseRemoteWorkerControlOption(mode, context = {}) {
       const now = chatConsoleNow();
       const cellId = chatConsoleRemoteWorkerControlState.lastCellId;
@@ -303,13 +317,20 @@
       }
 
       chatConsoleHideRemoteWorkerControlModal(context.closeReason || mode);
+      chatConsoleResolveRemoteWorkerControlChoice(choice);
       if (mode === "use_remote_when_needed_for_chat" || mode === "use_remote_once") renderChatConsoleNotebook();
       return choice;
     }
 
-    function chatConsoleShowRemoteWorkerControlModal({cell, runId, threadId, capacity}) {
+    function chatConsoleShowRemoteWorkerControlModal({cell, runId, threadId, capacity, resolveChoice = null}) {
       const existing = chatConsoleRemoteWorkerControlState.modal || document.querySelector("[data-chat-console-remote-worker-control-modal]");
-      if (existing) existing.remove();
+      if (existing) {
+        chatConsoleChooseRemoteWorkerControlOption("wait_local", {
+          auto: true,
+          reason: "superseded_by_new_remote_worker_control",
+          closeReason: "superseded by a newer Remote Worker control"
+        });
+      }
 
       const backdrop = document.createElement("div");
       backdrop.className = "chat-remote-worker-control-backdrop";
@@ -345,7 +366,7 @@
 
       const description = document.createElement("p");
       description.id = "chat-remote-worker-control-description";
-      description.textContent = "Local AI is busy. Review the current local worker and remote hub template, then choose how this request should wait or mark remote-worker intent.";
+      description.textContent = "Local AI is busy. This panel refreshes the blocking local worker every 2 seconds. If the local worker becomes available, this panel closes and starts the pending request locally.";
 
       const statusGrid = document.createElement("div");
       statusGrid.className = "chat-remote-worker-control-status-grid";
@@ -368,7 +389,7 @@
           kicker: "Default / safe",
           title: "Wait for Available Local Worker",
           description: "Close this control and keep local-first behavior.",
-          details: "This is also selected automatically when the blocking local AI call disappears.",
+          details: "If you leave this open, this is selected automatically when the blocking local AI call disappears and the pending request starts locally.",
           defaultOption: true
         }),
         chatConsoleRemoteWorkerOptionCard({
@@ -396,7 +417,7 @@
 
       const notice = document.createElement("p");
       notice.className = "chat-remote-worker-control-notice";
-      notice.textContent = "Phase 2 records modal choices only. No credits are checked, held, or spent; no hub assessment or remote worker is contacted yet.";
+      notice.textContent = "Phase 2 records modal choices only. The local-worker card refreshes every 2 seconds. No credits are checked, held, or spent; no hub assessment or remote worker is contacted yet.";
 
       modal.append(header, description, statusGrid, optionsTitle, optionsGrid, notice);
       backdrop.append(modal);
@@ -408,6 +429,7 @@
       chatConsoleRemoteWorkerControlState.lastCellId = cell?.id || "";
       chatConsoleRemoteWorkerControlState.lastRunId = runId || cell?.run_id || "";
       chatConsoleRemoteWorkerControlState.lastThreadId = threadId || "";
+      chatConsoleRemoteWorkerControlState.resolveChoice = typeof resolveChoice === "function" ? resolveChoice : null;
 
       chatConsoleRemoteWorkerControlState.escapeHandler = (event) => {
         if (event.key === "Escape") {
@@ -441,6 +463,21 @@
       return snapshot;
     }
 
+    function chatConsoleRemoteWorkerSleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    async function chatConsoleWaitForLocalAiCapacityAvailable(threadId) {
+      let snapshot = chatConsoleRemoteWorkerControlState.lastCapacitySnapshot || null;
+      while (chatConsoleShouldOpenRemoteWorkerControlForCapacity(snapshot)) {
+        chatConsoleSetStatus("waiting for local AI slot before starting the pending local request");
+        await chatConsoleRemoteWorkerSleep(CHAT_CONSOLE_REMOTE_WORKER_CONTROL_CAPACITY_INTERVAL_MS);
+        snapshot = await chatConsoleFetchLocalAiCapacityNow(threadId);
+        chatConsoleRemoteWorkerControlState.lastCapacitySnapshot = snapshot;
+      }
+      return snapshot || await chatConsoleFetchLocalAiCapacityNow(threadId);
+    }
+
     function chatConsoleShouldOpenRemoteWorkerControlForCapacity(snapshot) {
       if (!snapshot || snapshot.ok === false) return false;
       return snapshot.busy === true || snapshot.available_now === false || Number(snapshot.active_run_count || 0) >= Number(snapshot.max_local_concurrency || 1);
@@ -450,10 +487,20 @@
       if (!cell || cell.type !== "ai") return null;
       try {
         const snapshot = await chatConsoleFetchLocalAiCapacityNow(threadId);
-        if (chatConsoleShouldOpenRemoteWorkerControlForCapacity(snapshot)) {
-          chatConsoleShowRemoteWorkerControlModal({cell, runId, threadId, capacity: snapshot});
+        if (!chatConsoleShouldOpenRemoteWorkerControlForCapacity(snapshot)) {
+          return {capacity: snapshot, choice: {mode: "local_available", reason: "local_ai_available", auto: true}};
         }
-        return snapshot;
+
+        chatConsoleSetStatus("local AI is busy; waiting on Remote Worker control before starting the pending local request");
+        const choice = await new Promise((resolve) => {
+          chatConsoleShowRemoteWorkerControlModal({cell, runId, threadId, capacity: snapshot, resolveChoice: resolve});
+        });
+        let latestCapacity = chatConsoleRemoteWorkerControlState.lastCapacitySnapshot || snapshot;
+        if (choice?.mode === "wait_local" && chatConsoleShouldOpenRemoteWorkerControlForCapacity(latestCapacity)) {
+          latestCapacity = await chatConsoleWaitForLocalAiCapacityAvailable(threadId);
+          choice.waited_for_local_available = true;
+        }
+        return {capacity: latestCapacity, choice};
       } catch (error) {
         chatConsoleSetStatus(`local AI capacity preflight unavailable: ${error.message || error}`);
         return null;
@@ -2329,11 +2376,18 @@
             payload.queries = [cell.source || ""];
           }
           if (cell.type === "ai") {
-            await chatConsoleMaybeShowRemoteWorkerControlForBusyLocal({
+            const remoteWorkerGate = await chatConsoleMaybeShowRemoteWorkerControlForBusyLocal({
               cell,
               runId: aiRunId,
               threadId: payload.thread_id
             });
+            if (remoteWorkerGate?.choice?.reason === "local_ai_available") {
+              chatConsoleSetStatus("local AI is available; starting pending request locally");
+            } else if (remoteWorkerGate?.choice?.auto && remoteWorkerGate.choice.mode === "wait_local") {
+              chatConsoleSetStatus("local AI became available; starting pending request locally");
+            } else if (remoteWorkerGate?.choice?.waited_for_local_available) {
+              chatConsoleSetStatus("local AI became available after wait-local close; starting pending request locally");
+            }
           }
           const response = await fetch(endpoint, {
             method: "POST",
