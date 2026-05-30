@@ -927,6 +927,8 @@ def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_on
 
     assert "observeChromeFit" in browser_observer
     assert "observeChromeComposition" in browser_observer
+    assert "chromeSupportsCompositionObservation" in browser_observer
+    assert 'if (chrome !== "chrome-editorial-flow") return []' not in browser_observer
     assert "shapeInteriorEscapeFor" in browser_observer
     assert "safeShapeIntervalAtY" in browser_observer
     assert "compositionWarnings" in browser_observer
@@ -942,9 +944,17 @@ def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_on
     assert "data-mcel-fit-remediation" in ui
     assert "data-mcel-composition-remedy" in ui
     assert "data-mcel-composition-warnings" in ui
+    assert "mcelChromeCompositionScopeSelector" in ui
+    assert ".mcel-chrome-cluster-grid" in ui
+    assert ".mcel-chrome-spotlight-support" in ui
+    assert ".mcel-chrome-journey-step" in ui
+    assert ".mcel-chrome-compact-panel" in ui
     assert "control-balance" in ui
     assert "shape-inset-content" in ui
     assert "runCompositionRemediationPasses" in ui
+    assert 'body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-cluster-grid"]' in ui
+    assert 'body[data-mcel-fit-remediation~="region-reflow"][data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-shell' in ui
+    assert 'body[data-mcel-fit-remediation~="region-reflow"][data-mcel-chrome="chrome-compact-disclosure"] .mcel-chrome-compact-panel' in ui
     assert "firstPassCompositionWarnings" in ui
     assert "finalCompositionWarnings" in ui
     assert "mcelChromeFitFailureCount" in ui

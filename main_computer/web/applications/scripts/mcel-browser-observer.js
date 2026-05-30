@@ -326,7 +326,7 @@
           fitRegion: fitRegionFor(element),
           tagName: element?.tagName || "",
           className: classNameFor(element),
-          sourceIndex: sourceIndexFor(element),
+          sourceIndex: sourceIndexFor(element) || sourceIndexFor(element?.querySelector?.(`[${attributes.sourceIndex}]`)),
           dataMc: dataMcFor(element),
           elementWidth: Math.round(safeNumber(details.elementWidth ?? rect.width)),
           containerWidth: Math.round(safeNumber(details.containerWidth ?? rect.width)),
@@ -399,6 +399,12 @@
         return !warnings.length || warnings.includes(problem);
       }
 
+      function chromeSupportsCompositionObservation(compositionContract = {}) {
+        const selectors = Array.isArray(compositionContract.observeSelectors) ? compositionContract.observeSelectors : [];
+        const warnings = Array.isArray(compositionContract.warnings) ? compositionContract.warnings : [];
+        return selectors.length > 0 && warnings.length > 0;
+      }
+
       function remedyForCompositionWarning(problem, compositionContract = {}) {
         const remedies = compositionContract.remedies && typeof compositionContract.remedies === "object"
           ? compositionContract.remedies
@@ -407,14 +413,9 @@
       }
 
       function observableCompositionTargets(root, compositionContract = {}) {
-        const fallbackSelectors = [
-          ".mcel-chrome-editorial-rail > .mc",
-          "[data-mcel-fit-region=\"narrow\"].mc",
-          "[data-mcel-fit-region=\"narrow\"] > .mc"
-        ];
         const selectors = Array.isArray(compositionContract.observeSelectors) && compositionContract.observeSelectors.length
           ? compositionContract.observeSelectors
-          : fallbackSelectors;
+          : [];
         return uniqueElements(selectors.flatMap((selector) => {
           try {
             return [...(root?.querySelectorAll?.(selector) || [])];
@@ -425,10 +426,9 @@
       }
 
       function observeChromeComposition(root, options = {}) {
-        const chrome = options.chrome || root?.getAttribute?.("data-mcel-chrome") || "";
-        if (chrome !== "chrome-editorial-flow") return [];
         const tolerancePx = Number.isFinite(options.tolerancePx) ? options.tolerancePx : 2;
         const compositionContract = options.compositionContract || {};
+        if (!chromeSupportsCompositionObservation(compositionContract)) return [];
         const warnings = [];
         const targets = observableCompositionTargets(root, compositionContract);
 
