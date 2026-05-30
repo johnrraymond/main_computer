@@ -157,6 +157,167 @@
           "";
       }
 
+      function parseRadiusComponent(value, axisSize) {
+        const raw = String(value || "0").trim();
+        if (!raw) return 0;
+        if (raw.endsWith("%")) return safeNumber(parseFloat(raw)) * axisSize / 100;
+        return safeNumber(parseFloat(raw));
+      }
+
+      function parseRadiusPair(value, width, height) {
+        const parts = String(value || "0").trim().split(/\s+/).filter(Boolean);
+        const rx = parseRadiusComponent(parts[0] || "0", width);
+        const ry = parseRadiusComponent(parts[1] || parts[0] || "0", height);
+        return {rx, ry};
+      }
+
+      function normalizedCornerRadii(element) {
+        const rect = rectFor(element);
+        const style = element?.ownerDocument?.defaultView?.getComputedStyle
+          ? element.ownerDocument.defaultView.getComputedStyle(element)
+          : null;
+        const radii = {
+          tl: parseRadiusPair(style?.borderTopLeftRadius, rect.width, rect.height),
+          tr: parseRadiusPair(style?.borderTopRightRadius, rect.width, rect.height),
+          br: parseRadiusPair(style?.borderBottomRightRadius, rect.width, rect.height),
+          bl: parseRadiusPair(style?.borderBottomLeftRadius, rect.width, rect.height)
+        };
+        const scale = Math.min(
+          1,
+          rect.width / Math.max(1, radii.tl.rx + radii.tr.rx),
+          rect.width / Math.max(1, radii.bl.rx + radii.br.rx),
+          rect.height / Math.max(1, radii.tl.ry + radii.bl.ry),
+          rect.height / Math.max(1, radii.tr.ry + radii.br.ry)
+        );
+        Object.keys(radii).forEach((key) => {
+          radii[key].rx *= scale;
+          radii[key].ry *= scale;
+        });
+        return radii;
+      }
+
+      function shapeSummaryFor(element) {
+        const rect = rectFor(element);
+        const radii = normalizedCornerRadii(element);
+        const minRadius = Math.min(
+          radii.tl.rx, radii.tr.rx, radii.br.rx, radii.bl.rx,
+          radii.tl.ry, radii.tr.ry, radii.br.ry, radii.bl.ry
+        );
+        const minSide = Math.min(rect.width, rect.height);
+        const aspect = rect.height ? rect.width / rect.height : 0;
+        let shape = "flat-or-unknown";
+        if (minSide > 0 && minRadius >= minSide * 0.43 && aspect > 1.25) {
+          shape = "pill-oval";
+        } else if (minSide > 0 && minRadius >= minSide * 0.43) {
+          shape = "circle-ish";
+        } else if (minRadius >= 24) {
+          shape = "large-rounded-card";
+        } else if (minRadius > 0) {
+          shape = "rounded-card";
+        }
+        return {
+          shape,
+          aspect,
+          minRadius,
+          minRadiusToMinSide: minSide ? minRadius / minSide : 0
+        };
+      }
+
+      function isShapeInteriorSensitive(element) {
+        const summary = shapeSummaryFor(element);
+        return summary.shape === "pill-oval" || summary.shape === "circle-ish";
+      }
+
+      function safeShapeIntervalAtY(element, y, insetPx = 6) {
+        const rect = rectFor(element);
+        const radii = normalizedCornerRadii(element);
+        const left = rect.left + insetPx;
+        const right = rect.right - insetPx;
+        const top = rect.top + insetPx;
+        const bottom = rect.bottom - insetPx;
+        if (y < top || y > bottom) {
+          return {left, right, width: Math.max(0, right - left), outsideY: true};
+        }
+
+        let safeLeft = left;
+        let safeRight = right;
+
+        const leftCornerBound = (corner, cx, cy) => {
+          const rx = Math.max(0, corner.rx - insetPx);
+          const ry = Math.max(0, corner.ry - insetPx);
+          if (rx <= 0 || ry <= 0) return left;
+          const dy = Math.abs(y - cy);
+          if (dy >= ry) return left;
+          return cx - rx * Math.sqrt(Math.max(0, 1 - (dy * dy) / (ry * ry)));
+        };
+
+        const rightCornerBound = (corner, cx, cy) => {
+          const rx = Math.max(0, corner.rx - insetPx);
+          const ry = Math.max(0, corner.ry - insetPx);
+          if (rx <= 0 || ry <= 0) return right;
+          const dy = Math.abs(y - cy);
+          if (dy >= ry) return right;
+          return cx + rx * Math.sqrt(Math.max(0, 1 - (dy * dy) / (ry * ry)));
+        };
+
+        if (y < rect.top + radii.tl.ry) {
+          safeLeft = Math.max(safeLeft, leftCornerBound(radii.tl, rect.left + radii.tl.rx, rect.top + radii.tl.ry));
+        }
+        if (y < rect.top + radii.tr.ry) {
+          safeRight = Math.min(safeRight, rightCornerBound(radii.tr, rect.right - radii.tr.rx, rect.top + radii.tr.ry));
+        }
+        if (y > rect.bottom - radii.bl.ry) {
+          safeLeft = Math.max(safeLeft, leftCornerBound(radii.bl, rect.left + radii.bl.rx, rect.bottom - radii.bl.ry));
+        }
+        if (y > rect.bottom - radii.br.ry) {
+          safeRight = Math.min(safeRight, rightCornerBound(radii.br, rect.right - radii.br.rx, rect.bottom - radii.br.ry));
+        }
+
+        return {
+          left: safeLeft,
+          right: safeRight,
+          width: Math.max(0, safeRight - safeLeft),
+          outsideY: false
+        };
+      }
+
+      function shapeInteriorEscapeFor(target, child, tolerancePx = 2) {
+        const rect = rectFor(child);
+        const sampleYs = [
+          rect.top + 1,
+          rect.top + rect.height / 2,
+          rect.bottom - 1
+        ].filter((value) => Number.isFinite(value));
+        const failures = sampleYs.map((y) => {
+          const interval = safeShapeIntervalAtY(target, y);
+          const leftDelta = Math.max(0, interval.left - rect.left);
+          const rightDelta = Math.max(0, rect.right - interval.right);
+          const delta = Math.max(leftDelta, rightDelta);
+          return {
+            y,
+            safeLeft: interval.left,
+            safeRight: interval.right,
+            safeWidth: interval.width,
+            childLeft: rect.left,
+            childRight: rect.right,
+            childWidth: rect.width,
+            leftDelta,
+            rightDelta,
+            delta,
+            escaped: interval.outsideY || delta > tolerancePx
+          };
+        }).filter((failure) => failure.escaped);
+        if (!failures.length) return null;
+        return failures.reduce((worst, failure) => failure.delta > worst.delta ? failure : worst, failures[0]);
+      }
+
+      function shortTextFor(element) {
+        return String(element?.value || element?.textContent || element?.getAttribute?.("placeholder") || "")
+          .trim()
+          .replace(/\s+/g, " ")
+          .slice(0, 120);
+      }
+
       function compositionWarningFor(element, problem, details = {}, tolerancePx = 2) {
         const rect = rectFor(element);
         return {
@@ -171,6 +332,12 @@
           containerWidth: Math.round(safeNumber(details.containerWidth ?? rect.width)),
           inputWidth: Math.round(safeNumber(details.inputWidth ?? 0)),
           buttonWidth: Math.round(safeNumber(details.buttonWidth ?? 0)),
+          childTagName: details.childTagName || "",
+          childText: details.childText || "",
+          shape: details.shape || "",
+          safeWidth: Math.round(safeNumber(details.safeWidth ?? 0)),
+          leftDelta: Math.round(safeNumber(details.leftDelta ?? 0)),
+          rightDelta: Math.round(safeNumber(details.rightDelta ?? 0)),
           delta: Math.round(safeNumber(details.delta ?? 0)),
           remedy: details.remedy || "",
           tolerancePx
@@ -269,23 +436,58 @@
           const controls = uniqueElements([...(target.querySelectorAll?.("input,textarea,select,button") || [])]).filter(isVisibleElement);
           const primaryInput = controls.find((control) => ["INPUT", "TEXTAREA", "SELECT"].includes(control.tagName || ""));
           const primaryButton = controls.find((control) => (control.tagName || "") === "BUTTON");
-          if (!primaryInput || !primaryButton) return;
+          if (primaryInput && primaryButton) {
+            const inputRect = rectFor(primaryInput);
+            const buttonRect = rectFor(primaryButton);
+            const problem = "primary-control-width-collapsed-relative-to-input";
+            if (
+              inputRect.width > tolerancePx &&
+              buttonRect.width + tolerancePx < inputRect.width * 0.66 &&
+              allowedCompositionWarning(problem, compositionContract)
+            ) {
+              warnings.push(compositionWarningFor(target, problem, {
+                elementWidth: buttonRect.width,
+                containerWidth: inputRect.width,
+                inputWidth: inputRect.width,
+                buttonWidth: buttonRect.width,
+                delta: inputRect.width - buttonRect.width,
+                remedy: remedyForCompositionWarning(problem, compositionContract)
+              }, tolerancePx));
+            }
+          }
 
-          const inputRect = rectFor(primaryInput);
-          const buttonRect = rectFor(primaryButton);
-          const problem = "primary-control-width-collapsed-relative-to-input";
-          if (
-            inputRect.width > tolerancePx &&
-            buttonRect.width + tolerancePx < inputRect.width * 0.66 &&
-            allowedCompositionWarning(problem, compositionContract)
-          ) {
-            warnings.push(compositionWarningFor(target, problem, {
-              elementWidth: buttonRect.width,
-              containerWidth: inputRect.width,
-              inputWidth: inputRect.width,
-              buttonWidth: buttonRect.width,
-              delta: inputRect.width - buttonRect.width,
-              remedy: remedyForCompositionWarning(problem, compositionContract)
+          const shapeProblem = "shape-interior-escape";
+          if (!allowedCompositionWarning(shapeProblem, compositionContract) || !isShapeInteriorSensitive(target)) {
+            return;
+          }
+
+          const content = uniqueElements([...(target.querySelectorAll?.([
+            "h1", "h2", "h3", "h4", "h5", "h6",
+            "p", "label", "input", "textarea", "select", "button", "a",
+            "img", "svg", "canvas", "video", "iframe", "table", "pre", "code"
+          ].join(",")) || [])]).filter(isVisibleElement);
+          const shape = shapeSummaryFor(target);
+          let worst = null;
+          content.forEach((child) => {
+            const escape = shapeInteriorEscapeFor(target, child, tolerancePx);
+            if (!escape) return;
+            if (!worst || escape.delta > worst.escape.delta) {
+              worst = {child, escape};
+            }
+          });
+          if (worst) {
+            const childRect = rectFor(worst.child);
+            warnings.push(compositionWarningFor(target, shapeProblem, {
+              elementWidth: childRect.width,
+              containerWidth: worst.escape.safeWidth,
+              safeWidth: worst.escape.safeWidth,
+              leftDelta: worst.escape.leftDelta,
+              rightDelta: worst.escape.rightDelta,
+              delta: worst.escape.delta,
+              childTagName: worst.child?.tagName || "",
+              childText: shortTextFor(worst.child),
+              shape: shape.shape,
+              remedy: remedyForCompositionWarning(shapeProblem, compositionContract)
             }, tolerancePx));
           }
         });

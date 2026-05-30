@@ -1173,22 +1173,30 @@
     function applyMcelChromeCompositionRemedies(doc, warnings = []) {
       const applied = [];
       warnings.forEach((warning) => {
-        const remedy = warning?.remedy || (warning?.problem === "primary-control-width-collapsed-relative-to-input" ? "control-balance" : "");
+        const remedy = warning?.remedy ||
+          (warning?.problem === "primary-control-width-collapsed-relative-to-input"
+            ? "control-balance"
+            : (warning?.problem === "shape-interior-escape" ? "shape-inset-content" : ""));
         if (!remedy) return;
         const target = findMcelCompositionRemedyTarget(doc, warning);
         if (!target) return;
         const existing = new Set(String(target.getAttribute("data-mcel-composition-remedy") || "").split(/\s+/).filter(Boolean));
+        const beforeRemedyCount = existing.size;
         existing.add(remedy);
         target.setAttribute("data-mcel-composition-remedy", [...existing].join(" "));
         const existingWarnings = new Set(String(target.getAttribute("data-mcel-composition-warnings") || "").split(/\s+/).filter(Boolean));
+        const beforeWarningCount = existingWarnings.size;
         if (warning.problem) existingWarnings.add(warning.problem);
         target.setAttribute("data-mcel-composition-warnings", [...existingWarnings].join(" "));
+        if (existing.size === beforeRemedyCount && existingWarnings.size === beforeWarningCount) return;
         applied.push({
           problem: warning.problem || "",
           remedy,
           sourceIndex: warning.sourceIndex || "",
           chromePart: warning.chromePart || "",
-          fitRegion: warning.fitRegion || ""
+          fitRegion: warning.fitRegion || "",
+          childTagName: warning.childTagName || "",
+          shape: warning.shape || ""
         });
       });
       if (doc?.body) {
@@ -1297,7 +1305,13 @@
         return true;
       };
 
-      applyCompositionRemediesIfNeeded("composition-remedy");
+      const runCompositionRemediationPasses = (prefix) => {
+        for (let index = 0; index < 4 && mcelChromeCompositionWarningCount(current) > 0; index += 1) {
+          if (!applyCompositionRemediesIfNeeded(index === 0 ? prefix : `${prefix}-${index + 1}`)) break;
+        }
+      };
+
+      runCompositionRemediationPasses("composition-remedy");
 
       if (mcelChromeFitFailureCount(current) > 0 && mcelChromeGeometryFailureCount(current) > 0 && strategies.length) {
         for (const strategy of strategies) {
@@ -1317,7 +1331,7 @@
             compositionRemedies: [...appliedCompositionRemedies],
             report: current
           });
-          applyCompositionRemediesIfNeeded(`composition-after-${strategy.id}`);
+          runCompositionRemediationPasses(`composition-after-${strategy.id}`);
           if (mcelChromeFitFailureCount(current) === 0) break;
         }
       }
@@ -2209,6 +2223,172 @@
           grid-template-columns: minmax(0, 1fr);
         }
 
+
+        body[data-mcel-chrome="chrome-cluster-grid"] .mcel-runtime-preview,
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-runtime-preview,
+        body[data-mcel-chrome="chrome-journey"] .mcel-runtime-preview,
+        body[data-mcel-chrome="chrome-compact-disclosure"] .mcel-runtime-preview {
+          max-inline-size: min(1180px, calc(100% - 48px));
+          padding-block: clamp(22px, 4vw, 54px);
+        }
+        body[data-mcel-chrome="chrome-cluster-grid"] .mcel-runtime-preview > .mc,
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-runtime-preview > .mc,
+        body[data-mcel-chrome="chrome-journey"] .mcel-runtime-preview > .mc,
+        body[data-mcel-chrome="chrome-compact-disclosure"] .mcel-runtime-preview > .mc {
+          display: block;
+          min-block-size: auto;
+          border: 0;
+          border-radius: 0;
+          background: transparent;
+          box-shadow: none;
+          padding: 0;
+        }
+
+        body[data-mcel-chrome="chrome-cluster-grid"] .mcel-chrome-cluster-shell {
+          display: grid;
+          gap: clamp(22px, 4vw, 42px);
+        }
+        body[data-mcel-chrome="chrome-cluster-grid"] .mcel-chrome-cluster-intro {
+          display: grid;
+          gap: 12px;
+          max-inline-size: 760px;
+        }
+        body[data-mcel-chrome="chrome-cluster-grid"] .mcel-chrome-cluster-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
+          gap: clamp(16px, 2.4vw, 28px);
+          align-items: stretch;
+        }
+        body[data-mcel-chrome="chrome-cluster-grid"] .mcel-chrome-cluster-grid > .mc {
+          min-block-size: 100%;
+          align-content: start;
+        }
+        body[data-mcel-chrome="chrome-cluster-grid"] .mcel-chrome-cluster-grid > .mc h2,
+        body[data-mcel-chrome="chrome-cluster-grid"] .mcel-chrome-cluster-grid > .mc h3 {
+          font-size: clamp(1.2rem, 2.4vw, 2rem);
+          line-height: 1.02;
+        }
+
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-shell {
+          display: grid;
+          grid-template-columns: minmax(0, 1.25fr) minmax(250px, 0.75fr);
+          gap: clamp(22px, 4vw, 52px);
+          align-items: start;
+        }
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-primary > .mc {
+          min-block-size: clamp(360px, 52vw, 680px);
+          align-content: center;
+          padding: clamp(28px, 6vw, 76px);
+        }
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-primary h1,
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-primary h2 {
+          max-inline-size: 13ch;
+          font-size: clamp(3rem, 9vw, 7.2rem);
+          line-height: 0.9;
+          letter-spacing: -0.065em;
+        }
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support {
+          position: sticky;
+          top: 24px;
+          display: grid;
+          gap: 16px;
+          min-width: 0;
+        }
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mc {
+          padding: clamp(18px, 2.6vw, 30px);
+          border-color: var(--site-line);
+          background: var(--site-card-soft);
+        }
+
+        body[data-mcel-chrome="chrome-journey"] .mcel-chrome-journey-shell {
+          display: grid;
+          gap: clamp(22px, 4vw, 46px);
+        }
+        body[data-mcel-chrome="chrome-journey"] .mcel-chrome-journey-intro {
+          max-inline-size: 760px;
+        }
+        body[data-mcel-chrome="chrome-journey"] .mcel-chrome-journey-sequence {
+          display: grid;
+          gap: clamp(16px, 2.4vw, 28px);
+          counter-reset: mcel-journey-step;
+        }
+        body[data-mcel-chrome="chrome-journey"] .mcel-chrome-journey-step {
+          counter-increment: mcel-journey-step;
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr);
+          gap: clamp(14px, 2vw, 24px);
+          align-items: start;
+          min-width: 0;
+        }
+        body[data-mcel-chrome="chrome-journey"] .mcel-chrome-journey-step::before {
+          content: attr(data-mcel-step);
+          display: grid;
+          place-items: center;
+          inline-size: clamp(38px, 6vw, 58px);
+          block-size: clamp(38px, 6vw, 58px);
+          border: 1px solid var(--site-line);
+          border-radius: 999px;
+          background: var(--site-card-soft);
+          color: var(--site-accent);
+          font-weight: 900;
+        }
+        body[data-mcel-chrome="chrome-journey"] .mcel-chrome-journey-step > .mc {
+          min-width: 0;
+          border-left: 3px solid var(--site-accent);
+          border-radius: var(--site-radius-sm);
+        }
+
+        body[data-mcel-chrome="chrome-compact-disclosure"] .mcel-chrome-compact-shell {
+          display: grid;
+          gap: clamp(18px, 3vw, 34px);
+        }
+        body[data-mcel-chrome="chrome-compact-disclosure"] .mcel-chrome-compact-intro {
+          max-inline-size: 760px;
+        }
+        body[data-mcel-chrome="chrome-compact-disclosure"] .mcel-chrome-compact-panels {
+          display: grid;
+          gap: 12px;
+        }
+        body[data-mcel-chrome="chrome-compact-disclosure"] .mcel-chrome-compact-panel {
+          overflow: clip;
+          border: 1px solid var(--site-line);
+          border-radius: var(--site-radius-sm);
+          background: var(--site-card-soft);
+          box-shadow: var(--site-shadow);
+        }
+        body[data-mcel-chrome="chrome-compact-disclosure"] .mcel-chrome-compact-summary {
+          cursor: pointer;
+          padding: clamp(16px, 2.4vw, 24px);
+          color: var(--site-ink);
+          font-weight: 900;
+          list-style-position: inside;
+        }
+        body[data-mcel-chrome="chrome-compact-disclosure"] .mcel-chrome-compact-panel > .mc {
+          margin: 0;
+          border: 0;
+          border-top: 1px solid var(--site-line);
+          border-radius: 0;
+          background: transparent;
+          box-shadow: none;
+        }
+
+        body[data-mcel-chrome="chrome-cluster-grid"] [data-mcel-chrome-generated="true"],
+        body[data-mcel-chrome="chrome-cluster-grid"] [data-mcel-fit-region],
+        body[data-mcel-chrome="chrome-cluster-grid"] [data-mcel-fit-policy],
+        body[data-mcel-chrome="chrome-spotlight"] [data-mcel-chrome-generated="true"],
+        body[data-mcel-chrome="chrome-spotlight"] [data-mcel-fit-region],
+        body[data-mcel-chrome="chrome-spotlight"] [data-mcel-fit-policy],
+        body[data-mcel-chrome="chrome-journey"] [data-mcel-chrome-generated="true"],
+        body[data-mcel-chrome="chrome-journey"] [data-mcel-fit-region],
+        body[data-mcel-chrome="chrome-journey"] [data-mcel-fit-policy],
+        body[data-mcel-chrome="chrome-compact-disclosure"] [data-mcel-chrome-generated="true"],
+        body[data-mcel-chrome="chrome-compact-disclosure"] [data-mcel-fit-region],
+        body[data-mcel-chrome="chrome-compact-disclosure"] [data-mcel-fit-policy] {
+          min-inline-size: 0;
+          max-inline-size: 100%;
+          box-sizing: border-box;
+        }
+
         body[data-mcel-chrome="chrome-editorial-flow"] [data-mcel-chrome-generated="true"],
         body[data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-region],
         body[data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-policy] {
@@ -2256,6 +2436,66 @@
           display: grid;
           grid-template-columns: minmax(0, 1fr);
           align-items: stretch;
+        }
+
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] {
+          container-type: inline-size;
+        }
+
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] h1,
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] h2,
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] h3,
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] p,
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] label,
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] input,
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] textarea,
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] select,
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] button,
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] a[data-mc-action] {
+          max-inline-size: calc(100% - clamp(32px, 18cqi, 96px));
+          justify-self: center;
+          box-sizing: border-box;
+        }
+
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] input,
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] textarea,
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] select,
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] button,
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] a[data-mc-action] {
+          inline-size: calc(100% - clamp(32px, 18cqi, 96px));
+          width: calc(100% - clamp(32px, 18cqi, 96px));
+          min-inline-size: 0;
+        }
+
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail form[data-mcel-composition-remedy~="shape-inset-content"],
+        body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] form {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr);
+          justify-items: center;
+        }
+
+        @supports not (width: 1cqi) {
+          body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] h1,
+          body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] h2,
+          body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] h3,
+          body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] p,
+          body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] label,
+          body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] input,
+          body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] textarea,
+          body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] select,
+          body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] button,
+          body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] a[data-mc-action] {
+            max-inline-size: calc(100% - clamp(32px, 12vw, 96px));
+          }
+
+          body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] input,
+          body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] textarea,
+          body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] select,
+          body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] button,
+          body[data-mcel-chrome="chrome-editorial-flow"] .mcel-chrome-editorial-rail [data-mcel-composition-remedy~="shape-inset-content"] a[data-mc-action] {
+            inline-size: calc(100% - clamp(32px, 12vw, 96px));
+            width: calc(100% - clamp(32px, 12vw, 96px));
+          }
         }
 
         body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-editorial-flow"] [data-mcel-fit-region="narrow"] {
@@ -2317,6 +2557,24 @@
           }
           body[data-mcel-chrome="chrome-editorial-flow"] .mcel-runtime-preview {
             max-inline-size: min(100% - 28px, 760px);
+          }
+          body[data-mcel-chrome="chrome-cluster-grid"] .mcel-runtime-preview,
+          body[data-mcel-chrome="chrome-spotlight"] .mcel-runtime-preview,
+          body[data-mcel-chrome="chrome-journey"] .mcel-runtime-preview,
+          body[data-mcel-chrome="chrome-compact-disclosure"] .mcel-runtime-preview {
+            max-inline-size: min(100% - 28px, 760px);
+          }
+          body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-shell {
+            grid-template-columns: 1fr;
+          }
+          body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support {
+            position: static;
+          }
+          body[data-mcel-chrome="chrome-journey"] .mcel-chrome-journey-step {
+            grid-template-columns: 1fr;
+          }
+          body[data-mcel-chrome="chrome-journey"] .mcel-chrome-journey-step::before {
+            justify-self: start;
           }
           .mcel-runtime-preview .mc[data-mc-kind="hero"],
           .mcel-runtime-preview form.mc,

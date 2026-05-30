@@ -221,7 +221,7 @@ def test_mcel_lab_themes_are_product_grade_and_reach_the_iframe() -> None:
     assert "MCEL_THEME_CHANGED" in ui
 
 
-def test_mcel_lab_chromes_select_strict_baseline_and_editorial_flow() -> None:
+def test_mcel_lab_chromes_select_structural_chrome_family() -> None:
     html = (ROOT / "main_computer" / "web" / "applications.html").read_text(encoding="utf-8")
     app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
     bindings = (WEB_APP / "scripts" / "dom-bindings" / "mcel-lab.js").read_text(encoding="utf-8")
@@ -235,6 +235,10 @@ def test_mcel_lab_chromes_select_strict_baseline_and_editorial_flow() -> None:
     assert "mcel-chrome-select" in app
     assert 'value="chrome-strict-hierarchy">Strict Hierarchy' in app
     assert 'value="chrome-editorial-flow">Editorial Flow' in app
+    assert 'value="chrome-cluster-grid">Cluster Grid' in app
+    assert 'value="chrome-spotlight">Spotlight' in app
+    assert 'value="chrome-journey">Journey' in app
+    assert 'value="chrome-compact-disclosure">Compact Disclosure' in app
     assert 'chrome: "chrome-strict-hierarchy"' in bindings
     assert "lastChromeReport" in bindings
     assert "mcelChromeSelect" in bindings
@@ -242,6 +246,18 @@ def test_mcel_lab_chromes_select_strict_baseline_and_editorial_flow() -> None:
     assert 'CONTRACT_VERSION = "mcel.chrome.v1"' in chrome_law
     assert '"chrome-strict-hierarchy"' in chrome_law
     assert '"chrome-editorial-flow"' in chrome_law
+    assert '"chrome-cluster-grid"' in chrome_law
+    assert '"chrome-spotlight"' in chrome_law
+    assert '"chrome-journey"' in chrome_law
+    assert '"chrome-compact-disclosure"' in chrome_law
+    assert '"cluster-grid.v1": "chrome-cluster-grid"' in chrome_law
+    assert '"spotlight.v1": "chrome-spotlight"' in chrome_law
+    assert '"journey.v1": "chrome-journey"' in chrome_law
+    assert '"compact-disclosure.v1": "chrome-compact-disclosure"' in chrome_law
+    assert "peer-cluster-render" in chrome_law
+    assert "priority-render" in chrome_law
+    assert "sequence-render" in chrome_law
+    assert "disclosure-render" in chrome_law
     assert "preservesPixelBaseline: true" in chrome_law
     assert "return applyStrictHierarchyHtml" in chrome_law
     assert "changed: false" in chrome_law
@@ -252,7 +268,15 @@ def test_mcel_lab_chromes_select_strict_baseline_and_editorial_flow() -> None:
     assert 'data-mcel-chrome="${chrome}"' in ui
     assert 'body class="mcel-site-theme ${theme}" data-mcel-chrome="${chrome}"' in ui
     assert 'body[data-mcel-chrome="chrome-editorial-flow"]' in ui
+    assert 'body[data-mcel-chrome="chrome-cluster-grid"]' in ui
+    assert 'body[data-mcel-chrome="chrome-spotlight"]' in ui
+    assert 'body[data-mcel-chrome="chrome-journey"]' in ui
+    assert 'body[data-mcel-chrome="chrome-compact-disclosure"]' in ui
     assert "mcel-chrome-editorial-shell" in ui
+    assert "mcel-chrome-cluster-grid" in ui
+    assert "mcel-chrome-spotlight-primary" in ui
+    assert "mcel-chrome-journey-step" in ui
+    assert "mcel-chrome-compact-panel" in ui
     assert 'chrome: String(state.chrome || "chrome-strict-hierarchy")' in project_store
     assert "minmax(160px, 220px) minmax(160px, 220px)" in style
 
@@ -891,7 +915,9 @@ def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_on
     assert "chromeRemediationPlan" in chrome_law
     assert "compositionContract" in chrome_law
     assert '"primary-control-width-collapsed-relative-to-input"' in chrome_law
+    assert '"shape-interior-escape"' in chrome_law
     assert '"control-balance"' in chrome_law
+    assert '"shape-inset-content"' in chrome_law
     assert '"content-negotiate"' in chrome_law
     assert '"object-grow"' in chrome_law
     assert '"object-reshape"' in chrome_law
@@ -901,6 +927,8 @@ def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_on
 
     assert "observeChromeFit" in browser_observer
     assert "observeChromeComposition" in browser_observer
+    assert "shapeInteriorEscapeFor" in browser_observer
+    assert "safeShapeIntervalAtY" in browser_observer
     assert "compositionWarnings" in browser_observer
     assert '"mcel-chrome-fit-report"' in browser_observer
     assert '"page-overflow"' in browser_observer
@@ -915,6 +943,8 @@ def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_on
     assert "data-mcel-composition-remedy" in ui
     assert "data-mcel-composition-warnings" in ui
     assert "control-balance" in ui
+    assert "shape-inset-content" in ui
+    assert "runCompositionRemediationPasses" in ui
     assert "firstPassCompositionWarnings" in ui
     assert "finalCompositionWarnings" in ui
     assert "mcelChromeFitFailureCount" in ui
