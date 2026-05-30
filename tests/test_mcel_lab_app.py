@@ -23,6 +23,7 @@ def test_mcel_lab_is_registered_as_separate_application() -> None:
     assert "<!-- @include applications/scripts/mcel-law-registry.js -->" in html
     assert "<!-- @include applications/scripts/mcel-editor.js -->" in html
     assert "<!-- @include applications/scripts/mcel-style-law.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-chrome-law.js -->" in html
     assert "<!-- @include applications/scripts/mcel-browser-observer.js -->" in html
     assert "<!-- @include applications/scripts/mcel-layout-law.js -->" in html
     assert "<!-- @include applications/scripts/mcel-command-surface.js -->" in html
@@ -42,6 +43,7 @@ def test_mcel_lab_is_registered_as_separate_application() -> None:
         < html.index("mcel-law-registry.js")
         < html.index("mcel-editor.js")
         < html.index("mcel-style-law.js")
+        < html.index("mcel-chrome-law.js")
         < html.index("mcel-browser-observer.js")
         < html.index("mcel-layout-law.js")
         < html.index("mcel-command-surface.js")
@@ -217,6 +219,42 @@ def test_mcel_lab_themes_are_product_grade_and_reach_the_iframe() -> None:
     assert "rgba(174,224,111,0.94)" in ui
     assert "--mcel-theme-canvas" in style
     assert "MCEL_THEME_CHANGED" in ui
+
+
+def test_mcel_lab_chromes_select_strict_baseline_and_editorial_flow() -> None:
+    html = (ROOT / "main_computer" / "web" / "applications.html").read_text(encoding="utf-8")
+    app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
+    bindings = (WEB_APP / "scripts" / "dom-bindings" / "mcel-lab.js").read_text(encoding="utf-8")
+    chrome_law = (WEB_APP / "scripts" / "mcel-chrome-law.js").read_text(encoding="utf-8")
+    project_store = (WEB_APP / "scripts" / "mcel-project-store.js").read_text(encoding="utf-8")
+    ui = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    style = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
+
+    assert "<!-- @include applications/scripts/mcel-chrome-law.js -->" in html
+    assert html.index("mcel-style-law.js") < html.index("mcel-chrome-law.js") < html.index("mcel-browser-observer.js")
+    assert "mcel-chrome-select" in app
+    assert 'value="chrome-strict-hierarchy">Strict Hierarchy' in app
+    assert 'value="chrome-editorial-flow">Editorial Flow' in app
+    assert 'chrome: "chrome-strict-hierarchy"' in bindings
+    assert "lastChromeReport" in bindings
+    assert "mcelChromeSelect" in bindings
+    assert "McelLabChromeLaw" in chrome_law
+    assert 'CONTRACT_VERSION = "mcel.chrome.v1"' in chrome_law
+    assert '"chrome-strict-hierarchy"' in chrome_law
+    assert '"chrome-editorial-flow"' in chrome_law
+    assert "preservesPixelBaseline: true" in chrome_law
+    assert "return applyStrictHierarchyHtml" in chrome_law
+    assert "changed: false" in chrome_law
+    assert "CHROME_GENERATED_ATTR = \"data-mcel-chrome-generated\"" in chrome_law
+    assert "applyChromeHtml(runtimeHtml" in ui
+    assert "changeMcelChrome" in ui
+    assert "MCEL_CHROME_CHANGED" in ui
+    assert 'data-mcel-chrome="${chrome}"' in ui
+    assert 'body class="mcel-site-theme ${theme}" data-mcel-chrome="${chrome}"' in ui
+    assert 'body[data-mcel-chrome="chrome-editorial-flow"]' in ui
+    assert "mcel-chrome-editorial-shell" in ui
+    assert 'chrome: String(state.chrome || "chrome-strict-hierarchy")' in project_store
+    assert "minmax(160px, 220px) minmax(160px, 220px)" in style
 
 
 def test_mcel_lab_has_low_debt_module_boundaries() -> None:
