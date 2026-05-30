@@ -22,20 +22,21 @@ def test_chat_console_remote_worker_control_modal_hooks_busy_capacity() -> None:
     assert "snapshot.available_now === false" in source
 
 
-def test_chat_console_remote_worker_modal_is_phase_four_assessment_panel() -> None:
+def test_chat_console_remote_worker_modal_is_phase_five_intent_panel_with_compact_assessment() -> None:
     source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
 
-    assert "Phase 4 remote-worker assessment" in source
+    assert "Phase 5 durable remote-worker intent" in source
     assert "Remote Worker control" in source
     assert "Current Local AI Worker" in source
     assert "Remote Overflow Assessment" in source
     assert "Show diagnostic details" in source
     assert "compact read-only remote-overflow assessment" in source
+    assert "records the selected intent separately from the modal close reason" in source
     assert "Full card details are collapsed below." in source
     assert "Blocking worker age" in source
     assert "Last checked" in source
     assert "No credits are held or spent" in source
-    assert "no mock submit, real hub request, or real remote worker is contacted yet." in source
+    assert "no mock submit, real hub request, permanent Worker setting, or real remote worker is contacted yet." in source
     assert "data-chat-console-remote-worker-control-modal" in source
     assert "data-chat-remote-overflow-assessment-details" in source
     assert "data-chat-remote-overflow-assessment-details-summary" in source
@@ -72,12 +73,48 @@ def test_chat_console_remote_worker_modal_has_large_selectable_options() -> None
     assert "Use Remote Worker This Once" in source
     assert "Use Remote Worker When Needed for This Chat" in source
     assert "Always Use Remote Worker When Local AI Is Busy" in source
-    assert "To turn this off later, open the Worker app and unselect this option." in source
+    assert "The Worker app global setting is not connected yet, so no permanent Worker setting is changed in this phase." in source
     assert '[data-chat-remote-worker-option="wait_local"]' in source
     assert "button.dataset.chatRemoteWorkerOption = mode" in source
-    assert "mode === \"use_remote_once\"" in source
-    assert "mode === \"use_remote_when_needed_for_chat\"" in source
-    assert "mode === \"always_when_busy\"" in source
+    assert "use_remote_once: \"remote_once\"" in source
+    assert "use_remote_when_needed_for_chat: \"remote_when_needed_for_chat\"" in source
+    assert "always_when_busy: \"remote_when_needed_global\"" in source
+
+
+def test_chat_console_remote_worker_modal_records_durable_intent_separate_from_close_reason() -> None:
+    source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
+
+    assert "function chatConsoleCanonicalRemoteWorkerIntentMode" in source
+    assert "function chatConsoleBuildRemoteWorkerControlIntent" in source
+    assert "function chatConsoleBuildRemoteWorkerControlCloseReason" in source
+    assert 'mode: canonicalMode' in source
+    assert 'scope: chatConsoleRemoteWorkerIntentScope(canonicalMode)' in source
+    assert 'phase: "phase5_durable_intent"' in source
+    assert "remote_worker_overflow_intent" in source
+    assert "remote_worker_overflow_close_reason" in source
+    assert "lastIntent" in source
+    assert "lastCloseReason" in source
+    assert "close_reason_details" in source
+    assert "remote_execution_started: false" in source
+    assert "mock_remote_submit_started: false" in source
+    assert "credit_hold_created: false" in source
+    assert "credit_spent: false" in source
+
+
+def test_chat_console_remote_worker_phase_five_intent_scope_rules() -> None:
+    source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
+
+    assert 'use_remote_once: "remote_once"' in source
+    assert 'use_remote_when_needed_for_chat: "remote_when_needed_for_chat"' in source
+    assert 'always_when_busy: "remote_when_needed_global"' in source
+    assert 'if (mode === "remote_once" || mode === "wait_local") return "request";' in source
+    assert 'if (mode === "remote_when_needed_for_chat") return "chat";' in source
+    assert 'if (mode === "remote_when_needed_global") return "global";' in source
+    assert 'canonicalMode === "remote_when_needed_for_chat"' in source
+    assert 'canonicalMode === "remote_once"' in source
+    assert 'chatConsoleRemoteWorkerControlState.globalWhenBusyIntent = {' in source
+    assert 'permanent_worker_setting_changed: false' in source
+    assert "localStorage" not in source
 
 
 def test_chat_console_remote_worker_chat_choice_is_visible_and_reversible_like_rag() -> None:
@@ -91,7 +128,10 @@ def test_chat_console_remote_worker_chat_choice_is_visible_and_reversible_like_r
     assert "Remote worker when local AI is busy for this chat" in source
     assert "Use remote worker overflow when local AI is busy for this chat. Uncheck to back out." in source
     assert "remoteWorkerToggle.checked = remoteWorkerChatEnabled" in source
-    assert "chatConsoleSetRemoteWorkerWhenBusyForChat(remoteWorkerToggle.checked" in source
+    assert "chatConsoleSetRemoteWorkerWhenBusyForChat(" in source
+    assert "when_busy_for_chat_intent" in source
+    assert "when_busy_for_chat_cleared_at" in source
+    assert "chat_request_pane_checkbox" in source
 
 
 def test_chat_console_remote_worker_wait_is_default_and_auto_selected() -> None:
