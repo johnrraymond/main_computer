@@ -310,13 +310,13 @@
         status,
         message: status === "Unavailable"
           ? "Remote overflow assessment could not be loaded. Local-first waiting remains available."
-          : "Loading read-only remote overflow assessment from the backend decision engine.",
+          : "Loading a compact read-only remote-overflow assessment.",
         items: [
-          ["Assessment endpoint", "/api/applications/chat-console/ai/remote-overflow/assess"],
-          ["Execution", "not submitted"],
-          ["Credit hold", "not created"],
-          ["Credit spend", "none"],
-          ["Real remote worker", "not contacted"]
+          ["Decision", status === "Unavailable" ? "assessment unavailable" : "checking assessment"],
+          ["Reason", status === "Unavailable" ? "assessment_load_failed" : "waiting_for_backend_assessment"],
+          ["Remote offer", "no"],
+          ["Cards checked", "0"],
+          ["Safety", "hold: not created · spend: none · worker: not contacted"]
         ]
       };
     }
@@ -362,20 +362,25 @@
 
     function chatConsoleRemoteOverflowAssessmentStatus(assessment) {
       if (!assessment) return chatConsoleRemoteOverflowAssessmentPlaceholderStatus();
+      const cardCount = Array.isArray(assessment.cards) ? assessment.cards.length : 0;
+      const action = assessment.action || assessment.status || "read_only_assessment";
+      const reason = assessment.reason_code || "diagnostic_phase";
       return {
         status: assessment.status || assessment.reason_code || "Assessed",
-        message: assessment.user_message || "Remote overflow assessment returned diagnostic cards.",
+        message: assessment.user_message || "Remote overflow assessment returned a compact diagnostic summary. Full card details are collapsed below.",
         items: [
-          ["Action", assessment.action || ""],
-          ["Reason", assessment.reason_code || ""],
-          ["Offer remote", assessment.offer_remote ? "yes" : "no"],
-          ["Authorization required", assessment.authorization_required ? "yes" : "no"],
-          ["Cards", Array.isArray(assessment.cards) ? String(assessment.cards.length) : "0"],
-          ["Credit hold", "not created"],
-          ["Credit spend", "none"],
-          ["Real remote worker", "not contacted"]
+          ["Decision", action],
+          ["Reason", reason],
+          ["Remote offer", assessment.offer_remote ? "yes" : "no"],
+          ["Cards checked", String(cardCount)],
+          ["Safety", "hold: not created · spend: none · worker: not contacted"]
         ]
       };
+    }
+
+    function chatConsoleRemoteOverflowAssessmentDetailsSummaryText(assessment) {
+      const cardCount = Array.isArray(assessment?.cards) ? assessment.cards.length : 0;
+      return cardCount ? `Show diagnostic details (${cardCount} cards)` : "Show diagnostic details";
     }
 
     function chatConsoleRenderRemoteOverflowAssessmentCards(assessment) {
@@ -402,6 +407,8 @@
       if (!modal) return;
       const summaryCard = modal.querySelector('[data-chat-remote-worker-status-card="assessment-summary"]');
       if (summaryCard) chatConsolePopulateRemoteWorkerStatusCard(summaryCard, chatConsoleRemoteOverflowAssessmentStatus(assessment));
+      const detailsSummary = modal.querySelector("[data-chat-remote-overflow-assessment-details-summary]");
+      if (detailsSummary) detailsSummary.textContent = chatConsoleRemoteOverflowAssessmentDetailsSummaryText(assessment);
       const grid = modal.querySelector("[data-chat-remote-overflow-assessment-grid]");
       if (!grid) return;
       grid.replaceChildren(...chatConsoleRenderRemoteOverflowAssessmentCards(assessment));
@@ -722,7 +729,7 @@
 
       const description = document.createElement("p");
       description.id = "chat-remote-worker-control-description";
-      description.textContent = "Local AI is busy. This panel refreshes the blocking local worker every 2 seconds, calls the read-only remote-overflow assessment endpoint, and shows diagnostic cards before any remote execution exists.";
+      description.textContent = "Local AI is busy. This panel shows the blocking local worker and a compact read-only remote-overflow assessment. No credits are held or spent, and no remote worker is contacted in this phase.";
 
       const statusGrid = document.createElement("div");
       statusGrid.className = "chat-remote-worker-control-status-grid";
@@ -732,14 +739,19 @@
         chatConsoleRemoteWorkerStatusCard({kind: "assessment-summary", title: "Remote Overflow Assessment", ...chatConsoleRemoteOverflowAssessmentPlaceholderStatus()})
       );
 
-      const assessmentTitle = document.createElement("h3");
-      assessmentTitle.className = "chat-remote-worker-control-options-title";
-      assessmentTitle.textContent = "Diagnostic assessment cards";
+      const assessmentDetails = document.createElement("details");
+      assessmentDetails.className = "chat-remote-worker-control-assessment-details";
+      assessmentDetails.dataset.chatRemoteOverflowAssessmentDetails = "true";
+      const assessmentDetailsSummary = document.createElement("summary");
+      assessmentDetailsSummary.className = "chat-remote-worker-control-assessment-details-summary";
+      assessmentDetailsSummary.dataset.chatRemoteOverflowAssessmentDetailsSummary = "true";
+      assessmentDetailsSummary.textContent = chatConsoleRemoteOverflowAssessmentDetailsSummaryText(null);
 
       const assessmentGrid = document.createElement("div");
       assessmentGrid.className = "chat-remote-worker-control-status-grid chat-remote-worker-control-assessment-grid";
       assessmentGrid.dataset.chatRemoteOverflowAssessmentGrid = "true";
       assessmentGrid.append(...chatConsoleRenderRemoteOverflowAssessmentCards(null));
+      assessmentDetails.append(assessmentDetailsSummary, assessmentGrid);
 
       const optionsTitle = document.createElement("h3");
       optionsTitle.className = "chat-remote-worker-control-options-title";
@@ -788,7 +800,7 @@
       pendingFooter.dataset.chatRemoteWorkerPendingRequestFooter = "true";
       pendingFooter.textContent = chatConsolePendingLocalAiRequestFooterText(boundPendingRequest);
 
-      modal.append(header, description, statusGrid, assessmentTitle, assessmentGrid, optionsTitle, optionsGrid, notice, pendingFooter);
+      modal.append(header, description, statusGrid, assessmentDetails, optionsTitle, optionsGrid, notice, pendingFooter);
       backdrop.append(modal);
       document.body.append(backdrop);
 

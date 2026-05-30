@@ -29,14 +29,16 @@ def test_chat_console_remote_worker_modal_is_phase_four_assessment_panel() -> No
     assert "Remote Worker control" in source
     assert "Current Local AI Worker" in source
     assert "Remote Overflow Assessment" in source
-    assert "Diagnostic assessment cards" in source
-    assert "read-only remote-overflow assessment endpoint" in source
-    assert "This panel refreshes the blocking local worker every 2 seconds" in source
+    assert "Show diagnostic details" in source
+    assert "compact read-only remote-overflow assessment" in source
+    assert "Full card details are collapsed below." in source
     assert "Blocking worker age" in source
     assert "Last checked" in source
     assert "No credits are held or spent" in source
     assert "no mock submit, real hub request, or real remote worker is contacted yet." in source
     assert "data-chat-console-remote-worker-control-modal" in source
+    assert "data-chat-remote-overflow-assessment-details" in source
+    assert "data-chat-remote-overflow-assessment-details-summary" in source
     assert "data-chat-remote-overflow-assessment-grid" in source
 
 
@@ -57,6 +59,8 @@ def test_chat_console_remote_worker_modal_calls_read_only_assessment_endpoint() 
     assert "await chatConsoleRefreshRemoteOverflowAssessment({pendingRequest, capacity: snapshot})" in source
     assert "data-chat-remote-worker-status-card=\"assessment-summary\"" in source
     assert "chatConsoleRenderRemoteOverflowAssessmentCards" in source
+    assert "chatConsoleRemoteOverflowAssessmentDetailsSummaryText" in source
+    assert "chatRemoteOverflowAssessmentDetailsSummary" in source
     assert "lastAssessment" in source
 
 
@@ -151,6 +155,8 @@ def test_chat_console_remote_worker_modal_has_styles() -> None:
     assert ".chat-remote-worker-control-modal" in css
     assert ".chat-remote-worker-control-status-grid" in css
     assert ".chat-remote-worker-control-status-card" in css
+    assert ".chat-remote-worker-control-assessment-details" in css
+    assert ".chat-remote-worker-control-assessment-details-summary" in css
     assert ".chat-remote-worker-control-option-grid" in css
     assert ".chat-remote-worker-control-option-card" in css
     assert ".chat-remote-worker-control-option-card.default" in css

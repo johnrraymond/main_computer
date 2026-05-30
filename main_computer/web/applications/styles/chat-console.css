@@ -710,6 +710,34 @@
     .chat-remote-worker-control-status-card {
       min-height: 190px;
     }
+    .chat-remote-worker-control-assessment-details {
+      border: 1px solid rgba(230, 181, 74, 0.32);
+      border-radius: 13px;
+      background: rgba(230, 181, 74, 0.05);
+      margin-top: 14px;
+      overflow: hidden;
+    }
+    .chat-remote-worker-control-assessment-details-summary {
+      color: var(--gold);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 900;
+      letter-spacing: 0.05em;
+      list-style-position: inside;
+      padding: 12px;
+      text-transform: uppercase;
+    }
+    .chat-remote-worker-control-assessment-details-summary:hover,
+    .chat-remote-worker-control-assessment-details-summary:focus-visible {
+      background: rgba(230, 181, 74, 0.1);
+      outline: none;
+    }
+    .chat-remote-worker-control-assessment-details .chat-remote-worker-control-assessment-grid {
+      margin: 0 12px 12px;
+    }
+    .chat-remote-worker-control-assessment-details:not([open]) .chat-remote-worker-control-assessment-grid {
+      display: none;
+    }
     .chat-remote-worker-control-status-heading {
       display: flex;
       align-items: flex-start;

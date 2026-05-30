@@ -4,7 +4,7 @@ from __future__ import annotations
 
 This smoke proves the Chat Console checks local AI capacity during AI request
 startup, opens the modal before the normal AI evaluation fetch, calls the
-read-only remote-overflow assessment endpoint, renders diagnostic cards, exposes
+read-only remote-overflow assessment endpoint, renders a compact assessment summary with collapsed diagnostic cards, exposes
 large selectable option cards, and keeps the phase free of credit holds/spend,
 mock submit, real hub submit, or real remote worker contact. It also proves the
 modal polls every 2 seconds, binds to one pending request, and waits for a
@@ -39,7 +39,7 @@ def main() -> int:
         "Phase 4 remote-worker assessment",
         "Current Local AI Worker",
         "Remote Overflow Assessment",
-        "Diagnostic assessment cards",
+        "Show diagnostic details",
         "/api/applications/chat-console/ai/remote-overflow/assess",
         "Wait for Available Local Worker",
         "Use Remote Worker This Once",
@@ -48,7 +48,7 @@ def main() -> int:
         "To turn this off later, open the Worker app and unselect this option.",
         "Remote worker when local AI is busy for this chat",
         "dataset.chatRemoteWorkerWhenBusyForChat",
-        "This panel refreshes the blocking local worker every 2 seconds",
+        "compact read-only remote-overflow assessment",
         "Blocking worker age",
         "Last checked",
         "No credits are held or spent",
@@ -67,14 +67,18 @@ def main() -> int:
         "no_credit_hold_created: true",
         "real_remote_worker_contacted: false",
         "private_worker_prices_exposed: false",
+        "data-chat-remote-overflow-assessment-details",
+        "data-chat-remote-overflow-assessment-details-summary",
         "data-chat-remote-overflow-assessment-grid",
-        "no mock submit, real hub request, or real remote worker is contacted yet",
+        "No credits are held or spent, and no remote worker is contacted in this phase.",
     ]
     required_css = [
         ".chat-remote-worker-control-backdrop",
         ".chat-remote-worker-control-modal",
         ".chat-remote-worker-control-status-grid",
         ".chat-remote-worker-control-status-card",
+        ".chat-remote-worker-control-assessment-details",
+        ".chat-remote-worker-control-assessment-details-summary",
         ".chat-remote-worker-control-option-grid",
         ".chat-remote-worker-control-option-card",
         ".chat-remote-worker-chat-toggle.enabled",
@@ -93,7 +97,7 @@ def main() -> int:
 
     print({
         "ok": True,
-        "phase": "remote worker modal assessment cards",
+        "phase": "remote worker modal compact assessment",
         "assessment_endpoint": "/api/applications/chat-console/ai/remote-overflow/assess",
         "capacity_endpoint": "/api/applications/chat-console/ai/capacity",
         "status_cards": ["Current Local AI Worker", "Remote Overflow Assessment"],
