@@ -20,6 +20,7 @@
         window.McelLabPlatformSpine &&
         window.McelLabWorkbench &&
         window.McelLabBrowserRunner &&
+        window.McelLabSiteSkeleton &&
         window.McelLabAcidTests &&
         window.McelLabSupervisor &&
         window.McelLabKernel &&
@@ -71,6 +72,24 @@
       mcelLoadScenario?.addEventListener("click", loadSelectedMcelScenario);
       mcelScenarioSelect?.addEventListener("change", describeSelectedMcelScenario);
       mcelThemeSelect?.addEventListener("change", () => changeMcelTheme("theme-select"));
+      mcelOpenEditorModal?.addEventListener("click", () => openMcelLabModal("editor"));
+      mcelOpenSiteModal?.addEventListener("click", () => openMcelLabModal("site"));
+      mcelSiteFrameResync?.addEventListener("click", () => syncMcelRenderedSiteFrame("twiddle-resync"));
+      mcelSiteFrameRebuild?.addEventListener("click", () => rebuildMcelSiteFrameShell("twiddle-rebuild", {syncAfter: true}));
+      mcelSiteFrameClear?.addEventListener("click", () => clearMcelSiteFrameSrcdoc("twiddle-clear"));
+      bindMcelSiteFrameLifecycle("boot");
+      renderMcelSiteFrameTwiddle("boot");
+      document.querySelectorAll("[data-mcel-close-modal]").forEach((button) => {
+        button.addEventListener("click", () => closeMcelLabModal(button.dataset.mcelCloseModal || "all"));
+      });
+      [mcelEditorModal, mcelSiteModal].filter(Boolean).forEach((modal) => {
+        modal.addEventListener("click", (event) => {
+          if (event.target === modal) closeMcelLabModal("all");
+        });
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && mcelLabState.activeModal) closeMcelLabModal("all");
+      });
       mcelCommandPlan?.addEventListener("click", planMcelSemanticCommand);
       mcelCommandApply?.addEventListener("click", applyMcelSemanticCommand);
       mcelProjectSave?.addEventListener("click", saveMcelProject);
@@ -94,6 +113,14 @@
 
     let mcelLabCompileTimer = null;
     let mcelAutopilotTimer = null;
+
+    function recordMcelEvent(module, code, message, level = "info") {
+      mcelLabState.compileEvents = [
+        ...mcelLabState.compileEvents,
+        {level, module, code, message}
+      ].slice(-64);
+      renderMcelCompilerLog();
+    }
     function debounceMcelLabCompile() {
       clearTimeout(mcelLabCompileTimer);
       mcelLabCompileTimer = setTimeout(() => compileMcelLabSource("source-input"), 240);
@@ -257,6 +284,7 @@
       renderMcelDebugger();
       renderMcelCssLawReport();
       renderMcelLayoutLawReport();
+      renderMcelSiteSkeleton();
       renderMcelGraphReport();
       renderMcelScenarioMatrix();
       renderMcelEvidencePacket();
@@ -274,6 +302,7 @@
       syncMcelTraitControls();
       markSelectedMcelRuntimeElement();
       renderMcelSelectionStatus();
+      renderMcelSiteSkeleton();
     }
 
     function serializeMcelRuntime(reason = "serialize") {
@@ -679,6 +708,7 @@
       renderMcelCssLawReport();
       renderMcelGraphReport();
       renderMcelCompilerLog();
+      syncMcelRenderedSiteFrame("theme");
     }
 
     function applyMcelRuntimeStyleLaw(reason = "style-law") {
@@ -857,6 +887,7 @@
       syncMcelTraitControls();
       markSelectedMcelRuntimeElement();
       renderMcelSelectionStatus();
+      renderMcelSiteSkeleton();
       renderMcelDebugger();
       renderMcelCompilerLog();
     }
@@ -919,6 +950,505 @@
       if (["diff", "stress", "a11y"].includes(mcelLabState.currentMode)) {
         openMcelDiagnosticsDrawer(`mode:${mcelLabState.currentMode}`);
       }
+    }
+
+
+    function currentMcelSiteFrame() {
+      if (!mcelSiteFrame || !mcelSiteFrame.isConnected) {
+        mcelSiteFrame = document.querySelector("#mcel-site-frame");
+      }
+      return mcelSiteFrame;
+    }
+
+    function ensureMcelSiteFrameTwiddle() {
+      if (!mcelLabState.siteFrameTwiddle) {
+        mcelLabState.siteFrameTwiddle = {
+          openCount: 0,
+          closeCount: 0,
+          syncCount: 0,
+          rebuildCount: 0,
+          clearCount: 0,
+          loadCount: 0,
+          errorCount: 0,
+          generation: 0,
+          nonce: 0,
+          lastReason: "boot",
+          lastHash: "none",
+          lastLength: 0,
+          lastAt: null,
+          lastReadyState: "unknown",
+          events: []
+        };
+      }
+      if (!Array.isArray(mcelLabState.siteFrameTwiddle.events)) {
+        mcelLabState.siteFrameTwiddle.events = [];
+      }
+      return mcelLabState.siteFrameTwiddle;
+    }
+
+    function hashMcelSiteFrameDocument(value = "") {
+      let hash = 2166136261;
+      for (let index = 0; index < value.length; index += 1) {
+        hash ^= value.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+      }
+      return (hash >>> 0).toString(16).padStart(8, "0");
+    }
+
+    function readMcelSiteFrameReadyState(frame) {
+      try {
+        return frame?.contentDocument?.readyState || "sandboxed-or-unavailable";
+      } catch (error) {
+        return `sandboxed:${error?.name || "access-denied"}`;
+      }
+    }
+
+    function scheduleMcelSiteFrameWrite(callback) {
+      const scheduler = typeof window.requestAnimationFrame === "function"
+        ? window.requestAnimationFrame
+        : (task) => window.setTimeout(task, 0);
+      scheduler(callback);
+    }
+
+    function recordMcelSiteFrameTwiddle(action, details = {}) {
+      const twiddle = ensureMcelSiteFrameTwiddle();
+      const frame = currentMcelSiteFrame();
+      const event = {
+        at: new Date().toISOString(),
+        action,
+        reason: details.reason || twiddle.lastReason || "unknown",
+        hash: details.hash || frame?.dataset?.srcdocHash || twiddle.lastHash || "none",
+        length: Number.isFinite(details.length) ? details.length : Number(frame?.dataset?.srcdocLength || twiddle.lastLength || 0),
+        generation: Number(frame?.dataset?.generation || twiddle.generation || 0),
+        connected: Boolean(frame?.isConnected),
+        modalHidden: mcelSiteModal?.getAttribute("aria-hidden") || "missing",
+        synced: frame?.dataset?.synced || "never"
+      };
+      twiddle.events = [...twiddle.events, event].slice(-10);
+      twiddle.lastAt = event.at;
+      renderMcelSiteFrameTwiddle(action);
+    }
+
+    function renderMcelSiteFrameTwiddle(reason = "render") {
+      const twiddle = ensureMcelSiteFrameTwiddle();
+      const frame = currentMcelSiteFrame();
+      const srcdocLength = Number(frame?.dataset?.srcdocLength || frame?.srcdoc?.length || 0);
+      const stateLine = [
+        `state=${mcelLabState.activeModal || "closed"}`,
+        `modalHidden=${mcelSiteModal?.getAttribute("aria-hidden") || "missing"}`,
+        `frame=${frame?.isConnected ? "connected" : "missing"}`,
+        `generation=${frame?.dataset?.generation || twiddle.generation || 0}`,
+        `opens=${twiddle.openCount}`,
+        `closes=${twiddle.closeCount}`,
+        `syncs=${twiddle.syncCount}`,
+        `loads=${twiddle.loadCount}`,
+        `rebuilds=${twiddle.rebuildCount}`,
+        `clears=${twiddle.clearCount}`,
+        `hash=${frame?.dataset?.srcdocHash || twiddle.lastHash || "none"}`,
+        `len=${srcdocLength}`,
+        `reason=${reason}`
+      ].join(" · ");
+      if (mcelSiteFrameStatus) {
+        mcelSiteFrameStatus.textContent = stateLine;
+      }
+      if (mcelSiteFrameMiniStatus) {
+        mcelSiteFrameMiniStatus.textContent = `render iframe: ${stateLine}`;
+      }
+      if (mcelSiteFrameLog) {
+        mcelSiteFrameLog.textContent = (twiddle.events || [])
+          .slice()
+          .reverse()
+          .map((event) => [
+            event.at,
+            event.action,
+            `reason=${event.reason}`,
+            `hash=${event.hash}`,
+            `len=${event.length}`,
+            `generation=${event.generation}`,
+            `connected=${event.connected}`,
+            `modalHidden=${event.modalHidden}`,
+            `synced=${event.synced}`
+          ].join(" | "))
+          .join("\n") || "No iframe lifecycle events recorded yet.";
+      }
+    }
+
+    function bindMcelSiteFrameLifecycle(reason = "bind") {
+      const frame = currentMcelSiteFrame();
+      if (!frame || frame.dataset.lifecycleBound === "true") {
+        renderMcelSiteFrameTwiddle(reason);
+        return frame;
+      }
+      frame.dataset.lifecycleBound = "true";
+      frame.addEventListener("load", () => {
+        const twiddle = ensureMcelSiteFrameTwiddle();
+        twiddle.loadCount += 1;
+        twiddle.lastReadyState = readMcelSiteFrameReadyState(frame);
+        recordMcelSiteFrameTwiddle("iframe-load", {reason: frame.dataset.synced || reason});
+        recordMcelEvent("ui", "MCEL_SITE_IFRAME_LOADED", `Rendered-site iframe loaded generation ${frame.dataset.generation || 0}.`);
+      });
+      frame.addEventListener("error", () => {
+        const twiddle = ensureMcelSiteFrameTwiddle();
+        twiddle.errorCount += 1;
+        recordMcelSiteFrameTwiddle("iframe-error", {reason: frame.dataset.synced || reason});
+        recordMcelEvent("ui", "MCEL_SITE_IFRAME_ERROR", "Rendered-site iframe emitted an error event.");
+      });
+      renderMcelSiteFrameTwiddle(reason);
+      return frame;
+    }
+
+    function clearMcelSiteFrameSrcdoc(reason = "clear-srcdoc") {
+      const frame = bindMcelSiteFrameLifecycle(reason);
+      if (!frame) return;
+      const twiddle = ensureMcelSiteFrameTwiddle();
+      twiddle.clearCount += 1;
+      frame.removeAttribute("srcdoc");
+      frame.srcdoc = "";
+      frame.dataset.synced = reason;
+      frame.dataset.srcdocHash = "empty";
+      frame.dataset.srcdocLength = "0";
+      twiddle.lastReason = reason;
+      twiddle.lastHash = "empty";
+      twiddle.lastLength = 0;
+      recordMcelSiteFrameTwiddle("iframe-clear", {reason, hash: "empty", length: 0});
+      recordMcelEvent("ui", "MCEL_SITE_IFRAME_CLEARED", "Rendered-site iframe srcdoc was cleared from the lifecycle twiddle.");
+    }
+
+    function rebuildMcelSiteFrameShell(reason = "rebuild-frame", options = {}) {
+      const frame = currentMcelSiteFrame();
+      if (!frame || !frame.parentElement) return;
+      const twiddle = ensureMcelSiteFrameTwiddle();
+      const replacement = document.createElement("iframe");
+      replacement.id = "mcel-site-frame";
+      replacement.className = "mcel-site-frame";
+      replacement.title = "Isolated MCEL rendered site";
+      replacement.setAttribute("sandbox", "");
+      replacement.dataset.generation = String((Number(frame.dataset.generation || twiddle.generation || 0) || 0) + 1);
+      replacement.dataset.synced = "fresh-shell";
+      frame.replaceWith(replacement);
+      mcelSiteFrame = replacement;
+      twiddle.rebuildCount += 1;
+      twiddle.generation = Number(replacement.dataset.generation || twiddle.generation || 0);
+      bindMcelSiteFrameLifecycle(reason);
+      recordMcelSiteFrameTwiddle("iframe-rebuild", {reason, hash: "fresh-shell", length: 0});
+      recordMcelEvent("ui", "MCEL_SITE_IFRAME_REBUILT", `Rendered-site iframe shell rebuilt for ${reason}.`);
+      if (options.syncAfter) {
+        syncMcelRenderedSiteFrame(`${reason}:sync-after-rebuild`);
+      }
+    }
+
+    function openMcelLabModal(which = "site") {
+      const target = which === "editor" ? mcelEditorModal : mcelSiteModal;
+      if (!target) return;
+      closeMcelLabModal("all", {silent: true});
+      target.setAttribute("aria-hidden", "false");
+      target.dataset.open = "true";
+      mcelLabState.activeModal = which === "editor" ? "editor" : "site";
+      document.body?.classList?.add("mcel-modal-open");
+      if (which === "site") {
+        const twiddle = ensureMcelSiteFrameTwiddle();
+        twiddle.openCount += 1;
+        bindMcelSiteFrameLifecycle("open-site-modal");
+        syncMcelRenderedSiteFrame("open-site-modal");
+        recordMcelSiteFrameTwiddle("modal-open", {reason: "open-site-modal"});
+      } else {
+        syncMcelGrapesFromSource();
+      }
+      recordMcelEvent("ui", "MCEL_MODAL_OPENED", `${mcelLabState.activeModal} modal opened as isolated product surface.`);
+    }
+
+    function closeMcelLabModal(which = "all", options = {}) {
+      const wasSiteClose = which === "site" || which === "all" || mcelLabState.activeModal === "site";
+      const targets = [];
+      if (which === "editor" || which === "all") targets.push(mcelEditorModal);
+      if (which === "site" || which === "all") targets.push(mcelSiteModal);
+      targets.filter(Boolean).forEach((modal) => {
+        modal.setAttribute("aria-hidden", "true");
+        delete modal.dataset.open;
+      });
+      if (which === "all" || mcelLabState.activeModal === which) {
+        mcelLabState.activeModal = null;
+        document.body?.classList?.remove("mcel-modal-open");
+      }
+      if (wasSiteClose) {
+        const twiddle = ensureMcelSiteFrameTwiddle();
+        twiddle.closeCount += 1;
+        recordMcelSiteFrameTwiddle("modal-close", {reason: options.silent ? "silent-close" : "close-modal"});
+      }
+      if (!options.silent) recordMcelEvent("ui", "MCEL_MODAL_CLOSED", `${which} modal closed by outside click, Escape, or Close button.`);
+    }
+
+    function isolatedSiteCss() {
+      return `
+        :root {
+          color-scheme: dark;
+          --gold: #f6c75b;
+          --ink: #fff8df;
+          --muted: #b9b28d;
+          --sky: #73d6ff;
+          --mint: #aee06f;
+          --coral: #ff8b6b;
+          --panel: #090b08;
+          --line: rgba(246, 199, 91, 0.22);
+        }
+        * { box-sizing: border-box; }
+        html { min-height: 100%; background: #050605; }
+        body {
+          margin: 0;
+          min-height: 100%;
+          font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          color: var(--ink);
+          background:
+            radial-gradient(circle at 90% 0%, rgba(246, 199, 91, 0.18), transparent 34rem),
+            radial-gradient(circle at 0% 20%, rgba(115, 214, 255, 0.08), transparent 28rem),
+            #050605;
+        }
+        .mcel-runtime-preview {
+          width: min(1180px, calc(100% - 32px));
+          margin: 0 auto;
+          padding: clamp(18px, 3vw, 44px) 0;
+          display: grid;
+          gap: 18px;
+          overflow: visible;
+        }
+        .mcel-runtime-preview .mc {
+          min-width: 0;
+          position: relative;
+          display: grid;
+          gap: 14px;
+          padding: clamp(18px, 3vw, 34px);
+          border: 1px solid var(--line);
+          border-radius: 22px;
+          background:
+            linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.015)),
+            var(--panel);
+          box-shadow: 0 24px 80px rgba(0,0,0,0.26);
+          overflow: visible;
+        }
+        .mcel-runtime-preview [data-mc-generated="true"] {
+          display: none !important;
+        }
+        .mcel-runtime-preview .mc[data-mc-scroll-owner="self"] {
+          max-block-size: min(62vh, 560px);
+          overflow: auto;
+        }
+        .mcel-runtime-preview .mc[data-mc-scroll-owner="content"],
+        .mcel-runtime-preview .mc[data-mc-scroll-owner="parent"],
+        .mcel-runtime-preview .mc[data-mc-scroll-owner="viewport"] {
+          overflow: visible !important;
+        }
+        .mcel-runtime-preview .mc[data-mc-scroll-owner="none"] {
+          overflow: clip;
+        }
+        .mcel-runtime-preview > .mc[data-mc-component-kind="page"] {
+          gap: clamp(16px, 2.4vw, 28px);
+          padding: clamp(18px, 3vw, 40px);
+          border-radius: 30px;
+          background:
+            radial-gradient(circle at 86% 4%, rgba(246, 199, 91, 0.16), transparent 30%),
+            linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.018)),
+            #080907;
+        }
+        .mcel-runtime-preview .mc[data-mc-kind="hero"] {
+          grid-template-columns: minmax(0, 1.12fr) minmax(240px, 0.88fr);
+          align-items: center;
+          min-block-size: clamp(320px, 52vh, 620px);
+          background:
+            radial-gradient(circle at 88% 18%, rgba(115, 214, 255, 0.22), transparent 30%),
+            linear-gradient(135deg, rgba(246, 199, 91, 0.12), rgba(174, 224, 111, 0.06)),
+            #0b0d09;
+        }
+        .mcel-runtime-preview .mc[data-mc-kind="hero"]::after {
+          content: "";
+          inline-size: min(100%, 360px);
+          aspect-ratio: 0.62;
+          justify-self: end;
+          grid-row: 1 / span 4;
+          grid-column: 2;
+          border-radius: 999px;
+          background:
+            linear-gradient(180deg, rgba(174,224,111,0.94), rgba(174,224,111,0.72)),
+            radial-gradient(circle at 50% 26%, rgba(255,255,255,0.2), transparent 30%);
+          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.24), 0 24px 80px rgba(174,224,111,0.18);
+        }
+        .mcel-runtime-preview .mc[data-mc-kind="hero"] > *:not([data-mc-generated="true"]) {
+          grid-column: 1;
+          z-index: 1;
+        }
+        .mcel-runtime-preview h1,
+        .mcel-runtime-preview h2,
+        .mcel-runtime-preview h3,
+        .mcel-runtime-preview p {
+          margin-block: 0;
+        }
+        .mcel-runtime-preview h1 {
+          max-width: 12ch;
+          font-size: clamp(38px, 7vw, 88px);
+          line-height: 0.92;
+          letter-spacing: -0.075em;
+        }
+        .mcel-runtime-preview h2 {
+          font-size: clamp(24px, 3vw, 42px);
+          line-height: 1;
+        }
+        .mcel-runtime-preview h3 {
+          color: var(--mint);
+          font-size: 15px;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+        }
+        .mcel-runtime-preview p {
+          max-width: 68ch;
+          color: var(--muted);
+          font-weight: 760;
+          line-height: 1.55;
+        }
+        .mcel-runtime-preview [data-mc-slot="meta"] {
+          width: fit-content;
+          border: 1px solid rgba(115, 214, 255, 0.26);
+          border-radius: 999px;
+          padding: 6px 10px;
+          color: var(--sky);
+          font-size: 12px;
+          font-weight: 950;
+          text-transform: uppercase;
+          letter-spacing: 0.06em;
+        }
+        .mcel-runtime-preview .mc[data-mc-component="TrustCluster"] {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          align-items: stretch;
+        }
+        .mcel-runtime-preview .mc[data-mc-component="TrustCluster"] > h2 {
+          grid-column: 1 / -1;
+        }
+        .mcel-runtime-preview .mc[data-mc-component="TrustCluster"] > .mc {
+          min-block-size: 100%;
+          align-content: start;
+          background: rgba(255,255,255,0.035);
+        }
+        .mcel-runtime-preview form.mc {
+          grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto;
+          align-items: end;
+          gap: 14px;
+        }
+        .mcel-runtime-preview form.mc h2 {
+          grid-column: 1 / -1;
+        }
+        .mcel-runtime-preview form.mc label {
+          display: grid;
+          gap: 8px;
+          color: var(--muted);
+          font-size: 12px;
+          font-weight: 950;
+          text-transform: uppercase;
+          letter-spacing: 0.06em;
+        }
+        .mcel-runtime-preview input {
+          min-width: 0;
+          border: 1px solid rgba(246, 199, 91, 0.32);
+          border-radius: 999px;
+          background: #030403;
+          color: var(--ink);
+          padding: 13px 15px;
+          font: inherit;
+        }
+        .mcel-runtime-preview button,
+        .mcel-runtime-preview a[data-mc-action] {
+          justify-self: start;
+          min-height: 42px;
+          border: 0;
+          border-radius: 999px;
+          background: var(--gold);
+          color: #151205;
+          padding: 11px 18px;
+          font-weight: 950;
+          text-decoration: none;
+          cursor: pointer;
+        }
+        .mcel-runtime-preview .mc[data-mc="command-row"] {
+          grid-template-columns: minmax(0, 1fr) auto;
+          align-items: center;
+        }
+        @media (max-width: 860px) {
+          .mcel-runtime-preview .mc[data-mc-kind="hero"],
+          .mcel-runtime-preview form.mc,
+          .mcel-runtime-preview .mc[data-mc="command-row"],
+          .mcel-runtime-preview .mc[data-mc-component="TrustCluster"] {
+            grid-template-columns: 1fr;
+          }
+          .mcel-runtime-preview .mc[data-mc-kind="hero"]::after {
+            grid-column: 1;
+            grid-row: auto;
+            justify-self: center;
+            max-block-size: 320px;
+          }
+        }
+      `;
+    }
+
+    function isolatedSiteDocument(runtimeHtml, meta = {}) {
+      const reason = String(meta.reason || "sync").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const nonce = String(meta.nonce || "0").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const hash = String(meta.hash || "none").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      return `<!doctype html>
+<html data-mcel-frame-generation="${nonce}" data-mcel-frame-reason="${reason}" data-mcel-frame-hash="${hash}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCEL rendered site</title>
+<style>${isolatedSiteCss()}</style>
+</head>
+<body>
+  <!-- MCEL iframe twiddle: reason=${reason}; nonce=${nonce}; hash=${hash} -->
+  <div class="mcel-runtime-preview ${mcelLabState.theme || "theme-machine"}">
+    ${runtimeHtml || ""}
+  </div>
+</body>
+</html>`;
+    }
+
+    function syncMcelRenderedSiteFrame(reason = "sync") {
+      const frame = bindMcelSiteFrameLifecycle(reason);
+      if (!frame || !mcelRuntimePreview) {
+        recordMcelSiteFrameTwiddle("iframe-sync-skipped", {reason, hash: "missing", length: 0});
+        return;
+      }
+      const twiddle = ensureMcelSiteFrameTwiddle();
+      twiddle.syncCount += 1;
+      twiddle.nonce += 1;
+      const runtimeHtml = mcelRuntimePreview.innerHTML || "";
+      const runtimeHash = hashMcelSiteFrameDocument(runtimeHtml);
+      const nonce = `${Date.now()}-${twiddle.nonce}`;
+      const documentHtml = isolatedSiteDocument(runtimeHtml, {reason, nonce, hash: runtimeHash});
+      const documentHash = hashMcelSiteFrameDocument(documentHtml);
+      frame.dataset.synced = reason;
+      frame.dataset.srcdocHash = documentHash;
+      frame.dataset.runtimeHash = runtimeHash;
+      frame.dataset.srcdocLength = String(documentHtml.length);
+      frame.dataset.lastNonce = nonce;
+      twiddle.lastReason = reason;
+      twiddle.lastHash = documentHash;
+      twiddle.lastLength = documentHtml.length;
+      twiddle.lastAt = new Date().toISOString();
+
+      // Twiddle/fix: clear first, then write a nonce-bearing srcdoc. This makes repeated
+      // opens observable and prevents browser no-op behavior when the same srcdoc is reused.
+      frame.removeAttribute("srcdoc");
+      frame.srcdoc = "";
+      scheduleMcelSiteFrameWrite(() => {
+        const liveFrame = currentMcelSiteFrame();
+        if (!liveFrame || liveFrame !== frame || !liveFrame.isConnected) {
+          recordMcelSiteFrameTwiddle("iframe-sync-abandoned", {reason, hash: documentHash, length: documentHtml.length});
+          return;
+        }
+        liveFrame.srcdoc = documentHtml;
+        liveFrame.dataset.synced = reason;
+        liveFrame.dataset.srcdocHash = documentHash;
+        liveFrame.dataset.runtimeHash = runtimeHash;
+        liveFrame.dataset.srcdocLength = String(documentHtml.length);
+        liveFrame.dataset.lastNonce = nonce;
+        recordMcelSiteFrameTwiddle("iframe-sync", {reason, hash: documentHash, length: documentHtml.length});
+      });
     }
 
     function openMcelDiagnosticsDrawer(reason = "diagnostic-request") {
@@ -1100,6 +1630,36 @@
         persisted: Boolean(result?.ok),
         snapshot: payload
       }, null, 2);
+    }
+
+    function renderMcelSiteSkeleton() {
+      if (!mcelUiSkeletonSummary || !mcelRuntimePreview || typeof McelLabSiteSkeleton === "undefined") return;
+      const report = McelLabSiteSkeleton.buildSkeleton(currentMcelSource(), mcelRuntimePreview);
+      mcelLabState.lastSiteSkeleton = report;
+      const roleOrder = ["hero", "trust cluster", "conversion form", "command row"];
+      mcelUiSkeletonSummary.innerHTML = "";
+      roleOrder.forEach((role) => {
+        const matching = report.sections.find((section) => section.role === role);
+        const item = document.createElement("article");
+        item.dataset.status = matching ? "pass" : "pending";
+        const title = document.createElement("strong");
+        title.textContent = role;
+        const detail = document.createElement("span");
+        detail.textContent = matching
+          ? `${matching.label} · ${matching.policy.scroll} scroll`
+          : "not present in current source";
+        item.append(title, detail);
+        mcelUiSkeletonSummary.appendChild(item);
+      });
+      if (mcelUiSkeletonHealth) {
+        mcelUiSkeletonHealth.dataset.status = report.layoutHealth.status;
+        mcelUiSkeletonHealth.textContent = [
+          `Layout health: ${report.layoutHealth.status}`,
+          `illegal nested scrollbars: ${report.layoutHealth.nestedScrollbarCount}`,
+          `self-owned scroll regions: ${report.layoutHealth.selfScrollCount}`,
+          report.layoutHealth.claim
+        ].join(" · ");
+      }
     }
 
     function renderMcelA11yReport() {

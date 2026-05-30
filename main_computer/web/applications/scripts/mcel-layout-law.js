@@ -36,15 +36,21 @@
         if (policy.scrollPolicy === "external" || policy.overflowPolicy === "delegate") return "parent";
         if (policy.scrollPolicy === "viewport-only") return "viewport";
         if (policy.scrollPolicy === "never") return "none";
-        return "self";
+        if (policy.scrollPolicy === "required" || policy.scrollPolicy === "child-only") return "self";
+        if (policy.scrollPolicy === "auto" && (policy.sizePolicy === "fixed" || policy.overflowPolicy === "virtualize")) return "self";
+        if (policy.scrollPolicy === "auto") return "content";
+        return "content";
       }
 
       function expectedOverflow(policy) {
         if (policy.scrollPolicy === "never") return "clip";
         if (policy.overflowPolicy === "visible" || policy.overflowPolicy === "expand") return "visible";
-        if (policy.overflowPolicy === "clip" || policy.overflowPolicy === "paginate" || policy.overflowPolicy === "virtualize" || policy.overflowPolicy === "collapse") return "clip";
         if (policy.overflowPolicy === "delegate" || policy.scrollPolicy === "external" || policy.scrollPolicy === "viewport-only") return "visible";
-        return policy.scrollPolicy === "required" || policy.scrollPolicy === "auto" || policy.scrollPolicy === "child-only" ? "auto" : "clip";
+        if (policy.scrollPolicy === "required" || policy.scrollPolicy === "child-only") return "auto";
+        if (policy.scrollPolicy === "auto" && (policy.sizePolicy === "fixed" || policy.overflowPolicy === "virtualize")) return "auto";
+        if (policy.overflowPolicy === "clip" || policy.overflowPolicy === "collapse") return "clip";
+        if (policy.overflowPolicy === "paginate") return "visible";
+        return "visible";
       }
 
       function computeElementLaw(element, index = 0, total = 1) {
@@ -59,7 +65,7 @@
           expected: {
             overflow,
             scrollOwner: owner,
-            internalScrollbarAllowed: ["auto", "required", "child-only"].includes(policy.scrollPolicy) && owner === "self",
+            internalScrollbarAllowed: ["required", "child-only"].includes(policy.scrollPolicy) || (policy.scrollPolicy === "auto" && owner === "self"),
             internalScrollbarForbidden: policy.scrollPolicy === "never" || owner !== "self",
             keyboardRequired: ["required", "child-only"].includes(policy.scrollPolicy),
             pressure
@@ -86,8 +92,13 @@
         } else if (law.sizePolicy === "fluid") {
           element.style.maxInlineSize = "100%";
         }
+        if (law.expected.scrollOwner === "content") {
+          element.style.minBlockSize = "min-content";
+          element.style.overflow = "visible";
+          element.style.overscrollBehavior = "auto";
+        }
         if (law.overflowPolicy === "contain") {
-          element.style.overscrollBehavior = "contain";
+          element.style.overscrollBehavior = law.expected.scrollOwner === "self" ? "contain" : "auto";
         }
         if (law.scrollPolicy === "never") {
           element.style.overflow = "clip";
@@ -140,7 +151,7 @@
         const staticOnly = elementsReport.filter((item) => !item.liveGeometry).length;
         return {
           kind: "mcel-layout-law-report",
-          lawId: "layout.overflow.scroll.v1",
+          lawId: "layout.overflow.scroll.v2",
           elementCount: elementsReport.length,
           passed: elementsReport.length - failed,
           failed,
@@ -187,8 +198,9 @@
       }
 
       const descriptor = {
-        id: "layout.overflow.scroll.v1",
+        id: "layout.overflow.scroll.v2",
         label: "Layout / Overflow / Scroll Law",
+        notes: "Auto scroll is content-expanding by default; self scroll is opt-in through required, child-only, fixed, or virtualized policies.",
         version: "v1",
         reads: [attributes.sizePolicy, attributes.overflowPolicy, attributes.scrollPolicy, attributes.flow, attributes.density],
         writesRuntimeOnly: [

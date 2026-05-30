@@ -238,7 +238,8 @@
   gap: 12px;
   align-content: start;
   padding: 12px;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   border-bottom: 1px solid rgba(246, 199, 91, 0.18);
   background: #050605;
 }
@@ -505,7 +506,7 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
 
 .mcel-lab-primary-controls {
   display: grid;
-  grid-template-columns: minmax(180px, 260px) minmax(240px, 1fr);
+  grid-template-columns: minmax(180px, 260px) minmax(240px, 1fr) auto;
   gap: 8px;
   align-items: end;
   padding: 8px;
@@ -713,6 +714,11 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
 .mcel-runtime-preview .mc[data-mc-scroll-owner="self"] {
   max-block-size: min(44vh, 420px);
   overflow: auto;
+}
+
+.mcel-runtime-preview .mc[data-mc-scroll-owner="content"] {
+  min-block-size: min-content;
+  overflow: visible;
 }
 
 .mcel-runtime-preview .mc[data-mc-layout-pressure="high"],
@@ -931,4 +937,471 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
 
 .mcel-lab-panel[aria-label="Subsumption Lattice"] {
   border-color: color-mix(in srgb, var(--accent, #7dd3fc) 42%, transparent);
+}
+
+
+/* UI-first MCEL correction: the lab now shows a real site skeleton, not just hidden proof machinery. */
+.mcel-site-skeleton {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(340px, 1.4fr) minmax(220px, 0.75fr);
+  gap: 12px;
+  align-items: stretch;
+  padding: 12px;
+  border: 1px solid rgba(174, 224, 111, 0.26);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 8% 0%, rgba(174, 224, 111, 0.12), transparent 34%),
+    linear-gradient(90deg, rgba(115, 214, 255, 0.06), transparent 46%),
+    #050706;
+}
+
+.mcel-site-skeleton-copy {
+  display: grid;
+  align-content: center;
+  gap: 6px;
+}
+
+.mcel-site-skeleton-copy h4 {
+  margin: 0;
+  color: var(--gold);
+  font-size: 18px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mcel-site-skeleton-copy p:not(.eyebrow) {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
+.mcel-site-skeleton-cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(90px, 1fr));
+  gap: 8px;
+}
+
+.mcel-site-skeleton-cards article,
+.mcel-site-skeleton-health {
+  min-width: 0;
+  border: 1px solid rgba(246, 199, 91, 0.2);
+  border-radius: 10px;
+  background: #090b08;
+  padding: 10px;
+}
+
+.mcel-site-skeleton-cards article[data-status="pass"],
+.mcel-site-skeleton-health[data-status="pass"] {
+  border-color: rgba(174, 224, 111, 0.55);
+  background: rgba(174, 224, 111, 0.08);
+}
+
+.mcel-site-skeleton-cards article[data-status="pending"],
+.mcel-site-skeleton-health[data-status="pending"] {
+  border-color: rgba(115, 214, 255, 0.24);
+}
+
+.mcel-site-skeleton-cards article[data-status="fail"],
+.mcel-site-skeleton-health[data-status="fail"] {
+  border-color: rgba(255, 111, 111, 0.58);
+  background: rgba(255, 111, 111, 0.08);
+}
+
+.mcel-site-skeleton-cards strong {
+  display: block;
+  color: var(--mint);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.mcel-site-skeleton-cards span,
+.mcel-site-skeleton-health {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  line-height: 1.4;
+}
+
+.mcel-runtime-preview > .mc[data-mc-component-kind="page"] {
+  width: min(100%, 1120px);
+  justify-self: center;
+  gap: 18px;
+  padding: clamp(18px, 3vw, 34px);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 80% 0%, rgba(246, 199, 91, 0.16), transparent 35%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.015)),
+    #080907;
+}
+
+.mcel-runtime-preview .mc[data-mc-kind="hero"] {
+  grid-template-columns: minmax(0, 1.15fr) minmax(220px, 0.85fr);
+  align-items: center;
+  min-block-size: clamp(280px, 36vh, 520px);
+  padding: clamp(24px, 5vw, 56px);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 92% 14%, rgba(115, 214, 255, 0.22), transparent 30%),
+    linear-gradient(135deg, rgba(246, 199, 91, 0.12), rgba(174, 224, 111, 0.06)),
+    #0b0d09;
+}
+
+.mcel-runtime-preview .mc[data-mc-kind="hero"] h1,
+.mcel-runtime-preview .mc[data-mc-kind="hero"] h2 {
+  max-width: 12ch;
+  margin: 0;
+  color: #fff8df;
+  font-size: clamp(34px, 6vw, 72px);
+  line-height: 0.96;
+  letter-spacing: -0.06em;
+  text-transform: none;
+}
+
+.mcel-runtime-preview .mc[data-mc-kind="hero"] p {
+  max-width: 58ch;
+  font-size: clamp(14px, 1.4vw, 18px);
+}
+
+.mcel-runtime-preview .mc[data-mc-component="TrustCluster"] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 12px;
+}
+
+.mcel-runtime-preview .mc[data-mc-component="TrustCluster"] > h2,
+.mcel-runtime-preview .mc[data-mc-component="TrustCluster"] > [data-mc-generated="true"] {
+  grid-column: 1 / -1;
+}
+
+.mcel-runtime-preview .mc[data-mc-component="TrustCluster"] > .mc {
+  min-height: 100%;
+  align-content: start;
+  overflow: visible;
+}
+
+.mcel-runtime-preview form.mc {
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr);
+  align-items: end;
+  gap: 14px;
+  padding: 22px;
+  background:
+    linear-gradient(90deg, rgba(115, 214, 255, 0.08), rgba(174, 224, 111, 0.06)),
+    #060807;
+}
+
+.mcel-runtime-preview form.mc h2 {
+  margin: 0;
+  font-size: clamp(22px, 3vw, 34px);
+  line-height: 1;
+}
+
+.mcel-runtime-preview form.mc label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.mcel-runtime-preview form.mc input {
+  min-width: 0;
+  border: 1px solid rgba(246, 199, 91, 0.32);
+  border-radius: 999px;
+  background: #030403;
+  color: var(--ink);
+  padding: 12px 14px;
+}
+
+.mcel-runtime-preview button,
+.mcel-runtime-preview a[data-mc-action] {
+  justify-self: start;
+  min-height: 38px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--gold);
+  color: #151205;
+  padding: 10px 16px;
+  font-weight: 950;
+  text-decoration: none;
+}
+
+.mcel-runtime-preview .mc[data-mc="command-row"] {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  padding: 14px 18px;
+  border-radius: 18px;
+}
+
+.mcel-runtime-preview .mc[data-mc="command-row"] h2,
+.mcel-runtime-preview .mc[data-mc="command-row"] p {
+  margin: 0;
+}
+
+@media (max-width: 1180px) {
+  .mcel-site-skeleton {
+    grid-template-columns: 1fr;
+  }
+
+  .mcel-site-skeleton-cards {
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+
+  .mcel-runtime-preview .mc[data-mc-kind="hero"],
+  .mcel-runtime-preview form.mc,
+  .mcel-runtime-preview .mc[data-mc="command-row"] {
+    grid-template-columns: 1fr;
+  }
+
+  .mcel-runtime-preview .mc[data-mc-component="TrustCluster"] {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 680px) {
+  .mcel-site-skeleton-cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+/* Modal-isolated MCEL correction: product UI no longer competes with the lab/dev panes. */
+.mcel-product-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.mcel-product-actions button,
+.mcel-modal-close {
+  min-height: 36px;
+  border: 1px solid rgba(246, 199, 91, 0.34);
+  border-radius: 999px;
+  background: #0d100b;
+  color: var(--gold);
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 950;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+#mcel-open-site-modal {
+  background: var(--gold);
+  color: #151205;
+}
+
+
+.mcel-site-frame-mini-status {
+  min-width: min(100%, 320px);
+  display: block;
+  padding: 8px 10px;
+  border: 1px solid rgba(115, 214, 255, 0.22);
+  border-radius: 10px;
+  background: rgba(3, 8, 9, 0.86);
+  color: var(--muted, #b9b28d);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.mcel-site-frame-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.mcel-site-frame-actions button {
+  min-height: 34px;
+  border: 1px solid rgba(246, 199, 91, 0.34);
+  border-radius: 999px;
+  background: rgba(246, 199, 91, 0.1);
+  color: var(--gold, #f6c75b);
+  padding: 7px 11px;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.mcel-site-frame-twiddle {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.7fr) minmax(260px, 1fr) minmax(260px, 1.3fr);
+  gap: 10px;
+  align-items: stretch;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(115, 214, 255, 0.16);
+  background:
+    linear-gradient(90deg, rgba(115, 214, 255, 0.08), transparent 50%),
+    rgba(0, 0, 0, 0.26);
+}
+
+.mcel-site-frame-twiddle strong {
+  display: block;
+  color: var(--sky, #73d6ff);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.mcel-site-frame-twiddle span,
+.mcel-site-frame-twiddle output {
+  color: var(--muted, #b9b28d);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.mcel-site-frame-twiddle output,
+.mcel-site-frame-twiddle pre {
+  min-width: 0;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid rgba(174, 224, 111, 0.2);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.36);
+  color: var(--ink, #fff8df);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow: auto;
+}
+
+.mcel-site-frame-twiddle pre {
+  max-height: 84px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+
+.mcel-runtime-measurement-well {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: -12000px;
+  inline-size: min(1120px, calc(100vw - 64px));
+  visibility: hidden;
+  pointer-events: none;
+  z-index: -1;
+}
+
+.mcel-runtime-measurement-well .mcel-runtime-preview {
+  inline-size: 100%;
+  min-block-size: 1px;
+  max-block-size: none;
+  overflow: visible;
+}
+
+.mcel-lab-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: grid;
+  place-items: center;
+  padding: clamp(12px, 2vw, 24px);
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(8px);
+}
+
+.mcel-lab-modal[aria-hidden="true"] {
+  display: none;
+}
+
+.mcel-lab-modal-card {
+  min-width: 0;
+  width: min(1480px, 96vw);
+  max-height: 92vh;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  border: 1px solid rgba(246, 199, 91, 0.34);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(246, 199, 91, 0.14), transparent 30%),
+    #050605;
+  box-shadow: 0 30px 110px rgba(0, 0, 0, 0.72);
+  overflow: hidden;
+}
+
+.mcel-lab-site-modal-card {
+  width: min(1280px, 96vw);
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.mcel-lab-modal-head {
+  min-width: 0;
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(246, 199, 91, 0.18);
+}
+
+.mcel-lab-modal-head h4 {
+  margin: 0;
+  color: var(--gold);
+  font-size: 16px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.mcel-lab-modal .mcel-lab-workbench {
+  height: min(74vh, 780px);
+  min-height: 0;
+  padding: 0 12px 12px;
+  grid-template-columns: minmax(260px, 0.82fr) minmax(360px, 1.18fr) minmax(260px, 0.76fr);
+}
+
+.mcel-lab-modal .mcel-lab-pane,
+.mcel-lab-modal .mcel-lab-panel {
+  max-height: 100%;
+}
+
+.mcel-lab-modal .mcel-lab-runtime-pane {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.mcel-lab-modal #mcel-runtime-dom {
+  min-height: 0;
+  max-height: none;
+  overflow: auto;
+}
+
+.mcel-site-frame {
+  width: 100%;
+  min-width: 0;
+  height: min(78vh, 840px);
+  border: 0;
+  background: #050605;
+}
+
+body.mcel-modal-open {
+  overflow: hidden;
+}
+
+@media (max-width: 1180px) {
+  .mcel-lab-primary-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .mcel-product-actions {
+    justify-content: flex-start;
+  }
+
+  .mcel-lab-modal .mcel-lab-workbench {
+    grid-template-columns: 1fr;
+    height: 78vh;
+    overflow: auto;
+  }
+
+  .mcel-site-frame-twiddle {
+    grid-template-columns: 1fr;
+  }
+
+  .mcel-site-frame {
+    height: 80vh;
+  }
 }

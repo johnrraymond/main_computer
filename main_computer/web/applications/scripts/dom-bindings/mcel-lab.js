@@ -25,8 +25,27 @@
         lastSubsumptionLattice: null,
         lastWorkbenchPlan: null,
         lastBrowserProof: null,
+        lastSiteSkeleton: null,
         lastCommandPlan: null,
         lastProjectSnapshot: null,
+        activeModal: null,
+        siteFrameTwiddle: {
+          openCount: 0,
+          closeCount: 0,
+          syncCount: 0,
+          rebuildCount: 0,
+          clearCount: 0,
+          loadCount: 0,
+          errorCount: 0,
+          generation: 0,
+          nonce: 0,
+          lastReason: "boot",
+          lastHash: "none",
+          lastLength: 0,
+          lastAt: null,
+          lastReadyState: "unknown",
+          events: []
+        },
         lastSourceList: []
       };
     }
@@ -46,6 +65,19 @@
     const mcelScenarioSelect = document.querySelector("#mcel-scenario-select");
     const mcelLoadScenario = document.querySelector("#mcel-load-scenario");
     const mcelScenarioDescription = document.querySelector("#mcel-scenario-description");
+    const mcelUiSkeletonSummary = document.querySelector("#mcel-ui-skeleton-summary");
+    const mcelUiSkeletonHealth = document.querySelector("#mcel-ui-skeleton-health");
+    const mcelOpenEditorModal = document.querySelector("#mcel-open-editor-modal");
+    const mcelOpenSiteModal = document.querySelector("#mcel-open-site-modal");
+    const mcelEditorModal = document.querySelector("#mcel-editor-modal");
+    const mcelSiteModal = document.querySelector("#mcel-site-modal");
+    let mcelSiteFrame = document.querySelector("#mcel-site-frame");
+    const mcelSiteFrameStatus = document.querySelector("#mcel-site-frame-status");
+    const mcelSiteFrameMiniStatus = document.querySelector("#mcel-site-frame-mini-status");
+    const mcelSiteFrameLog = document.querySelector("#mcel-site-frame-log");
+    const mcelSiteFrameResync = document.querySelector("#mcel-site-frame-resync");
+    const mcelSiteFrameRebuild = document.querySelector("#mcel-site-frame-rebuild");
+    const mcelSiteFrameClear = document.querySelector("#mcel-site-frame-clear");
     const mcelSelectionStatus = document.querySelector("#mcel-selection-status");
     const mcelGrapesHost = document.querySelector("#mcel-grapes-host");
     const mcelGrapesCanvas = document.querySelector("#mcel-grapes");

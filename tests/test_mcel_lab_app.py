@@ -315,7 +315,7 @@ def test_mcel_lab_fifth_slice_adds_operational_graph_and_audit_provenance() -> N
     assert "mcelGraphReport" in bindings
     assert "mcelAuditReport" in bindings
     assert 'artifactOwner: "data-mc-owner"' in contract
-    assert 'contractVersion = "mcel-lab.v0.10-platform-spine"' in contract
+    assert 'contractVersion = "mcel-lab.v0.11-ui-site-skeleton"' in contract
     assert "attributes.artifactOwner" in contract
     assert 'node.setAttribute(attributes.artifactOwner, "mcel-part-manager")' in engine
     assert 'node.setAttribute(attributes.artifactReason' in engine
@@ -510,7 +510,33 @@ def test_mcel_lab_diagnostics_are_collapsed_to_keep_primary_surface_focused() ->
     assert app.index("Run Selected Acid Test") > diagnostics_start
     assert app.index("Scenario Matrix") > diagnostics_start
     assert app.index("Kernel Audit") > diagnostics_start
-    assert "Primary surface stays focused on source, semantic editor, and runtime output." in app
+    assert "Primary surface stays product-first: the editor and the rendered site open in isolated modal surfaces instead of fighting the lab chrome." in app
+    assert "Open Site Editor" in app
+    assert "Open Rendered Site" in app
+    assert "mcel-editor-modal" in app
+    assert "mcel-site-modal" in app
+    assert "mcel-site-frame" in app
+    assert "mcel-site-frame-status" in app
+    assert "mcel-site-frame-log" in app
+    assert "mcel-site-frame-resync" in app
+    assert "mcel-site-frame-rebuild" in app
+    assert "mcel-site-frame-clear" in app
+    assert "mcel-site-frame-mini-status" in app
+    assert "mcel-runtime-measurement-well" in app
+    assert "mcelOpenEditorModal" in bindings
+    assert "mcelSiteFrameStatus" in bindings
+    assert "siteFrameTwiddle" in bindings
+    assert "openMcelLabModal" in ui
+    assert "syncMcelRenderedSiteFrame" in ui
+    assert "isolatedSiteDocument" in ui
+    assert "recordMcelSiteFrameTwiddle" in ui
+    assert "rebuildMcelSiteFrameShell" in ui
+    assert "clearMcelSiteFrameSrcdoc" in ui
+    assert "MCEL_SITE_IFRAME_LOADED" in ui
+    assert 'if (event.target === modal) closeMcelLabModal("all")' in ui
+    assert 'mcel-lab-modal[aria-hidden="true"]' in style
+    assert "mcel-site-frame" in style
+    assert "mcel-site-frame-twiddle" in style
     assert "mcelDiagnosticsDrawer" in bindings
     assert "openMcelDiagnosticsDrawer" in ui
     assert "MCEL_DIAGNOSTICS_OPENED" in ui
@@ -643,7 +669,7 @@ def test_mcel_lab_ninth_slice_adds_layout_law_browser_observer_and_public_core_a
     assert "allowedSizePolicies" in editor
     assert "McelLabLawRegistry" in law_registry and "buildAxisMatrix" in law_registry
     assert "McelLabBrowserObserver" in browser_observer and "observeElement" in browser_observer
-    assert "McelLabLayoutLaw" in layout_law and "layout.overflow.scroll.v1" in layout_law
+    assert "McelLabLayoutLaw" in layout_law and "layout.overflow.scroll.v2" in layout_law
     assert "repairRuntimeLaw" in layout_law and "proveRuntime" in layout_law
     assert 'layout: ["layout", "geometry", "overflow-proof", "scroll-proof"]' in command_surface
     assert "never scroll" in acid
@@ -687,15 +713,16 @@ def test_mcel_lab_tenth_slice_fleshes_out_platform_subsumption_spine() -> None:
         "mcel-platform-spine.js",
         "mcel-workbench.js",
         "mcel-browser-runner.js",
+        "mcel-site-skeleton.js",
     ]
     for name in new_modules:
         module_text = (WEB_APP / "scripts" / name).read_text(encoding="utf-8")
         assert "<!-- @include applications/scripts/" + name + " -->" in html
         assert "var McelLab" in module_text
-        assert "buildSubsumptionPlan" in module_text or "buildSubsumptionLattice" in module_text or "observeAndProve" in module_text or "buildWorkbenchPlan" in module_text
+        assert "buildSubsumptionPlan" in module_text or "buildSubsumptionLattice" in module_text or "observeAndProve" in module_text or "buildWorkbenchPlan" in module_text or "buildSkeleton" in module_text
 
     assert html.index("mcel-layout-law.js") < html.index("mcel-component-law.js") < html.index("mcel-platform-spine.js") < html.index("mcel-workbench.js") < html.index("mcel-browser-runner.js") < html.index("mcel-command-surface.js")
-    assert 'contractVersion = "mcel-lab.v0.10-platform-spine"' in contract
+    assert 'contractVersion = "mcel-lab.v0.11-ui-site-skeleton"' in contract
     assert 'componentName: "data-mc-component"' in contract
     assert 'stateOwner: "data-mc-state-owner"' in contract
     assert 'query: "data-mc-query"' in contract
@@ -726,3 +753,44 @@ def test_mcel_lab_tenth_slice_fleshes_out_platform_subsumption_spine() -> None:
     assert "buildMcelSubsumptionLattice" in ui
     assert "renderMcelSubsumptionLattice" in ui
     assert "runMcelBrowserSemanticProof" in ui
+
+
+def test_mcel_lab_eleventh_slice_makes_real_ui_skeleton_visible_and_scroll_safe() -> None:
+    html = (ROOT / "main_computer" / "web" / "applications.html").read_text(encoding="utf-8")
+    app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
+    bindings = (WEB_APP / "scripts" / "dom-bindings" / "mcel-lab.js").read_text(encoding="utf-8")
+    contract = (WEB_APP / "scripts" / "mcel-contract.js").read_text(encoding="utf-8")
+    layout_law = (WEB_APP / "scripts" / "mcel-layout-law.js").read_text(encoding="utf-8")
+    site_skeleton = (WEB_APP / "scripts" / "mcel-site-skeleton.js").read_text(encoding="utf-8")
+    scenarios = (WEB_APP / "scripts" / "mcel-scenarios.js").read_text(encoding="utf-8")
+    acid = (WEB_APP / "scripts" / "mcel-acid-tests.js").read_text(encoding="utf-8")
+    ui = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    style = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
+
+    assert "<!-- @include applications/scripts/mcel-site-skeleton.js -->" in html
+    assert html.index("mcel-browser-runner.js") < html.index("mcel-site-skeleton.js") < html.index("mcel-command-surface.js")
+    assert "Semantic Interface Forge" in app
+    assert "Minimal site acid test" in app
+    assert "mcel-ui-skeleton-summary" in app
+    assert "mcel-ui-skeleton-health" in app
+    assert "NeighborhoodMarketSite" in contract
+    assert "HeroSection" in contract
+    assert "TrustCluster" in contract
+    assert "SignupForm" in contract
+    assert "FooterCta" in contract
+    assert "mcel-lab.v0.11-ui-site-skeleton" in contract
+    assert "Auto scroll is content-expanding by default" in layout_law
+    assert 'return "content";' in layout_law
+    assert 'data-mc-scroll-owner="content"' in style
+    assert "McelLabSiteSkeleton" in site_skeleton
+    assert "buildSkeleton" in site_skeleton
+    assert "nestedScrollbarCount" in site_skeleton
+    assert "minimal-site-skeleton" in scenarios
+    assert "without accidental nested scrollbars" in scenarios
+    assert "minimal-site-skeleton-no-scroll-traps" in acid
+    assert "acidMinimalSiteSkeletonNoScrollTraps" in acid
+    assert "mcelUiSkeletonSummary" in bindings and "mcelUiSkeletonHealth" in bindings
+    assert "renderMcelSiteSkeleton" in ui
+    assert "lastSiteSkeleton" in bindings
+    assert "iframe" in app and "sandbox" in app
+    assert "isolated from lab chrome" in app

@@ -8,6 +8,7 @@
       const commandSurface = typeof McelLabCommandSurface !== "undefined" ? McelLabCommandSurface : window.McelLabCommandSurface;
       const graph = typeof McelLabGraph !== "undefined" ? McelLabGraph : window.McelLabGraph;
       const opsRunner = typeof McelLabOpsRunner !== "undefined" ? McelLabOpsRunner : window.McelLabOpsRunner;
+      const siteSkeleton = typeof McelLabSiteSkeleton !== "undefined" ? McelLabSiteSkeleton : window.McelLabSiteSkeleton;
       const {attributes, runtimeOwnedAttributes, contractVersion} = contract;
 
       const runtimeLeakPatterns = [
@@ -380,8 +381,8 @@
           ? layoutLaw.applyRuntimeLaw(root, {reason: "acid-delegated-scroll"})
           : {layoutLawClean: false, warnings: ["layout law unavailable"]};
         const serialized = serializeClean(root, "acid-delegated-scroll");
-        const runtimeDelegated = target.getAttribute(attributes.overflowComputed) === "delegated" &&
-          target.getAttribute(attributes.scrollOwner) === "parent";
+        const runtimeDelegated = target.getAttribute(attributes.scrollOwner) === "parent" &&
+          ["visible", "delegated"].includes(target.getAttribute(attributes.overflowComputed));
         const sourcePolicySurvived = serialized.serialized.includes('data-mc-overflow-policy="delegate"') &&
           serialized.serialized.includes('data-mc-scroll-policy="external"');
         const runtimeFactsGone = !serialized.serialized.includes(attributes.scrollOwner) &&
@@ -391,6 +392,29 @@
           passed: report.layoutLawClean && serialized.leakFree && runtimeDelegated && sourcePolicySurvived && runtimeFactsGone,
           details: `runtimeDelegated=${runtimeDelegated}; sourcePolicySurvived=${sourcePolicySurvived}; runtimeFactsGone=${runtimeFactsGone}`,
           metrics: {scrollOwner: target.getAttribute(attributes.scrollOwner), warnings: report.warnings?.length || 0}
+        };
+      }
+
+      function acidMinimalSiteSkeletonNoScrollTraps() {
+        const {root} = compileClean(contract.defaultSource, "acid-minimal-site-skeleton");
+        const layout = layoutLaw?.applyRuntimeLaw
+          ? layoutLaw.applyRuntimeLaw(root, {reason: "acid-minimal-site-skeleton"})
+          : {layoutLawClean: false, warnings: ["layout law unavailable"]};
+        const skeleton = siteSkeleton?.buildSkeleton
+          ? siteSkeleton.buildSkeleton(contract.defaultSource, root)
+          : {realSiteScore: 0, layoutHealth: {status: "fail", nestedScrollbarCount: 999, traps: ["site skeleton unavailable"]}};
+        const serialized = serializeClean(root, "acid-minimal-site-skeleton");
+        const rolesPresent = skeleton.realSiteScore >= 4;
+        const noIllegalNestedScrollbars = skeleton.layoutHealth.status === "pass" && skeleton.layoutHealth.nestedScrollbarCount === 0;
+        return {
+          passed: layout.layoutLawClean && serialized.leakFree && rolesPresent && noIllegalNestedScrollbars,
+          details: `roles=${skeleton.realSiteScore}/5; illegalNestedScrollbars=${skeleton.layoutHealth.nestedScrollbarCount}; serializedClean=${serialized.leakFree}`,
+          metrics: {
+            roles: skeleton.roles,
+            realSiteScore: skeleton.realSiteScore,
+            nestedScrollbarCount: skeleton.layoutHealth.nestedScrollbarCount,
+            traps: skeleton.layoutHealth.traps
+          }
         };
       }
 
@@ -405,6 +429,7 @@
         Object.freeze({id: "schema-fuzz-normalization", name: "schema fuzz normalizes malformed traits safely", severity: "high", run: (source, options) => acidSchemaFuzz()}),
         Object.freeze({id: "overflow-never-no-internal-scrollbar", name: "overflow law forbids internal scrollbar when scroll policy is never", severity: "critical", run: (source, options) => acidOverflowNeverCreatesScrollbar()}),
         Object.freeze({id: "delegated-scroll-ownership", name: "delegated scroll policy publishes runtime owner without source pollution", severity: "critical", run: (source, options) => acidDelegatedScrollOwnership()}),
+        Object.freeze({id: "minimal-site-skeleton-no-scroll-traps", name: "minimal site skeleton proves real UI without illegal nested scrollbars", severity: "critical", run: (source, options) => acidMinimalSiteSkeletonNoScrollTraps()}),
         Object.freeze({id: "scenario-theme-soak", name: "scenario × theme soak preserves serializer/a11y/CSS law and layout law", severity: "system", run: (source, options) => acidScenarioThemeSoak(source)}),
         Object.freeze({id: "operational-evidence-integrity", name: "operational evidence packet remains machine-checkable", severity: "system", run: (source, options) => acidOperationalEvidence(source, options)})
       ]);
