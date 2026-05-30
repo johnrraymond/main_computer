@@ -810,6 +810,15 @@
       font-weight: 800;
       margin-top: 14px !important;
     }
+    .chat-remote-worker-control-pending-footer {
+      border-top: 1px solid var(--line);
+      color: var(--muted) !important;
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.02em;
+      margin-top: 12px !important;
+      padding-top: 10px;
+    }
     .chat-remote-worker-chat-toggle.enabled {
       border-color: var(--gold);
       color: var(--gold);

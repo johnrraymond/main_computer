@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-"""Static smoke for the Phase 2 busy-local Remote Worker control modal.
+"""Static smoke for the Phase 3 busy-local Remote Worker control modal.
 
 This smoke proves the Chat Console checks local AI capacity during AI request
 startup, opens the modal before the normal AI evaluation fetch, shows the
 two-card local/hub status grid, exposes large selectable option cards, and
 keeps the phase free of credit checks, real hub submit, or real remote worker
-contact. It also proves the modal polls every 2 seconds and waits to start
-the pending local request until local AI becomes available or the user chooses.
+contact. It also proves the modal polls every 2 seconds, binds to one pending
+request, and waits for a local-start lease before automated local retry.
 """
 
 from pathlib import Path
@@ -33,9 +33,9 @@ def main() -> int:
         "function chatConsoleRemoteWorkerSleep",
         "local AI is busy; waiting on Remote Worker control before starting the pending local request",
         "waiting for local AI slot before starting the pending local request",
-        "local AI became available after wait-local close; starting pending request locally",
-        "local AI became available; starting pending request locally",
-        "Phase 2 remote-worker controls",
+        "local AI became available after wait-local close; acquiring pending request lease before starting locally",
+        "local AI became available; acquiring pending request lease before starting locally",
+        "Phase 3 remote-worker controls",
         "Current Local AI Worker",
         "Remote Hub / Workers",
         "Available workers",
@@ -51,6 +51,13 @@ def main() -> int:
         "Blocking worker age",
         "Last checked",
         "No credits are checked, held, or spent",
+        "pendingLocalRequests: new Map()",
+        "localStartLease: null",
+        "function chatConsoleTryAcquireLocalAiStartLease",
+        "function chatConsoleWaitForPendingLocalAiStartLease",
+        "data-chat-remote-worker-pending-request-footer",
+        "Unable to acquire local AI start lease",
+        "local AI start lease is held",
         "no hub assessment or remote worker is contacted yet",
     ]
     required_css = [
@@ -61,6 +68,7 @@ def main() -> int:
         ".chat-remote-worker-control-option-grid",
         ".chat-remote-worker-control-option-card",
         ".chat-remote-worker-chat-toggle.enabled",
+        ".chat-remote-worker-control-pending-footer",
     ]
 
     missing_js = [item for item in required_js if item not in js]
@@ -75,7 +83,7 @@ def main() -> int:
 
     print({
         "ok": True,
-        "phase": "remote worker modal controls",
+        "phase": "remote worker modal request ownership controls",
         "capacity_endpoint": "/api/applications/chat-console/ai/capacity",
         "status_cards": ["Current Local AI Worker", "Remote Hub / Workers"],
         "selectable_options": [

@@ -1198,16 +1198,26 @@ class ChatAISubprocessManager:
                 append_text_log(active.log_file, "parent wait after kill failed", error=repr(exc))
         return {"ok": True, "stopped": True, "thread_id": active.thread_id, "run_id": active.run_id, "pid": active.process.pid}
 
-    def run(self, *, command: dict[str, Any], thread_id: str, log_file: Path, activity_bus: Any | None, cwd: Path | str) -> dict[str, Any]:
+    def run(
+        self,
+        *,
+        command: dict[str, Any],
+        thread_id: str,
+        log_file: Path,
+        activity_bus: Any | None,
+        cwd: Path | str,
+        max_local_concurrency: int = 1,
+    ) -> dict[str, Any]:
         thread_id = str(thread_id or "default-chat-thread").strip() or "default-chat-thread"
         run_id = str(command.get("run_id") or "").strip() or f"chat_ai_{int(time.time() * 1000)}"
         command = {**command, "run_id": run_id, "thread_id": thread_id}
         log_file = Path(log_file).resolve()
         log_file.parent.mkdir(parents=True, exist_ok=True)
-
-        active = self._active_for(thread_id)
-        if active is not None:
-            raise ChatAISubprocessBusy(f"Chat thread {thread_id} already has active AI/RAG subprocess {active.run_id}.")
+        try:
+            capacity_limit = int(max_local_concurrency)
+        except (TypeError, ValueError):
+            capacity_limit = 1
+        capacity_limit = max(1, capacity_limit)
 
         package_root = Path(__file__).resolve().parents[1]
         python_executable = _selected_python_executable()
@@ -1215,35 +1225,51 @@ class ChatAISubprocessManager:
         process_cwd = Path(cwd).resolve()
 
         args = [python_executable, "-u", "-m", "main_computer.chat_ai_subprocess", "--worker", "--log-file", str(log_file)]
-        append_text_log(
-            log_file,
-            "parent spawning worker",
-            thread_id=thread_id,
-            run_id=run_id,
-            args=args,
-            cwd=str(process_cwd),
-            python_executable=python_executable,
-            package_root=str(package_root),
-            command=command,
-        )
-        process = subprocess.Popen(
-            args,
-            cwd=str(process_cwd),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=False,
-            bufsize=0,
-            env=env,
-        )
-        active_process = ActiveChatAIProcess(
-            thread_id=thread_id,
-            run_id=run_id,
-            process=process,
-            log_file=log_file,
-            started_at=time.monotonic(),
-        )
         with self._lock:
+            active = self._active_for(thread_id)
+            if active is not None:
+                raise ChatAISubprocessBusy(f"Chat thread {thread_id} already has active AI/RAG subprocess {active.run_id}.")
+
+            active_runs = self._live_active_snapshots_locked()
+            if len(active_runs) >= capacity_limit:
+                active_run = active_runs[0] if active_runs else {}
+                active_thread_id = str(active_run.get("thread_id") or "")
+                active_run_id = str(active_run.get("run_id") or "")
+                raise ChatAISubprocessBusy(
+                    "Local AI capacity is exhausted; "
+                    f"{len(active_runs)} active run(s) already hold {capacity_limit} local slot(s)"
+                    f"{f' (thread {active_thread_id}, run {active_run_id})' if active_thread_id or active_run_id else ''}."
+                )
+
+            append_text_log(
+                log_file,
+                "parent spawning worker",
+                thread_id=thread_id,
+                run_id=run_id,
+                args=args,
+                cwd=str(process_cwd),
+                python_executable=python_executable,
+                package_root=str(package_root),
+                command=command,
+                max_local_concurrency=capacity_limit,
+            )
+            process = subprocess.Popen(
+                args,
+                cwd=str(process_cwd),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=False,
+                bufsize=0,
+                env=env,
+            )
+            active_process = ActiveChatAIProcess(
+                thread_id=thread_id,
+                run_id=run_id,
+                process=process,
+                log_file=log_file,
+                started_at=time.monotonic(),
+            )
             self._active_by_thread[thread_id] = active_process
             self._remember_run_result(run_id, {
                 "ok": True,

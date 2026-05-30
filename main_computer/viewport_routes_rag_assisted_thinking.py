@@ -317,6 +317,7 @@ class ViewportRagAssistedThinkingRoutesMixin:
                     log_file=log_path,
                     activity_bus=self.server.activity,
                     cwd=repo_root,
+                    max_local_concurrency=1,
                 )
                 result_payload = payload.get("result") if isinstance(payload.get("result"), dict) else {}
             result = _object_view(result_payload)

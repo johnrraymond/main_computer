@@ -22,15 +22,15 @@ def test_chat_console_remote_worker_control_modal_hooks_busy_capacity() -> None:
     assert "snapshot.available_now === false" in source
 
 
-def test_chat_console_remote_worker_modal_is_phase_two_control_panel() -> None:
+def test_chat_console_remote_worker_modal_is_phase_three_control_panel() -> None:
     source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
 
-    assert "Phase 2 remote-worker controls" in source
+    assert "Phase 3 remote-worker controls" in source
     assert "Remote Worker control" in source
     assert "Current Local AI Worker" in source
     assert "Remote Hub / Workers" in source
     assert "Hub worker information will appear here as the overflow pathway matures." in source
-    assert "Phase 2 records modal choices only." in source
+    assert "Phase 3 records modal choices and binds this control to one pending local request." in source
     assert "This panel refreshes the blocking local worker every 2 seconds." in source
     assert "Blocking worker age" in source
     assert "Last checked" in source
@@ -91,6 +91,38 @@ def test_chat_console_remote_worker_preflight_runs_before_ai_evaluate_fetch() ->
     assert preflight_index < fetch_index
 
 
+
+def test_chat_console_remote_worker_pending_request_ownership_and_lease_contract() -> None:
+    source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
+
+    assert "pendingLocalRequests: new Map()" in source
+    assert "localStartLease: null" in source
+    assert "activePendingRequestId" in source
+    assert "function chatConsoleRegisterPendingLocalAiRequest" in source
+    assert "function chatConsoleTryAcquireLocalAiStartLease" in source
+    assert "function chatConsoleWaitForPendingLocalAiStartLease" in source
+    assert "pending_request_id" in source
+    assert "data-chat-remote-worker-pending-request-footer" in source
+    assert "Unable to acquire local AI start lease" in source
+    assert "local AI start lease is held" in source
+    assert "chatConsoleReleaseLocalAiStartLease" in source
+    assert "chatConsoleForgetPendingLocalAiRequest" in source
+
+
+def test_chat_console_remote_worker_backend_start_gate_is_used() -> None:
+    manager_source = (REPO_ROOT / "main_computer" / "chat_ai_subprocess.py").read_text(encoding="utf-8")
+    route_source = (REPO_ROOT / "main_computer" / "viewport_routes_chat_console.py").read_text(encoding="utf-8")
+    rag_route_source = (REPO_ROOT / "main_computer" / "viewport_routes_rag_assisted_thinking.py").read_text(encoding="utf-8")
+
+    assert "max_local_concurrency: int = 1" in manager_source
+    assert "active_runs = self._live_active_snapshots_locked()" in manager_source
+    assert "Local AI capacity is exhausted" in manager_source
+    run_method = manager_source[manager_source.index("    def run("):]
+    assert "subprocess.Popen" in run_method
+    assert run_method.index("active_runs = self._live_active_snapshots_locked()") < run_method.index("subprocess.Popen")
+    assert "max_local_concurrency=1" in route_source
+    assert "max_local_concurrency=1" in rag_route_source
+
 def test_chat_console_remote_worker_modal_has_styles() -> None:
     css = CHAT_CONSOLE_CSS.read_text(encoding="utf-8")
 
@@ -102,6 +134,7 @@ def test_chat_console_remote_worker_modal_has_styles() -> None:
     assert ".chat-remote-worker-control-option-card" in css
     assert ".chat-remote-worker-control-option-card.default" in css
     assert ".chat-remote-worker-chat-toggle.enabled" in css
+    assert ".chat-remote-worker-control-pending-footer" in css
 
 
 def test_chat_console_remote_worker_busy_preflight_waits_before_local_fetch() -> None:
@@ -109,16 +142,16 @@ def test_chat_console_remote_worker_busy_preflight_waits_before_local_fetch() ->
 
     assert "const choice = await new Promise((resolve) => {" in source
     assert "resolveChoice: resolve" in source
-    assert "chatConsoleResolveRemoteWorkerControlChoice(choice)" in source
+    assert "chatConsoleResolveRemoteWorkerControlChoice(choice, pendingRequest.id)" in source
     assert "function chatConsoleWaitForLocalAiCapacityAvailable" in source
     assert "function chatConsoleRemoteWorkerSleep" in source
-    assert "local AI became available; starting pending request locally" in source
+    assert "local AI became available; acquiring pending request lease before starting locally" in source
     assert "local AI is busy; waiting on Remote Worker control before starting the pending local request" in source
     assert "waiting for local AI slot before starting the pending local request" in source
-    assert "local AI became available after wait-local close; starting pending request locally" in source
+    assert "local AI became available after wait-local close; acquiring pending request lease before starting locally" in source
 
     preflight_index = source.index("const remoteWorkerGate = await chatConsoleMaybeShowRemoteWorkerControlForBusyLocal")
-    local_start_index = source.index("local AI became available; starting pending request locally")
+    local_start_index = source.index("local AI became available; acquiring pending request lease before starting locally")
     fetch_index = source.index("const response = await fetch(endpoint")
     assert preflight_index < fetch_index
     assert local_start_index < fetch_index
