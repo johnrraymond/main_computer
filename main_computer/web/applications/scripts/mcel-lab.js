@@ -146,11 +146,14 @@
 
     function populateMcelThemes() {
       if (!mcelThemeSelect || typeof McelLabStyleLaw === "undefined") return;
+      const catalog = McelLabStyleLaw.themeCatalog || McelLabStyleLaw.themes.map((theme) => ({id: theme, label: theme, description: ""}));
       mcelThemeSelect.innerHTML = "";
-      McelLabStyleLaw.themes.forEach((theme) => {
+      catalog.forEach((theme) => {
         const option = document.createElement("option");
-        option.value = theme;
-        option.textContent = theme;
+        option.value = theme.id;
+        option.textContent = theme.label || theme.id;
+        if (theme.description) option.title = theme.description;
+        if (theme.audience) option.dataset.audience = theme.audience;
         mcelThemeSelect.appendChild(option);
       });
       mcelThemeSelect.value = McelLabStyleLaw.normalizeTheme(mcelLabState.theme);
@@ -699,9 +702,12 @@
       } else {
         mcelLabState.theme = mcelThemeSelect?.value || mcelLabState.theme;
       }
+      const label = typeof McelLabStyleLaw !== "undefined" && McelLabStyleLaw.themeLabel
+        ? McelLabStyleLaw.themeLabel(mcelLabState.theme)
+        : mcelLabState.theme;
       mcelLabState.compileEvents = [
         ...mcelLabState.compileEvents,
-        {level: "success", module: "style-law", code: "MCEL_THEME_CHANGED", message: `Theme changed to ${mcelLabState.theme} during ${reason}.`}
+        {level: "success", module: "style-law", code: "MCEL_THEME_CHANGED", message: `Theme changed to ${label} (${mcelLabState.theme}) during ${reason}.`}
       ].slice(-64);
       applyMcelRuntimeStyleLaw(reason);
       renderMcelRuntimeDom();
@@ -1182,34 +1188,312 @@
       return `
         :root {
           color-scheme: dark;
-          --gold: #f6c75b;
-          --ink: #fff8df;
-          --muted: #b9b28d;
-          --sky: #73d6ff;
-          --mint: #aee06f;
-          --coral: #ff8b6b;
-          --panel: #090b08;
-          --line: rgba(246, 199, 91, 0.22);
-        }
-        * { box-sizing: border-box; }
-        html { min-height: 100%; background: #050605; }
-        body {
-          margin: 0;
-          min-height: 100%;
-          font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-          color: var(--ink);
-          background:
+          --site-bg:
             radial-gradient(circle at 90% 0%, rgba(246, 199, 91, 0.18), transparent 34rem),
             radial-gradient(circle at 0% 20%, rgba(115, 214, 255, 0.08), transparent 28rem),
             #050605;
+          --site-page: #080907;
+          --site-card: #090b08;
+          --site-card-soft: rgba(255,255,255,0.035);
+          --site-ink: #fff8df;
+          --site-muted: #b9b28d;
+          --site-heading: #fff8df;
+          --site-accent: #f6c75b;
+          --site-accent-2: #aee06f;
+          --site-action: #f6c75b;
+          --site-action-ink: #151205;
+          --site-line: rgba(246, 199, 91, 0.22);
+          --site-shadow: 0 24px 80px rgba(0,0,0,0.26);
+          --site-radius: 22px;
+          --site-radius-sm: 999px;
+          --site-max: 1180px;
+          --site-font-body: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          --site-font-display: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          --site-heading-track: -0.075em;
+          --site-hero-columns: minmax(0, 1.12fr) minmax(240px, 0.88fr);
+          --site-hero-min: clamp(320px, 52vh, 620px);
+          --site-hero-ornament-display: block;
+          --site-hero-ornament-radius: 999px;
+          --site-hero-ornament-bg:
+            linear-gradient(180deg, rgba(174,224,111,0.94), rgba(174,224,111,0.72)),
+            radial-gradient(circle at 50% 26%, rgba(255,255,255,0.2), transparent 30%);
+          --site-hero-ornament-shadow: inset 0 0 0 1px rgba(255,255,255,0.24), 0 24px 80px rgba(174,224,111,0.18);
+          --site-hero-bg:
+            radial-gradient(circle at 88% 18%, rgba(115, 214, 255, 0.22), transparent 30%),
+            linear-gradient(135deg, rgba(246, 199, 91, 0.12), rgba(174, 224, 111, 0.06)),
+            #0b0d09;
+          --site-grid-overlay: none;
+        }
+
+        body.theme-machine,
+        .mcel-runtime-preview.theme-machine {
+          color-scheme: dark;
+          --site-bg:
+            radial-gradient(circle at 90% 0%, rgba(246, 199, 91, 0.18), transparent 34rem),
+            radial-gradient(circle at 0% 20%, rgba(115, 214, 255, 0.08), transparent 28rem),
+            #050605;
+          --site-page: #080907;
+          --site-card: #090b08;
+          --site-card-soft: rgba(255,255,255,0.035);
+          --site-ink: #fff8df;
+          --site-muted: #b9b28d;
+          --site-heading: #fff8df;
+          --site-accent: #f6c75b;
+          --site-accent-2: #aee06f;
+          --site-action: #f6c75b;
+          --site-action-ink: #151205;
+          --site-line: rgba(246, 199, 91, 0.22);
+          --site-shadow: 0 24px 80px rgba(0,0,0,0.26);
+          --site-radius: 22px;
+          --site-radius-sm: 999px;
+          --site-max: 1180px;
+          --site-heading-track: -0.075em;
+          --site-hero-columns: minmax(0, 1.12fr) minmax(240px, 0.88fr);
+          --site-hero-min: clamp(320px, 52vh, 620px);
+          --site-hero-ornament-display: block;
+          --site-hero-ornament-radius: 999px;
+          --site-hero-ornament-bg:
+            linear-gradient(180deg, rgba(174,224,111,0.94), rgba(174,224,111,0.72)),
+            radial-gradient(circle at 50% 26%, rgba(255,255,255,0.2), transparent 30%);
+          --site-hero-ornament-shadow: inset 0 0 0 1px rgba(255,255,255,0.24), 0 24px 80px rgba(174,224,111,0.18);
+          --site-hero-bg:
+            radial-gradient(circle at 88% 18%, rgba(115, 214, 255, 0.22), transparent 30%),
+            linear-gradient(135deg, rgba(246, 199, 91, 0.12), rgba(174, 224, 111, 0.06)),
+            #0b0d09;
+          --site-grid-overlay: none;
+        }
+
+        body.theme-local,
+        .mcel-runtime-preview.theme-local {
+          color-scheme: light;
+          --site-bg:
+            radial-gradient(circle at 90% 0%, rgba(247, 201, 72, 0.24), transparent 28rem),
+            linear-gradient(180deg, #f6eddd, #eee4d1);
+          --site-page: rgba(255, 252, 244, 0.94);
+          --site-card: #fffaf0;
+          --site-card-soft: rgba(255,255,255,0.72);
+          --site-ink: #1b2118;
+          --site-muted: #657058;
+          --site-heading: #141a11;
+          --site-accent: #2d7a4f;
+          --site-accent-2: #d77a2d;
+          --site-action: #f5c84c;
+          --site-action-ink: #1f1700;
+          --site-line: rgba(47, 80, 48, 0.2);
+          --site-shadow: 0 18px 55px rgba(54, 69, 44, 0.16);
+          --site-radius: 22px;
+          --site-radius-sm: 14px;
+          --site-hero-ornament-radius: 30px;
+          --site-hero-ornament-bg:
+            linear-gradient(135deg, rgba(45,122,79,0.86), rgba(120,160,78,0.82)),
+            radial-gradient(circle at 30% 22%, rgba(255,255,255,0.52), transparent 36%);
+          --site-hero-ornament-shadow: 0 28px 80px rgba(45, 122, 79, 0.24);
+          --site-hero-bg:
+            radial-gradient(circle at 95% 12%, rgba(45,122,79,0.13), transparent 32%),
+            linear-gradient(135deg, rgba(255,255,255,0.82), rgba(255,248,230,0.7)),
+            #fffaf0;
+        }
+
+        body.theme-saas,
+        .mcel-runtime-preview.theme-saas {
+          color-scheme: dark;
+          --site-bg:
+            radial-gradient(circle at 88% 6%, rgba(84, 116, 255, 0.28), transparent 31rem),
+            radial-gradient(circle at 8% 22%, rgba(0, 214, 201, 0.18), transparent 28rem),
+            #070916;
+          --site-page: rgba(12, 16, 34, 0.92);
+          --site-card: rgba(18, 24, 48, 0.9);
+          --site-card-soft: rgba(255,255,255,0.06);
+          --site-ink: #f6f8ff;
+          --site-muted: #aab5d6;
+          --site-heading: #ffffff;
+          --site-accent: #64e4ff;
+          --site-accent-2: #9d7cff;
+          --site-action: #8dffcb;
+          --site-action-ink: #00150f;
+          --site-line: rgba(127, 157, 255, 0.28);
+          --site-shadow: 0 28px 90px rgba(0, 0, 0, 0.42);
+          --site-radius: 28px;
+          --site-radius-sm: 16px;
+          --site-heading-track: -0.075em;
+          --site-hero-ornament-radius: 40% 60% 48% 52%;
+          --site-hero-ornament-bg:
+            linear-gradient(135deg, rgba(100,228,255,0.96), rgba(157,124,255,0.9)),
+            radial-gradient(circle at 35% 24%, rgba(255,255,255,0.48), transparent 31%);
+          --site-hero-ornament-shadow: 0 28px 110px rgba(100, 228, 255, 0.22);
+          --site-hero-bg:
+            linear-gradient(135deg, rgba(255,255,255,0.08), rgba(255,255,255,0.025)),
+            rgba(12, 16, 34, 0.9);
+        }
+
+        body.theme-editorial,
+        .mcel-runtime-preview.theme-editorial {
+          color-scheme: light;
+          --site-bg:
+            linear-gradient(90deg, rgba(56, 44, 28, 0.05) 1px, transparent 1px),
+            #f7f0e2;
+          --site-page: #fffaf0;
+          --site-card: #fffdf7;
+          --site-card-soft: rgba(244,232,210,0.7);
+          --site-ink: #251f17;
+          --site-muted: #736450;
+          --site-heading: #17120d;
+          --site-accent: #9b3f2c;
+          --site-accent-2: #1f5a68;
+          --site-action: #17120d;
+          --site-action-ink: #fff6e5;
+          --site-line: rgba(45, 35, 22, 0.2);
+          --site-shadow: none;
+          --site-radius: 10px;
+          --site-radius-sm: 6px;
+          --site-max: 980px;
+          --site-font-display: Georgia, "Times New Roman", serif;
+          --site-font-body: Georgia, "Times New Roman", serif;
+          --site-heading-track: -0.045em;
+          --site-hero-columns: minmax(0, 0.95fr) minmax(220px, 0.7fr);
+          --site-hero-ornament-radius: 6px;
+          --site-hero-ornament-bg:
+            linear-gradient(180deg, rgba(155,63,44,0.94), rgba(31,90,104,0.88)),
+            repeating-linear-gradient(45deg, rgba(255,255,255,0.18) 0 8px, transparent 8px 18px);
+          --site-hero-ornament-shadow: none;
+          --site-hero-bg: #fffdf7;
+        }
+
+        body.theme-luxury,
+        .mcel-runtime-preview.theme-luxury {
+          color-scheme: dark;
+          --site-bg:
+            radial-gradient(circle at 78% 8%, rgba(210, 172, 91, 0.18), transparent 30rem),
+            #070605;
+          --site-page: #0d0b09;
+          --site-card: #15110d;
+          --site-card-soft: rgba(210, 172, 91, 0.08);
+          --site-ink: #fbf3df;
+          --site-muted: #b9aa88;
+          --site-heading: #fff7df;
+          --site-accent: #d6b56d;
+          --site-accent-2: #8e6f41;
+          --site-action: #d6b56d;
+          --site-action-ink: #120d04;
+          --site-line: rgba(214, 181, 109, 0.32);
+          --site-shadow: 0 26px 90px rgba(0,0,0,0.52);
+          --site-radius: 4px;
+          --site-radius-sm: 2px;
+          --site-font-display: "Didot", "Bodoni 72", Georgia, serif;
+          --site-heading-track: -0.035em;
+          --site-hero-ornament-radius: 2px;
+          --site-hero-ornament-bg:
+            linear-gradient(145deg, rgba(214,181,109,0.88), rgba(75,55,30,0.9)),
+            radial-gradient(circle at 40% 20%, rgba(255,255,255,0.32), transparent 28%);
+          --site-hero-ornament-shadow: 0 26px 90px rgba(214, 181, 109, 0.18);
+          --site-hero-bg:
+            linear-gradient(135deg, rgba(214,181,109,0.11), rgba(255,255,255,0.02)),
+            #15110d;
+        }
+
+        body.theme-civic,
+        .mcel-runtime-preview.theme-civic {
+          color-scheme: light;
+          --site-bg: linear-gradient(180deg, #e8f1fb, #f7fbff 38%, #ffffff);
+          --site-page: #ffffff;
+          --site-card: #ffffff;
+          --site-card-soft: #eef6ff;
+          --site-ink: #132538;
+          --site-muted: #51677d;
+          --site-heading: #07192c;
+          --site-accent: #075da8;
+          --site-accent-2: #1b7b6d;
+          --site-action: #075da8;
+          --site-action-ink: #ffffff;
+          --site-line: rgba(7, 93, 168, 0.22);
+          --site-shadow: 0 16px 40px rgba(11, 57, 94, 0.12);
+          --site-radius: 14px;
+          --site-radius-sm: 8px;
+          --site-heading-track: -0.045em;
+          --site-hero-ornament-radius: 999px 999px 20px 20px;
+          --site-hero-ornament-bg:
+            linear-gradient(180deg, rgba(7,93,168,0.9), rgba(27,123,109,0.86)),
+            radial-gradient(circle at 50% 20%, rgba(255,255,255,0.42), transparent 30%);
+          --site-hero-ornament-shadow: 0 20px 70px rgba(7, 93, 168, 0.2);
+          --site-hero-bg:
+            linear-gradient(135deg, rgba(7,93,168,0.08), rgba(27,123,109,0.04)),
+            #ffffff;
+        }
+
+        body.theme-accessible,
+        .mcel-runtime-preview.theme-accessible {
+          color-scheme: dark;
+          --site-bg: #000000;
+          --site-page: #000000;
+          --site-card: #000000;
+          --site-card-soft: #101010;
+          --site-ink: #ffffff;
+          --site-muted: #ffffff;
+          --site-heading: #ffffff;
+          --site-accent: #00e5ff;
+          --site-accent-2: #ff7a00;
+          --site-action: #ffff00;
+          --site-action-ink: #000000;
+          --site-line: #ffffff;
+          --site-shadow: none;
+          --site-radius: 0;
+          --site-radius-sm: 0;
+          --site-font-body: Arial, Helvetica, sans-serif;
+          --site-font-display: Arial, Helvetica, sans-serif;
+          --site-heading-track: -0.02em;
+          --site-hero-ornament-display: none;
+          --site-hero-bg: #000000;
+        }
+
+        body.theme-debug,
+        .mcel-runtime-preview.theme-debug {
+          color-scheme: light;
+          --site-bg:
+            linear-gradient(90deg, rgba(0,0,0,0.05) 1px, transparent 1px),
+            linear-gradient(0deg, rgba(0,0,0,0.05) 1px, transparent 1px),
+            #fafafa;
+          --site-page: transparent;
+          --site-card: rgba(255,255,255,0.84);
+          --site-card-soft: rgba(0, 118, 255, 0.06);
+          --site-ink: #101010;
+          --site-muted: #313131;
+          --site-heading: #000000;
+          --site-accent: #005cff;
+          --site-accent-2: #ff3b30;
+          --site-action: #000000;
+          --site-action-ink: #ffffff;
+          --site-line: #005cff;
+          --site-shadow: none;
+          --site-radius: 0;
+          --site-radius-sm: 0;
+          --site-font-body: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          --site-font-display: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          --site-heading-track: -0.02em;
+          --site-hero-ornament-display: none;
+          --site-hero-bg: rgba(0, 92, 255, 0.04);
+          --site-grid-overlay:
+            linear-gradient(90deg, rgba(0,92,255,0.1) 1px, transparent 1px),
+            linear-gradient(0deg, rgba(255,59,48,0.08) 1px, transparent 1px);
+          background-size: 24px 24px;
+        }
+
+        * { box-sizing: border-box; }
+        html { min-height: 100%; background: var(--site-bg); }
+        body {
+          margin: 0;
+          min-height: 100%;
+          font-family: var(--site-font-body);
+          color: var(--site-ink);
+          background: var(--site-bg);
         }
         .mcel-runtime-preview {
-          width: min(1180px, calc(100% - 32px));
+          width: min(var(--site-max), calc(100% - 32px));
           margin: 0 auto;
           padding: clamp(18px, 3vw, 44px) 0;
           display: grid;
           gap: 18px;
           overflow: visible;
+          color: var(--site-ink);
         }
         .mcel-runtime-preview .mc {
           min-width: 0;
@@ -1217,16 +1501,24 @@
           display: grid;
           gap: 14px;
           padding: clamp(18px, 3vw, 34px);
-          border: 1px solid var(--line);
-          border-radius: 22px;
+          border: 1px solid var(--site-line);
+          border-radius: var(--site-radius);
           background:
+            var(--site-grid-overlay),
             linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.015)),
-            var(--panel);
-          box-shadow: 0 24px 80px rgba(0,0,0,0.26);
+            var(--site-card);
+          box-shadow: var(--site-shadow);
           overflow: visible;
         }
         .mcel-runtime-preview [data-mc-generated="true"] {
           display: none !important;
+        }
+        body.theme-debug .mcel-runtime-preview [data-mc-generated="true"] {
+          display: grid !important;
+          min-height: 12px;
+          color: var(--site-accent-2);
+          font-size: 10px;
+          text-transform: uppercase;
         }
         .mcel-runtime-preview .mc[data-mc-scroll-owner="self"] {
           max-block-size: min(62vh, 560px);
@@ -1243,33 +1535,32 @@
         .mcel-runtime-preview > .mc[data-mc-component-kind="page"] {
           gap: clamp(16px, 2.4vw, 28px);
           padding: clamp(18px, 3vw, 40px);
-          border-radius: 30px;
+          border-radius: calc(var(--site-radius) + 8px);
           background:
-            radial-gradient(circle at 86% 4%, rgba(246, 199, 91, 0.16), transparent 30%),
-            linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.018)),
-            #080907;
+            var(--site-grid-overlay),
+            radial-gradient(circle at 86% 4%, color-mix(in srgb, var(--site-accent) 14%, transparent), transparent 30%),
+            var(--site-page);
         }
         .mcel-runtime-preview .mc[data-mc-kind="hero"] {
-          grid-template-columns: minmax(0, 1.12fr) minmax(240px, 0.88fr);
+          grid-template-columns: var(--site-hero-columns);
           align-items: center;
-          min-block-size: clamp(320px, 52vh, 620px);
+          min-block-size: var(--site-hero-min);
           background:
-            radial-gradient(circle at 88% 18%, rgba(115, 214, 255, 0.22), transparent 30%),
-            linear-gradient(135deg, rgba(246, 199, 91, 0.12), rgba(174, 224, 111, 0.06)),
-            #0b0d09;
+            var(--site-grid-overlay),
+            var(--site-hero-bg);
         }
         .mcel-runtime-preview .mc[data-mc-kind="hero"]::after {
           content: "";
-          inline-size: min(100%, 360px);
-          aspect-ratio: 0.62;
+          display: var(--site-hero-ornament-display);
+          inline-size: min(100%, 370px);
+          aspect-ratio: 0.72;
           justify-self: end;
           grid-row: 1 / span 4;
           grid-column: 2;
-          border-radius: 999px;
-          background:
-            linear-gradient(180deg, rgba(174,224,111,0.94), rgba(174,224,111,0.72)),
-            radial-gradient(circle at 50% 26%, rgba(255,255,255,0.2), transparent 30%);
-          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.24), 0 24px 80px rgba(174,224,111,0.18);
+          border: 1px solid var(--site-line);
+          border-radius: var(--site-hero-ornament-radius);
+          background: var(--site-hero-ornament-bg);
+          box-shadow: var(--site-hero-ornament-shadow);
         }
         .mcel-runtime-preview .mc[data-mc-kind="hero"] > *:not([data-mc-generated="true"]) {
           grid-column: 1;
@@ -1281,38 +1572,70 @@
         .mcel-runtime-preview p {
           margin-block: 0;
         }
+        .mcel-runtime-preview h1,
+        .mcel-runtime-preview h2 {
+          font-family: var(--site-font-display);
+          color: var(--site-heading);
+        }
         .mcel-runtime-preview h1 {
           max-width: 12ch;
-          font-size: clamp(38px, 7vw, 88px);
+          font-size: clamp(40px, 7vw, 92px);
           line-height: 0.92;
-          letter-spacing: -0.075em;
+          letter-spacing: var(--site-heading-track);
         }
         .mcel-runtime-preview h2 {
           font-size: clamp(24px, 3vw, 42px);
-          line-height: 1;
+          line-height: 1.02;
+          letter-spacing: calc(var(--site-heading-track) * 0.45);
         }
         .mcel-runtime-preview h3 {
-          color: var(--mint);
-          font-size: 15px;
+          width: fit-content;
+          color: var(--site-accent);
+          font-size: 13px;
           text-transform: uppercase;
           letter-spacing: 0.08em;
         }
+
+        body.theme-machine .mcel-runtime-preview h3 {
+          color: var(--site-accent-2);
+          font-size: 15px;
+        }
         .mcel-runtime-preview p {
           max-width: 68ch;
-          color: var(--muted);
-          font-weight: 760;
-          line-height: 1.55;
+          color: var(--site-muted);
+          font-weight: 700;
+          line-height: 1.58;
+        }
+        body.theme-editorial .mcel-runtime-preview p {
+          font-size: 18px;
+          font-weight: 500;
+          line-height: 1.72;
+        }
+        body.theme-accessible .mcel-runtime-preview p,
+        body.theme-accessible .mcel-runtime-preview label,
+        body.theme-accessible .mcel-runtime-preview input,
+        body.theme-accessible .mcel-runtime-preview button {
+          font-size: 18px;
+          line-height: 1.6;
         }
         .mcel-runtime-preview [data-mc-slot="meta"] {
           width: fit-content;
-          border: 1px solid rgba(115, 214, 255, 0.26);
+          border: 1px solid var(--site-line);
           border-radius: 999px;
           padding: 6px 10px;
-          color: var(--sky);
+          color: var(--site-accent);
+          background: var(--site-card-soft);
           font-size: 12px;
-          font-weight: 950;
+          font-weight: 900;
           text-transform: uppercase;
           letter-spacing: 0.06em;
+        }
+
+        body.theme-machine .mcel-runtime-preview [data-mc-slot="meta"] {
+          border-color: rgba(115, 214, 255, 0.26);
+          color: #73d6ff;
+          background: transparent;
+          font-weight: 950;
         }
         .mcel-runtime-preview .mc[data-mc-component="TrustCluster"] {
           grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1324,7 +1647,9 @@
         .mcel-runtime-preview .mc[data-mc-component="TrustCluster"] > .mc {
           min-block-size: 100%;
           align-content: start;
-          background: rgba(255,255,255,0.035);
+          background:
+            var(--site-grid-overlay),
+            var(--site-card-soft);
         }
         .mcel-runtime-preview form.mc {
           grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto;
@@ -1337,20 +1662,25 @@
         .mcel-runtime-preview form.mc label {
           display: grid;
           gap: 8px;
-          color: var(--muted);
+          color: var(--site-muted);
           font-size: 12px;
-          font-weight: 950;
+          font-weight: 900;
           text-transform: uppercase;
           letter-spacing: 0.06em;
         }
         .mcel-runtime-preview input {
           min-width: 0;
-          border: 1px solid rgba(246, 199, 91, 0.32);
-          border-radius: 999px;
-          background: #030403;
-          color: var(--ink);
+          border: 1px solid var(--site-line);
+          border-radius: var(--site-radius-sm);
+          background: var(--site-card);
+          color: var(--site-ink);
           padding: 13px 15px;
           font: inherit;
+        }
+
+        body.theme-machine .mcel-runtime-preview input {
+          border-color: rgba(246, 199, 91, 0.32);
+          background: #030403;
         }
         .mcel-runtime-preview button,
         .mcel-runtime-preview a[data-mc-action] {
@@ -1358,16 +1688,43 @@
           min-height: 42px;
           border: 0;
           border-radius: 999px;
-          background: var(--gold);
-          color: #151205;
-          padding: 11px 18px;
+          background: var(--site-action);
+          color: var(--site-action-ink);
+          padding: 12px 20px;
           font-weight: 950;
           text-decoration: none;
           cursor: pointer;
+          box-shadow: none;
+        }
+        body.theme-accessible .mcel-runtime-preview button,
+        body.theme-accessible .mcel-runtime-preview a[data-mc-action] {
+          min-height: 52px;
+          border: 3px solid #ffffff;
+        }
+        body.theme-luxury .mcel-runtime-preview button,
+        body.theme-luxury .mcel-runtime-preview a[data-mc-action] {
+          border-radius: 2px;
+          text-transform: uppercase;
+          letter-spacing: 0.1em;
+        }
+        body.theme-editorial .mcel-runtime-preview button,
+        body.theme-editorial .mcel-runtime-preview a[data-mc-action] {
+          border-radius: 2px;
         }
         .mcel-runtime-preview .mc[data-mc="command-row"] {
           grid-template-columns: minmax(0, 1fr) auto;
           align-items: center;
+        }
+        body.theme-debug .mcel-runtime-preview .mc::before {
+          content: attr(data-mc) " / " attr(data-mc-kind);
+          justify-self: start;
+          padding: 3px 6px;
+          border: 1px solid var(--site-accent-2);
+          color: var(--site-accent-2);
+          background: #fff;
+          font-size: 10px;
+          font-weight: 900;
+          text-transform: uppercase;
         }
         @media (max-width: 860px) {
           .mcel-runtime-preview .mc[data-mc-kind="hero"],
@@ -1379,7 +1736,7 @@
           .mcel-runtime-preview .mc[data-mc-kind="hero"]::after {
             grid-column: 1;
             grid-row: auto;
-            justify-self: center;
+            justify-self: stretch;
             max-block-size: 320px;
           }
         }
@@ -1390,17 +1747,20 @@
       const reason = String(meta.reason || "sync").replace(/</g, "&lt;").replace(/>/g, "&gt;");
       const nonce = String(meta.nonce || "0").replace(/</g, "&lt;").replace(/>/g, "&gt;");
       const hash = String(meta.hash || "none").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const theme = typeof McelLabStyleLaw !== "undefined"
+        ? McelLabStyleLaw.normalizeTheme(mcelLabState.theme)
+        : (mcelLabState.theme || "theme-machine");
       return `<!doctype html>
-<html data-mcel-frame-generation="${nonce}" data-mcel-frame-reason="${reason}" data-mcel-frame-hash="${hash}">
+<html data-mcel-frame-generation="${nonce}" data-mcel-frame-reason="${reason}" data-mcel-frame-hash="${hash}" data-mcel-theme="${theme}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MCEL rendered site</title>
 <style>${isolatedSiteCss()}</style>
 </head>
-<body>
-  <!-- MCEL iframe twiddle: reason=${reason}; nonce=${nonce}; hash=${hash} -->
-  <div class="mcel-runtime-preview ${mcelLabState.theme || "theme-machine"}">
+<body class="mcel-site-theme ${theme}">
+  <!-- MCEL iframe twiddle: reason=${reason}; nonce=${nonce}; hash=${hash}; theme=${theme} -->
+  <div class="mcel-runtime-preview ${theme}" data-mcel-theme="${theme}">
     ${runtimeHtml || ""}
   </div>
 </body>

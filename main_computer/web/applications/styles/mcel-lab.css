@@ -241,7 +241,9 @@
   overflow-y: auto;
   overflow-x: hidden;
   border-bottom: 1px solid rgba(246, 199, 91, 0.18);
-  background: #050605;
+  background: var(--mcel-theme-canvas, #050605);
+  color: var(--mcel-theme-ink, var(--ink));
+  font-family: var(--mcel-theme-body, inherit);
 }
 
 .mcel-runtime-preview .mc {
@@ -249,33 +251,39 @@
   display: grid;
   gap: 8px;
   padding: 18px 18px 18px 28px;
-  border: 1px solid rgba(246, 199, 91, 0.35);
-  border-radius: var(--mc-radius, 12px);
-  background: rgba(255, 255, 255, 0.025);
-  box-shadow: inset 5px 0 0 var(--mc-accent, var(--gold));
+  border: 1px solid var(--mcel-theme-line, rgba(246, 199, 91, 0.35));
+  border-radius: var(--mc-radius, var(--mcel-theme-radius, 12px));
+  background:
+    var(--mcel-theme-grid, none),
+    var(--mcel-theme-card, rgba(255, 255, 255, 0.025));
+  box-shadow:
+    inset 5px 0 0 var(--mc-accent, var(--mcel-theme-accent, var(--gold))),
+    var(--mcel-theme-shadow, none);
 }
 
 .mcel-runtime-preview .mc[data-mc-flow="reverse"] {
   padding-left: 18px;
   padding-right: 28px;
-  box-shadow: inset -5px 0 0 var(--mc-accent, var(--gold));
+  box-shadow:
+    inset -5px 0 0 var(--mc-accent, var(--mcel-theme-accent, var(--gold))),
+    var(--mcel-theme-shadow, none);
 }
 
-.mcel-runtime-preview .mc[data-mc-kind="signal"] { --mc-accent: var(--sky); }
-.mcel-runtime-preview .mc[data-mc-kind="work"] { --mc-accent: var(--mint); }
-.mcel-runtime-preview .mc[data-mc-kind="hero"] { --mc-accent: var(--coral); }
-.mcel-runtime-preview .mc[data-mc-state="warning"] { --mc-accent: var(--coral); }
+.mcel-runtime-preview .mc[data-mc-kind="signal"] { --mc-accent: var(--mcel-theme-accent-2, var(--sky)); }
+.mcel-runtime-preview .mc[data-mc-kind="work"] { --mc-accent: var(--mcel-theme-accent, var(--mint)); }
+.mcel-runtime-preview .mc[data-mc-kind="hero"] { --mc-accent: var(--mcel-theme-accent-2, var(--coral)); }
+.mcel-runtime-preview .mc[data-mc-state="warning"] { --mc-accent: var(--mcel-theme-accent-2, var(--coral)); }
 .mcel-runtime-preview .mc[data-mc-neighborhood="cluster-middle"] { --mc-radius: 4px; }
 .mcel-runtime-preview .mc[data-mc-neighborhood="cluster-start"] { --mc-radius: 12px 12px 4px 4px; }
 .mcel-runtime-preview .mc[data-mc-neighborhood="cluster-end"] { --mc-radius: 4px 4px 12px 12px; }
 
 .mcel-runtime-preview .mc h2,
 .mcel-runtime-preview .mc h3 {
-  color: var(--ink);
+  color: var(--mcel-theme-heading, var(--ink));
 }
 
 .mcel-runtime-preview .mc p {
-  color: var(--muted);
+  color: var(--mcel-theme-muted, var(--muted));
   line-height: 1.45;
 }
 
@@ -301,10 +309,10 @@
   justify-self: start;
   width: fit-content;
   max-width: 100%;
-  border: 1px solid rgba(246, 199, 91, 0.24);
+  border: 1px solid var(--mcel-theme-line, rgba(246, 199, 91, 0.24));
   border-radius: 999px;
   padding: 4px 8px;
-  color: var(--gold);
+  color: var(--mcel-theme-accent, var(--gold));
   font-size: 11px;
   font-weight: 900;
   text-transform: uppercase;
@@ -313,11 +321,11 @@
 .mcel-runtime-preview [data-mc-part="field"] {
   min-height: 18px;
   border-radius: 999px;
-  background: linear-gradient(90deg, rgba(246, 199, 91, 0.22), transparent);
+  background: var(--mcel-theme-field, linear-gradient(90deg, rgba(246, 199, 91, 0.22), transparent));
 }
 
 .mcel-runtime-preview [data-mc-part="copy"] {
-  color: var(--sky);
+  color: var(--mcel-theme-accent-2, var(--sky));
   font-size: 11px;
   font-weight: 900;
   text-transform: uppercase;
@@ -640,39 +648,147 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
   grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
 }
 
-.mcel-runtime-preview.theme-basic {
-  background: #f7f4e8;
-  color: #111;
+.mcel-runtime-preview.theme-machine {
+  --mcel-theme-canvas:
+    radial-gradient(circle at 90% 0%, rgba(246, 199, 91, 0.18), transparent 34rem),
+    radial-gradient(circle at 0% 20%, rgba(115, 214, 255, 0.08), transparent 28rem),
+    #050605;
+  --mcel-theme-card: #090b08;
+  --mcel-theme-ink: #fff8df;
+  --mcel-theme-heading: #fff8df;
+  --mcel-theme-muted: #b9b28d;
+  --mcel-theme-accent: #f6c75b;
+  --mcel-theme-accent-2: #aee06f;
+  --mcel-theme-line: rgba(246, 199, 91, 0.22);
+  --mcel-theme-radius: 22px;
+  --mcel-theme-shadow: 0 24px 80px rgba(0,0,0,0.26);
+  --mcel-theme-field: linear-gradient(90deg, rgba(246, 199, 91, 0.18), transparent);
 }
 
-.mcel-runtime-preview.theme-basic .mc {
-  border-color: rgba(10, 10, 10, 0.24);
-  background: rgba(255, 255, 255, 0.86);
-  color: #111;
+.mcel-runtime-preview.theme-machine h3 {
+  color: var(--mcel-theme-accent-2);
 }
 
-.mcel-runtime-preview.theme-article {
-  background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.1), transparent),
-    #17120c;
+.mcel-runtime-preview.theme-local {
+  --mcel-theme-canvas: linear-gradient(180deg, #f5ead8, #eee2cd);
+  --mcel-theme-card: #fffaf0;
+  --mcel-theme-ink: #1b2118;
+  --mcel-theme-heading: #141a11;
+  --mcel-theme-muted: #647158;
+  --mcel-theme-accent: #2d7a4f;
+  --mcel-theme-accent-2: #d77a2d;
+  --mcel-theme-line: rgba(47, 80, 48, 0.24);
+  --mcel-theme-radius: 18px;
+  --mcel-theme-shadow: 0 16px 38px rgba(54, 69, 44, 0.12);
+  --mcel-theme-field: linear-gradient(90deg, rgba(45, 122, 79, 0.2), transparent);
 }
 
-.mcel-runtime-preview.theme-article .mc {
-  border-radius: 8px;
-  letter-spacing: 0;
+.mcel-runtime-preview.theme-saas {
+  --mcel-theme-canvas:
+    radial-gradient(circle at 94% 0%, rgba(100, 228, 255, 0.18), transparent 28rem),
+    #070916;
+  --mcel-theme-card: rgba(18, 24, 48, 0.92);
+  --mcel-theme-ink: #f6f8ff;
+  --mcel-theme-heading: #ffffff;
+  --mcel-theme-muted: #aab5d6;
+  --mcel-theme-accent: #64e4ff;
+  --mcel-theme-accent-2: #9d7cff;
+  --mcel-theme-line: rgba(127, 157, 255, 0.32);
+  --mcel-theme-radius: 22px;
+  --mcel-theme-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+  --mcel-theme-field: linear-gradient(90deg, rgba(100, 228, 255, 0.22), transparent);
+}
+
+.mcel-runtime-preview.theme-editorial {
+  --mcel-theme-canvas:
+    linear-gradient(90deg, rgba(56, 44, 28, 0.055) 1px, transparent 1px),
+    #f7f0e2;
+  --mcel-theme-card: #fffdf7;
+  --mcel-theme-ink: #251f17;
+  --mcel-theme-heading: #17120d;
+  --mcel-theme-muted: #736450;
+  --mcel-theme-accent: #9b3f2c;
+  --mcel-theme-accent-2: #1f5a68;
+  --mcel-theme-line: rgba(45, 35, 22, 0.22);
+  --mcel-theme-radius: 8px;
+  --mcel-theme-shadow: none;
+  --mcel-theme-body: Georgia, "Times New Roman", serif;
+  --mcel-theme-field: linear-gradient(90deg, rgba(155, 63, 44, 0.14), transparent);
+}
+
+.mcel-runtime-preview.theme-luxury {
+  --mcel-theme-canvas:
+    radial-gradient(circle at 78% 8%, rgba(210, 172, 91, 0.18), transparent 22rem),
+    #070605;
+  --mcel-theme-card: #15110d;
+  --mcel-theme-ink: #fbf3df;
+  --mcel-theme-heading: #fff7df;
+  --mcel-theme-muted: #b9aa88;
+  --mcel-theme-accent: #d6b56d;
+  --mcel-theme-accent-2: #8e6f41;
+  --mcel-theme-line: rgba(214, 181, 109, 0.34);
+  --mcel-theme-radius: 3px;
+  --mcel-theme-shadow: 0 18px 56px rgba(0, 0, 0, 0.38);
+  --mcel-theme-body: "Didot", Georgia, serif;
+  --mcel-theme-field: linear-gradient(90deg, rgba(214, 181, 109, 0.2), transparent);
+}
+
+.mcel-runtime-preview.theme-civic {
+  --mcel-theme-canvas: linear-gradient(180deg, #e8f1fb, #ffffff);
+  --mcel-theme-card: #ffffff;
+  --mcel-theme-ink: #132538;
+  --mcel-theme-heading: #07192c;
+  --mcel-theme-muted: #51677d;
+  --mcel-theme-accent: #075da8;
+  --mcel-theme-accent-2: #1b7b6d;
+  --mcel-theme-line: rgba(7, 93, 168, 0.24);
+  --mcel-theme-radius: 14px;
+  --mcel-theme-shadow: 0 14px 34px rgba(11, 57, 94, 0.12);
+  --mcel-theme-field: linear-gradient(90deg, rgba(7, 93, 168, 0.16), transparent);
+}
+
+.mcel-runtime-preview.theme-accessible {
+  --mcel-theme-canvas: #000000;
+  --mcel-theme-card: #000000;
+  --mcel-theme-ink: #ffffff;
+  --mcel-theme-heading: #ffffff;
+  --mcel-theme-muted: #ffffff;
+  --mcel-theme-accent: #00e5ff;
+  --mcel-theme-accent-2: #ff7a00;
+  --mcel-theme-line: #ffffff;
+  --mcel-theme-radius: 0;
+  --mcel-theme-shadow: none;
+  --mcel-theme-body: Arial, Helvetica, sans-serif;
+  --mcel-theme-field: #111111;
+}
+
+.mcel-runtime-preview.theme-accessible .mc {
+  border-width: 3px;
+}
+
+.mcel-runtime-preview.theme-debug {
+  --mcel-theme-canvas:
+    linear-gradient(90deg, rgba(0,92,255,0.1) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(255,59,48,0.08) 1px, transparent 1px),
+    #fafafa;
+  --mcel-theme-card: rgba(255,255,255,0.84);
+  --mcel-theme-ink: #101010;
+  --mcel-theme-heading: #000000;
+  --mcel-theme-muted: #313131;
+  --mcel-theme-accent: #005cff;
+  --mcel-theme-accent-2: #ff3b30;
+  --mcel-theme-line: #005cff;
+  --mcel-theme-radius: 0;
+  --mcel-theme-shadow: none;
+  --mcel-theme-body: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --mcel-theme-grid:
+    linear-gradient(90deg, rgba(0,92,255,0.1) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(255,59,48,0.08) 1px, transparent 1px);
 }
 
 .mcel-runtime-preview.theme-debug .mc {
-  outline: 1px dashed rgba(115, 214, 255, 0.55);
-  background-image:
-    linear-gradient(90deg, rgba(115, 214, 255, 0.08) 1px, transparent 1px),
-    linear-gradient(0deg, rgba(246, 199, 91, 0.08) 1px, transparent 1px);
+  outline: 1px dashed var(--mcel-theme-accent-2);
   background-size: 18px 18px;
-}
-
-.mcel-runtime-preview.theme-accessibility .mc {
-  border-width: 3px;
-  box-shadow: none;
 }
 
 .mcel-runtime-preview .mc[data-mc-style-law="true"] {

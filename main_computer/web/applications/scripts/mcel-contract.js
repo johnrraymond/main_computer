@@ -150,12 +150,47 @@
       const runtimeOwnedClasses = Object.freeze(["mc", "mcel-selected"]);
 
       const themes = Object.freeze([
-        "theme-basic",
         "theme-machine",
-        "theme-article",
-        "theme-debug",
-        "theme-accessibility"
+        "theme-local",
+        "theme-saas",
+        "theme-editorial",
+        "theme-luxury",
+        "theme-civic",
+        "theme-accessible",
+        "theme-debug"
       ]);
+
+      const themeAliases = Object.freeze({
+        "theme-basic": "theme-local",
+        basic: "theme-local",
+        local: "theme-local",
+        "local-service": "theme-local",
+        "small-business": "theme-local",
+        machine: "theme-machine",
+        original: "theme-machine",
+        "original-mcel": "theme-machine",
+        launch: "theme-saas",
+        startup: "theme-saas",
+        saas: "theme-saas",
+        product: "theme-saas",
+        "theme-article": "theme-editorial",
+        article: "theme-editorial",
+        editorial: "theme-editorial",
+        magazine: "theme-editorial",
+        "theme-premium": "theme-luxury",
+        premium: "theme-luxury",
+        luxury: "theme-luxury",
+        portfolio: "theme-luxury",
+        civic: "theme-civic",
+        nonprofit: "theme-civic",
+        public: "theme-civic",
+        "theme-accessibility": "theme-accessible",
+        accessibility: "theme-accessible",
+        accessible: "theme-accessible",
+        "high-contrast": "theme-accessible",
+        debug: "theme-debug",
+        wireframe: "theme-debug"
+      });
 
       const layoutPolicies = Object.freeze({
         size: Object.freeze(["adaptive", "fixed", "fluid", "intrinsic"]),
@@ -514,6 +549,7 @@
         runtimeOwnedAttributes,
         runtimeOwnedClasses,
         themes,
+        themeAliases,
         layoutPolicies,
         platformPolicies,
         contractVersion,

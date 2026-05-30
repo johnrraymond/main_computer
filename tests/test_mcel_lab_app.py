@@ -178,6 +178,47 @@ def test_mcel_lab_assets_define_round_trip_contract() -> None:
     assert "source HTML -> runtime DOM -> serializer round trips" in style
 
 
+def test_mcel_lab_themes_are_product_grade_and_reach_the_iframe() -> None:
+    app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
+    contract = (WEB_APP / "scripts" / "mcel-contract.js").read_text(encoding="utf-8")
+    style_law = (WEB_APP / "scripts" / "mcel-style-law.js").read_text(encoding="utf-8")
+    ui = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    style = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
+    bindings = (WEB_APP / "scripts" / "dom-bindings" / "mcel-lab.js").read_text(encoding="utf-8")
+
+    real_themes = {
+        "theme-machine": "Original MCEL",
+        "theme-local": "Local Service",
+        "theme-saas": "SaaS Launch",
+        "theme-editorial": "Editorial / Magazine",
+        "theme-luxury": "Luxury / Portfolio",
+        "theme-civic": "Civic / Nonprofit",
+        "theme-accessible": "Accessible High Contrast",
+        "theme-debug": "Debug Wireframe",
+    }
+
+    for theme_id, label in real_themes.items():
+        assert f'"{theme_id}"' in contract
+        assert f'value="{theme_id}"' in app
+        assert label in app
+        assert f'.mcel-runtime-preview.{theme_id}' in style
+        assert f'body.{theme_id}' in ui
+
+    assert 'theme: "theme-machine"' in bindings
+    assert 'class="mcel-runtime-preview theme-machine"' in app
+    assert "themeCatalog" in style_law
+    assert "themeDefinition" in style_law
+    assert "themeLabel" in style_law
+    assert "themeAliases" in contract and "machine: \"theme-machine\"" in contract
+    assert "option.textContent = theme.label || theme.id" in ui
+    assert 'data-mcel-theme="${theme}"' in ui
+    assert 'body class="mcel-site-theme ${theme}"' in ui
+    assert "--site-hero-ornament-bg" in ui
+    assert "rgba(174,224,111,0.94)" in ui
+    assert "--mcel-theme-canvas" in style
+    assert "MCEL_THEME_CHANGED" in ui
+
+
 def test_mcel_lab_has_low_debt_module_boundaries() -> None:
     contract = (WEB_APP / "scripts" / "mcel-contract.js").read_text(encoding="utf-8")
     engine = (WEB_APP / "scripts" / "mcel-engine.js").read_text(encoding="utf-8")
