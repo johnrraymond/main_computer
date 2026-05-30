@@ -3,6 +3,7 @@
       const engine = typeof McelLabEngine !== "undefined" ? McelLabEngine : window.McelLabEngine;
       const editor = typeof McelLabEditor !== "undefined" ? McelLabEditor : window.McelLabEditor;
       const styleLaw = typeof McelLabStyleLaw !== "undefined" ? McelLabStyleLaw : window.McelLabStyleLaw;
+      const layoutLaw = typeof McelLabLayoutLaw !== "undefined" ? McelLabLayoutLaw : window.McelLabLayoutLaw;
       const scenarios = typeof McelLabScenarios !== "undefined" ? McelLabScenarios : window.McelLabScenarios;
       const graph = typeof McelLabGraph !== "undefined" ? McelLabGraph : window.McelLabGraph;
       function testHarness() {
@@ -39,7 +40,7 @@
       }
 
       function serializedHasGeneratedMarkup(serialized) {
-        return /\bdata-mc-generated\b|\bdata-mc-enhanced\b|\bdata-mc-source-index\b|\bdata-mc-owner\b|\bdata-mc-origin\b|\bdata-mc-reason\b|\bdata-mc-contract-version\b/.test(String(serialized || ""));
+        return /\bdata-mc-generated\b|\bdata-mc-enhanced\b|\bdata-mc-source-index\b|\bdata-mc-owner\b|\bdata-mc-origin\b|\bdata-mc-reason\b|\bdata-mc-contract-version\b|\bdata-mc-layout-law\b|\bdata-mc-overflow-computed\b|\bdata-mc-scroll-needed\b|\bdata-mc-scroll-owner\b|\bdata-mc-layout-pressure\b|\bdata-mc-geometry-proof\b|\bdata-mc-keyboard-scroll\b/.test(String(serialized || ""));
       }
 
       function runCase(scenario, theme) {
@@ -47,10 +48,12 @@
         const compiled = engine.compileSource(source, {reason: `matrix:${scenario.id}:${theme}`});
         const root = runtimeRoot(compiled.runtimeHtml);
         const cssLaw = styleLaw.applyRuntimeLaw(root, {theme, reason: "scenario-matrix"});
+        const layoutReport = layoutLaw?.applyRuntimeLaw ? layoutLaw.applyRuntimeLaw(root, {reason: "scenario-matrix"}) : {layoutLawClean: true, warnings: []};
         const serialization = engine.serializeRuntimeRoot(root, {reason: "scenario-matrix"});
         const recompiled = engine.compileSource(serialization.serialized, {reason: "scenario-matrix-recompile"});
         const reRoot = runtimeRoot(recompiled.runtimeHtml);
         const reCssLaw = styleLaw.applyRuntimeLaw(reRoot, {theme, reason: "scenario-matrix-recompile"});
+        const reLayoutReport = layoutLaw?.applyRuntimeLaw ? layoutLaw.applyRuntimeLaw(reRoot, {reason: "scenario-matrix-recompile"}) : {layoutLawClean: true, warnings: []};
         const audit = graph.audit(serialization.serialized, reRoot, {reason: "scenario-matrix"});
         const a11y = engine.computeA11y(reRoot);
         const leakFree = !serializedHasGeneratedMarkup(serialization.serialized);
@@ -60,7 +63,9 @@
         const warnings = [
           ...(serialization.report?.warnings || []),
           ...(cssLaw.warnings || []),
+          ...(layoutReport.warnings || []),
           ...(reCssLaw.warnings || []),
+          ...(reLayoutReport.warnings || []),
           ...(a11y.warnings || []),
           ...(audit.issues || [])
         ].filter(Boolean);
@@ -79,6 +84,8 @@
           leakFree &&
           cssLaw.cssLawClean &&
           reCssLaw.cssLawClean &&
+          layoutReport.layoutLawClean &&
+          reLayoutReport.layoutLawClean &&
           a11y.a11yValid &&
           !audit.failed &&
           sourceElements === serializedElements &&
@@ -102,6 +109,7 @@
           provenanceClean: !audit.failed,
           serializerClean: Boolean(serialization.report?.serializerClean),
           cssLawClean: Boolean(cssLaw.cssLawClean && reCssLaw.cssLawClean),
+          layoutLawClean: Boolean(layoutReport.layoutLawClean && reLayoutReport.layoutLawClean),
           a11yValid: Boolean(a11y.a11yValid),
           relationEdges: audit.runtimeGraph?.edgeCount || 0
         };
@@ -143,7 +151,7 @@
           ""
         ];
         matrix.cases.forEach((item) => {
-          lines.push(`${item.passed ? "PASS" : "FAIL"} ${item.scenario} / ${item.theme} · source=${item.sourceElements} generated=${item.generatedParts} edges=${item.relationEdges}`);
+          lines.push(`${item.passed ? "PASS" : "FAIL"} ${item.scenario} / ${item.theme} · source=${item.sourceElements} generated=${item.generatedParts} layout=${item.layoutLawClean ? "clean" : "blocked"} edges=${item.relationEdges}`);
           item.warnings.slice(0, 3).forEach((warning) => lines.push(`  - ${warning}`));
         });
         if (matrix.warnings.length > 0) {
@@ -155,6 +163,7 @@
       function buildReadiness(state = {}) {
         const serializerClean = Boolean(state.serializerReport?.serializerClean);
         const cssLawClean = Boolean(state.cssLawReport?.cssLawClean);
+        const layoutLawClean = Boolean(state.layoutLawReport?.layoutLawClean);
         const a11yValid = Boolean(state.a11yReport?.a11yValid);
         const auditClean = Boolean(state.auditReport && !state.auditReport.failed);
         const testsClean = Boolean(state.testReport && !state.testReport.failed);
@@ -164,6 +173,7 @@
         const cards = [
           {key: "serializer", label: "Serializer", status: serializerClean ? "pass" : "pending", detail: serializerClean ? "clean source output" : "needs serialization proof"},
           {key: "css-law", label: "CSS Law", status: cssLawClean ? "pass" : "pending", detail: cssLawClean ? `${state.cssLawReport?.elementCount || 0} runtime element(s)` : "runtime tokens pending"},
+          {key: "layout-law", label: "Layout / Geometry Law", status: layoutLawClean ? "pass" : (state.layoutLawReport ? "fail" : "pending"), detail: state.layoutLawReport ? `${state.layoutLawReport.passed || 0}/${state.layoutLawReport.elementCount || 0} element(s)` : "overflow proof pending"},
           {key: "a11y", label: "A11y", status: a11yValid ? "pass" : "pending", detail: a11yValid ? "labels and decoration valid" : "a11y report pending"},
           {key: "audit", label: "Operational Audit", status: auditClean ? "pass" : (state.auditReport ? "fail" : "pending"), detail: auditClean ? "provenance clean" : "run audit"},
           {key: "contract-suite", label: "Contract Suite", status: testsClean ? "pass" : (state.testReport ? "fail" : "pending"), detail: state.testReport ? `${state.testReport.passed}/${state.testReport.passed + state.testReport.failed} tests` : "not run"},
@@ -193,7 +203,9 @@
           const compiled = engine.compileSource(source, {reason: "evidence-packet"});
           root = runtimeRoot(compiled.runtimeHtml);
           styleLaw.applyRuntimeLaw(root, {theme: state.theme || "theme-machine", reason: "evidence-packet"});
+          layoutLaw?.applyRuntimeLaw?.(root, {reason: "evidence-packet"});
         }
+        const layoutReport = layoutLaw?.reportFor ? layoutLaw.reportFor(root, {reason: "evidence-packet"}) : (state.layoutLawReport || {layoutLawClean: true, warnings: []});
         const serialized = engine.serializeRuntimeRoot(root, {reason: "evidence-packet"});
         const a11y = engine.computeA11y(root);
         const audit = graph.audit(source, root, {reason: "evidence-packet"});
@@ -205,6 +217,7 @@
         const readiness = buildReadiness({
           serializerReport: serialized.report,
           cssLawReport: cssLaw,
+          layoutLawReport: layoutReport,
           a11yReport: a11y,
           auditReport: audit,
           testReport: tests,
@@ -235,6 +248,7 @@
           serializer: serialized.report,
           a11y,
           cssLaw,
+          layoutLaw: layoutReport,
           graph: compactGraph,
           audit: {
             passed: !audit.failed,
@@ -263,6 +277,7 @@
             "runtime DOM is generated under explicit provenance",
             "serializer strips runtime-owned artifacts",
             "CSS law publishes runtime tokens without mutating source",
+            "layout/overflow law proves scrollbar ownership without mutating source",
             "operational audit checks graph and provenance contracts",
             "scenario matrix exercises every built-in scenario across every theme",
             "acid tests inject hostile runtime/editor/command/schema pressure without source corruption"
@@ -270,6 +285,7 @@
           warnings: [
             ...(serialized.report?.warnings || []),
             ...(a11y.warnings || []),
+            ...(layoutReport.warnings || []),
             ...(audit.issues || []),
             ...(!matrix ? ["scenario matrix has not been run for this evidence packet"] : []),
             ...(!state.acidReport ? ["acid tests have not been run for this evidence packet"] : [])
@@ -300,6 +316,7 @@
           `serializer clean: ${packet.serializer.serializerClean}`,
           `a11y valid: ${packet.a11y.a11yValid}`,
           `css law clean: ${packet.cssLaw.cssLawClean}`,
+          `layout law clean: ${packet.layoutLaw?.layoutLawClean}`,
           `audit passed: ${packet.audit.passed}`,
           `contract suite: ${packet.testSuite ? `${packet.testSuite.passed} passed / ${packet.testSuite.failed} failed` : "not attached"}`,
           `scenario matrix: ${packet.scenarioMatrix ? `${packet.scenarioMatrix.passed} passed / ${packet.scenarioMatrix.failed} failed` : "not attached"}`,

@@ -16,6 +16,7 @@
         explain: ["explain", "inspect", "debug"],
         graph: ["graph", "map"],
         audit: ["audit", "govern", "prove"],
+        layout: ["layout", "geometry", "overflow-proof", "scroll-proof"],
         autopilot: ["autopilot", "full-proof", "prove-all", "quality-gate", "readiness"],
         kernel: ["kernel", "boot-audit", "module-audit"],
         traceability: ["traceability", "requirements", "developer-spec", "spec-map"],
@@ -48,7 +49,10 @@
             flow: "allowedFlows",
             rank: "allowedRanks",
             state: "allowedStates",
-            density: "allowedDensities"
+            density: "allowedDensities",
+            sizePolicy: "allowedSizePolicies",
+            overflowPolicy: "allowedOverflowPolicies",
+            scrollPolicy: "allowedScrollPolicies"
           }[trait];
           (definition[key] || []).forEach((value) => union.add(value));
         });
@@ -95,13 +99,45 @@
           }
         }
 
-        ["kind", "flow", "rank", "state", "density"].forEach((trait) => {
+        [
+          "kind",
+          "flow",
+          "rank",
+          "state",
+          "density",
+          "sizePolicy",
+          "overflowPolicy",
+          "scrollPolicy"
+        ].forEach((trait) => {
           const value = detectTrait(tokens, trait, source);
           if (value) {
             record(result, "set-trait", {trait, value});
             result.summary.push(`set ${trait}=${value}`);
           }
         });
+
+        const layoutAliases = [
+          ["sizePolicy", "size(?:\\s+policy)?"],
+          ["overflowPolicy", "overflow(?:\\s+policy)?"],
+          ["scrollPolicy", "scroll(?:\\s+policy)?"]
+        ];
+        layoutAliases.forEach(([trait, prefix]) => {
+          const explicit = compactValue(source, `(?:set\\s+)?${prefix}`);
+          if (explicit && allowedValuesFor(trait).includes(explicit)) {
+            record(result, "set-trait", {trait, value: explicit});
+            result.summary.push(`set ${trait}=${explicit}`);
+          }
+        });
+
+        if (tokens.includes("never") && tokens.includes("scroll")) {
+          record(result, "set-trait", {trait: "scrollPolicy", value: "never"});
+          result.summary.push("set scrollPolicy=never");
+        }
+        if (tokens.includes("delegate") || tokens.includes("delegated")) {
+          record(result, "set-trait", {trait: "overflowPolicy", value: "delegate"});
+          record(result, "set-trait", {trait: "scrollPolicy", value: "external"});
+          result.summary.push("delegate overflow");
+        }
 
         const wordsValue = compactValue(source, "words");
         if (wordsValue) {

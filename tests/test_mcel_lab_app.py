@@ -20,8 +20,11 @@ def test_mcel_lab_is_registered_as_separate_application() -> None:
     assert "<!-- @include applications/styles/mcel-lab.css -->" in html
     assert "<!-- @include applications/scripts/mcel-contract.js -->" in html
     assert "<!-- @include applications/scripts/mcel-engine.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-law-registry.js -->" in html
     assert "<!-- @include applications/scripts/mcel-editor.js -->" in html
     assert "<!-- @include applications/scripts/mcel-style-law.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-browser-observer.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-layout-law.js -->" in html
     assert "<!-- @include applications/scripts/mcel-command-surface.js -->" in html
     assert "<!-- @include applications/scripts/mcel-project-store.js -->" in html
     assert "<!-- @include applications/scripts/mcel-scenarios.js -->" in html
@@ -31,12 +34,16 @@ def test_mcel_lab_is_registered_as_separate_application() -> None:
     assert "<!-- @include applications/scripts/mcel-test-harness.js -->" in html
     assert "<!-- @include applications/scripts/mcel-supervisor.js -->" in html
     assert "<!-- @include applications/scripts/mcel-kernel.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-core.js -->" in html
     assert "<!-- @include applications/scripts/mcel-lab.js -->" in html
     assert (
         html.index("mcel-contract.js")
         < html.index("mcel-engine.js")
+        < html.index("mcel-law-registry.js")
         < html.index("mcel-editor.js")
         < html.index("mcel-style-law.js")
+        < html.index("mcel-browser-observer.js")
+        < html.index("mcel-layout-law.js")
         < html.index("mcel-command-surface.js")
         < html.index("mcel-project-store.js")
         < html.index("mcel-scenarios.js")
@@ -46,6 +53,7 @@ def test_mcel_lab_is_registered_as_separate_application() -> None:
         < html.index("mcel-test-harness.js")
         < html.index("mcel-supervisor.js")
         < html.index("mcel-kernel.js")
+        < html.index("mcel-core.js")
         < html.index("mcel-lab.js")
     )
     assert "<!-- @include applications/scripts/dom-bindings/mcel-lab.js -->" in dom_bindings
@@ -66,6 +74,10 @@ def test_mcel_lab_assets_define_round_trip_contract() -> None:
     engine = (WEB_APP / "scripts" / "mcel-engine.js").read_text(encoding="utf-8")
     editor = (WEB_APP / "scripts" / "mcel-editor.js").read_text(encoding="utf-8")
     style_law = (WEB_APP / "scripts" / "mcel-style-law.js").read_text(encoding="utf-8")
+    law_registry = (WEB_APP / "scripts" / "mcel-law-registry.js").read_text(encoding="utf-8")
+    browser_observer = (WEB_APP / "scripts" / "mcel-browser-observer.js").read_text(encoding="utf-8")
+    layout_law = (WEB_APP / "scripts" / "mcel-layout-law.js").read_text(encoding="utf-8")
+    core = (WEB_APP / "scripts" / "mcel-core.js").read_text(encoding="utf-8")
     command_surface = (WEB_APP / "scripts" / "mcel-command-surface.js").read_text(encoding="utf-8")
     project_store = (WEB_APP / "scripts" / "mcel-project-store.js").read_text(encoding="utf-8")
     graph = (WEB_APP / "scripts" / "mcel-graph.js").read_text(encoding="utf-8")
@@ -89,6 +101,8 @@ def test_mcel_lab_assets_define_round_trip_contract() -> None:
     assert "mcel-theme-select" in app
     assert "mcel-command-input" in app
     assert "mcel-css-law-report" in app
+    assert "mcel-layout-law-report" in app
+    assert "mcel-trait-overflow-policy" in app
     assert "mcel-project-report" in app
     assert "mcel-graph-report" in app
     assert "mcel-audit-report" in app
@@ -120,6 +134,12 @@ def test_mcel_lab_assets_define_round_trip_contract() -> None:
     assert "insertBlock" in editor
     assert "McelLabStyleLaw" in style_law
     assert "applyRuntimeLaw" in style_law
+    assert "McelLabLawRegistry" in law_registry
+    assert "McelLabBrowserObserver" in browser_observer
+    assert "McelLabLayoutLaw" in layout_law
+    assert "window.MCEL = MCEL" in core
+    assert "layout law proves overflow and scrollbar policy without source pollution" in harness
+    assert "public MCEL core API fronts compile/serialize/repair/audit/inspect" in harness
     assert "McelLabCommandSurface" in command_surface
     assert "McelLabCommandSurface" in command_surface and "Semantic Command" in app
     assert "McelLabProjectStore" in project_store
@@ -161,6 +181,10 @@ def test_mcel_lab_assets_define_round_trip_contract() -> None:
 def test_mcel_lab_has_low_debt_module_boundaries() -> None:
     contract = (WEB_APP / "scripts" / "mcel-contract.js").read_text(encoding="utf-8")
     engine = (WEB_APP / "scripts" / "mcel-engine.js").read_text(encoding="utf-8")
+    law_registry = (WEB_APP / "scripts" / "mcel-law-registry.js").read_text(encoding="utf-8")
+    browser_observer = (WEB_APP / "scripts" / "mcel-browser-observer.js").read_text(encoding="utf-8")
+    layout_law = (WEB_APP / "scripts" / "mcel-layout-law.js").read_text(encoding="utf-8")
+    core = (WEB_APP / "scripts" / "mcel-core.js").read_text(encoding="utf-8")
     style_law = (WEB_APP / "scripts" / "mcel-style-law.js").read_text(encoding="utf-8")
     command_surface = (WEB_APP / "scripts" / "mcel-command-surface.js").read_text(encoding="utf-8")
     project_store = (WEB_APP / "scripts" / "mcel-project-store.js").read_text(encoding="utf-8")
@@ -190,6 +214,10 @@ def test_mcel_lab_has_low_debt_module_boundaries() -> None:
     assert "mcelCommandInput" in bindings
     assert "mcelProjectSave" in bindings
     assert "var McelLabStyleLaw" in style_law
+    assert "var McelLabLawRegistry" in law_registry
+    assert "var McelLabBrowserObserver" in browser_observer
+    assert "var McelLabLayoutLaw" in layout_law
+    assert "var MCEL" in core
     assert "var McelLabCommandSurface" in command_surface
     assert "var McelLabProjectStore" in project_store
     assert "var McelLabGraph" in graph
@@ -287,7 +315,7 @@ def test_mcel_lab_fifth_slice_adds_operational_graph_and_audit_provenance() -> N
     assert "mcelGraphReport" in bindings
     assert "mcelAuditReport" in bindings
     assert 'artifactOwner: "data-mc-owner"' in contract
-    assert 'contractVersion = "mcel-lab.v0.5-operational-graph"' in contract
+    assert 'contractVersion = "mcel-lab.v0.9-layout-proof-core"' in contract
     assert "attributes.artifactOwner" in contract
     assert 'node.setAttribute(attributes.artifactOwner, "mcel-part-manager")' in engine
     assert 'node.setAttribute(attributes.artifactReason' in engine
@@ -359,8 +387,11 @@ def test_mcel_lab_boot_is_safe_in_concatenated_inline_script() -> None:
     module_names = [
         "mcel-contract.js",
         "mcel-engine.js",
+        "mcel-law-registry.js",
         "mcel-editor.js",
         "mcel-style-law.js",
+        "mcel-browser-observer.js",
+        "mcel-layout-law.js",
         "mcel-command-surface.js",
         "mcel-project-store.js",
         "mcel-scenarios.js",
@@ -396,7 +427,7 @@ def test_mcel_lab_seventh_slice_adds_autopilot_supervisor_quality_gate() -> None
 
     assert "<!-- @include applications/scripts/mcel-supervisor.js -->" in html
     assert "<!-- @include applications/scripts/mcel-kernel.js -->" in html
-    assert html.index("mcel-test-harness.js") < html.index("mcel-supervisor.js") < html.index("mcel-kernel.js") < html.index("mcel-lab.js")
+    assert html.index("mcel-test-harness.js") < html.index("mcel-supervisor.js") < html.index("mcel-kernel.js") < html.index("mcel-core.js") < html.index("mcel-lab.js")
     assert "Run Autopilot Proof" in app
     assert "Autopilot Proof" in app
     assert "mcel-lab-autopilot" in app
@@ -432,7 +463,7 @@ def test_mcel_lab_eighth_slice_adds_kernel_traceability_and_zero_debt_ledger() -
     style = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
 
     assert "<!-- @include applications/scripts/mcel-kernel.js -->" in html
-    assert html.index("mcel-supervisor.js") < html.index("mcel-kernel.js") < html.index("mcel-lab.js")
+    assert html.index("mcel-supervisor.js") < html.index("mcel-kernel.js") < html.index("mcel-core.js") < html.index("mcel-lab.js")
     assert "Run Kernel Audit" in app
     assert "Build Traceability Map" in app
     assert "Kernel Audit" in app
@@ -522,6 +553,8 @@ def test_mcel_lab_acid_tests_stress_runtime_editor_serializer_and_evidence_contr
     assert "semantic command fuzz keeps clean source contract" in acid
     assert "scenario × theme soak preserves serializer/a11y/CSS law" in acid
     assert "operational evidence packet remains machine-checkable" in acid
+    assert "overflow law forbids internal scrollbar" in acid
+    assert "delegated scroll policy publishes runtime owner" in acid
     assert "hasRuntimeLeak" in acid
     assert "acid: [\"acid\", \"acid-test\", \"acid-tests\", \"stress-proof\", \"torture\", \"fuzz\", \"hostile\"]" in command_surface
     assert "acidClean" in ops_runner
@@ -568,3 +601,60 @@ def test_mcel_lab_heavy_proofs_are_manual_only_and_scenario_load_is_lightweight(
     assert "MCEL_ACID_SUITE_PASSED" in ui
     assert "executionMode: ${report.executionMode" in acid
     assert "mcel-acid-picker" in style
+
+
+def test_mcel_lab_ninth_slice_adds_layout_law_browser_observer_and_public_core_api() -> None:
+    html = (ROOT / "main_computer" / "web" / "applications.html").read_text(encoding="utf-8")
+    app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
+    bindings = (WEB_APP / "scripts" / "dom-bindings" / "mcel-lab.js").read_text(encoding="utf-8")
+    contract = (WEB_APP / "scripts" / "mcel-contract.js").read_text(encoding="utf-8")
+    engine = (WEB_APP / "scripts" / "mcel-engine.js").read_text(encoding="utf-8")
+    editor = (WEB_APP / "scripts" / "mcel-editor.js").read_text(encoding="utf-8")
+    law_registry = (WEB_APP / "scripts" / "mcel-law-registry.js").read_text(encoding="utf-8")
+    browser_observer = (WEB_APP / "scripts" / "mcel-browser-observer.js").read_text(encoding="utf-8")
+    layout_law = (WEB_APP / "scripts" / "mcel-layout-law.js").read_text(encoding="utf-8")
+    command_surface = (WEB_APP / "scripts" / "mcel-command-surface.js").read_text(encoding="utf-8")
+    scenarios = (WEB_APP / "scripts" / "mcel-scenarios.js").read_text(encoding="utf-8")
+    graph = (WEB_APP / "scripts" / "mcel-graph.js").read_text(encoding="utf-8")
+    ops_runner = (WEB_APP / "scripts" / "mcel-ops-runner.js").read_text(encoding="utf-8")
+    acid = (WEB_APP / "scripts" / "mcel-acid-tests.js").read_text(encoding="utf-8")
+    harness = (WEB_APP / "scripts" / "mcel-test-harness.js").read_text(encoding="utf-8")
+    supervisor = (WEB_APP / "scripts" / "mcel-supervisor.js").read_text(encoding="utf-8")
+    kernel = (WEB_APP / "scripts" / "mcel-kernel.js").read_text(encoding="utf-8")
+    core = (WEB_APP / "scripts" / "mcel-core.js").read_text(encoding="utf-8")
+    ui = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    style = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
+
+    assert html.index("mcel-law-registry.js") < html.index("mcel-style-law.js")
+    assert html.index("mcel-browser-observer.js") < html.index("mcel-layout-law.js") < html.index("mcel-command-surface.js")
+    assert html.index("mcel-kernel.js") < html.index("mcel-core.js") < html.index("mcel-lab.js")
+    assert "Layout / Geometry Law" in app
+    assert "mcel-trait-size-policy" in app
+    assert "mcel-trait-overflow-policy" in app
+    assert "mcel-trait-scroll-policy" in app
+    assert "mcelLayoutLawReport" in bindings
+    assert 'sizePolicy: "data-mc-size-policy"' in contract
+    assert 'overflowPolicy: "data-mc-overflow-policy"' in contract
+    assert 'scrollPolicy: "data-mc-scroll-policy"' in contract
+    assert "layoutPolicies" in contract
+    assert "data-mc-overflow-computed" in contract
+    assert "layout source policies survive while observed geometry is stripped" in engine
+    assert "scrollRegions" in engine
+    assert "allowedSizePolicies" in editor
+    assert "McelLabLawRegistry" in law_registry and "buildAxisMatrix" in law_registry
+    assert "McelLabBrowserObserver" in browser_observer and "observeElement" in browser_observer
+    assert "McelLabLayoutLaw" in layout_law and "layout.overflow.scroll.v1" in layout_law
+    assert "repairRuntimeLaw" in layout_law and "proveRuntime" in layout_law
+    assert 'layout: ["layout", "geometry", "overflow-proof", "scroll-proof"]' in command_surface
+    assert "never scroll" in acid
+    assert "Layout Overflow Proof" in scenarios
+    assert "scrollOwner" in graph and "layoutProofed" in graph
+    assert "layout law clean" in ops_runner
+    assert "Layout / Geometry Law" in supervisor
+    assert "browser-observation" in kernel
+    assert "public-core-api" in kernel
+    assert "window.MCEL = MCEL" in core
+    assert "compile," in core and "serialize," in core and "audit," in core
+    assert "renderMcelLayoutLawReport" in ui
+    assert "window.MCEL" in ui
+    assert 'data-mc-scroll-owner="self"' in style

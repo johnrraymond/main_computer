@@ -19,6 +19,15 @@
           requirements: ["runtime-dom", "serializer-firewall", "repair-pass", "a11y"]
         },
         {
+          id: "law-registry",
+          global: "McelLabLawRegistry",
+          label: "Law Registry",
+          owns: ["law descriptors", "law application", "proof aggregation"],
+          dependsOn: ["McelLabContract"],
+          priorArt: ["XState", "CI pipelines"],
+          requirements: ["law-registry", "zero-debt-governance"]
+        },
+        {
           id: "editor",
           global: "McelLabEditor",
           label: "Semantic Editor Adapter",
@@ -35,6 +44,24 @@
           dependsOn: ["McelLabContract"],
           priorArt: ["Tailwind", "Design Tokens"],
           requirements: ["css-law", "theme-system"]
+        },
+        {
+          id: "browser-observer",
+          global: "McelLabBrowserObserver",
+          label: "Browser Geometry Observer",
+          owns: ["rect observation", "scroll metrics", "computed overflow state"],
+          dependsOn: ["McelLabContract"],
+          priorArt: ["DevTools DOM inspectors", "browser layout engines"],
+          requirements: ["browser-observation", "layout-overflow-law"]
+        },
+        {
+          id: "layout-law",
+          global: "McelLabLayoutLaw",
+          label: "Layout / Overflow / Scroll Law",
+          owns: ["scroll policy", "overflow ownership", "geometry proof"],
+          dependsOn: ["McelLabContract", "McelLabBrowserObserver", "McelLabLawRegistry"],
+          priorArt: ["browser layout engines", "WAI-ARIA APG"],
+          requirements: ["layout-overflow-law", "browser-observation"]
         },
         {
           id: "command-surface",
@@ -116,6 +143,15 @@
           dependsOn: ["McelLabContract"],
           priorArt: ["architecture decision records", "dependency graphs"],
           requirements: ["traceability", "zero-debt-governance"]
+        },
+        {
+          id: "core",
+          global: "MCEL",
+          label: "Public MCEL Core API",
+          owns: ["compile API", "serialize API", "repair API", "audit API", "inspection API"],
+          dependsOn: ["McelLabContract", "McelLabEngine", "McelLabEditor", "McelLabLayoutLaw", "McelLabSupervisor"],
+          priorArt: ["Svelte", "Web Components", "CI pipelines"],
+          requirements: ["public-core-api", "layout-overflow-law"]
         }
       ]);
 
@@ -163,6 +199,12 @@
           mcelContract: "CSS law derives runtime tokens from semantic state without utility cluttering source."
         },
         {
+          system: "Browser layout engines",
+          difficulty: "actual geometry, overflow, clipping, and scroll ownership",
+          lesson: "Rendered DOM exposes machine-state facts through geometry and computed style APIs.",
+          mcelContract: "Treat browser geometry as observed runtime state that must prove source scroll policy without polluting source."
+        },
+        {
           system: "WAI-ARIA APG",
           difficulty: "accessible complex UI",
           lesson: "Complex widgets need explicit labels, roles, order, and hidden decoration rules.",
@@ -186,6 +228,10 @@
         {id: "clean-source-contract", label: "Clean semantic source remains canonical", owners: ["contract", "editor", "engine"], evidence: ["defaultSource", "runtimeOwnedAttributes", "canonicalSource"]},
         {id: "runtime-dom", label: "Compiler creates generated runtime DOM", owners: ["engine"], evidence: ["compileSource", "data-mc-generated", "data-mc-enhanced"]},
         {id: "css-law", label: "CSS law derives tokens from semantic state", owners: ["style-law"], evidence: ["applyRuntimeLaw", "data-mc-style-law"]},
+        {id: "law-registry", label: "MCEL laws are registered and machine-auditable", owners: ["law-registry", "style-law", "layout-law"], evidence: ["McelLabLawRegistry", "register", "prove"]},
+        {id: "browser-observation", label: "Runtime browser geometry is observed as machine state", owners: ["browser-observer"], evidence: ["observeElement", "scrollHeight", "getBoundingClientRect"]},
+        {id: "layout-overflow-law", label: "Layout law proves overflow and scrollbar ownership", owners: ["layout-law", "browser-observer", "ops-runner", "supervisor"], evidence: ["data-mc-scroll-policy", "data-mc-overflow-computed", "layoutLawClean"]},
+        {id: "public-core-api", label: "Reusable MCEL core API fronts the lab modules", owners: ["core"], evidence: ["MCEL.compile", "MCEL.serialize", "MCEL.audit"]},
         {id: "grapesjs-semantic-editing", label: "Editor manipulates semantic traits", owners: ["editor"], evidence: ["applyTraits", "insertBlock", "sanitizeEditorHtml"]},
         {id: "serializer-firewall", label: "Serializer strips generated parts", owners: ["engine", "editor"], evidence: ["serializeRuntimeRoot", "data-mc-generated"]},
         {id: "repair-pass", label: "Repair restores disposable generated parts", owners: ["engine"], evidence: ["repairRuntimeRoot", "generatedPartsCanonical"]},
@@ -225,6 +271,10 @@
 
       function graph() {
         return getGlobal("McelLabGraph");
+      }
+
+      function layoutLaw() {
+        return getGlobal("McelLabLayoutLaw");
       }
 
       function opsRunner() {
@@ -303,7 +353,14 @@
           attrs.artifactOrigin,
           attrs.artifactReason,
           attrs.contractVersion,
-          attrs.styleLaw
+          attrs.styleLaw,
+          attrs.layoutLaw,
+          attrs.overflowComputed,
+          attrs.scrollNeeded,
+          attrs.scrollOwner,
+          attrs.layoutPressure,
+          attrs.geometryProof,
+          attrs.keyboardScroll
         ].filter(Boolean).some((attribute) => String(source || "").includes(attribute));
       }
 
@@ -313,6 +370,7 @@
         const ed = editor();
         const sl = styleLaw();
         const gr = graph();
+        const ll = layoutLaw();
         const ops = opsRunner();
         const source = ed?.canonicalSource?.(options.source || c?.defaultSource || "") || String(options.source || c?.defaultSource || "");
         let root = options.runtimeRoot || null;
@@ -321,13 +379,16 @@
           compiled = e.compileSource(source, {reason: options.reason || "kernel-audit"});
           root = runtimeRoot(compiled.runtimeHtml);
           sl?.applyRuntimeLaw?.(root, {theme: options.theme || "theme-machine", reason: "kernel-audit"});
+          ll?.applyRuntimeLaw?.(root, {reason: "kernel-audit"});
         }
+        const layoutReport = ll?.reportFor?.(root, {reason: "kernel-audit"}) || {layoutLawClean: true, warnings: []};
         const serializer = e?.serializeRuntimeRoot?.(root, {reason: "kernel-audit"}) || {serialized: source, report: {serializerClean: !hasRuntimeLeak(source), warnings: []}};
         const traceability = buildTraceabilityMap({reason: options.reason || "kernel-audit"});
         const audit = gr?.audit?.(source, root, {reason: "kernel-audit"}) || null;
         const readiness = ops?.buildReadiness?.({
           serializerReport: serializer.report,
           cssLawReport: sl?.reportFor?.(root, {theme: options.theme || "theme-machine", reason: "kernel-audit"}),
+          layoutLawReport: layoutReport,
           a11yReport: e?.computeA11y?.(root),
           auditReport: audit,
           testReport: options.testReport || null,
@@ -373,6 +434,12 @@
             label: "Serializer Firewall",
             status: serializer.report?.serializerClean && !hasRuntimeLeak(serializer.serialized) ? "pass" : "fail",
             detail: serializer.report?.serializerClean ? "serializer output is clean" : "serializer reported warnings"
+          },
+          {
+            key: "layout-law",
+            label: "Layout / Overflow Law",
+            status: layoutReport.layoutLawClean ? "pass" : "fail",
+            detail: layoutReport.layoutLawClean ? `${layoutReport.passed || 0}/${layoutReport.elementCount || 0} element(s) passed layout proof` : `${layoutReport.failed || 0} layout proof failure(s)`
           },
           {
             key: "acid-tests",

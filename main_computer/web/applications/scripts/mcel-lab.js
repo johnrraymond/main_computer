@@ -4,11 +4,15 @@
       return Boolean(
         window.McelLabContract &&
         window.McelLabEngine &&
+        window.McelLabLawRegistry &&
         window.McelLabEditor &&
         window.McelLabScenarios &&
+        window.McelLabBrowserObserver &&
+        window.McelLabLayoutLaw &&
         window.McelLabAcidTests &&
         window.McelLabSupervisor &&
-        window.McelLabKernel
+        window.McelLabKernel &&
+        window.MCEL
       );
     }
 
@@ -220,7 +224,9 @@
       if (cleanSource && cleanSource !== mcelSourceHtml.value.trim()) {
         mcelSourceHtml.value = cleanSource;
       }
-      const compiled = McelLabEngine.compileSource(cleanSource, {reason});
+      const compiled = window.MCEL?.compile
+        ? MCEL.compile(cleanSource, {reason, theme: mcelLabState.theme})
+        : McelLabEngine.compileSource(cleanSource, {reason});
       mcelRuntimePreview.innerHTML = compiled.runtimeHtml;
       applyMcelRuntimeStyleLaw(reason);
       mcelLabState.lastSourceList = McelLabEditor.sourceList(cleanSource);
@@ -236,6 +242,7 @@
       renderMcelA11yReport();
       renderMcelDebugger();
       renderMcelCssLawReport();
+      renderMcelLayoutLawReport();
       renderMcelGraphReport();
       renderMcelScenarioMatrix();
       renderMcelEvidencePacket();
@@ -254,7 +261,9 @@
 
     function serializeMcelRuntime(reason = "serialize") {
       if (!mcelRuntimePreview || !mcelSourceHtml) return;
-      const result = McelLabEngine.serializeRuntimeRoot(mcelRuntimePreview, {reason});
+      const result = window.MCEL?.serialize
+        ? MCEL.serialize(mcelRuntimePreview, {reason})
+        : McelLabEngine.serializeRuntimeRoot(mcelRuntimePreview, {reason});
       mcelLabState.lastSerializerReport = result.report;
       mcelSourceHtml.value = result.serialized;
       mcelLabState.compileEvents.push({
@@ -276,6 +285,7 @@
       renderMcelA11yReport();
       renderMcelDebugger();
       renderMcelCssLawReport();
+      renderMcelLayoutLawReport();
       renderMcelGraphReport();
       renderMcelReadiness();
       renderMcelCompilerLog();
@@ -291,6 +301,7 @@
       renderMcelA11yReport();
       renderMcelDebugger();
       renderMcelCssLawReport();
+      renderMcelLayoutLawReport();
       renderMcelGraphReport();
       renderMcelReadiness();
       renderMcelCompilerLog();
@@ -303,6 +314,7 @@
       mcelLabState.compileEvents = [];
       mcelLabState.lastSerializerReport = null;
       mcelLabState.lastTestReport = null;
+      mcelLabState.lastLayoutLawReport = null;
       mcelLabState.lastGraphReport = null;
       mcelLabState.lastAuditReport = null;
       mcelLabState.lastMatrixReport = null;
@@ -495,6 +507,7 @@
         theme: mcelLabState.theme,
         serializerReport: mcelLabState.lastSerializerReport,
         cssLawReport: mcelLabState.lastCssLawReport,
+        layoutLawReport: mcelLabState.lastLayoutLawReport,
         auditReport: mcelLabState.lastAuditReport,
         testReport: mcelLabState.lastTestReport,
         matrixReport: mcelLabState.lastMatrixReport,
@@ -522,6 +535,7 @@
       mcelLabState.lastSupervisorReport = report;
       mcelLabState.lastSerializerReport = report.serializerReport;
       mcelLabState.lastCssLawReport = report.cssLawReport;
+      mcelLabState.lastLayoutLawReport = report.layoutLawReport || mcelLabState.lastLayoutLawReport;
       mcelLabState.lastAuditReport = report.auditReport;
       mcelLabState.lastGraphReport = report.graphReport;
       mcelLabState.lastTestReport = report.testReport;
@@ -565,6 +579,7 @@
       renderMcelGraphReport();
       renderMcelAuditReport();
       renderMcelCssLawReport();
+      renderMcelLayoutLawReport();
       renderMcelKernelAudit();
       renderMcelTraceabilityMap();
       renderMcelPriorArtReport();
@@ -598,6 +613,9 @@
         theme: mcelLabState.theme,
         reason
       });
+      if (typeof McelLabLayoutLaw !== "undefined") {
+        mcelLabState.lastLayoutLawReport = McelLabLayoutLaw.applyRuntimeLaw(mcelRuntimePreview, {reason});
+      }
     }
 
     function planMcelSemanticCommand() {
@@ -648,6 +666,10 @@
       if (applied.actions.includes("matrix")) runMcelScenarioMatrix();
       if (applied.actions.includes("acid")) runSelectedMcelAcidTest("semantic-command-selected-acid");
       if (applied.actions.includes("graph")) renderMcelGraphReport();
+      if (applied.actions.includes("layout")) {
+        applyMcelRuntimeStyleLaw("semantic-command-layout");
+        renderMcelLayoutLawReport();
+      }
       if (applied.actions.includes("audit")) runMcelOperationalAudit();
       if (applied.actions.includes("evidence")) buildMcelEvidencePacket();
       if (applied.actions.includes("autopilot")) runMcelAutopilotProof("semantic-command");
@@ -711,6 +733,9 @@
         rank: mcelTraitRank?.value,
         state: mcelTraitState?.value,
         density: mcelTraitDensity?.value,
+        sizePolicy: mcelTraitSizePolicy?.value,
+        overflowPolicy: mcelTraitOverflowPolicy?.value,
+        scrollPolicy: mcelTraitScrollPolicy?.value,
         words: mcelTraitWords?.value,
         connects: mcelTraitConnects?.value
       });
@@ -765,6 +790,9 @@
       setSelectOptions(mcelTraitRank, traits.options.ranks, traits.rank);
       setSelectOptions(mcelTraitState, traits.options.states, traits.state);
       setSelectOptions(mcelTraitDensity, traits.options.densities, traits.density);
+      setSelectOptions(mcelTraitSizePolicy, traits.options.sizePolicies, traits.sizePolicy);
+      setSelectOptions(mcelTraitOverflowPolicy, traits.options.overflowPolicies, traits.overflowPolicy);
+      setSelectOptions(mcelTraitScrollPolicy, traits.options.scrollPolicies, traits.scrollPolicy);
       if (mcelTraitWords) mcelTraitWords.value = traits.words;
       if (mcelTraitConnects) mcelTraitConnects.value = traits.connects;
     }
@@ -847,6 +875,13 @@
         : "CSS law has not been applied yet.";
     }
 
+    function renderMcelLayoutLawReport() {
+      if (!mcelLayoutLawReport) return;
+      mcelLayoutLawReport.textContent = mcelLabState.lastLayoutLawReport
+        ? JSON.stringify(mcelLabState.lastLayoutLawReport, null, 2)
+        : "Layout law has not been applied yet.";
+    }
+
     function renderMcelGraphReport() {
       if (!mcelGraphReport || typeof McelLabGraph === "undefined") return;
       mcelLabState.lastGraphReport = McelLabGraph.compactReport(currentMcelSource(), mcelRuntimePreview);
@@ -864,6 +899,7 @@
       return {
         serializerReport: mcelLabState.lastSerializerReport,
         cssLawReport: mcelLabState.lastCssLawReport,
+        layoutLawReport: mcelLabState.lastLayoutLawReport,
         a11yReport: mcelRuntimePreview ? McelLabEngine.computeA11y(mcelRuntimePreview) : null,
         auditReport: mcelLabState.lastAuditReport,
         testReport: mcelLabState.lastTestReport,

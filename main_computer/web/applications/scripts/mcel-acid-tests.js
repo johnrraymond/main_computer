@@ -3,6 +3,7 @@
       const engine = typeof McelLabEngine !== "undefined" ? McelLabEngine : window.McelLabEngine;
       const editor = typeof McelLabEditor !== "undefined" ? McelLabEditor : window.McelLabEditor;
       const styleLaw = typeof McelLabStyleLaw !== "undefined" ? McelLabStyleLaw : window.McelLabStyleLaw;
+      const layoutLaw = typeof McelLabLayoutLaw !== "undefined" ? McelLabLayoutLaw : window.McelLabLayoutLaw;
       const scenarios = typeof McelLabScenarios !== "undefined" ? McelLabScenarios : window.McelLabScenarios;
       const commandSurface = typeof McelLabCommandSurface !== "undefined" ? McelLabCommandSurface : window.McelLabCommandSurface;
       const graph = typeof McelLabGraph !== "undefined" ? McelLabGraph : window.McelLabGraph;
@@ -21,7 +22,14 @@
         attributes.neighborhood,
         attributes.clusterSize,
         attributes.relation,
-        attributes.relationCount
+        attributes.relationCount,
+        attributes.layoutLaw,
+        attributes.overflowComputed,
+        attributes.scrollNeeded,
+        attributes.scrollOwner,
+        attributes.layoutPressure,
+        attributes.geometryProof,
+        attributes.keyboardScroll
       ].filter(Boolean);
 
       function now() {
@@ -105,6 +113,13 @@
           element.setAttribute(attributes.artifactReason, "acid:pollution");
           element.setAttribute(attributes.contractVersion, "hostile-contract");
           element.setAttribute(attributes.sourceIndex, String(999 + index));
+          element.setAttribute(attributes.layoutLaw, "hostile-runtime-layout");
+          element.setAttribute(attributes.overflowComputed, "hostile-auto");
+          element.setAttribute(attributes.scrollNeeded, "true");
+          element.setAttribute(attributes.scrollOwner, "hostile-wrapper");
+          element.setAttribute(attributes.layoutPressure, "unstable");
+          element.setAttribute(attributes.geometryProof, "fake-pass");
+          element.setAttribute(attributes.keyboardScroll, "hostile");
           element.classList.add("mc", "mc-hostile", "mc-panel");
           element.style.setProperty("--mc-corrupt", "true");
           const forged = element.ownerDocument.createElement("div");
@@ -181,6 +196,8 @@
           "insert proof",
           "set kind proof; graph audit",
           "matrix evidence serialize",
+          "never scroll overflow clip layout",
+          "delegate overflow to parent scroll proof",
           "kernel traceability prior-art"
         ];
         let currentSource = canonical(source);
@@ -273,9 +290,12 @@
               const {root} = compileClean(scenario.source, `acid-soak:${scenario.id}:${theme}`);
               const css = styleLaw.reportFor(root, {theme, reason: `acid-soak:${scenario.id}`});
               styleLaw.applyRuntimeLaw(root, {theme, reason: `acid-soak:${scenario.id}`});
+              const layout = layoutLaw?.applyRuntimeLaw
+                ? layoutLaw.applyRuntimeLaw(root, {theme, reason: `acid-soak:${scenario.id}`})
+                : {layoutLawClean: true, warnings: []};
               const serialized = serializeClean(root, `acid-soak:${scenario.id}:${theme}`);
               const a11y = engine.computeA11y(root);
-              const ok = serialized.leakFree && css.cssLawClean && a11y.a11yValid;
+              const ok = serialized.leakFree && css.cssLawClean && layout.layoutLawClean && a11y.a11yValid;
               if (ok) passed += 1;
               else {
                 failed += 1;
@@ -297,6 +317,9 @@
       function acidOperationalEvidence(source, state = {}) {
         const {root} = compileClean(source, "acid-evidence");
         styleLaw.applyRuntimeLaw(root, {theme: state.theme || "theme-machine", reason: "acid-evidence"});
+        const layoutReport = layoutLaw?.applyRuntimeLaw
+          ? layoutLaw.applyRuntimeLaw(root, {theme: state.theme || "theme-machine", reason: "acid-evidence"})
+          : null;
         const audit = graph.audit(source, root, {reason: "acid-evidence"});
         const evidence = opsRunner.buildEvidencePacket({
           source,
@@ -305,17 +328,69 @@
           includeTests: true,
           matrixReport: state.matrixReport || null,
           acidReport: state.acidReport || null,
-          kernelReport: state.kernelReport || null
+          kernelReport: state.kernelReport || null,
+          layoutLawReport: layoutReport
         });
         return {
           passed: !audit.failed &&
             evidence.serializer?.serializerClean &&
             evidence.audit?.passed &&
             evidence.testSuite?.failed === 0 &&
+            evidence.layoutLaw?.layoutLawClean !== false &&
             evidence.hashes?.source &&
             evidence.hashes?.serialized,
           details: `auditFailed=${audit.failed}; tests=${evidence.testSuite?.passed || 0}/${(evidence.testSuite?.passed || 0) + (evidence.testSuite?.failed || 0)}; serialized=${evidence.hashes?.serialized}`,
           metrics: {auditFailed: audit.failed, sourceHash: evidence.hashes?.source, serializedHash: evidence.hashes?.serialized}
+        };
+      }
+
+      function acidOverflowNeverCreatesScrollbar() {
+        const neverSource = `<section data-mc="panel" data-mc-kind="proof" data-mc-flow="stack" data-mc-density="dense" data-mc-size-policy="fixed" data-mc-overflow-policy="clip" data-mc-scroll-policy="never"><h2>No Internal Scroll</h2><p>This panel declares that internal scrollbars are illegal. The layout law may clip or delegate, but it may not preserve a hostile internal scroll trap.</p><p>Extra proof text creates enough payload for overflow reasoning without allowing runtime facts into clean source.</p></section>`;
+        const {root} = compileClean(neverSource, "acid-overflow-never");
+        const target = root.querySelector(`[${attributes.type}]`);
+        if (!target) return {passed: false, details: "No source element compiled for overflow proof.", metrics: {}};
+        target.style.overflow = "auto";
+        target.setAttribute(attributes.overflowComputed, "hostile-auto");
+        target.setAttribute(attributes.scrollNeeded, "true");
+        const report = layoutLaw?.applyRuntimeLaw
+          ? layoutLaw.applyRuntimeLaw(root, {reason: "acid-overflow-never"})
+          : {layoutLawClean: false, warnings: ["layout law unavailable"]};
+        const serialized = serializeClean(root, "acid-overflow-never");
+        const runtimeClipped = target.style.overflow === "clip" &&
+          target.getAttribute(attributes.scrollOwner) === "none" &&
+          target.getAttribute(attributes.geometryProof) === "pass";
+        const sourcePolicySurvived = serialized.serialized.includes('data-mc-scroll-policy="never"') &&
+          serialized.serialized.includes('data-mc-overflow-policy="clip"');
+        const observedFactsGone = !serialized.serialized.includes(attributes.geometryProof) &&
+          !serialized.serialized.includes(attributes.overflowComputed) &&
+          !serialized.serialized.includes(attributes.scrollNeeded);
+        return {
+          passed: report.layoutLawClean && serialized.leakFree && runtimeClipped && sourcePolicySurvived && observedFactsGone,
+          details: `layoutClean=${report.layoutLawClean}; runtimeClipped=${runtimeClipped}; sourcePolicySurvived=${sourcePolicySurvived}; observedFactsGone=${observedFactsGone}`,
+          metrics: {warnings: report.warnings?.length || 0, sourceHash: hashText(serialized.serialized)}
+        };
+      }
+
+      function acidDelegatedScrollOwnership() {
+        const delegatedSource = `<main data-mc-host="ordinary"><section data-mc="panel" data-mc-kind="work" data-mc-flow="stack" data-mc-density="comfortable" data-mc-size-policy="adaptive" data-mc-overflow-policy="delegate" data-mc-scroll-policy="external"><h2>Delegated Scroll</h2><p>The section may overflow, but the scroll owner is a surrounding document surface instead of an internal generated trap.</p></section></main>`;
+        const {root} = compileClean(delegatedSource, "acid-delegated-scroll");
+        const target = root.querySelector(`[${attributes.type}]`);
+        if (!target) return {passed: false, details: "No source element compiled for delegated scroll proof.", metrics: {}};
+        const report = layoutLaw?.applyRuntimeLaw
+          ? layoutLaw.applyRuntimeLaw(root, {reason: "acid-delegated-scroll"})
+          : {layoutLawClean: false, warnings: ["layout law unavailable"]};
+        const serialized = serializeClean(root, "acid-delegated-scroll");
+        const runtimeDelegated = target.getAttribute(attributes.overflowComputed) === "delegated" &&
+          target.getAttribute(attributes.scrollOwner) === "parent";
+        const sourcePolicySurvived = serialized.serialized.includes('data-mc-overflow-policy="delegate"') &&
+          serialized.serialized.includes('data-mc-scroll-policy="external"');
+        const runtimeFactsGone = !serialized.serialized.includes(attributes.scrollOwner) &&
+          !serialized.serialized.includes(attributes.layoutLaw) &&
+          !serialized.serialized.includes(attributes.overflowComputed);
+        return {
+          passed: report.layoutLawClean && serialized.leakFree && runtimeDelegated && sourcePolicySurvived && runtimeFactsGone,
+          details: `runtimeDelegated=${runtimeDelegated}; sourcePolicySurvived=${sourcePolicySurvived}; runtimeFactsGone=${runtimeFactsGone}`,
+          metrics: {scrollOwner: target.getAttribute(attributes.scrollOwner), warnings: report.warnings?.length || 0}
         };
       }
 
@@ -328,7 +403,9 @@
         Object.freeze({id: "dumb-dom-survival", name: "smart widgets survive inside ordinary dumb DOM", severity: "high", run: (source, options) => acidNestedDumbDom(source)}),
         Object.freeze({id: "relation-mutation", name: "relation mutation recomputes without source corruption", severity: "high", run: (source, options) => acidRelationMutation(source)}),
         Object.freeze({id: "schema-fuzz-normalization", name: "schema fuzz normalizes malformed traits safely", severity: "high", run: (source, options) => acidSchemaFuzz()}),
-        Object.freeze({id: "scenario-theme-soak", name: "scenario × theme soak preserves serializer/a11y/CSS law", severity: "system", run: (source, options) => acidScenarioThemeSoak(source)}),
+        Object.freeze({id: "overflow-never-no-internal-scrollbar", name: "overflow law forbids internal scrollbar when scroll policy is never", severity: "critical", run: (source, options) => acidOverflowNeverCreatesScrollbar()}),
+        Object.freeze({id: "delegated-scroll-ownership", name: "delegated scroll policy publishes runtime owner without source pollution", severity: "critical", run: (source, options) => acidDelegatedScrollOwnership()}),
+        Object.freeze({id: "scenario-theme-soak", name: "scenario × theme soak preserves serializer/a11y/CSS law and layout law", severity: "system", run: (source, options) => acidScenarioThemeSoak(source)}),
         Object.freeze({id: "operational-evidence-integrity", name: "operational evidence packet remains machine-checkable", severity: "system", run: (source, options) => acidOperationalEvidence(source, options)})
       ]);
 

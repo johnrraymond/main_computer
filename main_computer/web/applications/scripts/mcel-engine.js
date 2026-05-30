@@ -69,6 +69,9 @@
         validateAttribute(element, events, attributes.rank, elementSchema.allowedRanks, defaults.rank);
         validateAttribute(element, events, attributes.state, elementSchema.allowedStates, defaults.state);
         validateAttribute(element, events, attributes.density, elementSchema.allowedDensities, defaults.density);
+        validateAttribute(element, events, attributes.sizePolicy, elementSchema.allowedSizePolicies || ["adaptive"], defaults.sizePolicy);
+        validateAttribute(element, events, attributes.overflowPolicy, elementSchema.allowedOverflowPolicies || ["contain"], defaults.overflowPolicy);
+        validateAttribute(element, events, attributes.scrollPolicy, elementSchema.allowedScrollPolicies || ["auto"], defaults.scrollPolicy);
       }
 
       function computedDensity(element) {
@@ -170,6 +173,7 @@
         element.setAttribute(attributes.neighborhood, neighborhood.neighborhood);
         element.setAttribute(attributes.clusterSize, String(neighborhood.clusterSize));
         element.style.setProperty("--mc-word-count", String(words(element).length));
+        element.style.setProperty("--mc-source-index", String(sourceIndex));
 
         if (relation.state) {
           element.setAttribute(attributes.relation, relation.state);
@@ -188,7 +192,7 @@
           "info",
           "runtime-builder",
           "MCEL_ELEMENT_ENHANCED",
-          `${type} enhanced as ${element.getAttribute(attributes.kind)}/${element.getAttribute(attributes.flow)}/${element.getAttribute(attributes.state)}.`
+          `${type} enhanced as ${element.getAttribute(attributes.kind)}/${element.getAttribute(attributes.flow)}/${element.getAttribute(attributes.state)} with overflow=${element.getAttribute(attributes.overflowPolicy)} scroll=${element.getAttribute(attributes.scrollPolicy)}.`
         );
       }
 
@@ -290,6 +294,7 @@
           decorationsHidden: true,
           readingOrderValid: true,
           focusWarnings: [],
+          scrollRegions: [],
           warnings: [],
           a11yValid: true
         };
@@ -300,6 +305,19 @@
             report.labels.push(heading.textContent.trim());
           } else {
             report.warnings.push(`${element.getAttribute(attributes.type) || "element"} is missing a heading label.`);
+          }
+          const scrollPolicy = element.getAttribute(attributes.scrollPolicy) || defaults.scrollPolicy;
+          const overflowPolicy = element.getAttribute(attributes.overflowPolicy) || defaults.overflowPolicy;
+          if (["required", "child-only", "external", "viewport-only"].includes(scrollPolicy) || ["delegate", "paginate", "virtualize"].includes(overflowPolicy)) {
+            const label = heading?.textContent?.trim() || element.getAttribute("aria-label") || element.id || "";
+            report.scrollRegions.push({
+              policy: scrollPolicy,
+              overflowPolicy,
+              label,
+              keyboardReachable: !element.hasAttribute("inert")
+            });
+            if (!label) report.warnings.push(`${element.getAttribute(attributes.type) || "element"} scroll/overflow policy needs a heading, aria-label, or id.`);
+            if (element.hasAttribute("inert")) report.focusWarnings.push(`${element.getAttribute(attributes.type) || "element"} declares scroll behavior but is inert.`);
           }
           element.querySelectorAll(`[${attributes.generated}="true"]`).forEach((generated) => {
             if (generated.getAttribute("aria-hidden") !== "true") {
@@ -336,6 +354,15 @@
           density: element.getAttribute(attributes.computedDensity) || "calm",
           words: words(element),
           connects: element.getAttribute(attributes.connects) || "",
+          sizePolicy: element.getAttribute(attributes.sizePolicy) || defaults.sizePolicy,
+          overflowPolicy: element.getAttribute(attributes.overflowPolicy) || defaults.overflowPolicy,
+          scrollPolicy: element.getAttribute(attributes.scrollPolicy) || defaults.scrollPolicy,
+          layoutLaw: element.getAttribute(attributes.layoutLaw) || "",
+          overflowComputed: element.getAttribute(attributes.overflowComputed) || "",
+          scrollNeeded: element.getAttribute(attributes.scrollNeeded) || "",
+          scrollOwner: element.getAttribute(attributes.scrollOwner) || "",
+          layoutPressure: element.getAttribute(attributes.layoutPressure) || "",
+          geometryProof: element.getAttribute(attributes.geometryProof) || "",
           relation: element.getAttribute(attributes.relation) || "",
           relationCount: Number(element.getAttribute(attributes.relationCount) || "0"),
           artifactOwner: element.getAttribute(attributes.artifactOwner) || "",
@@ -443,6 +470,28 @@
           return {
             passed: first.getAttribute(attributes.relation) === "resolved" && first.getAttribute(attributes.relationCount) === "1",
             details: `relation=${first.getAttribute(attributes.relation)}`
+          };
+        });
+
+        test("layout source policies survive while observed geometry is stripped", () => {
+          const source = `<section data-mc="panel" data-mc-overflow-policy="delegate" data-mc-scroll-policy="external" data-mc-size-policy="fluid"><h2>Layout</h2></section>`;
+          const compiled = compileSource(source, {reason: "layout-serializer-test"});
+          const root = makeRuntimeRoot(compiled.runtimeHtml);
+          const first = root.querySelector(`[${attributes.type}]`);
+          first.setAttribute(attributes.layoutLaw, "true");
+          first.setAttribute(attributes.overflowComputed, "delegated");
+          first.setAttribute(attributes.scrollNeeded, "true");
+          first.setAttribute(attributes.scrollOwner, "parent");
+          first.setAttribute(attributes.layoutPressure, "high");
+          first.setAttribute(attributes.geometryProof, "fail");
+          const serialized = serializeRuntimeRoot(root, {reason: "layout-serializer-test"});
+          return {
+            passed: serialized.report.serializerClean &&
+              serialized.serialized.includes(attributes.overflowPolicy) &&
+              serialized.serialized.includes(attributes.scrollPolicy) &&
+              !serialized.serialized.includes(attributes.overflowComputed) &&
+              !serialized.serialized.includes(attributes.geometryProof),
+            details: `serialized=${serialized.serialized}`
           };
         });
 

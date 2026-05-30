@@ -63,6 +63,9 @@
           rank: element.getAttribute(attributes.rank) || defaults.rank,
           state: element.getAttribute(attributes.state) || defaults.state,
           density: element.getAttribute(attributes.density) || defaults.density,
+          sizePolicy: element.getAttribute(attributes.sizePolicy) || defaults.sizePolicy,
+          overflowPolicy: element.getAttribute(attributes.overflowPolicy) || defaults.overflowPolicy,
+          scrollPolicy: element.getAttribute(attributes.scrollPolicy) || defaults.scrollPolicy,
           words: element.getAttribute(attributes.words) || "",
           connects: element.getAttribute(attributes.connects) || "",
           label: element.querySelector("h1,h2,h3,h4,h5,h6")?.textContent?.trim() || `MCEL widget ${index + 1}`
@@ -103,6 +106,9 @@
           rank: element.getAttribute(attributes.rank) || defaults.rank,
           state: element.getAttribute(attributes.state) || defaults.state,
           density: element.getAttribute(attributes.density) || defaults.density,
+          sizePolicy: element.getAttribute(attributes.sizePolicy) || defaults.sizePolicy,
+          overflowPolicy: element.getAttribute(attributes.overflowPolicy) || defaults.overflowPolicy,
+          scrollPolicy: element.getAttribute(attributes.scrollPolicy) || defaults.scrollPolicy,
           words: element.getAttribute(attributes.words) || "",
           connects: element.getAttribute(attributes.connects) || "",
           options: {
@@ -110,7 +116,10 @@
             flows: [...elementSchema.allowedFlows],
             ranks: [...elementSchema.allowedRanks],
             states: [...elementSchema.allowedStates],
-            densities: [...elementSchema.allowedDensities]
+            densities: [...elementSchema.allowedDensities],
+            sizePolicies: [...(elementSchema.allowedSizePolicies || ["adaptive"])],
+            overflowPolicies: [...(elementSchema.allowedOverflowPolicies || ["contain"])],
+            scrollPolicies: [...(elementSchema.allowedScrollPolicies || ["auto"])]
           }
         };
       }
@@ -130,6 +139,9 @@
           [attributes.rank, traits.rank],
           [attributes.state, traits.state],
           [attributes.density, traits.density],
+          [attributes.sizePolicy, traits.sizePolicy],
+          [attributes.overflowPolicy, traits.overflowPolicy],
+          [attributes.scrollPolicy, traits.scrollPolicy],
           [attributes.words, traits.words],
           [attributes.connects, traits.connects]
         ];

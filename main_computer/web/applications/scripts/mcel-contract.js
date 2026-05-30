@@ -8,6 +8,9 @@
         density: "data-mc-density",
         words: "data-mc-words",
         connects: "data-mc-connects",
+        sizePolicy: "data-mc-size-policy",
+        overflowPolicy: "data-mc-overflow-policy",
+        scrollPolicy: "data-mc-scroll-policy",
         enhanced: "data-mc-enhanced",
         generated: "data-mc-generated",
         part: "data-mc-part",
@@ -24,13 +27,20 @@
         fieldPressure: "data-mc-field-pressure",
         attention: "data-mc-attention",
         relationMode: "data-mc-relation-mode",
+        layoutLaw: "data-mc-layout-law",
+        overflowComputed: "data-mc-overflow-computed",
+        scrollNeeded: "data-mc-scroll-needed",
+        scrollOwner: "data-mc-scroll-owner",
+        layoutPressure: "data-mc-layout-pressure",
+        geometryProof: "data-mc-geometry-proof",
+        keyboardScroll: "data-mc-keyboard-scroll",
         artifactOwner: "data-mc-owner",
         artifactOrigin: "data-mc-origin",
         artifactReason: "data-mc-reason",
         contractVersion: "data-mc-contract-version"
       });
 
-      const contractVersion = "mcel-lab.v0.5-operational-graph";
+      const contractVersion = "mcel-lab.v0.9-layout-proof-core";
 
       const modes = Object.freeze(["source", "editor", "runtime", "diff", "stress", "a11y"]);
 
@@ -40,7 +50,10 @@
         flow: "forward",
         rank: "secondary",
         state: "idle",
-        density: "auto"
+        density: "auto",
+        sizePolicy: "adaptive",
+        overflowPolicy: "contain",
+        scrollPolicy: "auto"
       });
 
       const runtimeOwnedAttributes = Object.freeze([
@@ -58,6 +71,13 @@
         attributes.fieldPressure,
         attributes.attention,
         attributes.relationMode,
+        attributes.layoutLaw,
+        attributes.overflowComputed,
+        attributes.scrollNeeded,
+        attributes.scrollOwner,
+        attributes.layoutPressure,
+        attributes.geometryProof,
+        attributes.keyboardScroll,
         attributes.artifactOwner,
         attributes.artifactOrigin,
         attributes.artifactReason,
@@ -74,6 +94,12 @@
         "theme-accessibility"
       ]);
 
+      const layoutPolicies = Object.freeze({
+        size: Object.freeze(["adaptive", "fixed", "fluid", "intrinsic"]),
+        overflow: Object.freeze(["visible", "contain", "clip", "delegate", "paginate", "virtualize", "expand", "collapse"]),
+        scroll: Object.freeze(["never", "auto", "required", "external", "child-only", "viewport-only"])
+      });
+
       const schema = Object.freeze({
         panel: Object.freeze({
           generatedParts: Object.freeze(["rail", "copy", "meta", "field"]),
@@ -81,7 +107,10 @@
           allowedFlows: Object.freeze(["forward", "reverse", "stack", "split"]),
           allowedRanks: Object.freeze(["primary", "secondary", "minor"]),
           allowedStates: Object.freeze(["idle", "live", "draft", "warning"]),
-          allowedDensities: Object.freeze(["auto", "calm", "dense", "compressed"])
+          allowedDensities: Object.freeze(["auto", "calm", "dense", "compressed"]),
+          allowedSizePolicies: layoutPolicies.size,
+          allowedOverflowPolicies: layoutPolicies.overflow,
+          allowedScrollPolicies: layoutPolicies.scroll
         }),
         feed: Object.freeze({
           generatedParts: Object.freeze(["rail", "meta", "field"]),
@@ -89,7 +118,10 @@
           allowedFlows: Object.freeze(["stack", "forward", "reverse"]),
           allowedRanks: Object.freeze(["primary", "secondary", "minor"]),
           allowedStates: Object.freeze(["idle", "live", "draft", "warning"]),
-          allowedDensities: Object.freeze(["auto", "calm", "dense", "compressed"])
+          allowedDensities: Object.freeze(["auto", "calm", "dense", "compressed"]),
+          allowedSizePolicies: layoutPolicies.size,
+          allowedOverflowPolicies: layoutPolicies.overflow,
+          allowedScrollPolicies: layoutPolicies.scroll
         }),
         "command-row": Object.freeze({
           generatedParts: Object.freeze(["rail", "copy", "field"]),
@@ -97,7 +129,10 @@
           allowedFlows: Object.freeze(["forward", "reverse"]),
           allowedRanks: Object.freeze(["secondary", "minor"]),
           allowedStates: Object.freeze(["idle", "live", "draft", "warning"]),
-          allowedDensities: Object.freeze(["auto", "calm", "dense", "compressed"])
+          allowedDensities: Object.freeze(["auto", "calm", "dense", "compressed"]),
+          allowedSizePolicies: layoutPolicies.size,
+          allowedOverflowPolicies: layoutPolicies.overflow,
+          allowedScrollPolicies: layoutPolicies.scroll
         }),
         "proof-surface": Object.freeze({
           generatedParts: Object.freeze(["rail", "copy", "meta", "field"]),
@@ -105,7 +140,10 @@
           allowedFlows: Object.freeze(["forward", "reverse", "split"]),
           allowedRanks: Object.freeze(["primary", "secondary", "minor"]),
           allowedStates: Object.freeze(["idle", "live", "draft", "warning"]),
-          allowedDensities: Object.freeze(["auto", "calm", "dense", "compressed"])
+          allowedDensities: Object.freeze(["auto", "calm", "dense", "compressed"]),
+          allowedSizePolicies: layoutPolicies.size,
+          allowedOverflowPolicies: layoutPolicies.overflow,
+          allowedScrollPolicies: layoutPolicies.scroll
         }),
         "smart-region": Object.freeze({
           generatedParts: Object.freeze(["rail", "meta", "field"]),
@@ -113,7 +151,10 @@
           allowedFlows: Object.freeze(["stack", "forward", "reverse", "split"]),
           allowedRanks: Object.freeze(["primary", "secondary", "minor"]),
           allowedStates: Object.freeze(["idle", "live", "draft", "warning"]),
-          allowedDensities: Object.freeze(["auto", "calm", "dense", "compressed"])
+          allowedDensities: Object.freeze(["auto", "calm", "dense", "compressed"]),
+          allowedSizePolicies: layoutPolicies.size,
+          allowedOverflowPolicies: layoutPolicies.overflow,
+          allowedScrollPolicies: layoutPolicies.scroll
         })
       });
 
@@ -124,6 +165,9 @@
   data-mc-rank="primary"
   data-mc-state="live"
   data-mc-density="auto"
+  data-mc-size-policy="adaptive"
+  data-mc-overflow-policy="contain"
+  data-mc-scroll-policy="auto"
   data-mc-words="argument stream volatile public"
 >
   <h2>Crank Files</h2>
@@ -138,6 +182,9 @@
   data-mc-rank="secondary"
   data-mc-state="idle"
   data-mc-density="calm"
+  data-mc-size-policy="adaptive"
+  data-mc-overflow-policy="delegate"
+  data-mc-scroll-policy="external"
   data-mc-words="compiler serializer repair"
 >
   <h2>Runtime Proof</h2>
@@ -145,35 +192,35 @@
 </section>`;
 
       const blockTemplates = Object.freeze({
-        panel: `<section data-mc="panel" data-mc-kind="signal" data-mc-flow="forward" data-mc-rank="secondary" data-mc-state="draft" data-mc-density="auto" data-mc-words="semantic source html">
+        panel: `<section data-mc="panel" data-mc-kind="signal" data-mc-flow="forward" data-mc-rank="secondary" data-mc-state="draft" data-mc-density="auto" data-mc-size-policy="adaptive" data-mc-overflow-policy="contain" data-mc-scroll-policy="auto" data-mc-words="semantic source html">
   <h2>New Panel</h2>
   <p>Clean MCEL source that can compile into runtime structure.</p>
 </section>`,
-        hero: `<section data-mc="panel" data-mc-kind="hero" data-mc-flow="split" data-mc-rank="primary" data-mc-state="live" data-mc-density="calm" data-mc-words="hero proof surface">
+        hero: `<section data-mc="panel" data-mc-kind="hero" data-mc-flow="split" data-mc-rank="primary" data-mc-state="live" data-mc-density="calm" data-mc-size-policy="fluid" data-mc-overflow-policy="expand" data-mc-scroll-policy="never" data-mc-words="hero proof surface">
   <h2>Hero Panel</h2>
   <p>A semantic hero panel without generated wrapper pollution.</p>
 </section>`,
-        signal: `<section data-mc="panel" data-mc-kind="signal" data-mc-flow="reverse" data-mc-rank="primary" data-mc-state="live" data-mc-density="dense" data-mc-words="signal argument stream public">
+        signal: `<section data-mc="panel" data-mc-kind="signal" data-mc-flow="reverse" data-mc-rank="primary" data-mc-state="live" data-mc-density="dense" data-mc-size-policy="adaptive" data-mc-overflow-policy="contain" data-mc-scroll-policy="auto" data-mc-words="signal argument stream public">
   <h2>Signal Panel</h2>
   <p>A live signal block for public argument streams.</p>
 </section>`,
-        work: `<section data-mc="panel" data-mc-kind="work" data-mc-flow="forward" data-mc-rank="secondary" data-mc-state="idle" data-mc-density="calm" data-mc-words="work compiler module">
+        work: `<section data-mc="panel" data-mc-kind="work" data-mc-flow="forward" data-mc-rank="secondary" data-mc-state="idle" data-mc-density="calm" data-mc-size-policy="adaptive" data-mc-overflow-policy="delegate" data-mc-scroll-policy="external" data-mc-words="work compiler module">
   <h2>Work Panel</h2>
   <p>A work block for implementation progress.</p>
 </section>`,
-        feed: `<section data-mc="feed" data-mc-kind="signal" data-mc-flow="stack" data-mc-rank="secondary" data-mc-state="live" data-mc-density="dense" data-mc-words="feed stream items">
+        feed: `<section data-mc="feed" data-mc-kind="signal" data-mc-flow="stack" data-mc-rank="secondary" data-mc-state="live" data-mc-density="dense" data-mc-size-policy="fixed" data-mc-overflow-policy="virtualize" data-mc-scroll-policy="required" data-mc-words="feed stream items">
   <h2>Feed</h2>
   <p>Container source for future feed item intelligence.</p>
 </section>`,
-        "command-row": `<section data-mc="command-row" data-mc-kind="work" data-mc-flow="forward" data-mc-rank="minor" data-mc-state="idle" data-mc-density="compressed" data-mc-words="command action controls">
+        "command-row": `<section data-mc="command-row" data-mc-kind="work" data-mc-flow="forward" data-mc-rank="minor" data-mc-state="idle" data-mc-density="compressed" data-mc-size-policy="intrinsic" data-mc-overflow-policy="clip" data-mc-scroll-policy="never" data-mc-words="command action controls">
   <h2>Command Row</h2>
   <p>Semantic command strip source.</p>
 </section>`,
-        proof: `<section data-mc="proof-surface" data-mc-kind="proof" data-mc-flow="split" data-mc-rank="primary" data-mc-state="live" data-mc-density="auto" data-mc-words="proof verification serializer">
+        proof: `<section data-mc="proof-surface" data-mc-kind="proof" data-mc-flow="split" data-mc-rank="primary" data-mc-state="live" data-mc-density="auto" data-mc-size-policy="adaptive" data-mc-overflow-policy="paginate" data-mc-scroll-policy="child-only" data-mc-words="proof verification serializer">
   <h2>Proof Surface</h2>
   <p>Runtime and serializer claims should be proven here.</p>
 </section>`,
-        "smart-region": `<section data-mc="smart-region" data-mc-kind="article" data-mc-flow="stack" data-mc-rank="secondary" data-mc-state="draft" data-mc-density="auto" data-mc-words="region neighborhood a11y">
+        "smart-region": `<section data-mc="smart-region" data-mc-kind="article" data-mc-flow="stack" data-mc-rank="secondary" data-mc-state="draft" data-mc-density="auto" data-mc-size-policy="fluid" data-mc-overflow-policy="contain" data-mc-scroll-policy="auto" data-mc-words="region neighborhood a11y">
   <h2>Smart Region</h2>
   <p>A general semantic region for neighborhood and accessibility tests.</p>
 </section>`
@@ -186,6 +233,7 @@
         runtimeOwnedAttributes,
         runtimeOwnedClasses,
         themes,
+        layoutPolicies,
         contractVersion,
         schema,
         defaultSource,
