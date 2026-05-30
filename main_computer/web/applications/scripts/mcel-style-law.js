@@ -1,15 +1,111 @@
     var McelLabStyleLaw = (() => {
       const contract = typeof McelLabContract !== "undefined" ? McelLabContract : window.McelLabContract;
-      const {attributes, defaults, themes: contractThemes} = contract;
+      const {attributes, defaults, themes: contractThemes, themeAliases: contractThemeAliases} = contract;
       const registry = typeof McelLabLawRegistry !== "undefined" ? McelLabLawRegistry : window.McelLabLawRegistry;
 
-      const themes = Object.freeze(contractThemes || [
-        "theme-basic",
+      const fallbackThemes = Object.freeze([
         "theme-machine",
-        "theme-article",
-        "theme-debug",
-        "theme-accessibility"
+        "theme-local",
+        "theme-saas",
+        "theme-editorial",
+        "theme-luxury",
+        "theme-civic",
+        "theme-accessible",
+        "theme-debug"
       ]);
+
+      const themes = Object.freeze(contractThemes || fallbackThemes);
+
+      const themeAliases = Object.freeze({
+        "theme-basic": "theme-local",
+        basic: "theme-local",
+        local: "theme-local",
+        "local-service": "theme-local",
+        "small-business": "theme-local",
+        machine: "theme-machine",
+        original: "theme-machine",
+        "original-mcel": "theme-machine",
+        launch: "theme-saas",
+        startup: "theme-saas",
+        saas: "theme-saas",
+        product: "theme-saas",
+        "theme-article": "theme-editorial",
+        article: "theme-editorial",
+        editorial: "theme-editorial",
+        magazine: "theme-editorial",
+        "theme-premium": "theme-luxury",
+        premium: "theme-luxury",
+        luxury: "theme-luxury",
+        portfolio: "theme-luxury",
+        civic: "theme-civic",
+        nonprofit: "theme-civic",
+        public: "theme-civic",
+        "theme-accessibility": "theme-accessible",
+        accessibility: "theme-accessible",
+        accessible: "theme-accessible",
+        "high-contrast": "theme-accessible",
+        debug: "theme-debug",
+        wireframe: "theme-debug",
+        ...(contractThemeAliases || {})
+      });
+
+      const themeDefinitions = Object.freeze({
+        "theme-machine": Object.freeze({
+          id: "theme-machine",
+          label: "Original MCEL",
+          description: "The original dark MCEL product surface with gold, sky, and mint accents and the green hero ornament.",
+          audience: "MCEL default, demos, engine lab previews"
+        }),
+        "theme-local": Object.freeze({
+          id: "theme-local",
+          label: "Local Service",
+          description: "Warm small-business pages with obvious calls to action, trust cards, and practical form styling.",
+          audience: "restaurants, neighborhood services, local markets, clinics"
+        }),
+        "theme-saas": Object.freeze({
+          id: "theme-saas",
+          label: "SaaS Launch",
+          description: "Polished product-launch pages with dark gradients, strong hero contrast, and modern conversion buttons.",
+          audience: "apps, tools, product launches, B2B demos"
+        }),
+        "theme-editorial": Object.freeze({
+          id: "theme-editorial",
+          label: "Editorial / Magazine",
+          description: "Reading-first pages with paper texture, serif headlines, narrow measure, and article-like sections.",
+          audience: "blogs, newsletters, guides, publications"
+        }),
+        "theme-luxury": Object.freeze({
+          id: "theme-luxury",
+          label: "Luxury / Portfolio",
+          description: "Premium visual language with dark surfaces, restrained gold accents, large imagery, and spacious sections.",
+          audience: "studios, consultants, portfolios, premium services"
+        }),
+        "theme-civic": Object.freeze({
+          id: "theme-civic",
+          label: "Civic / Nonprofit",
+          description: "Clear institutional pages with trustworthy blues, strong navigation hierarchy, and public-service forms.",
+          audience: "nonprofits, civic projects, community programs"
+        }),
+        "theme-accessible": Object.freeze({
+          id: "theme-accessible",
+          label: "Accessible High Contrast",
+          description: "High-contrast, large-target, reduced-decoration pages for legibility and keyboard confidence.",
+          audience: "public services, accessibility-first deployments, critical forms"
+        }),
+        "theme-debug": Object.freeze({
+          id: "theme-debug",
+          label: "Debug Wireframe",
+          description: "Developer-facing wireframe theme that makes semantic boxes, generated parts, and layout proof visible.",
+          audience: "MCEL development and QA"
+        })
+      });
+
+      const themeCatalog = Object.freeze(themes.map((id) => themeDefinitions[id] || Object.freeze({
+        id,
+        label: id.replace(/^theme-/, "").replace(/-/g, " "),
+        description: "Custom MCEL theme",
+        audience: "custom"
+      })));
 
       const densityScale = Object.freeze({
         auto: "1",
@@ -33,7 +129,19 @@
 
       function normalizeTheme(theme) {
         const candidate = String(theme || "").trim();
-        return themes.includes(candidate) ? candidate : "theme-machine";
+        if (themes.includes(candidate)) return candidate;
+        const normalized = candidate.toLowerCase();
+        const alias = themeAliases[normalized] || themeAliases[candidate];
+        return themes.includes(alias) ? alias : "theme-machine";
+      }
+
+      function themeDefinition(theme) {
+        const normalized = normalizeTheme(theme);
+        return themeDefinitions[normalized] || themeCatalog.find((item) => item.id === normalized) || themeDefinitions["theme-machine"];
+      }
+
+      function themeLabel(theme) {
+        return themeDefinition(theme).label;
       }
 
       function sourceElements(root) {
@@ -147,7 +255,11 @@
 
       return Object.freeze({
         themes,
+        themeAliases,
+        themeCatalog,
         normalizeTheme,
+        themeDefinition,
+        themeLabel,
         computeElementLaw,
         applyRuntimeLaw,
         reportFor
