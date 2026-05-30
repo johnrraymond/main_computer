@@ -1,34 +1,37 @@
-    const mcelLabState = {
-      initialized: false,
-      compileEvents: [],
-      selectedIndex: 0,
-      currentMode: "source",
-      grapesEditor: null,
-      grapesReady: false,
-      syncingGrapes: false,
-      theme: "theme-machine",
-      lastSerializerReport: null,
-      lastTestReport: null,
-      lastCssLawReport: null,
-      lastGraphReport: null,
-      lastAuditReport: null,
-      lastCommandPlan: null,
-      lastProjectSnapshot: null,
-      lastSourceList: []
-    };
+    var mcelLabState = window.mcelLabState || (window.mcelLabState = createDefaultMcelLabState());
+
+    function mcelLabDependenciesReady() {
+      return Boolean(
+        window.McelLabContract &&
+        window.McelLabEngine &&
+        window.McelLabEditor &&
+        window.McelLabScenarios &&
+        window.McelLabAcidTests &&
+        window.McelLabSupervisor &&
+        window.McelLabKernel
+      );
+    }
 
     function initMcelLabApp() {
-      if (!mcelLabApp || mcelLabState.initialized) return;
+      if (!mcelLabApp) return;
+      if (!mcelLabDependenciesReady()) {
+        window.setTimeout(initMcelLabApp, 0);
+        return;
+      }
+      mcelLabState = window.mcelLabState || (window.mcelLabState = createDefaultMcelLabState());
+      if (mcelLabState.initialized) return;
       mcelLabState.initialized = true;
       if (mcelSourceHtml && !mcelSourceHtml.value.trim()) {
         mcelSourceHtml.value = McelLabContract.defaultSource;
       }
       populateMcelThemes();
       populateMcelScenarios();
+      populateMcelAcidCases();
       bindMcelLabControls();
       initMcelLabGrapes();
       selectMcelSourceIndex(0, "initial-selection");
       compileMcelLabSource("initial-load");
+      renderMcelAutopilotDeferred("boot");
     }
 
     function bindMcelLabControls() {
@@ -38,7 +41,14 @@
       mcelRepair?.addEventListener("click", () => repairMcelRuntime("manual-repair"));
       mcelReset?.addEventListener("click", resetMcelLab);
       mcelRunTests?.addEventListener("click", runMcelContractTests);
+      mcelRunMatrix?.addEventListener("click", runMcelScenarioMatrix);
+      mcelRunAcid?.addEventListener("click", () => runSelectedMcelAcidTest("manual-selected-acid-test"));
+      mcelRunAcidSuite?.addEventListener("click", () => runMcelAcidTests("manual-acid-suite"));
       mcelRunAudit?.addEventListener("click", runMcelOperationalAudit);
+      mcelBuildEvidence?.addEventListener("click", buildMcelEvidencePacket);
+      mcelRunAutopilot?.addEventListener("click", () => runMcelAutopilotProof("manual-autopilot"));
+      mcelRunKernel?.addEventListener("click", () => runMcelKernelAudit("manual-kernel-audit"));
+      mcelBuildTraceability?.addEventListener("click", () => buildMcelTraceabilityMap("manual-traceability"));
       mcelApplyTraits?.addEventListener("click", applyMcelTraitsToSelectedSourceWidget);
       mcelLoadScenario?.addEventListener("click", loadSelectedMcelScenario);
       mcelScenarioSelect?.addEventListener("change", describeSelectedMcelScenario);
@@ -65,9 +75,28 @@
     }
 
     let mcelLabCompileTimer = null;
+    let mcelAutopilotTimer = null;
     function debounceMcelLabCompile() {
       clearTimeout(mcelLabCompileTimer);
       mcelLabCompileTimer = setTimeout(() => compileMcelLabSource("source-input"), 240);
+    }
+
+    function scheduleMcelAutopilotProof(reason = "scheduled-autopilot") {
+      renderMcelAutopilotDeferred(reason);
+      return null;
+    }
+
+    function renderMcelAutopilotDeferred(reason = "manual-only") {
+      clearTimeout(mcelAutopilotTimer);
+      mcelLabState.lastSupervisorReport = null;
+      if (mcelSupervisorReport) {
+        mcelSupervisorReport.textContent = [
+          "Autopilot proof is manual-only.",
+          `reason: ${reason}`,
+          "Use Run Autopilot Proof from Diagnostics & Proofs when you want the supervisor report.",
+          "Scenario changes and page load intentionally do not run matrix, acid, kernel, or autopilot suites."
+        ].join("\n");
+      }
     }
 
     function populateMcelThemes() {
@@ -100,6 +129,21 @@
       mcelScenarioDescription.textContent = scenario.description;
     }
 
+    function populateMcelAcidCases() {
+      if (!mcelAcidSelect || typeof McelLabAcidTests === "undefined") return;
+      const cases = McelLabAcidTests.listCases();
+      mcelAcidSelect.innerHTML = "";
+      cases.forEach((testCase) => {
+        const option = document.createElement("option");
+        option.value = testCase.id;
+        option.textContent = `${testCase.severity.toUpperCase()} · ${testCase.name}`;
+        mcelAcidSelect.appendChild(option);
+      });
+      if (!cases.some((testCase) => testCase.id === mcelAcidSelect.value)) {
+        mcelAcidSelect.value = cases[0]?.id || "";
+      }
+    }
+
     function loadSelectedMcelScenario() {
       if (!mcelSourceHtml || typeof McelLabScenarios === "undefined") return;
       const scenario = McelLabScenarios.byId(mcelScenarioSelect?.value || "round-trip");
@@ -108,6 +152,7 @@
       setMcelLabMode(scenario.mode || "source");
       compileMcelLabSource(`scenario:${scenario.id}`);
       syncMcelGrapesFromSource();
+      renderMcelAutopilotDeferred(`scenario:${scenario.id}`);
     }
 
     function initMcelLabGrapes() {
@@ -192,6 +237,14 @@
       renderMcelDebugger();
       renderMcelCssLawReport();
       renderMcelGraphReport();
+      renderMcelScenarioMatrix();
+      renderMcelEvidencePacket();
+      renderMcelAcidTests();
+      renderMcelSupervisorReport();
+      renderMcelKernelAudit();
+      renderMcelTraceabilityMap();
+      renderMcelPriorArtReport();
+      renderMcelReadiness();
       renderMcelProjectReport();
       renderMcelCompilerLog();
       syncMcelTraitControls();
@@ -224,6 +277,7 @@
       renderMcelDebugger();
       renderMcelCssLawReport();
       renderMcelGraphReport();
+      renderMcelReadiness();
       renderMcelCompilerLog();
       markSelectedMcelRuntimeElement();
     }
@@ -238,6 +292,7 @@
       renderMcelDebugger();
       renderMcelCssLawReport();
       renderMcelGraphReport();
+      renderMcelReadiness();
       renderMcelCompilerLog();
       markSelectedMcelRuntimeElement();
     }
@@ -250,6 +305,10 @@
       mcelLabState.lastTestReport = null;
       mcelLabState.lastGraphReport = null;
       mcelLabState.lastAuditReport = null;
+      mcelLabState.lastMatrixReport = null;
+      mcelLabState.lastEvidencePacket = null;
+      mcelLabState.lastReadinessReport = null;
+      mcelLabState.lastSupervisorReport = null;
       mcelLabState.lastCommandPlan = null;
       mcelLabState.theme = "theme-machine";
       if (mcelThemeSelect) mcelThemeSelect.value = "theme-machine";
@@ -259,6 +318,12 @@
       renderMcelContractTests();
       renderMcelGraphReport();
       renderMcelAuditReport();
+      renderMcelScenarioMatrix();
+      renderMcelEvidencePacket();
+      renderMcelAcidTests();
+      renderMcelSupervisorReport();
+      renderMcelReadiness();
+      scheduleMcelAutopilotProof("reset-autopilot");
     }
 
     function runMcelContractTests() {
@@ -276,6 +341,7 @@
         }
       ].slice(-64);
       renderMcelContractTests();
+      renderMcelReadiness();
       renderMcelCompilerLog();
     }
 
@@ -297,7 +363,214 @@
       ].slice(-64);
       renderMcelGraphReport();
       renderMcelAuditReport();
+      renderMcelReadiness();
       renderMcelCompilerLog();
+    }
+
+    function runMcelKernelAudit(reason = "manual-kernel-audit") {
+      if (typeof McelLabKernel === "undefined" || !mcelSourceHtml) return null;
+      const report = McelLabKernel.runKernelAudit({
+        source: currentMcelSource(),
+        runtimeRoot: mcelRuntimePreview,
+        theme: mcelLabState.theme,
+        testReport: mcelLabState.lastTestReport,
+        matrixReport: mcelLabState.lastMatrixReport,
+        acidReport: mcelLabState.lastAcidReport,
+        kernelReport: mcelLabState.lastKernelAudit,
+        reason
+      });
+      mcelLabState.lastKernelAudit = report;
+      mcelLabState.lastTraceabilityMap = report.traceability;
+      mcelLabState.compileEvents = [
+        ...mcelLabState.compileEvents,
+        {
+          level: report.status === "ready" ? "success" : "warning",
+          module: "kernel",
+          code: report.status === "ready" ? "MCEL_KERNEL_AUDIT_READY" : "MCEL_KERNEL_AUDIT_BLOCKED",
+          message: `Kernel audit ${report.status}: ${report.passCount}/${report.total} debt gates at score ${report.score}.`
+        }
+      ].slice(-64);
+      renderMcelKernelAudit();
+      renderMcelTraceabilityMap();
+      renderMcelPriorArtReport();
+      renderMcelReadiness();
+      renderMcelCompilerLog();
+      return report;
+    }
+
+    function buildMcelTraceabilityMap(reason = "manual-traceability") {
+      if (typeof McelLabKernel === "undefined") return null;
+      const map = McelLabKernel.buildTraceabilityMap({reason});
+      mcelLabState.lastTraceabilityMap = map;
+      mcelLabState.compileEvents = [
+        ...mcelLabState.compileEvents,
+        {
+          level: map.status === "covered" ? "success" : "warning",
+          module: "kernel",
+          code: map.status === "covered" ? "MCEL_TRACEABILITY_COVERED" : "MCEL_TRACEABILITY_BLOCKED",
+          message: `Traceability map ${map.status}: ${map.covered}/${map.total} requirement(s) covered.`
+        }
+      ].slice(-64);
+      renderMcelTraceabilityMap();
+      renderMcelPriorArtReport();
+      renderMcelCompilerLog();
+      return map;
+    }
+
+    function runMcelScenarioMatrix() {
+      if (typeof McelLabOpsRunner === "undefined") return;
+      const report = McelLabOpsRunner.runScenarioMatrix();
+      mcelLabState.lastMatrixReport = report;
+      mcelLabState.compileEvents = [
+        ...mcelLabState.compileEvents,
+        {
+          level: report.failed ? "warning" : "success",
+          module: "matrix",
+          code: report.failed ? "MCEL_SCENARIO_MATRIX_FAILED" : "MCEL_SCENARIO_MATRIX_PASSED",
+          message: `${report.passed} passed / ${report.failed} failed across ${report.caseCount} scenario-theme case(s).`
+        }
+      ].slice(-64);
+      renderMcelScenarioMatrix();
+      renderMcelReadiness();
+      renderMcelCompilerLog();
+    }
+
+    function runSelectedMcelAcidTest(reason = "manual-selected-acid-test") {
+      if (typeof McelLabAcidTests === "undefined") return null;
+      const selectedCaseId = mcelAcidSelect?.value || McelLabAcidTests.listCases()[0]?.id;
+      const report = McelLabAcidTests.runOne(selectedCaseId, {
+        source: currentMcelSource(),
+        theme: mcelLabState.theme,
+        matrixReport: mcelLabState.lastMatrixReport,
+        kernelReport: mcelLabState.lastKernelAudit,
+        reason
+      });
+      mcelLabState.lastAcidReport = report;
+      mcelLabState.compileEvents = [
+        ...mcelLabState.compileEvents,
+        {
+          level: report.failed ? "warning" : "success",
+          module: "acid-tests",
+          code: report.failed ? "MCEL_SELECTED_ACID_TEST_FAILED" : "MCEL_SELECTED_ACID_TEST_PASSED",
+          message: `${report.passed} passed / ${report.failed} failed for selected acid test: ${report.tests[0]?.name || selectedCaseId}.`
+        }
+      ].slice(-64);
+      renderMcelAcidTests();
+      renderMcelReadiness();
+      renderMcelCompilerLog();
+      return report;
+    }
+
+    function runMcelAcidTests(reason = "manual-acid-suite") {
+      if (typeof McelLabAcidTests === "undefined") return null;
+      const report = McelLabAcidTests.runAll({
+        source: currentMcelSource(),
+        theme: mcelLabState.theme,
+        matrixReport: mcelLabState.lastMatrixReport,
+        kernelReport: mcelLabState.lastKernelAudit,
+        reason,
+        explicitSuite: true
+      });
+      mcelLabState.lastAcidReport = report;
+      mcelLabState.compileEvents = [
+        ...mcelLabState.compileEvents,
+        {
+          level: report.failed ? "warning" : "success",
+          module: "acid-tests",
+          code: report.failed ? "MCEL_ACID_SUITE_FAILED" : "MCEL_ACID_SUITE_PASSED",
+          message: `${report.passed} passed / ${report.failed} failed across ${report.total} acid test(s).`
+        }
+      ].slice(-64);
+      renderMcelAcidTests();
+      renderMcelReadiness();
+      renderMcelCompilerLog();
+      return report;
+    }
+
+    function buildMcelEvidencePacket() {
+      if (typeof McelLabOpsRunner === "undefined" || !mcelSourceHtml || !mcelRuntimePreview) return;
+      const packet = McelLabOpsRunner.buildEvidencePacket({
+        source: currentMcelSource(),
+        runtimeRoot: mcelRuntimePreview,
+        theme: mcelLabState.theme,
+        serializerReport: mcelLabState.lastSerializerReport,
+        cssLawReport: mcelLabState.lastCssLawReport,
+        auditReport: mcelLabState.lastAuditReport,
+        testReport: mcelLabState.lastTestReport,
+        matrixReport: mcelLabState.lastMatrixReport,
+        acidReport: mcelLabState.lastAcidReport,
+        kernelReport: mcelLabState.lastKernelAudit
+      });
+      mcelLabState.lastEvidencePacket = packet;
+      mcelLabState.lastReadinessReport = packet.readiness;
+      mcelLabState.compileEvents = [
+        ...mcelLabState.compileEvents,
+        {
+          level: packet.readiness.status === "blocked" ? "warning" : "success",
+          module: "evidence",
+          code: "MCEL_EVIDENCE_PACKET_BUILT",
+          message: `Evidence packet built with readiness ${packet.readiness.status} at score ${packet.readiness.score}.`
+        }
+      ].slice(-64);
+      renderMcelEvidencePacket();
+      renderMcelReadiness();
+      renderMcelCompilerLog();
+    }
+
+    function applyMcelSupervisorReport(report) {
+      if (!report) return;
+      mcelLabState.lastSupervisorReport = report;
+      mcelLabState.lastSerializerReport = report.serializerReport;
+      mcelLabState.lastCssLawReport = report.cssLawReport;
+      mcelLabState.lastAuditReport = report.auditReport;
+      mcelLabState.lastGraphReport = report.graphReport;
+      mcelLabState.lastTestReport = report.testReport;
+      mcelLabState.lastMatrixReport = report.matrixReport;
+      mcelLabState.lastAcidReport = report.acidReport || mcelLabState.lastAcidReport;
+      mcelLabState.lastEvidencePacket = report.evidencePacket;
+      mcelLabState.lastKernelAudit = report.kernelReport || mcelLabState.lastKernelAudit;
+      mcelLabState.lastTraceabilityMap = report.kernelReport?.traceability || mcelLabState.lastTraceabilityMap;
+      mcelLabState.lastReadinessReport = report.readiness;
+      mcelLabState.compileEvents = [
+        ...mcelLabState.compileEvents,
+        ...(report.compileEvents || []),
+        {
+          level: report.qualityGate.status === "ready" ? "success" : "warning",
+          module: "supervisor",
+          code: report.qualityGate.status === "ready" ? "MCEL_AUTOPILOT_READY" : "MCEL_AUTOPILOT_BLOCKED",
+          message: `Autopilot proof ${report.qualityGate.status}: ${report.qualityGate.passCount}/${report.qualityGate.total} gates at score ${report.qualityGate.score}.`
+        }
+      ].slice(-64);
+    }
+
+    function runMcelAutopilotProof(reason = "manual-autopilot") {
+      if (typeof McelLabSupervisor === "undefined" || !mcelSourceHtml) return null;
+      const report = McelLabSupervisor.runFullProof({
+        source: currentMcelSource(),
+        theme: mcelLabState.theme,
+        selectedIndex: mcelLabState.selectedIndex,
+        testReport: mcelLabState.lastTestReport,
+        matrixReport: mcelLabState.lastMatrixReport,
+        acidReport: mcelLabState.lastAcidReport,
+        kernelReport: mcelLabState.lastKernelAudit,
+        runHeavyProofs: false,
+        reason
+      });
+      applyMcelSupervisorReport(report);
+      renderMcelContractTests();
+      renderMcelScenarioMatrix();
+      renderMcelEvidencePacket();
+      renderMcelAcidTests();
+      renderMcelSupervisorReport();
+      renderMcelGraphReport();
+      renderMcelAuditReport();
+      renderMcelCssLawReport();
+      renderMcelKernelAudit();
+      renderMcelTraceabilityMap();
+      renderMcelPriorArtReport();
+      renderMcelReadiness();
+      renderMcelCompilerLog();
+      return report;
     }
 
     function changeMcelTheme(reason = "theme") {
@@ -372,8 +645,15 @@
       if (applied.actions.includes("damage")) damageMcelRuntime();
       if (applied.actions.includes("repair")) repairMcelRuntime("semantic-command");
       if (applied.actions.includes("test")) runMcelContractTests();
+      if (applied.actions.includes("matrix")) runMcelScenarioMatrix();
+      if (applied.actions.includes("acid")) runSelectedMcelAcidTest("semantic-command-selected-acid");
       if (applied.actions.includes("graph")) renderMcelGraphReport();
       if (applied.actions.includes("audit")) runMcelOperationalAudit();
+      if (applied.actions.includes("evidence")) buildMcelEvidencePacket();
+      if (applied.actions.includes("autopilot")) runMcelAutopilotProof("semantic-command");
+      if (applied.actions.includes("kernel")) runMcelKernelAudit("semantic-command");
+      if (applied.actions.includes("traceability")) buildMcelTraceabilityMap("semantic-command");
+      if (applied.actions.includes("prior-art")) renderMcelPriorArtReport();
       if (applied.actions.includes("explain")) setMcelLabMode("runtime");
 
       renderMcelCommandReport();
@@ -529,6 +809,15 @@
         button.classList.toggle("active", button.dataset.mcelMode === mcelLabState.currentMode);
       });
       if (mcelLabApp) mcelLabApp.dataset.mcelMode = mcelLabState.currentMode;
+      if (["diff", "stress", "a11y"].includes(mcelLabState.currentMode)) {
+        openMcelDiagnosticsDrawer(`mode:${mcelLabState.currentMode}`);
+      }
+    }
+
+    function openMcelDiagnosticsDrawer(reason = "diagnostic-request") {
+      if (!mcelDiagnosticsDrawer || mcelDiagnosticsDrawer.open) return;
+      mcelDiagnosticsDrawer.open = true;
+      recordMcelEvent("editor", "MCEL_DIAGNOSTICS_OPENED", `Diagnostics drawer opened by ${reason}.`);
     }
 
     function renderMcelRuntimeDom() {
@@ -569,6 +858,91 @@
       mcelAuditReport.textContent = mcelLabState.lastAuditReport
         ? JSON.stringify(mcelLabState.lastAuditReport, null, 2)
         : "Operational audit has not run yet.";
+    }
+
+    function currentMcelReadinessInputs() {
+      return {
+        serializerReport: mcelLabState.lastSerializerReport,
+        cssLawReport: mcelLabState.lastCssLawReport,
+        a11yReport: mcelRuntimePreview ? McelLabEngine.computeA11y(mcelRuntimePreview) : null,
+        auditReport: mcelLabState.lastAuditReport,
+        testReport: mcelLabState.lastTestReport,
+        matrixReport: mcelLabState.lastMatrixReport,
+        acidReport: mcelLabState.lastAcidReport,
+        kernelReport: mcelLabState.lastKernelAudit
+      };
+    }
+
+    function renderMcelScenarioMatrix() {
+      if (!mcelMatrixReport) return;
+      mcelMatrixReport.textContent = typeof McelLabOpsRunner !== "undefined"
+        ? McelLabOpsRunner.summarizeMatrix(mcelLabState.lastMatrixReport)
+        : "Scenario matrix runner is unavailable.";
+    }
+
+    function renderMcelAcidTests() {
+      if (!mcelAcidReport) return;
+      if (!mcelLabState.lastAcidReport) {
+        mcelAcidReport.textContent = "Acid tests have not run yet.";
+        return;
+      }
+      mcelAcidReport.textContent = McelLabAcidTests.compactText(mcelLabState.lastAcidReport);
+    }
+
+    function renderMcelEvidencePacket() {
+      if (!mcelEvidenceReport) return;
+      mcelEvidenceReport.textContent = typeof McelLabOpsRunner !== "undefined"
+        ? McelLabOpsRunner.compactEvidenceText(mcelLabState.lastEvidencePacket)
+        : "Evidence packet builder is unavailable.";
+    }
+
+    function renderMcelSupervisorReport() {
+      if (!mcelSupervisorReport) return;
+      mcelSupervisorReport.textContent = typeof McelLabSupervisor !== "undefined"
+        ? McelLabSupervisor.compactText(mcelLabState.lastSupervisorReport)
+        : "Autopilot supervisor is unavailable.";
+    }
+
+    function renderMcelKernelAudit() {
+      if (!mcelKernelReport) return;
+      mcelKernelReport.textContent = typeof McelLabKernel !== "undefined"
+        ? McelLabKernel.compactAuditText(mcelLabState.lastKernelAudit)
+        : "Kernel audit is unavailable.";
+    }
+
+    function renderMcelTraceabilityMap() {
+      if (!mcelTraceabilityReport) return;
+      mcelTraceabilityReport.textContent = typeof McelLabKernel !== "undefined"
+        ? McelLabKernel.compactTraceabilityText(mcelLabState.lastTraceabilityMap)
+        : "Traceability map is unavailable.";
+    }
+
+    function renderMcelPriorArtReport() {
+      if (!mcelPriorArtReport) return;
+      mcelPriorArtReport.textContent = typeof McelLabKernel !== "undefined"
+        ? McelLabKernel.priorArtText()
+        : "Prior art map is unavailable.";
+    }
+
+    function renderMcelReadiness() {
+      if (typeof McelLabOpsRunner === "undefined") return;
+      const readiness = McelLabOpsRunner.buildReadiness(currentMcelReadinessInputs());
+      mcelLabState.lastReadinessReport = readiness;
+      if (mcelReadinessScore) {
+        mcelReadinessScore.textContent = `Operational readiness: ${readiness.status} · ${readiness.passCount}/${readiness.total} checks · score ${readiness.score}`;
+      }
+      if (!mcelReadinessCards) return;
+      mcelReadinessCards.innerHTML = "";
+      readiness.cards.forEach((card) => {
+        const item = document.createElement("article");
+        item.dataset.status = card.status;
+        const title = document.createElement("strong");
+        title.textContent = card.label;
+        const detail = document.createElement("span");
+        detail.textContent = card.detail;
+        item.append(title, detail);
+        mcelReadinessCards.appendChild(item);
+      });
     }
 
     function renderMcelCommandReport() {

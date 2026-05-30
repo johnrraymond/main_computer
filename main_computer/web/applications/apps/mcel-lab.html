@@ -23,13 +23,7 @@
     <div class="mcel-lab-actions" role="group" aria-label="MCEL Lab primary actions">
       <button type="button" id="mcel-lab-compile">Compile</button>
       <button type="button" id="mcel-lab-serialize">Serialize</button>
-      <button type="button" id="mcel-lab-damage">Damage Runtime</button>
       <button type="button" id="mcel-lab-repair">Repair</button>
-      <button type="button" id="mcel-lab-run-tests">Run Full Contract Suite</button>
-      <button type="button" id="mcel-lab-audit">Run Operational Audit</button>
-      <button type="button" id="mcel-project-save">Save Project</button>
-      <button type="button" id="mcel-project-restore">Restore Project</button>
-      <button type="button" id="mcel-project-export">Export Snapshot</button>
       <button type="button" id="mcel-lab-reset">Reset</button>
     </div>
   </header>
@@ -52,7 +46,7 @@
     <span id="mcel-scenario-description">Scenario library is loading.</span>
   </section>
 
-  <section class="mcel-lab-operations" aria-label="MCEL Lab semantic operations">
+  <section class="mcel-lab-primary-controls" aria-label="MCEL Lab primary controls">
     <label>
       Theme
       <select id="mcel-theme-select" aria-label="MCEL theme selector">
@@ -63,17 +57,7 @@
         <option value="theme-accessibility">theme-accessibility</option>
       </select>
     </label>
-    <label class="mcel-command-label">
-      Semantic Command
-      <input
-        id="mcel-command-input"
-        aria-label="MCEL semantic command"
-        placeholder="try: set flow reverse; insert proof; theme debug; serialize"
-      >
-    </label>
-    <button type="button" id="mcel-command-plan">Plan Command</button>
-    <button type="button" id="mcel-command-apply">Apply Command</button>
-    <span id="mcel-project-status">Project state is local to this browser until saved.</span>
+    <span>Primary surface stays focused on source, semantic editor, and runtime output.</span>
   </section>
 
   <div class="mcel-lab-workbench">
@@ -160,7 +144,64 @@
     </section>
   </div>
 
-  <div class="mcel-lab-bottom">
+  <details id="mcel-diagnostics-drawer" class="mcel-lab-diagnostics" aria-label="MCEL diagnostic surfaces">
+    <summary>
+      <strong>Diagnostics &amp; Proofs</strong>
+      <span>closed by default · open only when proving/auditing the system</span>
+    </summary>
+
+    <section class="mcel-lab-diagnostics-actions" aria-label="MCEL Lab diagnostic actions">
+      <button type="button" id="mcel-lab-damage">Damage Runtime</button>
+      <button type="button" id="mcel-lab-run-tests">Run Full Contract Suite</button>
+      <button type="button" id="mcel-lab-matrix">Run Scenario Matrix</button>
+      <label class="mcel-acid-picker">
+        Acid Test
+        <select id="mcel-acid-select" aria-label="MCEL acid test selector"></select>
+      </label>
+      <button type="button" id="mcel-lab-acid">Run Selected Acid Test</button>
+      <button type="button" id="mcel-lab-acid-suite">Run Full Acid Suite</button>
+      <button type="button" id="mcel-lab-audit">Run Operational Audit</button>
+      <button type="button" id="mcel-lab-evidence">Build Evidence Packet</button>
+      <button type="button" id="mcel-lab-autopilot">Run Autopilot Proof</button>
+      <button type="button" id="mcel-lab-kernel">Run Kernel Audit</button>
+      <button type="button" id="mcel-lab-traceability">Build Traceability Map</button>
+      <button type="button" id="mcel-project-save">Save Project</button>
+      <button type="button" id="mcel-project-restore">Restore Project</button>
+      <button type="button" id="mcel-project-export">Export Snapshot</button>
+    </section>
+
+    <section class="mcel-lab-operations" aria-label="MCEL Lab semantic operations">
+      <label class="mcel-command-label">
+        Semantic Command
+        <input
+          id="mcel-command-input"
+          aria-label="MCEL semantic command"
+          placeholder="try: set flow reverse; insert proof; theme debug; matrix evidence serialize"
+        >
+      </label>
+      <button type="button" id="mcel-command-plan">Plan Command</button>
+      <button type="button" id="mcel-command-apply">Apply Command</button>
+      <span id="mcel-project-status">Project state is local to this browser until saved.</span>
+    </section>
+
+    <section class="mcel-lab-readiness" aria-label="MCEL operational readiness">
+      <div class="mcel-readiness-head">
+        <strong id="mcel-readiness-score">Operational readiness is warming.</strong>
+        <span>serializer · CSS law · a11y · audit · contract suite · scenario matrix · evidence · autopilot · kernel</span>
+      </div>
+      <div id="mcel-readiness-cards" class="mcel-readiness-cards">
+        <article data-status="pending"><strong>Serializer</strong><span>waiting for compile</span></article>
+        <article data-status="pending"><strong>CSS Law</strong><span>waiting for runtime</span></article>
+        <article data-status="pending"><strong>A11y</strong><span>waiting for report</span></article>
+        <article data-status="pending"><strong>Operational Audit</strong><span>not run</span></article>
+        <article data-status="pending"><strong>Contract Suite</strong><span>not run</span></article>
+        <article data-status="pending"><strong>Scenario Matrix</strong><span>not run</span></article>
+        <article data-status="pending"><strong>Acid Tests</strong><span>not run</span></article>
+        <article data-status="pending"><strong>Kernel</strong><span>not run</span></article>
+      </div>
+    </section>
+
+    <div class="mcel-lab-bottom">
     <section class="mcel-lab-panel" aria-label="Compiler Log">
       <h4>Compiler Log</h4>
       <ol id="mcel-compiler-log"></ol>
@@ -189,6 +230,34 @@
       <h4>Operational Audit</h4>
       <pre id="mcel-audit-report">Operational audit has not run yet.</pre>
     </section>
+    <section class="mcel-lab-panel" aria-label="Scenario Matrix">
+      <h4>Scenario Matrix</h4>
+      <pre id="mcel-matrix-report">Scenario matrix has not run yet.</pre>
+    </section>
+    <section class="mcel-lab-panel" aria-label="Evidence Packet">
+      <h4>Evidence Packet</h4>
+      <pre id="mcel-evidence-report">Evidence packet has not been built yet.</pre>
+    </section>
+    <section class="mcel-lab-panel mcel-lab-panel-wide" aria-label="Acid Tests">
+      <h4>Acid Tests</h4>
+      <pre id="mcel-acid-report">Acid tests are manual-only. Select one test and run it from this drawer.</pre>
+    </section>
+    <section class="mcel-lab-panel" aria-label="Autopilot Proof">
+      <h4>Autopilot Proof</h4>
+      <pre id="mcel-supervisor-report">Autopilot proof has not run yet.</pre>
+    </section>
+    <section class="mcel-lab-panel" aria-label="Kernel Audit">
+      <h4>Kernel Audit</h4>
+      <pre id="mcel-kernel-report">Kernel audit has not run yet.</pre>
+    </section>
+    <section class="mcel-lab-panel" aria-label="Traceability Map">
+      <h4>Traceability Map</h4>
+      <pre id="mcel-traceability-report">Traceability map has not been built yet.</pre>
+    </section>
+    <section class="mcel-lab-panel" aria-label="Prior Art">
+      <h4>Prior Art</h4>
+      <pre id="mcel-prior-art-report">Prior art map has not been built yet.</pre>
+    </section>
     <section class="mcel-lab-panel" aria-label="Command Surface">
       <h4>Command Surface</h4>
       <pre id="mcel-command-report">No semantic command has been planned yet.</pre>
@@ -201,5 +270,7 @@
       <h4>Contract Tests</h4>
       <pre id="mcel-test-report">Contract tests have not run yet.</pre>
     </section>
-  </div>
+    </div>
+
+  </details>
 </section>

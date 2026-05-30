@@ -1,4 +1,4 @@
-    const McelLabStyleLaw = (() => {
+    var McelLabStyleLaw = (() => {
       const contract = typeof McelLabContract !== "undefined" ? McelLabContract : window.McelLabContract;
       const {attributes, defaults, themes: contractThemes} = contract;
 

@@ -1,4 +1,4 @@
-    const McelLabEngine = (() => {
+    var McelLabEngine = (() => {
       const contract = typeof McelLabContract !== "undefined" ? McelLabContract : window.McelLabContract;
       const {attributes, defaults, runtimeOwnedAttributes, runtimeOwnedClasses, schema, contractVersion} = contract;
 

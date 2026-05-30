@@ -1,4 +1,4 @@
-    const McelLabGraph = (() => {
+    var McelLabGraph = (() => {
       const contract = typeof McelLabContract !== "undefined" ? McelLabContract : window.McelLabContract;
       const engine = typeof McelLabEngine !== "undefined" ? McelLabEngine : window.McelLabEngine;
       const editor = typeof McelLabEditor !== "undefined" ? McelLabEditor : window.McelLabEditor;

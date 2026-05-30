@@ -1,4 +1,4 @@
-    const McelLabTestHarness = (() => {
+    var McelLabTestHarness = (() => {
       const contract = typeof McelLabContract !== "undefined" ? McelLabContract : window.McelLabContract;
       const engine = typeof McelLabEngine !== "undefined" ? McelLabEngine : window.McelLabEngine;
       const editor = typeof McelLabEditor !== "undefined" ? McelLabEditor : window.McelLabEditor;
@@ -7,6 +7,14 @@
       const commandSurface = typeof McelLabCommandSurface !== "undefined" ? McelLabCommandSurface : window.McelLabCommandSurface;
       const projectStore = typeof McelLabProjectStore !== "undefined" ? McelLabProjectStore : window.McelLabProjectStore;
       const graph = typeof McelLabGraph !== "undefined" ? McelLabGraph : window.McelLabGraph;
+      const opsRunner = typeof McelLabOpsRunner !== "undefined" ? McelLabOpsRunner : window.McelLabOpsRunner;
+      function kernel() {
+        return window.McelLabKernel || null;
+      }
+
+      function acidTests() {
+        return window.McelLabAcidTests || null;
+      }
       const {attributes} = contract;
 
       function runtimeRoot(html) {
@@ -168,6 +176,77 @@
             snapshot.note.includes("never generated runtime DOM"),
           `version=${snapshot.version}, theme=${snapshot.theme}`,
           "project"
+        );
+
+
+
+        const matrix = opsRunner.runScenarioMatrix({
+          scenarios: [scenarios.byId("round-trip"), scenarios.byId("relation")],
+          themes: ["theme-machine", "theme-debug"]
+        });
+        record(
+          results,
+          "scenario-theme matrix proves cross-mode coverage",
+          matrix.failed === 0 &&
+            matrix.caseCount === 4 &&
+            matrix.warnings.length === 0,
+          `${matrix.passed}/${matrix.caseCount} scenario-theme case(s)`,
+          "ops-runner"
+        );
+
+        const acid = acidTests()?.runAll?.({
+          source: contract.defaultSource,
+          theme: "theme-machine",
+          matrixReport: matrix,
+          reason: "harness-acid-tests"
+        });
+        record(
+          results,
+          "acid tests survive hostile runtime/editor/serializer pressure",
+          Boolean(acid) &&
+            acid.failed === 0 &&
+            acid.total >= 10,
+          acid ? `${acid.passed}/${acid.total} acid test(s)` : "acid module unavailable",
+          "acid"
+        );
+
+        const evidence = opsRunner.buildEvidencePacket({
+          source: contract.defaultSource,
+          theme: "theme-machine",
+          matrixReport: matrix,
+          acidReport: acid,
+          testReport: {passed: results.filter((result) => result.passed).length, failed: 0}
+        });
+        record(
+          results,
+          "evidence packet summarizes operational readiness",
+          evidence.kind === "mcel-operational-evidence-packet" &&
+            evidence.hashes.source.startsWith("fnv1a-") &&
+            evidence.scenarioMatrix.caseCount === matrix.caseCount &&
+            evidence.readiness.cards.length >= 6,
+          `status=${evidence.readiness.status}, score=${evidence.readiness.score}`,
+          "ops-runner"
+        );
+
+        const kernelModule = kernel();
+        const kernelAudit = kernelModule?.runKernelAudit?.({
+          source: contract.defaultSource,
+          theme: "theme-machine",
+          matrixReport: matrix,
+          acidReport: acid,
+          testReport: {passed: results.filter((result) => result.passed).length, failed: 0},
+          reason: "harness-kernel-audit"
+        });
+        const traceability = kernelModule?.buildTraceabilityMap?.({reason: "harness-traceability"});
+        record(
+          results,
+          "kernel audit maps modules, requirements, prior art, and debt gates",
+          Boolean(kernelAudit) &&
+            kernelAudit.status === "ready" &&
+            traceability.status === "covered" &&
+            traceability.priorArt.length >= 8,
+          kernelAudit ? `${kernelAudit.passCount}/${kernelAudit.total} debt gate(s), traceability=${traceability.covered}/${traceability.total}` : "kernel unavailable",
+          "kernel"
         );
 
         const passed = results.filter((result) => result.passed).length;

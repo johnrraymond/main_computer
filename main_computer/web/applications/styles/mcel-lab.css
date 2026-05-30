@@ -40,6 +40,8 @@
 }
 
 .mcel-lab-actions button,
+.mcel-lab-diagnostics-actions button,
+.mcel-acid-picker select,
 .mcel-lab-modes button,
 .mcel-lab-blocks button,
 #mcel-apply-traits {
@@ -89,6 +91,16 @@
   grid-template-rows: auto minmax(0, 1fr);
 }
 
+
+.mcel-lab-runtime-pane {
+  grid-template-rows: auto minmax(180px, 0.85fr) minmax(180px, 1fr);
+}
+
+.mcel-lab-source-pane textarea,
+.mcel-lab-runtime-pane pre {
+  max-height: min(52vh, 620px);
+}
+
 .mcel-lab-pane-head {
   display: flex;
   justify-content: space-between;
@@ -117,7 +129,10 @@
 #mcel-a11y-report,
 #mcel-test-report,
 #mcel-graph-report,
-#mcel-audit-report {
+#mcel-audit-report,
+#mcel-kernel-report,
+#mcel-traceability-report,
+#mcel-prior-art-report {
   width: 100%;
   min-width: 0;
   min-height: 0;
@@ -325,6 +340,71 @@
   outline-offset: 2px;
 }
 
+.mcel-lab-diagnostics {
+  border: 1px solid rgba(115, 214, 255, 0.18);
+  border-radius: 10px;
+  background:
+    linear-gradient(90deg, rgba(115, 214, 255, 0.05), transparent 45%),
+    #050706;
+}
+
+.mcel-lab-diagnostics > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+  color: var(--muted);
+  font-weight: 900;
+  list-style-position: inside;
+}
+
+.mcel-lab-diagnostics > summary strong {
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mcel-lab-diagnostics > summary span {
+  font-size: 12px;
+}
+
+.mcel-lab-diagnostics[open] > summary {
+  border-bottom: 1px solid rgba(246, 199, 91, 0.18);
+}
+
+.mcel-lab-diagnostics-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid rgba(246, 199, 91, 0.12);
+}
+
+
+
+.mcel-acid-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 8px;
+  border: 1px solid rgba(246, 199, 91, 0.22);
+  border-radius: 999px;
+  color: var(--muted);
+  background: #050603;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.mcel-acid-picker select {
+  min-width: 260px;
+  border-radius: 999px;
+  background: #080907;
+  color: var(--text);
+}
+
 .mcel-lab-bottom {
   min-height: 220px;
   display: grid;
@@ -421,6 +501,43 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
   line-height: 1.35;
 }
 
+
+.mcel-lab-primary-controls {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) minmax(240px, 1fr);
+  gap: 8px;
+  align-items: end;
+  padding: 8px;
+  border: 1px solid rgba(115, 214, 255, 0.16);
+  border-radius: 10px;
+  background: #050706;
+}
+
+.mcel-lab-primary-controls label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.mcel-lab-primary-controls select {
+  min-width: 0;
+  border: 1px solid rgba(246, 199, 91, 0.24);
+  border-radius: 6px;
+  background: #030403;
+  color: var(--ink);
+  padding: 7px;
+}
+
+.mcel-lab-primary-controls span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
 .mcel-lab-selection {
   padding: 8px 10px;
   border: 1px solid rgba(174, 224, 111, 0.26);
@@ -441,7 +558,10 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
 
 #mcel-test-report,
 #mcel-graph-report,
-#mcel-audit-report {
+#mcel-audit-report,
+#mcel-kernel-report,
+#mcel-traceability-report,
+#mcel-prior-art-report {
   line-height: 1.5;
 }
 
@@ -450,7 +570,8 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
 }
 
 @media (max-width: 980px) {
-  .mcel-lab-scenarios {
+  .mcel-lab-scenarios,
+  .mcel-lab-primary-controls {
     grid-template-columns: 1fr;
   }
 }
@@ -458,10 +579,10 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
 
 .mcel-lab-operations {
   display: grid;
-  grid-template-columns: minmax(160px, 220px) minmax(280px, 1fr) auto auto minmax(260px, 0.75fr);
+  grid-template-columns: minmax(280px, 1fr) auto auto minmax(260px, 0.75fr);
   gap: 8px;
   align-items: end;
-  padding: 9px;
+  padding: 10px;
   border: 1px solid rgba(115, 214, 255, 0.2);
   border-radius: 10px;
   background:
@@ -585,7 +706,10 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
 #mcel-command-report,
 #mcel-project-report,
 #mcel-graph-report,
-#mcel-audit-report {
+#mcel-audit-report,
+#mcel-kernel-report,
+#mcel-traceability-report,
+#mcel-prior-art-report {
   line-height: 1.45;
 }
 
@@ -611,4 +735,147 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
 
 .mcel-lab-panel[aria-label="Semantic Graph"] {
   border-color: rgba(115, 214, 255, 0.24);
+}
+
+
+.mcel-lab-readiness {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid rgba(174, 224, 111, 0.2);
+  border-radius: 10px;
+  background:
+    linear-gradient(90deg, rgba(174, 224, 111, 0.08), transparent 42%),
+    #050706;
+}
+
+.mcel-readiness-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mcel-readiness-head strong {
+  color: var(--mint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mcel-readiness-head span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.mcel-readiness-cards {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(110px, 1fr));
+  gap: 8px;
+}
+
+.mcel-readiness-cards article {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  padding: 9px;
+  border: 1px solid rgba(246, 199, 91, 0.18);
+  border-radius: 9px;
+  background: #090b08;
+}
+
+.mcel-readiness-cards article[data-status="pass"] {
+  border-color: rgba(174, 224, 111, 0.52);
+  background: rgba(174, 224, 111, 0.08);
+}
+
+.mcel-readiness-cards article[data-status="fail"] {
+  border-color: rgba(255, 111, 111, 0.55);
+  background: rgba(255, 111, 111, 0.08);
+}
+
+.mcel-readiness-cards article[data-status="pending"] {
+  border-color: rgba(115, 214, 255, 0.22);
+}
+
+.mcel-readiness-cards strong {
+  color: var(--gold);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.mcel-readiness-cards span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+#mcel-matrix-report,
+#mcel-evidence-report,
+#mcel-acid-report,
+#mcel-kernel-report,
+#mcel-traceability-report,
+#mcel-prior-art-report {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 12px;
+  border: 0;
+  border-radius: 0;
+  background: #030403;
+  color: #f7f3e8;
+  font: 12px/1.45 Consolas, "SFMono-Regular", Menlo, monospace;
+  white-space: pre-wrap;
+  overflow: auto;
+}
+
+.mcel-lab-panel[aria-label="Scenario Matrix"],
+.mcel-lab-panel[aria-label="Evidence Packet"],
+.mcel-lab-panel[aria-label="Acid Tests"] {
+  min-height: 220px;
+  border-color: rgba(174, 224, 111, 0.22);
+}
+
+@media (max-width: 1180px) {
+  .mcel-readiness-cards {
+    grid-template-columns: repeat(3, minmax(110px, 1fr));
+  }
+}
+
+@media (max-width: 680px) {
+  .mcel-readiness-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .mcel-readiness-cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+#mcel-supervisor-report {
+  min-width: 28ch;
+}
+
+.mcel-lab-panel[aria-label="Autopilot Proof"] {
+  border-color: rgba(176, 226, 105, 0.45);
+}
+
+.mcel-lab-panel[aria-label="Kernel Audit"],
+.mcel-lab-panel[aria-label="Traceability Map"],
+.mcel-lab-panel[aria-label="Prior Art"] {
+  min-height: 220px;
+  border-color: rgba(115, 214, 255, 0.32);
+}
+
+
+.mcel-lab-panel[aria-label="Acid Tests"] {
+  border-color: rgba(255, 111, 111, 0.36);
+}
+
+#mcel-acid-report {
+  min-width: 42ch;
 }
