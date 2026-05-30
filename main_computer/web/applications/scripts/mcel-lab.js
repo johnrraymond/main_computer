@@ -1158,15 +1158,44 @@
       return mcelChromeGeometryFailureCount(report) + mcelChromeCompositionWarningCount(report);
     }
 
+    function mcelChromeCompositionScopeSelector() {
+      return [
+        ".mcel-chrome-editorial-rail",
+        ".mcel-chrome-cluster-grid",
+        ".mcel-chrome-spotlight-primary",
+        ".mcel-chrome-spotlight-support",
+        ".mcel-chrome-journey-step",
+        ".mcel-chrome-compact-panel"
+      ].join(", ");
+    }
+
+    function mcelSafeAttributeValue(value) {
+      return String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    }
+
     function findMcelCompositionRemedyTarget(doc, warning = {}) {
       const sourceIndex = String(warning.sourceIndex || "");
+      const scope = mcelChromeCompositionScopeSelector();
       if (sourceIndex) {
-        const candidates = [...(doc?.querySelectorAll?.(".mcel-chrome-editorial-rail [data-mc-source-index]") || [])]
-          .filter((element) => element.getAttribute("data-mc-source-index") === sourceIndex);
+        const selector = `${scope} [data-mc-source-index="${mcelSafeAttributeValue(sourceIndex)}"]`;
+        const candidates = [...(doc?.querySelectorAll?.(selector) || [])];
         const direct = candidates.find((element) => element.matches?.(".mc, [data-mc]"));
         if (direct) return direct;
+        const nested = candidates.map((element) => element.closest?.(".mc, [data-mc]")).find(Boolean);
+        if (nested) return nested;
         if (candidates.length) return candidates[0];
       }
+
+      const chromePart = String(warning.chromePart || "");
+      if (chromePart) {
+        const selector = `[data-mcel-chrome-part="${mcelSafeAttributeValue(chromePart)}"]`;
+        const generatedTargets = [...(doc?.querySelectorAll?.(selector) || [])];
+        const withSourceChild = generatedTargets
+          .map((element) => element.querySelector?.(".mc, [data-mc]") || element)
+          .find((element) => element?.matches?.(".mc, [data-mc], [data-mcel-chrome-generated=\"true\"]"));
+        if (withSourceChild) return withSourceChild;
+      }
+
       return null;
     }
 
@@ -2387,6 +2416,123 @@
           min-inline-size: 0;
           max-inline-size: 100%;
           box-sizing: border-box;
+        }
+
+        body[data-mcel-chrome="chrome-cluster-grid"] [data-mcel-fit-policy="contain"] > *,
+        body[data-mcel-chrome="chrome-spotlight"] [data-mcel-fit-policy="contain"] > *,
+        body[data-mcel-chrome="chrome-journey"] [data-mcel-fit-policy="contain"] > *,
+        body[data-mcel-chrome="chrome-compact-disclosure"] [data-mcel-fit-policy="contain"] > * {
+          min-inline-size: 0;
+          max-inline-size: 100%;
+          box-sizing: border-box;
+        }
+        body[data-mcel-chrome="chrome-cluster-grid"] [data-mcel-fit-policy="contain"] :is(img,svg,canvas,video,iframe,table,pre,code,input,textarea,select,button),
+        body[data-mcel-chrome="chrome-spotlight"] [data-mcel-fit-policy="contain"] :is(img,svg,canvas,video,iframe,table,pre,code,input,textarea,select,button),
+        body[data-mcel-chrome="chrome-journey"] [data-mcel-fit-policy="contain"] :is(img,svg,canvas,video,iframe,table,pre,code,input,textarea,select,button),
+        body[data-mcel-chrome="chrome-compact-disclosure"] [data-mcel-fit-policy="contain"] :is(img,svg,canvas,video,iframe,table,pre,code,input,textarea,select,button) {
+          max-inline-size: 100%;
+        }
+
+        body:not([data-mcel-chrome="chrome-strict-hierarchy"]) [data-mcel-composition-remedy~="control-balance"] :is(input,textarea,select,button) {
+          inline-size: 100%;
+          max-inline-size: 100%;
+          min-inline-size: 0;
+          box-sizing: border-box;
+        }
+        body:not([data-mcel-chrome="chrome-strict-hierarchy"]) [data-mcel-composition-remedy~="control-balance"] button {
+          justify-self: stretch;
+          width: 100%;
+          white-space: normal;
+        }
+        body:not([data-mcel-chrome="chrome-strict-hierarchy"]) :is(form[data-mcel-composition-remedy~="control-balance"], [data-mcel-composition-remedy~="control-balance"] form) {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr);
+          align-items: stretch;
+        }
+
+        body:not([data-mcel-chrome="chrome-strict-hierarchy"]) [data-mcel-composition-remedy~="shape-inset-content"] {
+          container-type: inline-size;
+        }
+        body:not([data-mcel-chrome="chrome-strict-hierarchy"]) [data-mcel-composition-remedy~="shape-inset-content"] :is(h1,h2,h3,p,label,input,textarea,select,button,a[data-mc-action]) {
+          max-inline-size: calc(100% - clamp(32px, 18cqi, 96px));
+          justify-self: center;
+          box-sizing: border-box;
+        }
+        body:not([data-mcel-chrome="chrome-strict-hierarchy"]) [data-mcel-composition-remedy~="shape-inset-content"] :is(input,textarea,select,button,a[data-mc-action]) {
+          inline-size: calc(100% - clamp(32px, 18cqi, 96px));
+          width: calc(100% - clamp(32px, 18cqi, 96px));
+          min-inline-size: 0;
+        }
+
+        @supports not (width: 1cqi) {
+          body:not([data-mcel-chrome="chrome-strict-hierarchy"]) [data-mcel-composition-remedy~="shape-inset-content"] :is(h1,h2,h3,p,label,input,textarea,select,button,a[data-mc-action]) {
+            max-inline-size: calc(100% - clamp(32px, 12vw, 96px));
+          }
+          body:not([data-mcel-chrome="chrome-strict-hierarchy"]) [data-mcel-composition-remedy~="shape-inset-content"] :is(input,textarea,select,button,a[data-mc-action]) {
+            inline-size: calc(100% - clamp(32px, 12vw, 96px));
+            width: calc(100% - clamp(32px, 12vw, 96px));
+          }
+        }
+
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-cluster-grid"] [data-mcel-fit-policy="contain"],
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-spotlight"] [data-mcel-fit-policy="contain"],
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-journey"] [data-mcel-fit-policy="contain"],
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-compact-disclosure"] [data-mcel-fit-policy="contain"] {
+          container-type: inline-size;
+          overflow-wrap: anywhere;
+        }
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-cluster-grid"] :is(h1,h2),
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support :is(h1,h2),
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-journey"] :is(h1,h2),
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-compact-disclosure"] :is(h1,h2) {
+          max-inline-size: 100%;
+          font-size: clamp(1.35rem, 8cqi, 3rem);
+          line-height: 1;
+          letter-spacing: -0.045em;
+          text-wrap: balance;
+        }
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-cluster-grid"] :is(form.mc, .mc[data-mc="command-row"], .mc[data-mc-component="TrustCluster"]),
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support :is(form.mc, .mc[data-mc="command-row"], .mc[data-mc-component="TrustCluster"]),
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-journey"] :is(form.mc, .mc[data-mc="command-row"], .mc[data-mc-component="TrustCluster"]),
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-compact-disclosure"] :is(form.mc, .mc[data-mc="command-row"], .mc[data-mc-component="TrustCluster"]) {
+          grid-template-columns: minmax(0, 1fr);
+          align-items: stretch;
+        }
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-cluster-grid"] :is(label,input,button,a[data-mc-action]),
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support :is(label,input,button,a[data-mc-action]),
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-journey"] :is(label,input,button,a[data-mc-action]),
+        body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-compact-disclosure"] :is(label,input,button,a[data-mc-action]) {
+          inline-size: 100%;
+          justify-self: stretch;
+          white-space: normal;
+        }
+
+        body[data-mcel-fit-remediation~="object-grow"][data-mcel-chrome="chrome-cluster-grid"] .mcel-chrome-cluster-grid {
+          grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+        }
+        body[data-mcel-fit-remediation~="object-grow"][data-mcel-chrome="chrome-cluster-grid"] .mcel-chrome-cluster-grid > .mc,
+        body[data-mcel-fit-remediation~="object-grow"][data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mc,
+        body[data-mcel-fit-remediation~="object-grow"][data-mcel-chrome="chrome-journey"] .mcel-chrome-journey-step > .mc,
+        body[data-mcel-fit-remediation~="object-grow"][data-mcel-chrome="chrome-compact-disclosure"] .mcel-chrome-compact-panel > .mc {
+          min-block-size: max-content;
+          align-content: start;
+        }
+
+        body[data-mcel-fit-remediation~="region-reflow"][data-mcel-chrome="chrome-cluster-grid"] .mcel-chrome-cluster-grid,
+        body[data-mcel-fit-remediation~="region-reflow"][data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-shell {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        body[data-mcel-fit-remediation~="region-reflow"][data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support {
+          position: static;
+        }
+        body[data-mcel-fit-remediation~="region-reflow"][data-mcel-chrome="chrome-journey"] .mcel-chrome-journey-step {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        body[data-mcel-fit-remediation~="region-reflow"][data-mcel-chrome="chrome-journey"] .mcel-chrome-journey-step::before {
+          justify-self: start;
+        }
+        body[data-mcel-fit-remediation~="region-reflow"][data-mcel-chrome="chrome-compact-disclosure"] .mcel-chrome-compact-panel {
+          overflow: visible;
         }
 
         body[data-mcel-chrome="chrome-editorial-flow"] [data-mcel-chrome-generated="true"],
