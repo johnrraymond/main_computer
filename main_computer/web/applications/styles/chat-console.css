@@ -633,3 +633,84 @@
         max-height: 260px;
       }
     }
+
+
+    .chat-remote-worker-control-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 100000;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(0, 0, 0, 0.62);
+      backdrop-filter: blur(2px);
+    }
+    .chat-remote-worker-control-modal {
+      width: min(560px, 100%);
+      border: 1px solid var(--gold);
+      border-radius: 14px;
+      background: #070806;
+      color: var(--ink);
+      padding: 18px;
+      box-shadow: 0 22px 70px rgba(0, 0, 0, 0.58);
+    }
+    .chat-remote-worker-control-eyebrow {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+    .chat-remote-worker-control-modal h2 {
+      margin: 0 0 8px;
+      color: var(--gold);
+      font-size: 20px;
+      text-transform: uppercase;
+    }
+    .chat-remote-worker-control-modal p {
+      margin: 8px 0;
+      color: var(--ink);
+      line-height: 1.45;
+    }
+    .chat-remote-worker-control-reason {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.04);
+      padding: 10px;
+      font-weight: 800;
+    }
+    .chat-remote-worker-control-diagnostics {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      gap: 6px 10px;
+      margin: 12px 0;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      padding: 10px 0;
+    }
+    .chat-remote-worker-control-diagnostics dt {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .chat-remote-worker-control-diagnostics dd {
+      margin: 0;
+      min-width: 0;
+      overflow-wrap: anywhere;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+    .chat-remote-worker-control-notice {
+      color: var(--muted) !important;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .chat-remote-worker-control-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 14px;
+    }
