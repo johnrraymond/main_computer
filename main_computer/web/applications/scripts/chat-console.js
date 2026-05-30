@@ -31,6 +31,9 @@
       lastCellId: "",
       lastRunId: "",
       lastThreadId: "",
+      activePendingRequestId: "",
+      pendingLocalRequests: new Map(),
+      localStartLease: null,
       resolveChoice: null,
       globalWhenBusyIntent: false
     };
@@ -82,6 +85,146 @@
       saveChatConsoleState(message);
       if (options.render !== false) renderChatConsoleNotebook();
       return true;
+    }
+
+    function chatConsoleCreatePendingLocalAiRequestId(runId) {
+      const cleanRunId = String(runId || "run").replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 48) || "run";
+      return `pending_local_${cleanRunId}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    }
+
+    function chatConsoleShortRemoteWorkerId(value, limit = 14) {
+      const text = String(value || "").trim();
+      if (!text) return "not assigned";
+      if (text.length <= limit) return text;
+      return `${text.slice(0, Math.max(4, limit - 3))}…`;
+    }
+
+    function chatConsoleRegisterPendingLocalAiRequest({cell, runId, threadId, endpoint, payload}) {
+      const pendingRequestId = chatConsoleCreatePendingLocalAiRequestId(runId || cell?.run_id || cell?.id || "run");
+      const request = {
+        id: pendingRequestId,
+        cell_id: cell?.id || "",
+        run_id: runId || cell?.run_id || "",
+        thread_id: threadId || "",
+        endpoint: endpoint || "",
+        payload,
+        status: "pending",
+        created_at: chatConsoleNow(),
+        updated_at: chatConsoleNow(),
+        start_attempts: 0,
+        started_at: "",
+        completed_at: "",
+        cancelled_at: "",
+        close_reason: ""
+      };
+      chatConsoleRemoteWorkerControlState.pendingLocalRequests.set(pendingRequestId, request);
+      return request;
+    }
+
+    function chatConsolePendingLocalAiRequest(pendingRequestId = "") {
+      const id = String(pendingRequestId || chatConsoleRemoteWorkerControlState.activePendingRequestId || "").trim();
+      return id ? chatConsoleRemoteWorkerControlState.pendingLocalRequests.get(id) || null : null;
+    }
+
+    function chatConsoleUpdatePendingLocalAiRequest(pendingRequestId, updates = {}) {
+      const request = chatConsolePendingLocalAiRequest(pendingRequestId);
+      if (!request) return null;
+      Object.assign(request, updates, {updated_at: chatConsoleNow()});
+      chatConsoleRemoteWorkerControlState.pendingLocalRequests.set(request.id, request);
+      return request;
+    }
+
+    function chatConsolePendingLocalAiRequestFooterText(request) {
+      if (!request) return "Pending request: not assigned";
+      const pendingId = chatConsoleShortRemoteWorkerId(request.id, 24);
+      const runId = chatConsoleShortRemoteWorkerId(request.run_id, 20);
+      const threadId = chatConsoleShortRemoteWorkerId(request.thread_id, 18);
+      return `Pending request ${pendingId} · run ${runId} · thread ${threadId}`;
+    }
+
+    function chatConsoleUpdateRemoteWorkerPendingRequestFooter(request = null) {
+      const modal = chatConsoleRemoteWorkerControlState.modal;
+      if (!modal) return;
+      const footer = modal.querySelector("[data-chat-remote-worker-pending-request-footer]");
+      if (footer) footer.textContent = chatConsolePendingLocalAiRequestFooterText(request || chatConsolePendingLocalAiRequest());
+    }
+
+    function chatConsoleTryAcquireLocalAiStartLease(pendingRequestId, capacity = null) {
+      const request = chatConsolePendingLocalAiRequest(pendingRequestId);
+      if (!request) return {ok: false, reason: "pending_request_missing", pending_request_id: pendingRequestId || ""};
+      if (request.cancelled_at) return {ok: false, reason: "pending_request_cancelled", pending_request_id: request.id};
+      if (request.started_at || request.status === "starting" || request.status === "running") {
+        return {ok: false, reason: "pending_request_already_started", pending_request_id: request.id};
+      }
+      if (capacity && chatConsoleShouldOpenRemoteWorkerControlForCapacity(capacity)) {
+        return {ok: false, reason: "local_ai_still_busy", pending_request_id: request.id};
+      }
+      const currentLease = chatConsoleRemoteWorkerControlState.localStartLease;
+      if (currentLease && currentLease.pending_request_id !== request.id) {
+        return {
+          ok: false,
+          reason: "local_ai_start_lease_held",
+          pending_request_id: request.id,
+          held_by_pending_request_id: currentLease.pending_request_id || ""
+        };
+      }
+      const lease = {
+        ok: true,
+        pending_request_id: request.id,
+        run_id: request.run_id || "",
+        thread_id: request.thread_id || "",
+        cell_id: request.cell_id || "",
+        acquired_at: chatConsoleNow()
+      };
+      chatConsoleRemoteWorkerControlState.localStartLease = lease;
+      chatConsoleUpdatePendingLocalAiRequest(request.id, {
+        status: "starting",
+        start_attempts: Number(request.start_attempts || 0) + 1,
+        started_at: lease.acquired_at
+      });
+      return lease;
+    }
+
+    function chatConsoleReleaseLocalAiStartLease(pendingRequestId, reason = "released") {
+      const id = String(pendingRequestId || "").trim();
+      const lease = chatConsoleRemoteWorkerControlState.localStartLease;
+      if (lease && (!id || lease.pending_request_id === id)) {
+        chatConsoleRemoteWorkerControlState.localStartLease = null;
+      }
+      if (id) {
+        chatConsoleUpdatePendingLocalAiRequest(id, {
+          status: reason === "completed" ? "completed" : "released",
+          completed_at: reason === "completed" ? chatConsoleNow() : ""
+        });
+      }
+    }
+
+    function chatConsoleForgetPendingLocalAiRequest(pendingRequestId) {
+      const id = String(pendingRequestId || "").trim();
+      if (!id) return;
+      if (chatConsoleRemoteWorkerControlState.activePendingRequestId === id) chatConsoleRemoteWorkerControlState.activePendingRequestId = "";
+      chatConsoleRemoteWorkerControlState.pendingLocalRequests.delete(id);
+    }
+
+    async function chatConsoleWaitForPendingLocalAiStartLease({pendingRequestId, threadId}) {
+      const requestId = String(pendingRequestId || "").trim();
+      if (!requestId) return {ok: false, reason: "pending_request_missing", pending_request_id: ""};
+      while (chatConsolePendingLocalAiRequest(requestId)) {
+        chatConsoleSetStatus("waiting for local AI slot before acquiring pending request lease");
+        const snapshot = await chatConsoleFetchLocalAiCapacityNow(threadId);
+        chatConsoleRemoteWorkerControlState.lastCapacitySnapshot = snapshot;
+        if (chatConsoleShouldOpenRemoteWorkerControlForCapacity(snapshot)) {
+          await chatConsoleRemoteWorkerSleep(CHAT_CONSOLE_REMOTE_WORKER_CONTROL_CAPACITY_INTERVAL_MS);
+          continue;
+        }
+        const lease = chatConsoleTryAcquireLocalAiStartLease(requestId, snapshot);
+        if (lease.ok) return lease;
+        if (lease.reason === "pending_request_already_started" || lease.reason === "pending_request_cancelled") return lease;
+        const heldBy = lease.held_by_pending_request_id ? ` by ${chatConsoleShortRemoteWorkerId(lease.held_by_pending_request_id, 18)}` : "";
+        chatConsoleSetStatus(`local AI start lease is held${heldBy}; this pending request will retry`);
+        await chatConsoleRemoteWorkerSleep(CHAT_CONSOLE_REMOTE_WORKER_CONTROL_CAPACITY_INTERVAL_MS);
+      }
+      return {ok: false, reason: "pending_request_missing", pending_request_id: requestId};
     }
 
     function chatConsoleRemoteWorkerControlSummary(snapshot) {
@@ -226,15 +369,20 @@
 
     async function chatConsoleRemoteWorkerControlCapacityTick() {
       if (!chatConsoleRemoteWorkerControlState.modal || chatConsoleRemoteWorkerControlState.capacityRefreshInFlight) return;
-      const threadId = chatConsoleRemoteWorkerControlState.lastThreadId;
-      if (!threadId) return;
+      const pendingRequestId = chatConsoleRemoteWorkerControlState.activePendingRequestId;
+      const pendingRequest = chatConsolePendingLocalAiRequest(pendingRequestId);
+      const threadId = pendingRequest?.thread_id || chatConsoleRemoteWorkerControlState.lastThreadId;
+      if (!threadId || !pendingRequestId) return;
       chatConsoleRemoteWorkerControlState.capacityRefreshInFlight = true;
       try {
         const snapshot = await chatConsoleFetchLocalAiCapacityNow(threadId);
+        if (pendingRequestId !== chatConsoleRemoteWorkerControlState.activePendingRequestId) return;
         chatConsoleUpdateRemoteWorkerControlLocalCard(snapshot);
+        chatConsoleUpdateRemoteWorkerPendingRequestFooter(pendingRequest);
         if (!chatConsoleShouldOpenRemoteWorkerControlForCapacity(snapshot)) {
           chatConsoleChooseRemoteWorkerControlOption("wait_local", {
             auto: true,
+            pendingRequestId,
             reason: "local_ai_available",
             closeReason: "auto-selected Wait for Available Local Worker because local AI became available; starting the pending request locally"
           });
@@ -275,31 +423,49 @@
       return true;
     }
 
-    function chatConsoleResolveRemoteWorkerControlChoice(choice) {
-      const resolver = chatConsoleRemoteWorkerControlState.resolveChoice;
-      chatConsoleRemoteWorkerControlState.resolveChoice = null;
+    function chatConsoleResolveRemoteWorkerControlChoice(choice, pendingRequestId = "") {
+      const request = chatConsolePendingLocalAiRequest(pendingRequestId || choice?.pending_request_id || "");
+      const resolver = request?.resolveChoice || chatConsoleRemoteWorkerControlState.resolveChoice;
+      if (request) {
+        request.resolveChoice = null;
+        chatConsoleRemoteWorkerControlState.pendingLocalRequests.set(request.id, request);
+      }
+      if (!request || chatConsoleRemoteWorkerControlState.activePendingRequestId === request.id) {
+        chatConsoleRemoteWorkerControlState.resolveChoice = null;
+      }
       if (typeof resolver === "function") resolver(choice);
     }
 
     function chatConsoleChooseRemoteWorkerControlOption(mode, context = {}) {
       const now = chatConsoleNow();
-      const cellId = chatConsoleRemoteWorkerControlState.lastCellId;
+      const pendingRequestId = String(context.pendingRequestId || chatConsoleRemoteWorkerControlState.activePendingRequestId || "").trim();
+      const pendingRequest = chatConsolePendingLocalAiRequest(pendingRequestId);
+      if (!pendingRequest) return null;
+      const cellId = pendingRequest.cell_id || chatConsoleRemoteWorkerControlState.lastCellId;
       const choice = {
         mode,
         selected_at: now,
         auto: Boolean(context.auto),
         reason: context.reason || mode,
-        thread_id: chatConsoleRemoteWorkerControlState.lastThreadId || "",
-        run_id: chatConsoleRemoteWorkerControlState.lastRunId || ""
+        close_reason: context.closeReason || mode,
+        pending_request_id: pendingRequest.id,
+        thread_id: pendingRequest.thread_id || "",
+        run_id: pendingRequest.run_id || ""
       };
       chatConsoleRemoteWorkerControlState.lastChoice = choice;
+      chatConsoleUpdatePendingLocalAiRequest(pendingRequest.id, {
+        status: mode === "wait_local" ? "waiting_local" : "intent_recorded",
+        close_reason: choice.close_reason,
+        choice
+      });
 
       if (mode === "use_remote_once") {
         chatConsoleRecordRemoteWorkerControlCellIntent(cellId, {
           mode: "once",
           selected_at: now,
           run_id: choice.run_id,
-          phase: "modal_controls_phase2"
+          pending_request_id: pendingRequest.id,
+          phase: "modal_controls_phase3"
         });
       } else if (mode === "use_remote_when_needed_for_chat") {
         chatConsoleSetRemoteWorkerWhenBusyForChat(true, "remote worker chat preference enabled", {render: false});
@@ -309,7 +475,8 @@
           window.localStorage?.setItem?.("mainComputer.remoteWorker.alwaysWhenLocalAiBusy.intent", JSON.stringify({
             enabled: true,
             selected_at: now,
-            phase: "modal_controls_phase2"
+            pending_request_id: pendingRequest.id,
+            phase: "modal_controls_phase3"
           }));
         } catch {
           // Local storage can be unavailable in hardened contexts; the modal still records the choice in memory.
@@ -317,16 +484,19 @@
       }
 
       chatConsoleHideRemoteWorkerControlModal(context.closeReason || mode);
-      chatConsoleResolveRemoteWorkerControlChoice(choice);
+      chatConsoleResolveRemoteWorkerControlChoice(choice, pendingRequest.id);
       if (mode === "use_remote_when_needed_for_chat" || mode === "use_remote_once") renderChatConsoleNotebook();
       return choice;
     }
 
-    function chatConsoleShowRemoteWorkerControlModal({cell, runId, threadId, capacity, resolveChoice = null}) {
+    function chatConsoleShowRemoteWorkerControlModal({cell, runId, threadId, capacity, pendingRequest = null, resolveChoice = null}) {
+      const boundPendingRequest = pendingRequest || chatConsoleRegisterPendingLocalAiRequest({cell, runId, threadId, endpoint: "", payload: null});
       const existing = chatConsoleRemoteWorkerControlState.modal || document.querySelector("[data-chat-console-remote-worker-control-modal]");
       if (existing) {
+        const previousPendingRequestId = chatConsoleRemoteWorkerControlState.activePendingRequestId;
         chatConsoleChooseRemoteWorkerControlOption("wait_local", {
           auto: true,
+          pendingRequestId: previousPendingRequestId,
           reason: "superseded_by_new_remote_worker_control",
           closeReason: "superseded by a newer Remote Worker control"
         });
@@ -338,7 +508,7 @@
       backdrop.setAttribute("role", "presentation");
       backdrop.addEventListener("click", (event) => {
         if (event.target === backdrop) {
-          chatConsoleChooseRemoteWorkerControlOption("wait_local", {reason: "backdrop_wait_local"});
+          chatConsoleChooseRemoteWorkerControlOption("wait_local", {pendingRequestId: boundPendingRequest.id, reason: "backdrop_wait_local"});
         }
       });
 
@@ -354,12 +524,12 @@
       const headingWrap = document.createElement("div");
       const eyebrow = document.createElement("div");
       eyebrow.className = "chat-remote-worker-control-eyebrow";
-      eyebrow.textContent = "Phase 2 remote-worker controls";
+      eyebrow.textContent = "Phase 3 remote-worker controls";
       const title = document.createElement("h2");
       title.id = "chat-remote-worker-control-title";
       title.textContent = "Remote Worker control";
       headingWrap.append(eyebrow, title);
-      const close = chatConsoleButton("×", () => chatConsoleChooseRemoteWorkerControlOption("wait_local", {reason: "close_wait_local"}));
+      const close = chatConsoleButton("×", () => chatConsoleChooseRemoteWorkerControlOption("wait_local", {pendingRequestId: boundPendingRequest.id, reason: "close_wait_local"}));
       close.className = "chat-remote-worker-control-x";
       close.setAttribute("aria-label", "Wait for Available Local Worker and close");
       header.append(headingWrap, close);
@@ -370,7 +540,7 @@
 
       const statusGrid = document.createElement("div");
       statusGrid.className = "chat-remote-worker-control-status-grid";
-      const localStatus = chatConsoleRemoteWorkerLocalStatus(capacity, threadId, runId || cell?.run_id || "");
+      const localStatus = chatConsoleRemoteWorkerLocalStatus(capacity, boundPendingRequest.thread_id || threadId, boundPendingRequest.run_id || runId || cell?.run_id || "");
       const hubStatus = chatConsoleRemoteWorkerHubStatus();
       statusGrid.append(
         chatConsoleRemoteWorkerStatusCard({kind: "local", title: "Current Local AI Worker", ...localStatus}),
@@ -417,24 +587,35 @@
 
       const notice = document.createElement("p");
       notice.className = "chat-remote-worker-control-notice";
-      notice.textContent = "Phase 2 records modal choices only. The local-worker card refreshes every 2 seconds. No credits are checked, held, or spent; no hub assessment or remote worker is contacted yet.";
+      notice.textContent = "Phase 3 records modal choices and binds this control to one pending local request. The local-worker card refreshes every 2 seconds. No credits are checked, held, or spent; no hub assessment or remote worker is contacted yet.";
 
-      modal.append(header, description, statusGrid, optionsTitle, optionsGrid, notice);
+      const pendingFooter = document.createElement("p");
+      pendingFooter.className = "chat-remote-worker-control-pending-footer";
+      pendingFooter.dataset.chatRemoteWorkerPendingRequestFooter = "true";
+      pendingFooter.textContent = chatConsolePendingLocalAiRequestFooterText(boundPendingRequest);
+
+      modal.append(header, description, statusGrid, optionsTitle, optionsGrid, notice, pendingFooter);
       backdrop.append(modal);
       document.body.append(backdrop);
 
+      boundPendingRequest.resolveChoice = typeof resolveChoice === "function" ? resolveChoice : null;
+      chatConsoleUpdatePendingLocalAiRequest(boundPendingRequest.id, {
+        status: "modal_bound",
+        resolveChoice: boundPendingRequest.resolveChoice
+      });
       chatConsoleRemoteWorkerControlState.modal = backdrop;
       chatConsoleRemoteWorkerControlState.lastCapacitySnapshot = capacity || null;
       chatConsoleRemoteWorkerControlState.lastShownAt = chatConsoleNow();
-      chatConsoleRemoteWorkerControlState.lastCellId = cell?.id || "";
-      chatConsoleRemoteWorkerControlState.lastRunId = runId || cell?.run_id || "";
-      chatConsoleRemoteWorkerControlState.lastThreadId = threadId || "";
+      chatConsoleRemoteWorkerControlState.lastCellId = boundPendingRequest.cell_id || cell?.id || "";
+      chatConsoleRemoteWorkerControlState.lastRunId = boundPendingRequest.run_id || runId || cell?.run_id || "";
+      chatConsoleRemoteWorkerControlState.lastThreadId = boundPendingRequest.thread_id || threadId || "";
+      chatConsoleRemoteWorkerControlState.activePendingRequestId = boundPendingRequest.id;
       chatConsoleRemoteWorkerControlState.resolveChoice = typeof resolveChoice === "function" ? resolveChoice : null;
 
       chatConsoleRemoteWorkerControlState.escapeHandler = (event) => {
         if (event.key === "Escape") {
           event.preventDefault();
-          chatConsoleChooseRemoteWorkerControlOption("wait_local", {reason: "escape_wait_local"});
+          chatConsoleChooseRemoteWorkerControlOption("wait_local", {pendingRequestId: boundPendingRequest.id, reason: "escape_wait_local"});
         }
       };
       document.addEventListener("keydown", chatConsoleRemoteWorkerControlState.escapeHandler);
@@ -483,24 +664,37 @@
       return snapshot.busy === true || snapshot.available_now === false || Number(snapshot.active_run_count || 0) >= Number(snapshot.max_local_concurrency || 1);
     }
 
-    async function chatConsoleMaybeShowRemoteWorkerControlForBusyLocal({cell, runId, threadId}) {
+    async function chatConsoleMaybeShowRemoteWorkerControlForBusyLocal({cell, runId, threadId, pendingRequest = null}) {
       if (!cell || cell.type !== "ai") return null;
+      const request = pendingRequest || chatConsoleRegisterPendingLocalAiRequest({cell, runId, threadId, endpoint: "", payload: null});
       try {
         const snapshot = await chatConsoleFetchLocalAiCapacityNow(threadId);
+        chatConsoleRemoteWorkerControlState.lastCapacitySnapshot = snapshot;
         if (!chatConsoleShouldOpenRemoteWorkerControlForCapacity(snapshot)) {
-          return {capacity: snapshot, choice: {mode: "local_available", reason: "local_ai_available", auto: true}};
+          return {
+            capacity: snapshot,
+            pending_request_id: request.id,
+            choice: {
+              mode: "local_available",
+              reason: "local_ai_available",
+              auto: true,
+              pending_request_id: request.id,
+              thread_id: request.thread_id || threadId || "",
+              run_id: request.run_id || runId || ""
+            }
+          };
         }
 
         chatConsoleSetStatus("local AI is busy; waiting on Remote Worker control before starting the pending local request");
         const choice = await new Promise((resolve) => {
-          chatConsoleShowRemoteWorkerControlModal({cell, runId, threadId, capacity: snapshot, resolveChoice: resolve});
+          chatConsoleShowRemoteWorkerControlModal({cell, runId, threadId, capacity: snapshot, pendingRequest: request, resolveChoice: resolve});
         });
         let latestCapacity = chatConsoleRemoteWorkerControlState.lastCapacitySnapshot || snapshot;
         if (choice?.mode === "wait_local" && chatConsoleShouldOpenRemoteWorkerControlForCapacity(latestCapacity)) {
           latestCapacity = await chatConsoleWaitForLocalAiCapacityAvailable(threadId);
           choice.waited_for_local_available = true;
         }
-        return {capacity: latestCapacity, choice};
+        return {capacity: latestCapacity, choice, pending_request_id: request.id};
       } catch (error) {
         chatConsoleSetStatus(`local AI capacity preflight unavailable: ${error.message || error}`);
         return null;
@@ -2375,27 +2569,55 @@
             payload.auto_apply = false;
             payload.queries = [cell.source || ""];
           }
+          let pendingLocalRequest = null;
+          let localAiStartLease = null;
           if (cell.type === "ai") {
+            pendingLocalRequest = chatConsoleRegisterPendingLocalAiRequest({
+              cell,
+              runId: aiRunId,
+              threadId: payload.thread_id,
+              endpoint,
+              payload
+            });
             const remoteWorkerGate = await chatConsoleMaybeShowRemoteWorkerControlForBusyLocal({
               cell,
               runId: aiRunId,
-              threadId: payload.thread_id
+              threadId: payload.thread_id,
+              pendingRequest: pendingLocalRequest
             });
             if (remoteWorkerGate?.choice?.reason === "local_ai_available") {
-              chatConsoleSetStatus("local AI is available; starting pending request locally");
+              chatConsoleSetStatus("local AI is available; acquiring pending request lease before starting locally");
             } else if (remoteWorkerGate?.choice?.auto && remoteWorkerGate.choice.mode === "wait_local") {
-              chatConsoleSetStatus("local AI became available; starting pending request locally");
+              chatConsoleSetStatus("local AI became available; acquiring pending request lease before starting locally");
             } else if (remoteWorkerGate?.choice?.waited_for_local_available) {
-              chatConsoleSetStatus("local AI became available after wait-local close; starting pending request locally");
+              chatConsoleSetStatus("local AI became available after wait-local close; acquiring pending request lease before starting locally");
+            }
+            localAiStartLease = await chatConsoleWaitForPendingLocalAiStartLease({
+              pendingRequestId: remoteWorkerGate?.pending_request_id || pendingLocalRequest.id,
+              threadId: payload.thread_id
+            });
+            if (!localAiStartLease?.ok) {
+              throw new Error(`Unable to acquire local AI start lease: ${localAiStartLease?.reason || "unknown"}`);
+            }
+            chatConsoleUpdatePendingLocalAiRequest(localAiStartLease.pending_request_id, {status: "running"});
+          }
+          let data = {};
+          try {
+            const response = await fetch(endpoint, {
+              method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify(payload)
+            });
+            data = await response.json().catch(() => ({}));
+            if (!response.ok || data.ok === false) throw new Error(data.error || `cell evaluation returned ${response.status}`);
+          } finally {
+            if (localAiStartLease?.pending_request_id) {
+              chatConsoleReleaseLocalAiStartLease(localAiStartLease.pending_request_id, "completed");
+              chatConsoleForgetPendingLocalAiRequest(localAiStartLease.pending_request_id);
+            } else if (pendingLocalRequest?.id) {
+              chatConsoleForgetPendingLocalAiRequest(pendingLocalRequest.id);
             }
           }
-          const response = await fetch(endpoint, {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify(payload)
-          });
-          const data = await response.json().catch(() => ({}));
-          if (!response.ok || data.ok === false) throw new Error(data.error || `cell evaluation returned ${response.status}`);
           outputCell = data.output_cell;
           if (ragAt.enabled && data.run_id) chatConsoleSetStatus(`RAG-AT run ${data.run_id} complete; open Activity Monitor AI filter`);
         }

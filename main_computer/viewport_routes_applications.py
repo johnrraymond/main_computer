@@ -501,6 +501,7 @@ class ViewportApplicationRoutesMixin:
                 log_file=log_path,
                 activity_bus=self.server.activity,
                 cwd=self.server.debug_root,
+                max_local_concurrency=1,
             )
         response_payload = payload.get("response") if isinstance(payload.get("response"), dict) else {}
         response = ChatResponse(

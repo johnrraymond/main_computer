@@ -3,7 +3,9 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from main_computer.chat_ai_subprocess import ActiveChatAIProcess, ChatAISubprocessManager
+import pytest
+
+from main_computer.chat_ai_subprocess import ActiveChatAIProcess, ChatAISubprocessBusy, ChatAISubprocessManager
 
 
 class FakeProcess:
@@ -88,3 +90,18 @@ def test_local_ai_capacity_prunes_finished_runs() -> None:
     assert snapshot["reason_code"] == "local_ai_available"
     assert snapshot["active_run_count"] == 0
     assert manager.active_runs_snapshot()["active_run_count"] == 0
+
+def test_local_ai_run_refuses_global_capacity_when_slot_is_reserved(tmp_path: Path) -> None:
+    manager = ChatAISubprocessManager()
+    _install_active_run(manager, thread_id="thread-a", run_id="run-a")
+
+    with pytest.raises(ChatAISubprocessBusy, match="Local AI capacity is exhausted"):
+        manager.run(
+            command={"run_id": "run-b", "mode": "chat_console_ai", "source": "hello"},
+            thread_id="thread-b",
+            log_file=tmp_path / "run-b.log",
+            activity_bus=None,
+            cwd=tmp_path,
+            max_local_concurrency=1,
+        )
+
