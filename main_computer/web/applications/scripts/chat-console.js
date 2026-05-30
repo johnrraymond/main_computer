@@ -26,6 +26,8 @@
       escapeHandler: null,
       capacityRefreshInFlight: false,
       lastCapacitySnapshot: null,
+      lastAssessment: null,
+      assessmentRefreshInFlight: false,
       lastChoice: null,
       lastShownAt: "",
       lastCellId: "",
@@ -303,6 +305,189 @@
       };
     }
 
+    function chatConsoleRemoteOverflowAssessmentPlaceholderStatus(status = "Checking") {
+      return {
+        status,
+        message: status === "Unavailable"
+          ? "Remote overflow assessment could not be loaded. Local-first waiting remains available."
+          : "Loading read-only remote overflow assessment from the backend decision engine.",
+        items: [
+          ["Assessment endpoint", "/api/applications/chat-console/ai/remote-overflow/assess"],
+          ["Execution", "not submitted"],
+          ["Credit hold", "not created"],
+          ["Credit spend", "none"],
+          ["Real remote worker", "not contacted"]
+        ]
+      };
+    }
+
+    function chatConsoleRemoteOverflowDetailLabel(key) {
+      return String(key || "")
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, (char) => char.toUpperCase());
+    }
+
+    function chatConsoleRemoteOverflowDetailValue(value) {
+      if (value === true) return "true";
+      if (value === false) return "false";
+      if (value === null || value === undefined || value === "") return "";
+      if (Array.isArray(value)) return value.length ? value.map((item) => chatConsoleRemoteOverflowDetailValue(item)).join(", ") : "[]";
+      if (typeof value === "object") {
+        try {
+          return JSON.stringify(value);
+        } catch {
+          return String(value);
+        }
+      }
+      return String(value);
+    }
+
+    function chatConsoleRemoteOverflowAssessmentCardStatus(card) {
+      const details = card?.details && typeof card.details === "object" && !Array.isArray(card.details) ? card.details : {};
+      const detailItems = Object.entries(details)
+        .slice(0, 10)
+        .map(([key, value]) => [chatConsoleRemoteOverflowDetailLabel(key), chatConsoleRemoteOverflowDetailValue(value)])
+        .filter(([, value]) => String(value || "").trim());
+      const reasonCode = details.reason_code || card?.key || "";
+      return {
+        status: card?.status || "Unknown",
+        message: card?.message || "",
+        items: [
+          ["Card", card?.key || ""],
+          ["Reason", reasonCode || ""],
+          ...detailItems.filter(([label]) => label !== "Reason Code")
+        ]
+      };
+    }
+
+    function chatConsoleRemoteOverflowAssessmentStatus(assessment) {
+      if (!assessment) return chatConsoleRemoteOverflowAssessmentPlaceholderStatus();
+      return {
+        status: assessment.status || assessment.reason_code || "Assessed",
+        message: assessment.user_message || "Remote overflow assessment returned diagnostic cards.",
+        items: [
+          ["Action", assessment.action || ""],
+          ["Reason", assessment.reason_code || ""],
+          ["Offer remote", assessment.offer_remote ? "yes" : "no"],
+          ["Authorization required", assessment.authorization_required ? "yes" : "no"],
+          ["Cards", Array.isArray(assessment.cards) ? String(assessment.cards.length) : "0"],
+          ["Credit hold", "not created"],
+          ["Credit spend", "none"],
+          ["Real remote worker", "not contacted"]
+        ]
+      };
+    }
+
+    function chatConsoleRenderRemoteOverflowAssessmentCards(assessment) {
+      const cards = Array.isArray(assessment?.cards) ? assessment.cards.filter((card) => card && typeof card === "object") : [];
+      if (!cards.length) {
+        return [
+          chatConsoleRemoteWorkerStatusCard({
+            kind: "assessment-loading",
+            title: "Remote overflow assessment",
+            ...chatConsoleRemoteOverflowAssessmentPlaceholderStatus()
+          })
+        ];
+      }
+      return cards.map((card) => chatConsoleRemoteWorkerStatusCard({
+        kind: `assessment-${String(card.key || "card").replace(/[^a-z0-9_-]+/gi, "-").toLowerCase()}`,
+        title: card.title || chatConsoleRemoteOverflowDetailLabel(card.key || "Assessment card"),
+        ...chatConsoleRemoteOverflowAssessmentCardStatus(card)
+      }));
+    }
+
+    function chatConsoleUpdateRemoteOverflowAssessmentCards(assessment) {
+      chatConsoleRemoteWorkerControlState.lastAssessment = assessment || null;
+      const modal = chatConsoleRemoteWorkerControlState.modal;
+      if (!modal) return;
+      const summaryCard = modal.querySelector('[data-chat-remote-worker-status-card="assessment-summary"]');
+      if (summaryCard) chatConsolePopulateRemoteWorkerStatusCard(summaryCard, chatConsoleRemoteOverflowAssessmentStatus(assessment));
+      const grid = modal.querySelector("[data-chat-remote-overflow-assessment-grid]");
+      if (!grid) return;
+      grid.replaceChildren(...chatConsoleRenderRemoteOverflowAssessmentCards(assessment));
+    }
+
+    function chatConsoleRemoteOverflowMessagesFromPendingRequest(request) {
+      const payload = request?.payload && typeof request.payload === "object" ? request.payload : {};
+      if (Array.isArray(payload.messages)) return payload.messages.filter((item) => item && typeof item === "object");
+      const cell = payload.cell && typeof payload.cell === "object" ? payload.cell : null;
+      const stateCell = request?.cell_id ? chatConsoleState?.cells?.find((item) => item.id === request.cell_id) : null;
+      const content = String(payload.prompt || payload.source || cell?.source || stateCell?.source || "").trim();
+      return content ? [{role: "user", content}] : [];
+    }
+
+    function chatConsoleRemoteOverflowModelFromPendingRequest(request) {
+      const payload = request?.payload && typeof request.payload === "object" ? request.payload : {};
+      const cell = payload.cell && typeof payload.cell === "object" ? payload.cell : {};
+      const config = payload.config && typeof payload.config === "object" ? payload.config : {};
+      return String(payload.model || config.model || cell.model || payload.preferred_model || "");
+    }
+
+    function chatConsoleBuildRemoteOverflowAssessmentPayload({pendingRequest, capacity = null}) {
+      const request = pendingRequest || chatConsolePendingLocalAiRequest();
+      const payload = request?.payload && typeof request.payload === "object" ? request.payload : {};
+      return {
+        phase: "phase4_modal_assessment_cards",
+        pending_request_id: request?.id || "",
+        thread_id: request?.thread_id || payload.thread_id || chatConsoleRemoteWorkerControlState.lastThreadId || "",
+        run_id: request?.run_id || payload.run_id || chatConsoleRemoteWorkerControlState.lastRunId || "",
+        cell_id: request?.cell_id || chatConsoleRemoteWorkerControlState.lastCellId || "",
+        model: chatConsoleRemoteOverflowModelFromPendingRequest(request),
+        capability: payload.rag_type || payload.capability || "chat.completions",
+        messages: chatConsoleRemoteOverflowMessagesFromPendingRequest(request),
+        max_local_concurrency: 1,
+        remote_overflow_enabled: true,
+        local_only: false,
+        local_capacity_settings: {
+          max_local_concurrency: 1
+        },
+        local_capacity_snapshot: capacity || chatConsoleRemoteWorkerControlState.lastCapacitySnapshot || null,
+        credit: {
+          known: false,
+          no_credit_hold_created: true,
+          no_credit_spent: true
+        },
+        hub: {
+          mode: "mock_safe_template",
+          willing_worker_count: 0,
+          real_remote_worker_contacted: false,
+          private_worker_prices_exposed: false
+        }
+      };
+    }
+
+    async function chatConsoleFetchRemoteOverflowAssessment({pendingRequest, capacity = null}) {
+      const body = chatConsoleBuildRemoteOverflowAssessmentPayload({pendingRequest, capacity});
+      const response = await fetch("/api/applications/chat-console/ai/remote-overflow/assess", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        cache: "no-store",
+        body: JSON.stringify(body)
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) throw new Error(data.error || `remote overflow assessment HTTP ${response.status}`);
+      return data.remote_overflow || data.assessment || data;
+    }
+
+    async function chatConsoleRefreshRemoteOverflowAssessment({pendingRequest = null, capacity = null} = {}) {
+      if (chatConsoleRemoteWorkerControlState.assessmentRefreshInFlight) return chatConsoleRemoteWorkerControlState.lastAssessment;
+      const request = pendingRequest || chatConsolePendingLocalAiRequest();
+      if (!request) return null;
+      chatConsoleRemoteWorkerControlState.assessmentRefreshInFlight = true;
+      try {
+        const assessment = await chatConsoleFetchRemoteOverflowAssessment({pendingRequest: request, capacity});
+        chatConsoleUpdateRemoteOverflowAssessmentCards(assessment);
+        chatConsoleSetStatus(`remote overflow assessment ${assessment.reason_code || assessment.status || "updated"}`);
+        return assessment;
+      } catch (error) {
+        chatConsoleUpdateRemoteOverflowAssessmentCards(null);
+        chatConsoleSetStatus(`remote overflow assessment failed: ${error.message || error}`);
+        return null;
+      } finally {
+        chatConsoleRemoteWorkerControlState.assessmentRefreshInFlight = false;
+      }
+    }
+
     function chatConsoleRemoteWorkerStatusCard({kind, title, status, message, items}) {
       const card = document.createElement("article");
       card.className = "chat-remote-worker-control-status-card";
@@ -379,6 +564,7 @@
         if (pendingRequestId !== chatConsoleRemoteWorkerControlState.activePendingRequestId) return;
         chatConsoleUpdateRemoteWorkerControlLocalCard(snapshot);
         chatConsoleUpdateRemoteWorkerPendingRequestFooter(pendingRequest);
+        await chatConsoleRefreshRemoteOverflowAssessment({pendingRequest, capacity: snapshot});
         if (!chatConsoleShouldOpenRemoteWorkerControlForCapacity(snapshot)) {
           chatConsoleChooseRemoteWorkerControlOption("wait_local", {
             auto: true,
@@ -524,7 +710,7 @@
       const headingWrap = document.createElement("div");
       const eyebrow = document.createElement("div");
       eyebrow.className = "chat-remote-worker-control-eyebrow";
-      eyebrow.textContent = "Phase 3 remote-worker controls";
+      eyebrow.textContent = "Phase 4 remote-worker assessment";
       const title = document.createElement("h2");
       title.id = "chat-remote-worker-control-title";
       title.textContent = "Remote Worker control";
@@ -536,16 +722,24 @@
 
       const description = document.createElement("p");
       description.id = "chat-remote-worker-control-description";
-      description.textContent = "Local AI is busy. This panel refreshes the blocking local worker every 2 seconds. If the local worker becomes available, this panel closes and starts the pending request locally.";
+      description.textContent = "Local AI is busy. This panel refreshes the blocking local worker every 2 seconds, calls the read-only remote-overflow assessment endpoint, and shows diagnostic cards before any remote execution exists.";
 
       const statusGrid = document.createElement("div");
       statusGrid.className = "chat-remote-worker-control-status-grid";
       const localStatus = chatConsoleRemoteWorkerLocalStatus(capacity, boundPendingRequest.thread_id || threadId, boundPendingRequest.run_id || runId || cell?.run_id || "");
-      const hubStatus = chatConsoleRemoteWorkerHubStatus();
       statusGrid.append(
         chatConsoleRemoteWorkerStatusCard({kind: "local", title: "Current Local AI Worker", ...localStatus}),
-        chatConsoleRemoteWorkerStatusCard({kind: "hub", title: "Remote Hub / Workers", ...hubStatus})
+        chatConsoleRemoteWorkerStatusCard({kind: "assessment-summary", title: "Remote Overflow Assessment", ...chatConsoleRemoteOverflowAssessmentPlaceholderStatus()})
       );
+
+      const assessmentTitle = document.createElement("h3");
+      assessmentTitle.className = "chat-remote-worker-control-options-title";
+      assessmentTitle.textContent = "Diagnostic assessment cards";
+
+      const assessmentGrid = document.createElement("div");
+      assessmentGrid.className = "chat-remote-worker-control-status-grid chat-remote-worker-control-assessment-grid";
+      assessmentGrid.dataset.chatRemoteOverflowAssessmentGrid = "true";
+      assessmentGrid.append(...chatConsoleRenderRemoteOverflowAssessmentCards(null));
 
       const optionsTitle = document.createElement("h3");
       optionsTitle.className = "chat-remote-worker-control-options-title";
@@ -587,14 +781,14 @@
 
       const notice = document.createElement("p");
       notice.className = "chat-remote-worker-control-notice";
-      notice.textContent = "Phase 3 records modal choices and binds this control to one pending local request. The local-worker card refreshes every 2 seconds. No credits are checked, held, or spent; no hub assessment or remote worker is contacted yet.";
+      notice.textContent = "Phase 4 displays read-only diagnostic assessment cards and keeps the existing Phase 3 pending-request ownership and local-start lease. No credits are held or spent; no mock submit, real hub request, or real remote worker is contacted yet.";
 
       const pendingFooter = document.createElement("p");
       pendingFooter.className = "chat-remote-worker-control-pending-footer";
       pendingFooter.dataset.chatRemoteWorkerPendingRequestFooter = "true";
       pendingFooter.textContent = chatConsolePendingLocalAiRequestFooterText(boundPendingRequest);
 
-      modal.append(header, description, statusGrid, optionsTitle, optionsGrid, notice, pendingFooter);
+      modal.append(header, description, statusGrid, assessmentTitle, assessmentGrid, optionsTitle, optionsGrid, notice, pendingFooter);
       backdrop.append(modal);
       document.body.append(backdrop);
 
@@ -623,6 +817,7 @@
       const defaultOption = modal.querySelector('[data-chat-remote-worker-option="wait_local"]');
       defaultOption?.focus?.({preventScroll: true});
       chatConsoleStartRemoteWorkerControlCapacityWatcher();
+      chatConsoleRefreshRemoteOverflowAssessment({pendingRequest: boundPendingRequest, capacity}).catch(() => {});
       chatConsoleSetStatus("remote worker control opened because local AI is busy");
       return backdrop;
     }
@@ -2980,6 +3175,7 @@
           lastChoice: chatConsoleRemoteWorkerControlState.lastChoice,
           lastThreadId: chatConsoleRemoteWorkerControlState.lastThreadId,
           lastRunId: chatConsoleRemoteWorkerControlState.lastRunId,
+          lastAssessment: chatConsoleRemoteWorkerControlState.lastAssessment,
           chatWhenBusy: chatConsoleRemoteWorkerWhenBusyForChatEnabled(),
           globalWhenBusyIntent: Boolean(chatConsoleRemoteWorkerControlState.globalWhenBusyIntent)
         };
