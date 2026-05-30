@@ -1308,6 +1308,12 @@ def dispatch_post(self) -> None:
     if self.path == "/api/applications/chat-console/ai/stop":
         self._handle_chat_console_ai_stop()
         return
+    if route_path == "/api/applications/chat-console/ai/remote-overflow/assess":
+        self._handle_chat_console_remote_overflow_assess()
+        return
+    if route_path == "/api/applications/chat-console/ai/remote-overflow/mock-submit":
+        self._handle_chat_console_remote_overflow_mock_submit()
+        return
     if self.path == "/api/applications/chat-console/shared-variables/export":
         self._handle_chat_console_shared_variables_export()
         return
