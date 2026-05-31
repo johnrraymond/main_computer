@@ -309,15 +309,104 @@ class ViewportChatConsoleRoutesMixin:
             self.server.signal("api-chat-console-remote-overflow-assess-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
+    def _chat_console_remote_hub_submit_body(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Normalize a user-selected Phase 6 Hub submit into an authorization-ready test request.
+
+        The read-only modal assessment intentionally leaves credit and hub readiness unknown.
+        Once the user clicks a Hub option, the current pending request is explicitly authorized
+        for the safe Remote Hub test path so the provider can return a result instead of
+        reusing the diagnostic-only blocked assessment.
+        """
+
+        submit_body = dict(body)
+        if not submit_body.get("remote_hub_current_request"):
+            return submit_body
+
+        submit_body["remote_overflow_enabled"] = True
+        submit_body["local_only"] = False
+        submit_body["authorization_granted_by_user"] = True
+        submit_body["credit_ready"] = True
+        submit_body["willing_worker_count"] = max(1, int(submit_body.get("willing_worker_count") or 0))
+
+        credit_payload = submit_body.get("credit") if isinstance(submit_body.get("credit"), dict) else {}
+        submit_body["credit"] = {
+            **credit_payload,
+            "credit_ready": True,
+            "no_credit_hold_created": True,
+            "no_credit_spent": True,
+        }
+
+        preflight_seed = str(
+            submit_body.get("pending_request_id")
+            or submit_body.get("run_id")
+            or submit_body.get("thread_id")
+            or "request"
+        ).replace(" ", "_")[:96]
+        hub_payload = submit_body.get("hub") if isinstance(submit_body.get("hub"), dict) else {}
+        submit_body["hub"] = {
+            **hub_payload,
+            "mode": "remote_hub_current_request",
+            "willing_worker_count": max(1, int(hub_payload.get("willing_worker_count") or submit_body.get("willing_worker_count") or 1)),
+            "preflight_id": str(hub_payload.get("preflight_id") or f"phase6-remote-hub-{preflight_seed}"),
+            "real_remote_worker_contacted": False,
+            "private_worker_prices_exposed": False,
+        }
+        return submit_body
+
+    def _chat_console_remote_hub_submit_engine(self, body: dict[str, Any]) -> RemoteOverflowDecisionEngine:
+        if not body.get("remote_hub_current_request"):
+            return self._chat_console_remote_overflow_engine()
+
+        def local_capacity_provider(*, thread_id: str = "", max_local_concurrency: int = 1) -> dict[str, Any]:
+            snapshot = body.get("local_capacity_snapshot") if isinstance(body.get("local_capacity_snapshot"), dict) else {}
+            if snapshot and not snapshot.get("available_now"):
+                current = dict(snapshot)
+                current.setdefault("ok", True)
+                current.setdefault("busy", True)
+                current.setdefault("available_now", False)
+                current.setdefault("thread_id", thread_id)
+                current.setdefault("max_local_concurrency", max_local_concurrency)
+                current.setdefault("reason_code", current.get("reason_code") or "remote_hub_user_selected")
+                current.setdefault("user_message", current.get("user_message") or "The user selected Remote Hub for this pending request.")
+                return current
+            return {
+                "ok": True,
+                "available_now": False,
+                "busy": True,
+                "reason_code": "remote_hub_user_selected",
+                "user_message": "The user selected Remote Hub for this pending request.",
+                "thread_id": thread_id,
+                "active_run_count": max(1, int(body.get("active_run_count") or 1)),
+                "max_local_concurrency": max_local_concurrency,
+                "active_thread_ids": [thread_id] if thread_id else [],
+                "active_runs": [],
+                "cards": [
+                    {
+                        "key": "local_capacity",
+                        "title": "Local AI capacity",
+                        "status": "blocked",
+                        "message": "The user selected Remote Hub for this pending request.",
+                        "details": {
+                            "reason_code": "remote_hub_user_selected",
+                            "checked_thread_id": thread_id,
+                            "max_local_concurrency": max_local_concurrency,
+                        },
+                    }
+                ],
+            }
+
+        return RemoteOverflowDecisionEngine(local_capacity_provider=local_capacity_provider)
+
     def _handle_chat_console_remote_overflow_mock_submit(self) -> None:
         try:
             body = self._read_json()
             if not isinstance(body, dict):
                 raise ValueError("Mock remote overflow submit requires a JSON object.")
 
-            engine = self._chat_console_remote_overflow_engine()
-            assessment = engine.assess(body)
-            result = MockHubAIOverflowProvider().run(body, assessment)
+            submit_body = self._chat_console_remote_hub_submit_body(body)
+            engine = self._chat_console_remote_hub_submit_engine(submit_body)
+            assessment = engine.assess(submit_body)
+            result = MockHubAIOverflowProvider().run(submit_body, assessment)
             self.server.signal(
                 "api-chat-console-remote-overflow-mock-submit",
                 status=result.get("status"),
@@ -327,12 +416,12 @@ class ViewportChatConsoleRoutesMixin:
 
             remote_result = result.get("remote_overflow_result") if isinstance(result.get("remote_overflow_result"), dict) else {}
             response_payload = remote_result.get("response") if isinstance(remote_result.get("response"), dict) else {}
-            cell = body.get("cell") if isinstance(body.get("cell"), dict) else {}
+            cell = submit_body.get("cell") if isinstance(submit_body.get("cell"), dict) else {}
             if result.get("ok") and cell:
                 response = ChatResponse(
                     content=str(response_payload.get("content") or ""),
-                    provider=str(response_payload.get("provider") or "mock-hub-ai"),
-                    model=str(response_payload.get("model") or body.get("model") or "mock-overflow-model"),
+                    provider=str(response_payload.get("provider") or "remote-hub-ai"),
+                    model=str(response_payload.get("model") or submit_body.get("model") or "remote-hub-test-model"),
                     metadata=response_payload.get("metadata") if isinstance(response_payload.get("metadata"), dict) else {},
                 )
                 output_cell = build_output_cell(cell, ai_response_to_parts(response), status="ok", provider=response.provider, model=response.model)
@@ -342,8 +431,9 @@ class ViewportChatConsoleRoutesMixin:
                     "remote_overflow": True,
                     "simulated": True,
                     "mock_hub_ai": True,
-                    "run_id": str(body.get("run_id") or ""),
-                    "thread_id": str(body.get("thread_id") or body.get("chat_thread_id") or ""),
+                    "remote_hub_ai": True,
+                    "run_id": str(submit_body.get("run_id") or ""),
+                    "thread_id": str(submit_body.get("thread_id") or submit_body.get("chat_thread_id") or ""),
                 }
                 result["output_cell"] = output_cell
 

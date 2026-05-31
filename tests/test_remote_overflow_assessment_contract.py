@@ -214,7 +214,8 @@ def test_mock_hub_ai_returns_fast_simulated_result_only_when_authorized() -> Non
     remote_result = result["remote_overflow_result"]
     assert remote_result["source"] == "mock_hub_ai"
     assert remote_result["simulated"] is True
-    assert remote_result["response"]["provider"] == "mock-hub-ai"
+    assert remote_result["response"]["provider"] == "remote-hub-ai"
+    assert "Remote Hub AI response received" in remote_result["response"]["content"]
     assert remote_result["response"]["metadata"]["no_real_remote_worker_contacted"] is True
     assert remote_result["response"]["metadata"]["no_credit_hold_created"] is True
     assert remote_result["response"]["metadata"]["no_credit_spent"] is True

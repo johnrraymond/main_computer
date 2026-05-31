@@ -5,7 +5,7 @@ from __future__ import annotations
 This smoke proves the Chat Console checks local AI capacity during AI request
 startup, opens the modal before the normal AI evaluation fetch, calls the
 read-only remote-overflow assessment endpoint, renders a compact assessment summary with collapsed diagnostic cards, records durable selectable intent separately from close reasons, exposes
-large selectable option cards, and routes Remote Worker This Once through the Remote Hub while keeping the modal as a decision prompt. It also proves the
+large selectable option cards, and routes Hub options through the Remote Hub while keeping the modal as a decision prompt. It also proves the
 modal polls every 2 seconds, binds to one pending request, and waits for a
 local-start lease before automated local retry.
 """
@@ -83,7 +83,14 @@ def main() -> int:
         "data-chat-remote-overflow-assessment-details-summary",
         "data-chat-remote-overflow-assessment-grid",
         "This dialog only asks for a decision. Any option closes it immediately.",
-        "Remote Worker This Once routes the request through the Remote Hub",
+        "Hub options route this blocked request through the Remote Hub",
+        "function chatConsoleRemoteWorkerIntentUsesRemoteHubForCurrentRequest",
+        "useRemoteHubForCurrentRequest = chatConsoleRemoteWorkerIntentUsesRemoteHubForCurrentRequest(remoteHubIntentMode)",
+        "remote_hub_current_request: true",
+        "authorization_granted_by_user: true",
+        "credit_ready: true",
+        "willing_worker_count: 1",
+        "remote_worker_intent_mode: intentMode",
         "function chatConsoleSubmitRemoteHubOnce",
         "function chatConsoleSetRemoteHubExecutionState",
         "function renderChatConsoleRemoteHubThinkingCard",
