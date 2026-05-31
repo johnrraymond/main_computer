@@ -2816,11 +2816,11 @@
       const theme = typeof McelLabStyleLaw !== "undefined"
         ? McelLabStyleLaw.normalizeTheme(mcelLabState.theme)
         : (mcelLabState.theme || "theme-machine");
-      const chrome = typeof McelLabChromeLaw !== "undefined"
-        ? McelLabChromeLaw.normalizeChrome(mcelLabState.chrome)
+      const chrome = typeof MCEL !== "undefined" && MCEL.normalizeChrome
+        ? MCEL.normalizeChrome(mcelLabState.chrome)
         : (mcelLabState.chrome || "chrome-strict-hierarchy");
-      const chromeResult = typeof McelLabChromeLaw !== "undefined"
-        ? McelLabChromeLaw.applyChromeHtml(runtimeHtml, {chrome, theme, reason})
+      const chromeResult = typeof MCEL !== "undefined" && MCEL.applyChrome
+        ? MCEL.applyChrome(runtimeHtml, {chrome, theme, reason})
         : {html: runtimeHtml || "", report: {chrome, changed: false, visibleResponse: Boolean(runtimeHtml)}};
       mcelLabState.chrome = chrome;
       mcelLabState.lastChromeReport = chromeResult.report;

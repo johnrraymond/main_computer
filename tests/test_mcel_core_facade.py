@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -23,6 +24,22 @@ CHROME_IDS = [
 
 def _script(relative_path: str) -> str:
     return (SCRIPTS / relative_path).read_text(encoding="utf-8")
+
+
+def _extract_function_source(script: str, function_name: str) -> str:
+    match = re.search(rf"function\s+{re.escape(function_name)}\s*\([^)]*\)\s*\{{", script)
+    assert match, f"missing function {function_name}"
+    body_start = match.end() - 1
+    depth = 0
+    for index in range(body_start, len(script)):
+        char = script[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return script[match.start() : index + 1]
+    raise AssertionError(f"could not find end of function {function_name}")
 
 
 def _run_node_json(tmp_path: Path, script: str) -> dict:
@@ -152,3 +169,76 @@ process.stdout.write(JSON.stringify(result));
     assert data["applied"]["report"] == {"chrome": "chrome-journey", "reason": "facade-test"}
     assert ["normalize", "journey-alias"] in data["calls"]
     assert ["apply", "<main></main>", "chrome-journey", "facade-test"] in data["calls"]
+
+
+def test_mcel_lab_rendered_site_chrome_call_routes_through_core_facade(tmp_path: Path) -> None:
+    lab_ui = _script("mcel-lab.js")
+    isolated_site_css = _extract_function_source(lab_ui, "isolatedSiteCss")
+    isolated_site_document = _extract_function_source(lab_ui, "isolatedSiteDocument")
+
+    assert "MCEL.applyChrome(runtimeHtml" in isolated_site_document
+    assert "McelLabChromeLaw.applyChromeHtml" not in isolated_site_document
+
+    script = f"""
+var calls = [];
+var mcelLabState = {{
+  theme: "theme-machine",
+  chrome: "journey-alias",
+  lastChromeReport: null
+}};
+var McelLabStyleLaw = {{
+  normalizeTheme(theme) {{
+    calls.push(["theme", theme]);
+    return theme || "theme-machine";
+  }}
+}};
+var MCEL = {{
+  normalizeChrome(chrome) {{
+    calls.push(["normalizeChrome", chrome]);
+    return chrome === "journey-alias" ? "chrome-journey" : "chrome-strict-hierarchy";
+  }},
+  applyChrome(html, options) {{
+    calls.push(["applyChrome", html, options.chrome, options.theme, options.reason]);
+    return {{
+      html: "<section data-core-chrome='" + options.chrome + "'>" + html + "</section>",
+      report: {{chrome: options.chrome, delegated: true, reason: options.reason}}
+    }};
+  }}
+}};
+{isolated_site_css}
+{isolated_site_document}
+
+const rendered = isolatedSiteDocument("<main data-mc='component'>Hello</main>", {{
+  reason: "caller-migration-test",
+  nonce: "42",
+  hash: "hash-42"
+}});
+process.stdout.write(JSON.stringify({{
+  calls,
+  stateChrome: mcelLabState.chrome,
+  lastChromeReport: mcelLabState.lastChromeReport,
+  rendered
+}}));
+"""
+
+    data = _run_node_json(tmp_path, script)
+
+    assert data["calls"] == [
+        ["theme", "theme-machine"],
+        ["normalizeChrome", "journey-alias"],
+        [
+            "applyChrome",
+            "<main data-mc='component'>Hello</main>",
+            "chrome-journey",
+            "theme-machine",
+            "caller-migration-test",
+        ],
+    ]
+    assert data["stateChrome"] == "chrome-journey"
+    assert data["lastChromeReport"] == {
+        "chrome": "chrome-journey",
+        "delegated": True,
+        "reason": "caller-migration-test",
+    }
+    assert 'data-mcel-chrome="chrome-journey"' in data["rendered"]
+    assert "data-core-chrome='chrome-journey'" in data["rendered"]
