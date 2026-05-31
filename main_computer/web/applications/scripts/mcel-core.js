@@ -4,6 +4,7 @@
       const editor = typeof McelLabEditor !== "undefined" ? McelLabEditor : window.McelLabEditor;
       const styleLaw = typeof McelLabStyleLaw !== "undefined" ? McelLabStyleLaw : window.McelLabStyleLaw;
       const layoutLaw = typeof McelLabLayoutLaw !== "undefined" ? McelLabLayoutLaw : window.McelLabLayoutLaw;
+      const chromeLaw = typeof McelLabChromeLaw !== "undefined" ? McelLabChromeLaw : window.McelLabChromeLaw;
       const browserObserver = typeof McelLabBrowserObserver !== "undefined" ? McelLabBrowserObserver : window.McelLabBrowserObserver;
       const platformSpine = typeof McelLabPlatformSpine !== "undefined" ? McelLabPlatformSpine : window.McelLabPlatformSpine;
       const workbench = typeof McelLabWorkbench !== "undefined" ? McelLabWorkbench : window.McelLabWorkbench;
@@ -121,6 +122,43 @@
         return workbench?.buildWorkbenchPlan ? workbench.buildWorkbenchPlan() : null;
       }
 
+      function listChromes() {
+        if (Array.isArray(chromeLaw?.chromeCatalog)) {
+          return chromeLaw.chromeCatalog.map((definition) => ({...definition}));
+        }
+        if (Array.isArray(chromeLaw?.chromes)) {
+          return chromeLaw.chromes.map((id) => chromeLaw?.chromeDefinition ? chromeLaw.chromeDefinition(id) : {id, label: id});
+        }
+        return [];
+      }
+
+      function normalizeChrome(chrome) {
+        return chromeLaw?.normalizeChrome ? chromeLaw.normalizeChrome(chrome) : "chrome-strict-hierarchy";
+      }
+
+      function describeChrome(chrome) {
+        return chromeLaw?.chromeDefinition ? chromeLaw.chromeDefinition(chrome) : null;
+      }
+
+      function applyChrome(runtimeHtml, options = {}) {
+        const html = String(runtimeHtml || "");
+        if (!chromeLaw?.applyChromeHtml) {
+          return {
+            html,
+            report: {
+              kind: "mcel-chrome-report",
+              contractVersion: null,
+              chrome: "chrome-strict-hierarchy",
+              changed: false,
+              generatedContainers: 0,
+              movedSourceElements: 0,
+              warnings: ["mcel-core:chrome-law-unavailable"]
+            }
+          };
+        }
+        return chromeLaw.applyChromeHtml(html, {...options, chrome: normalizeChrome(options.chrome)});
+      }
+
       function runBrowserProof(runtimeRootOrHtml, options = {}) {
         const root = typeof runtimeRootOrHtml === "string" ? runtimeRoot(runtimeRootOrHtml) : runtimeRootOrHtml;
         return browserRunner?.observeAndProve ? browserRunner.observeAndProve(root, options) : null;
@@ -141,6 +179,10 @@
         runProof,
         buildSubsumptionLattice,
         buildWorkbenchPlan,
+        listChromes,
+        normalizeChrome,
+        describeChrome,
+        applyChrome,
         runBrowserProof,
         platform: platformSpine,
         workbench,
