@@ -2105,15 +2105,22 @@
         }
         .mcel-runtime-preview button,
         .mcel-runtime-preview a[data-mc-action] {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
           justify-self: start;
+          max-inline-size: 100%;
           min-height: 42px;
           border: 0;
           border-radius: 999px;
           background: var(--site-action);
           color: var(--site-action-ink);
           padding: 12px 20px;
+          box-sizing: border-box;
           font-weight: 950;
+          line-height: 1;
           text-decoration: none;
+          vertical-align: top;
           cursor: pointer;
           box-shadow: none;
         }

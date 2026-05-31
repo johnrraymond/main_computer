@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from main_computer.models import ChatResponse
 from main_computer.remote_overflow import (
+    RemoteHubExecutionGateway,
     RemoteOverflowDecisionEngine,
     run_mock_hub_overflow,
 )
@@ -238,3 +240,64 @@ def test_mock_hub_ai_refuses_when_assessment_is_not_authorization_ready() -> Non
     assert result["ok"] is False
     assert result["status"] == "blocked"
     assert result["remote_overflow"]["reason_code"] == "local_ai_available"
+
+def test_remote_hub_gateway_calls_observable_hub_surface_and_preserves_no_credit_contract() -> None:
+    calls: list[dict[str, Any]] = []
+
+    class FakeHubProvider:
+        def __init__(self, **kwargs: Any) -> None:
+            calls.append({"init": kwargs})
+
+        def remote_overflow_safe_chat(
+            self,
+            messages: list[Any],
+            *,
+            remote_overflow_request_id: str,
+            metadata: dict[str, Any] | None = None,
+        ) -> ChatResponse:
+            calls.append(
+                {
+                    "remote_overflow_request_id": remote_overflow_request_id,
+                    "messages": messages,
+                    "metadata": dict(metadata or {}),
+                }
+            )
+            return ChatResponse(
+                content="Remote Hub AI response received.\nNo credits were held, no credits were spent, and no real paid worker was contacted.",
+                provider="remote-hub-ai",
+                model="fake-hub-model",
+                metadata={
+                    "hub": {
+                        "request_id": "hub_overflow_test",
+                        "remote_overflow_request_id": remote_overflow_request_id,
+                        "surface": "/api/hub/remote-overflow/safe-chat",
+                    }
+                },
+            )
+
+    request = {
+        "thread_id": "thread-a",
+        "pending_request_id": "pending-remote-123",
+        "remote_overflow_enabled": True,
+        "messages": [{"role": "user", "content": "answer through observable hub"}],
+        "credit_ready": True,
+        "willing_worker_count": 2,
+    }
+    assessment = RemoteOverflowDecisionEngine(local_capacity_provider=_capacity_busy).assess(request)
+    result = RemoteHubExecutionGateway(provider_factory=FakeHubProvider).run(request, assessment)
+
+    assert result["ok"] is True
+    assert result["status"] == "completed"
+    remote_result = result["remote_overflow_result"]
+    assert remote_result["source"] == "remote_hub_ai"
+    assert remote_result["safe_remote_hub_path"] is True
+    assert remote_result["remote_overflow_request_id"] == "pending-remote-123"
+    assert calls[-1]["remote_overflow_request_id"] == "pending-remote-123"
+    assert calls[-1]["metadata"]["safe_remote_hub_path"] is True
+    metadata = remote_result["response"]["metadata"]
+    assert metadata["remote_hub_gateway"] is True
+    assert metadata["hub"]["surface"] == "/api/hub/remote-overflow/safe-chat"
+    assert metadata["no_real_paid_worker_contacted"] is True
+    assert metadata["no_credit_hold_created"] is True
+    assert metadata["no_credit_spent"] is True
+

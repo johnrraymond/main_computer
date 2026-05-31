@@ -102,7 +102,7 @@ def test_chat_console_remote_worker_modal_records_durable_intent_separate_from_c
     assert "credit_hold_created: false" in source
     assert "credit_spent: false" in source
     assert "function chatConsoleSubmitRemoteHubOnce" in source
-    assert "/api/applications/chat-console/ai/remote-overflow/mock-submit" in source
+    assert "/api/applications/chat-console/ai/remote-overflow/hub-submit" in source
     assert "remote_execution_source: \"remote_hub\"" in source
     assert "remote_worker_intent_mode: intentMode" in source
     assert "remote_hub_current_request: true" in source
@@ -202,11 +202,16 @@ def test_chat_console_remote_worker_backend_start_gate_is_used() -> None:
 
 def test_chat_console_remote_worker_phase_six_remote_once_uses_remote_hub_as_normal_ai_execution() -> None:
     source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
+    route_source = (REPO_ROOT / "main_computer" / "viewport_routes_chat_console.py").read_text(encoding="utf-8")
+    dispatch_source = (REPO_ROOT / "main_computer" / "viewport_route_dispatch.py").read_text(encoding="utf-8")
 
+    assert "RemoteHubExecutionGateway" in route_source
+    assert "MockHubAIOverflowProvider().run" not in route_source
+    assert "/api/applications/chat-console/ai/remote-overflow/hub-submit" in dispatch_source
     assert "function chatConsoleSubmitRemoteHubOnce" in source
     assert "function chatConsoleSetRemoteHubExecutionState" in source
     assert "function renderChatConsoleRemoteHubThinkingCard" in source
-    assert "/api/applications/chat-console/ai/remote-overflow/mock-submit" in source
+    assert "/api/applications/chat-console/ai/remote-overflow/hub-submit" in source
     assert "function chatConsoleRemoteWorkerIntentUsesRemoteHubForCurrentRequest" in source
     assert 'canonicalMode === "remote_once"' in source
     assert 'canonicalMode === "remote_when_needed_for_chat"' in source

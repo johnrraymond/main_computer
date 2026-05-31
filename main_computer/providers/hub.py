@@ -53,6 +53,32 @@ class HubProvider(LLMProvider):
             return self._secure_chat(messages)
         return self._legacy_plaintext_chat(messages)
 
+    def remote_overflow_safe_chat(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        remote_overflow_request_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> ChatResponse:
+        """Call the Hub server's observable, no-credit Remote Hub overflow surface."""
+
+        payload = {
+            "model": self.model,
+            "client_node_id": self.client_node_id,
+            "messages": [_message_payload(message) for message in messages],
+            "remote_overflow_request_id": str(remote_overflow_request_id or ""),
+            "metadata": dict(metadata or {}),
+        }
+        data = self._post_json("/api/hub/remote-overflow/safe-chat", payload)
+        response_metadata = dict(data.get("metadata", {})) if isinstance(data.get("metadata", {}), dict) else {}
+        response_metadata.setdefault("hub_url", self.hub_url.rstrip("/"))
+        return ChatResponse(
+            content=str(data.get("content", "")),
+            provider=str(data.get("provider") or "remote-hub-ai"),
+            model=str(data.get("model") or self.model),
+            metadata=response_metadata,
+        )
+
     def _secure_chat(self, messages: Sequence[ChatMessage]) -> ChatResponse:
         if not hub_transport_is_encrypted_or_loopback(
             self.hub_url,

@@ -959,6 +959,44 @@ class HubServerTests(unittest.TestCase):
                 hub_thread.join(timeout=2)
 
 
+    def test_remote_overflow_safe_chat_surface_returns_no_credit_observable_response(self) -> None:
+        with tempfile.TemporaryDirectory() as hub_tmp:
+            hub_config = MainComputerConfig(
+                workspace=Path(hub_tmp),
+                model="fake-model",
+                hub_root=Path(hub_tmp) / "hub-runtime",
+            )
+            hub = HubHttpServer(("127.0.0.1", 0), hub_config, verbose=False)
+            hub_thread = self._start_server(hub)
+            try:
+                provider = HubProvider(
+                    model="fake-model",
+                    hub_url=f"http://127.0.0.1:{hub.server_port}",
+                    client_node_id="chat-console-client",
+                )
+                response = provider.remote_overflow_safe_chat(
+                    [ChatMessage(role="user", content="verify observable hub overflow")],
+                    remote_overflow_request_id="overflow-correlation-01",
+                    metadata={"pending_request_id": "pending-01"},
+                )
+
+                self.assertEqual(response.provider, "remote-hub-ai")
+                self.assertEqual(response.model, "fake-model")
+                self.assertIn("Remote Hub AI response received.", response.content)
+                self.assertIn("No credits were held", response.content)
+                self.assertTrue(response.metadata["remote_hub_observable_passthrough"])
+                self.assertTrue(response.metadata["no_credit_hold_created"])
+                self.assertTrue(response.metadata["no_credit_spent"])
+                self.assertTrue(response.metadata["no_real_paid_worker_contacted"])
+                self.assertEqual(response.metadata["remote_overflow_request_id"], "overflow-correlation-01")
+                self.assertEqual(response.metadata["hub"]["remote_overflow_request_id"], "overflow-correlation-01")
+                self.assertEqual(response.metadata["hub"]["surface"], "/api/hub/remote-overflow/safe-chat")
+            finally:
+                hub.shutdown()
+                hub.server_close()
+                hub_thread.join(timeout=2)
+
+
 
 if __name__ == "__main__":
     unittest.main()

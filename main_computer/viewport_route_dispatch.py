@@ -1311,6 +1311,9 @@ def dispatch_post(self) -> None:
     if route_path == "/api/applications/chat-console/ai/remote-overflow/assess":
         self._handle_chat_console_remote_overflow_assess()
         return
+    if route_path == "/api/applications/chat-console/ai/remote-overflow/hub-submit":
+        self._handle_chat_console_remote_overflow_hub_submit()
+        return
     if route_path == "/api/applications/chat-console/ai/remote-overflow/mock-submit":
         self._handle_chat_console_remote_overflow_mock_submit()
         return
