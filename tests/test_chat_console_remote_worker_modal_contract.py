@@ -22,10 +22,10 @@ def test_chat_console_remote_worker_control_modal_hooks_busy_capacity() -> None:
     assert "snapshot.available_now === false" in source
 
 
-def test_chat_console_remote_worker_modal_is_phase_five_intent_panel_with_compact_assessment() -> None:
+def test_chat_console_remote_worker_modal_is_phase_six_decision_panel_with_compact_assessment() -> None:
     source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
 
-    assert "Phase 5 durable remote-worker intent" in source
+    assert "Remote Worker control" in source
     assert "Remote Worker control" in source
     assert "Current Local AI Worker" in source
     assert "Remote Overflow Assessment" in source
@@ -36,7 +36,7 @@ def test_chat_console_remote_worker_modal_is_phase_five_intent_panel_with_compac
     assert "Blocking worker age" in source
     assert "Last checked" in source
     assert "No credits are held or spent" in source
-    assert "no mock submit, real hub request, permanent Worker setting, or real remote worker is contacted yet." in source
+    assert "Remote Worker This Once routes the request through the Remote Hub" in source
     assert "data-chat-console-remote-worker-control-modal" in source
     assert "data-chat-remote-overflow-assessment-details" in source
     assert "data-chat-remote-overflow-assessment-details-summary" in source
@@ -99,6 +99,9 @@ def test_chat_console_remote_worker_modal_records_durable_intent_separate_from_c
     assert "mock_remote_submit_started: false" in source
     assert "credit_hold_created: false" in source
     assert "credit_spent: false" in source
+    assert "function chatConsoleSubmitRemoteHubOnce" in source
+    assert "/api/applications/chat-console/ai/remote-overflow/mock-submit" in source
+    assert "remote_execution_source: \"remote_hub\"" in source
 
 
 def test_chat_console_remote_worker_phase_five_intent_scope_rules() -> None:
@@ -188,6 +191,27 @@ def test_chat_console_remote_worker_backend_start_gate_is_used() -> None:
     assert "max_local_concurrency=1" in route_source
     assert "max_local_concurrency=1" in rag_route_source
 
+
+def test_chat_console_remote_worker_phase_six_remote_once_uses_remote_hub_as_normal_ai_execution() -> None:
+    source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
+
+    assert "function chatConsoleSubmitRemoteHubOnce" in source
+    assert "function chatConsoleSetRemoteHubExecutionState" in source
+    assert "function renderChatConsoleRemoteHubThinkingCard" in source
+    assert "/api/applications/chat-console/ai/remote-overflow/mock-submit" in source
+    assert "useRemoteHubOnce = chatConsoleCanonicalRemoteWorkerIntentMode(remoteWorkerGate?.choice?.mode) === \"remote_once\"" in source
+    assert "data = await chatConsoleSubmitRemoteHubOnce({pendingRequest: pendingLocalRequest, cell, payload})" in source
+    assert "Remote Hub is working on this request." in source
+    assert "Remote Hub response received." in source
+    assert "Remote Hub AI" in source
+    assert "no credits spent" in source
+    assert "chatConsoleWaitForPendingLocalAiStartLease" in source
+    evaluate_body = source[source.index("async function evaluateChatConsoleCell"):]
+    assert evaluate_body.index("if (useRemoteHubOnce)") < evaluate_body.index("chatConsoleWaitForPendingLocalAiStartLease")
+    assert "chatConsoleHideRemoteWorkerControlModal(closeReason.reason)" in source
+    assert source.index("chatConsoleHideRemoteWorkerControlModal(closeReason.reason)") < source.index("chatConsoleResolveRemoteWorkerControlChoice(choice, pendingRequest.id)")
+
+
 def test_chat_console_remote_worker_modal_has_styles() -> None:
     css = CHAT_CONSOLE_CSS.read_text(encoding="utf-8")
 
@@ -217,7 +241,7 @@ def test_chat_console_remote_worker_busy_preflight_waits_before_local_fetch() ->
     assert "waiting for local AI slot before starting the pending local request" in source
     assert "local AI became available after wait-local close; acquiring pending request lease before starting locally" in source
 
-    preflight_index = source.index("const remoteWorkerGate = await chatConsoleMaybeShowRemoteWorkerControlForBusyLocal")
+    preflight_index = source.index("remoteWorkerGate = await chatConsoleMaybeShowRemoteWorkerControlForBusyLocal")
     local_start_index = source.index("local AI became available; acquiring pending request lease before starting locally")
     fetch_index = source.index("const response = await fetch(endpoint")
     assert preflight_index < fetch_index
