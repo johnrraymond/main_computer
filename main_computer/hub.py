@@ -1065,6 +1065,144 @@ class HubServerHandler(_JsonHandler):
             },
         }
 
+
+    def _remote_overflow_prompt_preview(self, messages_payload: Any, *, limit: int = 280) -> str:
+        chunks: list[str] = []
+        if isinstance(messages_payload, list):
+            for item in messages_payload:
+                if isinstance(item, dict):
+                    content = str(item.get("content") or "")
+                    if content:
+                        chunks.append(content)
+        preview = " ".join(" ".join(chunks).replace("\r\n", "\n").replace("\r", "\n").split())
+        if not preview:
+            preview = "the submitted chat request"
+        return preview[:limit]
+
+    def _log_remote_overflow_event(
+        self,
+        event: str,
+        *,
+        remote_overflow_request_id: str = "",
+        hub_request_id: str = "",
+        message: str = "",
+    ) -> None:
+        parts = [f"[remote-hub-overflow] {event}"]
+        if remote_overflow_request_id:
+            parts.append(f"remote_overflow_request_id={remote_overflow_request_id}")
+        if hub_request_id:
+            parts.append(f"hub_request_id={hub_request_id}")
+        if message:
+            parts.append(message)
+        print(" ".join(parts), flush=True)
+
+    def _handle_remote_overflow_safe_chat(self, body: dict[str, Any]) -> dict[str, Any]:
+        messages_payload = body.get("messages")
+        if not isinstance(messages_payload, list):
+            messages_payload = []
+        model = str(body.get("model") or self.server.config.model or "remote-hub-ai")
+        client_node_id = str(body.get("client_node_id") or self.server.config.hub_client_node_id)
+        remote_overflow_request_id = str(
+            body.get("remote_overflow_request_id")
+            or body.get("correlation_id")
+            or body.get("request_id")
+            or ""
+        ).strip()
+        if not remote_overflow_request_id:
+            remote_overflow_request_id = "remote-overflow-" + hashlib.sha256(
+                json.dumps(
+                    {
+                        "model": model,
+                        "client_node_id": client_node_id,
+                        "messages": messages_payload,
+                        "stamp": time.time_ns(),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest()[:16]
+
+        hub_request_id = "hub_overflow_" + hashlib.sha256(
+            json.dumps(
+                {
+                    "remote_overflow_request_id": remote_overflow_request_id,
+                    "model": model,
+                    "client_node_id": client_node_id,
+                    "stamp": time.time_ns(),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()[:20]
+
+        self._log_remote_overflow_event(
+            "request received",
+            remote_overflow_request_id=remote_overflow_request_id,
+            hub_request_id=hub_request_id,
+        )
+        prompt_preview = self._remote_overflow_prompt_preview(messages_payload)
+        content = (
+            "Remote Hub AI response received.\n"
+            "No credits were held, no credits were spent, and no real paid worker was contacted.\n\n"
+            f"Prompt preview: {prompt_preview}"
+        )
+
+        incoming_metadata = dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {}
+        metadata = {
+            **incoming_metadata,
+            "remote_overflow": True,
+            "remote_hub_ai": True,
+            "remote_hub_surface": "remote-overflow-safe-chat",
+            "remote_hub_observable_passthrough": True,
+            "safe_remote_hub_path": True,
+            "remote_overflow_request_id": remote_overflow_request_id,
+            "no_credit_hold_created": True,
+            "no_credit_spent": True,
+            "no_real_paid_worker_contacted": True,
+            "no_real_remote_worker_contacted": True,
+            "hub": {
+                "request_id": hub_request_id,
+                "remote_overflow_request_id": remote_overflow_request_id,
+                "client_node_id": client_node_id,
+                "model": model,
+                "surface": "/api/hub/remote-overflow/safe-chat",
+                "security_mode": "safe-deterministic-remote-overflow",
+                "no_credit_hold_created": True,
+                "no_credit_spent": True,
+                "no_real_paid_worker_contacted": True,
+            },
+        }
+        self._log_remote_overflow_event(
+            "deterministic safe worker response generated",
+            remote_overflow_request_id=remote_overflow_request_id,
+            hub_request_id=hub_request_id,
+        )
+        self._log_remote_overflow_event(
+            "no credit hold created",
+            remote_overflow_request_id=remote_overflow_request_id,
+            hub_request_id=hub_request_id,
+        )
+        self._log_remote_overflow_event(
+            "no credit spend recorded",
+            remote_overflow_request_id=remote_overflow_request_id,
+            hub_request_id=hub_request_id,
+        )
+        self._log_remote_overflow_event(
+            "response returned to chat console",
+            remote_overflow_request_id=remote_overflow_request_id,
+            hub_request_id=hub_request_id,
+        )
+        return {
+            "ok": True,
+            "content": content,
+            "provider": "remote-hub-ai",
+            "model": model,
+            "metadata": metadata,
+        }
+
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
@@ -1317,6 +1455,9 @@ class HubServerHandler(_JsonHandler):
         try:
             parsed = urlparse(self.path)
             path = parsed.path
+            if path == "/api/hub/remote-overflow/safe-chat":
+                self._send_json(self._handle_remote_overflow_safe_chat(self._read_json()))
+                return
             if path in {"/api/hub/workers/register", "/api/hub/v1/workers/register"}:
                 body = self._read_json()
                 capabilities = dict(body.get("capabilities", {})) if isinstance(body.get("capabilities"), dict) else {}

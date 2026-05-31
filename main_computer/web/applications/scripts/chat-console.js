@@ -646,7 +646,7 @@
       renderChatConsoleNotebook();
       const body = chatConsoleBuildRemoteHubSubmitPayload({pendingRequest: request, cell, payload, mode: intentMode});
       try {
-        const response = await fetch("/api/applications/chat-console/ai/remote-overflow/mock-submit", {
+        const response = await fetch("/api/applications/chat-console/ai/remote-overflow/hub-submit", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
           cache: "no-store",

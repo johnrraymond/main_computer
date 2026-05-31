@@ -1,18 +1,23 @@
 from __future__ import annotations
 
-"""Remote overflow assessment and mock hub AI execution contracts.
+"""Remote overflow assessment and observable Remote Hub overflow contracts.
 
 This module is intentionally backend-only.  It decides whether a local AI
-request may offer remote overflow, and it can return a clearly simulated hub AI
-result for end-to-end flow tests.  It does not submit real remote work, mint
-credits, hold credits, spend credits, or expose private worker prices.
+request may offer remote overflow, and it can route an authorized current
+request through a safe, deterministic Remote Hub surface.  The safe path does
+not mint credits, hold credits, spend credits, or contact real paid workers.
 """
 
 import math
 import time
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
+
+from main_computer.config import MainComputerConfig
+from main_computer.models import ChatMessage
+from main_computer.providers.hub import HubProvider
 
 
 def _utc_now() -> str:
@@ -661,7 +666,7 @@ class RemoteOverflowDecisionEngine:
                     "reason_code": "remote_authorization_required",
                     "willing_worker_count": hub.willing_worker_count,
                     "estimated_max_credits": estimate.estimated_max_credits,
-                    "simulated": True,
+                    "safe_remote_hub_path": True,
                 },
             )
         )
@@ -669,12 +674,144 @@ class RemoteOverflowDecisionEngine:
             status="authorization_required",
             action="authorization_required",
             reason_code="remote_authorization_required",
-            user_message="A compatible mock remote worker is available; user authorization is required before simulated remote execution.",
+            user_message="A compatible Remote Hub worker path is available; user authorization is required before remote execution.",
             authorization_required=True,
             offer_remote=True,
             cards=cards,
             authorization_payload=authorization_payload,
         )
+
+
+def _chat_messages_from_request(request: dict[str, Any]) -> list[ChatMessage]:
+    """Return normalized ChatMessage objects for the Remote Hub gateway."""
+
+    messages: list[ChatMessage] = []
+    for item in _messages_from_request(request):
+        role = str(item.get("role") or "user").strip().lower()
+        if role not in {"system", "user", "assistant"}:
+            role = "user"
+        messages.append(ChatMessage(role=role, content=str(item.get("content") or "")))
+    if not messages:
+        messages.append(ChatMessage(role="user", content=str(request.get("prompt") or "")))
+    return messages
+
+
+def _remote_overflow_request_id(request: dict[str, Any]) -> str:
+    for key in ("remote_overflow_request_id", "pending_request_id", "run_id", "request_id", "cell_id", "thread_id", "chat_thread_id"):
+        value = str(request.get(key) or "").strip()
+        if value:
+            return value[:120]
+    return f"remote-overflow-{uuid.uuid4().hex[:16]}"
+
+
+class RemoteHubExecutionGateway:
+    """Route an authorized overflow request through an observable Remote Hub surface.
+
+    The Hub endpoint used by this gateway is intentionally safe and
+    deterministic for Phase 6: it returns a Remote Hub AI answer without
+    creating credit holds, spending credits, or contacting paid workers.  The
+    important property is that the request crosses the Hub HTTP surface and the
+    Hub server emits operator-visible log lines with the same correlation id.
+    """
+
+    def __init__(
+        self,
+        *,
+        config: MainComputerConfig | None = None,
+        provider_factory: Callable[..., HubProvider] | None = None,
+    ) -> None:
+        self.config = config or MainComputerConfig.from_env()
+        self.provider_factory = provider_factory or HubProvider
+
+    def _provider_for_request(self, request: dict[str, Any]) -> HubProvider:
+        hub_payload = request.get("hub") if isinstance(request.get("hub"), dict) else {}
+        hub_url = str(hub_payload.get("url") or request.get("hub_url") or self.config.hub_url).strip() or self.config.hub_url
+        return self.provider_factory(
+            model=str(request.get("model") or self.config.model or "remote-hub-ai"),
+            hub_url=hub_url.rstrip("/"),
+            timeout_s=float(request.get("hub_timeout_s") or self.config.hub_timeout_s),
+            client_node_id=str(request.get("hub_client_node_id") or self.config.hub_client_node_id),
+            high_security=bool(self.config.hub_high_security),
+            allow_insecure_dev_network=bool(self.config.hub_allow_insecure_dev_network),
+        )
+
+    def run(self, request: dict[str, Any], assessment: RemoteOverflowAssessment) -> dict[str, Any]:
+        if not assessment.authorization_required or not assessment.offer_remote:
+            return {
+                "ok": False,
+                "status": "blocked",
+                "error": "Remote overflow was not authorization-ready.",
+                "remote_overflow": assessment.as_dict(),
+            }
+
+        remote_overflow_request_id = _remote_overflow_request_id(request)
+        messages = _chat_messages_from_request(request)
+        provider = self._provider_for_request(request)
+        response = provider.remote_overflow_safe_chat(
+            messages,
+            remote_overflow_request_id=remote_overflow_request_id,
+            metadata={
+                "remote_overflow_request_id": remote_overflow_request_id,
+                "pending_request_id": str(request.get("pending_request_id") or ""),
+                "run_id": str(request.get("run_id") or ""),
+                "thread_id": str(request.get("thread_id") or request.get("chat_thread_id") or ""),
+                "preflight_id": (assessment.authorization_payload or {}).get("preflight_id", ""),
+                "willing_worker_count": (assessment.authorization_payload or {}).get("willing_worker_count", 0),
+                "safe_remote_hub_path": True,
+            },
+        )
+
+        metadata = dict(response.metadata or {})
+        metadata.update(
+            {
+                "remote_overflow": True,
+                "remote_hub_ai": True,
+                "remote_hub_gateway": True,
+                "safe_remote_hub_path": True,
+                "remote_overflow_request_id": remote_overflow_request_id,
+                "preflight_id": (assessment.authorization_payload or {}).get("preflight_id", ""),
+                "willing_worker_count": (assessment.authorization_payload or {}).get("willing_worker_count", 0),
+                "no_real_paid_worker_contacted": True,
+                "no_real_remote_worker_contacted": True,
+                "no_credit_hold_created": True,
+                "no_credit_spent": True,
+            }
+        )
+        result = {
+            "source": "remote_hub_ai",
+            "safe_remote_hub_path": True,
+            "remote_overflow_request_id": remote_overflow_request_id,
+            "response": {
+                "content": response.content,
+                "provider": "remote-hub-ai",
+                "model": response.model,
+                "metadata": metadata,
+            },
+            "cards": [
+                _card(
+                    "remote_worker_execution",
+                    "Remote worker execution",
+                    "completed",
+                    "Remote Hub AI returned a safe response. No credits were held or spent, and no real paid worker was contacted.",
+                    {
+                        "source": "remote_hub_ai",
+                        "remote_hub_gateway": True,
+                        "safe_remote_hub_path": True,
+                        "remote_overflow_request_id": remote_overflow_request_id,
+                        "no_real_paid_worker_contacted": True,
+                        "no_credit_hold_created": True,
+                        "no_credit_spent": True,
+                    },
+                )
+            ],
+            "updated_at": _utc_now(),
+        }
+        return {
+            "ok": True,
+            "status": "completed",
+            "remote_overflow": assessment.as_dict(),
+            "remote_overflow_result": result,
+        }
 
 
 class MockHubAIOverflowProvider:
