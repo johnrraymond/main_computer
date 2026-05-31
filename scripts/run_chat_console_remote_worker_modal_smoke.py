@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-"""Static smoke for the Phase 5 busy-local Remote Worker durable intent modal.
+"""Static smoke for the Phase 6 busy-local Remote Worker modal and Remote Hub path.
 
 This smoke proves the Chat Console checks local AI capacity during AI request
 startup, opens the modal before the normal AI evaluation fetch, calls the
 read-only remote-overflow assessment endpoint, renders a compact assessment summary with collapsed diagnostic cards, records durable selectable intent separately from close reasons, exposes
-large selectable option cards, and keeps the phase free of credit holds/spend,
-mock submit, real hub submit, or real remote worker contact. It also proves the
+large selectable option cards, and routes Remote Worker This Once through the Remote Hub while keeping the modal as a decision prompt. It also proves the
 modal polls every 2 seconds, binds to one pending request, and waits for a
 local-start lease before automated local retry.
 """
@@ -27,7 +26,7 @@ def main() -> int:
         "function chatConsoleChooseRemoteWorkerControlOption",
         "CHAT_CONSOLE_REMOTE_WORKER_CONTROL_CAPACITY_INTERVAL_MS = 2000",
         "/api/applications/chat-console/ai/capacity",
-        "const remoteWorkerGate = await chatConsoleMaybeShowRemoteWorkerControlForBusyLocal",
+        "remoteWorkerGate = await chatConsoleMaybeShowRemoteWorkerControlForBusyLocal",
         "const choice = await new Promise((resolve) => {",
         "resolveChoice: resolve",
         "function chatConsoleWaitForLocalAiCapacityAvailable",
@@ -36,7 +35,7 @@ def main() -> int:
         "waiting for local AI slot before starting the pending local request",
         "local AI became available after wait-local close; acquiring pending request lease before starting locally",
         "local AI became available; acquiring pending request lease before starting locally",
-        "Phase 5 durable remote-worker intent",
+        "Remote Worker control",
         "Current Local AI Worker",
         "Remote Overflow Assessment",
         "Show diagnostic details",
@@ -83,7 +82,16 @@ def main() -> int:
         "data-chat-remote-overflow-assessment-details",
         "data-chat-remote-overflow-assessment-details-summary",
         "data-chat-remote-overflow-assessment-grid",
-        "No credits are held or spent, and no remote worker is contacted in this phase.",
+        "This dialog only asks for a decision. Any option closes it immediately.",
+        "Remote Worker This Once routes the request through the Remote Hub",
+        "function chatConsoleSubmitRemoteHubOnce",
+        "function chatConsoleSetRemoteHubExecutionState",
+        "function renderChatConsoleRemoteHubThinkingCard",
+        "/api/applications/chat-console/ai/remote-overflow/mock-submit",
+        "Remote Hub is working on this request.",
+        "Remote Hub response received.",
+        "Remote Hub AI",
+        "no credits spent",
     ]
     required_css = [
         ".chat-remote-worker-control-backdrop",
@@ -110,7 +118,7 @@ def main() -> int:
 
     print({
         "ok": True,
-        "phase": "remote worker modal durable intent with compact assessment",
+        "phase": "remote worker modal decision prompt with Remote Hub execution",
         "assessment_endpoint": "/api/applications/chat-console/ai/remote-overflow/assess",
         "capacity_endpoint": "/api/applications/chat-console/ai/capacity",
         "status_cards": ["Current Local AI Worker", "Remote Overflow Assessment"],
@@ -122,9 +130,9 @@ def main() -> int:
         ],
         "credit_hold_created": False,
         "credits_spent": False,
-        "mock_submit_called": False,
-        "real_hub_request_created": False,
-        "remote_worker_contacted": False,
+        "remote_hub_submit_path": "/api/applications/chat-console/ai/remote-overflow/mock-submit",
+        "real_credit_hold_created": False,
+        "credits_spent": False,
         "capacity_poll_interval_ms": 2000,
         "starts_local_after_capacity_available": True,
     })
