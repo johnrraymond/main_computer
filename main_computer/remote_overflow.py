@@ -699,9 +699,8 @@ class MockHubAIOverflowProvider:
             prompt_preview = "the submitted chat request"
 
         content = (
-            "Mock remote AI result returned by the hub test provider. "
-            "This is simulated overflow output for test flow only; no real remote worker was contacted, "
-            "no credits were held, and no credits were spent.\n\n"
+            "Remote Hub AI response received through the safe Hub test path. "
+            "No credits were held, no credits were spent, and no real paid worker was contacted.\n\n"
             f"Prompt preview: {prompt_preview}"
         )
         result = {
@@ -710,8 +709,8 @@ class MockHubAIOverflowProvider:
             "thinking_delay_ms": delay_ms,
             "response": {
                 "content": content,
-                "provider": "mock-hub-ai",
-                "model": str(request.get("model") or "mock-overflow-model"),
+                "provider": "remote-hub-ai",
+                "model": str(request.get("model") or "remote-hub-test-model"),
                 "metadata": {
                     "remote_overflow": True,
                     "simulated": True,
@@ -728,7 +727,7 @@ class MockHubAIOverflowProvider:
                     "remote_worker_execution",
                     "Remote worker execution",
                     "simulated",
-                    "This result was produced by the mock hub AI provider for overflow testing. No real remote worker was contacted and no credits were spent.",
+                    "This result was produced through the safe Remote Hub test path. No real paid worker was contacted and no credits were spent.",
                     {
                         "source": "mock_hub_ai",
                         "simulated": True,

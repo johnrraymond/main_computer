@@ -118,6 +118,13 @@
       return "request";
     }
 
+    function chatConsoleRemoteWorkerIntentUsesRemoteHubForCurrentRequest(mode) {
+      const canonicalMode = chatConsoleCanonicalRemoteWorkerIntentMode(mode);
+      return canonicalMode === "remote_once"
+        || canonicalMode === "remote_when_needed_for_chat"
+        || canonicalMode === "remote_when_needed_global";
+    }
+
     function chatConsoleBuildRemoteWorkerControlIntent({mode, pendingRequest = null, source = "modal_option", auto = false, reason = "", active = true} = {}) {
       const canonicalMode = chatConsoleCanonicalRemoteWorkerIntentMode(mode);
       const request = pendingRequest || chatConsolePendingLocalAiRequest();
@@ -544,14 +551,19 @@
       return data.remote_overflow || data.assessment || data;
     }
 
-    function chatConsoleBuildRemoteHubSubmitPayload({pendingRequest, cell, payload}) {
+    function chatConsoleBuildRemoteHubSubmitPayload({pendingRequest, cell, payload, mode = ""}) {
       const request = pendingRequest || chatConsolePendingLocalAiRequest();
+      const assessmentPayload = chatConsoleBuildRemoteOverflowAssessmentPayload({pendingRequest: request});
       const basePayload = payload && typeof payload === "object" ? payload : (request?.payload && typeof request.payload === "object" ? request.payload : {});
       const submitCell = cell && typeof cell === "object"
         ? {...cell}
         : (basePayload.cell && typeof basePayload.cell === "object" ? {...basePayload.cell} : {});
+      const intentMode = chatConsoleCanonicalRemoteWorkerIntentMode(
+        mode || request?.remote_worker_overflow_intent?.mode || request?.choice?.mode || "remote_once"
+      );
+      const preflightSeed = String(request?.id || request?.run_id || submitCell.id || Date.now()).replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 80);
       return {
-        ...chatConsoleBuildRemoteOverflowAssessmentPayload({pendingRequest: request}),
+        ...assessmentPayload,
         ...basePayload,
         phase: "phase6_remote_hub_execution",
         pending_request_id: request?.id || "",
@@ -561,8 +573,30 @@
           ...submitCell,
           run_id: request?.run_id || basePayload.run_id || submitCell.run_id || ""
         },
+        remote_overflow_enabled: true,
+        local_only: false,
+        authorization_granted_by_user: true,
         remote_execution_source: "remote_hub",
-        remote_once: true
+        remote_worker_intent_mode: intentMode,
+        remote_worker_intent_scope: chatConsoleRemoteWorkerIntentScope(intentMode),
+        remote_hub_current_request: true,
+        remote_once: intentMode === "remote_once",
+        credit_ready: true,
+        willing_worker_count: 1,
+        credit: {
+          ...(assessmentPayload.credit && typeof assessmentPayload.credit === "object" ? assessmentPayload.credit : {}),
+          credit_ready: true,
+          no_credit_hold_created: true,
+          no_credit_spent: true
+        },
+        hub: {
+          ...(assessmentPayload.hub && typeof assessmentPayload.hub === "object" ? assessmentPayload.hub : {}),
+          mode: "remote_hub_current_request",
+          willing_worker_count: 1,
+          preflight_id: `phase6-remote-hub-${preflightSeed}`,
+          real_remote_worker_contacted: false,
+          private_worker_prices_exposed: false
+        }
       };
     }
 
@@ -584,18 +618,25 @@
       return true;
     }
 
-    async function chatConsoleSubmitRemoteHubOnce({pendingRequest, cell, payload}) {
+    async function chatConsoleSubmitRemoteHubOnce({pendingRequest, cell, payload, mode = ""}) {
       const request = pendingRequest || chatConsolePendingLocalAiRequest();
       if (!request?.id) throw new Error("Remote Hub submit requires a pending request.");
       if (request.remote_hub_submit_started_at) {
         throw new Error("Remote Hub submit already started for this pending request.");
       }
+      const intentMode = chatConsoleCanonicalRemoteWorkerIntentMode(
+        mode || request?.remote_worker_overflow_intent?.mode || request?.choice?.mode || "remote_once"
+      );
+      if (!chatConsoleRemoteWorkerIntentUsesRemoteHubForCurrentRequest(intentMode)) {
+        throw new Error(`Remote Hub submit cannot run for intent ${intentMode || "unknown"}.`);
+      }
       chatConsoleUpdatePendingLocalAiRequest(request.id, {
         status: "remote_hub_running",
-        remote_hub_submit_started_at: chatConsoleNow()
+        remote_hub_submit_started_at: chatConsoleNow(),
+        remote_worker_intent_mode: intentMode
       });
       chatConsoleSetRemoteHubExecutionState(request.cell_id || cell?.id || "", {
-        mode: "remote_once",
+        mode: intentMode,
         status: "running",
         started_at: chatConsoleNow(),
         run_id: request.run_id || payload?.run_id || cell?.run_id || "",
@@ -603,26 +644,40 @@
         message: "Remote Hub is working on this request."
       });
       renderChatConsoleNotebook();
-      const body = chatConsoleBuildRemoteHubSubmitPayload({pendingRequest: request, cell, payload});
-      const response = await fetch("/api/applications/chat-console/ai/remote-overflow/mock-submit", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        cache: "no-store",
-        body: JSON.stringify(body)
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || data.ok === false) throw new Error(data.error || `Remote Hub submit returned ${response.status}`);
-      chatConsoleSetRemoteHubExecutionState(request.cell_id || cell?.id || "", {
-        mode: "remote_once",
-        status: "completed",
-        completed_at: chatConsoleNow(),
-        run_id: request.run_id || body.run_id || "",
-        pending_request_id: request.id,
-        message: "Remote Hub response received.",
-        provider: data?.remote_overflow_result?.response?.provider || data?.output_cell?.provider || "remote-hub-ai",
-        model: data?.remote_overflow_result?.response?.model || data?.output_cell?.model || body.model || ""
-      });
-      return data;
+      const body = chatConsoleBuildRemoteHubSubmitPayload({pendingRequest: request, cell, payload, mode: intentMode});
+      try {
+        const response = await fetch("/api/applications/chat-console/ai/remote-overflow/mock-submit", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          cache: "no-store",
+          body: JSON.stringify(body)
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.ok === false) throw new Error(data.error || `Remote Hub submit returned ${response.status}`);
+        chatConsoleSetRemoteHubExecutionState(request.cell_id || cell?.id || "", {
+          mode: intentMode,
+          status: "completed",
+          completed_at: chatConsoleNow(),
+          run_id: request.run_id || body.run_id || "",
+          pending_request_id: request.id,
+          message: "Remote Hub response received.",
+          provider: data?.remote_overflow_result?.response?.provider || data?.output_cell?.provider || "remote-hub-ai",
+          model: data?.remote_overflow_result?.response?.model || data?.output_cell?.model || body.model || ""
+        });
+        return data;
+      } catch (error) {
+        chatConsoleSetRemoteHubExecutionState(request.cell_id || cell?.id || "", {
+          mode: intentMode,
+          status: "error",
+          error: error.message || String(error),
+          completed_at: chatConsoleNow(),
+          run_id: request.run_id || body.run_id || "",
+          pending_request_id: request.id,
+          message: "Remote Hub could not complete this request."
+        });
+        renderChatConsoleNotebook();
+        throw error;
+      }
     }
 
     async function chatConsoleRefreshRemoteOverflowAssessment({pendingRequest = null, capacity = null} = {}) {
@@ -941,21 +996,21 @@
           mode: "use_remote_when_needed_for_chat",
           kicker: "This chat",
           title: "Use Remote Worker When Needed for This Chat",
-          description: "Enable the visible chat option beside the RAG controls.",
-          details: "Uncheck that chat option later to clear the chat-scoped intent."
+          description: "Route this blocked request through the Remote Hub and enable the visible chat option beside the RAG controls.",
+          details: "Uncheck that chat option later to clear the chat-scoped intent. Future automatic chat failover is handled in a later phase."
         }),
         chatConsoleRemoteWorkerOptionCard({
           mode: "always_when_busy",
           kicker: "Global preference",
           title: "Always Use Remote Worker When Local AI Is Busy",
-          description: "Record non-permanent global remote-worker intent for busy-local overflow.",
+          description: "Route this blocked request through the Remote Hub and record non-permanent global remote-worker intent for busy-local overflow.",
           details: "The Worker app global setting is not connected yet, so no permanent Worker setting is changed in this phase."
         })
       );
 
       const notice = document.createElement("p");
       notice.className = "chat-remote-worker-control-notice";
-      notice.textContent = "This dialog only asks for a decision. Any option closes it immediately. Wait-local continues through the normal local AI path; Remote Worker This Once routes the request through the Remote Hub and shows progress in the regular request card. No credits are held or spent in this phase.";
+      notice.textContent = "This dialog only asks for a decision. Any option closes it immediately. Wait-local continues through the normal local AI path; Hub options route this blocked request through the Remote Hub and show progress in the regular request card. No credits are held or spent in this phase.";
 
       const pendingFooter = document.createElement("p");
       pendingFooter.className = "chat-remote-worker-control-pending-footer";
@@ -2980,7 +3035,8 @@
           let pendingLocalRequest = null;
           let localAiStartLease = null;
           let remoteWorkerGate = null;
-          let useRemoteHubOnce = false;
+          let remoteHubIntentMode = "";
+          let useRemoteHubForCurrentRequest = false;
           if (cell.type === "ai") {
             pendingLocalRequest = chatConsoleRegisterPendingLocalAiRequest({
               cell,
@@ -2995,8 +3051,9 @@
               threadId: payload.thread_id,
               pendingRequest: pendingLocalRequest
             });
-            useRemoteHubOnce = chatConsoleCanonicalRemoteWorkerIntentMode(remoteWorkerGate?.choice?.mode) === "remote_once";
-            if (useRemoteHubOnce) {
+            remoteHubIntentMode = chatConsoleCanonicalRemoteWorkerIntentMode(remoteWorkerGate?.choice?.mode);
+            useRemoteHubForCurrentRequest = chatConsoleRemoteWorkerIntentUsesRemoteHubForCurrentRequest(remoteHubIntentMode);
+            if (useRemoteHubForCurrentRequest) {
               chatConsoleSetStatus("Remote Hub is working on this request");
               chatConsoleStopRemoteWorkerControlCapacityWatcher();
             } else {
@@ -3019,8 +3076,8 @@
           }
           let data = {};
           try {
-            if (useRemoteHubOnce) {
-              data = await chatConsoleSubmitRemoteHubOnce({pendingRequest: pendingLocalRequest, cell, payload});
+            if (useRemoteHubForCurrentRequest) {
+              data = await chatConsoleSubmitRemoteHubOnce({pendingRequest: pendingLocalRequest, cell, payload, mode: remoteHubIntentMode});
             } else {
               const response = await fetch(endpoint, {
                 method: "POST",
@@ -3035,7 +3092,7 @@
               chatConsoleReleaseLocalAiStartLease(localAiStartLease.pending_request_id, "completed");
               chatConsoleForgetPendingLocalAiRequest(localAiStartLease.pending_request_id);
             } else if (pendingLocalRequest?.id) {
-              if (useRemoteHubOnce) {
+              if (useRemoteHubForCurrentRequest) {
                 chatConsoleUpdatePendingLocalAiRequest(pendingLocalRequest.id, {
                   status: "remote_hub_completed",
                   completed_at: chatConsoleNow()

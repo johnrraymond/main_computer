@@ -36,7 +36,7 @@ def test_chat_console_remote_worker_modal_is_phase_six_decision_panel_with_compa
     assert "Blocking worker age" in source
     assert "Last checked" in source
     assert "No credits are held or spent" in source
-    assert "Remote Worker This Once routes the request through the Remote Hub" in source
+    assert "Hub options route this blocked request through the Remote Hub" in source
     assert "data-chat-console-remote-worker-control-modal" in source
     assert "data-chat-remote-overflow-assessment-details" in source
     assert "data-chat-remote-overflow-assessment-details-summary" in source
@@ -73,6 +73,8 @@ def test_chat_console_remote_worker_modal_has_large_selectable_options() -> None
     assert "Use Remote Worker This Once" in source
     assert "Use Remote Worker When Needed for This Chat" in source
     assert "Always Use Remote Worker When Local AI Is Busy" in source
+    assert "Route this blocked request through the Remote Hub and enable the visible chat option beside the RAG controls." in source
+    assert "Route this blocked request through the Remote Hub and record non-permanent global remote-worker intent for busy-local overflow." in source
     assert "The Worker app global setting is not connected yet, so no permanent Worker setting is changed in this phase." in source
     assert '[data-chat-remote-worker-option="wait_local"]' in source
     assert "button.dataset.chatRemoteWorkerOption = mode" in source
@@ -102,6 +104,12 @@ def test_chat_console_remote_worker_modal_records_durable_intent_separate_from_c
     assert "function chatConsoleSubmitRemoteHubOnce" in source
     assert "/api/applications/chat-console/ai/remote-overflow/mock-submit" in source
     assert "remote_execution_source: \"remote_hub\"" in source
+    assert "remote_worker_intent_mode: intentMode" in source
+    assert "remote_hub_current_request: true" in source
+    assert "authorization_granted_by_user: true" in source
+    assert "credit_ready: true" in source
+    assert "willing_worker_count: 1" in source
+    assert "phase6-remote-hub-" in source
 
 
 def test_chat_console_remote_worker_phase_five_intent_scope_rules() -> None:
@@ -199,15 +207,19 @@ def test_chat_console_remote_worker_phase_six_remote_once_uses_remote_hub_as_nor
     assert "function chatConsoleSetRemoteHubExecutionState" in source
     assert "function renderChatConsoleRemoteHubThinkingCard" in source
     assert "/api/applications/chat-console/ai/remote-overflow/mock-submit" in source
-    assert "useRemoteHubOnce = chatConsoleCanonicalRemoteWorkerIntentMode(remoteWorkerGate?.choice?.mode) === \"remote_once\"" in source
-    assert "data = await chatConsoleSubmitRemoteHubOnce({pendingRequest: pendingLocalRequest, cell, payload})" in source
+    assert "function chatConsoleRemoteWorkerIntentUsesRemoteHubForCurrentRequest" in source
+    assert 'canonicalMode === "remote_once"' in source
+    assert 'canonicalMode === "remote_when_needed_for_chat"' in source
+    assert 'canonicalMode === "remote_when_needed_global"' in source
+    assert "useRemoteHubForCurrentRequest = chatConsoleRemoteWorkerIntentUsesRemoteHubForCurrentRequest(remoteHubIntentMode)" in source
+    assert "data = await chatConsoleSubmitRemoteHubOnce({pendingRequest: pendingLocalRequest, cell, payload, mode: remoteHubIntentMode})" in source
     assert "Remote Hub is working on this request." in source
     assert "Remote Hub response received." in source
     assert "Remote Hub AI" in source
     assert "no credits spent" in source
     assert "chatConsoleWaitForPendingLocalAiStartLease" in source
     evaluate_body = source[source.index("async function evaluateChatConsoleCell"):]
-    assert evaluate_body.index("if (useRemoteHubOnce)") < evaluate_body.index("chatConsoleWaitForPendingLocalAiStartLease")
+    assert evaluate_body.index("if (useRemoteHubForCurrentRequest)") < evaluate_body.index("chatConsoleWaitForPendingLocalAiStartLease")
     assert "chatConsoleHideRemoteWorkerControlModal(closeReason.reason)" in source
     assert source.index("chatConsoleHideRemoteWorkerControlModal(closeReason.reason)") < source.index("chatConsoleResolveRemoteWorkerControlChoice(choice, pendingRequest.id)")
 
