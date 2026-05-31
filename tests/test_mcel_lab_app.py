@@ -268,7 +268,8 @@ def test_mcel_lab_chromes_select_structural_chrome_family() -> None:
     assert 'generatedRegion("compact-summary", chrome, "header", "summary")' in chrome_law
     assert 'generatedRegion("compact-body", chrome, "body")' in chrome_law
     assert "panel.appendChild(child)" not in chrome_law
-    assert "applyChromeHtml(runtimeHtml" in ui
+    assert "MCEL.normalizeChrome(mcelLabState.chrome)" in ui
+    assert "MCEL.applyChrome(runtimeHtml" in ui
     assert "changeMcelChrome" in ui
     assert "MCEL_CHROME_CHANGED" in ui
     assert 'data-mcel-chrome="${chrome}"' in ui
