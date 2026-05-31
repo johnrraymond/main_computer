@@ -1980,7 +1980,8 @@ def serve_hub(config: MainComputerConfig, host: str = "127.0.0.1", port: int = D
         "POST /api/hub/v1/workers/heartbeat, POST /api/hub/v1/workers/poll, "
         "POST /api/hub/v1/workers/results, GET/POST /api/hub/v1/workers/claims, "
         "GET /api/hub/v1/workers/settlements, POST /api/hub/v1/workers/settlements/batches, POST /api/hub/v1/workers/settlements/proofs, POST /api/hub/v1/workers/settlements/chain-executions, "
-        "POST /api/hub/sessions/start, POST /api/hub/sessions/chat, POST /api/hub/payouts/claim"
+        "POST /api/hub/sessions/start, POST /api/hub/sessions/chat, "
+        "POST /api/hub/remote-overflow/safe-chat, POST /api/hub/payouts/claim"
     )
     try:
         server.serve_forever()

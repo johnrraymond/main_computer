@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from main_computer.hub_security import (
@@ -60,7 +61,14 @@ class HubProvider(LLMProvider):
         remote_overflow_request_id: str,
         metadata: dict[str, Any] | None = None,
     ) -> ChatResponse:
-        """Call the Hub server's observable, no-credit Remote Hub overflow surface."""
+        """Call the Hub server's observable, no-credit Remote Hub overflow surface.
+
+        In local development the application process can inherit a Docker/dev
+        hub DNS name that is not resolvable from the Windows host running the
+        Hub server.  This safe deterministic surface is explicitly local-dev
+        no-credit work, so a DNS-resolution failure retries the same port on
+        127.0.0.1 and records that fallback in response metadata.
+        """
 
         payload = {
             "model": self.model,
@@ -69,9 +77,28 @@ class HubProvider(LLMProvider):
             "remote_overflow_request_id": str(remote_overflow_request_id or ""),
             "metadata": dict(metadata or {}),
         }
-        data = self._post_json("/api/hub/remote-overflow/safe-chat", payload)
+        original_hub_url = self.hub_url.rstrip("/")
+        fallback_from = ""
+        try:
+            data = self._post_json("/api/hub/remote-overflow/safe-chat", payload)
+            hub_url_used = original_hub_url
+        except RuntimeError as exc:
+            fallback_url = self._remote_overflow_loopback_fallback_url()
+            if not fallback_url or not self._is_name_resolution_failure(exc):
+                raise
+            fallback_from = original_hub_url
+            self.hub_url = fallback_url
+            try:
+                data = self._post_json("/api/hub/remote-overflow/safe-chat", payload)
+                hub_url_used = fallback_url
+            finally:
+                self.hub_url = original_hub_url
+
         response_metadata = dict(data.get("metadata", {})) if isinstance(data.get("metadata", {}), dict) else {}
-        response_metadata.setdefault("hub_url", self.hub_url.rstrip("/"))
+        response_metadata["hub_url"] = hub_url_used
+        if fallback_from:
+            response_metadata["hub_url_fallback_from"] = fallback_from
+            response_metadata["hub_url_fallback_to"] = hub_url_used
         return ChatResponse(
             content=str(data.get("content", "")),
             provider=str(data.get("provider") or "remote-hub-ai"),
@@ -172,9 +199,33 @@ class HubProvider(LLMProvider):
             metadata=metadata,
         )
 
+    def _remote_overflow_loopback_fallback_url(self) -> str:
+        parsed = urlparse(self.hub_url)
+        host = (parsed.hostname or "").strip().lower()
+        if host in {"", "127.0.0.1", "localhost", "::1"}:
+            return ""
+        if parsed.scheme not in {"http", "https"}:
+            return ""
+        port = parsed.port or 8770
+        return f"http://127.0.0.1:{port}"
+
+    @staticmethod
+    def _is_name_resolution_failure(exc: BaseException) -> bool:
+        text = str(exc).lower()
+        return any(
+            marker in text
+            for marker in (
+                "getaddrinfo failed",
+                "name or service not known",
+                "nodename nor servname provided",
+                "temporary failure in name resolution",
+            )
+        )
+
     def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        url = self.hub_url.rstrip("/") + path
         request = Request(
-            self.hub_url.rstrip("/") + path,
+            url,
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -184,9 +235,9 @@ class HubProvider(LLMProvider):
                 data = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Hub request failed with HTTP {exc.code}: {body}") from exc
+            raise RuntimeError(f"Hub request failed for {url} with HTTP {exc.code}: {body}") from exc
         except URLError as exc:
-            raise RuntimeError(f"Hub request failed: {exc}") from exc
+            raise RuntimeError(f"Hub request failed for {url}: {exc}") from exc
 
         if not isinstance(data, dict):
             raise RuntimeError("Hub returned a non-object response.")

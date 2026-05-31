@@ -997,6 +997,57 @@ class HubServerTests(unittest.TestCase):
                 hub_thread.join(timeout=2)
 
 
+    def test_remote_overflow_safe_chat_retries_loopback_when_hub_dns_name_fails(self) -> None:
+        class DnsFailOnceHubProvider(HubProvider):
+            def _post_json(self, path: str, payload: dict[str, object]) -> dict[str, object]:
+                if self.hub_url.startswith("http://unresolvable-hub-name"):
+                    raise RuntimeError(
+                        "Hub request failed for "
+                        f"{self.hub_url.rstrip('/')}{path}: "
+                        "<urlopen error [Errno 11001] getaddrinfo failed>"
+                    )
+                return super()._post_json(path, payload)
+
+        with tempfile.TemporaryDirectory() as hub_tmp:
+            hub_config = MainComputerConfig(
+                workspace=Path(hub_tmp),
+                model="fake-model",
+                hub_root=Path(hub_tmp) / "hub-runtime",
+            )
+            hub = HubHttpServer(("127.0.0.1", 0), hub_config, verbose=False)
+            hub_thread = self._start_server(hub)
+            try:
+                provider = DnsFailOnceHubProvider(
+                    model="fake-model",
+                    hub_url=f"http://unresolvable-hub-name:{hub.server_port}",
+                    client_node_id="chat-console-client",
+                )
+                response = provider.remote_overflow_safe_chat(
+                    [ChatMessage(role="user", content="verify loopback fallback")],
+                    remote_overflow_request_id="overflow-correlation-fallback",
+                    metadata={"pending_request_id": "pending-fallback"},
+                )
+
+                self.assertEqual(response.provider, "remote-hub-ai")
+                self.assertIn("Remote Hub AI response received.", response.content)
+                self.assertEqual(response.metadata["hub_url"], f"http://127.0.0.1:{hub.server_port}")
+                self.assertEqual(
+                    response.metadata["hub_url_fallback_from"],
+                    f"http://unresolvable-hub-name:{hub.server_port}",
+                )
+                self.assertEqual(
+                    response.metadata["hub_url_fallback_to"],
+                    f"http://127.0.0.1:{hub.server_port}",
+                )
+                self.assertEqual(response.metadata["remote_overflow_request_id"], "overflow-correlation-fallback")
+                self.assertTrue(response.metadata["no_credit_hold_created"])
+                self.assertTrue(response.metadata["no_credit_spent"])
+            finally:
+                hub.shutdown()
+                hub.server_close()
+                hub_thread.join(timeout=2)
+
+
 
 if __name__ == "__main__":
     unittest.main()
