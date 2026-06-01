@@ -126,7 +126,7 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
     assert 'id="worker-faucet-result-runtime"' in html
     assert "Request 1 local dev-chain credit" in html
     assert "Request Faucet Funds" in html
-    assert "read MetaMask directly" in html
+    assert "verified ethers wallet state" in html
     assert '"/api/xlag/dev/faucet"' in js
     assert "WORKER_DEV_CHAIN_ID_DECIMAL = 42424242" in js
     assert 'WORKER_DEV_CHAIN_ID_HEX = "0x28757b2"' in js
@@ -178,45 +178,50 @@ def test_worker_wallet_connect_and_disconnect_use_always_disconnect_cycle() -> N
 
     assert "async function connectWorkerPrimaryWallet" in js
     assert "async function disconnectWorkerPrimaryWallet" in js
-    assert "async function workerWaitForStableWalletProvider" in js
+    assert "async function workerGetEthers" in js
     assert "async function workerReadWalletProviderSnapshot" in js
+    assert "async function workerEnsureDevWalletChain" in js
     assert "workerConnectWallet.addEventListener" in js
     assert "workerDisconnectWallet.addEventListener" in js
     assert "workerWalletNextOperation()" in js
     assert "workerWalletOperationIsCurrent(token)" in js
-    assert "connect.eth_requestAccounts.start" in js
-    assert "connect.eth_requestAccounts.resolved" in js
-    assert "provider.sample.after-requestAccounts" in js
+    assert "connect.ethers.requestAccounts.start" in js
+    assert "connect.ethers.requestAccounts.resolved" in js
+    assert "provider.selected" in js
     assert "connect.finalized.connected" in js
-    assert "disconnect.wallet_revokePermissions.start" in js
+    assert "disconnect.ethers.revokePermissions.start" in js
     assert "disconnect.done" in js
-    assert "provider.accountsChanged.observed-only" in js
-    assert "provider.chainChanged.observed-only" in js
+    assert "provider.accountsChanged.refresh" in js
+    assert "provider.chainChanged.refresh" in js
     assert "Force Disconnect / Reset" in js
-    assert "Local state cleared. If MetaMask still has a pending popup, close it manually." in js
-    assert "MetaMask returned; stabilizing provider state" in js
+    assert "Local state cleared. If a wallet popup is still pending, close it manually." in js
+    assert "Wallet accepted. Verifying signer and dev chain with ethers." in js
 
     required_provider_calls = [
-        "window.ethereum",
+        "ethers.BrowserProvider",
         "eth_requestAccounts",
-        "eth_accounts",
-        "eth_chainId",
         "wallet_revokePermissions",
+        "wallet_switchEthereumChain",
+        "wallet_addEthereumChain",
+        "eip6963:requestProvider",
     ]
     for token in required_provider_calls:
         assert token in js
 
     forbidden = [
-        "ethers",
+        "window.ethereum.request",
         "wallet_requestPermissions",
-        "wallet_switchEthereumChain",
-        "wallet_addEthereumChain",
         "Verify / Finalize",
         "document.hasFocus",
         "window.addEventListener(\"focus\"",
         "window.addEventListener(\"blur\"",
         "Wallet connect and disconnect calls are intentionally removed",
+        "observed-only",
+        "workerWaitForStableWalletProvider",
     ]
     for token in forbidden:
         assert token not in js
+
+    assert "const {wallet: _liveWalletState, ...serializableState}" in js
+    assert "workerSetPrimaryWalletState" in js
 
