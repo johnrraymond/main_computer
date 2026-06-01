@@ -140,3 +140,23 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
 
     assert "not Hub-spendable" not in html
     assert "Hub-spendable" not in js
+
+def test_worker_wallet_connect_is_single_flight_and_dev_chain_aware() -> None:
+    js = WORKER_JS.read_text(encoding="utf-8")
+
+    assert "let workerWalletConnectInFlight = null" in js
+    assert "if (workerWalletConnectInFlight)" in js
+    assert "Wallet connection already in progress." in js
+    assert 'workerConnectWallet.setAttribute("aria-busy", "true")' in js
+    assert 'workerConnectWallet.removeAttribute("aria-busy")' in js
+
+    assert "function workerBindWalletProviderEvents()" in js
+    assert '"accountsChanged"' in js
+    assert '"chainChanged"' in js
+
+    assert "async function workerEnsureExpectedWalletChain()" in js
+    assert '"/api/xlag/contract/status"' in js
+    assert '"wallet_switchEthereumChain"' in js
+    assert '"wallet_addEthereumChain"' in js
+    assert "workerNormalizeChainHex(chainId)" in js
+
