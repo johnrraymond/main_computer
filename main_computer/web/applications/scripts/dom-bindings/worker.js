@@ -44,8 +44,17 @@
     const workerRefreshBridgeReadiness = document.querySelector("#worker-refresh-bridge-readiness");
     const workerFaucetAmount = document.querySelector("#worker-faucet-amount");
     const workerFaucetTarget = document.querySelector("#worker-faucet-target");
+    const workerFaucetReadiness = document.querySelector("#worker-faucet-readiness");
     const workerFaucetStatus = document.querySelector("#worker-faucet-status");
     const workerFaucetTx = document.querySelector("#worker-faucet-tx");
+    const workerFaucetDisabledReason = document.querySelector("#worker-faucet-disabled-reason");
+    const workerFaucetResult = document.querySelector("#worker-faucet-result");
+    const workerFaucetResultTx = document.querySelector("#worker-faucet-result-tx");
+    const workerFaucetResultFrom = document.querySelector("#worker-faucet-result-from");
+    const workerFaucetResultTo = document.querySelector("#worker-faucet-result-to");
+    const workerFaucetResultAmount = document.querySelector("#worker-faucet-result-amount");
+    const workerFaucetResultChain = document.querySelector("#worker-faucet-result-chain");
+    const workerFaucetResultRuntime = document.querySelector("#worker-faucet-result-runtime");
     const workerRequestFaucet = document.querySelector("#worker-request-faucet");
     const workerAddRecoveryEmailForm = document.querySelector("#worker-add-recovery-email-form");
     const workerRecoveryEmailInput = document.querySelector("#worker-recovery-email-input");

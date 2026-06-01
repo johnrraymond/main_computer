@@ -266,18 +266,24 @@
 
         <div class="worker-card worker-bridge-card worker-faucet-card" id="worker-faucet-card" aria-label="Faucet credit request">
           <h4>Faucet Credits</h4>
-          <p class="worker-card-note">Request credits through the existing faucet for the connected wallet or eligible account. Credit binding, reconciliation, and issuance policy remain separate from this local readiness patch.</p>
-          <label>
-            <span>Amount credits</span>
-            <input id="worker-faucet-amount" type="number" min="1" step="1" value="1" autocomplete="off">
-          </label>
+          <p class="worker-card-note">Request 1 local dev-chain credit for the already-connected Worker wallet. The faucet does not connect wallets, switch chains, or read MetaMask directly.</p>
           <dl class="worker-bridge-status-grid">
             <div><dt>Target</dt><dd id="worker-faucet-target">Connect wallet first</dd></div>
+            <div><dt>Readiness</dt><dd id="worker-faucet-readiness">Checking faucet readiness</dd></div>
             <div><dt>Last request</dt><dd id="worker-faucet-status">Not requested</dd></div>
             <div><dt>Transaction</dt><dd id="worker-faucet-tx">—</dd></div>
           </dl>
+          <dl class="worker-bridge-status-grid worker-faucet-result-grid" id="worker-faucet-result" hidden>
+            <div><dt>tx_hash</dt><dd id="worker-faucet-result-tx">—</dd></div>
+            <div><dt>from</dt><dd id="worker-faucet-result-from">—</dd></div>
+            <div><dt>to</dt><dd id="worker-faucet-result-to">—</dd></div>
+            <div><dt>amount_credits</dt><dd id="worker-faucet-result-amount">—</dd></div>
+            <div><dt>chain_id</dt><dd id="worker-faucet-result-chain">—</dd></div>
+            <div><dt>runtime_source</dt><dd id="worker-faucet-result-runtime">—</dd></div>
+          </dl>
           <div class="worker-inline-actions">
-            <button type="button" id="worker-request-faucet">Request Faucet Credits</button>
+            <button type="button" id="worker-request-faucet" disabled>Request Faucet Funds</button>
+            <span id="worker-faucet-disabled-reason" class="worker-inline-status">Connect Wallet before requesting faucet funds.</span>
           </div>
         </div>
 

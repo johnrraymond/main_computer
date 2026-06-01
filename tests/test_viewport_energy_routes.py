@@ -18,7 +18,7 @@ from main_computer.cli import _config_from_args
 from main_computer.config import DEFAULT_ENERGY_CHAIN_ID, DEFAULT_ENERGY_CHAIN_RPC_URL, MainComputerConfig
 from main_computer.energy import EnergyCreditLedger
 from main_computer.energy_chain import EnergyChainClient
-from main_computer.dev_faucet import DevFaucetError, xlag_dev_faucet
+from main_computer.dev_faucet import DevFaucetError, xlag_dev_faucet, xlag_dev_faucet_status
 from main_computer.governance import bridge_governance_status
 from main_computer.models import ChatMessage, ChatResponse
 from main_computer.revision import DebugAssetRevisionControl, RevisionControl
@@ -744,6 +744,42 @@ class ViewportEnergyRouteTests(unittest.TestCase):
             self.assertEqual(chain.sent["value"], hex(250_000_000_000_000_000))
             self.assertNotIn("private", json.dumps(result).lower())
 
+    def test_xlag_dev_faucet_status_reports_runtime_chain_and_account_readiness(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime_path = root / "runtime" / "deployments" / "current.json"
+            runtime_path.parent.mkdir(parents=True)
+            runtime_path.write_text(json.dumps({"environment": "dev"}), encoding="utf-8")
+
+            class FakeChain:
+                def rpc(self, method: str, params=None):
+                    if method == "eth_chainId":
+                        return hex(42424242)
+                    raise AssertionError(f"unexpected rpc method: {method}")
+
+            config = MainComputerConfig(
+                workspace=root,
+                energy_chain_rpc_url="http://127.0.0.1:18547",
+                xlag_chain_id=42424242,
+                dev_chain_runtime_source="deployment-runtime",
+                dev_chain_runtime_path=runtime_path,
+                dev_chain_offices=(
+                    {"office": "O0", "title": "Captain", "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"},
+                ),
+            )
+
+            result = xlag_dev_faucet_status(config, FakeChain())
+
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["ready"])
+            self.assertEqual(result["endpoint"], "/api/xlag/dev/faucet")
+            self.assertEqual(result["method"], "POST")
+            self.assertEqual(result["runtime_source"], "deployment-runtime")
+            self.assertTrue(result["has_faucet_account"])
+            self.assertEqual(result["faucet_from"], "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266")
+            self.assertEqual(result["chain_id"], 42424242)
+            self.assertEqual(result["expected_chain_id_hex"], "0x28757b2")
+
     def test_xlag_dev_faucet_refuses_non_loopback_rpc(self) -> None:
         config = MainComputerConfig(
             workspace=Path.cwd(),
@@ -814,6 +850,20 @@ class ViewportEnergyRouteTests(unittest.TestCase):
                 server.energy_chain = fake_chain
                 thread = threading.Thread(target=server.serve_forever, daemon=True)
                 thread.start()
+
+                status_request = Request(
+                    f"http://127.0.0.1:{server.server_port}/api/xlag/dev/faucet",
+                    headers={"Accept": "application/json"},
+                    method="GET",
+                )
+                with urlopen(status_request, timeout=5) as response:
+                    self.assertEqual(response.status, 200)
+                    status_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertTrue(status_payload["ready"])
+                self.assertEqual(status_payload["endpoint"], "/api/xlag/dev/faucet")
+                self.assertEqual(status_payload["runtime_source"], "deployment-runtime")
+                self.assertEqual(status_payload["chain_id"], 42424242)
 
                 request = Request(
                     f"http://127.0.0.1:{server.server_port}/api/xlag/dev/faucet",

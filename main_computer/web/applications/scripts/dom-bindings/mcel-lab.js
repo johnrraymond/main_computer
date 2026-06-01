@@ -30,6 +30,7 @@
         lastCommandPlan: null,
         lastChromeReport: null,
         lastChromeFitReport: null,
+        lastSmartCssPrimitiveReport: null,
         lastProjectSnapshot: null,
         activeModal: null,
         siteFrameTwiddle: {
@@ -76,8 +77,13 @@
     const mcelUiSkeletonHealth = document.querySelector("#mcel-ui-skeleton-health");
     const mcelOpenEditorModal = document.querySelector("#mcel-open-editor-modal");
     const mcelOpenSiteModal = document.querySelector("#mcel-open-site-modal");
+    const mcelOpenSmartCssModal = document.querySelector("#mcel-open-smart-css-modal");
     const mcelEditorModal = document.querySelector("#mcel-editor-modal");
     const mcelSiteModal = document.querySelector("#mcel-site-modal");
+    const mcelSmartCssModal = document.querySelector("#mcel-smart-css-modal");
+    const mcelSmartCssSuite = document.querySelector("#mcel-smart-css-suite");
+    const mcelSmartCssReport = document.querySelector("#mcel-smart-css-report");
+    const mcelSmartCssRerun = document.querySelector("#mcel-smart-css-rerun");
     let mcelSiteFrame = document.querySelector("#mcel-site-frame");
     const mcelSiteFrameStatus = document.querySelector("#mcel-site-frame-status");
     const mcelSiteFrameMiniStatus = document.querySelector("#mcel-site-frame-mini-status");

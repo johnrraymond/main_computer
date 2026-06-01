@@ -77,6 +77,8 @@
       mcelChromeSelect?.addEventListener("change", () => changeMcelChrome("chrome-select"));
       mcelOpenEditorModal?.addEventListener("click", () => openMcelLabModal("editor"));
       mcelOpenSiteModal?.addEventListener("click", () => openMcelLabModal("site"));
+      mcelOpenSmartCssModal?.addEventListener("click", () => openMcelLabModal("smart-css"));
+      mcelSmartCssRerun?.addEventListener("click", () => renderMcelSmartCssPrimitiveLab("manual-rerun"));
       mcelSiteFrameResync?.addEventListener("click", () => syncMcelRenderedSiteFrame("twiddle-resync"));
       mcelSiteFrameRebuild?.addEventListener("click", () => rebuildMcelSiteFrameShell("twiddle-rebuild", {syncAfter: true}));
       mcelSiteFrameClear?.addEventListener("click", () => clearMcelSiteFrameSrcdoc("twiddle-clear"));
@@ -85,7 +87,7 @@
       document.querySelectorAll("[data-mcel-close-modal]").forEach((button) => {
         button.addEventListener("click", () => closeMcelLabModal(button.dataset.mcelCloseModal || "all"));
       });
-      [mcelEditorModal, mcelSiteModal].filter(Boolean).forEach((modal) => {
+      [mcelEditorModal, mcelSiteModal, mcelSmartCssModal].filter(Boolean).forEach((modal) => {
         modal.addEventListener("click", (event) => {
           if (event.target === modal) closeMcelLabModal("all");
         });
@@ -1180,7 +1182,9 @@
       const chromePart = String(warning.chromePart || "");
       const scope = mcelChromeCompositionScopeSelector();
       const wantsGeneratedContainer = warning?.problem === "container-distorted-by-extreme-aspect-ratio" ||
-        warning?.remedy === "dedistort-container-shape";
+        warning?.problem === "shape-containment-failed" ||
+        warning?.remedy === "dedistort-container-shape" ||
+        warning?.remedy === "smart-content-envelope";
 
       if (wantsGeneratedContainer && chromePart) {
         const selector = `[data-mcel-chrome-part="${mcelSafeAttributeValue(chromePart)}"]`;
@@ -1225,11 +1229,13 @@
         const remedy = warning?.remedy ||
           (warning?.problem === "primary-control-width-collapsed-relative-to-input"
             ? "control-balance"
-            : (warning?.problem === "shape-interior-escape"
-              ? "shape-inset-content"
-              : (warning?.problem === "text-distorted-by-narrow-inline-size"
-                ? "dedistort-inline-content"
-                : (warning?.problem === "container-distorted-by-extreme-aspect-ratio" ? "dedistort-container-shape" : ""))));
+            : (warning?.problem === "shape-containment-failed"
+              ? "smart-content-envelope"
+              : (warning?.problem === "shape-interior-escape"
+                ? "shape-inset-content"
+                : (warning?.problem === "text-distorted-by-narrow-inline-size"
+                  ? "dedistort-inline-content"
+                  : (warning?.problem === "container-distorted-by-extreme-aspect-ratio" ? "dedistort-container-shape" : "")))));
         if (!remedy) return;
         const target = findMcelCompositionRemedyTarget(doc, warning);
         if (!target) return;
@@ -1586,22 +1592,442 @@
       }
     }
 
+    function getMcelSmartCssPrimitiveCases() {
+      return [
+        {
+          id: "unbounded-pill-frame",
+          title: "Unbounded CSS pill used as a content-bearing frame",
+          rawPrimitive: "border-radius: 999px on a generated frame that contains a card stack",
+          smartPrimitive: "big-rounded support-frame object with explicit content region and growth contract",
+          proof: "shape-containment",
+          rawClass: "mcel-smart-css-raw-pill",
+          smartClass: "mcel-smart-css-smart-frame",
+          expectedRawFailure: "shape-containment-failed"
+        },
+        {
+          id: "fixed-clip-box",
+          title: "Fixed overflow clip box pretending to be a layout primitive",
+          rawPrimitive: "fixed block-size plus overflow: clip around variable children",
+          smartPrimitive: "flow-frame object that derives block-size from accepted children",
+          proof: "content-fit",
+          rawClass: "mcel-smart-css-raw-clip",
+          smartClass: "mcel-smart-css-smart-flow",
+          expectedRawFailure: "content-fit-failed"
+        },
+        {
+          id: "overlay-paint-layer",
+          title: "Decorative paint layer order around semantic content",
+          rawPrimitive: "same decorative paint token, but raw stacking places it above semantic content",
+          smartPrimitive: "same decorative paint token, but paint envelope is behind semantic content and inert to hit testing",
+          proof: "paint-layer-order",
+          rawClass: "mcel-smart-css-raw-overlay",
+          smartClass: "mcel-smart-css-smart-paint",
+          expectedRawFailure: "paint-layer-overlay-failed"
+        }
+      ];
+    }
+
+    function createMcelSmartCssCard(title, copy) {
+      const card = document.createElement("article");
+      card.className = "mcel-smart-css-card";
+      card.innerHTML = `<strong>${title}</strong><span>${copy}</span>`;
+      return card;
+    }
+
+    function createMcelSmartCssPrimitiveStage(spec, side) {
+      const isRaw = side === "raw";
+      const stage = document.createElement("section");
+      stage.className = `mcel-smart-css-stage ${isRaw ? spec.rawClass : spec.smartClass}`;
+      stage.dataset.mcelSmartCssSide = side;
+      stage.dataset.mcelSmartCssProof = spec.proof;
+
+      const heading = document.createElement("header");
+      heading.className = "mcel-smart-css-stage-head";
+      heading.innerHTML = [
+        `<span>${isRaw ? "Raw CSS backend" : "MCEL smart primitive"}</span>`,
+        `<strong>${isRaw ? spec.rawPrimitive : spec.smartPrimitive}</strong>`
+      ].join("");
+
+      const object = document.createElement("div");
+      object.className = "mcel-smart-css-object";
+      object.dataset.mcelSmartCssObject = isRaw ? "raw" : "smart";
+
+      const layer = document.createElement("div");
+      layer.className = "mcel-smart-css-paint-layer";
+      layer.setAttribute("aria-hidden", "true");
+      object.appendChild(layer);
+
+      const content = document.createElement("div");
+      content.className = "mcel-smart-css-content";
+      content.appendChild(createMcelSmartCssCard("Fresh daily", "Card stack child one"));
+      content.appendChild(createMcelSmartCssCard("Pickup + delivery", "Card stack child two"));
+      content.appendChild(createMcelSmartCssCard("Proof visible", "Card stack child three"));
+
+      if (spec.id === "fixed-clip-box") {
+        content.appendChild(createMcelSmartCssCard("Fourth child", "Variable content that raw CSS clips"));
+      }
+
+      object.appendChild(content);
+      const verdict = document.createElement("output");
+      verdict.className = "mcel-smart-css-verdict";
+      verdict.setAttribute("aria-live", "polite");
+      verdict.textContent = "not run";
+
+      stage.append(heading, object, verdict);
+      return stage;
+    }
+
+    function renderMcelSmartCssPrimitiveCase(spec) {
+      const article = document.createElement("article");
+      article.className = "mcel-smart-css-case";
+      article.dataset.mcelSmartCssCase = spec.id;
+      article.innerHTML = `
+        <header class="mcel-smart-css-case-head">
+          <div>
+            <p class="eyebrow">Primitive replacement test</p>
+            <h5>${spec.title}</h5>
+          </div>
+          <code>${spec.proof}</code>
+        </header>
+      `;
+
+      const comparison = document.createElement("div");
+      comparison.className = "mcel-smart-css-comparison";
+      comparison.append(
+        createMcelSmartCssPrimitiveStage(spec, "raw"),
+        createMcelSmartCssPrimitiveStage(spec, "smart")
+      );
+
+      article.appendChild(comparison);
+      return article;
+    }
+
+    function mcelSmartCssPx(value) {
+      const parsed = Number.parseFloat(value);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function mcelSmartCssRound(value, places = 1) {
+      const factor = 10 ** places;
+      return Math.round(value * factor) / factor;
+    }
+
+    function getMcelSmartCssUsedRadius(element) {
+      const styles = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      const raw = Math.max(
+        mcelSmartCssPx(styles.borderTopLeftRadius),
+        mcelSmartCssPx(styles.borderTopRightRadius),
+        mcelSmartCssPx(styles.borderBottomRightRadius),
+        mcelSmartCssPx(styles.borderBottomLeftRadius)
+      );
+      return {
+        raw,
+        used: Math.min(raw, rect.width / 2, rect.height / 2),
+        css: styles.borderRadius
+      };
+    }
+
+    function getMcelSmartCssSafeInterval(parent, y) {
+      const rect = parent.getBoundingClientRect();
+      const radius = getMcelSmartCssUsedRadius(parent).used;
+      let left = rect.left;
+      let right = rect.right;
+
+      if (radius > 0 && y < rect.top + radius) {
+        const centerY = rect.top + radius;
+        const dy = Math.abs(y - centerY);
+        if (dy < radius) {
+          const dx = Math.sqrt(Math.max(0, radius * radius - dy * dy));
+          const inset = radius - dx;
+          left = Math.max(left, rect.left + inset);
+          right = Math.min(right, rect.right - inset);
+        }
+      } else if (radius > 0 && y > rect.bottom - radius) {
+        const centerY = rect.bottom - radius;
+        const dy = Math.abs(y - centerY);
+        if (dy < radius) {
+          const dx = Math.sqrt(Math.max(0, radius * radius - dy * dy));
+          const inset = radius - dx;
+          left = Math.max(left, rect.left + inset);
+          right = Math.min(right, rect.right - inset);
+        }
+      }
+
+      return {left, right, width: Math.max(0, right - left)};
+    }
+
+    function analyzeMcelSmartCssShapeContainment(stage) {
+      const object = stage.querySelector(".mcel-smart-css-object");
+      const cards = Array.from(stage.querySelectorAll(".mcel-smart-css-card"));
+      const radius = getMcelSmartCssUsedRadius(object);
+      const failures = cards.map((card, index) => {
+        const rect = card.getBoundingClientRect();
+        const samples = [
+          rect.top + 1,
+          rect.top + rect.height * 0.25,
+          rect.top + rect.height * 0.5,
+          rect.top + rect.height * 0.75,
+          rect.bottom - 1
+        ].map((y) => {
+          const safe = getMcelSmartCssSafeInterval(object, y);
+          const leftEscape = Math.max(0, safe.left - rect.left);
+          const rightEscape = Math.max(0, rect.right - safe.right);
+          return {
+            y: mcelSmartCssRound(y),
+            safeWidth: mcelSmartCssRound(safe.width),
+            leftEscape: mcelSmartCssRound(leftEscape),
+            rightEscape: mcelSmartCssRound(rightEscape),
+            worstEscape: mcelSmartCssRound(Math.max(leftEscape, rightEscape))
+          };
+        });
+        const worstEscape = Math.max(...samples.map((sample) => sample.worstEscape));
+        return {
+          index,
+          failed: worstEscape > 2,
+          worstEscapePx: mcelSmartCssRound(worstEscape),
+          samples
+        };
+      }).filter((failure) => failure.failed);
+
+      return {
+        failed: failures.length > 0,
+        failure: failures.length ? "shape-containment-failed" : null,
+        detail: {
+          rawRadius: mcelSmartCssRound(radius.raw),
+          usedRadius: mcelSmartCssRound(radius.used),
+          collisionCount: failures.length,
+          failures
+        }
+      };
+    }
+
+    function analyzeMcelSmartCssContentFit(stage) {
+      const object = stage.querySelector(".mcel-smart-css-object");
+      const cards = Array.from(stage.querySelectorAll(".mcel-smart-css-card"));
+      const objectRect = object.getBoundingClientRect();
+      const styles = window.getComputedStyle(object);
+      const clips = ["clip", "hidden", "scroll", "auto"].includes(styles.overflow) || ["clip", "hidden", "scroll", "auto"].includes(styles.overflowY);
+      const union = cards.reduce((bounds, card) => {
+        const rect = card.getBoundingClientRect();
+        return {
+          left: Math.min(bounds.left, rect.left),
+          top: Math.min(bounds.top, rect.top),
+          right: Math.max(bounds.right, rect.right),
+          bottom: Math.max(bounds.bottom, rect.bottom)
+        };
+      }, {left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity});
+      const bottomEscape = Math.max(0, union.bottom - objectRect.bottom);
+      const rightEscape = Math.max(0, union.right - objectRect.right);
+      const leftEscape = Math.max(0, objectRect.left - union.left);
+      const topEscape = Math.max(0, objectRect.top - union.top);
+      const worstEscape = Math.max(bottomEscape, rightEscape, leftEscape, topEscape);
+      const failed = clips && worstEscape > 2;
+
+      return {
+        failed,
+        failure: failed ? "content-fit-failed" : null,
+        detail: {
+          clips,
+          objectHeight: mcelSmartCssRound(objectRect.height),
+          contentHeight: mcelSmartCssRound(union.bottom - union.top),
+          worstEscapePx: mcelSmartCssRound(worstEscape)
+        }
+      };
+    }
+
+    function mcelSmartCssStackOrder(styles) {
+      const parsed = Number.parseInt(styles.zIndex, 10);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function mcelSmartCssRectsOverlap(a, b) {
+      return a.right > b.left && a.left < b.right && a.bottom > b.top && a.top < b.bottom;
+    }
+
+    function analyzeMcelSmartCssPaintLayerOrder(stage) {
+      const layer = stage.querySelector(".mcel-smart-css-paint-layer");
+      const content = stage.querySelector(".mcel-smart-css-content");
+      const cards = Array.from(stage.querySelectorAll(".mcel-smart-css-card"));
+      if (!layer || !content || !cards.length) {
+        return {
+          failed: true,
+          failure: "paint-layer-overlay-failed",
+          detail: {reason: "missing paint-layer, content layer, or cards"}
+        };
+      }
+
+      const layerStyles = window.getComputedStyle(layer);
+      const contentStyles = window.getComputedStyle(content);
+      const layerRect = layer.getBoundingClientRect();
+      const layerZ = mcelSmartCssStackOrder(layerStyles);
+      const contentZ = mcelSmartCssStackOrder(contentStyles);
+      const pointerEvents = layerStyles.pointerEvents;
+      const paintCanReceiveHits = pointerEvents !== "none";
+      const paintStacksAboveContent = layerZ >= contentZ;
+      const foregroundPaint = paintCanReceiveHits || paintStacksAboveContent;
+
+      const hits = cards.map((card, index) => {
+        const rect = card.getBoundingClientRect();
+        const overlapsPaint = mcelSmartCssRectsOverlap(layerRect, rect);
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        const inViewport = x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight;
+        const stack = inViewport && document.elementsFromPoint ? document.elementsFromPoint(x, y) : [];
+        const blockedByPaintLayer = stack.some((hit) => hit === layer || layer.contains(hit));
+        const hitContent = stack.some((hit) => hit === card || card.contains(hit) || hit === content || content.contains(hit));
+        return {
+          index,
+          overlapsPaint,
+          blockedByPaintLayer,
+          hitContent,
+          hitTested: inViewport
+        };
+      });
+
+      const foregroundOverlapCount = hits.filter((hit) => hit.overlapsPaint && foregroundPaint).length;
+      const blockedHitCount = hits.filter((hit) => hit.blockedByPaintLayer).length;
+      const failed = foregroundOverlapCount > 0 || blockedHitCount > 0;
+
+      return {
+        failed,
+        failure: failed ? "paint-layer-overlay-failed" : null,
+        detail: {
+          paintLayerZ: layerZ,
+          contentLayerZ: contentZ,
+          paintLayerPointerEvents: pointerEvents,
+          foregroundOverlapCount,
+          blockedHitCount,
+          hitTestedCount: hits.filter((hit) => hit.hitTested).length,
+          hits
+        }
+      };
+    }
+
+    function analyzeMcelSmartCssPrimitiveStage(stage, spec) {
+      if (spec.proof === "shape-containment") return analyzeMcelSmartCssShapeContainment(stage);
+      if (spec.proof === "content-fit") return analyzeMcelSmartCssContentFit(stage);
+      if (spec.proof === "paint-layer-order") return analyzeMcelSmartCssPaintLayerOrder(stage);
+      return {failed: true, failure: "unknown-proof", detail: {proof: spec.proof}};
+    }
+
+    function summarizeMcelSmartCssVerdictDetail(analysis) {
+      const detail = analysis.detail || {};
+      const pieces = [];
+      if (Number.isFinite(detail.collisionCount)) pieces.push(`${detail.collisionCount} child collision(s)`);
+      if (Number.isFinite(detail.worstEscapePx)) pieces.push(`worst escape ${detail.worstEscapePx}px`);
+      if (Number.isFinite(detail.rawRadius)) pieces.push(`raw radius ${detail.rawRadius}px`);
+      if (Number.isFinite(detail.usedRadius)) pieces.push(`used radius ${detail.usedRadius}px`);
+      if (Number.isFinite(detail.objectHeight)) pieces.push(`object ${detail.objectHeight}px`);
+      if (Number.isFinite(detail.contentHeight)) pieces.push(`content ${detail.contentHeight}px`);
+      if (Number.isFinite(detail.foregroundOverlapCount)) pieces.push(`${detail.foregroundOverlapCount} foreground overlap(s)`);
+      if (Number.isFinite(detail.blockedHitCount)) pieces.push(`${detail.blockedHitCount} blocked hit(s)`);
+      if (Number.isFinite(detail.paintLayerZ)) pieces.push(`paint z=${detail.paintLayerZ}`);
+      if (Number.isFinite(detail.contentLayerZ)) pieces.push(`content z=${detail.contentLayerZ}`);
+      if (detail.paintLayerPointerEvents) pieces.push(`pointer-events=${detail.paintLayerPointerEvents}`);
+      return pieces.length ? `; ${pieces.join("; ")}` : "";
+    }
+
+    function updateMcelSmartCssVerdict(stage, analysis, expectedFailure) {
+      const side = stage.dataset.mcelSmartCssSide || "raw";
+      const verdict = stage.querySelector(".mcel-smart-css-verdict");
+      const contractPassed = side === "raw" ? analysis.failed && analysis.failure === expectedFailure : !analysis.failed;
+      const detail = summarizeMcelSmartCssVerdictDetail(analysis);
+      stage.dataset.mcelSmartCssStatus = contractPassed ? "passed" : "failed";
+      stage.dataset.mcelSmartCssDetectedFailure = analysis.failure || "none";
+      if (verdict) {
+        if (side === "raw") {
+          verdict.textContent = contractPassed
+            ? `expected backend hazard detected: ${analysis.failure}${detail}`
+            : `unexpected raw backend result: ${analysis.failure || "no failure"}${detail}`;
+        } else {
+          verdict.textContent = contractPassed
+            ? `golden-path smart primitive proof passed${detail}`
+            : `golden-path smart primitive failed: ${analysis.failure}${detail}`;
+        }
+      }
+      return contractPassed;
+    }
+
+    function runMcelSmartCssPrimitiveProofs() {
+      const cases = getMcelSmartCssPrimitiveCases();
+      const results = cases.map((spec) => {
+        const caseEl = mcelSmartCssSuite?.querySelector(`[data-mcel-smart-css-case="${spec.id}"]`);
+        const rawStage = caseEl?.querySelector('[data-mcel-smart-css-side="raw"]');
+        const smartStage = caseEl?.querySelector('[data-mcel-smart-css-side="smart"]');
+        const rawAnalysis = rawStage ? analyzeMcelSmartCssPrimitiveStage(rawStage, spec) : {failed: true, failure: "missing-raw-stage", detail: {}};
+        const smartAnalysis = smartStage ? analyzeMcelSmartCssPrimitiveStage(smartStage, spec) : {failed: true, failure: "missing-smart-stage", detail: {}};
+        const rawContractPassed = rawStage ? updateMcelSmartCssVerdict(rawStage, rawAnalysis, spec.expectedRawFailure) : false;
+        const smartContractPassed = smartStage ? updateMcelSmartCssVerdict(smartStage, smartAnalysis, spec.expectedRawFailure) : false;
+        const passed = rawContractPassed && smartContractPassed;
+
+        if (caseEl) caseEl.dataset.mcelSmartCssStatus = passed ? "passed" : "failed";
+
+        return {
+          id: spec.id,
+          title: spec.title,
+          proof: spec.proof,
+          expectedRawFailure: spec.expectedRawFailure,
+          passed,
+          raw: rawAnalysis,
+          smart: smartAnalysis
+        };
+      });
+      const report = {
+        status: results.every((result) => result.passed) ? "passed" : "failed",
+        premise: "CSS/HTML are treated as backend output; MCEL-generated golden-path surfaces must use smart primitives that prove object contracts before raw CSS is emitted.",
+        caseCount: results.length,
+        passedCount: results.filter((result) => result.passed).length,
+        failedCount: results.filter((result) => !result.passed).length,
+        results
+      };
+      mcelLabState.lastSmartCssPrimitiveReport = report;
+      if (mcelSmartCssReport) mcelSmartCssReport.textContent = JSON.stringify(report, null, 2);
+      recordMcelEvent(
+        "smart-css",
+        report.status === "passed" ? "MCEL_SMART_CSS_PRIMITIVES_PROVED" : "MCEL_SMART_CSS_PRIMITIVES_FAILED",
+        `Smart CSS primitive suite ${report.status}: ${report.passedCount}/${report.caseCount} primitive replacement proofs passed.`,
+        report.status === "passed" ? "info" : "warning"
+      );
+      return report;
+    }
+
+    function renderMcelSmartCssPrimitiveLab(reason = "open-smart-css-modal") {
+      if (!mcelSmartCssSuite) return null;
+      mcelSmartCssSuite.innerHTML = "";
+      getMcelSmartCssPrimitiveCases().forEach((spec) => {
+        mcelSmartCssSuite.appendChild(renderMcelSmartCssPrimitiveCase(spec));
+      });
+      window.requestAnimationFrame(() => runMcelSmartCssPrimitiveProofs());
+      recordMcelEvent("smart-css", "MCEL_SMART_CSS_PRIMITIVE_LAB_RENDERED", `Smart CSS primitive lab rendered for ${reason}.`);
+      return true;
+    }
+
+
     function openMcelLabModal(which = "site") {
-      const target = which === "editor" ? mcelEditorModal : mcelSiteModal;
+      const modals = {
+        editor: mcelEditorModal,
+        site: mcelSiteModal,
+        "smart-css": mcelSmartCssModal
+      };
+      const target = modals[which] || mcelSiteModal;
+      const active = modals[which] ? which : "site";
       if (!target) return;
       closeMcelLabModal("all", {silent: true});
       target.setAttribute("aria-hidden", "false");
       target.dataset.open = "true";
-      mcelLabState.activeModal = which === "editor" ? "editor" : "site";
+      mcelLabState.activeModal = active;
       document.body?.classList?.add("mcel-modal-open");
-      if (which === "site") {
+      if (active === "site") {
         const twiddle = ensureMcelSiteFrameTwiddle();
         twiddle.openCount += 1;
         bindMcelSiteFrameLifecycle("open-site-modal");
         syncMcelRenderedSiteFrame("open-site-modal");
         recordMcelSiteFrameTwiddle("modal-open", {reason: "open-site-modal"});
-      } else {
+      } else if (active === "editor") {
         syncMcelGrapesFromSource();
+      } else if (active === "smart-css") {
+        renderMcelSmartCssPrimitiveLab("open-smart-css-modal");
       }
       recordMcelEvent("ui", "MCEL_MODAL_OPENED", `${mcelLabState.activeModal} modal opened as isolated product surface.`);
     }
@@ -1611,6 +2037,7 @@
       const targets = [];
       if (which === "editor" || which === "all") targets.push(mcelEditorModal);
       if (which === "site" || which === "all") targets.push(mcelSiteModal);
+      if (which === "smart-css" || which === "all") targets.push(mcelSmartCssModal);
       targets.filter(Boolean).forEach((modal) => {
         modal.setAttribute("aria-hidden", "true");
         delete modal.dataset.open;
@@ -2376,6 +2803,43 @@
           background: var(--site-card-soft);
           box-shadow: var(--site-shadow);
         }
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mcel-chrome-spotlight-item[data-mcel-chrome-primitive="content-envelope"],
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mcel-chrome-spotlight-item[data-mcel-composition-remedy~="smart-content-envelope"] {
+          --mcel-smart-envelope-block-pad: clamp(72px, 11vw, 160px);
+          --mcel-smart-envelope-inline-pad: clamp(32px, 6vw, 84px);
+          position: relative;
+          display: grid;
+          align-content: center;
+          min-block-size: max-content;
+          padding: var(--mcel-smart-envelope-block-pad) var(--mcel-smart-envelope-inline-pad);
+          border-radius: 999px;
+          overflow: visible;
+          isolation: isolate;
+        }
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mcel-chrome-spotlight-item[data-mcel-chrome-primitive="content-envelope"] > [data-mcel-chrome-region-role="body"],
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mcel-chrome-spotlight-item[data-mcel-composition-remedy~="smart-content-envelope"] > [data-mcel-chrome-region-role="body"] {
+          position: relative;
+          z-index: 1;
+          display: grid;
+          align-content: center;
+          min-inline-size: 0;
+          max-inline-size: 100%;
+        }
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mcel-chrome-spotlight-item[data-mcel-chrome-primitive="content-envelope"] [data-mc="feed"],
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mcel-chrome-spotlight-item[data-mcel-composition-remedy~="smart-content-envelope"] [data-mc="feed"],
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mcel-chrome-spotlight-item[data-mcel-chrome-primitive="content-envelope"] [data-mc-component-kind="layout"],
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mcel-chrome-spotlight-item[data-mcel-composition-remedy~="smart-content-envelope"] [data-mc-component-kind="layout"] {
+          display: grid;
+          gap: clamp(16px, 2.4vw, 28px);
+          min-inline-size: 0;
+          max-inline-size: 100%;
+          margin-inline: auto;
+        }
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mcel-chrome-spotlight-item[data-mcel-chrome-primitive="content-envelope"] :is(.mc-panel, [data-mc="panel"]),
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mcel-chrome-spotlight-item[data-mcel-composition-remedy~="smart-content-envelope"] :is(.mc-panel, [data-mc="panel"]) {
+          max-inline-size: 100%;
+          margin-inline: 0;
+        }
         body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support .mcel-chrome-spotlight-body > .mc {
           border: 0;
           background: transparent;
@@ -2586,6 +3050,26 @@
         }
         body:not([data-mcel-chrome="chrome-strict-hierarchy"]) [data-mcel-composition-remedy~="dedistort-container-shape"] :is(.mc,[data-mc]) {
           border-radius: min(var(--site-radius), 22px);
+        }
+        body:not([data-mcel-chrome="chrome-strict-hierarchy"]) [data-mcel-composition-remedy~="smart-content-envelope"] {
+          --mcel-smart-envelope-block-pad: clamp(72px, 11vw, 160px);
+          --mcel-smart-envelope-inline-pad: clamp(32px, 6vw, 84px);
+          position: relative;
+          display: grid;
+          align-content: center;
+          min-block-size: max-content;
+          padding: var(--mcel-smart-envelope-block-pad) var(--mcel-smart-envelope-inline-pad) !important;
+          border-radius: 999px;
+          overflow: visible;
+          isolation: isolate;
+        }
+        body:not([data-mcel-chrome="chrome-strict-hierarchy"]) [data-mcel-composition-remedy~="smart-content-envelope"] > [data-mcel-chrome-region-role="body"] {
+          position: relative;
+          z-index: 1;
+          display: grid;
+          align-content: center;
+          min-inline-size: 0;
+          max-inline-size: 100%;
         }
 
         body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-cluster-grid"] [data-mcel-fit-policy="contain"],

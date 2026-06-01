@@ -613,6 +613,11 @@
     .worker-inline-form button {
       min-width: max-content;
     }
+    .worker-inline-status {
+      color: var(--muted);
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
     .worker-token-list {
       display: flex;
       flex-wrap: wrap;

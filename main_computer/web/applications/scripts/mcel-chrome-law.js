@@ -20,6 +20,7 @@
       const CHROME_ID_ATTR = "data-mcel-chrome-id";
       const CHROME_FRAME_ATTR = "data-mcel-chrome-frame";
       const CHROME_REGION_ROLE_ATTR = "data-mcel-chrome-region-role";
+      const CHROME_PRIMITIVE_ATTR = "data-mcel-chrome-primitive";
       const FIT_REGION_ATTR = "data-mcel-fit-region";
       const FIT_POLICY_ATTR = "data-mcel-fit-policy";
       const FIT_REMEDIATION_ATTR = "data-mcel-fit-remediation";
@@ -101,12 +102,14 @@
             [
               "primary-control-width-collapsed-relative-to-input",
               "shape-interior-escape",
+              "shape-containment-failed",
               "text-distorted-by-narrow-inline-size",
               "container-distorted-by-extreme-aspect-ratio"
             ],
             {
               "primary-control-width-collapsed-relative-to-input": "control-balance",
               "shape-interior-escape": "shape-inset-content",
+              "shape-containment-failed": "smart-content-envelope",
               "text-distorted-by-narrow-inline-size": "dedistort-inline-content",
               "container-distorted-by-extreme-aspect-ratio": "dedistort-container-shape"
             }
@@ -158,11 +161,13 @@
             ],
             [
               "shape-interior-escape",
+              "shape-containment-failed",
               "text-distorted-by-narrow-inline-size",
               "container-distorted-by-extreme-aspect-ratio"
             ],
             {
               "shape-interior-escape": "shape-inset-content",
+              "shape-containment-failed": "smart-content-envelope",
               "text-distorted-by-narrow-inline-size": "dedistort-inline-content",
               "container-distorted-by-extreme-aspect-ratio": "dedistort-container-shape"
             }
@@ -210,12 +215,14 @@
             [
               "primary-control-width-collapsed-relative-to-input",
               "shape-interior-escape",
+              "shape-containment-failed",
               "text-distorted-by-narrow-inline-size",
               "container-distorted-by-extreme-aspect-ratio"
             ],
             {
               "primary-control-width-collapsed-relative-to-input": "control-balance",
               "shape-interior-escape": "shape-inset-content",
+              "shape-containment-failed": "smart-content-envelope",
               "text-distorted-by-narrow-inline-size": "dedistort-inline-content",
               "container-distorted-by-extreme-aspect-ratio": "dedistort-container-shape"
             }
@@ -261,11 +268,13 @@
             ],
             [
               "shape-interior-escape",
+              "shape-containment-failed",
               "text-distorted-by-narrow-inline-size",
               "container-distorted-by-extreme-aspect-ratio"
             ],
             {
               "shape-interior-escape": "shape-inset-content",
+              "shape-containment-failed": "smart-content-envelope",
               "text-distorted-by-narrow-inline-size": "dedistort-inline-content",
               "container-distorted-by-extreme-aspect-ratio": "dedistort-container-shape"
             }
@@ -312,12 +321,14 @@
             [
               "primary-control-width-collapsed-relative-to-input",
               "shape-interior-escape",
+              "shape-containment-failed",
               "text-distorted-by-narrow-inline-size",
               "container-distorted-by-extreme-aspect-ratio"
             ],
             {
               "primary-control-width-collapsed-relative-to-input": "control-balance",
               "shape-interior-escape": "shape-inset-content",
+              "shape-containment-failed": "smart-content-envelope",
               "text-distorted-by-narrow-inline-size": "dedistort-inline-content",
               "container-distorted-by-extreme-aspect-ratio": "dedistort-container-shape"
             }
@@ -528,8 +539,38 @@
         return markChromeRegion(generatedPart(part, chrome, tagName), role);
       }
 
+      const nestedLayoutContentSelector = [
+        "[data-mc=\"feed\"]",
+        ".mc-feed",
+        "[data-mc-component-kind=\"layout\"]",
+        "[data-mc=\"panel\"]",
+        ".mc-panel"
+      ].join(",");
+
+      function generatedFrameContentKind(children = []) {
+        const childList = children.filter(Boolean);
+        const hasNestedLayout = childList.some((child) =>
+          Boolean(child?.matches?.(nestedLayoutContentSelector) || child?.querySelector?.(nestedLayoutContentSelector))
+        );
+        if (hasNestedLayout) return "nested-layout";
+        if (childList.length > 1) return "multi-child";
+        return "single-child";
+      }
+
+      function generatedFramePrimitive(children = [], options = {}) {
+        if (options.primitive) return options.primitive;
+        const contentKind = generatedFrameContentKind(children);
+        if (contentKind === "nested-layout") return "content-envelope";
+        if (options.frame === "support") return "support-frame";
+        return "object-frame";
+      }
+
       function generatedObjectFrame(part, chrome, children, options = {}) {
         const frame = markChromeFrame(generatedPart(part, chrome, options.tagName || "div"), options.frame || "object");
+        const contentKind = generatedFrameContentKind(children);
+        const primitive = generatedFramePrimitive(children, options);
+        frame.setAttribute(CHROME_PRIMITIVE_ATTR, primitive);
+        frame.setAttribute("data-mcel-chrome-content", contentKind);
         const body = generatedRegion(options.bodyPart || `${part}-body`, chrome, "body");
         children.filter(Boolean).forEach((child) => body.appendChild(child));
         frame.appendChild(body);

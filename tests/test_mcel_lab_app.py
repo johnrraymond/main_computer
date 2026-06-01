@@ -923,10 +923,12 @@ def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_on
     assert "compositionContract" in chrome_law
     assert '"primary-control-width-collapsed-relative-to-input"' in chrome_law
     assert '"shape-interior-escape"' in chrome_law
+    assert '"shape-containment-failed"' in chrome_law
     assert '"text-distorted-by-narrow-inline-size"' in chrome_law
     assert '"container-distorted-by-extreme-aspect-ratio"' in chrome_law
     assert '"control-balance"' in chrome_law
     assert '"shape-inset-content"' in chrome_law
+    assert '"smart-content-envelope"' in chrome_law
     assert '"dedistort-inline-content"' in chrome_law
     assert '"dedistort-container-shape"' in chrome_law
     assert '"content-negotiate"' in chrome_law
@@ -937,6 +939,9 @@ def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_on
     assert 'element.setAttribute(FIT_POLICY_ATTR, fit.policy)' in chrome_law
     assert 'element.setAttribute(CHROME_FRAME_ATTR, frame)' in chrome_law
     assert 'element.setAttribute(CHROME_REGION_ROLE_ATTR, role)' in chrome_law
+    assert 'CHROME_PRIMITIVE_ATTR = "data-mcel-chrome-primitive"' in chrome_law
+    assert 'frame.setAttribute(CHROME_PRIMITIVE_ATTR, primitive)' in chrome_law
+    assert 'generatedFramePrimitive' in chrome_law
     assert '".mcel-chrome-compact-panel > [data-mcel-chrome-region-role=\\"body\\"]"' in chrome_law
     assert '".mcel-chrome-journey-step > [data-mcel-chrome-frame]"' in chrome_law
 
@@ -945,6 +950,8 @@ def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_on
     assert "chromeSupportsCompositionObservation" in browser_observer
     assert 'if (chrome !== "chrome-editorial-flow") return []' not in browser_observer
     assert "shapeInteriorEscapeFor" in browser_observer
+    assert "shapeContainmentChildrenFor" in browser_observer
+    assert "shape-containment-failed" in browser_observer
     assert "safeShapeIntervalAtY" in browser_observer
     assert "textDistortionFor" in browser_observer
     assert "containerDistortionFor" in browser_observer
@@ -974,6 +981,7 @@ def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_on
     assert ".mcel-chrome-compact-panel" in ui
     assert "control-balance" in ui
     assert "shape-inset-content" in ui
+    assert "smart-content-envelope" in ui
     assert "dedistort-inline-content" in ui
     assert "dedistort-container-shape" in ui
     assert "text-distorted-by-narrow-inline-size" in ui
@@ -982,6 +990,9 @@ def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_on
     assert "generatedContainerWithSource" in ui
     assert "writing-mode: horizontal-tb" in ui
     assert "border-radius: min(var(--site-radius), 28px) !important" in ui
+    assert 'data-mcel-chrome-primitive="content-envelope"' in ui
+    assert "--mcel-smart-envelope-block-pad" in ui
+    assert "border-radius: 999px;" in ui
     assert "runCompositionRemediationPasses" in ui
     assert 'body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-cluster-grid"]' in ui
     assert 'body[data-mcel-fit-remediation~="region-reflow"][data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-shell' in ui
@@ -994,3 +1005,45 @@ def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_on
     assert "lastChromeFitReport" in bindings
     assert "lastChromeFitReport" in ui
     assert 'body class="mcel-site-theme ${theme}" data-mcel-chrome="${chrome}"' in ui
+
+
+def test_mcel_lab_adds_smart_css_primitive_replacement_lab() -> None:
+    app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
+    css = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
+    ui = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    bindings = (WEB_APP / "scripts" / "dom-bindings" / "mcel-lab.js").read_text(encoding="utf-8")
+
+    assert 'id="mcel-open-smart-css-modal"' in app
+    assert 'id="mcel-smart-css-modal"' in app
+    assert "Raw CSS backend hazards on the left; MCEL golden-path primitives on the right." in app
+    assert "Rerun Primitive Proofs" in app
+    assert "mcelSmartCssModal" in bindings
+    assert "mcelSmartCssSuite" in bindings
+    assert "lastSmartCssPrimitiveReport" in bindings
+    assert "renderMcelSmartCssPrimitiveLab" in ui
+    assert "runMcelSmartCssPrimitiveProofs" in ui
+    assert "shape-containment-failed" in ui
+    assert "content-fit-failed" in ui
+    assert "paint-layer-overlay-failed" in ui
+    assert "MCEL-generated golden-path surfaces must use smart primitives" in ui
+    assert "big-rounded support-frame object with explicit content region and growth contract" in ui
+    assert "same decorative paint token, but raw stacking places it above semantic content" in ui
+    assert "same decorative paint token, but paint envelope is behind semantic content and inert to hit testing" in ui
+    assert "foreground overlap(s)" in ui
+    assert "paint z=" in ui
+    assert "pointer-events=" in ui
+    assert "expected backend hazard detected" in ui
+    assert "golden-path smart primitive proof passed" in ui
+    assert ".mcel-smart-css-raw-pill .mcel-smart-css-object" in css
+    assert ".mcel-smart-css-raw-pill .mcel-smart-css-card" in css
+    assert "inline-size: calc(100% + 92px);" in css
+    assert ".mcel-smart-css-smart-frame .mcel-smart-css-object" in css
+    assert "border-radius: 999px;" in css
+    assert "display: none;" in css
+    assert ".mcel-smart-css-raw-clip .mcel-smart-css-object" in css
+    assert ".mcel-smart-css-smart-flow .mcel-smart-css-object" in css
+    assert ".mcel-smart-css-raw-overlay .mcel-smart-css-paint-layer" in css
+    assert ".mcel-smart-css-smart-paint .mcel-smart-css-paint-layer" in css
+    assert "z-index: 30;" in css
+    assert "pointer-events: auto;" in css
+    assert "pointer-events: none;" in css
