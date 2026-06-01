@@ -39,6 +39,7 @@
     const workerMultisessionStatus = document.querySelector("#worker-multisession-status");
     const workerBridgeReadinessStatus = document.querySelector("#worker-bridge-readiness-status");
     const workerConnectWallet = document.querySelector("#worker-connect-wallet");
+    const workerDisconnectWallet = document.querySelector("#worker-disconnect-wallet");
     const workerCreateBridgeAccount = document.querySelector("#worker-create-bridge-account");
     const workerRefreshBridgeReadiness = document.querySelector("#worker-refresh-bridge-readiness");
     const workerFaucetAmount = document.querySelector("#worker-faucet-amount");

@@ -109,6 +109,7 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
 
     assert 'id="worker-bridge-readiness-card"' in html
     assert 'id="worker-connect-wallet"' in html
+    assert 'id="worker-disconnect-wallet"' in html
     assert 'id="worker-create-bridge-account"' in html
     assert 'id="worker-recovery-card"' in html
     assert 'id="worker-confirm-recovery"' in html
@@ -133,6 +134,7 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
     assert "You can request a new key now." in js
 
     assert "workerRequestFaucet" in bindings
+    assert "workerDisconnectWallet" in bindings
     assert "workerRequestMultisessionKey" in bindings
     assert "workerRevokeMultisessionKey" in bindings
     assert ".worker-bridge-card" in css
@@ -145,14 +147,20 @@ def test_worker_wallet_connect_is_single_flight_and_dev_chain_aware() -> None:
     js = WORKER_JS.read_text(encoding="utf-8")
 
     assert "let workerWalletConnectInFlight = null" in js
+    assert "let workerWalletProviderSyncInFlight = null" in js
+    assert "let workerWalletOperationSerial = 0" in js
     assert "if (workerWalletConnectInFlight)" in js
     assert "Wallet connection already in progress." in js
+    assert "Wallet is already connected. Use Disconnect Wallet before choosing a different account." in js
     assert 'workerConnectWallet.setAttribute("aria-busy", "true")' in js
     assert 'workerConnectWallet.removeAttribute("aria-busy")' in js
 
     assert "function workerBindWalletProviderEvents()" in js
     assert '"accountsChanged"' in js
     assert '"chainChanged"' in js
+    assert "workerScheduleWalletProviderSync" in js
+    assert "workerReadWalletProviderSnapshot" in js
+    assert "workerWalletOperationIsCurrent(token)" in js
 
     assert "async function workerEnsureExpectedWalletChain()" in js
     assert '"/api/xlag/contract/status"' in js
@@ -160,3 +168,17 @@ def test_worker_wallet_connect_is_single_flight_and_dev_chain_aware() -> None:
     assert '"wallet_addEthereumChain"' in js
     assert "workerNormalizeChainHex(chainId)" in js
 
+
+def test_worker_wallet_has_local_disconnect_for_repeatable_ui_testing() -> None:
+    html = WORKER_HTML.read_text(encoding="utf-8")
+    js = WORKER_JS.read_text(encoding="utf-8")
+    bindings = WORKER_BINDINGS_JS.read_text(encoding="utf-8")
+
+    assert 'id="worker-disconnect-wallet"' in html
+    assert "Disconnect Wallet" in html
+    assert "workerDisconnectWallet" in bindings
+    assert "function workerDisconnectPrimaryWallet()" in js
+    assert "Wallet disconnected locally. Browser wallet permissions are unchanged; connect again to relink." in js
+    assert "workerBridgeState.wallet = {...workerDefaultBridgeState().wallet}" in js
+    assert "workerDisconnectWallet.addEventListener" in js
+    assert "workerDisconnectWallet.disabled = busy || !connected" in js
