@@ -16,6 +16,11 @@
       const supervisor = typeof McelLabSupervisor !== "undefined" ? McelLabSupervisor : window.McelLabSupervisor;
       const registry = typeof McelLabLawRegistry !== "undefined" ? McelLabLawRegistry : window.McelLabLawRegistry;
 
+
+      function editorCatalog() {
+        return contract.editorCatalog?.() || null;
+      }
+
       function runtimeRoot(html) {
         const root = document.createElement("div");
         root.innerHTML = String(html || "");
@@ -166,6 +171,7 @@
 
       return Object.freeze({
         version: contract.contractVersion,
+        editorCatalog,
         compile,
         serialize,
         repair,

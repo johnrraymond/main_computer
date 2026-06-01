@@ -883,11 +883,15 @@ def test_mcel_lab_eleventh_slice_makes_real_ui_skeleton_visible_and_scroll_safe(
     assert "Minimal site acid test" in app
     assert "mcel-ui-skeleton-summary" in app
     assert "mcel-ui-skeleton-health" in app
-    assert "NeighborhoodMarketSite" in contract
-    assert "HeroSection" in contract
-    assert "TrustCluster" in contract
-    assert "SignupForm" in contract
-    assert "FooterCta" in contract
+    assert "<main>" in contract
+    assert "<section>" in contract
+    assert "A useful local site from almost plain HTML." in contract
+    assert "Get the weekly market note." in contract
+    assert "data-mc-component=\"NeighborhoodMarketSite\"" not in contract
+    assert "data-mc-component=\"HeroSection\"" not in contract
+    assert "data-mc-component=\"TrustCluster\"" not in contract
+    assert "data-mc-component=\"SignupForm\"" not in contract
+    assert "data-mc-component=\"FooterCta\"" not in contract
     assert "mcel-lab.v0.11-ui-site-skeleton" in contract
     assert "Auto scroll is content-expanding by default" in layout_law
     assert 'return "content";' in layout_law

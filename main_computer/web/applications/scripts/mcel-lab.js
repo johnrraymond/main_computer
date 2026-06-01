@@ -285,9 +285,6 @@
     function compileMcelLabSource(reason = "compile") {
       if (!mcelRuntimePreview || !mcelSourceHtml) return;
       const cleanSource = currentMcelSource();
-      if (cleanSource && cleanSource !== mcelSourceHtml.value.trim()) {
-        mcelSourceHtml.value = cleanSource;
-      }
       const compiled = window.MCEL?.compile
         ? MCEL.compile(cleanSource, {reason, theme: mcelLabState.theme})
         : McelLabEngine.compileSource(cleanSource, {reason});
