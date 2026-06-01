@@ -145,6 +145,7 @@
       const isWebsiteBuilder = normalizedApp === "website-builder";
       const isMcelLab = normalizedApp === "mcel-lab";
       const isWorker = normalizedApp === "worker";
+      const isWallet = normalizedApp === "wallet";
       if (previousApp === "task-manager" && normalizedApp !== "task-manager") {
         stopTaskManagerAutoRefresh();
       }
@@ -174,7 +175,8 @@
       if (websiteBuilderApp) websiteBuilderApp.style.display = isWebsiteBuilder ? "grid" : "none";
       if (mcelLabApp) mcelLabApp.style.display = isMcelLab ? "grid" : "none";
       if (workerApp) workerApp.style.display = isWorker ? "grid" : "none";
-      stubMessage.style.display = isWebgl || isCalculator || isDocument || isSpreadsheet || isOnlyOffice || isTaskManager || isTerminal || isChatConsole || isGitTools || isCodeEditor || isFileExplorer || isGameEditor || isWebsiteBuilder || isMcelLab || isWorker ? "none" : "grid";
+      if (walletApp) walletApp.style.display = isWallet ? "grid" : "none";
+      stubMessage.style.display = isWebgl || isCalculator || isDocument || isSpreadsheet || isOnlyOffice || isTaskManager || isTerminal || isChatConsole || isGitTools || isCodeEditor || isFileExplorer || isGameEditor || isWebsiteBuilder || isMcelLab || isWorker || isWallet ? "none" : "grid";
       demoControls.style.display = isWebgl ? "grid" : "none";
       layoutDesktopIcons(normalizedApp);
       if (isWebgl) {
@@ -261,6 +263,10 @@
         running = false;
         glStatus.textContent = "worker configuration ready";
         initWorkerApp();
+      } else if (isWallet) {
+        running = false;
+        glStatus.textContent = "wallet workbench ready";
+        initWalletApp();
       } else {
         glStatus.textContent = "stub selected";
       }
