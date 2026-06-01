@@ -10,9 +10,19 @@ import shlex
 import signal
 import subprocess
 import sys
+import threading
 import time
 from typing import Any, Callable, Protocol, TextIO
 
+from main_computer.main_log_client import (
+    DEFAULT_MAIN_LOG_HOST,
+    DEFAULT_MAIN_LOG_PORT,
+    ENV_MAIN_LOG_HOST,
+    ENV_MAIN_LOG_PORT,
+    ENV_MAIN_LOG_URL,
+    emit_main_log_event,
+    healthcheck_main_log,
+)
 from main_computer.service_control import (
     complete_control_request,
     control_status,
@@ -32,6 +42,12 @@ DEFAULT_POLL_INTERVAL_S = 5.0
 SERVICE_NAME = "main-computer-service-supervisor"
 SERVICE_SUPERVISOR_PID_FILENAME = ".main_computer_service_supervisor.pid"
 GENERIC_PYTHON_COMMANDS = {"python", "python.exe", "python3", "python3.exe", "py", "py.exe"}
+MAIN_LOG_CHILD_NAME = "main-log"
+MAIN_LOG_SERVICE_NAME = "main-computer-main-log-service"
+MAIN_LOG_READY_TIMEOUT_S = 3.0
+MAIN_LOG_RESTART_EMIT_TIMEOUT_S = 0.2
+MAIN_LOG_STREAM_EMIT_TIMEOUT_S = 0.05
+STREAM_DRAIN_JOIN_TIMEOUT_S = 2.0
 
 
 def resolve_python_command(python_command: str | None = None) -> str:
@@ -189,6 +205,39 @@ def _pid_file_command_matches_live(entry: dict[str, Any], live_command_line: str
     return bool(recorded and live and (recorded in live or live in recorded))
 
 
+def _main_log_url_from_environment() -> str:
+    explicit = str(os.environ.get(ENV_MAIN_LOG_URL) or "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    host = str(os.environ.get(ENV_MAIN_LOG_HOST) or DEFAULT_MAIN_LOG_HOST).strip() or DEFAULT_MAIN_LOG_HOST
+    port_text = str(os.environ.get(ENV_MAIN_LOG_PORT) or DEFAULT_MAIN_LOG_PORT).strip()
+    try:
+        port = int(port_text)
+    except ValueError:
+        port = DEFAULT_MAIN_LOG_PORT
+    return f"http://{host}:{port}"
+
+
+def _main_log_port_from_environment() -> int:
+    port_text = str(os.environ.get(ENV_MAIN_LOG_PORT) or DEFAULT_MAIN_LOG_PORT).strip()
+    try:
+        port = int(port_text)
+    except ValueError:
+        port = DEFAULT_MAIN_LOG_PORT
+    return port if 1 <= port <= 65535 else DEFAULT_MAIN_LOG_PORT
+
+
+def _main_log_host_from_environment() -> str:
+    return str(os.environ.get(ENV_MAIN_LOG_HOST) or DEFAULT_MAIN_LOG_HOST).strip() or DEFAULT_MAIN_LOG_HOST
+
+
+def _coerce_float_env(name: str, default: float) -> float:
+    try:
+        return float(str(os.environ.get(name) or "").strip())
+    except ValueError:
+        return default
+
+
 class ProcessLike(Protocol):
     @property
     def pid(self) -> int:
@@ -206,6 +255,13 @@ class ChildSpec:
     name: str
     module: str
     args: tuple[str, ...] = ()
+    role: str = "service"
+    start_priority: int = 10
+    stop_priority: int = 10
+
+    @property
+    def is_logging(self) -> bool:
+        return self.role == "logging" or self.name == MAIN_LOG_CHILD_NAME
 
     def command(self, *, python_command: str, root: Path) -> list[str]:
         args = list(self.args)
@@ -228,6 +284,7 @@ class ChildRuntime:
     last_exit_code: int | None = None
     stdout_handle: TextIO | None = None
     stderr_handle: TextIO | None = None
+    stream_threads: tuple[threading.Thread, ...] = ()
 
     def close_logs(self) -> None:
         for handle_name in ("stdout_handle", "stderr_handle"):
@@ -237,9 +294,22 @@ class ChildRuntime:
                     handle.close()
                 finally:
                     setattr(self, handle_name, None)
+        for thread in self.stream_threads:
+            try:
+                thread.join(timeout=STREAM_DRAIN_JOIN_TIMEOUT_S)
+            except RuntimeError:
+                pass
 
 
 CHILD_SPECS: tuple[ChildSpec, ...] = (
+    ChildSpec(
+        name=MAIN_LOG_CHILD_NAME,
+        module="main_computer.main_log_service",
+        args=("serve",),
+        role="logging",
+        start_priority=0,
+        stop_priority=1000,
+    ),
     ChildSpec(name="app", module="main_computer.app_control", args=("run",)),
     ChildSpec(name="executor", module="main_computer.executor_service", args=("boot", "--watch")),
     ChildSpec(name="applications", module="main_computer.applications_service", args=("boot", "--watch")),
@@ -289,6 +359,12 @@ class ServiceSupervisor:
         self._shutdown_requested = False
         self._shutdown_reason = ""
         self._replacement_started = False
+        self.main_log_host = _main_log_host_from_environment()
+        self.main_log_port = _main_log_port_from_environment()
+        self.main_log_url = _main_log_url_from_environment()
+        os.environ.setdefault(ENV_MAIN_LOG_HOST, self.main_log_host)
+        os.environ.setdefault(ENV_MAIN_LOG_PORT, str(self.main_log_port))
+        os.environ.setdefault(ENV_MAIN_LOG_URL, self.main_log_url)
 
     def supervise(self, *, max_loops: int | None = None) -> dict[str, Any]:
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -305,7 +381,7 @@ class ServiceSupervisor:
         try:
             while max_loops is None or loops < max_loops:
                 loops += 1
-                for spec in CHILD_SPECS:
+                for spec in self._start_ordered_specs():
                     child = self._children.get(spec.name)
                     if child is None:
                         self._start_child(spec)
@@ -346,9 +422,137 @@ class ServiceSupervisor:
             self._emit("service supervisor stopping", reason="keyboard-interrupt")
             self._stop_children()
         finally:
-            if max_loops is None:
+            if max_loops is None and not self._replacement_started:
                 self._release_pid_file_if_current()
         return self._last_state or state
+
+    def _spec_order_index(self, name: str) -> int:
+        for index, spec in enumerate(CHILD_SPECS):
+            if spec.name == name:
+                return index
+        return len(CHILD_SPECS)
+
+    def _start_ordered_specs(self) -> list[ChildSpec]:
+        return [
+            spec
+            for _index, spec in sorted(
+                enumerate(CHILD_SPECS),
+                key=lambda item: (item[1].start_priority, item[0]),
+            )
+        ]
+
+    def _stop_ordered_children(self) -> list[tuple[str, ChildRuntime]]:
+        return sorted(self._children.items(), key=lambda item: (item[1].spec.stop_priority, self._spec_order_index(item[0])))
+
+    def _child_env(self, spec: ChildSpec) -> dict[str, str]:
+        env = os.environ.copy()
+        env["MAIN_COMPUTER_ROOT"] = str(self.root)
+        env["MAIN_COMPUTER_SERVICE_NAME"] = spec.name
+        env[ENV_MAIN_LOG_HOST] = self.main_log_host
+        env[ENV_MAIN_LOG_PORT] = str(self.main_log_port)
+        env[ENV_MAIN_LOG_URL] = self.main_log_url
+        return env
+
+    def _wait_for_main_log_ready(self) -> dict[str, Any]:
+        if self.process_factory is not None:
+            return {"ok": True, "state": "skipped", "message": "process factory test mode"}
+        timeout_s = max(0.0, _coerce_float_env("MAIN_COMPUTER_MAIN_LOG_READY_TIMEOUT_S", MAIN_LOG_READY_TIMEOUT_S))
+        deadline = self.time() + timeout_s
+        last: dict[str, Any] = {"ok": False, "state": "not-checked"}
+        while True:
+            last = healthcheck_main_log(url=self.main_log_url, timeout_s=MAIN_LOG_RESTART_EMIT_TIMEOUT_S)
+            if last.get("ok"):
+                return last
+            now = self.time()
+            if now >= deadline:
+                self._safe_restart_emit(
+                    "main-log health check failed; continuing restart fail-open",
+                    url=self.main_log_url,
+                    healthcheck=last,
+                    timeout_s=timeout_s,
+                )
+                return last
+            self.sleep(min(0.1, max(0.0, deadline - now)))
+
+    def _safe_restart_emit(self, message: str, *, url: str | None = None, **fields: Any) -> dict[str, Any]:
+        event = {
+            "service": SERVICE_NAME,
+            "source_service": SERVICE_NAME,
+            "kind": "supervisor-restart",
+            "stream": "event",
+            "message": message,
+            **fields,
+        }
+        return emit_main_log_event(
+            event,
+            url=url or self.main_log_url,
+            timeout_s=MAIN_LOG_RESTART_EMIT_TIMEOUT_S,
+            fallback_output=self.output,
+            fallback_on_error=True,
+        )
+
+    def _emit_child_stream_to_main_log(self, *, child: str, stream: str, path: Path, chunk: str) -> None:
+        if child == MAIN_LOG_CHILD_NAME:
+            return
+        text = str(chunk)
+        if not text:
+            return
+        emit_main_log_event(
+            {
+                "service": SERVICE_NAME,
+                "source_service": child,
+                "kind": "child-stream",
+                "stream": stream,
+                "path": str(path),
+                "message": text.rstrip("\n"),
+            },
+            url=self.main_log_url,
+            timeout_s=MAIN_LOG_STREAM_EMIT_TIMEOUT_S,
+            fallback_on_error=False,
+        )
+
+    def _start_stream_drain(
+        self,
+        *,
+        child: str,
+        stream: str,
+        pipe: Any,
+        path: Path,
+        forward_to_main_log: bool,
+    ) -> threading.Thread:
+        def _drain() -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with path.open("a", encoding="utf-8") as handle:
+                    while True:
+                        chunk = pipe.readline()
+                        if not chunk:
+                            break
+                        if isinstance(chunk, bytes):
+                            text = chunk.decode("utf-8", errors="replace")
+                        else:
+                            text = str(chunk)
+                        handle.write(text)
+                        handle.flush()
+                        if forward_to_main_log:
+                            self._emit_child_stream_to_main_log(child=child, stream=stream, path=path, chunk=text)
+            except Exception as exc:  # pragma: no cover - defensive stream drain
+                self._safe_restart_emit(
+                    "child stream drain failed; continuing supervisor",
+                    child=child,
+                    stream=stream,
+                    path=str(path),
+                    error=str(exc),
+                )
+            finally:
+                try:
+                    pipe.close()
+                except Exception:
+                    pass
+
+        thread = threading.Thread(target=_drain, name=f"main-computer-{child}-{stream}-drain", daemon=True)
+        thread.start()
+        return thread
 
     def _process_control_queue(self) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
@@ -427,19 +631,11 @@ class ServiceSupervisor:
         if target in {"blockchain", "chain", "anvil", "ethereum", "ethereum-dev"}:
             return self._restart_child("blockchain", source=source, parameters=parameters)
 
+        if target in {"main-log", "main_log", "logging", "logger"}:
+            return self._restart_child(MAIN_LOG_CHILD_NAME, source=source, parameters=parameters)
+
         if target in {"services", "children", "all"}:
-            results = [
-                self._restart_child("app", source=source, parameters=parameters),
-                self._restart_child("executor", source=source, parameters=parameters),
-                self._restart_child("applications", source=source, parameters=parameters),
-                self._restart_child("blockchain", source=source, parameters=parameters),
-            ]
-            return {
-                "ok": all(item.get("ok") for item in results),
-                "state": "restarted",
-                "message": "all supervised service children were restarted",
-                "results": results,
-            }
+            return self._restart_all_children(source=source, parameters=parameters)
 
         proxied = self._proxy_application_restart(target=target, source=source, parameters=parameters)
         if proxied.get("ok"):
@@ -457,6 +653,7 @@ class ServiceSupervisor:
                 "executor",
                 "applications",
                 "blockchain",
+                "main-log",
                 "all",
                 "onlyoffice",
                 "gitea",
@@ -487,13 +684,7 @@ class ServiceSupervisor:
             polled = child.process.poll()
             if polled is not None:
                 last_exit_code = int(polled)
-            try:
-                if polled is None:
-                    self.process_terminator(previous_pid)
-            except Exception as exc:
-                self._emit("failed to terminate child before requested restart", child=name, pid=previous_pid, error=str(exc))
-            child.close_logs()
-            self._children.pop(name, None)
+            self._stop_child_runtime(name, child, reason=f"requested restart from {source or 'unknown'}")
 
         started = self._start_child(spec, restart_count=restart_count, last_exit_code=last_exit_code)
         return {
@@ -506,6 +697,64 @@ class ServiceSupervisor:
             "restart_count": restart_count,
             "source": source,
             "parameters": dict(parameters or {}),
+        }
+
+    def _restart_all_children(self, *, source: str = "", parameters: dict[str, Any] | None = None) -> dict[str, Any]:
+        restart_counts: dict[str, int] = {}
+        last_exit_codes: dict[str, int | None] = {}
+        previous_pids: dict[str, int] = {}
+        for name, child in self._children.items():
+            restart_counts[name] = child.restart_count + 1
+            polled = child.process.poll()
+            last_exit_codes[name] = int(polled) if polled is not None else child.last_exit_code
+            previous_pids[name] = int(child.process.pid)
+
+        self._safe_restart_emit(
+            "full supervised restart requested",
+            source=source,
+            parameters=dict(parameters or {}),
+            previous_pids=previous_pids,
+        )
+        self._stop_children(exclude_roles={"logging"}, reason="full-restart")
+        self._safe_restart_emit("full restart stopped non-logging services", previous_pids=previous_pids)
+        self._stop_children(only_roles={"logging"}, reason="full-restart")
+        if self.output is not None:
+            self.output(
+                json.dumps(
+                    {
+                        "at": _now_iso(),
+                        "service": SERVICE_NAME,
+                        "message": "old main-log stopped; starting replacement main-log first",
+                        "main_log_fallback": True,
+                    },
+                    sort_keys=True,
+                )
+            )
+
+        results: list[dict[str, Any]] = []
+        for spec in self._start_ordered_specs():
+            started = self._start_child(
+                spec,
+                restart_count=restart_counts.get(spec.name, 0),
+                last_exit_code=last_exit_codes.get(spec.name),
+            )
+            results.append(
+                {
+                    "child": spec.name,
+                    "pid": int(started.process.pid),
+                    "previous_pid": previous_pids.get(spec.name),
+                    "restart_count": started.restart_count,
+                }
+            )
+
+        self._safe_restart_emit("full supervised restart completed", source=source, results=results)
+        return {
+            "ok": True,
+            "state": "restarted",
+            "message": "all supervised service children were restarted, including main-log",
+            "source": source,
+            "parameters": dict(parameters or {}),
+            "results": results,
         }
 
     def _proxy_application_restart(
@@ -552,7 +801,6 @@ class ServiceSupervisor:
         if self._replacement_started:
             return
         self._replacement_started = True
-        self._release_pid_file_if_current()
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         stdout_path = self.runtime_dir / f"replacement-supervisor-{stamp}.stdout.log"
         stderr_path = self.runtime_dir / f"replacement-supervisor-{stamp}.stderr.log"
@@ -599,21 +847,44 @@ class ServiceSupervisor:
 
         stdout_handle: TextIO | None = None
         stderr_handle: TextIO | None = None
+        stream_threads: tuple[threading.Thread, ...] = ()
         if self.process_factory is not None:
             process = self.process_factory(command, self.root, stdout_path, stderr_path)
         else:
             stdout_path.parent.mkdir(parents=True, exist_ok=True)
-            stdout_handle = stdout_path.open("a", encoding="utf-8")
-            stderr_handle = stderr_path.open("a", encoding="utf-8")
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             process = subprocess.Popen(
                 command,
                 cwd=str(self.root),
-                stdout=stdout_handle,
-                stderr=stderr_handle,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
+                bufsize=1,
                 creationflags=creationflags,
+                env=self._child_env(spec),
             )
+            threads: list[threading.Thread] = []
+            if process.stdout is not None:
+                threads.append(
+                    self._start_stream_drain(
+                        child=spec.name,
+                        stream="stdout",
+                        pipe=process.stdout,
+                        path=stdout_path,
+                        forward_to_main_log=not spec.is_logging,
+                    )
+                )
+            if process.stderr is not None:
+                threads.append(
+                    self._start_stream_drain(
+                        child=spec.name,
+                        stream="stderr",
+                        pipe=process.stderr,
+                        path=stderr_path,
+                        forward_to_main_log=not spec.is_logging,
+                    )
+                )
+            stream_threads = tuple(threads)
 
         runtime = ChildRuntime(
             spec=spec,
@@ -626,6 +897,7 @@ class ServiceSupervisor:
             last_exit_code=last_exit_code,
             stdout_handle=stdout_handle,
             stderr_handle=stderr_handle,
+            stream_threads=stream_threads,
         )
         self._children[spec.name] = runtime
         self._emit(
@@ -636,17 +908,41 @@ class ServiceSupervisor:
             stdout=str(stdout_path),
             stderr=str(stderr_path),
         )
+        if spec.is_logging:
+            self._wait_for_main_log_ready()
         return runtime
 
-    def _stop_children(self) -> None:
-        for name, child in list(self._children.items()):
-            try:
-                self.process_terminator(int(child.process.pid))
-            except Exception as exc:  # pragma: no cover - defensive shutdown path
-                self._emit("child stop failed", child=child.spec.name, pid=child.process.pid, error=str(exc))
-            finally:
-                child.close_logs()
-                self._children.pop(name, None)
+    def _stop_child_runtime(self, name: str, child: ChildRuntime, *, reason: str = "") -> None:
+        try:
+            self._safe_restart_emit(
+                "stopping child service",
+                child=child.spec.name,
+                pid=child.process.pid,
+                reason=reason,
+            )
+            self.process_terminator(int(child.process.pid))
+        except Exception as exc:  # pragma: no cover - defensive shutdown path
+            self._emit("child stop failed", child=child.spec.name, pid=child.process.pid, error=str(exc))
+        finally:
+            child.close_logs()
+            self._children.pop(name, None)
+
+    def _stop_children(
+        self,
+        *,
+        only_roles: set[str] | None = None,
+        exclude_roles: set[str] | None = None,
+        reason: str = "",
+    ) -> None:
+        only_roles = set(only_roles or set())
+        exclude_roles = set(exclude_roles or set())
+        for name, child in self._stop_ordered_children():
+            role = child.spec.role
+            if only_roles and role not in only_roles:
+                continue
+            if exclude_roles and role in exclude_roles:
+                continue
+            self._stop_child_runtime(name, child, reason=reason)
 
     def _write_supervisor_state(
         self,
@@ -655,7 +951,7 @@ class ServiceSupervisor:
         pid_claim: dict[str, Any],
         ok: bool | None = None,
     ) -> dict[str, Any]:
-        child_states = {name: self._child_state(child) for name, child in sorted(self._children.items())}
+        child_states = {name: self._child_state(child) for name, child in sorted(self._children.items(), key=lambda item: self._spec_order_index(item[0]))}
         all_running = bool(child_states) and all(item.get("state") == "running" for item in child_states.values())
         if ok is None:
             ok = all_running
@@ -667,6 +963,12 @@ class ServiceSupervisor:
             "root": str(self.root),
             "runtime_dir": str(self.runtime_dir),
             "state_path": str(self.state_path),
+            "main_log": {
+                "url": self.main_log_url,
+                "host": self.main_log_host,
+                "port": self.main_log_port,
+                "child": MAIN_LOG_CHILD_NAME,
+            },
             "service": {
                 "name": SERVICE_NAME,
                 "pid": os.getpid(),
@@ -688,6 +990,7 @@ class ServiceSupervisor:
         return {
             "name": child.spec.name,
             "module": child.spec.module,
+            "role": child.spec.role,
             "pid": int(child.process.pid),
             "state": "running" if exit_code is None else "exited",
             "returncode": exit_code,
@@ -697,7 +1000,84 @@ class ServiceSupervisor:
             "command": child.command,
             "stdout": str(child.stdout_path),
             "stderr": str(child.stderr_path),
+            "main_log_url": self.main_log_url if child.spec.is_logging else None,
         }
+
+    def _prior_state_for_takeover(self) -> dict[str, Any]:
+        try:
+            return json.loads(self.state_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _terminate_prior_generation_ordered(self, prior_pid: int, claim: dict[str, Any]) -> None:
+        prior_state = self._prior_state_for_takeover()
+        children = prior_state.get("children") if isinstance(prior_state.get("children"), dict) else {}
+        main_log_info = prior_state.get("main_log") if isinstance(prior_state.get("main_log"), dict) else {}
+        old_logger_url = str(main_log_info.get("url") or self.main_log_url).strip() or self.main_log_url
+        claim["ordered_takeover_attempted"] = True
+        claim["prior_children"] = list(children.keys()) if isinstance(children, dict) else []
+        claim["prior_main_log_url"] = old_logger_url
+        terminations: list[dict[str, Any]] = []
+
+        self._safe_restart_emit(
+            "new supervisor taking over prior generation",
+            url=old_logger_url,
+            prior_pid=prior_pid,
+            prior_children=claim.get("prior_children", []),
+        )
+
+        def _child_sort(item: tuple[str, Any]) -> tuple[int, str]:
+            name, payload = item
+            role = payload.get("role") if isinstance(payload, dict) else ""
+            is_logger = name == MAIN_LOG_CHILD_NAME or role == "logging"
+            return (1 if is_logger else 0, name)
+
+        for name, payload in sorted(children.items(), key=_child_sort):
+            if not isinstance(payload, dict):
+                continue
+            try:
+                child_pid = int(payload.get("pid"))
+            except (TypeError, ValueError):
+                continue
+            if child_pid <= 0:
+                continue
+            role = str(payload.get("role") or ("logging" if name == MAIN_LOG_CHILD_NAME else "service"))
+            if role == "logging" or name == MAIN_LOG_CHILD_NAME:
+                self._safe_restart_emit(
+                    "stopping prior main-log last during takeover",
+                    url=old_logger_url,
+                    child=name,
+                    pid=child_pid,
+                )
+            else:
+                self._safe_restart_emit(
+                    "stopping prior non-log child during takeover",
+                    url=old_logger_url,
+                    child=name,
+                    pid=child_pid,
+                )
+            try:
+                self.process_terminator(child_pid)
+                terminations.append({"child": name, "pid": child_pid, "role": role, "state": "terminated"})
+            except Exception as exc:
+                terminations.append({"child": name, "pid": child_pid, "role": role, "state": "termination-failed", "error": str(exc)})
+
+        # If no child state was available, fall back to the prior supervisor PID.
+        # This is less precise, but it still must not block takeover.
+        try:
+            self.process_terminator(prior_pid)
+            supervisor_termination = {"pid": prior_pid, "state": "terminated"}
+        except Exception as exc:
+            supervisor_termination = {"pid": prior_pid, "state": "termination-failed", "error": str(exc)}
+
+        claim["ordered_terminations"] = terminations
+        claim["prior_supervisor_termination"] = supervisor_termination
+        failed = [item for item in terminations if item.get("state") != "terminated"]
+        if supervisor_termination.get("state") != "terminated":
+            failed.append({"child": "prior-supervisor", **supervisor_termination})
+        claim["state"] = "terminated" if not failed else "termination-failed"
+        if failed:
+            claim["termination_error"] = "one or more prior generation processes could not be terminated"
 
     def _claim_pid_file(self) -> dict[str, Any]:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -745,12 +1125,7 @@ class ServiceSupervisor:
                 }
             )
             if should_terminate:
-                try:
-                    self.process_terminator(prior_pid)
-                    claim["state"] = "terminated"
-                except Exception as exc:
-                    claim["state"] = "termination-failed"
-                    claim["termination_error"] = str(exc)
+                self._terminate_prior_generation_ordered(prior_pid, claim)
             else:
                 claim["state"] = "not-terminated"
 
@@ -788,6 +1163,20 @@ class ServiceSupervisor:
                 handle.write(json.dumps(payload, sort_keys=True, default=str) + "\n")
         except OSError:
             pass
+        if message != "child service started" or fields.get("child") != MAIN_LOG_CHILD_NAME:
+            emit_main_log_event(
+                {
+                    "service": SERVICE_NAME,
+                    "source_service": SERVICE_NAME,
+                    "kind": "supervisor-event",
+                    "stream": "event",
+                    "message": message,
+                    **fields,
+                },
+                url=self.main_log_url,
+                timeout_s=MAIN_LOG_STREAM_EMIT_TIMEOUT_S,
+                fallback_on_error=False,
+            )
         if self.output is not None:
             self.output(line)
 
@@ -897,7 +1286,7 @@ def render_service_supervisor_summary(root: Path | str) -> str:
 
     children = supervisor.get("children") if isinstance(supervisor.get("children"), dict) else {}
     if children:
-        for child_name in ("app", "executor", "applications", "blockchain"):
+        for child_name in (MAIN_LOG_CHILD_NAME, "app", "executor", "applications", "blockchain"):
             child = children.get(child_name)
             if not isinstance(child, dict):
                 continue
