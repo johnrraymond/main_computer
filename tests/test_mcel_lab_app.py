@@ -923,8 +923,12 @@ def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_on
     assert "compositionContract" in chrome_law
     assert '"primary-control-width-collapsed-relative-to-input"' in chrome_law
     assert '"shape-interior-escape"' in chrome_law
+    assert '"text-distorted-by-narrow-inline-size"' in chrome_law
+    assert '"container-distorted-by-extreme-aspect-ratio"' in chrome_law
     assert '"control-balance"' in chrome_law
     assert '"shape-inset-content"' in chrome_law
+    assert '"dedistort-inline-content"' in chrome_law
+    assert '"dedistort-container-shape"' in chrome_law
     assert '"content-negotiate"' in chrome_law
     assert '"object-grow"' in chrome_law
     assert '"object-reshape"' in chrome_law
@@ -942,6 +946,10 @@ def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_on
     assert 'if (chrome !== "chrome-editorial-flow") return []' not in browser_observer
     assert "shapeInteriorEscapeFor" in browser_observer
     assert "safeShapeIntervalAtY" in browser_observer
+    assert "textDistortionFor" in browser_observer
+    assert "containerDistortionFor" in browser_observer
+    assert "text-distorted-by-narrow-inline-size" in browser_observer
+    assert "container-distorted-by-extreme-aspect-ratio" in browser_observer
     assert "compositionWarnings" in browser_observer
     assert '"mcel-chrome-fit-report"' in browser_observer
     assert '"page-overflow"' in browser_observer
@@ -966,6 +974,14 @@ def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_on
     assert ".mcel-chrome-compact-panel" in ui
     assert "control-balance" in ui
     assert "shape-inset-content" in ui
+    assert "dedistort-inline-content" in ui
+    assert "dedistort-container-shape" in ui
+    assert "text-distorted-by-narrow-inline-size" in ui
+    assert "container-distorted-by-extreme-aspect-ratio" in ui
+    assert "wantsGeneratedContainer" in ui
+    assert "generatedContainerWithSource" in ui
+    assert "writing-mode: horizontal-tb" in ui
+    assert "border-radius: min(var(--site-radius), 28px) !important" in ui
     assert "runCompositionRemediationPasses" in ui
     assert 'body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-cluster-grid"]' in ui
     assert 'body[data-mcel-fit-remediation~="region-reflow"][data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-shell' in ui

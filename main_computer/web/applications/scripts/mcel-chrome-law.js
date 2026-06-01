@@ -100,11 +100,15 @@
             ],
             [
               "primary-control-width-collapsed-relative-to-input",
-              "shape-interior-escape"
+              "shape-interior-escape",
+              "text-distorted-by-narrow-inline-size",
+              "container-distorted-by-extreme-aspect-ratio"
             ],
             {
               "primary-control-width-collapsed-relative-to-input": "control-balance",
-              "shape-interior-escape": "shape-inset-content"
+              "shape-interior-escape": "shape-inset-content",
+              "text-distorted-by-narrow-inline-size": "dedistort-inline-content",
+              "container-distorted-by-extreme-aspect-ratio": "dedistort-container-shape"
             }
           ),
           remediation: chromeRemediationDefinition(
@@ -153,10 +157,14 @@
               "[data-mcel-fit-region=\"grid-body\"] > .mc"
             ],
             [
-              "shape-interior-escape"
+              "shape-interior-escape",
+              "text-distorted-by-narrow-inline-size",
+              "container-distorted-by-extreme-aspect-ratio"
             ],
             {
-              "shape-interior-escape": "shape-inset-content"
+              "shape-interior-escape": "shape-inset-content",
+              "text-distorted-by-narrow-inline-size": "dedistort-inline-content",
+              "container-distorted-by-extreme-aspect-ratio": "dedistort-container-shape"
             }
           ),
           remediation: chromeRemediationDefinition(
@@ -201,11 +209,15 @@
             ],
             [
               "primary-control-width-collapsed-relative-to-input",
-              "shape-interior-escape"
+              "shape-interior-escape",
+              "text-distorted-by-narrow-inline-size",
+              "container-distorted-by-extreme-aspect-ratio"
             ],
             {
               "primary-control-width-collapsed-relative-to-input": "control-balance",
-              "shape-interior-escape": "shape-inset-content"
+              "shape-interior-escape": "shape-inset-content",
+              "text-distorted-by-narrow-inline-size": "dedistort-inline-content",
+              "container-distorted-by-extreme-aspect-ratio": "dedistort-container-shape"
             }
           ),
           remediation: chromeRemediationDefinition(
@@ -248,10 +260,14 @@
               "[data-mcel-fit-region=\"sequence-content\"] > .mc"
             ],
             [
-              "shape-interior-escape"
+              "shape-interior-escape",
+              "text-distorted-by-narrow-inline-size",
+              "container-distorted-by-extreme-aspect-ratio"
             ],
             {
-              "shape-interior-escape": "shape-inset-content"
+              "shape-interior-escape": "shape-inset-content",
+              "text-distorted-by-narrow-inline-size": "dedistort-inline-content",
+              "container-distorted-by-extreme-aspect-ratio": "dedistort-container-shape"
             }
           ),
           remediation: chromeRemediationDefinition(
@@ -295,11 +311,15 @@
             ],
             [
               "primary-control-width-collapsed-relative-to-input",
-              "shape-interior-escape"
+              "shape-interior-escape",
+              "text-distorted-by-narrow-inline-size",
+              "container-distorted-by-extreme-aspect-ratio"
             ],
             {
               "primary-control-width-collapsed-relative-to-input": "control-balance",
-              "shape-interior-escape": "shape-inset-content"
+              "shape-interior-escape": "shape-inset-content",
+              "text-distorted-by-narrow-inline-size": "dedistort-inline-content",
+              "container-distorted-by-extreme-aspect-ratio": "dedistort-container-shape"
             }
           ),
           remediation: chromeRemediationDefinition(
