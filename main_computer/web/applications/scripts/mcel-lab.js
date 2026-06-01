@@ -1229,19 +1229,21 @@
         const remedy = warning?.remedy ||
           (warning?.problem === "primary-control-width-collapsed-relative-to-input"
             ? "control-balance"
-            : (warning?.problem === "shape-containment-failed"
-              ? "smart-content-envelope"
-              : (warning?.problem === "shape-interior-escape"
-                ? "shape-inset-content"
-                : (warning?.problem === "text-distorted-by-narrow-inline-size"
-                  ? "dedistort-inline-content"
-                  : (warning?.problem === "container-distorted-by-extreme-aspect-ratio" ? "dedistort-container-shape" : "")))));
+            : (warning?.problem === "content-fit-failed"
+              ? "smart-flow-frame"
+              : (warning?.problem === "shape-containment-failed"
+                ? "smart-content-envelope"
+                : (warning?.problem === "shape-interior-escape"
+                  ? "shape-inset-content"
+                  : (warning?.problem === "text-distorted-by-narrow-inline-size"
+                    ? "dedistort-inline-content"
+                    : (warning?.problem === "container-distorted-by-extreme-aspect-ratio" ? "dedistort-container-shape" : ""))))));
         if (!remedy) return;
         const target = findMcelCompositionRemedyTarget(doc, warning);
         if (!target) return;
         const existing = new Set(String(target.getAttribute("data-mcel-composition-remedy") || "").split(/\s+/).filter(Boolean));
         const beforeRemedyCount = existing.size;
-        existing.add(remedy);
+        String(remedy).split(/\s+/).filter(Boolean).forEach((token) => existing.add(token));
         target.setAttribute("data-mcel-composition-remedy", [...existing].join(" "));
         const existingWarnings = new Set(String(target.getAttribute("data-mcel-composition-warnings") || "").split(/\s+/).filter(Boolean));
         const beforeWarningCount = existingWarnings.size;
@@ -2840,6 +2842,30 @@
           max-inline-size: 100%;
           margin-inline: 0;
         }
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mcel-chrome-spotlight-item[data-mcel-chrome-primitive="content-envelope"] :is(form.mc, .mc[data-mc="command-row"], .mc[data-mc-component-kind="island"], .mc[data-mc-component-kind="primitive"]),
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mcel-chrome-spotlight-item[data-mcel-composition-remedy~="smart-content-envelope"] :is(form.mc, .mc[data-mc="command-row"], .mc[data-mc-component-kind="island"], .mc[data-mc-component-kind="primitive"]) {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr);
+          align-items: stretch;
+          align-content: start;
+          gap: clamp(12px, 2vw, 18px);
+          min-block-size: max-content;
+          max-block-size: none;
+          overflow: visible !important;
+        }
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mcel-chrome-spotlight-item[data-mcel-chrome-primitive="content-envelope"] :is(form.mc, .mc[data-mc="command-row"], .mc[data-mc-component-kind="island"], .mc[data-mc-component-kind="primitive"]) :is(h1,h2,h3,p,label,input,textarea,select,button,a[data-mc-action]),
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mcel-chrome-spotlight-item[data-mcel-composition-remedy~="smart-content-envelope"] :is(form.mc, .mc[data-mc="command-row"], .mc[data-mc-component-kind="island"], .mc[data-mc-component-kind="primitive"]) :is(h1,h2,h3,p,label,input,textarea,select,button,a[data-mc-action]) {
+          max-inline-size: 100%;
+          min-inline-size: 0;
+          overflow: visible;
+          box-sizing: border-box;
+        }
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mcel-chrome-spotlight-item[data-mcel-chrome-primitive="content-envelope"] :is(form.mc, .mc[data-mc="command-row"]) :is(input,textarea,select,button,a[data-mc-action]),
+        body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support > .mcel-chrome-spotlight-item[data-mcel-composition-remedy~="smart-content-envelope"] :is(form.mc, .mc[data-mc="command-row"]) :is(input,textarea,select,button,a[data-mc-action]) {
+          inline-size: 100%;
+          width: 100%;
+          justify-self: stretch;
+        }
         body[data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-support .mcel-chrome-spotlight-body > .mc {
           border: 0;
           background: transparent;
@@ -3070,6 +3096,38 @@
           align-content: center;
           min-inline-size: 0;
           max-inline-size: 100%;
+        }
+        body:not([data-mcel-chrome="chrome-strict-hierarchy"]) [data-mcel-composition-remedy~="smart-flow-frame"] {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr);
+          align-items: stretch;
+          align-content: start;
+          min-inline-size: 0;
+          max-inline-size: 100%;
+          min-block-size: max-content !important;
+          block-size: auto !important;
+          max-block-size: none !important;
+          overflow: visible !important;
+        }
+        body:not([data-mcel-chrome="chrome-strict-hierarchy"]) [data-mcel-composition-remedy~="smart-flow-frame"] > * {
+          min-inline-size: 0;
+          max-inline-size: 100%;
+          box-sizing: border-box;
+        }
+        body:not([data-mcel-chrome="chrome-strict-hierarchy"]) [data-mcel-composition-remedy~="smart-flow-frame"] :is(h1,h2,h3,h4,h5,h6,p,label,input,textarea,select,button,a[data-mc-action]) {
+          max-inline-size: 100%;
+          min-inline-size: 0;
+          overflow: visible;
+          box-sizing: border-box;
+        }
+        body:not([data-mcel-chrome="chrome-strict-hierarchy"]) :is(form[data-mcel-composition-remedy~="smart-flow-frame"], [data-mcel-composition-remedy~="smart-flow-frame"] form, .mc[data-mc="command-row"][data-mcel-composition-remedy~="smart-flow-frame"], [data-mcel-composition-remedy~="smart-flow-frame"] .mc[data-mc="command-row"]) {
+          grid-template-columns: minmax(0, 1fr);
+          align-items: stretch;
+        }
+        body:not([data-mcel-chrome="chrome-strict-hierarchy"]) :is(form[data-mcel-composition-remedy~="smart-flow-frame"], [data-mcel-composition-remedy~="smart-flow-frame"] form, .mc[data-mc="command-row"][data-mcel-composition-remedy~="smart-flow-frame"], [data-mcel-composition-remedy~="smart-flow-frame"] .mc[data-mc="command-row"]) :is(input,textarea,select,button,a[data-mc-action]) {
+          inline-size: 100%;
+          width: 100%;
+          justify-self: stretch;
         }
 
         body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-cluster-grid"] [data-mcel-fit-policy="contain"],

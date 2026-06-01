@@ -353,6 +353,78 @@
         ].join(",")) || [])]).filter(isVisibleElement);
       }
 
+      function contentFitCandidatesFor(target) {
+        const selector = [
+          ".mc",
+          "[data-mc]",
+          "form",
+          "section",
+          "article"
+        ].join(",");
+        const candidates = [];
+        if (target?.matches?.(selector)) candidates.push(target);
+        candidates.push(...(target?.querySelectorAll?.(selector) || []));
+        return uniqueElements(candidates)
+          .filter((candidate) => candidate !== target || candidate.matches?.(".mc,[data-mc],form"))
+          .filter((candidate) => !candidate.getAttribute?.("data-mcel-chrome-generated"))
+          .filter((candidate) => !candidate.getAttribute?.("data-mc-generated"))
+          .filter(isVisibleElement);
+      }
+
+      function clipsSemanticContent(element, tolerancePx = 2) {
+        const style = computedStyleFor(element);
+        const overflow = `${style.overflow || ""} ${style.overflowX || ""} ${style.overflowY || ""}`;
+        if (!/(clip|hidden)/.test(overflow)) return null;
+
+        const rect = rectFor(element);
+        const clientHeight = safeNumber(element.clientHeight);
+        const scrollHeight = safeNumber(element.scrollHeight);
+        const clientWidth = safeNumber(element.clientWidth);
+        const scrollWidth = safeNumber(element.scrollWidth);
+        const children = uniqueElements([...(element.children || [])]).filter(isVisibleElement);
+        let worstDelta = Math.max(0, scrollHeight - clientHeight, scrollWidth - clientWidth);
+        let worstChild = null;
+
+        children.forEach((child) => {
+          const childRect = rectFor(child);
+          const delta = Math.max(
+            0,
+            childRect.bottom - rect.bottom,
+            rect.top - childRect.top,
+            childRect.right - rect.right,
+            rect.left - childRect.left
+          );
+          if (delta > worstDelta) {
+            worstDelta = delta;
+            worstChild = child;
+          }
+        });
+
+        if (worstDelta <= tolerancePx) return null;
+        return {
+          delta: worstDelta,
+          child: worstChild || children[0] || element,
+          overflow: overflow.trim(),
+          scrollHeight,
+          clientHeight,
+          scrollWidth,
+          clientWidth
+        };
+      }
+
+      function contentFitFailureFor(target, tolerancePx = 2) {
+        const candidates = contentFitCandidatesFor(target);
+        let worst = null;
+        candidates.forEach((candidate) => {
+          const failure = clipsSemanticContent(candidate, tolerancePx);
+          if (!failure) return;
+          if (!worst || failure.delta > worst.failure.delta) {
+            worst = {candidate, failure};
+          }
+        });
+        return worst;
+      }
+
       function shortTextFor(element) {
         return String(element?.value || element?.textContent || element?.getAttribute?.("placeholder") || "")
           .trim()
@@ -601,6 +673,23 @@
                 buttonWidth: buttonRect.width,
                 delta: inputRect.width - buttonRect.width,
                 remedy: remedyForCompositionWarning(problem, compositionContract)
+              }, tolerancePx));
+            }
+          }
+
+          const contentFitProblem = "content-fit-failed";
+          if (allowedCompositionWarning(contentFitProblem, compositionContract)) {
+            const contentFit = contentFitFailureFor(target, tolerancePx);
+            if (contentFit) {
+              const candidateRect = rectFor(contentFit.candidate);
+              warnings.push(compositionWarningFor(contentFit.candidate, contentFitProblem, {
+                elementWidth: Math.max(candidateRect.width, safeNumber(contentFit.failure.scrollWidth)),
+                containerWidth: Math.max(0, safeNumber(contentFit.failure.clientWidth)),
+                childTagName: contentFit.failure.child?.tagName || "",
+                childText: shortTextFor(contentFit.failure.child),
+                visibleChildCount: contentFit.candidate?.children?.length || 0,
+                delta: contentFit.failure.delta,
+                remedy: remedyForCompositionWarning(contentFitProblem, compositionContract)
               }, tolerancePx));
             }
           }

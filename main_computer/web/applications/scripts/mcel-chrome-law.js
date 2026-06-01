@@ -101,6 +101,7 @@
             ],
             [
               "primary-control-width-collapsed-relative-to-input",
+              "content-fit-failed",
               "shape-interior-escape",
               "shape-containment-failed",
               "text-distorted-by-narrow-inline-size",
@@ -108,6 +109,7 @@
             ],
             {
               "primary-control-width-collapsed-relative-to-input": "control-balance",
+              "content-fit-failed": "smart-flow-frame",
               "shape-interior-escape": "shape-inset-content",
               "shape-containment-failed": "smart-content-envelope",
               "text-distorted-by-narrow-inline-size": "dedistort-inline-content",
@@ -160,12 +162,14 @@
               "[data-mcel-fit-region=\"grid-body\"] > .mc"
             ],
             [
+              "content-fit-failed",
               "shape-interior-escape",
               "shape-containment-failed",
               "text-distorted-by-narrow-inline-size",
               "container-distorted-by-extreme-aspect-ratio"
             ],
             {
+              "content-fit-failed": "smart-flow-frame",
               "shape-interior-escape": "shape-inset-content",
               "shape-containment-failed": "smart-content-envelope",
               "text-distorted-by-narrow-inline-size": "dedistort-inline-content",
@@ -214,6 +218,7 @@
             ],
             [
               "primary-control-width-collapsed-relative-to-input",
+              "content-fit-failed",
               "shape-interior-escape",
               "shape-containment-failed",
               "text-distorted-by-narrow-inline-size",
@@ -221,6 +226,7 @@
             ],
             {
               "primary-control-width-collapsed-relative-to-input": "control-balance",
+              "content-fit-failed": "smart-flow-frame",
               "shape-interior-escape": "shape-inset-content",
               "shape-containment-failed": "smart-content-envelope",
               "text-distorted-by-narrow-inline-size": "dedistort-inline-content",
@@ -267,12 +273,14 @@
               "[data-mcel-fit-region=\"sequence-content\"] > .mc"
             ],
             [
+              "content-fit-failed",
               "shape-interior-escape",
               "shape-containment-failed",
               "text-distorted-by-narrow-inline-size",
               "container-distorted-by-extreme-aspect-ratio"
             ],
             {
+              "content-fit-failed": "smart-flow-frame",
               "shape-interior-escape": "shape-inset-content",
               "shape-containment-failed": "smart-content-envelope",
               "text-distorted-by-narrow-inline-size": "dedistort-inline-content",
@@ -320,6 +328,7 @@
             ],
             [
               "primary-control-width-collapsed-relative-to-input",
+              "content-fit-failed",
               "shape-interior-escape",
               "shape-containment-failed",
               "text-distorted-by-narrow-inline-size",
@@ -327,6 +336,7 @@
             ],
             {
               "primary-control-width-collapsed-relative-to-input": "control-balance",
+              "content-fit-failed": "smart-flow-frame",
               "shape-interior-escape": "shape-inset-content",
               "shape-containment-failed": "smart-content-envelope",
               "text-distorted-by-narrow-inline-size": "dedistort-inline-content",
@@ -547,12 +557,29 @@
         ".mc-panel"
       ].join(",");
 
+      const contentFlowPrimitiveSelector = [
+        "form[data-mc]",
+        "form.mc",
+        "[data-mc=\"command-row\"]",
+        "[data-mc-component-kind=\"island\"]",
+        "[data-mc-component-kind=\"primitive\"]",
+        "input",
+        "textarea",
+        "select",
+        "button",
+        "a[data-mc-action]"
+      ].join(",");
+
       function generatedFrameContentKind(children = []) {
         const childList = children.filter(Boolean);
         const hasNestedLayout = childList.some((child) =>
           Boolean(child?.matches?.(nestedLayoutContentSelector) || child?.querySelector?.(nestedLayoutContentSelector))
         );
         if (hasNestedLayout) return "nested-layout";
+        const hasContentFlow = childList.some((child) =>
+          Boolean(child?.matches?.(contentFlowPrimitiveSelector) || child?.querySelector?.(contentFlowPrimitiveSelector))
+        );
+        if (hasContentFlow) return "content-flow";
         if (childList.length > 1) return "multi-child";
         return "single-child";
       }
@@ -560,7 +587,7 @@
       function generatedFramePrimitive(children = [], options = {}) {
         if (options.primitive) return options.primitive;
         const contentKind = generatedFrameContentKind(children);
-        if (contentKind === "nested-layout") return "content-envelope";
+        if (contentKind === "nested-layout" || contentKind === "content-flow") return "content-envelope";
         if (options.frame === "support") return "support-frame";
         return "object-frame";
       }
