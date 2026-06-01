@@ -16,6 +16,9 @@
     let workerBridgeState = workerDefaultBridgeState();
     let workerWalletConnectInFlight = null;
     let workerWalletProviderEventsBound = false;
+    let workerWalletProviderSyncInFlight = null;
+    let workerWalletProviderSyncQueued = false;
+    let workerWalletOperationSerial = 0;
     let workerExpectedChainCache = null;
 
     function workerDefaultBridgeState() {
@@ -64,6 +67,70 @@
       const clean = String(value || "").trim();
       if (!clean) return "—";
       return clean.length > 18 ? `${clean.slice(0, 10)}…${clean.slice(-6)}` : clean;
+    }
+
+    function workerCleanWalletAddress(value) {
+      const clean = String(value || "").trim();
+      return /^0x[0-9a-f]{40}$/i.test(clean) ? clean : "";
+    }
+
+    function workerWalletAddressMatches(left, right) {
+      const leftClean = workerCleanWalletAddress(left).toLowerCase();
+      const rightClean = workerCleanWalletAddress(right).toLowerCase();
+      return Boolean(leftClean && rightClean && leftClean === rightClean);
+    }
+
+    function workerNextWalletOperationToken() {
+      workerWalletOperationSerial += 1;
+      return workerWalletOperationSerial;
+    }
+
+    function workerWalletOperationIsCurrent(token) {
+      return token === workerWalletOperationSerial;
+    }
+
+    function workerWalletControlsBusy() {
+      return Boolean(workerWalletConnectInFlight || workerWalletProviderSyncInFlight);
+    }
+
+    function workerWalletLocallyConnected() {
+      return Boolean(workerBridgeState.wallet?.connected && workerBridgeState.wallet?.address);
+    }
+
+    function workerRenderWalletControls() {
+      const busy = workerWalletControlsBusy();
+      const connected = workerWalletLocallyConnected();
+      if (workerConnectWallet) {
+        workerConnectWallet.disabled = busy || connected;
+        workerConnectWallet.textContent = connected ? "Connected" : "Connect Wallet";
+        if (busy) workerConnectWallet.setAttribute("aria-busy", "true");
+        else workerConnectWallet.removeAttribute("aria-busy");
+      }
+      if (workerDisconnectWallet) {
+        workerDisconnectWallet.disabled = busy || !connected;
+        if (busy) workerDisconnectWallet.setAttribute("aria-busy", "true");
+        else workerDisconnectWallet.removeAttribute("aria-busy");
+      }
+    }
+
+    function workerSetWalletControlsBusy(busy) {
+      if (workerConnectWallet) {
+        workerConnectWallet.disabled = Boolean(busy) || workerWalletLocallyConnected();
+        if (busy) workerConnectWallet.setAttribute("aria-busy", "true");
+        else workerConnectWallet.removeAttribute("aria-busy");
+      }
+      if (workerDisconnectWallet) {
+        workerDisconnectWallet.disabled = Boolean(busy) || !workerWalletLocallyConnected();
+        if (busy) workerDisconnectWallet.setAttribute("aria-busy", "true");
+        else workerDisconnectWallet.removeAttribute("aria-busy");
+      }
+    }
+
+    async function workerReadWalletProviderSnapshot() {
+      const accounts = await window.ethereum.request({method: "eth_accounts"});
+      const address = Array.isArray(accounts) && accounts[0] ? workerCleanWalletAddress(accounts[0]) : "";
+      const chainId = workerNormalizeChainHex(await window.ethereum.request({method: "eth_chainId"}));
+      return {address, chainId};
     }
 
     function workerNormalizeChainHex(value) {
@@ -148,46 +215,104 @@
       return confirmedHex;
     }
 
-    function workerApplyWalletSnapshot(address, chainId) {
+    function workerApplyWalletSnapshot(address, chainId, options = {}) {
+      if (Number.isInteger(options.operationToken) && !workerWalletOperationIsCurrent(options.operationToken)) {
+        return false;
+      }
       loadWorkerBridgeState();
-      const cleanAddress = String(address || "").trim();
+      const cleanAddress = workerCleanWalletAddress(address);
+      const previousWallet = workerBridgeState.wallet || {};
+      const sameAddress = cleanAddress && workerWalletAddressMatches(cleanAddress, previousWallet.address);
       workerBridgeState.wallet = {
         address: cleanAddress,
-        chainId: workerNormalizeChainHex(chainId),
+        chainId: cleanAddress ? workerNormalizeChainHex(chainId) : "",
         connected: Boolean(cleanAddress),
-        connectedAt: cleanAddress ? workerNowIso() : ""
+        connectedAt: cleanAddress ? (sameAddress && previousWallet.connectedAt ? previousWallet.connectedAt : workerNowIso()) : ""
       };
       if (cleanAddress && workerBridgeState.bridgeAccount.id && !workerBridgeState.bridgeAccount.primaryWallet) {
         workerBridgeState.bridgeAccount.primaryWallet = cleanAddress;
       }
       saveWorkerBridgeState();
       renderWorkerBridgeReadiness();
+      return true;
+    }
+
+    function workerDisconnectPrimaryWallet() {
+      workerNextWalletOperationToken();
+      workerWalletProviderSyncQueued = false;
+      loadWorkerBridgeState();
+      workerBridgeState.wallet = {...workerDefaultBridgeState().wallet};
+      saveWorkerBridgeState();
+      renderWorkerBridgeReadiness();
+      if (workerSaveStatus) {
+        workerSaveStatus.textContent = "Wallet disconnected locally. Browser wallet permissions are unchanged; connect again to relink.";
+      }
+    }
+
+    function workerScheduleWalletProviderSync(reason = "wallet event") {
+      if (!window.ethereum || typeof window.ethereum.request !== "function") return null;
+      if (workerWalletConnectInFlight) {
+        workerWalletProviderSyncQueued = true;
+        return workerWalletConnectInFlight;
+      }
+      if (workerWalletProviderSyncInFlight) {
+        workerWalletProviderSyncQueued = true;
+        return workerWalletProviderSyncInFlight;
+      }
+      loadWorkerBridgeState();
+      if (!workerWalletLocallyConnected()) return null;
+
+      const token = workerNextWalletOperationToken();
+      workerWalletProviderSyncQueued = false;
+      workerWalletProviderSyncInFlight = (async () => {
+        try {
+          const snapshot = await workerReadWalletProviderSnapshot();
+          if (!workerWalletOperationIsCurrent(token)) return;
+
+          if (!snapshot.address) {
+            workerApplyWalletSnapshot("", "", {operationToken: token});
+            if (workerSaveStatus) workerSaveStatus.textContent = "Wallet provider reported no selected account; local wallet state was cleared.";
+            return;
+          }
+
+          const details = await workerExpectedChainDetails();
+          if (!workerWalletOperationIsCurrent(token)) return;
+          if (details.expectedHex && snapshot.chainId && !workerChainIdMatches(snapshot.chainId, details.expectedHex)) {
+            renderWorkerBridgeReadiness();
+            if (workerSaveStatus) {
+              workerSaveStatus.textContent = `Wallet provider moved to ${snapshot.chainId}; Worker kept the last dev-chain wallet. Disconnect and reconnect to switch back to ${details.expectedHex}.`;
+            }
+            return;
+          }
+
+          const applied = workerApplyWalletSnapshot(snapshot.address, snapshot.chainId, {operationToken: token});
+          if (applied && workerSaveStatus) {
+            workerSaveStatus.textContent = `${reason}: synced ${workerShortAddress(snapshot.address)} on ${snapshot.chainId || "the selected chain"}.`;
+          }
+        } catch (error) {
+          if (workerSaveStatus) workerSaveStatus.textContent = `Wallet sync failed: ${error.message || error}`;
+        } finally {
+          workerWalletProviderSyncInFlight = null;
+          renderWorkerBridgeReadiness();
+          if (workerWalletProviderSyncQueued) {
+            workerWalletProviderSyncQueued = false;
+            window.setTimeout(() => workerScheduleWalletProviderSync("wallet event"), 0);
+          }
+        }
+      })();
+
+      renderWorkerBridgeReadiness();
+      return workerWalletProviderSyncInFlight;
     }
 
     function workerBindWalletProviderEvents() {
       if (workerWalletProviderEventsBound || !window.ethereum || typeof window.ethereum.on !== "function") return;
       workerWalletProviderEventsBound = true;
-      window.ethereum.on("accountsChanged", (accounts) => {
-        const address = Array.isArray(accounts) && accounts[0] ? String(accounts[0]) : "";
-        workerApplyWalletSnapshot(address, workerBridgeState.wallet.chainId);
-        if (workerSaveStatus) {
-          workerSaveStatus.textContent = address
-            ? `Wallet account changed to ${workerShortAddress(address)}.`
-            : "Wallet disconnected.";
-        }
+      window.ethereum.on("accountsChanged", () => {
+        workerScheduleWalletProviderSync("Wallet account changed");
       });
-      window.ethereum.on("chainChanged", (chainId) => {
-        loadWorkerBridgeState();
-        workerBridgeState.wallet = {
-          ...workerBridgeState.wallet,
-          chainId: workerNormalizeChainHex(chainId),
-          connected: Boolean(workerBridgeState.wallet.address)
-        };
-        saveWorkerBridgeState();
-        renderWorkerBridgeReadiness();
-        if (workerSaveStatus && workerBridgeState.wallet.address) {
-          workerSaveStatus.textContent = `Wallet chain changed to ${workerNormalizeChainHex(chainId)}.`;
-        }
+      window.ethereum.on("chainChanged", () => {
+        workerScheduleWalletProviderSync("Wallet chain changed");
       });
     }
 
@@ -382,6 +507,7 @@
       if (workerRevokeMultisessionKey) {
         workerRevokeMultisessionKey.disabled = !activeKey;
       }
+      workerRenderWalletControls();
       workerRenderTokenList(workerRecoveryEmailList, workerBridgeState.recoveryEmails, "No recovery emails added.", "data-worker-remove-recovery-email");
       workerRenderTokenList(workerRecoveryWalletList, workerBridgeState.recoveryWallets, "No recovery wallets added.", "data-worker-remove-recovery-wallet");
     }
@@ -403,26 +529,56 @@
         if (workerSaveStatus) workerSaveStatus.textContent = "Wallet connection already in progress.";
         return workerWalletConnectInFlight;
       }
-      workerBindWalletProviderEvents();
-      if (workerConnectWallet) {
-        workerConnectWallet.disabled = true;
-        workerConnectWallet.setAttribute("aria-busy", "true");
+      if (workerWalletLocallyConnected()) {
+        renderWorkerBridgeReadiness();
+        if (workerSaveStatus) workerSaveStatus.textContent = "Wallet is already connected. Use Disconnect Wallet before choosing a different account.";
+        return;
       }
+
+      workerBindWalletProviderEvents();
+      const token = workerNextWalletOperationToken();
+      workerSetWalletControlsBusy(true);
       workerWalletConnectInFlight = (async () => {
         try {
-          const accounts = await window.ethereum.request({method: "eth_requestAccounts"});
-          const address = Array.isArray(accounts) && accounts[0] ? String(accounts[0]) : "";
-          if (!address) throw new Error("No wallet account was returned.");
-          const chainId = await workerEnsureExpectedWalletChain();
-          workerApplyWalletSnapshot(address, chainId);
-          if (workerSaveStatus) workerSaveStatus.textContent = `Connected wallet ${workerShortAddress(address)} on ${chainId || "the selected chain"}.`;
+          if (workerSaveStatus) workerSaveStatus.textContent = "Opening browser wallet...";
+          const requestedAccounts = await window.ethereum.request({method: "eth_requestAccounts"});
+          if (!workerWalletOperationIsCurrent(token)) return;
+          const requestedAddress = Array.isArray(requestedAccounts) && requestedAccounts[0]
+            ? workerCleanWalletAddress(requestedAccounts[0])
+            : "";
+          if (!requestedAddress) throw new Error("No valid wallet account was returned.");
+
+          if (workerSaveStatus) workerSaveStatus.textContent = "Checking Worker dev chain...";
+          const switchedChainId = await workerEnsureExpectedWalletChain();
+          if (!workerWalletOperationIsCurrent(token)) return;
+
+          const snapshot = await workerReadWalletProviderSnapshot();
+          if (!workerWalletOperationIsCurrent(token)) return;
+          const finalAddress = snapshot.address || requestedAddress;
+          const finalChainId = snapshot.chainId || switchedChainId;
+          if (!finalAddress) throw new Error("No valid wallet account is selected after chain confirmation.");
+
+          const details = await workerExpectedChainDetails();
+          if (!workerWalletOperationIsCurrent(token)) return;
+          if (details.expectedHex && finalChainId && !workerChainIdMatches(finalChainId, details.expectedHex)) {
+            throw new Error(`Wallet is on ${finalChainId || "an unknown chain"}; expected ${details.expectedHex}.`);
+          }
+
+          const applied = workerApplyWalletSnapshot(finalAddress, finalChainId, {operationToken: token});
+          if (applied && workerSaveStatus) workerSaveStatus.textContent = `Connected wallet ${workerShortAddress(finalAddress)} on ${finalChainId || "the selected chain"}.`;
         } catch (error) {
-          if (workerSaveStatus) workerSaveStatus.textContent = `Wallet connection failed: ${error.message || error}`;
+          if (workerWalletOperationIsCurrent(token) && workerSaveStatus) {
+            workerSaveStatus.textContent = `Wallet connection failed: ${error.message || error}`;
+          }
         } finally {
-          workerWalletConnectInFlight = null;
-          if (workerConnectWallet) {
-            workerConnectWallet.disabled = false;
-            workerConnectWallet.removeAttribute("aria-busy");
+          if (workerWalletOperationIsCurrent(token)) {
+            workerWalletConnectInFlight = null;
+            workerSetWalletControlsBusy(false);
+            renderWorkerBridgeReadiness();
+            if (workerWalletProviderSyncQueued) {
+              workerWalletProviderSyncQueued = false;
+              workerScheduleWalletProviderSync("wallet event");
+            }
           }
         }
       })();
@@ -1010,6 +1166,10 @@
       if (workerConnectWallet && !workerConnectWallet.dataset.workerBound) {
         workerConnectWallet.dataset.workerBound = "true";
         workerConnectWallet.addEventListener("click", connectWorkerPrimaryWallet);
+      }
+      if (workerDisconnectWallet && !workerDisconnectWallet.dataset.workerBound) {
+        workerDisconnectWallet.dataset.workerBound = "true";
+        workerDisconnectWallet.addEventListener("click", workerDisconnectPrimaryWallet);
       }
       if (workerCreateBridgeAccount && !workerCreateBridgeAccount.dataset.workerBound) {
         workerCreateBridgeAccount.dataset.workerBound = "true";
