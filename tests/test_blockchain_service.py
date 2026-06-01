@@ -103,8 +103,12 @@ def test_boot_reuses_running_default_dev_rpc_without_starting_compose(tmp_path: 
 
     current = json.loads((repo / "runtime" / "deployments" / "current.json").read_text(encoding="utf-8"))
     assert current["source"] == "blockchain-service-dev-compose"
+    assert current["environment"] == "dev"
     assert current["chain"]["rpc_url"] == DEFAULT_RPC_URL
     assert current["chain"]["chain_id"] == DEFAULT_CHAIN_ID
+    assert current["offices"][0]["office"] == "O0"
+    assert current["offices"][0]["address"] == "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+    assert "private_key" not in current["offices"][0]
     assert load_blockchain_service_state(repo)["ok"] is True
 
 
@@ -156,8 +160,48 @@ def test_boot_uses_external_blockchain_env_without_starting_dev_compose(tmp_path
     assert all("up" not in call for call in runner.calls)
     current = json.loads((repo / "runtime" / "deployments" / "current.json").read_text(encoding="utf-8"))
     assert current["source"] == "blockchain-service-env"
+    assert current["environment"] == "external"
     assert current["chain"]["rpc_url"] == "http://127.0.0.1:9999"
     assert current["chain"]["chain_id"] == 12345
+    assert current["offices"] == []
+
+
+def test_external_blockchain_env_can_publish_dev_office_addresses(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    env_path = tmp_path / ".env.blockchain"
+    env_path.write_text(
+        "\n".join(
+            [
+                "MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL=http://127.0.0.1:9999",
+                "MAIN_COMPUTER_ENERGY_CHAIN_ID=12345",
+                "MAIN_COMPUTER_DEV_OFFICE_0_ADDRESS=0x1111111111111111111111111111111111111111",
+                "MAIN_COMPUTER_DEV_OFFICE_0_TITLE=Requester",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    service = BlockchainService(
+        root=repo,
+        blockchain_env_path=env_path,
+        runner=FakeBlockchainRunner(),
+        rpc_probe_func=ok_rpc_probe,
+        sleep_func=lambda _: None,
+        output_func=None,
+    )
+
+    state = service.boot()
+
+    assert state["ok"] is True
+    current = json.loads((repo / "runtime" / "deployments" / "current.json").read_text(encoding="utf-8"))
+    assert current["environment"] == "dev"
+    assert current["offices"] == [
+        {
+            "office": "O0",
+            "title": "Requester",
+            "address": "0x1111111111111111111111111111111111111111",
+        }
+    ]
 
 
 def test_watch_retries_dev_chain_boot_on_heartbeat_until_ready(tmp_path: Path) -> None:

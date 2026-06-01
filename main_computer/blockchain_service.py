@@ -27,6 +27,28 @@ SERVICE_NAME = "main-computer-blockchain-service"
 DEV_COMPOSE_SERVICE = "ethereum-dev"
 DEV_RUNTIME_SOURCE = "blockchain-service-dev-compose"
 EXTERNAL_RUNTIME_SOURCE = "blockchain-service-env"
+DEFAULT_DEV_OFFICES = (
+    {
+        "office": "O0",
+        "title": "Captain",
+        "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    },
+    {
+        "office": "O1",
+        "title": "First Officer",
+        "address": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+    },
+    {
+        "office": "O2",
+        "title": "Second Officer",
+        "address": "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
+    },
+    {
+        "office": "O3",
+        "title": "Third Officer",
+        "address": "0x90F79bf6EB2c4f870365E785982E1f101E93b906",
+    },
+)
 
 
 def _now_iso() -> str:
@@ -66,6 +88,33 @@ def _coerce_int(value: Any, default: int = DEFAULT_CHAIN_ID) -> int:
         return int(str(value).strip(), 0)
     except (TypeError, ValueError):
         return default
+
+
+def _valid_address(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if len(text) == 42 and text.startswith("0x") and all(ch in "0123456789abcdefABCDEF" for ch in text[2:]):
+        return text
+    return None
+
+
+def _office_records_from_env_values(values: dict[str, str]) -> list[dict[str, str]]:
+    offices: list[dict[str, str]] = []
+    for index in range(4):
+        address = _valid_address(values.get(f"MAIN_COMPUTER_DEV_OFFICE_{index}_ADDRESS"))
+        if not address:
+            continue
+        offices.append(
+            {
+                "office": f"O{index}",
+                "title": values.get(f"MAIN_COMPUTER_DEV_OFFICE_{index}_TITLE") or f"Office {index}",
+                "address": address,
+            }
+        )
+    return offices
+
+
+def _default_dev_office_records() -> list[dict[str, str]]:
+    return [dict(office) for office in DEFAULT_DEV_OFFICES]
 
 
 def _default_blockchain_env_path() -> Path:
@@ -293,6 +342,12 @@ class BlockchainService:
                 values.get("MAIN_COMPUTER_ENERGY_CHAIN_ID") or values.get("ENERGY_CHAIN_ID") or values.get("CHAIN_ID"),
                 default=DEFAULT_CHAIN_ID,
             )
+            offices = _office_records_from_env_values(values)
+            environment = (
+                values.get("MAIN_COMPUTER_DEPLOYMENT_ENVIRONMENT")
+                or values.get("MAIN_COMPUTER_BLOCKCHAIN_ENVIRONMENT")
+                or ("dev" if offices else "external")
+            )
             return {
                 "ok": True,
                 "mode": "external",
@@ -302,6 +357,8 @@ class BlockchainService:
                 "rpc_url": rpc_url,
                 "chain_id": chain_id,
                 "source": EXTERNAL_RUNTIME_SOURCE,
+                "environment": environment,
+                "offices": offices,
             }
 
         rpc_url = os.environ.get("MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL") or DEFAULT_RPC_URL
@@ -315,6 +372,8 @@ class BlockchainService:
             "rpc_url": rpc_url,
             "chain_id": chain_id,
             "source": DEV_RUNTIME_SOURCE,
+            "environment": "dev",
+            "offices": _default_dev_office_records(),
             "compose_file": str(self.compose_file),
             "compose_project": self.compose_project or None,
             "compose_service": DEV_COMPOSE_SERVICE,
@@ -328,6 +387,7 @@ class BlockchainService:
         path = _deployment_current_path(self.root)
         payload = {
             "schema_version": 1,
+            "environment": str(config.get("environment") or "external"),
             "run_id": str(config.get("mode") or "blockchain"),
             "source": config.get("source"),
             "published_at": _now_iso(),
@@ -339,6 +399,7 @@ class BlockchainService:
             },
             "deployments": {},
             "contracts": {},
+            "offices": config.get("offices") or [],
         }
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
