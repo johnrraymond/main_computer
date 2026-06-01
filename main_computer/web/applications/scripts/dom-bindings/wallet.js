@@ -1,0 +1,9 @@
+    const walletApp = document.querySelector("#wallet-app");
+    const walletStatusPill = document.querySelector("#wallet-status-pill");
+    const walletConnectButton = document.querySelector("#wallet-connect-button");
+    const walletDisconnectButton = document.querySelector("#wallet-disconnect-button");
+    const walletResetLogButton = document.querySelector("#wallet-reset-log-button");
+    const walletHookState = document.querySelector("#wallet-hook-state");
+    const walletProviderState = document.querySelector("#wallet-provider-state");
+    const walletLastAction = document.querySelector("#wallet-last-action");
+    const walletEventLog = document.querySelector("#wallet-event-log");

@@ -1,0 +1,55 @@
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.16.0/dist/ethers.umd.min.js" data-mc-component-id="wallet.ethers-loader" data-mc-component-kind="dependency" data-mc-component-label="ethers.js BrowserProvider"></script>
+<section class="wallet-app mc-app" id="wallet-app" aria-label="Wallet connection workbench" data-mc-component-id="wallet.root" data-mc-component-kind="app" data-mc-component-label="Wallet" data-mc-component-owner="applications.workspace" data-mc-feature-id="wallet.feature.connection-workbench" data-mc-source="main_computer/web/applications/apps/wallet.html; main_computer/web/applications/styles/wallet.css; main_computer/web/applications/scripts/wallet.js; ethers@6.16.0">
+  <div class="wallet-shell app-widget mc-app-shell" data-widget-label="Wallet" data-mc-component-id="wallet.shell" data-mc-component-kind="panel" data-mc-component-label="Wallet Shell" data-mc-component-owner="wallet.root" data-mc-feature-id="wallet.feature.connection-workbench">
+    <header class="wallet-hero mc-app-header" data-mc-component-id="wallet.header" data-mc-component-kind="header" data-mc-component-label="Wallet Header" data-mc-component-owner="wallet.shell">
+      <div>
+        <p class="eyebrow">Wallet</p>
+        <h2>Wallet Connection Workbench</h2>
+        <p>Standalone surface for rebuilding ethers-powered browser wallet connect/disconnect behavior without touching Worker state.</p>
+      </div>
+      <span class="status-pill wallet-status-pill" id="wallet-status-pill" data-mc-component-id="wallet.status-pill" data-mc-component-kind="status" data-mc-component-label="Wallet Status Pill" data-mc-component-owner="wallet.header">not wired</span>
+    </header>
+
+    <section class="wallet-grid" data-mc-component-id="wallet.grid" data-mc-component-kind="layout" data-mc-component-label="Wallet Grid" data-mc-component-owner="wallet.shell">
+      <article class="wallet-card mc-app-pane" data-mc-component-id="wallet.connection-card" data-mc-component-kind="panel" data-mc-component-label="Wallet Connection Card" data-mc-component-owner="wallet.grid">
+        <div class="wallet-card-head">
+          <div>
+            <h3>Connection Controls</h3>
+            <p>Connect uses ethers BrowserProvider and finalizes only after stable signer/network reads. Disconnect is always available as a force reset and permission revoke.</p>
+          </div>
+        </div>
+        <div class="wallet-actions" data-mc-component-id="wallet.actions" data-mc-component-kind="toolbar" data-mc-component-label="Wallet Actions" data-mc-component-owner="wallet.connection-card">
+          <button type="button" id="wallet-connect-button" data-mc-component-id="wallet.connect" data-mc-component-kind="action" data-mc-component-label="Connect Wallet" data-mc-component-owner="wallet.actions">Connect Wallet</button>
+          <button type="button" id="wallet-disconnect-button" data-mc-component-id="wallet.disconnect" data-mc-component-kind="action" data-mc-component-label="Disconnect Wallet" data-mc-component-owner="wallet.actions">Disconnect Wallet</button>
+          <button type="button" id="wallet-reset-log-button" data-mc-component-id="wallet.reset-log" data-mc-component-kind="action" data-mc-component-label="Reset Wallet Log" data-mc-component-owner="wallet.actions">Reset Log</button>
+        </div>
+        <dl class="wallet-state-list" data-mc-component-id="wallet.state-list" data-mc-component-kind="status" data-mc-component-label="Wallet State List" data-mc-component-owner="wallet.connection-card">
+          <div>
+            <dt>Hook State</dt>
+            <dd id="wallet-hook-state">idle</dd>
+          </div>
+          <div>
+            <dt>Provider Layer</dt>
+            <dd id="wallet-provider-state">not installed</dd>
+          </div>
+          <div>
+            <dt>Last Action</dt>
+            <dd id="wallet-last-action">none</dd>
+          </div>
+        </dl>
+      </article>
+
+      <article class="wallet-card mc-app-pane" data-mc-component-id="wallet.log-card" data-mc-component-kind="panel" data-mc-component-label="Wallet Log Card" data-mc-component-owner="wallet.grid">
+        <div class="wallet-card-head">
+          <div>
+            <h3>Hook Log</h3>
+            <p>Use this log to inspect connect, disconnect, ethers provider samples, and observed wallet events.</p>
+          </div>
+        </div>
+        <ol class="wallet-event-log" id="wallet-event-log" aria-live="polite" data-mc-component-id="wallet.event-log" data-mc-component-kind="log" data-mc-component-label="Wallet Event Log" data-mc-component-owner="wallet.log-card">
+          <li>Wallet app ready.</li>
+        </ol>
+      </article>
+    </section>
+  </div>
+</section>
