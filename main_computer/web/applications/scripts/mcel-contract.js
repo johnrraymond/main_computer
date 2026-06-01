@@ -363,39 +363,39 @@
         })
       });
 
-      const defaultSource = `<main>
-  <section>
-    <p>Neighborhood Cluster · Open today</p>
-    <h1>A useful local site from almost plain HTML.</h1>
-    <p>MCEL turns simple semantic sections into a resilient product surface with layout, proof, state, actions, forms, and accessibility rules layered on top.</p>
-    <p><a href="#join">Join the list</a></p>
+      const defaultSource = `<main data-mc="smart-region">
+  <section data-mc="panel" data-mc-kind="hero">
+    <p data-mc-slot="meta">Neighborhood Cluster · Open today</p>
+    <h1 data-mc-slot="title">A useful local site from almost plain HTML.</h1>
+    <p data-mc-slot="body">MCEL turns simple semantic sections into a resilient product surface with layout, proof, state, actions, forms, and accessibility rules layered on top.</p>
+    <p data-mc-slot="actions"><a href="#join" data-mc-action="join-neighborhood" data-mc-event-policy="audited">Join the list</a></p>
   </section>
 
-  <section>
-    <h2>Neighborhood Cluster</h2>
-    <article>
-      <h3>Fresh daily</h3>
-      <p>Simple source becomes a polished card without hand-authored wrapper soup.</p>
+  <section data-mc="feed">
+    <h2 data-mc-slot="title">Neighborhood Cluster</h2>
+    <article data-mc="panel" data-mc-kind="article">
+      <h3 data-mc-slot="title">Fresh daily</h3>
+      <p data-mc-slot="body">Simple source becomes a polished card without hand-authored wrapper soup.</p>
     </article>
-    <article>
-      <h3>Pickup + delivery</h3>
-      <p>The layout law expands content instead of making each card a scroll trap.</p>
+    <article data-mc="panel" data-mc-kind="article">
+      <h3 data-mc-slot="title">Pickup + delivery</h3>
+      <p data-mc-slot="body">The layout law expands content instead of making each card a scroll trap.</p>
     </article>
-    <article>
-      <h3>Proof visible</h3>
-      <p>Runtime facts are generated, inspected, and stripped back out on serialize.</p>
+    <article data-mc="panel" data-mc-kind="article">
+      <h3 data-mc-slot="title">Proof visible</h3>
+      <p data-mc-slot="body">Runtime facts are generated, inspected, and stripped back out on serialize.</p>
     </article>
   </section>
 
-  <form id="join">
-    <h2>Get the weekly market note.</h2>
+  <form id="join" data-mc="smart-region" data-mc-submit="lead.create" data-mc-validation="native">
+    <h2 data-mc-slot="title">Get the weekly market note.</h2>
     <label>Email <input name="email" type="email" required placeholder="you@example.com"></label>
-    <button type="submit">Notify me</button>
+    <button type="submit" data-mc-action="signup" data-mc-event-policy="audited">Notify me</button>
   </form>
 
-  <nav aria-label="Market details">
-    <h2>Open 7am–7pm · 12th and Pine</h2>
-    <p>One semantic command row, zero nested scrollbars.</p>
+  <nav aria-label="Market details" data-mc="command-row">
+    <h2 data-mc-slot="title">Open 7am–7pm · 12th and Pine</h2>
+    <p data-mc-slot="body">One semantic command row, zero nested scrollbars.</p>
   </nav>
 </main>`;
 

@@ -140,17 +140,41 @@ def test_engine_preserves_nullify_marker_while_skipping_nullified_runtime_enrich
     assert "attributes.nullify" not in runtime_owned_match.group("body")
 
 
-def test_default_lab_source_is_human_seed_html_not_pre_enriched_contract() -> None:
+def test_default_lab_source_is_minimal_source_contract_not_machine_policy_markup() -> None:
     contract = _script("mcel-contract.js")
     default_match = re.search(r"const\s+defaultSource\s*=\s*`(?P<html>.*?)`;", contract, re.S)
     assert default_match, "missing defaultSource"
     default_source = default_match.group("html")
 
-    assert "<main>" in default_source
-    assert "<section>" in default_source
-    assert "<form id=\"join\">" in default_source
-    assert "<button type=\"submit\">Notify me</button>" in default_source
-    assert "data-mc" not in default_source
+    assert '<main data-mc="smart-region">' in default_source
+    assert '<section data-mc="panel" data-mc-kind="hero">' in default_source
+    assert '<p data-mc-slot="actions"><a href="#join" data-mc-action="join-neighborhood" data-mc-event-policy="audited">Join the list</a></p>' in default_source
+    assert '<form id="join" data-mc="smart-region" data-mc-submit="lead.create" data-mc-validation="native">' in default_source
+    assert '<button type="submit" data-mc-action="signup" data-mc-event-policy="audited">Notify me</button>' in default_source
+
+    machine_policy_attributes = [
+        "data-mc-flow",
+        "data-mc-rank",
+        "data-mc-state",
+        "data-mc-density",
+        "data-mc-size-policy",
+        "data-mc-overflow-policy",
+        "data-mc-scroll-policy",
+        "data-mc-words",
+        "data-mc-connects",
+        "data-mc-component",
+        "data-mc-component-kind",
+        "data-mc-state-owner",
+        "data-mc-state-policy",
+        "data-mc-render",
+        "data-mc-hydration",
+        "data-mc-a11y-policy",
+        "data-mc-performance-budget",
+        "data-mc-security-policy",
+    ]
+    for attribute in machine_policy_attributes:
+        assert attribute not in default_source
+
     assert "mcel-nullify" not in default_source
     assert "NeighborhoodMarketSite" not in default_source
     assert "HeroSection" not in default_source

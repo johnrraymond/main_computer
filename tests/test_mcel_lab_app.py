@@ -883,8 +883,10 @@ def test_mcel_lab_eleventh_slice_makes_real_ui_skeleton_visible_and_scroll_safe(
     assert "Minimal site acid test" in app
     assert "mcel-ui-skeleton-summary" in app
     assert "mcel-ui-skeleton-health" in app
-    assert "<main>" in contract
-    assert "<section>" in contract
+    assert '<main data-mc="smart-region">' in contract
+    assert '<section data-mc="panel" data-mc-kind="hero">' in contract
+    assert 'data-mc-slot="actions"' in contract
+    assert 'data-mc-action="join-neighborhood"' in contract
     assert "A useful local site from almost plain HTML." in contract
     assert "Get the weekly market note." in contract
     assert "data-mc-component=\"NeighborhoodMarketSite\"" not in contract
