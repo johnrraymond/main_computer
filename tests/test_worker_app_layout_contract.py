@@ -85,6 +85,8 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert 'mode: settings.executionMode' in js
     assert '"/api/applications/worker/register-offer"' in js
     assert '"/api/applications/worker/hub-health"' in js
+    assert '"/api/applications/worker/multisession-key/request"' in js
+    assert "requestMultiSessionKeySignature" in js
 
     assert "workerRegistrationHub" in bindings
     assert "workerEndpoint" in bindings
@@ -95,6 +97,9 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert "self._handle_worker_offer_register()" in dispatch
     assert '"/api/applications/worker/hub-health"' in dispatch
     assert "self._handle_worker_hub_health()" in dispatch
+    assert '"/api/applications/worker/multisession-key/request"' in dispatch
+    assert "self._handle_worker_multisession_key_request()" in dispatch
+    assert '"/api/hub/v1/credits/multisession-keys/request"' in energy_routes
     assert '"/api/hub/v1/workers/register"' in energy_routes
     assert "phase12_worker_seller_offer_ui" in energy_routes
     assert "Worker offer registration is only available to local viewport clients." in energy_routes
@@ -147,10 +152,12 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
     assert 'id="worker-request-multisession-key"' in html
     assert 'id="worker-revoke-multisession-key"' in html
     assert "main-computer-worker-bridge-readiness-v1" in js
-    assert "function requestWorkerMultisessionKey()" in js
+    assert "async function requestWorkerMultisessionKey" in js
     assert "function revokeWorkerMultisessionKey()" in js
     assert "No active multi-session key to revoke." in js
     assert "You can request a new key now." in js
+    assert "Multi-session key requested and marked active locally." not in js
+    assert "workerRandomKeyId" not in js
 
     assert "workerRequestFaucet" in bindings
     assert "workerFaucetReadiness" in bindings
