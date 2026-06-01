@@ -75,6 +75,7 @@
     <div class="mcel-product-actions" role="group" aria-label="MCEL product surface actions">
       <button type="button" id="mcel-open-editor-modal">Open Site Editor</button>
       <button type="button" id="mcel-open-site-modal">Open Rendered Site</button>
+      <button type="button" id="mcel-open-smart-css-modal">Open Smart CSS Primitive Tests</button>
     </div>
     <output id="mcel-site-frame-mini-status" class="mcel-site-frame-mini-status" aria-live="polite">
       rendered-site iframe idle
@@ -256,6 +257,32 @@
         title="Isolated MCEL rendered site"
         sandbox="allow-same-origin"
       ></iframe>
+    </div>
+  </div>
+
+  <div id="mcel-smart-css-modal" class="mcel-lab-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="mcel-smart-css-modal-title">
+    <div class="mcel-lab-modal-card mcel-smart-css-modal-card" role="document">
+      <header class="mcel-lab-modal-head">
+        <div>
+          <p class="eyebrow">Smart CSS Primitive Test Bed</p>
+          <h4 id="mcel-smart-css-modal-title">Raw CSS backend hazards on the left; MCEL golden-path primitives on the right.</h4>
+        </div>
+        <div class="mcel-site-frame-actions" role="group" aria-label="Smart CSS primitive test controls">
+          <button type="button" id="mcel-smart-css-rerun">Rerun Primitive Proofs</button>
+          <button type="button" class="mcel-modal-close" data-mcel-close-modal="smart-css">Close</button>
+        </div>
+      </header>
+      <section class="mcel-smart-css-intro" aria-label="Smart CSS primitive premise">
+        <strong>CSS/HTML are backend instructions, not trusted primitives.</strong>
+        <span>
+          These paired tests use the left side as a raw-backend hazard control and the
+          right side as the system-authored primitive MCEL should use on the golden path.
+          The suite checks object contracts: content envelope, growth behavior, clipping,
+          and paint-layer order.
+        </span>
+      </section>
+      <div id="mcel-smart-css-suite" class="mcel-smart-css-suite" aria-live="polite"></div>
+      <pre id="mcel-smart-css-report" class="mcel-smart-css-report" aria-label="Smart CSS primitive proof report">Open this modal to run the smart CSS primitive proofs.</pre>
     </div>
   </div>
 

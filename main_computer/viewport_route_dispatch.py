@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 from urllib.parse import parse_qs, urlsplit
 
 from main_computer.viewport_state import *  # noqa: F401,F403
-from main_computer.dev_faucet import DevFaucetError, xlag_dev_faucet
+from main_computer.dev_faucet import DevFaucetError, xlag_dev_faucet, xlag_dev_faucet_status
 from main_computer.executor_service import load_executor_service_state
 from main_computer.service_control import control_status, enqueue_supervisor_action
 from main_computer.service_supervisor import load_service_supervisor_state
@@ -1195,6 +1195,10 @@ def dispatch_get(self) -> None:
     if self.path == "/api/xlag/contract/status":
         self.server.signal("api-xlag-contract-status")
         self._send_json(xlag_contract_status(self.server.config))
+        return
+    if route_path == "/api/xlag/dev/faucet":
+        self.server.signal("api-xlag-dev-faucet-status")
+        self._send_json(xlag_dev_faucet_status(self.server.config, self.server.energy_chain))
         return
     if urlsplit(self.path).path == "/api/applications/game-editor/asset/read":
         self._handle_game_asset_read()

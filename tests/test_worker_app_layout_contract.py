@@ -116,12 +116,31 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
 
     assert 'id="worker-faucet-card"' in html
     assert 'id="worker-request-faucet"' in html
-    assert 'id="worker-faucet-amount"' in html
-    assert "Request credits through the existing faucet" in html
+    assert 'id="worker-faucet-readiness"' in html
+    assert 'id="worker-faucet-disabled-reason"' in html
+    assert 'id="worker-faucet-result-tx"' in html
+    assert 'id="worker-faucet-result-from"' in html
+    assert 'id="worker-faucet-result-to"' in html
+    assert 'id="worker-faucet-result-amount"' in html
+    assert 'id="worker-faucet-result-chain"' in html
+    assert 'id="worker-faucet-result-runtime"' in html
+    assert "Request 1 local dev-chain credit" in html
+    assert "Request Faucet Funds" in html
+    assert "read MetaMask directly" in html
     assert '"/api/xlag/dev/faucet"' in js
-    assert "amount_credits" in js
+    assert "WORKER_DEV_CHAIN_ID_DECIMAL = 42424242" in js
+    assert 'WORKER_DEV_CHAIN_ID_HEX = "0x28757b2"' in js
+    assert 'WORKER_FAUCET_AMOUNT_CREDITS = "1"' in js
+    assert "workerFaucetInFlight" in js
+    assert "workerFaucetLastResult" in js
+    assert "workerFaucetLastError" in js
+    assert "function workerComputeFaucetReadiness()" in js
+    assert "workerRefreshFaucetRuntimeStatus" in js
+    assert "amount_credits: WORKER_FAUCET_AMOUNT_CREDITS" in js
     assert "POST" in js
-    assert 'self.path == "/api/xlag/dev/faucet"' in dispatch
+    assert 'route_path == "/api/xlag/dev/faucet"' in dispatch
+    assert "xlag_dev_faucet_status" in dispatch
+    assert "api-xlag-dev-faucet-status" in dispatch
 
     assert 'id="worker-multisession-card"' in html
     assert "Visible before wallet connection" in html
@@ -134,6 +153,9 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
     assert "You can request a new key now." in js
 
     assert "workerRequestFaucet" in bindings
+    assert "workerFaucetReadiness" in bindings
+    assert "workerFaucetDisabledReason" in bindings
+    assert "workerFaucetResultTx" in bindings
     assert "workerDisconnectWallet" in bindings
     assert "workerRequestMultisessionKey" in bindings
     assert "workerRevokeMultisessionKey" in bindings
@@ -144,7 +166,7 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
     assert "Hub-spendable" not in js
 
 
-def test_worker_wallet_connect_and_disconnect_calls_are_removed_but_buttons_remain() -> None:
+def test_worker_wallet_connect_and_disconnect_use_always_disconnect_cycle() -> None:
     html = WORKER_HTML.read_text(encoding="utf-8")
     js = WORKER_JS.read_text(encoding="utf-8")
     bindings = WORKER_BINDINGS_JS.read_text(encoding="utf-8")
@@ -154,32 +176,47 @@ def test_worker_wallet_connect_and_disconnect_calls_are_removed_but_buttons_rema
     assert "workerConnectWallet" in bindings
     assert "workerDisconnectWallet" in bindings
 
-    removed_provider_calls = [
+    assert "async function connectWorkerPrimaryWallet" in js
+    assert "async function disconnectWorkerPrimaryWallet" in js
+    assert "async function workerWaitForStableWalletProvider" in js
+    assert "async function workerReadWalletProviderSnapshot" in js
+    assert "workerConnectWallet.addEventListener" in js
+    assert "workerDisconnectWallet.addEventListener" in js
+    assert "workerWalletNextOperation()" in js
+    assert "workerWalletOperationIsCurrent(token)" in js
+    assert "connect.eth_requestAccounts.start" in js
+    assert "connect.eth_requestAccounts.resolved" in js
+    assert "provider.sample.after-requestAccounts" in js
+    assert "connect.finalized.connected" in js
+    assert "disconnect.wallet_revokePermissions.start" in js
+    assert "disconnect.done" in js
+    assert "provider.accountsChanged.observed-only" in js
+    assert "provider.chainChanged.observed-only" in js
+    assert "Force Disconnect / Reset" in js
+    assert "Local state cleared. If MetaMask still has a pending popup, close it manually." in js
+    assert "MetaMask returned; stabilizing provider state" in js
+
+    required_provider_calls = [
         "window.ethereum",
         "eth_requestAccounts",
         "eth_accounts",
         "eth_chainId",
-        "wallet_requestPermissions",
         "wallet_revokePermissions",
+    ]
+    for token in required_provider_calls:
+        assert token in js
+
+    forbidden = [
+        "ethers",
+        "wallet_requestPermissions",
         "wallet_switchEthereumChain",
         "wallet_addEthereumChain",
+        "Verify / Finalize",
+        "document.hasFocus",
+        "window.addEventListener(\"focus\"",
+        "window.addEventListener(\"blur\"",
+        "Wallet connect and disconnect calls are intentionally removed",
     ]
-    for removed in removed_provider_calls:
-        assert removed not in js
+    for token in forbidden:
+        assert token not in js
 
-    removed_wallet_flows = [
-        "connectWorkerPrimaryWallet",
-        "workerDisconnectPrimaryWallet",
-        "workerBindWalletProviderEvents",
-        "workerScheduleWalletProviderSync",
-        "workerEnsureExpectedWalletChain",
-        "workerReadWalletProviderSnapshot",
-    ]
-    for removed in removed_wallet_flows:
-        assert removed not in js
-
-    assert "workerConnectWallet.addEventListener" not in js
-    assert "workerDisconnectWallet.addEventListener" not in js
-    assert 'workerConnectWallet.disabled = true' in js
-    assert 'workerDisconnectWallet.disabled = true' in js
-    assert "Wallet connect and disconnect calls are intentionally removed" in js

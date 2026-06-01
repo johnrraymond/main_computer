@@ -99,6 +99,108 @@ def xlag_dev_faucet(
     }
 
 
+def xlag_dev_faucet_status(config: MainComputerConfig, chain: EnergyChainClient) -> dict[str, Any]:
+    """Return side-effect-free local dev faucet readiness for the Worker UI."""
+
+    endpoint = "/api/xlag/dev/faucet"
+    runtime_source = str(config.dev_chain_runtime_source or "")
+    runtime_path = str(config.dev_chain_runtime_path) if config.dev_chain_runtime_path else None
+    expected_chain_id = config.xlag_chain_id
+
+    runtime_ready = True
+    runtime_error = config.dev_chain_runtime_error
+    try:
+        _require_dev_runtime(config)
+    except DevFaucetError as exc:
+        runtime_ready = False
+        runtime_error = str(exc)
+
+    rpc_loopback_ready = True
+    rpc_error = None
+    try:
+        _require_loopback_rpc(config.energy_chain_rpc_url)
+    except DevFaucetError as exc:
+        rpc_loopback_ready = False
+        rpc_error = str(exc)
+
+    faucet = None
+    faucet_error = None
+    try:
+        faucet = _faucet_address(config)
+    except DevFaucetError as exc:
+        faucet_error = str(exc)
+    if not faucet and not faucet_error:
+        faucet_error = "No dev faucet account is configured in the current deployment runtime."
+
+    chain_status: dict[str, Any]
+    if hasattr(chain, "status"):
+        try:
+            raw_chain_status = chain.status()
+            chain_status = raw_chain_status if isinstance(raw_chain_status, dict) else {"connected": False, "error": "Invalid chain status response."}
+        except Exception as exc:  # pragma: no cover - defensive against custom chain clients
+            chain_status = {"connected": False, "chain_id": None, "error": str(exc)}
+    else:
+        try:
+            chain_status = {
+                "connected": True,
+                "chain_id": _hex_to_int(chain.rpc("eth_chainId")),
+                "error": None,
+            }
+        except Exception as exc:
+            chain_status = {"connected": False, "chain_id": None, "error": str(exc)}
+
+    chain_id = chain_status.get("chain_id")
+    chain_connected = bool(chain_status.get("connected"))
+    chain_id_ok = chain_id == expected_chain_id if expected_chain_id is not None and chain_id is not None else False
+
+    checks = {
+        "deployment_runtime": runtime_ready,
+        "faucet_account": bool(faucet),
+        "loopback_rpc": rpc_loopback_ready,
+        "dev_chain_reachable": chain_connected,
+        "dev_chain_id": chain_id_ok,
+    }
+    ready = all(checks.values())
+
+    reason = "Faucet API is ready."
+    if not runtime_ready:
+        reason = runtime_error or "Deployment runtime is missing or not a local dev runtime."
+    elif not faucet:
+        reason = faucet_error or "Deployment runtime is missing or has no faucet account."
+    elif not rpc_loopback_ready:
+        reason = rpc_error or "Dev faucet requires a configured local loopback RPC URL."
+    elif not chain_connected:
+        reason = f"Dev chain is not reachable: {chain_status.get('error') or 'unknown error'}"
+    elif not chain_id_ok:
+        reason = f"Dev chain id {chain_id!r} does not match expected {expected_chain_id}."
+
+    return {
+        "ok": True,
+        "endpoint": endpoint,
+        "method": "POST",
+        "ready": ready,
+        "reason": reason,
+        "checks": checks,
+        "runtime_exists": runtime_source in {"deployment-runtime", "runtime-dev-chain"} and not config.dev_chain_runtime_error,
+        "runtime_ready": runtime_ready,
+        "runtime_source": runtime_source,
+        "runtime_path": runtime_path,
+        "runtime_error": runtime_error,
+        "has_faucet_account": bool(faucet),
+        "faucet_from": faucet,
+        "faucet_error": faucet_error,
+        "rpc_url": config.energy_chain_rpc_url,
+        "rpc_loopback_ready": rpc_loopback_ready,
+        "rpc_error": rpc_error,
+        "chain_connected": chain_connected,
+        "chain_id": chain_id,
+        "expected_chain_id": expected_chain_id,
+        "expected_chain_id_hex": hex(expected_chain_id) if expected_chain_id is not None else None,
+        "chain_id_ok": chain_id_ok,
+        "chain_status": chain_status,
+    }
+
+
 def _require_local_request(remote_addr: str | None) -> None:
     if not remote_addr:
         return

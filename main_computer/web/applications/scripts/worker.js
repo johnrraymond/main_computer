@@ -12,8 +12,21 @@
     let workerHubs = [...workerDefaultHubs];
 
     const workerBridgeReadinessStorageKey = "main-computer-worker-bridge-readiness-v1";
+    const WORKER_DEV_CHAIN_ID_DECIMAL = 42424242;
+    const WORKER_DEV_CHAIN_ID_HEX = "0x28757b2";
+    const WORKER_FAUCET_AMOUNT_CREDITS = "1";
     let workerBridgeStateLoaded = false;
     let workerBridgeState = workerDefaultBridgeState();
+    let workerWalletOperationSerial = 0;
+    let workerWalletProviderEventsBound = false;
+    let workerWalletHookState = "idle";
+    let workerWalletLastAction = "not connected";
+    let workerFaucetInFlight = false;
+    let workerFaucetLastResult = null;
+    let workerFaucetLastError = "";
+    let workerFaucetRuntimeStatus = null;
+    let workerFaucetRuntimeEndpointReachable = false;
+    let workerFaucetRuntimeCheckInFlight = false;
 
     function workerDefaultBridgeState() {
       return {
@@ -36,9 +49,11 @@
         multisessionKeys: [],
         activeMultisessionKeyId: "",
         faucet: {
-          amountCredits: "1",
+          amountCredits: WORKER_FAUCET_AMOUNT_CREDITS,
           lastStatus: "Not requested",
           lastTxHash: "",
+          lastResult: null,
+          lastError: "",
           updatedAt: ""
         }
       };
@@ -63,18 +78,108 @@
       return clean.length > 18 ? `${clean.slice(0, 10)}…${clean.slice(-6)}` : clean;
     }
 
+    function workerWalletValidAddress(value) {
+      return /^0x[0-9a-fA-F]{40}$/.test(String(value || ""));
+    }
+
+    function workerNormalizeChainIdHex(value) {
+      const text = String(value || "").trim().toLowerCase();
+      if (!text) return "";
+      if (/^0x[0-9a-f]+$/.test(text)) {
+        return `0x${BigInt(text).toString(16)}`;
+      }
+      if (/^[0-9]+$/.test(text)) {
+        return `0x${BigInt(text).toString(16)}`;
+      }
+      return text;
+    }
+
+    function workerNormalizeFaucetResult(data) {
+      if (!data || typeof data !== "object") return null;
+      const result = {
+        tx_hash: String(data.tx_hash || data.transaction_hash || data.hash || ""),
+        from: String(data.from || ""),
+        to: String(data.to || ""),
+        amount_credits: String(data.amount_credits || ""),
+        chain_id: String(data.chain_id || ""),
+        runtime_source: String(data.runtime_source || "")
+      };
+      return Object.values(result).some(Boolean) ? result : null;
+    }
+
+    function workerFaucetResultValue(result, key) {
+      return result && result[key] ? String(result[key]) : "—";
+    }
+
+    function workerWalletNextOperation() {
+      workerWalletOperationSerial += 1;
+      return workerWalletOperationSerial;
+    }
+
+    function workerWalletOperationIsCurrent(token) {
+      return token === workerWalletOperationSerial;
+    }
+
+    function workerWalletSleep(ms) {
+      return new Promise((resolve) => window.setTimeout(resolve, ms));
+    }
+
+    function workerSetWalletOperationState(nextState, message = "") {
+      workerWalletHookState = String(nextState || "idle");
+      if (message) workerWalletLastAction = String(message);
+      if (workerSaveStatus && message) workerSaveStatus.textContent = message;
+      renderWorkerBridgeReadiness();
+    }
+
+    function workerSetPrimaryWalletState({connected = false, address = "", chainId = ""} = {}) {
+      loadWorkerBridgeState();
+      workerBridgeState.wallet = {
+        address: connected ? String(address || "") : "",
+        chainId: connected ? String(chainId || "") : "",
+        connected: Boolean(connected && address),
+        connectedAt: connected && address ? workerNowIso() : ""
+      };
+      saveWorkerBridgeState();
+    }
+
     function workerRenderWalletControls() {
-      const disabledReason = "Wallet connect and disconnect calls are intentionally removed while the Worker wallet flow is rebuilt.";
+      const connected = Boolean(workerBridgeState.wallet.connected && workerBridgeState.wallet.address);
+      const busy = ["requesting", "stabilizing", "disconnecting"].includes(workerWalletHookState);
       if (workerConnectWallet) {
-        workerConnectWallet.disabled = true;
-        workerConnectWallet.removeAttribute("aria-busy");
-        workerConnectWallet.textContent = "Connect Wallet";
-        workerConnectWallet.title = disabledReason;
+        workerConnectWallet.disabled = busy || connected;
+        workerConnectWallet.textContent = connected
+          ? "Connected"
+          : workerWalletHookState === "requesting"
+            ? "MetaMask Open…"
+            : workerWalletHookState === "stabilizing"
+              ? "Finalizing…"
+              : "Connect Wallet";
+
+        if (["requesting", "stabilizing"].includes(workerWalletHookState)) {
+          workerConnectWallet.setAttribute("aria-busy", "true");
+        } else {
+          workerConnectWallet.removeAttribute("aria-busy");
+        }
+        workerConnectWallet.title = connected
+          ? `Connected wallet ${workerShortAddress(workerBridgeState.wallet.address)}`
+          : "Connect the Worker primary wallet through MetaMask.";
       }
       if (workerDisconnectWallet) {
-        workerDisconnectWallet.disabled = true;
-        workerDisconnectWallet.removeAttribute("aria-busy");
-        workerDisconnectWallet.title = disabledReason;
+        workerDisconnectWallet.disabled = workerWalletHookState === "disconnecting";
+        workerDisconnectWallet.textContent = workerWalletHookState === "disconnecting"
+          ? "Disconnecting…"
+          : connected
+            ? "Disconnect Wallet"
+            : "Force Disconnect / Reset";
+
+        if (workerWalletHookState === "disconnecting") {
+          workerDisconnectWallet.setAttribute("aria-busy", "true");
+        } else {
+          workerDisconnectWallet.removeAttribute("aria-busy");
+        }
+        workerDisconnectWallet.title = connected
+          ? "Disconnect the Worker wallet and revoke MetaMask account permission when supported."
+          : "Clear Worker wallet state and attempt to revoke MetaMask account permission.";
       }
     }
 
@@ -129,9 +234,11 @@
           .filter((key) => key.id),
         activeMultisessionKeyId: String(state.activeMultisessionKeyId || state.active_multisession_key_id || ""),
         faucet: {
-          amountCredits: String(faucet.amountCredits || faucet.amount_credits || "1"),
+          amountCredits: WORKER_FAUCET_AMOUNT_CREDITS,
           lastStatus: String(faucet.lastStatus || faucet.last_status || fallback.faucet.lastStatus),
           lastTxHash: String(faucet.lastTxHash || faucet.last_tx_hash || ""),
+          lastResult: workerNormalizeFaucetResult(faucet.lastResult || faucet.last_result),
+          lastError: String(faucet.lastError || faucet.last_error || ""),
           updatedAt: String(faucet.updatedAt || faucet.updated_at || "")
         }
       };
@@ -145,8 +252,11 @@
       } catch {
         workerBridgeState = workerDefaultBridgeState();
       }
+      workerFaucetLastResult = workerBridgeState.faucet.lastResult || null;
+      workerFaucetLastError = workerBridgeState.faucet.lastError || "";
       if (workerFaucetAmount) {
-        workerFaucetAmount.value = workerBridgeState.faucet.amountCredits || "1";
+        workerFaucetAmount.value = WORKER_FAUCET_AMOUNT_CREDITS;
+        workerFaucetAmount.disabled = true;
       }
     }
 
@@ -191,6 +301,132 @@
       return "Setup in progress";
     }
 
+    function workerComputeFaucetReadiness() {
+      loadWorkerBridgeState();
+
+      const wallet = workerBridgeState.wallet || {};
+      const address = String(wallet.address || "").trim();
+      const chainId = workerNormalizeChainIdHex(wallet.chainId);
+      const connected = Boolean(wallet.connected && address);
+
+      if (workerFaucetInFlight) {
+        return {
+          ready: false,
+          reason: "Sending faucet request…",
+          address,
+          chainId
+        };
+      }
+
+      if (!connected) {
+        return {
+          ready: false,
+          reason: "Connect Wallet before requesting faucet funds.",
+          address,
+          chainId
+        };
+      }
+
+      if (!workerWalletValidAddress(address)) {
+        return {
+          ready: false,
+          reason: "Connected Worker wallet address is not a valid 0x address.",
+          address,
+          chainId
+        };
+      }
+
+      if (chainId !== WORKER_DEV_CHAIN_ID_HEX) {
+        return {
+          ready: false,
+          reason: `Wallet is connected on ${chainId || "unknown chain"}. Switch MetaMask to ${WORKER_DEV_CHAIN_ID_HEX}.`,
+          address,
+          chainId
+        };
+      }
+
+      if (workerFaucetRuntimeCheckInFlight && !workerFaucetRuntimeStatus) {
+        return {
+          ready: false,
+          reason: "Checking faucet endpoint and deployment runtime.",
+          address,
+          chainId
+        };
+      }
+
+      if (!workerFaucetRuntimeEndpointReachable) {
+        return {
+          ready: false,
+          reason: "Faucet API endpoint is not reachable.",
+          address,
+          chainId
+        };
+      }
+
+      const runtime = workerFaucetRuntimeStatus || {};
+      if (!runtime.runtime_ready || !runtime.runtime_exists || !runtime.has_faucet_account) {
+        return {
+          ready: false,
+          reason: "Deployment runtime is missing or has no faucet account.",
+          address,
+          chainId
+        };
+      }
+
+      if (runtime.ready === false) {
+        return {
+          ready: false,
+          reason: String(runtime.reason || "Faucet runtime is not ready."),
+          address,
+          chainId
+        };
+      }
+
+      return {
+        ready: true,
+        reason: `Faucet can fund ${workerShortAddress(address)} on ${WORKER_DEV_CHAIN_ID_HEX}.`,
+        address,
+        chainId
+      };
+    }
+
+    function workerFaucetStatusText(readiness) {
+      if (workerFaucetInFlight) return "Sending faucet request…";
+      if (workerFaucetLastError) return workerFaucetLastError;
+      if (workerFaucetLastResult) {
+        const amount = workerFaucetResultValue(workerFaucetLastResult, "amount_credits");
+        const to = workerFaucetResultValue(workerFaucetLastResult, "to");
+        return `Faucet sent ${amount} credit${amount === "1" ? "" : "s"} to ${workerShortAddress(to)}.`;
+      }
+      return readiness.ready ? "Ready" : readiness.reason;
+    }
+
+    function workerRenderFaucetResult(result) {
+      const hasResult = Boolean(result);
+      if (workerFaucetResult) {
+        workerFaucetResult.hidden = !hasResult;
+      }
+      if (workerFaucetResultTx) {
+        workerFaucetResultTx.textContent = workerFaucetResultValue(result, "tx_hash");
+      }
+      if (workerFaucetResultFrom) {
+        workerFaucetResultFrom.textContent = workerFaucetResultValue(result, "from");
+      }
+      if (workerFaucetResultTo) {
+        workerFaucetResultTo.textContent = workerFaucetResultValue(result, "to");
+      }
+      if (workerFaucetResultAmount) {
+        workerFaucetResultAmount.textContent = workerFaucetResultValue(result, "amount_credits");
+      }
+      if (workerFaucetResultChain) {
+        const chainId = workerFaucetResultValue(result, "chain_id");
+        workerFaucetResultChain.textContent = chainId === "—" ? "—" : workerNormalizeChainIdHex(chainId);
+      }
+      if (workerFaucetResultRuntime) {
+        workerFaucetResultRuntime.textContent = workerFaucetResultValue(result, "runtime_source");
+      }
+    }
+
     function workerRenderTokenList(container, items, emptyText, removeAttribute) {
       if (!container) return;
       container.innerHTML = "";
@@ -218,6 +454,7 @@
     function renderWorkerBridgeReadiness() {
       loadWorkerBridgeState();
       const walletAddress = workerBridgeState.wallet.address;
+      const faucetReadiness = workerComputeFaucetReadiness();
       const bridgeAccount = workerBridgeState.bridgeAccount;
       const recoveryEmailCount = workerBridgeState.recoveryEmails.filter((item) => item.status === "active").length;
       const recoveryWalletCount = workerBridgeState.recoveryWallets.filter((item) => item.status === "active").length;
@@ -227,7 +464,13 @@
       if (workerPrimaryWalletStatus) {
         workerPrimaryWalletStatus.textContent = walletAddress
           ? `${workerShortAddress(walletAddress)}${workerBridgeState.wallet.chainId ? ` on ${workerBridgeState.wallet.chainId}` : ""}`
-          : "Not connected";
+          : workerWalletHookState === "requesting"
+            ? "MetaMask request open; not connected"
+            : workerWalletHookState === "stabilizing"
+              ? "MetaMask returned; stabilizing provider state"
+              : workerWalletHookState === "disconnecting"
+                ? "Force disconnecting"
+                : "Not connected";
       }
       if (workerBridgeAccountStatus) {
         workerBridgeAccountStatus.textContent = bridgeAccount.id
@@ -246,14 +489,32 @@
         workerBridgeReadinessStatus.textContent = workerReadinessLabel();
       }
       if (workerFaucetTarget) {
-        workerFaucetTarget.textContent = walletAddress ? workerShortAddress(walletAddress) : "Connect wallet first";
+        workerFaucetTarget.textContent = faucetReadiness.address
+          ? `${workerShortAddress(faucetReadiness.address)}${faucetReadiness.chainId ? ` on ${faucetReadiness.chainId}` : ""}`
+          : "Connect wallet first";
+      }
+      if (workerFaucetReadiness) {
+        workerFaucetReadiness.textContent = faucetReadiness.ready ? "Ready" : faucetReadiness.reason;
       }
       if (workerFaucetStatus) {
-        workerFaucetStatus.textContent = workerBridgeState.faucet.lastStatus || "Not requested";
+        workerFaucetStatus.textContent = workerFaucetStatusText(faucetReadiness) || "Not requested";
       }
       if (workerFaucetTx) {
-        workerFaucetTx.textContent = workerBridgeState.faucet.lastTxHash || "—";
+        workerFaucetTx.textContent = workerFaucetResultValue(workerFaucetLastResult, "tx_hash");
       }
+      if (workerFaucetDisabledReason) {
+        workerFaucetDisabledReason.textContent = faucetReadiness.reason;
+      }
+      if (workerRequestFaucet) {
+        workerRequestFaucet.disabled = !faucetReadiness.ready;
+        workerRequestFaucet.textContent = "Request Faucet Funds";
+        if (workerFaucetInFlight) {
+          workerRequestFaucet.setAttribute("aria-busy", "true");
+        } else {
+          workerRequestFaucet.removeAttribute("aria-busy");
+        }
+      }
+      workerRenderFaucetResult(workerFaucetLastResult);
       if (workerMultisessionKeyState) {
         workerMultisessionKeyState.textContent = activeKey ? "Active" : "No active key";
       }
@@ -281,7 +542,230 @@
       return `msk_${Date.now().toString(36)}_${random}`;
     }
 
-    // Wallet connect/disconnect calls are intentionally absent while the Worker wallet flow is rebuilt.
+    function workerWalletRecordEvent(type, detail = {}) {
+      const entry = {
+        at: workerNowIso(),
+        type: String(type || "event"),
+        detail: detail && typeof detail === "object" ? detail : {}
+      };
+      console.log("[worker-wallet]", entry.type, entry.detail);
+      if (workerSaveStatus) {
+        if (entry.type === "provider.sample.after-requestAccounts") {
+          const sampleAddress = detail.address || "";
+          const sampleChainId = detail.chainId || "";
+          workerSaveStatus.textContent = sampleAddress
+            ? `Finalizing wallet: stable sample ${detail.stableCount || 0} for ${sampleAddress} on ${sampleChainId}.`
+            : "Finalizing wallet: waiting for MetaMask account.";
+        } else if (entry.type === "connect.eth_requestAccounts.start") {
+          workerSaveStatus.textContent = "Opening MetaMask account request...";
+        } else if (entry.type === "connect.eth_requestAccounts.resolved") {
+          workerSaveStatus.textContent = "MetaMask returned; stabilizing wallet provider state.";
+        } else if (entry.type === "connect.finalized.connected") {
+          workerSaveStatus.textContent = `Connected wallet ${workerShortAddress(detail.address)} on ${detail.chainId || "unknown chain"}.`;
+        } else if (entry.type === "disconnect.done") {
+          workerSaveStatus.textContent = detail.revoked
+            ? "Worker wallet disconnected and MetaMask permission revoked."
+            : "Worker wallet state cleared. If MetaMask still has a pending popup, close it manually.";
+        }
+      }
+      window.dispatchEvent(new CustomEvent("main-computer-worker-wallet", {detail: entry}));
+      return entry;
+    }
+
+    async function workerReadWalletProviderSnapshot() {
+      if (!window.ethereum?.request) {
+        throw new Error("MetaMask provider not found.");
+      }
+
+      const accounts = await window.ethereum.request({method: "eth_accounts"});
+      const chainId = await window.ethereum.request({method: "eth_chainId"});
+      return {
+        accounts: Array.isArray(accounts) ? accounts : [],
+        address: Array.isArray(accounts) ? accounts[0] || "" : "",
+        chainId: String(chainId || "")
+      };
+    }
+
+    async function workerWaitForStableWalletProvider(token) {
+      workerSetWalletOperationState("stabilizing", "MetaMask returned. Waiting for stable provider state.");
+
+      const started = Date.now();
+      let previousKey = "";
+      let stableCount = 0;
+      let lastGood = null;
+
+      while (workerWalletOperationIsCurrent(token) && Date.now() - started < 20000) {
+        const snapshot = await workerReadWalletProviderSnapshot();
+        const address = workerWalletValidAddress(snapshot.address) ? snapshot.address : "";
+        const chainId = snapshot.chainId || "";
+        const key = `${address.toLowerCase()}|${chainId.toLowerCase()}`;
+
+        workerWalletRecordEvent("provider.sample.after-requestAccounts", {
+          address: address ? workerShortAddress(address) : "",
+          chainId,
+          stableCount
+        });
+
+        if (address && chainId && key === previousKey) {
+          stableCount += 1;
+        } else {
+          stableCount = address && chainId ? 1 : 0;
+          previousKey = key;
+        }
+
+        if (address && chainId) {
+          lastGood = {...snapshot, address, chainId};
+        }
+
+        if (stableCount >= 3) {
+          return {...snapshot, address, chainId};
+        }
+
+        await workerWalletSleep(350);
+      }
+
+      if (!workerWalletOperationIsCurrent(token)) {
+        throw new Error("Connect was cancelled by Force Disconnect / Reset.");
+      }
+
+      if (lastGood) {
+        workerWalletRecordEvent("provider.stability.timeout.using-last-good", {
+          address: workerShortAddress(lastGood.address),
+          chainId: lastGood.chainId
+        });
+        return lastGood;
+      }
+
+      throw new Error("Timed out waiting for MetaMask to expose a stable account and chain.");
+    }
+
+    async function connectWorkerPrimaryWallet(event) {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      event?.stopImmediatePropagation?.();
+
+      loadWorkerBridgeState();
+      if (!window.ethereum?.request) {
+        workerSetPrimaryWalletState({connected: false});
+        workerWalletHookState = "idle";
+        workerWalletLastAction = "MetaMask provider not found.";
+        if (workerSaveStatus) workerSaveStatus.textContent = workerWalletLastAction;
+        workerWalletRecordEvent("connect.failed.no-provider");
+        renderWorkerBridgeReadiness();
+        return;
+      }
+
+      if (workerWalletHookState !== "idle") {
+        workerWalletRecordEvent("connect.ignored.busy", {phase: workerWalletHookState});
+        return;
+      }
+
+      const token = workerWalletNextOperation();
+
+      workerSetPrimaryWalletState({connected: false});
+      workerSetWalletOperationState("requesting", "MetaMask opened. No provider state will be read until eth_requestAccounts resolves.");
+
+      try {
+        workerWalletRecordEvent("connect.eth_requestAccounts.start");
+
+        const accountsResult = await window.ethereum.request({method: "eth_requestAccounts"});
+
+        if (!workerWalletOperationIsCurrent(token)) {
+          throw new Error("Connect result ignored because Force Disconnect / Reset was clicked.");
+        }
+
+        workerWalletRecordEvent("connect.eth_requestAccounts.resolved", {accountsResult});
+
+        const finalSnapshot = await workerWaitForStableWalletProvider(token);
+
+        if (!workerWalletOperationIsCurrent(token)) {
+          throw new Error("Connect finalization ignored because Force Disconnect / Reset was clicked.");
+        }
+
+        workerSetPrimaryWalletState({
+          connected: true,
+          address: finalSnapshot.address,
+          chainId: finalSnapshot.chainId
+        });
+        workerWalletHookState = "idle";
+        workerWalletLastAction = `Connected ${workerShortAddress(finalSnapshot.address)} on ${finalSnapshot.chainId}.`;
+        workerWalletRecordEvent("connect.finalized.connected", {
+          address: finalSnapshot.address,
+          chainId: finalSnapshot.chainId
+        });
+        renderWorkerBridgeReadiness();
+      } catch (error) {
+        if (workerWalletOperationIsCurrent(token)) {
+          workerSetPrimaryWalletState({connected: false});
+          workerWalletHookState = "idle";
+          workerWalletLastAction = `Connect failed: ${error.message || error}`;
+          if (workerSaveStatus) workerSaveStatus.textContent = workerWalletLastAction;
+          workerWalletRecordEvent("connect.failed", {
+            code: error && typeof error === "object" ? error.code : undefined,
+            message: error && typeof error === "object" ? error.message || String(error) : String(error)
+          });
+          renderWorkerBridgeReadiness();
+        }
+      }
+    }
+
+    async function disconnectWorkerPrimaryWallet(event) {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      event?.stopImmediatePropagation?.();
+
+      const token = workerWalletNextOperation();
+
+      workerSetPrimaryWalletState({connected: false});
+      workerSetWalletOperationState("disconnecting", "Force disconnect/reset requested.");
+
+      let revoked = false;
+
+      try {
+        if (window.ethereum?.request) {
+          try {
+            workerWalletRecordEvent("disconnect.wallet_revokePermissions.start");
+            await window.ethereum.request({
+              method: "wallet_revokePermissions",
+              params: [{eth_accounts: {}}]
+            });
+            revoked = true;
+            workerWalletRecordEvent("disconnect.wallet_revokePermissions.done");
+          } catch (error) {
+            workerWalletRecordEvent("disconnect.wallet_revokePermissions.failed", {
+              code: error && typeof error === "object" ? error.code : undefined,
+              message: error && typeof error === "object" ? error.message || String(error) : String(error)
+            });
+          }
+        }
+      } finally {
+        if (workerWalletOperationIsCurrent(token)) {
+          workerSetPrimaryWalletState({connected: false});
+          workerWalletHookState = "idle";
+          workerWalletLastAction = revoked
+            ? "Disconnected and MetaMask permission revoked."
+            : "Local state cleared. If MetaMask still has a pending popup, close it manually.";
+          if (workerSaveStatus) workerSaveStatus.textContent = workerWalletLastAction;
+          workerWalletRecordEvent("disconnect.done", {revoked});
+          renderWorkerBridgeReadiness();
+        }
+      }
+    }
+
+    function workerHandleWalletAccountsChanged(accounts) {
+      workerWalletRecordEvent("provider.accountsChanged.observed-only", {accounts});
+    }
+
+    function workerHandleWalletChainChanged(chainId) {
+      workerWalletRecordEvent("provider.chainChanged.observed-only", {chainId});
+    }
+
+    function workerBindWalletProviderEvents() {
+      if (workerWalletProviderEventsBound || !window.ethereum?.on) return;
+      workerWalletProviderEventsBound = true;
+      window.ethereum.on("accountsChanged", workerHandleWalletAccountsChanged);
+      window.ethereum.on("chainChanged", workerHandleWalletChainChanged);
+    }
 
     function createOrLoadWorkerBridgeAccount() {
       loadWorkerBridgeState();
@@ -316,49 +800,76 @@
 
     async function requestWorkerFaucetCredits() {
       loadWorkerBridgeState();
-      const address = String(workerBridgeState.wallet.address || "").trim();
-      if (!address) {
-        if (workerSaveStatus) workerSaveStatus.textContent = "Connect a wallet before requesting faucet credits.";
+      const readiness = workerComputeFaucetReadiness();
+      if (!readiness.ready) {
+        workerFaucetLastError = readiness.reason;
+        workerBridgeState.faucet = {
+          ...workerBridgeState.faucet,
+          amountCredits: WORKER_FAUCET_AMOUNT_CREDITS,
+          lastStatus: readiness.reason,
+          lastError: readiness.reason,
+          updatedAt: workerNowIso()
+        };
+        saveWorkerBridgeState();
         renderWorkerBridgeReadiness();
+        if (workerSaveStatus) workerSaveStatus.textContent = readiness.reason;
         return;
       }
-      const amountCredits = String(workerPositiveInteger(workerElementValue(workerFaucetAmount, workerBridgeState.faucet.amountCredits || "1"), 1));
-      if (workerRequestFaucet) workerRequestFaucet.disabled = true;
+
+      const address = readiness.address;
+      workerFaucetInFlight = true;
+      workerFaucetLastError = "";
+      workerFaucetLastResult = null;
       workerBridgeState.faucet = {
         ...workerBridgeState.faucet,
-        amountCredits,
-        lastStatus: `Requesting ${amountCredits} credit${amountCredits === "1" ? "" : "s"}...`,
+        amountCredits: WORKER_FAUCET_AMOUNT_CREDITS,
+        lastStatus: "Sending faucet request…",
+        lastTxHash: "",
+        lastResult: null,
+        lastError: "",
         updatedAt: workerNowIso()
       };
       saveWorkerBridgeState();
       renderWorkerBridgeReadiness();
+
       try {
         const data = await workerPostJson("/api/xlag/dev/faucet", {
           address,
-          amount_credits: amountCredits
+          amount_credits: WORKER_FAUCET_AMOUNT_CREDITS
         });
+        workerFaucetLastResult = workerNormalizeFaucetResult(data);
+        workerFaucetLastError = "";
+        const txHash = workerFaucetResultValue(workerFaucetLastResult, "tx_hash") === "—" ? "" : workerFaucetLastResult.tx_hash;
+        const amount = workerFaucetResultValue(workerFaucetLastResult, "amount_credits");
+        const target = workerFaucetResultValue(workerFaucetLastResult, "to") === "—" ? address : workerFaucetLastResult.to;
         workerBridgeState.faucet = {
-          amountCredits,
-          lastStatus: "Faucet request submitted",
-          lastTxHash: String(data.tx_hash || data.transaction_hash || data.hash || ""),
+          amountCredits: WORKER_FAUCET_AMOUNT_CREDITS,
+          lastStatus: `Faucet sent ${amount} credit${amount === "1" ? "" : "s"} to ${workerShortAddress(target)}.`,
+          lastTxHash: txHash,
+          lastResult: workerFaucetLastResult,
+          lastError: "",
           updatedAt: workerNowIso()
         };
         saveWorkerBridgeState();
-        renderWorkerBridgeReadiness();
-        if (workerSaveStatus) workerSaveStatus.textContent = workerBridgeState.faucet.lastTxHash
-          ? `Faucet request submitted: ${workerBridgeState.faucet.lastTxHash}`
-          : "Faucet request submitted.";
+        if (workerSaveStatus) {
+          workerSaveStatus.textContent = txHash
+            ? `Faucet sent ${amount} credit${amount === "1" ? "" : "s"}: ${txHash}`
+            : workerBridgeState.faucet.lastStatus;
+        }
       } catch (error) {
+        workerFaucetLastError = `Faucet request failed: ${error.message || error}`;
         workerBridgeState.faucet = {
           ...workerBridgeState.faucet,
-          lastStatus: `Faucet request failed: ${error.message || error}`,
+          amountCredits: WORKER_FAUCET_AMOUNT_CREDITS,
+          lastStatus: workerFaucetLastError,
+          lastError: workerFaucetLastError,
           updatedAt: workerNowIso()
         };
         saveWorkerBridgeState();
-        renderWorkerBridgeReadiness();
-        if (workerSaveStatus) workerSaveStatus.textContent = workerBridgeState.faucet.lastStatus;
+        if (workerSaveStatus) workerSaveStatus.textContent = workerFaucetLastError;
       } finally {
-        if (workerRequestFaucet) workerRequestFaucet.disabled = false;
+        workerFaucetInFlight = false;
+        renderWorkerBridgeReadiness();
       }
     }
 
@@ -731,6 +1242,24 @@
       };
     }
 
+    async function workerGetJson(path) {
+      const response = await fetch(path, {
+        method: "GET",
+        headers: {"Accept": "application/json"},
+        cache: "no-store"
+      });
+      let data = {};
+      try {
+        data = await response.json();
+      } catch {
+        data = {};
+      }
+      if (!response.ok || data.error || data.ok === false) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+      }
+      return data;
+    }
+
     async function workerPostJson(path, payload) {
       const response = await fetch(path, {
         method: "POST",
@@ -747,6 +1276,28 @@
         throw new Error(data.error || `HTTP ${response.status}`);
       }
       return data;
+    }
+
+    async function workerRefreshFaucetRuntimeStatus() {
+      if (workerFaucetRuntimeCheckInFlight) return;
+      workerFaucetRuntimeCheckInFlight = true;
+      renderWorkerBridgeReadiness();
+      try {
+        workerFaucetRuntimeStatus = await workerGetJson("/api/xlag/dev/faucet");
+        workerFaucetRuntimeEndpointReachable = true;
+        if (workerFaucetLastError && workerFaucetLastError.startsWith("Faucet readiness check failed:")) {
+          workerFaucetLastError = "";
+        }
+      } catch (error) {
+        workerFaucetRuntimeStatus = null;
+        workerFaucetRuntimeEndpointReachable = false;
+        if (!workerFaucetLastError) {
+          workerFaucetLastError = `Faucet readiness check failed: ${error.message || error}`;
+        }
+      } finally {
+        workerFaucetRuntimeCheckInFlight = false;
+        renderWorkerBridgeReadiness();
+      }
     }
 
     async function registerWorkerOffer() {
@@ -806,6 +1357,7 @@
       renderWorkerHubs();
       loadWorkerBridgeState();
       renderWorkerBridgeReadiness();
+      workerRefreshFaucetRuntimeStatus();
       if (workerAddHubForm && !workerAddHubForm.dataset.workerBound) {
         workerAddHubForm.dataset.workerBound = "true";
         workerAddHubForm.addEventListener("submit", (event) => {
@@ -862,12 +1414,13 @@
       }
       if (workerConnectWallet && !workerConnectWallet.dataset.workerBound) {
         workerConnectWallet.dataset.workerBound = "true";
-        workerConnectWallet.disabled = true;
+        workerConnectWallet.addEventListener("click", connectWorkerPrimaryWallet, true);
       }
       if (workerDisconnectWallet && !workerDisconnectWallet.dataset.workerBound) {
         workerDisconnectWallet.dataset.workerBound = "true";
-        workerDisconnectWallet.disabled = true;
+        workerDisconnectWallet.addEventListener("click", disconnectWorkerPrimaryWallet, true);
       }
+      workerBindWalletProviderEvents();
       if (workerCreateBridgeAccount && !workerCreateBridgeAccount.dataset.workerBound) {
         workerCreateBridgeAccount.dataset.workerBound = "true";
         workerCreateBridgeAccount.addEventListener("click", createOrLoadWorkerBridgeAccount);
@@ -877,17 +1430,13 @@
         workerRefreshBridgeReadiness.addEventListener("click", () => {
           loadWorkerBridgeState();
           renderWorkerBridgeReadiness();
-          if (workerSaveStatus) workerSaveStatus.textContent = "Bridge readiness state refreshed from local storage.";
+          workerRefreshFaucetRuntimeStatus();
+          if (workerSaveStatus) workerSaveStatus.textContent = "Bridge and faucet readiness refreshed from local storage and runtime status.";
         });
       }
-      if (workerFaucetAmount && !workerFaucetAmount.dataset.workerBound) {
-        workerFaucetAmount.dataset.workerBound = "true";
-        workerFaucetAmount.addEventListener("change", () => {
-          loadWorkerBridgeState();
-          workerBridgeState.faucet.amountCredits = String(workerPositiveInteger(workerElementValue(workerFaucetAmount, "1"), 1));
-          saveWorkerBridgeState();
-          renderWorkerBridgeReadiness();
-        });
+      if (workerFaucetAmount) {
+        workerFaucetAmount.value = WORKER_FAUCET_AMOUNT_CREDITS;
+        workerFaucetAmount.disabled = true;
       }
       if (workerRequestFaucet && !workerRequestFaucet.dataset.workerBound) {
         workerRequestFaucet.dataset.workerBound = "true";

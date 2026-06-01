@@ -335,6 +335,24 @@
         return failures.reduce((worst, failure) => failure.delta > worst.delta ? failure : worst, failures[0]);
       }
 
+      function shapeContainmentChildrenFor(target) {
+        const structuralSelectors = [
+          "[data-mc=\"panel\"]",
+          ".mc-panel",
+          "article[data-mc]",
+          "[data-mc-component-kind=\"component\"]"
+        ].join(",");
+        const structural = uniqueElements([...(target?.querySelectorAll?.(structuralSelectors) || [])])
+          .filter((child) => child !== target && isVisibleElement(child));
+        if (structural.length) return structural;
+
+        return uniqueElements([...(target?.querySelectorAll?.([
+          "h1", "h2", "h3", "h4", "h5", "h6",
+          "p", "label", "input", "textarea", "select", "button", "a",
+          "img", "svg", "canvas", "video", "iframe", "table", "pre", "code"
+        ].join(",")) || [])]).filter(isVisibleElement);
+      }
+
       function shortTextFor(element) {
         return String(element?.value || element?.textContent || element?.getAttribute?.("placeholder") || "")
           .trim()
@@ -635,16 +653,16 @@
             }
           }
 
-          const shapeProblem = "shape-interior-escape";
+          const shapeContainmentProblem = "shape-containment-failed";
+          const shapeInteriorProblem = "shape-interior-escape";
+          const shapeProblem = allowedCompositionWarning(shapeContainmentProblem, compositionContract)
+            ? shapeContainmentProblem
+            : shapeInteriorProblem;
           if (!allowedCompositionWarning(shapeProblem, compositionContract) || !isShapeInteriorSensitive(target)) {
             return;
           }
 
-          const content = uniqueElements([...(target.querySelectorAll?.([
-            "h1", "h2", "h3", "h4", "h5", "h6",
-            "p", "label", "input", "textarea", "select", "button", "a",
-            "img", "svg", "canvas", "video", "iframe", "table", "pre", "code"
-          ].join(",")) || [])]).filter(isVisibleElement);
+          const content = shapeContainmentChildrenFor(target);
           const shape = shapeSummaryFor(target);
           let worst = null;
           content.forEach((child) => {
@@ -666,6 +684,7 @@
               childTagName: worst.child?.tagName || "",
               childText: shortTextFor(worst.child),
               shape: shape.shape,
+              visibleChildCount: content.length,
               remedy: remedyForCompositionWarning(shapeProblem, compositionContract)
             }, tolerancePx));
           }
