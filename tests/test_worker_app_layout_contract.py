@@ -156,7 +156,9 @@ def test_worker_wallet_connect_is_single_flight_and_dev_chain_aware() -> None:
     assert "Opening MetaMask account chooser..." in js
     assert '"wallet_requestPermissions"' in js
     assert "workerRequestFreshWalletPermission" in js
-    assert "Wallet account changed during connect" in js
+    assert "accountSettledDuringConnect" in js
+    assert "after MetaMask settled from" in js
+    assert "throw new Error(`Wallet account changed during connect" not in js
     assert 'workerConnectWallet.setAttribute("aria-busy", "true")' in js
     assert 'workerConnectWallet.removeAttribute("aria-busy")' in js
 
