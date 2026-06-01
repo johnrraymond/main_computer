@@ -88,6 +88,27 @@
 
     const websiteBuilderBackendRuntimeOrder = ["none", "fastapi", "node-express", "worker"];
 
+    const websiteBuilderPageRuntimeLabels = {
+      default: "Default Runtime",
+      mcel: "MCEL Runtime"
+    };
+
+    const websiteBuilderPageRuntimeDescriptions = {
+      default: "No-op runtime.js proves selectable site runtimes ship with saved and published sites.",
+      mcel: "Reserved for the compiled MCELRuntime file once the runtime bundle lands."
+    };
+
+    const websiteBuilderPageRuntimeSources = {
+      default: "deploy/local-platform/site-runtimes/default-runtime.js",
+      mcel: "deploy/local-platform/site-runtimes/mcel-runtime.js"
+    };
+
+    const websiteBuilderPageRuntimeOrder = ["default", "mcel"];
+    const websiteBuilderPageRuntimeAvailability = {
+      default: true,
+      mcel: false
+    };
+
     const websiteBuilderBlogLayerInstallOrder = ["database", "cms", "blog"];
 
     const websiteBuilderBlogLayerLabels = {
@@ -226,10 +247,10 @@
       syncWebsiteBuilderSourceFromGrapes({markDirty: false});
       return websiteBuilderEnsureBlogWidgetAssets({
         site_id: siteId,
-        html: websiteBuilderHtml?.value || "",
+        html: ensureWebsiteBuilderRuntimeScript(websiteBuilderHtml?.value || ""),
         css: websiteBuilderCss?.value || "",
         js: websiteBuilderJs?.value || "",
-        builder: websiteBuilderState?.value || ""
+        builder: websiteBuilderBuilderStateWithPageRuntime()
       });
     }
 
@@ -1075,6 +1096,86 @@
       markWebsiteBuilderDirty();
     }
 
+    function normalizeWebsiteBuilderPageRuntime(value) {
+      const source = value && typeof value === "object" && !Array.isArray(value)
+        ? value.id || value.runtime_id || value.name
+        : value;
+      const runtime = String(source || "default").trim().toLowerCase().replace(/_/g, "-");
+      const aliases = {
+        "": "default",
+        none: "default",
+        noop: "default",
+        "no-op": "default",
+        "default-runtime": "default",
+        "mcel-runtime": "mcel",
+        "use-mcel-runtime": "mcel"
+      };
+      const normalized = aliases[runtime] || runtime;
+      return websiteBuilderPageRuntimeOrder.includes(normalized) ? normalized : "default";
+    }
+
+    function websiteBuilderPageRuntimeConfig(runtimeId = "default") {
+      const id = normalizeWebsiteBuilderPageRuntime(runtimeId);
+      return {
+        id,
+        entry: "runtime.js",
+        source: websiteBuilderPageRuntimeSources[id] || websiteBuilderPageRuntimeSources.default
+      };
+    }
+
+    function currentWebsiteBuilderPageRuntimeConfig() {
+      const builder = parseWebsiteBuilderBuilderState();
+      if (builder === null) return websiteBuilderPageRuntimeConfig();
+      return websiteBuilderPageRuntimeConfig(builder.page_runtime || builder.runtime?.page_runtime || "default");
+    }
+
+    function websiteBuilderBuilderStateWithPageRuntime() {
+      const text = websiteBuilderState?.value || "";
+      if (!text.trim()) return text;
+      const builder = parseWebsiteBuilderBuilderState();
+      if (builder === null) return text;
+      const runtime = websiteBuilderPageRuntimeConfig(builder.page_runtime || "default");
+      const nextBuilder = {...builder, page_runtime: runtime};
+      return `${JSON.stringify(nextBuilder, null, 2)}\n`;
+    }
+
+    function setWebsiteBuilderPageRuntime(runtimeName) {
+      const runtime = normalizeWebsiteBuilderPageRuntime(runtimeName);
+      if (!websiteBuilderPageRuntimeAvailability[runtime]) {
+        setWebsiteBuilderLog(`${websiteBuilderPageRuntimeLabels[runtime] || runtime} is not available yet. Add the compiled runtime file before selecting it.`);
+        return;
+      }
+      const builder = parseWebsiteBuilderBuilderState();
+      if (builder === null) {
+        setWebsiteBuilderLog("Fix builder.json before editing the page runtime.");
+        return;
+      }
+      const nextBuilder = {...builder, page_runtime: websiteBuilderPageRuntimeConfig(runtime)};
+      writeWebsiteBuilderBuilderState(nextBuilder);
+      renderWebsiteBuilderPageRuntimeView();
+      scheduleWebsiteBuilderDraftPreview();
+      setWebsiteBuilderLog(`${websiteBuilderPageRuntimeLabels[runtime]} selected. Save will package runtime.js with this site.`);
+    }
+
+    function renderWebsiteBuilderPageRuntimeView() {
+      const config = currentWebsiteBuilderPageRuntimeConfig();
+      const runtime = normalizeWebsiteBuilderPageRuntime(config.id);
+      websiteBuilderPageRuntimeButtons.forEach((button) => {
+        const buttonRuntime = normalizeWebsiteBuilderPageRuntime(button.dataset.websiteBuilderPageRuntime);
+        const available = Boolean(websiteBuilderPageRuntimeAvailability[buttonRuntime]);
+        button.classList.toggle("active", buttonRuntime === runtime);
+        button.disabled = !available;
+        button.setAttribute("aria-pressed", buttonRuntime === runtime ? "true" : "false");
+        if (!available) {
+          button.title = "Add the compiled runtime file before enabling this runtime.";
+        }
+      });
+      if (websiteBuilderPageRuntimeStatus) {
+        const availableText = websiteBuilderPageRuntimeAvailability[runtime] ? "available" : "not available yet";
+        websiteBuilderPageRuntimeStatus.textContent = `${websiteBuilderPageRuntimeLabels[runtime] || runtime}: ${websiteBuilderPageRuntimeDescriptions[runtime] || ""} Entry ${config.entry}; source ${config.source}; ${availableText}.`;
+      }
+    }
+
     function normalizeWebsiteBuilderBackendRuntime(value) {
       const runtime = String(value || "none").trim().toLowerCase();
       return websiteBuilderBackendRuntimeOrder.includes(runtime) ? runtime : "none";
@@ -1290,6 +1391,7 @@
       if (websiteBuilderBackendSourcePreview) {
         websiteBuilderBackendSourcePreview.textContent = buildWebsiteBuilderBackendSourcePreview(config);
       }
+      renderWebsiteBuilderPageRuntimeView();
     }
 
 
@@ -2121,6 +2223,26 @@
       return escapeWebsiteBuilderHtml(site?.name || site?.id || websiteBuilderStateModel.selectedSiteId || "Website");
     }
 
+    function websiteBuilderRuntimeScriptTag() {
+      return '  <script src="/runtime.js" defer><\/script>';
+    }
+
+    function hasWebsiteBuilderRuntimeScript(htmlText) {
+      return /<script\b[^>]*\bsrc\s*=\s*["']\/?runtime\.js["'][^>]*>\s*<\/script>/i.test(String(htmlText || ""));
+    }
+
+    function ensureWebsiteBuilderRuntimeScript(htmlText) {
+      const source = String(htmlText || "");
+      if (!source.trim() || hasWebsiteBuilderRuntimeScript(source)) return source;
+      const hasDocumentShell = /<html[\s>]/i.test(source) || /<head[\s>]/i.test(source) || /<!doctype/i.test(source);
+      if (!hasDocumentShell) return source;
+      const siteScript = /<script\b[^>]*\bsrc\s*=\s*["']\/?script\.js["'][^>]*>\s*<\/script>/i;
+      if (siteScript.test(source)) {
+        return source.replace(siteScript, `${websiteBuilderRuntimeScriptTag()}\n$&`);
+      }
+      return source.replace(/<\/head\s*>/i, `${websiteBuilderRuntimeScriptTag()}\n</head>`);
+    }
+
     function buildWebsiteBuilderFullDocument(bodyHtml, site = websiteBuilderStateModel.selectedSite) {
       const body = String(bodyHtml || "").trim() || `<main class="site-shell"><h1>${websiteBuilderDocumentTitle(site)}</h1><p>Drag blocks from the Visual Builder to begin.</p></main>`;
       return `<!doctype html>
@@ -2130,6 +2252,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${websiteBuilderDocumentTitle(site)}</title>
   <link rel="stylesheet" href="/style.css">
+  <script src="/runtime.js" defer><\/script>
   <script src="/script.js" defer><\/script>
 </head>
 <body>
@@ -3503,6 +3626,7 @@ body {
       data.entry_html = "index.html";
       data.stylesheet = "style.css";
       data.script = "script.js";
+      data.page_runtime = websiteBuilderPageRuntimeConfig(data.page_runtime || "default");
       data.updated_at = new Date().toISOString();
       websiteBuilderState.value = JSON.stringify(data, null, 2) + "\n";
     }
@@ -5031,6 +5155,9 @@ body {
     });
     websiteBuilderFileTabs.forEach((button) => {
       button.addEventListener("click", () => selectWebsiteBuilderSourceFile(button.dataset.websiteBuilderFile));
+    });
+    websiteBuilderPageRuntimeButtons.forEach((button) => {
+      button.addEventListener("click", () => setWebsiteBuilderPageRuntime(button.dataset.websiteBuilderPageRuntime));
     });
     websiteBuilderBackendRuntimeButtons.forEach((button) => {
       button.addEventListener("click", () => setWebsiteBuilderBackendRuntime(button.dataset.websiteBuilderBackendRuntime));

@@ -197,6 +197,11 @@
   "builder": {
     "engine": "grapesjs",
     "entry_html": "index.html",
+    "page_runtime": {
+      "entry": "runtime.js",
+      "id": "default",
+      "source": "deploy/local-platform/site-runtimes/default-runtime.js"
+    },
     "script": "script.js",
     "state_file": "builder.json",
     "stylesheet": "style.css"
@@ -311,7 +316,12 @@
     }
   },
   "runtime": {
-    "default_lane": "local"
+    "default_lane": "local",
+    "page_runtime": {
+      "entry": "runtime.js",
+      "id": "default",
+      "sha256": "94172186179122657ef9ed93dba088f80a538394c653ea6717e296f4efc029fa"
+    }
   },
   "runtime_config": {
     "content": {
@@ -333,5 +343,5 @@
     "kind": "host_runtime_site",
     "path": "runtime/websites/johnrraymond"
   },
-  "updated_at": "2026-05-29T22:20:28+00:00"
+  "updated_at": "2026-06-01T23:48:18+00:00"
 }

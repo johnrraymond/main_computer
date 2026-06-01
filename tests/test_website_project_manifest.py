@@ -82,7 +82,7 @@ def test_repository_ships_hub_site_as_v2_artifact_set() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     site_dir = repo_root / "runtime" / "websites" / "hub-site"
 
-    for artifact_name in ("site.json", "index.html", "style.css", "script.js", "builder.json"):
+    for artifact_name in ("site.json", "index.html", "style.css", "script.js", "builder.json", "runtime.js"):
         assert (site_dir / artifact_name).exists()
 
     manifest = json.loads((site_dir / "site.json").read_text(encoding="utf-8"))
@@ -94,7 +94,7 @@ def test_repository_ships_hub_site_as_v2_artifact_set() -> None:
         "path": "runtime/websites/hub-site",
     }
     assert manifest["runtime"]["content_runtime"] == "deployed"
-    assert manifest["artifacts"]["required_files"] == ["site.json", "index.html", "style.css", "script.js", "builder.json"]
+    assert manifest["artifacts"]["required_files"] == ["site.json", "index.html", "style.css", "script.js", "builder.json", "runtime.js"]
 
 
 def test_website_manifest_loader_seeds_hub_and_blog_runtime_projects(tmp_path: Path) -> None:
@@ -114,12 +114,13 @@ def test_website_manifest_loader_seeds_hub_and_blog_runtime_projects(tmp_path: P
         "path": "runtime/websites/hub-site",
     }
     assert hub_data["runtime"]["content_runtime"] == "deployed"
-    assert hub_data["artifacts"]["required_files"] == ["site.json", "index.html", "style.css", "script.js", "builder.json"]
+    assert hub_data["artifacts"]["required_files"] == ["site.json", "index.html", "style.css", "script.js", "builder.json", "runtime.js"]
     assert hub_data["content"] == {
         "index_html": True,
         "style_css": True,
         "builder_json": True,
         "script_js": True,
+        "runtime_js": True,
     }
     assert hub_data["local_platform"]["lanes"]["local"]["service"] == "hub-local"
     assert hub_data["local_platform"]["lanes"]["dev"]["service"] == "hub-dev"
@@ -134,7 +135,7 @@ def test_website_manifest_supports_arbitrary_site_creation_and_safe_save(tmp_pat
         "kind": "host_runtime_site",
         "path": "runtime/websites/portfolio-site",
     }
-    for artifact_name in ("site.json", "index.html", "style.css", "script.js", "builder.json"):
+    for artifact_name in ("site.json", "index.html", "style.css", "script.js", "builder.json", "runtime.js"):
         assert (tmp_path / "runtime" / "websites" / "portfolio-site" / artifact_name).exists()
 
     saved = save_website_project_files(
@@ -149,7 +150,11 @@ def test_website_manifest_supports_arbitrary_site_creation_and_safe_save(tmp_pat
     payload = read_website_project_files(tmp_path, "portfolio-site")
     assert payload["html"] == "<h1>Portfolio</h1>\n"
     assert "font-family" in payload["css"]
-    assert json.loads(payload["builder"])["version"] == 1
+    builder_payload = json.loads(payload["builder"])
+    assert builder_payload["version"] == 1
+    assert builder_payload["page_runtime"]["id"] == "default"
+    assert "WebsiteBuilderRuntime" in payload["runtime_js"]
+    assert (tmp_path / "runtime" / "websites" / "portfolio-site" / "runtime.js").exists()
 
     with pytest.raises(WebsiteProjectError):
         create_website_project(tmp_path, "../escape", "Escape")
@@ -618,6 +623,36 @@ def _write_site_runtime_stub(repo_root: Path, body: str = "print('runtime')\n") 
     runtime = repo_root / "deploy" / "local-platform" / "site-server" / "app.py"
     runtime.parent.mkdir(parents=True, exist_ok=True)
     runtime.write_text(body, encoding="utf-8")
+
+
+def test_site_page_runtime_bundle_copies_default_runtime_and_injects_full_document(tmp_path: Path) -> None:
+    list_website_projects(tmp_path)
+    html = """<!doctype html>
+<html lang="en">
+<head>
+  <title>Runtime test</title>
+  <script src="/script.js" defer></script>
+</head>
+<body><main>Runtime test</main></body>
+</html>
+"""
+    save_website_project_files(
+        tmp_path,
+        "hub-site",
+        html=html,
+        builder='{"version": 2, "page_runtime": {"id": "default"}}\n',
+    )
+
+    site_root = tmp_path / "runtime" / "websites" / "hub-site"
+    saved_html = (site_root / "index.html").read_text(encoding="utf-8")
+    runtime_js = (site_root / "runtime.js").read_text(encoding="utf-8")
+    metadata = json.loads((site_root / ".main-computer" / "runtime" / "page-runtime.json").read_text(encoding="utf-8"))
+
+    assert '<script src="/runtime.js" defer></script>' in saved_html
+    assert saved_html.index("/runtime.js") < saved_html.index("/script.js")
+    assert "WebsiteBuilderRuntime" in runtime_js
+    assert metadata["runtime_id"] == "default"
+    assert metadata["entrypoint"] == "runtime.js"
 
 
 def test_site_runtime_bundle_copies_current_runtime_inside_site_directory(tmp_path: Path) -> None:

@@ -23,6 +23,8 @@
     const websiteBuilderGrapesCanvas = document.querySelector("#website-builder-grapes");
     const websiteBuilderGrapesFallback = document.querySelector("#website-builder-grapes-fallback");
     const websiteBuilderState = document.querySelector("#website-builder-state");
+    const websiteBuilderPageRuntimeButtons = document.querySelectorAll("[data-website-builder-page-runtime]");
+    const websiteBuilderPageRuntimeStatus = document.querySelector("#website-builder-page-runtime-status");
     const websiteBuilderLog = document.querySelector("#website-builder-log");
     const websiteBuilderSave = document.querySelector("#website-builder-save");
     const websiteBuilderPublishLocal = document.querySelector("#website-builder-publish-local");

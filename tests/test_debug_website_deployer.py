@@ -61,6 +61,7 @@ def test_debug_website_deployer_ensures_bootstrap_site_and_registry(tmp_path: Pa
     assert (site_dir / "style.css").exists()
     assert (site_dir / "script.js").exists()
     assert (site_dir / "builder.json").exists()
+    assert (site_dir / "runtime.js").exists()
 
     manifest = json.loads((site_dir / "site.json").read_text(encoding="utf-8"))
     assert manifest["id"] == "debug-bootstrap"
@@ -71,7 +72,7 @@ def test_debug_website_deployer_ensures_bootstrap_site_and_registry(tmp_path: Pa
         "kind": "host_runtime_site",
         "path": "runtime/websites/debug-bootstrap",
     }
-    assert manifest["artifacts"]["required_files"] == ["site.json", "index.html", "style.css", "script.js", "builder.json"]
+    assert manifest["artifacts"]["required_files"] == ["site.json", "index.html", "style.css", "script.js", "builder.json", "runtime.js"]
     assert manifest["debug"]["bootstrap"] is True
     assert manifest["debug"]["managed_by"] == "tools/local-platform/debug-website.py"
     assert "generate, repair, and debug websites safely" in (site_dir / "index.html").read_text(encoding="utf-8")

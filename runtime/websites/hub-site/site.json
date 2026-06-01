@@ -3,12 +3,14 @@
     "builder_state": "builder.json",
     "entry_html": "index.html",
     "manifest": "site.json",
+    "page_runtime": "runtime.js",
     "required_files": [
       "site.json",
       "index.html",
       "style.css",
       "script.js",
-      "builder.json"
+      "builder.json",
+      "runtime.js"
     ],
     "script": "script.js",
     "stylesheet": "style.css"
@@ -215,6 +217,11 @@
   "builder": {
     "engine": "grapesjs",
     "entry_html": "index.html",
+    "page_runtime": {
+      "entry": "runtime.js",
+      "id": "default",
+      "source": "deploy/local-platform/site-runtimes/default-runtime.js"
+    },
     "script": "script.js",
     "state_file": "builder.json",
     "stylesheet": "style.css"
@@ -350,5 +357,5 @@
     "kind": "host_runtime_site",
     "path": "runtime/websites/hub-site"
   },
-  "updated_at": "2026-06-01T18:30:01+00:00"
+  "updated_at": "2026-06-01T23:47:37+00:00"
 }
