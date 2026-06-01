@@ -147,11 +147,16 @@ def test_worker_wallet_connect_is_single_flight_and_dev_chain_aware() -> None:
     js = WORKER_JS.read_text(encoding="utf-8")
 
     assert "let workerWalletConnectInFlight = null" in js
+    assert "let workerWalletDisconnectInFlight = null" in js
     assert "let workerWalletProviderSyncInFlight = null" in js
     assert "let workerWalletOperationSerial = 0" in js
     assert "if (workerWalletConnectInFlight)" in js
     assert "Wallet connection already in progress." in js
     assert "Wallet is already connected. Use Disconnect Wallet before choosing a different account." in js
+    assert "Opening MetaMask account chooser..." in js
+    assert '"wallet_requestPermissions"' in js
+    assert "workerRequestFreshWalletPermission" in js
+    assert "Wallet account changed during connect" in js
     assert 'workerConnectWallet.setAttribute("aria-busy", "true")' in js
     assert 'workerConnectWallet.removeAttribute("aria-busy")' in js
 
@@ -160,7 +165,10 @@ def test_worker_wallet_connect_is_single_flight_and_dev_chain_aware() -> None:
     assert '"chainChanged"' in js
     assert "workerScheduleWalletProviderSync" in js
     assert "workerReadWalletProviderSnapshot" in js
+    assert "Worker kept" in js
+    assert "Use Disconnect Wallet before changing accounts." in js
     assert "workerWalletOperationIsCurrent(token)" in js
+    assert "return Boolean(workerWalletConnectInFlight || workerWalletDisconnectInFlight);" in js
 
     assert "async function workerEnsureExpectedWalletChain()" in js
     assert '"/api/xlag/contract/status"' in js
@@ -177,8 +185,11 @@ def test_worker_wallet_has_local_disconnect_for_repeatable_ui_testing() -> None:
     assert 'id="worker-disconnect-wallet"' in html
     assert "Disconnect Wallet" in html
     assert "workerDisconnectWallet" in bindings
-    assert "function workerDisconnectPrimaryWallet()" in js
-    assert "Wallet disconnected locally. Browser wallet permissions are unchanged; connect again to relink." in js
+    assert "async function workerDisconnectPrimaryWallet()" in js
+    assert '"wallet_revokePermissions"' in js
+    assert "workerRevokeWalletPermission" in js
+    assert "Connect Wallet should ask MetaMask again." in js
+    assert "use MetaMask's site disconnect if reconnect does not prompt" in js
     assert "workerBridgeState.wallet = {...workerDefaultBridgeState().wallet}" in js
     assert "workerDisconnectWallet.addEventListener" in js
     assert "workerDisconnectWallet.disabled = busy || !connected" in js
