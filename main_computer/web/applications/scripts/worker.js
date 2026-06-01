@@ -15,10 +15,17 @@
     const WORKER_DEV_CHAIN_ID_DECIMAL = 42424242;
     const WORKER_DEV_CHAIN_ID_HEX = "0x28757b2";
     const WORKER_FAUCET_AMOUNT_CREDITS = "1";
+    const WORKER_DEV_CHAIN_NAME = "Main Computer Dev";
+    const WORKER_DEV_CHAIN_RPC_URL = "http://127.0.0.1:18545";
+    const WORKER_ETHERS_ESM_URL = "https://cdn.jsdelivr.net/npm/ethers@6.13.4/+esm";
     let workerBridgeStateLoaded = false;
     let workerBridgeState = workerDefaultBridgeState();
     let workerWalletOperationSerial = 0;
-    let workerWalletProviderEventsBound = false;
+    let workerWalletBoundProvider = null;
+    let workerWalletSelectedProvider = null;
+    let workerWalletSelectedProviderInfo = null;
+    let workerWalletBrowserProvider = null;
+    let workerEthersModulePromise = null;
     let workerWalletHookState = "idle";
     let workerWalletLastAction = "not connected";
     let workerFaucetInFlight = false;
@@ -120,10 +127,6 @@
       return token === workerWalletOperationSerial;
     }
 
-    function workerWalletSleep(ms) {
-      return new Promise((resolve) => window.setTimeout(resolve, ms));
-    }
-
     function workerSetWalletOperationState(nextState, message = "") {
       workerWalletHookState = String(nextState || "idle");
       if (message) workerWalletLastAction = String(message);
@@ -135,11 +138,10 @@
       loadWorkerBridgeState();
       workerBridgeState.wallet = {
         address: connected ? String(address || "") : "",
-        chainId: connected ? String(chainId || "") : "",
+        chainId: connected ? workerNormalizeChainIdHex(chainId) : "",
         connected: Boolean(connected && address),
         connectedAt: connected && address ? workerNowIso() : ""
       };
-      saveWorkerBridgeState();
     }
 
     function workerRenderWalletControls() {
@@ -150,7 +152,7 @@
         workerConnectWallet.textContent = connected
           ? "Connected"
           : workerWalletHookState === "requesting"
-            ? "MetaMask Open…"
+            ? "Wallet Open…"
             : workerWalletHookState === "stabilizing"
               ? "Finalizing…"
               : "Connect Wallet";
@@ -162,7 +164,7 @@
         }
         workerConnectWallet.title = connected
           ? `Connected wallet ${workerShortAddress(workerBridgeState.wallet.address)}`
-          : "Connect the Worker primary wallet through MetaMask.";
+          : "Connect the Worker primary wallet through the selected browser wallet.";
       }
       if (workerDisconnectWallet) {
         workerDisconnectWallet.disabled = workerWalletHookState === "disconnecting";
@@ -178,8 +180,8 @@
           workerDisconnectWallet.removeAttribute("aria-busy");
         }
         workerDisconnectWallet.title = connected
-          ? "Disconnect the Worker wallet and revoke MetaMask account permission when supported."
-          : "Clear Worker wallet state and attempt to revoke MetaMask account permission.";
+          ? "Disconnect the Worker wallet and revoke account permission when supported."
+          : "Clear Worker wallet state and attempt to revoke account permission.";
       }
     }
 
@@ -203,17 +205,11 @@
     function workerNormalizeBridgeState(parsed) {
       const fallback = workerDefaultBridgeState();
       const state = parsed && typeof parsed === "object" ? parsed : {};
-      const wallet = state.wallet && typeof state.wallet === "object" ? state.wallet : {};
       const bridgeAccount = state.bridgeAccount && typeof state.bridgeAccount === "object" ? state.bridgeAccount : {};
       const faucet = state.faucet && typeof state.faucet === "object" ? state.faucet : {};
       const multisessionKeys = Array.isArray(state.multisessionKeys) ? state.multisessionKeys : [];
       return {
-        wallet: {
-          address: String(wallet.address || ""),
-          chainId: String(wallet.chainId || ""),
-          connected: Boolean(wallet.connected && wallet.address),
-          connectedAt: String(wallet.connectedAt || "")
-        },
+        wallet: {...fallback.wallet},
         bridgeAccount: {
           id: String(bridgeAccount.id || ""),
           status: String(bridgeAccount.status || fallback.bridgeAccount.status),
@@ -262,7 +258,8 @@
 
     function saveWorkerBridgeState() {
       try {
-        localStorage.setItem(workerBridgeReadinessStorageKey, JSON.stringify(workerBridgeState));
+        const {wallet: _liveWalletState, ...serializableState} = workerBridgeState || {};
+        localStorage.setItem(workerBridgeReadinessStorageKey, JSON.stringify(serializableState));
       } catch {}
     }
 
@@ -339,7 +336,7 @@
       if (chainId !== WORKER_DEV_CHAIN_ID_HEX) {
         return {
           ready: false,
-          reason: `Wallet is connected on ${chainId || "unknown chain"}. Switch MetaMask to ${WORKER_DEV_CHAIN_ID_HEX}.`,
+          reason: `Wallet is connected on ${chainId || "unknown chain"}. Switch the browser wallet to ${WORKER_DEV_CHAIN_ID_HEX}.`,
           address,
           chainId
         };
@@ -465,9 +462,9 @@
         workerPrimaryWalletStatus.textContent = walletAddress
           ? `${workerShortAddress(walletAddress)}${workerBridgeState.wallet.chainId ? ` on ${workerBridgeState.wallet.chainId}` : ""}`
           : workerWalletHookState === "requesting"
-            ? "MetaMask request open; not connected"
+            ? "Wallet request open; not connected"
             : workerWalletHookState === "stabilizing"
-              ? "MetaMask returned; stabilizing provider state"
+              ? "Finalizing ethers wallet state"
               : workerWalletHookState === "disconnecting"
                 ? "Force disconnecting"
                 : "Not connected";
@@ -550,93 +547,279 @@
       };
       console.log("[worker-wallet]", entry.type, entry.detail);
       if (workerSaveStatus) {
-        if (entry.type === "provider.sample.after-requestAccounts") {
-          const sampleAddress = detail.address || "";
-          const sampleChainId = detail.chainId || "";
-          workerSaveStatus.textContent = sampleAddress
-            ? `Finalizing wallet: stable sample ${detail.stableCount || 0} for ${sampleAddress} on ${sampleChainId}.`
-            : "Finalizing wallet: waiting for MetaMask account.";
-        } else if (entry.type === "connect.eth_requestAccounts.start") {
-          workerSaveStatus.textContent = "Opening MetaMask account request...";
-        } else if (entry.type === "connect.eth_requestAccounts.resolved") {
-          workerSaveStatus.textContent = "MetaMask returned; stabilizing wallet provider state.";
+        if (entry.type === "connect.ethers.requestAccounts.start") {
+          workerSaveStatus.textContent = "Opening browser wallet account request...";
+        } else if (entry.type === "connect.ethers.requestAccounts.resolved") {
+          workerSaveStatus.textContent = "Wallet account request accepted; verifying signer and chain with ethers.";
+        } else if (entry.type === "connect.ethers.switchChain.start") {
+          workerSaveStatus.textContent = `Switching wallet to ${WORKER_DEV_CHAIN_ID_HEX}.`;
         } else if (entry.type === "connect.finalized.connected") {
           workerSaveStatus.textContent = `Connected wallet ${workerShortAddress(detail.address)} on ${detail.chainId || "unknown chain"}.`;
         } else if (entry.type === "disconnect.done") {
           workerSaveStatus.textContent = detail.revoked
-            ? "Worker wallet disconnected and MetaMask permission revoked."
-            : "Worker wallet state cleared. If MetaMask still has a pending popup, close it manually.";
+            ? "Worker wallet disconnected and account permission revoked."
+            : "Worker wallet state cleared. If a wallet popup is still pending, close it manually.";
         }
       }
       window.dispatchEvent(new CustomEvent("main-computer-worker-wallet", {detail: entry}));
       return entry;
     }
 
-    async function workerReadWalletProviderSnapshot() {
-      if (!window.ethereum?.request) {
-        throw new Error("MetaMask provider not found.");
-      }
-
-      const accounts = await window.ethereum.request({method: "eth_accounts"});
-      const chainId = await window.ethereum.request({method: "eth_chainId"});
+    function workerWalletErrorDetail(error) {
       return {
-        accounts: Array.isArray(accounts) ? accounts : [],
-        address: Array.isArray(accounts) ? accounts[0] || "" : "",
-        chainId: String(chainId || "")
+        code: error && typeof error === "object" ? error.code : undefined,
+        message: error && typeof error === "object" ? error.message || String(error) : String(error)
       };
     }
 
-    async function workerWaitForStableWalletProvider(token) {
-      workerSetWalletOperationState("stabilizing", "MetaMask returned. Waiting for stable provider state.");
+    async function workerGetEthers() {
+      if (window.ethers && typeof window.ethers.BrowserProvider === "function") {
+        return window.ethers;
+      }
+      if (!workerEthersModulePromise) {
+        workerEthersModulePromise = import(WORKER_ETHERS_ESM_URL);
+      }
+      const ethersModule = await workerEthersModulePromise;
+      if (!ethersModule || typeof ethersModule.BrowserProvider !== "function") {
+        throw new Error("ethers BrowserProvider could not be loaded.");
+      }
+      return ethersModule;
+    }
 
-      const started = Date.now();
-      let previousKey = "";
-      let stableCount = 0;
-      let lastGood = null;
+    function workerNormalizeWalletProviderInfo(info = {}, provider = null, fallbackName = "Injected wallet") {
+      return {
+        uuid: String(info.uuid || ""),
+        name: String(info.name || fallbackName),
+        icon: String(info.icon || ""),
+        rdns: String(info.rdns || ""),
+        isMetaMask: Boolean(provider && provider.isMetaMask)
+      };
+    }
 
-      while (workerWalletOperationIsCurrent(token) && Date.now() - started < 20000) {
-        const snapshot = await workerReadWalletProviderSnapshot();
+    function workerAddWalletProviderCandidate(candidates, seenProviders, seenUuids, detail, fallbackName) {
+      const provider = detail && detail.provider ? detail.provider : detail;
+      if (!provider || seenProviders.has(provider)) return;
+      const info = workerNormalizeWalletProviderInfo(
+        detail && detail.info ? detail.info : {},
+        provider,
+        fallbackName
+      );
+      if (info.uuid && seenUuids.has(info.uuid)) return;
+      seenProviders.add(provider);
+      if (info.uuid) seenUuids.add(info.uuid);
+      candidates.push({provider, info});
+    }
+
+    async function workerDiscoverInjectedWalletProviders() {
+      const candidates = [];
+      const seenProviders = new Set();
+      const seenUuids = new Set();
+
+      const handleAnnounceProvider = (event) => {
+        if (event && event.detail && event.detail.provider) {
+          workerAddWalletProviderCandidate(candidates, seenProviders, seenUuids, event.detail, "Injected wallet");
+        }
+      };
+
+      if (typeof window.addEventListener === "function" && typeof window.dispatchEvent === "function") {
+        window.addEventListener("eip6963:announceProvider", handleAnnounceProvider);
+        window.dispatchEvent(new Event("eip6963:requestProvider"));
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+        window.removeEventListener("eip6963:announceProvider", handleAnnounceProvider);
+      }
+
+      const injected = window.ethereum;
+      if (injected && Array.isArray(injected.providers)) {
+        injected.providers.forEach((provider, index) => {
+          workerAddWalletProviderCandidate(
+            candidates,
+            seenProviders,
+            seenUuids,
+            {provider, info: workerNormalizeWalletProviderInfo({}, provider, `Injected wallet ${index + 1}`)},
+            `Injected wallet ${index + 1}`
+          );
+        });
+      } else if (injected) {
+        workerAddWalletProviderCandidate(
+          candidates,
+          seenProviders,
+          seenUuids,
+          {provider: injected, info: workerNormalizeWalletProviderInfo({}, injected, "Injected wallet")},
+          "Injected wallet"
+        );
+      }
+
+      return candidates;
+    }
+
+    function workerWalletProviderLooksLikeMetaMask(candidate) {
+      const info = candidate && candidate.info ? candidate.info : {};
+      const provider = candidate && candidate.provider;
+      const name = String(info.name || "").toLowerCase();
+      const rdns = String(info.rdns || "").toLowerCase();
+      return Boolean(provider && provider.isMetaMask) || name.includes("metamask") || rdns.includes("metamask");
+    }
+
+    function workerSelectInjectedWalletProvider(candidates) {
+      if (!candidates.length) {
+        throw new Error("No browser wallet provider found.");
+      }
+
+      const metaMaskCandidates = candidates.filter(workerWalletProviderLooksLikeMetaMask);
+      if (metaMaskCandidates.length === 1) {
+        return metaMaskCandidates[0];
+      }
+      if (metaMaskCandidates.length > 1) {
+        workerWalletRecordEvent("connect.failed.multiple-metamask-providers", {
+          providers: metaMaskCandidates.map((candidate) => candidate.info)
+        });
+        throw new Error("Multiple MetaMask providers detected. Disable one, reload, then connect again.");
+      }
+      if (candidates.length === 1) {
+        return candidates[0];
+      }
+
+      workerWalletRecordEvent("connect.failed.multiple-wallet-providers", {
+        providers: candidates.map((candidate) => candidate.info)
+      });
+      throw new Error("Multiple browser wallet providers detected. Disable extras, reload, then connect again.");
+    }
+
+    async function workerGetWalletProviderContext() {
+      const ethers = await workerGetEthers();
+      if (!workerWalletSelectedProvider || !workerWalletBrowserProvider) {
+        const selected = workerSelectInjectedWalletProvider(await workerDiscoverInjectedWalletProviders());
+        workerWalletSelectedProvider = selected.provider;
+        workerWalletSelectedProviderInfo = selected.info;
+        workerWalletBrowserProvider = new ethers.BrowserProvider(selected.provider, "any");
+        workerWalletRecordEvent("provider.selected", {provider: selected.info});
+      }
+      return {
+        ethers,
+        injectedProvider: workerWalletSelectedProvider,
+        providerInfo: workerWalletSelectedProviderInfo || {},
+        browserProvider: workerWalletBrowserProvider
+      };
+    }
+
+    function workerResetSelectedWalletProvider() {
+      workerWalletSelectedProvider = null;
+      workerWalletSelectedProviderInfo = null;
+      workerWalletBrowserProvider = null;
+    }
+
+    async function workerAddressFromEthersAccount(account) {
+      if (!account) return "";
+      if (typeof account === "string") return account;
+      if (typeof account.address === "string") return account.address;
+      if (typeof account.getAddress === "function") return await account.getAddress();
+      return "";
+    }
+
+    function workerChainIdFromEthersNetwork(network) {
+      if (!network || network.chainId === undefined || network.chainId === null) return "";
+      return workerNormalizeChainIdHex(`0x${BigInt(network.chainId).toString(16)}`);
+    }
+
+    async function workerReadWalletProviderSnapshot(browserProvider = workerWalletBrowserProvider) {
+      if (!browserProvider) {
+        return {accounts: [], address: "", chainId: ""};
+      }
+
+      const accounts = await browserProvider.listAccounts();
+      const addresses = [];
+      for (const account of Array.isArray(accounts) ? accounts : []) {
+        const address = await workerAddressFromEthersAccount(account);
+        if (address) addresses.push(address);
+      }
+
+      const network = await browserProvider.getNetwork();
+      return {
+        accounts: addresses,
+        address: addresses[0] || "",
+        chainId: workerChainIdFromEthersNetwork(network)
+      };
+    }
+
+    async function workerEnsureDevWalletChain(browserProvider) {
+      let snapshot = await workerReadWalletProviderSnapshot(browserProvider);
+      if (snapshot.chainId === WORKER_DEV_CHAIN_ID_HEX) {
+        return snapshot.chainId;
+      }
+
+      workerWalletRecordEvent("connect.ethers.switchChain.start", {
+        from: snapshot.chainId || "unknown",
+        to: WORKER_DEV_CHAIN_ID_HEX
+      });
+
+      try {
+        await browserProvider.send("wallet_switchEthereumChain", [{chainId: WORKER_DEV_CHAIN_ID_HEX}]);
+      } catch (error) {
+        const code = error && typeof error === "object" ? error.code : undefined;
+        const message = error && typeof error === "object" ? String(error.message || "") : String(error || "");
+        if (code !== 4902 && !message.includes("4902")) {
+          throw error;
+        }
+        workerWalletRecordEvent("connect.ethers.addChain.start", {chainId: WORKER_DEV_CHAIN_ID_HEX});
+        await browserProvider.send("wallet_addEthereumChain", [{
+          chainId: WORKER_DEV_CHAIN_ID_HEX,
+          chainName: WORKER_DEV_CHAIN_NAME,
+          nativeCurrency: {
+            name: "MC Dev ETH",
+            symbol: "ETH",
+            decimals: 18
+          },
+          rpcUrls: [WORKER_DEV_CHAIN_RPC_URL],
+          blockExplorerUrls: []
+        }]);
+      }
+
+      snapshot = await workerReadWalletProviderSnapshot(browserProvider);
+      if (snapshot.chainId !== WORKER_DEV_CHAIN_ID_HEX) {
+        throw new Error(`Wrong chain after wallet switch. Expected ${WORKER_DEV_CHAIN_ID_HEX}, got ${snapshot.chainId || "unknown"}.`);
+      }
+      return snapshot.chainId;
+    }
+
+    async function workerRefreshWalletFromProvider(reason = "refresh") {
+      if (!workerWalletBrowserProvider) {
+        renderWorkerBridgeReadiness();
+        return null;
+      }
+
+      try {
+        const snapshot = await workerReadWalletProviderSnapshot(workerWalletBrowserProvider);
         const address = workerWalletValidAddress(snapshot.address) ? snapshot.address : "";
-        const chainId = snapshot.chainId || "";
-        const key = `${address.toLowerCase()}|${chainId.toLowerCase()}`;
+        const chainId = workerNormalizeChainIdHex(snapshot.chainId);
 
-        workerWalletRecordEvent("provider.sample.after-requestAccounts", {
+        workerWalletRecordEvent("provider.refresh", {
+          reason,
           address: address ? workerShortAddress(address) : "",
-          chainId,
-          stableCount
+          chainId
         });
 
-        if (address && chainId && key === previousKey) {
-          stableCount += 1;
+        if (!address) {
+          workerSetPrimaryWalletState({connected: false});
+          workerWalletLastAction = "Wallet account disconnected.";
+        } else if (chainId !== WORKER_DEV_CHAIN_ID_HEX) {
+          workerSetPrimaryWalletState({connected: false});
+          workerWalletLastAction = `Wallet is on ${chainId || "unknown chain"}; expected ${WORKER_DEV_CHAIN_ID_HEX}.`;
         } else {
-          stableCount = address && chainId ? 1 : 0;
-          previousKey = key;
+          workerSetPrimaryWalletState({connected: true, address, chainId});
+          workerWalletLastAction = `Connected ${workerShortAddress(address)} on ${chainId}.`;
         }
 
-        if (address && chainId) {
-          lastGood = {...snapshot, address, chainId};
-        }
-
-        if (stableCount >= 3) {
-          return {...snapshot, address, chainId};
-        }
-
-        await workerWalletSleep(350);
+        workerWalletHookState = "idle";
+        renderWorkerBridgeReadiness();
+        return snapshot;
+      } catch (error) {
+        workerSetPrimaryWalletState({connected: false});
+        workerWalletHookState = "idle";
+        workerWalletLastAction = `Wallet refresh failed: ${error.message || error}`;
+        workerWalletRecordEvent("provider.refresh.failed", workerWalletErrorDetail(error));
+        renderWorkerBridgeReadiness();
+        return null;
       }
-
-      if (!workerWalletOperationIsCurrent(token)) {
-        throw new Error("Connect was cancelled by Force Disconnect / Reset.");
-      }
-
-      if (lastGood) {
-        workerWalletRecordEvent("provider.stability.timeout.using-last-good", {
-          address: workerShortAddress(lastGood.address),
-          chainId: lastGood.chainId
-        });
-        return lastGood;
-      }
-
-      throw new Error("Timed out waiting for MetaMask to expose a stable account and chain.");
     }
 
     async function connectWorkerPrimaryWallet(event) {
@@ -645,15 +828,6 @@
       event?.stopImmediatePropagation?.();
 
       loadWorkerBridgeState();
-      if (!window.ethereum?.request) {
-        workerSetPrimaryWalletState({connected: false});
-        workerWalletHookState = "idle";
-        workerWalletLastAction = "MetaMask provider not found.";
-        if (workerSaveStatus) workerSaveStatus.textContent = workerWalletLastAction;
-        workerWalletRecordEvent("connect.failed.no-provider");
-        renderWorkerBridgeReadiness();
-        return;
-      }
 
       if (workerWalletHookState !== "idle") {
         workerWalletRecordEvent("connect.ignored.busy", {phase: workerWalletHookState});
@@ -663,35 +837,52 @@
       const token = workerWalletNextOperation();
 
       workerSetPrimaryWalletState({connected: false});
-      workerSetWalletOperationState("requesting", "MetaMask opened. No provider state will be read until eth_requestAccounts resolves.");
+      workerSetWalletOperationState("requesting", "Browser wallet opened. Worker will stay disconnected until ethers verifies signer and chain.");
 
       try {
-        workerWalletRecordEvent("connect.eth_requestAccounts.start");
+        const context = await workerGetWalletProviderContext();
+        workerBindWalletProviderEvents(context.injectedProvider);
+        workerWalletRecordEvent("connect.ethers.requestAccounts.start", {provider: context.providerInfo});
 
-        const accountsResult = await window.ethereum.request({method: "eth_requestAccounts"});
+        await context.browserProvider.send("eth_requestAccounts", []);
 
         if (!workerWalletOperationIsCurrent(token)) {
           throw new Error("Connect result ignored because Force Disconnect / Reset was clicked.");
         }
 
-        workerWalletRecordEvent("connect.eth_requestAccounts.resolved", {accountsResult});
+        workerWalletRecordEvent("connect.ethers.requestAccounts.resolved");
 
-        const finalSnapshot = await workerWaitForStableWalletProvider(token);
+        workerSetWalletOperationState("stabilizing", "Wallet accepted. Verifying signer and dev chain with ethers.");
+
+        await workerEnsureDevWalletChain(context.browserProvider);
 
         if (!workerWalletOperationIsCurrent(token)) {
           throw new Error("Connect finalization ignored because Force Disconnect / Reset was clicked.");
         }
 
+        const signer = await context.browserProvider.getSigner();
+        const address = await signer.getAddress();
+        const network = await context.browserProvider.getNetwork();
+        const chainId = workerChainIdFromEthersNetwork(network);
+
+        if (!workerWalletValidAddress(address)) {
+          throw new Error("Wallet did not provide a valid 0x address.");
+        }
+        if (chainId !== WORKER_DEV_CHAIN_ID_HEX) {
+          throw new Error(`Wrong chain after connect. Expected ${WORKER_DEV_CHAIN_ID_HEX}, got ${chainId || "unknown"}.`);
+        }
+
         workerSetPrimaryWalletState({
           connected: true,
-          address: finalSnapshot.address,
-          chainId: finalSnapshot.chainId
+          address,
+          chainId
         });
         workerWalletHookState = "idle";
-        workerWalletLastAction = `Connected ${workerShortAddress(finalSnapshot.address)} on ${finalSnapshot.chainId}.`;
+        workerWalletLastAction = `Connected ${workerShortAddress(address)} on ${chainId}.`;
         workerWalletRecordEvent("connect.finalized.connected", {
-          address: finalSnapshot.address,
-          chainId: finalSnapshot.chainId
+          address,
+          chainId,
+          provider: context.providerInfo
         });
         renderWorkerBridgeReadiness();
       } catch (error) {
@@ -700,10 +891,7 @@
           workerWalletHookState = "idle";
           workerWalletLastAction = `Connect failed: ${error.message || error}`;
           if (workerSaveStatus) workerSaveStatus.textContent = workerWalletLastAction;
-          workerWalletRecordEvent("connect.failed", {
-            code: error && typeof error === "object" ? error.code : undefined,
-            message: error && typeof error === "object" ? error.message || String(error) : String(error)
-          });
+          workerWalletRecordEvent("connect.failed", workerWalletErrorDetail(error));
           renderWorkerBridgeReadiness();
         }
       }
@@ -722,29 +910,28 @@
       let revoked = false;
 
       try {
-        if (window.ethereum?.request) {
+        if (!workerWalletBrowserProvider && workerWalletSelectedProvider) {
+          const ethers = await workerGetEthers();
+          workerWalletBrowserProvider = new ethers.BrowserProvider(workerWalletSelectedProvider, "any");
+        }
+        if (workerWalletBrowserProvider) {
           try {
-            workerWalletRecordEvent("disconnect.wallet_revokePermissions.start");
-            await window.ethereum.request({
-              method: "wallet_revokePermissions",
-              params: [{eth_accounts: {}}]
-            });
+            workerWalletRecordEvent("disconnect.ethers.revokePermissions.start");
+            await workerWalletBrowserProvider.send("wallet_revokePermissions", [{eth_accounts: {}}]);
             revoked = true;
-            workerWalletRecordEvent("disconnect.wallet_revokePermissions.done");
+            workerWalletRecordEvent("disconnect.ethers.revokePermissions.done");
           } catch (error) {
-            workerWalletRecordEvent("disconnect.wallet_revokePermissions.failed", {
-              code: error && typeof error === "object" ? error.code : undefined,
-              message: error && typeof error === "object" ? error.message || String(error) : String(error)
-            });
+            workerWalletRecordEvent("disconnect.ethers.revokePermissions.failed", workerWalletErrorDetail(error));
           }
         }
       } finally {
         if (workerWalletOperationIsCurrent(token)) {
           workerSetPrimaryWalletState({connected: false});
+          workerResetSelectedWalletProvider();
           workerWalletHookState = "idle";
           workerWalletLastAction = revoked
-            ? "Disconnected and MetaMask permission revoked."
-            : "Local state cleared. If MetaMask still has a pending popup, close it manually.";
+            ? "Disconnected and account permission revoked."
+            : "Local state cleared. If a wallet popup is still pending, close it manually.";
           if (workerSaveStatus) workerSaveStatus.textContent = workerWalletLastAction;
           workerWalletRecordEvent("disconnect.done", {revoked});
           renderWorkerBridgeReadiness();
@@ -753,18 +940,24 @@
     }
 
     function workerHandleWalletAccountsChanged(accounts) {
-      workerWalletRecordEvent("provider.accountsChanged.observed-only", {accounts});
+      workerWalletRecordEvent("provider.accountsChanged.refresh", {accounts});
+      workerRefreshWalletFromProvider("accountsChanged");
     }
 
     function workerHandleWalletChainChanged(chainId) {
-      workerWalletRecordEvent("provider.chainChanged.observed-only", {chainId});
+      workerWalletRecordEvent("provider.chainChanged.refresh", {chainId});
+      workerRefreshWalletFromProvider("chainChanged");
     }
 
-    function workerBindWalletProviderEvents() {
-      if (workerWalletProviderEventsBound || !window.ethereum?.on) return;
-      workerWalletProviderEventsBound = true;
-      window.ethereum.on("accountsChanged", workerHandleWalletAccountsChanged);
-      window.ethereum.on("chainChanged", workerHandleWalletChainChanged);
+    function workerBindWalletProviderEvents(provider = workerWalletSelectedProvider) {
+      if (!provider || typeof provider.on !== "function" || workerWalletBoundProvider === provider) return;
+      if (workerWalletBoundProvider && typeof workerWalletBoundProvider.removeListener === "function") {
+        workerWalletBoundProvider.removeListener("accountsChanged", workerHandleWalletAccountsChanged);
+        workerWalletBoundProvider.removeListener("chainChanged", workerHandleWalletChainChanged);
+      }
+      workerWalletBoundProvider = provider;
+      provider.on("accountsChanged", workerHandleWalletAccountsChanged);
+      provider.on("chainChanged", workerHandleWalletChainChanged);
     }
 
     function createOrLoadWorkerBridgeAccount() {
