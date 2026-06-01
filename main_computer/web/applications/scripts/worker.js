@@ -14,6 +14,9 @@
     const workerBridgeReadinessStorageKey = "main-computer-worker-bridge-readiness-v1";
     let workerBridgeStateLoaded = false;
     let workerBridgeState = workerDefaultBridgeState();
+    let workerWalletConnectInFlight = null;
+    let workerWalletProviderEventsBound = false;
+    let workerExpectedChainCache = null;
 
     function workerDefaultBridgeState() {
       return {
@@ -61,6 +64,131 @@
       const clean = String(value || "").trim();
       if (!clean) return "—";
       return clean.length > 18 ? `${clean.slice(0, 10)}…${clean.slice(-6)}` : clean;
+    }
+
+    function workerNormalizeChainHex(value) {
+      const clean = String(value || "").trim();
+      if (!clean) return "";
+      try {
+        if (/^0x[0-9a-f]+$/i.test(clean)) {
+          return `0x${BigInt(clean).toString(16)}`;
+        }
+        if (/^[0-9]+$/.test(clean)) {
+          return `0x${BigInt(clean).toString(16)}`;
+        }
+      } catch {}
+      return clean.toLowerCase();
+    }
+
+    function workerChainIdMatches(left, right) {
+      const leftHex = workerNormalizeChainHex(left);
+      const rightHex = workerNormalizeChainHex(right);
+      return Boolean(leftHex && rightHex && leftHex === rightHex);
+    }
+
+    async function workerExpectedChainDetails() {
+      const now = Date.now();
+      if (workerExpectedChainCache && now - workerExpectedChainCache.fetchedAt < 15000) {
+        return workerExpectedChainCache.details;
+      }
+      const fallback = {
+        expectedHex: "",
+        rpcUrl: "http://127.0.0.1:8545",
+        chainName: "Main Computer Dev Chain",
+        currencySymbol: "Compute Credits"
+      };
+      try {
+        const response = await fetch("/api/xlag/contract/status", {cache: "no-store"});
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        const live = data && typeof data === "object" && data.live && typeof data.live === "object" ? data.live : {};
+        const expectedRaw = live.expected_chain_id || data.chain_id_expected || data.chain_id || live.chain_id || "";
+        const details = {
+          expectedHex: workerNormalizeChainHex(expectedRaw),
+          rpcUrl: String(live.rpc_url || data.rpc_url || fallback.rpcUrl),
+          chainName: String(live.chain_name || data.chain_name || fallback.chainName),
+          currencySymbol: String(live.currency_symbol || data.currency_symbol || fallback.currencySymbol)
+        };
+        workerExpectedChainCache = {fetchedAt: now, details};
+        return details;
+      } catch {
+        workerExpectedChainCache = {fetchedAt: now, details: fallback};
+        return fallback;
+      }
+    }
+
+    async function workerEnsureExpectedWalletChain() {
+      const details = await workerExpectedChainDetails();
+      const expectedHex = details.expectedHex;
+      const actualHex = workerNormalizeChainHex(await window.ethereum.request({method: "eth_chainId"}));
+      if (!expectedHex || workerChainIdMatches(actualHex, expectedHex)) {
+        return actualHex;
+      }
+      try {
+        await window.ethereum.request({method: "wallet_switchEthereumChain", params: [{chainId: expectedHex}]});
+      } catch (error) {
+        if (error && typeof error === "object" && error.code === 4902 && details.rpcUrl) {
+          await window.ethereum.request({
+            method: "wallet_addEthereumChain",
+            params: [{
+              chainId: expectedHex,
+              chainName: details.chainName,
+              nativeCurrency: {name: details.currencySymbol, symbol: details.currencySymbol, decimals: 18},
+              rpcUrls: [details.rpcUrl]
+            }]
+          });
+        } else {
+          throw error;
+        }
+      }
+      const confirmedHex = workerNormalizeChainHex(await window.ethereum.request({method: "eth_chainId"}));
+      if (!workerChainIdMatches(confirmedHex, expectedHex)) {
+        throw new Error(`Wallet is on ${confirmedHex || "an unknown chain"}; expected ${expectedHex}.`);
+      }
+      return confirmedHex;
+    }
+
+    function workerApplyWalletSnapshot(address, chainId) {
+      loadWorkerBridgeState();
+      const cleanAddress = String(address || "").trim();
+      workerBridgeState.wallet = {
+        address: cleanAddress,
+        chainId: workerNormalizeChainHex(chainId),
+        connected: Boolean(cleanAddress),
+        connectedAt: cleanAddress ? workerNowIso() : ""
+      };
+      if (cleanAddress && workerBridgeState.bridgeAccount.id && !workerBridgeState.bridgeAccount.primaryWallet) {
+        workerBridgeState.bridgeAccount.primaryWallet = cleanAddress;
+      }
+      saveWorkerBridgeState();
+      renderWorkerBridgeReadiness();
+    }
+
+    function workerBindWalletProviderEvents() {
+      if (workerWalletProviderEventsBound || !window.ethereum || typeof window.ethereum.on !== "function") return;
+      workerWalletProviderEventsBound = true;
+      window.ethereum.on("accountsChanged", (accounts) => {
+        const address = Array.isArray(accounts) && accounts[0] ? String(accounts[0]) : "";
+        workerApplyWalletSnapshot(address, workerBridgeState.wallet.chainId);
+        if (workerSaveStatus) {
+          workerSaveStatus.textContent = address
+            ? `Wallet account changed to ${workerShortAddress(address)}.`
+            : "Wallet disconnected.";
+        }
+      });
+      window.ethereum.on("chainChanged", (chainId) => {
+        loadWorkerBridgeState();
+        workerBridgeState.wallet = {
+          ...workerBridgeState.wallet,
+          chainId: workerNormalizeChainHex(chainId),
+          connected: Boolean(workerBridgeState.wallet.address)
+        };
+        saveWorkerBridgeState();
+        renderWorkerBridgeReadiness();
+        if (workerSaveStatus && workerBridgeState.wallet.address) {
+          workerSaveStatus.textContent = `Wallet chain changed to ${workerNormalizeChainHex(chainId)}.`;
+        }
+      });
     }
 
     function workerNormalizeList(items, type) {
@@ -271,34 +399,34 @@
         if (workerSaveStatus) workerSaveStatus.textContent = "No browser wallet provider was found.";
         return;
       }
-      if (workerConnectWallet) workerConnectWallet.disabled = true;
-      try {
-        const accounts = await window.ethereum.request({method: "eth_requestAccounts"});
-        const address = Array.isArray(accounts) && accounts[0] ? String(accounts[0]) : "";
-        if (!address) throw new Error("No wallet account was returned.");
-        let chainId = "";
-        try {
-          chainId = String(await window.ethereum.request({method: "eth_chainId"}));
-        } catch {
-          chainId = "";
-        }
-        workerBridgeState.wallet = {
-          address,
-          chainId,
-          connected: true,
-          connectedAt: workerNowIso()
-        };
-        if (workerBridgeState.bridgeAccount.id && !workerBridgeState.bridgeAccount.primaryWallet) {
-          workerBridgeState.bridgeAccount.primaryWallet = address;
-        }
-        saveWorkerBridgeState();
-        renderWorkerBridgeReadiness();
-        if (workerSaveStatus) workerSaveStatus.textContent = `Connected wallet ${workerShortAddress(address)}.`;
-      } catch (error) {
-        if (workerSaveStatus) workerSaveStatus.textContent = `Wallet connection failed: ${error.message || error}`;
-      } finally {
-        if (workerConnectWallet) workerConnectWallet.disabled = false;
+      if (workerWalletConnectInFlight) {
+        if (workerSaveStatus) workerSaveStatus.textContent = "Wallet connection already in progress.";
+        return workerWalletConnectInFlight;
       }
+      workerBindWalletProviderEvents();
+      if (workerConnectWallet) {
+        workerConnectWallet.disabled = true;
+        workerConnectWallet.setAttribute("aria-busy", "true");
+      }
+      workerWalletConnectInFlight = (async () => {
+        try {
+          const accounts = await window.ethereum.request({method: "eth_requestAccounts"});
+          const address = Array.isArray(accounts) && accounts[0] ? String(accounts[0]) : "";
+          if (!address) throw new Error("No wallet account was returned.");
+          const chainId = await workerEnsureExpectedWalletChain();
+          workerApplyWalletSnapshot(address, chainId);
+          if (workerSaveStatus) workerSaveStatus.textContent = `Connected wallet ${workerShortAddress(address)} on ${chainId || "the selected chain"}.`;
+        } catch (error) {
+          if (workerSaveStatus) workerSaveStatus.textContent = `Wallet connection failed: ${error.message || error}`;
+        } finally {
+          workerWalletConnectInFlight = null;
+          if (workerConnectWallet) {
+            workerConnectWallet.disabled = false;
+            workerConnectWallet.removeAttribute("aria-busy");
+          }
+        }
+      })();
+      return workerWalletConnectInFlight;
     }
 
     function createOrLoadWorkerBridgeAccount() {
@@ -824,6 +952,7 @@
       renderWorkerHubs();
       loadWorkerBridgeState();
       renderWorkerBridgeReadiness();
+      workerBindWalletProviderEvents();
       if (workerAddHubForm && !workerAddHubForm.dataset.workerBound) {
         workerAddHubForm.dataset.workerBound = "true";
         workerAddHubForm.addEventListener("submit", (event) => {
