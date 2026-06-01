@@ -922,11 +922,13 @@ def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_on
     assert "chromeRemediationPlan" in chrome_law
     assert "compositionContract" in chrome_law
     assert '"primary-control-width-collapsed-relative-to-input"' in chrome_law
+    assert '"content-fit-failed"' in chrome_law
     assert '"shape-interior-escape"' in chrome_law
     assert '"shape-containment-failed"' in chrome_law
     assert '"text-distorted-by-narrow-inline-size"' in chrome_law
     assert '"container-distorted-by-extreme-aspect-ratio"' in chrome_law
     assert '"control-balance"' in chrome_law
+    assert '"smart-flow-frame"' in chrome_law
     assert '"shape-inset-content"' in chrome_law
     assert '"smart-content-envelope"' in chrome_law
     assert '"dedistort-inline-content"' in chrome_law
@@ -951,6 +953,8 @@ def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_on
     assert 'if (chrome !== "chrome-editorial-flow") return []' not in browser_observer
     assert "shapeInteriorEscapeFor" in browser_observer
     assert "shapeContainmentChildrenFor" in browser_observer
+    assert "contentFitFailureFor" in browser_observer
+    assert "content-fit-failed" in browser_observer
     assert "shape-containment-failed" in browser_observer
     assert "safeShapeIntervalAtY" in browser_observer
     assert "textDistortionFor" in browser_observer
@@ -980,6 +984,7 @@ def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_on
     assert ".mcel-chrome-journey-step" in ui
     assert ".mcel-chrome-compact-panel" in ui
     assert "control-balance" in ui
+    assert "smart-flow-frame" in ui
     assert "shape-inset-content" in ui
     assert "smart-content-envelope" in ui
     assert "dedistort-inline-content" in ui
@@ -991,8 +996,11 @@ def test_mcel_lab_chrome_fit_remediation_protocol_is_chrome_owned_and_runtime_on
     assert "writing-mode: horizontal-tb" in ui
     assert "border-radius: min(var(--site-radius), 28px) !important" in ui
     assert 'data-mcel-chrome-primitive="content-envelope"' in ui
+    assert "contentFlowPrimitiveSelector" in chrome_law
+    assert "content-flow" in chrome_law
     assert "--mcel-smart-envelope-block-pad" in ui
     assert "border-radius: 999px;" in ui
+    assert '[data-mcel-composition-remedy~="smart-flow-frame"]' in ui
     assert "runCompositionRemediationPasses" in ui
     assert 'body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-cluster-grid"]' in ui
     assert 'body[data-mcel-fit-remediation~="region-reflow"][data-mcel-chrome="chrome-spotlight"] .mcel-chrome-spotlight-shell' in ui
