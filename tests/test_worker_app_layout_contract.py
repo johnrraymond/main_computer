@@ -143,55 +143,43 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
     assert "not Hub-spendable" not in html
     assert "Hub-spendable" not in js
 
-def test_worker_wallet_connect_is_single_flight_and_dev_chain_aware() -> None:
-    js = WORKER_JS.read_text(encoding="utf-8")
 
-    assert "let workerWalletConnectInFlight = null" in js
-    assert "let workerWalletDisconnectInFlight = null" in js
-    assert "let workerWalletProviderSyncInFlight = null" in js
-    assert "let workerWalletOperationSerial = 0" in js
-    assert "if (workerWalletConnectInFlight)" in js
-    assert "Wallet connection already in progress." in js
-    assert "Wallet is already connected. Use Disconnect Wallet before choosing a different account." in js
-    assert "Opening MetaMask account chooser..." in js
-    assert '"wallet_requestPermissions"' in js
-    assert "workerRequestFreshWalletPermission" in js
-    assert "accountSettledDuringConnect" in js
-    assert "after MetaMask settled from" in js
-    assert "throw new Error(`Wallet account changed during connect" not in js
-    assert 'workerConnectWallet.setAttribute("aria-busy", "true")' in js
-    assert 'workerConnectWallet.removeAttribute("aria-busy")' in js
-
-    assert "function workerBindWalletProviderEvents()" in js
-    assert '"accountsChanged"' in js
-    assert '"chainChanged"' in js
-    assert "workerScheduleWalletProviderSync" in js
-    assert "workerReadWalletProviderSnapshot" in js
-    assert "Worker kept" in js
-    assert "Use Disconnect Wallet before changing accounts." in js
-    assert "workerWalletOperationIsCurrent(token)" in js
-    assert "return Boolean(workerWalletConnectInFlight || workerWalletDisconnectInFlight);" in js
-
-    assert "async function workerEnsureExpectedWalletChain()" in js
-    assert '"/api/xlag/contract/status"' in js
-    assert '"wallet_switchEthereumChain"' in js
-    assert '"wallet_addEthereumChain"' in js
-    assert "workerNormalizeChainHex(chainId)" in js
-
-
-def test_worker_wallet_has_local_disconnect_for_repeatable_ui_testing() -> None:
+def test_worker_wallet_connect_and_disconnect_calls_are_removed_but_buttons_remain() -> None:
     html = WORKER_HTML.read_text(encoding="utf-8")
     js = WORKER_JS.read_text(encoding="utf-8")
     bindings = WORKER_BINDINGS_JS.read_text(encoding="utf-8")
 
+    assert 'id="worker-connect-wallet"' in html
     assert 'id="worker-disconnect-wallet"' in html
-    assert "Disconnect Wallet" in html
+    assert "workerConnectWallet" in bindings
     assert "workerDisconnectWallet" in bindings
-    assert "async function workerDisconnectPrimaryWallet()" in js
-    assert '"wallet_revokePermissions"' in js
-    assert "workerRevokeWalletPermission" in js
-    assert "Connect Wallet should ask MetaMask again." in js
-    assert "use MetaMask's site disconnect if reconnect does not prompt" in js
-    assert "workerBridgeState.wallet = {...workerDefaultBridgeState().wallet}" in js
-    assert "workerDisconnectWallet.addEventListener" in js
-    assert "workerDisconnectWallet.disabled = busy || !connected" in js
+
+    removed_provider_calls = [
+        "window.ethereum",
+        "eth_requestAccounts",
+        "eth_accounts",
+        "eth_chainId",
+        "wallet_requestPermissions",
+        "wallet_revokePermissions",
+        "wallet_switchEthereumChain",
+        "wallet_addEthereumChain",
+    ]
+    for removed in removed_provider_calls:
+        assert removed not in js
+
+    removed_wallet_flows = [
+        "connectWorkerPrimaryWallet",
+        "workerDisconnectPrimaryWallet",
+        "workerBindWalletProviderEvents",
+        "workerScheduleWalletProviderSync",
+        "workerEnsureExpectedWalletChain",
+        "workerReadWalletProviderSnapshot",
+    ]
+    for removed in removed_wallet_flows:
+        assert removed not in js
+
+    assert "workerConnectWallet.addEventListener" not in js
+    assert "workerDisconnectWallet.addEventListener" not in js
+    assert 'workerConnectWallet.disabled = true' in js
+    assert 'workerDisconnectWallet.disabled = true' in js
+    assert "Wallet connect and disconnect calls are intentionally removed" in js
