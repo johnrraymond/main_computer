@@ -36,12 +36,36 @@
           contain: style?.contain || element?.style?.contain || "",
           maxHeight: style?.maxHeight || element?.style?.maxHeight || "",
           minHeight: style?.minHeight || element?.style?.minHeight || "",
-          overscrollBehavior: style?.overscrollBehavior || element?.style?.overscrollBehavior || ""
+          overscrollBehavior: style?.overscrollBehavior || element?.style?.overscrollBehavior || "",
+          fontSize: style?.fontSize || element?.style?.fontSize || "",
+          lineHeight: style?.lineHeight || element?.style?.lineHeight || "",
+          whiteSpace: style?.whiteSpace || element?.style?.whiteSpace || "",
+          wordBreak: style?.wordBreak || element?.style?.wordBreak || "",
+          overflowWrap: style?.overflowWrap || element?.style?.overflowWrap || "",
+          writingMode: style?.writingMode || element?.style?.writingMode || "",
+          textOrientation: style?.textOrientation || element?.style?.textOrientation || ""
         };
       }
 
       function isScrollableOverflow(value) {
         return ["auto", "scroll", "overlay"].includes(String(value || "").trim().toLowerCase());
+      }
+
+      function parseCssPixelValue(value, fallback = 0) {
+        const parsed = parseFloat(String(value || "").replace("px", ""));
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+      }
+
+      function lineHeightFor(style) {
+        const fontSize = parseCssPixelValue(style?.fontSize, 16);
+        const raw = String(style?.lineHeight || "").trim().toLowerCase();
+        if (!raw || raw === "normal") return fontSize * 1.2;
+        if (raw.endsWith("px")) return parseCssPixelValue(raw, fontSize * 1.2);
+        const numeric = parseFloat(raw);
+        if (Number.isFinite(numeric) && numeric > 0) {
+          return numeric < 4 ? numeric * fontSize : numeric;
+        }
+        return fontSize * 1.2;
       }
 
       function hasLiveGeometry(element) {
@@ -318,6 +342,106 @@
           .slice(0, 120);
       }
 
+      function isActionTextElement(element) {
+        const tagName = element?.tagName || "";
+        return tagName === "BUTTON" ||
+          (tagName === "A" && element.getAttribute?.("data-mc-action")) ||
+          element?.getAttribute?.("role") === "button";
+      }
+
+      function textDistortionFor(element, tolerancePx = 2) {
+        if (!isActionTextElement(element)) return null;
+        const text = shortTextFor(element);
+        const glyphCount = text.replace(/\s+/g, "").length;
+        if (glyphCount < 6) return null;
+
+        const rect = rectFor(element);
+        if (rect.width <= tolerancePx || rect.height <= tolerancePx) return null;
+
+        const style = computedStyleFor(element);
+        const fontSize = parseCssPixelValue(style.fontSize, 16);
+        const lineHeight = lineHeightFor(style);
+        const lineCount = rect.height / Math.max(1, lineHeight);
+        const longestWord = Math.max(0, ...text.split(/\s+/).map((word) => word.length));
+        const characterCapacity = rect.width / Math.max(1, fontSize * 0.56);
+        const inlineEstimate = glyphCount * fontSize * 0.56 + Math.max(24, text.split(/\s+/).length * fontSize * 0.35);
+        const narrowByEstimate = rect.width + tolerancePx < Math.min(inlineEstimate * 0.58, 120);
+        const stackedWord = longestWord >= 4 && characterCapacity + 0.75 < longestWord && lineCount >= 2.6;
+        const hyperTall = lineCount >= 3.5 && rect.width < Math.min(96, inlineEstimate * 0.65);
+        const verticalWriting = String(style.writingMode || "").trim().toLowerCase().startsWith("vertical");
+
+        if (!(verticalWriting || stackedWord || hyperTall || (narrowByEstimate && lineCount >= 2.6))) {
+          return null;
+        }
+
+        return {
+          text,
+          glyphCount,
+          lineCount,
+          characterCapacity,
+          inlineEstimate,
+          fontSize,
+          lineHeight,
+          verticalWriting,
+          distortionRatio: lineCount / Math.max(1, Math.ceil(glyphCount / Math.max(1, characterCapacity)))
+        };
+      }
+
+      function isPlainActionOrFieldContainer(element) {
+        const tagName = element?.tagName || "";
+        return tagName === "BUTTON" ||
+          tagName === "A" ||
+          tagName === "INPUT" ||
+          tagName === "TEXTAREA" ||
+          tagName === "SELECT" ||
+          element?.getAttribute?.("role") === "button";
+      }
+
+      function containerDistortionFor(element, tolerancePx = 2) {
+        if (isPlainActionOrFieldContainer(element)) return null;
+        const rect = rectFor(element);
+        if (rect.width <= tolerancePx || rect.height <= tolerancePx) return null;
+
+        const summary = shapeSummaryFor(element);
+        if (summary.shape !== "pill-oval" && summary.shape !== "circle-ish") return null;
+
+        const directVisibleChildren = [...(element?.children || [])].filter(isVisibleElement);
+        const structuralChildren = uniqueElements([...(element?.querySelectorAll?.([
+          "[data-mcel-chrome-region-role]",
+          "[data-mcel-chrome-frame]",
+          "[data-mc]",
+          ".mc",
+          "section",
+          "article",
+          "form",
+          "main"
+        ].join(",")) || [])]).filter(isVisibleElement);
+        const visibleChildCount = Math.max(directVisibleChildren.length, structuralChildren.length);
+        const text = shortTextFor(element);
+        const generatedChromeContainer = element?.getAttribute?.("data-mcel-chrome-generated") === "true" || Boolean(chromePartFor(element));
+        const complexContent = visibleChildCount >= 2 ||
+          text.length >= 64 ||
+          Boolean(element?.querySelector?.("section,article,form,main,[data-mc-component-kind=\"layout\"],[data-mc-component-kind=\"island\"]"));
+        const aspect = rect.height ? rect.width / rect.height : 0;
+        const widePill = summary.shape === "pill-oval" && aspect >= 1.55 && rect.height >= 96;
+        const largeCircle = summary.shape === "circle-ish" && Math.min(rect.width, rect.height) >= 180;
+
+        if (!generatedChromeContainer && !complexContent) return null;
+        if (!complexContent || !(widePill || largeCircle)) return null;
+
+        return {
+          text,
+          shape: summary.shape,
+          aspectRatio: aspect,
+          minRadius: summary.minRadius,
+          minRadiusToMinSide: summary.minRadiusToMinSide,
+          visibleChildCount,
+          elementWidth: rect.width,
+          elementHeight: rect.height,
+          distortionRatio: Math.max(aspect, aspect ? 1 / aspect : 0)
+        };
+      }
+
       function compositionWarningFor(element, problem, details = {}, tolerancePx = 2) {
         const rect = rectFor(element);
         return {
@@ -335,10 +459,17 @@
           childTagName: details.childTagName || "",
           childText: details.childText || "",
           shape: details.shape || "",
+          aspectRatio: Math.round(safeNumber(details.aspectRatio ?? 0) * 10) / 10,
+          minRadius: Math.round(safeNumber(details.minRadius ?? 0)),
+          visibleChildCount: Math.round(safeNumber(details.visibleChildCount ?? 0)),
           safeWidth: Math.round(safeNumber(details.safeWidth ?? 0)),
           leftDelta: Math.round(safeNumber(details.leftDelta ?? 0)),
           rightDelta: Math.round(safeNumber(details.rightDelta ?? 0)),
           delta: Math.round(safeNumber(details.delta ?? 0)),
+          lineCount: Math.round(safeNumber(details.lineCount ?? 0) * 10) / 10,
+          characterCapacity: Math.round(safeNumber(details.characterCapacity ?? 0) * 10) / 10,
+          inlineEstimate: Math.round(safeNumber(details.inlineEstimate ?? 0)),
+          distortionRatio: Math.round(safeNumber(details.distortionRatio ?? 0) * 10) / 10,
           remedy: details.remedy || "",
           tolerancePx
         };
@@ -452,6 +583,54 @@
                 buttonWidth: buttonRect.width,
                 delta: inputRect.width - buttonRect.width,
                 remedy: remedyForCompositionWarning(problem, compositionContract)
+              }, tolerancePx));
+            }
+          }
+
+          const distortionProblem = "text-distorted-by-narrow-inline-size";
+          if (allowedCompositionWarning(distortionProblem, compositionContract)) {
+            const actionTextElements = uniqueElements([...(target.querySelectorAll?.("button,a[data-mc-action],[role=\"button\"]") || [])]).filter(isVisibleElement);
+            let worstDistortion = null;
+            actionTextElements.forEach((child) => {
+              const distortion = textDistortionFor(child, tolerancePx);
+              if (!distortion) return;
+              if (!worstDistortion || distortion.lineCount > worstDistortion.distortion.lineCount) {
+                worstDistortion = {child, distortion};
+              }
+            });
+            if (worstDistortion) {
+              const childRect = rectFor(worstDistortion.child);
+              warnings.push(compositionWarningFor(worstDistortion.child, distortionProblem, {
+                elementWidth: childRect.width,
+                containerWidth: Math.max(childRect.width, worstDistortion.distortion.inlineEstimate),
+                childTagName: worstDistortion.child?.tagName || "",
+                childText: worstDistortion.distortion.text,
+                lineCount: worstDistortion.distortion.lineCount,
+                characterCapacity: worstDistortion.distortion.characterCapacity,
+                inlineEstimate: worstDistortion.distortion.inlineEstimate,
+                distortionRatio: worstDistortion.distortion.distortionRatio,
+                delta: Math.max(0, worstDistortion.distortion.inlineEstimate - childRect.width),
+                remedy: remedyForCompositionWarning(distortionProblem, compositionContract)
+              }, tolerancePx));
+            }
+          }
+
+          const containerProblem = "container-distorted-by-extreme-aspect-ratio";
+          if (allowedCompositionWarning(containerProblem, compositionContract)) {
+            const containerDistortion = containerDistortionFor(target, tolerancePx);
+            if (containerDistortion) {
+              warnings.push(compositionWarningFor(target, containerProblem, {
+                elementWidth: containerDistortion.elementWidth,
+                containerWidth: containerDistortion.elementHeight,
+                childTagName: target?.tagName || "",
+                childText: containerDistortion.text,
+                shape: containerDistortion.shape,
+                aspectRatio: containerDistortion.aspectRatio,
+                minRadius: containerDistortion.minRadius,
+                visibleChildCount: containerDistortion.visibleChildCount,
+                distortionRatio: containerDistortion.distortionRatio,
+                delta: Math.max(0, containerDistortion.minRadius - Math.min(28, containerDistortion.elementHeight / 4)),
+                remedy: remedyForCompositionWarning(containerProblem, compositionContract)
               }, tolerancePx));
             }
           }

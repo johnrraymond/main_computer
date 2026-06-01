@@ -1177,7 +1177,26 @@
 
     function findMcelCompositionRemedyTarget(doc, warning = {}) {
       const sourceIndex = String(warning.sourceIndex || "");
+      const chromePart = String(warning.chromePart || "");
       const scope = mcelChromeCompositionScopeSelector();
+      const wantsGeneratedContainer = warning?.problem === "container-distorted-by-extreme-aspect-ratio" ||
+        warning?.remedy === "dedistort-container-shape";
+
+      if (wantsGeneratedContainer && chromePart) {
+        const selector = `[data-mcel-chrome-part="${mcelSafeAttributeValue(chromePart)}"]`;
+        const generatedTargets = [...(doc?.querySelectorAll?.(selector) || [])];
+        const sourceSelector = sourceIndex
+          ? `[data-mc-source-index="${mcelSafeAttributeValue(sourceIndex)}"]`
+          : "";
+        const generatedContainerWithSource = sourceSelector
+          ? generatedTargets.find((element) => element?.querySelector?.(sourceSelector))
+          : null;
+        if (generatedContainerWithSource) return generatedContainerWithSource;
+        const generatedContainer = generatedTargets.find((element) => element?.getAttribute?.("data-mcel-chrome-generated") === "true");
+        if (generatedContainer) return generatedContainer;
+        if (generatedTargets.length) return generatedTargets[0];
+      }
+
       if (sourceIndex) {
         const selector = `${scope} [data-mc-source-index="${mcelSafeAttributeValue(sourceIndex)}"]`;
         const candidates = [...(doc?.querySelectorAll?.(selector) || [])];
@@ -1188,7 +1207,6 @@
         if (candidates.length) return candidates[0];
       }
 
-      const chromePart = String(warning.chromePart || "");
       if (chromePart) {
         const selector = `[data-mcel-chrome-part="${mcelSafeAttributeValue(chromePart)}"]`;
         const generatedTargets = [...(doc?.querySelectorAll?.(selector) || [])];
@@ -1207,7 +1225,11 @@
         const remedy = warning?.remedy ||
           (warning?.problem === "primary-control-width-collapsed-relative-to-input"
             ? "control-balance"
-            : (warning?.problem === "shape-interior-escape" ? "shape-inset-content" : ""));
+            : (warning?.problem === "shape-interior-escape"
+              ? "shape-inset-content"
+              : (warning?.problem === "text-distorted-by-narrow-inline-size"
+                ? "dedistort-inline-content"
+                : (warning?.problem === "container-distorted-by-extreme-aspect-ratio" ? "dedistort-container-shape" : ""))));
         if (!remedy) return;
         const target = findMcelCompositionRemedyTarget(doc, warning);
         if (!target) return;
@@ -2552,6 +2574,20 @@
           }
         }
 
+        body:not([data-mcel-chrome="chrome-strict-hierarchy"]) [data-mcel-composition-remedy~="dedistort-container-shape"] {
+          border-radius: min(var(--site-radius), 28px) !important;
+          min-block-size: max-content !important;
+          aspect-ratio: auto !important;
+          align-content: start;
+          overflow: visible;
+        }
+        body:not([data-mcel-chrome="chrome-strict-hierarchy"]) [data-mcel-composition-remedy~="dedistort-container-shape"] > [data-mcel-chrome-region-role="body"] {
+          align-items: stretch;
+        }
+        body:not([data-mcel-chrome="chrome-strict-hierarchy"]) [data-mcel-composition-remedy~="dedistort-container-shape"] :is(.mc,[data-mc]) {
+          border-radius: min(var(--site-radius), 22px);
+        }
+
         body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-cluster-grid"] [data-mcel-fit-policy="contain"],
         body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-spotlight"] [data-mcel-fit-policy="contain"],
         body[data-mcel-fit-remediation~="content-negotiate"][data-mcel-chrome="chrome-journey"] [data-mcel-fit-policy="contain"],
@@ -2583,6 +2619,26 @@
           inline-size: 100%;
           justify-self: stretch;
           white-space: normal;
+        }
+
+        body:not([data-mcel-chrome="chrome-strict-hierarchy"]) [data-mcel-composition-remedy~="dedistort-inline-content"] :is(p[data-mc-slot="actions"], [data-mc-slot="actions"]) {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          align-items: center;
+        }
+        body:not([data-mcel-chrome="chrome-strict-hierarchy"]) [data-mcel-composition-remedy~="dedistort-inline-content"] :is(button,a[data-mc-action],[role="button"]) {
+          writing-mode: horizontal-tb;
+          text-orientation: mixed;
+          white-space: nowrap;
+          word-break: normal;
+          overflow-wrap: normal;
+          inline-size: max-content;
+          width: max-content;
+          max-inline-size: none;
+          min-inline-size: max-content;
+          justify-self: start;
+          align-self: center;
         }
 
         body[data-mcel-fit-remediation~="object-grow"][data-mcel-chrome="chrome-cluster-grid"] .mcel-chrome-cluster-grid {
