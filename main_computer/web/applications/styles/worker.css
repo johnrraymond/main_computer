@@ -31,6 +31,7 @@
     .worker-hero span,
     .worker-pane-head p,
     .worker-card small,
+    .worker-card-note,
     .worker-hub-card span,
     .worker-save-note,
     .worker-drawer summary small,
@@ -563,6 +564,86 @@
       color: var(--sky);
       font-weight: 900;
     }
+
+    .worker-bridge-card {
+      border-color: rgba(115, 214, 255, 0.34);
+      background:
+        linear-gradient(180deg, rgba(115, 214, 255, 0.06), transparent 140px),
+        rgba(17, 17, 14, 0.96);
+    }
+    .worker-card-note {
+      margin: 0;
+      font-weight: 700;
+    }
+    .worker-bridge-status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+      gap: 9px;
+      margin: 0;
+    }
+    .worker-bridge-status-grid div {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+    }
+    .worker-bridge-status-grid dt {
+      color: var(--mint);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .worker-bridge-status-grid dd {
+      margin: 0;
+      color: var(--muted);
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+    .worker-inline-actions,
+    .worker-inline-form {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: end;
+      gap: 8px;
+    }
+    .worker-inline-form label {
+      flex: 1 1 210px;
+    }
+    .worker-inline-actions button,
+    .worker-inline-form button {
+      min-width: max-content;
+    }
+    .worker-token-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      min-height: 32px;
+      align-items: center;
+    }
+    .worker-token-list > span:not(.worker-token) {
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .worker-token {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      max-width: 100%;
+      border: 1px solid rgba(115, 214, 255, 0.24);
+      border-radius: 999px;
+      background: rgba(115, 214, 255, 0.08);
+      color: var(--ink);
+      font-weight: 800;
+      padding: 5px 6px 5px 10px;
+    }
+    .worker-token > span {
+      overflow-wrap: anywhere;
+    }
+    .worker-token button {
+      border-radius: 999px;
+      padding: 4px 7px;
+      font-size: 11px;
+    }
     .worker-hubs .worker-hub-list {
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     }
@@ -640,7 +721,9 @@
       }
       .worker-actions,
       .worker-actions div,
-      .worker-actions button {
+      .worker-actions button,
+      .worker-inline-actions button,
+      .worker-inline-form button {
         width: 100%;
       }
     }

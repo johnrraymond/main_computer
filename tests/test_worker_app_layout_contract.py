@@ -98,3 +98,45 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert '"/api/hub/v1/workers/register"' in energy_routes
     assert "phase12_worker_seller_offer_ui" in energy_routes
     assert "Worker offer registration is only available to local viewport clients." in energy_routes
+
+
+def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys_visible() -> None:
+    html = WORKER_HTML.read_text(encoding="utf-8")
+    css = WORKER_CSS.read_text(encoding="utf-8")
+    js = WORKER_JS.read_text(encoding="utf-8")
+    bindings = WORKER_BINDINGS_JS.read_text(encoding="utf-8")
+    dispatch = VIEWPORT_ROUTES.read_text(encoding="utf-8")
+
+    assert 'id="worker-bridge-readiness-card"' in html
+    assert 'id="worker-connect-wallet"' in html
+    assert 'id="worker-create-bridge-account"' in html
+    assert 'id="worker-recovery-card"' in html
+    assert 'id="worker-confirm-recovery"' in html
+
+    assert 'id="worker-faucet-card"' in html
+    assert 'id="worker-request-faucet"' in html
+    assert 'id="worker-faucet-amount"' in html
+    assert "Request credits through the existing faucet" in html
+    assert '"/api/xlag/dev/faucet"' in js
+    assert "amount_credits" in js
+    assert "POST" in js
+    assert 'self.path == "/api/xlag/dev/faucet"' in dispatch
+
+    assert 'id="worker-multisession-card"' in html
+    assert "Visible before wallet connection" in html
+    assert 'id="worker-request-multisession-key"' in html
+    assert 'id="worker-revoke-multisession-key"' in html
+    assert "main-computer-worker-bridge-readiness-v1" in js
+    assert "function requestWorkerMultisessionKey()" in js
+    assert "function revokeWorkerMultisessionKey()" in js
+    assert "No active multi-session key to revoke." in js
+    assert "You can request a new key now." in js
+
+    assert "workerRequestFaucet" in bindings
+    assert "workerRequestMultisessionKey" in bindings
+    assert "workerRevokeMultisessionKey" in bindings
+    assert ".worker-bridge-card" in css
+    assert ".worker-token-list" in css
+
+    assert "not Hub-spendable" not in html
+    assert "Hub-spendable" not in js
