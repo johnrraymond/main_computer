@@ -639,9 +639,7 @@
           const finalAddress = snapshot.address || requestedAddress;
           const finalChainId = snapshot.chainId || switchedChainId;
           if (!finalAddress) throw new Error("No valid wallet account is selected after chain confirmation.");
-          if (!workerWalletAddressMatches(finalAddress, requestedAddress)) {
-            throw new Error(`Wallet account changed during connect from ${workerShortAddress(requestedAddress)} to ${workerShortAddress(finalAddress)}. Retry Connect Wallet after MetaMask settles.`);
-          }
+          const accountSettledDuringConnect = !workerWalletAddressMatches(finalAddress, requestedAddress);
 
           const details = await workerExpectedChainDetails();
           if (!workerWalletOperationIsCurrent(token)) return;
@@ -649,8 +647,12 @@
             throw new Error(`Wallet is on ${finalChainId || "an unknown chain"}; expected ${details.expectedHex}.`);
           }
 
-          const applied = workerApplyWalletSnapshot(requestedAddress, finalChainId, {operationToken: token});
-          if (applied && workerSaveStatus) workerSaveStatus.textContent = `Connected wallet ${workerShortAddress(requestedAddress)} on ${finalChainId || "the selected chain"}.`;
+          const applied = workerApplyWalletSnapshot(finalAddress, finalChainId, {operationToken: token});
+          if (applied && workerSaveStatus) {
+            workerSaveStatus.textContent = accountSettledDuringConnect
+              ? `Connected wallet ${workerShortAddress(finalAddress)} on ${finalChainId || "the selected chain"} after MetaMask settled from ${workerShortAddress(requestedAddress)}.`
+              : `Connected wallet ${workerShortAddress(finalAddress)} on ${finalChainId || "the selected chain"}.`;
+          }
         } catch (error) {
           if (workerWalletOperationIsCurrent(token) && workerSaveStatus) {
             workerSaveStatus.textContent = `Wallet connection failed: ${error.message || error}`;
