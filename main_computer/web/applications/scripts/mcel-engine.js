@@ -11,114 +11,6 @@
         return normalized || fallback;
       }
 
-
-      function normalizedTokens(value) {
-        return String(value || "")
-          .toLowerCase()
-          .split(/[\s,;|]+/)
-          .map((token) => token.trim())
-          .filter(Boolean);
-      }
-
-      function nullifyTokens(element) {
-        return normalizedTokens(element?.getAttribute?.(attributes.nullify || "mcel-nullify"));
-      }
-
-      function nullifiedAttributeForToken(token) {
-        const alias = {
-          type: attributes.type,
-          region: attributes.type,
-          component: attributes.type,
-          "data-mc": attributes.type,
-          kind: attributes.kind,
-          "data-mc-kind": attributes.kind,
-          flow: attributes.flow,
-          "data-mc-flow": attributes.flow,
-          rank: attributes.rank,
-          "data-mc-rank": attributes.rank,
-          state: attributes.state,
-          "data-mc-state": attributes.state,
-          density: attributes.density,
-          "data-mc-density": attributes.density,
-          "size-policy": attributes.sizePolicy,
-          "data-mc-size-policy": attributes.sizePolicy,
-          "overflow-policy": attributes.overflowPolicy,
-          "data-mc-overflow-policy": attributes.overflowPolicy,
-          "scroll-policy": attributes.scrollPolicy,
-          "data-mc-scroll-policy": attributes.scrollPolicy,
-          slot: attributes.slot,
-          "data-mc-slot": attributes.slot,
-          action: attributes.action,
-          "data-mc-action": attributes.action,
-          "event-policy": attributes.eventPolicy,
-          "data-mc-event-policy": attributes.eventPolicy,
-          submit: attributes.submit,
-          "data-mc-submit": attributes.submit,
-          validation: attributes.validation,
-          "data-mc-validation": attributes.validation,
-          "dirty-policy": attributes.dirtyPolicy,
-          "data-mc-dirty-policy": attributes.dirtyPolicy,
-          "error-policy": attributes.errorPolicy,
-          "data-mc-error-policy": attributes.errorPolicy
-        };
-        return alias[token] || (String(token || "").startsWith("data-mc-") ? token : "");
-      }
-
-      function nullifiesAttribute(element, attribute) {
-        const tokens = nullifyTokens(element);
-        if (!tokens.length) return false;
-        if (tokens.some((token) => ["all", "defaults", "enrichment", "enrichments"].includes(token))) return true;
-        if (tokens.some((token) => ["traits", "region-traits"].includes(token)) && [attributes.kind, attributes.flow, attributes.rank, attributes.state, attributes.density, attributes.sizePolicy, attributes.overflowPolicy, attributes.scrollPolicy].includes(attribute)) return true;
-        if (tokens.includes("form") && [attributes.submit, attributes.validation, attributes.dirtyPolicy, attributes.errorPolicy].includes(attribute)) return true;
-        if (tokens.includes("action") && [attributes.action, attributes.eventPolicy].includes(attribute)) return true;
-        return tokens.some((token) => nullifiedAttributeForToken(token) === attribute);
-      }
-
-      function nullifiesGeneratedPart(element, part) {
-        const tokens = nullifyTokens(element);
-        if (!tokens.length) return false;
-        return tokens.some((token) => (
-          ["all", "defaults", "enrichment", "enrichments", "generated", "generated-parts", "parts"].includes(token) ||
-          token === part ||
-          token === `part:${part}` ||
-          token === `generated:${part}` ||
-          token === `data-mc-part:${part}` ||
-          token === `data-mc-part=${part}`
-        ));
-      }
-
-      function applyNullificationToElement(element) {
-        [
-          attributes.type,
-          attributes.kind,
-          attributes.flow,
-          attributes.rank,
-          attributes.state,
-          attributes.density,
-          attributes.sizePolicy,
-          attributes.overflowPolicy,
-          attributes.scrollPolicy,
-          attributes.slot,
-          attributes.submit,
-          attributes.validation,
-          attributes.dirtyPolicy,
-          attributes.errorPolicy,
-          attributes.action,
-          attributes.eventPolicy
-        ].filter(Boolean).forEach((attribute) => {
-          if (nullifiesAttribute(element, attribute)) element.removeAttribute(attribute);
-        });
-      }
-
-      function applyNullificationToTree(root) {
-        root.querySelectorAll?.(`[${attributes.nullify || "mcel-nullify"}]`).forEach(applyNullificationToElement);
-        return root;
-      }
-
-      function generatedPartsFor(element, elementSchema) {
-        return [...(elementSchema.generatedParts || [])].filter((part) => !nullifiesGeneratedPart(element, part));
-      }
-
       function schemaFor(rawType, events = []) {
         const requested = normalizeValue(rawType, defaults.type);
         if (schema[requested]) return {type: requested, schema: schema[requested]};
@@ -132,8 +24,7 @@
       }
 
       function sourceElements(docOrRoot) {
-        return [...(docOrRoot?.querySelectorAll?.(`[${attributes.type}]`) || [])]
-          .filter((element) => !nullifiesAttribute(element, attributes.type));
+        return [...(docOrRoot?.querySelectorAll?.(`[${attributes.type}]`) || [])];
       }
 
       function stripGeneratedParts(root) {
@@ -162,10 +53,6 @@
       }
 
       function validateAttribute(element, events, attribute, allowed, fallback) {
-        if (nullifiesAttribute(element, attribute)) {
-          element.removeAttribute(attribute);
-          return "";
-        }
         const value = normalizeValue(element.getAttribute(attribute), fallback);
         if (!allowed.includes(value)) {
           logEvent(events, "warning", "schema", "MCEL_SCHEMA_NORMALIZED", `${attribute}=${value} normalized to ${fallback}.`);
@@ -177,10 +64,6 @@
       }
 
       function validateOptionalAttribute(element, events, attribute, allowed, fallback) {
-        if (nullifiesAttribute(element, attribute)) {
-          element.removeAttribute(attribute);
-          return "";
-        }
         if (!element.hasAttribute(attribute)) return "";
         return validateAttribute(element, events, attribute, allowed, fallback);
       }
@@ -281,11 +164,11 @@
       function rebuildGeneratedParts(element, elementSchema, events, reason) {
         const removed = element.querySelectorAll(`[${attributes.generated}="true"]`).length;
         stripGeneratedParts(element);
-        generatedPartsFor(element, elementSchema).slice().reverse().forEach((part) => {
+        elementSchema.generatedParts.slice().reverse().forEach((part) => {
           element.insertBefore(createGeneratedPart(part, element), element.firstChild);
         });
         if (removed) {
-          logEvent(events, "repair", "part-manager", "MCEL_PARTS_REBUILT", `Rebuilt ${generatedPartsFor(element, elementSchema).length} generated part(s) after removing ${removed} stale part(s) during ${reason}.`);
+          logEvent(events, "repair", "part-manager", "MCEL_PARTS_REBUILT", `Rebuilt ${elementSchema.generatedParts.length} generated part(s) after removing ${removed} stale part(s) during ${reason}.`);
         }
       }
 
@@ -322,7 +205,7 @@
           element.removeAttribute(attributes.relationCount);
         }
 
-        generatedPartsFor(element, elementSchema).slice().reverse().forEach((part) => {
+        elementSchema.generatedParts.slice().reverse().forEach((part) => {
           element.insertBefore(createGeneratedPart(part, element), element.firstChild);
         });
 
@@ -338,7 +221,6 @@
       function compileDocument(doc, reason = "compile") {
         const events = [];
         logEvent(events, "info", "compiler", "MCEL_COMPILE_START", `Compiling source because ${reason}.`);
-        applyNullificationToTree(doc.body);
         const smartElements = sourceElements(doc.body);
         logEvent(events, "info", "source-reader", "MCEL_SOURCE_FOUND", `Found ${smartElements.length} MCEL source element(s).`);
         smartElements.forEach((element, index) => enhanceElement(element, smartElements, events, index));

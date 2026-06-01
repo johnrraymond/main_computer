@@ -1,7 +1,6 @@
     var McelLabContract = (() => {
       const attributes = Object.freeze({
         type: "data-mc",
-        nullify: "mcel-nullify",
         kind: "data-mc-kind",
         flow: "data-mc-flow",
         rank: "data-mc-rank",
@@ -363,40 +362,136 @@
         })
       });
 
-      const defaultSource = `<main data-mc="smart-region">
-  <section data-mc="panel" data-mc-kind="hero">
+      const defaultSource = `<main
+  data-mc="smart-region"
+  data-mc-kind="article"
+  data-mc-flow="stack"
+  data-mc-rank="primary"
+  data-mc-state="live"
+  data-mc-density="calm"
+  data-mc-size-policy="fluid"
+  data-mc-overflow-policy="delegate"
+  data-mc-scroll-policy="external"
+  data-mc-component="NeighborhoodMarketSite"
+  data-mc-component-kind="page"
+  data-mc-state-owner="url"
+  data-mc-state-policy="replayable"
+  data-mc-route="/"
+  data-mc-render="static"
+  data-mc-hydration="islands"
+  data-mc-a11y-policy="strict"
+  data-mc-performance-budget="small"
+  data-mc-security-policy="trusted"
+  data-mc-words="minimal site skeleton emerges from simple semantic html"
+>
+  <section
+    data-mc="panel"
+    data-mc-kind="hero"
+    data-mc-flow="split"
+    data-mc-rank="primary"
+    data-mc-state="live"
+    data-mc-density="calm"
+    data-mc-size-policy="fluid"
+    data-mc-overflow-policy="expand"
+    data-mc-scroll-policy="never"
+    data-mc-component="HeroSection"
+    data-mc-component-kind="layout"
+    data-mc-render="static"
+    data-mc-a11y-policy="strict"
+    data-mc-performance-budget="tiny"
+    data-mc-words="hero promise call to action"
+  >
     <p data-mc-slot="meta">Neighborhood Cluster · Open today</p>
     <h1 data-mc-slot="title">A useful local site from almost plain HTML.</h1>
     <p data-mc-slot="body">MCEL turns simple semantic sections into a resilient product surface with layout, proof, state, actions, forms, and accessibility rules layered on top.</p>
     <p data-mc-slot="actions"><a href="#join" data-mc-action="join-neighborhood" data-mc-event-policy="audited">Join the list</a></p>
   </section>
 
-  <section data-mc="feed">
-    <h2 data-mc-slot="title">Neighborhood Cluster</h2>
-    <article data-mc="panel" data-mc-kind="article">
-      <h3 data-mc-slot="title">Fresh daily</h3>
-      <p data-mc-slot="body">Simple source becomes a polished card without hand-authored wrapper soup.</p>
+  <section
+    data-mc="feed"
+    data-mc-kind="signal"
+    data-mc-flow="stack"
+    data-mc-rank="secondary"
+    data-mc-state="live"
+    data-mc-density="auto"
+    data-mc-size-policy="fluid"
+    data-mc-overflow-policy="expand"
+    data-mc-scroll-policy="never"
+    data-mc-component="TrustCluster"
+    data-mc-component-kind="layout"
+    data-mc-a11y-policy="strict"
+    data-mc-performance-budget="tiny"
+    data-mc-words="cards hours delivery pickup trust"
+  >
+    <h2>Neighborhood Cluster</h2>
+    <article data-mc="panel" data-mc-kind="signal" data-mc-flow="stack" data-mc-rank="secondary" data-mc-state="live" data-mc-density="dense" data-mc-size-policy="adaptive" data-mc-overflow-policy="contain" data-mc-scroll-policy="auto" data-mc-component="TrustCard" data-mc-component-kind="component" data-mc-words="fresh daily">
+      <h3>Fresh daily</h3>
+      <p>Simple source becomes a polished card without hand-authored wrapper soup.</p>
     </article>
-    <article data-mc="panel" data-mc-kind="article">
-      <h3 data-mc-slot="title">Pickup + delivery</h3>
-      <p data-mc-slot="body">The layout law expands content instead of making each card a scroll trap.</p>
+    <article data-mc="panel" data-mc-kind="work" data-mc-flow="stack" data-mc-rank="secondary" data-mc-state="idle" data-mc-density="dense" data-mc-size-policy="adaptive" data-mc-overflow-policy="contain" data-mc-scroll-policy="auto" data-mc-component="TrustCard" data-mc-component-kind="component" data-mc-words="pickup delivery">
+      <h3>Pickup + delivery</h3>
+      <p>The layout law expands content instead of making each card a scroll trap.</p>
     </article>
-    <article data-mc="panel" data-mc-kind="article">
-      <h3 data-mc-slot="title">Proof visible</h3>
-      <p data-mc-slot="body">Runtime facts are generated, inspected, and stripped back out on serialize.</p>
+    <article data-mc="panel" data-mc-kind="proof" data-mc-flow="stack" data-mc-rank="secondary" data-mc-state="draft" data-mc-density="dense" data-mc-size-policy="adaptive" data-mc-overflow-policy="contain" data-mc-scroll-policy="auto" data-mc-component="TrustCard" data-mc-component-kind="component" data-mc-words="proof accessible">
+      <h3>Proof visible</h3>
+      <p>Runtime facts are generated, inspected, and stripped back out on serialize.</p>
     </article>
   </section>
 
-  <form id="join" data-mc="smart-region" data-mc-submit="lead.create" data-mc-validation="native">
-    <h2 data-mc-slot="title">Get the weekly market note.</h2>
+  <form
+    id="join"
+    data-mc="smart-region"
+    data-mc-kind="work"
+    data-mc-flow="split"
+    data-mc-rank="secondary"
+    data-mc-state="draft"
+    data-mc-density="auto"
+    data-mc-size-policy="fluid"
+    data-mc-overflow-policy="delegate"
+    data-mc-scroll-policy="external"
+    data-mc-component="SignupForm"
+    data-mc-component-kind="island"
+    data-mc-state-owner="view"
+    data-mc-state-policy="transactional"
+    data-mc-submit="lead.create"
+    data-mc-validation="native"
+    data-mc-dirty-policy="warn"
+    data-mc-error-policy="inline-and-summary"
+    data-mc-action="signup"
+    data-mc-event-policy="audited"
+    data-mc-render="island"
+    data-mc-hydration="interaction"
+    data-mc-focus-policy="preserve"
+    data-mc-a11y-policy="strict"
+    data-mc-performance-budget="small"
+    data-mc-words="signup form validated accessible"
+  >
+    <h2>Get the weekly market note.</h2>
     <label>Email <input name="email" type="email" required placeholder="you@example.com"></label>
     <button type="submit" data-mc-action="signup" data-mc-event-policy="audited">Notify me</button>
   </form>
 
-  <nav aria-label="Market details" data-mc="command-row">
-    <h2 data-mc-slot="title">Open 7am–7pm · 12th and Pine</h2>
-    <p data-mc-slot="body">One semantic command row, zero nested scrollbars.</p>
-  </nav>
+  <section
+    data-mc="command-row"
+    data-mc-kind="work"
+    data-mc-flow="forward"
+    data-mc-rank="minor"
+    data-mc-state="live"
+    data-mc-density="compressed"
+    data-mc-size-policy="intrinsic"
+    data-mc-overflow-policy="clip"
+    data-mc-scroll-policy="never"
+    data-mc-component="FooterCta"
+    data-mc-component-kind="primitive"
+    data-mc-action="open-hours"
+    data-mc-event-policy="audited"
+    data-mc-a11y-policy="strict"
+    data-mc-performance-budget="tiny"
+    data-mc-words="footer command row hours contact"
+  >
+    <h2>Open 7am–7pm · 12th and Pine</h2>
+    <p>One semantic command row, zero nested scrollbars.</p>
+  </section>
 </main>`;
 
       const blockTemplates = Object.freeze({
@@ -447,48 +542,6 @@
 </section>`
       });
 
-
-      const editorCatalog = () => Object.freeze({
-        schemaTypes: Object.freeze(Object.keys(schema)),
-        blockTemplates: Object.freeze(Object.keys(blockTemplates)),
-        slots: platformPolicies.slots,
-        attributes: Object.freeze({...attributes}),
-        policies: Object.freeze({
-          layout: layoutPolicies,
-          platform: platformPolicies
-        }),
-        defaultEnrichments: Object.freeze({
-          regions: Object.freeze([
-            Object.freeze({tag: "main", type: "smart-region", kind: "article", flow: "stack", rank: "primary", state: "live", density: "calm", sizePolicy: "fluid", overflowPolicy: "delegate", scrollPolicy: "external"}),
-            Object.freeze({tag: "section", type: "panel", kind: "signal", flow: "forward", rank: "secondary", state: "idle", density: "auto", sizePolicy: "adaptive", overflowPolicy: "contain", scrollPolicy: "auto"}),
-            Object.freeze({tag: "article", type: "panel", kind: "article", flow: "stack", rank: "secondary", state: "idle", density: "dense", sizePolicy: "adaptive", overflowPolicy: "contain", scrollPolicy: "auto"}),
-            Object.freeze({tag: "form", type: "smart-region", kind: "work", flow: "stack", rank: "secondary", state: "draft", density: "auto", sizePolicy: "adaptive", overflowPolicy: "contain", scrollPolicy: "auto", validation: "native", dirtyPolicy: "warn", errorPolicy: "inline"}),
-            Object.freeze({tag: "nav", type: "command-row", kind: "work", flow: "forward", rank: "minor", state: "idle", density: "compressed", sizePolicy: "intrinsic", overflowPolicy: "clip", scrollPolicy: "never"}),
-            Object.freeze({tag: "aside", type: "panel", kind: "signal", flow: "stack", rank: "minor", state: "idle", density: "dense", sizePolicy: "adaptive", overflowPolicy: "contain", scrollPolicy: "auto"})
-          ]),
-          slots: Object.freeze([
-            Object.freeze({selector: "h1,h2,h3,h4,h5,h6", slot: "title"}),
-            Object.freeze({selector: "p", slot: "body"}),
-            Object.freeze({selector: "figure,picture,img,video", slot: "media"})
-          ]),
-          actions: Object.freeze([
-            Object.freeze({selector: "a[href]", attribute: attributes.action}),
-            Object.freeze({selector: "button", attribute: attributes.action})
-          ]),
-          generatedParts: Object.freeze(["rail", "copy", "meta", "field"])
-        }),
-        nullifyAttribute: attributes.nullify,
-        nullifiableEnrichments: Object.freeze({
-          all: Object.freeze(["data-mc", "data-mc-kind", "data-mc-flow", "data-mc-rank", "data-mc-state", "data-mc-density", "data-mc-size-policy", "data-mc-overflow-policy", "data-mc-scroll-policy", "data-mc-slot", "data-mc-action", "data-mc-event-policy", "data-mc-submit", "data-mc-validation", "data-mc-dirty-policy", "data-mc-error-policy", "rail", "copy", "meta", "field"]),
-          region: Object.freeze(["data-mc", "data-mc-kind", "data-mc-flow", "data-mc-rank", "data-mc-state", "data-mc-density", "data-mc-size-policy", "data-mc-overflow-policy", "data-mc-scroll-policy"]),
-          traits: Object.freeze(["data-mc-kind", "data-mc-flow", "data-mc-rank", "data-mc-state", "data-mc-density", "data-mc-size-policy", "data-mc-overflow-policy", "data-mc-scroll-policy"]),
-          slot: Object.freeze(["data-mc-slot"]),
-          action: Object.freeze(["data-mc-action", "data-mc-event-policy"]),
-          form: Object.freeze(["data-mc-submit", "data-mc-validation", "data-mc-dirty-policy", "data-mc-error-policy"]),
-          generated: Object.freeze(["rail", "copy", "meta", "field"])
-        })
-      });
-
       return Object.freeze({
         attributes,
         modes,
@@ -502,8 +555,7 @@
         contractVersion,
         schema,
         defaultSource,
-        blockTemplates,
-        editorCatalog
+        blockTemplates
       });
     })();
 
