@@ -333,6 +333,55 @@
   white-space: pre-wrap;
 }
 
+.website-builder-page-runtime-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+  margin-top: 0.85rem;
+}
+
+.website-builder-page-runtime-option {
+  display: grid;
+  gap: 0.35rem;
+  min-height: 8.5rem;
+  padding: 0.85rem;
+  text-align: left;
+  background: rgba(15, 23, 42, 0.92);
+  color: #cfe3ff;
+  border-color: rgba(147, 197, 253, 0.24);
+}
+
+.website-builder-page-runtime-option.active {
+  background: #f8c95c;
+  color: #0b1020;
+  border-color: rgba(252, 211, 77, 0.72);
+  box-shadow: 0 0 0 2px rgba(252, 211, 77, 0.18);
+}
+
+.website-builder-page-runtime-option span,
+.website-builder-page-runtime-option small {
+  font-size: 0.74rem;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.website-builder-page-runtime-option span {
+  color: inherit;
+  opacity: 0.72;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.website-builder-page-runtime-option strong {
+  color: inherit;
+  font-size: 1.05rem;
+}
+
+.website-builder-page-runtime-option small {
+  color: inherit;
+  opacity: 0.78;
+}
+
 
 .website-builder-actions button,
 .website-builder-tabs button,
@@ -341,6 +390,7 @@
 .website-builder-site-actions button,
 .website-builder-create button,
 .website-builder-publish-grid button,
+.website-builder-page-runtime-option,
 .website-builder-backend-runtime-card,
 .website-builder-backend-products button {
   border: 1px solid rgba(252, 211, 77, 0.35);
@@ -359,6 +409,7 @@
 .website-builder-site-actions button:disabled,
 .website-builder-git-actions button:disabled,
 .website-builder-publish-grid button:disabled,
+.website-builder-page-runtime-option:disabled,
 .website-builder-backend-runtime-card:disabled,
 .website-builder-backend-products button:disabled {
   cursor: wait;

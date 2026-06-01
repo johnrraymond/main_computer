@@ -54,6 +54,7 @@ def test_website_builder_jsonish_parser_accepts_first_object_and_wrapped_json() 
 def test_website_builder_frontend_assets_define_save_and_publish_controls() -> None:
     app = (ROOT / "main_computer" / "web" / "applications" / "apps" / "website-builder.html").read_text(encoding="utf-8")
     script = (ROOT / "main_computer" / "web" / "applications" / "scripts" / "website-builder.js").read_text(encoding="utf-8")
+    bindings = (ROOT / "main_computer" / "web" / "applications" / "scripts" / "dom-bindings" / "websites.js").read_text(encoding="utf-8")
 
     assert "website-builder-save" in app
     assert "website-builder-publish-local" in app
@@ -71,6 +72,13 @@ def test_website_builder_frontend_assets_define_save_and_publish_controls() -> N
     assert "website-builder-preview-draft" in app
     assert "website-builder-preview-local" in app
     assert "website-builder-preview-dev" in app
+    assert "website-builder-page-runtime-status" in app
+    assert 'data-website-builder-page-runtime="default"' in app
+    assert "Use MCEL Runtime" in app
+    assert "runtime.js" in script
+    assert "ensureWebsiteBuilderRuntimeScript" in script
+    assert "websiteBuilderPageRuntimeButtons" in bindings
+    assert "websiteBuilderPageRuntimeStatus" in bindings
     assert "website-builder-generated-editor-live-apply" in script
     assert "auto_apply: true" in script
     assert "live_apply: true" in script
@@ -225,6 +233,8 @@ def test_website_builder_layout_uses_two_column_workspace_with_rail_manager() ->
     assert ".website-site-card span" in css
     assert ".website-builder-coolify-compose-details" in css
     assert ".website-builder-publishing-checkbox" in css
+    assert ".website-builder-page-runtime-grid" in css
+    assert ".website-builder-page-runtime-option" in css
     assert ".website-builder-directus-connection-backdrop" in css
     assert ".website-builder-directus-connection-form" in css
     assert "color: #0b1020;" in css
@@ -256,6 +266,7 @@ def test_website_builder_layout_uses_two_column_workspace_with_rail_manager() ->
     assert "websiteBuilderPublishingUseLocalServer" in bindings
     assert "websiteBuilderPublishingSiteSlug" in bindings
     assert "websiteBuilderPublishingSshHost" in bindings
+    assert "websiteBuilderPageRuntimeButtons" in bindings
     assert "websiteBuilderPublishDirectusUrl" in bindings
     assert "websiteBuilderPublishBlogDirectusCard" in bindings
     assert "websiteBuilderDirectusConnection" in bindings

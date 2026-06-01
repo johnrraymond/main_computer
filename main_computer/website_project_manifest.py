@@ -57,10 +57,21 @@ SITE_RUNTIME_DIR = Path(".main-computer") / "runtime"
 SITE_RUNTIME_ENTRYPOINT = SITE_RUNTIME_DIR / "app.py"
 SITE_RUNTIME_METADATA = SITE_RUNTIME_DIR / "runtime.json"
 SITE_RUNTIME_ID = "main-computer-site-runtime"
+PAGE_RUNTIME_SOURCE_DIR = Path("deploy") / "local-platform" / "site-runtimes"
+PAGE_RUNTIME_OUTPUT = Path("runtime.js")
+PAGE_RUNTIME_METADATA = SITE_RUNTIME_DIR / "page-runtime.json"
+PAGE_RUNTIME_SCRIPT_TAG = '  <script src="/runtime.js" defer></script>'
+PAGE_RUNTIME_ID_DEFAULT = "default"
+PAGE_RUNTIME_ID_MCEL = "mcel"
+PAGE_RUNTIME_IDS = {PAGE_RUNTIME_ID_DEFAULT, PAGE_RUNTIME_ID_MCEL}
+PAGE_RUNTIME_SOURCE_FILES = {
+    PAGE_RUNTIME_ID_DEFAULT: PAGE_RUNTIME_SOURCE_DIR / "default-runtime.js",
+    PAGE_RUNTIME_ID_MCEL: PAGE_RUNTIME_SOURCE_DIR / "mcel-runtime.js",
+}
 CURRENT_SITE_SCHEMA_VERSION = 2
 CURRENT_SITE_MODEL = "2.0"
 HOST_RUNTIME_SOURCE_KIND = "host_runtime_site"
-WEBSITE_ARTIFACT_FILES = ("site.json", "index.html", "style.css", "script.js", "builder.json")
+WEBSITE_ARTIFACT_FILES = ("site.json", "index.html", "style.css", "script.js", "builder.json", "runtime.js")
 ARCHIVED_WEBSITES_DIRNAME = "websites-archive"
 BUILTIN_WEBSITE_IDS = {"hub-site", "blog-site"}
 PROTECTED_ARCHIVE_SITE_IDS = {"hub-site"}
@@ -92,6 +103,7 @@ class WebsiteProject:
             "style_css": (self.path / "style.css").exists(),
             "builder_json": (self.path / "builder.json").exists(),
             "script_js": (self.path / "script.js").exists(),
+            "runtime_js": (self.path / PAGE_RUNTIME_OUTPUT).exists(),
         }
         data["publish_targets"] = site_publish_targets(data, repo_root)
         return data
@@ -256,9 +268,204 @@ def website_artifact_contract(site_id: object) -> dict[str, Any]:
             "stylesheet": "style.css",
             "script": "script.js",
             "builder_state": "builder.json",
+            "page_runtime": PAGE_RUNTIME_OUTPUT.as_posix(),
             "manifest": "site.json",
         },
         "runtime": website_runtime_contract(),
+    }
+
+
+DEFAULT_PAGE_RUNTIME_JS = """/* Main Computer Website Builder default page runtime.
+ * This no-op runtime proves that exported sites can carry a selectable page
+ * runtime without changing the user's HTML, CSS, or app script behavior.
+ */
+(function () {
+  "use strict";
+
+  const runtime = {
+    id: "default",
+    name: "Default Website Builder Runtime",
+    version: "0.1.0",
+    entry: "runtime.js",
+    hydrate(root) {
+      return {
+        ok: true,
+        runtime: "default",
+        changed: false,
+        root: root && root.nodeType === 9 ? "document" : "element"
+      };
+    },
+    transform(html) {
+      return String(html || "");
+    },
+    audit() {
+      return {
+        ok: true,
+        runtime: "default",
+        issues: []
+      };
+    }
+  };
+
+  Object.defineProperty(window, "WebsiteBuilderRuntime", {
+    value: runtime,
+    configurable: true,
+    writable: false
+  });
+
+  document.addEventListener("DOMContentLoaded", function () {
+    runtime.hydrate(document);
+  });
+})();
+"""
+
+
+PAGE_RUNTIME_SCRIPT_RE = re.compile(
+    r"""<script\b[^>]*\bsrc\s*=\s*["']/?runtime\.js["'][^>]*>\s*</script>""",
+    re.IGNORECASE,
+)
+SITE_SCRIPT_RE = re.compile(
+    r"""<script\b[^>]*\bsrc\s*=\s*["']/?script\.js["'][^>]*>\s*</script>""",
+    re.IGNORECASE,
+)
+
+
+def normalize_page_runtime_id(value: object) -> str:
+    if isinstance(value, dict):
+        for key in ("id", "runtime_id", "name"):
+            if value.get(key):
+                value = value[key]
+                break
+    text = str(value or PAGE_RUNTIME_ID_DEFAULT).strip().lower().replace("_", "-")
+    aliases = {
+        "": PAGE_RUNTIME_ID_DEFAULT,
+        "none": PAGE_RUNTIME_ID_DEFAULT,
+        "noop": PAGE_RUNTIME_ID_DEFAULT,
+        "no-op": PAGE_RUNTIME_ID_DEFAULT,
+        "default-runtime": PAGE_RUNTIME_ID_DEFAULT,
+        "website-builder-default": PAGE_RUNTIME_ID_DEFAULT,
+        "mcel-runtime": PAGE_RUNTIME_ID_MCEL,
+        "use-mcel-runtime": PAGE_RUNTIME_ID_MCEL,
+    }
+    text = aliases.get(text, text)
+    if text not in PAGE_RUNTIME_IDS:
+        raise WebsiteProjectError(f"Unsupported Website Builder page runtime: {value!r}.")
+    return text
+
+
+def page_runtime_builder_config(runtime_id: object = PAGE_RUNTIME_ID_DEFAULT) -> dict[str, str]:
+    clean_id = normalize_page_runtime_id(runtime_id)
+    return {
+        "id": clean_id,
+        "entry": PAGE_RUNTIME_OUTPUT.as_posix(),
+        "source": PAGE_RUNTIME_SOURCE_FILES[clean_id].as_posix(),
+    }
+
+
+def _builder_page_runtime_id(builder_payload: object) -> str:
+    if isinstance(builder_payload, dict):
+        page_runtime = builder_payload.get("page_runtime")
+        if page_runtime is not None:
+            return normalize_page_runtime_id(page_runtime)
+    return PAGE_RUNTIME_ID_DEFAULT
+
+
+def _normalize_builder_text_for_page_runtime(builder_text: str) -> tuple[str, str]:
+    source = str(builder_text or "")
+    if not source.strip():
+        return source, PAGE_RUNTIME_ID_DEFAULT
+    try:
+        payload = json.loads(source)
+    except json.JSONDecodeError as exc:
+        raise WebsiteProjectError("builder.json must be valid JSON.") from exc
+    if not isinstance(payload, dict) or isinstance(payload, list):
+        return source, PAGE_RUNTIME_ID_DEFAULT
+    runtime_id = _builder_page_runtime_id(payload)
+    desired = page_runtime_builder_config(runtime_id)
+    if payload.get("page_runtime") != desired:
+        payload = dict(payload)
+        payload["page_runtime"] = desired
+        source = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    return source, runtime_id
+
+
+def ensure_page_runtime_script(html_text: str) -> str:
+    source = str(html_text or "")
+    if not source.strip() or PAGE_RUNTIME_SCRIPT_RE.search(source):
+        return source
+    if not (re.search(r"<html[\s>]", source, re.IGNORECASE) or re.search(r"<head[\s>]", source, re.IGNORECASE) or re.search(r"<!doctype", source, re.IGNORECASE)):
+        return source
+    script_match = SITE_SCRIPT_RE.search(source)
+    if script_match:
+        return f"{source[:script_match.start()]}{PAGE_RUNTIME_SCRIPT_TAG}\n{source[script_match.start():]}"
+    return re.sub(r"</head\s*>", f"{PAGE_RUNTIME_SCRIPT_TAG}\n</head>", source, count=1, flags=re.IGNORECASE)
+
+
+def _page_runtime_source_payload(repo_root: Path, runtime_id: str) -> tuple[str, str, bool]:
+    clean_id = normalize_page_runtime_id(runtime_id)
+    source = PAGE_RUNTIME_SOURCE_FILES[clean_id]
+    source_path = repo_root / source
+    if source_path.is_file():
+        return source_path.read_text(encoding="utf-8"), source.as_posix(), True
+    if clean_id == PAGE_RUNTIME_ID_DEFAULT:
+        return DEFAULT_PAGE_RUNTIME_JS, "builtin:default-page-runtime", False
+    raise WebsiteProjectError(f"Website Builder page runtime source is missing: {source.as_posix()}")
+
+
+def ensure_site_page_runtime_bundle(
+    repo_root: Path,
+    site_id: object,
+    *,
+    runtime_id: object = PAGE_RUNTIME_ID_DEFAULT,
+) -> dict[str, Any]:
+    clean_site_id = validate_site_id(site_id)
+    clean_runtime_id = normalize_page_runtime_id(runtime_id)
+    site_root = safe_site_dir(repo_root, clean_site_id)
+    runtime_text, source_label, source_exists = _page_runtime_source_payload(repo_root, clean_runtime_id)
+    runtime_path = site_root / PAGE_RUNTIME_OUTPUT
+    metadata_path = site_root / PAGE_RUNTIME_METADATA
+
+    current_text = _read_optional_text(runtime_path)
+    status = "unchanged"
+    if current_text != runtime_text:
+        runtime_path.write_text(runtime_text, encoding="utf-8")
+        status = "updated" if current_text else "created"
+
+    sha256 = hashlib.sha256(runtime_text.encode("utf-8")).hexdigest()
+    payload = {
+        "runtime_id": clean_runtime_id,
+        "site_id": clean_site_id,
+        "entrypoint": PAGE_RUNTIME_OUTPUT.as_posix(),
+        "source": source_label,
+        "source_exists": source_exists,
+        "sha256": sha256,
+        "packaged_at": utc_now(),
+    }
+    existing_payload: dict[str, Any] = {}
+    if metadata_path.is_file():
+        try:
+            parsed = json.loads(metadata_path.read_text(encoding="utf-8"))
+            existing_payload = parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, OSError):
+            existing_payload = {}
+    comparable_existing = {key: value for key, value in existing_payload.items() if key != "packaged_at"}
+    comparable_new = {key: value for key, value in payload.items() if key != "packaged_at"}
+    if comparable_existing != comparable_new:
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        if status == "unchanged":
+            status = "metadata_updated"
+
+    return {
+        "ok": True,
+        "status": status,
+        "runtime_id": clean_runtime_id,
+        "entrypoint": PAGE_RUNTIME_OUTPUT.as_posix(),
+        "source": source_label,
+        "source_exists": source_exists,
+        "sha256": sha256,
+        "site_relative_entrypoint": f"runtime/websites/{clean_site_id}/{PAGE_RUNTIME_OUTPUT.as_posix()}",
+        "site_relative_metadata": f"runtime/websites/{clean_site_id}/{PAGE_RUNTIME_METADATA.as_posix()}",
     }
 
 
@@ -572,6 +779,7 @@ def default_manifest(site_id: str, name: str, kind: str = "static-site") -> dict
             "entry_html": "index.html",
             "stylesheet": "style.css",
             "script": "script.js",
+            "page_runtime": page_runtime_builder_config(),
         },
         "local_platform": {
             "lanes": {},
@@ -1735,6 +1943,7 @@ def generated_blog_page_html(project: WebsiteProject, *, route: object = "/blog"
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Blog - {escaped_name}</title>
   <link rel="stylesheet" href="/style.css">
+  <script src="/runtime.js" defer></script>
   <script src="/script.js" defer></script>
 </head>
 <body data-mc-generated-blog-page="{mode}" data-mc-blog-route-mode="index">
@@ -2119,6 +2328,7 @@ def generated_blog_post_page_html(project: WebsiteProject, post: dict[str, Any],
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{title} - {escaped_name}</title>
   <link rel="stylesheet" href="/style.css">
+  <script src="/runtime.js" defer></script>
   <script src="/script.js" defer></script>
 </head>
 <body data-mc-generated-blog-page="detail">
@@ -2646,6 +2856,7 @@ def starter_builder_state(name: str, kind: str) -> dict[str, Any]:
         "entry_html": "index.html",
         "stylesheet": "style.css",
         "script": "script.js",
+        "page_runtime": page_runtime_builder_config(),
         "blocks": [
             {"type": "eyebrow", "text": "Main Computer Website Builder"},
             {"type": "heading", "text": name},
@@ -2687,6 +2898,15 @@ def normalize_website_manifest(
         artifacts = {}
     for key, value in artifact_contract["artifacts"].items():
         artifacts.setdefault(key, value)
+    required_files = artifacts.get("required_files")
+    if not isinstance(required_files, list):
+        required_files = list(WEBSITE_ARTIFACT_FILES)
+    else:
+        required_files = [str(item) for item in required_files]
+        for artifact_name in WEBSITE_ARTIFACT_FILES:
+            if artifact_name not in required_files:
+                required_files.append(artifact_name)
+    artifacts["required_files"] = required_files
     normalized["artifacts"] = artifacts
 
     runtime = normalized.get("runtime")
@@ -2702,16 +2922,16 @@ def normalize_website_manifest(
     normalized.setdefault("backend", {})
     if not isinstance(normalized["backend"], dict):
         normalized["backend"] = {}
-    normalized.setdefault(
-        "builder",
-        {
-            "engine": "grapesjs",
-            "state_file": "builder.json",
-            "entry_html": "index.html",
-            "stylesheet": "style.css",
-            "script": "script.js",
-        },
-    )
+    builder = normalized.get("builder")
+    if not isinstance(builder, dict):
+        builder = {}
+    builder.setdefault("engine", "grapesjs")
+    builder.setdefault("state_file", "builder.json")
+    builder.setdefault("entry_html", "index.html")
+    builder.setdefault("stylesheet", "style.css")
+    builder.setdefault("script", "script.js")
+    builder["page_runtime"] = page_runtime_builder_config(builder.get("page_runtime", PAGE_RUNTIME_ID_DEFAULT))
+    normalized["builder"] = builder
     normalized.setdefault("local_platform", {"lanes": {}})
     normalized.setdefault("deploy", {"target": "local-platform", "remote_target": None})
     normalized.setdefault(
@@ -2775,6 +2995,9 @@ def ensure_website_project_artifacts(
     builder_path = site_dir / "builder.json"
     if overwrite or not builder_path.exists():
         write_json(builder_path, starter_builder_state(name, kind))
+    runtime_path = site_dir / PAGE_RUNTIME_OUTPUT
+    if overwrite or not runtime_path.exists():
+        runtime_path.write_text(DEFAULT_PAGE_RUNTIME_JS, encoding="utf-8")
 
 
 def create_website_project(
@@ -3128,6 +3351,7 @@ def read_website_project_files(repo_root: Path, site_id: object) -> dict[str, An
         "css": _read_optional_text(project.path / "style.css"),
         "js": _read_optional_text(project.path / "script.js"),
         "builder": _read_optional_text(project.path / "builder.json"),
+        "runtime_js": _read_optional_text(project.path / PAGE_RUNTIME_OUTPUT),
     }
 
 
@@ -3158,8 +3382,11 @@ def save_website_project_files(
     html_text = _coerce_limited_text(html, "index.html") if html is not None else None
     css_text = _coerce_limited_text(css, "style.css") if css is not None else None
     js_text = _coerce_limited_text(js, "script.js") if js is not None else None
+    builder_text = _coerce_limited_text(builder, "builder.json") if builder is not None else _read_optional_text(project.path / "builder.json")
+    builder_text, page_runtime_id = _normalize_builder_text_for_page_runtime(builder_text)
 
     html_for_detection = html_text if html_text is not None else _read_optional_text(project.path / "index.html")
+    html_for_detection = ensure_page_runtime_script(html_for_detection)
     needs_blog_assets = _project_needs_blog_widget_assets(repo_root, project, html_for_detection)
     if needs_blog_assets:
         if css_text is None:
@@ -3170,22 +3397,34 @@ def save_website_project_files(
         js_text = _ensure_blog_widget_script(js_text)
 
     if html_text is not None:
-        (project.path / "index.html").write_text(html_text, encoding="utf-8")
+        (project.path / "index.html").write_text(ensure_page_runtime_script(html_text), encoding="utf-8")
     if css_text is not None:
         (project.path / "style.css").write_text(css_text, encoding="utf-8")
     if js_text is not None:
         (project.path / "script.js").write_text(js_text, encoding="utf-8")
     if builder is not None:
-        builder_text = _coerce_limited_text(builder, "builder.json")
-        if builder_text.strip():
-            try:
-                json.loads(builder_text)
-            except json.JSONDecodeError as exc:
-                raise WebsiteProjectError("builder.json must be valid JSON.") from exc
         (project.path / "builder.json").write_text(builder_text, encoding="utf-8")
+    elif builder_text:
+        (project.path / "builder.json").write_text(builder_text, encoding="utf-8")
+
+    page_runtime_bundle = ensure_site_page_runtime_bundle(repo_root, project.id, runtime_id=page_runtime_id)
 
     manifest = dict(project.manifest)
     manifest["updated_at"] = utc_now()
+    builder_manifest = manifest.get("builder")
+    if not isinstance(builder_manifest, dict):
+        builder_manifest = {}
+    builder_manifest["page_runtime"] = page_runtime_builder_config(page_runtime_id)
+    manifest["builder"] = builder_manifest
+    runtime_manifest = manifest.get("runtime")
+    if not isinstance(runtime_manifest, dict):
+        runtime_manifest = {}
+    runtime_manifest["page_runtime"] = {
+        "id": page_runtime_id,
+        "entry": PAGE_RUNTIME_OUTPUT.as_posix(),
+        "sha256": page_runtime_bundle["sha256"],
+    }
+    manifest["runtime"] = runtime_manifest
     write_json(project.path / "site.json", manifest)
     return load_website_project(repo_root, site_id)
 

@@ -565,6 +565,22 @@
             <h4>Manifest</h4>
             <p id="website-builder-settings-manifest">Site settings are stored in runtime/websites/&lt;site-id&gt;/site.json.</p>
           </article>
+          <article class="website-builder-page-runtime-card">
+            <h4>Page Runtime</h4>
+            <p id="website-builder-page-runtime-status">Default runtime will be saved as runtime.js with this site.</p>
+            <div class="website-builder-page-runtime-grid" role="group" aria-label="Page runtime">
+              <button class="website-builder-page-runtime-option active" type="button" data-website-builder-page-runtime="default">
+                <span>Default Runtime</span>
+                <strong>No-op runtime.js</strong>
+                <small>Ships with the site and changes nothing.</small>
+              </button>
+              <button class="website-builder-page-runtime-option" type="button" data-website-builder-page-runtime="mcel" disabled>
+                <span>Use MCEL Runtime</span>
+                <strong>MCEL Runtime</strong>
+                <small>Reserved for the compiled MCELRuntime bundle.</small>
+              </button>
+            </div>
+          </article>
           <article class="website-builder-coolify-card">
             <h4>Coolify Targets</h4>
             <p>One local Coolify is shared by all sites. Add as many remote Coolify targets as publishing destinations require.</p>

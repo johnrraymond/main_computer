@@ -1,0 +1,9 @@
+{
+  "entrypoint": "runtime.js",
+  "packaged_at": "2026-06-01T23:48:18+00:00",
+  "runtime_id": "default",
+  "sha256": "94172186179122657ef9ed93dba088f80a538394c653ea6717e296f4efc029fa",
+  "site_id": "johnrraymond",
+  "source": "deploy/local-platform/site-runtimes/default-runtime.js",
+  "source_exists": true
+}
