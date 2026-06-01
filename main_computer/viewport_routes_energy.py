@@ -146,6 +146,46 @@ class ViewportEnergyRoutesMixin:
             self.server.signal("api-worker-hub-health-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
+    def _handle_worker_multisession_key_request(self) -> None:
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Worker multi-session key requests are only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                return
+            body = self._read_json()
+            hub_url = self._clean_hub_url(str(body.get("hub_url") or self.server.config.hub_url))
+            signed_request = body.get("signed_request")
+            if not isinstance(signed_request, dict):
+                raise ValueError("signed_request object is required.")
+            if signed_request.get("kind") != "main_computer_multisession_key_request":
+                raise ValueError("signed_request.kind must be main_computer_multisession_key_request.")
+            if signed_request.get("signing_method") != "personal_sign":
+                raise ValueError("signed_request.signing_method must be personal_sign.")
+            if not str(signed_request.get("signature") or "").startswith("0x"):
+                raise ValueError("signed_request.signature is required.")
+
+            bridge_context = body.get("bridge_context")
+            if bridge_context is None:
+                bridge_context = {}
+            if not isinstance(bridge_context, dict):
+                raise ValueError("bridge_context must be an object when supplied.")
+
+            forwarded = {
+                "signed_request": signed_request,
+                "bridge_context": bridge_context,
+                "client_metadata": dict(body.get("client_metadata", {})) if isinstance(body.get("client_metadata"), dict) else {},
+            }
+            result = self._post_multisession_key_request_to_hub(hub_url=hub_url, payload=forwarded)
+            key = result.get("key") if isinstance(result.get("key"), dict) else {}
+            self.server.signal(
+                "api-worker-multisession-key-request",
+                hub_url=hub_url,
+                key_id=key.get("id", ""),
+            )
+            self._send_json({"ok": True, "hub_url": hub_url, **result})
+        except Exception as exc:
+            self.server.signal("api-worker-multisession-key-request-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
     def _handle_worker_offer_register(self) -> None:
         try:
             if not self._worker_ui_client_is_local():
@@ -322,6 +362,27 @@ class ViewportEnergyRoutesMixin:
             raise RuntimeError(f"Local hub is unreachable: {exc}") from exc
         if not isinstance(data, dict):
             raise RuntimeError("Local hub returned a non-object upstream registration response.")
+        if data.get("error"):
+            raise RuntimeError(str(data["error"]))
+        return data
+
+    def _post_multisession_key_request_to_hub(self, *, hub_url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        request = Request(
+            self._clean_hub_url(hub_url) + "/api/hub/v1/credits/multisession-keys/request",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=5.0) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Hub returned HTTP {exc.code}: {body}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"Hub is unreachable: {exc}") from exc
+        if not isinstance(data, dict):
+            raise RuntimeError("Hub returned a non-object multi-session key response.")
         if data.get("error"):
             raise RuntimeError(str(data["error"]))
         return data

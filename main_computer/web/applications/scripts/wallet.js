@@ -639,6 +639,90 @@
       injected.on("chainChanged", walletHandleChainChanged);
     }
 
+    function walletTextToHex(value) {
+      const bytes = new TextEncoder().encode(String(value || ""));
+      return `0x${Array.from(bytes).map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+    }
+
+    function walletBuildMultiSessionKeyMessage({walletAddress = "", chainId = "", bridgeContext = {}, origin = ""} = {}) {
+      const now = walletNowIso();
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+      const accountId = String(bridgeContext.account_id || bridgeContext.bridge_account_id || "").trim();
+      const requestEntropy = window.crypto && typeof window.crypto.randomUUID === "function"
+        ? window.crypto.randomUUID()
+        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+      return {
+        purpose: "request_multi_session_key",
+        request_id: `msk_req_${requestEntropy}`,
+        wallet_address: walletAddress,
+        chain_id: walletNormalizeChainIdHex(chainId),
+        bridge_account_id: accountId,
+        bridge_account_status: String(bridgeContext.status || bridgeContext.bridge_account_status || ""),
+        origin: String(origin || window.location?.origin || "main-computer-worker"),
+        issued_at: now,
+        expires_at: expiresAt,
+        version: "main-computer-multisession-key-request-v1"
+      };
+    }
+
+    async function requestMultiSessionKeySignature({bridgeContext = {}, origin = ""} = {}) {
+      const provider = walletBrowserProvider();
+      await provider.send("eth_requestAccounts", []);
+      await walletEnsureExpectedChain();
+
+      const signer = await provider.getSigner();
+      const walletAddress = await signer.getAddress();
+      const chainId = await walletNetworkChainId(provider);
+      const normalizedChainId = walletNormalizeChainIdHex(chainId);
+      const expectedWallet = String(
+        bridgeContext.wallet_address
+        || bridgeContext.primary_wallet
+        || bridgeContext.primaryWallet
+        || ""
+      ).trim();
+
+      if (!walletValidAddress(walletAddress)) {
+        throw new Error("Browser wallet did not provide a valid 0x address.");
+      }
+      if (expectedWallet && expectedWallet.toLowerCase() !== walletAddress.toLowerCase()) {
+        throw new Error(`Connected wallet ${walletShortAddress(walletAddress)} does not match bridge wallet ${walletShortAddress(expectedWallet)}.`);
+      }
+      if (!walletChainMatchesExpected(normalizedChainId)) {
+        throw new Error(`Wallet is on ${normalizedChainId || "unknown chain"}; expected ${WALLET_DEV_CHAIN_ID_HEX}.`);
+      }
+
+      const message = walletBuildMultiSessionKeyMessage({
+        walletAddress,
+        chainId: normalizedChainId,
+        bridgeContext,
+        origin
+      });
+      const messageText = JSON.stringify(message);
+      const signature = await signer.signMessage(messageText);
+
+      return {
+        kind: "main_computer_multisession_key_request",
+        signing_method: "personal_sign",
+        wallet_address: walletAddress,
+        chain_id: normalizedChainId,
+        message,
+        message_text: messageText,
+        message_hex: walletTextToHex(messageText),
+        signature
+      };
+    }
+
+    window.MainComputerWalletLibrary = {
+      ...(window.MainComputerWalletLibrary || {}),
+      requestMultiSessionKeySignature,
+      buildMultiSessionKeyMessage: walletBuildMultiSessionKeyMessage,
+      constants: {
+        devChainIdHex: WALLET_DEV_CHAIN_ID_HEX,
+        purpose: "request_multi_session_key",
+        kind: "main_computer_multisession_key_request"
+      }
+    };
+
     function initWalletApp() {
       if (!walletApp) return;
       walletEnsureStateShape();
@@ -679,6 +763,8 @@
         providerSnapshot: walletProviderSnapshot,
         ensureExpectedChain: walletEnsureExpectedChain,
         refreshProviderState: walletRefreshProviderStateAfterEvent,
-        waitForStableProvider: walletWaitForStableProvider
+        waitForStableProvider: walletWaitForStableProvider,
+        requestMultiSessionKeySignature,
+        buildMultiSessionKeyMessage: walletBuildMultiSessionKeyMessage
       };
     }
