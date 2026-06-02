@@ -34,13 +34,11 @@
     const workerPauseRentals = document.querySelector("#worker-pause-rentals");
     const workerTestHubs = document.querySelector("#worker-test-hubs");
     const workerPrimaryWalletStatus = document.querySelector("#worker-primary-wallet-status");
-    const workerBridgeAccountStatus = document.querySelector("#worker-bridge-account-status");
     const workerRecoveryStatus = document.querySelector("#worker-recovery-status");
     const workerMultisessionStatus = document.querySelector("#worker-multisession-status");
     const workerBridgeReadinessStatus = document.querySelector("#worker-bridge-readiness-status");
     const workerConnectWallet = document.querySelector("#worker-connect-wallet");
     const workerDisconnectWallet = document.querySelector("#worker-disconnect-wallet");
-    const workerCreateBridgeAccount = document.querySelector("#worker-create-bridge-account");
     const workerRefreshBridgeReadiness = document.querySelector("#worker-refresh-bridge-readiness");
     const workerFaucetAmount = document.querySelector("#worker-faucet-amount");
     const workerFaucetTarget = document.querySelector("#worker-faucet-target");

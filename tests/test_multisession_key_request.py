@@ -15,8 +15,8 @@ from main_computer.viewport_server import ViewportServer
 
 _TEST_WALLET_ADDRESS = "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf"
 _TEST_SIGNATURE = (
-    "0x05a1b57b422dbc066283e928fd489a9040bd364b6431ba4a8ea5cf8837e808ed"
-    "40fc4f43e64bb3a4851939b54ae729153b963d38e34bf8b96979942cc5fbf6321c"
+    "0x08f4f37e2d8f74e18c1b8fde2374d5f28402fb8ab7fd1cc5b786aa40851a70cb"
+    "fbda0244b7266d2b2651d5a0c6d00a4f9843db5b222e067666c0859b0c8ad25d1b"
 )
 
 
@@ -53,7 +53,6 @@ def _post_json_error(url: str, payload: dict[str, object]) -> tuple[int, dict[st
 
 def _signed_msk_blob(
     *,
-    account_id: str = "bridge_local_test_wallet",
     request_id: str = "msk_req_unit_valid",
     tamper_wallet: bool = False,
 ) -> dict[str, object]:
@@ -62,8 +61,6 @@ def _signed_msk_blob(
         "request_id": request_id,
         "wallet_address": "0x1111111111111111111111111111111111111111" if tamper_wallet else _TEST_WALLET_ADDRESS,
         "chain_id": "0x28757b2",
-        "bridge_account_id": account_id,
-        "bridge_account_status": "prepared",
         "origin": "pytest",
         "version": "main-computer-multisession-key-request-v1",
     }
@@ -113,37 +110,23 @@ def test_hub_multisession_key_endpoint_verifies_signature_and_persists_key() -> 
 
         try:
             hub_url = f"http://127.0.0.1:{hub.server_port}"
-            account_id = "bridge_local_test_wallet"
-            blob = _signed_msk_blob(account_id=account_id)
-            payload = {
-                "signed_request": blob,
-                "bridge_context": {
-                    "account_id": account_id,
-                    "status": "prepared",
-                    "wallet_address": blob["wallet_address"],
-                },
-            }
+            blob = _signed_msk_blob()
+            payload = {"signed_request": blob}
 
             data = _post_json(f"{hub_url}/api/hub/v1/credits/multisession-keys/request", payload)
 
             assert data["ok"] is True
             assert data["verification"]["matched"] is True  # type: ignore[index]
-            assert data["account"]["spendable"] is True  # type: ignore[index]
             assert data["key"]["status"] == "active"  # type: ignore[index]
-            assert data["key"]["account_id"] == account_id  # type: ignore[index]
+            assert data["key"]["wallet_address"] == _TEST_WALLET_ADDRESS  # type: ignore[index]
+            assert "account" not in data
+            assert "account_id" not in data["key"]  # type: ignore[index]
             assert (root / "hub" / "compute_credits" / "multisession_keys.json").exists()
 
-            bad_blob = _signed_msk_blob(account_id=account_id, tamper_wallet=True)
+            bad_blob = _signed_msk_blob(tamper_wallet=True)
             status, error = _post_json_error(
                 f"{hub_url}/api/hub/v1/credits/multisession-keys/request",
-                {
-                    "signed_request": bad_blob,
-                    "bridge_context": {
-                        "account_id": account_id,
-                        "status": "prepared",
-                        "wallet_address": blob["wallet_address"],
-                    },
-                },
+                {"signed_request": bad_blob},
             )
             assert status == 400
             assert error["ok"] is False
@@ -172,19 +155,13 @@ def test_worker_multisession_key_local_proxy_forwards_to_hub() -> None:
         viewport_thread.start()
 
         try:
-            account_id = "bridge_local_test_wallet"
-            blob = _signed_msk_blob(account_id=account_id)
+            blob = _signed_msk_blob()
             viewport_url = f"http://127.0.0.1:{viewport.server_port}"
             data = _post_json(
                 f"{viewport_url}/api/applications/worker/multisession-key/request",
                 {
                     "hub_url": hub_url,
                     "signed_request": blob,
-                    "bridge_context": {
-                        "account_id": account_id,
-                        "status": "prepared",
-                        "wallet_address": blob["wallet_address"],
-                    },
                 },
             )
 

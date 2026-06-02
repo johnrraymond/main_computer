@@ -30,7 +30,6 @@ from main_computer.hub_credit_indexer import HubCreditIndexer
 from main_computer.hub_credit_ledger import HubCreditLedger
 from main_computer.hub_credit_models import (
     DEFAULT_WORKER_PAYOUT_PRECISION_PLACES,
-    clean_account_id,
     stable_id,
     normalize_worker_payout_precision_places,
 )
@@ -1011,11 +1010,10 @@ class HubServerHandler(_JsonHandler):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
-    def _active_multisession_key_for_account_unlocked(
+    def _active_multisession_key_for_wallet_unlocked(
         self,
         data: dict[str, Any],
         *,
-        account_id: str,
         wallet_address: str,
     ) -> dict[str, Any] | None:
         for record in data.get("keys", {}).values():
@@ -1023,34 +1021,15 @@ class HubServerHandler(_JsonHandler):
                 continue
             if (
                 record.get("status") == "active"
-                and record.get("account_id") == account_id
                 and str(record.get("wallet_address", "")).lower() == wallet_address
             ):
                 return dict(record)
         return None
 
-    def _bridge_context_address(self, bridge_context: dict[str, Any]) -> str:
-        candidates = [
-            bridge_context.get("wallet_address"),
-            bridge_context.get("primary_wallet"),
-            bridge_context.get("primaryWallet"),
-            bridge_context.get("owner_address"),
-        ]
-        for candidate in candidates:
-            if candidate:
-                return normalize_address(candidate)
-        return ""
-
     def _handle_multisession_key_request(self, body: dict[str, Any]) -> dict[str, Any]:
         signed_request = body.get("signed_request")
         if not isinstance(signed_request, dict):
             raise ValueError("signed_request object is required.")
-
-        bridge_context = body.get("bridge_context")
-        if bridge_context is None:
-            bridge_context = {}
-        if not isinstance(bridge_context, dict):
-            raise ValueError("bridge_context must be an object when supplied.")
 
         verification = verify_personal_sign_blob(
             signed_request,
@@ -1058,57 +1037,9 @@ class HubServerHandler(_JsonHandler):
             max_age_minutes=HUB_MULTISESSION_KEY_MAX_AGE_MINUTES,
         )
         wallet_address = str(verification["wallet_address"]).lower()
-        message = verification.get("message") if isinstance(verification.get("message"), dict) else {}
-
-        context_wallet = self._bridge_context_address(bridge_context)
-        if context_wallet and context_wallet != wallet_address:
-            raise ValueError(f"bridge_context wallet {context_wallet} does not match signed wallet {wallet_address}.")
-
-        raw_account_id = (
-            bridge_context.get("account_id")
-            or bridge_context.get("bridge_account_id")
-            or message.get("bridge_account_id")
-            or message.get("account_id")
-        )
-        raw_account_text = str(raw_account_id or "").strip()
-        if not raw_account_text:
-            raise ValueError("bridge account_id is required.")
-        account_id = clean_account_id(raw_account_text)
-
-        bridge_status = str(
-            bridge_context.get("status")
-            or bridge_context.get("bridge_account_status")
-            or message.get("bridge_account_status")
-            or ""
-        ).strip().lower()
-
-        ledger_account = self.server.credit_ledger.get_account(account_id)
-        if ledger_account.owner_address and ledger_account.owner_address != wallet_address:
-            raise ValueError(
-                f"bridge account {account_id} belongs to {ledger_account.owner_address}, not {wallet_address}."
-            )
-
-        spendable = ledger_account.available_credits > 0 or bridge_status in {"prepared", "spendable", "active"}
-        account_payload = {
-            "id": account_id,
-            "account_id": account_id,
-            "wallet_address": wallet_address,
-            "owner_address": ledger_account.owner_address or wallet_address,
-            "available_credits": ledger_account.available_credits,
-            "held_credits": ledger_account.held_credits,
-            "spent_credits": ledger_account.spent_credits,
-            "spendable": bool(spendable),
-            "status": bridge_status or ("funded" if ledger_account.available_credits > 0 else "unknown"),
-        }
-
-        if not spendable:
-            raise ValueError(
-                "bridge account is not spendable by a multi-session key yet; prepare the bridge account or fund it first."
-            )
 
         now = _utc_now()
         key_seed = {
-            "account_id": account_id,
             "wallet_address": wallet_address,
             "request_id": verification.get("request_id", ""),
             "purpose": "multisession_key_issuance_v1",
@@ -1122,9 +1053,8 @@ class HubServerHandler(_JsonHandler):
                 key_payload = dict(existing)
                 idempotent = True
             else:
-                active_existing = self._active_multisession_key_for_account_unlocked(
+                active_existing = self._active_multisession_key_for_wallet_unlocked(
                     data,
-                    account_id=account_id,
                     wallet_address=wallet_address,
                 )
                 if active_existing:
@@ -1136,7 +1066,6 @@ class HubServerHandler(_JsonHandler):
                         "status": "active",
                         "created_at": now,
                         "revoked_at": "",
-                        "account_id": account_id,
                         "wallet_address": wallet_address,
                         "chain_id": verification.get("chain_id", ""),
                         "request_id": verification.get("request_id", ""),
@@ -1154,7 +1083,6 @@ class HubServerHandler(_JsonHandler):
             "ok": True,
             "idempotent": idempotent,
             "verification": public_verification,
-            "account": account_payload,
             "key": key_payload,
         }
 

@@ -644,10 +644,9 @@
       return `0x${Array.from(bytes).map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
     }
 
-    function walletBuildMultiSessionKeyMessage({walletAddress = "", chainId = "", bridgeContext = {}, origin = ""} = {}) {
+    function walletBuildMultiSessionKeyMessage({walletAddress = "", chainId = "", origin = ""} = {}) {
       const now = walletNowIso();
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-      const accountId = String(bridgeContext.account_id || bridgeContext.bridge_account_id || "").trim();
       const requestEntropy = window.crypto && typeof window.crypto.randomUUID === "function"
         ? window.crypto.randomUUID()
         : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -656,8 +655,6 @@
         request_id: `msk_req_${requestEntropy}`,
         wallet_address: walletAddress,
         chain_id: walletNormalizeChainIdHex(chainId),
-        bridge_account_id: accountId,
-        bridge_account_status: String(bridgeContext.status || bridgeContext.bridge_account_status || ""),
         origin: String(origin || window.location?.origin || "main-computer-worker"),
         issued_at: now,
         expires_at: expiresAt,
@@ -665,7 +662,7 @@
       };
     }
 
-    async function requestMultiSessionKeySignature({bridgeContext = {}, origin = ""} = {}) {
+    async function requestMultiSessionKeySignature({requestContext = {}, origin = ""} = {}) {
       const provider = walletBrowserProvider();
       await provider.send("eth_requestAccounts", []);
       await walletEnsureExpectedChain();
@@ -674,18 +671,13 @@
       const walletAddress = await signer.getAddress();
       const chainId = await walletNetworkChainId(provider);
       const normalizedChainId = walletNormalizeChainIdHex(chainId);
-      const expectedWallet = String(
-        bridgeContext.wallet_address
-        || bridgeContext.primary_wallet
-        || bridgeContext.primaryWallet
-        || ""
-      ).trim();
+      const expectedWallet = String(requestContext.wallet_address || requestContext.walletAddress || "").trim();
 
       if (!walletValidAddress(walletAddress)) {
         throw new Error("Browser wallet did not provide a valid 0x address.");
       }
       if (expectedWallet && expectedWallet.toLowerCase() !== walletAddress.toLowerCase()) {
-        throw new Error(`Connected wallet ${walletShortAddress(walletAddress)} does not match bridge wallet ${walletShortAddress(expectedWallet)}.`);
+        throw new Error(`Connected wallet ${walletShortAddress(walletAddress)} does not match Worker request ${walletShortAddress(expectedWallet)}.`);
       }
       if (!walletChainMatchesExpected(normalizedChainId)) {
         throw new Error(`Wallet is on ${normalizedChainId || "unknown chain"}; expected ${WALLET_DEV_CHAIN_ID_HEX}.`);
@@ -694,7 +686,6 @@
       const message = walletBuildMultiSessionKeyMessage({
         walletAddress,
         chainId: normalizedChainId,
-        bridgeContext,
         origin
       });
       const messageText = JSON.stringify(message);
