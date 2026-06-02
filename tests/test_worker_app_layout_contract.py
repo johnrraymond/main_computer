@@ -207,6 +207,14 @@ def test_worker_wallet_connect_and_disconnect_use_always_disconnect_cycle() -> N
     assert "connect.ethers.requestAccounts.resolved" in js
     assert "provider.selected" in js
     assert "connect.finalized.connected" in js
+    assert "async function workerHydrateConnectedWalletFromProvider" in js
+    assert 'workerHydrateConnectedWalletFromProvider("page-load")' in js
+    assert "workerReadGrantedWalletProviderSnapshot" in js
+    assert '"eth_accounts"' in js
+    assert "provider.hydrate.start" in js
+    assert "provider.hydrate.connected" in js
+    assert "provider.hydrate.no-account" in js
+    assert "workerLoadMultisessionKeysForWallet(address, reason)" in js
     assert "disconnect.ethers.revokePermissions.start" in js
     assert "disconnect.done" in js
     assert "provider.accountsChanged.refresh" in js
