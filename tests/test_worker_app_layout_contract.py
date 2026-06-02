@@ -87,6 +87,7 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert '"/api/applications/worker/hub-health"' in js
     assert '"/api/applications/worker/multisession-key/request"' in js
     assert '"/api/applications/worker/multisession-keys/load"' in js
+    assert '"/api/applications/worker/wallet-balance"' in js
     assert '"/api/applications/worker/wallet-funding/import"' in js
     assert '"/api/applications/worker/wallet-funding/balance"' in js
     assert "requestMultiSessionKeySignature" in js
@@ -105,6 +106,8 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert "self._handle_worker_multisession_key_request()" in dispatch
     assert '"/api/applications/worker/multisession-keys/load"' in dispatch
     assert "self._handle_worker_multisession_keys_load()" in dispatch
+    assert '"/api/applications/worker/wallet-balance"' in dispatch
+    assert "self._handle_worker_wallet_balance()" in dispatch
     assert '"/api/applications/worker/wallet-funding/import"' in dispatch
     assert "self._handle_worker_wallet_funding_import()" in dispatch
     assert '"/api/applications/worker/wallet-funding/balance"' in dispatch
@@ -147,10 +150,20 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
     assert 'id="worker-hub-credit-card"' in html
     assert 'id="worker-hub-credit-contract"' in html
     assert 'id="worker-hub-credit-amount"' in html
+    assert 'id="worker-hub-credit-wallet-balance"' in html
     assert 'id="worker-check-hub-credit-balance"' in html
     assert 'id="worker-fund-hub-credit"' in html
-    assert "Hub Wallet Credit" in html
-    assert "bridge-escrow credit from the connected wallet" in html
+    assert "My Bridge Account" in html
+    assert "Money on the machine is money on the bridge." in html
+    assert "Hub Wallet Credit" not in html
+    assert "Fund Hub Wallet Credit" not in html
+    assert "Fund Hub Wallet Credit" not in js
+    assert html.index('id="worker-hub-credit-card"') < html.index('class="worker-card worker-field-grid worker-remote-policy"')
+    bridge_card_end = html.index('class="worker-card worker-field-grid worker-remote-policy"')
+    bridge_card_start = html.index('id="worker-hub-credit-card"')
+    bridge_slice = html[bridge_card_start:bridge_card_end]
+    assert "Recovery Methods" not in bridge_slice
+    assert "Multi-session Key" not in bridge_slice
     assert "Request 1 local dev-chain credit" in html
     assert "Request Faucet Funds" in html
     assert "verified ethers wallet state" in html
@@ -168,6 +181,20 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
     assert "function workerComputeHubCreditFundingReadiness()" in js
     assert "async function fundWorkerHubCredit" in js
     assert "async function checkWorkerHubCreditBalance" in js
+    assert "async function checkWorkerWalletCreditBalance" in js
+    assert "WORKER_WALLET_BALANCE_TIMEOUT_MS = 8000" in js
+    assert "workerReadWalletBalanceFromLocalRpc" in js
+    assert "workerReadWalletBalanceFromInjectedProvider" in js
+    assert '"/api/applications/worker/wallet-balance"' in js
+    assert '"eth_getBalance"' in js
+    assert "Wallet RPC unavailable." in js
+    assert "Could not read my wallet balance. MetaMask says the RPC endpoint is failing" in js
+    assert "Checking automatically" not in js
+    assert "browserProvider.getBalance(walletAddress)" not in js
+    assert "Check my wallet balance before funding." in js
+    assert "Request Faucet Funds for this wallet before funding the bridge." in js
+    assert "0 credits available — Request Faucet Funds first" in js
+    assert "Amount exceeds my wallet balance." in js
     assert "walletFunding" in js
     assert "POST" in js
     assert 'route_path == "/api/xlag/dev/faucet"' in dispatch
@@ -193,6 +220,7 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
     assert "workerRequestFaucet" in bindings
     assert "workerHubCreditForm" in bindings
     assert "workerHubCreditContract" in bindings
+    assert "workerHubCreditWalletBalance" in bindings
     assert "workerFundHubCredit" in bindings
     assert "workerCheckHubCreditBalance" in bindings
     assert "workerFaucetReadiness" in bindings

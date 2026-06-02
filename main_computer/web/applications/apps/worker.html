@@ -285,32 +285,6 @@
           </div>
         </div>
 
-        <div class="worker-card worker-bridge-card worker-hub-credit-card" id="worker-hub-credit-card" aria-label="Hub wallet credit funding">
-          <h4>Hub Wallet Credit</h4>
-          <p class="worker-card-note">Fund the selected hub by sending bridge-escrow credit from the connected wallet, then import that confirmed deposit as this wallet's hub-side balance.</p>
-          <dl class="worker-bridge-status-grid">
-            <div><dt>Wallet account</dt><dd id="worker-hub-credit-wallet">Connect wallet first</dd></div>
-            <div><dt>Hub balance</dt><dd id="worker-hub-credit-balance">Unknown</dd></div>
-            <div><dt>Last funding</dt><dd id="worker-hub-credit-status">Not funded</dd></div>
-            <div><dt>Transaction</dt><dd id="worker-hub-credit-tx">—</dd></div>
-          </dl>
-          <form class="worker-inline-form" id="worker-hub-credit-form">
-            <label>
-              <span>Bridge escrow contract</span>
-              <input id="worker-hub-credit-contract" type="text" placeholder="0x..." autocomplete="off">
-            </label>
-            <label>
-              <span>Credits to fund</span>
-              <input id="worker-hub-credit-amount" type="number" min="0.000001" step="0.000001" value="1">
-            </label>
-          </form>
-          <div class="worker-inline-actions">
-            <button type="button" id="worker-check-hub-credit-balance">Check Hub Balance</button>
-            <button type="button" id="worker-fund-hub-credit" disabled>Fund Hub Wallet Credit</button>
-            <span id="worker-hub-credit-disabled-reason" class="worker-inline-status">Connect Wallet before funding hub credit.</span>
-          </div>
-        </div>
-
         <div class="worker-card worker-bridge-card worker-recovery-card" id="worker-recovery-card" aria-label="Recovery methods">
           <h4>Recovery Methods</h4>
           <p class="worker-card-note">Store optional local recovery contacts for later wallet recovery flows.</p>
@@ -351,6 +325,33 @@
           <div class="worker-inline-actions">
             <button type="button" id="worker-request-multisession-key">Request New Key</button>
             <button type="button" id="worker-revoke-multisession-key">Revoke Active Key</button>
+          </div>
+        </div>
+
+        <div class="worker-card worker-bridge-card worker-hub-credit-card" id="worker-hub-credit-card" aria-label="My bridge account">
+          <h4>My Bridge Account</h4>
+          <p class="worker-card-note">Money on the machine is money on the bridge.</p>
+          <dl class="worker-bridge-status-grid">
+            <div><dt>My wallet</dt><dd id="worker-hub-credit-wallet">Connect wallet first</dd></div>
+            <div><dt>My wallet balance</dt><dd id="worker-hub-credit-wallet-balance">Connect wallet first</dd></div>
+            <div><dt>My bridge balance</dt><dd id="worker-hub-credit-balance">Unknown</dd></div>
+            <div><dt>Last funding</dt><dd id="worker-hub-credit-status">Not funded</dd></div>
+            <div><dt>Transaction</dt><dd id="worker-hub-credit-tx">—</dd></div>
+          </dl>
+          <form class="worker-inline-form" id="worker-hub-credit-form">
+            <label>
+              <span>Bridge address</span>
+              <input id="worker-hub-credit-contract" type="text" placeholder="0x..." autocomplete="off">
+            </label>
+            <label>
+              <span>Amount</span>
+              <input id="worker-hub-credit-amount" type="number" min="0.000001" step="0.000001" value="1">
+            </label>
+          </form>
+          <div class="worker-inline-actions">
+            <button type="button" id="worker-check-hub-credit-balance">Check Balances</button>
+            <button type="button" id="worker-fund-hub-credit" disabled>Fund</button>
+            <span id="worker-hub-credit-disabled-reason" class="worker-inline-status">Connect Wallet before funding.</span>
           </div>
         </div>
 

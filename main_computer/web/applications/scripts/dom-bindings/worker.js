@@ -56,6 +56,7 @@
     const workerRequestFaucet = document.querySelector("#worker-request-faucet");
     const workerHubCreditForm = document.querySelector("#worker-hub-credit-form");
     const workerHubCreditWallet = document.querySelector("#worker-hub-credit-wallet");
+    const workerHubCreditWalletBalance = document.querySelector("#worker-hub-credit-wallet-balance");
     const workerHubCreditBalance = document.querySelector("#worker-hub-credit-balance");
     const workerHubCreditStatus = document.querySelector("#worker-hub-credit-status");
     const workerHubCreditTx = document.querySelector("#worker-hub-credit-tx");
