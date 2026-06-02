@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-MCEL_RUNTIME_VERSION = "mcel-runtime.v0.1.5"
+MCEL_RUNTIME_VERSION = "mcel-runtime.v0.1.6"
 
 MCEL_RUNTIME_MODULES: tuple[str, ...] = (
     "main_computer/web/applications/scripts/mcel-contract.js",
@@ -195,7 +195,7 @@ def package_mcel_runtime(
 
 
 _MCEL_RUNTIME_WRAPPER = r'''
-  const mcelRuntimeVersion = "mcel-runtime.v0.1.4";
+  const mcelRuntimeVersion = "mcel-runtime.v0.1.6";
   const runtimeEntry = "runtime.js";
   const runtimeDefaults = Object.freeze({
     mode: "site",
@@ -208,6 +208,7 @@ _MCEL_RUNTIME_WRAPPER = r'''
   });
 
   let mcelRuntimeLastReport = null;
+  let mcelRuntimeScript = null;
 
   function mcelRuntimeModule(name) {
     return window[name] || null;
@@ -357,15 +358,87 @@ _MCEL_RUNTIME_WRAPPER = r'''
     return chromeLaw?.normalizeChrome ? chromeLaw.normalizeChrome(chrome || runtimeDefaults.chrome) : runtimeDefaults.chrome;
   }
 
-  function mcelRuntimeOptions(options = {}) {
-    const mode = mcelRuntimeNormalizeMode(options.mode);
+  function mcelRuntimeReadQueryValue(names = []) {
+    const location = window.location || null;
+    const chunks = [location?.search || "", location?.hash || ""].filter(Boolean);
+    for (const chunk of chunks) {
+      const normalizedChunk = String(chunk || "").replace(/^[?#]/, "");
+      if (!normalizedChunk) continue;
+      try {
+        const params = new URLSearchParams(normalizedChunk);
+        for (const name of names) {
+          if (params.has(name)) {
+            const value = params.get(name);
+            if (value !== null && String(value).trim()) return String(value).trim();
+          }
+        }
+      } catch (_error) {
+        for (const name of names) {
+          const pattern = new RegExp(`(?:^|[&#?])${name}=([^&#]+)`, "i");
+          const match = String(chunk || "").match(pattern);
+          if (match?.[1]) return decodeURIComponent(match[1].replace(/\+/g, " ")).trim();
+        }
+      }
+    }
+    return "";
+  }
+
+  function mcelRuntimeReadQueryBoolean(names = []) {
+    const raw = mcelRuntimeReadQueryValue(names);
+    if (!raw) return null;
+    if (/^(1|true|yes|on)$/i.test(raw)) return true;
+    if (/^(0|false|no|off)$/i.test(raw)) return false;
+    return null;
+  }
+
+  function mcelRuntimeScriptDatasetOptions() {
+    const script = window.document?.currentScript || mcelRuntimeScript || null;
+    const dataset = script?.dataset || {};
+    const options = {};
+    if (dataset.mcelRuntimeMode) options.mode = dataset.mcelRuntimeMode;
+    if (dataset.mcelRuntimeTheme) options.theme = dataset.mcelRuntimeTheme;
+    if (dataset.mcelRuntimeChrome) options.chrome = dataset.mcelRuntimeChrome;
+    if (dataset.mcelRuntimeApplySiteChrome === "false") options.applySiteChrome = false;
+    if (dataset.mcelRuntimeApplyChrome === "true") options.applyChrome = true;
+    if (dataset.mcelRuntimeRenderOptInOnly === "false") options.renderOptInOnly = false;
+    return options;
+  }
+
+  function mcelRuntimeQueryOptions() {
+    const options = {};
+    const mode = mcelRuntimeReadQueryValue(["mcel-mode", "mcel-runtime-mode", "mcelRuntimeMode"]);
+    const theme = mcelRuntimeReadQueryValue(["mcel-theme", "mcel-runtime-theme", "mcelRuntimeTheme", "theme"]);
+    const chrome = mcelRuntimeReadQueryValue(["mcel-chrome", "mcel-runtime-chrome", "mcelRuntimeChrome", "chrome"]);
+    const siteChrome = mcelRuntimeReadQueryBoolean(["mcel-site-chrome", "mcel-runtime-site-chrome", "mcelSiteChrome"]);
+    const render = mcelRuntimeReadQueryBoolean(["mcel-render-opt-in-only", "mcelRuntimeRenderOptInOnly"]);
+    if (mode) options.mode = mode;
+    if (theme) options.theme = theme;
+    if (chrome) options.chrome = chrome;
+    if (siteChrome !== null) options.applySiteChrome = siteChrome;
+    if (render !== null) options.renderOptInOnly = render;
+    return options;
+  }
+
+  function mcelRuntimeAmbientOptions() {
     return {
+      ...mcelRuntimeScriptDatasetOptions(),
+      ...mcelRuntimeQueryOptions()
+    };
+  }
+
+  function mcelRuntimeOptions(options = {}) {
+    const merged = {
       ...runtimeDefaults,
-      ...options,
+      ...mcelRuntimeAmbientOptions(),
+      ...options
+    };
+    const mode = mcelRuntimeNormalizeMode(merged.mode);
+    return {
+      ...merged,
       mode,
-      reason: options.reason || "mcel-runtime",
-      theme: mcelRuntimeNormalizeTheme(options.theme),
-      chrome: mcelRuntimeNormalizeChrome(options.chrome)
+      reason: merged.reason || "mcel-runtime",
+      theme: mcelRuntimeNormalizeTheme(merged.theme),
+      chrome: mcelRuntimeNormalizeChrome(merged.chrome)
     };
   }
 
@@ -436,8 +509,8 @@ _MCEL_RUNTIME_WRAPPER = r'''
 
   function mcelRuntimeDebugRequested(doc) {
     const targetDoc = doc || window.document || null;
-    const currentScript = targetDoc?.currentScript || window.document?.currentScript || null;
-    if (currentScript?.dataset?.mcelRuntimeDebug === "true") return true;
+    const script = targetDoc?.currentScript || window.document?.currentScript || mcelRuntimeScript || null;
+    if (script?.dataset?.mcelRuntimeDebug === "true") return true;
     const location = window.location;
     return Boolean(location && /(?:\?|&|#)mcel(?:-runtime)?-debug(?:=1|=true)?(?:&|$)/i.test(`${location.search || ""}${location.hash || ""}`));
   }
@@ -465,16 +538,138 @@ _MCEL_RUNTIME_WRAPPER = r'''
   --mcel-runtime-radius-lg: 1.35rem;
   --mcel-runtime-radius-md: .9rem;
   --mcel-runtime-focus-ring: 0 0 0 .22rem rgba(56, 189, 248, .32);
+  --mcel-runtime-body-bg:
+    radial-gradient(circle at 16% 4%, rgba(56, 189, 248, .18), transparent 34rem),
+    radial-gradient(circle at 90% 12%, rgba(245, 158, 11, .16), transparent 32rem),
+    radial-gradient(circle at 70% 72%, rgba(99, 102, 241, .16), transparent 38rem),
+    linear-gradient(180deg, #07101f 0%, #08111f 46%, #040813 100%);
+  --mcel-runtime-grid-opacity: 1;
+  --mcel-runtime-hero-badge: "MCEL powered";
+}
+
+:root[data-mcel-runtime-theme="theme-saas"] {
+  --mcel-runtime-accent: #6366f1;
+  --mcel-runtime-accent-strong: #06b6d4;
+  --mcel-runtime-accent-warm: #f97316;
+  --mcel-runtime-ink: #eef2ff;
+  --mcel-runtime-muted: #c7d2fe;
+  --mcel-runtime-bg: #090b1f;
+  --mcel-runtime-panel: rgba(30, 41, 86, .72);
+  --mcel-runtime-panel-strong: rgba(17, 24, 64, .94);
+  --mcel-runtime-body-bg:
+    radial-gradient(circle at 22% 8%, rgba(99, 102, 241, .28), transparent 34rem),
+    radial-gradient(circle at 82% 18%, rgba(6, 182, 212, .24), transparent 30rem),
+    radial-gradient(circle at 74% 76%, rgba(249, 115, 22, .15), transparent 38rem),
+    linear-gradient(180deg, #07091c 0%, #111837 52%, #060918 100%);
+}
+
+:root[data-mcel-runtime-theme="theme-local"] {
+  --mcel-runtime-accent: #22c55e;
+  --mcel-runtime-accent-strong: #f59e0b;
+  --mcel-runtime-accent-warm: #fb923c;
+  --mcel-runtime-ink: #fff7ed;
+  --mcel-runtime-muted: #fed7aa;
+  --mcel-runtime-bg: #1c1208;
+  --mcel-runtime-panel: rgba(67, 40, 18, .72);
+  --mcel-runtime-panel-strong: rgba(43, 27, 13, .94);
+  --mcel-runtime-body-bg:
+    radial-gradient(circle at 12% 8%, rgba(34, 197, 94, .18), transparent 30rem),
+    radial-gradient(circle at 86% 16%, rgba(245, 158, 11, .28), transparent 32rem),
+    linear-gradient(180deg, #1a130a 0%, #25160a 48%, #120b05 100%);
+}
+
+:root[data-mcel-runtime-theme="theme-editorial"] {
+  color-scheme: light;
+  --mcel-runtime-accent: #2563eb;
+  --mcel-runtime-accent-strong: #111827;
+  --mcel-runtime-accent-warm: #b45309;
+  --mcel-runtime-ink: #111827;
+  --mcel-runtime-muted: #475569;
+  --mcel-runtime-faint: #64748b;
+  --mcel-runtime-bg: #f8fafc;
+  --mcel-runtime-panel: rgba(255, 255, 255, .88);
+  --mcel-runtime-panel-strong: rgba(255, 255, 255, .98);
+  --mcel-runtime-panel-soft: rgba(241, 245, 249, .92);
+  --mcel-runtime-surface-ring: rgba(15, 23, 42, .12);
+  --mcel-runtime-surface-ring-strong: rgba(37, 99, 235, .26);
+  --mcel-runtime-surface-shadow: 0 20px 70px rgba(15, 23, 42, .12);
+  --mcel-runtime-body-bg:
+    radial-gradient(circle at 12% 6%, rgba(37, 99, 235, .11), transparent 28rem),
+    linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
+  --mcel-runtime-grid-opacity: .35;
+}
+
+:root[data-mcel-runtime-theme="theme-luxury"] {
+  --mcel-runtime-accent: #f5d06f;
+  --mcel-runtime-accent-strong: #fef3c7;
+  --mcel-runtime-accent-warm: #a78bfa;
+  --mcel-runtime-ink: #fff8e7;
+  --mcel-runtime-muted: #d7c7a7;
+  --mcel-runtime-bg: #080509;
+  --mcel-runtime-panel: rgba(28, 22, 36, .78);
+  --mcel-runtime-panel-strong: rgba(16, 11, 22, .96);
+  --mcel-runtime-body-bg:
+    radial-gradient(circle at 86% 10%, rgba(245, 208, 111, .2), transparent 28rem),
+    radial-gradient(circle at 18% 18%, rgba(167, 139, 250, .16), transparent 34rem),
+    linear-gradient(180deg, #09050b 0%, #15101d 48%, #050307 100%);
+}
+
+:root[data-mcel-runtime-theme="theme-civic"] {
+  --mcel-runtime-accent: #38bdf8;
+  --mcel-runtime-accent-strong: #f8fafc;
+  --mcel-runtime-accent-warm: #ef4444;
+  --mcel-runtime-ink: #f8fafc;
+  --mcel-runtime-muted: #cbd5e1;
+  --mcel-runtime-bg: #061526;
+  --mcel-runtime-panel: rgba(15, 31, 54, .78);
+  --mcel-runtime-panel-strong: rgba(8, 24, 44, .96);
+  --mcel-runtime-body-bg:
+    radial-gradient(circle at 80% 12%, rgba(239, 68, 68, .13), transparent 30rem),
+    radial-gradient(circle at 16% 12%, rgba(56, 189, 248, .2), transparent 34rem),
+    linear-gradient(180deg, #07182b 0%, #0b1f36 50%, #06111f 100%);
+}
+
+:root[data-mcel-runtime-theme="theme-accessible"] {
+  color-scheme: dark;
+  --mcel-runtime-accent: #fde047;
+  --mcel-runtime-accent-strong: #ffffff;
+  --mcel-runtime-accent-warm: #38bdf8;
+  --mcel-runtime-ink: #ffffff;
+  --mcel-runtime-muted: #f8fafc;
+  --mcel-runtime-faint: #e2e8f0;
+  --mcel-runtime-bg: #000000;
+  --mcel-runtime-bg-2: #050505;
+  --mcel-runtime-panel: rgba(0, 0, 0, .92);
+  --mcel-runtime-panel-strong: rgba(0, 0, 0, .98);
+  --mcel-runtime-panel-soft: rgba(17, 24, 39, .94);
+  --mcel-runtime-surface-ring: rgba(253, 224, 71, .8);
+  --mcel-runtime-surface-ring-strong: rgba(255, 255, 255, .92);
+  --mcel-runtime-surface-shadow: 0 0 0 2px rgba(253, 224, 71, .45);
+  --mcel-runtime-glow: 0 0 0 2px rgba(253, 224, 71, .8);
+  --mcel-runtime-body-bg: #000000;
+  --mcel-runtime-grid-opacity: 0;
+}
+
+:root[data-mcel-runtime-theme="theme-debug"] {
+  --mcel-runtime-accent: #22c55e;
+  --mcel-runtime-accent-strong: #f43f5e;
+  --mcel-runtime-accent-warm: #eab308;
+  --mcel-runtime-ink: #d9f99d;
+  --mcel-runtime-muted: #86efac;
+  --mcel-runtime-panel: rgba(2, 6, 23, .84);
+  --mcel-runtime-panel-strong: rgba(2, 6, 23, .98);
+  --mcel-runtime-body-bg:
+    linear-gradient(rgba(34, 197, 94, .08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(34, 197, 94, .08) 1px, transparent 1px),
+    #020617;
+  --mcel-runtime-grid-opacity: .9;
+  --mcel-runtime-hero-badge: "MCEL debug";
 }
 
 body.mcel-powered-site {
   min-height: 100vh;
   color: var(--mcel-runtime-ink);
-  background:
-    radial-gradient(circle at 16% 4%, rgba(56, 189, 248, .18), transparent 34rem),
-    radial-gradient(circle at 90% 12%, rgba(245, 158, 11, .16), transparent 32rem),
-    radial-gradient(circle at 70% 72%, rgba(99, 102, 241, .16), transparent 38rem),
-    linear-gradient(180deg, #07101f 0%, #08111f 46%, #040813 100%);
+  background: var(--mcel-runtime-body-bg);
   letter-spacing: -.01em;
 }
 
@@ -522,7 +717,7 @@ body.mcel-powered-site :where(section[data-mc-kind="hero"][data-mcel-runtime-hyd
 }
 
 body.mcel-powered-site :where(section[data-mc-kind="hero"][data-mcel-runtime-hydrated="true"], .mc-hero[data-mcel-runtime-hydrated="true"])::before {
-  content: "MCEL powered";
+  content: var(--mcel-runtime-hero-badge);
   position: absolute;
   top: clamp(1rem, 2.4vw, 1.65rem);
   right: max(1.5rem, calc((100vw - 1120px) / 2));
@@ -658,6 +853,63 @@ body.mcel-powered-site [data-mcel-runtime-hydrated="true"][data-mc-component-kin
 body.mcel-powered-site [data-mcel-runtime-hydrated="true"][data-mc-render="island"] {
   content-visibility: auto;
   contain-intrinsic-size: auto 320px;
+}
+
+/* Query-selectable production chromes. These stay section-scoped to avoid re-breaking the page wrapper. */
+:root[data-mcel-runtime-chrome="chrome-spotlight"] body.mcel-powered-site :where(section[data-mc-kind="hero"][data-mcel-runtime-hydrated="true"], .mc-hero[data-mcel-runtime-hydrated="true"]) {
+  min-height: clamp(34rem, 72vh, 48rem);
+  isolation: isolate;
+}
+
+:root[data-mcel-runtime-chrome="chrome-spotlight"] body.mcel-powered-site :where(section[data-mc-kind="proof"][data-mcel-runtime-hydrated="true"]) {
+  transform: translateY(-2.25rem);
+  border-radius: var(--mcel-runtime-radius-xl);
+  margin-inline: auto;
+  max-width: min(1120px, calc(100vw - 2rem));
+}
+
+:root[data-mcel-runtime-chrome="chrome-cluster-grid"] body.mcel-powered-site :where(.mc-feature-grid[data-mcel-runtime-hydrated="true"], section[data-mc-kind="work"][data-mcel-runtime-hydrated="true"], section[data-mc-kind="article"][data-mcel-runtime-hydrated="true"]) {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(18rem, 100%), 1fr));
+  gap: clamp(1rem, 2vw, 1.45rem);
+  align-items: stretch;
+}
+
+:root[data-mcel-runtime-chrome="chrome-editorial-flow"] body.mcel-powered-site {
+  font-family: Georgia, "Times New Roman", serif;
+  letter-spacing: 0;
+}
+
+:root[data-mcel-runtime-chrome="chrome-editorial-flow"] body.mcel-powered-site :where(section[data-mcel-runtime-hydrated="true"], footer[data-mcel-runtime-hydrated="true"]) {
+  max-width: min(920px, calc(100vw - 2rem));
+  margin-inline: auto;
+}
+
+:root[data-mcel-runtime-chrome="chrome-journey"] body.mcel-powered-site :where(#workflow.mc-feature-grid[data-mcel-runtime-hydrated="true"]) {
+  counter-reset: mcel-journey;
+}
+
+:root[data-mcel-runtime-chrome="chrome-journey"] body.mcel-powered-site :where(#workflow.mc-feature-grid[data-mcel-runtime-hydrated="true"] > .mc-feature)::before {
+  counter-increment: mcel-journey;
+  content: counter(mcel-journey, decimal-leading-zero);
+  display: inline-grid;
+  place-items: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  margin-bottom: .9rem;
+  border-radius: 999px;
+  color: #020617;
+  background: var(--mcel-runtime-accent-strong);
+  font: 900 .72rem/1 ui-sans-serif, system-ui, sans-serif;
+}
+
+:root[data-mcel-runtime-chrome="chrome-compact-disclosure"] body.mcel-powered-site :where(.mc-feature, section[data-mc-kind="proof"][data-mcel-runtime-hydrated="true"] > *, .mc-blog-widget__items) {
+  min-height: 0;
+  padding-block: clamp(.85rem, 1.4vw, 1.15rem);
+}
+
+:root[data-mcel-runtime-chrome="chrome-compact-disclosure"] body.mcel-powered-site :where(section[data-mcel-runtime-hydrated="true"]) {
+  padding-block: clamp(2rem, 4vw, 4rem);
 }
 
 html[data-mcel-runtime-debug="true"] body.mcel-powered-site::after {
@@ -1191,8 +1443,8 @@ html[data-mcel-runtime-debug="true"] body.mcel-powered-site::after {
     }
   }
 
-  const currentScript = window.document?.currentScript || null;
-  const autoHydrate = currentScript?.dataset?.mcelRuntimeAuto !== "false";
+  mcelRuntimeScript = window.document?.currentScript || null;
+  const autoHydrate = mcelRuntimeScript?.dataset?.mcelRuntimeAuto !== "false";
   if (autoHydrate && window.document) {
     if (window.document.readyState === "loading") {
       window.document.addEventListener("DOMContentLoaded", mcelRuntimeAutoHydrate, {once: true});

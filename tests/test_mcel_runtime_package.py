@@ -21,7 +21,7 @@ def test_mcel_runtime_packager_builds_single_frontend_runtime_without_lab_ui(tmp
     text = result.output_path.read_text(encoding="utf-8")
 
     assert result.size_bytes == len(text.encode("utf-8"))
-    assert result.version == "mcel-runtime.v0.1.5"
+    assert result.version == "mcel-runtime.v0.1.6"
     assert result.helper_functions == ("isolatedSiteCss",)
     assert MCEL_LAB_HELPER_FILE in result.source_files
     for source_file in MCEL_RUNTIME_MODULES:
@@ -38,6 +38,12 @@ def test_mcel_runtime_packager_builds_single_frontend_runtime_without_lab_ui(tmp
     assert "detectSources: mcelRuntimeDetectSources" in text
     assert "function mcelRuntimeSourceIslands" in text
     assert "function mcelRuntimeSourceElements" in text
+    assert "function mcelRuntimeQueryOptions" in text
+    assert "function mcelRuntimeReadQueryValue" in text
+    assert '"mcel-theme"' in text
+    assert '"mcel-chrome"' in text
+    assert '"theme"' in text
+    assert '"chrome"' in text
     assert "data-mcel-runtime-hydrated" in text
     assert "data-mcel-runtime-powered" in text
     assert "data-mcel-runtime-site-style" in text
@@ -82,9 +88,15 @@ def test_mcel_runtime_hydration_powers_site_mode_without_lab_replacing_everythin
     assert 'body.classList.toggle("mcel-powered-site", sourceCount > 0 && mode !== "observe")' in text
     assert 'runtime.powerSite(window.document, {reason: "mcel-runtime:auto-hydrate"})' in text
     assert 'content: "MCEL " attr(data-mcel-runtime-version)' in text
-    assert 'content: "MCEL powered"' in text
+    assert '--mcel-runtime-hero-badge: "MCEL powered"' in text
     assert 'element.dataset.mcelRuntimeChromeApplied = meta.mode === "render" ? "render" : "site"' in text
     assert 'body.mcel-powered-site :where(section[data-mc-kind="hero"][data-mcel-runtime-hydrated="true"]' in text
+    assert ':root[data-mcel-runtime-theme="theme-saas"]' in text
+    assert ':root[data-mcel-runtime-theme="theme-accessible"]' in text
+    assert ':root[data-mcel-runtime-chrome="chrome-spotlight"]' in text
+    assert ':root[data-mcel-runtime-chrome="chrome-cluster-grid"]' in text
+    assert "mcelRuntimeAmbientOptions()" in text
+    assert 'mcelRuntimeScript = window.document?.currentScript || null' in text
 
     hydrate_body = text.split("function mcelRuntimeHydrate", 1)[1].split("function mcelRuntimePowerSite", 1)[0]
     assert "mcelRuntimeEnsureStyle(doc)" in hydrate_body

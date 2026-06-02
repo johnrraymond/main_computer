@@ -1,8 +1,8 @@
 {
   "entrypoint": "runtime.js",
-  "packaged_at": "2026-06-02T02:36:52+00:00",
+  "packaged_at": "2026-06-02T23:46:25+00:00",
   "runtime_id": "mcel",
-  "sha256": "f1b1660cc52ac461f604e8a77aa67ad3ed76dd2dc7401ce062b35810d441e3fc",
+  "sha256": "21ef4e7108a1ad367637a673ad767cbd850fa52c13edca1aa16b1450369b5a51",
   "site_id": "hub-site",
   "source": "deploy/local-platform/site-runtimes/mcel-runtime.js",
   "source_exists": true
