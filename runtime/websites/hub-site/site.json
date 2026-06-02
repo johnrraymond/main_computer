@@ -19,7 +19,7 @@
     "cms": {
       "database_connection": "content",
       "local_connection": {
-        "confirmed_at": "2026-05-23T19:21:33+00:00",
+        "confirmed_at": "2026-06-02T00:24:33+00:00",
         "database_volume": "hub-site_directus_database_20260519170018",
         "external": false,
         "internal_url": "http://hub-site-directus:8055",
@@ -32,26 +32,25 @@
         "uploads_volume": "hub-site_directus_uploads_20260519170018"
       },
       "permissions": {
-        "last_verified_at": "2026-05-23T19:22:03+00:00",
         "public_read_files": true,
         "public_read_published_posts": true,
-        "status": "ready"
+        "status": "pending_deploy"
       },
-      "permissions_status": "ready",
+      "permissions_status": "pending_deploy",
       "provider": "directus",
       "required": true,
       "runtime": "deployed",
       "schema": {
         "collection": "posts",
-        "status": "ready"
+        "status": "pending_deploy"
       },
-      "schema_status": "ready",
+      "schema_status": "pending_deploy",
       "service": {
         "admin_secret_ref": "directus_admin_token",
         "image": "directus/directus:11.5.1",
         "internal_url": "http://hub-site-directus:8055",
         "kind": "directus",
-        "last_verified_at": "2026-05-23T19:22:02+00:00",
+        "last_verified_at": "2026-06-02T00:59:23+00:00",
         "ping_status": "ready",
         "public_url": "http://127.0.0.1:28200",
         "status": "service_reachable"
@@ -61,7 +60,7 @@
         "database_volume": "hub-site_directus_database_20260519170018",
         "uploads_volume": "hub-site_directus_uploads_20260519170018"
       },
-      "uploads_status": "ready"
+      "uploads_status": "pending_deploy"
     },
     "databases": {
       "connections": {
@@ -78,124 +77,40 @@
   },
   "blog_install": {
     "base_deploy_policy": "sqlite_source_seeded_once; deploy publishes unchanged artifacts only once",
-    "blog_source_files": [
-      "src/content/runtime-config.js",
-      "src/content/directus-client.js",
-      "src/blog/list-posts.js",
-      "src/blog/get-post-by-slug.js"
-    ],
-    "directus_bootstrap": {
-      "ok": true,
-      "results": [
-        {
-          "anonymous_policy": "abf8a154-5b1c-4a46-ac9c-7300570f4f17",
-          "collection": "posts",
-          "ok": true,
-          "provider": "directus",
-          "public_url": "http://127.0.0.1:28200",
-          "service": "hub-site-directus",
-          "steps": [
-            {
-              "action": "reused",
-              "collection": "posts",
-              "message": "posts collection exists",
-              "ok": true,
-              "step": "schema.collection"
-            },
-            {
-              "collection": "posts",
-              "created": [],
-              "message": "ensured posts fields",
-              "ok": true,
-              "reused": [
-                "status",
-                "slug",
-                "title",
-                "excerpt",
-                "body",
-                "published_on",
-                "read_time_minutes",
-                "is_legacy",
-                "featured_image",
-                "published_at"
-              ],
-              "step": "schema.fields"
-            },
-            {
-              "anonymous_policy": "abf8a154-5b1c-4a46-ac9c-7300570f4f17",
-              "message": "using Directus anonymous public policy abf8a154-5b1c-4a46-ac9c-7300570f4f17; listed Directus access rows from /access; updated permission posts:read; updated permission directus_files:read",
-              "ok": true,
-              "step": "permissions.public_read"
-            },
-            {
-              "message": "anonymous posts read succeeded",
-              "ok": true,
-              "post_slugs": [
-                "Making first post",
-                "goodone",
-                "item 4"
-              ],
-              "step": "verify.anonymous_posts"
-            }
-          ]
-        }
-      ],
-      "updated_at": "2026-05-23T19:22:03+00:00"
-    },
     "feature": "blog",
     "install_order": [
       "database",
       "cms",
       "blog"
     ],
-    "last_runtime_verification": {
-      "draft_protected": true,
-      "ok": true,
-      "published_read_ok": true,
-      "route_ok": true,
-      "updated_at": "2026-05-23T19:22:03+00:00"
-    },
     "layers": {
-      "blog": {
-        "action": "pending_deploy",
-        "status": "ready",
-        "updated_at": "2026-05-23T19:22:03+00:00",
-        "verification": {
-          "draft_protected": true,
-          "published_read_ok": true,
-          "route_ok": true
-        }
-      },
       "cms": {
         "action": "configured",
-        "status": "ready",
-        "updated_at": "2026-05-23T19:22:03+00:00"
+        "status": "configured",
+        "updated_at": "2026-06-02T00:24:33+00:00"
       },
       "database": {
         "action": "reused",
         "status": "reused",
-        "updated_at": "2026-05-23T19:21:33+00:00"
+        "updated_at": "2026-06-02T00:24:33+00:00"
       }
     },
-    "runtime_config_written_at": "2026-05-23T19:22:03+00:00",
     "runtime_dependency_policy": "deploy_reuses_existing_dependencies_when_safe",
     "runtime_preparation": {
       "directus_service": {
         "internal_url": "http://hub-site-directus:8055",
-        "permissions_status": "ready",
         "provider": "directus",
         "public_url": "http://127.0.0.1:28200",
         "requested": true,
-        "schema_status": "ready",
         "service": "hub-site-directus",
         "status": "ready",
-        "updated_at": "2026-05-23T19:22:03+00:00",
+        "updated_at": "2026-06-02T00:59:23+00:00",
         "verified": true
       },
       "sqlite_database": {
         "source": "runtime/websites/hub-site/data/content.sqlite",
         "status": "ready",
-        "updated_at": "2026-05-23T19:21:33+00:00",
+        "updated_at": "2026-06-02T00:24:33+00:00",
         "verified": true
       }
     },
@@ -212,15 +127,15 @@
     "post_route_prefix": "/blog/",
     "route": "/blog",
     "status": "ready",
-    "updated_at": "2026-05-23T19:21:55+00:00"
+    "updated_at": "2026-06-02T00:59:19+00:00"
   },
   "builder": {
     "engine": "grapesjs",
     "entry_html": "index.html",
     "page_runtime": {
       "entry": "runtime.js",
-      "id": "default",
-      "source": "deploy/local-platform/site-runtimes/default-runtime.js"
+      "id": "mcel",
+      "source": "deploy/local-platform/site-runtimes/mcel-runtime.js"
     },
     "script": "script.js",
     "state_file": "builder.json",
@@ -235,36 +150,14 @@
   "features": {
     "blog": {
       "cms": "directus",
-      "content": {
-        "collection": "posts",
-        "draft_safe": true,
-        "provider": "directus",
-        "public_fields": [
-          "id",
-          "status",
-          "slug",
-          "title",
-          "excerpt",
-          "body",
-          "published_on",
-          "read_time_minutes",
-          "is_legacy"
-        ],
-        "published_filter": {
-          "status": "published"
-        }
-      },
-      "content_runtime": "deployed",
       "database": "sqlite",
-      "enabled": true,
-      "hydrated_at": "2026-05-23T19:22:03+00:00",
+      "enabled": false,
       "install_order": [
         "database",
         "cms",
         "blog"
       ],
-      "install_status": "ready",
-      "last_verified_at": "2026-05-23T19:22:03+00:00",
+      "install_status": "pending_deploy",
       "page": {
         "managed": true,
         "mode": "list_and_detail",
@@ -272,20 +165,14 @@
         "post_route_prefix": "/blog/",
         "route": "/blog",
         "status": "ready",
-        "updated_at": "2026-05-23T19:21:55+00:00"
+        "updated_at": "2026-06-02T00:59:19+00:00"
       },
       "routes": {
         "index": "/blog",
         "post": "/blog/:slug"
       },
       "runtime_lane": "local",
-      "selected": true,
-      "source_files": [
-        "src/content/runtime-config.js",
-        "src/content/directus-client.js",
-        "src/blog/list-posts.js",
-        "src/blog/get-post-by-slug.js"
-      ]
+      "selected": true
     }
   },
   "id": "hub-site",
@@ -296,7 +183,7 @@
     "lanes": {
       "dev": {
         "last_publish_verified": true,
-        "last_published_at": "2026-05-23T19:22:03+00:00",
+        "last_published_at": "2026-06-02T00:59:23+00:00",
         "last_published_service": "hub-dev",
         "last_published_url": "http://127.0.0.1:18082/",
         "port": 18082,
@@ -335,20 +222,11 @@
   },
   "runtime": {
     "content_runtime": "deployed",
-    "default_lane": "local"
-  },
-  "runtime_config": {
-    "content": {
-      "cms_public_url_ref": "backend.cms.service.public_url",
-      "cms_url_ref": "backend.cms.service.internal_url",
-      "collection": "posts",
-      "content_runtime": "deployed",
-      "lane": "local",
-      "provider": "directus",
-      "published_filter": {
-        "status": "published"
-      },
-      "site_id": "hub-site"
+    "default_lane": "local",
+    "page_runtime": {
+      "entry": "runtime.js",
+      "id": "mcel",
+      "sha256": "630231d6adeb1bddab66e4429b38e1c003a1ac622266b1c7e3a346036798dfa8"
     }
   },
   "schema_version": 2,
@@ -357,5 +235,5 @@
     "kind": "host_runtime_site",
     "path": "runtime/websites/hub-site"
   },
-  "updated_at": "2026-06-01T23:47:37+00:00"
+  "updated_at": "2026-06-02T00:59:23+00:00"
 }

@@ -12,6 +12,7 @@ import pytest
 import main_computer.website_project_manifest as website_project_manifest
 
 
+ROOT = Path(__file__).resolve().parents[1]
 _LOCAL_PLATFORM_ENV_PREFIX = "MAIN_COMPUTER_LOCAL_PLATFORM_"
 
 
@@ -653,6 +654,41 @@ def test_site_page_runtime_bundle_copies_default_runtime_and_injects_full_docume
     assert "WebsiteBuilderRuntime" in runtime_js
     assert metadata["runtime_id"] == "default"
     assert metadata["entrypoint"] == "runtime.js"
+
+
+def test_site_page_runtime_bundle_can_package_compiled_mcel_runtime(tmp_path: Path) -> None:
+    source_runtime = ROOT / "deploy" / "local-platform" / "site-runtimes" / "mcel-runtime.js"
+    target_runtime = tmp_path / "deploy" / "local-platform" / "site-runtimes" / "mcel-runtime.js"
+    target_runtime.parent.mkdir(parents=True, exist_ok=True)
+    target_runtime.write_text(source_runtime.read_text(encoding="utf-8"), encoding="utf-8")
+
+    list_website_projects(tmp_path)
+    save_website_project_files(
+        tmp_path,
+        "hub-site",
+        html="""<!doctype html>
+<html lang="en">
+<head>
+  <title>MCEL Runtime test</title>
+  <script src="/script.js" defer></script>
+</head>
+<body><main data-mc="hero" data-mc-flow="feature">MCEL Runtime test</main></body>
+</html>
+""",
+        builder='{"version": 2, "page_runtime": {"id": "mcel"}}\n',
+    )
+
+    site_root = tmp_path / "runtime" / "websites" / "hub-site"
+    runtime_js = (site_root / "runtime.js").read_text(encoding="utf-8")
+    metadata = json.loads((site_root / ".main-computer" / "runtime" / "page-runtime.json").read_text(encoding="utf-8"))
+
+    assert "MCELRuntime" in runtime_js
+    assert "WebsiteBuilderRuntime" in runtime_js
+    assert "function isolatedSiteCss()" in runtime_js
+    assert metadata["runtime_id"] == "mcel"
+    assert metadata["entrypoint"] == "runtime.js"
+    assert metadata["source"] == "deploy/local-platform/site-runtimes/mcel-runtime.js"
+    assert metadata["source_exists"] is True
 
 
 def test_site_runtime_bundle_copies_current_runtime_inside_site_directory(tmp_path: Path) -> None:

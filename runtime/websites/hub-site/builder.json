@@ -17,6 +17,11 @@
   "entry_html": "index.html",
   "script": "script.js",
   "stylesheet": "style.css",
-  "updated_at": "2026-05-23T19:21:55.310Z",
-  "version": 2
+  "updated_at": "2026-06-02T00:59:19.588Z",
+  "version": 2,
+  "page_runtime": {
+    "id": "mcel",
+    "entry": "runtime.js",
+    "source": "deploy/local-platform/site-runtimes/mcel-runtime.js"
+  }
 }

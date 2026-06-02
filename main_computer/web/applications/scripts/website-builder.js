@@ -95,7 +95,7 @@
 
     const websiteBuilderPageRuntimeDescriptions = {
       default: "No-op runtime.js proves selectable site runtimes ship with saved and published sites.",
-      mcel: "Reserved for the compiled MCELRuntime file once the runtime bundle lands."
+      mcel: "Compiled MCELRuntime bundle can hydrate, compile, repair, audit, and render MCEL source markup in exported sites."
     };
 
     const websiteBuilderPageRuntimeSources = {
@@ -106,7 +106,7 @@
     const websiteBuilderPageRuntimeOrder = ["default", "mcel"];
     const websiteBuilderPageRuntimeAvailability = {
       default: true,
-      mcel: false
+      mcel: true
     };
 
     const websiteBuilderBlogLayerInstallOrder = ["database", "cms", "blog"];

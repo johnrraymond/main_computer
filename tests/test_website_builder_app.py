@@ -75,6 +75,8 @@ def test_website_builder_frontend_assets_define_save_and_publish_controls() -> N
     assert "website-builder-page-runtime-status" in app
     assert 'data-website-builder-page-runtime="default"' in app
     assert "Use MCEL Runtime" in app
+    assert "Compiled MCELRuntime bundle can hydrate, compile, repair, audit, and render MCEL source markup in exported sites." in script
+    assert "mcel: true" in script
     assert "runtime.js" in script
     assert "ensureWebsiteBuilderRuntimeScript" in script
     assert "websiteBuilderPageRuntimeButtons" in bindings

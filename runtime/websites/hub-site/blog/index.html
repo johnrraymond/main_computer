@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Blog - Hub Site</title>
   <link rel="stylesheet" href="/style.css">
+  <script src="/runtime.js" defer></script>
   <script src="/script.js" defer></script>
 </head>
 <body data-mc-generated-blog-page="list_and_detail" data-mc-blog-route-mode="index">
@@ -13,7 +14,9 @@
     <section class="mc-section mc-blog-widget"
              data-mc-widget="blog-list"
              data-source-ref="blog.posts"
-             data-limit="12"
+             data-page-size="50"
+             data-search-enabled="true"
+             data-pagination-enabled="true"
              data-post-base-path="/blog/">
       <div class="mc-blog-widget__header">
         <div>
@@ -21,6 +24,22 @@
           <h1>From the blog</h1>
         </div>
       </div>
+      <form class="mc-blog-widget__controls" data-mc-blog-controls>
+        <label class="mc-blog-widget__control">
+          <span>Search</span>
+          <input type="search" name="q" autocomplete="off" data-mc-blog-search>
+        </label>
+        <label class="mc-blog-widget__control">
+          <span>Allowed Fuzz</span>
+          <input type="number" name="fuzz" min="0" max="5" step="1" value="0" data-mc-blog-fuzz>
+        </label>
+        <label class="mc-blog-widget__control">
+          <span>Results per Page</span>
+          <input type="number" name="per_page" min="1" step="1" value="50" data-mc-blog-per-page>
+        </label>
+        <button class="mc-blog-widget__apply" type="submit">Apply</button>
+      </form>
+      <p class="mc-blog-widget__summary" data-mc-blog-summary></p>
       <div class="mc-blog-widget__items" data-mc-blog-posts>
         <article class="mc-blog-widget__placeholder">
           Blog posts will appear here when Blog is configured.
