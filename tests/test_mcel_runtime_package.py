@@ -21,7 +21,7 @@ def test_mcel_runtime_packager_builds_single_frontend_runtime_without_lab_ui(tmp
     text = result.output_path.read_text(encoding="utf-8")
 
     assert result.size_bytes == len(text.encode("utf-8"))
-    assert result.version == "mcel-runtime.v0.1.2"
+    assert result.version == "mcel-runtime.v0.1.5"
     assert result.helper_functions == ("isolatedSiteCss",)
     assert MCEL_LAB_HELPER_FILE in result.source_files
     for source_file in MCEL_RUNTIME_MODULES:
@@ -33,17 +33,22 @@ def test_mcel_runtime_packager_builds_single_frontend_runtime_without_lab_ui(tmp
     assert "mountPreview" in text
     assert "renderDocument" in text
     assert "hydrate: mcelRuntimeHydrate" in text
+    assert "powerSite: mcelRuntimePowerSite" in text
+    assert "report: mcelRuntimeReport" in text
     assert "detectSources: mcelRuntimeDetectSources" in text
     assert "function mcelRuntimeSourceIslands" in text
+    assert "function mcelRuntimeSourceElements" in text
     assert "data-mcel-runtime-hydrated" in text
-    assert "data-mcel-runtime-mode" in text
-    assert "data-mcel-runtime-style" in text
+    assert "data-mcel-runtime-powered" in text
+    assert "data-mcel-runtime-site-style" in text
+    assert "mcel-powered-site" in text
     assert "mcel-runtime-ready" in text
-    assert "mcel-runtime-preserving" in text
-    hydrate_body = text.split("function mcelRuntimeHydrate", 1)[1].split("function mcelRuntimeDetectSources", 1)[0]
+    assert "MCEL powered" in text
+    assert 'section[data-mc-kind="hero"][data-mcel-runtime-hydrated="true"]' in text
+    assert '[data-mc-component-kind="page"]' in text
+    assert 'section[data-mc="command-row"][data-mcel-runtime-hydrated="true"]' in text
+    hydrate_body = text.split("function mcelRuntimeHydrate", 1)[1].split("function mcelRuntimePowerSite", 1)[0]
     assert "target.innerHTML = compiled.runtimeHtml" not in hydrate_body
-    assert "mcelRuntimePreserveElement(island, compiled, mode)" in hydrate_body
-    assert 'if (mode === "render")' in hydrate_body
 
     assert "initMcelLabApp" not in text
     assert "mcelLabState" not in text
@@ -62,19 +67,26 @@ def test_checked_in_mcel_runtime_asset_matches_packager_output() -> None:
     assert MCEL_RUNTIME.read_text(encoding="utf-8") == expected
 
 
-def test_mcel_runtime_hydration_defaults_to_site_mode_and_preserves_author_markup() -> None:
+def test_mcel_runtime_hydration_powers_site_mode_without_lab_replacing_everything() -> None:
     text = build_mcel_runtime_text(ROOT)
 
     assert 'reason: "no-mcel-source"' in text
     assert "mcelRuntimeMarkReady(root, emptyResult)" in text
-    assert "const islands = mcelRuntimeSourceIslands(target)" in text
-    assert 'const runtimeModeAttribute = "data-mcel-runtime"' in text
-    assert "function mcelRuntimeIslandMode" in text
-    assert "function mcelRuntimePreserveElement" in text
-    assert "mcelRuntimePreserveElement(island, compiled, mode)" in text
-    assert 'if (mode === "render")' in text
-    assert "mcelRuntimeReplaceElement(island, compiled.runtimeHtml ||" in text
-    assert "if (renderedCount > 0) mcelRuntimeEnsureStyle(doc)" in text
+    assert "const sources = mcelRuntimeSourceElements(target" in text
+    assert "mcelRuntimeEnsureSiteChrome(doc)" in text
+    assert "mcelRuntimeEnhanceElement(source, compiled" in text
+    assert "mcelRuntimeReplaceElement(source, compiled.runtimeHtml ||" in text
+    assert "mcelRuntimeShouldRender(source, opts)" in text
+    assert 'element.dataset.mcelRuntimePowered = sourceCount > 0 ? "true" : "false"' in text
     assert 'element.dataset.mcelRuntimeMode = mode' in text
-    assert 'body.classList.toggle("mcel-runtime-preserving", !changed && sourceCount > 0)' in text
-    assert "mcelRuntimeSourceIslands(root, {includeHydrated: true})" in text
+    assert 'body.classList.toggle("mcel-powered-site", sourceCount > 0 && mode !== "observe")' in text
+    assert 'runtime.powerSite(window.document, {reason: "mcel-runtime:auto-hydrate"})' in text
+    assert 'content: "MCEL " attr(data-mcel-runtime-version)' in text
+    assert 'content: "MCEL powered"' in text
+    assert 'element.dataset.mcelRuntimeChromeApplied = meta.mode === "render" ? "render" : "site"' in text
+    assert 'body.mcel-powered-site :where(section[data-mc-kind="hero"][data-mcel-runtime-hydrated="true"]' in text
+
+    hydrate_body = text.split("function mcelRuntimeHydrate", 1)[1].split("function mcelRuntimePowerSite", 1)[0]
+    assert "mcelRuntimeEnsureStyle(doc)" in hydrate_body
+    assert "renderThisSource" in hydrate_body
+    assert 'mode: "render"' in hydrate_body
