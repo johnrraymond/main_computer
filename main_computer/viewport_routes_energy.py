@@ -146,6 +146,144 @@ class ViewportEnergyRoutesMixin:
             self.server.signal("api-worker-hub-health-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
+    def _worker_multisession_key_cache_path(self) -> Path:
+        return self.server.debug_root / "worker_multisession_keys.json"
+
+    def _normalize_worker_wallet_address(self, value: Any) -> str:
+        address = str(value or "").strip().lower()
+        if not re.fullmatch(r"0x[0-9a-f]{40}", address):
+            raise ValueError("wallet_address must be a valid 0x address.")
+        return address
+
+    def _load_worker_multisession_key_cache(self) -> dict[str, Any]:
+        path = self._worker_multisession_key_cache_path()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        keys = data.get("keys")
+        if not isinstance(keys, dict):
+            keys = {}
+        data["keys"] = keys
+        data.setdefault("version", "main-computer-worker-multisession-key-cache-v1")
+        return data
+
+    def _save_worker_multisession_key_cache(self, data: dict[str, Any]) -> None:
+        path = self._worker_multisession_key_cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+    def _normalize_worker_multisession_key_record(
+        self,
+        key: dict[str, Any],
+        *,
+        hub_url: str = "",
+        fallback_wallet_address: str = "",
+    ) -> dict[str, Any]:
+        key_id = str(key.get("id") or "").strip()
+        if not key_id:
+            raise ValueError("multi-session key id is required.")
+        wallet_address = self._normalize_worker_wallet_address(key.get("wallet_address") or fallback_wallet_address)
+        return {
+            "id": key_id,
+            "status": str(key.get("status") or "active"),
+            "created_at": str(key.get("created_at") or key.get("createdAt") or ""),
+            "revoked_at": str(key.get("revoked_at") or key.get("revokedAt") or ""),
+            "wallet_address": wallet_address,
+            "chain_id": str(key.get("chain_id") or key.get("chainId") or ""),
+            "request_id": str(key.get("request_id") or key.get("requestId") or ""),
+            "origin": str(key.get("origin") or ""),
+            "hub_url": self._clean_hub_url(str(key.get("hub_url") or hub_url), allow_empty=True),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def _store_worker_multisession_key_from_hub_result(
+        self,
+        *,
+        hub_url: str,
+        result: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        key = result.get("key") if isinstance(result.get("key"), dict) else None
+        if not key:
+            return None
+        verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
+        fallback_wallet = (
+            key.get("wallet_address")
+            or verification.get("wallet_address")
+            or verification.get("recovered_address")
+            or ""
+        )
+        record = self._normalize_worker_multisession_key_record(
+            key,
+            hub_url=hub_url,
+            fallback_wallet_address=str(fallback_wallet),
+        )
+        data = self._load_worker_multisession_key_cache()
+        data["keys"][record["id"]] = record
+        self._save_worker_multisession_key_cache(data)
+        return record
+
+    def _worker_multisession_keys_for_wallet(
+        self,
+        *,
+        wallet_address: str,
+        hub_url: str = "",
+    ) -> list[dict[str, Any]]:
+        normalized_wallet = self._normalize_worker_wallet_address(wallet_address)
+        normalized_hub_url = self._clean_hub_url(hub_url, allow_empty=True)
+        data = self._load_worker_multisession_key_cache()
+        records: list[dict[str, Any]] = []
+        for value in data.get("keys", {}).values():
+            if not isinstance(value, dict):
+                continue
+            try:
+                record = self._normalize_worker_multisession_key_record(
+                    value,
+                    hub_url=str(value.get("hub_url") or ""),
+                    fallback_wallet_address=str(value.get("wallet_address") or ""),
+                )
+            except ValueError:
+                continue
+            if record["wallet_address"] != normalized_wallet:
+                continue
+            if normalized_hub_url and record.get("hub_url") and record["hub_url"] != normalized_hub_url:
+                continue
+            records.append(record)
+        records.sort(key=lambda item: (item.get("status") != "active", item.get("created_at", ""), item.get("id", "")), reverse=False)
+        return records
+
+    def _handle_worker_multisession_keys_load(self) -> None:
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Worker multi-session key load is only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                return
+            body = self._read_json()
+            wallet_address = self._normalize_worker_wallet_address(body.get("wallet_address"))
+            hub_url = self._clean_hub_url(str(body.get("hub_url") or ""), allow_empty=True)
+            keys = self._worker_multisession_keys_for_wallet(wallet_address=wallet_address, hub_url=hub_url)
+            active_key = next((key for key in keys if key.get("status") == "active"), None)
+            self.server.signal(
+                "api-worker-multisession-keys-load",
+                hub_url=hub_url,
+                wallet_address=wallet_address,
+                key_count=len(keys),
+                active_key_id=(active_key or {}).get("id", ""),
+            )
+            self._send_json(
+                {
+                    "ok": True,
+                    "wallet_address": wallet_address,
+                    "hub_url": hub_url,
+                    "keys": keys,
+                    "active_key": active_key,
+                }
+            )
+        except Exception as exc:
+            self.server.signal("api-worker-multisession-keys-load-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
     def _handle_worker_multisession_key_request(self) -> None:
         try:
             if not self._worker_ui_client_is_local():
@@ -169,12 +307,17 @@ class ViewportEnergyRoutesMixin:
             }
             result = self._post_multisession_key_request_to_hub(hub_url=hub_url, payload=forwarded)
             key = result.get("key") if isinstance(result.get("key"), dict) else {}
+            local_record = self._store_worker_multisession_key_from_hub_result(hub_url=hub_url, result=result)
             self.server.signal(
                 "api-worker-multisession-key-request",
                 hub_url=hub_url,
                 key_id=key.get("id", ""),
+                local_cached=bool(local_record),
             )
-            self._send_json({"ok": True, "hub_url": hub_url, **result})
+            response = {"ok": True, "hub_url": hub_url, **result}
+            if local_record:
+                response["local_cache"] = {"stored": True, "key": local_record}
+            self._send_json(response)
         except Exception as exc:
             self.server.signal("api-worker-multisession-key-request-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)

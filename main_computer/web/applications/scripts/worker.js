@@ -250,10 +250,31 @@
       } catch {}
     }
 
+    function workerLowerAddress(value) {
+      return String(value || "").trim().toLowerCase();
+    }
+
+    function workerMultisessionKeyMatchesWallet(key, walletAddress = workerBridgeState.wallet.address) {
+      const wallet = workerLowerAddress(walletAddress);
+      if (!wallet) return false;
+      return workerLowerAddress(key?.walletAddress || key?.wallet_address || "") === wallet;
+    }
+
     function workerActiveMultisessionKey() {
       const activeId = String(workerBridgeState.activeMultisessionKeyId || "");
       if (!activeId) return null;
-      return workerBridgeState.multisessionKeys.find((key) => key.id === activeId && key.status === "active") || null;
+      return workerBridgeState.multisessionKeys.find((key) => (
+        key.id === activeId
+        && key.status === "active"
+        && workerMultisessionKeyMatchesWallet(key)
+      )) || null;
+    }
+
+    function workerClearActiveMultisessionKeyIfWalletMismatch() {
+      if (!workerBridgeState.activeMultisessionKeyId) return;
+      if (!workerActiveMultisessionKey()) {
+        workerBridgeState.activeMultisessionKeyId = "";
+      }
     }
 
     function workerRecoveryMethodsReady() {
@@ -424,6 +445,7 @@
 
     function renderWorkerBridgeReadiness() {
       loadWorkerBridgeState();
+      workerClearActiveMultisessionKeyIfWalletMismatch();
       const walletAddress = workerBridgeState.wallet.address;
       const faucetReadiness = workerComputeFaucetReadiness();
       const recoveryEmailCount = workerBridgeState.recoveryEmails.filter((item) => item.status === "active").length;
@@ -553,6 +575,56 @@
       workerBridgeState.activeMultisessionKeyId = key.status === "active" ? key.id : "";
       saveWorkerBridgeState();
       return key;
+    }
+
+    function workerMergeLoadedMultisessionKeys(result, walletAddress) {
+      const wallet = workerLowerAddress(walletAddress);
+      const rawKeys = Array.isArray(result?.keys) ? result.keys : [];
+      const loadedKeys = rawKeys
+        .map((item) => workerNormalizeIssuedMultisessionKey({key: item, verification: {wallet_address: wallet}}))
+        .filter((key) => key.id && key.status !== "revoked" && workerMultisessionKeyMatchesWallet(key, wallet));
+
+      workerBridgeState.multisessionKeys = workerBridgeState.multisessionKeys.filter((existing) => {
+        if (!existing.id) return false;
+        return !workerMultisessionKeyMatchesWallet(existing, wallet);
+      });
+
+      loadedKeys.forEach((key) => {
+        workerBridgeState.multisessionKeys.push(key);
+      });
+
+      const activeKey = loadedKeys.find((key) => key.status === "active") || null;
+      workerBridgeState.activeMultisessionKeyId = activeKey ? activeKey.id : "";
+      saveWorkerBridgeState();
+      return activeKey;
+    }
+
+    async function workerLoadMultisessionKeysForWallet(walletAddress, reason = "wallet-connect") {
+      const wallet = workerLowerAddress(walletAddress);
+      if (!workerWalletValidAddress(wallet)) return null;
+
+      try {
+        console.info("[worker-msk] local-cache.load.start", {wallet_address: wallet, reason});
+        const result = await workerPostJson("/api/applications/worker/multisession-keys/load", {
+          wallet_address: wallet,
+          hub_url: workerSelectedHubUrl()
+        });
+        const activeKey = workerMergeLoadedMultisessionKeys(result, wallet);
+        console.info("[worker-msk] local-cache.load.done", {
+          wallet_address: wallet,
+          reason,
+          key_count: Array.isArray(result.keys) ? result.keys.length : 0,
+          active_key_id: activeKey?.id || ""
+        });
+        if (workerSaveStatus && activeKey) {
+          workerSaveStatus.textContent = `Loaded multi-session key ${activeKey.id} for ${workerShortAddress(wallet)}.`;
+        }
+        renderWorkerBridgeReadiness();
+        return activeKey;
+      } catch (error) {
+        console.warn("[worker-msk] local-cache.load.failed", {wallet_address: wallet, reason, error});
+        return null;
+      }
     }
 
     function workerWalletRecordEvent(type, detail = {}) {
@@ -823,6 +895,7 @@
         } else {
           workerSetPrimaryWalletState({connected: true, address, chainId});
           workerWalletLastAction = `Connected ${workerShortAddress(address)} on ${chainId}.`;
+          await workerLoadMultisessionKeysForWallet(address, reason);
         }
 
         workerWalletHookState = "idle";
@@ -900,6 +973,7 @@
           chainId,
           provider: context.providerInfo
         });
+        await workerLoadMultisessionKeysForWallet(address, "connect");
         renderWorkerBridgeReadiness();
       } catch (error) {
         if (workerWalletOperationIsCurrent(token)) {
@@ -1623,7 +1697,12 @@
       }
       if (workerRegistrationHub && !workerRegistrationHub.dataset.workerBound) {
         workerRegistrationHub.dataset.workerBound = "true";
-        workerRegistrationHub.addEventListener("change", saveWorkerSettings);
+        workerRegistrationHub.addEventListener("change", async () => {
+          saveWorkerSettings();
+          if (workerBridgeState.wallet.connected && workerBridgeState.wallet.address) {
+            await workerLoadMultisessionKeysForWallet(workerBridgeState.wallet.address, "hub-change");
+          }
+        });
       }
       if (workerRegisterOffer && !workerRegisterOffer.dataset.workerBound) {
         workerRegisterOffer.dataset.workerBound = "true";
@@ -1655,11 +1734,14 @@
       workerBindWalletProviderEvents();
       if (workerRefreshBridgeReadiness && !workerRefreshBridgeReadiness.dataset.workerBound) {
         workerRefreshBridgeReadiness.dataset.workerBound = "true";
-        workerRefreshBridgeReadiness.addEventListener("click", () => {
+        workerRefreshBridgeReadiness.addEventListener("click", async () => {
           loadWorkerBridgeState();
+          if (workerBridgeState.wallet.connected && workerBridgeState.wallet.address) {
+            await workerLoadMultisessionKeysForWallet(workerBridgeState.wallet.address, "manual-refresh");
+          }
           renderWorkerBridgeReadiness();
           workerRefreshFaucetRuntimeStatus();
-          if (workerSaveStatus) workerSaveStatus.textContent = "Wallet and faucet readiness refreshed from local storage and runtime status.";
+          if (workerSaveStatus) workerSaveStatus.textContent = "Wallet, key, and faucet readiness refreshed from local app storage and runtime status.";
         });
       }
       if (workerFaucetAmount) {

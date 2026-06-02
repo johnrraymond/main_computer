@@ -127,7 +127,7 @@
     "post_route_prefix": "/blog/",
     "route": "/blog",
     "status": "ready",
-    "updated_at": "2026-06-02T01:07:55+00:00"
+    "updated_at": "2026-06-02T01:15:20+00:00"
   },
   "builder": {
     "engine": "grapesjs",
@@ -165,7 +165,7 @@
         "post_route_prefix": "/blog/",
         "route": "/blog",
         "status": "ready",
-        "updated_at": "2026-06-02T01:07:55+00:00"
+        "updated_at": "2026-06-02T01:15:20+00:00"
       },
       "routes": {
         "index": "/blog",
@@ -182,10 +182,6 @@
     "dev_url": "http://127.0.0.1:18082/",
     "lanes": {
       "dev": {
-        "last_publish_verified": true,
-        "last_published_at": "2026-06-02T01:07:59+00:00",
-        "last_published_service": "hub-dev",
-        "last_published_url": "http://127.0.0.1:18082/",
         "port": 18082,
         "service": "hub-dev",
         "status_url": "http://127.0.0.1:18082/api/site/status",
@@ -235,5 +231,5 @@
     "kind": "host_runtime_site",
     "path": "runtime/websites/hub-site"
   },
-  "updated_at": "2026-06-02T01:07:59+00:00"
+  "updated_at": "2026-06-02T01:15:20+00:00"
 }

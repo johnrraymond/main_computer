@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import threading
 from pathlib import Path
@@ -136,9 +137,11 @@ def test_hub_multisession_key_endpoint_verifies_signature_and_persists_key() -> 
             hub.server_close()
 
 
-def test_worker_multisession_key_local_proxy_forwards_to_hub() -> None:
+def test_worker_multisession_key_local_proxy_forwards_to_hub_and_caches_key_by_wallet() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
+        old_cwd = Path.cwd()
+        os.chdir(root)
         hub_config = MainComputerConfig(
             workspace=root / "workspace",
             hub_root=root / "hub",
@@ -169,8 +172,28 @@ def test_worker_multisession_key_local_proxy_forwards_to_hub() -> None:
             assert data["hub_url"] == hub_url
             assert data["verification"]["recovered_address"] == _TEST_WALLET_ADDRESS  # type: ignore[index]
             assert data["key"]["id"].startswith("msk_")  # type: ignore[index]
+            assert data["key"]["wallet_address"] == _TEST_WALLET_ADDRESS  # type: ignore[index]
+            assert data["local_cache"]["stored"] is True  # type: ignore[index]
+            cache_path = root / "worker_multisession_keys.json"
+            assert cache_path.exists()
+            cache = json.loads(cache_path.read_text(encoding="utf-8"))
+            assert cache["keys"][data["key"]["id"]]["wallet_address"] == _TEST_WALLET_ADDRESS  # type: ignore[index]
+
+            loaded = _post_json(
+                f"{viewport_url}/api/applications/worker/multisession-keys/load",
+                {
+                    "hub_url": hub_url,
+                    "wallet_address": _TEST_WALLET_ADDRESS,
+                },
+            )
+
+            assert loaded["ok"] is True
+            assert loaded["wallet_address"] == _TEST_WALLET_ADDRESS
+            assert loaded["active_key"]["id"] == data["key"]["id"]  # type: ignore[index]
+            assert loaded["keys"][0]["wallet_address"] == _TEST_WALLET_ADDRESS  # type: ignore[index]
         finally:
             viewport.shutdown()
             hub.shutdown()
             viewport.server_close()
             hub.server_close()
+            os.chdir(old_cwd)
