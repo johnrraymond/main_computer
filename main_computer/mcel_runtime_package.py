@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-MCEL_RUNTIME_VERSION = "mcel-runtime.v0.1.1"
+MCEL_RUNTIME_VERSION = "mcel-runtime.v0.1.2"
 
 MCEL_RUNTIME_MODULES: tuple[str, ...] = (
     "main_computer/web/applications/scripts/mcel-contract.js",
@@ -195,7 +195,7 @@ def package_mcel_runtime(
 
 
 _MCEL_RUNTIME_WRAPPER = r'''
-  const mcelRuntimeVersion = "mcel-runtime.v0.1.1";
+  const mcelRuntimeVersion = "mcel-runtime.v0.1.2";
   const runtimeEntry = "runtime.js";
   const runtimeDefaults = Object.freeze({
     theme: "theme-machine",
@@ -250,6 +250,9 @@ _MCEL_RUNTIME_WRAPPER = r'''
 
   const runtimeStyleAttribute = "data-mcel-runtime-style";
   const runtimeHydratedAttribute = "data-mcel-runtime-hydrated";
+  const runtimeModeAttribute = "data-mcel-runtime";
+  const runtimeModeMarkerAttribute = "data-mcel-runtime-mode";
+  const runtimeSourceCountAttribute = "data-mcel-runtime-source-count";
 
   function mcelRuntimeSourceHtml(root) {
     const target = mcelRuntimeNodeRoot(root);
@@ -280,11 +283,12 @@ _MCEL_RUNTIME_WRAPPER = r'''
     return wrapper.innerHTML;
   }
 
-  function mcelRuntimeSourceIslands(root) {
+  function mcelRuntimeSourceIslands(root, options = {}) {
     const target = mcelRuntimeNodeRoot(root);
     if (!target) return [];
     const sourceSelector = mcelRuntimeSourceSelector();
     const hydratedSelector = `[${runtimeHydratedAttribute}="true"]`;
+    const includeHydrated = options.includeHydrated === true;
     const sources = [];
 
     if (mcelRuntimeElementMatches(target, sourceSelector)) sources.push(target);
@@ -292,7 +296,7 @@ _MCEL_RUNTIME_WRAPPER = r'''
 
     return sources.filter((node, index) => {
       if (!node || sources.indexOf(node) !== index) return false;
-      if (mcelRuntimeElementMatches(node, hydratedSelector) || node.closest?.(hydratedSelector)) return false;
+      if (!includeHydrated && (mcelRuntimeElementMatches(node, hydratedSelector) || node.closest?.(hydratedSelector))) return false;
 
       let parent = node.parentElement;
       while (parent && parent !== target.parentElement) {
@@ -321,6 +325,7 @@ _MCEL_RUNTIME_WRAPPER = r'''
     const html = doc?.documentElement || null;
     const changed = result.changed === true;
     const sourceCount = Number(result.sourceCount || 0);
+    const mode = result.mode || "site";
 
     [html, body].forEach((element) => {
       if (!element?.dataset) return;
@@ -328,12 +333,16 @@ _MCEL_RUNTIME_WRAPPER = r'''
       element.dataset.mcelRuntimeVersion = mcelRuntimeVersion;
       element.dataset.mcelRuntimeReady = "true";
       element.dataset.mcelRuntimeChanged = changed ? "true" : "false";
+      element.dataset.mcelRuntimeMode = mode;
       element.dataset.mcelRuntimeSourceCount = String(sourceCount);
     });
 
     if (body?.classList) {
       body.classList.add("mcel-runtime-ready");
+      body.classList.add(`mcel-runtime-${mode}-mode`);
       body.classList.toggle("mcel-runtime-active", changed);
+      body.classList.toggle("mcel-runtime-rendered", changed);
+      body.classList.toggle("mcel-runtime-preserving", !changed && sourceCount > 0);
     }
   }
 
@@ -378,6 +387,58 @@ _MCEL_RUNTIME_WRAPPER = r'''
     }
     mcelRuntimeMarkHydrated(nodes);
     return nodes;
+  }
+
+  function mcelRuntimeNormalizeMode(value, fallback = "preserve") {
+    const raw = String(value || "").trim().toLowerCase();
+    if (!raw) return fallback;
+    if (["render", "replace", "takeover", "full"].includes(raw)) return "render";
+    if (["observe", "audit"].includes(raw)) return "observe";
+    if (["enhance", "preserve", "site", "safe", "ready"].includes(raw)) return "preserve";
+    return fallback;
+  }
+
+  function mcelRuntimeIslandMode(element, options = {}) {
+    if (options.render === true) return "render";
+    const explicitOption = options.runtimeMode || options.hydrationMode || options.mode || "";
+    const optionMode = mcelRuntimeNormalizeMode(explicitOption, "");
+    if (optionMode) return optionMode;
+
+    const attrMode = mcelRuntimeNormalizeMode(
+      element?.getAttribute?.(runtimeModeAttribute) ||
+      element?.getAttribute?.("data-mc-runtime") ||
+      element?.dataset?.mcelRuntime ||
+      "",
+      ""
+    );
+    if (attrMode) return attrMode;
+
+    const renderHint = String(
+      element?.getAttribute?.("data-mc-render") ||
+      element?.getAttribute?.("data-mcel-render") ||
+      ""
+    ).trim().toLowerCase();
+    if (["runtime", "replace", "render"].includes(renderHint)) return "render";
+
+    return "preserve";
+  }
+
+  function mcelRuntimePreserveElement(element, compiled, mode = "preserve") {
+    if (!element || element.nodeType !== 1) return false;
+    const normalizedMode = mcelRuntimeNormalizeMode(mode, "preserve");
+    element.setAttribute(runtimeHydratedAttribute, "true");
+    element.setAttribute(runtimeModeMarkerAttribute, normalizedMode);
+    element.setAttribute(runtimeSourceCountAttribute, String(Number(compiled?.sourceCount || 0)));
+    element.setAttribute("data-mcel-runtime-version", mcelRuntimeVersion);
+
+    const sourceSelector = mcelRuntimeSourceSelector();
+    element.querySelectorAll?.(sourceSelector).forEach((child) => {
+      child.setAttribute(runtimeHydratedAttribute, "true");
+      child.setAttribute(runtimeModeMarkerAttribute, "inherited");
+      child.setAttribute("data-mcel-runtime-version", mcelRuntimeVersion);
+    });
+
+    return true;
   }
 
   function mcelRuntimeNormalizeTheme(theme) {
@@ -588,6 +649,7 @@ _MCEL_RUNTIME_WRAPPER = r'''
         runtime: "mcel",
         version: mcelRuntimeVersion,
         changed: false,
+        mode: "site",
         error: "No hydrate target was available."
       };
     }
@@ -599,6 +661,7 @@ _MCEL_RUNTIME_WRAPPER = r'''
         runtime: "mcel",
         version: mcelRuntimeVersion,
         changed: false,
+        mode: "site",
         sourceCount: 0,
         islandCount: 0,
         reason: "no-mcel-source"
@@ -615,28 +678,38 @@ _MCEL_RUNTIME_WRAPPER = r'''
     };
     const compiledIslands = [];
     const errors = [];
-    let changedCount = 0;
+    let renderedCount = 0;
+    let preservedCount = 0;
     let sourceCount = 0;
 
     islands.forEach((island, index) => {
+      const mode = mcelRuntimeIslandMode(island, hydrationOptions);
       const compiled = mcelRuntimeCompile(mcelRuntimeElementHtml(island), {
         ...hydrationOptions,
         reason: `${hydrationOptions.reason}:island-${index + 1}`
       });
       if (!compiled.ok) {
-        errors.push({index, error: compiled.error || "MCEL island compile failed."});
+        errors.push({index, mode, error: compiled.error || "MCEL island compile failed."});
         return;
       }
-      sourceCount += Number(compiled.sourceCount || 0);
+
+      const islandSourceCount = Number(compiled.sourceCount || 0);
+      sourceCount += islandSourceCount;
       compiledIslands.push({
         index,
-        sourceCount: Number(compiled.sourceCount || 0),
+        mode,
+        sourceCount: islandSourceCount,
         eventCount: Array.isArray(compiled.events) ? compiled.events.length : 0,
         chrome: compiled.chrome || null
       });
-      if (options.applyToDom !== false) {
+
+      if (options.applyToDom === false) return;
+
+      if (mode === "render") {
         const nodes = mcelRuntimeReplaceElement(island, compiled.runtimeHtml || "");
-        if (nodes.length) changedCount += 1;
+        if (nodes.length) renderedCount += 1;
+      } else if (mcelRuntimePreserveElement(island, compiled, mode)) {
+        preservedCount += 1;
       }
     });
 
@@ -644,27 +717,31 @@ _MCEL_RUNTIME_WRAPPER = r'''
       ok: errors.length === 0,
       runtime: "mcel",
       version: mcelRuntimeVersion,
-      changed: options.applyToDom !== false && changedCount > 0,
+      changed: renderedCount > 0,
+      mode: "site",
       sourceCount,
       islandCount: islands.length,
-      hydratedIslandCount: options.applyToDom !== false ? changedCount : 0,
+      hydratedIslandCount: options.applyToDom !== false ? renderedCount + preservedCount : 0,
+      renderedIslandCount: options.applyToDom !== false ? renderedCount : 0,
+      preservedIslandCount: options.applyToDom !== false ? preservedCount : 0,
       compiledIslands,
       errors
     };
 
-    if (result.changed) mcelRuntimeEnsureStyle(doc);
+    if (renderedCount > 0) mcelRuntimeEnsureStyle(doc);
     mcelRuntimeMarkReady(root, result);
     return result;
   }
 
   function mcelRuntimeDetectSources(root = window.document) {
-    const islands = mcelRuntimeSourceIslands(root);
+    const islands = mcelRuntimeSourceIslands(root, {includeHydrated: true});
     return {
       ok: true,
       runtime: "mcel",
       version: mcelRuntimeVersion,
       sourceCount: islands.length,
       islandCount: islands.length,
+      modes: islands.map((island) => mcelRuntimeIslandMode(island, {})),
       ready: true
     };
   }
