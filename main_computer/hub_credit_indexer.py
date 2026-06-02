@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from main_computer.hub_credit_ledger import HubCreditLedger
-from main_computer.hub_credit_models import ChainEventRef, CreditDeposit, clean_account_id, positive_int
+from main_computer.hub_credit_models import ChainEventRef, CreditDeposit, clean_account_id, normalize_address, positive_int
 
 
 HUB_CREDIT_INDEXER_PHASE = "R2A"
@@ -67,6 +67,20 @@ def _clean_payment_asset(value: Any) -> str:
     return text
 
 
+def wallet_account_id(wallet_address: Any) -> str:
+    """Return the canonical hub credit account id for an EVM wallet address.
+
+    The paid hub path must charge wallet-backed balances, not browser-invented
+    bridge-account names.  Keeping the account id equal to the normalized wallet
+    address makes the MSK -> wallet -> balance chain explicit and auditable.
+    """
+
+    text = normalize_address(str(wallet_address or ""))
+    if not _is_hex(text, chars=40):
+        raise ValueError("wallet_address must be a 20-byte 0x-prefixed hex address.")
+    return clean_account_id(text, default="")
+
+
 class HubCreditIndexer:
     """R2A manual escrow deposit importer for the internal Compute Credit ledger.
 
@@ -100,6 +114,8 @@ class HubCreditIndexer:
             "endpoints": {
                 "status": "/api/hub/v1/credits/indexer",
                 "manual_import": "/api/hub/v1/credits/deposits/import",
+                "wallet_funding_import": "/api/hub/v1/credits/wallet-funding/import",
+                "wallet_balance": "/api/hub/v1/credits/balance?wallet_address=0x...",
                 "deposits": "/api/hub/v1/credits/deposits",
                 "legacy_purchase_import": "/api/hub/v1/credits/purchases/import",
                 "legacy_purchases": "/api/hub/v1/credits/purchases",
@@ -111,10 +127,22 @@ class HubCreditIndexer:
         if not isinstance(payload, dict):
             raise ValueError("deposit import payload must be a JSON object.")
 
-        account_id_raw = _require_string(payload, "account_id")
-        account_id = clean_account_id(account_id_raw, default="")
+        account_id_raw = str(payload.get("account_id", "")).strip()
+        wallet_address_raw = str(payload.get("wallet_address") or payload.get("account_address") or "").strip()
+        payer_address_raw = str(payload.get("payer_address") or payload.get("payer") or wallet_address_raw).strip()
+
+        if account_id_raw:
+            account_id = clean_account_id(account_id_raw, default="")
+        elif wallet_address_raw:
+            account_id = wallet_account_id(wallet_address_raw)
+        else:
+            raise ValueError("account_id or wallet_address is required.")
+
         if not account_id:
-            raise ValueError("account_id is required.")
+            raise ValueError("account_id or wallet_address is required.")
+
+        if not payer_address_raw:
+            raise ValueError("payer_address or wallet_address is required.")
 
         event = ChainEventRef(
             chain_id=_require_positive_int(payload, "chain_id"),
@@ -126,13 +154,38 @@ class HubCreditIndexer:
         return CreditDeposit(
             deposit_id="",
             account_id=account_id,
-            payer_address=_require_evm_address(payload, "payer_address"),
+            payer_address=_require_evm_address({"payer_address": payer_address_raw}, "payer_address"),
             payment_asset=_clean_payment_asset(payload.get("payment_asset", "native")),
             payment_amount_base_units=_require_positive_int(payload, "payment_amount_base_units"),
             credits_granted=_require_positive_int(payload, "credits_granted"),
             chain_event=event,
             memo=str(payload.get("memo", "")).strip() or "escrow deposit receipt import",
         )
+
+    def import_wallet_funding(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Import a normalized bridge-escrow deposit as wallet-backed hub credit.
+
+        This is the narrow funding primitive needed before MSK-authenticated
+        remote AI can charge anything.  The caller supplies the wallet address
+        that owns the bridge escrow deposit; the hub derives the ledger account
+        id from that wallet and ignores any arbitrary browser account label.
+        """
+
+        if not isinstance(payload, dict):
+            raise ValueError("wallet funding payload must be a JSON object.")
+        wallet_address = normalize_address(_require_evm_address(payload, "wallet_address"))
+        forced_payload = dict(payload)
+        forced_payload["account_id"] = wallet_account_id(wallet_address)
+        forced_payload["wallet_address"] = wallet_address
+        forced_payload.setdefault("payer_address", wallet_address)
+        forced_payload.setdefault("memo", f"bridge escrow wallet funding for {wallet_address}")
+        account_id = forced_payload["account_id"]
+        result = self.import_deposit(forced_payload)
+        result["wallet_address"] = wallet_address
+        result["account_id"] = account_id
+        result["account"] = self.ledger.get_account(account_id).as_dict()
+        result["funding_model"] = "hub_credit_bridge_escrow_wallet_v1"
+        return result
 
     def import_deposit(self, payload: dict[str, Any]) -> dict[str, Any]:
         deposit = self.build_deposit(payload)

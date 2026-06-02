@@ -15,6 +15,11 @@
     const WORKER_DEV_CHAIN_ID_DECIMAL = 42424242;
     const WORKER_DEV_CHAIN_ID_HEX = "0x28757b2";
     const WORKER_FAUCET_AMOUNT_CREDITS = "1";
+    const WORKER_HUB_CREDIT_DEFAULT_AMOUNT = "1";
+    const WORKER_CREDIT_BASE_UNITS_PER_CREDIT = 1000000000000000000n;
+    const WORKER_HUB_CREDIT_BRIDGE_ESCROW_ABI = [
+      "function depositFor(address account,uint256 amountUnits,bytes32 depositId,string memo) payable returns (bool)"
+    ];
     const WORKER_DEV_CHAIN_NAME = "Main Computer Dev";
     const WORKER_DEV_CHAIN_RPC_URL = "http://127.0.0.1:18545";
     const WORKER_ETHERS_ESM_URL = "https://cdn.jsdelivr.net/npm/ethers@6.13.4/+esm";
@@ -34,6 +39,8 @@
     let workerFaucetRuntimeStatus = null;
     let workerFaucetRuntimeEndpointReachable = false;
     let workerFaucetRuntimeCheckInFlight = false;
+    let workerHubCreditFundingInFlight = false;
+    let workerHubCreditBalanceInFlight = false;
     let workerMultisessionInFlight = false;
     let workerWalletHydrationPromise = null;
     let workerWalletPageLoadHydrationAttempted = false;
@@ -56,6 +63,16 @@
           lastStatus: "Not requested",
           lastTxHash: "",
           lastResult: null,
+          lastError: "",
+          updatedAt: ""
+        },
+        walletFunding: {
+          bridgeContractAddress: "",
+          amountCredits: WORKER_HUB_CREDIT_DEFAULT_AMOUNT,
+          balance: null,
+          accountId: "",
+          lastStatus: "Not funded",
+          lastTxHash: "",
           lastError: "",
           updatedAt: ""
         }
@@ -108,6 +125,44 @@
         runtime_source: String(data.runtime_source || "")
       };
       return Object.values(result).some(Boolean) ? result : null;
+    }
+
+    function workerNormalizeHubCreditBalance(data) {
+      if (!data || typeof data !== "object") return null;
+      const account = data.account && typeof data.account === "object" ? data.account : {};
+      return {
+        wallet_address: String(data.wallet_address || ""),
+        account_id: String(data.account_id || account.account_id || ""),
+        available_credits: String(account.available_credits ?? data.available_credits ?? "0"),
+        held_credits: String(account.held_credits ?? "0"),
+        spent_credits: String(account.spent_credits ?? "0"),
+        funding_model: String(data.funding_model || ""),
+        updated_at: workerNowIso()
+      };
+    }
+
+    function workerCreditsToBaseUnits(value) {
+      const text = String(value || "").trim();
+      if (!/^\d+(\.\d{1,18})?$/.test(text)) {
+        throw new Error("Credits must be a positive decimal with up to 18 places.");
+      }
+      const [whole, fractional = ""] = text.split(".");
+      const units = (BigInt(whole) * WORKER_CREDIT_BASE_UNITS_PER_CREDIT)
+        + BigInt(fractional.padEnd(18, "0"));
+      if (units <= 0n) {
+        throw new Error("Credits must be greater than zero.");
+      }
+      return units.toString();
+    }
+
+    function workerDecimalChainId(value) {
+      const normalized = workerNormalizeChainIdHex(value);
+      if (!normalized) return 0;
+      try {
+        return Number(BigInt(normalized));
+      } catch {
+        return 0;
+      }
     }
 
     function workerFaucetResultValue(result, key) {
@@ -204,6 +259,11 @@
       const fallback = workerDefaultBridgeState();
       const state = parsed && typeof parsed === "object" ? parsed : {};
       const faucet = state.faucet && typeof state.faucet === "object" ? state.faucet : {};
+      const walletFunding = state.walletFunding && typeof state.walletFunding === "object"
+        ? state.walletFunding
+        : state.wallet_funding && typeof state.wallet_funding === "object"
+          ? state.wallet_funding
+          : {};
       const multisessionKeys = Array.isArray(state.multisessionKeys) ? state.multisessionKeys : [];
       return {
         wallet: {...fallback.wallet},
@@ -227,6 +287,16 @@
           lastResult: workerNormalizeFaucetResult(faucet.lastResult || faucet.last_result),
           lastError: String(faucet.lastError || faucet.last_error || ""),
           updatedAt: String(faucet.updatedAt || faucet.updated_at || "")
+        },
+        walletFunding: {
+          bridgeContractAddress: String(walletFunding.bridgeContractAddress || walletFunding.bridge_contract_address || ""),
+          amountCredits: String(walletFunding.amountCredits || walletFunding.amount_credits || WORKER_HUB_CREDIT_DEFAULT_AMOUNT),
+          balance: workerNormalizeHubCreditBalance(walletFunding.balance),
+          accountId: String(walletFunding.accountId || walletFunding.account_id || ""),
+          lastStatus: String(walletFunding.lastStatus || walletFunding.last_status || fallback.walletFunding.lastStatus),
+          lastTxHash: String(walletFunding.lastTxHash || walletFunding.last_tx_hash || ""),
+          lastError: String(walletFunding.lastError || walletFunding.last_error || ""),
+          updatedAt: String(walletFunding.updatedAt || walletFunding.updated_at || "")
         }
       };
     }
@@ -244,6 +314,12 @@
       if (workerFaucetAmount) {
         workerFaucetAmount.value = WORKER_FAUCET_AMOUNT_CREDITS;
         workerFaucetAmount.disabled = true;
+      }
+      if (workerHubCreditContract) {
+        workerHubCreditContract.value = workerBridgeState.walletFunding.bridgeContractAddress || "";
+      }
+      if (workerHubCreditAmount) {
+        workerHubCreditAmount.value = workerBridgeState.walletFunding.amountCredits || WORKER_HUB_CREDIT_DEFAULT_AMOUNT;
       }
     }
 
@@ -386,6 +462,95 @@
       };
     }
 
+
+    function workerComputeHubCreditFundingReadiness() {
+      loadWorkerBridgeState();
+
+      const wallet = workerBridgeState.wallet || {};
+      const address = String(wallet.address || "").trim();
+      const chainId = workerNormalizeChainIdHex(wallet.chainId);
+      const connected = Boolean(wallet.connected && address);
+      const contractAddress = String(workerHubCreditContract?.value || workerBridgeState.walletFunding.bridgeContractAddress || "").trim();
+      const amountCredits = String(workerHubCreditAmount?.value || workerBridgeState.walletFunding.amountCredits || WORKER_HUB_CREDIT_DEFAULT_AMOUNT).trim();
+
+      if (workerHubCreditFundingInFlight) {
+        return {
+          ready: false,
+          reason: "Funding bridge escrow transaction is pending.",
+          address,
+          chainId,
+          contractAddress,
+          amountCredits
+        };
+      }
+
+      if (!connected) {
+        return {
+          ready: false,
+          reason: "Connect Wallet before funding hub credit.",
+          address,
+          chainId,
+          contractAddress,
+          amountCredits
+        };
+      }
+
+      if (!workerWalletValidAddress(address)) {
+        return {
+          ready: false,
+          reason: "Connected Worker wallet address is not a valid 0x address.",
+          address,
+          chainId,
+          contractAddress,
+          amountCredits
+        };
+      }
+
+      if (chainId !== WORKER_DEV_CHAIN_ID_HEX) {
+        return {
+          ready: false,
+          reason: `Wallet is connected on ${chainId || "unknown chain"}. Switch the browser wallet to ${WORKER_DEV_CHAIN_ID_HEX}.`,
+          address,
+          chainId,
+          contractAddress,
+          amountCredits
+        };
+      }
+
+      if (!workerWalletValidAddress(contractAddress)) {
+        return {
+          ready: false,
+          reason: "Enter the deployed HubCreditBridgeEscrow contract address.",
+          address,
+          chainId,
+          contractAddress,
+          amountCredits
+        };
+      }
+
+      try {
+        workerCreditsToBaseUnits(amountCredits);
+      } catch (error) {
+        return {
+          ready: false,
+          reason: error.message || String(error),
+          address,
+          chainId,
+          contractAddress,
+          amountCredits
+        };
+      }
+
+      return {
+        ready: true,
+        reason: `Ready to fund ${workerShortAddress(address)} on the selected hub.`,
+        address,
+        chainId,
+        contractAddress,
+        amountCredits
+      };
+    }
+
     function workerFaucetStatusText(readiness) {
       if (workerFaucetInFlight) return "Sending faucet request…";
       if (workerFaucetLastError) return workerFaucetLastError;
@@ -505,6 +670,54 @@
           workerRequestFaucet.setAttribute("aria-busy", "true");
         } else {
           workerRequestFaucet.removeAttribute("aria-busy");
+        }
+      }
+
+      const hubCreditReadiness = workerComputeHubCreditFundingReadiness();
+      const hubCreditBalance = workerBridgeState.walletFunding?.balance || null;
+      if (workerHubCreditWallet) {
+        workerHubCreditWallet.textContent = hubCreditReadiness.address
+          ? `${workerShortAddress(hubCreditReadiness.address)}${hubCreditReadiness.chainId ? ` on ${hubCreditReadiness.chainId}` : ""}`
+          : "Connect wallet first";
+      }
+      if (workerHubCreditBalance) {
+        workerHubCreditBalance.textContent = hubCreditBalance
+          ? `${hubCreditBalance.available_credits} available / ${hubCreditBalance.held_credits} held / ${hubCreditBalance.spent_credits} spent`
+          : "Unknown";
+      }
+      if (workerHubCreditStatus) {
+        if (workerHubCreditFundingInFlight) {
+          workerHubCreditStatus.textContent = "Funding bridge escrow and importing hub credit…";
+        } else if (workerHubCreditBalanceInFlight) {
+          workerHubCreditStatus.textContent = "Checking hub wallet balance…";
+        } else {
+          workerHubCreditStatus.textContent = workerBridgeState.walletFunding?.lastError
+            || workerBridgeState.walletFunding?.lastStatus
+            || "Not funded";
+        }
+      }
+      if (workerHubCreditTx) {
+        workerHubCreditTx.textContent = workerBridgeState.walletFunding?.lastTxHash || "—";
+      }
+      if (workerHubCreditDisabledReason) {
+        workerHubCreditDisabledReason.textContent = hubCreditReadiness.reason;
+      }
+      if (workerCheckHubCreditBalance) {
+        workerCheckHubCreditBalance.disabled = workerHubCreditBalanceInFlight || !workerWalletValidAddress(hubCreditReadiness.address);
+        workerCheckHubCreditBalance.textContent = workerHubCreditBalanceInFlight ? "Checking…" : "Check Hub Balance";
+        if (workerHubCreditBalanceInFlight) {
+          workerCheckHubCreditBalance.setAttribute("aria-busy", "true");
+        } else {
+          workerCheckHubCreditBalance.removeAttribute("aria-busy");
+        }
+      }
+      if (workerFundHubCredit) {
+        workerFundHubCredit.disabled = !hubCreditReadiness.ready;
+        workerFundHubCredit.textContent = workerHubCreditFundingInFlight ? "Funding…" : "Fund Hub Wallet Credit";
+        if (workerHubCreditFundingInFlight) {
+          workerFundHubCredit.setAttribute("aria-busy", "true");
+        } else {
+          workerFundHubCredit.removeAttribute("aria-busy");
         }
       }
       workerRenderFaucetResult(workerFaucetLastResult);
@@ -1236,6 +1449,204 @@
       }
     }
 
+
+    function workerSaveHubCreditInputs() {
+      loadWorkerBridgeState();
+      const fallback = workerDefaultBridgeState().walletFunding;
+      const current = workerBridgeState.walletFunding && typeof workerBridgeState.walletFunding === "object"
+        ? workerBridgeState.walletFunding
+        : {};
+      workerBridgeState.walletFunding = {
+        ...fallback,
+        ...current,
+        bridgeContractAddress: String(workerHubCreditContract?.value || current.bridgeContractAddress || "").trim(),
+        amountCredits: String(workerHubCreditAmount?.value || current.amountCredits || WORKER_HUB_CREDIT_DEFAULT_AMOUNT).trim() || WORKER_HUB_CREDIT_DEFAULT_AMOUNT
+      };
+      saveWorkerBridgeState();
+    }
+
+    function workerRandomBytes32Hex(ethers) {
+      if (ethers && typeof ethers.randomBytes === "function" && typeof ethers.hexlify === "function") {
+        return ethers.hexlify(ethers.randomBytes(32));
+      }
+      const bytes = new Uint8Array(32);
+      crypto.getRandomValues(bytes);
+      return `0x${Array.from(bytes).map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+    }
+
+    function workerReceiptLogIndex(receipt, contractAddress) {
+      const target = workerLowerAddress(contractAddress);
+      const logs = Array.isArray(receipt?.logs) ? receipt.logs : [];
+      const match = logs.find((log) => workerLowerAddress(log?.address || "") === target);
+      const index = match?.logIndex ?? match?.index ?? 0;
+      const parsed = Number(index);
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+    }
+
+    async function checkWorkerHubCreditBalance() {
+      loadWorkerBridgeState();
+      workerSaveHubCreditInputs();
+      const walletAddress = workerLowerAddress(workerBridgeState.wallet.address);
+      if (!workerWalletValidAddress(walletAddress)) {
+        const message = "Connect Wallet before checking hub wallet credit.";
+        workerBridgeState.walletFunding = {
+          ...workerBridgeState.walletFunding,
+          lastStatus: message,
+          lastError: message,
+          updatedAt: workerNowIso()
+        };
+        saveWorkerBridgeState();
+        renderWorkerBridgeReadiness();
+        if (workerSaveStatus) workerSaveStatus.textContent = message;
+        return null;
+      }
+
+      workerHubCreditBalanceInFlight = true;
+      renderWorkerBridgeReadiness();
+      try {
+        const data = await workerPostJson("/api/applications/worker/wallet-funding/balance", {
+          hub_url: workerSelectedHubUrl(),
+          wallet_address: walletAddress
+        });
+        const balance = workerNormalizeHubCreditBalance(data);
+        const available = balance?.available_credits || "0";
+        workerBridgeState.walletFunding = {
+          ...workerBridgeState.walletFunding,
+          balance,
+          accountId: balance?.account_id || "",
+          lastStatus: `Hub reports ${available} spendable credits for ${workerShortAddress(walletAddress)}.`,
+          lastError: "",
+          updatedAt: workerNowIso()
+        };
+        saveWorkerBridgeState();
+        if (workerSaveStatus) workerSaveStatus.textContent = workerBridgeState.walletFunding.lastStatus;
+        return balance;
+      } catch (error) {
+        const message = `Hub wallet balance check failed: ${error.message || error}`;
+        workerBridgeState.walletFunding = {
+          ...workerBridgeState.walletFunding,
+          lastStatus: message,
+          lastError: message,
+          updatedAt: workerNowIso()
+        };
+        saveWorkerBridgeState();
+        if (workerSaveStatus) workerSaveStatus.textContent = message;
+        return null;
+      } finally {
+        workerHubCreditBalanceInFlight = false;
+        renderWorkerBridgeReadiness();
+      }
+    }
+
+    async function fundWorkerHubCredit(event) {
+      event?.preventDefault?.();
+      loadWorkerBridgeState();
+      workerSaveHubCreditInputs();
+      const readiness = workerComputeHubCreditFundingReadiness();
+      if (!readiness.ready) {
+        workerBridgeState.walletFunding = {
+          ...workerBridgeState.walletFunding,
+          lastStatus: readiness.reason,
+          lastError: readiness.reason,
+          updatedAt: workerNowIso()
+        };
+        saveWorkerBridgeState();
+        renderWorkerBridgeReadiness();
+        if (workerSaveStatus) workerSaveStatus.textContent = readiness.reason;
+        return;
+      }
+
+      workerHubCreditFundingInFlight = true;
+      workerBridgeState.walletFunding = {
+        ...workerBridgeState.walletFunding,
+        lastStatus: "Waiting for wallet bridge-escrow transaction…",
+        lastError: "",
+        updatedAt: workerNowIso()
+      };
+      saveWorkerBridgeState();
+      renderWorkerBridgeReadiness();
+
+      try {
+        const {ethers, browserProvider} = await workerGetWalletProviderContext();
+        await workerEnsureDevWalletChain(browserProvider);
+        const signer = await browserProvider.getSigner();
+        const signerAddress = workerLowerAddress(await signer.getAddress());
+        const walletAddress = workerLowerAddress(readiness.address);
+        if (signerAddress !== walletAddress) {
+          throw new Error(`Wallet signer changed from ${workerShortAddress(walletAddress)} to ${workerShortAddress(signerAddress)}.`);
+        }
+
+        const amountUnits = workerCreditsToBaseUnits(readiness.amountCredits);
+        const depositId = workerRandomBytes32Hex(ethers);
+        const memo = `worker hub wallet funding ${workerShortAddress(walletAddress)}`;
+        const contract = new ethers.Contract(readiness.contractAddress, WORKER_HUB_CREDIT_BRIDGE_ESCROW_ABI, signer);
+        const tx = await contract.depositFor(walletAddress, amountUnits, depositId, memo, {value: amountUnits});
+        workerBridgeState.walletFunding = {
+          ...workerBridgeState.walletFunding,
+          lastStatus: `Bridge escrow deposit submitted: ${tx.hash || "pending"}`,
+          lastTxHash: tx.hash || "",
+          lastError: "",
+          updatedAt: workerNowIso()
+        };
+        saveWorkerBridgeState();
+        renderWorkerBridgeReadiness();
+
+        const receipt = typeof tx.wait === "function" ? await tx.wait() : null;
+        const txHash = String(receipt?.hash || receipt?.transactionHash || tx.hash || "");
+        const importResult = await workerPostJson("/api/applications/worker/wallet-funding/import", {
+          hub_url: workerSelectedHubUrl(),
+          wallet_address: walletAddress,
+          deposit_receipt: {
+            wallet_address: walletAddress,
+            chain_id: workerDecimalChainId(workerBridgeState.wallet.chainId || WORKER_DEV_CHAIN_ID_HEX),
+            contract_address: readiness.contractAddress,
+            tx_hash: txHash,
+            log_index: workerReceiptLogIndex(receipt, readiness.contractAddress),
+            block_number: Number(receipt?.blockNumber || 0),
+            payer_address: signerAddress,
+            payment_asset: "native",
+            payment_amount_base_units: amountUnits,
+            credits_granted: amountUnits,
+            deposit_id: depositId,
+            memo
+          }
+        });
+
+        const balance = workerNormalizeHubCreditBalance(importResult);
+        workerBridgeState.walletFunding = {
+          ...workerBridgeState.walletFunding,
+          bridgeContractAddress: readiness.contractAddress,
+          amountCredits: readiness.amountCredits,
+          balance: balance || workerBridgeState.walletFunding.balance,
+          accountId: String(importResult.account_id || balance?.account_id || ""),
+          lastStatus: importResult.idempotent
+            ? "Bridge escrow deposit was already imported; hub wallet balance is current."
+            : `Hub wallet credit funded for ${workerShortAddress(walletAddress)}.`,
+          lastTxHash: txHash,
+          lastError: "",
+          updatedAt: workerNowIso()
+        };
+        saveWorkerBridgeState();
+        if (workerSaveStatus) workerSaveStatus.textContent = workerBridgeState.walletFunding.lastStatus;
+        await checkWorkerHubCreditBalance();
+      } catch (error) {
+        const message = `Hub wallet funding failed: ${error.message || error}`;
+        workerBridgeState.walletFunding = {
+          ...workerBridgeState.walletFunding,
+          lastStatus: message,
+          lastError: message,
+          updatedAt: workerNowIso()
+        };
+        saveWorkerBridgeState();
+        if (workerSaveStatus) workerSaveStatus.textContent = message;
+      } finally {
+        workerHubCreditFundingInFlight = false;
+        renderWorkerBridgeReadiness();
+      }
+    }
+
+
+
     function addWorkerRecoveryMethod(type, value) {
       loadWorkerBridgeState();
       const clean = String(value || "").trim();
@@ -1850,10 +2261,11 @@
           loadWorkerBridgeState();
           if (workerBridgeState.wallet.connected && workerBridgeState.wallet.address) {
             await workerLoadMultisessionKeysForWallet(workerBridgeState.wallet.address, "manual-refresh");
+            await checkWorkerHubCreditBalance();
           }
           renderWorkerBridgeReadiness();
           workerRefreshFaucetRuntimeStatus();
-          if (workerSaveStatus) workerSaveStatus.textContent = "Wallet, key, and faucet readiness refreshed from local app storage and runtime status.";
+          if (workerSaveStatus) workerSaveStatus.textContent = "Wallet, key, faucet, and hub-credit readiness refreshed from local app storage and runtime status.";
         });
       }
       if (workerFaucetAmount) {
@@ -1863,6 +2275,32 @@
       if (workerRequestFaucet && !workerRequestFaucet.dataset.workerBound) {
         workerRequestFaucet.dataset.workerBound = "true";
         workerRequestFaucet.addEventListener("click", requestWorkerFaucetCredits);
+      }
+      if (workerHubCreditForm && !workerHubCreditForm.dataset.workerBound) {
+        workerHubCreditForm.dataset.workerBound = "true";
+        workerHubCreditForm.addEventListener("submit", fundWorkerHubCredit);
+      }
+      if (workerHubCreditContract && !workerHubCreditContract.dataset.workerBound) {
+        workerHubCreditContract.dataset.workerBound = "true";
+        workerHubCreditContract.addEventListener("input", () => {
+          workerSaveHubCreditInputs();
+          renderWorkerBridgeReadiness();
+        });
+      }
+      if (workerHubCreditAmount && !workerHubCreditAmount.dataset.workerBound) {
+        workerHubCreditAmount.dataset.workerBound = "true";
+        workerHubCreditAmount.addEventListener("input", () => {
+          workerSaveHubCreditInputs();
+          renderWorkerBridgeReadiness();
+        });
+      }
+      if (workerCheckHubCreditBalance && !workerCheckHubCreditBalance.dataset.workerBound) {
+        workerCheckHubCreditBalance.dataset.workerBound = "true";
+        workerCheckHubCreditBalance.addEventListener("click", checkWorkerHubCreditBalance);
+      }
+      if (workerFundHubCredit && !workerFundHubCredit.dataset.workerBound) {
+        workerFundHubCredit.dataset.workerBound = "true";
+        workerFundHubCredit.addEventListener("click", fundWorkerHubCredit);
       }
       if (workerAddRecoveryEmailForm && !workerAddRecoveryEmailForm.dataset.workerBound) {
         workerAddRecoveryEmailForm.dataset.workerBound = "true";

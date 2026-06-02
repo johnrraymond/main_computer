@@ -87,6 +87,8 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert '"/api/applications/worker/hub-health"' in js
     assert '"/api/applications/worker/multisession-key/request"' in js
     assert '"/api/applications/worker/multisession-keys/load"' in js
+    assert '"/api/applications/worker/wallet-funding/import"' in js
+    assert '"/api/applications/worker/wallet-funding/balance"' in js
     assert "requestMultiSessionKeySignature" in js
     assert "workerLoadMultisessionKeysForWallet" in js
 
@@ -103,7 +105,13 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert "self._handle_worker_multisession_key_request()" in dispatch
     assert '"/api/applications/worker/multisession-keys/load"' in dispatch
     assert "self._handle_worker_multisession_keys_load()" in dispatch
+    assert '"/api/applications/worker/wallet-funding/import"' in dispatch
+    assert "self._handle_worker_wallet_funding_import()" in dispatch
+    assert '"/api/applications/worker/wallet-funding/balance"' in dispatch
+    assert "self._handle_worker_wallet_funding_balance()" in dispatch
     assert '"/api/hub/v1/credits/multisession-keys/request"' in energy_routes
+    assert '"/api/hub/v1/credits/wallet-funding/import"' in energy_routes
+    assert "/api/hub/v1/credits/balance" in energy_routes
     assert '"/api/hub/v1/workers/register"' in energy_routes
     assert "phase12_worker_seller_offer_ui" in energy_routes
     assert "Worker offer registration is only available to local viewport clients." in energy_routes
@@ -136,6 +144,13 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
     assert 'id="worker-faucet-result-amount"' in html
     assert 'id="worker-faucet-result-chain"' in html
     assert 'id="worker-faucet-result-runtime"' in html
+    assert 'id="worker-hub-credit-card"' in html
+    assert 'id="worker-hub-credit-contract"' in html
+    assert 'id="worker-hub-credit-amount"' in html
+    assert 'id="worker-check-hub-credit-balance"' in html
+    assert 'id="worker-fund-hub-credit"' in html
+    assert "Hub Wallet Credit" in html
+    assert "bridge-escrow credit from the connected wallet" in html
     assert "Request 1 local dev-chain credit" in html
     assert "Request Faucet Funds" in html
     assert "verified ethers wallet state" in html
@@ -149,6 +164,11 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
     assert "function workerComputeFaucetReadiness()" in js
     assert "workerRefreshFaucetRuntimeStatus" in js
     assert "amount_credits: WORKER_FAUCET_AMOUNT_CREDITS" in js
+    assert "WORKER_HUB_CREDIT_BRIDGE_ESCROW_ABI" in js
+    assert "function workerComputeHubCreditFundingReadiness()" in js
+    assert "async function fundWorkerHubCredit" in js
+    assert "async function checkWorkerHubCreditBalance" in js
+    assert "walletFunding" in js
     assert "POST" in js
     assert 'route_path == "/api/xlag/dev/faucet"' in dispatch
     assert "xlag_dev_faucet_status" in dispatch
@@ -171,6 +191,10 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
     assert "workerRandomKeyId" not in js
 
     assert "workerRequestFaucet" in bindings
+    assert "workerHubCreditForm" in bindings
+    assert "workerHubCreditContract" in bindings
+    assert "workerFundHubCredit" in bindings
+    assert "workerCheckHubCreditBalance" in bindings
     assert "workerFaucetReadiness" in bindings
     assert "workerFaucetDisabledReason" in bindings
     assert "workerFaucetResultTx" in bindings

@@ -54,6 +54,16 @@
     const workerFaucetResultChain = document.querySelector("#worker-faucet-result-chain");
     const workerFaucetResultRuntime = document.querySelector("#worker-faucet-result-runtime");
     const workerRequestFaucet = document.querySelector("#worker-request-faucet");
+    const workerHubCreditForm = document.querySelector("#worker-hub-credit-form");
+    const workerHubCreditWallet = document.querySelector("#worker-hub-credit-wallet");
+    const workerHubCreditBalance = document.querySelector("#worker-hub-credit-balance");
+    const workerHubCreditStatus = document.querySelector("#worker-hub-credit-status");
+    const workerHubCreditTx = document.querySelector("#worker-hub-credit-tx");
+    const workerHubCreditContract = document.querySelector("#worker-hub-credit-contract");
+    const workerHubCreditAmount = document.querySelector("#worker-hub-credit-amount");
+    const workerCheckHubCreditBalance = document.querySelector("#worker-check-hub-credit-balance");
+    const workerFundHubCredit = document.querySelector("#worker-fund-hub-credit");
+    const workerHubCreditDisabledReason = document.querySelector("#worker-hub-credit-disabled-reason");
     const workerAddRecoveryEmailForm = document.querySelector("#worker-add-recovery-email-form");
     const workerRecoveryEmailInput = document.querySelector("#worker-recovery-email-input");
     const workerRecoveryEmailList = document.querySelector("#worker-recovery-email-list");
