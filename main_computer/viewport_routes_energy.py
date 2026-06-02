@@ -163,15 +163,8 @@ class ViewportEnergyRoutesMixin:
             if not str(signed_request.get("signature") or "").startswith("0x"):
                 raise ValueError("signed_request.signature is required.")
 
-            bridge_context = body.get("bridge_context")
-            if bridge_context is None:
-                bridge_context = {}
-            if not isinstance(bridge_context, dict):
-                raise ValueError("bridge_context must be an object when supplied.")
-
             forwarded = {
                 "signed_request": signed_request,
-                "bridge_context": bridge_context,
                 "client_metadata": dict(body.get("client_metadata", {})) if isinstance(body.get("client_metadata"), dict) else {},
             }
             result = self._post_multisession_key_request_to_hub(hub_url=hub_url, payload=forwarded)

@@ -115,7 +115,10 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
     assert 'id="worker-bridge-readiness-card"' in html
     assert 'id="worker-connect-wallet"' in html
     assert 'id="worker-disconnect-wallet"' in html
-    assert 'id="worker-create-bridge-account"' in html
+    removed_account_button_id = 'id="worker-create-' + 'bridge-' + 'account"'
+    removed_account_button_label = "Create / Load " + "Bridge " + "Account"
+    assert removed_account_button_id not in html
+    assert removed_account_button_label not in html
     assert 'id="worker-recovery-card"' in html
     assert 'id="worker-confirm-recovery"' in html
 
@@ -152,6 +155,8 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
     assert 'id="worker-request-multisession-key"' in html
     assert 'id="worker-revoke-multisession-key"' in html
     assert "main-computer-worker-bridge-readiness-v1" in js
+    assert ("bridge" + "Account") not in js
+    assert ("bridge" + "_context") not in js
     assert "async function requestWorkerMultisessionKey" in js
     assert "function revokeWorkerMultisessionKey()" in js
     assert "No active multi-session key to revoke." in js

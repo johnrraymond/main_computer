@@ -246,12 +246,11 @@
           </label>
         </div>
 
-        <div class="worker-card worker-bridge-card worker-bridge-readiness-card" id="worker-bridge-readiness-card" aria-label="Bridge account readiness">
-          <h4>Bridge Account Readiness</h4>
-          <p class="worker-card-note">Prepare the local account scaffolding used by later bridge binding, recovery, funding, and worker overflow patches.</p>
+        <div class="worker-card worker-bridge-card worker-bridge-readiness-card" id="worker-bridge-readiness-card" aria-label="Worker wallet readiness">
+          <h4>Worker Wallet Readiness</h4>
+          <p class="worker-card-note">Connect a Worker wallet, request faucet funds when needed, and request a hub-issued multi-session key.</p>
           <dl class="worker-bridge-status-grid">
             <div><dt>Primary wallet</dt><dd id="worker-primary-wallet-status">Not connected</dd></div>
-            <div><dt>Bridge account</dt><dd id="worker-bridge-account-status">Not created</dd></div>
             <div><dt>Recovery</dt><dd id="worker-recovery-status">Not configured</dd></div>
             <div><dt>Multi-session key</dt><dd id="worker-multisession-status">No active key</dd></div>
             <div><dt>Readiness</dt><dd id="worker-bridge-readiness-status">Setup not started</dd></div>
@@ -259,7 +258,6 @@
           <div class="worker-inline-actions">
             <button type="button" id="worker-connect-wallet">Connect Wallet</button>
             <button type="button" id="worker-disconnect-wallet" disabled>Disconnect Wallet</button>
-            <button type="button" id="worker-create-bridge-account">Create / Load Bridge Account</button>
             <button type="button" id="worker-refresh-bridge-readiness">Refresh</button>
           </div>
         </div>
@@ -289,7 +287,7 @@
 
         <div class="worker-card worker-bridge-card worker-recovery-card" id="worker-recovery-card" aria-label="Recovery methods">
           <h4>Recovery Methods</h4>
-          <p class="worker-card-note">Store local recovery contacts for the bridge account readiness record.</p>
+          <p class="worker-card-note">Store optional local recovery contacts for later wallet recovery flows.</p>
           <form class="worker-inline-form" id="worker-add-recovery-email-form">
             <label>
               <span>Recovery email</span>

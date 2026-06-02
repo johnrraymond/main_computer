@@ -44,13 +44,6 @@
           connected: false,
           connectedAt: ""
         },
-        bridgeAccount: {
-          id: "",
-          status: "not-created",
-          primaryWallet: "",
-          createdAt: "",
-          updatedAt: ""
-        },
         recoveryEmails: [],
         recoveryWallets: [],
         recoveryConfirmedAt: "",
@@ -206,18 +199,10 @@
     function workerNormalizeBridgeState(parsed) {
       const fallback = workerDefaultBridgeState();
       const state = parsed && typeof parsed === "object" ? parsed : {};
-      const bridgeAccount = state.bridgeAccount && typeof state.bridgeAccount === "object" ? state.bridgeAccount : {};
       const faucet = state.faucet && typeof state.faucet === "object" ? state.faucet : {};
       const multisessionKeys = Array.isArray(state.multisessionKeys) ? state.multisessionKeys : [];
       return {
         wallet: {...fallback.wallet},
-        bridgeAccount: {
-          id: String(bridgeAccount.id || ""),
-          status: String(bridgeAccount.status || fallback.bridgeAccount.status),
-          primaryWallet: String(bridgeAccount.primaryWallet || bridgeAccount.primary_wallet || ""),
-          createdAt: String(bridgeAccount.createdAt || bridgeAccount.created_at || ""),
-          updatedAt: String(bridgeAccount.updatedAt || bridgeAccount.updated_at || "")
-        },
         recoveryEmails: workerNormalizeList(state.recoveryEmails, "email"),
         recoveryWallets: workerNormalizeList(state.recoveryWallets, "wallet"),
         recoveryConfirmedAt: String(state.recoveryConfirmedAt || state.recovery_confirmed_at || ""),
@@ -227,7 +212,6 @@
             status: String(key.status || "active"),
             createdAt: String(key.createdAt || key.created_at || ""),
             revokedAt: String(key.revokedAt || key.revoked_at || ""),
-            accountId: String(key.accountId || key.account_id || ""),
             walletAddress: String(key.walletAddress || key.wallet_address || "")
           }))
           .filter((key) => key.id),
@@ -278,27 +262,14 @@
       return Boolean(workerBridgeState.recoveryConfirmedAt && (activeEmails.length || activeWallets.length));
     }
 
-    function workerBridgeAccountReady() {
-      return Boolean(workerBridgeState.bridgeAccount.id && workerBridgeState.bridgeAccount.status === "prepared");
-    }
-
     function workerReadinessLabel() {
-      if (workerBridgeAccountReady() && workerRecoveryMethodsReady() && workerActiveMultisessionKey()) {
-        return "Bridge account prepared — ready for later funding";
-      }
       if (!workerBridgeState.wallet.address) {
         return "Wallet not connected";
-      }
-      if (!workerBridgeAccountReady()) {
-        return "Create or load bridge account";
-      }
-      if (!workerRecoveryMethodsReady()) {
-        return "Confirm recovery methods";
       }
       if (!workerActiveMultisessionKey()) {
         return "Request multi-session key";
       }
-      return "Setup in progress";
+      return "Worker wallet ready";
     }
 
     function workerComputeFaucetReadiness() {
@@ -455,7 +426,6 @@
       loadWorkerBridgeState();
       const walletAddress = workerBridgeState.wallet.address;
       const faucetReadiness = workerComputeFaucetReadiness();
-      const bridgeAccount = workerBridgeState.bridgeAccount;
       const recoveryEmailCount = workerBridgeState.recoveryEmails.filter((item) => item.status === "active").length;
       const recoveryWalletCount = workerBridgeState.recoveryWallets.filter((item) => item.status === "active").length;
       const activeKey = workerActiveMultisessionKey();
@@ -471,11 +441,6 @@
               : workerWalletHookState === "disconnecting"
                 ? "Force disconnecting"
                 : "Not connected";
-      }
-      if (workerBridgeAccountStatus) {
-        workerBridgeAccountStatus.textContent = bridgeAccount.id
-          ? `${bridgeAccount.id} (${bridgeAccount.status})`
-          : "Not created";
       }
       if (workerRecoveryStatus) {
         workerRecoveryStatus.textContent = workerRecoveryMethodsReady()
@@ -556,14 +521,10 @@
         .map((item) => item.value);
     }
 
-    function workerBuildMultisessionBridgeContext() {
-      const bridgeAccount = workerBridgeState.bridgeAccount || {};
+    function workerBuildMultisessionRequestContext() {
       const wallet = workerBridgeState.wallet || {};
       return {
-        account_id: bridgeAccount.id,
-        status: bridgeAccount.status,
-        wallet_address: wallet.address || bridgeAccount.primaryWallet || "",
-        primary_wallet: bridgeAccount.primaryWallet || wallet.address || "",
+        wallet_address: wallet.address || "",
         chain_id: workerNormalizeChainIdHex(wallet.chainId),
         recovery_emails: workerActiveRecoveryEmails(),
         recovery_wallets: workerActiveRecoveryWallets(),
@@ -578,7 +539,6 @@
         status: String(key.status || "active"),
         createdAt: String(key.createdAt || key.created_at || ""),
         revokedAt: String(key.revokedAt || key.revoked_at || ""),
-        accountId: String(key.accountId || key.account_id || result?.account?.id || result?.account?.account_id || ""),
         walletAddress: String(key.walletAddress || key.wallet_address || result?.verification?.wallet_address || "")
       };
     }
@@ -1016,37 +976,6 @@
       provider.on("chainChanged", workerHandleWalletChainChanged);
     }
 
-    function createOrLoadWorkerBridgeAccount() {
-      loadWorkerBridgeState();
-      const address = String(workerBridgeState.wallet.address || "").trim();
-      if (!address) {
-        if (workerSaveStatus) workerSaveStatus.textContent = "Connect a primary wallet before creating the local bridge account.";
-        renderWorkerBridgeReadiness();
-        return;
-      }
-      const now = workerNowIso();
-      if (!workerBridgeState.bridgeAccount.id) {
-        const slug = address.toLowerCase().replace(/^0x/, "").slice(0, 12) || "wallet";
-        workerBridgeState.bridgeAccount = {
-          id: `bridge_local_${slug}`,
-          status: "prepared",
-          primaryWallet: address,
-          createdAt: now,
-          updatedAt: now
-        };
-      } else {
-        workerBridgeState.bridgeAccount = {
-          ...workerBridgeState.bridgeAccount,
-          status: "prepared",
-          primaryWallet: workerBridgeState.bridgeAccount.primaryWallet || address,
-          updatedAt: now
-        };
-      }
-      saveWorkerBridgeState();
-      renderWorkerBridgeReadiness();
-      if (workerSaveStatus) workerSaveStatus.textContent = "Local bridge account readiness record prepared.";
-    }
-
     async function requestWorkerFaucetCredits() {
       loadWorkerBridgeState();
       const readiness = workerComputeFaucetReadiness();
@@ -1181,57 +1110,58 @@
       loadWorkerBridgeState();
 
       if (workerMultisessionInFlight) {
+        console.info("[worker-msk] request.ignored", {reason: "already-in-flight"});
         return;
       }
       if (workerActiveMultisessionKey()) {
+        console.info("[worker-msk] request.blocked", {reason: "active-key-present"});
         if (workerSaveStatus) workerSaveStatus.textContent = "Revoke the active multi-session key before requesting a replacement.";
         renderWorkerBridgeReadiness();
         return;
       }
       if (!workerBridgeState.wallet.connected || !workerWalletValidAddress(workerBridgeState.wallet.address)) {
+        console.info("[worker-msk] request.blocked", {reason: "wallet-not-connected"});
         if (workerSaveStatus) workerSaveStatus.textContent = "Connect a Worker wallet before requesting a multi-session key.";
         renderWorkerBridgeReadiness();
         return;
       }
-      if (!workerBridgeAccountReady()) {
-        if (workerSaveStatus) workerSaveStatus.textContent = "Create or load the bridge account before requesting a multi-session key.";
-        renderWorkerBridgeReadiness();
-        return;
-      }
-      if (!workerRecoveryMethodsReady()) {
-        if (workerSaveStatus) workerSaveStatus.textContent = "Confirm recovery methods before requesting a multi-session key.";
-        renderWorkerBridgeReadiness();
-        return;
-      }
-
       const walletLibrary = window.MainComputerWalletLibrary || window.MainComputerWalletApp || {};
       if (typeof walletLibrary.requestMultiSessionKeySignature !== "function") {
+        console.info("[worker-msk] request.blocked", {reason: "wallet-signing-library-missing"});
         if (workerSaveStatus) workerSaveStatus.textContent = "Wallet signing library is not loaded yet; open Wallet once or reload Applications.";
         renderWorkerBridgeReadiness();
         return;
       }
 
-      const bridgeContext = workerBuildMultisessionBridgeContext();
+      const requestContext = workerBuildMultisessionRequestContext();
       workerMultisessionInFlight = true;
       renderWorkerBridgeReadiness();
 
       try {
+        console.info("[worker-msk] request.start", requestContext);
         if (workerSaveStatus) workerSaveStatus.textContent = "Waiting for wallet signature for request_multi_session_key…";
         const signedRequest = await walletLibrary.requestMultiSessionKeySignature({
-          bridgeContext,
+          requestContext,
           origin: window.location?.origin || "main-computer-worker"
         });
 
+        console.info("[worker-msk] signature.created", {
+          wallet_address: signedRequest?.wallet_address || "",
+          chain_id: signedRequest?.chain_id || "",
+          request_id: signedRequest?.message?.request_id || ""
+        });
         if (workerSaveStatus) workerSaveStatus.textContent = "Requesting multi-session key from local app; hub will verify the signature.";
         const result = await workerPostJson("/api/applications/worker/multisession-key/request", {
           hub_url: workerSelectedHubUrl(),
           signed_request: signedRequest,
-          bridge_context: bridgeContext,
           client_metadata: {
             source: "worker-request-new-key-button",
-            requested_at: workerNowIso()
+            requested_at: workerNowIso(),
+            wallet_address: requestContext.wallet_address,
+            chain_id: requestContext.chain_id
           }
         });
+        console.info("[worker-msk] hub.response", result);
 
         const key = workerStoreIssuedMultisessionKey(result);
         if (workerSaveStatus) {
@@ -1241,6 +1171,7 @@
           workerSaveStatus.textContent = `Hub issued multi-session key ${key.id};${verified}.`;
         }
       } catch (error) {
+        console.error("[worker-msk] request.failed", error);
         if (workerSaveStatus) workerSaveStatus.textContent = `Multi-session key request failed: ${error.message || error}`;
       } finally {
         workerMultisessionInFlight = false;
@@ -1722,17 +1653,13 @@
         workerDisconnectWallet.addEventListener("click", disconnectWorkerPrimaryWallet, true);
       }
       workerBindWalletProviderEvents();
-      if (workerCreateBridgeAccount && !workerCreateBridgeAccount.dataset.workerBound) {
-        workerCreateBridgeAccount.dataset.workerBound = "true";
-        workerCreateBridgeAccount.addEventListener("click", createOrLoadWorkerBridgeAccount);
-      }
       if (workerRefreshBridgeReadiness && !workerRefreshBridgeReadiness.dataset.workerBound) {
         workerRefreshBridgeReadiness.dataset.workerBound = "true";
         workerRefreshBridgeReadiness.addEventListener("click", () => {
           loadWorkerBridgeState();
           renderWorkerBridgeReadiness();
           workerRefreshFaucetRuntimeStatus();
-          if (workerSaveStatus) workerSaveStatus.textContent = "Bridge and faucet readiness refreshed from local storage and runtime status.";
+          if (workerSaveStatus) workerSaveStatus.textContent = "Wallet and faucet readiness refreshed from local storage and runtime status.";
         });
       }
       if (workerFaucetAmount) {
