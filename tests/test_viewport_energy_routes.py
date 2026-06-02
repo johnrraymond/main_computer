@@ -892,6 +892,59 @@ class ViewportEnergyRouteTests(unittest.TestCase):
                     thread.join(timeout=5)
                 os.chdir(old_cwd)
 
+    def test_worker_wallet_balance_api_reports_connected_wallet_balance_from_local_rpc(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            wallet = "0x7777777777777777777777777777777777777777"
+
+            class FakeChain:
+                def rpc(self, method: str, params=None):
+                    if method == "eth_chainId":
+                        return hex(42424242)
+                    raise AssertionError(f"unexpected rpc method: {method}")
+
+                def get_balance(self, address: str) -> int:
+                    self.address = address
+                    return 2 * 10**18 + 123
+
+            server = None
+            thread = None
+            try:
+                server = ViewportServer(
+                    ("127.0.0.1", 0),
+                    MainComputerConfig(workspace=root, energy_chain_rpc_url="http://127.0.0.1:18547", xlag_chain_id=42424242),
+                    verbose=False,
+                )
+                fake_chain = FakeChain()
+                server.energy_chain = fake_chain
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+
+                request = Request(
+                    f"http://127.0.0.1:{server.server_port}/api/applications/worker/wallet-balance",
+                    data=json.dumps({"wallet_address": wallet}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(request, timeout=5) as response:
+                    self.assertEqual(response.status, 200)
+                    payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertTrue(payload["ok"])
+                self.assertEqual(payload["wallet_address"], wallet)
+                self.assertEqual(payload["chain_id"], 42424242)
+                self.assertEqual(payload["chain_id_hex"], "0x28757b2")
+                self.assertEqual(payload["balance_base_units"], str(2 * 10**18 + 123))
+                self.assertEqual(payload["available_credits"], "2.000000000000000123")
+                self.assertEqual(payload["source"], "local-rpc")
+                self.assertEqual(fake_chain.address, wallet)
+            finally:
+                if server is not None:
+                    server.shutdown()
+                    server.server_close()
+                if thread is not None:
+                    thread.join(timeout=5)
+
     def test_local_energy_ledger_registers_nodes_and_tracks_credits(self) -> None:
         tempdir = tempfile.TemporaryDirectory()
         try:

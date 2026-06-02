@@ -156,6 +156,49 @@ class ViewportEnergyRoutesMixin:
             raise ValueError("wallet_address must be a valid 0x address.")
         return address
 
+    def _format_worker_credit_units(self, value: int) -> str:
+        base = 10**18
+        whole, fraction = divmod(max(0, int(value)), base)
+        if not fraction:
+            return str(whole)
+        fraction_text = str(fraction).rjust(18, "0").rstrip("0")
+        return f"{whole}.{fraction_text}"
+
+    def _handle_worker_wallet_balance(self) -> None:
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Worker wallet balance checks are only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                return
+            body = self._read_json()
+            wallet_address = self._normalize_worker_wallet_address(body.get("wallet_address"))
+            chain_id_hex = str(self.server.energy_chain.rpc("eth_chainId"))
+            chain_id = int(chain_id_hex, 16)
+            expected_chain_id = self.server.config.xlag_chain_id
+            if expected_chain_id is not None and chain_id != expected_chain_id:
+                raise RuntimeError(f"Local RPC chain id {chain_id} does not match expected {expected_chain_id}.")
+            balance_base_units = int(self.server.energy_chain.get_balance(wallet_address))
+            self.server.signal(
+                "api-worker-wallet-balance",
+                wallet_address=wallet_address,
+                chain_id=chain_id,
+                available_credits=self._format_worker_credit_units(balance_base_units),
+            )
+            self._send_json(
+                {
+                    "ok": True,
+                    "wallet_address": wallet_address,
+                    "chain_id": chain_id,
+                    "chain_id_hex": chain_id_hex,
+                    "expected_chain_id": expected_chain_id,
+                    "balance_base_units": str(balance_base_units),
+                    "available_credits": self._format_worker_credit_units(balance_base_units),
+                    "source": "local-rpc",
+                }
+            )
+        except Exception as exc:
+            self.server.signal("api-worker-wallet-balance-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
     def _load_worker_multisession_key_cache(self) -> dict[str, Any]:
         path = self._worker_multisession_key_cache_path()
         try:

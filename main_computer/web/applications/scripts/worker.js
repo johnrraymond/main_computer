@@ -16,6 +16,7 @@
     const WORKER_DEV_CHAIN_ID_HEX = "0x28757b2";
     const WORKER_FAUCET_AMOUNT_CREDITS = "1";
     const WORKER_HUB_CREDIT_DEFAULT_AMOUNT = "1";
+    const WORKER_WALLET_BALANCE_TIMEOUT_MS = 8000;
     const WORKER_CREDIT_BASE_UNITS_PER_CREDIT = 1000000000000000000n;
     const WORKER_HUB_CREDIT_BRIDGE_ESCROW_ABI = [
       "function depositFor(address account,uint256 amountUnits,bytes32 depositId,string memo) payable returns (bool)"
@@ -41,6 +42,7 @@
     let workerFaucetRuntimeCheckInFlight = false;
     let workerHubCreditFundingInFlight = false;
     let workerHubCreditBalanceInFlight = false;
+    let workerWalletCreditBalanceInFlight = false;
     let workerMultisessionInFlight = false;
     let workerWalletHydrationPromise = null;
     let workerWalletPageLoadHydrationAttempted = false;
@@ -69,6 +71,9 @@
         walletFunding: {
           bridgeContractAddress: "",
           amountCredits: WORKER_HUB_CREDIT_DEFAULT_AMOUNT,
+          walletBalance: null,
+          walletBalanceStatus: "idle",
+          walletBalanceError: "",
           balance: null,
           accountId: "",
           lastStatus: "Not funded",
@@ -102,6 +107,95 @@
       return /^0x[0-9a-fA-F]{40}$/.test(String(value || ""));
     }
 
+    function workerPromiseWithTimeout(promise, label, timeoutMs = WORKER_WALLET_BALANCE_TIMEOUT_MS) {
+      return Promise.race([
+        promise,
+        new Promise((_, reject) => {
+          setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+        })
+      ]);
+    }
+
+    function workerWalletBalanceErrorDetails(error) {
+      const raw = String(error?.message || error || "Unknown wallet balance error.").trim();
+      const lower = raw.toLowerCase();
+      if (lower.includes("rpc endpoint returned too many errors") || lower.includes("rpc endpoint")) {
+        return {
+          fieldText: "Wallet RPC unavailable.",
+          message: `Could not read my wallet balance. MetaMask says the RPC endpoint is failing: ${raw}`
+        };
+      }
+      if (lower.includes("timed out")) {
+        return {
+          fieldText: "Wallet balance check timed out.",
+          message: `Could not read my wallet balance. ${raw}`
+        };
+      }
+      return {
+        fieldText: "Wallet balance unavailable.",
+        message: `Wallet balance check failed: ${raw}`
+      };
+    }
+
+    async function workerInjectedProviderRequest(injectedProvider, method, params = [], label = method) {
+      if (!injectedProvider || typeof injectedProvider.request !== "function") {
+        throw new Error("No browser wallet request provider is available.");
+      }
+      return await workerPromiseWithTimeout(
+        injectedProvider.request({method, params}),
+        label
+      );
+    }
+
+    async function workerReadWalletBalanceFromInjectedProvider(injectedProvider, walletAddress) {
+      const [chainIdRaw, accountsRaw] = await Promise.all([
+        workerInjectedProviderRequest(injectedProvider, "eth_chainId", [], "wallet chain check"),
+        workerInjectedProviderRequest(injectedProvider, "eth_accounts", [], "wallet account check")
+      ]);
+      const accounts = Array.isArray(accountsRaw) ? accountsRaw : [];
+      const providerAddress = workerLowerAddress(accounts[0] || "");
+      const chainId = workerNormalizeChainIdHex(chainIdRaw);
+
+      if (!workerWalletValidAddress(providerAddress)) {
+        throw new Error("Open the wallet and approve account access.");
+      }
+      if (providerAddress !== walletAddress) {
+        throw new Error(`Browser wallet is ${workerShortAddress(providerAddress)}; expected ${workerShortAddress(walletAddress)}.`);
+      }
+      if (chainId !== WORKER_DEV_CHAIN_ID_HEX) {
+        throw new Error(`Wallet is on ${chainId || "unknown chain"}; expected ${WORKER_DEV_CHAIN_ID_HEX}.`);
+      }
+
+      const balanceHex = await workerInjectedProviderRequest(
+        injectedProvider,
+        "eth_getBalance",
+        [walletAddress, "latest"],
+        "wallet balance check"
+      );
+      return {
+        wallet_address: walletAddress,
+        balance_base_units: BigInt(balanceHex || "0x0").toString(),
+        chain_id: chainId,
+        source: "wallet-provider"
+      };
+    }
+
+    async function workerReadWalletBalanceFromLocalRpc(walletAddress) {
+      const data = await workerPostJson("/api/applications/worker/wallet-balance", {
+        wallet_address: walletAddress
+      });
+      if (!data || data.ok === false || data.error) {
+        throw new Error(data?.error || "Local wallet balance endpoint failed.");
+      }
+      return {
+        wallet_address: workerLowerAddress(data.wallet_address || walletAddress),
+        balance_base_units: String(data.balance_base_units ?? "0"),
+        available_credits: String(data.available_credits ?? ""),
+        chain_id: workerNormalizeChainIdHex(data.chain_id_hex || data.chain_id || ""),
+        source: String(data.source || "local-rpc")
+      };
+    }
+
     function workerNormalizeChainIdHex(value) {
       const text = String(value || "").trim().toLowerCase();
       if (!text) return "";
@@ -112,6 +206,41 @@
         return `0x${BigInt(text).toString(16)}`;
       }
       return text;
+    }
+
+    function workerFormatCreditBaseUnits(value) {
+      try {
+        const units = BigInt(value?.toString ? value.toString() : value ?? 0);
+        const whole = units / WORKER_CREDIT_BASE_UNITS_PER_CREDIT;
+        const fractional = units % WORKER_CREDIT_BASE_UNITS_PER_CREDIT;
+        if (fractional === 0n) return whole.toString();
+        const fractionText = fractional.toString().padStart(18, "0").replace(/0+$/, "");
+        const visibleFraction = fractionText.length > 6
+          ? fractionText.slice(0, 6).replace(/0+$/, "")
+          : fractionText;
+        return visibleFraction ? `${whole.toString()}.${visibleFraction}` : whole.toString();
+      } catch {
+        return "";
+      }
+    }
+
+    function workerNormalizeWalletCreditBalance(data) {
+      if (!data || typeof data !== "object") return null;
+      const balanceBaseUnits = String(data.balance_base_units ?? data.base_units ?? "");
+      const availableCredits = String(
+        data.available_credits
+          ?? data.balance_credits
+          ?? data.credits
+          ?? (balanceBaseUnits ? workerFormatCreditBaseUnits(balanceBaseUnits) : "0")
+      );
+      return {
+        wallet_address: String(data.wallet_address || ""),
+        available_credits: availableCredits,
+        balance_base_units: balanceBaseUnits,
+        chain_id: workerNormalizeChainIdHex(data.chain_id || data.chainId || ""),
+        source: String(data.source || ""),
+        updated_at: String(data.updated_at || data.updatedAt || workerNowIso())
+      };
     }
 
     function workerNormalizeFaucetResult(data) {
@@ -187,12 +316,24 @@
 
     function workerSetPrimaryWalletState({connected = false, address = "", chainId = ""} = {}) {
       loadWorkerBridgeState();
+      const previousAddress = workerLowerAddress(workerBridgeState.wallet?.address || "");
+      const previousChainId = workerNormalizeChainIdHex(workerBridgeState.wallet?.chainId || "");
+      const nextAddress = connected ? String(address || "") : "";
+      const nextChainId = connected ? workerNormalizeChainIdHex(chainId) : "";
       workerBridgeState.wallet = {
-        address: connected ? String(address || "") : "",
-        chainId: connected ? workerNormalizeChainIdHex(chainId) : "",
+        address: nextAddress,
+        chainId: nextChainId,
         connected: Boolean(connected && address),
         connectedAt: connected && address ? workerNowIso() : ""
       };
+      const walletChanged = workerLowerAddress(nextAddress) !== previousAddress || nextChainId !== previousChainId;
+      if (workerBridgeState.walletFunding && (!connected || walletChanged)) {
+        workerBridgeState.walletFunding.walletBalance = null;
+        workerBridgeState.walletFunding.walletBalanceStatus = connected ? "idle" : "not_connected";
+        workerBridgeState.walletFunding.walletBalanceError = "";
+        workerBridgeState.walletFunding.balance = null;
+        workerBridgeState.walletFunding.accountId = "";
+      }
     }
 
     function workerRenderWalletControls() {
@@ -291,6 +432,9 @@
         walletFunding: {
           bridgeContractAddress: String(walletFunding.bridgeContractAddress || walletFunding.bridge_contract_address || ""),
           amountCredits: String(walletFunding.amountCredits || walletFunding.amount_credits || WORKER_HUB_CREDIT_DEFAULT_AMOUNT),
+          walletBalance: workerNormalizeWalletCreditBalance(walletFunding.walletBalance || walletFunding.wallet_balance),
+          walletBalanceStatus: String(walletFunding.walletBalanceStatus || walletFunding.wallet_balance_status || "idle"),
+          walletBalanceError: String(walletFunding.walletBalanceError || walletFunding.wallet_balance_error || ""),
           balance: workerNormalizeHubCreditBalance(walletFunding.balance),
           accountId: String(walletFunding.accountId || walletFunding.account_id || ""),
           lastStatus: String(walletFunding.lastStatus || walletFunding.last_status || fallback.walletFunding.lastStatus),
@@ -476,7 +620,7 @@
       if (workerHubCreditFundingInFlight) {
         return {
           ready: false,
-          reason: "Funding bridge escrow transaction is pending.",
+          reason: "Funding my bridge account is pending.",
           address,
           chainId,
           contractAddress,
@@ -487,7 +631,7 @@
       if (!connected) {
         return {
           ready: false,
-          reason: "Connect Wallet before funding hub credit.",
+          reason: "Connect Wallet before funding.",
           address,
           chainId,
           contractAddress,
@@ -520,7 +664,7 @@
       if (!workerWalletValidAddress(contractAddress)) {
         return {
           ready: false,
-          reason: "Enter the deployed HubCreditBridgeEscrow contract address.",
+          reason: "Enter the bridge address.",
           address,
           chainId,
           contractAddress,
@@ -528,8 +672,9 @@
         };
       }
 
+      let amountUnits = "";
       try {
-        workerCreditsToBaseUnits(amountCredits);
+        amountUnits = workerCreditsToBaseUnits(amountCredits);
       } catch (error) {
         return {
           ready: false,
@@ -541,9 +686,33 @@
         };
       }
 
+      const walletBalanceUnits = String(workerBridgeState.walletFunding?.walletBalance?.balance_base_units || "");
+      if (!/^\d+$/.test(walletBalanceUnits)) {
+        return {
+          ready: false,
+          reason: "Check my wallet balance before funding.",
+          address,
+          chainId,
+          contractAddress,
+          amountCredits
+        };
+      }
+      if (BigInt(amountUnits) > BigInt(walletBalanceUnits)) {
+        return {
+          ready: false,
+          reason: BigInt(walletBalanceUnits) === 0n
+            ? "Request Faucet Funds for this wallet before funding the bridge."
+            : "Amount exceeds my wallet balance.",
+          address,
+          chainId,
+          contractAddress,
+          amountCredits
+        };
+      }
+
       return {
         ready: true,
-        reason: `Ready to fund ${workerShortAddress(address)} on the selected hub.`,
+        reason: "Ready to fund my bridge account.",
         address,
         chainId,
         contractAddress,
@@ -674,11 +843,30 @@
       }
 
       const hubCreditReadiness = workerComputeHubCreditFundingReadiness();
+      const walletCreditBalance = workerBridgeState.walletFunding?.walletBalance || null;
+      const walletCreditBalanceStatus = String(workerBridgeState.walletFunding?.walletBalanceStatus || "idle");
+      const walletCreditBalanceError = String(workerBridgeState.walletFunding?.walletBalanceError || "");
       const hubCreditBalance = workerBridgeState.walletFunding?.balance || null;
       if (workerHubCreditWallet) {
         workerHubCreditWallet.textContent = hubCreditReadiness.address
           ? `${workerShortAddress(hubCreditReadiness.address)}${hubCreditReadiness.chainId ? ` on ${hubCreditReadiness.chainId}` : ""}`
           : "Connect wallet first";
+      }
+      if (workerHubCreditWalletBalance) {
+        if (!hubCreditReadiness.address) {
+          workerHubCreditWalletBalance.textContent = "Connect wallet first";
+        } else if (workerWalletCreditBalanceInFlight || walletCreditBalanceStatus === "checking") {
+          workerHubCreditWalletBalance.textContent = "Checking my wallet balance…";
+        } else if (walletCreditBalance) {
+          const source = walletCreditBalance.source === "local-rpc" ? " via local RPC" : "";
+          workerHubCreditWalletBalance.textContent = walletCreditBalance.balance_base_units === "0"
+            ? `0 credits available — Request Faucet Funds first${source}`
+            : `${walletCreditBalance.available_credits} credits available to fund${source}`;
+        } else if (walletCreditBalanceStatus === "failed" && walletCreditBalanceError) {
+          workerHubCreditWalletBalance.textContent = workerWalletBalanceErrorDetails(walletCreditBalanceError).fieldText;
+        } else {
+          workerHubCreditWalletBalance.textContent = "Check balances to load.";
+        }
       }
       if (workerHubCreditBalance) {
         workerHubCreditBalance.textContent = hubCreditBalance
@@ -687,9 +875,9 @@
       }
       if (workerHubCreditStatus) {
         if (workerHubCreditFundingInFlight) {
-          workerHubCreditStatus.textContent = "Funding bridge escrow and importing hub credit…";
-        } else if (workerHubCreditBalanceInFlight) {
-          workerHubCreditStatus.textContent = "Checking hub wallet balance…";
+          workerHubCreditStatus.textContent = "Funding my bridge account…";
+        } else if (workerHubCreditBalanceInFlight || workerWalletCreditBalanceInFlight) {
+          workerHubCreditStatus.textContent = "Checking my balances…";
         } else {
           workerHubCreditStatus.textContent = workerBridgeState.walletFunding?.lastError
             || workerBridgeState.walletFunding?.lastStatus
@@ -703,9 +891,10 @@
         workerHubCreditDisabledReason.textContent = hubCreditReadiness.reason;
       }
       if (workerCheckHubCreditBalance) {
-        workerCheckHubCreditBalance.disabled = workerHubCreditBalanceInFlight || !workerWalletValidAddress(hubCreditReadiness.address);
-        workerCheckHubCreditBalance.textContent = workerHubCreditBalanceInFlight ? "Checking…" : "Check Hub Balance";
-        if (workerHubCreditBalanceInFlight) {
+        const checkingBalances = workerHubCreditBalanceInFlight || workerWalletCreditBalanceInFlight;
+        workerCheckHubCreditBalance.disabled = checkingBalances || !workerWalletValidAddress(hubCreditReadiness.address);
+        workerCheckHubCreditBalance.textContent = checkingBalances ? "Checking…" : "Check Balances";
+        if (checkingBalances) {
           workerCheckHubCreditBalance.setAttribute("aria-busy", "true");
         } else {
           workerCheckHubCreditBalance.removeAttribute("aria-busy");
@@ -713,7 +902,7 @@
       }
       if (workerFundHubCredit) {
         workerFundHubCredit.disabled = !hubCreditReadiness.ready;
-        workerFundHubCredit.textContent = workerHubCreditFundingInFlight ? "Funding…" : "Fund Hub Wallet Credit";
+        workerFundHubCredit.textContent = workerHubCreditFundingInFlight ? "Funding…" : "Fund";
         if (workerHubCreditFundingInFlight) {
           workerFundHubCredit.setAttribute("aria-busy", "true");
         } else {
@@ -1143,6 +1332,7 @@
           workerSetPrimaryWalletState({connected: true, address, chainId});
           workerWalletLastAction = `Connected ${workerShortAddress(address)} on ${chainId}.`;
           await workerLoadMultisessionKeysForWallet(address, reason);
+          await checkWorkerWalletCreditBalance({quiet: true});
         }
 
         workerWalletHookState = "idle";
@@ -1213,6 +1403,7 @@
           workerWalletLastAction = `Connected ${workerShortAddress(address)} on ${chainId}.`;
           workerWalletRecordEvent("provider.hydrate.connected", {reason, address, chainId});
           const activeKey = await workerLoadMultisessionKeysForWallet(address, reason);
+          await checkWorkerWalletCreditBalance({quiet: true});
           if (!activeKey && workerSaveStatus) {
             workerSaveStatus.textContent = `Connected wallet ${workerShortAddress(address)} on ${chainId}; no saved multi-session key loaded.`;
           }
@@ -1298,6 +1489,7 @@
           provider: context.providerInfo
         });
         await workerLoadMultisessionKeysForWallet(address, "connect");
+        await checkWorkerWalletCreditBalance({quiet: true});
         renderWorkerBridgeReadiness();
       } catch (error) {
         if (workerWalletOperationIsCurrent(token)) {
@@ -1432,6 +1624,7 @@
             ? `Faucet sent ${amount} credit${amount === "1" ? "" : "s"}: ${txHash}`
             : workerBridgeState.faucet.lastStatus;
         }
+        await checkWorkerWalletCreditBalance({quiet: true});
       } catch (error) {
         workerFaucetLastError = `Faucet request failed: ${error.message || error}`;
         workerBridgeState.faucet = {
@@ -1483,12 +1676,88 @@
       return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
     }
 
+    async function checkWorkerWalletCreditBalance({quiet = false} = {}) {
+      loadWorkerBridgeState();
+      const walletAddress = workerLowerAddress(workerBridgeState.wallet.address);
+      if (!workerWalletValidAddress(walletAddress)) {
+        if (workerBridgeState.walletFunding) {
+          workerBridgeState.walletFunding.walletBalance = null;
+          workerBridgeState.walletFunding.walletBalanceStatus = "not_connected";
+          workerBridgeState.walletFunding.walletBalanceError = "";
+        }
+        if (!quiet && workerSaveStatus) workerSaveStatus.textContent = "Connect Wallet before checking wallet balance.";
+        renderWorkerBridgeReadiness();
+        return null;
+      }
+
+      workerWalletCreditBalanceInFlight = true;
+      workerBridgeState.walletFunding = {
+        ...workerBridgeState.walletFunding,
+        walletBalance: null,
+        walletBalanceStatus: "checking",
+        walletBalanceError: "",
+        updatedAt: workerNowIso()
+      };
+      saveWorkerBridgeState();
+      renderWorkerBridgeReadiness();
+      try {
+        let rawBalance;
+        let localRpcError = null;
+        try {
+          rawBalance = await workerReadWalletBalanceFromLocalRpc(walletAddress);
+        } catch (error) {
+          localRpcError = error;
+          try {
+            const {injectedProvider} = await workerGetWalletProviderContext();
+            rawBalance = await workerReadWalletBalanceFromInjectedProvider(injectedProvider, walletAddress);
+          } catch (fallbackError) {
+            const localMessage = localRpcError?.message || String(localRpcError || "");
+            const fallbackMessage = fallbackError?.message || String(fallbackError || "");
+            throw new Error(localMessage && fallbackMessage ? `${localMessage}; wallet provider fallback failed: ${fallbackMessage}` : fallbackMessage || localMessage);
+          }
+        }
+        const walletBalance = workerNormalizeWalletCreditBalance(rawBalance);
+
+        workerBridgeState.walletFunding = {
+          ...workerBridgeState.walletFunding,
+          walletBalance,
+          walletBalanceStatus: "loaded",
+          walletBalanceError: "",
+          lastError: "",
+          updatedAt: workerNowIso()
+        };
+        saveWorkerBridgeState();
+        if (!quiet && workerSaveStatus) {
+          workerSaveStatus.textContent = walletBalance.balance_base_units === "0"
+            ? "My wallet has 0 credits. Request Faucet Funds before funding the bridge."
+            : `My wallet has ${walletBalance.available_credits} credits available to fund.`;
+        }
+        return walletBalance;
+      } catch (error) {
+        const details = workerWalletBalanceErrorDetails(error);
+        workerBridgeState.walletFunding = {
+          ...workerBridgeState.walletFunding,
+          walletBalance: null,
+          walletBalanceStatus: "failed",
+          walletBalanceError: details.message,
+          lastError: details.message,
+          updatedAt: workerNowIso()
+        };
+        saveWorkerBridgeState();
+        if (!quiet && workerSaveStatus) workerSaveStatus.textContent = details.message;
+        return null;
+      } finally {
+        workerWalletCreditBalanceInFlight = false;
+        renderWorkerBridgeReadiness();
+      }
+    }
+
     async function checkWorkerHubCreditBalance() {
       loadWorkerBridgeState();
       workerSaveHubCreditInputs();
       const walletAddress = workerLowerAddress(workerBridgeState.wallet.address);
       if (!workerWalletValidAddress(walletAddress)) {
-        const message = "Connect Wallet before checking hub wallet credit.";
+        const message = "Connect Wallet before checking balance.";
         workerBridgeState.walletFunding = {
           ...workerBridgeState.walletFunding,
           lastStatus: message,
@@ -1500,6 +1769,8 @@
         if (workerSaveStatus) workerSaveStatus.textContent = message;
         return null;
       }
+
+      await checkWorkerWalletCreditBalance({quiet: true});
 
       workerHubCreditBalanceInFlight = true;
       renderWorkerBridgeReadiness();
@@ -1514,7 +1785,7 @@
           ...workerBridgeState.walletFunding,
           balance,
           accountId: balance?.account_id || "",
-          lastStatus: `Hub reports ${available} spendable credits for ${workerShortAddress(walletAddress)}.`,
+          lastStatus: `My bridge account has ${available} spendable credits.`,
           lastError: "",
           updatedAt: workerNowIso()
         };
@@ -1522,7 +1793,7 @@
         if (workerSaveStatus) workerSaveStatus.textContent = workerBridgeState.walletFunding.lastStatus;
         return balance;
       } catch (error) {
-        const message = `Hub wallet balance check failed: ${error.message || error}`;
+        const message = `Balance check failed: ${error.message || error}`;
         workerBridgeState.walletFunding = {
           ...workerBridgeState.walletFunding,
           lastStatus: message,
@@ -1559,7 +1830,7 @@
       workerHubCreditFundingInFlight = true;
       workerBridgeState.walletFunding = {
         ...workerBridgeState.walletFunding,
-        lastStatus: "Waiting for wallet bridge-escrow transaction…",
+        lastStatus: "Waiting for wallet confirmation…",
         lastError: "",
         updatedAt: workerNowIso()
       };
@@ -1578,12 +1849,12 @@
 
         const amountUnits = workerCreditsToBaseUnits(readiness.amountCredits);
         const depositId = workerRandomBytes32Hex(ethers);
-        const memo = `worker hub wallet funding ${workerShortAddress(walletAddress)}`;
+        const memo = `my bridge account funding ${workerShortAddress(walletAddress)}`;
         const contract = new ethers.Contract(readiness.contractAddress, WORKER_HUB_CREDIT_BRIDGE_ESCROW_ABI, signer);
         const tx = await contract.depositFor(walletAddress, amountUnits, depositId, memo, {value: amountUnits});
         workerBridgeState.walletFunding = {
           ...workerBridgeState.walletFunding,
-          lastStatus: `Bridge escrow deposit submitted: ${tx.hash || "pending"}`,
+          lastStatus: `Funding transaction submitted: ${tx.hash || "pending"}`,
           lastTxHash: tx.hash || "",
           lastError: "",
           updatedAt: workerNowIso()
@@ -1620,17 +1891,18 @@
           balance: balance || workerBridgeState.walletFunding.balance,
           accountId: String(importResult.account_id || balance?.account_id || ""),
           lastStatus: importResult.idempotent
-            ? "Bridge escrow deposit was already imported; hub wallet balance is current."
-            : `Hub wallet credit funded for ${workerShortAddress(walletAddress)}.`,
+            ? "Funding was already recorded; my bridge balance is current."
+            : `My bridge account funded for ${workerShortAddress(walletAddress)}.`,
           lastTxHash: txHash,
           lastError: "",
           updatedAt: workerNowIso()
         };
         saveWorkerBridgeState();
         if (workerSaveStatus) workerSaveStatus.textContent = workerBridgeState.walletFunding.lastStatus;
+        await checkWorkerWalletCreditBalance({quiet: true});
         await checkWorkerHubCreditBalance();
       } catch (error) {
-        const message = `Hub wallet funding failed: ${error.message || error}`;
+        const message = `Funding failed: ${error.message || error}`;
         workerBridgeState.walletFunding = {
           ...workerBridgeState.walletFunding,
           lastStatus: message,
@@ -2265,7 +2537,7 @@
           }
           renderWorkerBridgeReadiness();
           workerRefreshFaucetRuntimeStatus();
-          if (workerSaveStatus) workerSaveStatus.textContent = "Wallet, key, faucet, and hub-credit readiness refreshed from local app storage and runtime status.";
+          if (workerSaveStatus) workerSaveStatus.textContent = "Wallet, key, faucet, and bridge-account balances refreshed from local app storage and runtime status.";
         });
       }
       if (workerFaucetAmount) {
