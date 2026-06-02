@@ -10,7 +10,7 @@ from urllib.request import Request, urlopen
 
 from main_computer.config import MainComputerConfig
 from main_computer.hub import HubHttpServer
-from main_computer.hub_credit_indexer import HubCreditIndexer
+from main_computer.hub_credit_indexer import HubCreditIndexer, wallet_account_id
 from main_computer.hub_credit_ledger import HubCreditLedger
 
 
@@ -69,6 +69,32 @@ class HubCreditIndexerTests(unittest.TestCase):
             self.assertEqual(ledger.get_account("user-one").available_credits, 100)
             self.assertEqual(ledger.status()["deposit_count"], 1)
             self.assertEqual(len(ledger.list_transactions(account_id="user-one")), 1)
+
+    def test_wallet_funding_import_uses_wallet_address_as_account_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wallet = "0xABCDEFabcdefABCDEFabcdefABCDEFabcdefABCD"
+            normalized_wallet = wallet.lower()
+            ledger = HubCreditLedger(Path(tmp))
+            indexer = HubCreditIndexer(ledger)
+
+            payload = normalized_deposit_payload(
+                account_id="browser-invented-account-must-not-win",
+                wallet_address=wallet,
+                payer_address=wallet,
+                tx_hash="0x4444444444444444444444444444444444444444444444444444444444444444",
+                credits_granted=250,
+            )
+
+            result = indexer.import_wallet_funding(payload)
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(wallet_account_id(wallet), normalized_wallet)
+            self.assertEqual(result["wallet_address"], normalized_wallet)
+            self.assertEqual(result["account_id"], normalized_wallet)
+            self.assertEqual(result["deposit"]["account_id"], normalized_wallet)
+            self.assertEqual(result["account"]["available_credits"], 250)
+            self.assertEqual(ledger.get_account(normalized_wallet).available_credits, 250)
+            self.assertEqual(ledger.get_account("browser-invented-account-must-not-win").available_credits, 0)
 
     def test_malformed_event_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -141,6 +167,55 @@ class HubCreditIndexerTests(unittest.TestCase):
                     bootstrap = json.loads(response.read().decode("utf-8"))
                 self.assertEqual(bootstrap["credits"]["totals"]["deposited_credits"], 100)
                 self.assertEqual(bootstrap["credit_indexer"]["phase"], "R2A")
+            finally:
+                hub.shutdown()
+                hub.server_close()
+                thread.join(timeout=2)
+
+
+    def test_hub_api_imports_wallet_funding_and_reports_wallet_balance(self) -> None:
+        with tempfile.TemporaryDirectory() as hub_tmp:
+            hub_config = MainComputerConfig(
+                workspace=Path(hub_tmp),
+                model="fake-model",
+                hub_root=Path(hub_tmp) / "hub-runtime",
+            )
+            hub = HubHttpServer(("127.0.0.1", 0), hub_config, verbose=False)
+            thread = self._start_server(hub)
+            try:
+                hub_base = f"http://127.0.0.1:{hub.server_port}"
+                wallet = "0x5555555555555555555555555555555555555555"
+
+                import_request = Request(
+                    f"{hub_base}/api/hub/v1/credits/wallet-funding/import",
+                    data=json.dumps(
+                        normalized_deposit_payload(
+                            account_id="frontend-label-ignored",
+                            wallet_address=wallet,
+                            payer_address=wallet,
+                            tx_hash="0x6666666666666666666666666666666666666666666666666666666666666666",
+                            credits_granted=777,
+                        )
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urlopen(import_request, timeout=5) as response:
+                    imported = json.loads(response.read().decode("utf-8"))
+
+                self.assertTrue(imported["ok"])
+                self.assertFalse(imported["idempotent"])
+                self.assertEqual(imported["wallet_address"], wallet)
+                self.assertEqual(imported["account_id"], wallet)
+                self.assertEqual(imported["account"]["available_credits"], 777)
+
+                with urlopen(f"{hub_base}/api/hub/v1/credits/balance?wallet_address={wallet}", timeout=5) as response:
+                    balance = json.loads(response.read().decode("utf-8"))
+                self.assertTrue(balance["ok"])
+                self.assertEqual(balance["wallet_address"], wallet)
+                self.assertEqual(balance["account_id"], wallet)
+                self.assertEqual(balance["account"]["available_credits"], 777)
+                self.assertEqual(balance["funding_model"], "hub_credit_bridge_escrow_wallet_v1")
             finally:
                 hub.shutdown()
                 hub.server_close()

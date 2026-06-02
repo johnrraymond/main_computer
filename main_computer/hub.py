@@ -26,7 +26,7 @@ from main_computer.hub_security import (
     hub_transport_is_encrypted_or_loopback,
 )
 from main_computer.hub_admin_site import HUB_ADMIN_ROUTES, build_admin_bootstrap_payload, render_hub_admin_html
-from main_computer.hub_credit_indexer import HubCreditIndexer
+from main_computer.hub_credit_indexer import HubCreditIndexer, wallet_account_id
 from main_computer.hub_credit_ledger import HubCreditLedger
 from main_computer.hub_credit_models import (
     DEFAULT_WORKER_PAYOUT_PRECISION_PLACES,
@@ -1026,6 +1026,20 @@ class HubServerHandler(_JsonHandler):
                 return dict(record)
         return None
 
+    def _wallet_credit_balance_payload(self, wallet_address: str) -> dict[str, Any]:
+        normalized_wallet = normalize_address(wallet_address)
+        account_id = wallet_account_id(normalized_wallet)
+        account = self.server.credit_ledger.get_account(account_id)
+        ledger_status = self.server.credit_ledger.status(recent_limit=10)
+        return {
+            "ok": True,
+            "wallet_address": normalized_wallet,
+            "account_id": account_id,
+            "account": account.as_dict(),
+            "unit": ledger_status["unit"],
+            "funding_model": "hub_credit_bridge_escrow_wallet_v1",
+        }
+
     def _handle_multisession_key_request(self, body: dict[str, Any]) -> dict[str, Any]:
         signed_request = body.get("signed_request")
         if not isinstance(signed_request, dict):
@@ -1464,9 +1478,26 @@ class HubServerHandler(_JsonHandler):
             self._send_json({"ok": True, "accounts": accounts, "account_count": len(accounts)})
             return
         if path == "/api/hub/v1/credits/balance":
+            wallet_address = str(query.get("wallet_address", [""])[0]).strip()
+            if wallet_address:
+                try:
+                    self._send_json(self._wallet_credit_balance_payload(wallet_address))
+                except ValueError as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
             account_id = query.get("account_id", [self.server.config.hub_client_node_id])[0]
             account = self.server.credit_ledger.get_account(account_id)
             self._send_json({"ok": True, "account": account.as_dict(), "unit": self.server.credit_ledger.status()["unit"]})
+            return
+        if path.startswith("/api/hub/v1/credits/wallets/") and path.endswith("/balance"):
+            wallet_address = path.removeprefix("/api/hub/v1/credits/wallets/").removesuffix("/balance").strip("/")
+            if not wallet_address or "/" in wallet_address:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            try:
+                self._send_json(self._wallet_credit_balance_payload(wallet_address))
+            except ValueError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
         if path == "/api/hub/v1/credits/transactions":
             account_id = query.get("account_id", [""])[0]
@@ -1759,6 +1790,10 @@ class HubServerHandler(_JsonHandler):
                     metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
                 )
                 self._send_json(result)
+                return
+            if path == "/api/hub/v1/credits/wallet-funding/import":
+                body = self._read_json()
+                self._send_json(self.server.credit_indexer.import_wallet_funding(body))
                 return
             if path in {"/api/hub/v1/credits/deposits/import", "/api/hub/v1/credits/purchases/import"}:
                 body = self._read_json()

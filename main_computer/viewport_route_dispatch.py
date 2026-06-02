@@ -1357,6 +1357,12 @@ def dispatch_post(self) -> None:
     if self.path == "/api/applications/worker/multisession-keys/load":
         self._handle_worker_multisession_keys_load()
         return
+    if self.path == "/api/applications/worker/wallet-funding/balance":
+        self._handle_worker_wallet_funding_balance()
+        return
+    if self.path == "/api/applications/worker/wallet-funding/import":
+        self._handle_worker_wallet_funding_import()
+        return
     if self.path == "/api/applications/git/status":
         self._handle_git_status()
         return

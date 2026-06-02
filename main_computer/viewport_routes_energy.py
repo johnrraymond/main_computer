@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 import ipaddress
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from main_computer.viewport_state import *  # noqa: F401,F403
@@ -284,6 +285,64 @@ class ViewportEnergyRoutesMixin:
             self.server.signal("api-worker-multisession-keys-load-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
+    def _handle_worker_wallet_funding_balance(self) -> None:
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Worker wallet funding balance checks are only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                return
+            body = self._read_json()
+            wallet_address = self._normalize_worker_wallet_address(body.get("wallet_address"))
+            hub_url = self._clean_hub_url(str(body.get("hub_url") or self.server.config.hub_url))
+            balance = self._fetch_worker_wallet_funding_balance_from_hub(hub_url=hub_url, wallet_address=wallet_address)
+            self.server.signal(
+                "api-worker-wallet-funding-balance",
+                hub_url=hub_url,
+                wallet_address=wallet_address,
+                available_credits=(balance.get("account") or {}).get("available_credits", 0) if isinstance(balance.get("account"), dict) else 0,
+            )
+            self._send_json({"ok": True, "hub_url": hub_url, **balance})
+        except Exception as exc:
+            self.server.signal("api-worker-wallet-funding-balance-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+    def _handle_worker_wallet_funding_import(self) -> None:
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Worker wallet funding imports are only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                return
+            body = self._read_json()
+            wallet_address = self._normalize_worker_wallet_address(body.get("wallet_address"))
+            hub_url = self._clean_hub_url(str(body.get("hub_url") or self.server.config.hub_url))
+            receipt = body.get("deposit_receipt")
+            if not isinstance(receipt, dict):
+                receipt = body
+
+            forwarded = {
+                "wallet_address": wallet_address,
+                "chain_id": int(receipt.get("chain_id", body.get("chain_id", 0)) or 0),
+                "contract_address": str(receipt.get("contract_address", body.get("contract_address", ""))),
+                "tx_hash": str(receipt.get("tx_hash", receipt.get("transaction_hash", body.get("tx_hash", "")))),
+                "log_index": int(receipt.get("log_index", body.get("log_index", 0)) or 0),
+                "block_number": int(receipt.get("block_number", body.get("block_number", 0)) or 0),
+                "payer_address": str(receipt.get("payer_address", body.get("payer_address", wallet_address)) or wallet_address),
+                "payment_asset": str(receipt.get("payment_asset", body.get("payment_asset", "native")) or "native"),
+                "payment_amount_base_units": int(receipt.get("payment_amount_base_units", body.get("payment_amount_base_units", 0)) or 0),
+                "credits_granted": int(receipt.get("credits_granted", body.get("credits_granted", 0)) or 0),
+                "memo": str(receipt.get("memo", body.get("memo", "Worker wallet bridge funding import"))),
+            }
+            result = self._post_worker_wallet_funding_import_to_hub(hub_url=hub_url, payload=forwarded)
+            self.server.signal(
+                "api-worker-wallet-funding-import",
+                hub_url=hub_url,
+                wallet_address=wallet_address,
+                tx_hash=forwarded["tx_hash"],
+                idempotent=bool(result.get("idempotent")),
+            )
+            self._send_json({"ok": True, "hub_url": hub_url, **result})
+        except Exception as exc:
+            self.server.signal("api-worker-wallet-funding-import-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
     def _handle_worker_multisession_key_request(self) -> None:
         try:
             if not self._worker_ui_client_is_local():
@@ -519,6 +578,43 @@ class ViewportEnergyRoutesMixin:
             raise RuntimeError(f"Hub is unreachable: {exc}") from exc
         if not isinstance(data, dict):
             raise RuntimeError("Hub returned a non-object multi-session key response.")
+        if data.get("error"):
+            raise RuntimeError(str(data["error"]))
+        return data
+
+    def _fetch_worker_wallet_funding_balance_from_hub(self, *, hub_url: str, wallet_address: str) -> dict[str, Any]:
+        query = urlencode({"wallet_address": wallet_address})
+        try:
+            with urlopen(self._clean_hub_url(hub_url) + f"/api/hub/v1/credits/balance?{query}", timeout=5.0) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Hub returned HTTP {exc.code}: {body}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"Hub is unreachable: {exc}") from exc
+        if not isinstance(data, dict):
+            raise RuntimeError("Hub returned a non-object wallet funding balance response.")
+        if data.get("error"):
+            raise RuntimeError(str(data["error"]))
+        return data
+
+    def _post_worker_wallet_funding_import_to_hub(self, *, hub_url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        request = Request(
+            self._clean_hub_url(hub_url) + "/api/hub/v1/credits/wallet-funding/import",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=10.0) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Hub returned HTTP {exc.code}: {body}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"Hub is unreachable: {exc}") from exc
+        if not isinstance(data, dict):
+            raise RuntimeError("Hub returned a non-object wallet funding import response.")
         if data.get("error"):
             raise RuntimeError(str(data["error"]))
         return data
