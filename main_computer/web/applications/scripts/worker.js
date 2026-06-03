@@ -21,8 +21,10 @@
     const WORKER_HUB_CREDIT_BRIDGE_ESCROW_ABI = [
       "function depositFor(address account,uint256 amountUnits,bytes32 depositId,string memo) payable returns (bool)"
     ];
-    const WORKER_DEV_CHAIN_NAME = "Main Computer Dev";
+    const WORKER_DEV_CHAIN_NAME = "Main Computer Dev Chain";
     const WORKER_DEV_CHAIN_RPC_URL = "http://127.0.0.1:18545";
+    const WORKER_DEV_CHAIN_CURRENCY_NAME = "Compute Credits";
+    const WORKER_DEV_CHAIN_CURRENCY_SYMBOL = "MCC";
     const WORKER_ETHERS_ESM_URL = "https://cdn.jsdelivr.net/npm/ethers@6.13.4/+esm";
     let workerBridgeStateLoaded = false;
     let workerBridgeState = workerDefaultBridgeState();
@@ -137,13 +139,14 @@
       };
     }
 
-    async function workerInjectedProviderRequest(injectedProvider, method, params = [], label = method) {
+    async function workerInjectedProviderRequest(injectedProvider, method, params = [], label = method, timeoutMs = WORKER_WALLET_BALANCE_TIMEOUT_MS) {
       if (!injectedProvider || typeof injectedProvider.request !== "function") {
         throw new Error("No browser wallet request provider is available.");
       }
       return await workerPromiseWithTimeout(
         injectedProvider.request({method, params}),
-        label
+        label,
+        timeoutMs
       );
     }
 
@@ -1057,6 +1060,12 @@
           workerSaveStatus.textContent = "Opening browser wallet account request...";
         } else if (entry.type === "connect.ethers.requestAccounts.resolved") {
           workerSaveStatus.textContent = "Wallet account request accepted; verifying signer and chain with ethers.";
+        } else if (entry.type === "connect.wallet.addChain.start") {
+          workerSaveStatus.textContent = `Requesting MetaMask network update to ${WORKER_DEV_CHAIN_RPC_URL}.`;
+        } else if (entry.type === "connect.wallet.addChain.done") {
+          workerSaveStatus.textContent = "MetaMask network update accepted; switching to the Main Computer dev chain.";
+        } else if (entry.type === "connect.wallet.rpcProof.done") {
+          workerSaveStatus.textContent = `MetaMask RPC ready on ${detail.chainId || WORKER_DEV_CHAIN_ID_HEX}.`;
         } else if (entry.type === "connect.ethers.switchChain.start") {
           workerSaveStatus.textContent = `Switching wallet to ${WORKER_DEV_CHAIN_ID_HEX}.`;
         } else if (entry.type === "connect.finalized.connected") {
@@ -1076,6 +1085,200 @@
         code: error && typeof error === "object" ? error.code : undefined,
         message: error && typeof error === "object" ? error.message || String(error) : String(error)
       };
+    }
+
+    function workerWalletErrorMessage(error) {
+      if (!error) return "unknown wallet error";
+      if (error && typeof error === "object") {
+        if (error.message) return String(error.message);
+        if (error.error && typeof error.error === "object" && error.error.message) {
+          return String(error.error.message);
+        }
+      }
+      return String(error);
+    }
+
+    function workerDevWalletChainParams() {
+      return {
+        chainId: WORKER_DEV_CHAIN_ID_HEX,
+        chainName: WORKER_DEV_CHAIN_NAME,
+        nativeCurrency: {
+          name: WORKER_DEV_CHAIN_CURRENCY_NAME,
+          symbol: WORKER_DEV_CHAIN_CURRENCY_SYMBOL,
+          decimals: 18
+        },
+        rpcUrls: [WORKER_DEV_CHAIN_RPC_URL],
+        blockExplorerUrls: []
+      };
+    }
+
+    function workerWalletRpcRepairMessage(reason = "") {
+      const detail = String(reason || "").trim();
+      return detail
+        ? `MetaMask is selected on the Main Computer dev chain, but its RPC connection is stale/loading. Requesting MetaMask to update this network to ${WORKER_DEV_CHAIN_RPC_URL}. ${detail}`
+        : `MetaMask is selected on the Main Computer dev chain, but its RPC connection is stale/loading. Requesting MetaMask to update this network to ${WORKER_DEV_CHAIN_RPC_URL}.`;
+    }
+
+    function workerSleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    function workerProviderStateFlag(provider, key) {
+      try {
+        return provider && typeof provider[key] === "function" ? provider[key]() : null;
+      } catch {
+        return null;
+      }
+    }
+
+    async function workerReadInjectedProviderMetadata(injectedProvider) {
+      const metadata = {
+        providerPresent: Boolean(injectedProvider),
+        isMetaMask: Boolean(injectedProvider?.isMetaMask),
+        providerConnected: workerProviderStateFlag(injectedProvider, "isConnected"),
+        chainId: "",
+        accounts: [],
+        networkVersion: null,
+        metamaskState: null,
+        errors: {}
+      };
+
+      if (!injectedProvider || typeof injectedProvider.request !== "function") {
+        metadata.errors.provider = "No browser wallet request provider is available.";
+        return metadata;
+      }
+
+      try {
+        metadata.chainId = workerNormalizeChainIdHex(
+          await workerInjectedProviderRequest(injectedProvider, "eth_chainId", [], "wallet chain metadata")
+        );
+      } catch (error) {
+        metadata.errors.chainId = workerWalletErrorMessage(error);
+      }
+
+      try {
+        const accounts = await workerInjectedProviderRequest(injectedProvider, "eth_accounts", [], "wallet account metadata");
+        metadata.accounts = (Array.isArray(accounts) ? accounts : [])
+          .map((account) => String(account || ""))
+          .filter(Boolean);
+      } catch (error) {
+        metadata.errors.accounts = workerWalletErrorMessage(error);
+      }
+
+      try {
+        const providerState = await workerInjectedProviderRequest(injectedProvider, "metamask_getProviderState", [], "MetaMask provider state");
+        if (providerState && typeof providerState === "object") {
+          metadata.metamaskState = providerState;
+          metadata.networkVersion = providerState.networkVersion ?? null;
+          if (typeof providerState.isConnected === "boolean") {
+            metadata.providerConnected = providerState.isConnected;
+          }
+          if (!metadata.chainId && providerState.chainId) {
+            metadata.chainId = workerNormalizeChainIdHex(providerState.chainId);
+          }
+          if (!metadata.accounts.length && Array.isArray(providerState.accounts)) {
+            metadata.accounts = providerState.accounts
+              .map((account) => String(account || ""))
+              .filter(Boolean);
+          }
+        }
+      } catch (error) {
+        metadata.errors.metamaskProviderState = workerWalletErrorMessage(error);
+      }
+
+      return metadata;
+    }
+
+    function workerWalletMetadataNeedsRpcRepair(metadata) {
+      if (!metadata || metadata.chainId !== WORKER_DEV_CHAIN_ID_HEX) return false;
+      if (metadata.providerConnected === false) return true;
+      if (metadata.networkVersion === "loading") return true;
+      return false;
+    }
+
+    async function workerProveInjectedProviderRpc(injectedProvider) {
+      let chainId = "";
+      try {
+        chainId = workerNormalizeChainIdHex(
+          await workerInjectedProviderRequest(injectedProvider, "eth_chainId", [], "wallet chain proof")
+        );
+      } catch (error) {
+        return {
+          ok: false,
+          chainId: "",
+          reason: `Could not read MetaMask chain id: ${workerWalletErrorMessage(error)}`,
+          error
+        };
+      }
+
+      if (chainId !== WORKER_DEV_CHAIN_ID_HEX) {
+        return {
+          ok: false,
+          chainId,
+          wrongChain: true,
+          reason: `Wallet is on ${chainId || "unknown chain"}; expected ${WORKER_DEV_CHAIN_ID_HEX}.`
+        };
+      }
+
+      try {
+        const blockNumber = await workerInjectedProviderRequest(injectedProvider, "eth_blockNumber", [], "wallet RPC block proof");
+        return {
+          ok: true,
+          chainId,
+          blockNumber
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          chainId,
+          rpcUnavailable: true,
+          reason: `MetaMask cannot read the Main Computer dev chain through its current RPC: ${workerWalletErrorMessage(error)}`,
+          error
+        };
+      }
+    }
+
+    async function workerRequestDevWalletChainUpdate(injectedProvider, reason = "network-repair") {
+      if (!injectedProvider || typeof injectedProvider.request !== "function") {
+        throw new Error("No browser wallet request provider is available.");
+      }
+
+      workerWalletRecordEvent("connect.wallet.addChain.start", {
+        reason,
+        chainId: WORKER_DEV_CHAIN_ID_HEX,
+        rpcUrl: WORKER_DEV_CHAIN_RPC_URL
+      });
+      await workerInjectedProviderRequest(
+        injectedProvider,
+        "wallet_addEthereumChain",
+        [workerDevWalletChainParams()],
+        "wallet dev-chain update",
+        120000
+      );
+      workerWalletRecordEvent("connect.wallet.addChain.done", {
+        reason,
+        chainId: WORKER_DEV_CHAIN_ID_HEX,
+        rpcUrl: WORKER_DEV_CHAIN_RPC_URL
+      });
+
+      workerWalletRecordEvent("connect.ethers.switchChain.start", {
+        from: "wallet-provider",
+        to: WORKER_DEV_CHAIN_ID_HEX,
+        reason
+      });
+      await workerInjectedProviderRequest(
+        injectedProvider,
+        "wallet_switchEthereumChain",
+        [{chainId: WORKER_DEV_CHAIN_ID_HEX}],
+        "wallet dev-chain switch",
+        60000
+      );
+    }
+
+    function workerRebuildWalletBrowserProvider(ethers, injectedProvider) {
+      if (!ethers || !injectedProvider) return workerWalletBrowserProvider;
+      workerWalletBrowserProvider = new ethers.BrowserProvider(injectedProvider, "any");
+      return workerWalletBrowserProvider;
     }
 
     async function workerGetEthers() {
@@ -1265,44 +1468,74 @@
       };
     }
 
-    async function workerEnsureDevWalletChain(browserProvider) {
-      let snapshot = await workerReadWalletProviderSnapshot(browserProvider);
-      if (snapshot.chainId === WORKER_DEV_CHAIN_ID_HEX) {
-        return snapshot.chainId;
+    async function workerEnsureDevWalletChain(browserProvider, injectedProvider = workerWalletSelectedProvider, options = {}) {
+      const opts = options && typeof options === "object" ? options : {};
+      const reason = String(opts.reason || "ensure-dev-chain");
+      const ethers = await workerGetEthers();
+      let activeBrowserProvider = browserProvider || workerWalletBrowserProvider;
+
+      if (!injectedProvider && workerWalletSelectedProvider) {
+        injectedProvider = workerWalletSelectedProvider;
+      }
+      if (!activeBrowserProvider && injectedProvider) {
+        activeBrowserProvider = workerRebuildWalletBrowserProvider(ethers, injectedProvider);
       }
 
-      workerWalletRecordEvent("connect.ethers.switchChain.start", {
-        from: snapshot.chainId || "unknown",
-        to: WORKER_DEV_CHAIN_ID_HEX
-      });
+      let metadata = await workerReadInjectedProviderMetadata(injectedProvider);
+      let needsUpdate = Boolean(opts.forceUpdate);
+      let updateReason = needsUpdate ? String(opts.forceReason || reason) : "";
 
-      try {
-        await browserProvider.send("wallet_switchEthereumChain", [{chainId: WORKER_DEV_CHAIN_ID_HEX}]);
-      } catch (error) {
-        const code = error && typeof error === "object" ? error.code : undefined;
-        const message = error && typeof error === "object" ? String(error.message || "") : String(error || "");
-        if (code !== 4902 && !message.includes("4902")) {
-          throw error;
+      if (metadata.chainId !== WORKER_DEV_CHAIN_ID_HEX) {
+        needsUpdate = true;
+        updateReason = metadata.chainId
+          ? `wallet is on ${metadata.chainId}; expected ${WORKER_DEV_CHAIN_ID_HEX}`
+          : metadata.errors.chainId || "wallet chain is unknown";
+      } else if (workerWalletMetadataNeedsRpcRepair(metadata)) {
+        needsUpdate = true;
+        updateReason = workerWalletRpcRepairMessage(`networkVersion=${metadata.networkVersion || "unknown"} providerConnected=${metadata.providerConnected}`);
+      } else if (opts.probeRpc) {
+        const proof = await workerProveInjectedProviderRpc(injectedProvider);
+        if (!proof.ok) {
+          needsUpdate = true;
+          updateReason = proof.reason || "MetaMask RPC proof failed.";
         }
-        workerWalletRecordEvent("connect.ethers.addChain.start", {chainId: WORKER_DEV_CHAIN_ID_HEX});
-        await browserProvider.send("wallet_addEthereumChain", [{
-          chainId: WORKER_DEV_CHAIN_ID_HEX,
-          chainName: WORKER_DEV_CHAIN_NAME,
-          nativeCurrency: {
-            name: "MC Dev ETH",
-            symbol: "ETH",
-            decimals: 18
-          },
-          rpcUrls: [WORKER_DEV_CHAIN_RPC_URL],
-          blockExplorerUrls: []
-        }]);
       }
 
-      snapshot = await workerReadWalletProviderSnapshot(browserProvider);
-      if (snapshot.chainId !== WORKER_DEV_CHAIN_ID_HEX) {
-        throw new Error(`Wrong chain after wallet switch. Expected ${WORKER_DEV_CHAIN_ID_HEX}, got ${snapshot.chainId || "unknown"}.`);
+      if (needsUpdate) {
+        if (workerSaveStatus) workerSaveStatus.textContent = workerWalletRpcRepairMessage(updateReason);
+        await workerRequestDevWalletChainUpdate(injectedProvider, updateReason || reason);
+        await workerSleep(500);
+        activeBrowserProvider = workerRebuildWalletBrowserProvider(ethers, injectedProvider);
+        metadata = await workerReadInjectedProviderMetadata(injectedProvider);
       }
-      return snapshot.chainId;
+
+      const chainId = workerNormalizeChainIdHex(metadata.chainId);
+      if (chainId !== WORKER_DEV_CHAIN_ID_HEX) {
+        throw new Error(`Wrong chain after wallet network reconciliation. Expected ${WORKER_DEV_CHAIN_ID_HEX}, got ${chainId || "unknown"}.`);
+      }
+
+      if (opts.probeRpc) {
+        const proof = await workerProveInjectedProviderRpc(injectedProvider);
+        if (!proof.ok) {
+          throw new Error(
+            needsUpdate
+              ? `MetaMask network update did not restore RPC access: ${proof.reason}`
+              : proof.reason
+          );
+        }
+        workerWalletRecordEvent("connect.wallet.rpcProof.done", {
+          reason,
+          chainId: proof.chainId,
+          blockNumber: proof.blockNumber
+        });
+      }
+
+      return {
+        chainId,
+        browserProvider: activeBrowserProvider,
+        metadata,
+        repaired: needsUpdate
+      };
     }
 
     async function workerRefreshWalletFromProvider(reason = "refresh") {
@@ -1329,10 +1562,23 @@
           workerSetPrimaryWalletState({connected: false});
           workerWalletLastAction = `Wallet is on ${chainId || "unknown chain"}; expected ${WORKER_DEV_CHAIN_ID_HEX}.`;
         } else {
-          workerSetPrimaryWalletState({connected: true, address, chainId});
-          workerWalletLastAction = `Connected ${workerShortAddress(address)} on ${chainId}.`;
-          await workerLoadMultisessionKeysForWallet(address, reason);
-          await checkWorkerWalletCreditBalance({quiet: true});
+          const metadata = await workerReadInjectedProviderMetadata(workerWalletSelectedProvider);
+          if (workerWalletMetadataNeedsRpcRepair(metadata)) {
+            workerSetPrimaryWalletState({connected: false});
+            workerWalletLastAction = workerWalletRpcRepairMessage("Click Connect Wallet to update the saved MetaMask network before funding.");
+            workerWalletRecordEvent("provider.refresh.rpc-needs-repair", {
+              reason,
+              address,
+              chainId,
+              networkVersion: metadata.networkVersion,
+              providerConnected: metadata.providerConnected
+            });
+          } else {
+            workerSetPrimaryWalletState({connected: true, address, chainId});
+            workerWalletLastAction = `Connected ${workerShortAddress(address)} on ${chainId}.`;
+            await workerLoadMultisessionKeysForWallet(address, reason);
+            await checkWorkerWalletCreditBalance({quiet: true});
+          }
         }
 
         workerWalletHookState = "idle";
@@ -1398,6 +1644,22 @@
             return snapshot;
           }
 
+          const metadata = await workerReadInjectedProviderMetadata(context.injectedProvider);
+          if (workerWalletMetadataNeedsRpcRepair(metadata)) {
+            workerSetPrimaryWalletState({connected: false});
+            workerWalletHookState = "idle";
+            workerWalletLastAction = workerWalletRpcRepairMessage("Click Connect Wallet to update the saved MetaMask network before funding.");
+            workerWalletRecordEvent("provider.hydrate.rpc-needs-repair", {
+              reason,
+              address,
+              chainId,
+              networkVersion: metadata.networkVersion,
+              providerConnected: metadata.providerConnected
+            });
+            renderWorkerBridgeReadiness();
+            return snapshot;
+          }
+
           workerSetPrimaryWalletState({connected: true, address, chainId});
           workerWalletHookState = "idle";
           workerWalletLastAction = `Connected ${workerShortAddress(address)} on ${chainId}.`;
@@ -1446,6 +1708,16 @@
       try {
         const context = await workerGetWalletProviderContext();
         workerBindWalletProviderEvents(context.injectedProvider);
+
+        workerWalletRecordEvent("connect.wallet.networkPreflight.start", {provider: context.providerInfo});
+        workerSetWalletOperationState("requesting", "Checking browser wallet network before requesting accounts.");
+        const preAccountNetwork = await workerEnsureDevWalletChain(
+          context.browserProvider,
+          context.injectedProvider,
+          {probeRpc: true, reason: "connect-pre-account"}
+        );
+        context.browserProvider = preAccountNetwork.browserProvider || context.browserProvider;
+
         workerWalletRecordEvent("connect.ethers.requestAccounts.start", {provider: context.providerInfo});
 
         await context.browserProvider.send("eth_requestAccounts", []);
@@ -1456,9 +1728,14 @@
 
         workerWalletRecordEvent("connect.ethers.requestAccounts.resolved");
 
-        workerSetWalletOperationState("stabilizing", "Wallet accepted. Verifying signer and dev chain with ethers.");
+        workerSetWalletOperationState("stabilizing", "Wallet accepted. Verifying signer and dev chain with ethers. Checking MetaMask RPC before enabling funding.");
 
-        await workerEnsureDevWalletChain(context.browserProvider);
+        const postAccountNetwork = await workerEnsureDevWalletChain(
+          context.browserProvider,
+          context.injectedProvider,
+          {probeRpc: true, reason: "connect-post-account"}
+        );
+        context.browserProvider = postAccountNetwork.browserProvider || context.browserProvider;
 
         if (!workerWalletOperationIsCurrent(token)) {
           throw new Error("Connect finalization ignored because Force Disconnect / Reset was clicked.");
@@ -1838,8 +2115,14 @@
       renderWorkerBridgeReadiness();
 
       try {
-        const {ethers, browserProvider} = await workerGetWalletProviderContext();
-        await workerEnsureDevWalletChain(browserProvider);
+        const context = await workerGetWalletProviderContext();
+        const {ethers} = context;
+        const fundingNetwork = await workerEnsureDevWalletChain(
+          context.browserProvider,
+          context.injectedProvider,
+          {probeRpc: true, reason: "funding-preflight"}
+        );
+        const browserProvider = fundingNetwork.browserProvider || context.browserProvider;
         const signer = await browserProvider.getSigner();
         const signerAddress = workerLowerAddress(await signer.getAddress());
         const walletAddress = workerLowerAddress(readiness.address);
