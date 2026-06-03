@@ -453,7 +453,7 @@
         expectedHex: expected ? `0x${expected.toString(16)}` : "",
         rpcUrl: live.rpc_url || xlagStatus?.rpc_url || "http://127.0.0.1:18545",
         chainName: live.chain_name || "Main Computer Dev Chain",
-        currencySymbol: live.currency_symbol || "Compute Credits"
+        currencySymbol: "MCXLAG"
       };
     }
     function xlagSetWalletMessage(message, target = null) {
@@ -829,7 +829,7 @@
             params: [{
               chainId: expectedHex,
               chainName,
-              nativeCurrency: {name: currencySymbol, symbol: currencySymbol, decimals: 18},
+              nativeCurrency: {name: "Main Computer XLAG Credit", symbol: currencySymbol || "MCXLAG", decimals: 18},
               rpcUrls: [rpcUrl]
             }]
           });
@@ -850,7 +850,7 @@
       const guide = [
         "1) Run: python .\\dev-chain-wallet-smoke-guide.py --show-private-keys",
         `2) MetaMask RPC: ${live.rpc_url || "http://127.0.0.1:18545"}`,
-        `3) Chain ID: ${live.expected_chain_id || data.chain_id || "42424242"} / symbol Compute Credits`,
+        `3) Chain ID: ${live.expected_chain_id || data.chain_id || "42424242"} / symbol MCXLAG`,
         "4) Import an O0/O1/O2/O3 dev office private key.",
         `5) Call ${smoke.function || "finalizeWalletSmokeTest(bytes32,string)"} from one office wallet.`,
         `selector ${smoke.selector || "0xaa46bd04"}`
