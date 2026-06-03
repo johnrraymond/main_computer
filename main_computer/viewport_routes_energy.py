@@ -360,8 +360,13 @@ class ViewportEnergyRoutesMixin:
             if not isinstance(receipt, dict):
                 receipt = body
 
+            # Keep the normalized wallet address as the hub account id for legacy
+            # deposit/purchase import routes.  Newer hubs derive this in the
+            # wallet-funding route, but older hubs reject otherwise-valid receipts
+            # with "account_id is required" before they look at wallet_address.
             forwarded = {
                 "wallet_address": wallet_address,
+                "account_id": wallet_address,
                 "chain_id": int(receipt.get("chain_id", body.get("chain_id", 0)) or 0),
                 "contract_address": str(receipt.get("contract_address", body.get("contract_address", ""))),
                 "tx_hash": str(receipt.get("tx_hash", receipt.get("transaction_hash", body.get("tx_hash", "")))),
@@ -642,25 +647,70 @@ class ViewportEnergyRoutesMixin:
         return data
 
     def _post_worker_wallet_funding_import_to_hub(self, *, hub_url: str, payload: dict[str, Any]) -> dict[str, Any]:
-        request = Request(
-            self._clean_hub_url(hub_url) + "/api/hub/v1/credits/wallet-funding/import",
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urlopen(request, timeout=10.0) as response:
-                data = json.loads(response.read().decode("utf-8"))
-        except HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Hub returned HTTP {exc.code}: {body}") from exc
-        except URLError as exc:
-            raise RuntimeError(f"Hub is unreachable: {exc}") from exc
-        if not isinstance(data, dict):
-            raise RuntimeError("Hub returned a non-object wallet funding import response.")
-        if data.get("error"):
-            raise RuntimeError(str(data["error"]))
-        return data
+        """Forward a confirmed wallet-funding receipt to Hub.
+
+        The on-chain transaction has already happened before this helper runs, so a
+        missing newest Hub route must not force the user to submit another funding
+        transaction.  New Hubs expose the wallet-specific import route; older Hubs
+        still expose the normalized deposit/purchase import aliases that record the
+        same chain receipt idempotently for the wallet address.
+        """
+
+        hub_base = self._clean_hub_url(hub_url)
+        wallet_address = str(payload.get("wallet_address", "")).strip().lower()
+        account_id = str(payload.get("account_id", "") or wallet_address).strip().lower()
+        import_paths = [
+            ("/api/hub/v1/credits/wallet-funding/import", "wallet-funding"),
+            ("/api/hub/v1/credits/deposits/import", "legacy-deposit-import"),
+            ("/api/hub/v1/credits/purchases/import", "legacy-purchase-import"),
+        ]
+        route_errors: list[str] = []
+
+        for index, (path, mode) in enumerate(import_paths):
+            route_payload = dict(payload)
+            if mode != "wallet-funding":
+                if wallet_address:
+                    route_payload.setdefault("wallet_address", wallet_address)
+                if account_id:
+                    route_payload.setdefault("account_id", account_id)
+            encoded = json.dumps(route_payload, ensure_ascii=False).encode("utf-8")
+            request = Request(
+                hub_base + path,
+                data=encoded,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urlopen(request, timeout=10.0) as response:
+                    data = json.loads(response.read().decode("utf-8"))
+            except HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                route_errors.append(f"{path} -> HTTP {exc.code}: {body}")
+                if exc.code in {HTTPStatus.NOT_FOUND, HTTPStatus.METHOD_NOT_ALLOWED} and index + 1 < len(import_paths):
+                    continue
+                raise RuntimeError(f"Hub returned HTTP {exc.code} from {path}: {body}") from exc
+            except URLError as exc:
+                raise RuntimeError(f"Hub is unreachable: {exc}") from exc
+
+            if not isinstance(data, dict):
+                raise RuntimeError(f"Hub returned a non-object wallet funding import response from {path}.")
+            if data.get("error"):
+                raise RuntimeError(str(data["error"]))
+
+            if mode != "wallet-funding":
+                data = dict(data)
+                if wallet_address:
+                    data.setdefault("wallet_address", wallet_address)
+                if account_id:
+                    data.setdefault("account_id", account_id)
+                data.setdefault("funding_model", "hub_credit_bridge_escrow_wallet_v1")
+                data["wallet_funding_import_endpoint"] = path
+                data["wallet_funding_import_fallback"] = True
+                if route_errors:
+                    data["wallet_funding_import_route_errors"] = route_errors
+            return data
+
+        raise RuntimeError("Hub wallet funding import failed: " + " ; ".join(route_errors))
 
     def _post_worker_registration_to_hub(self, *, hub_url: str, payload: dict[str, Any]) -> dict[str, Any]:
         request = Request(
