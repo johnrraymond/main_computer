@@ -21,7 +21,7 @@ def test_mcel_runtime_packager_builds_single_frontend_runtime_without_lab_ui(tmp
     text = result.output_path.read_text(encoding="utf-8")
 
     assert result.size_bytes == len(text.encode("utf-8"))
-    assert result.version == "mcel-runtime.v0.1.8"
+    assert result.version == "mcel-runtime.v0.1.9"
     assert result.helper_functions == ("isolatedSiteCss",)
     assert MCEL_LAB_HELPER_FILE in result.source_files
     for source_file in MCEL_RUNTIME_MODULES:
@@ -115,6 +115,10 @@ def test_mcel_runtime_hydration_powers_site_mode_without_lab_replacing_everythin
     assert "scroll-chip" in text
     assert "disclose" in text
     assert "mcelRuntimeScheduleVanity(root, opts)" in text
+    assert 'vanity: true' in text
+    assert 'vanityRemedy: "auto"' in text
+    assert 'options.vanity === false' in text
+    assert 'opts.vanityDetect === true || options.detect === true' in text
     assert "mcelRuntimeAmbientOptions()" in text
     assert 'mcelRuntimeScript = window.document?.currentScript || null' in text
     spotlight_body = text.split(':root[data-mcel-runtime-chrome="chrome-spotlight"] body.mcel-powered-site :where(section[data-mc-kind="proof"]', 1)[1].split('}', 1)[0]
