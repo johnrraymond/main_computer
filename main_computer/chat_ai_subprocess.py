@@ -39,6 +39,7 @@ from main_computer.rag_assisted_thinking_v4 import (
     run_rag_assisted_thinking_v4_request,
 )
 
+from main_computer.main_log_hooks import install_main_log_hooks_from_env
 
 HEARTBEAT_INTERVAL_S = 2.0
 HEARTBEAT_TIMEOUT_S = 30.0
@@ -96,6 +97,8 @@ def _child_process_env(package_root: Path, python_executable: str) -> dict[str, 
     env["PATH"] = str(python_path.parent) + os.pathsep + env.get("PATH", "")
     env["MAIN_COMPUTER_PYTHON"] = str(python_path)
     env["MAIN_COMPUTER_FUNCTIONAL_PYTHON"] = str(python_path)
+    env["MAIN_COMPUTER_SERVICE_NAME"] = "chat-ai-subprocess"
+    env["MAIN_COMPUTER_MAIN_LOG_HOOK_OS_WRITE"] = "1"
     env["PYTHONPATH"] = str(package_root)
     env.pop("PYTHONHOME", None)
     env.pop("__PYVENV_LAUNCHER__", None)
@@ -1539,6 +1542,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not args.worker:
         parser.error("--worker is required")
+    install_main_log_hooks_from_env(
+        default_service_name="chat-ai-subprocess",
+        root=os.environ.get("MAIN_COMPUTER_ROOT"),
+        capture_os_write=True,
+    )
     return run_worker(args.log_file)
 
 
