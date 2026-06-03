@@ -170,6 +170,8 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
     assert '"/api/xlag/dev/faucet"' in js
     assert "WORKER_DEV_CHAIN_ID_DECIMAL = 42424242" in js
     assert 'WORKER_DEV_CHAIN_ID_HEX = "0x28757b2"' in js
+    assert 'WORKER_DEV_CHAIN_RPC_URL = "http://127.0.0.1:18545"' in js
+    assert 'WORKER_DEV_CHAIN_NAME = "Main Computer Dev Chain"' in js
     assert 'WORKER_FAUCET_AMOUNT_CREDITS = "1"' in js
     assert "workerFaucetInFlight" in js
     assert "workerFaucetLastResult" in js
@@ -263,6 +265,15 @@ def test_worker_wallet_connect_and_disconnect_use_always_disconnect_cycle() -> N
     assert 'workerHydrateConnectedWalletFromProvider("page-load")' in js
     assert "workerReadGrantedWalletProviderSnapshot" in js
     assert '"eth_accounts"' in js
+    assert '"metamask_getProviderState"' in js
+    assert '"eth_blockNumber"' in js
+    assert "workerWalletMetadataNeedsRpcRepair" in js
+    assert "workerProveInjectedProviderRpc" in js
+    assert "workerRequestDevWalletChainUpdate" in js
+    assert "provider.hydrate.rpc-needs-repair" in js
+    assert "connect.wallet.networkPreflight.start" in js
+    assert "connect.wallet.rpcProof.done" in js
+    assert "funding-preflight" in js
     assert "provider.hydrate.start" in js
     assert "provider.hydrate.connected" in js
     assert "provider.hydrate.no-account" in js
