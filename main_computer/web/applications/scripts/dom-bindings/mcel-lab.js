@@ -33,6 +33,7 @@
         lastSmartCssPrimitiveReport: null,
         lastCanonicalSpecimenReport: null,
         lastCanonicalSpecimenProof: null,
+        lastCanonicalSpecimenLens: null,
         lastProjectSnapshot: null,
         activeModal: null,
         canonicalAppSpecimen: {
@@ -42,6 +43,8 @@
           inspectCount: 0,
           proofCount: 0,
           specimenChromeCount: 0,
+          lensCount: 0,
+          lensStatus: "idle",
           app: "task-manager",
           route: "/applications/task-manager/server-processes?mcel_lab_specimen=task-manager",
           rootSelector: "#task-manager-app",
@@ -111,11 +114,13 @@
     const mcelCanonicalAppRefresh = document.querySelector("#mcel-canonical-app-refresh");
     const mcelCanonicalAppInspect = document.querySelector("#mcel-canonical-app-inspect");
     const mcelCanonicalAppProof = document.querySelector("#mcel-canonical-app-proof");
+    const mcelCanonicalAppLens = document.querySelector("#mcel-canonical-app-lens");
     const mcelCanonicalAppStatus = document.querySelector("#mcel-canonical-app-status");
     const mcelCanonicalAppFrameShell = document.querySelector(".mcel-canonical-specimen-frame-shell");
     const mcelCanonicalAppFrameSummary = document.querySelector("#mcel-canonical-app-frame-summary");
     const mcelCanonicalAppFrame = document.querySelector("#mcel-canonical-app-frame");
     const mcelCanonicalAppReport = document.querySelector("#mcel-canonical-app-report");
+    const mcelCanonicalAppLensMap = document.querySelector("#mcel-canonical-app-lens-map");
     const mcelSelectionStatus = document.querySelector("#mcel-selection-status");
     const mcelGrapesHost = document.querySelector("#mcel-grapes-host");
     const mcelGrapesCanvas = document.querySelector("#mcel-grapes");
