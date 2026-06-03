@@ -7,7 +7,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKER_HTML = REPO_ROOT / "main_computer" / "web" / "applications" / "apps" / "worker.html"
 WORKER_CSS = REPO_ROOT / "main_computer" / "web" / "applications" / "styles" / "worker.css"
 WORKER_JS = REPO_ROOT / "main_computer" / "web" / "applications" / "scripts" / "worker.js"
-WALLET_JS = REPO_ROOT / "main_computer" / "web" / "applications" / "scripts" / "wallet.js"
 WORKER_BINDINGS_JS = REPO_ROOT / "main_computer" / "web" / "applications" / "scripts" / "dom-bindings" / "worker.js"
 VIEWPORT_ROUTES = REPO_ROOT / "main_computer" / "viewport_route_dispatch.py"
 VIEWPORT_ENERGY_ROUTES = REPO_ROOT / "main_computer" / "viewport_routes_energy.py"
@@ -173,8 +172,6 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
     assert 'WORKER_DEV_CHAIN_ID_HEX = "0x28757b2"' in js
     assert 'WORKER_DEV_CHAIN_RPC_URL = "http://127.0.0.1:18545"' in js
     assert 'WORKER_DEV_CHAIN_NAME = "Main Computer Dev Chain"' in js
-    assert 'WORKER_DEV_CHAIN_CURRENCY_NAME = "Main Computer XLAG Credit"' in js
-    assert 'WORKER_DEV_CHAIN_CURRENCY_SYMBOL = "MCXLAG"' in js
     assert 'WORKER_FAUCET_AMOUNT_CREDITS = "1"' in js
     assert "workerFaucetInFlight" in js
     assert "workerFaucetLastResult" in js
@@ -272,14 +269,23 @@ def test_worker_wallet_connect_and_disconnect_use_always_disconnect_cycle() -> N
     assert '"eth_blockNumber"' in js
     assert "workerWalletMetadataNeedsRpcRepair" in js
     assert "workerProveInjectedProviderRpc" in js
+    assert "workerProveInjectedProviderRpcWithBackoff" in js
     assert "workerRequestDevWalletChainUpdate" in js
-    assert "workerWalletErrorIsNativeCurrencySymbolMismatch" in js
-    assert "nativeCurrencyNull" in js
-    assert "rpc-only-native-currency-null" in js
-    assert "connect.wallet.addChain.symbolMismatch" in js
+    assert "WORKER_METAMASK_RPC_BACKOFF_TIMEOUT_MS = 75000" in js
+    assert "WORKER_METAMASK_RPC_BACKOFF_POLL_MS = 3000" in js
+    assert 'WORKER_DEV_CHAIN_CURRENCY_SYMBOL = "MCXLAG"' in js
+    assert 'WORKER_DEV_CHAIN_LEGACY_REPAIR_CURRENCY_SYMBOL = "ENG"' in js
+    assert "workerWalletIsNativeCurrencySymbolMismatch" in js
+    assert "connect.wallet.addChain.symbolMismatchFallback" in js
+    assert "canonical-mcxlag" in js
+    assert "legacy-symbol-rpc-repair" in js
     assert "provider.hydrate.rpc-needs-repair" in js
     assert "connect.wallet.networkPreflight.start" in js
     assert "connect.wallet.rpcProof.done" in js
+    assert "connect.wallet.rpcProof.backoffWait" in js
+    assert "connect.wallet.rpcProof.backoffCleared" in js
+    assert "workerWalletIsRpcEndpointBackoff" in js
+    assert "workerWalletRpcBackoffMessage" in js
     assert "funding-preflight" in js
     assert "provider.hydrate.start" in js
     assert "provider.hydrate.connected" in js
@@ -320,26 +326,4 @@ def test_worker_wallet_connect_and_disconnect_use_always_disconnect_cycle() -> N
 
     assert "const {wallet: _liveWalletState, ...serializableState}" in js
     assert "workerSetPrimaryWalletState" in js
-
-
-def test_dev_chain_wallet_surfaces_use_mc_xlag_and_rpc_only_repair_fallback() -> None:
-    worker_js = WORKER_JS.read_text(encoding="utf-8")
-    wallet_js = WALLET_JS.read_text(encoding="utf-8")
-    energy_html = (REPO_ROOT / "main_computer" / "web" / "energy.html").read_text(encoding="utf-8")
-
-    assert 'WORKER_DEV_CHAIN_CURRENCY_NAME = "Main Computer XLAG Credit"' in worker_js
-    assert 'WORKER_DEV_CHAIN_CURRENCY_SYMBOL = "MCXLAG"' in worker_js
-    assert 'WALLET_DEV_CHAIN_CURRENCY_NAME = "Main Computer XLAG Credit"' in wallet_js
-    assert 'WALLET_DEV_CHAIN_CURRENCY_SYMBOL = "MCXLAG"' in wallet_js
-    assert 'currencySymbol: "MCXLAG"' in energy_html
-    assert 'symbol MCXLAG' in energy_html
-
-    assert "workerWalletErrorIsNativeCurrencySymbolMismatch" in worker_js
-    assert "nativeCurrencyNull" in worker_js
-    assert "nativeCurrency: useNullNativeCurrency" in worker_js
-    assert "rpc-only-native-currency-null" in worker_js
-    assert "connect.wallet.addChain.symbolMismatch" in worker_js
-
-    assert 'WORKER_DEV_CHAIN_CURRENCY_SYMBOL = "MCC"' not in worker_js
-    assert 'WALLET_DEV_CHAIN_CURRENCY_SYMBOL = "MCC"' not in wallet_js
 

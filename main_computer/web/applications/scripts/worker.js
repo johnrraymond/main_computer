@@ -17,6 +17,8 @@
     const WORKER_FAUCET_AMOUNT_CREDITS = "1";
     const WORKER_HUB_CREDIT_DEFAULT_AMOUNT = "1";
     const WORKER_WALLET_BALANCE_TIMEOUT_MS = 8000;
+    const WORKER_METAMASK_RPC_BACKOFF_TIMEOUT_MS = 75000;
+    const WORKER_METAMASK_RPC_BACKOFF_POLL_MS = 3000;
     const WORKER_CREDIT_BASE_UNITS_PER_CREDIT = 1000000000000000000n;
     const WORKER_HUB_CREDIT_BRIDGE_ESCROW_ABI = [
       "function depositFor(address account,uint256 amountUnits,bytes32 depositId,string memo) payable returns (bool)"
@@ -25,6 +27,8 @@
     const WORKER_DEV_CHAIN_RPC_URL = "http://127.0.0.1:18545";
     const WORKER_DEV_CHAIN_CURRENCY_NAME = "Main Computer XLAG Credit";
     const WORKER_DEV_CHAIN_CURRENCY_SYMBOL = "MCXLAG";
+    const WORKER_DEV_CHAIN_LEGACY_REPAIR_CURRENCY_NAME = "Energy Credits";
+    const WORKER_DEV_CHAIN_LEGACY_REPAIR_CURRENCY_SYMBOL = "ENG";
     const WORKER_ETHERS_ESM_URL = "https://cdn.jsdelivr.net/npm/ethers@6.13.4/+esm";
     let workerBridgeStateLoaded = false;
     let workerBridgeState = workerDefaultBridgeState();
@@ -1099,27 +1103,48 @@
     }
 
     function workerDevWalletChainParams(options = {}) {
-      const useNullNativeCurrency = Boolean(options && options.nativeCurrencyNull);
+      const currencyName = String(options.currencyName || WORKER_DEV_CHAIN_CURRENCY_NAME);
+      const currencySymbol = String(options.currencySymbol || WORKER_DEV_CHAIN_CURRENCY_SYMBOL);
       return {
         chainId: WORKER_DEV_CHAIN_ID_HEX,
         chainName: WORKER_DEV_CHAIN_NAME,
-        nativeCurrency: useNullNativeCurrency
-          ? null
-          : {
-              name: WORKER_DEV_CHAIN_CURRENCY_NAME,
-              symbol: WORKER_DEV_CHAIN_CURRENCY_SYMBOL,
-              decimals: 18
-            },
+        nativeCurrency: {
+          name: currencyName,
+          symbol: currencySymbol,
+          decimals: 18
+        },
         rpcUrls: [WORKER_DEV_CHAIN_RPC_URL],
         blockExplorerUrls: []
       };
     }
 
-    function workerWalletErrorIsNativeCurrencySymbolMismatch(error) {
+    function workerDevWalletLegacyRpcRepairChainParams() {
+      return workerDevWalletChainParams({
+        currencyName: WORKER_DEV_CHAIN_LEGACY_REPAIR_CURRENCY_NAME,
+        currencySymbol: WORKER_DEV_CHAIN_LEGACY_REPAIR_CURRENCY_SYMBOL
+      });
+    }
+
+    function workerWalletIsNativeCurrencySymbolMismatch(error) {
       const message = workerWalletErrorMessage(error).toLowerCase();
-      return message.includes("nativecurrency.symbol")
-        && message.includes("does not match")
-        && message.includes("same chainid");
+      return message.includes("nativecurrency.symbol does not match")
+        || (message.includes("currency symbol") && message.includes("same chainid"));
+    }
+
+    function workerWalletIsRpcEndpointBackoff(error) {
+      const message = workerWalletErrorMessage(error).toLowerCase();
+      return (
+        (error && typeof error === "object" && error.code === -32002)
+        || message.includes("rpc endpoint returned too many errors")
+        || (message.includes("retrying in") && message.includes("different rpc endpoint"))
+      );
+    }
+
+    function workerWalletRpcBackoffMessage(reason = "") {
+      const detail = String(reason || "").trim();
+      return detail
+        ? `MetaMask accepted the Main Computer dev-chain RPC update, but its internal RPC backoff is still clearing. Waiting before retrying provider access. ${detail}`
+        : "MetaMask accepted the Main Computer dev-chain RPC update, but its internal RPC backoff is still clearing. Waiting before retrying provider access.";
     }
 
     function workerWalletRpcRepairMessage(reason = "") {
@@ -1248,52 +1273,108 @@
       }
     }
 
+    async function workerProveInjectedProviderRpcWithBackoff(injectedProvider, options = {}) {
+      const opts = options && typeof options === "object" ? options : {};
+      const reason = String(opts.reason || "rpc-proof");
+      const timeoutMs = Number.isFinite(opts.timeoutMs) ? Number(opts.timeoutMs) : WORKER_METAMASK_RPC_BACKOFF_TIMEOUT_MS;
+      const pollMs = Number.isFinite(opts.pollMs) ? Number(opts.pollMs) : WORKER_METAMASK_RPC_BACKOFF_POLL_MS;
+      const startedAt = Date.now();
+      let attempts = 0;
+      let lastProof = null;
+
+      while (Date.now() - startedAt <= timeoutMs) {
+        attempts += 1;
+        const proof = await workerProveInjectedProviderRpc(injectedProvider);
+        if (proof.ok) {
+          if (attempts > 1) {
+            workerWalletRecordEvent("connect.wallet.rpcProof.backoffCleared", {
+              reason,
+              attempts,
+              elapsedMs: Date.now() - startedAt,
+              chainId: proof.chainId,
+              blockNumber: proof.blockNumber
+            });
+          }
+          return {...proof, attempts};
+        }
+
+        lastProof = proof;
+        if (!proof.rpcUnavailable || !workerWalletIsRpcEndpointBackoff(proof.error || proof.reason)) {
+          return {...proof, attempts};
+        }
+
+        const elapsedMs = Date.now() - startedAt;
+        workerWalletRecordEvent("connect.wallet.rpcProof.backoffWait", {
+          reason,
+          attempts,
+          elapsedMs,
+          timeoutMs,
+          pollMs,
+          message: workerWalletErrorMessage(proof.error || proof.reason)
+        });
+        if (workerSaveStatus) {
+          workerSaveStatus.textContent = workerWalletRpcBackoffMessage(
+            `Attempt ${attempts}; retrying in ${Math.round(pollMs / 1000)}s.`
+          );
+        }
+        await workerSleep(pollMs);
+      }
+
+      const lastReason = lastProof?.reason || "MetaMask RPC backoff did not clear.";
+      return {
+        ok: false,
+        chainId: lastProof?.chainId || "",
+        rpcUnavailable: true,
+        backoffExpired: true,
+        attempts,
+        reason: `MetaMask RPC backoff did not clear after ${Math.round(timeoutMs / 1000)}s: ${lastReason}`,
+        error: lastProof?.error || null
+      };
+    }
+
     async function workerRequestDevWalletChainUpdate(injectedProvider, reason = "network-repair") {
       if (!injectedProvider || typeof injectedProvider.request !== "function") {
         throw new Error("No browser wallet request provider is available.");
       }
 
-      async function requestAddEthereumChain(params, attempt) {
+      const requestDevChainUpdate = async (params, repairMode) => {
         workerWalletRecordEvent("connect.wallet.addChain.start", {
           reason,
-          attempt,
+          repairMode,
           chainId: WORKER_DEV_CHAIN_ID_HEX,
           rpcUrl: WORKER_DEV_CHAIN_RPC_URL,
-          nativeCurrencySymbol: params.nativeCurrency && params.nativeCurrency.symbol ? params.nativeCurrency.symbol : null
+          currencySymbol: params?.nativeCurrency?.symbol || ""
         });
         await workerInjectedProviderRequest(
           injectedProvider,
           "wallet_addEthereumChain",
           [params],
-          `wallet dev-chain update (${attempt})`,
+          "wallet dev-chain update",
           120000
         );
         workerWalletRecordEvent("connect.wallet.addChain.done", {
           reason,
-          attempt,
+          repairMode,
           chainId: WORKER_DEV_CHAIN_ID_HEX,
           rpcUrl: WORKER_DEV_CHAIN_RPC_URL,
-          nativeCurrencySymbol: params.nativeCurrency && params.nativeCurrency.symbol ? params.nativeCurrency.symbol : null
+          currencySymbol: params?.nativeCurrency?.symbol || ""
         });
-      }
+      };
 
       try {
-        await requestAddEthereumChain(workerDevWalletChainParams(), "canonical");
+        await requestDevChainUpdate(workerDevWalletChainParams(), "canonical-mcxlag");
       } catch (error) {
-        if (!workerWalletErrorIsNativeCurrencySymbolMismatch(error)) {
+        if (!workerWalletIsNativeCurrencySymbolMismatch(error)) {
           throw error;
         }
-        workerWalletRecordEvent("connect.wallet.addChain.symbolMismatch", {
+        workerWalletRecordEvent("connect.wallet.addChain.symbolMismatchFallback", {
           reason,
           chainId: WORKER_DEV_CHAIN_ID_HEX,
-          rpcUrl: WORKER_DEV_CHAIN_RPC_URL,
-          canonicalCurrencySymbol: WORKER_DEV_CHAIN_CURRENCY_SYMBOL,
+          canonicalSymbol: WORKER_DEV_CHAIN_CURRENCY_SYMBOL,
+          repairOnlySymbol: WORKER_DEV_CHAIN_LEGACY_REPAIR_CURRENCY_SYMBOL,
           message: workerWalletErrorMessage(error)
         });
-        await requestAddEthereumChain(
-          workerDevWalletChainParams({nativeCurrencyNull: true}),
-          "rpc-only-native-currency-null"
-        );
+        await requestDevChainUpdate(workerDevWalletLegacyRpcRepairChainParams(), "legacy-symbol-rpc-repair");
       }
 
       workerWalletRecordEvent("connect.ethers.switchChain.start", {
@@ -1550,7 +1631,9 @@
       }
 
       if (opts.probeRpc) {
-        const proof = await workerProveInjectedProviderRpc(injectedProvider);
+        const proof = needsUpdate
+          ? await workerProveInjectedProviderRpcWithBackoff(injectedProvider, {reason})
+          : await workerProveInjectedProviderRpc(injectedProvider);
         if (!proof.ok) {
           throw new Error(
             needsUpdate
@@ -1561,7 +1644,8 @@
         workerWalletRecordEvent("connect.wallet.rpcProof.done", {
           reason,
           chainId: proof.chainId,
-          blockNumber: proof.blockNumber
+          blockNumber: proof.blockNumber,
+          attempts: proof.attempts || 1
         });
       }
 
