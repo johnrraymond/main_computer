@@ -115,6 +115,7 @@
     const mcelCanonicalAppInspect = document.querySelector("#mcel-canonical-app-inspect");
     const mcelCanonicalAppProof = document.querySelector("#mcel-canonical-app-proof");
     const mcelCanonicalAppLens = document.querySelector("#mcel-canonical-app-lens");
+    const mcelCanonicalAppClean = document.querySelector("#mcel-canonical-app-clean");
     const mcelCanonicalAppStatus = document.querySelector("#mcel-canonical-app-status");
     const mcelCanonicalAppFrameShell = document.querySelector(".mcel-canonical-specimen-frame-shell");
     const mcelCanonicalAppFrameSummary = document.querySelector("#mcel-canonical-app-frame-summary");

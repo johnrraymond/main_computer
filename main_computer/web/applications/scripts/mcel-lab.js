@@ -87,6 +87,7 @@
       mcelCanonicalAppInspect?.addEventListener("click", () => inspectMcelCanonicalAppSpecimen("manual-inspect"));
       mcelCanonicalAppProof?.addEventListener("click", () => runMcelCanonicalAppSpecimenProof("manual-proof"));
       mcelCanonicalAppLens?.addEventListener("click", () => applyMcelCanonicalTaskManagerLens("manual-lens"));
+      mcelCanonicalAppClean?.addEventListener("click", () => clearMcelCanonicalTaskManagerLens("manual-clean"));
       mcelCanonicalAppSelect?.addEventListener("change", () => {
         renderMcelCanonicalAppLensMap(null, "specimen-select");
         renderMcelCanonicalAppSpecimenStatus("specimen-select");
@@ -3653,41 +3654,22 @@
         style = doc.createElement("style");
         style.id = MCEL_CANONICAL_SPECIMEN_CHROME_STYLE_ID;
         style.textContent = `
-          body[data-mcel-lab-specimen] #${MCEL_CANONICAL_SPECIMEN_RIBBON_ID} {
-            position: fixed;
-            top: 10px;
-            right: 12px;
-            z-index: 2147483647;
-            max-width: min(460px, calc(100vw - 24px));
-            padding: 8px 12px;
-            border: 1px solid rgba(115, 214, 255, 0.82);
-            border-radius: 999px;
-            background: rgba(3, 10, 14, 0.92);
-            color: #73d6ff;
-            box-shadow: 0 0 0 2px rgba(115, 214, 255, 0.12), 0 14px 34px rgba(0, 0, 0, 0.38);
-            font: 900 11px/1.25 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-            letter-spacing: 0.08em;
-            pointer-events: none;
-            text-transform: uppercase;
-          }
           [data-mcel-lab-specimen-root="true"] {
-            outline: 2px dashed rgba(115, 214, 255, 0.95);
-            outline-offset: -6px;
-            box-shadow: inset 0 0 0 2px rgba(246, 199, 91, 0.16), 0 0 28px rgba(115, 214, 255, 0.18);
+            outline: 1px solid rgba(115, 214, 255, 0.42);
+            outline-offset: -3px;
+          }
+          [data-mcel-lab-specimen-root="true"]:focus-within {
+            outline-color: rgba(115, 214, 255, 0.76);
           }
         `;
         doc.head?.appendChild?.(style);
       }
-      let ribbon = doc.getElementById(MCEL_CANONICAL_SPECIMEN_RIBBON_ID);
-      if (!ribbon) {
-        ribbon = doc.createElement("div");
-        ribbon.id = MCEL_CANONICAL_SPECIMEN_RIBBON_ID;
-        ribbon.setAttribute("role", "status");
-        ribbon.setAttribute("aria-live", "polite");
-        ribbon.dataset.mcelLabMarker = "canonical-specimen-ribbon";
-        doc.body.appendChild(ribbon);
-      }
-      ribbon.textContent = `MCEL Lab specimen · ${specimen.label} · observational only`;
+
+      // Earlier versions inserted a fixed in-frame ribbon. That crowded legacy app chrome,
+      // so this inspector twiddle deliberately removes any stale ribbon and keeps the visible
+      // MCEL status in the Lab sidecar/frame bar instead.
+      doc.getElementById(MCEL_CANONICAL_SPECIMEN_RIBBON_ID)?.remove?.();
+
       if (root) {
         root.setAttribute("data-mcel-lab-specimen-root", "true");
         root.setAttribute("data-mcel-lab-specimen-app", specimen.app);
@@ -3696,7 +3678,6 @@
       return true;
     }
 
-
     function ensureMcelCanonicalTaskManagerLensStyle(doc) {
       if (!doc?.head) return false;
       let style = doc.getElementById(MCEL_CANONICAL_SPECIMEN_LENS_STYLE_ID);
@@ -3704,170 +3685,34 @@
       style = doc.createElement("style");
       style.id = MCEL_CANONICAL_SPECIMEN_LENS_STYLE_ID;
       style.textContent = `
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] {
-          background:
-            radial-gradient(circle at 20% 0%, rgba(115, 214, 255, 0.12), transparent 30%),
-            radial-gradient(circle at 100% 14%, rgba(246, 199, 91, 0.1), transparent 34%),
-            #020403;
-        }
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] .task-manager-app {
-          display: flex !important;
-          min-height: 100vh !important;
-          height: auto !important;
-          padding: 64px 16px 16px !important;
-          box-sizing: border-box !important;
-          background:
-            radial-gradient(circle at 0% 0%, rgba(115, 214, 255, 0.16), transparent 32%),
-            linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.012));
-        }
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] .task-manager-shell {
-          position: relative !important;
-          display: grid !important;
-          grid-template-columns: minmax(280px, 360px) minmax(0, 1fr) !important;
-          gap: 14px !important;
-          width: 100% !important;
-          min-height: calc(100vh - 92px) !important;
-          height: auto !important;
-          overflow: visible !important;
-          border: 1px solid rgba(115, 214, 255, 0.48) !important;
-          border-radius: 18px !important;
-          padding: 16px !important;
-          background:
-            radial-gradient(circle at 100% 0%, rgba(246, 199, 91, 0.12), transparent 28%),
-            linear-gradient(135deg, rgba(115, 214, 255, 0.08), rgba(174, 224, 111, 0.035)),
-            #050706 !important;
-          box-shadow: inset 0 0 0 1px rgba(246, 199, 91, 0.12), 0 22px 54px rgba(0, 0, 0, 0.36) !important;
-        }
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] .task-manager-sidebar,
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] .task-manager-detail {
-          overflow: visible !important;
-          gap: 12px !important;
-        }
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] .task-manager-detail {
-          grid-template-rows: minmax(420px, 1.45fr) minmax(160px, auto) minmax(220px, 0.7fr) !important;
-        }
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] .task-card,
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] .task-pane,
         body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] [data-mcel-lens-role] {
-          position: relative !important;
-          border-color: rgba(115, 214, 255, 0.34) !important;
-          border-radius: 14px !important;
-          background:
-            linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.01)),
-            #070907 !important;
-          box-shadow: inset 0 0 0 1px rgba(115, 214, 255, 0.08) !important;
-        }
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] [data-mcel-lens-role="audited-command-zone"],
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] [data-mcel-lens-role="scheduler"] {
-          border-color: rgba(246, 199, 91, 0.48) !important;
-          box-shadow: inset 0 0 0 1px rgba(246, 199, 91, 0.14), 0 0 28px rgba(246, 199, 91, 0.08) !important;
-        }
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] [data-mcel-lens-role$="-feed"],
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] [data-mcel-lens-role="live-data-notebook"] {
-          border-color: rgba(174, 224, 111, 0.36) !important;
-        }
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] [data-mcel-lens-label] {
-          padding-top: 36px !important;
-        }
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] .mcel-lens-label {
-          position: absolute;
-          top: 9px;
-          right: 10px;
-          z-index: 3;
-          max-width: calc(100% - 20px);
-          padding: 4px 8px;
-          border: 1px solid rgba(115, 214, 255, 0.58);
-          border-radius: 999px;
-          background: rgba(3, 10, 14, 0.86);
-          color: #73d6ff;
-          font: 950 10px/1.15 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-          letter-spacing: 0.06em;
-          pointer-events: none;
-          text-transform: uppercase;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] .mcel-lens-hud {
-          position: fixed;
-          top: 10px;
-          left: 14px;
-          right: min(480px, 38vw);
-          z-index: 2147483646;
-          display: flex;
-          flex-wrap: wrap;
-          align-items: center;
-          gap: 8px;
-          min-height: 34px;
-          padding: 8px 10px;
-          border: 1px solid rgba(115, 214, 255, 0.58);
-          border-radius: 999px;
-          background: rgba(3, 10, 14, 0.92);
-          color: #e7f9ff;
-          box-shadow: 0 16px 36px rgba(0, 0, 0, 0.32);
-          font: 850 11px/1.25 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-          pointer-events: none;
-        }
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] .mcel-lens-hud strong {
-          color: #f6c75b;
-          margin: 0;
-          font-size: 11px;
-          text-transform: uppercase;
-        }
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] button[data-mcel-risk] {
           position: relative;
-          border-color: rgba(115, 214, 255, 0.42) !important;
-          box-shadow: inset 0 0 0 1px rgba(115, 214, 255, 0.08) !important;
         }
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] button[data-mcel-risk]::after {
-          content: attr(data-mcel-risk);
-          display: inline-flex;
-          margin-left: 6px;
-          padding: 1px 5px;
-          border-radius: 999px;
-          border: 1px solid currentColor;
-          font: 900 9px/1.25 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-          letter-spacing: 0.05em;
-          opacity: 0.84;
-          text-transform: uppercase;
+        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] [data-mcel-lens-role]::before {
+          content: "";
+          position: absolute;
+          inset: 4px;
+          z-index: 2;
+          border: 1px solid rgba(115, 214, 255, 0.0);
+          border-radius: inherit;
+          opacity: 0;
+          pointer-events: none;
+          transition: opacity 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
         }
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] button[data-mcel-risk="destructive"],
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] button[data-mcel-risk="process-destructive"] {
-          border-color: rgba(255, 143, 112, 0.72) !important;
-          color: #ffb49f !important;
-          box-shadow: inset 0 0 0 1px rgba(255, 143, 112, 0.18), 0 0 18px rgba(255, 143, 112, 0.08) !important;
+        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] [data-mcel-lens-role]:hover::before,
+        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] [data-mcel-lens-role]:focus-within::before {
+          border-color: rgba(115, 214, 255, 0.5);
+          box-shadow: inset 0 0 0 1px rgba(115, 214, 255, 0.08);
+          opacity: 1;
         }
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] button[data-mcel-risk="disruptive"],
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] button[data-mcel-risk="deferred-mutation"] {
-          border-color: rgba(246, 199, 91, 0.72) !important;
-          color: #f6c75b !important;
+        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] button[data-mcel-action-risk]:focus-visible {
+          outline: 2px solid rgba(115, 214, 255, 0.74);
+          outline-offset: 2px;
         }
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] button[data-mcel-risk="safe"],
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] button[data-mcel-risk="analysis"],
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] button[data-mcel-risk="operational"] {
-          border-color: rgba(174, 224, 111, 0.52) !important;
-        }
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] .task-grid-scroll {
-          border-color: rgba(174, 224, 111, 0.32) !important;
-          border-radius: 12px !important;
-          min-height: 320px !important;
-          background: #010301 !important;
-        }
-        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] #task-ai-output {
-          min-height: 210px !important;
-          border: 1px solid rgba(115, 214, 255, 0.22);
-          border-radius: 10px;
-          padding: 10px;
-          background: rgba(0, 0, 0, 0.28);
-        }
-        @media (max-width: 980px) {
-          body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] .task-manager-shell {
-            grid-template-columns: 1fr !important;
-          }
-          body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] .mcel-lens-hud {
-            right: 12px;
-            border-radius: 14px;
-          }
+        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] .mcel-lens-label,
+        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] .mcel-lens-hud,
+        body[data-mcel-lab-specimen="task-manager"][data-mcel-canonical-lens="active"] .mcel-lens-risk-badge {
+          display: none !important;
         }
       `;
       doc.head.appendChild(style);
@@ -3878,43 +3723,21 @@
       if (!doc || !element) return false;
       element.setAttribute("data-mcel-lens-label", label);
       element.setAttribute("data-mcel-lens-kind", kind);
-      let badge = element.querySelector?.(":scope > .mcel-lens-label");
-      if (!badge) {
-        badge = doc.createElement("span");
-        badge.className = "mcel-lens-label";
-        badge.dataset.mcelLensGenerated = "true";
-        element.insertBefore(badge, element.firstChild);
+      const staleBadge = element.querySelector?.(":scope > .mcel-lens-label");
+      if (staleBadge?.dataset?.mcelLensGenerated === "true") {
+        staleBadge.remove();
       }
-      badge.textContent = label;
       return true;
     }
 
     function renderMcelCanonicalTaskManagerLensHud(doc, root, report) {
       if (!doc?.body || !root || !report) return false;
-      let hud = doc.getElementById(MCEL_CANONICAL_TASK_MANAGER_LENS_HUD_ID);
-      if (!hud) {
-        hud = doc.createElement("div");
-        hud.id = MCEL_CANONICAL_TASK_MANAGER_LENS_HUD_ID;
-        hud.className = "mcel-lens-hud";
-        hud.setAttribute("role", "status");
-        hud.setAttribute("aria-live", "polite");
-        doc.body.appendChild(hud);
-      }
-      hud.replaceChildren();
-      const title = doc.createElement("strong");
-      title.textContent = "MCEL canonical lens";
-      hud.appendChild(title);
-      [
-        `${report.classifiedPanelCount} panels`,
-        `${report.feedCount} feeds`,
-        `${report.riskControlCount} risk surfaces`,
-        "observational only"
-      ].forEach((text) => {
-        const span = doc.createElement("span");
-        span.textContent = text;
-        hud.appendChild(span);
-      });
-      root.setAttribute("data-mcel-lens-hud", "active");
+      doc.getElementById(MCEL_CANONICAL_TASK_MANAGER_LENS_HUD_ID)?.remove?.();
+      root.setAttribute("data-mcel-lens-sidecar", "active");
+      root.setAttribute(
+        "aria-description",
+        `MCEL Lab sidecar classified ${report.classifiedPanelCount} panels and ${report.riskControlCount} risk surfaces without modifying Task Manager controls.`
+      );
       return true;
     }
 
@@ -3927,8 +3750,8 @@
       title.textContent = "Task Manager specimen map";
       const meta = document.createElement("span");
       meta.textContent = report
-        ? `lens ${report.lensActive ? "active" : "inactive"} · ${report.reason || reason}`
-        : "lens not applied yet";
+        ? `inspector ${report.lensActive ? "active" : "inactive"} · ${report.reason || reason}`
+        : "sidecar inspector not applied yet";
       heading.append(title, meta);
       mcelCanonicalAppLensMap.appendChild(heading);
 
@@ -3937,8 +3760,8 @@
         ["Panels", `${report.classifiedPanelCount}/${report.panelCount}`],
         ["Feeds", String(report.feedCount)],
         ["Actions", `${report.actionControlCount} classified`],
-        ["Risk", `${report.riskControlCount} audited`],
-        ["Layout", report.layoutLaw],
+        ["Risk", `${report.riskControlCount} audited in sidecar`],
+        ["Overlay", report.overlayMode || "subtle hover/focus only"],
         ["Safety", report.destructiveActionsExecuted ? "mutation executed" : "no destructive clicks"]
       ] : [
         ["Root", "unknown"],
@@ -3946,7 +3769,7 @@
         ["Feeds", "not classified"],
         ["Actions", "not classified"],
         ["Risk", "not audited"],
-        ["Layout", "lens pending"],
+        ["Overlay", "off"],
         ["Safety", "observational"]
       ];
 
@@ -3963,6 +3786,85 @@
         grid.appendChild(card);
       });
       mcelCanonicalAppLensMap.appendChild(grid);
+
+      if (report?.riskControls?.length) {
+        const details = document.createElement("div");
+        details.className = "mcel-canonical-app-lens-sidecar-list";
+        const label = document.createElement("strong");
+        label.textContent = "Risk surfaces stay in sidecar:";
+        details.appendChild(label);
+        report.riskControls.slice(0, 8).forEach((control) => {
+          const chip = document.createElement("span");
+          chip.textContent = `${control.role}: ${control.risk}`;
+          details.appendChild(chip);
+        });
+        mcelCanonicalAppLensMap.appendChild(details);
+      }
+      return true;
+    }
+
+    function clearMcelCanonicalTaskManagerLens(reason = "clear-lens") {
+      const state = ensureMcelCanonicalAppSpecimenState();
+      const specimen = selectedMcelCanonicalAppSpecimen();
+      const doc = mcelCanonicalAppFrameDocument();
+      if (!doc?.body) {
+        state.lensStatus = "idle";
+        renderMcelCanonicalAppLensMap(null, reason);
+        renderMcelCanonicalAppSpecimenStatus(reason);
+        return false;
+      }
+
+      doc.documentElement?.removeAttribute?.("data-mcel-canonical-lens");
+      doc.body.removeAttribute("data-mcel-canonical-lens");
+      doc.body.classList.remove(MCEL_CANONICAL_TASK_MANAGER_LENS_CLASS);
+      doc.getElementById(MCEL_CANONICAL_TASK_MANAGER_LENS_HUD_ID)?.remove?.();
+      doc.getElementById(MCEL_CANONICAL_SPECIMEN_RIBBON_ID)?.remove?.();
+
+      const generatedSelectors = [
+        ".mcel-lens-label[data-mcel-lens-generated=\"true\"]",
+        ".mcel-lens-hud",
+        ".mcel-lens-risk-badge"
+      ];
+      generatedSelectors.forEach((selector) => {
+        Array.from(doc.querySelectorAll?.(selector) || []).forEach((node) => node.remove());
+      });
+
+      Array.from(doc.querySelectorAll?.("[data-mcel-lens-role], [data-mcel-action-risk], [data-mcel-risk], [data-mcel-lens-label], [data-mcel-lens-kind], [data-mcel-mutates], [data-mcel-action-label]") || []).forEach((element) => {
+        element.removeAttribute("data-mcel-lens-role");
+        element.removeAttribute("data-mcel-action-risk");
+        element.removeAttribute("data-mcel-risk");
+        element.removeAttribute("data-mcel-lens-label");
+        element.removeAttribute("data-mcel-lens-kind");
+        element.removeAttribute("data-mcel-mutates");
+        element.removeAttribute("data-mcel-action-label");
+      });
+
+      const root = doc.querySelector?.(specimen.rootSelector) || null;
+      if (root) {
+        root.removeAttribute("data-mcel-lens");
+        root.removeAttribute("data-mcel-lens-state");
+        root.removeAttribute("data-mcel-component-id");
+        root.removeAttribute("data-mcel-component-kind");
+        root.removeAttribute("data-mcel-layout-law");
+        root.removeAttribute("data-mcel-lens-sidecar");
+        root.removeAttribute("data-mcel-lens-hud");
+        root.removeAttribute("aria-description");
+      }
+
+      state.lensStatus = "clean";
+      state.lastAt = new Date().toISOString();
+      mcelLabState.lastCanonicalSpecimenLens = null;
+      renderMcelCanonicalAppLensMap(null, reason);
+      if (mcelCanonicalAppReport) {
+        mcelCanonicalAppReport.textContent = `Cleaned MCEL specimen overlays for ${specimen.label}.\nThe iframe still has specimen root markers, but the Task Manager layout and controls are no longer decorated.`;
+      }
+      recordMcelEvent(
+        "canonical-app",
+        "MCEL_CANONICAL_TASK_MANAGER_LENS_CLEANED",
+        "Task Manager specimen lens overlay removed; sidecar state reset.",
+        "info"
+      );
+      renderMcelCanonicalAppSpecimenStatus(reason);
       return true;
     }
 
@@ -3982,6 +3884,7 @@
           riskControlCount: 0,
           feedCount: 0,
           layoutLaw: "iframe document unavailable",
+          overlayMode: "none",
           destructiveActionsExecuted: false,
           safetyClaim: "lens application never clicks Task Manager controls",
           reason,
@@ -3998,12 +3901,15 @@
       doc.documentElement?.setAttribute?.("data-mcel-canonical-lens", "active");
       doc.body.setAttribute("data-mcel-canonical-lens", "active");
       doc.body.classList.add(MCEL_CANONICAL_TASK_MANAGER_LENS_CLASS);
+      doc.getElementById(MCEL_CANONICAL_SPECIMEN_RIBBON_ID)?.remove?.();
+      doc.getElementById(MCEL_CANONICAL_TASK_MANAGER_LENS_HUD_ID)?.remove?.();
+
       if (root) {
         root.setAttribute("data-mcel-lens", "canonical-task-manager");
-        root.setAttribute("data-mcel-lens-state", "active");
+        root.setAttribute("data-mcel-lens-state", "sidecar-inspector");
         root.setAttribute("data-mcel-component-id", "canonical.task-manager.root");
         root.setAttribute("data-mcel-component-kind", "canonical-app-specimen");
-        root.setAttribute("data-mcel-layout-law", "dashboard-lens");
+        root.setAttribute("data-mcel-layout-law", "sidecar-inspector");
       }
 
       const panels = MCEL_CANONICAL_TASK_MANAGER_PANEL_LENS.map((panel) => {
@@ -4023,7 +3929,6 @@
           element.setAttribute("data-mcel-lens-role", action.role);
           element.setAttribute("data-mcel-action-risk", action.risk);
           element.setAttribute("data-mcel-action-label", action.label);
-          element.setAttribute("data-mcel-risk", action.risk);
           element.setAttribute("data-mcel-mutates", action.risk === "safe" || action.risk === "analysis" ? "false" : "potential");
           actionControls.push({
             selector: action.selector,
@@ -4052,12 +3957,13 @@
         actionControls,
         riskControlCount: riskControls.length,
         riskControls,
-        layoutLaw: "lab-only dashboard lens active",
+        layoutLaw: "lab-side inspector lens active",
+        overlayMode: "subtle root outline and hover/focus rings; no inline labels or risk badges",
         chromeStyleId: MCEL_CANONICAL_SPECIMEN_CHROME_STYLE_ID,
         lensStyleId: MCEL_CANONICAL_SPECIMEN_LENS_STYLE_ID,
         lensHudId: MCEL_CANONICAL_TASK_MANAGER_LENS_HUD_ID,
         destructiveActionsExecuted: false,
-        safetyClaim: "canonical lens annotates and styles Task Manager; it never clicks server control, PID termination, or schedule actions",
+        safetyClaim: "canonical lens annotates Task Manager and reports risk in the Lab sidecar; it does not restyle layout, inject labels into cards, or click server control, PID termination, or schedule actions",
         reason,
         appliedAt: new Date().toISOString()
       };
@@ -4065,14 +3971,14 @@
       renderMcelCanonicalTaskManagerLensHud(doc, root, report);
       renderMcelCanonicalAppLensMap(report, reason);
       state.lensCount = (state.lensCount || 0) + 1;
-      state.lensStatus = report.lensActive ? "active" : "warning";
+      state.lensStatus = report.lensActive ? "sidecar" : "warning";
       state.lastAt = report.appliedAt;
       mcelLabState.lastCanonicalSpecimenLens = report;
       recordMcelEvent(
         "canonical-app",
         report.lensActive ? "MCEL_CANONICAL_TASK_MANAGER_LENS_ACTIVE" : "MCEL_CANONICAL_TASK_MANAGER_LENS_WARNING",
         report.lensActive
-          ? `Task Manager canonical lens classified ${report.classifiedPanelCount} panel(s), ${report.feedCount} feed(s), and ${report.riskControlCount} risk surface(s).`
+          ? `Task Manager sidecar inspector classified ${report.classifiedPanelCount} panel(s), ${report.feedCount} feed(s), and ${report.riskControlCount} risk surface(s) without in-frame badges.`
           : `Task Manager canonical lens could not find ${specimen.rootSelector}.`,
         report.lensActive ? "success" : "warning"
       );
@@ -4130,7 +4036,7 @@
       frame.src = specimen.route;
       renderMcelCanonicalAppLensMap(null, reason);
       if (mcelCanonicalAppReport) {
-        mcelCanonicalAppReport.textContent = `Mounting ${specimen.label} from ${specimen.route}\nreason: ${reason}\nThe MCEL canonical lens will apply after iframe load.\nNo destructive controls are executed by this lab harness.`;
+        mcelCanonicalAppReport.textContent = `Mounting ${specimen.label} from ${specimen.route}\nreason: ${reason}\nThe MCEL sidecar inspector will classify the iframe after load.\nNo destructive controls are executed by this lab harness.`;
       }
       recordMcelEvent("canonical-app", "MCEL_CANONICAL_SPECIMEN_MOUNTING", `${specimen.label} specimen iframe loading ${specimen.route}.`);
       renderMcelCanonicalAppSpecimenStatus(reason);
@@ -4202,9 +4108,9 @@
         missingRequiredIds: requiredIds.filter((item) => !item.present).map((item) => item.id),
         dangerousControls,
         dangerousControlCount: dangerousControls.reduce((total, item) => total + item.count, 0),
-        specimenChromeApplied: Boolean(doc?.getElementById?.(MCEL_CANONICAL_SPECIMEN_RIBBON_ID)),
+        specimenChromeApplied: Boolean(root?.getAttribute?.("data-mcel-lab-specimen-root")),
         specimenChromeStyleId: MCEL_CANONICAL_SPECIMEN_CHROME_STYLE_ID,
-        specimenRibbonId: MCEL_CANONICAL_SPECIMEN_RIBBON_ID,
+        specimenRibbonId: "removed-from-clean-sidecar-lens",
         lensActive: Boolean(lensReport?.lensActive),
         lensPanelCount: lensReport?.classifiedPanelCount || 0,
         lensRiskControlCount: lensReport?.riskControlCount || 0,
