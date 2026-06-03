@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-MCEL_RUNTIME_VERSION = "mcel-runtime.v0.1.7"
+MCEL_RUNTIME_VERSION = "mcel-runtime.v0.1.8"
 
 MCEL_RUNTIME_MODULES: tuple[str, ...] = (
     "main_computer/web/applications/scripts/mcel-contract.js",
@@ -195,7 +195,7 @@ def package_mcel_runtime(
 
 
 _MCEL_RUNTIME_WRAPPER = r'''
-  const mcelRuntimeVersion = "mcel-runtime.v0.1.6";
+  const mcelRuntimeVersion = "mcel-runtime.v0.1.8";
   const runtimeEntry = "runtime.js";
   const runtimeDefaults = Object.freeze({
     mode: "site",
@@ -208,6 +208,7 @@ _MCEL_RUNTIME_WRAPPER = r'''
   });
 
   let mcelRuntimeLastReport = null;
+  let mcelRuntimeLastVanityReport = null;
   let mcelRuntimeScript = null;
 
   function mcelRuntimeModule(name) {
@@ -260,6 +261,11 @@ _MCEL_RUNTIME_WRAPPER = r'''
   const runtimeCompiledAttribute = "data-mcel-runtime-compiled";
   const runtimeDiagnosticsPanelAttribute = "data-mcel-runtime-diagnostics-panel";
   const runtimeTwiddlePanelAttribute = "data-mcel-runtime-twiddle-panel";
+  const runtimeVanityStyleAttribute = "data-mcel-runtime-vanity-style";
+  const runtimeVanityDefectAttribute = "data-mcel-vanity-defect";
+  const runtimeVanityDefectIdAttribute = "data-mcel-vanity-defect-id";
+  const runtimeVanityContainerDefectAttribute = "data-mcel-vanity-container-defect";
+  const runtimeVanityFixAttribute = "data-mcel-vanity-fix";
 
   function mcelRuntimeSourceHtml(root) {
     const target = mcelRuntimeNodeRoot(root);
@@ -360,6 +366,53 @@ _MCEL_RUNTIME_WRAPPER = r'''
     return chromeLaw?.normalizeChrome ? chromeLaw.normalizeChrome(chrome || runtimeDefaults.chrome) : runtimeDefaults.chrome;
   }
 
+  function mcelRuntimeNormalizeVanityRemedy(remedy) {
+    const value = String(remedy || "none").trim().toLowerCase();
+    if (!value || ["0", "false", "off", "none", "detect"].includes(value)) return "none";
+    if (["auto", "best", "fix"].includes(value)) return "auto";
+    if (["font", "font-size", "font-size-step-down", "shrink-font", "smaller-font", "typography-squeeze"].includes(value)) {
+      return "font-size-step-down";
+    }
+    if (["wrap", "wrap-anywhere", "overflow-wrap-anywhere", "break-word", "word-wrap"].includes(value)) {
+      return "wrap-anywhere";
+    }
+    if (["chip", "code-chip", "promote-inline-code-chip", "inline-code-chip"].includes(value)) {
+      return "code-chip";
+    }
+    if (["scroll", "scroll-chip", "local-scroll-code-chip", "scroll-code"].includes(value)) {
+      return "scroll-chip";
+    }
+    if (["disclose", "disclosure", "details", "disclose-diagnostic-detail"].includes(value)) {
+      return "disclose";
+    }
+    return "none";
+  }
+
+  function mcelRuntimeVanityRemedyLabel(remedy) {
+    const labels = {
+      none: "Detect only",
+      auto: "Auto",
+      "font-size-step-down": "Smaller font",
+      "wrap-anywhere": "Wrap hard token",
+      "code-chip": "Code chip",
+      "scroll-chip": "Scroll chip",
+      disclose: "Disclose detail"
+    };
+    return labels[remedy] || remedy || "Detect only";
+  }
+
+  function mcelRuntimeVanityRemedies() {
+    return [
+      {id: "none", label: "Detect only"},
+      {id: "auto", label: "Auto"},
+      {id: "font-size-step-down", label: "Smaller font"},
+      {id: "wrap-anywhere", label: "Wrap hard token"},
+      {id: "code-chip", label: "Code chip"},
+      {id: "scroll-chip", label: "Scroll chip"},
+      {id: "disclose", label: "Disclose detail"}
+    ];
+  }
+
   function mcelRuntimeReadQueryValue(names = []) {
     const location = window.location || null;
     const chunks = [location?.search || "", location?.hash || ""].filter(Boolean);
@@ -405,6 +458,10 @@ _MCEL_RUNTIME_WRAPPER = r'''
     if (dataset.mcelRuntimeRenderOptInOnly === "false") options.renderOptInOnly = false;
     if (dataset.mcelRuntimeDiagnostics === "true") options.diagnostics = true;
     if (dataset.mcelRuntimeTwiddle === "true") options.twiddle = true;
+    if (dataset.mcelRuntimeVanity === "true") options.vanity = true;
+    if (dataset.mcelRuntimeVanityDetect === "true") options.vanityDetect = true;
+    if (dataset.mcelRuntimeVanityHighlight === "true") options.vanityHighlight = true;
+    if (dataset.mcelRuntimeVanityRemedy) options.vanityRemedy = dataset.mcelRuntimeVanityRemedy;
     if (dataset.mcelRuntimeChromeReset === "true") options.chromeReset = true;
     return options;
   }
@@ -418,6 +475,10 @@ _MCEL_RUNTIME_WRAPPER = r'''
     const render = mcelRuntimeReadQueryBoolean(["mcel-render-opt-in-only", "mcelRuntimeRenderOptInOnly"]);
     const diagnostics = mcelRuntimeReadQueryBoolean(["mcel-diagnostics", "mcel-runtime-diagnostics", "mcel-diag", "mcel-layout-diag"]);
     const twiddle = mcelRuntimeReadQueryBoolean(["mcel-twiddle", "mcel-runtime-twiddle"]);
+    const vanity = mcelRuntimeReadQueryBoolean(["mcel-vanity", "mcel-runtime-vanity"]);
+    const vanityDetect = mcelRuntimeReadQueryBoolean(["mcel-vanity-detect", "mcel-runtime-vanity-detect"]);
+    const vanityHighlight = mcelRuntimeReadQueryBoolean(["mcel-vanity-highlight", "mcel-runtime-vanity-highlight"]);
+    const vanityRemedy = mcelRuntimeReadQueryValue(["mcel-vanity-remedy", "mcel-remedy", "mcel-runtime-remedy"]);
     const chromeReset = mcelRuntimeReadQueryBoolean(["mcel-chrome-reset", "mcel-runtime-chrome-reset"]);
     if (mode) options.mode = mode;
     if (theme) options.theme = theme;
@@ -426,6 +487,10 @@ _MCEL_RUNTIME_WRAPPER = r'''
     if (render !== null) options.renderOptInOnly = render;
     if (diagnostics !== null) options.diagnostics = diagnostics;
     if (twiddle !== null) options.twiddle = twiddle;
+    if (vanity !== null) options.vanity = vanity;
+    if (vanityDetect !== null) options.vanityDetect = vanityDetect;
+    if (vanityHighlight !== null) options.vanityHighlight = vanityHighlight;
+    if (vanityRemedy) options.vanityRemedy = vanityRemedy;
     if (chromeReset !== null) options.chromeReset = chromeReset;
     return options;
   }
@@ -452,6 +517,10 @@ _MCEL_RUNTIME_WRAPPER = r'''
       chrome: mcelRuntimeNormalizeChrome(merged.chrome),
       diagnostics: merged.diagnostics === true,
       twiddle: merged.twiddle === true,
+      vanity: merged.vanity === true,
+      vanityDetect: merged.vanityDetect === true,
+      vanityHighlight: merged.vanityHighlight === true,
+      vanityRemedy: mcelRuntimeNormalizeVanityRemedy(merged.vanityRemedy),
       chromeReset: merged.chromeReset === true
     };
   }
@@ -662,6 +731,7 @@ _MCEL_RUNTIME_WRAPPER = r'''
       hydratedCount: report.hydratedCount,
       renderedCount: report.renderedCount,
       layout,
+      vanity: mcelRuntimeLastVanityReport,
       note: "If a Website Builder .mc-section has max-width plus large viewport-derived inline padding, its grid can collapse into vertical slivers."
     };
     if (options.mark !== false) {
@@ -703,9 +773,690 @@ _MCEL_RUNTIME_WRAPPER = r'''
     return diagnostics;
   }
 
+
+  function mcelRuntimeVanityRequested(doc, options = {}) {
+    if (
+      options.vanity === true ||
+      options.vanityDetect === true ||
+      options.vanityHighlight === true ||
+      (options.vanityRemedy && options.vanityRemedy !== "none")
+    ) {
+      return true;
+    }
+    const targetDoc = doc || window.document || null;
+    const script = targetDoc?.currentScript || window.document?.currentScript || mcelRuntimeScript || null;
+    if (script?.dataset?.mcelRuntimeVanity === "true") return true;
+    const location = window.location;
+    return Boolean(location && /(?:\?|&|#)mcel(?:-runtime)?-vanity(?:=1|=true)?(?:&|$)/i.test(`${location.search || ""}${location.hash || ""}`));
+  }
+
+  function mcelRuntimeInstallVanityStyle(doc) {
+    const targetDoc = doc || window.document || null;
+    if (!targetDoc?.head?.appendChild || targetDoc.head.querySelector?.(`[${runtimeVanityStyleAttribute}]`)) return false;
+    const style = targetDoc.createElement("style");
+    style.setAttribute(runtimeVanityStyleAttribute, mcelRuntimeVersion);
+    style.textContent = `
+body.mcel-powered-site [${runtimeVanityDefectAttribute}] {
+  outline: 2px solid #f97316 !important;
+  outline-offset: 3px !important;
+}
+
+body.mcel-powered-site [${runtimeVanityContainerDefectAttribute}] {
+  box-shadow:
+    0 0 0 2px rgba(249, 115, 22, .42),
+    0 18px 60px rgba(249, 115, 22, .18) !important;
+}
+
+body.mcel-powered-site [${runtimeVanityFixAttribute}~="font-size-step-down"] {
+  font-size: .86em;
+  line-height: 1.45;
+  letter-spacing: -.01em;
+}
+
+body.mcel-powered-site [${runtimeVanityFixAttribute}~="wrap-anywhere"] {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+body.mcel-powered-site [${runtimeVanityFixAttribute}~="code-chip"] {
+  display: inline-block;
+  max-width: 100%;
+  margin-block: .08rem;
+  padding: .12rem .38rem;
+  border-radius: .55rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  vertical-align: baseline;
+  color: #dff7ff;
+  background: rgba(8, 47, 73, .58);
+  border: 1px solid rgba(56, 189, 248, .35);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .035);
+}
+
+body.mcel-powered-site [${runtimeVanityFixAttribute}~="scroll-chip"] {
+  display: inline-block;
+  max-width: 100%;
+  margin-block: .08rem;
+  padding: .12rem .38rem;
+  border-radius: .55rem;
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  vertical-align: bottom;
+  color: #dff7ff;
+  background: rgba(8, 47, 73, .58);
+  border: 1px solid rgba(56, 189, 248, .35);
+  scrollbar-width: thin;
+}
+
+body.mcel-powered-site [data-mcel-vanity-disclosure="true"] {
+  display: block;
+  max-width: 100%;
+  margin-block: .35rem;
+  padding: .45rem .55rem;
+  border-radius: .75rem;
+  border: 1px solid rgba(56, 189, 248, .26);
+  background: rgba(8, 47, 73, .38);
+}
+
+body.mcel-powered-site [data-mcel-vanity-disclosure="true"] summary {
+  cursor: pointer;
+  font-weight: 800;
+  color: var(--mcel-runtime-accent, #38bdf8);
+}
+`;
+    targetDoc.head.appendChild(style);
+    return true;
+  }
+
+  function mcelRuntimeClearVanityMarks(root = window.document) {
+    const target = mcelRuntimeNodeRoot(root) || root;
+    const elements = target?.querySelectorAll?.(
+      `[${runtimeVanityDefectAttribute}], [${runtimeVanityContainerDefectAttribute}]`
+    ) || [];
+    elements.forEach((element) => {
+      element.removeAttribute?.(runtimeVanityDefectAttribute);
+      element.removeAttribute?.(runtimeVanityDefectIdAttribute);
+      element.removeAttribute?.(runtimeVanityContainerDefectAttribute);
+    });
+  }
+
+  function mcelRuntimeIsVisible(element) {
+    if (!element || element.nodeType !== 1) return false;
+    const style = window.getComputedStyle ? window.getComputedStyle(element) : null;
+    if (!style || style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
+    const rect = element.getBoundingClientRect?.();
+    return Number(rect?.width || 0) > 0 && Number(rect?.height || 0) > 0;
+  }
+
+  function mcelRuntimeElementPath(element) {
+    if (!element || element === document) return "document";
+    if (element === document.documentElement) return "html";
+    if (element === document.body) return "body";
+    const parts = [];
+    let node = element;
+    while (node && node.nodeType === 1 && node !== document.body) {
+      let part = String(node.localName || "node");
+      if (node.id) {
+        part += `#${node.id}`;
+        parts.unshift(part);
+        break;
+      }
+      const classes = Array.from(node.classList || []).slice(0, 3);
+      if (classes.length) part += `.${classes.join(".")}`;
+      const parent = node.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children || []).filter((child) => child.localName === node.localName);
+        if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(node) + 1})`;
+      }
+      parts.unshift(part);
+      node = parent;
+    }
+    return parts.join(" > ");
+  }
+
+  function mcelRuntimeVanityContentWidth(element) {
+    const style = window.getComputedStyle ? window.getComputedStyle(element) : null;
+    const rect = element?.getBoundingClientRect?.();
+    const paddingLeft = mcelRuntimeNumber(style?.paddingLeft);
+    const paddingRight = mcelRuntimeNumber(style?.paddingRight);
+    const width = Number(element?.clientWidth || rect?.width || 0);
+    return Math.max(0, width - paddingLeft - paddingRight);
+  }
+
+  function mcelRuntimeLongestHardToken(text) {
+    const raw = String(text || "").trim();
+    if (!raw) return null;
+    const tokens = raw.match(/\S+/g) || [];
+    return tokens
+      .map((token) => token.replace(/^[("'[{<]+|[)"'\]}>.,;:!?]+$/g, ""))
+      .filter(Boolean)
+      .filter((token) => {
+        const longEnough = token.length >= 24;
+        const looksStructured = /[./_:#?=&-]/.test(token) && token.length >= 18;
+        return longEnough || looksStructured;
+      })
+      .sort((a, b) => b.length - a.length)[0] || null;
+  }
+
+  function mcelRuntimeMeasureTokenWidth(token, sourceElement) {
+    const doc = sourceElement?.ownerDocument || window.document;
+    const sourceStyle = window.getComputedStyle ? window.getComputedStyle(sourceElement) : null;
+    const probe = doc.createElement("span");
+    probe.textContent = String(token || "");
+    probe.setAttribute("aria-hidden", "true");
+    probe.style.position = "fixed";
+    probe.style.left = "-99999px";
+    probe.style.top = "-99999px";
+    probe.style.whiteSpace = "nowrap";
+    probe.style.fontFamily = sourceStyle?.fontFamily || "monospace";
+    probe.style.fontSize = sourceStyle?.fontSize || "16px";
+    probe.style.fontWeight = sourceStyle?.fontWeight || "400";
+    probe.style.fontStyle = sourceStyle?.fontStyle || "normal";
+    probe.style.letterSpacing = sourceStyle?.letterSpacing || "normal";
+    probe.style.textTransform = sourceStyle?.textTransform || "none";
+    doc.body?.appendChild(probe);
+    const width = probe.getBoundingClientRect?.().width || 0;
+    probe.remove();
+    return width;
+  }
+
+  function mcelRuntimeRectLeakPx(child, container) {
+    const childRect = child?.getBoundingClientRect?.();
+    const containerRect = container?.getBoundingClientRect?.();
+    if (!childRect || !containerRect) {
+      return {inline: 0, block: 0, left: 0, right: 0, top: 0, bottom: 0};
+    }
+    const left = Math.max(0, containerRect.left - childRect.left);
+    const right = Math.max(0, childRect.right - containerRect.right);
+    const top = Math.max(0, containerRect.top - childRect.top);
+    const bottom = Math.max(0, childRect.bottom - containerRect.bottom);
+    return {inline: left + right, block: top + bottom, left, right, top, bottom};
+  }
+
+  function mcelRuntimeCssSnapshot(element) {
+    const style = window.getComputedStyle ? window.getComputedStyle(element) : null;
+    return {
+      display: String(style?.display || ""),
+      whiteSpace: String(style?.whiteSpace || ""),
+      overflowWrap: String(style?.overflowWrap || style?.wordWrap || ""),
+      wordBreak: String(style?.wordBreak || ""),
+      overflowX: String(style?.overflowX || ""),
+      fontSize: String(style?.fontSize || ""),
+      lineHeight: String(style?.lineHeight || "")
+    };
+  }
+
+  function mcelRuntimeHardBreakPolicy(element) {
+    const style = window.getComputedStyle ? window.getComputedStyle(element) : null;
+    const overflowWrap = String(style?.overflowWrap || style?.wordWrap || "").toLowerCase();
+    const wordBreak = String(style?.wordBreak || "").toLowerCase();
+    const whiteSpace = String(style?.whiteSpace || "").toLowerCase();
+    return (
+      overflowWrap.includes("anywhere") ||
+      overflowWrap.includes("break-word") ||
+      wordBreak.includes("break-all") ||
+      wordBreak.includes("break-word") ||
+      whiteSpace.includes("pre-wrap") ||
+      whiteSpace.includes("break-spaces")
+    );
+  }
+
+  function mcelRuntimeNearestVanityContainer(element) {
+    const selector = [
+      ".mc-feature",
+      ".mc-visual-card",
+      ".mc-blog-widget__placeholder",
+      ".mc-blog-widget__items",
+      ".mc-cta",
+      "[data-mcel-runtime-hydrated='true'][data-mc-component-kind='island']",
+      "[data-mcel-runtime-hydrated='true'][data-mc-render='island']",
+      "[data-mcel-runtime-hydrated='true'].mc-feature",
+      "article",
+      "section",
+      "main",
+      "body"
+    ].join(",");
+    let node = element?.parentElement || null;
+    while (node && node !== document.documentElement) {
+      if (node.matches?.(selector) && mcelRuntimeIsVisible(node)) return node;
+      node = node.parentElement;
+    }
+    return element?.ownerDocument?.body || window.document.body;
+  }
+
+  function mcelRuntimeVanityMeasure(element, container, token) {
+    const availableWidth = mcelRuntimeVanityContentWidth(container);
+    const tokenWidth = mcelRuntimeMeasureTokenWidth(token, element);
+    const leak = mcelRuntimeRectLeakPx(element, container);
+    const elementScrollOverflow = Math.max(0, Number(element?.scrollWidth || 0) - Number(element?.clientWidth || 0));
+    const containerScrollOverflow = Math.max(0, Number(container?.scrollWidth || 0) - Number(container?.clientWidth || 0));
+    const predictedOverflow = Math.max(0, tokenWidth - availableWidth);
+    const actualOverflow = Math.max(leak.inline, elementScrollOverflow, containerScrollOverflow);
+    return {
+      availableWidth,
+      tokenWidth,
+      predictedOverflow,
+      actualOverflow,
+      rectLeakPx: leak,
+      canBreak: mcelRuntimeHardBreakPolicy(element)
+    };
+  }
+
+  function mcelRuntimeRankVanityRemedies(context) {
+    const remedies = [];
+    const currentFontSize = mcelRuntimeNumber(context.elementCss?.fontSize) || 16;
+    const scaleNeeded = context.availableWidth / Math.max(context.tokenWidth, 1);
+    if (scaleNeeded >= 0.78 && currentFontSize > 12) {
+      remedies.push({
+        id: "font-size-step-down",
+        family: "typography",
+        reason: "The hard token almost fits; a small local font-size reduction may be enough."
+      });
+    }
+    remedies.push({
+      id: "wrap-anywhere",
+      family: "text-flow",
+      reason: "Allow the hard token to break instead of escaping its card."
+    });
+    if (["code", "kbd", "samp", "var"].includes(context.elementTag)) {
+      remedies.push({
+        id: "code-chip",
+        family: "representation",
+        reason: "Promote the hard inline token into a contained code chip."
+      });
+      remedies.push({
+        id: "scroll-chip",
+        family: "containment",
+        reason: "Preserve exact one-line text while containing scroll inside the chip."
+      });
+    }
+    remedies.push({
+      id: "disclose",
+      family: "interaction",
+      reason: "Move verbose diagnostic content into a compact details disclosure."
+    });
+    return remedies;
+  }
+
+  function mcelRuntimeSerializeVanityDefect(defect) {
+    return {
+      id: defect.id,
+      defect: defect.defect,
+      severity: defect.severity,
+      elementTag: defect.elementTag,
+      elementPath: defect.elementPath,
+      containerPath: defect.containerPath,
+      token: defect.token,
+      tokenLength: defect.tokenLength,
+      tokenWidth: Math.round(defect.tokenWidth),
+      availableWidth: Math.round(defect.availableWidth),
+      predictedOverflowPx: Math.round(defect.predictedOverflow),
+      actualOverflowPx: Math.round(defect.actualOverflow),
+      rectLeakPx: defect.rectLeakPx,
+      elementCss: defect.elementCss,
+      containerCss: defect.containerCss,
+      suggestedRemedies: defect.suggestedRemedies,
+      selectedRemedy: defect.selectedRemedy || "none",
+      appliedRemedy: defect.appliedRemedy || "none",
+      verified: defect.verified === true
+    };
+  }
+
+  function mcelRuntimeDetectVanityDefects(root = window.document, options = {}) {
+    const target = mcelRuntimeNodeRoot(root) || root;
+    const selector = [
+      "code",
+      "kbd",
+      "samp",
+      "var",
+      "a[href]",
+      "button",
+      ".mc-button",
+      "p",
+      "li",
+      "strong",
+      "small",
+      "span",
+      "[data-mc-slot]",
+      "[data-mc-action]"
+    ].join(",");
+    const candidates = Array.from(target?.querySelectorAll?.(selector) || []).filter(mcelRuntimeIsVisible);
+    const raw = [];
+    candidates.forEach((element) => {
+      const token = mcelRuntimeLongestHardToken(element.textContent || "");
+      if (!token) return;
+      const container = mcelRuntimeNearestVanityContainer(element);
+      if (!container || !mcelRuntimeIsVisible(container)) return;
+      const metrics = mcelRuntimeVanityMeasure(element, container, token);
+      const predictedBad = metrics.predictedOverflow > 3 && !metrics.canBreak;
+      const actualBad = metrics.actualOverflow > 3;
+      if (!actualBad && !predictedBad) return;
+      const css = mcelRuntimeCssSnapshot(element);
+      const containerCss = mcelRuntimeCssSnapshot(container);
+      const severity = metrics.actualOverflow > 48 || metrics.predictedOverflow > 96
+        ? "high"
+        : metrics.actualOverflow > 12 || metrics.predictedOverflow > 32
+          ? "medium"
+          : "low";
+      raw.push({
+        id: "",
+        defect: "hard-inline-content-overflow",
+        severity,
+        element,
+        container,
+        elementTag: String(element.localName || ""),
+        elementPath: mcelRuntimeElementPath(element),
+        containerPath: mcelRuntimeElementPath(container),
+        token,
+        tokenLength: token.length,
+        tokenWidth: metrics.tokenWidth,
+        availableWidth: metrics.availableWidth,
+        predictedOverflow: metrics.predictedOverflow,
+        actualOverflow: metrics.actualOverflow,
+        rectLeakPx: metrics.rectLeakPx,
+        elementCss: css,
+        containerCss,
+        suggestedRemedies: []
+      });
+    });
+
+    const deduped = raw.filter((defect) => {
+      return !raw.some((other) => {
+        return other !== defect &&
+          defect.element?.contains?.(other.element) &&
+          other.token === defect.token;
+      });
+    });
+
+    deduped.forEach((defect, index) => {
+      defect.id = `vanity-hard-token-${index + 1}`;
+      defect.suggestedRemedies = mcelRuntimeRankVanityRemedies(defect);
+      if (options.highlight === true) {
+        defect.element?.setAttribute?.(runtimeVanityDefectAttribute, defect.defect);
+        defect.element?.setAttribute?.(runtimeVanityDefectIdAttribute, defect.id);
+        defect.container?.setAttribute?.(runtimeVanityContainerDefectAttribute, defect.defect);
+      }
+    });
+
+    return deduped;
+  }
+
+  function mcelRuntimeVerifyVanityDefect(defect) {
+    if (!defect?.element?.isConnected || !defect?.container?.isConnected) return false;
+    const metrics = mcelRuntimeVanityMeasure(defect.element, defect.container, defect.token);
+    return metrics.actualOverflow <= 3;
+  }
+
+  function mcelRuntimeSnapshotVanityElement(element) {
+    return {
+      style: element.getAttribute?.("style"),
+      fix: element.getAttribute?.(runtimeVanityFixAttribute),
+      vanity: element.getAttribute?.("data-mcel-vanity"),
+      title: element.getAttribute?.("title")
+    };
+  }
+
+  function mcelRuntimeRestoreVanityElement(element, snapshot) {
+    if (!element || !snapshot) return;
+    if (snapshot.style === null || snapshot.style === undefined) element.removeAttribute?.("style");
+    else element.setAttribute?.("style", snapshot.style);
+    if (snapshot.fix === null || snapshot.fix === undefined) element.removeAttribute?.(runtimeVanityFixAttribute);
+    else element.setAttribute?.(runtimeVanityFixAttribute, snapshot.fix);
+    if (snapshot.vanity === null || snapshot.vanity === undefined) element.removeAttribute?.("data-mcel-vanity");
+    else element.setAttribute?.("data-mcel-vanity", snapshot.vanity);
+    if (snapshot.title === null || snapshot.title === undefined) element.removeAttribute?.("title");
+    else element.setAttribute?.("title", snapshot.title);
+  }
+
+  function mcelRuntimeMarkVanityFix(element, remedy) {
+    if (!element?.setAttribute) return;
+    const existing = String(element.getAttribute(runtimeVanityFixAttribute) || "").split(/\s+/).filter(Boolean);
+    if (!existing.includes(remedy)) existing.push(remedy);
+    element.setAttribute(runtimeVanityFixAttribute, existing.join(" "));
+    element.setAttribute("data-mcel-vanity", "true");
+  }
+
+  function mcelRuntimeApplyOneVanityRemedy(defect, remedy) {
+    const element = defect?.element;
+    if (!element?.setAttribute) return false;
+    const doc = element.ownerDocument || window.document;
+    mcelRuntimeInstallVanityStyle(doc);
+    const normalized = mcelRuntimeNormalizeVanityRemedy(remedy);
+    if (normalized === "none") return false;
+
+    if (normalized === "font-size-step-down") {
+      element.style.fontSize = ".86em";
+      element.style.lineHeight = "1.45";
+      element.style.letterSpacing = "-.01em";
+      mcelRuntimeMarkVanityFix(element, normalized);
+      return true;
+    }
+
+    if (normalized === "wrap-anywhere") {
+      element.style.maxWidth = "100%";
+      element.style.whiteSpace = "normal";
+      element.style.overflowWrap = "anywhere";
+      element.style.wordBreak = "break-word";
+      mcelRuntimeMarkVanityFix(element, normalized);
+      return true;
+    }
+
+    if (normalized === "code-chip") {
+      element.style.display = "inline-block";
+      element.style.maxWidth = "100%";
+      element.style.whiteSpace = "normal";
+      element.style.overflowWrap = "anywhere";
+      element.style.wordBreak = "break-word";
+      mcelRuntimeMarkVanityFix(element, normalized);
+      return true;
+    }
+
+    if (normalized === "scroll-chip") {
+      element.style.display = "inline-block";
+      element.style.maxWidth = "100%";
+      element.style.whiteSpace = "nowrap";
+      element.style.overflowX = "auto";
+      element.style.overflowY = "hidden";
+      element.title = element.title || element.textContent || "";
+      mcelRuntimeMarkVanityFix(element, normalized);
+      return true;
+    }
+
+    if (normalized === "disclose") {
+      if (element.closest?.("[data-mcel-vanity-disclosure='true']")) return true;
+      const details = doc.createElement("details");
+      details.setAttribute("data-mcel-vanity-disclosure", "true");
+      details.setAttribute(runtimeVanityFixAttribute, "disclose");
+      details.setAttribute("data-mcel-vanity", "true");
+      const summary = doc.createElement("summary");
+      summary.textContent = "Show console check";
+      const clone = element.cloneNode(true);
+      clone.removeAttribute?.(runtimeVanityDefectAttribute);
+      clone.removeAttribute?.(runtimeVanityDefectIdAttribute);
+      clone.removeAttribute?.(runtimeVanityFixAttribute);
+      details.append(summary, clone);
+      element.replaceWith(details);
+      return true;
+    }
+
+    return false;
+  }
+
+  function mcelRuntimeApplyVanityRemedy(defect, requestedRemedy) {
+    const normalized = mcelRuntimeNormalizeVanityRemedy(requestedRemedy);
+    if (normalized === "none") return {applied: false, remedy: "none", verified: false};
+    if (normalized !== "auto") {
+      const applied = mcelRuntimeApplyOneVanityRemedy(defect, normalized);
+      const verified = normalized === "disclose" ? true : mcelRuntimeVerifyVanityDefect(defect);
+      defect.selectedRemedy = normalized;
+      defect.appliedRemedy = applied ? normalized : "none";
+      defect.verified = verified;
+      return {applied, remedy: defect.appliedRemedy, verified};
+    }
+
+    const candidates = defect.suggestedRemedies.map((entry) => entry.id).filter((id) => id !== "disclose");
+    for (const candidate of candidates) {
+      const snapshot = mcelRuntimeSnapshotVanityElement(defect.element);
+      const applied = mcelRuntimeApplyOneVanityRemedy(defect, candidate);
+      const verified = applied && mcelRuntimeVerifyVanityDefect(defect);
+      if (verified) {
+        defect.selectedRemedy = "auto";
+        defect.appliedRemedy = candidate;
+        defect.verified = true;
+        return {applied: true, remedy: candidate, verified: true};
+      }
+      mcelRuntimeRestoreVanityElement(defect.element, snapshot);
+    }
+
+    defect.selectedRemedy = "auto";
+    defect.appliedRemedy = "none";
+    defect.verified = false;
+    return {applied: false, remedy: "none", verified: false};
+  }
+
+  function mcelRuntimeVanityDiagnostics(root = window.document, options = {}) {
+    const doc = mcelRuntimeDocumentFor(root);
+    const opts = mcelRuntimeOptions(options);
+    if (opts.vanityHighlight || options.highlight === true) {
+      mcelRuntimeInstallVanityStyle(doc);
+    }
+    if (options.clear !== false) mcelRuntimeClearVanityMarks(root);
+    const rawDefects = mcelRuntimeDetectVanityDefects(root, {
+      highlight: opts.vanityHighlight || options.highlight === true
+    });
+    const report = {
+      ok: rawDefects.length === 0,
+      runtime: "mcel",
+      version: mcelRuntimeVersion,
+      subsystem: "mcel-vanity-pass",
+      mode: "detect",
+      requestedRemedy: opts.vanityRemedy,
+      defectFamily: "final-surface-fit",
+      inspected: rawDefects.length,
+      defectCount: rawDefects.length,
+      summary: {
+        hardInlineContentOverflow: rawDefects.length
+      },
+      defects: rawDefects.map(mcelRuntimeSerializeVanityDefect)
+    };
+    mcelRuntimeLastVanityReport = report;
+    return report;
+  }
+
+  function mcelRuntimeVanity(root = window.document, options = {}) {
+    const doc = mcelRuntimeDocumentFor(root);
+    const opts = mcelRuntimeOptions(options);
+    const requestedRemedy = mcelRuntimeNormalizeVanityRemedy(options.remedy || opts.vanityRemedy);
+    if (opts.vanityHighlight || options.highlight === true || requestedRemedy !== "none") {
+      mcelRuntimeInstallVanityStyle(doc);
+    }
+    if (options.clear !== false) mcelRuntimeClearVanityMarks(root);
+    const rawDefects = mcelRuntimeDetectVanityDefects(root, {
+      highlight: opts.vanityHighlight || options.highlight === true
+    });
+    const applied = [];
+    rawDefects.forEach((defect) => {
+      const outcome = mcelRuntimeApplyVanityRemedy(defect, requestedRemedy);
+      if (outcome.applied) {
+        applied.push({
+          id: defect.id,
+          defect: defect.defect,
+          remedy: outcome.remedy,
+          verified: outcome.verified,
+          elementPath: defect.elementPath
+        });
+      }
+    });
+    const report = {
+      ok: rawDefects.length === 0 || applied.every((entry) => entry.verified),
+      runtime: "mcel",
+      version: mcelRuntimeVersion,
+      subsystem: "mcel-vanity-pass",
+      mode: requestedRemedy === "none" ? "detect" : "apply",
+      requestedRemedy,
+      defectFamily: "final-surface-fit",
+      inspected: rawDefects.length,
+      defectCount: rawDefects.length,
+      appliedCount: applied.length,
+      verifiedCount: applied.filter((entry) => entry.verified).length,
+      summary: {
+        hardInlineContentOverflow: rawDefects.length
+      },
+      applied,
+      defects: rawDefects.map(mcelRuntimeSerializeVanityDefect)
+    };
+    doc?.documentElement?.setAttribute("data-mcel-runtime-vanity", "true");
+    doc?.documentElement?.setAttribute("data-mcel-runtime-vanity-remedy", requestedRemedy);
+    doc?.documentElement?.setAttribute("data-mcel-runtime-vanity-defects", String(rawDefects.length));
+    doc?.documentElement?.setAttribute("data-mcel-runtime-vanity-applied", String(applied.length));
+    mcelRuntimeLastVanityReport = report;
+    if (mcelRuntimeLastReport) {
+      mcelRuntimeLastReport = {...mcelRuntimeLastReport, vanity: report};
+    }
+    return report;
+  }
+
+  function mcelRuntimeNextFrame() {
+    return new Promise((resolve) => window.requestAnimationFrame ? window.requestAnimationFrame(resolve) : window.setTimeout(resolve, 16));
+  }
+
+  async function mcelRuntimeWaitForStableLayout(doc) {
+    try {
+      if (doc?.fonts?.ready) await doc.fonts.ready;
+    } catch (_error) {
+      // Font readiness is a best-effort hint.
+    }
+    await mcelRuntimeNextFrame();
+    await mcelRuntimeNextFrame();
+  }
+
+  function mcelRuntimeScheduleVanity(root = window.document, options = {}) {
+    const opts = mcelRuntimeOptions(options);
+    const scheduled = {
+      ok: true,
+      runtime: "mcel",
+      version: mcelRuntimeVersion,
+      subsystem: "mcel-vanity-pass",
+      scheduled: true,
+      requestedRemedy: opts.vanityRemedy
+    };
+    const doc = mcelRuntimeDocumentFor(root);
+    window.setTimeout(() => {
+      mcelRuntimeWaitForStableLayout(doc).then(() => {
+        try {
+          const report = mcelRuntimeVanity(root, {
+            ...opts,
+            highlight: opts.vanityHighlight
+          });
+          if (mcelRuntimeLastReport) {
+            mcelRuntimeLastReport = {...mcelRuntimeLastReport, vanity: report};
+          }
+        } catch (error) {
+          window.console?.warn?.("MCELRuntime vanity pass failed", error);
+        }
+      });
+    }, 0);
+    return scheduled;
+  }
+
+
   function mcelRuntimeSetUrlOption(name, value) {
     const current = new URL(window.location.href);
     current.searchParams.set(name, value);
+    current.searchParams.set("mcel-twiddle", "1");
+    current.searchParams.set("mcel-diagnostics", "1");
+    window.location.href = current.toString();
+  }
+
+  function mcelRuntimeSetVanityUrlOption(value) {
+    const current = new URL(window.location.href);
+    current.searchParams.set("mcel-vanity", "1");
+    current.searchParams.set("mcel-vanity-highlight", "1");
+    current.searchParams.set("mcel-vanity-remedy", value);
     current.searchParams.set("mcel-twiddle", "1");
     current.searchParams.set("mcel-diagnostics", "1");
     window.location.href = current.toString();
@@ -761,6 +1512,26 @@ _MCEL_RUNTIME_WRAPPER = r'''
     });
     chromeSelect.addEventListener("change", () => mcelRuntimeSetUrlOption("mcel-chrome", mcelRuntimeOptionSlug(chromeSelect.value, "chrome")));
 
+    const vanityLabel = targetDoc.createElement("label");
+    vanityLabel.textContent = "Vanity remedy";
+    const vanitySelect = targetDoc.createElement("select");
+    const vanityReport = mcelRuntimeLastVanityReport || {};
+    const selectedVanityRemedy = mcelRuntimeNormalizeVanityRemedy(
+      mcelRuntimeReadQueryValue(["mcel-vanity-remedy", "mcel-remedy", "mcel-runtime-remedy"]) ||
+      vanityReport.requestedRemedy ||
+      "none"
+    );
+    mcelRuntimeVanityRemedies().forEach((remedy) => {
+      const option = targetDoc.createElement("option");
+      option.value = remedy.id;
+      option.textContent = remedy.label || remedy.id;
+      option.selected = remedy.id === selectedVanityRemedy;
+      vanitySelect.appendChild(option);
+    });
+    vanitySelect.addEventListener("change", () => mcelRuntimeSetVanityUrlOption(vanitySelect.value));
+
+    vanityLabel.appendChild(vanitySelect);
+
     const safeButton = targetDoc.createElement("button");
     safeButton.type = "button";
     safeButton.textContent = "Reset to safe strict";
@@ -775,7 +1546,7 @@ _MCEL_RUNTIME_WRAPPER = r'''
 
     themeLabel.appendChild(themeSelect);
     chromeLabel.appendChild(chromeSelect);
-    panel.append(title, summary, themeLabel, chromeLabel, safeButton);
+    panel.append(title, summary, themeLabel, chromeLabel, vanityLabel, safeButton);
     return panel;
   }
 
@@ -1623,6 +2394,9 @@ html[data-mcel-runtime-debug="true"] body.mcel-powered-site::after {
       if (mcelRuntimeTwiddleRequested(doc, opts)) {
         mcelRuntimeEnsureTwiddlePanel(doc, emptyResult);
       }
+      if (mcelRuntimeVanityRequested(doc, opts)) {
+        emptyResult.vanity = mcelRuntimeScheduleVanity(root, opts);
+      }
       return emptyResult;
     }
 
@@ -1709,6 +2483,9 @@ html[data-mcel-runtime-debug="true"] body.mcel-powered-site::after {
     if (mcelRuntimeTwiddleRequested(doc, opts)) {
       mcelRuntimeEnsureTwiddlePanel(doc, result);
     }
+    if (mcelRuntimeVanityRequested(doc, opts)) {
+      result.vanity = mcelRuntimeScheduleVanity(root, opts);
+    }
     return result;
   }
 
@@ -1740,7 +2517,8 @@ html[data-mcel-runtime-debug="true"] body.mcel-powered-site::after {
       powered: doc?.documentElement?.dataset?.mcelRuntimePowered === "true",
       mode: doc?.documentElement?.dataset?.mcelRuntimeMode || mcelRuntimeLastReport?.mode || runtimeDefaults.mode,
       theme: doc?.documentElement?.dataset?.mcelRuntimeTheme || mcelRuntimeLastReport?.theme || runtimeDefaults.theme,
-      chrome: doc?.documentElement?.dataset?.mcelRuntimeChrome || mcelRuntimeLastReport?.chrome || runtimeDefaults.chrome
+      chrome: doc?.documentElement?.dataset?.mcelRuntimeChrome || mcelRuntimeLastReport?.chrome || runtimeDefaults.chrome,
+      vanity: mcelRuntimeLastVanityReport
     };
   }
 
@@ -1776,6 +2554,9 @@ html[data-mcel-runtime-debug="true"] body.mcel-powered-site::after {
     report: mcelRuntimeReport,
     diagnostics: mcelRuntimeDiagnostics,
     twiddle: mcelRuntimeTwiddle,
+    vanity: mcelRuntimeVanity,
+    vanityDiagnostics: mcelRuntimeVanityDiagnostics,
+    vanityRemedies: mcelRuntimeVanityRemedies,
     detectSources: mcelRuntimeDetectSources,
     listThemes: mcelRuntimeListThemes,
     listChromes: mcelRuntimeListChromes,

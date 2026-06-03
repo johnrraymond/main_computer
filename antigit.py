@@ -1,8 +1,7 @@
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
-import datetime as _dt
-import fnmatch
 import hashlib
 import json
 import os
@@ -10,704 +9,629 @@ import re
 import shutil
 import sys
 import tempfile
-import zipfile
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
-from typing import Iterable, Iterator
+from pathlib import Path
+from typing import Iterable
 
 
-SNAPSHOT_FORMAT = "antigit.snapshot.v1"
-DEFAULT_SNAPSHOT_DIR = ".antigit/snapshots"
-DEFAULT_EXCLUDED_DIRS = {
-    ".antigit",
-    ".git",
-    ".hg",
-    ".svn",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    "__pycache__",
-    "aider.log",
-    "build",
-    "dist",
-    "htmlcov",
-    "node_modules",
-    "venv",
-    ".venv",
-    "env",
-}
-DEFAULT_EXCLUDED_FILE_GLOBS = {
-    "*.7z",
-    "*.avi",
-    "*.bak",
-    "*.bin",
-    "*.db",
-    "*.dll",
-    "*.egg-info",
-    "*.exe",
-    "*.gif",
-    "*.ico",
-    "*.jpeg",
-    "*.jpg",
-    "*.log",
-    "*.mov",
-    "*.mp3",
-    "*.mp4",
-    "*.ogg",
-    "*.orig",
-    "*.patch",
-    "*.pid",
-    "*.png",
-    "*.pyc",
-    "*.pyd",
-    "*.rar",
-    "*.rej",
-    "*.sqlite",
-    "*.sqlite3",
-    "*.swp",
-    "*.swo",
-    "*.tar",
-    "*.tar.gz",
-    "*.temp",
-    "*.tgz",
-    "*.tmp",
-    "*.wasm",
-    "*.wav",
-    "*.webp",
-    "*.zip",
-}
-TEXT_SUFFIXES = {
-    ".bat",
-    ".c",
-    ".cfg",
-    ".cmd",
-    ".cpp",
-    ".cs",
-    ".css",
-    ".csv",
-    ".go",
-    ".h",
-    ".hpp",
-    ".html",
-    ".ini",
-    ".java",
-    ".js",
-    ".json",
-    ".jsx",
-    ".md",
-    ".ps1",
-    ".py",
-    ".rs",
-    ".sh",
-    ".sql",
-    ".svg",
-    ".toml",
-    ".ts",
-    ".tsx",
-    ".txt",
-    ".xml",
-    ".yaml",
-    ".yml",
-}
-GRAMMAR_STOP_WORDS = {
-    ".py": ["def", "class", "import", "from", "return", "if", "elif", "else", "for", "while", "try", "except", "with", "as"],
-    ".js": ["function", "const", "let", "var", "return", "if", "else", "for", "while", "await", "async", "import", "export"],
-    ".jsx": ["function", "const", "let", "return", "if", "else", "await", "async", "import", "export", "props", "state"],
-    ".ts": ["function", "const", "let", "type", "interface", "return", "if", "else", "await", "async", "import", "export"],
-    ".tsx": ["function", "const", "let", "type", "interface", "return", "if", "else", "await", "async", "import", "export", "props"],
-    ".html": ["html", "head", "body", "div", "span", "script", "link", "class", "id", "data"],
-    ".css": ["class", "id", "display", "position", "color", "margin", "padding", "grid", "flex"],
-    ".json": ["object", "array", "string", "number", "true", "false", "null"],
-    ".yaml": ["mapping", "sequence", "string", "number", "true", "false", "null"],
-    ".yml": ["mapping", "sequence", "string", "number", "true", "false", "null"],
-    ".toml": ["table", "array", "string", "number", "true", "false"],
-    ".ps1": ["param", "function", "if", "else", "foreach", "try", "catch", "return"],
-    ".sh": ["if", "then", "else", "fi", "for", "do", "done", "case", "esac", "function"],
-    ".bat": ["if", "else", "for", "set", "call", "goto", "exit"],
-    ".md": ["heading", "list", "code", "link", "table"],
-}
-GUESS_MAP = {
-    "anti": ["inverse", "mirror", "counter", "reversal"],
-    "git": ["snapshot", "tree", "commit", "checkout", "pull"],
-    "pull": ["restore", "merge", "checkpoint", "state"],
-    "snapshot": ["checkpoint", "archive", "manifest", "fossil"],
-    "checkpoint": ["snapshot", "restore", "anchor", "state"],
-    "restore": ["rollback", "recover", "original", "checkpoint"],
-    "number": ["literal", "amount", "integer", "float"],
-    "numbers": ["literal", "amount", "integer", "float"],
-    "grammar": ["syntax", "token", "parser", "language"],
-    "signal": ["event", "pulse", "trace", "plan"],
-    "sopwith": ["stop", "word", "grammar", "signal"],
-    "stop": ["token", "guard", "boundary", "grammar"],
-    "word": ["token", "symbol", "identifier", "literal"],
-    "python": ["def", "class", "import", "return"],
-    "javascript": ["function", "const", "let", "return"],
-    "json": ["object", "array", "string", "number"],
-}
-IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{1,63}")
-NUMBER_RE = re.compile(r"(?<![A-Za-z_])[-+]?(?:0x[0-9A-Fa-f]+|\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)(?![A-Za-z_])")
+TEXT_SCAN_LIMIT = 2 * 1024 * 1024
 
+LANGUAGE_GRAMMAR_WORDS: dict[str, tuple[str, ...]] = {
+    ".py": ("def", "class", "import", "from", "return", "with", "for", "while", "if", "elif", "else", "try", "except", "raise", "yield", "async", "await", "lambda"),
+    ".js": ("function", "class", "import", "export", "return", "const", "let", "var", "if", "else", "for", "while", "async", "await"),
+    ".jsx": ("function", "class", "import", "export", "return", "const", "let", "props", "state", "component"),
+    ".ts": ("function", "class", "interface", "type", "import", "export", "return", "const", "let", "async", "await"),
+    ".tsx": ("function", "class", "interface", "type", "import", "export", "return", "const", "let", "props", "state", "component"),
+    ".json": ("object", "array", "string", "number", "boolean", "null", "key", "value"),
+    ".yml": ("mapping", "sequence", "key", "value", "anchor", "alias"),
+    ".yaml": ("mapping", "sequence", "key", "value", "anchor", "alias"),
+    ".toml": ("table", "array", "string", "integer", "float", "boolean", "key", "value"),
+    ".ini": ("section", "key", "value", "setting"),
+    ".cfg": ("section", "key", "value", "setting"),
+    ".md": ("heading", "link", "code", "list", "quote"),
+    ".rst": ("heading", "directive", "role", "literal", "section"),
+    ".html": ("html", "head", "body", "div", "span", "script", "style", "class", "id"),
+    ".css": ("selector", "property", "value", "class", "id", "media"),
+    ".sh": ("if", "then", "else", "fi", "for", "while", "do", "done", "case", "export"),
+    ".ps1": ("param", "function", "if", "else", "foreach", "where", "object", "return"),
+    ".sql": ("select", "insert", "update", "delete", "from", "where", "join", "group", "order"),
+}
 
-class AntiGitError(RuntimeError):
-    pass
+GUESS_MAP: dict[str, tuple[str, ...]] = {
+    "anti": ("git", "inverse", "checkpoint", "state"),
+    "git": ("pull", "diff", "status", "tracked", "state"),
+    "pull": ("restore", "fetch", "compare", "checkpoint", "state"),
+    "snapshot": ("checkpoint", "clone", "state", "copy", "mirror"),
+    "checkpoint": ("snapshot", "clone", "state", "restore", "preserve"),
+    "clone": ("copy", "mirror", "duplicate", "state"),
+    "copy": ("clone", "mirror", "duplicate"),
+    "duplicate": ("clone", "copy", "mirror"),
+    "machine": ("state", "runtime", "local", "raw"),
+    "state": ("machine", "runtime", "checkpoint", "snapshot"),
+    "raw": ("machine", "state", "unignored", "local"),
+    "ignored": ("gitignore", "untracked", "local", "raw"),
+    "gitignore": ("ignored", "untracked", "local", "raw"),
+    "untracked": ("ignored", "local", "raw", "machine"),
+    "number": ("numeric", "literal", "integer", "float", "amount"),
+    "numbers": ("numeric", "literal", "integer", "float", "amount"),
+    "numeric": ("number", "literal", "integer", "float"),
+    "literal": ("number", "numeric", "string", "token"),
+    "grammar": ("syntax", "language", "token", "query"),
+    "language": ("grammar", "syntax", "token", "query"),
+    "sopwith": ("stop", "word", "signal", "query"),
+    "stop": ("word", "signal", "query"),
+    "word": ("stop", "signal", "query", "token"),
+    "python": ("def", "class", "import", "return", "async", "await"),
+    "javascript": ("function", "class", "import", "export", "return"),
+}
 
 
 @dataclass(frozen=True)
-class SnapshotEntry:
+class EntryState:
     path: str
-    size: int
-    sha256: str
-    mode: int
-    stop_words: tuple[str, ...]
-    numeric_literals: tuple[str, ...]
+    kind: str
+    sha256: str | None = None
+    size: int | None = None
+    link_target: str | None = None
+    numeric_literals: tuple[str, ...] = ()
+    sopwith_stop_words: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
-class Snapshot:
-    manifest: dict
-    entries: dict[str, SnapshotEntry]
-    archive_path: Path
+class ChangeSignal:
+    action: str
+    path: str
+    kind: str
+    before_kind: str | None = None
+    after_kind: str | None = None
+    before_sha256: str | None = None
+    after_sha256: str | None = None
+    before_size: int | None = None
+    after_size: int | None = None
+    before_numeric_literals: tuple[str, ...] = ()
+    after_numeric_literals: tuple[str, ...] = ()
+    numeric_literals: tuple[str, ...] = ()
+    sopwith_stop_words: tuple[str, ...] = ()
 
 
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+def sha256_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
-def utc_stamp() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d-%H%M%SZ")
-
-
-def utc_iso() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def normalize_relative(path: Path | PurePosixPath | str) -> str:
-    raw = str(path).replace("\\", "/")
-    normalized = PurePosixPath(raw)
-    if normalized.is_absolute():
-        raise AntiGitError(f"absolute paths are not allowed: {path}")
-    parts = [part for part in normalized.parts if part not in ("", ".")]
-    if not parts:
-        raise AntiGitError("empty relative path is not allowed")
-    if any(part == ".." for part in parts):
-        raise AntiGitError(f"parent traversal is not allowed: {path}")
-    if any(len(part) >= 2 and part[0].isalpha() and part[1] == ":" for part in parts):
-        raise AntiGitError(f"windows drive designators are not allowed: {path}")
-    return "/".join(parts)
-
-
-def safe_join(root: Path, relative: str) -> Path:
-    normalized = normalize_relative(relative)
-    target = (root / normalized).resolve()
-    root_resolved = root.resolve()
-    try:
-        target.relative_to(root_resolved)
-    except ValueError as exc:
-        raise AntiGitError(f"path escapes root: {relative}") from exc
-    return target
-
-
-def posix_parts(relative: str) -> tuple[str, ...]:
-    return tuple(PurePosixPath(normalize_relative(relative)).parts)
-
-
-def path_tokens(relative: str) -> list[str]:
-    words: list[str] = []
-    for part in posix_parts(relative):
-        stem = Path(part).stem
-        pieces = re.split(r"[^A-Za-z0-9]+", stem)
-        for piece in pieces:
-            if not piece:
-                continue
-            # Split basic camelCase/PascalCase without losing snake_case.
-            words.extend(re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)|\d+", piece))
-    return words
-
-
-def stable_unique(values: Iterable[str], *, limit: int | None = None) -> tuple[str, ...]:
+def ordered_unique(words: Iterable[str]) -> tuple[str, ...]:
     seen: set[str] = set()
     result: list[str] = []
-    for value in values:
-        item = value.strip().lower()
-        if not item:
+    for word in words:
+        normalized = word.strip().lower()
+        if not normalized or normalized in seen:
             continue
-        if len(item) > 80:
-            continue
-        if item not in seen:
-            seen.add(item)
-            result.append(item)
-            if limit is not None and len(result) >= limit:
-                break
+        seen.add(normalized)
+        result.append(normalized)
     return tuple(result)
 
 
-def is_probably_text(path: Path, data: bytes) -> bool:
-    if path.suffix.lower() in TEXT_SUFFIXES:
-        return True
-    if not data:
-        return True
+def split_tokens(text: str) -> tuple[str, ...]:
+    raw: list[str] = []
+    for chunk in re.split(r"[^A-Za-z0-9]+", text):
+        if not chunk:
+            continue
+        # Split a little bit of CamelCase without making path processing costly.
+        expanded = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", chunk)
+        raw.extend(part for part in expanded.split() if part)
+    return ordered_unique(raw)
+
+
+def looks_like_text(data: bytes) -> bool:
     if b"\x00" in data:
         return False
-    sample = data[:4096]
+    if not data:
+        return True
     try:
-        sample.decode("utf-8")
+        data.decode("utf-8")
+        return True
     except UnicodeDecodeError:
         return False
-    return True
 
 
-def decode_text_for_signal(path: Path, data: bytes) -> str:
-    if not is_probably_text(path, data):
-        return ""
+def read_text_sample(path: Path) -> str:
     try:
-        return data.decode("utf-8", errors="ignore")
-    except Exception:
+        data = path.read_bytes()
+    except OSError:
         return ""
+    if len(data) > TEXT_SCAN_LIMIT:
+        data = data[:TEXT_SCAN_LIMIT]
+    if not looks_like_text(data):
+        return ""
+    return data.decode("utf-8", errors="replace")
 
 
-def numeric_literals(text: str, *, limit: int = 24) -> tuple[str, ...]:
-    return stable_unique(NUMBER_RE.findall(text), limit=limit)
+def numeric_literals_from_text(text: str) -> tuple[str, ...]:
+    return ordered_unique(re.findall(r"(?<![A-Za-z_])-?\d+(?:\.\d+)?(?![A-Za-z_])", text))
 
 
-def identifier_words(text: str, *, limit: int = 64) -> tuple[str, ...]:
-    raw = IDENTIFIER_RE.findall(text)
-    blocked = {
-        "and",
-        "are",
-        "but",
-        "for",
-        "from",
-        "has",
-        "not",
-        "the",
-        "this",
-        "that",
-        "with",
-        "you",
-        "your",
-    }
-    return stable_unique((item for item in raw if item.lower() not in blocked), limit=limit)
+def identifier_tokens_from_text(text: str) -> tuple[str, ...]:
+    return ordered_unique(re.findall(r"[A-Za-z_][A-Za-z0-9_]{1,}", text))
 
 
-def guess_stop_words(words: Iterable[str], *, limit: int = 64) -> tuple[str, ...]:
-    generated: list[str] = []
-    for word in stable_unique(words):
-        generated.append(word)
-        generated.extend(GUESS_MAP.get(word, ()))
-        if "." in word:
-            generated.extend(GRAMMAR_STOP_WORDS.get(Path(word).suffix.lower(), ()))
-    return stable_unique(generated, limit=limit)
+def guess_stop_words(seeds: Iterable[str]) -> tuple[str, ...]:
+    result: list[str] = []
+    seen: set[str] = set()
+
+    def visit(word: str) -> None:
+        if word in seen:
+            return
+        seen.add(word)
+        result.append(word)
+        for related in GUESS_MAP.get(word, ()):
+            visit(related)
+
+    for seed in ordered_unique(token for seed in seeds for token in split_tokens(seed)):
+        visit(seed)
+
+    return tuple(result)
 
 
-def sopwith_stop_words(relative: str, data: bytes = b"") -> tuple[str, ...]:
-    suffix = PurePosixPath(relative).suffix.lower()
-    text = decode_text_for_signal(Path(relative), data)
-    words: list[str] = []
-    words.extend(path_tokens(relative))
-    words.extend(GRAMMAR_STOP_WORDS.get(suffix, ()))
-    words.extend(identifier_words(text, limit=32))
-    words.extend(numeric_literals(text, limit=12))
-    words.extend(guess_stop_words(words, limit=32))
-    return stable_unique(words, limit=96)
+def sopwith_stop_words_for_entry(relative_path: str, path: Path | None = None, text: str = "") -> tuple[str, ...]:
+    suffix = Path(relative_path).suffix.lower()
+    seeds: list[str] = []
+    seeds.extend(split_tokens(relative_path))
+    seeds.extend(LANGUAGE_GRAMMAR_WORDS.get(suffix, ()))
+    if text:
+        seeds.extend(identifier_tokens_from_text(text)[:80])
+        if numeric_literals_from_text(text):
+            seeds.extend(("number", "literal"))
+    return guess_stop_words(seeds)
 
 
-def load_ignore_file(root: Path) -> list[str]:
-    ignore_path = root / ".antigitignore"
-    if not ignore_path.exists():
-        return []
-    lines: list[str] = []
-    for raw in ignore_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        lines.append(line.replace("\\", "/"))
-    return lines
+def safe_relative_path(path: Path, root: Path) -> str:
+    return path.relative_to(root).as_posix()
 
 
-def is_excluded(relative: str, user_patterns: Iterable[str] = ()) -> bool:
-    normalized = normalize_relative(relative)
-    parts = posix_parts(normalized)
-    if any(part in DEFAULT_EXCLUDED_DIRS for part in parts[:-1]):
-        return True
-    name = parts[-1]
-    if name in DEFAULT_EXCLUDED_DIRS:
-        return True
-    for pattern in DEFAULT_EXCLUDED_FILE_GLOBS:
-        if fnmatch.fnmatch(name.lower(), pattern.lower()) or fnmatch.fnmatch(normalized.lower(), pattern.lower()):
-            return True
-    for pattern in user_patterns:
-        pattern = pattern.strip().replace("\\", "/")
-        if not pattern:
-            continue
-        anchored = pattern.startswith("/")
-        pattern = pattern.lstrip("/")
-        if pattern.endswith("/"):
-            prefix = pattern.rstrip("/") + "/"
-            if normalized == pattern.rstrip("/") or normalized.startswith(prefix):
-                return True
-            continue
-        if anchored:
-            if fnmatch.fnmatch(normalized, pattern):
-                return True
-        elif fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(normalized, pattern):
-            return True
-    return False
-
-
-def iter_snapshot_files(root: Path, *, include: list[str] | None = None, include_excluded: bool = False) -> Iterator[Path]:
-    root = root.resolve()
-    user_patterns = [] if include_excluded else load_ignore_file(root)
-    include_set = {normalize_relative(item) for item in include or []}
-    if include_set:
-        for relative in sorted(include_set):
-            path = safe_join(root, relative)
-            if path.is_file():
-                yield path
-        return
-
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
-            continue
-        relative = path.relative_to(root).as_posix()
-        if not include_excluded and is_excluded(relative, user_patterns):
-            continue
-        yield path
-
-
-def make_entry(root: Path, path: Path) -> SnapshotEntry:
-    data = path.read_bytes()
-    relative = normalize_relative(path.relative_to(root).as_posix())
-    return SnapshotEntry(
-        path=relative,
-        size=len(data),
-        sha256=sha256_bytes(data),
-        mode=path.stat().st_mode & 0o777,
-        stop_words=sopwith_stop_words(relative, data),
-        numeric_literals=numeric_literals(decode_text_for_signal(path, data)),
-    )
-
-
-def entry_to_json(entry: SnapshotEntry) -> dict:
-    return {
-        "path": entry.path,
-        "size": entry.size,
-        "sha256": entry.sha256,
-        "mode": oct(entry.mode),
-        "stop_words": list(entry.stop_words),
-        "numeric_literals": list(entry.numeric_literals),
-    }
-
-
-def entry_from_json(payload: dict) -> SnapshotEntry:
-    mode_raw = payload.get("mode", "0o644")
-    if isinstance(mode_raw, int):
-        mode = mode_raw
-    else:
-        mode = int(str(mode_raw), 8)
-    return SnapshotEntry(
-        path=normalize_relative(payload["path"]),
-        size=int(payload["size"]),
-        sha256=str(payload["sha256"]),
-        mode=mode,
-        stop_words=tuple(str(item) for item in payload.get("stop_words", [])),
-        numeric_literals=tuple(str(item) for item in payload.get("numeric_literals", [])),
-    )
-
-
-def default_snapshot_path(root: Path) -> Path:
-    destination = root / DEFAULT_SNAPSHOT_DIR
-    return destination / f"antigit-{root.name}-{utc_stamp()}.zip"
-
-
-def create_snapshot(root: Path, output: Path | None, *, include: list[str] | None = None, include_excluded: bool = False) -> tuple[Path, dict]:
-    root = root.resolve()
-    if not root.exists():
-        raise AntiGitError(f"root does not exist: {root}")
-    output = (output or default_snapshot_path(root)).resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
-
-    entries = [make_entry(root, path) for path in iter_snapshot_files(root, include=include, include_excluded=include_excluded)]
-    manifest = {
-        "format": SNAPSHOT_FORMAT,
-        "created_at_utc": utc_iso(),
-        "root_name": root.name,
-        "file_count": len(entries),
-        "files": [entry_to_json(entry) for entry in entries],
-    }
-
-    with tempfile.NamedTemporaryFile("wb", delete=False, dir=str(output.parent), suffix=".tmp") as tmp:
-        temp_name = Path(tmp.name)
-    try:
-        with zipfile.ZipFile(temp_name, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr("manifest.json", json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-            for entry in entries:
-                path = safe_join(root, entry.path)
-                archive.write(path, f"files/{entry.path}")
-        temp_name.replace(output)
-    finally:
-        if temp_name.exists():
-            temp_name.unlink()
-
-    return output, manifest
-
-
-def load_snapshot(archive_path: Path) -> Snapshot:
-    archive_path = archive_path.resolve()
-    if not archive_path.exists():
-        raise AntiGitError(f"snapshot archive does not exist: {archive_path}")
-    with zipfile.ZipFile(archive_path) as archive:
+def entry_state(root: Path, path: Path) -> EntryState:
+    relative = safe_relative_path(path, root)
+    if path.is_symlink():
         try:
-            manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
-        except KeyError as exc:
-            raise AntiGitError("snapshot archive is missing manifest.json") from exc
-    if manifest.get("format") != SNAPSHOT_FORMAT:
-        raise AntiGitError(f"unsupported snapshot format: {manifest.get('format')!r}")
-    entries = {entry.path: entry for entry in (entry_from_json(item) for item in manifest.get("files", []))}
-    return Snapshot(manifest=manifest, entries=entries, archive_path=archive_path)
-
-
-def archive_member_for(entry: SnapshotEntry) -> str:
-    return f"files/{entry.path}"
-
-
-def read_snapshot_file(snapshot: Snapshot, entry: SnapshotEntry) -> bytes:
-    with zipfile.ZipFile(snapshot.archive_path) as archive:
-        data = archive.read(archive_member_for(entry))
-    actual = sha256_bytes(data)
-    if actual != entry.sha256:
-        raise AntiGitError(f"snapshot hash mismatch for {entry.path}: {actual} != {entry.sha256}")
-    return data
-
-
-def target_file_state(root: Path, entry: SnapshotEntry) -> tuple[str, str | None]:
-    target = safe_join(root, entry.path)
-    if not target.exists():
-        return "missing", None
-    if not target.is_file():
-        return "blocked", None
-    data = target.read_bytes()
-    digest = sha256_bytes(data)
-    if digest == entry.sha256:
-        return "same", digest
-    return "drifted", digest
-
-
-def diff_action_for_state(state: str) -> str:
-    if state == "missing":
-        return "create"
-    if state == "drifted":
-        return "restore"
-    if state == "same":
-        return "unchanged"
-    return "blocked"
-
-
-def snapshot_signal(root: Path, snapshot: Snapshot, *, include_unchanged: bool = False) -> list[dict]:
-    root = root.resolve()
-    events: list[dict] = []
-    for path, entry in sorted(snapshot.entries.items()):
-        state, target_sha = target_file_state(root, entry)
-        action = diff_action_for_state(state)
-        if action == "unchanged" and not include_unchanged:
-            continue
-        events.append(
-            {
-                "event": "antigit.pull.signal",
-                "path": path,
-                "action": action,
-                "state": state,
-                "snapshot_sha256": entry.sha256,
-                "target_sha256": target_sha,
-                "size": entry.size,
-                "numeric_literals": list(entry.numeric_literals),
-                "sopwith_stop_words": list(entry.stop_words),
-            }
-        )
-    return events
-
-
-def extra_target_files(root: Path, snapshot: Snapshot) -> list[str]:
-    existing = {
-        path.relative_to(root).as_posix()
-        for path in iter_snapshot_files(root)
-        if path.is_file()
-    }
-    return sorted(existing.difference(snapshot.entries))
-
-
-def write_json_lines(items: Iterable[dict]) -> None:
-    for item in items:
-        print(json.dumps(item, sort_keys=True))
-
-
-def print_signal_text(events: list[dict]) -> None:
-    if not events:
-        print("anti-git signal: checkpoint already matches target")
-        return
-    for event in events:
-        stop = ", ".join(event["sopwith_stop_words"][:12])
-        numbers = ", ".join(event["numeric_literals"][:8]) or "-"
-        print(f"{event['action']:9} {event['path']}  numbers=[{numbers}]  sopwith=[{stop}]")
-
-
-def pull_snapshot(root: Path, snapshot: Snapshot, *, dry_run: bool = False, emit_signal: bool = False, json_output: bool = False) -> int:
-    root = root.resolve()
-    events = snapshot_signal(root, snapshot, include_unchanged=False)
-
-    if emit_signal:
-        if json_output:
-            write_json_lines(events)
-        else:
-            print_signal_text(events)
-
-    changed = 0
-    blocked = 0
-    for event in events:
-        if event["action"] == "blocked":
-            blocked += 1
-            continue
-        if event["action"] not in {"create", "restore"}:
-            continue
-        changed += 1
-        if dry_run:
-            continue
-        entry = snapshot.entries[event["path"]]
-        data = read_snapshot_file(snapshot, entry)
-        target = safe_join(root, entry.path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
-        try:
-            os.chmod(target, entry.mode)
+            link_target = os.readlink(path)
         except OSError:
-            # Windows may not preserve POSIX-style modes. The bytes are the authoritative restore.
-            pass
+            link_target = ""
+        stop_words = sopwith_stop_words_for_entry(relative)
+        return EntryState(
+            path=relative,
+            kind="symlink",
+            sha256=hashlib.sha256(f"symlink:{link_target}".encode("utf-8", errors="replace")).hexdigest(),
+            size=None,
+            link_target=link_target,
+            sopwith_stop_words=stop_words,
+        )
 
-    summary = {
-        "event": "antigit.pull.summary",
-        "archive": str(snapshot.archive_path),
-        "root": str(root),
-        "dry_run": dry_run,
-        "changed_files": changed,
-        "blocked_files": blocked,
-    }
-    if json_output:
-        print(json.dumps(summary, sort_keys=True))
-    elif not emit_signal:
-        print(f"anti-git pull: changed_files={changed} blocked_files={blocked} dry_run={dry_run}")
-    return 1 if blocked else 0
+    if path.is_dir():
+        stop_words = sopwith_stop_words_for_entry(relative)
+        return EntryState(path=relative, kind="directory", sopwith_stop_words=stop_words)
+
+    if path.is_file():
+        text = read_text_sample(path)
+        stop_words = sopwith_stop_words_for_entry(relative, path, text)
+        return EntryState(
+            path=relative,
+            kind="file",
+            sha256=sha256_file(path),
+            size=path.stat().st_size,
+            numeric_literals=numeric_literals_from_text(text),
+            sopwith_stop_words=stop_words,
+        )
+
+    stop_words = sopwith_stop_words_for_entry(relative)
+    return EntryState(path=relative, kind="other", sopwith_stop_words=stop_words)
 
 
-def command_snapshot(args: argparse.Namespace) -> int:
-    output, manifest = create_snapshot(
-        Path(args.root),
-        Path(args.output) if args.output else None,
-        include=list(args.include or []),
-        include_excluded=bool(args.include_excluded),
-    )
-    summary = {
-        "event": "antigit.snapshot.created",
-        "archive": str(output),
-        "format": SNAPSHOT_FORMAT,
-        "file_count": manifest["file_count"],
-        "root_name": manifest["root_name"],
-        "created_at_utc": manifest["created_at_utc"],
-    }
-    if args.json:
-        print(json.dumps(summary, sort_keys=True))
+def collect_entries(root: Path) -> dict[str, EntryState]:
+    if not root.exists():
+        return {}
+    if not root.is_dir():
+        raise RuntimeError(f"expected a directory: {root}")
+
+    entries: dict[str, EntryState] = {}
+    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+        state = entry_state(root, path)
+        entries[state.path] = state
+    return entries
+
+
+def combine_words(*groups: Iterable[str]) -> tuple[str, ...]:
+    return ordered_unique(word for group in groups for word in group)
+
+
+def compare_dirs(before_root: Path | None, after_root: Path, include_unchanged: bool = False) -> tuple[ChangeSignal, ...]:
+    before = collect_entries(before_root) if before_root and before_root.exists() else {}
+    after = collect_entries(after_root)
+    signals: list[ChangeSignal] = []
+
+    for relative in sorted(set(before) | set(after)):
+        old = before.get(relative)
+        new = after.get(relative)
+
+        if old is None and new is not None:
+            signals.append(
+                ChangeSignal(
+                    action="added",
+                    path=relative,
+                    kind=new.kind,
+                    after_kind=new.kind,
+                    after_sha256=new.sha256,
+                    after_size=new.size,
+                    after_numeric_literals=new.numeric_literals,
+                    numeric_literals=new.numeric_literals,
+                    sopwith_stop_words=new.sopwith_stop_words,
+                )
+            )
+            continue
+
+        if old is not None and new is None:
+            signals.append(
+                ChangeSignal(
+                    action="deleted",
+                    path=relative,
+                    kind=old.kind,
+                    before_kind=old.kind,
+                    before_sha256=old.sha256,
+                    before_size=old.size,
+                    before_numeric_literals=old.numeric_literals,
+                    numeric_literals=old.numeric_literals,
+                    sopwith_stop_words=old.sopwith_stop_words,
+                )
+            )
+            continue
+
+        assert old is not None and new is not None
+        same = (
+            old.kind == new.kind
+            and old.sha256 == new.sha256
+            and old.link_target == new.link_target
+            and old.size == new.size
+        )
+        if same:
+            if include_unchanged:
+                signals.append(
+                    ChangeSignal(
+                        action="unchanged",
+                        path=relative,
+                        kind=new.kind,
+                        before_kind=old.kind,
+                        after_kind=new.kind,
+                        before_sha256=old.sha256,
+                        after_sha256=new.sha256,
+                        before_size=old.size,
+                        after_size=new.size,
+                        before_numeric_literals=old.numeric_literals,
+                        after_numeric_literals=new.numeric_literals,
+                        numeric_literals=new.numeric_literals,
+                        sopwith_stop_words=new.sopwith_stop_words,
+                    )
+                )
+            continue
+
+        action = "modified" if old.kind == new.kind else "type_changed"
+        signals.append(
+            ChangeSignal(
+                action=action,
+                path=relative,
+                kind=new.kind,
+                before_kind=old.kind,
+                after_kind=new.kind,
+                before_sha256=old.sha256,
+                after_sha256=new.sha256,
+                before_size=old.size,
+                after_size=new.size,
+                before_numeric_literals=old.numeric_literals,
+                after_numeric_literals=new.numeric_literals,
+                numeric_literals=combine_words(new.numeric_literals, old.numeric_literals),
+                sopwith_stop_words=combine_words(new.sopwith_stop_words, old.sopwith_stop_words),
+            )
+        )
+
+    return tuple(signals)
+
+
+def checkpoint_name_for_source(source: Path, override: str | None = None) -> str:
+    if override:
+        if any(sep in override for sep in ("/", "\\")) or override in {"", ".", ".."}:
+            raise RuntimeError(f"unsafe checkpoint name: {override!r}")
+        return override
+    return f"antigit_{source.name}_checkpoint"
+
+
+def default_checkpoint_root(source: Path) -> Path:
+    return source.parent / "checkpoint"
+
+
+def resolve_checkpoint(source: Path, checkpoint_root: Path | None, name: str | None = None) -> tuple[Path, Path]:
+    source = source.resolve()
+    root = (checkpoint_root.resolve() if checkpoint_root else default_checkpoint_root(source).resolve())
+    checkpoint = (root / checkpoint_name_for_source(source, name)).resolve()
+
+    try:
+        root.relative_to(source)
+    except ValueError:
+        pass
     else:
-        print(f"anti-git snapshot: {output}")
-        print(f"files: {manifest['file_count']}")
-    return 0
+        raise RuntimeError("checkpoint root must not be inside the source project; anti-git must not write into the current directory")
 
-
-def command_signal(args: argparse.Namespace) -> int:
-    snapshot = load_snapshot(Path(args.snapshot))
-    events = snapshot_signal(Path(args.root), snapshot, include_unchanged=bool(args.include_unchanged))
-    if args.json:
-        write_json_lines(events)
+    try:
+        checkpoint.relative_to(source)
+    except ValueError:
+        pass
     else:
-        print_signal_text(events)
-    return 0
+        raise RuntimeError("checkpoint destination must not be inside the source project; anti-git must not write into the current directory")
+
+    return root, checkpoint
 
 
-def command_pull(args: argparse.Namespace) -> int:
-    snapshot = load_snapshot(Path(args.snapshot))
-    return pull_snapshot(
-        Path(args.root),
-        snapshot,
-        dry_run=bool(args.dry_run),
-        emit_signal=bool(args.emit_signal),
-        json_output=bool(args.json),
-    )
+def copy_clone_atomic(source: Path, checkpoint_root: Path, checkpoint: Path) -> None:
+    checkpoint_root.mkdir(parents=True, exist_ok=True)
+    temp_name = f".{checkpoint.name}.tmp.{os.getpid()}"
+    backup_name = f".{checkpoint.name}.previous.{os.getpid()}"
+    temp_path = checkpoint_root / temp_name
+    backup_path = checkpoint_root / backup_name
+
+    if temp_path.exists():
+        shutil.rmtree(temp_path)
+    if backup_path.exists():
+        shutil.rmtree(backup_path)
+
+    shutil.copytree(source, temp_path, symlinks=True, copy_function=shutil.copy2)
+
+    try:
+        if checkpoint.exists():
+            checkpoint.rename(backup_path)
+        temp_path.rename(checkpoint)
+    except Exception:
+        if temp_path.exists() and not checkpoint.exists():
+            temp_path.rename(checkpoint)
+        if backup_path.exists() and not checkpoint.exists():
+            backup_path.rename(checkpoint)
+        raise
+    finally:
+        if backup_path.exists():
+            shutil.rmtree(backup_path)
 
 
-def command_guess_stop_words(args: argparse.Namespace) -> int:
-    words = list(args.words or [])
-    guessed = guess_stop_words(words, limit=args.limit)
+def signal_to_payload(signal: ChangeSignal) -> dict:
     payload = {
-        "event": "antigit.sopwith_stop_words.guess",
-        "input": words,
-        "sopwith_stop_words": list(guessed),
+        "event": "antigit.signal",
+        "action": signal.action,
+        "path": signal.path,
+        "kind": signal.kind,
+        "before_kind": signal.before_kind,
+        "after_kind": signal.after_kind,
+        "before_sha256": signal.before_sha256,
+        "after_sha256": signal.after_sha256,
+        "before_size": signal.before_size,
+        "after_size": signal.after_size,
+        "before_numeric_literals": list(signal.before_numeric_literals),
+        "after_numeric_literals": list(signal.after_numeric_literals),
+        "numeric_literals": list(signal.numeric_literals),
+        "sopwith_stop_words": list(signal.sopwith_stop_words),
     }
+    return {key: value for key, value in payload.items() if value not in (None, [], ())}
+
+
+def summarize_signals(signals: Iterable[ChangeSignal]) -> dict[str, int]:
+    summary = {"added": 0, "modified": 0, "deleted": 0, "type_changed": 0, "unchanged": 0}
+    for signal in signals:
+        summary.setdefault(signal.action, 0)
+        summary[signal.action] += 1
+    return summary
+
+
+def count_files(root: Path) -> int:
+    return sum(1 for path in root.rglob("*") if path.is_file() or path.is_symlink())
+
+
+def print_json_lines(signals: Iterable[ChangeSignal]) -> None:
+    for signal in signals:
+        print(json.dumps(signal_to_payload(signal), sort_keys=True))
+
+
+def print_plain_signals(signals: Iterable[ChangeSignal]) -> None:
+    for signal in signals:
+        numbers = ",".join(signal.numeric_literals[:12])
+        words = ",".join(signal.sopwith_stop_words[:16])
+        print(f"{signal.action:<12} {signal.kind:<10} {signal.path} numbers=[{numbers}] sopwith=[{words}]")
+
+
+def cmd_snapshot(args: argparse.Namespace) -> int:
+    source = Path(args.source).resolve()
+    if not source.exists() or not source.is_dir():
+        print(f"error: source must be an existing directory: {source}", file=sys.stderr)
+        return 2
+
+    try:
+        checkpoint_root, checkpoint = resolve_checkpoint(
+            source,
+            Path(args.checkpoint_root) if args.checkpoint_root else None,
+            args.name,
+        )
+        signals = compare_dirs(checkpoint if checkpoint.exists() else None, source, include_unchanged=False)
+        summary = summarize_signals(signals)
+        file_count = count_files(source)
+
+        if args.emit_signal:
+            if args.json:
+                print_json_lines(signals)
+            else:
+                print_plain_signals(signals)
+
+        if not args.dry_run:
+            copy_clone_atomic(source, checkpoint_root, checkpoint)
+
+        event = "antigit.snapshot.dry_run" if args.dry_run else "antigit.snapshot.created"
+        payload = {
+            "event": event,
+            "source_root": str(source),
+            "checkpoint_root": str(checkpoint_root),
+            "checkpoint_path": str(checkpoint),
+            "checkpoint_name": checkpoint.name,
+            "file_count": file_count,
+            "changed_files": sum(summary.get(key, 0) for key in ("added", "modified", "deleted", "type_changed")),
+            "summary": summary,
+            "dry_run": bool(args.dry_run),
+            "writes_to_source": False,
+            "uses_gitignore": False,
+        }
+
+        if args.json:
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            print(f"{event}: {checkpoint}")
+            print(f"source: {source}")
+            print(f"checkpoint_name: {checkpoint.name}")
+            print(f"file_count: {file_count}")
+            print(f"changed_files_since_previous_checkpoint: {payload['changed_files']}")
+            print("writes_to_source: false")
+            print("uses_gitignore: false")
+        return 0
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+
+def cmd_signal(args: argparse.Namespace) -> int:
+    source = Path(args.source).resolve()
+    if not source.exists() or not source.is_dir():
+        print(f"error: source must be an existing directory: {source}", file=sys.stderr)
+        return 2
+
+    try:
+        _, checkpoint = resolve_checkpoint(
+            source,
+            Path(args.checkpoint_root) if args.checkpoint_root else None,
+            args.name,
+        )
+        if not checkpoint.exists():
+            print(f"error: checkpoint does not exist: {checkpoint}", file=sys.stderr)
+            return 2
+
+        signals = compare_dirs(checkpoint, source, include_unchanged=args.include_unchanged)
+        if args.json:
+            print_json_lines(signals)
+            payload = {
+                "event": "antigit.signal.summary",
+                "source_root": str(source),
+                "checkpoint_path": str(checkpoint),
+                "summary": summarize_signals(signals),
+                "changed_files": sum(1 for signal in signals if signal.action != "unchanged"),
+                "writes_to_source": False,
+                "uses_gitignore": False,
+            }
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            print_plain_signals(signals)
+            summary = summarize_signals(signals)
+            changed = sum(1 for signal in signals if signal.action != "unchanged")
+            print(f"summary: {summary}")
+            print(f"changed_files: {changed}")
+            print("writes_to_source: false")
+            print("uses_gitignore: false")
+        return 0
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+
+def cmd_diff(args: argparse.Namespace) -> int:
+    before = Path(args.before).resolve()
+    after = Path(args.after).resolve()
+    if not before.exists() or not before.is_dir():
+        print(f"error: before must be an existing directory: {before}", file=sys.stderr)
+        return 2
+    if not after.exists() or not after.is_dir():
+        print(f"error: after must be an existing directory: {after}", file=sys.stderr)
+        return 2
+
+    signals = compare_dirs(before, after, include_unchanged=args.include_unchanged)
+    if args.json:
+        print_json_lines(signals)
+        payload = {
+            "event": "antigit.diff.summary",
+            "before": str(before),
+            "after": str(after),
+            "summary": summarize_signals(signals),
+            "changed_files": sum(1 for signal in signals if signal.action != "unchanged"),
+            "writes_to_source": False,
+            "uses_gitignore": False,
+        }
+        print(json.dumps(payload, sort_keys=True))
+    else:
+        print_plain_signals(signals)
+        print(f"summary: {summarize_signals(signals)}")
+    return 0
+
+
+def cmd_guess_stop_words(args: argparse.Namespace) -> int:
+    words = guess_stop_words(args.words)
+    payload = {"event": "antigit.sopwith_stop_words", "sopwith_stop_words": list(words)}
     if args.json:
         print(json.dumps(payload, sort_keys=True))
     else:
-        print(" ".join(payload["sopwith_stop_words"]))
+        print(" ".join(words))
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Anti-git snapshots a live tree, compares it to a checkpoint, and pulls "
-            "checkpoint bytes back while optionally emitting sopwith stop-word signals."
+            "Anti-git snapshots raw machine state by cloning a project directory into "
+            "../checkpoint/antigit_<repo>_checkpoint without obeying .gitignore."
         )
     )
-    sub = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command", required=True)
 
-    snap = sub.add_parser("snapshot", help="Create an anti-git checkpoint archive from a repository tree.")
-    snap.add_argument("root", nargs="?", default=".", help="Repository or code-base root to snapshot.")
-    snap.add_argument("--output", "-o", default=None, help="Snapshot zip path. Defaults to .antigit/snapshots/.")
-    snap.add_argument("--include", action="append", help="Limit snapshot to a repository-relative file path. May be repeated.")
-    snap.add_argument("--include-excluded", action="store_true", help="Do not apply built-in or .antigitignore exclusions.")
-    snap.add_argument("--json", action="store_true", help="Print a JSON summary.")
-    snap.set_defaults(func=command_snapshot)
+    snapshot = subparsers.add_parser(
+        "snapshot",
+        help="Clone the source project to ../checkpoint/antigit_<repo>_checkpoint.",
+    )
+    snapshot.add_argument("source", nargs="?", default=".", help="Project directory to clone. Defaults to the current directory.")
+    snapshot.add_argument("--checkpoint-root", default=None, help="Directory that will contain the named checkpoint. Defaults to ../checkpoint from the source.")
+    snapshot.add_argument("--name", default=None, help="Override the checkpoint directory name. Defaults to antigit_<repo>_checkpoint.")
+    snapshot.add_argument("--emit-signal", action="store_true", help="Before replacing the checkpoint, emit changes versus the previous checkpoint.")
+    snapshot.add_argument("--dry-run", action="store_true", help="Emit the plan without writing the checkpoint clone.")
+    snapshot.add_argument("--json", action="store_true", help="Emit JSON lines.")
+    snapshot.set_defaults(func=cmd_snapshot)
 
-    signal = sub.add_parser("signal", help="Compare a checkpoint to a target tree and emit pull-plan signals.")
-    signal.add_argument("snapshot", help="Anti-git snapshot zip.")
-    signal.add_argument("--root", default=".", help="Target repository root. Defaults to the current directory.")
-    signal.add_argument("--include-unchanged", action="store_true", help="Include files that already match the snapshot.")
-    signal.add_argument("--json", action="store_true", help="Print one JSON object per signal.")
-    signal.set_defaults(func=command_signal)
+    signal = subparsers.add_parser(
+        "signal",
+        help="Compare the existing named checkpoint to the current source without writing anything.",
+    )
+    signal.add_argument("source", nargs="?", default=".", help="Project directory to compare. Defaults to the current directory.")
+    signal.add_argument("--checkpoint-root", default=None, help="Directory that contains the named checkpoint. Defaults to ../checkpoint from the source.")
+    signal.add_argument("--name", default=None, help="Override the checkpoint directory name. Defaults to antigit_<repo>_checkpoint.")
+    signal.add_argument("--include-unchanged", action="store_true", help="Also emit unchanged entries.")
+    signal.add_argument("--json", action="store_true", help="Emit JSON lines.")
+    signal.set_defaults(func=cmd_signal)
 
-    pull = sub.add_parser("pull", help="Restore checkpoint bytes into the target tree.")
-    pull.add_argument("snapshot", help="Anti-git snapshot zip.")
-    pull.add_argument("--root", default=".", help="Target repository root. Defaults to the current directory.")
-    pull.add_argument("--dry-run", action="store_true", help="Report planned restoration without writing files.")
-    pull.add_argument("--emit-signal", action="store_true", help="Print one signal per changed checkpoint file.")
-    pull.add_argument("--json", action="store_true", help="Print JSON lines for signals and summary.")
-    pull.set_defaults(func=command_pull)
+    diff = subparsers.add_parser("diff", help="Compare any two directory trees.")
+    diff.add_argument("before", help="Earlier directory tree.")
+    diff.add_argument("after", help="Later directory tree.")
+    diff.add_argument("--include-unchanged", action="store_true", help="Also emit unchanged entries.")
+    diff.add_argument("--json", action="store_true", help="Emit JSON lines.")
+    diff.set_defaults(func=cmd_diff)
 
-    guess = sub.add_parser("guess-stop-words", help="Guess deterministic sopwith stop words from seed words.")
-    guess.add_argument("words", nargs="+", help="Seed words, paths, languages, or signal labels.")
-    guess.add_argument("--limit", type=int, default=64, help="Maximum number of output stop words.")
-    guess.add_argument("--json", action="store_true", help="Print a JSON payload.")
-    guess.set_defaults(func=command_guess_stop_words)
+    guess = subparsers.add_parser("guess-stop-words", help="Expand seed terms into deterministic sopwith stop words.")
+    guess.add_argument("words", nargs="+", help="Seed words.")
+    guess.add_argument("--json", action="store_true", help="Emit JSON.")
+    guess.set_defaults(func=cmd_guess_stop_words)
 
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
-    try:
-        return int(args.func(args))
-    except AntiGitError as exc:
-        print(f"antigit error: {exc}", file=sys.stderr)
-        return 2
-    except KeyboardInterrupt:
-        print("antigit interrupted", file=sys.stderr)
-        return 130
+    args = parser.parse_args(list(argv or sys.argv[1:]))
+    return args.func(args)
 
 
 if __name__ == "__main__":
