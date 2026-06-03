@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 from typing import Any, Callable
+from main_computer.main_log_hooks import install_main_log_hooks_from_env
 
 from main_computer.config import MainComputerConfig
 from main_computer.heartbeat import HeartbeatConfig, ensure_heartbeat_service
@@ -215,6 +216,7 @@ def run_app(
 ) -> int:
     port = _resolve_control_port(port)
     root_path = Path(root).resolve()
+    install_main_log_hooks_from_env(default_service_name=APP_CONTROL_SERVICE_NAME, root=root_path)
     os.environ.setdefault("MAIN_COMPUTER_CONTROL_ROOT", str(root_path))
     os.chdir(root_path)
 

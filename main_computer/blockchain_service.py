@@ -8,6 +8,8 @@ from pathlib import Path
 import subprocess
 import time
 from typing import Any, Callable
+from main_computer.main_log_hooks import install_main_log_hooks_from_env
+from main_computer.main_log_client import emit_main_log_text
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -623,9 +625,37 @@ class BlockchainService:
             error=_truncate(ps.stderr),
         )
 
+    def _emit_completed_process_to_main_log(self, result: subprocess.CompletedProcess[str]) -> None:
+        command = result.args if isinstance(result.args, list) else []
+        fields = {
+            "command": " ".join(str(part) for part in command) if command else str(result.args),
+            "cwd": str(self.root),
+            "returncode": result.returncode,
+        }
+        if result.stdout:
+            emit_main_log_text(
+                service=SERVICE_NAME,
+                source_service=SERVICE_NAME,
+                kind="subprocess-stream",
+                stream="stdout",
+                message=_process_stream_text(result.stdout),
+                timeout_s=0.05,
+                **fields,
+            )
+        if result.stderr:
+            emit_main_log_text(
+                service=SERVICE_NAME,
+                source_service=SERVICE_NAME,
+                kind="subprocess-stream",
+                stream="stderr",
+                message=_process_stream_text(result.stderr),
+                timeout_s=0.05,
+                **fields,
+            )
+
     def _run(self, command: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
         try:
-            return self.runner(
+            result = self.runner(
                 command,
                 cwd=str(self.root),
                 capture_output=True,
@@ -633,6 +663,8 @@ class BlockchainService:
                 timeout=timeout,
                 check=False,
             )
+            self._emit_completed_process_to_main_log(result)
+            return result
         except subprocess.TimeoutExpired as exc:
             stdout = _process_stream_text(getattr(exc, "stdout", None) or getattr(exc, "output", None))
             stderr = _process_stream_text(getattr(exc, "stderr", None))
@@ -640,9 +672,13 @@ class BlockchainService:
                 stderr = f"{stderr.rstrip()}\ncommand timed out after {timeout:g} seconds"
             else:
                 stderr = f"command timed out after {timeout:g} seconds"
-            return subprocess.CompletedProcess(command, 124, stdout=stdout, stderr=stderr)
+            result = subprocess.CompletedProcess(command, 124, stdout=stdout, stderr=stderr)
+            self._emit_completed_process_to_main_log(result)
+            return result
         except (OSError, subprocess.SubprocessError) as exc:
-            return subprocess.CompletedProcess(command, 127, stdout="", stderr=str(exc))
+            result = subprocess.CompletedProcess(command, 127, stdout="", stderr=str(exc))
+            self._emit_completed_process_to_main_log(result)
+            return result
 
     def _component(self, *, ok: bool, state: str, message: str, **extra: Any) -> dict[str, Any]:
         return {"ok": bool(ok), "state": state, "message": message, "checked_at": _now_iso(), **extra}
@@ -714,6 +750,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     command = args.command or "boot"
+    if command != "status":
+        install_main_log_hooks_from_env(default_service_name=SERVICE_NAME, root=args.root)
 
     if command == "status":
         print(json.dumps(load_blockchain_service_state(args.root), indent=2, sort_keys=True))

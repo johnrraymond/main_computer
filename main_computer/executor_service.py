@@ -13,6 +13,8 @@ import subprocess
 import sys
 import time
 from typing import Any, Callable
+from main_computer.main_log_hooks import install_main_log_hooks_from_env
+from main_computer.main_log_client import emit_main_log_text
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -766,6 +768,34 @@ class ExecutorService:
             self._emit("could not write executor service PID file; continuing boot", pid_file=str(self.pid_path), error=exc)
         return claim
 
+    def _emit_completed_process_to_main_log(self, result: subprocess.CompletedProcess[str], *, cwd: Path) -> None:
+        command = result.args if isinstance(result.args, list) else []
+        fields = {
+            "command": _command_display(command) if command else str(result.args),
+            "cwd": str(cwd),
+            "returncode": result.returncode,
+        }
+        if result.stdout:
+            emit_main_log_text(
+                service=SERVICE_NAME,
+                source_service=SERVICE_NAME,
+                kind="subprocess-stream",
+                stream="stdout",
+                message=_process_stream_text(result.stdout),
+                timeout_s=0.05,
+                **fields,
+            )
+        if result.stderr:
+            emit_main_log_text(
+                service=SERVICE_NAME,
+                source_service=SERVICE_NAME,
+                kind="subprocess-stream",
+                stream="stderr",
+                message=_process_stream_text(result.stderr),
+                timeout_s=0.05,
+                **fields,
+            )
+
     def _run(
         self,
         command: list[str],
@@ -773,15 +803,18 @@ class ExecutorService:
         timeout: float,
         cwd: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
+        run_cwd = cwd or self.root
         try:
-            return self.runner(
+            result = self.runner(
                 command,
-                cwd=str(cwd or self.root),
+                cwd=str(run_cwd),
                 capture_output=True,
                 text=True,
                 timeout=timeout,
                 check=False,
             )
+            self._emit_completed_process_to_main_log(result, cwd=run_cwd)
+            return result
         except subprocess.TimeoutExpired as exc:
             stdout = _process_stream_text(getattr(exc, "stdout", None) or getattr(exc, "output", None))
             stderr = _process_stream_text(getattr(exc, "stderr", None))
@@ -790,21 +823,27 @@ class ExecutorService:
                 stderr = f"{stderr.rstrip()}\n{timeout_message}"
             else:
                 stderr = timeout_message
-            return subprocess.CompletedProcess(command, 124, stdout=stdout, stderr=stderr)
+            result = subprocess.CompletedProcess(command, 124, stdout=stdout, stderr=stderr)
+            self._emit_completed_process_to_main_log(result, cwd=cwd or self.root)
+            return result
         except OSError as exc:
-            return subprocess.CompletedProcess(
+            result = subprocess.CompletedProcess(
                 command,
                 127,
                 stdout="",
                 stderr=f"command failed to start: {_command_display(command)}: {exc}",
             )
+            self._emit_completed_process_to_main_log(result, cwd=cwd or self.root)
+            return result
         except subprocess.SubprocessError as exc:
-            return subprocess.CompletedProcess(
+            result = subprocess.CompletedProcess(
                 command,
                 1,
                 stdout="",
                 stderr=f"command failed: {_command_display(command)}: {exc}",
             )
+            self._emit_completed_process_to_main_log(result, cwd=cwd or self.root)
+            return result
 
     def _full_boot_reconcile(self) -> dict[str, Any]:
         state = self._base_state("booting")
@@ -1527,6 +1566,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     command = args.command or "boot"
+    if command != "status":
+        install_main_log_hooks_from_env(default_service_name=SERVICE_NAME, root=args.root)
 
     if command == "status":
         print(json.dumps(load_executor_service_state(args.root), indent=2, sort_keys=True))

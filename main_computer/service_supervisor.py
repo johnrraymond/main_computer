@@ -451,6 +451,8 @@ class ServiceSupervisor:
         env[ENV_MAIN_LOG_HOST] = self.main_log_host
         env[ENV_MAIN_LOG_PORT] = str(self.main_log_port)
         env[ENV_MAIN_LOG_URL] = self.main_log_url
+        env["MAIN_COMPUTER_MAIN_LOG_HOOKS"] = "0" if spec.is_logging else "1"
+        env.setdefault("PYTHONUNBUFFERED", "1")
         return env
 
     def _wait_for_main_log_ready(self) -> dict[str, Any]:

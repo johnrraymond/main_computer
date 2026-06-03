@@ -21,6 +21,9 @@ ENV_MAIN_LOG_DISABLED = "MAIN_COMPUTER_MAIN_LOG_DISABLED"
 
 OutputFunc = Callable[[str], None]
 
+MAX_MAIN_LOG_TEXT_CHUNK_CHARS = 64_000
+
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -107,6 +110,54 @@ def emit_main_log_event(
         decoded.setdefault("url", target)
         return decoded
     return {"ok": False, "state": "bad-response", "message": "main log service returned a non-object response", "url": target}
+
+
+
+def _text_chunks(value: str, *, max_chunk_chars: int = MAX_MAIN_LOG_TEXT_CHUNK_CHARS) -> list[str]:
+    text = str(value or "")
+    if not text:
+        return []
+    limit = max(1, int(max_chunk_chars))
+    return [text[index : index + limit] for index in range(0, len(text), limit)]
+
+
+def emit_main_log_text(
+    *,
+    service: str,
+    source_service: str | None = None,
+    kind: str,
+    stream: str,
+    message: str,
+    url: str | None = None,
+    timeout_s: float = DEFAULT_MAIN_LOG_TIMEOUT_S,
+    max_chunk_chars: int = MAX_MAIN_LOG_TEXT_CHUNK_CHARS,
+    **fields: Any,
+) -> list[dict[str, Any]]:
+    """Emit text to the main log as one or more bounded best-effort events."""
+
+    chunks = _text_chunks(str(message or ""), max_chunk_chars=max_chunk_chars)
+    results: list[dict[str, Any]] = []
+    for index, chunk in enumerate(chunks):
+        event = {
+            "service": service,
+            "source_service": source_service or service,
+            "kind": kind,
+            "stream": stream,
+            "message": chunk.rstrip("\n"),
+            **fields,
+        }
+        if len(chunks) > 1:
+            event["chunk_index"] = index
+            event["chunk_count"] = len(chunks)
+        results.append(
+            emit_main_log_event(
+                event,
+                url=url,
+                timeout_s=timeout_s,
+                fallback_on_error=False,
+            )
+        )
+    return results
 
 
 def healthcheck_main_log(
