@@ -751,7 +751,6 @@ function New-StartSession(
     local_platform = $LocalPlatformStart
     managed_pid_files = @(
       (Join-Path $RootPath ".main_computer_service_supervisor.pid"),
-      (Join-Path $RootPath ".main_computer_main_log_service.pid"),
       (Join-Path $controlRoot ".main_computer_viewport.pid"),
       (Join-Path $controlRoot ".main_computer_heartbeat.pid"),
       (Join-Path $RootPath ".main_computer_executor_service.pid"),
@@ -759,7 +758,6 @@ function New-StartSession(
     )
     managed_state_files = @(
       (Join-Path $RootPath "runtime\service_supervisor\state.json"),
-      (Join-Path $RootPath "runtime\main_log\state.json"),
       (Join-Path $RootPath "runtime\executor_service\state.json"),
       (Join-Path $RootPath "runtime\applications_service\state.json"),
       (Join-Path $RootPath "runtime\blockchain_service\state.json")
@@ -770,12 +768,6 @@ function New-StartSession(
         module = "main_computer.app_control bootstrap"
         pid_file = Join-Path $RootPath ".main_computer_service_supervisor.pid"
         state_file = Join-Path $RootPath "runtime\service_supervisor\state.json"
-      },
-      [ordered]@{
-        name = "main-log"
-        module = "main_computer.main_log_service serve"
-        pid_file = Join-Path $RootPath ".main_computer_main_log_service.pid"
-        state_file = Join-Path $RootPath "runtime\main_log\state.json"
       },
       [ordered]@{
         name = "viewport"
@@ -1010,9 +1002,6 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName) {
   Write-Host ("Control root:     " + $controlRoot)
   Write-Host ("Supervisor state: " + (Join-Path $serviceRuntime "state.json"))
   Write-Host ("Supervisor PID:   " + (Join-Path $RootPath ".main_computer_service_supervisor.pid"))
-  Write-Host ("Main log state:   " + (Join-Path $RootPath "runtime\main_log\state.json"))
-  Write-Host ("Main log PID:     " + (Join-Path $RootPath ".main_computer_main_log_service.pid"))
-  Write-Host ("Main log file:    " + (Join-Path $RootPath "runtime\main_log\main.log.lex"))
   Write-Host ("App PID:          " + (Join-Path $controlRoot ".main_computer_viewport.pid"))
   Write-Host ("Heartbeat PID:    " + (Join-Path $controlRoot ".main_computer_heartbeat.pid"))
   Write-Host ("Executor state:   " + (Join-Path $RootPath "runtime\executor_service\state.json"))
@@ -1121,9 +1110,6 @@ function Get-PidFileCandidateMetadata([string]$PidFile) {
     ".main_computer_service_supervisor.pid" {
       return [pscustomobject]@{ role = "supervisor"; order = 90 }
     }
-    ".main_computer_main_log_service.pid" {
-      return [pscustomobject]@{ role = "main-log"; order = 1000 }
-    }
     ".main_computer_executor_service.pid" {
       return [pscustomobject]@{ role = "executor"; order = 20 }
     }
@@ -1173,18 +1159,9 @@ function Add-PidCandidate([hashtable]$Candidates, [object]$PidValue, [string]$Ro
     $existing.allow_foreign_main_computer = $true
   }
 
-  # A duplicate PID can arrive from broad live process scans before a
-  # role-specific PID/state source. Keep logging and supervisor lifecycle roles
-  # when they are discovered so bulk start/stop can preserve shutdown order.
-  if ($Role -eq "main-log" -or $Role -eq "logging") {
-    $existing.role = "main-log"
-    $existing.order = $Order
-    return
-  }
-  if ([string]$existing.role -eq "main-log" -or [string]$existing.role -eq "logging") {
-    return
-  }
-
+  # A duplicate PID can arrive from the generic managed_pid_files list before
+  # the supervisor-specific state/session source. Keep supervisor ownership and
+  # its later stop order so child services are stopped first.
   if ($Role -eq "supervisor") {
     $existing.role = $Role
     $existing.order = $Order
@@ -1222,27 +1199,10 @@ function Add-PidsFromSupervisorState([hashtable]$Candidates, [object]$State) {
   foreach ($property in $children.PSObject.Properties) {
     $name = [string]$property.Name
     $child = $property.Value
-    $role = $name
-    $order = 20
-    if ($name -eq "main-log") {
-      $role = "main-log"
-      $order = 1000
-    }
     try {
-      Add-PidCandidate $Candidates $child.pid $role ("runtime/service_supervisor/state.json children." + $name + ".pid") $order
+      Add-PidCandidate $Candidates $child.pid $name ("runtime/service_supervisor/state.json children." + $name + ".pid") 20
     } catch {}
   }
-}
-
-function Get-MainComputerMainLogPort([object]$LaunchContext) {
-  $value = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_MAIN_LOG_PORT" "8767"
-  try {
-    $port = [int]$value
-    if ($port -gt 0) {
-      return $port
-    }
-  } catch {}
-  return 8767
 }
 
 function Get-MainComputerManagedPorts([object]$LaunchContext) {
@@ -1255,7 +1215,6 @@ function Get-MainComputerManagedPorts([object]$LaunchContext) {
   foreach ($value in @(
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_CONTROL_PORT" "8765"),
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HEARTBEAT_PORT" "8766"),
-      (Get-MainComputerMainLogPort $LaunchContext),
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DOCKER_VIEWPORT_PORT" "")
     )) {
     try {
@@ -1286,7 +1245,6 @@ function Test-MainComputerServiceCommandLine([string]$CommandLine, [string]$Root
   $serviceMarkers = @(
     "main_computer.app_control",
     "main_computer.service_supervisor",
-    "main_computer.main_log_service",
     "main_computer.executor_service",
     "main_computer.applications_service",
     "main_computer.blockchain_service",
@@ -1361,46 +1319,6 @@ function Get-NetstatListenRows {
   return $rows
 }
 
-function Test-MainComputerMainLogCommandLine([string]$CommandLine) {
-  if ([string]::IsNullOrWhiteSpace($CommandLine)) {
-    return $false
-  }
-  $normalizedCommand = $CommandLine.ToLowerInvariant()
-  return (
-    $normalizedCommand.Contains("main_computer.main_log_service") -or
-    $normalizedCommand.Contains("main_log_service.py")
-  )
-}
-
-function Test-MainComputerSupervisorCommandLine([string]$CommandLine) {
-  if ([string]::IsNullOrWhiteSpace($CommandLine)) {
-    return $false
-  }
-  $normalizedCommand = $CommandLine.ToLowerInvariant()
-  return (
-    $normalizedCommand.Contains("main_computer.service_supervisor") -or
-    $normalizedCommand.Contains("service_supervisor.py") -or
-    ($normalizedCommand.Contains("main_computer.app_control") -and $normalizedCommand.Contains(" bootstrap")) -or
-    ($normalizedCommand.Contains("app_control.py") -and $normalizedCommand.Contains(" bootstrap"))
-  )
-}
-
-function Get-CurrentMainComputerProcessCandidateMetadata(
-  [string]$CommandLine,
-  [int]$LocalPort,
-  [int]$MainLogPort,
-  [string]$DefaultRole,
-  [int]$DefaultOrder
-) {
-  if ((Test-MainComputerMainLogCommandLine $CommandLine) -or ($LocalPort -gt 0 -and $LocalPort -eq $MainLogPort)) {
-    return [pscustomobject]@{ role = "main-log"; order = 1000 }
-  }
-  if (Test-MainComputerSupervisorCommandLine $CommandLine) {
-    return [pscustomobject]@{ role = "supervisor"; order = 90 }
-  }
-  return [pscustomobject]@{ role = $DefaultRole; order = $DefaultOrder }
-}
-
 function Add-CurrentMainComputerProcessCandidates([hashtable]$Candidates, [string]$RootPath, [object]$LaunchContext) {
   # start_v2/stop_v2 are intended to clear the app that is actually running now,
   # even when stale PID/session files no longer point at it.  Add live
@@ -1412,15 +1330,12 @@ function Add-CurrentMainComputerProcessCandidates([hashtable]$Candidates, [strin
     $processes = @()
   }
 
-  $mainLogPort = Get-MainComputerMainLogPort $LaunchContext
-
   foreach ($process in $processes) {
     $commandLine = [string]$process.CommandLine
     if ((Test-MainComputerServiceCommandLine $commandLine $RootPath) -and (Test-OwnedMainComputerPid ([int]$process.ProcessId) $RootPath $commandLine)) {
       $processName = [string]$process.Name
       if ($processName -match '^(python|pythonw)\.exe$') {
-        $metadata = Get-CurrentMainComputerProcessCandidateMetadata $commandLine 0 $mainLogPort "current-main-computer-service" 10
-        Add-PidCandidate $Candidates $process.ProcessId $metadata.role "live Main Computer service command line for this tree" $metadata.order $true
+        Add-PidCandidate $Candidates $process.ProcessId "current-main-computer-service" "live Main Computer service command line for this tree" 10 $true
       }
     }
   }
@@ -1439,8 +1354,7 @@ function Add-CurrentMainComputerProcessCandidates([hashtable]$Candidates, [strin
     }
 
     if ((Test-MainComputerServiceCommandLine $commandLine $RootPath) -or ([string]::IsNullOrWhiteSpace($commandLine) -and $processName -like "python*")) {
-      $metadata = Get-CurrentMainComputerProcessCandidateMetadata $commandLine ([int]$row.LocalPort) $mainLogPort "current-main-computer-port-listener" 5
-      Add-PidCandidate $Candidates $processId $metadata.role ("listener on Main Computer port " + [string]$row.LocalPort) $metadata.order $true
+      Add-PidCandidate $Candidates $processId "current-main-computer-port-listener" ("listener on Main Computer port " + [string]$row.LocalPort) 5 $true
     }
   }
 }
@@ -1495,17 +1409,13 @@ function Wait-ProcessGone([int]$ProcessId, [int]$TimeoutSeconds = 5) {
   return (-not (Test-ProcessStillRunning $ProcessId))
 }
 
-function Invoke-ProcessKill([int]$ProcessId, [bool]$KillTree = $true) {
+function Invoke-ProcessKill([int]$ProcessId) {
   $output = ""
   $exitCode = $null
 
   if (($IsWindows) -or ($env:OS -eq "Windows_NT")) {
     try {
-      $arguments = @("/PID", [string]$ProcessId, "/F")
-      if ($KillTree) {
-        $arguments = @("/PID", [string]$ProcessId, "/T", "/F")
-      }
-      $output = (& taskkill.exe @arguments 2>&1 | Out-String).Trim()
+      $output = (& taskkill.exe /PID $ProcessId /T /F 2>&1 | Out-String).Trim()
       $exitCode = $LASTEXITCODE
     } catch {
       $output = $_.Exception.Message
@@ -1525,7 +1435,6 @@ function Invoke-ProcessKill([int]$ProcessId, [bool]$KillTree = $true) {
   return [ordered]@{
     exit_code = $exitCode
     output = $output
-    kill_tree = $KillTree
   }
 }
 
@@ -1565,22 +1474,14 @@ function Stop-OnePid([object]$Candidate, [string]$RootPath) {
 
   $attempts = @()
   $lastResult = $null
-  $killTree = $true
-  if ($role -eq "supervisor") {
-    # taskkill /T against the supervisor would also kill the logger child before
-    # its explicit last-stop turn. Kill only the supervisor PID; any remaining
-    # child PIDs are handled as their own candidates.
-    $killTree = $false
-  }
 
   for ($attempt = 1; $attempt -le 2; $attempt++) {
-    $lastResult = Invoke-ProcessKill $processId $killTree
+    $lastResult = Invoke-ProcessKill $processId
     $gone = Wait-ProcessGone $processId 5
     $attempts += [ordered]@{
       attempt = $attempt
       exit_code = $lastResult.exit_code
       output = $lastResult.output
-      kill_tree = $killTree
       process_gone_after_attempt = $gone
     }
 
@@ -1594,7 +1495,6 @@ function Stop-OnePid([object]$Candidate, [string]$RootPath) {
         command_line = $commandLine
         allow_foreign_main_computer = $allowForeignMainComputer
         output = $lastResult.output
-        kill_tree = $killTree
         attempts = $attempts
       }
     }
@@ -1613,7 +1513,6 @@ function Stop-OnePid([object]$Candidate, [string]$RootPath) {
     command_line = $commandLine
     allow_foreign_main_computer = $allowForeignMainComputer
     output = $lastResult.output
-    kill_tree = $killTree
     attempts = $attempts
   }
 }
@@ -1623,7 +1522,6 @@ function Remove-ManagedRuntimeFiles([string]$RootPath, [object]$Session, [string
 
   foreach ($relative in @(
       ".main_computer_service_supervisor.pid",
-      ".main_computer_main_log_service.pid",
       ".main_computer_viewport.pid",
       ".main_computer_heartbeat.pid",
       ".main_computer_executor_service.pid",
@@ -1888,7 +1786,6 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false) {
 
   foreach ($relative in @(
       ".main_computer_service_supervisor.pid",
-      ".main_computer_main_log_service.pid",
       ".main_computer_viewport.pid",
       ".main_computer_heartbeat.pid",
       ".main_computer_executor_service.pid",
