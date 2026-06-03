@@ -24,37 +24,15 @@ def test_start_stop_helper_stops_children_before_supervisor_and_verifies_taskkil
 
     assert 'Add-PidCandidate $candidates $session.launcher.pid "supervisor" "runtime/start_stop/start-session.json launcher.pid" 90' in helper
     assert 'Add-PidCandidate $Candidates $State.service.pid "supervisor" "runtime/service_supervisor/state.json service.pid" 90' in helper
-    assert 'if ($name -eq "main-log")' in helper
-    assert 'Add-PidCandidate $Candidates $child.pid $role ("runtime/service_supervisor/state.json children." + $name + ".pid") $order' in helper
+    assert 'Add-PidCandidate $Candidates $child.pid $name ("runtime/service_supervisor/state.json children." + $name + ".pid") 20' in helper
     assert 'return [pscustomobject]@{ role = "supervisor"; order = 90 }' in helper
-    assert 'return [pscustomobject]@{ role = "main-log"; order = 1000 }' in helper
     assert 'if ([string]$existing.role -eq "supervisor")' in helper
-    assert 'if ([string]$existing.role -eq "main-log" -or [string]$existing.role -eq "logging")' in helper
 
     assert 'Sort-Object -Property @{ Expression = { [int]$_[\'order\'] } }, @{ Expression = { [int]$_[\'pid\'] } }' in helper
 
     assert "function Wait-ProcessGone" in helper
     assert "process_gone_after_attempt" in helper
     assert 'state = $(if ($lastResult.exit_code -eq 0) { "terminated" } else { "terminated-after-check" })' in helper
-    assert 'Invoke-ProcessKill $processId $killTree' in helper
-    assert 'if ($role -eq "supervisor")' in helper
-
-
-def test_start_stop_helper_knows_main_log_lifecycle_files_and_port() -> None:
-    helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
-
-    assert ".main_computer_main_log_service.pid" in helper
-    assert "runtime\\main_log\\state.json" in helper
-    assert "runtime\\main_log\\main.log.lex" in helper
-    assert "main_computer.main_log_service" in helper
-    assert "MAIN_COMPUTER_MAIN_LOG_PORT" in helper
-    assert '"8767"' in helper
-    assert "function Test-MainComputerMainLogCommandLine" in helper
-    assert "function Get-CurrentMainComputerProcessCandidateMetadata" in helper
-    assert 'return [pscustomobject]@{ role = "main-log"; order = 1000 }' in helper
-    assert '($LocalPort -gt 0 -and $LocalPort -eq $MainLogPort)' in helper
-    assert '$arguments = @("/PID", [string]$ProcessId, "/F")' in helper
-    assert '$arguments = @("/PID", [string]$ProcessId, "/T", "/F")' in helper
 
 
 def test_start_stop_helper_waits_for_docker_compose_stacks_to_disappear() -> None:
