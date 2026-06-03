@@ -19,8 +19,8 @@
     const WALLET_DEV_CHAIN_ID_HEX = "0x28757b2";
     const WALLET_DEV_CHAIN_RPC_URL = "http://127.0.0.1:18545";
     const WALLET_DEV_CHAIN_NAME = "Main Computer Dev Chain";
-    const WALLET_DEV_CHAIN_CURRENCY_NAME = "Compute Credits";
-    const WALLET_DEV_CHAIN_CURRENCY_SYMBOL = "MCC";
+    const WALLET_DEV_CHAIN_CURRENCY_NAME = "Main Computer XLAG Credit";
+    const WALLET_DEV_CHAIN_CURRENCY_SYMBOL = "MCXLAG";
 
     function walletNowIso() {
       return new Date().toISOString();

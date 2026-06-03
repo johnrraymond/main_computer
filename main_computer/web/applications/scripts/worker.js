@@ -23,8 +23,8 @@
     ];
     const WORKER_DEV_CHAIN_NAME = "Main Computer Dev Chain";
     const WORKER_DEV_CHAIN_RPC_URL = "http://127.0.0.1:18545";
-    const WORKER_DEV_CHAIN_CURRENCY_NAME = "Compute Credits";
-    const WORKER_DEV_CHAIN_CURRENCY_SYMBOL = "MCC";
+    const WORKER_DEV_CHAIN_CURRENCY_NAME = "Main Computer XLAG Credit";
+    const WORKER_DEV_CHAIN_CURRENCY_SYMBOL = "MCXLAG";
     const WORKER_ETHERS_ESM_URL = "https://cdn.jsdelivr.net/npm/ethers@6.13.4/+esm";
     let workerBridgeStateLoaded = false;
     let workerBridgeState = workerDefaultBridgeState();
@@ -1098,18 +1098,28 @@
       return String(error);
     }
 
-    function workerDevWalletChainParams() {
+    function workerDevWalletChainParams(options = {}) {
+      const useNullNativeCurrency = Boolean(options && options.nativeCurrencyNull);
       return {
         chainId: WORKER_DEV_CHAIN_ID_HEX,
         chainName: WORKER_DEV_CHAIN_NAME,
-        nativeCurrency: {
-          name: WORKER_DEV_CHAIN_CURRENCY_NAME,
-          symbol: WORKER_DEV_CHAIN_CURRENCY_SYMBOL,
-          decimals: 18
-        },
+        nativeCurrency: useNullNativeCurrency
+          ? null
+          : {
+              name: WORKER_DEV_CHAIN_CURRENCY_NAME,
+              symbol: WORKER_DEV_CHAIN_CURRENCY_SYMBOL,
+              decimals: 18
+            },
         rpcUrls: [WORKER_DEV_CHAIN_RPC_URL],
         blockExplorerUrls: []
       };
+    }
+
+    function workerWalletErrorIsNativeCurrencySymbolMismatch(error) {
+      const message = workerWalletErrorMessage(error).toLowerCase();
+      return message.includes("nativecurrency.symbol")
+        && message.includes("does not match")
+        && message.includes("same chainid");
     }
 
     function workerWalletRpcRepairMessage(reason = "") {
@@ -1243,23 +1253,48 @@
         throw new Error("No browser wallet request provider is available.");
       }
 
-      workerWalletRecordEvent("connect.wallet.addChain.start", {
-        reason,
-        chainId: WORKER_DEV_CHAIN_ID_HEX,
-        rpcUrl: WORKER_DEV_CHAIN_RPC_URL
-      });
-      await workerInjectedProviderRequest(
-        injectedProvider,
-        "wallet_addEthereumChain",
-        [workerDevWalletChainParams()],
-        "wallet dev-chain update",
-        120000
-      );
-      workerWalletRecordEvent("connect.wallet.addChain.done", {
-        reason,
-        chainId: WORKER_DEV_CHAIN_ID_HEX,
-        rpcUrl: WORKER_DEV_CHAIN_RPC_URL
-      });
+      async function requestAddEthereumChain(params, attempt) {
+        workerWalletRecordEvent("connect.wallet.addChain.start", {
+          reason,
+          attempt,
+          chainId: WORKER_DEV_CHAIN_ID_HEX,
+          rpcUrl: WORKER_DEV_CHAIN_RPC_URL,
+          nativeCurrencySymbol: params.nativeCurrency && params.nativeCurrency.symbol ? params.nativeCurrency.symbol : null
+        });
+        await workerInjectedProviderRequest(
+          injectedProvider,
+          "wallet_addEthereumChain",
+          [params],
+          `wallet dev-chain update (${attempt})`,
+          120000
+        );
+        workerWalletRecordEvent("connect.wallet.addChain.done", {
+          reason,
+          attempt,
+          chainId: WORKER_DEV_CHAIN_ID_HEX,
+          rpcUrl: WORKER_DEV_CHAIN_RPC_URL,
+          nativeCurrencySymbol: params.nativeCurrency && params.nativeCurrency.symbol ? params.nativeCurrency.symbol : null
+        });
+      }
+
+      try {
+        await requestAddEthereumChain(workerDevWalletChainParams(), "canonical");
+      } catch (error) {
+        if (!workerWalletErrorIsNativeCurrencySymbolMismatch(error)) {
+          throw error;
+        }
+        workerWalletRecordEvent("connect.wallet.addChain.symbolMismatch", {
+          reason,
+          chainId: WORKER_DEV_CHAIN_ID_HEX,
+          rpcUrl: WORKER_DEV_CHAIN_RPC_URL,
+          canonicalCurrencySymbol: WORKER_DEV_CHAIN_CURRENCY_SYMBOL,
+          message: workerWalletErrorMessage(error)
+        });
+        await requestAddEthereumChain(
+          workerDevWalletChainParams({nativeCurrencyNull: true}),
+          "rpc-only-native-currency-null"
+        );
+      }
 
       workerWalletRecordEvent("connect.ethers.switchChain.start", {
         from: "wallet-provider",
