@@ -299,6 +299,18 @@ class TaskManagerServiceTests(unittest.TestCase):
         self.assertIn("taskHeartbeatRequest", APPLICATIONS_INDEX_HTML)
         self.assertIn("/api/heartbeat/control", APPLICATIONS_INDEX_HTML)
         self.assertNotIn("Terminate Server", APPLICATIONS_INDEX_HTML)
+        self.assertNotIn("task-overview-card app-widget", APPLICATIONS_INDEX_HTML)
+        self.assertNotIn("task-notebook app-widget", APPLICATIONS_INDEX_HTML)
+
+        task_manager_css = (Path(__file__).resolve().parents[1] / "main_computer" / "web" / "applications" / "styles" / "task-manager.css").read_text(encoding="utf-8")
+        self.assertIn(".task-manager-app .fullscreen-control", task_manager_css)
+        self.assertIn("#task-process-table .task-table", task_manager_css)
+        self.assertIn("table-layout: fixed", task_manager_css)
+        self.assertIn("grid-template-columns: 300px minmax(0, 1fr);", task_manager_css)
+        self.assertIn("width: 300px;", task_manager_css)
+        self.assertIn("flex-direction: column;", task_manager_css)
+        self.assertIn("grid-template-columns: 92px minmax(0, 1fr);", task_manager_css)
+        self.assertNotIn("minmax(300px, 380px) minmax(0, 1fr)", task_manager_css)
 
         config = MainComputerConfig(model="fake-model", workspace=Path.cwd(), ollama_timeout_s=30)
         server = ViewportServer(("127.0.0.1", 0), config, verbose=False)

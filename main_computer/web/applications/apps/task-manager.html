@@ -1,12 +1,12 @@
 <div class="task-manager-app" id="task-manager-app" aria-label="Task Manager">
   <div class="task-manager-shell">
     <div class="task-manager-sidebar">
-      <div class="task-card task-overview-card app-widget" data-widget-label="Task Overview">
+      <div class="task-card task-overview-card" data-widget-label="Task Overview">
         <strong>Task Manager</strong>
         <div class="task-manager-status" id="task-manager-status">Task manager ready.</div>
         <div class="task-manager-server" id="task-manager-server">Select Task Manager to load process, server, and connection state.</div>
       </div>
-      <div class="task-card task-controls-card app-widget" data-widget-label="Task Controls">
+      <div class="task-card task-controls-card" data-widget-label="Task Controls">
         <label>process filter<input id="task-query" placeholder="main_computer, python, port, pid"></label>
         <div class="task-inline-grid">
           <label>row limit<input id="task-limit" type="number" min="5" max="100" value="24"></label>
@@ -20,7 +20,7 @@
           <button type="button" id="task-server-restart">Restart Server</button>
         </div>
       </div>
-      <div class="task-card task-schedule-card app-widget" data-widget-label="Task Schedules">
+      <div class="task-card task-schedule-card" data-widget-label="Task Schedules">
         <strong>Schedules</strong>
         <label>scheduled action<select id="task-schedule-action">
           <option value="server_status">Server Status</option>
@@ -39,7 +39,7 @@
     </div>
     <div class="task-manager-detail">
       <div class="task-detail-grid">
-        <div class="task-pane task-notebook app-widget" data-widget-label="Task Data Notebook">
+        <div class="task-pane task-notebook" data-widget-label="Task Data Notebook">
           <div class="task-notebook-tabs" id="task-notebook-tabs" role="tablist" aria-label="Task manager data views">
             <button type="button" class="task-tab-button active" id="task-tab-processes" data-task-tab-group="task-notebook" data-task-tab="server-processes" role="tab" aria-selected="true" aria-controls="task-panel-processes">Server Processes</button>
             <button type="button" class="task-tab-button" id="task-tab-all-processes" data-task-tab-group="task-notebook" data-task-tab="all-processes" role="tab" aria-selected="false" aria-controls="task-panel-all-processes">All Processes</button>
@@ -62,14 +62,14 @@
           </div>
         </div>
       </div>
-      <div class="task-card task-ai-toolbar app-widget" data-widget-label="Task AI Controls">
+      <div class="task-card task-ai-toolbar" data-widget-label="Task AI Controls">
         <strong>AI Operations</strong>
         <label>task manager prompt<textarea id="task-ai-prompt" placeholder="Explain what should be watched, killed, restarted, or scheduled next."></textarea></label>
         <div class="task-actions">
           <button type="button" id="task-ai-analyze">Ask AI</button>
         </div>
       </div>
-      <div class="task-pane app-widget" data-widget-label="Task AI Brief">
+      <div class="task-pane" data-widget-label="Task AI Brief">
         <strong>AI Operations Brief</strong>
         <pre class="task-ai-output" id="task-ai-output">AI analysis will appear here after you ask for it.</pre>
       </div>

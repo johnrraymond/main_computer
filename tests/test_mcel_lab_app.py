@@ -85,6 +85,7 @@ def test_mcel_lab_mounts_task_manager_as_canonical_specimen() -> None:
     assert 'id="mcel-canonical-app-inspect"' in app
     assert 'id="mcel-canonical-app-proof"' in app
     assert 'id="mcel-canonical-app-lens"' in app
+    assert 'id="mcel-canonical-app-clean"' in app
     assert 'id="mcel-canonical-app-lens-map"' in app
     assert "mcelCanonicalAppFrame = document.querySelector" in bindings
     assert "lastCanonicalSpecimenReport" in bindings
@@ -104,6 +105,7 @@ def test_mcel_lab_mounts_task_manager_as_canonical_specimen() -> None:
     assert 'id="mcel-canonical-app-frame-summary"' in app
     assert "mcelCanonicalAppFrameSummary = document.querySelector" in bindings
     assert "mcelCanonicalAppLens = document.querySelector" in bindings
+    assert "mcelCanonicalAppClean = document.querySelector" in bindings
     assert "mcelCanonicalAppLensMap = document.querySelector" in bindings
     assert "lastCanonicalSpecimenLens" in bindings
     assert "injectMcelCanonicalAppSpecimenChrome" in lab
@@ -114,7 +116,8 @@ def test_mcel_lab_mounts_task_manager_as_canonical_specimen() -> None:
     assert "mcel-lens-hud" in lab
     assert "data-mcel-action-risk" in lab
     assert "MCEL_CANONICAL_SPECIMEN_RIBBON_ID" in lab
-    assert "MCEL Lab specimen" in lab
+    assert "fixed in-frame ribbon" in lab
+    assert "clearMcelCanonicalTaskManagerLens" in lab
 
 
 def test_mcel_lab_task_manager_specimen_route_is_valid_and_observational() -> None:
@@ -140,7 +143,7 @@ def test_mcel_lab_task_manager_specimen_route_is_valid_and_observational() -> No
     assert "lensActive" in specimen_block
     assert "lensPanelCount" in specimen_block
     assert "lensRiskControlCount" in specimen_block
-    assert "canonical lens annotates and styles Task Manager" in specimen_block
+    assert "canonical lens annotates Task Manager and reports risk in the Lab sidecar" in specimen_block
     assert "data-mcel-lab-specimen-root" in specimen_block
     assert "destructiveActionsExecuted: false" in specimen_block
     assert "does not click server control" in specimen_block
@@ -156,7 +159,8 @@ def test_mcel_lab_task_manager_lens_is_lab_only_and_risk_aware() -> None:
         lab.index("function openMcelDiagnosticsDrawer")
     ]
 
-    assert "Apply MCEL Lens" in app
+    assert "Inspect MCEL Lens" in app
+    assert "Clean Specimen" in app
     assert "Task Manager specimen map" in app
     assert "renderMcelCanonicalAppLensMap" in specimen_block
     assert "applyMcelCanonicalTaskManagerLens" in specimen_block
@@ -164,11 +168,14 @@ def test_mcel_lab_task_manager_lens_is_lab_only_and_risk_aware() -> None:
     assert "data-mcel-action-risk" in specimen_block
     assert "process-destructive" in specimen_block
     assert "deferred-mutation" in specimen_block
-    assert "lab-only dashboard lens active" in specimen_block
+    assert "lab-side inspector lens active" in specimen_block
     assert "lens application never clicks Task Manager controls" in specimen_block
+    assert "no inline labels or risk badges" in specimen_block
+    assert "does not restyle layout" in specimen_block
     assert '"task-all-processes-table"' not in specimen_block
     assert '"task-connections-table"' not in specimen_block
     assert ".mcel-canonical-app-lens-map-grid" in css
+    assert ".mcel-canonical-app-lens-sidecar-list" in css
 
 
 def test_mcel_lab_assets_define_round_trip_contract() -> None:
