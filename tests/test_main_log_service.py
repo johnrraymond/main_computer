@@ -6,10 +6,11 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 from main_computer.main_log_client import emit_main_log_event
+from main_computer.main_log_codec import iter_lex_records
 from main_computer.main_log_service import MainLogHTTPServer, MainLogRequestHandler, MainLogStore
 
 
-def test_main_log_service_accepts_events_and_writes_jsonl(tmp_path: Path) -> None:
+def test_main_log_service_accepts_events_and_writes_lexlog(tmp_path: Path) -> None:
     store = MainLogStore(root=tmp_path)
     server = MainLogHTTPServer(("127.0.0.1", 0), MainLogRequestHandler, store)
     port = int(server.server_port)
@@ -41,6 +42,7 @@ def test_main_log_service_accepts_events_and_writes_jsonl(tmp_path: Path) -> Non
         store.stop(host="127.0.0.1", port=port)
         thread.join(timeout=5)
 
-    records = [json.loads(line) for line in store.log_path.read_text(encoding="utf-8").splitlines()]
+    assert store.log_path.name == "main.log.lex"
+    records = list(iter_lex_records(store.log_path))
     assert any(record.get("message") == "hello main log" for record in records)
     assert records[-1]["ingest_seq"] >= 1

@@ -6,6 +6,7 @@ import threading
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+from main_computer.main_log_codec import iter_lex_records
 from main_computer.main_log_hooks import install_main_log_hooks, uninstall_main_log_hooks
 from main_computer.main_log_service import MainLogHTTPServer, MainLogRequestHandler, MainLogStore
 
@@ -49,7 +50,7 @@ def test_main_log_hooks_capture_path_open_log_writes(tmp_path: Path) -> None:
         _stop_main_log(store, server, thread)
 
     assert log_path.read_text(encoding="utf-8") == "hello from Path.open\n"
-    records = [json.loads(line) for line in store.log_path.read_text(encoding="utf-8").splitlines()]
+    records = list(iter_lex_records(store.log_path))
     assert any(
         record.get("kind") == "file-write"
         and record.get("stream") == "file-log"

@@ -75,6 +75,7 @@ def _path_is_main_log(path: Path) -> bool:
     candidates: list[Path] = []
     if root is not None:
         candidates.append(root / "runtime" / "main_log" / "main.log.jsonl")
+        candidates.append(root / "runtime" / "main_log" / "main.log.lex")
         candidates.append(root / "runtime" / "main_log" / "state.json")
     for candidate in candidates:
         try:
@@ -84,7 +85,7 @@ def _path_is_main_log(path: Path) -> bool:
             if str(resolved) == str(candidate):
                 return True
     parts = {part.casefold() for part in resolved.parts}
-    return "runtime" in parts and "main_log" in parts and resolved.name.casefold() in {"main.log.jsonl", "state.json"}
+    return "runtime" in parts and "main_log" in parts and resolved.name.casefold() in {"main.log.jsonl", "main.log.lex", "state.json"}
 
 
 def _mode_writes(mode: object) -> bool:
