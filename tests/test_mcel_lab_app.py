@@ -93,8 +93,15 @@ def test_mcel_lab_mounts_task_manager_as_canonical_specimen() -> None:
     assert "MCEL_CANONICAL_TASK_MANAGER_REQUIRED_IDS" in lab
     assert "MCEL_CANONICAL_TASK_MANAGER_DANGEROUS_CONTROL_SELECTORS" in lab
     assert ".mcel-canonical-specimen" in css
+    assert ".mcel-canonical-specimen-frame-bar" in css
+    assert ".mcel-canonical-specimen-badge" in css
     assert ".mcel-canonical-app-frame" in css
     assert ".mcel-canonical-app-report" in css
+    assert 'id="mcel-canonical-app-frame-summary"' in app
+    assert "mcelCanonicalAppFrameSummary = document.querySelector" in bindings
+    assert "injectMcelCanonicalAppSpecimenChrome" in lab
+    assert "MCEL_CANONICAL_SPECIMEN_RIBBON_ID" in lab
+    assert "MCEL Lab specimen" in lab
 
 
 def test_mcel_lab_task_manager_specimen_route_is_valid_and_observational() -> None:
@@ -114,6 +121,8 @@ def test_mcel_lab_task_manager_specimen_route_is_valid_and_observational() -> No
     assert '"task-server-restart"' in specimen_block
     assert '"[data-task-action=\\"terminate-pid\\"]"' in specimen_block
     assert '"[data-task-action=\\"kill-pid\\"]"' in specimen_block
+    assert "specimenChromeApplied" in specimen_block
+    assert "data-mcel-lab-specimen-root" in specimen_block
     assert "destructiveActionsExecuted: false" in specimen_block
     assert "does not click server control" in specimen_block
     assert ".click(" not in specimen_block
