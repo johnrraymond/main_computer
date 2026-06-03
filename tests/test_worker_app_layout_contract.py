@@ -286,6 +286,10 @@ def test_worker_wallet_connect_and_disconnect_use_always_disconnect_cycle() -> N
     assert "connect.wallet.rpcProof.backoffCleared" in js
     assert "workerWalletIsRpcEndpointBackoff" in js
     assert "workerWalletRpcBackoffMessage" in js
+    assert "async function workerBrowserProviderSend" in js
+    assert "browserProvider.send(method, params)" in js
+    assert "workerInjectedProviderRequest" not in js
+    assert "injectedProvider.request" not in js
     assert "funding-preflight" in js
     assert "provider.hydrate.start" in js
     assert "provider.hydrate.connected" in js

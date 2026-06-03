@@ -143,21 +143,21 @@
       };
     }
 
-    async function workerInjectedProviderRequest(injectedProvider, method, params = [], label = method, timeoutMs = WORKER_WALLET_BALANCE_TIMEOUT_MS) {
-      if (!injectedProvider || typeof injectedProvider.request !== "function") {
-        throw new Error("No browser wallet request provider is available.");
+    async function workerBrowserProviderSend(browserProvider, method, params = [], label = method, timeoutMs = WORKER_WALLET_BALANCE_TIMEOUT_MS) {
+      if (!browserProvider || typeof browserProvider.send !== "function") {
+        throw new Error("No ethers browser wallet provider is available.");
       }
       return await workerPromiseWithTimeout(
-        injectedProvider.request({method, params}),
+        browserProvider.send(method, params),
         label,
         timeoutMs
       );
     }
 
-    async function workerReadWalletBalanceFromInjectedProvider(injectedProvider, walletAddress) {
+    async function workerReadWalletBalanceFromInjectedProvider(browserProvider, walletAddress) {
       const [chainIdRaw, accountsRaw] = await Promise.all([
-        workerInjectedProviderRequest(injectedProvider, "eth_chainId", [], "wallet chain check"),
-        workerInjectedProviderRequest(injectedProvider, "eth_accounts", [], "wallet account check")
+        workerBrowserProviderSend(browserProvider, "eth_chainId", [], "wallet chain check"),
+        workerBrowserProviderSend(browserProvider, "eth_accounts", [], "wallet account check")
       ]);
       const accounts = Array.isArray(accountsRaw) ? accountsRaw : [];
       const providerAddress = workerLowerAddress(accounts[0] || "");
@@ -173,8 +173,8 @@
         throw new Error(`Wallet is on ${chainId || "unknown chain"}; expected ${WORKER_DEV_CHAIN_ID_HEX}.`);
       }
 
-      const balanceHex = await workerInjectedProviderRequest(
-        injectedProvider,
+      const balanceHex = await workerBrowserProviderSend(
+        browserProvider,
         "eth_getBalance",
         [walletAddress, "latest"],
         "wallet balance check"
@@ -1166,7 +1166,7 @@
       }
     }
 
-    async function workerReadInjectedProviderMetadata(injectedProvider) {
+    async function workerReadInjectedProviderMetadata(browserProvider, injectedProvider = workerWalletSelectedProvider) {
       const metadata = {
         providerPresent: Boolean(injectedProvider),
         isMetaMask: Boolean(injectedProvider?.isMetaMask),
@@ -1178,21 +1178,21 @@
         errors: {}
       };
 
-      if (!injectedProvider || typeof injectedProvider.request !== "function") {
-        metadata.errors.provider = "No browser wallet request provider is available.";
+      if (!browserProvider || typeof browserProvider.send !== "function") {
+        metadata.errors.provider = "No ethers browser wallet provider is available.";
         return metadata;
       }
 
       try {
         metadata.chainId = workerNormalizeChainIdHex(
-          await workerInjectedProviderRequest(injectedProvider, "eth_chainId", [], "wallet chain metadata")
+          await workerBrowserProviderSend(browserProvider, "eth_chainId", [], "wallet chain metadata")
         );
       } catch (error) {
         metadata.errors.chainId = workerWalletErrorMessage(error);
       }
 
       try {
-        const accounts = await workerInjectedProviderRequest(injectedProvider, "eth_accounts", [], "wallet account metadata");
+        const accounts = await workerBrowserProviderSend(browserProvider, "eth_accounts", [], "wallet account metadata");
         metadata.accounts = (Array.isArray(accounts) ? accounts : [])
           .map((account) => String(account || ""))
           .filter(Boolean);
@@ -1201,7 +1201,7 @@
       }
 
       try {
-        const providerState = await workerInjectedProviderRequest(injectedProvider, "metamask_getProviderState", [], "MetaMask provider state");
+        const providerState = await workerBrowserProviderSend(browserProvider, "metamask_getProviderState", [], "MetaMask provider state");
         if (providerState && typeof providerState === "object") {
           metadata.metamaskState = providerState;
           metadata.networkVersion = providerState.networkVersion ?? null;
@@ -1231,11 +1231,11 @@
       return false;
     }
 
-    async function workerProveInjectedProviderRpc(injectedProvider) {
+    async function workerProveInjectedProviderRpc(browserProvider) {
       let chainId = "";
       try {
         chainId = workerNormalizeChainIdHex(
-          await workerInjectedProviderRequest(injectedProvider, "eth_chainId", [], "wallet chain proof")
+          await workerBrowserProviderSend(browserProvider, "eth_chainId", [], "wallet chain proof")
         );
       } catch (error) {
         return {
@@ -1256,7 +1256,7 @@
       }
 
       try {
-        const blockNumber = await workerInjectedProviderRequest(injectedProvider, "eth_blockNumber", [], "wallet RPC block proof");
+        const blockNumber = await workerBrowserProviderSend(browserProvider, "eth_blockNumber", [], "wallet RPC block proof");
         return {
           ok: true,
           chainId,
@@ -1273,7 +1273,7 @@
       }
     }
 
-    async function workerProveInjectedProviderRpcWithBackoff(injectedProvider, options = {}) {
+    async function workerProveInjectedProviderRpcWithBackoff(browserProvider, options = {}) {
       const opts = options && typeof options === "object" ? options : {};
       const reason = String(opts.reason || "rpc-proof");
       const timeoutMs = Number.isFinite(opts.timeoutMs) ? Number(opts.timeoutMs) : WORKER_METAMASK_RPC_BACKOFF_TIMEOUT_MS;
@@ -1284,7 +1284,7 @@
 
       while (Date.now() - startedAt <= timeoutMs) {
         attempts += 1;
-        const proof = await workerProveInjectedProviderRpc(injectedProvider);
+        const proof = await workerProveInjectedProviderRpc(browserProvider);
         if (proof.ok) {
           if (attempts > 1) {
             workerWalletRecordEvent("connect.wallet.rpcProof.backoffCleared", {
@@ -1332,9 +1332,9 @@
       };
     }
 
-    async function workerRequestDevWalletChainUpdate(injectedProvider, reason = "network-repair") {
-      if (!injectedProvider || typeof injectedProvider.request !== "function") {
-        throw new Error("No browser wallet request provider is available.");
+    async function workerRequestDevWalletChainUpdate(browserProvider, reason = "network-repair") {
+      if (!browserProvider || typeof browserProvider.send !== "function") {
+        throw new Error("No ethers browser wallet provider is available.");
       }
 
       const requestDevChainUpdate = async (params, repairMode) => {
@@ -1345,8 +1345,8 @@
           rpcUrl: WORKER_DEV_CHAIN_RPC_URL,
           currencySymbol: params?.nativeCurrency?.symbol || ""
         });
-        await workerInjectedProviderRequest(
-          injectedProvider,
+        await workerBrowserProviderSend(
+          browserProvider,
           "wallet_addEthereumChain",
           [params],
           "wallet dev-chain update",
@@ -1382,8 +1382,8 @@
         to: WORKER_DEV_CHAIN_ID_HEX,
         reason
       });
-      await workerInjectedProviderRequest(
-        injectedProvider,
+      await workerBrowserProviderSend(
+        browserProvider,
         "wallet_switchEthereumChain",
         [{chainId: WORKER_DEV_CHAIN_ID_HEX}],
         "wallet dev-chain switch",
@@ -1597,7 +1597,7 @@
         activeBrowserProvider = workerRebuildWalletBrowserProvider(ethers, injectedProvider);
       }
 
-      let metadata = await workerReadInjectedProviderMetadata(injectedProvider);
+      let metadata = await workerReadInjectedProviderMetadata(activeBrowserProvider, injectedProvider);
       let needsUpdate = Boolean(opts.forceUpdate);
       let updateReason = needsUpdate ? String(opts.forceReason || reason) : "";
 
@@ -1610,7 +1610,7 @@
         needsUpdate = true;
         updateReason = workerWalletRpcRepairMessage(`networkVersion=${metadata.networkVersion || "unknown"} providerConnected=${metadata.providerConnected}`);
       } else if (opts.probeRpc) {
-        const proof = await workerProveInjectedProviderRpc(injectedProvider);
+        const proof = await workerProveInjectedProviderRpc(activeBrowserProvider);
         if (!proof.ok) {
           needsUpdate = true;
           updateReason = proof.reason || "MetaMask RPC proof failed.";
@@ -1619,10 +1619,10 @@
 
       if (needsUpdate) {
         if (workerSaveStatus) workerSaveStatus.textContent = workerWalletRpcRepairMessage(updateReason);
-        await workerRequestDevWalletChainUpdate(injectedProvider, updateReason || reason);
+        await workerRequestDevWalletChainUpdate(activeBrowserProvider, updateReason || reason);
         await workerSleep(500);
         activeBrowserProvider = workerRebuildWalletBrowserProvider(ethers, injectedProvider);
-        metadata = await workerReadInjectedProviderMetadata(injectedProvider);
+        metadata = await workerReadInjectedProviderMetadata(activeBrowserProvider, injectedProvider);
       }
 
       const chainId = workerNormalizeChainIdHex(metadata.chainId);
@@ -1632,8 +1632,8 @@
 
       if (opts.probeRpc) {
         const proof = needsUpdate
-          ? await workerProveInjectedProviderRpcWithBackoff(injectedProvider, {reason})
-          : await workerProveInjectedProviderRpc(injectedProvider);
+          ? await workerProveInjectedProviderRpcWithBackoff(activeBrowserProvider, {reason})
+          : await workerProveInjectedProviderRpc(activeBrowserProvider);
         if (!proof.ok) {
           throw new Error(
             needsUpdate
@@ -1681,7 +1681,7 @@
           workerSetPrimaryWalletState({connected: false});
           workerWalletLastAction = `Wallet is on ${chainId || "unknown chain"}; expected ${WORKER_DEV_CHAIN_ID_HEX}.`;
         } else {
-          const metadata = await workerReadInjectedProviderMetadata(workerWalletSelectedProvider);
+          const metadata = await workerReadInjectedProviderMetadata(workerWalletBrowserProvider, workerWalletSelectedProvider);
           if (workerWalletMetadataNeedsRpcRepair(metadata)) {
             workerSetPrimaryWalletState({connected: false});
             workerWalletLastAction = workerWalletRpcRepairMessage("Click Connect Wallet to update the saved MetaMask network before funding.");
@@ -1763,7 +1763,7 @@
             return snapshot;
           }
 
-          const metadata = await workerReadInjectedProviderMetadata(context.injectedProvider);
+          const metadata = await workerReadInjectedProviderMetadata(context.browserProvider, context.injectedProvider);
           if (workerWalletMetadataNeedsRpcRepair(metadata)) {
             workerSetPrimaryWalletState({connected: false});
             workerWalletHookState = "idle";
@@ -2104,8 +2104,8 @@
         } catch (error) {
           localRpcError = error;
           try {
-            const {injectedProvider} = await workerGetWalletProviderContext();
-            rawBalance = await workerReadWalletBalanceFromInjectedProvider(injectedProvider, walletAddress);
+            const {browserProvider} = await workerGetWalletProviderContext();
+            rawBalance = await workerReadWalletBalanceFromInjectedProvider(browserProvider, walletAddress);
           } catch (fallbackError) {
             const localMessage = localRpcError?.message || String(localRpcError || "");
             const fallbackMessage = fallbackError?.message || String(fallbackError || "");
