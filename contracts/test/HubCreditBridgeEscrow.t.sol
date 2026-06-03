@@ -23,6 +23,10 @@ contract EscrowActor {
         return escrow.rectifySpend(account, amountUnits, rectificationId, memo);
     }
 
+    function completeDeposit(HubCreditBridgeEscrow escrow, bytes32 depositId) external returns (bool) {
+        return escrow.completeDeposit(depositId);
+    }
+
     function releaseWithdrawal(
         HubCreditBridgeEscrow escrow,
         address account,
@@ -100,6 +104,125 @@ contract HubCreditBridgeEscrowTest {
         assertEq(address(requester).balance, beforeRequester + ((94 * CREDIT) + (CREDIT / 2)));
         assertEq(escrow.withdrawnUnits(address(requester)), (94 * CREDIT) + (CREDIT / 2));
         assertEq(escrow.withdrawableUnits(address(requester)), 0);
+    }
+
+    function testDepositRecordStartsIncompleteWithPayer() public {
+        HubCreditBridgeEscrow escrow = new HubCreditBridgeEscrow(address(bridge));
+
+        bytes32 depositId = keccak256("deposit-record");
+        requester.depositFor{value: 3 * CREDIT}(
+            escrow,
+            address(requester),
+            3 * CREDIT,
+            depositId,
+            "record deposit"
+        );
+
+        (
+            bool exists,
+            bool completed,
+            address account,
+            address payer,
+            uint256 amountUnits
+        ) = escrow.depositRecord(depositId);
+
+        assertTrue(exists);
+        assertFalse(completed);
+        assertEq(account, address(requester));
+        assertEq(payer, address(requester));
+        assertEq(amountUnits, 3 * CREDIT);
+        assertEq(escrow.completedDepositUnits(address(requester)), 0);
+    }
+
+    function testCompleteDepositMarksCompleteAndIncrementsAggregate() public {
+        HubCreditBridgeEscrow escrow = fundedEscrow();
+
+        bytes32 depositId = keccak256("complete-deposit");
+        requester.depositFor{value: 7 * CREDIT}(
+            escrow,
+            address(requester),
+            7 * CREDIT,
+            depositId,
+            "complete deposit"
+        );
+
+        bool applied = bridge.completeDeposit(escrow, depositId);
+
+        (
+            bool exists,
+            bool completed,
+            address account,
+            address payer,
+            uint256 amountUnits
+        ) = escrow.depositRecord(depositId);
+
+        assertTrue(applied);
+        assertTrue(exists);
+        assertTrue(completed);
+        assertEq(account, address(requester));
+        assertEq(payer, address(requester));
+        assertEq(amountUnits, 7 * CREDIT);
+        assertEq(escrow.completedDepositUnits(address(requester)), 7 * CREDIT);
+    }
+
+    function testDuplicateCompleteDepositDoesNotDoubleCount() public {
+        HubCreditBridgeEscrow escrow = fundedEscrow();
+
+        bytes32 depositId = keccak256("duplicate-complete-deposit");
+        requester.depositFor{value: 11 * CREDIT}(
+            escrow,
+            address(requester),
+            11 * CREDIT,
+            depositId,
+            "complete deposit once"
+        );
+
+        bool first = bridge.completeDeposit(escrow, depositId);
+        bool duplicate = bridge.completeDeposit(escrow, depositId);
+
+        assertTrue(first);
+        assertFalse(duplicate);
+        assertEq(escrow.completedDepositUnits(address(requester)), 11 * CREDIT);
+    }
+
+    function testNonBridgeCannotCompleteDeposit() public {
+        HubCreditBridgeEscrow escrow = fundedEscrow();
+
+        bytes32 depositId = keccak256("non-bridge-complete-deposit");
+        requester.depositFor{value: 13 * CREDIT}(
+            escrow,
+            address(requester),
+            13 * CREDIT,
+            depositId,
+            "non bridge complete"
+        );
+
+        try outsider.completeDeposit(escrow, depositId) {
+            revert("expected bridge-only complete rejection");
+        } catch {}
+
+        (
+            bool exists,
+            bool completed,
+            address account,
+            address payer,
+            uint256 amountUnits
+        ) = escrow.depositRecord(depositId);
+
+        assertTrue(exists);
+        assertFalse(completed);
+        assertEq(account, address(requester));
+        assertEq(payer, address(requester));
+        assertEq(amountUnits, 13 * CREDIT);
+        assertEq(escrow.completedDepositUnits(address(requester)), 0);
+    }
+
+    function testUnknownDepositCannotBeCompleted() public {
+        HubCreditBridgeEscrow escrow = fundedEscrow();
+
+        try bridge.completeDeposit(escrow, keccak256("missing-deposit")) {
+            revert("expected unknown deposit rejection");
+        } catch {}
     }
 
     function testDuplicateRectificationIdDoesNotDoubleCount() public {

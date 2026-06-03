@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import os
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -48,6 +49,12 @@ DEFAULT_HOST_RPC_URL = "http://127.0.0.1:18545"
 DEFAULT_PROJECT_NAME = "main-computer-dev"
 DEFAULT_DEPLOYMENT_ENVIRONMENT = "dev"
 DEPLOYMENT_SCHEMA = "main-computer.deployment.v1"
+HUB_ADMIN_WALLET_SCHEMA = "main-computer.hub-admin-wallet.v1"
+HUB_ADMIN_WALLET_FILENAME = "hub-admin-wallet.json"
+HUB_CREDIT_BRIDGE_ESCROW_KEY = "hub_credit_bridge_escrow"
+HUB_CREDIT_BRIDGE_ESCROW_DEPLOY_CHOICE = "hub-credit-bridge-escrow"
+HUB_ADMIN_PREVIEW_ADDRESS = "0x0000000000000000000000000000000000000a11"
+DEFAULT_HUB_ADMIN_FUNDING_WEI = "10000000000000000000"
 DEFAULT_PRIVATE_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 DEFAULT_OFFICE_KEYS = [
     {
@@ -82,6 +89,15 @@ class DeploymentSpec:
     key: str
     target: str
     constructor_args: list[str]
+    metadata: dict[str, object] | None = None
+
+
+@dataclass(frozen=True)
+class HubAdminWallet:
+    path: Path
+    address: str
+    private_key: str | None
+    source: str
 
 
 @dataclass(frozen=True)
@@ -166,10 +182,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mnemonic", default=DEFAULT_MNEMONIC)
     parser.add_argument(
         "--deploy",
-        choices=("alpha-beta-lockout", "xlag-bridge-reserve"),
+        choices=("alpha-beta-lockout", "xlag-bridge-reserve", HUB_CREDIT_BRIDGE_ESCROW_DEPLOY_CHOICE),
         action="append",
         default=[],
         help="Deploy only a selected root contract. May be repeated. Defaults to all root contracts.",
+    )
+    parser.add_argument(
+        "--hub-admin-funding-wei",
+        default=DEFAULT_HUB_ADMIN_FUNDING_WEI,
+        help="Native wei sent from the Anvil deployer to the Hub admin wallet before escrow deployment.",
     )
     parser.add_argument("--max-payout-wei", default="1000000000000000000")
     parser.add_argument("--payout-delay-blocks", default="1")
@@ -229,10 +250,19 @@ def office_arg(offices: list[str]) -> str:
     return "[" + ",".join(offices) + "]"
 
 
-def deployment_specs(args: argparse.Namespace) -> list[DeploymentSpec]:
+def selected_deployments(args: argparse.Namespace) -> set[str]:
+    return set(args.deploy or ["alpha-beta-lockout", "xlag-bridge-reserve", HUB_CREDIT_BRIDGE_ESCROW_DEPLOY_CHOICE])
+
+
+def hub_admin_required(args: argparse.Namespace) -> bool:
+    return (not args.no_deploy) and HUB_CREDIT_BRIDGE_ESCROW_DEPLOY_CHOICE in selected_deployments(args)
+
+
+def deployment_specs(args: argparse.Namespace, hub_admin_address: str | None = None) -> list[DeploymentSpec]:
     offices = parse_offices(args.offices)
     office_constructor_arg = office_arg(offices)
-    selected = set(args.deploy or ["alpha-beta-lockout", "xlag-bridge-reserve"])
+    selected = selected_deployments(args)
+    bridge_controller_address = hub_admin_address or HUB_ADMIN_PREVIEW_ADDRESS
 
     specs: list[DeploymentSpec] = []
     if "alpha-beta-lockout" in selected:
@@ -254,6 +284,20 @@ def deployment_specs(args: argparse.Namespace) -> list[DeploymentSpec]:
                     str(args.payout_delay_blocks),
                     str(args.reset_delay_blocks),
                 ],
+            )
+        )
+    if HUB_CREDIT_BRIDGE_ESCROW_DEPLOY_CHOICE in selected:
+        specs.append(
+            DeploymentSpec(
+                key=HUB_CREDIT_BRIDGE_ESCROW_KEY,
+                target="src/HubCreditBridgeEscrow.sol:HubCreditBridgeEscrow",
+                constructor_args=[bridge_controller_address],
+                metadata={
+                    "chain_id": args.chain_id,
+                    "payment_asset": "native",
+                    "approval_required": False,
+                    "bridge_controller_address": bridge_controller_address,
+                },
             )
         )
     return specs
@@ -368,6 +412,194 @@ def docker_deploy_command(args: argparse.Namespace, spec: DeploymentSpec, contra
         "--constructor-args",
         *spec.constructor_args,
     ]
+
+
+def docker_cast_command(
+    args: argparse.Namespace,
+    cast_args: list[str],
+    *,
+    root: Path | None = None,
+    rid: str | None = None,
+    use_network: bool = False,
+) -> list[str]:
+    actual_root = root or repo_root()
+    command = [docker_executable(), "run", "--rm"]
+    if use_network:
+        if not rid:
+            raise ValueError("rid is required for networked cast commands")
+        command.extend(["--network", network_name(args, rid)])
+    command.extend(
+        [
+            "-v",
+            f"{docker_mount_path(actual_root)}:/workspace",
+            "-w",
+            "/workspace/contracts",
+            "--entrypoint",
+            "cast",
+            args.foundry_image,
+            *cast_args,
+        ]
+    )
+    return command
+
+
+def hub_admin_fund_command(args: argparse.Namespace, rid: str, wallet: HubAdminWallet, root: Path) -> list[str]:
+    return docker_cast_command(
+        args,
+        [
+            "send",
+            wallet.address,
+            "--value",
+            str(args.hub_admin_funding_wei),
+            "--rpc-url",
+            container_rpc_url(args, rid),
+            "--private-key",
+            args.private_key,
+            "--json",
+        ],
+        root=root,
+        rid=rid,
+        use_network=True,
+    )
+
+
+def is_address(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"0x[0-9a-fA-F]{40}", value) is not None
+
+
+def is_private_key(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"0x[0-9a-fA-F]{64}", value) is not None
+
+
+def metadata_path(path: Path, root: Path) -> str:
+    resolved = path.resolve()
+    root_resolved = root.resolve()
+    try:
+        return resolved.relative_to(root_resolved).as_posix()
+    except ValueError:
+        return str(resolved)
+
+
+def hub_admin_wallet_path(args: argparse.Namespace, root: Path) -> Path:
+    return deployment_output_root(args, root) / HUB_ADMIN_WALLET_FILENAME
+
+
+def load_hub_admin_wallet(path: Path, chain_id: int) -> HubAdminWallet | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid Hub admin wallet JSON: {path}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"invalid Hub admin wallet record: {path}")
+    if payload.get("schema") != HUB_ADMIN_WALLET_SCHEMA:
+        raise ValueError(f"unexpected Hub admin wallet schema in {path}")
+    wallet_chain_id = payload.get("chain_id")
+    if int(wallet_chain_id) != int(chain_id):
+        raise ValueError(f"Hub admin wallet chain_id {wallet_chain_id!r} does not match requested chain_id {chain_id}")
+    address = payload.get("address")
+    private_key = payload.get("private_key")
+    if not is_address(address):
+        raise ValueError(f"invalid Hub admin wallet address in {path}")
+    if not is_private_key(private_key):
+        raise ValueError(f"invalid Hub admin private key in {path}")
+    return HubAdminWallet(path=path, address=str(address), private_key=str(private_key), source=str(payload.get("source") or "loaded-local-dev"))
+
+
+def derive_address_for_private_key(args: argparse.Namespace, root: Path, private_key: str) -> str:
+    completed = run_command(
+        docker_cast_command(args, ["wallet", "address", "--private-key", private_key], root=root),
+        check=True,
+        echo=False,
+    )
+    output = (completed.stdout or "") + "\n" + (completed.stderr or "")
+    match = re.search(r"0x[0-9a-fA-F]{40}", output)
+    if not match:
+        raise RuntimeError("could not derive Hub admin address from generated private key")
+    return match.group(0)
+
+
+def write_hub_admin_wallet(path: Path, *, chain_id: int, address: str, private_key: str) -> HubAdminWallet:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema": HUB_ADMIN_WALLET_SCHEMA,
+        "chain_id": chain_id,
+        "address": address,
+        "private_key": private_key,
+        "created_at": dt.datetime.now(dt.UTC).isoformat(),
+        "source": "generated-local-dev",
+    }
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if os.name != "nt":
+        os.chmod(tmp_path, 0o600)
+    tmp_path.replace(path)
+    if os.name != "nt":
+        os.chmod(path, 0o600)
+    return HubAdminWallet(path=path, address=address, private_key=private_key, source="generated-local-dev")
+
+
+def create_hub_admin_wallet(args: argparse.Namespace, root: Path, path: Path) -> HubAdminWallet:
+    while True:
+        private_key = "0x" + secrets.token_hex(32)
+        if int(private_key, 16) != 0:
+            break
+    address = derive_address_for_private_key(args, root, private_key)
+    if address.lower() == str(DEFAULT_OFFICE_KEYS[0]["address"]).lower():
+        raise RuntimeError("generated Hub admin wallet unexpectedly matched the deployer address")
+    wallet = write_hub_admin_wallet(path, chain_id=args.chain_id, address=address, private_key=private_key)
+    log(f"Created Hub admin wallet: {metadata_path(path, root)} ({address})")
+    return wallet
+
+
+def resolve_hub_admin_wallet(args: argparse.Namespace, root: Path, *, create_missing: bool) -> HubAdminWallet | None:
+    if not hub_admin_required(args):
+        return None
+    path = hub_admin_wallet_path(args, root)
+    existing = load_hub_admin_wallet(path, args.chain_id)
+    if existing is not None:
+        log(f"Loaded Hub admin wallet: {metadata_path(path, root)} ({existing.address})")
+        return existing
+    if not create_missing:
+        return HubAdminWallet(path=path, address=HUB_ADMIN_PREVIEW_ADDRESS, private_key=None, source="dry-run-preview")
+    return create_hub_admin_wallet(args, root, path)
+
+
+def public_hub_admin_record(value: object, root: Path) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    address = value.get("address")
+    wallet_path = value.get("wallet_path")
+    if not is_address(address):
+        return None
+    record = {
+        "address": address,
+        "wallet_path": str(wallet_path or ""),
+    }
+    if value.get("source"):
+        record["source"] = value.get("source")
+    if value.get("funding_wei"):
+        record["funding_wei"] = str(value.get("funding_wei"))
+    return record
+
+
+def hub_admin_payload(wallet: HubAdminWallet | None, root: Path, args: argparse.Namespace) -> dict | None:
+    if wallet is None:
+        return None
+    return {
+        "address": wallet.address,
+        "wallet_path": metadata_path(wallet.path, root),
+        "source": wallet.source,
+        "funding_wei": str(args.hub_admin_funding_wei),
+    }
+
+
+def fund_hub_admin_wallet(args: argparse.Namespace, rid: str, wallet: HubAdminWallet | None, root: Path) -> None:
+    if wallet is None or wallet.private_key is None:
+        return
+    log(f"Funding Hub admin wallet {wallet.address} with {args.hub_admin_funding_wei} wei")
+    run_command(hub_admin_fund_command(args, rid, wallet, root), timeout_s=args.deploy_timeout_s)
 
 
 def display_command(command: list[str]) -> str:
@@ -628,6 +860,7 @@ def deploy_payload(
     rid: str,
     dry_run: bool,
     deployments: dict[str, dict],
+    hub_admin: dict | None = None,
 ) -> dict:
     return {
         "schema": DEPLOYMENT_SCHEMA,
@@ -651,6 +884,7 @@ def deploy_payload(
             "address": DEFAULT_OFFICE_KEYS[0]["address"] if args.private_key == DEFAULT_PRIVATE_KEY else None,
             "private_key": args.private_key,
         },
+        "hub_admin": hub_admin,
         "deployments": deployments,
     }
 
@@ -664,7 +898,9 @@ def public_deployment_payload(payload: dict) -> dict:
     """
 
     chain = dict(payload.get("chain") or {})
-    return {
+    root = repo_root()
+    public_hub_admin = public_hub_admin_record(payload.get("hub_admin"), root)
+    public_payload = {
         "schema": DEPLOYMENT_SCHEMA,
         "environment": str(payload.get("environment") or DEFAULT_DEPLOYMENT_ENVIRONMENT),
         "run_id": payload.get("run_id"),
@@ -686,6 +922,9 @@ def public_deployment_payload(payload: dict) -> dict:
             "project_name": payload.get("project_name") or DEFAULT_PROJECT_NAME,
         },
     }
+    if public_hub_admin is not None:
+        public_payload["hub_admin"] = public_hub_admin
+    return public_payload
 
 
 def public_contract_records(deployments: dict) -> dict:
@@ -693,12 +932,16 @@ def public_contract_records(deployments: dict) -> dict:
     for key, value in deployments.items():
         if not isinstance(value, dict):
             continue
-        records[str(key)] = {
+        record = {
             "target": value.get("target"),
             "constructor_args": value.get("constructor_args"),
             "address": value.get("address"),
             "transaction_hash": value.get("transaction_hash"),
         }
+        for optional_key in ("chain_id", "payment_asset", "approval_required", "bridge_controller_address"):
+            if optional_key in value:
+                record[optional_key] = value.get(optional_key)
+        records[str(key)] = record
     return records
 
 
@@ -738,22 +981,29 @@ def env_payload(payload: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def planned_deployments(args: argparse.Namespace) -> dict[str, dict]:
+def deployment_record(spec: DeploymentSpec, *, address: str | None, transaction_hash: str | None) -> dict:
+    record = {
+        "target": spec.target,
+        "constructor_args": spec.constructor_args,
+        "address": address,
+        "transaction_hash": transaction_hash,
+    }
+    if spec.metadata:
+        record.update(spec.metadata)
+    return record
+
+
+def planned_deployments(args: argparse.Namespace, hub_admin_address: str | None = None) -> dict[str, dict]:
     return {
-        spec.key: {
-            "target": spec.target,
-            "constructor_args": spec.constructor_args,
-            "address": None,
-            "transaction_hash": None,
-        }
-        for spec in deployment_specs(args)
+        spec.key: deployment_record(spec, address=None, transaction_hash=None)
+        for spec in deployment_specs(args, hub_admin_address)
     }
 
 
-def deployed_contracts(args: argparse.Namespace, rid: str) -> dict[str, dict]:
+def deployed_contracts(args: argparse.Namespace, rid: str, hub_admin_address: str | None = None) -> dict[str, dict]:
     contracts_root = repo_root() / "contracts"
     result: dict[str, dict] = {}
-    for spec in deployment_specs(args):
+    for spec in deployment_specs(args, hub_admin_address):
         command = docker_deploy_command(args, spec, contracts_root, rid)
         completed = run_command(command, timeout_s=args.deploy_timeout_s)
         output = (completed.stdout or "") + "\n" + (completed.stderr or "")
@@ -761,18 +1011,15 @@ def deployed_contracts(args: argparse.Namespace, rid: str) -> dict[str, dict]:
         tx_hash = parse_transaction_hash(output)
         if not address:
             raise RuntimeError(f"could not parse deployed address for {spec.key}")
-        result[spec.key] = {
-            "target": spec.target,
-            "constructor_args": spec.constructor_args,
-            "address": address,
-            "transaction_hash": tx_hash,
-        }
+        result[spec.key] = deployment_record(spec, address=address, transaction_hash=tx_hash)
     return result
 
 
 def validate_args(args: argparse.Namespace) -> None:
     if args.accounts <= 1:
         raise ValueError("--accounts must be greater than one for the local office key pool")
+    if int(str(args.hub_admin_funding_wei), 0) <= 0:
+        raise ValueError("--hub-admin-funding-wei must be greater than zero")
     parse_offices(args.offices)
     validate_environment_name(args.environment)
     host_rpc_endpoint(args.host_rpc_url)
@@ -780,7 +1027,7 @@ def validate_args(args: argparse.Namespace) -> None:
         args.host_rpc_url = host_rpc_url_with_port(args.host_rpc_url, args.host_port)
 
 
-def print_plan(args: argparse.Namespace, rid: str) -> None:
+def print_plan(args: argparse.Namespace, rid: str, hub_admin: HubAdminWallet | None = None) -> None:
     root = repo_root()
     run_dir = output_root(args, root) / "runs" / rid
     log(f"Repository root: {root}")
@@ -789,13 +1036,18 @@ def print_plan(args: argparse.Namespace, rid: str) -> None:
     log(f"Host RPC URL: {args.host_rpc_url}")
     log(f"Container RPC URL: {container_rpc_url(args, rid)}")
     log(f"Host port strategy: {args.port_strategy}")
+    if hub_admin is not None:
+        log(f"Hub admin wallet: {metadata_path(hub_admin.path, root)}")
+        log(f"Hub admin address: {hub_admin.address}")
     log()
     log("Planned commands:")
     log("$ " + display_command(network_inspect_command(args, rid)) + " || " + display_command(network_create_command(args, rid)))
     log("$ " + display_command(container_remove_command(args, rid)) + "  # ignored if container does not exist")
     log("$ " + display_command(anvil_command(args, rid)))
     if not args.no_deploy:
-        for spec in deployment_specs(args):
+        if hub_admin is not None:
+            log("$ " + display_command(hub_admin_fund_command(args, rid, hub_admin, root)))
+        for spec in deployment_specs(args, hub_admin.address if hub_admin else None):
             log("$ " + display_command(docker_deploy_command(args, spec, root / "contracts", rid)))
 
 
@@ -867,10 +1119,19 @@ def main(argv: list[str] | None = None) -> int:
         )
         if args.port_strategy == "auto" and not args.dry_run:
             prepare_host_rpc_port(args)
-        print_plan(args, rid)
+
+        create_admin_wallet = bool(args.yes and not args.dry_run)
+        hub_admin = resolve_hub_admin_wallet(args, root, create_missing=create_admin_wallet)
+        print_plan(args, rid, hub_admin)
 
         if args.dry_run:
-            payload = deploy_payload(args=args, rid=rid, dry_run=True, deployments=planned_deployments(args))
+            payload = deploy_payload(
+                args=args,
+                rid=rid,
+                dry_run=True,
+                deployments=planned_deployments(args, hub_admin.address if hub_admin else None),
+                hub_admin=hub_admin_payload(hub_admin, root, args),
+            )
             write_outputs(args, rid, payload)
             return 0
 
@@ -890,9 +1151,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.no_deploy:
             deployments = {}
         else:
-            deployments = deployed_contracts(args, rid)
+            fund_hub_admin_wallet(args, rid, hub_admin, root)
+            deployments = deployed_contracts(args, rid, hub_admin.address if hub_admin else None)
 
-        payload = deploy_payload(args=args, rid=rid, dry_run=False, deployments=deployments)
+        payload = deploy_payload(
+            args=args,
+            rid=rid,
+            dry_run=False,
+            deployments=deployments,
+            hub_admin=hub_admin_payload(hub_admin, root, args),
+        )
         write_outputs(args, rid, payload)
         return 0
     except Exception as exc:  # noqa: BLE001 - operator-facing script
