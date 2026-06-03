@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_dev_chain_reset():
-    spec = importlib.util.spec_from_file_location("dev_chain_reset", ROOT / "dev-chain-reset.py")
+    spec = importlib.util.spec_from_file_location("dev_chain_reset", ROOT / "tools" / "dev-chain-reset.py")
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -41,18 +41,21 @@ def test_host_port_shorthand_updates_rpc_url() -> None:
     assert reset.anvil_command(args, "unit")[reset.anvil_command(args, "unit").index("-p") + 1] == "127.0.0.1:18546:8545"
 
 
-def test_default_deployments_cover_governance_and_xlag_contracts() -> None:
+def test_default_deployments_cover_governance_xlag_and_hub_escrow_contracts() -> None:
     reset = load_dev_chain_reset()
     parser = reset.build_parser()
     args = parser.parse_args(["--yes", "--run-id", "unit"])
 
-    specs = reset.deployment_specs(args)
+    specs = reset.deployment_specs(args, "0x1111111111111111111111111111111111111111")
 
-    assert [spec.key for spec in specs] == ["alpha-beta-lockout", "xlag-bridge-reserve"]
+    assert [spec.key for spec in specs] == ["alpha-beta-lockout", "xlag-bridge-reserve", "hub_credit_bridge_escrow"]
     assert specs[0].target == "AlphaBetaLockout.sol:AlphaBetaLockout"
     assert specs[1].target == "src/XLagBridgeReserve.sol:XLagBridgeReserve"
+    assert specs[2].target == "src/HubCreditBridgeEscrow.sol:HubCreditBridgeEscrow"
     assert specs[0].constructor_args[0].startswith("[0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266")
     assert specs[1].constructor_args[-3:] == ["1000000000000000000", "1", "1"]
+    assert specs[2].constructor_args == ["0x1111111111111111111111111111111111111111"]
+    assert specs[2].metadata["bridge_controller_address"] == "0x1111111111111111111111111111111111111111"
 
 
 def test_soft_deploy_commands_create_isolated_network_and_anvil_pool(monkeypatch) -> None:
@@ -117,6 +120,8 @@ def test_dry_run_writes_soft_chroot_outputs(tmp_path: Path, monkeypatch) -> None
     assert latest["chain"]["accounts"] == 4
     assert latest["chain"]["container"] == "main-computer-dev-chain-unit-dry-run"
     assert latest["deployments"]["xlag-bridge-reserve"]["target"] == "src/XLagBridgeReserve.sol:XLagBridgeReserve"
+    assert latest["deployments"]["hub_credit_bridge_escrow"]["target"] == "src/HubCreditBridgeEscrow.sol:HubCreditBridgeEscrow"
+    assert latest["hub_admin"]["address"] == "0x0000000000000000000000000000000000000a11"
     assert (tmp_path / "legacy-dev-chain" / "runs" / "unit-dry-run" / "deploy.env").exists()
 
     current = json.loads((deploy_root / "current.json").read_text(encoding="utf-8"))
@@ -125,8 +130,73 @@ def test_dry_run_writes_soft_chroot_outputs(tmp_path: Path, monkeypatch) -> None
     assert current["schema"] == "main-computer.deployment.v1"
     assert current["chain"]["rpc_url"] == "http://127.0.0.1:18545"
     assert current["contracts"]["xlag-bridge-reserve"]["target"] == "src/XLagBridgeReserve.sol:XLagBridgeReserve"
+    escrow = current["contracts"]["hub_credit_bridge_escrow"]
+    assert escrow["target"] == "src/HubCreditBridgeEscrow.sol:HubCreditBridgeEscrow"
+    assert escrow["payment_asset"] == "native"
+    assert escrow["approval_required"] is False
+    assert escrow["bridge_controller_address"] == current["hub_admin"]["address"]
+    assert current["hub_admin"]["wallet_path"] == "deployments/hub-admin-wallet.json"
+    assert not (deploy_root / "hub-admin-wallet.json").exists()
     assert "private_key" not in json.dumps(current)
     assert "mnemonic" not in json.dumps(current)
+
+
+def test_hub_admin_wallet_is_created_and_reused(tmp_path: Path, monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+    monkeypatch.setattr(reset, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        reset,
+        "derive_address_for_private_key",
+        lambda args, root, private_key: "0x1234567890123456789012345678901234567890",
+    )
+    parser = reset.build_parser()
+    args = parser.parse_args([
+        "--yes",
+        "--run-id",
+        "unit-wallet",
+        "--deployment-output-dir",
+        str(tmp_path / "deployments"),
+    ])
+
+    first = reset.resolve_hub_admin_wallet(args, tmp_path, create_missing=True)
+    second = reset.resolve_hub_admin_wallet(args, tmp_path, create_missing=True)
+
+    wallet_path = tmp_path / "deployments" / "hub-admin-wallet.json"
+    payload = json.loads(wallet_path.read_text(encoding="utf-8"))
+    assert first is not None
+    assert second is not None
+    assert first.address == "0x1234567890123456789012345678901234567890"
+    assert second.address == first.address
+    assert second.private_key == first.private_key
+    assert payload["schema"] == "main-computer.hub-admin-wallet.v1"
+    assert payload["chain_id"] == 42424242
+    assert payload["address"] == first.address
+    assert payload["private_key"] == first.private_key
+
+
+def test_hub_admin_private_key_is_not_published(tmp_path: Path) -> None:
+    reset = load_dev_chain_reset()
+    wallet = reset.HubAdminWallet(
+        path=tmp_path / "runtime" / "deployments" / "hub-admin-wallet.json",
+        address="0x1234567890123456789012345678901234567890",
+        private_key="0x" + "7" * 64,
+        source="generated-local-dev",
+    )
+    parser = reset.build_parser()
+    args = parser.parse_args(["--dry-run"])
+    payload = reset.deploy_payload(
+        args=args,
+        rid="unit",
+        dry_run=True,
+        deployments=reset.planned_deployments(args, wallet.address),
+        hub_admin=reset.hub_admin_payload(wallet, tmp_path, args),
+    )
+
+    public = reset.public_deployment_payload(payload)
+
+    assert public["hub_admin"]["address"] == wallet.address
+    assert "private_key" not in json.dumps(public)
+    assert public["contracts"]["hub_credit_bridge_escrow"]["bridge_controller_address"] == wallet.address
 
 
 def test_parse_deployment_address_from_forge_json_and_text() -> None:

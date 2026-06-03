@@ -21,12 +21,27 @@ contract HubCreditBridgeEscrow {
         uint256 amountUnits;
     }
 
+    struct DepositRecord {
+        bool exists;
+        bool completed;
+        address account;
+        address payer;
+        uint256 amountUnits;
+    }
+
     event CreditDeposited(
         bytes32 indexed depositId,
         address indexed account,
         address indexed payer,
         uint256 amountUnits,
         string memo
+    );
+    event CreditDepositCompleted(
+        bytes32 indexed depositId,
+        address indexed account,
+        uint256 amountUnits,
+        uint256 cumulativeCompletedUnits,
+        address indexed completer
     );
     event SpendRectified(
         bytes32 indexed rectificationId,
@@ -51,7 +66,8 @@ contract HubCreditBridgeEscrow {
     bool public paused;
 
     mapping(address => AccountEscrow) private _accounts;
-    mapping(bytes32 => ActionRecord) private _deposits;
+    mapping(bytes32 => DepositRecord) private _deposits;
+    mapping(address => uint256) private _completedDepositUnits;
     mapping(bytes32 => ActionRecord) private _rectifications;
     mapping(bytes32 => ActionRecord) private _withdrawals;
 
@@ -103,6 +119,10 @@ contract HubCreditBridgeEscrow {
         return _accounts[account].withdrawnUnits;
     }
 
+    function completedDepositUnits(address account) external view returns (uint256) {
+        return _completedDepositUnits[account];
+    }
+
     function withdrawableUnits(address account) public view returns (uint256) {
         AccountEscrow memory escrow = _accounts[account];
         uint256 used = escrow.rectifiedSpentUnits + escrow.withdrawnUnits;
@@ -112,8 +132,25 @@ contract HubCreditBridgeEscrow {
         return escrow.depositedUnits - used;
     }
 
-    function depositRecord(bytes32 depositId) external view returns (ActionRecord memory) {
-        return _deposits[depositId];
+    function depositRecord(bytes32 depositId)
+        external
+        view
+        returns (
+            bool exists,
+            bool completed,
+            address account,
+            address payer,
+            uint256 amountUnits
+        )
+    {
+        DepositRecord memory deposit = _deposits[depositId];
+        return (
+            deposit.exists,
+            deposit.completed,
+            deposit.account,
+            deposit.payer,
+            deposit.amountUnits
+        );
     }
 
     function rectificationRecord(bytes32 rectificationId) external view returns (ActionRecord memory) {
@@ -138,20 +175,51 @@ contract HubCreditBridgeEscrow {
         require(depositId != bytes32(0), "zero deposit id");
         require(msg.value == amountUnits, "value mismatch");
 
-        ActionRecord memory prior = _deposits[depositId];
+        DepositRecord memory prior = _deposits[depositId];
         if (prior.exists) {
             revert("duplicate deposit id");
         }
 
-        _deposits[depositId] = ActionRecord({
+        _deposits[depositId] = DepositRecord({
             exists: true,
+            completed: false,
             account: account,
-            actor: msg.sender,
+            payer: msg.sender,
             amountUnits: amountUnits
         });
         _accounts[account].depositedUnits += amountUnits;
 
         emit CreditDeposited(depositId, account, msg.sender, amountUnits, memo);
+        return true;
+    }
+
+    /// @notice Mark a previously recorded funding deposit as completed by the bridge.
+    /// @dev This is the on-chain idempotency point for Hub wallet-funding credit.
+    function completeDeposit(bytes32 depositId)
+        external
+        onlyBridge
+        whenNotPaused
+        returns (bool applied)
+    {
+        DepositRecord storage deposit = _deposits[depositId];
+
+        require(deposit.exists, "unknown deposit");
+
+        if (deposit.completed) {
+            return false;
+        }
+
+        deposit.completed = true;
+        _completedDepositUnits[deposit.account] += deposit.amountUnits;
+
+        emit CreditDepositCompleted(
+            depositId,
+            deposit.account,
+            deposit.amountUnits,
+            _completedDepositUnits[deposit.account],
+            msg.sender
+        );
+
         return true;
     }
 

@@ -361,7 +361,7 @@ def make_new_wallet(root: Path, args: argparse.Namespace) -> tuple[str, str]:
     return private_key, address
 
 
-def assert_dev_chain_reset_gap(root: Path) -> None:
+def assert_dev_chain_reset_has_escrow_support(root: Path) -> None:
     script = (root / "tools" / "dev-chain-reset.py").read_text(encoding="utf-8")
 
     has_xlag = (
@@ -372,13 +372,10 @@ def assert_dev_chain_reset_gap(root: Path) -> None:
 
     if not has_xlag:
         raise SmokeFailure("Could not find existing XLag deployment support in tools/dev-chain-reset.py")
-    if has_escrow:
-        raise SmokeFailure(
-            "tools/dev-chain-reset.py already mentions HubCreditBridgeEscrow; "
-            "update this smoke test expectation"
-        )
+    if not has_escrow:
+        raise SmokeFailure("Could not find HubCreditBridgeEscrow deployment support in tools/dev-chain-reset.py")
 
-    print("OK: dev-chain-reset.py deploys existing root contracts but not HubCreditBridgeEscrow yet")
+    print("OK: dev-chain-reset.py has canonical HubCreditBridgeEscrow deployment/config wiring")
 
 
 def assert_abi_native_deposit_only(root: Path, args: argparse.Namespace) -> None:
@@ -870,7 +867,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Bridge deposit wei: {deposit_wei}")
 
     try:
-        assert_dev_chain_reset_gap(root)
+        assert_dev_chain_reset_has_escrow_support(root)
 
         if not args.skip_python_tests:
             run_python_tests(root, args)
@@ -964,7 +961,7 @@ def main(argv: list[str] | None = None) -> int:
         print("- The funding contract path is native value, not ERC-20 approval.")
         print("- Duplicate deposit id and value mismatch failures are still enforced.")
         print("- The receipt contains CreditDeposited from the escrow contract.")
-        print("- dev-chain-reset.py still needs canonical HubCreditBridgeEscrow deployment/config wiring before Fund can avoid manual bridge addresses.")
+        print("- dev-chain-reset.py now has canonical HubCreditBridgeEscrow deployment/config wiring; this smoke still manually deploys an isolated escrow for deposit-path assertions.")
 
         return 0
 
