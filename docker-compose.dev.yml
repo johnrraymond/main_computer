@@ -111,7 +111,7 @@ services:
     volumes:
       - ethereum-dev-data:/data
     ports:
-      - "${MAIN_COMPUTER_ETHEREUM_RPC_PORT:-8545}:8545"
+      - "${MAIN_COMPUTER_ETHEREUM_RPC_PORT:-18545}:8545"
 
   # Gitea is no longer defined in the dev stack. Main Computer uses the
   # standalone machine-wide docker-compose.gitea.yml stack on HTTP localhost:3000

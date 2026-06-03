@@ -523,7 +523,7 @@ def _control_panel_known_ports(self) -> dict[str, int]:
         "worker": 8771,
         "ollama": int(urlsplit(config.ollama_base_url).port or 11434),
         "gitea": _control_panel_url_port(gitea_web_url, 3000),
-        "blockchain": int(urlsplit(config.energy_chain_rpc_url or "http://127.0.0.1:8545").port or 8545),
+        "blockchain": int(urlsplit(config.energy_chain_rpc_url or "http://127.0.0.1:18545").port or 18545),
     }
 
 
