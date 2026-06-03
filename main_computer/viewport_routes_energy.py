@@ -164,6 +164,34 @@ class ViewportEnergyRoutesMixin:
         fraction_text = str(fraction).rjust(18, "0").rstrip("0")
         return f"{whole}.{fraction_text}"
 
+    def _worker_base_units_to_hub_credits(self, value: Any) -> int:
+        base_units = int(value or 0)
+        if base_units <= 0:
+            raise ValueError("payment_amount_base_units must be positive.")
+        whole_credits, remainder = divmod(base_units, 10**18)
+        if remainder:
+            raise ValueError("wallet funding imports must be whole credits; payment_amount_base_units is not divisible by 1e18.")
+        if whole_credits <= 0:
+            raise ValueError("credits_granted must be positive.")
+        return whole_credits
+
+    def _worker_wallet_funding_credits_granted(self, *, receipt: dict[str, Any], body: dict[str, Any], payment_amount_base_units: int) -> int:
+        raw_value = receipt.get("credits_granted", body.get("credits_granted", None))
+        if raw_value is None or str(raw_value).strip() == "":
+            return self._worker_base_units_to_hub_credits(payment_amount_base_units)
+
+        credits = int(raw_value or 0)
+        if credits <= 0:
+            return self._worker_base_units_to_hub_credits(payment_amount_base_units)
+
+        # Older Worker UI builds forwarded credits_granted as wei/base units.
+        # Hub ledger credits are whole credits, so normalize the legacy receipt
+        # shape before forwarding the import to Hub.
+        if credits == payment_amount_base_units or credits >= 10**18:
+            return self._worker_base_units_to_hub_credits(credits)
+
+        return credits
+
     def _handle_worker_wallet_balance(self) -> None:
         try:
             if not self._worker_ui_client_is_local():
@@ -360,10 +388,7 @@ class ViewportEnergyRoutesMixin:
             if not isinstance(receipt, dict):
                 receipt = body
 
-            # Keep the normalized wallet address as the hub account id for legacy
-            # deposit/purchase import routes.  Newer hubs derive this in the
-            # wallet-funding route, but older hubs reject otherwise-valid receipts
-            # with "account_id is required" before they look at wallet_address.
+            payment_amount_base_units = int(receipt.get("payment_amount_base_units", body.get("payment_amount_base_units", 0)) or 0)
             forwarded = {
                 "wallet_address": wallet_address,
                 "account_id": wallet_address,
@@ -374,8 +399,12 @@ class ViewportEnergyRoutesMixin:
                 "block_number": int(receipt.get("block_number", body.get("block_number", 0)) or 0),
                 "payer_address": str(receipt.get("payer_address", body.get("payer_address", wallet_address)) or wallet_address),
                 "payment_asset": str(receipt.get("payment_asset", body.get("payment_asset", "native")) or "native"),
-                "payment_amount_base_units": int(receipt.get("payment_amount_base_units", body.get("payment_amount_base_units", 0)) or 0),
-                "credits_granted": int(receipt.get("credits_granted", body.get("credits_granted", 0)) or 0),
+                "payment_amount_base_units": payment_amount_base_units,
+                "credits_granted": self._worker_wallet_funding_credits_granted(
+                    receipt=receipt,
+                    body=body,
+                    payment_amount_base_units=payment_amount_base_units,
+                ),
                 "memo": str(receipt.get("memo", body.get("memo", "Worker wallet bridge funding import"))),
             }
             result = self._post_worker_wallet_funding_import_to_hub(hub_url=hub_url, payload=forwarded)
@@ -657,8 +686,6 @@ class ViewportEnergyRoutesMixin:
         """
 
         hub_base = self._clean_hub_url(hub_url)
-        wallet_address = str(payload.get("wallet_address", "")).strip().lower()
-        account_id = str(payload.get("account_id", "") or wallet_address).strip().lower()
         import_paths = [
             ("/api/hub/v1/credits/wallet-funding/import", "wallet-funding"),
             ("/api/hub/v1/credits/deposits/import", "legacy-deposit-import"),
@@ -668,11 +695,10 @@ class ViewportEnergyRoutesMixin:
 
         for index, (path, mode) in enumerate(import_paths):
             route_payload = dict(payload)
-            if mode != "wallet-funding":
-                if wallet_address:
-                    route_payload.setdefault("wallet_address", wallet_address)
-                if account_id:
-                    route_payload.setdefault("account_id", account_id)
+            wallet_address = str(route_payload.get("wallet_address", "")).strip().lower()
+            if wallet_address:
+                route_payload["wallet_address"] = wallet_address
+                route_payload.setdefault("account_id", wallet_address)
             encoded = json.dumps(route_payload, ensure_ascii=False).encode("utf-8")
             request = Request(
                 hub_base + path,
@@ -699,10 +725,10 @@ class ViewportEnergyRoutesMixin:
 
             if mode != "wallet-funding":
                 data = dict(data)
+                wallet_address = str(payload.get("wallet_address", ""))
                 if wallet_address:
                     data.setdefault("wallet_address", wallet_address)
-                if account_id:
-                    data.setdefault("account_id", account_id)
+                    data.setdefault("account_id", wallet_address.lower())
                 data.setdefault("funding_model", "hub_credit_bridge_escrow_wallet_v1")
                 data["wallet_funding_import_endpoint"] = path
                 data["wallet_funding_import_fallback"] = True
