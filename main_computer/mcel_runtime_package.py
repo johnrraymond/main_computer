@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-MCEL_RUNTIME_VERSION = "mcel-runtime.v0.1.6"
+MCEL_RUNTIME_VERSION = "mcel-runtime.v0.1.7"
 
 MCEL_RUNTIME_MODULES: tuple[str, ...] = (
     "main_computer/web/applications/scripts/mcel-contract.js",
@@ -258,6 +258,8 @@ _MCEL_RUNTIME_WRAPPER = r'''
   const runtimeSiteStyleAttribute = "data-mcel-runtime-site-style";
   const runtimeHydratedAttribute = "data-mcel-runtime-hydrated";
   const runtimeCompiledAttribute = "data-mcel-runtime-compiled";
+  const runtimeDiagnosticsPanelAttribute = "data-mcel-runtime-diagnostics-panel";
+  const runtimeTwiddlePanelAttribute = "data-mcel-runtime-twiddle-panel";
 
   function mcelRuntimeSourceHtml(root) {
     const target = mcelRuntimeNodeRoot(root);
@@ -401,6 +403,9 @@ _MCEL_RUNTIME_WRAPPER = r'''
     if (dataset.mcelRuntimeApplySiteChrome === "false") options.applySiteChrome = false;
     if (dataset.mcelRuntimeApplyChrome === "true") options.applyChrome = true;
     if (dataset.mcelRuntimeRenderOptInOnly === "false") options.renderOptInOnly = false;
+    if (dataset.mcelRuntimeDiagnostics === "true") options.diagnostics = true;
+    if (dataset.mcelRuntimeTwiddle === "true") options.twiddle = true;
+    if (dataset.mcelRuntimeChromeReset === "true") options.chromeReset = true;
     return options;
   }
 
@@ -411,11 +416,17 @@ _MCEL_RUNTIME_WRAPPER = r'''
     const chrome = mcelRuntimeReadQueryValue(["mcel-chrome", "mcel-runtime-chrome", "mcelRuntimeChrome", "chrome"]);
     const siteChrome = mcelRuntimeReadQueryBoolean(["mcel-site-chrome", "mcel-runtime-site-chrome", "mcelSiteChrome"]);
     const render = mcelRuntimeReadQueryBoolean(["mcel-render-opt-in-only", "mcelRuntimeRenderOptInOnly"]);
+    const diagnostics = mcelRuntimeReadQueryBoolean(["mcel-diagnostics", "mcel-runtime-diagnostics", "mcel-diag", "mcel-layout-diag"]);
+    const twiddle = mcelRuntimeReadQueryBoolean(["mcel-twiddle", "mcel-runtime-twiddle"]);
+    const chromeReset = mcelRuntimeReadQueryBoolean(["mcel-chrome-reset", "mcel-runtime-chrome-reset"]);
     if (mode) options.mode = mode;
     if (theme) options.theme = theme;
     if (chrome) options.chrome = chrome;
     if (siteChrome !== null) options.applySiteChrome = siteChrome;
     if (render !== null) options.renderOptInOnly = render;
+    if (diagnostics !== null) options.diagnostics = diagnostics;
+    if (twiddle !== null) options.twiddle = twiddle;
+    if (chromeReset !== null) options.chromeReset = chromeReset;
     return options;
   }
 
@@ -438,7 +449,10 @@ _MCEL_RUNTIME_WRAPPER = r'''
       mode,
       reason: merged.reason || "mcel-runtime",
       theme: mcelRuntimeNormalizeTheme(merged.theme),
-      chrome: mcelRuntimeNormalizeChrome(merged.chrome)
+      chrome: mcelRuntimeNormalizeChrome(merged.chrome),
+      diagnostics: merged.diagnostics === true,
+      twiddle: merged.twiddle === true,
+      chromeReset: merged.chromeReset === true
     };
   }
 
@@ -513,6 +527,270 @@ _MCEL_RUNTIME_WRAPPER = r'''
     if (script?.dataset?.mcelRuntimeDebug === "true") return true;
     const location = window.location;
     return Boolean(location && /(?:\?|&|#)mcel(?:-runtime)?-debug(?:=1|=true)?(?:&|$)/i.test(`${location.search || ""}${location.hash || ""}`));
+  }
+
+  function mcelRuntimeDiagnosticsRequested(doc, options = {}) {
+    if (options.diagnostics === true || options.twiddle === true) return true;
+    const targetDoc = doc || window.document || null;
+    const script = targetDoc?.currentScript || window.document?.currentScript || mcelRuntimeScript || null;
+    if (script?.dataset?.mcelRuntimeDiagnostics === "true") return true;
+    const location = window.location;
+    return Boolean(location && /(?:\?|&|#)mcel(?:-runtime)?-(?:diagnostics|diag|layout-diag)(?:=1|=true)?(?:&|$)/i.test(`${location.search || ""}${location.hash || ""}`));
+  }
+
+  function mcelRuntimeTwiddleRequested(doc, options = {}) {
+    if (options.twiddle === true) return true;
+    const targetDoc = doc || window.document || null;
+    const script = targetDoc?.currentScript || window.document?.currentScript || mcelRuntimeScript || null;
+    if (script?.dataset?.mcelRuntimeTwiddle === "true") return true;
+    const location = window.location;
+    return Boolean(location && /(?:\?|&|#)mcel(?:-runtime)?-twiddle(?:=1|=true)?(?:&|$)/i.test(`${location.search || ""}${location.hash || ""}`));
+  }
+
+  function mcelRuntimeNumber(value) {
+    const parsed = Number.parseFloat(String(value || "0"));
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function mcelRuntimeElementLabel(element, index = 0) {
+    const tag = String(element?.tagName || "node").toLowerCase();
+    const id = element?.id ? `#${element.id}` : "";
+    const component = element?.getAttribute?.("data-mc-component") || element?.getAttribute?.("data-mc") || "";
+    const kind = element?.getAttribute?.("data-mc-kind") || "";
+    return `${index + 1}:${tag}${id}${component ? `/${component}` : ""}${kind ? `/${kind}` : ""}`;
+  }
+
+  function mcelRuntimeLayoutDiagnostics(root = window.document) {
+    const target = mcelRuntimeNodeRoot(root);
+    const doc = mcelRuntimeDocumentFor(root);
+    const sources = mcelRuntimeSourceElements(target || doc, {includeHydrated: true});
+    const issues = [];
+    const elements = sources.map((element, index) => {
+      const rect = element?.getBoundingClientRect?.();
+      const computed = window.getComputedStyle && element?.nodeType === 1 ? window.getComputedStyle(element) : null;
+      const width = Number(rect?.width || 0);
+      const height = Number(rect?.height || 0);
+      const paddingLeft = mcelRuntimeNumber(computed?.paddingLeft);
+      const paddingRight = mcelRuntimeNumber(computed?.paddingRight);
+      const paddingInline = paddingLeft + paddingRight;
+      const maxWidth = String(computed?.maxWidth || "");
+      const display = String(computed?.display || "");
+      const childCount = Number(element?.children?.length || 0);
+      const issueCodes = [];
+      const isMcSection = Boolean(element?.classList?.contains?.("mc-section"));
+      const isFeatureGrid = Boolean(element?.classList?.contains?.("mc-feature-grid"));
+
+      if (width > 0 && width < 180) issueCodes.push("narrow-source");
+      if (isMcSection && maxWidth && maxWidth !== "none" && paddingInline > width * 0.35) {
+        issueCodes.push("section-max-width-padding-conflict");
+      }
+      if (isFeatureGrid && display.includes("grid") && childCount > 1 && width > 0 && width / childCount < 180) {
+        issueCodes.push("grid-column-sliver-risk");
+      }
+      if (element?.scrollWidth && width > 0 && element.scrollWidth > width + 24) {
+        issueCodes.push("horizontal-overflow");
+      }
+
+      if (issueCodes.length && element?.setAttribute) {
+        element.setAttribute("data-mcel-runtime-layout-issue", issueCodes.join(" "));
+      } else if (element?.removeAttribute) {
+        element.removeAttribute("data-mcel-runtime-layout-issue");
+      }
+
+      issueCodes.forEach((code) => {
+        issues.push({
+          code,
+          index: index + 1,
+          label: mcelRuntimeElementLabel(element, index),
+          width,
+          height,
+          display,
+          maxWidth,
+          paddingInline,
+          childCount
+        });
+      });
+
+      return {
+        index: index + 1,
+        label: mcelRuntimeElementLabel(element, index),
+        tag: String(element?.tagName || "").toLowerCase(),
+        id: element?.id || "",
+        classes: String(element?.className || ""),
+        type: element?.getAttribute?.(mcelRuntimeSourceAttribute()) || "",
+        kind: element?.getAttribute?.("data-mc-kind") || "",
+        flow: element?.getAttribute?.("data-mc-flow") || "",
+        render: element?.getAttribute?.("data-mc-render") || "",
+        hydrated: element?.getAttribute?.(runtimeHydratedAttribute) === "true",
+        chromeApplied: element?.getAttribute?.("data-mcel-runtime-chrome-applied") || "",
+        width,
+        height,
+        display,
+        maxWidth,
+        paddingInline,
+        childCount,
+        issues: issueCodes
+      };
+    });
+
+    return {
+      ok: true,
+      runtime: "mcel",
+      version: mcelRuntimeVersion,
+      sourceCount: sources.length,
+      hydratedCount: elements.filter((entry) => entry.hydrated).length,
+      issueCount: issues.length,
+      issues,
+      elements
+    };
+  }
+
+  function mcelRuntimeDiagnostics(root = window.document, options = {}) {
+    const doc = mcelRuntimeDocumentFor(root);
+    const report = mcelRuntimeReport(root);
+    const layout = mcelRuntimeLayoutDiagnostics(root);
+    const diagnostics = {
+      ok: true,
+      runtime: "mcel",
+      version: mcelRuntimeVersion,
+      mode: report.mode,
+      theme: report.theme,
+      chrome: report.chrome,
+      ready: report.ready,
+      powered: report.powered,
+      sourceCount: report.sourceCount,
+      hydratedCount: report.hydratedCount,
+      renderedCount: report.renderedCount,
+      layout,
+      note: "If a Website Builder .mc-section has max-width plus large viewport-derived inline padding, its grid can collapse into vertical slivers."
+    };
+    if (options.mark !== false) {
+      doc?.documentElement?.setAttribute("data-mcel-runtime-diagnostics", "true");
+    }
+    return diagnostics;
+  }
+
+  function mcelRuntimeEnsureDiagnosticsPanel(doc, diagnostics) {
+    const targetDoc = doc || window.document || null;
+    const body = targetDoc?.body || null;
+    if (!body?.appendChild) return null;
+    let panel = body.querySelector?.(`[${runtimeDiagnosticsPanelAttribute}]`) || null;
+    if (!panel) {
+      panel = targetDoc.createElement("aside");
+      panel.setAttribute(runtimeDiagnosticsPanelAttribute, mcelRuntimeVersion);
+      panel.setAttribute("aria-label", "MCEL runtime diagnostics");
+      body.appendChild(panel);
+    }
+    const issuePreview = diagnostics.layout.issues.slice(0, 3).map((issue) => `${issue.code} @ ${issue.label}`).join(" | ") || "no layout issues flagged";
+    panel.textContent = "";
+    const title = targetDoc.createElement("strong");
+    title.textContent = "MCEL diagnostics";
+    const summary = targetDoc.createElement("div");
+    summary.textContent = `${diagnostics.theme} / ${diagnostics.chrome} · ${diagnostics.sourceCount} sources · ${diagnostics.hydratedCount} hydrated`;
+    const issues = targetDoc.createElement("div");
+    issues.textContent = `${diagnostics.layout.issueCount} issue(s): ${issuePreview}`;
+    const hint = targetDoc.createElement("div");
+    hint.textContent = "Console: MCELRuntime.diagnostics()";
+    panel.append(title, summary, issues, hint);
+    return panel;
+  }
+
+  function mcelRuntimeApplyDiagnostics(root = window.document, result = {}) {
+    const doc = mcelRuntimeDocumentFor(root);
+    doc?.documentElement?.setAttribute("data-mcel-runtime-diagnostics", "true");
+    const diagnostics = mcelRuntimeDiagnostics(root, {mark: true});
+    mcelRuntimeEnsureDiagnosticsPanel(doc, diagnostics);
+    return diagnostics;
+  }
+
+  function mcelRuntimeSetUrlOption(name, value) {
+    const current = new URL(window.location.href);
+    current.searchParams.set(name, value);
+    current.searchParams.set("mcel-twiddle", "1");
+    current.searchParams.set("mcel-diagnostics", "1");
+    window.location.href = current.toString();
+  }
+
+  function mcelRuntimeOptionSlug(value, prefix) {
+    return String(value || "").replace(new RegExp(`^${prefix}-`), "");
+  }
+
+  function mcelRuntimeEnsureTwiddlePanel(doc, result = {}) {
+    const targetDoc = doc || window.document || null;
+    const body = targetDoc?.body || null;
+    if (!body?.appendChild) return null;
+    let panel = body.querySelector?.(`[${runtimeTwiddlePanelAttribute}]`) || null;
+    if (!panel) {
+      panel = targetDoc.createElement("aside");
+      panel.setAttribute(runtimeTwiddlePanelAttribute, mcelRuntimeVersion);
+      panel.setAttribute("aria-label", "MCEL runtime twiddle");
+      body.appendChild(panel);
+    }
+
+    const report = mcelRuntimeReport(targetDoc);
+    const themes = mcelRuntimeListThemes();
+    const chromes = mcelRuntimeListChromes();
+    panel.textContent = "";
+
+    const title = targetDoc.createElement("strong");
+    title.textContent = "MCEL twiddle";
+    const summary = targetDoc.createElement("div");
+    summary.textContent = `${report.version} · ${report.sourceCount} sources · ${report.hydratedCount} hydrated`;
+
+    const themeLabel = targetDoc.createElement("label");
+    themeLabel.textContent = "Theme";
+    const themeSelect = targetDoc.createElement("select");
+    themes.forEach((theme) => {
+      const option = targetDoc.createElement("option");
+      option.value = theme.id;
+      option.textContent = theme.label || theme.id;
+      option.selected = theme.id === report.theme;
+      themeSelect.appendChild(option);
+    });
+    themeSelect.addEventListener("change", () => mcelRuntimeSetUrlOption("mcel-theme", mcelRuntimeOptionSlug(themeSelect.value, "theme")));
+
+    const chromeLabel = targetDoc.createElement("label");
+    chromeLabel.textContent = "Chrome";
+    const chromeSelect = targetDoc.createElement("select");
+    chromes.forEach((chrome) => {
+      const option = targetDoc.createElement("option");
+      option.value = chrome.id;
+      option.textContent = chrome.label || chrome.id;
+      option.selected = chrome.id === report.chrome;
+      chromeSelect.appendChild(option);
+    });
+    chromeSelect.addEventListener("change", () => mcelRuntimeSetUrlOption("mcel-chrome", mcelRuntimeOptionSlug(chromeSelect.value, "chrome")));
+
+    const safeButton = targetDoc.createElement("button");
+    safeButton.type = "button";
+    safeButton.textContent = "Reset to safe strict";
+    safeButton.addEventListener("click", () => {
+      const current = new URL(window.location.href);
+      current.searchParams.set("mcel-theme", "machine");
+      current.searchParams.set("mcel-chrome", "strict");
+      current.searchParams.set("mcel-twiddle", "1");
+      current.searchParams.set("mcel-diagnostics", "1");
+      window.location.href = current.toString();
+    });
+
+    themeLabel.appendChild(themeSelect);
+    chromeLabel.appendChild(chromeSelect);
+    panel.append(title, summary, themeLabel, chromeLabel, safeButton);
+    return panel;
+  }
+
+  function mcelRuntimeTwiddle(root = window.document, options = {}) {
+    const doc = mcelRuntimeDocumentFor(root);
+    doc?.documentElement?.setAttribute("data-mcel-runtime-diagnostics", "true");
+    const diagnostics = mcelRuntimeApplyDiagnostics(root, options);
+    const panel = mcelRuntimeEnsureTwiddlePanel(doc, diagnostics);
+    return {
+      ok: Boolean(panel),
+      runtime: "mcel",
+      version: mcelRuntimeVersion,
+      diagnostics,
+      panel
+    };
   }
 
   function mcelRuntimeSiteModeCss() {
@@ -861,11 +1139,12 @@ body.mcel-powered-site [data-mcel-runtime-hydrated="true"][data-mc-render="islan
   isolation: isolate;
 }
 
+/* Spotlight may lift proof/status sections, but must not max-width a .mc-section.
+   Website Builder centers content with large inline padding on the section itself;
+   combining that with max-width collapses the grid into vertical slivers. */
 :root[data-mcel-runtime-chrome="chrome-spotlight"] body.mcel-powered-site :where(section[data-mc-kind="proof"][data-mcel-runtime-hydrated="true"]) {
   transform: translateY(-2.25rem);
   border-radius: var(--mcel-runtime-radius-xl);
-  margin-inline: auto;
-  max-width: min(1120px, calc(100vw - 2rem));
 }
 
 :root[data-mcel-runtime-chrome="chrome-cluster-grid"] body.mcel-powered-site :where(.mc-feature-grid[data-mcel-runtime-hydrated="true"], section[data-mc-kind="work"][data-mcel-runtime-hydrated="true"], section[data-mc-kind="article"][data-mcel-runtime-hydrated="true"]) {
@@ -880,7 +1159,9 @@ body.mcel-powered-site [data-mcel-runtime-hydrated="true"][data-mc-render="islan
   letter-spacing: 0;
 }
 
-:root[data-mcel-runtime-chrome="chrome-editorial-flow"] body.mcel-powered-site :where(section[data-mcel-runtime-hydrated="true"], footer[data-mcel-runtime-hydrated="true"]) {
+/* Editorial max-width is safe for plain nodes only. Do not max-width Website Builder .mc-section nodes
+   because their inline padding is already calculated against the viewport. */
+:root[data-mcel-runtime-chrome="chrome-editorial-flow"] body.mcel-powered-site :where(section[data-mcel-runtime-hydrated="true"]:not(.mc-section), footer[data-mcel-runtime-hydrated="true"]:not(.mc-footer)) {
   max-width: min(920px, calc(100vw - 2rem));
   margin-inline: auto;
 }
@@ -910,6 +1191,81 @@ body.mcel-powered-site [data-mcel-runtime-hydrated="true"][data-mc-render="islan
 
 :root[data-mcel-runtime-chrome="chrome-compact-disclosure"] body.mcel-powered-site :where(section[data-mcel-runtime-hydrated="true"]) {
   padding-block: clamp(2rem, 4vw, 4rem);
+}
+
+/* Layout guard: MCEL runtime chrome should never constrain Website Builder sections themselves. */
+body.mcel-powered-site :where(.mc-section[data-mcel-runtime-hydrated="true"]) {
+  width: 100%;
+  max-width: none;
+}
+
+html[data-mcel-runtime-diagnostics="true"] body.mcel-powered-site :where([data-mc][data-mcel-runtime-hydrated="true"]) {
+  outline: 1px dashed rgba(56, 189, 248, .55);
+  outline-offset: -2px;
+}
+
+html[data-mcel-runtime-diagnostics="true"] body.mcel-powered-site :where([data-mcel-runtime-layout-issue]) {
+  outline: 2px solid #f97316 !important;
+  outline-offset: 2px;
+}
+
+body.mcel-powered-site [data-mcel-runtime-diagnostics-panel],
+body.mcel-powered-site [data-mcel-runtime-twiddle-panel] {
+  position: fixed;
+  z-index: 2147483646;
+  width: min(24rem, calc(100vw - 2rem));
+  color: #e0f2fe;
+  background: rgba(2, 6, 23, .88);
+  border: 1px solid rgba(125, 211, 252, .28);
+  border-radius: 1rem;
+  box-shadow: 0 22px 80px rgba(2, 6, 23, .42);
+  backdrop-filter: blur(16px);
+  font: 700 .78rem/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+body.mcel-powered-site [data-mcel-runtime-diagnostics-panel] {
+  left: 1rem;
+  bottom: 1rem;
+  padding: .9rem;
+  pointer-events: auto;
+}
+
+body.mcel-powered-site [data-mcel-runtime-twiddle-panel] {
+  right: 1rem;
+  top: 1rem;
+  padding: .85rem;
+}
+
+body.mcel-powered-site [data-mcel-runtime-diagnostics-panel] strong,
+body.mcel-powered-site [data-mcel-runtime-twiddle-panel] strong {
+  display: block;
+  margin-bottom: .45rem;
+  color: #ffffff;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+body.mcel-powered-site [data-mcel-runtime-diagnostics-panel] code {
+  color: #bae6fd;
+  background: rgba(14, 165, 233, .14);
+}
+
+body.mcel-powered-site [data-mcel-runtime-twiddle-panel] label {
+  display: grid;
+  gap: .25rem;
+  margin-top: .55rem;
+  color: #bfdbfe;
+}
+
+body.mcel-powered-site [data-mcel-runtime-twiddle-panel] select,
+body.mcel-powered-site [data-mcel-runtime-twiddle-panel] button {
+  width: 100%;
+  min-height: 2rem;
+  border-radius: .65rem;
+  border: 1px solid rgba(125, 211, 252, .28);
+  color: #e0f2fe;
+  background: rgba(15, 23, 42, .92);
+  font: inherit;
 }
 
 html[data-mcel-runtime-debug="true"] body.mcel-powered-site::after {
@@ -1243,6 +1599,7 @@ html[data-mcel-runtime-debug="true"] body.mcel-powered-site::after {
     }
 
     const opts = mcelRuntimeOptions(options);
+    const doc = mcelRuntimeDocumentFor(root);
     const sources = mcelRuntimeSourceElements(target, {includeHydrated: options.force === true});
     if (options.force !== true && !sources.length) {
       const emptyResult = {
@@ -1260,10 +1617,15 @@ html[data-mcel-runtime-debug="true"] body.mcel-powered-site::after {
         reason: "no-mcel-source"
       };
       mcelRuntimeMarkReady(root, emptyResult);
+      if (mcelRuntimeDiagnosticsRequested(doc, opts)) {
+        emptyResult.diagnostics = mcelRuntimeApplyDiagnostics(root, emptyResult);
+      }
+      if (mcelRuntimeTwiddleRequested(doc, opts)) {
+        mcelRuntimeEnsureTwiddlePanel(doc, emptyResult);
+      }
       return emptyResult;
     }
 
-    const doc = mcelRuntimeDocumentFor(root);
     if (opts.applySiteChrome !== false && opts.mode !== "observe") {
       mcelRuntimeEnsureSiteChrome(doc);
     }
@@ -1341,6 +1703,12 @@ html[data-mcel-runtime-debug="true"] body.mcel-powered-site::after {
     };
 
     mcelRuntimeMarkReady(root, result);
+    if (mcelRuntimeDiagnosticsRequested(doc, opts)) {
+      result.diagnostics = mcelRuntimeApplyDiagnostics(root, result);
+    }
+    if (mcelRuntimeTwiddleRequested(doc, opts)) {
+      mcelRuntimeEnsureTwiddlePanel(doc, result);
+    }
     return result;
   }
 
@@ -1406,6 +1774,8 @@ html[data-mcel-runtime-debug="true"] body.mcel-powered-site::after {
     hydrate: mcelRuntimeHydrate,
     powerSite: mcelRuntimePowerSite,
     report: mcelRuntimeReport,
+    diagnostics: mcelRuntimeDiagnostics,
+    twiddle: mcelRuntimeTwiddle,
     detectSources: mcelRuntimeDetectSources,
     listThemes: mcelRuntimeListThemes,
     listChromes: mcelRuntimeListChromes,

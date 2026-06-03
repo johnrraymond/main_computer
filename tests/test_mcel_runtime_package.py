@@ -21,7 +21,7 @@ def test_mcel_runtime_packager_builds_single_frontend_runtime_without_lab_ui(tmp
     text = result.output_path.read_text(encoding="utf-8")
 
     assert result.size_bytes == len(text.encode("utf-8"))
-    assert result.version == "mcel-runtime.v0.1.6"
+    assert result.version == "mcel-runtime.v0.1.7"
     assert result.helper_functions == ("isolatedSiteCss",)
     assert MCEL_LAB_HELPER_FILE in result.source_files
     for source_file in MCEL_RUNTIME_MODULES:
@@ -35,6 +35,8 @@ def test_mcel_runtime_packager_builds_single_frontend_runtime_without_lab_ui(tmp
     assert "hydrate: mcelRuntimeHydrate" in text
     assert "powerSite: mcelRuntimePowerSite" in text
     assert "report: mcelRuntimeReport" in text
+    assert "diagnostics: mcelRuntimeDiagnostics" in text
+    assert "twiddle: mcelRuntimeTwiddle" in text
     assert "detectSources: mcelRuntimeDetectSources" in text
     assert "function mcelRuntimeSourceIslands" in text
     assert "function mcelRuntimeSourceElements" in text
@@ -42,6 +44,8 @@ def test_mcel_runtime_packager_builds_single_frontend_runtime_without_lab_ui(tmp
     assert "function mcelRuntimeReadQueryValue" in text
     assert '"mcel-theme"' in text
     assert '"mcel-chrome"' in text
+    assert '"mcel-diagnostics"' in text
+    assert '"mcel-twiddle"' in text
     assert '"theme"' in text
     assert '"chrome"' in text
     assert "data-mcel-runtime-hydrated" in text
@@ -95,8 +99,14 @@ def test_mcel_runtime_hydration_powers_site_mode_without_lab_replacing_everythin
     assert ':root[data-mcel-runtime-theme="theme-accessible"]' in text
     assert ':root[data-mcel-runtime-chrome="chrome-spotlight"]' in text
     assert ':root[data-mcel-runtime-chrome="chrome-cluster-grid"]' in text
+    assert "section-max-width-padding-conflict" in text
+    assert "MCEL diagnostics" in text
+    assert "MCEL twiddle" in text
     assert "mcelRuntimeAmbientOptions()" in text
     assert 'mcelRuntimeScript = window.document?.currentScript || null' in text
+    spotlight_body = text.split(':root[data-mcel-runtime-chrome="chrome-spotlight"] body.mcel-powered-site :where(section[data-mc-kind="proof"]', 1)[1].split('}', 1)[0]
+    assert "max-width" not in spotlight_body
+    assert "margin-inline" not in spotlight_body
 
     hydrate_body = text.split("function mcelRuntimeHydrate", 1)[1].split("function mcelRuntimePowerSite", 1)[0]
     assert "mcelRuntimeEnsureStyle(doc)" in hydrate_body

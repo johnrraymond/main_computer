@@ -25,6 +25,7 @@ import subprocess
 import sys
 import threading
 import time
+from decimal import Decimal
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -67,6 +68,20 @@ def repo_root() -> Path:
         "Run this from the repo root or a child directory; "
         "could not find contracts/ and tools/dev-chain-reset.py"
     )
+
+
+def ensure_repo_import_path(root: Path) -> None:
+    """Make direct script execution from tools/ import the checkout package.
+
+    When Python executes tools/smoke_fund_contract_preflight.py, sys.path[0]
+    is tools/, not the repository root. The embedded faucet route imports the
+    local main_computer package, so the checkout root must be first on sys.path.
+    """
+
+    root_text = str(root)
+    if root_text in sys.path:
+        sys.path.remove(root_text)
+    sys.path.insert(0, root_text)
 
 
 def docker_executable() -> str:
@@ -316,9 +331,6 @@ def credit_amount_to_wei(value: str) -> int:
     text = str(value).strip()
     if re.fullmatch(r"[0-9]+", text):
         return int(text) * BASE_UNITS_PER_CREDIT
-
-    from decimal import Decimal
-
     return int(Decimal(text) * Decimal(BASE_UNITS_PER_CREDIT))
 
 
@@ -492,9 +504,14 @@ def http_json(url: str, *, method: str = "GET", payload: dict | None = None, tim
 
 
 def start_embedded_viewport_server(root: Path, args: argparse.Namespace):
+    ensure_repo_import_path(root)
+
     from main_computer.config import MainComputerConfig
     from main_computer.energy_chain import EnergyChainClient
     from main_computer.viewport import ViewportServer
+
+    imported_from = Path(__import__("main_computer").__file__ or "").resolve()
+    print(f"OK: importing main_computer from {imported_from}")
 
     runtime_path = root / "runtime" / "deployments" / "current.json"
     offices = (
@@ -828,6 +845,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     root = repo_root()
+    ensure_repo_import_path(root)
+    os.chdir(root)
 
     faucet_wei = credit_amount_to_wei(args.faucet_credits)
     deposit_wei = credit_amount_to_wei(args.deposit_credits)
