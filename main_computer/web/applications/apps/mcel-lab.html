@@ -140,7 +140,12 @@
       <button type="button" id="mcel-canonical-app-proof">Run Specimen Proof</button>
       <output id="mcel-canonical-app-status" aria-live="polite">canonical app specimen not mounted</output>
     </div>
-    <div class="mcel-canonical-specimen-frame-shell">
+    <div class="mcel-canonical-specimen-frame-shell" data-mcel-specimen-frame-status="idle">
+      <div class="mcel-canonical-specimen-frame-bar" aria-label="MCEL canonical specimen frame status">
+        <span class="mcel-canonical-specimen-badge">MCEL Canonical Specimen</span>
+        <span id="mcel-canonical-app-frame-summary">Task Manager has not been mounted yet.</span>
+        <span class="mcel-canonical-specimen-safety">observational · no destructive clicks</span>
+      </div>
       <iframe
         id="mcel-canonical-app-frame"
         class="mcel-canonical-app-frame"

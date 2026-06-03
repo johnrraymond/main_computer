@@ -1238,6 +1238,63 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
   border-radius: 12px;
   background: #030403;
   overflow: hidden;
+  box-shadow: 0 0 0 1px rgba(115, 214, 255, 0.08), 0 18px 50px rgba(0, 0, 0, 0.22);
+}
+
+.mcel-canonical-specimen-frame-shell[data-mcel-specimen-frame-status="loading"],
+.mcel-canonical-specimen-frame-shell[data-mcel-specimen-frame-status="loaded"],
+.mcel-canonical-specimen-frame-shell[data-mcel-specimen-frame-status="inspected"],
+.mcel-canonical-specimen-frame-shell[data-mcel-specimen-frame-status="proof-ready"] {
+  border-color: rgba(115, 214, 255, 0.72);
+  box-shadow: 0 0 0 2px rgba(115, 214, 255, 0.16), 0 18px 54px rgba(0, 0, 0, 0.34);
+}
+
+.mcel-canonical-specimen-frame-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(115, 214, 255, 0.24);
+  background:
+    linear-gradient(90deg, rgba(115, 214, 255, 0.16), rgba(246, 199, 91, 0.08), transparent),
+    #020403;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.mcel-canonical-specimen-badge,
+.mcel-canonical-specimen-safety {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 950;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.mcel-canonical-specimen-badge {
+  border: 1px solid rgba(115, 214, 255, 0.6);
+  background: rgba(115, 214, 255, 0.14);
+  color: var(--sky, #73d6ff);
+}
+
+#mcel-canonical-app-frame-summary {
+  flex: 1 1 260px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mcel-canonical-specimen-safety {
+  border: 1px solid rgba(174, 224, 111, 0.46);
+  background: rgba(174, 224, 111, 0.1);
+  color: var(--mint, #aee06f);
 }
 
 .mcel-canonical-app-frame {

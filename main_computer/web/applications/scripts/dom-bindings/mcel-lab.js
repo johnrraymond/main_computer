@@ -41,6 +41,7 @@
           errorCount: 0,
           inspectCount: 0,
           proofCount: 0,
+          specimenChromeCount: 0,
           app: "task-manager",
           route: "/applications/task-manager/server-processes?mcel_lab_specimen=task-manager",
           rootSelector: "#task-manager-app",
@@ -111,6 +112,8 @@
     const mcelCanonicalAppInspect = document.querySelector("#mcel-canonical-app-inspect");
     const mcelCanonicalAppProof = document.querySelector("#mcel-canonical-app-proof");
     const mcelCanonicalAppStatus = document.querySelector("#mcel-canonical-app-status");
+    const mcelCanonicalAppFrameShell = document.querySelector(".mcel-canonical-specimen-frame-shell");
+    const mcelCanonicalAppFrameSummary = document.querySelector("#mcel-canonical-app-frame-summary");
     const mcelCanonicalAppFrame = document.querySelector("#mcel-canonical-app-frame");
     const mcelCanonicalAppReport = document.querySelector("#mcel-canonical-app-report");
     const mcelSelectionStatus = document.querySelector("#mcel-selection-status");

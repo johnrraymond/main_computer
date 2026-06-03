@@ -3533,6 +3533,9 @@
       "[data-task-action=\"kill-pid\"]"
     ];
 
+    const MCEL_CANONICAL_SPECIMEN_CHROME_STYLE_ID = "mcel-lab-canonical-specimen-style";
+    const MCEL_CANONICAL_SPECIMEN_RIBBON_ID = "mcel-lab-canonical-specimen-ribbon";
+
     function ensureMcelCanonicalAppSpecimenState() {
       if (!mcelLabState.canonicalAppSpecimen) {
         mcelLabState.canonicalAppSpecimen = {
@@ -3541,6 +3544,7 @@
           errorCount: 0,
           inspectCount: 0,
           proofCount: 0,
+          specimenChromeCount: 0,
           app: "task-manager",
           route: "/applications/task-manager/server-processes?mcel_lab_specimen=task-manager",
           rootSelector: "#task-manager-app",
@@ -3573,15 +3577,84 @@
         `loads=${state.loadCount || 0}`,
         `inspections=${state.inspectCount || 0}`,
         `proofs=${state.proofCount || 0}`,
+        `chrome=${state.specimenChromeCount || 0}`,
         report ? `root=${report.rootPresent ? "present" : "missing"}` : "root=unknown",
         proof ? `browserProof=${proof.failed ? "warning" : "ready"}` : "browserProof=not-run",
         `reason=${reason}`
       ].join(" · ");
       if (mcelCanonicalAppStatus) mcelCanonicalAppStatus.textContent = status;
+      if (mcelCanonicalAppFrameShell) {
+        mcelCanonicalAppFrameShell.dataset.mcelSpecimenFrameStatus = state.status || "idle";
+      }
+      if (mcelCanonicalAppFrameSummary) {
+        const mounted = state.status && state.status !== "idle";
+        const rootSummary = report ? `root ${report.rootPresent ? "present" : "missing"}` : "root not inspected";
+        const proofSummary = proof ? `proof ${proof.failed ? "warning" : "ready"}` : "proof pending";
+        mcelCanonicalAppFrameSummary.textContent = mounted
+          ? `${state.app || "task-manager"} specimen ${state.status}; ${rootSummary}; ${proofSummary}.`
+          : "Task Manager has not been mounted yet.";
+      }
       if (mcelCanonicalAppReport && !mcelLabState.lastCanonicalSpecimenReport) {
         mcelCanonicalAppReport.textContent = "Mount Task Manager to inspect it as a canonical MCEL specimen.";
       }
       return status;
+    }
+
+    function injectMcelCanonicalAppSpecimenChrome(reason = "specimen-chrome") {
+      const state = ensureMcelCanonicalAppSpecimenState();
+      const specimen = selectedMcelCanonicalAppSpecimen();
+      const doc = mcelCanonicalAppFrameDocument();
+      if (!doc?.body) return false;
+      const root = doc.querySelector?.(specimen.rootSelector) || null;
+      doc.documentElement?.setAttribute?.("data-mcel-lab-specimen", specimen.app);
+      doc.body.setAttribute("data-mcel-lab-specimen", specimen.app);
+      doc.body.setAttribute("data-mcel-lab-specimen-reason", reason);
+      let style = doc.getElementById(MCEL_CANONICAL_SPECIMEN_CHROME_STYLE_ID);
+      if (!style) {
+        style = doc.createElement("style");
+        style.id = MCEL_CANONICAL_SPECIMEN_CHROME_STYLE_ID;
+        style.textContent = `
+          body[data-mcel-lab-specimen] #${MCEL_CANONICAL_SPECIMEN_RIBBON_ID} {
+            position: fixed;
+            top: 10px;
+            right: 12px;
+            z-index: 2147483647;
+            max-width: min(420px, calc(100vw - 24px));
+            padding: 8px 12px;
+            border: 1px solid rgba(115, 214, 255, 0.82);
+            border-radius: 999px;
+            background: rgba(3, 10, 14, 0.92);
+            color: #73d6ff;
+            box-shadow: 0 0 0 2px rgba(115, 214, 255, 0.12), 0 14px 34px rgba(0, 0, 0, 0.38);
+            font: 900 11px/1.25 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            letter-spacing: 0.08em;
+            pointer-events: none;
+            text-transform: uppercase;
+          }
+          [data-mcel-lab-specimen-root="true"] {
+            outline: 2px dashed rgba(115, 214, 255, 0.95);
+            outline-offset: -6px;
+            box-shadow: inset 0 0 0 2px rgba(246, 199, 91, 0.16), 0 0 28px rgba(115, 214, 255, 0.18);
+          }
+        `;
+        doc.head?.appendChild?.(style);
+      }
+      let ribbon = doc.getElementById(MCEL_CANONICAL_SPECIMEN_RIBBON_ID);
+      if (!ribbon) {
+        ribbon = doc.createElement("div");
+        ribbon.id = MCEL_CANONICAL_SPECIMEN_RIBBON_ID;
+        ribbon.setAttribute("role", "status");
+        ribbon.setAttribute("aria-live", "polite");
+        ribbon.dataset.mcelLabMarker = "canonical-specimen-ribbon";
+        doc.body.appendChild(ribbon);
+      }
+      ribbon.textContent = `MCEL Lab specimen · ${specimen.label} · observational only`;
+      if (root) {
+        root.setAttribute("data-mcel-lab-specimen-root", "true");
+        root.setAttribute("data-mcel-lab-specimen-app", specimen.app);
+      }
+      state.specimenChromeCount = (state.specimenChromeCount || 0) + 1;
+      return true;
     }
 
     function bindMcelCanonicalAppSpecimenLifecycle(reason = "bind") {
@@ -3596,6 +3669,7 @@
         state.loadCount += 1;
         state.status = "loaded";
         state.lastAt = new Date().toISOString();
+        injectMcelCanonicalAppSpecimenChrome("iframe-load");
         renderMcelCanonicalAppSpecimenStatus("iframe-load");
         window.setTimeout(() => inspectMcelCanonicalAppSpecimen("iframe-load"), 80);
       });
@@ -3670,6 +3744,7 @@
       const state = ensureMcelCanonicalAppSpecimenState();
       const specimen = selectedMcelCanonicalAppSpecimen();
       const frame = bindMcelCanonicalAppSpecimenLifecycle(reason);
+      injectMcelCanonicalAppSpecimenChrome(reason);
       const doc = mcelCanonicalAppFrameDocument();
       const root = doc?.querySelector?.(specimen.rootSelector) || null;
       const requiredIds = MCEL_CANONICAL_TASK_MANAGER_REQUIRED_IDS.map((id) => ({
@@ -3699,6 +3774,9 @@
         missingRequiredIds: requiredIds.filter((item) => !item.present).map((item) => item.id),
         dangerousControls,
         dangerousControlCount: dangerousControls.reduce((total, item) => total + item.count, 0),
+        specimenChromeApplied: Boolean(doc?.getElementById?.(MCEL_CANONICAL_SPECIMEN_RIBBON_ID)),
+        specimenChromeStyleId: MCEL_CANONICAL_SPECIMEN_CHROME_STYLE_ID,
+        specimenRibbonId: MCEL_CANONICAL_SPECIMEN_RIBBON_ID,
         destructiveActionsExecuted: false,
         safetyClaim: "inspection only; the harness does not click server control, PID termination, or schedule creation actions",
         inspectedAt: new Date().toISOString(),
@@ -3726,6 +3804,7 @@
 
     function runMcelCanonicalAppSpecimenProof(reason = "specimen-proof") {
       const report = inspectMcelCanonicalAppSpecimen(reason);
+      injectMcelCanonicalAppSpecimenChrome(reason);
       const doc = mcelCanonicalAppFrameDocument();
       const root = doc?.querySelector?.(report.rootSelector) || null;
       let proof = null;
