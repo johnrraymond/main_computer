@@ -21,7 +21,7 @@ def test_mcel_runtime_packager_builds_single_frontend_runtime_without_lab_ui(tmp
     text = result.output_path.read_text(encoding="utf-8")
 
     assert result.size_bytes == len(text.encode("utf-8"))
-    assert result.version == "mcel-runtime.v0.1.7"
+    assert result.version == "mcel-runtime.v0.1.8"
     assert result.helper_functions == ("isolatedSiteCss",)
     assert MCEL_LAB_HELPER_FILE in result.source_files
     for source_file in MCEL_RUNTIME_MODULES:
@@ -37,6 +37,9 @@ def test_mcel_runtime_packager_builds_single_frontend_runtime_without_lab_ui(tmp
     assert "report: mcelRuntimeReport" in text
     assert "diagnostics: mcelRuntimeDiagnostics" in text
     assert "twiddle: mcelRuntimeTwiddle" in text
+    assert "vanity: mcelRuntimeVanity" in text
+    assert "vanityDiagnostics: mcelRuntimeVanityDiagnostics" in text
+    assert "vanityRemedies: mcelRuntimeVanityRemedies" in text
     assert "detectSources: mcelRuntimeDetectSources" in text
     assert "function mcelRuntimeSourceIslands" in text
     assert "function mcelRuntimeSourceElements" in text
@@ -46,6 +49,8 @@ def test_mcel_runtime_packager_builds_single_frontend_runtime_without_lab_ui(tmp
     assert '"mcel-chrome"' in text
     assert '"mcel-diagnostics"' in text
     assert '"mcel-twiddle"' in text
+    assert '"mcel-vanity"' in text
+    assert '"mcel-vanity-remedy"' in text
     assert '"theme"' in text
     assert '"chrome"' in text
     assert "data-mcel-runtime-hydrated" in text
@@ -102,6 +107,14 @@ def test_mcel_runtime_hydration_powers_site_mode_without_lab_replacing_everythin
     assert "section-max-width-padding-conflict" in text
     assert "MCEL diagnostics" in text
     assert "MCEL twiddle" in text
+    assert "mcel-vanity-pass" in text
+    assert "hard-inline-content-overflow" in text
+    assert "font-size-step-down" in text
+    assert "wrap-anywhere" in text
+    assert "code-chip" in text
+    assert "scroll-chip" in text
+    assert "disclose" in text
+    assert "mcelRuntimeScheduleVanity(root, opts)" in text
     assert "mcelRuntimeAmbientOptions()" in text
     assert 'mcelRuntimeScript = window.document?.currentScript || null' in text
     spotlight_body = text.split(':root[data-mcel-runtime-chrome="chrome-spotlight"] body.mcel-powered-site :where(section[data-mc-kind="proof"]', 1)[1].split('}', 1)[0]
