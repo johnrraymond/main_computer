@@ -70,6 +70,55 @@ def test_mcel_lab_route_targets_applications_shell() -> None:
     assert _application_route_target("/applications/web-test-bed") == "mcel-lab"
 
 
+def test_mcel_lab_mounts_task_manager_as_canonical_specimen() -> None:
+    app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
+    bindings = (WEB_APP / "scripts" / "dom-bindings" / "mcel-lab.js").read_text(encoding="utf-8")
+    lab = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    css = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
+
+    assert 'id="mcel-canonical-app-frame"' in app
+    assert 'data-mcel-specimen-app="task-manager"' in app
+    assert 'data-mcel-specimen-root="#task-manager-app"' in app
+    assert 'data-route="/applications/task-manager/server-processes?mcel_lab_specimen=task-manager"' in app
+    assert 'sandbox="allow-same-origin allow-scripts allow-forms"' in app
+    assert 'id="mcel-canonical-app-mount"' in app
+    assert 'id="mcel-canonical-app-inspect"' in app
+    assert 'id="mcel-canonical-app-proof"' in app
+    assert "mcelCanonicalAppFrame = document.querySelector" in bindings
+    assert "lastCanonicalSpecimenReport" in bindings
+    assert "canonicalAppSpecimen" in bindings
+    assert "mountMcelCanonicalAppSpecimen" in lab
+    assert "inspectMcelCanonicalAppSpecimen" in lab
+    assert "runMcelCanonicalAppSpecimenProof" in lab
+    assert "MCEL_CANONICAL_TASK_MANAGER_REQUIRED_IDS" in lab
+    assert "MCEL_CANONICAL_TASK_MANAGER_DANGEROUS_CONTROL_SELECTORS" in lab
+    assert ".mcel-canonical-specimen" in css
+    assert ".mcel-canonical-app-frame" in css
+    assert ".mcel-canonical-app-report" in css
+
+
+def test_mcel_lab_task_manager_specimen_route_is_valid_and_observational() -> None:
+    assert (
+        _application_route_target("/applications/task-manager/server-processes?mcel_lab_specimen=task-manager")
+        == "task-manager"
+    )
+
+    lab = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    specimen_block = lab[
+        lab.index("const MCEL_CANONICAL_TASK_MANAGER_REQUIRED_IDS"):
+        lab.index("function openMcelDiagnosticsDrawer")
+    ]
+
+    assert '"task-manager-app"' in specimen_block
+    assert '"task-server-shutdown"' in specimen_block
+    assert '"task-server-restart"' in specimen_block
+    assert '"[data-task-action=\\"terminate-pid\\"]"' in specimen_block
+    assert '"[data-task-action=\\"kill-pid\\"]"' in specimen_block
+    assert "destructiveActionsExecuted: false" in specimen_block
+    assert "does not click server control" in specimen_block
+    assert ".click(" not in specimen_block
+
+
 def test_mcel_lab_assets_define_round_trip_contract() -> None:
     app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
     contract = (WEB_APP / "scripts" / "mcel-contract.js").read_text(encoding="utf-8")

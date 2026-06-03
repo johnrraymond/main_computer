@@ -155,6 +155,32 @@ def test_snapshot_refuses_to_write_checkpoint_inside_source_project(tmp_path: Pa
     assert not (repo / "checkpoint").exists()
 
 
+
+def test_snapshot_default_output_explains_what_antigit_is_doing(tmp_path: Path) -> None:
+    repo = tmp_path / "main_computer_test"
+    repo.mkdir()
+    (repo / ".gitignore").write_text("*.zip\n", encoding="utf-8")
+    (repo / "artifact.zip").write_bytes(b"raw zip-shaped machine state")
+    (repo / "counter.py").write_text("AMOUNT = 12\n", encoding="utf-8")
+
+    checkpoint_root = tmp_path / "checkpoint"
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "snapshot", str(repo), "--checkpoint-root", str(checkpoint_root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "antigit snapshot: starting external raw machine-state checkpoint." in result.stdout
+    assert "source project:" in result.stdout
+    assert "checkpoint directory:" in result.stdout
+    assert "source project will not be edited" in result.stdout
+    assert ".gitignore is copied as data but its ignore rules are not obeyed" in result.stdout
+    assert "copying raw machine state" in result.stdout
+    assert "antigit snapshot: complete." in result.stdout
+    assert (checkpoint_root / "antigit_main_computer_test_checkpoint" / "artifact.zip").exists()
+
 def test_antigit_guess_stop_words_expands_seed_words_deterministically() -> None:
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "guess-stop-words", "sopwith", "pull", "numbers", "--json"],

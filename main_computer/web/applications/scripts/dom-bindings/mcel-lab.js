@@ -31,8 +31,22 @@
         lastChromeReport: null,
         lastChromeFitReport: null,
         lastSmartCssPrimitiveReport: null,
+        lastCanonicalSpecimenReport: null,
+        lastCanonicalSpecimenProof: null,
         lastProjectSnapshot: null,
         activeModal: null,
+        canonicalAppSpecimen: {
+          mountCount: 0,
+          loadCount: 0,
+          errorCount: 0,
+          inspectCount: 0,
+          proofCount: 0,
+          app: "task-manager",
+          route: "/applications/task-manager/server-processes?mcel_lab_specimen=task-manager",
+          rootSelector: "#task-manager-app",
+          status: "idle",
+          lastAt: null
+        },
         siteFrameTwiddle: {
           openCount: 0,
           closeCount: 0,
@@ -91,6 +105,14 @@
     const mcelSiteFrameResync = document.querySelector("#mcel-site-frame-resync");
     const mcelSiteFrameRebuild = document.querySelector("#mcel-site-frame-rebuild");
     const mcelSiteFrameClear = document.querySelector("#mcel-site-frame-clear");
+    const mcelCanonicalAppSelect = document.querySelector("#mcel-canonical-app-select");
+    const mcelCanonicalAppMount = document.querySelector("#mcel-canonical-app-mount");
+    const mcelCanonicalAppRefresh = document.querySelector("#mcel-canonical-app-refresh");
+    const mcelCanonicalAppInspect = document.querySelector("#mcel-canonical-app-inspect");
+    const mcelCanonicalAppProof = document.querySelector("#mcel-canonical-app-proof");
+    const mcelCanonicalAppStatus = document.querySelector("#mcel-canonical-app-status");
+    const mcelCanonicalAppFrame = document.querySelector("#mcel-canonical-app-frame");
+    const mcelCanonicalAppReport = document.querySelector("#mcel-canonical-app-report");
     const mcelSelectionStatus = document.querySelector("#mcel-selection-status");
     const mcelGrapesHost = document.querySelector("#mcel-grapes-host");
     const mcelGrapesCanvas = document.querySelector("#mcel-grapes");
