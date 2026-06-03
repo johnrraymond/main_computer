@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-MCEL_RUNTIME_VERSION = "mcel-runtime.v0.1.8"
+MCEL_RUNTIME_VERSION = "mcel-runtime.v0.1.9"
 
 MCEL_RUNTIME_MODULES: tuple[str, ...] = (
     "main_computer/web/applications/scripts/mcel-contract.js",
@@ -195,7 +195,7 @@ def package_mcel_runtime(
 
 
 _MCEL_RUNTIME_WRAPPER = r'''
-  const mcelRuntimeVersion = "mcel-runtime.v0.1.8";
+  const mcelRuntimeVersion = "mcel-runtime.v0.1.9";
   const runtimeEntry = "runtime.js";
   const runtimeDefaults = Object.freeze({
     mode: "site",
@@ -204,7 +204,9 @@ _MCEL_RUNTIME_WRAPPER = r'''
     applyLaws: true,
     applyChrome: false,
     applySiteChrome: true,
-    renderOptInOnly: true
+    renderOptInOnly: true,
+    vanity: true,
+    vanityRemedy: "auto"
   });
 
   let mcelRuntimeLastReport = null;
@@ -775,16 +777,21 @@ _MCEL_RUNTIME_WRAPPER = r'''
 
 
   function mcelRuntimeVanityRequested(doc, options = {}) {
+    if (options.vanity === false && options.vanityDetect !== true && options.vanityHighlight !== true) {
+      return false;
+    }
     if (
       options.vanity === true ||
       options.vanityDetect === true ||
       options.vanityHighlight === true ||
+      options.vanityRemedy === "auto" ||
       (options.vanityRemedy && options.vanityRemedy !== "none")
     ) {
       return true;
     }
     const targetDoc = doc || window.document || null;
     const script = targetDoc?.currentScript || window.document?.currentScript || mcelRuntimeScript || null;
+    if (script?.dataset?.mcelRuntimeVanity === "false") return false;
     if (script?.dataset?.mcelRuntimeVanity === "true") return true;
     const location = window.location;
     return Boolean(location && /(?:\?|&|#)mcel(?:-runtime)?-vanity(?:=1|=true)?(?:&|$)/i.test(`${location.search || ""}${location.hash || ""}`));
@@ -1350,7 +1357,9 @@ body.mcel-powered-site [data-mcel-vanity-disclosure="true"] summary {
   function mcelRuntimeVanity(root = window.document, options = {}) {
     const doc = mcelRuntimeDocumentFor(root);
     const opts = mcelRuntimeOptions(options);
-    const requestedRemedy = mcelRuntimeNormalizeVanityRemedy(options.remedy || opts.vanityRemedy);
+    const requestedRemedy = opts.vanityDetect === true || options.detect === true
+      ? "none"
+      : mcelRuntimeNormalizeVanityRemedy(options.remedy || opts.vanityRemedy || "auto");
     if (opts.vanityHighlight || options.highlight === true || requestedRemedy !== "none") {
       mcelRuntimeInstallVanityStyle(doc);
     }
@@ -1519,7 +1528,8 @@ body.mcel-powered-site [data-mcel-vanity-disclosure="true"] summary {
     const selectedVanityRemedy = mcelRuntimeNormalizeVanityRemedy(
       mcelRuntimeReadQueryValue(["mcel-vanity-remedy", "mcel-remedy", "mcel-runtime-remedy"]) ||
       vanityReport.requestedRemedy ||
-      "none"
+      runtimeDefaults.vanityRemedy ||
+      "auto"
     );
     mcelRuntimeVanityRemedies().forEach((remedy) => {
       const option = targetDoc.createElement("option");

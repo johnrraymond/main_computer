@@ -50,7 +50,7 @@
         "image": "directus/directus:11.5.1",
         "internal_url": "http://hub-site-directus:8055",
         "kind": "directus",
-        "last_verified_at": "2026-06-03T01:22:53+00:00",
+        "last_verified_at": "2026-06-03T02:55:10+00:00",
         "ping_status": "ready",
         "public_url": "http://127.0.0.1:28200",
         "status": "service_reachable"
@@ -104,7 +104,7 @@
         "requested": true,
         "service": "hub-site-directus",
         "status": "ready",
-        "updated_at": "2026-06-03T01:22:53+00:00",
+        "updated_at": "2026-06-03T02:55:10+00:00",
         "verified": true
       },
       "sqlite_database": {
@@ -127,7 +127,7 @@
     "post_route_prefix": "/blog/",
     "route": "/blog",
     "status": "ready",
-    "updated_at": "2026-06-03T01:22:46+00:00"
+    "updated_at": "2026-06-03T02:55:04+00:00"
   },
   "builder": {
     "engine": "grapesjs",
@@ -165,7 +165,7 @@
         "post_route_prefix": "/blog/",
         "route": "/blog",
         "status": "ready",
-        "updated_at": "2026-06-03T01:22:46+00:00"
+        "updated_at": "2026-06-03T02:55:04+00:00"
       },
       "routes": {
         "index": "/blog",
@@ -183,7 +183,7 @@
     "lanes": {
       "dev": {
         "last_publish_verified": true,
-        "last_published_at": "2026-06-03T01:22:53+00:00",
+        "last_published_at": "2026-06-03T02:55:10+00:00",
         "last_published_service": "hub-dev",
         "last_published_url": "http://127.0.0.1:18082/",
         "port": 18082,
@@ -226,7 +226,7 @@
     "page_runtime": {
       "entry": "runtime.js",
       "id": "mcel",
-      "sha256": "794c97b8fe189fc815a9667777058313070758992854d8f99966e80684cef9a2"
+      "sha256": "3abd0eaa3402eb9c6b03138654a19d6b11923bbf2df4a918842760f42cdb59de"
     }
   },
   "schema_version": 2,
@@ -235,5 +235,5 @@
     "kind": "host_runtime_site",
     "path": "runtime/websites/hub-site"
   },
-  "updated_at": "2026-06-03T01:22:53+00:00"
+  "updated_at": "2026-06-03T02:55:10+00:00"
 }
