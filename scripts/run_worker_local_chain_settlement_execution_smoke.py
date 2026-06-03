@@ -17,7 +17,7 @@ from urllib.request import Request, urlopen
 DEFAULT_STATE_FILE = Path("runtime/deployments/current.json")
 LEGACY_STATE_FILE = Path("runtime/dev-chain/latest.json")
 DEFAULT_REPORT_PATH = Path("runtime/hub/worker_local_chain_settlement_execution_smoke.json")
-DEFAULT_RPC_URL = "http://127.0.0.1:8545"
+DEFAULT_RPC_URL = "http://127.0.0.1:18545"
 DEFAULT_CHAIN_ID = 31337
 EXECUTED_STATE = 4
 
@@ -690,7 +690,7 @@ def execute_local_chain_payout(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Phase 8 local-chain worker settlement execution smoke.")
     parser.add_argument("--hub-url", default="http://127.0.0.1:8770", help="Running hub base URL.")
-    parser.add_argument("--rpc-url", default=None, help="Local/dev chain RPC URL. Defaults to deployment state, PHASE8_RPC_URL, or 127.0.0.1:8545.")
+    parser.add_argument("--rpc-url", default=None, help="Local/dev chain RPC URL. Defaults to deployment state, PHASE8_RPC_URL, or 127.0.0.1:18545.")
     parser.add_argument("--chain-id", type=int, default=None, help="Expected local/dev chain id. Defaults to deployment state or 31337.")
     parser.add_argument("--state-file", type=Path, default=DEFAULT_STATE_FILE, help="Deployment state with XLagBridgeReserve address/offices.")
     parser.add_argument("--contract-address", default="", help="Existing deployed XLagBridgeReserve address. Overrides deployment state.")

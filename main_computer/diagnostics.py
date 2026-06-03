@@ -194,7 +194,7 @@ class DiagnosticRunner:
                 "worker": 8771,
                 "ollama": int(urlsplit(self.config.ollama_base_url).port or 11434),
                 "gitea": 3000,
-                "blockchain": int(urlsplit(self.config.energy_chain_rpc_url or "http://127.0.0.1:8545").port or 8545),
+                "blockchain": int(urlsplit(self.config.energy_chain_rpc_url or "http://127.0.0.1:18545").port or 18545),
             }
             report = collect_level1_telemetry(
                 Path.cwd(),

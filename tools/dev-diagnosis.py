@@ -35,7 +35,7 @@ DEFAULT_PORTS = {
     "hub": 8770,
     "hub-worker": 8771,
     "ollama": 11434,
-    "energy-chain": 8545,
+    "energy-chain": 18545,
     "gitea": env_port("MAIN_COMPUTER_GITEA_HTTP_PORT", 3000),
 }
 
@@ -105,8 +105,8 @@ ROLES: tuple[Role, ...] = (
     Role(
         key="energy-chain",
         label="energy-chain",
-        port=8545,
-        url="http://127.0.0.1:8545",
+        port=18545,
+        url="http://127.0.0.1:18545",
         docker_service="ethereum-dev",
         declared=("docker-compose.dev.yml service ethereum-dev", "Anvil JSON-RPC endpoint"),
         probe_kind="eth_chain_id",

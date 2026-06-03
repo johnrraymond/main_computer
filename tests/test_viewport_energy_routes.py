@@ -228,6 +228,7 @@ class ViewportEnergyRouteTests(unittest.TestCase):
     def test_config_uses_default_energy_chain_when_env_is_missing(self) -> None:
         with patch.dict(os.environ, {"MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL": "", "MAIN_COMPUTER_ENERGY_CHAIN_ID": ""}, clear=False):
             config = MainComputerConfig.from_env()
+        self.assertEqual(DEFAULT_ENERGY_CHAIN_RPC_URL, "http://127.0.0.1:18545")
         self.assertEqual(config.energy_chain_rpc_url, DEFAULT_ENERGY_CHAIN_RPC_URL)
         self.assertEqual(config.energy_chain_id, DEFAULT_ENERGY_CHAIN_ID)
         self.assertEqual(config.energy_chain_rpc_url_source, "default")

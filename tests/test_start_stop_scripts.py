@@ -90,6 +90,10 @@ def test_v2_batch_files_are_location_aware_and_do_not_require_env_files() -> Non
     assert 'PYTHONPATH' in helper
     assert 'VIRTUAL_ENV' in helper
     assert 'treeKind -eq "installed"' in helper
+    assert 'MAIN_COMPUTER_ETHEREUM_RPC_PORT = "18545"' in helper
+    assert 'MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL = "http://127.0.0.1:18545"' in helper
+    assert 'MAIN_COMPUTER_ETHEREUM_RPC_PORT = "8545"' not in helper
+    assert 'MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL = "http://127.0.0.1:8545"' not in helper
 
 
 def test_dev_compose_file_defaults_to_unleashed_project_and_mode_ports() -> None:
@@ -106,7 +110,7 @@ def test_dev_compose_file_defaults_to_unleashed_project_and_mode_ports() -> None
     assert ("http://" + "ollama" + ":11434") not in compose
     assert "http://host.docker.internal:11434" in compose
     assert "MAIN_COMPUTER_DOCKER_OLLAMA_BASE_URL" in compose
-    assert "${MAIN_COMPUTER_ETHEREUM_RPC_PORT:-8545}:8545" in compose
+    assert "${MAIN_COMPUTER_ETHEREUM_RPC_PORT:-18545}:8545" in compose
 
 
 def test_v2_helper_uses_mode_scoped_non_gitea_docker_projects() -> None:
