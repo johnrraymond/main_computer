@@ -14,6 +14,7 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 
+from main_computer.main_log_codec import LexLogWriter, canonical_json_line
 from main_computer.main_log_client import (
     DEFAULT_MAIN_LOG_HOST,
     DEFAULT_MAIN_LOG_PORT,
@@ -27,6 +28,11 @@ SERVICE_NAME = "main-computer-main-log-service"
 MAIN_LOG_SERVICE_PID_FILENAME = ".main_computer_main_log_service.pid"
 DEFAULT_RECENT_LIMIT = 200
 MAX_EVENT_BYTES = 256 * 1024
+ENV_MAIN_LOG_RAW_MIRROR = "MAIN_COMPUTER_MAIN_LOG_RAW_MIRROR"
+
+
+def _truthy_env(name: str) -> bool:
+    return str(os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _now_iso() -> str:
@@ -56,7 +62,9 @@ class MainLogStore:
     def __init__(self, *, root: Path | str, recent_limit: int = DEFAULT_RECENT_LIMIT) -> None:
         self.root = Path(root).resolve()
         self.runtime_dir = self.root / "runtime" / "main_log"
-        self.log_path = self.runtime_dir / "main.log.jsonl"
+        self.log_path = self.runtime_dir / "main.log.lex"
+        self.raw_log_path = self.runtime_dir / "main.log.jsonl"
+        self.raw_mirror = _truthy_env(ENV_MAIN_LOG_RAW_MIRROR)
         self.state_path = self.runtime_dir / "state.json"
         self.pid_path = self.root / MAIN_LOG_SERVICE_PID_FILENAME
         self.recent_limit = max(1, int(recent_limit))
@@ -80,6 +88,9 @@ class MainLogStore:
             "port": int(port),
             "url": f"http://{host}:{int(port)}",
             "log_path": str(self.log_path),
+            "log_format": "mclog-lex-v1",
+            "raw_log_path": str(self.raw_log_path),
+            "raw_mirror": self.raw_mirror,
             "state_path": str(self.state_path),
             "pid_file": str(self.pid_path),
             "updated_at": _now_iso(),
@@ -103,6 +114,9 @@ class MainLogStore:
             "port": int(port),
             "url": f"http://{host}:{int(port)}",
             "log_path": str(self.log_path),
+            "log_format": "mclog-lex-v1",
+            "raw_log_path": str(self.raw_log_path),
+            "raw_mirror": self.raw_mirror,
             "state_path": str(self.state_path),
             "pid_file": str(self.pid_path),
             "message": message,
@@ -142,22 +156,30 @@ class MainLogStore:
 
     def _writer_loop(self) -> None:
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
-        with self.log_path.open("a", encoding="utf-8") as handle:
-            while True:
-                item = self._queue.get()
-                if item is None:
-                    self._queue.task_done()
-                    break
-                try:
-                    line = json.dumps(item, sort_keys=True, default=str)
-                    handle.write(line + "\n")
-                    handle.flush()
-                    with self._lock:
-                        self._recent.append(item)
-                        if len(self._recent) > self.recent_limit:
-                            del self._recent[: len(self._recent) - self.recent_limit]
-                finally:
-                    self._queue.task_done()
+        raw_handle = None
+        try:
+            if self.raw_mirror:
+                raw_handle = self.raw_log_path.open("a", encoding="utf-8")
+            with LexLogWriter(self.log_path) as lex_writer:
+                while True:
+                    item = self._queue.get()
+                    if item is None:
+                        self._queue.task_done()
+                        break
+                    try:
+                        lex_writer.write_record(item)
+                        if raw_handle is not None:
+                            raw_handle.write(canonical_json_line(item) + "\n")
+                            raw_handle.flush()
+                        with self._lock:
+                            self._recent.append(item)
+                            if len(self._recent) > self.recent_limit:
+                                del self._recent[: len(self._recent) - self.recent_limit]
+                    finally:
+                        self._queue.task_done()
+        finally:
+            if raw_handle is not None:
+                raw_handle.close()
 
     def recent(self, *, limit: int = DEFAULT_RECENT_LIMIT) -> list[dict[str, Any]]:
         with self._lock:
@@ -210,6 +232,9 @@ class MainLogRequestHandler(BaseHTTPRequestHandler):
                     "pid": os.getpid(),
                     "root": str(self.server.store.root),
                     "log_path": str(self.server.store.log_path),
+                    "log_format": "mclog-lex-v1",
+                    "raw_log_path": str(self.server.store.raw_log_path),
+                    "raw_mirror": self.server.store.raw_mirror,
                     "at": _now_iso(),
                 },
             )
