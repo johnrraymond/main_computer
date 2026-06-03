@@ -14,84 +14,149 @@ from pathlib import Path
 from typing import Iterable
 
 
-TEXT_SCAN_LIMIT = 2 * 1024 * 1024
+NUMERIC_LITERAL_RE = re.compile(r"(?<![\w.])-?(?:0x[0-9a-fA-F]+|\d+(?:\.\d+)?)")
+WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
-LANGUAGE_GRAMMAR_WORDS: dict[str, tuple[str, ...]] = {
-    ".py": ("def", "class", "import", "from", "return", "with", "for", "while", "if", "elif", "else", "try", "except", "raise", "yield", "async", "await", "lambda"),
-    ".js": ("function", "class", "import", "export", "return", "const", "let", "var", "if", "else", "for", "while", "async", "await"),
-    ".jsx": ("function", "class", "import", "export", "return", "const", "let", "props", "state", "component"),
-    ".ts": ("function", "class", "interface", "type", "import", "export", "return", "const", "let", "async", "await"),
-    ".tsx": ("function", "class", "interface", "type", "import", "export", "return", "const", "let", "props", "state", "component"),
-    ".json": ("object", "array", "string", "number", "boolean", "null", "key", "value"),
-    ".yml": ("mapping", "sequence", "key", "value", "anchor", "alias"),
-    ".yaml": ("mapping", "sequence", "key", "value", "anchor", "alias"),
-    ".toml": ("table", "array", "string", "integer", "float", "boolean", "key", "value"),
-    ".ini": ("section", "key", "value", "setting"),
-    ".cfg": ("section", "key", "value", "setting"),
-    ".md": ("heading", "link", "code", "list", "quote"),
-    ".rst": ("heading", "directive", "role", "literal", "section"),
-    ".html": ("html", "head", "body", "div", "span", "script", "style", "class", "id"),
-    ".css": ("selector", "property", "value", "class", "id", "media"),
-    ".sh": ("if", "then", "else", "fi", "for", "while", "do", "done", "case", "export"),
-    ".ps1": ("param", "function", "if", "else", "foreach", "where", "object", "return"),
-    ".sql": ("select", "insert", "update", "delete", "from", "where", "join", "group", "order"),
+
+SOPWITH_EXPANSIONS: dict[str, tuple[str, ...]] = {
+    "anti": ("git", "checkpoint", "inverse", "restore"),
+    "antigit": ("anti", "git", "checkpoint", "machine", "state"),
+    "checkpoint": ("snapshot", "clone", "state", "restore"),
+    "clone": ("copy", "duplicate", "mirror", "state"),
+    "diff": ("change", "modified", "added", "deleted"),
+    "git": ("pull", "track", "state", "history"),
+    "grammar": ("syntax", "token", "language", "deterministic"),
+    "number": ("numeric", "literal", "integer", "float"),
+    "numbers": ("numeric", "literal", "integer", "float"),
+    "pull": ("restore", "copy", "checkpoint", "state"),
+    "python": ("def", "class", "import", "return"),
+    "snapshot": ("checkpoint", "clone", "copy", "state"),
+    "sopwith": ("stop", "word", "signal", "grammar"),
+    "state": ("machine", "raw", "runtime", "checkpoint"),
+    "stop": ("word", "signal", "grammar", "query"),
+    "word": ("token", "grammar", "signal", "query"),
 }
 
-GUESS_MAP: dict[str, tuple[str, ...]] = {
-    "anti": ("git", "inverse", "checkpoint", "state"),
-    "git": ("pull", "diff", "status", "tracked", "state"),
-    "pull": ("restore", "fetch", "compare", "checkpoint", "state"),
-    "snapshot": ("checkpoint", "clone", "state", "copy", "mirror"),
-    "checkpoint": ("snapshot", "clone", "state", "restore", "preserve"),
-    "clone": ("copy", "mirror", "duplicate", "state"),
-    "copy": ("clone", "mirror", "duplicate"),
-    "duplicate": ("clone", "copy", "mirror"),
-    "machine": ("state", "runtime", "local", "raw"),
-    "state": ("machine", "runtime", "checkpoint", "snapshot"),
-    "raw": ("machine", "state", "unignored", "local"),
-    "ignored": ("gitignore", "untracked", "local", "raw"),
-    "gitignore": ("ignored", "untracked", "local", "raw"),
-    "untracked": ("ignored", "local", "raw", "machine"),
-    "number": ("numeric", "literal", "integer", "float", "amount"),
-    "numbers": ("numeric", "literal", "integer", "float", "amount"),
-    "numeric": ("number", "literal", "integer", "float"),
-    "literal": ("number", "numeric", "string", "token"),
-    "grammar": ("syntax", "language", "token", "query"),
-    "language": ("grammar", "syntax", "token", "query"),
-    "sopwith": ("stop", "word", "signal", "query"),
-    "stop": ("word", "signal", "query"),
-    "word": ("stop", "signal", "query", "token"),
-    "python": ("def", "class", "import", "return", "async", "await"),
-    "javascript": ("function", "class", "import", "export", "return"),
+LANGUAGE_WORDS_BY_SUFFIX: dict[str, tuple[str, ...]] = {
+    ".py": ("def", "class", "import", "from", "return", "if", "else", "for", "while", "try", "except", "with", "as"),
+    ".js": ("function", "const", "let", "var", "return", "import", "export", "class", "if", "else"),
+    ".ts": ("function", "const", "let", "type", "interface", "return", "import", "export", "class"),
+    ".tsx": ("function", "const", "let", "type", "interface", "return", "import", "export", "class"),
+    ".jsx": ("function", "const", "let", "return", "import", "export", "class"),
+    ".json": ("object", "array", "string", "number", "true", "false", "null"),
+    ".yml": ("key", "value", "list", "map"),
+    ".yaml": ("key", "value", "list", "map"),
+    ".toml": ("table", "key", "value", "array"),
+    ".md": ("heading", "link", "list", "code"),
+    ".html": ("html", "head", "body", "div", "script", "style"),
+    ".css": ("selector", "class", "id", "property", "value"),
+    ".sh": ("if", "then", "fi", "for", "do", "done", "export"),
+    ".ps1": ("param", "function", "if", "foreach", "return"),
 }
 
 
 @dataclass(frozen=True)
-class EntryState:
+class EntryInfo:
     path: str
     kind: str
-    sha256: str | None = None
-    size: int | None = None
-    link_target: str | None = None
-    numeric_literals: tuple[str, ...] = ()
-    sopwith_stop_words: tuple[str, ...] = ()
+    sha256: str
+    size: int
+    numeric_literals: tuple[str, ...]
+    sopwith_stop_words: tuple[str, ...]
 
 
 @dataclass(frozen=True)
-class ChangeSignal:
-    action: str
-    path: str
-    kind: str
-    before_kind: str | None = None
-    after_kind: str | None = None
-    before_sha256: str | None = None
-    after_sha256: str | None = None
-    before_size: int | None = None
-    after_size: int | None = None
-    before_numeric_literals: tuple[str, ...] = ()
-    after_numeric_literals: tuple[str, ...] = ()
-    numeric_literals: tuple[str, ...] = ()
-    sopwith_stop_words: tuple[str, ...] = ()
+class CopyStats:
+    files: int
+    directories: int
+    symlinks: int
+    bytes: int
+
+
+def eprint(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
+
+
+def emit_human(enabled: bool, message: str) -> None:
+    if enabled:
+        print(message, flush=True)
+
+
+def unique_preserve_order(words: Iterable[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for word in words:
+        normalized = word.strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return tuple(ordered)
+
+
+def guess_stop_words_from_seeds(seeds: Iterable[str]) -> tuple[str, ...]:
+    words: list[str] = []
+
+    def visit(seed: str) -> None:
+        normalized = seed.strip().lower()
+        if not normalized or normalized in words:
+            return
+        words.append(normalized)
+        for expanded in SOPWITH_EXPANSIONS.get(normalized, ()):
+            visit(expanded)
+
+    for seed in seeds:
+        visit(seed)
+
+    return unique_preserve_order(words)
+
+
+def split_path_words(path: str) -> tuple[str, ...]:
+    pieces = re.split(r"[^A-Za-z0-9_]+", path.replace("/", " "))
+    words: list[str] = []
+    for piece in pieces:
+        if not piece:
+            continue
+        words.append(piece)
+        words.extend(part for part in piece.split("_") if part)
+    return unique_preserve_order(words)
+
+
+def extract_text(data: bytes) -> str:
+    if b"\x00" in data:
+        return ""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            return data.decode("latin-1")
+        except UnicodeDecodeError:
+            return ""
+
+
+def numeric_literals_from_text(text: str) -> tuple[str, ...]:
+    return unique_preserve_order(match.group(0) for match in NUMERIC_LITERAL_RE.finditer(text))
+
+
+def identifiers_from_text(text: str, limit: int = 40) -> tuple[str, ...]:
+    return unique_preserve_order(match.group(0) for match in WORD_RE.finditer(text))[:limit]
+
+
+def sopwith_words_for_file(relative_path: str, data: bytes | None = None) -> tuple[str, ...]:
+    path_obj = Path(relative_path)
+    seeds: list[str] = []
+    seeds.extend(split_path_words(relative_path))
+    suffix = path_obj.suffix.lower()
+    seeds.extend(LANGUAGE_WORDS_BY_SUFFIX.get(suffix, ()))
+    if data is not None:
+        text = extract_text(data)
+        seeds.extend(identifiers_from_text(text))
+        seeds.extend(numeric_literals_from_text(text))
+    return guess_stop_words_from_seeds(seeds)
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def sha256_file(path: Path) -> str:
@@ -102,536 +167,474 @@ def sha256_file(path: Path) -> str:
     return hasher.hexdigest()
 
 
-def ordered_unique(words: Iterable[str]) -> tuple[str, ...]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for word in words:
-        normalized = word.strip().lower()
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        result.append(normalized)
-    return tuple(result)
+def safe_resolve(path: Path) -> Path:
+    return path.expanduser().resolve()
 
 
-def split_tokens(text: str) -> tuple[str, ...]:
-    raw: list[str] = []
-    for chunk in re.split(r"[^A-Za-z0-9]+", text):
-        if not chunk:
-            continue
-        # Split a little bit of CamelCase without making path processing costly.
-        expanded = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", chunk)
-        raw.extend(part for part in expanded.split() if part)
-    return ordered_unique(raw)
+def default_checkpoint_root(source_root: Path) -> Path:
+    return source_root.resolve().parent / "checkpoint"
 
 
-def looks_like_text(data: bytes) -> bool:
-    if b"\x00" in data:
-        return False
-    if not data:
-        return True
+def checkpoint_name_for_source(source_root: Path) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", source_root.name).strip("._")
+    if not cleaned:
+        cleaned = "project"
+    return f"antigit_{cleaned}_checkpoint"
+
+
+def checkpoint_path(source_root: Path, checkpoint_root: Path) -> Path:
+    return checkpoint_root / checkpoint_name_for_source(source_root)
+
+
+def is_relative_to(child: Path, parent: Path) -> bool:
     try:
-        data.decode("utf-8")
-        return True
-    except UnicodeDecodeError:
+        child.relative_to(parent)
+    except ValueError:
         return False
+    return True
 
 
-def read_text_sample(path: Path) -> str:
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return ""
-    if len(data) > TEXT_SCAN_LIMIT:
-        data = data[:TEXT_SCAN_LIMIT]
-    if not looks_like_text(data):
-        return ""
-    return data.decode("utf-8", errors="replace")
+def validate_source_and_checkpoint(source_root: Path, checkpoint_root: Path) -> tuple[Path, Path, Path]:
+    source = safe_resolve(source_root)
+    checkpoint_base = safe_resolve(checkpoint_root)
+    checkpoint = checkpoint_base / checkpoint_name_for_source(source)
+
+    if not source.exists():
+        raise ValueError(f"source project does not exist: {source}")
+    if not source.is_dir():
+        raise ValueError(f"source project is not a directory: {source}")
+
+    if is_relative_to(checkpoint_base, source) or is_relative_to(checkpoint, source):
+        raise ValueError("checkpoint root must not be inside the source project")
+
+    return source, checkpoint_base, checkpoint
 
 
-def numeric_literals_from_text(text: str) -> tuple[str, ...]:
-    return ordered_unique(re.findall(r"(?<![A-Za-z_])-?\d+(?:\.\d+)?(?![A-Za-z_])", text))
-
-
-def identifier_tokens_from_text(text: str) -> tuple[str, ...]:
-    return ordered_unique(re.findall(r"[A-Za-z_][A-Za-z0-9_]{1,}", text))
-
-
-def guess_stop_words(seeds: Iterable[str]) -> tuple[str, ...]:
-    result: list[str] = []
-    seen: set[str] = set()
-
-    def visit(word: str) -> None:
-        if word in seen:
-            return
-        seen.add(word)
-        result.append(word)
-        for related in GUESS_MAP.get(word, ()):
-            visit(related)
-
-    for seed in ordered_unique(token for seed in seeds for token in split_tokens(seed)):
-        visit(seed)
-
-    return tuple(result)
-
-
-def sopwith_stop_words_for_entry(relative_path: str, path: Path | None = None, text: str = "") -> tuple[str, ...]:
-    suffix = Path(relative_path).suffix.lower()
-    seeds: list[str] = []
-    seeds.extend(split_tokens(relative_path))
-    seeds.extend(LANGUAGE_GRAMMAR_WORDS.get(suffix, ()))
-    if text:
-        seeds.extend(identifier_tokens_from_text(text)[:80])
-        if numeric_literals_from_text(text):
-            seeds.extend(("number", "literal"))
-    return guess_stop_words(seeds)
-
-
-def safe_relative_path(path: Path, root: Path) -> str:
+def relative_file_key(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
-def entry_state(root: Path, path: Path) -> EntryState:
-    relative = safe_relative_path(path, root)
-    if path.is_symlink():
-        try:
-            link_target = os.readlink(path)
-        except OSError:
-            link_target = ""
-        stop_words = sopwith_stop_words_for_entry(relative)
-        return EntryState(
-            path=relative,
-            kind="symlink",
-            sha256=hashlib.sha256(f"symlink:{link_target}".encode("utf-8", errors="replace")).hexdigest(),
-            size=None,
-            link_target=link_target,
-            sopwith_stop_words=stop_words,
-        )
-
-    if path.is_dir():
-        stop_words = sopwith_stop_words_for_entry(relative)
-        return EntryState(path=relative, kind="directory", sopwith_stop_words=stop_words)
-
-    if path.is_file():
-        text = read_text_sample(path)
-        stop_words = sopwith_stop_words_for_entry(relative, path, text)
-        return EntryState(
-            path=relative,
-            kind="file",
-            sha256=sha256_file(path),
-            size=path.stat().st_size,
-            numeric_literals=numeric_literals_from_text(text),
-            sopwith_stop_words=stop_words,
-        )
-
-    stop_words = sopwith_stop_words_for_entry(relative)
-    return EntryState(path=relative, kind="other", sopwith_stop_words=stop_words)
-
-
-def collect_entries(root: Path) -> dict[str, EntryState]:
-    if not root.exists():
-        return {}
-    if not root.is_dir():
-        raise RuntimeError(f"expected a directory: {root}")
-
-    entries: dict[str, EntryState] = {}
+def collect_entry_infos(root: Path, *, progress: bool = False, label: str = "scan") -> dict[str, EntryInfo]:
+    entries: dict[str, EntryInfo] = {}
+    visited = 0
     for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
-        state = entry_state(root, path)
-        entries[state.path] = state
+        if path.is_dir() and not path.is_symlink():
+            continue
+
+        relative = relative_file_key(path, root)
+        visited += 1
+
+        if path.is_symlink():
+            target = os.readlink(path)
+            data = target.encode("utf-8", errors="surrogateescape")
+            info = EntryInfo(
+                path=relative,
+                kind="symlink",
+                sha256=sha256_bytes(b"symlink:" + data),
+                size=len(data),
+                numeric_literals=numeric_literals_from_text(target),
+                sopwith_stop_words=sopwith_words_for_file(relative, data),
+            )
+        else:
+            data = path.read_bytes()
+            text = extract_text(data)
+            info = EntryInfo(
+                path=relative,
+                kind="file",
+                sha256=sha256_bytes(data),
+                size=len(data),
+                numeric_literals=numeric_literals_from_text(text),
+                sopwith_stop_words=sopwith_words_for_file(relative, data),
+            )
+        entries[relative] = info
+
+        if progress and visited % 250 == 0:
+            emit_human(True, f"antigit: {label}: indexed {visited} raw entries so far...")
+
+    if progress:
+        emit_human(True, f"antigit: {label}: indexed {visited} raw file/symlink entries.")
     return entries
 
 
-def combine_words(*groups: Iterable[str]) -> tuple[str, ...]:
-    return ordered_unique(word for group in groups for word in group)
+def signal_events(source_root: Path, checkpoint: Path) -> tuple[list[dict], dict]:
+    source_entries = collect_entry_infos(source_root)
+    checkpoint_entries = collect_entry_infos(checkpoint) if checkpoint.exists() else {}
 
+    events: list[dict] = []
+    for path in sorted(set(source_entries) | set(checkpoint_entries)):
+        source_info = source_entries.get(path)
+        checkpoint_info = checkpoint_entries.get(path)
 
-def compare_dirs(before_root: Path | None, after_root: Path, include_unchanged: bool = False) -> tuple[ChangeSignal, ...]:
-    before = collect_entries(before_root) if before_root and before_root.exists() else {}
-    after = collect_entries(after_root)
-    signals: list[ChangeSignal] = []
-
-    for relative in sorted(set(before) | set(after)):
-        old = before.get(relative)
-        new = after.get(relative)
-
-        if old is None and new is not None:
-            signals.append(
-                ChangeSignal(
-                    action="added",
-                    path=relative,
-                    kind=new.kind,
-                    after_kind=new.kind,
-                    after_sha256=new.sha256,
-                    after_size=new.size,
-                    after_numeric_literals=new.numeric_literals,
-                    numeric_literals=new.numeric_literals,
-                    sopwith_stop_words=new.sopwith_stop_words,
-                )
+        if checkpoint_info is None and source_info is not None:
+            events.append(
+                {
+                    "event": "antigit.signal",
+                    "path": path,
+                    "action": "added",
+                    "numeric_literals": list(source_info.numeric_literals),
+                    "sopwith_stop_words": list(source_info.sopwith_stop_words),
+                    "size": source_info.size,
+                    "kind": source_info.kind,
+                }
             )
-            continue
-
-        if old is not None and new is None:
-            signals.append(
-                ChangeSignal(
-                    action="deleted",
-                    path=relative,
-                    kind=old.kind,
-                    before_kind=old.kind,
-                    before_sha256=old.sha256,
-                    before_size=old.size,
-                    before_numeric_literals=old.numeric_literals,
-                    numeric_literals=old.numeric_literals,
-                    sopwith_stop_words=old.sopwith_stop_words,
-                )
+        elif source_info is None and checkpoint_info is not None:
+            events.append(
+                {
+                    "event": "antigit.signal",
+                    "path": path,
+                    "action": "deleted",
+                    "before_numeric_literals": list(checkpoint_info.numeric_literals),
+                    "sopwith_stop_words": list(checkpoint_info.sopwith_stop_words),
+                    "size": checkpoint_info.size,
+                    "kind": checkpoint_info.kind,
+                }
             )
-            continue
-
-        assert old is not None and new is not None
-        same = (
-            old.kind == new.kind
-            and old.sha256 == new.sha256
-            and old.link_target == new.link_target
-            and old.size == new.size
-        )
-        if same:
-            if include_unchanged:
-                signals.append(
-                    ChangeSignal(
-                        action="unchanged",
-                        path=relative,
-                        kind=new.kind,
-                        before_kind=old.kind,
-                        after_kind=new.kind,
-                        before_sha256=old.sha256,
-                        after_sha256=new.sha256,
-                        before_size=old.size,
-                        after_size=new.size,
-                        before_numeric_literals=old.numeric_literals,
-                        after_numeric_literals=new.numeric_literals,
-                        numeric_literals=new.numeric_literals,
-                        sopwith_stop_words=new.sopwith_stop_words,
-                    )
-                )
-            continue
-
-        action = "modified" if old.kind == new.kind else "type_changed"
-        signals.append(
-            ChangeSignal(
-                action=action,
-                path=relative,
-                kind=new.kind,
-                before_kind=old.kind,
-                after_kind=new.kind,
-                before_sha256=old.sha256,
-                after_sha256=new.sha256,
-                before_size=old.size,
-                after_size=new.size,
-                before_numeric_literals=old.numeric_literals,
-                after_numeric_literals=new.numeric_literals,
-                numeric_literals=combine_words(new.numeric_literals, old.numeric_literals),
-                sopwith_stop_words=combine_words(new.sopwith_stop_words, old.sopwith_stop_words),
+        elif source_info is not None and checkpoint_info is not None and source_info.sha256 != checkpoint_info.sha256:
+            events.append(
+                {
+                    "event": "antigit.signal",
+                    "path": path,
+                    "action": "modified",
+                    "before_numeric_literals": list(checkpoint_info.numeric_literals),
+                    "after_numeric_literals": list(source_info.numeric_literals),
+                    "sopwith_stop_words": list(
+                        unique_preserve_order(checkpoint_info.sopwith_stop_words + source_info.sopwith_stop_words)
+                    ),
+                    "before_size": checkpoint_info.size,
+                    "after_size": source_info.size,
+                    "kind": source_info.kind,
+                }
             )
-        )
 
-    return tuple(signals)
-
-
-def checkpoint_name_for_source(source: Path, override: str | None = None) -> str:
-    if override:
-        if any(sep in override for sep in ("/", "\\")) or override in {"", ".", ".."}:
-            raise RuntimeError(f"unsafe checkpoint name: {override!r}")
-        return override
-    return f"antigit_{source.name}_checkpoint"
-
-
-def default_checkpoint_root(source: Path) -> Path:
-    return source.parent / "checkpoint"
-
-
-def resolve_checkpoint(source: Path, checkpoint_root: Path | None, name: str | None = None) -> tuple[Path, Path]:
-    source = source.resolve()
-    root = (checkpoint_root.resolve() if checkpoint_root else default_checkpoint_root(source).resolve())
-    checkpoint = (root / checkpoint_name_for_source(source, name)).resolve()
-
-    try:
-        root.relative_to(source)
-    except ValueError:
-        pass
-    else:
-        raise RuntimeError("checkpoint root must not be inside the source project; anti-git must not write into the current directory")
-
-    try:
-        checkpoint.relative_to(source)
-    except ValueError:
-        pass
-    else:
-        raise RuntimeError("checkpoint destination must not be inside the source project; anti-git must not write into the current directory")
-
-    return root, checkpoint
-
-
-def copy_clone_atomic(source: Path, checkpoint_root: Path, checkpoint: Path) -> None:
-    checkpoint_root.mkdir(parents=True, exist_ok=True)
-    temp_name = f".{checkpoint.name}.tmp.{os.getpid()}"
-    backup_name = f".{checkpoint.name}.previous.{os.getpid()}"
-    temp_path = checkpoint_root / temp_name
-    backup_path = checkpoint_root / backup_name
-
-    if temp_path.exists():
-        shutil.rmtree(temp_path)
-    if backup_path.exists():
-        shutil.rmtree(backup_path)
-
-    shutil.copytree(source, temp_path, symlinks=True, copy_function=shutil.copy2)
-
-    try:
-        if checkpoint.exists():
-            checkpoint.rename(backup_path)
-        temp_path.rename(checkpoint)
-    except Exception:
-        if temp_path.exists() and not checkpoint.exists():
-            temp_path.rename(checkpoint)
-        if backup_path.exists() and not checkpoint.exists():
-            backup_path.rename(checkpoint)
-        raise
-    finally:
-        if backup_path.exists():
-            shutil.rmtree(backup_path)
-
-
-def signal_to_payload(signal: ChangeSignal) -> dict:
-    payload = {
-        "event": "antigit.signal",
-        "action": signal.action,
-        "path": signal.path,
-        "kind": signal.kind,
-        "before_kind": signal.before_kind,
-        "after_kind": signal.after_kind,
-        "before_sha256": signal.before_sha256,
-        "after_sha256": signal.after_sha256,
-        "before_size": signal.before_size,
-        "after_size": signal.after_size,
-        "before_numeric_literals": list(signal.before_numeric_literals),
-        "after_numeric_literals": list(signal.after_numeric_literals),
-        "numeric_literals": list(signal.numeric_literals),
-        "sopwith_stop_words": list(signal.sopwith_stop_words),
+    summary = {
+        "event": "antigit.signal.summary",
+        "source": str(source_root),
+        "checkpoint": str(checkpoint),
+        "changed_files": len(events),
+        "added": sum(1 for event in events if event["action"] == "added"),
+        "modified": sum(1 for event in events if event["action"] == "modified"),
+        "deleted": sum(1 for event in events if event["action"] == "deleted"),
     }
-    return {key: value for key, value in payload.items() if value not in (None, [], ())}
+    return events, summary
 
 
-def summarize_signals(signals: Iterable[ChangeSignal]) -> dict[str, int]:
-    summary = {"added": 0, "modified": 0, "deleted": 0, "type_changed": 0, "unchanged": 0}
-    for signal in signals:
-        summary.setdefault(signal.action, 0)
-        summary[signal.action] += 1
-    return summary
+def emit_signal(events: list[dict], summary: dict, *, json_output: bool) -> None:
+    if json_output:
+        for event in events:
+            print(json.dumps(event, sort_keys=True), flush=True)
+        print(json.dumps(summary, sort_keys=True), flush=True)
+        return
+
+    if not events:
+        print("antigit signal: no raw machine-state changes relative to the checkpoint.", flush=True)
+    else:
+        print(f"antigit signal: {len(events)} changed raw entries:", flush=True)
+        for event in events:
+            words = ", ".join(event.get("sopwith_stop_words", [])[:12])
+            print(f"  {event['action']:<8} {event['path']}  sopwith=[{words}]", flush=True)
+    print(
+        "antigit signal summary: "
+        f"added={summary['added']} modified={summary['modified']} deleted={summary['deleted']}",
+        flush=True,
+    )
 
 
-def count_files(root: Path) -> int:
-    return sum(1 for path in root.rglob("*") if path.is_file() or path.is_symlink())
+def remove_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
 
 
-def print_json_lines(signals: Iterable[ChangeSignal]) -> None:
-    for signal in signals:
-        print(json.dumps(signal_to_payload(signal), sort_keys=True))
-
-
-def print_plain_signals(signals: Iterable[ChangeSignal]) -> None:
-    for signal in signals:
-        numbers = ",".join(signal.numeric_literals[:12])
-        words = ",".join(signal.sopwith_stop_words[:16])
-        print(f"{signal.action:<12} {signal.kind:<10} {signal.path} numbers=[{numbers}] sopwith=[{words}]")
-
-
-def cmd_snapshot(args: argparse.Namespace) -> int:
-    source = Path(args.source).resolve()
-    if not source.exists() or not source.is_dir():
-        print(f"error: source must be an existing directory: {source}", file=sys.stderr)
-        return 2
-
+def copy_symlink(source: Path, destination: Path) -> None:
+    target = os.readlink(source)
     try:
-        checkpoint_root, checkpoint = resolve_checkpoint(
-            source,
-            Path(args.checkpoint_root) if args.checkpoint_root else None,
-            args.name,
-        )
-        signals = compare_dirs(checkpoint if checkpoint.exists() else None, source, include_unchanged=False)
-        summary = summarize_signals(signals)
-        file_count = count_files(source)
-
-        if args.emit_signal:
-            if args.json:
-                print_json_lines(signals)
-            else:
-                print_plain_signals(signals)
-
-        if not args.dry_run:
-            copy_clone_atomic(source, checkpoint_root, checkpoint)
-
-        event = "antigit.snapshot.dry_run" if args.dry_run else "antigit.snapshot.created"
-        payload = {
-            "event": event,
-            "source_root": str(source),
-            "checkpoint_root": str(checkpoint_root),
-            "checkpoint_path": str(checkpoint),
-            "checkpoint_name": checkpoint.name,
-            "file_count": file_count,
-            "changed_files": sum(summary.get(key, 0) for key in ("added", "modified", "deleted", "type_changed")),
-            "summary": summary,
-            "dry_run": bool(args.dry_run),
-            "writes_to_source": False,
-            "uses_gitignore": False,
-        }
-
-        if args.json:
-            print(json.dumps(payload, sort_keys=True))
+        os.symlink(target, destination)
+    except (AttributeError, NotImplementedError, OSError):
+        # Some Windows environments disallow creating symlinks.  Fall back to
+        # copying the referent when possible so the checkpoint still contains
+        # usable machine state instead of failing late and silently.
+        if source.exists() and source.is_file():
+            shutil.copy2(source, destination)
+        elif source.exists() and source.is_dir():
+            shutil.copytree(source, destination, symlinks=True)
         else:
-            print(f"{event}: {checkpoint}")
-            print(f"source: {source}")
-            print(f"checkpoint_name: {checkpoint.name}")
-            print(f"file_count: {file_count}")
-            print(f"changed_files_since_previous_checkpoint: {payload['changed_files']}")
-            print("writes_to_source: false")
-            print("uses_gitignore: false")
-        return 0
-    except RuntimeError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
+            destination.write_text(target, encoding="utf-8")
 
 
-def cmd_signal(args: argparse.Namespace) -> int:
-    source = Path(args.source).resolve()
-    if not source.exists() or not source.is_dir():
-        print(f"error: source must be an existing directory: {source}", file=sys.stderr)
-        return 2
+def clone_directory(source_root: Path, destination: Path, *, verbose: bool) -> CopyStats:
+    directories = 0
+    files = 0
+    symlinks = 0
+    bytes_copied = 0
+
+    destination.mkdir(parents=True, exist_ok=False)
+
+    all_paths = sorted(source_root.rglob("*"), key=lambda item: item.relative_to(source_root).as_posix())
+    emit_human(verbose, f"antigit: copy plan contains {len(all_paths)} raw filesystem entries.")
+
+    for path in all_paths:
+        relative = path.relative_to(source_root)
+        target = destination / relative
+
+        if path.is_symlink():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            copy_symlink(path, target)
+            symlinks += 1
+        elif path.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            shutil.copystat(path, target, follow_symlinks=False)
+            directories += 1
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+            files += 1
+            try:
+                bytes_copied += path.stat().st_size
+            except OSError:
+                pass
+
+        processed = directories + files + symlinks
+        if verbose and (processed == 1 or processed % 100 == 0):
+            print(
+                "antigit: copying raw machine state... "
+                f"{processed}/{len(all_paths)} entries, {files} files, {directories} dirs, {symlinks} symlinks.",
+                flush=True,
+            )
+
+    emit_human(
+        verbose,
+        "antigit: finished copying raw machine state "
+        f"({files} files, {directories} directories, {symlinks} symlinks, {bytes_copied} bytes).",
+    )
+    return CopyStats(files=files, directories=directories, symlinks=symlinks, bytes=bytes_copied)
+
+
+def replace_checkpoint(temp_checkpoint: Path, checkpoint: Path, *, verbose: bool) -> None:
+    backup: Path | None = None
+    if checkpoint.exists() or checkpoint.is_symlink():
+        if not checkpoint.is_dir() or checkpoint.is_symlink():
+            raise ValueError(f"checkpoint path exists but is not a directory: {checkpoint}")
+        backup = checkpoint.with_name(checkpoint.name + ".previous-delete")
+        if backup.exists():
+            remove_path(backup)
+        emit_human(verbose, "antigit: moving previous checkpoint aside before replacement.")
+        checkpoint.rename(backup)
 
     try:
-        _, checkpoint = resolve_checkpoint(
-            source,
-            Path(args.checkpoint_root) if args.checkpoint_root else None,
-            args.name,
-        )
-        if not checkpoint.exists():
-            print(f"error: checkpoint does not exist: {checkpoint}", file=sys.stderr)
-            return 2
+        emit_human(verbose, "antigit: installing the new checkpoint directory.")
+        temp_checkpoint.rename(checkpoint)
+    except Exception:
+        if backup is not None and not checkpoint.exists():
+            backup.rename(checkpoint)
+        raise
+    else:
+        if backup is not None:
+            emit_human(verbose, "antigit: deleting the previous checkpoint copy.")
+            remove_path(backup)
 
-        signals = compare_dirs(checkpoint, source, include_unchanged=args.include_unchanged)
-        if args.json:
-            print_json_lines(signals)
-            payload = {
+
+def create_snapshot(
+    source_root: Path,
+    checkpoint_root: Path,
+    *,
+    emit_signal_before_replace: bool,
+    json_output: bool,
+) -> int:
+    source, checkpoint_base, checkpoint = validate_source_and_checkpoint(source_root, checkpoint_root)
+    verbose = not json_output
+
+    emit_human(verbose, "antigit snapshot: starting external raw machine-state checkpoint.")
+    emit_human(verbose, f"antigit: source project: {source}")
+    emit_human(verbose, f"antigit: checkpoint directory: {checkpoint}")
+    emit_human(verbose, "antigit: source project will not be edited.")
+    emit_human(verbose, "antigit: .gitignore is copied as data but its ignore rules are not obeyed.")
+    emit_human(verbose, "antigit: zip files, ignored files, .git, caches, logs, and local runtime files are included.")
+
+    checkpoint_base.mkdir(parents=True, exist_ok=True)
+
+    events: list[dict] = []
+    summary: dict | None = None
+    if checkpoint.exists():
+        emit_human(verbose, "antigit: existing checkpoint found; comparing it to the live source before replacement.")
+        if verbose:
+            collect_entry_infos(source, progress=True, label="source scan")
+            collect_entry_infos(checkpoint, progress=True, label="checkpoint scan")
+        events, summary = signal_events(source, checkpoint)
+        if emit_signal_before_replace:
+            emit_signal(events, summary, json_output=json_output)
+        elif verbose:
+            emit_human(
+                True,
+                "antigit: comparison complete: "
+                f"{summary['changed_files']} changed entries "
+                f"(added={summary['added']}, modified={summary['modified']}, deleted={summary['deleted']}).",
+            )
+    else:
+        emit_human(verbose, "antigit: no previous checkpoint exists; this is the first raw clone.")
+        if emit_signal_before_replace:
+            summary = {
                 "event": "antigit.signal.summary",
-                "source_root": str(source),
-                "checkpoint_path": str(checkpoint),
-                "summary": summarize_signals(signals),
-                "changed_files": sum(1 for signal in signals if signal.action != "unchanged"),
-                "writes_to_source": False,
-                "uses_gitignore": False,
+                "source": str(source),
+                "checkpoint": str(checkpoint),
+                "changed_files": 0,
+                "added": 0,
+                "modified": 0,
+                "deleted": 0,
             }
-            print(json.dumps(payload, sort_keys=True))
-        else:
-            print_plain_signals(signals)
-            summary = summarize_signals(signals)
-            changed = sum(1 for signal in signals if signal.action != "unchanged")
-            print(f"summary: {summary}")
-            print(f"changed_files: {changed}")
-            print("writes_to_source: false")
-            print("uses_gitignore: false")
-        return 0
-    except RuntimeError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
+            emit_signal([], summary, json_output=json_output)
+
+    temp_parent = checkpoint_base
+    temp_checkpoint = Path(tempfile.mkdtemp(prefix=f".{checkpoint.name}.tmp-", dir=temp_parent))
+    remove_path(temp_checkpoint)
+    try:
+        emit_human(verbose, "antigit: cloning the complete source directory into a temporary checkpoint.")
+        stats = clone_directory(source, temp_checkpoint, verbose=verbose)
+        replace_checkpoint(temp_checkpoint, checkpoint, verbose=verbose)
+    except Exception:
+        if temp_checkpoint.exists() or temp_checkpoint.is_symlink():
+            remove_path(temp_checkpoint)
+        raise
+
+    payload = {
+        "event": "antigit.snapshot.created",
+        "source": str(source),
+        "checkpoint_root": str(checkpoint_base),
+        "checkpoint": str(checkpoint),
+        "checkpoint_name": checkpoint.name,
+        "writes_to_source": False,
+        "uses_gitignore": False,
+        "files_copied": stats.files,
+        "directories_copied": stats.directories,
+        "symlinks_copied": stats.symlinks,
+        "bytes_copied": stats.bytes,
+    }
+    if summary is not None:
+        payload["changed_files_before_replace"] = summary["changed_files"]
+
+    if json_output:
+        print(json.dumps(payload, sort_keys=True), flush=True)
+    else:
+        print("antigit snapshot: complete.", flush=True)
+        print(f"antigit: checkpoint is ready at {checkpoint}", flush=True)
+        print(
+            "antigit: source remained read-only; all writes went to the sibling checkpoint directory.",
+            flush=True,
+        )
+    return 0
 
 
-def cmd_diff(args: argparse.Namespace) -> int:
-    before = Path(args.before).resolve()
-    after = Path(args.after).resolve()
-    if not before.exists() or not before.is_dir():
-        print(f"error: before must be an existing directory: {before}", file=sys.stderr)
-        return 2
-    if not after.exists() or not after.is_dir():
-        print(f"error: after must be an existing directory: {after}", file=sys.stderr)
-        return 2
-
-    signals = compare_dirs(before, after, include_unchanged=args.include_unchanged)
-    if args.json:
-        print_json_lines(signals)
-        payload = {
-            "event": "antigit.diff.summary",
-            "before": str(before),
-            "after": str(after),
-            "summary": summarize_signals(signals),
-            "changed_files": sum(1 for signal in signals if signal.action != "unchanged"),
-            "writes_to_source": False,
-            "uses_gitignore": False,
+def run_signal(source_root: Path, checkpoint_root: Path, *, json_output: bool) -> int:
+    source, checkpoint_base, checkpoint = validate_source_and_checkpoint(source_root, checkpoint_root)
+    if not checkpoint.exists():
+        summary = {
+            "event": "antigit.signal.summary",
+            "source": str(source),
+            "checkpoint": str(checkpoint),
+            "changed_files": 0,
+            "added": 0,
+            "modified": 0,
+            "deleted": 0,
         }
-        print(json.dumps(payload, sort_keys=True))
-    else:
-        print_plain_signals(signals)
-        print(f"summary: {summarize_signals(signals)}")
+        if json_output:
+            print(json.dumps(summary, sort_keys=True), flush=True)
+        else:
+            print(f"antigit signal: no checkpoint exists yet at {checkpoint}", flush=True)
+            print("antigit signal summary: added=0 modified=0 deleted=0", flush=True)
+        return 0
+
+    if not json_output:
+        print(f"antigit signal: comparing source {source}", flush=True)
+        print(f"antigit signal: against checkpoint {checkpoint}", flush=True)
+        collect_entry_infos(source, progress=True, label="source scan")
+        collect_entry_infos(checkpoint, progress=True, label="checkpoint scan")
+
+    events, summary = signal_events(source, checkpoint)
+    emit_signal(events, summary, json_output=json_output)
     return 0
 
 
-def cmd_guess_stop_words(args: argparse.Namespace) -> int:
-    words = guess_stop_words(args.words)
-    payload = {"event": "antigit.sopwith_stop_words", "sopwith_stop_words": list(words)}
-    if args.json:
-        print(json.dumps(payload, sort_keys=True))
+def run_guess_stop_words(seeds: list[str], *, json_output: bool) -> int:
+    words = guess_stop_words_from_seeds(seeds)
+    if json_output:
+        print(json.dumps({"event": "antigit.sopwith_stop_words", "sopwith_stop_words": list(words)}, sort_keys=True))
     else:
-        print(" ".join(words))
+        print("sopwith stop words:")
+        for word in words:
+            print(f"  {word}")
     return 0
 
 
-def build_parser() -> argparse.ArgumentParser:
+def add_common_snapshot_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("source", nargs="?", default=".", help="Source project directory. Defaults to the current directory.")
+    parser.add_argument(
+        "--checkpoint-root",
+        default=None,
+        help="Directory that contains the named checkpoint. Defaults to ../checkpoint from the source project.",
+    )
+    parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON and suppress human progress narration.")
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Anti-git snapshots raw machine state by cloning a project directory into "
-            "../checkpoint/antigit_<repo>_checkpoint without obeying .gitignore."
+            "Anti-git snapshots raw machine state by cloning the current project to "
+            "../checkpoint/antigit_<project>_checkpoint without obeying .gitignore."
         )
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    snapshot = subparsers.add_parser(
-        "snapshot",
-        help="Clone the source project to ../checkpoint/antigit_<repo>_checkpoint.",
+    snapshot_parser = subparsers.add_parser("snapshot", help="Create or replace the external checkpoint directory clone.")
+    add_common_snapshot_args(snapshot_parser)
+    snapshot_parser.add_argument(
+        "--emit-signal",
+        action="store_true",
+        help="Emit the changes relative to the previous checkpoint before replacing it.",
     )
-    snapshot.add_argument("source", nargs="?", default=".", help="Project directory to clone. Defaults to the current directory.")
-    snapshot.add_argument("--checkpoint-root", default=None, help="Directory that will contain the named checkpoint. Defaults to ../checkpoint from the source.")
-    snapshot.add_argument("--name", default=None, help="Override the checkpoint directory name. Defaults to antigit_<repo>_checkpoint.")
-    snapshot.add_argument("--emit-signal", action="store_true", help="Before replacing the checkpoint, emit changes versus the previous checkpoint.")
-    snapshot.add_argument("--dry-run", action="store_true", help="Emit the plan without writing the checkpoint clone.")
-    snapshot.add_argument("--json", action="store_true", help="Emit JSON lines.")
-    snapshot.set_defaults(func=cmd_snapshot)
 
-    signal = subparsers.add_parser(
-        "signal",
-        help="Compare the existing named checkpoint to the current source without writing anything.",
-    )
-    signal.add_argument("source", nargs="?", default=".", help="Project directory to compare. Defaults to the current directory.")
-    signal.add_argument("--checkpoint-root", default=None, help="Directory that contains the named checkpoint. Defaults to ../checkpoint from the source.")
-    signal.add_argument("--name", default=None, help="Override the checkpoint directory name. Defaults to antigit_<repo>_checkpoint.")
-    signal.add_argument("--include-unchanged", action="store_true", help="Also emit unchanged entries.")
-    signal.add_argument("--json", action="store_true", help="Emit JSON lines.")
-    signal.set_defaults(func=cmd_signal)
+    signal_parser = subparsers.add_parser("signal", help="Compare the live source project to the existing checkpoint.")
+    add_common_snapshot_args(signal_parser)
 
-    diff = subparsers.add_parser("diff", help="Compare any two directory trees.")
-    diff.add_argument("before", help="Earlier directory tree.")
-    diff.add_argument("after", help="Later directory tree.")
-    diff.add_argument("--include-unchanged", action="store_true", help="Also emit unchanged entries.")
-    diff.add_argument("--json", action="store_true", help="Emit JSON lines.")
-    diff.set_defaults(func=cmd_diff)
+    guess_parser = subparsers.add_parser("guess-stop-words", help="Expand seed terms into deterministic sopwith stop words.")
+    guess_parser.add_argument("seeds", nargs="+")
+    guess_parser.add_argument("--json", action="store_true")
 
-    guess = subparsers.add_parser("guess-stop-words", help="Expand seed terms into deterministic sopwith stop words.")
-    guess.add_argument("words", nargs="+", help="Seed words.")
-    guess.add_argument("--json", action="store_true", help="Emit JSON.")
-    guess.set_defaults(func=cmd_guess_stop_words)
+    return parser.parse_args(argv)
 
-    return parser
+
+def checkpoint_root_from_args(source: Path, raw_checkpoint_root: str | None) -> Path:
+    if raw_checkpoint_root is None:
+        return default_checkpoint_root(source)
+    return Path(raw_checkpoint_root)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(list(argv or sys.argv[1:]))
-    return args.func(args)
+    args = parse_args(list(argv if argv is not None else sys.argv[1:]))
+    try:
+        if args.command == "snapshot":
+            source = Path(args.source)
+            checkpoint_root = checkpoint_root_from_args(source, args.checkpoint_root)
+            return create_snapshot(
+                source,
+                checkpoint_root,
+                emit_signal_before_replace=args.emit_signal,
+                json_output=args.json,
+            )
+        if args.command == "signal":
+            source = Path(args.source)
+            checkpoint_root = checkpoint_root_from_args(source, args.checkpoint_root)
+            return run_signal(source, checkpoint_root, json_output=args.json)
+        if args.command == "guess-stop-words":
+            return run_guess_stop_words(args.seeds, json_output=args.json)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr, flush=True)
+        return 2
+    except OSError as exc:
+        print(f"error: filesystem operation failed: {exc}", file=sys.stderr, flush=True)
+        return 1
+
+    print(f"error: unsupported command: {args.command}", file=sys.stderr, flush=True)
+    return 2
 
 
 if __name__ == "__main__":

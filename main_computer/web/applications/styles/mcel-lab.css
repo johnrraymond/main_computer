@@ -1140,6 +1140,133 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
   line-height: 1.4;
 }
 
+.mcel-canonical-specimen {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.72fr) minmax(320px, 1fr);
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid rgba(115, 214, 255, 0.26);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(115, 214, 255, 0.14), transparent 34%),
+    linear-gradient(90deg, rgba(246, 199, 91, 0.06), transparent 48%),
+    #050706;
+}
+
+.mcel-canonical-specimen-copy {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+}
+
+.mcel-canonical-specimen-copy h4 {
+  margin: 0;
+  color: var(--gold);
+  font-size: 18px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mcel-canonical-specimen-copy p:not(.eyebrow) {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
+.mcel-canonical-specimen-controls {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+}
+
+.mcel-canonical-specimen-controls label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.mcel-canonical-specimen-controls select {
+  min-height: 34px;
+  min-width: 180px;
+  border: 1px solid rgba(246, 199, 91, 0.28);
+  border-radius: 999px;
+  background: #030403;
+  color: var(--ink);
+  padding: 6px 10px;
+}
+
+.mcel-canonical-specimen-controls button {
+  min-height: 34px;
+  border: 1px solid rgba(115, 214, 255, 0.34);
+  border-radius: 999px;
+  background: rgba(115, 214, 255, 0.1);
+  color: var(--sky, #73d6ff);
+  padding: 7px 11px;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+#mcel-canonical-app-status {
+  min-width: min(100%, 320px);
+  flex: 1 1 320px;
+  padding: 8px 10px;
+  border: 1px solid rgba(174, 224, 111, 0.2);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.34);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.mcel-canonical-specimen-frame-shell {
+  grid-column: 1 / -1;
+  min-width: 0;
+  min-height: 360px;
+  border: 1px solid rgba(246, 199, 91, 0.2);
+  border-radius: 12px;
+  background: #030403;
+  overflow: hidden;
+}
+
+.mcel-canonical-app-frame {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: min(64vh, 720px);
+  min-height: 360px;
+  border: 0;
+  background: #050605;
+}
+
+.mcel-canonical-app-report {
+  grid-column: 1 / -1;
+  min-width: 0;
+  max-height: 220px;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid rgba(115, 214, 255, 0.2);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.36);
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow: auto;
+}
+
 .mcel-runtime-preview > .mc[data-mc-component-kind="page"] {
   width: min(100%, 1120px);
   justify-self: center;
@@ -1499,6 +1626,10 @@ body.mcel-modal-open {
 }
 
 @media (max-width: 1180px) {
+  .mcel-canonical-specimen {
+    grid-template-columns: 1fr;
+  }
+
   .mcel-lab-primary-controls {
     grid-template-columns: 1fr;
   }

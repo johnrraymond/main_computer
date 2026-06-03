@@ -103,6 +103,59 @@
     </div>
   </section>
 
+  <section
+    class="mcel-canonical-specimen"
+    aria-label="Canonical application specimen test"
+    data-mc-component-id="mcel-lab.canonical-specimen"
+    data-mc-component-kind="proof"
+    data-mc-component-label="Canonical Application Specimen"
+    data-mc-widget-id="mcel-lab.canonical-specimen"
+    data-mc-widget-kind="proof"
+    data-mc-widget-class="canonical-app"
+    data-mc-widget-label="Canonical App Specimen"
+  >
+    <div class="mcel-canonical-specimen-copy">
+      <p class="eyebrow">Canonical App Test</p>
+      <h4>Mount a real application and prove it without rewriting it.</h4>
+      <p>
+        The first specimen is Task Manager. MCEL Lab loads it in a same-origin iframe,
+        inspects its live DOM, and audits known risky action surfaces without executing
+        server control, PID termination, or schedule actions.
+      </p>
+    </div>
+    <div class="mcel-canonical-specimen-controls" role="group" aria-label="Canonical app specimen controls">
+      <label>
+        Specimen
+        <select id="mcel-canonical-app-select" aria-label="Canonical app specimen selector">
+          <option
+            value="task-manager"
+            data-route="/applications/task-manager/server-processes?mcel_lab_specimen=task-manager"
+            data-root="#task-manager-app"
+          >Task Manager</option>
+        </select>
+      </label>
+      <button type="button" id="mcel-canonical-app-mount">Mount Task Manager</button>
+      <button type="button" id="mcel-canonical-app-refresh">Refresh Specimen</button>
+      <button type="button" id="mcel-canonical-app-inspect">Inspect Specimen</button>
+      <button type="button" id="mcel-canonical-app-proof">Run Specimen Proof</button>
+      <output id="mcel-canonical-app-status" aria-live="polite">canonical app specimen not mounted</output>
+    </div>
+    <div class="mcel-canonical-specimen-frame-shell">
+      <iframe
+        id="mcel-canonical-app-frame"
+        class="mcel-canonical-app-frame"
+        title="Canonical application specimen"
+        src="about:blank"
+        loading="lazy"
+        sandbox="allow-same-origin allow-scripts allow-forms"
+        data-mcel-specimen-app="task-manager"
+        data-mcel-specimen-root="#task-manager-app"
+        data-mcel-specimen-route="/applications/task-manager/server-processes?mcel_lab_specimen=task-manager"
+      ></iframe>
+    </div>
+    <pre id="mcel-canonical-app-report" class="mcel-canonical-app-report" aria-label="Canonical app specimen report">Mount Task Manager to inspect it as a canonical MCEL specimen.</pre>
+  </section>
+
   <section id="mcel-runtime-measurement-well" class="mcel-runtime-measurement-well" aria-hidden="true">
     <div id="mcel-runtime-preview" class="mcel-runtime-preview theme-machine" aria-label="Compiled MCEL preview"></div>
   </section>

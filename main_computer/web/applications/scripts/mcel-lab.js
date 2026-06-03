@@ -82,8 +82,15 @@
       mcelSiteFrameResync?.addEventListener("click", () => syncMcelRenderedSiteFrame("twiddle-resync"));
       mcelSiteFrameRebuild?.addEventListener("click", () => rebuildMcelSiteFrameShell("twiddle-rebuild", {syncAfter: true}));
       mcelSiteFrameClear?.addEventListener("click", () => clearMcelSiteFrameSrcdoc("twiddle-clear"));
+      mcelCanonicalAppMount?.addEventListener("click", () => mountMcelCanonicalAppSpecimen("manual-mount"));
+      mcelCanonicalAppRefresh?.addEventListener("click", () => refreshMcelCanonicalAppSpecimen("manual-refresh"));
+      mcelCanonicalAppInspect?.addEventListener("click", () => inspectMcelCanonicalAppSpecimen("manual-inspect"));
+      mcelCanonicalAppProof?.addEventListener("click", () => runMcelCanonicalAppSpecimenProof("manual-proof"));
+      mcelCanonicalAppSelect?.addEventListener("change", () => renderMcelCanonicalAppSpecimenStatus("specimen-select"));
       bindMcelSiteFrameLifecycle("boot");
       renderMcelSiteFrameTwiddle("boot");
+      bindMcelCanonicalAppSpecimenLifecycle("boot");
+      renderMcelCanonicalAppSpecimenStatus("boot");
       document.querySelectorAll("[data-mcel-close-modal]").forEach((button) => {
         button.addEventListener("click", () => closeMcelLabModal(button.dataset.mcelCloseModal || "all"));
       });
@@ -3495,6 +3502,284 @@
         recordMcelSiteFrameTwiddle("iframe-sync", {reason, hash: documentHash, length: documentHtml.length, fitStatus: "pending", fitViolations: 0});
       });
     }
+
+    const MCEL_CANONICAL_TASK_MANAGER_REQUIRED_IDS = [
+      "task-manager-app",
+      "task-manager-status",
+      "task-manager-server",
+      "task-query",
+      "task-limit",
+      "task-refresh",
+      "task-process-table",
+      "task-all-processes-table",
+      "task-connections-table",
+      "task-hardware-table",
+      "task-ai-output"
+    ];
+
+    const MCEL_CANONICAL_TASK_MANAGER_DANGEROUS_CONTROL_IDS = [
+      "task-server-shutdown",
+      "task-server-start",
+      "task-server-restart",
+      "task-schedule-create"
+    ];
+
+    const MCEL_CANONICAL_TASK_MANAGER_DANGEROUS_CONTROL_SELECTORS = [
+      "#task-server-shutdown",
+      "#task-server-start",
+      "#task-server-restart",
+      "#task-schedule-create",
+      "[data-task-action=\"terminate-pid\"]",
+      "[data-task-action=\"kill-pid\"]"
+    ];
+
+    function ensureMcelCanonicalAppSpecimenState() {
+      if (!mcelLabState.canonicalAppSpecimen) {
+        mcelLabState.canonicalAppSpecimen = {
+          mountCount: 0,
+          loadCount: 0,
+          errorCount: 0,
+          inspectCount: 0,
+          proofCount: 0,
+          app: "task-manager",
+          route: "/applications/task-manager/server-processes?mcel_lab_specimen=task-manager",
+          rootSelector: "#task-manager-app",
+          status: "idle",
+          lastAt: null
+        };
+      }
+      return mcelLabState.canonicalAppSpecimen;
+    }
+
+    function selectedMcelCanonicalAppSpecimen() {
+      const option = mcelCanonicalAppSelect?.selectedOptions?.[0] || mcelCanonicalAppSelect?.querySelector?.("option");
+      const frame = mcelCanonicalAppFrame;
+      return {
+        app: option?.value || frame?.dataset?.mcelSpecimenApp || "task-manager",
+        route: option?.dataset?.route || frame?.dataset?.mcelSpecimenRoute || "/applications/task-manager/server-processes?mcel_lab_specimen=task-manager",
+        rootSelector: option?.dataset?.root || frame?.dataset?.mcelSpecimenRoot || "#task-manager-app",
+        label: option?.textContent?.trim() || "Task Manager"
+      };
+    }
+
+    function renderMcelCanonicalAppSpecimenStatus(reason = "render") {
+      const state = ensureMcelCanonicalAppSpecimenState();
+      const report = mcelLabState.lastCanonicalSpecimenReport;
+      const proof = mcelLabState.lastCanonicalSpecimenProof;
+      const status = [
+        `specimen=${state.app || "task-manager"}`,
+        `status=${state.status || "idle"}`,
+        `mounts=${state.mountCount || 0}`,
+        `loads=${state.loadCount || 0}`,
+        `inspections=${state.inspectCount || 0}`,
+        `proofs=${state.proofCount || 0}`,
+        report ? `root=${report.rootPresent ? "present" : "missing"}` : "root=unknown",
+        proof ? `browserProof=${proof.failed ? "warning" : "ready"}` : "browserProof=not-run",
+        `reason=${reason}`
+      ].join(" · ");
+      if (mcelCanonicalAppStatus) mcelCanonicalAppStatus.textContent = status;
+      if (mcelCanonicalAppReport && !mcelLabState.lastCanonicalSpecimenReport) {
+        mcelCanonicalAppReport.textContent = "Mount Task Manager to inspect it as a canonical MCEL specimen.";
+      }
+      return status;
+    }
+
+    function bindMcelCanonicalAppSpecimenLifecycle(reason = "bind") {
+      const frame = mcelCanonicalAppFrame;
+      if (!frame || frame.dataset.lifecycleBound === "true") {
+        renderMcelCanonicalAppSpecimenStatus(reason);
+        return frame;
+      }
+      frame.dataset.lifecycleBound = "true";
+      frame.addEventListener("load", () => {
+        const state = ensureMcelCanonicalAppSpecimenState();
+        state.loadCount += 1;
+        state.status = "loaded";
+        state.lastAt = new Date().toISOString();
+        renderMcelCanonicalAppSpecimenStatus("iframe-load");
+        window.setTimeout(() => inspectMcelCanonicalAppSpecimen("iframe-load"), 80);
+      });
+      frame.addEventListener("error", () => {
+        const state = ensureMcelCanonicalAppSpecimenState();
+        state.errorCount += 1;
+        state.status = "error";
+        state.lastAt = new Date().toISOString();
+        renderMcelCanonicalAppSpecimenStatus("iframe-error");
+        recordMcelEvent("canonical-app", "MCEL_CANONICAL_SPECIMEN_IFRAME_ERROR", "Canonical app specimen iframe emitted an error.", "warning");
+      });
+      renderMcelCanonicalAppSpecimenStatus(reason);
+      return frame;
+    }
+
+    function mountMcelCanonicalAppSpecimen(reason = "mount") {
+      const frame = bindMcelCanonicalAppSpecimenLifecycle(reason);
+      if (!frame) return null;
+      const specimen = selectedMcelCanonicalAppSpecimen();
+      const state = ensureMcelCanonicalAppSpecimenState();
+      state.mountCount += 1;
+      state.app = specimen.app;
+      state.route = specimen.route;
+      state.rootSelector = specimen.rootSelector;
+      state.status = "loading";
+      state.lastAt = new Date().toISOString();
+      mcelLabState.lastCanonicalSpecimenReport = null;
+      mcelLabState.lastCanonicalSpecimenProof = null;
+      frame.dataset.mcelSpecimenApp = specimen.app;
+      frame.dataset.mcelSpecimenRoot = specimen.rootSelector;
+      frame.dataset.mcelSpecimenRoute = specimen.route;
+      frame.src = specimen.route;
+      if (mcelCanonicalAppReport) {
+        mcelCanonicalAppReport.textContent = `Mounting ${specimen.label} from ${specimen.route}\nreason: ${reason}\nNo destructive controls are executed by this lab harness.`;
+      }
+      recordMcelEvent("canonical-app", "MCEL_CANONICAL_SPECIMEN_MOUNTING", `${specimen.label} specimen iframe loading ${specimen.route}.`);
+      renderMcelCanonicalAppSpecimenStatus(reason);
+      return specimen;
+    }
+
+    function refreshMcelCanonicalAppSpecimen(reason = "refresh") {
+      const frame = bindMcelCanonicalAppSpecimenLifecycle(reason);
+      if (!frame) return mountMcelCanonicalAppSpecimen(reason);
+      const currentSrc = frame.getAttribute("src") || "";
+      if (!currentSrc || currentSrc === "about:blank") {
+        return mountMcelCanonicalAppSpecimen(reason);
+      }
+      const state = ensureMcelCanonicalAppSpecimenState();
+      state.status = "refreshing";
+      state.lastAt = new Date().toISOString();
+      try {
+        frame.contentWindow?.location?.reload();
+      } catch (error) {
+        frame.src = currentSrc;
+      }
+      recordMcelEvent("canonical-app", "MCEL_CANONICAL_SPECIMEN_REFRESHING", "Canonical app specimen iframe refresh requested.");
+      renderMcelCanonicalAppSpecimenStatus(reason);
+      return selectedMcelCanonicalAppSpecimen();
+    }
+
+    function mcelCanonicalAppFrameDocument() {
+      const frame = mcelCanonicalAppFrame;
+      if (!frame) return null;
+      try {
+        return frame.contentDocument || frame.contentWindow?.document || null;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    function inspectMcelCanonicalAppSpecimen(reason = "inspect") {
+      const state = ensureMcelCanonicalAppSpecimenState();
+      const specimen = selectedMcelCanonicalAppSpecimen();
+      const frame = bindMcelCanonicalAppSpecimenLifecycle(reason);
+      const doc = mcelCanonicalAppFrameDocument();
+      const root = doc?.querySelector?.(specimen.rootSelector) || null;
+      const requiredIds = MCEL_CANONICAL_TASK_MANAGER_REQUIRED_IDS.map((id) => ({
+        id,
+        present: Boolean(doc?.getElementById?.(id))
+      }));
+      const dangerousControls = MCEL_CANONICAL_TASK_MANAGER_DANGEROUS_CONTROL_SELECTORS.map((selector) => {
+        const elements = Array.from(doc?.querySelectorAll?.(selector) || []);
+        return {
+          selector,
+          present: elements.length > 0,
+          count: elements.length,
+          labels: elements.slice(0, 8).map((element) => (element.textContent || element.getAttribute("aria-label") || element.id || selector).trim())
+        };
+      });
+      const report = {
+        app: specimen.app,
+        route: frame?.dataset?.mcelSpecimenRoute || specimen.route,
+        rootSelector: specimen.rootSelector,
+        mounted: Boolean(frame && frame.getAttribute("src") && frame.getAttribute("src") !== "about:blank"),
+        frameReadyState: doc?.readyState || "unavailable",
+        rootPresent: Boolean(root),
+        rootLabel: root?.getAttribute?.("aria-label") || root?.id || "",
+        rootWidgetCount: root ? root.querySelectorAll(".app-widget, [data-widget-label], [data-mc-widget-id]").length : 0,
+        tabCount: root ? root.querySelectorAll("[role=\"tab\"], [data-task-tab]").length : 0,
+        requiredIds,
+        missingRequiredIds: requiredIds.filter((item) => !item.present).map((item) => item.id),
+        dangerousControls,
+        dangerousControlCount: dangerousControls.reduce((total, item) => total + item.count, 0),
+        destructiveActionsExecuted: false,
+        safetyClaim: "inspection only; the harness does not click server control, PID termination, or schedule creation actions",
+        inspectedAt: new Date().toISOString(),
+        reason
+      };
+      report.status = report.rootPresent && report.missingRequiredIds.length === 0 ? "passed" : "warning";
+      mcelLabState.lastCanonicalSpecimenReport = report;
+      state.inspectCount += 1;
+      state.status = report.status === "passed" ? "inspected" : "inspection-warning";
+      state.lastAt = report.inspectedAt;
+      if (mcelCanonicalAppReport) {
+        mcelCanonicalAppReport.textContent = JSON.stringify(report, null, 2);
+      }
+      recordMcelEvent(
+        "canonical-app",
+        report.status === "passed" ? "MCEL_CANONICAL_SPECIMEN_INSPECTED" : "MCEL_CANONICAL_SPECIMEN_INCOMPLETE",
+        report.status === "passed"
+          ? `Task Manager specimen inspected with ${report.rootWidgetCount} widget surface(s) and ${report.dangerousControlCount} audited risky control selector match(es).`
+          : `Canonical specimen inspection warning: missing ${report.missingRequiredIds.join(", ") || specimen.rootSelector}.`,
+        report.status === "passed" ? "success" : "warning"
+      );
+      renderMcelCanonicalAppSpecimenStatus(reason);
+      return report;
+    }
+
+    function runMcelCanonicalAppSpecimenProof(reason = "specimen-proof") {
+      const report = inspectMcelCanonicalAppSpecimen(reason);
+      const doc = mcelCanonicalAppFrameDocument();
+      const root = doc?.querySelector?.(report.rootSelector) || null;
+      let proof = null;
+      if (root && window.MCEL?.runBrowserProof) {
+        try {
+          proof = MCEL.runBrowserProof(root, {
+            reason,
+            surface: "canonical-app-specimen",
+            app: report.app
+          });
+        } catch (error) {
+          proof = {
+            failed: true,
+            error: error?.message || String(error),
+            reason,
+            surface: "canonical-app-specimen",
+            app: report.app
+          };
+        }
+      } else {
+        proof = {
+          failed: true,
+          reason,
+          surface: "canonical-app-specimen",
+          app: report.app,
+          error: root ? "MCEL.runBrowserProof unavailable" : `missing root ${report.rootSelector}`
+        };
+      }
+      const state = ensureMcelCanonicalAppSpecimenState();
+      state.proofCount += 1;
+      state.status = proof && !proof.failed ? "proof-ready" : "proof-warning";
+      state.lastAt = new Date().toISOString();
+      mcelLabState.lastCanonicalSpecimenProof = proof;
+      const combined = {
+        inspection: report,
+        browserProof: proof,
+        destructiveActionsExecuted: false,
+        safetyClaim: "browser proof observes the iframe DOM; it does not invoke Task Manager command buttons"
+      };
+      if (mcelCanonicalAppReport) {
+        mcelCanonicalAppReport.textContent = JSON.stringify(combined, null, 2);
+      }
+      recordMcelEvent(
+        "canonical-app",
+        proof && !proof.failed ? "MCEL_CANONICAL_SPECIMEN_PROOF_READY" : "MCEL_CANONICAL_SPECIMEN_PROOF_WARNING",
+        proof && !proof.failed
+          ? `Task Manager specimen browser proof observed ${proof.elementCount || 0} element(s).`
+          : `Task Manager specimen browser proof warning: ${proof?.error || "unavailable"}.`,
+        proof && !proof.failed ? "success" : "warning"
+      );
+      renderMcelCanonicalAppSpecimenStatus(reason);
+      return combined;
+    }
+
 
     function openMcelDiagnosticsDrawer(reason = "diagnostic-request") {
       if (!mcelDiagnosticsDrawer || mcelDiagnosticsDrawer.open) return;
