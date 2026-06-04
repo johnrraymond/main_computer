@@ -4,12 +4,15 @@ from __future__ import annotations
 
 This module is intentionally backend-only.  It decides whether a local AI
 request may offer remote overflow, and it can route an authorized current
-request through a safe, deterministic Remote Hub surface.  The safe path does
-not mint credits, hold credits, spend credits, or contact real paid workers.
+request through the Remote Hub surface.  Paid overflow requests carry explicit
+wallet/MSK authorization so the Hub can reserve and charge bridged
+wallet-account credits.  Unpaid preview calls keep the old no-credit/no-worker
+metadata for operator verification.
 """
 
 import math
 import time
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -53,6 +56,37 @@ def _as_int(value: Any, default: int = 0, *, minimum: int | None = None, maximum
     return number
 
 
+def _as_decimal(
+    value: Any,
+    default: str = "0",
+    *,
+    minimum: str | None = None,
+    maximum: str | None = None,
+) -> Decimal:
+    try:
+        number = Decimal(str(value).strip())
+        if not number.is_finite():
+            raise InvalidOperation
+    except (InvalidOperation, ValueError, TypeError):
+        number = Decimal(str(default))
+    if minimum is not None:
+        number = max(Decimal(str(minimum)), number)
+    if maximum is not None:
+        number = min(Decimal(str(maximum)), number)
+    return number
+
+
+def _decimal_text(value: Decimal) -> str:
+    text = format(value.normalize(), "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _ceil_decimal_to_int(value: Decimal, *, minimum: int = 0) -> int:
+    return max(int(minimum), int(value.to_integral_value(rounding=ROUND_CEILING)))
+
+
 def _card(key: str, title: str, status: str, message: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "key": key,
@@ -85,7 +119,7 @@ class RemoteRequestEstimate:
     reason_code: str
     estimated_input_tokens: int
     max_output_tokens: int
-    credits_per_token: int
+    credits_per_token: str
     minimum_useful_credits: int
     estimated_max_credits: int
     message: str
@@ -156,16 +190,30 @@ def estimate_remote_request(request: dict[str, Any]) -> RemoteRequestEstimate:
 
     estimated_input_tokens = max(1, int(math.ceil(content_chars / 4.0)) + attachment_count * 256)
     max_output_tokens = _as_int(request.get("max_output_tokens"), 1024, minimum=1, maximum=128_000)
-    credits_per_token = _as_int(request.get("credits_per_token"), 1, minimum=1, maximum=1_000_000)
-    estimated_max_credits = (estimated_input_tokens + max_output_tokens) * credits_per_token
-    default_minimum = min(estimated_max_credits, max(128 * credits_per_token, max_output_tokens // 4 * credits_per_token))
+    credits_per_token_decimal = _as_decimal(
+        request.get("credits_per_token"),
+        "0.001",
+        minimum="0.000001",
+        maximum="1000000",
+    )
+    credits_per_token = _decimal_text(credits_per_token_decimal)
+    estimated_max_credits_decimal = Decimal(estimated_input_tokens + max_output_tokens) * credits_per_token_decimal
+    estimated_max_credits = _ceil_decimal_to_int(estimated_max_credits_decimal, minimum=1)
+    default_minimum_decimal = min(
+        estimated_max_credits_decimal,
+        max(Decimal(128) * credits_per_token_decimal, Decimal(max_output_tokens // 4) * credits_per_token_decimal),
+    )
+    default_minimum = _ceil_decimal_to_int(default_minimum_decimal, minimum=1)
     minimum_useful_credits = _as_int(
         request.get("minimum_useful_credits"),
         default_minimum,
         minimum=1,
         maximum=max(1, estimated_max_credits),
     )
-    message = f"Estimated maximum remote authorization is {estimated_max_credits:,} credits."
+    message = (
+        f"Estimated maximum remote authorization is {estimated_max_credits:,} whole credits "
+        f"(approximately {_decimal_text(estimated_max_credits_decimal)} before ledger rounding)."
+    )
     card = _card(
         "remote_request_estimate",
         "Remote request estimate",
@@ -181,6 +229,8 @@ def estimate_remote_request(request: dict[str, Any]) -> RemoteRequestEstimate:
             "credits_per_token": credits_per_token,
             "minimum_useful_credits": minimum_useful_credits,
             "estimated_max_credits": estimated_max_credits,
+            "estimated_max_credits_approx": _decimal_text(estimated_max_credits_decimal),
+            "approximation_only": True,
         },
     )
     return RemoteRequestEstimate(
@@ -238,22 +288,23 @@ def assess_credit_readiness(request: dict[str, Any], estimate: RemoteRequestEsti
     daily_remote_limit = _as_int(credit_payload.get("daily_remote_limit"), 0, minimum=0)
     daily_remote_used = _as_int(credit_payload.get("daily_remote_used"), 0, minimum=0)
 
+    required_credits = estimate.estimated_max_credits
     ok = True
     reason_code = "credit_ready"
-    message = "Spendable bridged credits are sufficient for this remote request."
-    if bridged_credits < estimate.minimum_useful_credits:
+    message = "Spendable bridged credits are sufficient for this remote request estimate."
+    if bridged_credits < required_credits:
         ok = False
         reason_code = "insufficient_bridged_credits"
-        message = "Remote workers were not offered because bridged credits are below the minimum useful request budget."
-    elif spendable_credits < estimate.minimum_useful_credits:
+        message = "Remote workers were not offered because bridged credits are below this request's estimated authorization budget."
+    elif spendable_credits < required_credits:
         ok = False
         reason_code = "insufficient_spendable_credits"
-        message = "Remote workers were not offered because spendable credits are below the minimum useful request budget."
-    elif max(0, spendable_credits - pending_holds) < estimate.minimum_useful_credits:
+        message = "Remote workers were not offered because spendable credits are below this request's estimated authorization budget."
+    elif max(0, spendable_credits - pending_holds) < required_credits:
         ok = False
         reason_code = "pending_holds_exhaust_budget"
-        message = "Remote workers were not offered because pending holds exhaust the useful remote request budget."
-    elif daily_remote_limit and (daily_remote_used + estimate.minimum_useful_credits) > daily_remote_limit:
+        message = "Remote workers were not offered because pending holds exhaust this request's estimated authorization budget."
+    elif daily_remote_limit and (daily_remote_used + required_credits) > daily_remote_limit:
         ok = False
         reason_code = "daily_remote_limit_exceeded"
         message = "Remote workers were not offered because the daily remote spend limit would be exceeded."
@@ -707,11 +758,11 @@ def _remote_overflow_request_id(request: dict[str, Any]) -> str:
 class RemoteHubExecutionGateway:
     """Route an authorized overflow request through an observable Remote Hub surface.
 
-    The Hub endpoint used by this gateway is intentionally safe and
-    deterministic for Phase 6: it returns a Remote Hub AI answer without
-    creating credit holds, spending credits, or contacting paid workers.  The
-    important property is that the request crosses the Hub HTTP surface and the
-    Hub server emits operator-visible log lines with the same correlation id.
+    The Hub endpoint used by this gateway keeps the request on the Remote Hub
+    HTTP surface and emits operator-visible log lines with the same correlation
+    id.  Paid overflow requests carry explicit wallet/MSK authorization so the
+    Hub can reserve and charge bridged wallet-account credits; unpaid preview
+    calls keep the old no-credit/no-worker metadata.
     """
 
     def __init__(
@@ -747,6 +798,11 @@ class RemoteHubExecutionGateway:
         remote_overflow_request_id = _remote_overflow_request_id(request)
         messages = _chat_messages_from_request(request)
         provider = self._provider_for_request(request)
+        payment_authorization = (
+            dict(request.get("payment_authorization"))
+            if isinstance(request.get("payment_authorization"), dict)
+            else {}
+        )
         response = provider.remote_overflow_safe_chat(
             messages,
             remote_overflow_request_id=remote_overflow_request_id,
@@ -758,6 +814,10 @@ class RemoteHubExecutionGateway:
                 "preflight_id": (assessment.authorization_payload or {}).get("preflight_id", ""),
                 "willing_worker_count": (assessment.authorization_payload or {}).get("willing_worker_count", 0),
                 "safe_remote_hub_path": True,
+                "paid_overflow_enabled": _as_bool(request.get("remote_overflow_enabled"), False),
+                "max_output_tokens": request.get("max_output_tokens"),
+                "credits_per_token": request.get("credits_per_token"),
+                "payment_authorization": payment_authorization,
             },
         )
 
@@ -773,14 +833,20 @@ class RemoteHubExecutionGateway:
                 "willing_worker_count": (assessment.authorization_payload or {}).get("willing_worker_count", 0),
                 "no_real_paid_worker_contacted": True,
                 "no_real_remote_worker_contacted": True,
-                "no_credit_hold_created": True,
-                "no_credit_spent": True,
             }
         )
+        payment = metadata.get("payment") if isinstance(metadata.get("payment"), dict) else {}
+        credit_hold_created = bool(payment.get("hold_id"))
+        credit_spent = _as_int(payment.get("charged_credits"), 0, minimum=0) > 0
+        metadata["credit_hold_created"] = credit_hold_created
+        metadata["credit_spent"] = credit_spent
+        metadata["no_credit_hold_created"] = not credit_hold_created
+        metadata["no_credit_spent"] = not credit_spent
         result = {
             "source": "remote_hub_ai",
             "safe_remote_hub_path": True,
             "remote_overflow_request_id": remote_overflow_request_id,
+            "payment": payment if payment else None,
             "response": {
                 "content": response.content,
                 "provider": "remote-hub-ai",
@@ -792,15 +858,21 @@ class RemoteHubExecutionGateway:
                     "remote_worker_execution",
                     "Remote worker execution",
                     "completed",
-                    "Remote Hub AI returned a safe response. No credits were held or spent, and no real paid worker was contacted.",
+                    (
+                        "Remote Hub AI returned a response and the Hub recorded the paid overflow charge."
+                        if credit_spent
+                        else "Remote Hub AI returned a response. No credits were held or spent, and no real paid worker was contacted."
+                    ),
                     {
                         "source": "remote_hub_ai",
                         "remote_hub_gateway": True,
                         "safe_remote_hub_path": True,
                         "remote_overflow_request_id": remote_overflow_request_id,
                         "no_real_paid_worker_contacted": True,
-                        "no_credit_hold_created": True,
-                        "no_credit_spent": True,
+                        "credit_hold_created": credit_hold_created,
+                        "credit_spent": credit_spent,
+                        "no_credit_hold_created": not credit_hold_created,
+                        "no_credit_spent": not credit_spent,
                     },
                 )
             ],

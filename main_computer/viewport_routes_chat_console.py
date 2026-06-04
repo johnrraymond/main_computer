@@ -322,16 +322,18 @@ class ViewportChatConsoleRoutesMixin:
         if not submit_body.get("remote_hub_current_request"):
             return submit_body
 
-        submit_body["remote_overflow_enabled"] = True
-        submit_body["local_only"] = False
-        submit_body["authorization_granted_by_user"] = True
-        submit_body["credit_ready"] = True
-        submit_body["willing_worker_count"] = max(1, int(submit_body.get("willing_worker_count") or 0))
-
+        remote_enabled = bool(submit_body.get("remote_overflow_enabled"))
         credit_payload = submit_body.get("credit") if isinstance(submit_body.get("credit"), dict) else {}
+        credit_ready = bool(submit_body.get("credit_ready") or credit_payload.get("credit_ready"))
+        submit_body["remote_overflow_enabled"] = remote_enabled
+        submit_body["local_only"] = bool(submit_body.get("local_only", False))
+        submit_body["authorization_granted_by_user"] = bool(submit_body.get("authorization_granted_by_user"))
+        submit_body["credit_ready"] = credit_ready
+        submit_body["willing_worker_count"] = max(0, int(submit_body.get("willing_worker_count") or 0))
+
         submit_body["credit"] = {
             **credit_payload,
-            "credit_ready": True,
+            "credit_ready": credit_ready,
             "no_credit_hold_created": True,
             "no_credit_spent": True,
         }
@@ -346,7 +348,7 @@ class ViewportChatConsoleRoutesMixin:
         submit_body["hub"] = {
             **hub_payload,
             "mode": "remote_hub_current_request",
-            "willing_worker_count": max(1, int(hub_payload.get("willing_worker_count") or submit_body.get("willing_worker_count") or 1)),
+            "willing_worker_count": max(0, int(hub_payload.get("willing_worker_count") or submit_body.get("willing_worker_count") or 0)),
             "preflight_id": str(hub_payload.get("preflight_id") or f"phase6-remote-hub-{preflight_seed}"),
             "real_remote_worker_contacted": False,
             "private_worker_prices_exposed": False,
@@ -438,8 +440,10 @@ class ViewportChatConsoleRoutesMixin:
                     "remote_overflow_request_id": remote_overflow_request_id,
                     "run_id": str(submit_body.get("run_id") or ""),
                     "thread_id": str(submit_body.get("thread_id") or submit_body.get("chat_thread_id") or ""),
-                    "no_credit_hold_created": True,
-                    "no_credit_spent": True,
+                    "credit_hold_created": bool((response.metadata.get("payment") or {}).get("hold_id")) if isinstance(response.metadata.get("payment"), dict) else False,
+                    "credit_spent": bool((response.metadata.get("payment") or {}).get("charged_credits")) if isinstance(response.metadata.get("payment"), dict) else False,
+                    "no_credit_hold_created": not bool((response.metadata.get("payment") or {}).get("hold_id")) if isinstance(response.metadata.get("payment"), dict) else True,
+                    "no_credit_spent": not bool((response.metadata.get("payment") or {}).get("charged_credits")) if isinstance(response.metadata.get("payment"), dict) else True,
                 }
                 result["output_cell"] = output_cell
 

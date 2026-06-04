@@ -505,9 +505,174 @@
       return String(payload.model || config.model || cell.model || payload.preferred_model || "");
     }
 
+    const chatConsoleWorkerSettingsStorageKey = "main-computer-worker-settings-v4";
+    const chatConsoleWorkerBridgeReadinessStorageKey = "main-computer-worker-bridge-readiness-v1";
+
+    function chatConsoleReadLocalStorageJson(key) {
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === "object" ? parsed : {};
+      } catch {
+        return {};
+      }
+    }
+
+    function chatConsoleSavedBoolean(value, fallback = false) {
+      if (value === true || value === false) return value;
+      const text = String(value ?? "").trim().toLowerCase();
+      if (["1", "true", "yes", "on", "enabled", "enable"].includes(text)) return true;
+      if (["0", "false", "no", "off", "disabled", "disable"].includes(text)) return false;
+      return Boolean(fallback);
+    }
+
+    function chatConsolePositiveInteger(value, fallback, {minimum = 1, maximum = 128000} = {}) {
+      const parsed = Number.parseInt(String(value ?? ""), 10);
+      const number = Number.isFinite(parsed) ? parsed : fallback;
+      return Math.min(maximum, Math.max(minimum, number));
+    }
+
+    function chatConsolePositiveDecimalNumber(value, fallback, {minimum = 0.000001, maximum = 1000000} = {}) {
+      const parsed = Number(String(value ?? "").trim());
+      const number = Number.isFinite(parsed) ? parsed : fallback;
+      return Math.min(maximum, Math.max(minimum, number));
+    }
+
+    function chatConsoleDecimalSettingString(value, fallback = "0.001") {
+      const number = chatConsolePositiveDecimalNumber(value, Number(fallback) || 0.001);
+      return String(value ?? "").trim() && Number.isFinite(Number(value))
+        ? String(value).trim()
+        : String(number);
+    }
+
+    function chatConsoleLowerAddress(value) {
+      return String(value || "").trim().toLowerCase();
+    }
+
+    function chatConsoleHubCreditBalanceFromWorkerBridgeState(bridgeState) {
+      const funding = bridgeState?.walletFunding && typeof bridgeState.walletFunding === "object"
+        ? bridgeState.walletFunding
+        : bridgeState?.wallet_funding && typeof bridgeState.wallet_funding === "object"
+          ? bridgeState.wallet_funding
+          : {};
+      const balance = funding.balance && typeof funding.balance === "object" ? funding.balance : {};
+      return {
+        walletAddress: chatConsoleLowerAddress(balance.wallet_address || balance.walletAddress || funding.wallet_address || ""),
+        accountId: String(balance.account_id || balance.accountId || funding.accountId || funding.account_id || ""),
+        availableCredits: chatConsolePositiveDecimalNumber(balance.available_credits ?? balance.availableCredits ?? 0, 0, {minimum: 0, maximum: Number.MAX_SAFE_INTEGER}),
+        heldCredits: chatConsolePositiveDecimalNumber(balance.held_credits ?? balance.heldCredits ?? 0, 0, {minimum: 0, maximum: Number.MAX_SAFE_INTEGER}),
+        spentCredits: chatConsolePositiveDecimalNumber(balance.spent_credits ?? balance.spentCredits ?? 0, 0, {minimum: 0, maximum: Number.MAX_SAFE_INTEGER}),
+        raw: balance
+      };
+    }
+
+    function chatConsoleActiveMultisessionKeyFromWorkerBridgeState(bridgeState, walletAddress = "") {
+      const keys = Array.isArray(bridgeState?.multisessionKeys)
+        ? bridgeState.multisessionKeys
+        : Array.isArray(bridgeState?.multisession_keys)
+          ? bridgeState.multisession_keys
+          : [];
+      const activeId = String(bridgeState?.activeMultisessionKeyId || bridgeState?.active_multisession_key_id || "");
+      const wallet = chatConsoleLowerAddress(walletAddress);
+      return keys.find((key) => {
+        if (!key || typeof key !== "object") return false;
+        if (String(key.id || "") !== activeId) return false;
+        if (String(key.status || "active") !== "active") return false;
+        const keyWallet = chatConsoleLowerAddress(key.walletAddress || key.wallet_address || "");
+        return !wallet || keyWallet === wallet;
+      }) || null;
+    }
+
+    function chatConsoleEstimatedInputTokensForRemoteOverflow(request) {
+      const messages = chatConsoleRemoteOverflowMessagesFromPendingRequest(request);
+      const contentChars = messages.reduce((total, item) => total + String(item?.content || "").length, 0);
+      const attachmentCount = messages.reduce((total, item) => {
+        const attachments = Array.isArray(item?.attachments) ? item.attachments : [];
+        return total + attachments.length;
+      }, 0);
+      return Math.max(1, Math.ceil(contentChars / 4) + attachmentCount * 256);
+    }
+
+    function chatConsoleWorkerPaidOverflowContext(request) {
+      const settings = chatConsoleReadLocalStorageJson(chatConsoleWorkerSettingsStorageKey);
+      const bridgeState = chatConsoleReadLocalStorageJson(chatConsoleWorkerBridgeReadinessStorageKey);
+      const balance = chatConsoleHubCreditBalanceFromWorkerBridgeState(bridgeState);
+      const activeKey = chatConsoleActiveMultisessionKeyFromWorkerBridgeState(bridgeState, balance.walletAddress);
+      const keyWallet = chatConsoleLowerAddress(activeKey?.walletAddress || activeKey?.wallet_address || "");
+      const walletAddress = balance.walletAddress || keyWallet;
+      const remoteEnabled = chatConsoleSavedBoolean(settings.remoteEnabled ?? settings.remote_enabled, false);
+      const maxOutputTokens = chatConsolePositiveInteger(settings.remoteMaxOutputTokens ?? settings.remote_max_output_tokens, 1024, {minimum: 1, maximum: 128000});
+      const creditsPerTokenText = chatConsoleDecimalSettingString(settings.remoteCreditsPerToken ?? settings.remote_credits_per_token, "0.001");
+      const creditsPerToken = chatConsolePositiveDecimalNumber(creditsPerTokenText, 0.001);
+      const estimatedInputTokens = chatConsoleEstimatedInputTokensForRemoteOverflow(request);
+      const estimatedMaxCreditsApprox = (estimatedInputTokens + maxOutputTokens) * creditsPerToken;
+      const estimatedMaxCredits = Math.max(1, Math.ceil(estimatedMaxCreditsApprox));
+      const spendableCredits = Math.max(0, balance.availableCredits);
+      const creditReady = Boolean(
+        remoteEnabled
+        && walletAddress
+        && activeKey
+        && spendableCredits >= estimatedMaxCredits
+      );
+      let blockedReason = "";
+      if (!remoteEnabled) blockedReason = "Paid overflow is disabled in Worker settings.";
+      else if (!walletAddress) blockedReason = "Connect and fund a Worker wallet before using paid overflow.";
+      else if (!activeKey) blockedReason = "Request a multi-session key before using paid overflow.";
+      else if (spendableCredits < estimatedMaxCredits) blockedReason = `Not enough bridged credits for this approximate authorization: available ${spendableCredits}, required ${estimatedMaxCredits}.`;
+
+      return {
+        remoteEnabled,
+        maxOutputTokens,
+        creditsPerTokenText,
+        creditsPerToken,
+        estimatedInputTokens,
+        estimatedMaxCredits,
+        estimatedMaxCreditsApprox,
+        spendableCredits,
+        availableCredits: balance.availableCredits,
+        heldCredits: balance.heldCredits,
+        spentCredits: balance.spentCredits,
+        walletAddress,
+        accountId: balance.accountId,
+        activeMultisessionKey: activeKey,
+        activeMultisessionKeyId: String(activeKey?.id || ""),
+        creditReady,
+        blockedReason,
+        balance
+      };
+    }
+
+    function chatConsoleApplyRemoteHubPaymentReceiptToWorkerStorage(payment) {
+      if (!payment || typeof payment !== "object") return;
+      const walletAddress = chatConsoleLowerAddress(payment.wallet_address || payment.walletAddress || "");
+      if (!walletAddress) return;
+      const bridgeState = chatConsoleReadLocalStorageJson(chatConsoleWorkerBridgeReadinessStorageKey);
+      const walletFunding = bridgeState.walletFunding && typeof bridgeState.walletFunding === "object" ? bridgeState.walletFunding : {};
+      const currentBalance = walletFunding.balance && typeof walletFunding.balance === "object" ? walletFunding.balance : {};
+      bridgeState.walletFunding = {
+        ...walletFunding,
+        balance: {
+          ...currentBalance,
+          wallet_address: walletAddress,
+          account_id: String(payment.account_id || currentBalance.account_id || ""),
+          available_credits: String(payment.available_credits_after ?? currentBalance.available_credits ?? "0"),
+          held_credits: String(payment.held_credits_after ?? currentBalance.held_credits ?? "0"),
+          spent_credits: String(payment.spent_credits_after ?? currentBalance.spent_credits ?? "0"),
+          updated_at: chatConsoleNow()
+        },
+        accountId: String(payment.account_id || walletFunding.accountId || walletFunding.account_id || ""),
+        updatedAt: chatConsoleNow()
+      };
+      try {
+        localStorage.setItem(chatConsoleWorkerBridgeReadinessStorageKey, JSON.stringify(bridgeState));
+      } catch {}
+    }
+
     function chatConsoleBuildRemoteOverflowAssessmentPayload({pendingRequest, capacity = null}) {
       const request = pendingRequest || chatConsolePendingLocalAiRequest();
       const payload = request?.payload && typeof request.payload === "object" ? request.payload : {};
+      const paidOverflow = chatConsoleWorkerPaidOverflowContext(request);
       return {
         phase: "phase4_modal_assessment_cards",
         pending_request_id: request?.id || "",
@@ -518,20 +683,48 @@
         capability: payload.rag_type || payload.capability || "chat.completions",
         messages: chatConsoleRemoteOverflowMessagesFromPendingRequest(request),
         max_local_concurrency: 1,
-        remote_overflow_enabled: true,
+        max_output_tokens: paidOverflow.maxOutputTokens,
+        credits_per_token: paidOverflow.creditsPerTokenText,
+        remote_overflow_enabled: paidOverflow.remoteEnabled,
         local_only: false,
         local_capacity_settings: {
           max_local_concurrency: 1
         },
         local_capacity_snapshot: capacity || chatConsoleRemoteWorkerControlState.lastCapacitySnapshot || null,
+        credit_ready: paidOverflow.creditReady,
+        bridged_credits: paidOverflow.availableCredits,
+        spendable_credits: paidOverflow.spendableCredits,
+        pending_holds: 0,
         credit: {
-          known: false,
+          known: Boolean(paidOverflow.walletAddress),
+          wallet_address: paidOverflow.walletAddress,
+          account_id: paidOverflow.accountId,
+          credit_ready: paidOverflow.creditReady,
+          bridged_credits: paidOverflow.availableCredits,
+          spendable_credits: paidOverflow.spendableCredits,
+          pending_holds: 0,
+          estimated_max_credits: paidOverflow.estimatedMaxCredits,
+          estimated_max_credits_approx: paidOverflow.estimatedMaxCreditsApprox,
+          approximation_only: true,
           no_credit_hold_created: true,
           no_credit_spent: true
         },
+        payment_authorization: {
+          kind: "multisession_key",
+          paid_overflow_enabled: paidOverflow.remoteEnabled,
+          wallet_address: paidOverflow.walletAddress,
+          account_id: paidOverflow.accountId,
+          multisession_key_id: paidOverflow.activeMultisessionKeyId,
+          max_output_tokens: paidOverflow.maxOutputTokens,
+          credits_per_token: paidOverflow.creditsPerTokenText,
+          estimated_input_tokens: paidOverflow.estimatedInputTokens,
+          max_authorized_credits: paidOverflow.estimatedMaxCredits,
+          estimated_max_credits_approx: paidOverflow.estimatedMaxCreditsApprox,
+          approximation_only: true
+        },
         hub: {
           mode: "mock_safe_template",
-          willing_worker_count: 0,
+          willing_worker_count: paidOverflow.creditReady ? 1 : 0,
           real_remote_worker_contacted: false,
           private_worker_prices_exposed: false
         }
@@ -573,7 +766,7 @@
           ...submitCell,
           run_id: request?.run_id || basePayload.run_id || submitCell.run_id || ""
         },
-        remote_overflow_enabled: true,
+        remote_overflow_enabled: Boolean(assessmentPayload.remote_overflow_enabled),
         local_only: false,
         authorization_granted_by_user: true,
         remote_execution_source: "remote_hub",
@@ -581,18 +774,21 @@
         remote_worker_intent_scope: chatConsoleRemoteWorkerIntentScope(intentMode),
         remote_hub_current_request: true,
         remote_once: intentMode === "remote_once",
-        credit_ready: true,
-        willing_worker_count: 1,
+        credit_ready: Boolean(assessmentPayload.credit_ready),
+        max_output_tokens: assessmentPayload.max_output_tokens,
+        credits_per_token: assessmentPayload.credits_per_token,
+        payment_authorization: assessmentPayload.payment_authorization,
+        willing_worker_count: assessmentPayload.credit_ready ? 1 : 0,
         credit: {
           ...(assessmentPayload.credit && typeof assessmentPayload.credit === "object" ? assessmentPayload.credit : {}),
-          credit_ready: true,
+          credit_ready: Boolean(assessmentPayload.credit_ready),
           no_credit_hold_created: true,
           no_credit_spent: true
         },
         hub: {
           ...(assessmentPayload.hub && typeof assessmentPayload.hub === "object" ? assessmentPayload.hub : {}),
           mode: "remote_hub_current_request",
-          willing_worker_count: 1,
+          willing_worker_count: assessmentPayload.credit_ready ? 1 : 0,
           preflight_id: `phase6-remote-hub-${preflightSeed}`,
           real_remote_worker_contacted: false,
           private_worker_prices_exposed: false
@@ -630,6 +826,19 @@
       if (!chatConsoleRemoteWorkerIntentUsesRemoteHubForCurrentRequest(intentMode)) {
         throw new Error(`Remote Hub submit cannot run for intent ${intentMode || "unknown"}.`);
       }
+      const paidOverflowPreflight = chatConsoleWorkerPaidOverflowContext(request);
+      if (!paidOverflowPreflight.remoteEnabled) {
+        throw new Error("Paid overflow is disabled in Worker settings.");
+      }
+      if (!paidOverflowPreflight.walletAddress) {
+        throw new Error("Connect and fund a Worker wallet before using paid overflow.");
+      }
+      if (!paidOverflowPreflight.activeMultisessionKeyId) {
+        throw new Error("Request a multi-session key before using paid overflow.");
+      }
+      if (paidOverflowPreflight.spendableCredits < paidOverflowPreflight.estimatedMaxCredits) {
+        throw new Error(`Not enough bridged credits for this approximate authorization: available ${paidOverflowPreflight.spendableCredits}, required ${paidOverflowPreflight.estimatedMaxCredits}.`);
+      }
       chatConsoleUpdatePendingLocalAiRequest(request.id, {
         status: "remote_hub_running",
         remote_hub_submit_started_at: chatConsoleNow(),
@@ -654,6 +863,8 @@
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || data.ok === false) throw new Error(data.error || `Remote Hub submit returned ${response.status}`);
+        const paymentReceipt = data?.remote_overflow_result?.payment || data?.remote_overflow_result?.response?.metadata?.payment || data?.payment || null;
+        chatConsoleApplyRemoteHubPaymentReceiptToWorkerStorage(paymentReceipt);
         chatConsoleSetRemoteHubExecutionState(request.cell_id || cell?.id || "", {
           mode: intentMode,
           status: "completed",
@@ -662,7 +873,10 @@
           pending_request_id: request.id,
           message: "Remote Hub response received.",
           provider: data?.remote_overflow_result?.response?.provider || data?.output_cell?.provider || "remote-hub-ai",
-          model: data?.remote_overflow_result?.response?.model || data?.output_cell?.model || body.model || ""
+          model: data?.remote_overflow_result?.response?.model || data?.output_cell?.model || body.model || "",
+          credit_hold_created: Boolean(paymentReceipt?.hold_id),
+          credit_spent: Number(paymentReceipt?.charged_credits || 0) > 0,
+          payment: paymentReceipt || null
         });
         return data;
       } catch (error) {
@@ -1309,7 +1523,9 @@
           execution.run_id ? `run ${execution.run_id}` : "",
           execution.pending_request_id ? `pending ${chatConsoleShortRemoteWorkerId(execution.pending_request_id, 18)}` : "",
           "Remote Hub AI",
-          "no credits spent"
+          execution.credit_spent
+            ? `charged ${execution.payment?.charged_credits || ""} credits`.trim()
+            : "no credits spent"
         ].filter(Boolean).join(" | ")
       });
     }
