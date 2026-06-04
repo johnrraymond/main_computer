@@ -2670,6 +2670,25 @@
       return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
     }
 
+    function workerPositiveDecimalString(value, fallback = "1") {
+      const raw = String(value ?? "").trim();
+      const parsed = Number.parseFloat(raw);
+      if (!raw || !Number.isFinite(parsed) || parsed <= 0) {
+        return String(fallback);
+      }
+      return raw;
+    }
+
+    function workerSavedBoolean(value, fallback = false) {
+      if (typeof value === "boolean") return value;
+      if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (["true", "1", "yes", "on"].includes(normalized)) return true;
+        if (["false", "0", "no", "off"].includes(normalized)) return false;
+      }
+      return Boolean(fallback);
+    }
+
     function workerOfferModelsArray() {
       const raw = workerElementValue(workerOfferModels, "mock-ai-model-phase9");
       const models = raw.split(",").map((item) => item.trim()).filter(Boolean);
@@ -2772,9 +2791,9 @@
     function readWorkerFormSettings() {
       const models = workerOfferModelsArray();
       return {
-        remoteEnabled: Boolean(workerRemoteEnabled?.checked),
+        remoteEnabled: workerSavedBoolean(workerRemoteEnabled?.checked, false),
         remoteMode: workerElementValue(workerRemoteMode, "ask-when-busy"),
-        remoteCreditsPerToken: workerPositiveInteger(workerElementValue(workerRemoteCreditsPerToken, "12"), 12),
+        remoteCreditsPerToken: workerPositiveDecimalString(workerElementValue(workerRemoteCreditsPerToken, "0.001"), "0.001"),
         remoteMaxOutputTokens: workerPositiveInteger(workerElementValue(workerRemoteMaxOutputTokens, "1024"), 1024),
         remoteDailyLimit: workerPositiveInteger(workerElementValue(workerRemoteDailyLimit, "100000"), 100000),
         remoteAskBeforeSpend: Boolean(workerRemoteAskBeforeSpend?.checked),
@@ -2830,8 +2849,8 @@
             }))
             .filter((hub) => hub.name || hub.url);
         }
-        if (workerRemoteEnabled && parsed && typeof parsed.remoteEnabled === "boolean") {
-          workerRemoteEnabled.checked = parsed.remoteEnabled;
+        if (workerRemoteEnabled && parsed && Object.prototype.hasOwnProperty.call(parsed, "remoteEnabled")) {
+          workerRemoteEnabled.checked = workerSavedBoolean(parsed.remoteEnabled, false);
         }
         if (parsed) {
           assignWorkerValue(workerRemoteMode, parsed.remoteMode);
@@ -3029,6 +3048,14 @@
       }
     }
 
+    function bindWorkerAutosaveSetting(element, eventName = "change") {
+      if (!element) return;
+      const datasetKey = eventName === "input" ? "workerAutosaveInputBound" : "workerAutosaveChangeBound";
+      if (element.dataset[datasetKey]) return;
+      element.dataset[datasetKey] = "true";
+      element.addEventListener(eventName, saveWorkerSettings);
+    }
+
     function initWorkerApp() {
       loadWorkerSettings();
       renderWorkerHubs();
@@ -3084,6 +3111,16 @@
         workerSaveSettings.dataset.workerBound = "true";
         workerSaveSettings.addEventListener("click", saveWorkerSettings);
       }
+      [
+        workerRemoteEnabled,
+        workerRemoteMode,
+        workerRemoteCreditsPerToken,
+        workerRemoteMaxOutputTokens,
+        workerRemoteDailyLimit,
+        workerRemoteAskBeforeSpend,
+        workerRemoteOnlyWhenBusy
+      ].forEach((element) => bindWorkerAutosaveSetting(element, "change"));
+      bindWorkerAutosaveSetting(workerRemoteCreditsPerToken, "input");
       if (workerPauseRentals && !workerPauseRentals.dataset.workerBound) {
         workerPauseRentals.dataset.workerBound = "true";
         workerPauseRentals.addEventListener("click", () => {

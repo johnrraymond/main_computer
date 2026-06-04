@@ -364,14 +364,14 @@
             <small>The first wired flow should be local first, then remote only when local capacity is unavailable.</small>
           </label>
           <label>
-            <span>Max credits per token</span>
-            <input id="worker-remote-credits-per-token" type="number" min="1" step="1" value="12">
-            <small>Single requester-side number used for estimated input and output tokens for now.</small>
+            <span>Max credits per estimated token</span>
+            <input id="worker-remote-credits-per-token" type="number" min="0.000001" step="0.001" value="0.001">
+            <small>Approximation only: this ceiling is applied to estimated input and output tokens for now.</small>
           </label>
           <label>
             <span>Max output tokens to authorize</span>
             <input id="worker-remote-max-output-tokens" type="number" min="1" step="1" value="1024">
-            <small>Used with the prompt estimate to compute the maximum remote request budget.</small>
+            <small>Approximation only: used with the prompt estimate to compute the maximum remote request budget.</small>
           </label>
           <label>
             <span>Daily remote spend limit</span>
