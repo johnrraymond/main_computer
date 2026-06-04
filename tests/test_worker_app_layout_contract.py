@@ -34,8 +34,10 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert "Configure how other hub users pay this machine" in html
     assert "Configure how this machine is allowed to pay other workers" in html
     assert "Enable paid overflow" in html
-    assert "Max credits per token" in html
-    assert "Single requester-side number used for estimated input and output tokens for now." in html
+    assert "Max credits per estimated token" in html
+    assert 'id="worker-remote-credits-per-token" type="number" min="0.000001" step="0.001" value="0.001"' in html
+    assert "Approximation only: this ceiling is applied to estimated input and output tokens for now." in html
+    assert "Approximation only: used with the prompt estimate to compute the maximum remote request budget." in html
     assert "Show the count to the user, not the workers' private minimum prices." in html
 
     # Remote overflow is a privacy-preserving availability check, not a lowest-price browser.
@@ -60,6 +62,9 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     # The remote payment policy is stored locally with the rest of the Worker market settings.
     assert "main-computer-worker-settings-v4" in js
     assert "remoteCreditsPerToken" in js
+    assert 'workerPositiveDecimalString(workerElementValue(workerRemoteCreditsPerToken, "0.001"), "0.001")' in js
+    assert "workerSavedBoolean(parsed.remoteEnabled, false)" in js
+    assert 'bindWorkerAutosaveSetting(workerRemoteCreditsPerToken, "input")' in js
     assert "remoteMaxOutputTokens" in js
     assert "remoteAskBeforeSpend" in js
     assert "workerRemoteCreditsPerToken" in bindings
