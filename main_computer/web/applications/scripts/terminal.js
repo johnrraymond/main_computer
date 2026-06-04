@@ -444,14 +444,64 @@ function updateTaskAiTicker(message) {
   setApplicationWidgetTicker(taskAiPane, `AI brief | ${cleaned.slice(0, 220) || "ready"}`);
 }
 
+function taskProcessSurfaceHasRows(target) {
+  return Boolean(target?.querySelector?.(".task-table tbody tr"));
+}
+function taskProcessSurfaceHoldOverlay(target) {
+  if (!target || !taskProcessSurfaceHasRows(target)) return null;
+  const height = Math.max(140, Math.ceil(target.getBoundingClientRect?.().height || 0));
+  target.style.setProperty("--task-process-refresh-hold-height", `${height}px`);
+  const overlay = document.createElement("div");
+  overlay.className = "task-process-refresh-hold";
+  overlay.setAttribute("aria-hidden", "true");
+  overlay.innerHTML = target.innerHTML;
+  return overlay;
+}
+function releaseTaskProcessSurfaceHold(target, overlay) {
+  const release = () => {
+    overlay?.remove?.();
+    target?.removeAttribute?.("data-task-refresh-hold");
+    target?.style?.removeProperty?.("--task-process-refresh-hold-height");
+  };
+  const raf = typeof window.requestAnimationFrame === "function"
+    ? window.requestAnimationFrame.bind(window)
+    : (callback) => window.setTimeout(callback, 16);
+  raf(() => raf(release));
+}
+function commitTaskProcessSurface(target, html) {
+  if (!target) return;
+  const overlay = taskProcessSurfaceHoldOverlay(target);
+  const template = document.createElement("template");
+  template.innerHTML = String(html || "").trim();
+  const nodes = Array.from(template.content.childNodes);
+  const scrollTop = target.scrollTop || 0;
+  const scrollLeft = target.scrollLeft || 0;
+  if (overlay) {
+    nodes.push(overlay);
+    target.setAttribute("data-task-refresh-hold", "1");
+  }
+  if (typeof target.replaceChildren === "function") {
+    target.replaceChildren(...nodes);
+  } else {
+    target.innerHTML = "";
+    nodes.forEach((node) => target.appendChild(node));
+  }
+  target.scrollTop = scrollTop;
+  target.scrollLeft = scrollLeft;
+  if (overlay) {
+    overlay.scrollTop = scrollTop;
+    overlay.scrollLeft = scrollLeft;
+    releaseTaskProcessSurfaceHold(target, overlay);
+  }
+}
 function renderTaskProcessRows(target, items, emptyMessage) {
   const rows = Array.isArray(items) ? items : [];
   if (!target) return;
   if (!rows.length) {
-    target.innerHTML = `<div class="task-empty">${escapeHtml(emptyMessage)}</div>`;
+    commitTaskProcessSurface(target, `<div class="task-empty">${escapeHtml(emptyMessage)}</div>`);
     return;
   }
-  target.innerHTML = `
+  commitTaskProcessSurface(target, `
     <table class="task-table">
       <thead>
         <tr>
@@ -487,7 +537,7 @@ function renderTaskProcessRows(target, items, emptyMessage) {
           `;
         }).join("")}
       </tbody>
-    </table>`;
+    </table>`);
 }
 function renderTaskProcesses(items) {
   renderTaskProcessRows(taskProcessTable, items, "No server process rows matched the current filter.");

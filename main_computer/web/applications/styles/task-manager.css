@@ -337,6 +337,20 @@
   background: #010201;
 }
 
+.task-grid-scroll[data-task-refresh-hold="1"] {
+  position: relative;
+  min-height: var(--task-process-refresh-hold-height, 140px);
+}
+
+.task-process-refresh-hold {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  overflow: auto;
+  pointer-events: none;
+  background: #010201;
+}
+
 .task-table {
   width: 100%;
   border-collapse: collapse;
