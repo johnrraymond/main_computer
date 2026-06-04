@@ -60,7 +60,7 @@
     const workerHubCreditBalance = document.querySelector("#worker-hub-credit-balance");
     const workerHubCreditStatus = document.querySelector("#worker-hub-credit-status");
     const workerHubCreditTx = document.querySelector("#worker-hub-credit-tx");
-    const workerHubCreditContract = document.querySelector("#worker-hub-credit-contract");
+    const workerHubCreditEscrowAddress = document.querySelector("#worker-hub-credit-escrow-address");
     const workerHubCreditAmount = document.querySelector("#worker-hub-credit-amount");
     const workerCheckHubCreditBalance = document.querySelector("#worker-check-hub-credit-balance");
     const workerFundHubCredit = document.querySelector("#worker-fund-hub-credit");
