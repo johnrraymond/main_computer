@@ -116,11 +116,12 @@
   >
     <div class="mcel-canonical-specimen-copy">
       <p class="eyebrow">Canonical App Test</p>
-      <h4>Mount a real application and prove it without rewriting it.</h4>
+      <h4>Mount a real application, enrich its legacy DOM, and prove MCEL layout laws.</h4>
       <p>
         The first specimen is Task Manager. MCEL Lab loads it in a same-origin iframe,
-        inspects its live DOM, and audits known risky action surfaces without executing
-        server control, PID termination, or schedule actions.
+        reads the legacy DOM into a MCEL enrichment model, applies semantic layout roles,
+        and audits risky action surfaces without executing server control, PID termination,
+        or schedule actions.
       </p>
     </div>
     <div class="mcel-canonical-specimen-controls" role="group" aria-label="Canonical app specimen controls">
@@ -137,13 +138,14 @@
       <button type="button" id="mcel-canonical-app-mount">Mount Task Manager</button>
       <button type="button" id="mcel-canonical-app-refresh">Refresh Specimen</button>
       <button type="button" id="mcel-canonical-app-inspect">Inspect Specimen</button>
+      <button type="button" id="mcel-canonical-app-enrich">Enrich MCEL Model</button>
       <button type="button" id="mcel-canonical-app-proof">Run Specimen Proof</button>
       <button type="button" id="mcel-canonical-app-lens">Inspect MCEL Lens</button>
       <button type="button" id="mcel-canonical-app-clean">Clean Specimen</button>
       <output id="mcel-canonical-app-status" aria-live="polite">canonical app specimen not mounted</output>
     </div>
     <div id="mcel-canonical-app-lens-map" class="mcel-canonical-app-lens-map" aria-live="polite" data-mcel-lens-mode="sidecar">
-      <div class="mcel-canonical-app-lens-map-heading"><strong>Task Manager specimen map</strong><span>lens not applied yet</span></div>
+      <div class="mcel-canonical-app-lens-map-heading"><strong>Task Manager enrichment map</strong><span>enrichment not applied yet</span></div>
       <div class="mcel-canonical-app-lens-map-grid">
         <div class="mcel-canonical-app-lens-map-card"><span>Root</span><strong>unknown</strong></div>
         <div class="mcel-canonical-app-lens-map-card"><span>Panels</span><strong>not classified</strong></div>
@@ -169,7 +171,7 @@
         data-mcel-specimen-route="/applications/task-manager/server-processes?mcel_lab_specimen=task-manager"
       ></iframe>
     </div>
-    <pre id="mcel-canonical-app-report" class="mcel-canonical-app-report" aria-label="Canonical app specimen report">Mount Task Manager to inspect it as a canonical MCEL specimen.</pre>
+    <pre id="mcel-canonical-app-report" class="mcel-canonical-app-report" aria-label="Canonical app specimen report">Mount Task Manager to enrich it as a canonical MCEL specimen.</pre>
   </section>
 
   <section id="mcel-runtime-measurement-well" class="mcel-runtime-measurement-well" aria-hidden="true">

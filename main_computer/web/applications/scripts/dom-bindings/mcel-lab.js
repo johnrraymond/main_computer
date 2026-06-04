@@ -34,6 +34,7 @@
         lastCanonicalSpecimenReport: null,
         lastCanonicalSpecimenProof: null,
         lastCanonicalSpecimenLens: null,
+        lastCanonicalSpecimenEnrichment: null,
         lastProjectSnapshot: null,
         activeModal: null,
         canonicalAppSpecimen: {
@@ -45,6 +46,8 @@
           specimenChromeCount: 0,
           lensCount: 0,
           lensStatus: "idle",
+          enrichmentCount: 0,
+          enrichmentStatus: "idle",
           app: "task-manager",
           route: "/applications/task-manager/server-processes?mcel_lab_specimen=task-manager",
           rootSelector: "#task-manager-app",
@@ -114,6 +117,7 @@
     const mcelCanonicalAppRefresh = document.querySelector("#mcel-canonical-app-refresh");
     const mcelCanonicalAppInspect = document.querySelector("#mcel-canonical-app-inspect");
     const mcelCanonicalAppProof = document.querySelector("#mcel-canonical-app-proof");
+    const mcelCanonicalAppEnrich = document.querySelector("#mcel-canonical-app-enrich");
     const mcelCanonicalAppLens = document.querySelector("#mcel-canonical-app-lens");
     const mcelCanonicalAppClean = document.querySelector("#mcel-canonical-app-clean");
     const mcelCanonicalAppStatus = document.querySelector("#mcel-canonical-app-status");
