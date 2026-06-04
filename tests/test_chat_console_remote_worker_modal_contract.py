@@ -51,7 +51,9 @@ def test_chat_console_remote_worker_modal_calls_read_only_assessment_endpoint() 
     assert "function chatConsoleRefreshRemoteOverflowAssessment" in source
     assert "/api/applications/chat-console/ai/remote-overflow/assess" in source
     assert "phase4_modal_assessment_cards" in source
-    assert "remote_overflow_enabled: true" in source
+    assert "remote_overflow_enabled: paidOverflow.remoteEnabled" in source
+    assert "max_output_tokens: paidOverflow.maxOutputTokens" in source
+    assert "credits_per_token: paidOverflow.creditsPerTokenText" in source
     assert "no_credit_hold_created: true" in source
     assert "no_credit_spent: true" in source
     assert "real_remote_worker_contacted: false" in source
@@ -107,8 +109,8 @@ def test_chat_console_remote_worker_modal_records_durable_intent_separate_from_c
     assert "remote_worker_intent_mode: intentMode" in source
     assert "remote_hub_current_request: true" in source
     assert "authorization_granted_by_user: true" in source
-    assert "credit_ready: true" in source
-    assert "willing_worker_count: 1" in source
+    assert "credit_ready: Boolean(assessmentPayload.credit_ready)" in source
+    assert "willing_worker_count: assessmentPayload.credit_ready ? 1 : 0" in source
     assert "phase6-remote-hub-" in source
 
 
@@ -125,7 +127,8 @@ def test_chat_console_remote_worker_phase_five_intent_scope_rules() -> None:
     assert 'canonicalMode === "remote_once"' in source
     assert 'chatConsoleRemoteWorkerControlState.globalWhenBusyIntent = {' in source
     assert 'permanent_worker_setting_changed: false' in source
-    assert "localStorage" not in source
+    assert "chatConsoleWorkerSettingsStorageKey" in source
+    assert "chatConsoleWorkerBridgeReadinessStorageKey" in source
 
 
 def test_chat_console_remote_worker_chat_choice_is_visible_and_reversible_like_rag() -> None:
@@ -227,6 +230,31 @@ def test_chat_console_remote_worker_phase_six_remote_once_uses_remote_hub_as_nor
     assert evaluate_body.index("if (useRemoteHubForCurrentRequest)") < evaluate_body.index("chatConsoleWaitForPendingLocalAiStartLease")
     assert "chatConsoleHideRemoteWorkerControlModal(closeReason.reason)" in source
     assert source.index("chatConsoleHideRemoteWorkerControlModal(closeReason.reason)") < source.index("chatConsoleResolveRemoteWorkerControlChoice(choice, pendingRequest.id)")
+
+
+def test_chat_console_paid_overflow_uses_worker_policy_and_multisession_credit_preflight() -> None:
+    source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
+    route_source = (REPO_ROOT / "main_computer" / "viewport_routes_chat_console.py").read_text(encoding="utf-8")
+
+    assert "chatConsoleWorkerSettingsStorageKey" in source
+    assert "main-computer-worker-settings-v4" in source
+    assert "chatConsoleWorkerBridgeReadinessStorageKey" in source
+    assert "main-computer-worker-bridge-readiness-v1" in source
+    assert "chatConsoleWorkerPaidOverflowContext" in source
+    assert "remoteMaxOutputTokens" in source
+    assert "remoteCreditsPerToken" in source
+    assert "max_output_tokens: paidOverflow.maxOutputTokens" in source
+    assert "credits_per_token: paidOverflow.creditsPerTokenText" in source
+    assert "payment_authorization" in source
+    assert 'kind: "multisession_key"' in source
+    assert "multisession_key_id" in source
+    assert "max_authorized_credits" in source
+    assert "Not enough bridged credits for this approximate authorization" in source
+    assert "Paid overflow is disabled in Worker settings." in source
+    assert "Request a multi-session key before using paid overflow." in source
+    assert "remote_overflow_enabled: true" not in source
+    assert 'submit_body["remote_overflow_enabled"] = True' not in route_source
+    assert 'submit_body["credit_ready"] = True' not in route_source
 
 
 def test_chat_console_remote_worker_modal_has_styles() -> None:

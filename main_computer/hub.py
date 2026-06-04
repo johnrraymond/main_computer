@@ -4,6 +4,7 @@ import hashlib
 import json
 import threading
 import time
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -52,6 +53,70 @@ PHASE9_PRICING_TYPE = "fixed_per_call_v0"
 PHASE9_EXECUTION_MODE = "worker_pull_v0"
 HUB_MULTISESSION_KEY_EXPECTED_CHAIN_ID = "0x28757b2"
 HUB_MULTISESSION_KEY_MAX_AGE_MINUTES = 15
+
+
+class HubPaymentRequired(ValueError):
+    """Raised when a paid Hub request cannot reserve enough wallet credits."""
+
+
+class HubCreditAuthorizationError(ValueError):
+    """Raised when a paid Hub request is not authorized for the claimed wallet."""
+
+
+def _hub_as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "enabled", "enable"}:
+        return True
+    if text in {"0", "false", "no", "off", "disabled", "disable"}:
+        return False
+    return default
+
+
+def _hub_as_int(value: Any, default: int = 0, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = int(default)
+    if minimum is not None:
+        number = max(int(minimum), number)
+    if maximum is not None:
+        number = min(int(maximum), number)
+    return number
+
+
+def _hub_as_decimal(
+    value: Any,
+    default: str = "0",
+    *,
+    minimum: str | None = None,
+    maximum: str | None = None,
+) -> Decimal:
+    try:
+        number = Decimal(str(value).strip())
+        if not number.is_finite():
+            raise InvalidOperation
+    except (InvalidOperation, ValueError, TypeError):
+        number = Decimal(str(default))
+    if minimum is not None:
+        number = max(Decimal(str(minimum)), number)
+    if maximum is not None:
+        number = min(Decimal(str(maximum)), number)
+    return number
+
+
+def _hub_decimal_text(value: Decimal) -> str:
+    text = format(value.normalize(), "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _hub_ceil_decimal_to_int(value: Decimal, *, minimum: int = 0) -> int:
+    return max(int(minimum), int(value.to_integral_value(rounding=ROUND_CEILING)))
 
 
 def _phase9_offer_id(*, worker_node_id: str, models: list[str], credits_per_request: int, execution_mode: str) -> str:
@@ -1197,6 +1262,115 @@ class HubServerHandler(_JsonHandler):
             preview = "the submitted chat request"
         return preview[:limit]
 
+    def _remote_overflow_token_estimate(self, messages_payload: list[Any]) -> tuple[int, int, int]:
+        content_chars = 0
+        attachment_count = 0
+        for item in messages_payload:
+            if not isinstance(item, dict):
+                continue
+            content_chars += len(str(item.get("content") or ""))
+            attachments = item.get("attachments")
+            if isinstance(attachments, list):
+                attachment_count += len(attachments)
+        estimated_input_tokens = max(1, int((content_chars + 3) // 4) + attachment_count * 256)
+        return estimated_input_tokens, content_chars, attachment_count
+
+    def _paid_overflow_authorization_from_metadata(
+        self,
+        *,
+        body: dict[str, Any],
+        metadata: dict[str, Any],
+        messages_payload: list[Any],
+    ) -> dict[str, Any] | None:
+        authorization = metadata.get("payment_authorization")
+        if not isinstance(authorization, dict):
+            authorization = body.get("payment_authorization") if isinstance(body.get("payment_authorization"), dict) else {}
+        if not authorization:
+            return None
+
+        if not _hub_as_bool(authorization.get("paid_overflow_enabled", metadata.get("paid_overflow_enabled")), False):
+            raise HubCreditAuthorizationError("Paid overflow is disabled for this request.")
+
+        kind = str(authorization.get("kind") or "").strip().lower()
+        if kind != "multisession_key":
+            raise HubCreditAuthorizationError("Paid overflow requires an active multi-session key authorization.")
+
+        wallet_address = normalize_address(authorization.get("wallet_address") or metadata.get("wallet_address") or body.get("wallet_address"))
+        key_id = str(
+            authorization.get("multisession_key_id")
+            or authorization.get("key_id")
+            or metadata.get("multisession_key_id")
+            or ""
+        ).strip()
+        if not key_id:
+            raise HubCreditAuthorizationError("Paid overflow requires a multi-session key id.")
+
+        with self.server.multisession_key_store_lock:
+            data = self._load_multisession_key_store_unlocked()
+            record = data.get("keys", {}).get(key_id)
+            if not isinstance(record, dict) or record.get("status") != "active":
+                raise HubCreditAuthorizationError("The multi-session key is not active.")
+            record_wallet = normalize_address(record.get("wallet_address"))
+            if record_wallet != wallet_address:
+                raise HubCreditAuthorizationError("The multi-session key does not belong to the requested wallet.")
+            record_chain_id = str(record.get("chain_id") or "").strip().lower()
+
+        requested_chain_id = str(authorization.get("chain_id") or metadata.get("chain_id") or record_chain_id or "").strip().lower()
+        if requested_chain_id and record_chain_id and requested_chain_id != record_chain_id:
+            raise HubCreditAuthorizationError("The multi-session key chain id does not match this request.")
+        if requested_chain_id and requested_chain_id != HUB_MULTISESSION_KEY_EXPECTED_CHAIN_ID:
+            raise HubCreditAuthorizationError("Paid overflow is only enabled for the local dev chain.")
+
+        estimated_input_tokens, content_chars, attachment_count = self._remote_overflow_token_estimate(messages_payload)
+        max_output_tokens = _hub_as_int(
+            authorization.get("max_output_tokens", metadata.get("max_output_tokens", body.get("max_output_tokens"))),
+            1024,
+            minimum=1,
+            maximum=128_000,
+        )
+        credits_per_token_decimal = _hub_as_decimal(
+            authorization.get("credits_per_token", metadata.get("credits_per_token", body.get("credits_per_token"))),
+            "0.001",
+            minimum="0.000001",
+            maximum="1000000",
+        )
+        estimated_credits_decimal = Decimal(estimated_input_tokens + max_output_tokens) * credits_per_token_decimal
+        required_credits = _hub_ceil_decimal_to_int(estimated_credits_decimal, minimum=1)
+        max_authorized_credits = _hub_as_int(
+            authorization.get("max_authorized_credits", authorization.get("estimated_max_credits", required_credits)),
+            required_credits,
+            minimum=1,
+            maximum=1_000_000_000,
+        )
+        if max_authorized_credits < required_credits:
+            raise HubCreditAuthorizationError(
+                f"Paid overflow authorization is below the Hub estimate: authorized={max_authorized_credits}, required={required_credits}."
+            )
+
+        account_id = wallet_account_id(wallet_address)
+        account = self.server.credit_ledger.get_account(account_id)
+        if account.available_credits < required_credits:
+            raise HubPaymentRequired(
+                f"Insufficient Compute Credits for account {account_id}: available={account.available_credits}, required={required_credits}."
+            )
+
+        return {
+            "kind": "multisession_key",
+            "wallet_address": wallet_address,
+            "account_id": account_id,
+            "multisession_key_id": key_id,
+            "chain_id": requested_chain_id or record_chain_id,
+            "estimated_input_tokens": estimated_input_tokens,
+            "max_output_tokens": max_output_tokens,
+            "credits_per_token": _hub_decimal_text(credits_per_token_decimal),
+            "estimated_max_credits_approx": _hub_decimal_text(estimated_credits_decimal),
+            "required_credits": required_credits,
+            "max_authorized_credits": max_authorized_credits,
+            "content_chars": content_chars,
+            "attachment_count": attachment_count,
+            "approximation_only": True,
+        }
+
     def _log_remote_overflow_event(
         self,
         event: str,
@@ -1241,18 +1415,23 @@ class HubServerHandler(_JsonHandler):
                 ).encode("utf-8")
             ).hexdigest()[:16]
 
+        incoming_metadata = dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {}
+        payment_authorization = self._paid_overflow_authorization_from_metadata(
+            body=body,
+            metadata=incoming_metadata,
+            messages_payload=messages_payload,
+        )
+        request_seed = {
+            "remote_overflow_request_id": remote_overflow_request_id,
+            "model": model,
+            "client_node_id": client_node_id,
+        }
+        if payment_authorization:
+            request_seed["account_id"] = payment_authorization["account_id"]
+        else:
+            request_seed["stamp"] = time.time_ns()
         hub_request_id = "hub_overflow_" + hashlib.sha256(
-            json.dumps(
-                {
-                    "remote_overflow_request_id": remote_overflow_request_id,
-                    "model": model,
-                    "client_node_id": client_node_id,
-                    "stamp": time.time_ns(),
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-                default=str,
-            ).encode("utf-8")
+            json.dumps(request_seed, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
         ).hexdigest()[:20]
 
         self._log_remote_overflow_event(
@@ -1260,14 +1439,125 @@ class HubServerHandler(_JsonHandler):
             remote_overflow_request_id=remote_overflow_request_id,
             hub_request_id=hub_request_id,
         )
-        prompt_preview = self._remote_overflow_prompt_preview(messages_payload)
-        content = (
-            "Remote Hub AI response received.\n"
-            "No credits were held, no credits were spent, and no real paid worker was contacted.\n\n"
-            f"Prompt preview: {prompt_preview}"
-        )
 
-        incoming_metadata = dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {}
+        hold_result: dict[str, Any] | None = None
+        charge_result: dict[str, Any] | None = None
+        try:
+            if payment_authorization:
+                hold_result = self.server.credit_ledger.create_hold(
+                    account_id=payment_authorization["account_id"],
+                    request_id=hub_request_id,
+                    credits=payment_authorization["required_credits"],
+                    memo=f"paid remote overflow hold for {remote_overflow_request_id}",
+                    metadata={
+                        "remote_overflow_request_id": remote_overflow_request_id,
+                        "wallet_address": payment_authorization["wallet_address"],
+                        "multisession_key_id": payment_authorization["multisession_key_id"],
+                        "max_output_tokens": payment_authorization["max_output_tokens"],
+                        "credits_per_token": payment_authorization["credits_per_token"],
+                        "estimated_input_tokens": payment_authorization["estimated_input_tokens"],
+                        "estimated_max_credits_approx": payment_authorization["estimated_max_credits_approx"],
+                        "approximation_only": True,
+                    },
+                )
+                self._log_remote_overflow_event(
+                    "credit hold created",
+                    remote_overflow_request_id=remote_overflow_request_id,
+                    hub_request_id=hub_request_id,
+                    message=f"account_id={payment_authorization['account_id']} credits={payment_authorization['required_credits']}",
+                )
+
+            prompt_preview = self._remote_overflow_prompt_preview(messages_payload)
+            if payment_authorization:
+                content = (
+                    "Remote Hub AI response received.\n"
+                    f"Paid overflow charged {payment_authorization['required_credits']} whole credit"
+                    f"{'' if payment_authorization['required_credits'] == 1 else 's'} from the bridged wallet account.\n\n"
+                    f"Prompt preview: {prompt_preview}"
+                )
+            else:
+                content = (
+                    "Remote Hub AI response received.\n"
+                    "No credits were held, no credits were spent, and no real paid worker was contacted.\n\n"
+                    f"Prompt preview: {prompt_preview}"
+                )
+
+            payment_receipt: dict[str, Any] | None = None
+            if payment_authorization and hold_result:
+                hold_payload = hold_result.get("hold") if isinstance(hold_result.get("hold"), dict) else {}
+                hold_id = str(hold_payload.get("hold_id") or "")
+                charge_result = self.server.credit_ledger.charge_hold(
+                    hold_id=hold_id,
+                    charged_credits=payment_authorization["required_credits"],
+                    memo=f"paid remote overflow charge for {remote_overflow_request_id}",
+                    metadata={
+                        "remote_overflow_request_id": remote_overflow_request_id,
+                        "wallet_address": payment_authorization["wallet_address"],
+                        "multisession_key_id": payment_authorization["multisession_key_id"],
+                        "max_output_tokens": payment_authorization["max_output_tokens"],
+                        "credits_per_token": payment_authorization["credits_per_token"],
+                        "estimated_input_tokens": payment_authorization["estimated_input_tokens"],
+                        "estimated_max_credits_approx": payment_authorization["estimated_max_credits_approx"],
+                        "approximation_only": True,
+                    },
+                )
+                charge_payload = charge_result.get("charge") if isinstance(charge_result.get("charge"), dict) else {}
+                account_payload = charge_result.get("account") if isinstance(charge_result.get("account"), dict) else {}
+                payment_receipt = {
+                    "account_id": payment_authorization["account_id"],
+                    "wallet_address": payment_authorization["wallet_address"],
+                    "charged_credits": payment_authorization["required_credits"],
+                    "hold_id": hold_id,
+                    "charge_id": str(charge_payload.get("charge_id") or ""),
+                    "request_id": hub_request_id,
+                    "remote_overflow_request_id": remote_overflow_request_id,
+                    "available_credits_after": account_payload.get("available_credits", 0),
+                    "held_credits_after": account_payload.get("held_credits", 0),
+                    "spent_credits_after": account_payload.get("spent_credits", 0),
+                    "max_output_tokens": payment_authorization["max_output_tokens"],
+                    "credits_per_token": payment_authorization["credits_per_token"],
+                    "estimated_input_tokens": payment_authorization["estimated_input_tokens"],
+                    "estimated_max_credits_approx": payment_authorization["estimated_max_credits_approx"],
+                    "approximation_only": True,
+                    "idempotent": bool(hold_result.get("idempotent") or charge_result.get("idempotent")),
+                    "authorization": {
+                        "kind": payment_authorization["kind"],
+                        "multisession_key_id": payment_authorization["multisession_key_id"],
+                        "chain_id": payment_authorization["chain_id"],
+                    },
+                }
+                self._log_remote_overflow_event(
+                    "credit spend recorded",
+                    remote_overflow_request_id=remote_overflow_request_id,
+                    hub_request_id=hub_request_id,
+                    message=(
+                        f"account_id={payment_authorization['account_id']} "
+                        f"charged_credits={payment_authorization['required_credits']} "
+                        f"charge_id={payment_receipt['charge_id']}"
+                    ),
+                )
+
+        except Exception:
+            if hold_result:
+                hold_payload = hold_result.get("hold") if isinstance(hold_result.get("hold"), dict) else {}
+                hold_id = str(hold_payload.get("hold_id") or "")
+                if hold_id and str(hold_payload.get("status") or "") == "held":
+                    try:
+                        self.server.credit_ledger.release_hold(
+                            hold_id=hold_id,
+                            reason="remote_overflow_execution_failed",
+                            memo=f"released paid remote overflow hold for {remote_overflow_request_id}",
+                            metadata={"remote_overflow_request_id": remote_overflow_request_id},
+                        )
+                    except Exception as release_exc:  # pragma: no cover - best effort cleanup
+                        self._log_remote_overflow_event(
+                            "credit hold release failed",
+                            remote_overflow_request_id=remote_overflow_request_id,
+                            hub_request_id=hub_request_id,
+                            message=str(release_exc),
+                        )
+            raise
+
         metadata = {
             **incoming_metadata,
             "remote_overflow": True,
@@ -1276,8 +1566,10 @@ class HubServerHandler(_JsonHandler):
             "remote_hub_observable_passthrough": True,
             "safe_remote_hub_path": True,
             "remote_overflow_request_id": remote_overflow_request_id,
-            "no_credit_hold_created": True,
-            "no_credit_spent": True,
+            "credit_hold_created": bool(payment_receipt),
+            "credit_spent": bool(payment_receipt),
+            "no_credit_hold_created": not bool(payment_receipt),
+            "no_credit_spent": not bool(payment_receipt),
             "no_real_paid_worker_contacted": True,
             "no_real_remote_worker_contacted": True,
             "hub": {
@@ -1286,27 +1578,17 @@ class HubServerHandler(_JsonHandler):
                 "client_node_id": client_node_id,
                 "model": model,
                 "surface": "/api/hub/remote-overflow/safe-chat",
-                "security_mode": "safe-deterministic-remote-overflow",
-                "no_credit_hold_created": True,
-                "no_credit_spent": True,
+                "security_mode": "remote-overflow-paid" if payment_receipt else "remote-overflow-safe-preview",
+                "credit_hold_created": bool(payment_receipt),
+                "credit_spent": bool(payment_receipt),
+                "no_credit_hold_created": not bool(payment_receipt),
+                "no_credit_spent": not bool(payment_receipt),
                 "no_real_paid_worker_contacted": True,
             },
         }
-        self._log_remote_overflow_event(
-            "deterministic safe worker response generated",
-            remote_overflow_request_id=remote_overflow_request_id,
-            hub_request_id=hub_request_id,
-        )
-        self._log_remote_overflow_event(
-            "no credit hold created",
-            remote_overflow_request_id=remote_overflow_request_id,
-            hub_request_id=hub_request_id,
-        )
-        self._log_remote_overflow_event(
-            "no credit spend recorded",
-            remote_overflow_request_id=remote_overflow_request_id,
-            hub_request_id=hub_request_id,
-        )
+        if payment_receipt:
+            metadata["payment"] = payment_receipt
+
         self._log_remote_overflow_event(
             "response returned to chat console",
             remote_overflow_request_id=remote_overflow_request_id,
@@ -1594,7 +1876,12 @@ class HubServerHandler(_JsonHandler):
             parsed = urlparse(self.path)
             path = parsed.path
             if path == "/api/hub/remote-overflow/safe-chat":
-                self._send_json(self._handle_remote_overflow_safe_chat(self._read_json()))
+                try:
+                    self._send_json(self._handle_remote_overflow_safe_chat(self._read_json()))
+                except HubPaymentRequired as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.PAYMENT_REQUIRED)
+                except HubCreditAuthorizationError as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.FORBIDDEN)
                 return
             if path == "/api/hub/v1/credits/multisession-keys/request":
                 try:
