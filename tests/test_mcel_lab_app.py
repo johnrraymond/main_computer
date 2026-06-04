@@ -84,6 +84,7 @@ def test_mcel_lab_mounts_task_manager_as_canonical_specimen() -> None:
     assert 'id="mcel-canonical-app-mount"' in app
     assert 'id="mcel-canonical-app-inspect"' in app
     assert 'id="mcel-canonical-app-proof"' in app
+    assert 'id="mcel-canonical-app-enrich"' in app
     assert 'id="mcel-canonical-app-lens"' in app
     assert 'id="mcel-canonical-app-clean"' in app
     assert 'id="mcel-canonical-app-lens-map"' in app
@@ -104,15 +105,25 @@ def test_mcel_lab_mounts_task_manager_as_canonical_specimen() -> None:
     assert ".mcel-canonical-app-lens-map-card" in css
     assert 'id="mcel-canonical-app-frame-summary"' in app
     assert "mcelCanonicalAppFrameSummary = document.querySelector" in bindings
+    assert "mcelCanonicalAppEnrich = document.querySelector" in bindings
     assert "mcelCanonicalAppLens = document.querySelector" in bindings
     assert "mcelCanonicalAppClean = document.querySelector" in bindings
     assert "mcelCanonicalAppLensMap = document.querySelector" in bindings
     assert "lastCanonicalSpecimenLens" in bindings
+    assert "lastCanonicalSpecimenEnrichment" in bindings
     assert "injectMcelCanonicalAppSpecimenChrome" in lab
     assert "applyMcelCanonicalTaskManagerLens" in lab
+    assert "applyMcelCanonicalTaskManagerEnrichment" in lab
+    assert "MCEL_CANONICAL_TASK_MANAGER_REGION_ENRICHMENT" in lab
+    assert "MCEL_CANONICAL_TASK_MANAGER_COMPONENT_ENRICHMENT" in lab
+    assert "MCEL_CANONICAL_TASK_MANAGER_FIELD_ENRICHMENT" in lab
     assert "MCEL_CANONICAL_TASK_MANAGER_PANEL_LENS" in lab
     assert "MCEL_CANONICAL_TASK_MANAGER_ACTION_LENS" in lab
     assert "MCEL_CANONICAL_SPECIMEN_LENS_STYLE_ID" in lab
+    assert "MCEL_CANONICAL_TASK_MANAGER_ENRICHMENT_STYLE_ID" in lab
+    assert "data-mcel-task-enrichment" in lab
+    assert "data-mcel-fit" in lab
+    assert "data-mcel-region" in lab
     assert "mcel-lens-hud" in lab
     assert "data-mcel-action-risk" in lab
     assert "MCEL_CANONICAL_SPECIMEN_RIBBON_ID" in lab
@@ -161,7 +172,7 @@ def test_mcel_lab_task_manager_lens_is_lab_only_and_risk_aware() -> None:
 
     assert "Inspect MCEL Lens" in app
     assert "Clean Specimen" in app
-    assert "Task Manager specimen map" in app
+    assert "Task Manager enrichment map" in app
     assert "renderMcelCanonicalAppLensMap" in specimen_block
     assert "applyMcelCanonicalTaskManagerLens" in specimen_block
     assert "data-mcel-canonical-lens" in specimen_block
@@ -176,6 +187,36 @@ def test_mcel_lab_task_manager_lens_is_lab_only_and_risk_aware() -> None:
     assert '"task-connections-table"' not in specimen_block
     assert ".mcel-canonical-app-lens-map-grid" in css
     assert ".mcel-canonical-app-lens-sidecar-list" in css
+
+
+def test_mcel_lab_task_manager_enrichment_is_role_based_before_render() -> None:
+    app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
+    lab = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    specimen_block = lab[
+        lab.index("const MCEL_CANONICAL_TASK_MANAGER_REQUIRED_IDS"):
+        lab.index("function openMcelDiagnosticsDrawer")
+    ]
+    enrichment_style = lab[
+        lab.index("function ensureMcelCanonicalTaskManagerEnrichmentStyle"):
+        lab.index("function applyMcelElementEnrichment")
+    ]
+
+    assert "Enrich MCEL Model" in app
+    assert "reads the legacy DOM into a MCEL enrichment model" in app
+    assert "regions, components, fields, actions, and fit laws" in specimen_block
+    assert "structural containers preserve app geometry" in specimen_block
+    assert "constrained regions use compact leaf-control fit policies" in specimen_block
+    assert "checkbox controls reserve a fixed input slot and shrinkable label slot" in specimen_block
+    assert "data-mcel-layout-region" in specimen_block
+    assert "[data-mcel-region=\"command-status-rail\"]" in enrichment_style
+    assert "[data-mcel-fit=\"compact-controls\"]" in enrichment_style
+    assert "[data-mcel-fit=\"fixed-input-shrink-label\"]" in enrichment_style
+    assert "[data-mcel-control-priority=\"primary\"]" in enrichment_style
+    assert "#task-include-connections" not in enrichment_style
+    assert "connections" not in enrichment_style.lower()
+    assert "data-mcel-action-risk" in specimen_block
+    assert "destructiveActionsExecuted: false" in specimen_block
+    assert ".click(" not in specimen_block
 
 
 def test_mcel_lab_assets_define_round_trip_contract() -> None:
