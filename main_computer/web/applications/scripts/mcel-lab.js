@@ -4596,12 +4596,39 @@
       const state = ensureMcelCanonicalAppSpecimenState();
       state.status = "refreshing";
       state.lastAt = new Date().toISOString();
+      let refreshedMountedApp = false;
       try {
-        frame.contentWindow?.location?.reload();
+        const child = frame.contentWindow;
+        const childDocument = child?.document;
+        const hasTaskManagerRoot = Boolean(childDocument?.querySelector?.("#task-manager-app"));
+        if (hasTaskManagerRoot && typeof child?.refreshTaskManager === "function") {
+          refreshedMountedApp = true;
+          Promise.resolve(child.refreshTaskManager())
+            .catch(() => null)
+            .finally(() => {
+              window.setTimeout(() => inspectMcelCanonicalAppSpecimen(`${reason}:app-refresh-complete`), 80);
+            });
+        } else {
+          const refreshButton = hasTaskManagerRoot ? childDocument?.querySelector?.("#task-refresh") : null;
+          if (refreshButton) {
+            refreshedMountedApp = true;
+            refreshButton.click();
+            window.setTimeout(() => inspectMcelCanonicalAppSpecimen(`${reason}:app-refresh-clicked`), 180);
+          }
+        }
+        if (!refreshedMountedApp) {
+          frame.contentWindow?.location?.reload();
+        }
       } catch (error) {
         frame.src = currentSrc;
       }
-      recordMcelEvent("canonical-app", "MCEL_CANONICAL_SPECIMEN_REFRESHING", "Canonical app specimen iframe refresh requested.");
+      recordMcelEvent(
+        "canonical-app",
+        "MCEL_CANONICAL_SPECIMEN_REFRESHING",
+        refreshedMountedApp
+          ? "Canonical app specimen mounted-app refresh requested."
+          : "Canonical app specimen iframe refresh requested."
+      );
       renderMcelCanonicalAppSpecimenStatus(reason);
       return selectedMcelCanonicalAppSpecimen();
     }
