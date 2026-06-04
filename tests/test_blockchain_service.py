@@ -101,15 +101,51 @@ def test_boot_reuses_running_default_dev_rpc_without_starting_compose(tmp_path: 
     assert state["compose"]["reused_existing_rpc"] is True
     assert runner.calls == []
 
-    current = json.loads((repo / "runtime" / "deployments" / "current.json").read_text(encoding="utf-8"))
-    assert current["source"] == "blockchain-service-dev-compose"
-    assert current["environment"] == "dev"
-    assert current["chain"]["rpc_url"] == DEFAULT_RPC_URL
-    assert current["chain"]["chain_id"] == DEFAULT_CHAIN_ID
-    assert current["offices"][0]["office"] == "O0"
-    assert current["offices"][0]["address"] == "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-    assert "private_key" not in current["offices"][0]
+    assert not (repo / "runtime" / "deployments" / "current.json").exists()
+    assert state["runtime"]["source"] == "blockchain-service-dev-compose"
+    assert state["runtime"]["environment"] == "dev"
+    assert state["runtime"]["rpc_url"] == DEFAULT_RPC_URL
+    assert state["runtime"]["chain_id"] == DEFAULT_CHAIN_ID
+    assert state["runtime"]["offices"][0]["office"] == "O0"
+    assert state["runtime"]["offices"][0]["address"] == "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+    assert "private_key" not in state["runtime"]["offices"][0]
     assert load_blockchain_service_state(repo)["ok"] is True
+
+
+def test_boot_does_not_edit_deployment_current_json(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    current_path = repo / "runtime" / "deployments" / "current.json"
+    current_path.parent.mkdir(parents=True)
+    existing = {
+        "schema_version": 1,
+        "source": {"kind": "dev-chain-reset", "project_name": "main-computer-dev"},
+        "contracts": {
+            "hub_credit_bridge_escrow": {
+                "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+                "bridge_controller_address": "0x6bef896c6Cbe2a89DC3508c31Ab8a2723153A0a4",
+            }
+        },
+        "hub_admin": {
+            "address": "0x6bef896c6Cbe2a89DC3508c31Ab8a2723153A0a4",
+            "wallet_path": "runtime/deployments/hub-admin-wallet.json",
+        },
+    }
+    original_text = json.dumps(existing, indent=2, sort_keys=True) + "\n"
+    current_path.write_text(original_text, encoding="utf-8")
+
+    service = BlockchainService(
+        root=repo,
+        blockchain_env_path=tmp_path / "missing.env",
+        runner=FakeBlockchainRunner(),
+        rpc_probe_func=ok_rpc_probe,
+        sleep_func=lambda _: None,
+        output_func=None,
+    )
+
+    state = service.boot()
+
+    assert state["ok"] is True
+    assert current_path.read_text(encoding="utf-8") == original_text
 
 
 def test_boot_starts_dev_compose_when_default_rpc_is_not_up(tmp_path: Path) -> None:
@@ -158,12 +194,12 @@ def test_boot_uses_external_blockchain_env_without_starting_dev_compose(tmp_path
     assert state["docker"]["state"] == "not-required"
     assert state["compose"]["state"] == "not-required"
     assert all("up" not in call for call in runner.calls)
-    current = json.loads((repo / "runtime" / "deployments" / "current.json").read_text(encoding="utf-8"))
-    assert current["source"] == "blockchain-service-env"
-    assert current["environment"] == "external"
-    assert current["chain"]["rpc_url"] == "http://127.0.0.1:9999"
-    assert current["chain"]["chain_id"] == 12345
-    assert current["offices"] == []
+    assert not (repo / "runtime" / "deployments" / "current.json").exists()
+    assert state["runtime"]["source"] == "blockchain-service-env"
+    assert state["runtime"]["environment"] == "external"
+    assert state["runtime"]["rpc_url"] == "http://127.0.0.1:9999"
+    assert state["runtime"]["chain_id"] == 12345
+    assert state["runtime"]["offices"] == []
 
 
 def test_external_blockchain_env_can_publish_dev_office_addresses(tmp_path: Path) -> None:
@@ -193,9 +229,9 @@ def test_external_blockchain_env_can_publish_dev_office_addresses(tmp_path: Path
     state = service.boot()
 
     assert state["ok"] is True
-    current = json.loads((repo / "runtime" / "deployments" / "current.json").read_text(encoding="utf-8"))
-    assert current["environment"] == "dev"
-    assert current["offices"] == [
+    assert not (repo / "runtime" / "deployments" / "current.json").exists()
+    assert state["runtime"]["environment"] == "dev"
+    assert state["runtime"]["offices"] == [
         {
             "office": "O0",
             "title": "Requester",

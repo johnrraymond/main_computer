@@ -123,10 +123,6 @@ def _default_blockchain_env_path() -> Path:
     return Path.home() / ".env.blockchain"
 
 
-def _deployment_current_path(root: Path) -> Path:
-    return root / "runtime" / "deployments" / "current.json"
-
-
 def _probe_json_rpc_chain_id(rpc_url: str, expected_chain_id: int) -> dict[str, Any]:
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "eth_chainId", "params": []}).encode("utf-8")
     request = Request(
@@ -213,9 +209,9 @@ class BlockchainService:
 
         docker compose -f docker-compose.dev.yml up -d ethereum-dev
 
-    The service also publishes runtime/deployments/current.json so the viewport
-    reads the chain that this service is responsible for, instead of a stale
-    dev-chain run.
+    The service reconciles and monitors the blockchain substrate. Deployment
+    manifests such as runtime/deployments/current.json are deploy-owned and
+    must not be written by Hub runtime services.
     """
 
     def __init__(
@@ -382,47 +378,19 @@ class BlockchainService:
             "rpc_source": "environment" if os.environ.get("MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL") else "default",
         }
 
-    def _publish_runtime_config(self, config: dict[str, Any]) -> dict[str, Any]:
+    def _runtime_config_status(self, config: dict[str, Any]) -> dict[str, Any]:
         if not config.get("ok"):
             return self._component(ok=False, state="blocked", message="blockchain config is not ready")
-
-        path = _deployment_current_path(self.root)
-        payload = {
-            "schema_version": 1,
-            "environment": str(config.get("environment") or "external"),
-            "run_id": str(config.get("mode") or "blockchain"),
-            "source": config.get("source"),
-            "published_at": _now_iso(),
-            "chain": {
-                "rpc_url": config.get("rpc_url"),
-                "host_rpc_url": config.get("rpc_url"),
-                "chain_id": config.get("chain_id"),
-                "mode": config.get("mode"),
-            },
-            "deployments": {},
-            "contracts": {},
-            "offices": config.get("offices") or [],
-        }
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        except OSError as exc:
-            return self._component(
-                ok=False,
-                state="write-failed",
-                message="could not publish blockchain runtime config",
-                path=str(path),
-                error=str(exc),
-            )
 
         return self._component(
             ok=True,
             state="ready",
-            message="blockchain runtime config was published",
-            path=str(path),
+            message="blockchain runtime config is available in memory; deployment manifests are deploy-owned",
             source=config.get("source"),
+            environment=str(config.get("environment") or "external"),
             rpc_url=config.get("rpc_url"),
             chain_id=config.get("chain_id"),
+            offices=config.get("offices") or [],
         )
 
     def _reconcile_dev_chain_without_resetting_running_default(self, config: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -478,7 +446,7 @@ class BlockchainService:
     def _full_boot_reconcile(self) -> dict[str, Any]:
         state = self._base_state("booting")
         config = self._chain_config()
-        runtime = self._publish_runtime_config(config)
+        runtime = self._runtime_config_status(config)
 
         if not config.get("ok"):
             docker = self._component(ok=False, state="blocked", message="blockchain config is not ready")
@@ -517,7 +485,7 @@ class BlockchainService:
 
     def _light_keepalive(self, state: dict[str, Any]) -> dict[str, Any]:
         config = self._chain_config()
-        runtime = self._publish_runtime_config(config)
+        runtime = self._runtime_config_status(config)
         if not config.get("ok"):
             docker = self._component(ok=False, state="blocked", message="blockchain config is not ready")
             compose = self._component(ok=False, state="blocked", message="blockchain config is not ready")

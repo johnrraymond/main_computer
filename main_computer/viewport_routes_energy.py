@@ -376,6 +376,39 @@ class ViewportEnergyRoutesMixin:
             self.server.signal("api-worker-wallet-funding-balance-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
+    def _handle_worker_wallet_funding_complete(self) -> None:
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Worker wallet funding completion is only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                return
+            body = self._read_json()
+            wallet_address = self._normalize_worker_wallet_address(body.get("wallet_address"))
+            hub_url = self._clean_hub_url(str(body.get("hub_url") or self.server.config.hub_url))
+            receipt = body.get("deposit_receipt")
+            if not isinstance(receipt, dict):
+                receipt = body
+            deposit_id = str(receipt.get("deposit_id", body.get("deposit_id", ""))).strip().lower()
+            forwarded = {
+                "wallet_address": wallet_address,
+                "deposit_id": deposit_id,
+                "chain_id": int(receipt.get("chain_id", body.get("chain_id", 0)) or 0),
+                "contract_address": str(receipt.get("contract_address", body.get("contract_address", ""))),
+                "tx_hash": str(receipt.get("tx_hash", receipt.get("transaction_hash", body.get("tx_hash", "")))),
+            }
+            result = self._post_worker_wallet_funding_completion_to_hub(hub_url=hub_url, payload=forwarded)
+            self.server.signal(
+                "api-worker-wallet-funding-complete",
+                hub_url=hub_url,
+                wallet_address=wallet_address,
+                deposit_id=deposit_id,
+                tx_hash=forwarded["tx_hash"],
+                idempotent=bool(result.get("idempotent")),
+            )
+            self._send_json({"ok": True, "hub_url": hub_url, **result})
+        except Exception as exc:
+            self.server.signal("api-worker-wallet-funding-complete-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
     def _handle_worker_wallet_funding_import(self) -> None:
         try:
             if not self._worker_ui_client_is_local():
@@ -673,6 +706,56 @@ class ViewportEnergyRoutesMixin:
             raise RuntimeError("Hub returned a non-object wallet funding balance response.")
         if data.get("error"):
             raise RuntimeError(str(data["error"]))
+        return data
+
+    def _post_worker_wallet_funding_completion_to_hub(self, *, hub_url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Ask Hub to complete a bridge escrow deposit by deposit id.
+
+        The browser wallet has already submitted depositFor(...).  The viewport
+        forwards only the deposit id and wallet identity; the Hub must verify the
+        amount on-chain before crediting the ledger.
+        """
+
+        hub_base = self._clean_hub_url(hub_url)
+        wallet_address = str(payload.get("wallet_address", "")).strip().lower()
+        deposit_id = str(payload.get("deposit_id", "")).strip().lower()
+        if not re.fullmatch(r"0x[0-9a-f]{64}", deposit_id):
+            raise ValueError("deposit_id must be a 32-byte 0x-prefixed hex value.")
+
+        route_payload = {
+            "deposit_id": deposit_id,
+            "wallet_address": wallet_address,
+        }
+        if payload.get("tx_hash"):
+            route_payload["tx_hash"] = str(payload.get("tx_hash", "")).strip()
+        if payload.get("contract_address"):
+            route_payload["contract_address"] = str(payload.get("contract_address", "")).strip()
+        if payload.get("chain_id") is not None:
+            route_payload["chain_id"] = int(payload.get("chain_id") or 0)
+        encoded = json.dumps(route_payload, ensure_ascii=False).encode("utf-8")
+        request = Request(
+            hub_base + "/api/hub/v1/credits/wallet-funding/complete",
+            data=encoded,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=30.0) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Hub returned HTTP {exc.code} from /api/hub/v1/credits/wallet-funding/complete: {body}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"Hub is unreachable: {exc}") from exc
+
+        if not isinstance(data, dict):
+            raise RuntimeError("Hub returned a non-object wallet funding completion response.")
+        if data.get("error"):
+            raise RuntimeError(str(data["error"]))
+        data.setdefault("wallet_address", wallet_address)
+        data.setdefault("account_id", wallet_address)
+        data.setdefault("funding_model", "hub_credit_bridge_escrow_wallet_v2")
+        data["wallet_funding_completion_endpoint"] = "/api/hub/v1/credits/wallet-funding/complete"
         return data
 
     def _post_worker_wallet_funding_import_to_hub(self, *, hub_url: str, payload: dict[str, Any]) -> dict[str, Any]:

@@ -1363,6 +1363,9 @@ def dispatch_post(self) -> None:
     if self.path == "/api/applications/worker/wallet-funding/balance":
         self._handle_worker_wallet_funding_balance()
         return
+    if self.path == "/api/applications/worker/wallet-funding/complete":
+        self._handle_worker_wallet_funding_complete()
+        return
     if self.path == "/api/applications/worker/wallet-funding/import":
         self._handle_worker_wallet_funding_import()
         return

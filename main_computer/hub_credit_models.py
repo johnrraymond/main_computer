@@ -21,6 +21,7 @@ CREDIT_TRANSACTION_TYPES = {
     "hold_released",
     "request_charged",
     "worker_earned",
+    "bridge_deposit_completed",
     "bridge_spend_rectified",
     "withdrawal_released",
     "refund_issued",
@@ -217,6 +218,7 @@ class HubCreditAccount:
     held_credits: int = 0
     spent_credits: int = 0
     earned_credits: int = 0
+    bridge_completed_credits: int = 0
     created_at: str = ""
     updated_at: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -229,6 +231,7 @@ class HubCreditAccount:
         object.__setattr__(self, "held_credits", positive_int(self.held_credits))
         object.__setattr__(self, "spent_credits", positive_int(self.spent_credits))
         object.__setattr__(self, "earned_credits", positive_int(self.earned_credits))
+        object.__setattr__(self, "bridge_completed_credits", positive_int(self.bridge_completed_credits))
         object.__setattr__(self, "created_at", self.created_at or now)
         object.__setattr__(self, "updated_at", self.updated_at or self.created_at or now)
 

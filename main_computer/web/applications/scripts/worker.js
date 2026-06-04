@@ -21,7 +21,8 @@
     const WORKER_METAMASK_RPC_BACKOFF_POLL_MS = 3000;
     const WORKER_CREDIT_BASE_UNITS_PER_CREDIT = 1000000000000000000n;
     const WORKER_HUB_CREDIT_BRIDGE_ESCROW_ABI = [
-      "function depositFor(address account,uint256 amountUnits,bytes32 depositId,string memo) payable returns (bool)"
+      "function depositFor(address account,uint256 amountUnits,bytes32 depositId,string memo) payable returns (bool)",
+      "event CreditDeposited(bytes32 indexed depositId,address indexed account,address indexed payer,uint256 amountUnits,string memo)"
     ];
     const WORKER_DEV_CHAIN_NAME = "Main Computer Dev Chain";
     const WORKER_DEV_CHAIN_RPC_URL = "http://127.0.0.1:18545";
@@ -2072,6 +2073,47 @@
       return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
     }
 
+
+    function workerCreditDepositedEventFromReceipt(contract, receipt, expected) {
+      const logs = Array.isArray(receipt?.logs) ? receipt.logs : [];
+      const expectedContract = workerLowerAddress(expected.contractAddress);
+      const expectedDepositId = String(expected.depositId || "").toLowerCase();
+      const expectedAccount = workerLowerAddress(expected.account);
+      const expectedAmount = BigInt(expected.amountUnits || 0);
+      for (const log of logs) {
+        if (workerLowerAddress(log?.address || "") !== expectedContract) continue;
+        try {
+          const parsed = contract.interface.parseLog(log);
+          if (!parsed || parsed.name !== "CreditDeposited") continue;
+          const args = parsed.args || {};
+          const actualDepositId = String(args.depositId || args[0] || "").toLowerCase();
+          const actualAccount = workerLowerAddress(args.account || args[1] || "");
+          const actualAmount = BigInt(args.amountUnits || args[3] || 0);
+          if (actualDepositId !== expectedDepositId) {
+            throw new Error("CreditDeposited depositId did not match the submitted deposit id.");
+          }
+          if (actualAccount !== expectedAccount) {
+            throw new Error("CreditDeposited account did not match the connected wallet.");
+          }
+          if (actualAmount !== expectedAmount) {
+            throw new Error("CreditDeposited amount did not match the submitted amount.");
+          }
+          return {
+            depositId: actualDepositId,
+            account: actualAccount,
+            payer: workerLowerAddress(args.payer || args[2] || ""),
+            amountUnits: actualAmount,
+            logIndex: Number(log.logIndex ?? log.index ?? 0) || 0
+          };
+        } catch (error) {
+          if (String(error?.message || error).includes("did not match")) {
+            throw error;
+          }
+        }
+      }
+      throw new Error("Funding receipt did not include the expected CreditDeposited event.");
+    }
+
     async function checkWorkerWalletCreditBalance({quiet = false} = {}) {
       loadWorkerBridgeState();
       const walletAddress = workerLowerAddress(workerBridgeState.wallet.address);
@@ -2266,7 +2308,13 @@
 
         const receipt = typeof tx.wait === "function" ? await tx.wait() : null;
         const txHash = String(receipt?.hash || receipt?.transactionHash || tx.hash || "");
-        const importResult = await workerPostJson("/api/applications/worker/wallet-funding/import", {
+        const depositedEvent = workerCreditDepositedEventFromReceipt(contract, receipt, {
+          contractAddress: readiness.contractAddress,
+          depositId,
+          account: walletAddress,
+          amountUnits
+        });
+        const completionResult = await workerPostJson("/api/applications/worker/wallet-funding/complete", {
           hub_url: workerSelectedHubUrl(),
           wallet_address: walletAddress,
           deposit_receipt: {
@@ -2274,28 +2322,25 @@
             chain_id: workerDecimalChainId(workerBridgeState.wallet.chainId || WORKER_DEV_CHAIN_ID_HEX),
             contract_address: readiness.contractAddress,
             tx_hash: txHash,
-            log_index: workerReceiptLogIndex(receipt, readiness.contractAddress),
+            log_index: depositedEvent.logIndex ?? workerReceiptLogIndex(receipt, readiness.contractAddress),
             block_number: Number(receipt?.blockNumber || 0),
-            payer_address: signerAddress,
-            payment_asset: "native",
-            payment_amount_base_units: amountUnits,
-            credits_granted: amountUnits,
-            deposit_id: depositId,
-            memo
+            deposit_id: depositId
           }
         });
 
-        const balance = workerNormalizeHubCreditBalance(importResult);
+        const balance = workerNormalizeHubCreditBalance(completionResult);
         workerBridgeState.walletFunding = {
           ...workerBridgeState.walletFunding,
           bridgeContractAddress: readiness.contractAddress,
           amountCredits: readiness.amountCredits,
           balance: balance || workerBridgeState.walletFunding.balance,
-          accountId: String(importResult.account_id || balance?.account_id || ""),
-          lastStatus: importResult.idempotent
-            ? "Funding was already recorded; my bridge balance is current."
+          accountId: String(completionResult.account_id || balance?.account_id || ""),
+          lastStatus: completionResult.idempotent
+            ? "Funding was already completed; my bridge balance is current."
             : `My bridge account funded for ${workerShortAddress(walletAddress)}.`,
           lastTxHash: txHash,
+          lastCompletionTxHash: String(completionResult.completion_tx_hash || ""),
+          lastDepositId: depositId,
           lastError: "",
           updatedAt: workerNowIso()
         };

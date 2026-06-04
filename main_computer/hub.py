@@ -26,6 +26,7 @@ from main_computer.hub_security import (
     hub_transport_is_encrypted_or_loopback,
 )
 from main_computer.hub_admin_site import HUB_ADMIN_ROUTES, build_admin_bootstrap_payload, render_hub_admin_html
+from main_computer.hub_credit_bridge_completion import HubCreditBridgeCompletionService
 from main_computer.hub_credit_indexer import HubCreditIndexer, wallet_account_id
 from main_computer.hub_credit_ledger import HubCreditLedger
 from main_computer.hub_credit_models import (
@@ -975,6 +976,7 @@ class HubHttpServer(ThreadingHTTPServer):
         self.energy_ledger = EnergyCreditLedger(hub_root / "energy_credits")
         self.credit_ledger = HubCreditLedger(hub_root / "compute_credits")
         self.credit_indexer = HubCreditIndexer(self.credit_ledger)
+        self.credit_bridge_completion = HubCreditBridgeCompletionService(self.credit_ledger, config)
         self.multisession_key_store_path = hub_root / "compute_credits" / "multisession_keys.json"
         self.multisession_key_store_lock = threading.Lock()
         self.dispatcher = HubDispatcher(
@@ -1472,6 +1474,9 @@ class HubServerHandler(_JsonHandler):
         if path == "/api/hub/v1/credits/indexer":
             self._send_json(self.server.credit_indexer.status())
             return
+        if path == "/api/hub/v1/credits/wallet-funding/completion":
+            self._send_json(self.server.credit_bridge_completion.status())
+            return
         if path == "/api/hub/v1/credits/accounts":
             limit = int(query.get("limit", ["100"])[0] or 100)
             accounts = [account.as_dict() for account in self.server.credit_ledger.list_accounts(limit=limit)]
@@ -1790,6 +1795,10 @@ class HubServerHandler(_JsonHandler):
                     metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
                 )
                 self._send_json(result)
+                return
+            if path == "/api/hub/v1/credits/wallet-funding/complete":
+                body = self._read_json()
+                self._send_json(self.server.credit_bridge_completion.complete_wallet_funding_deposit(body))
                 return
             if path == "/api/hub/v1/credits/wallet-funding/import":
                 body = self._read_json()
