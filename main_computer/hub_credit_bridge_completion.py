@@ -83,6 +83,27 @@ def normalize_evm_address(value: Any, *, field_name: str = "address") -> str:
     return text
 
 
+def _checksum_evm_address_for_transaction(value: Any, *, field_name: str = "address") -> str:
+    """Return an eth-account compatible transaction address.
+
+    The app stores and compares EVM addresses in normalized lowercase form, but
+    eth-account validates transaction address fields more strictly and rejects
+    some lowercase addresses. Convert only at the transaction-signing boundary.
+    """
+    normalized = normalize_evm_address(value, field_name=field_name)
+    try:
+        from eth_utils import to_checksum_address  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            "eth-utils is required for Hub admin transaction signing. "
+            "Install the project requirements or run bootstrap before completing deposits."
+        ) from exc
+    try:
+        return str(to_checksum_address(normalized))
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a valid EIP-55 compatible EVM address.") from exc
+
+
 def _hex_to_int(value: Any) -> int:
     if not isinstance(value, str):
         raise ValueError(f"Expected hex string result, got {type(value).__name__}.")
@@ -247,7 +268,13 @@ class HubCreditBridgeContractClient:
         if derived != self.admin_address:
             raise RuntimeError(f"Hub admin wallet address mismatch: metadata={self.admin_address}, key={derived}.")
 
-        tx_for_estimate = {"from": self.admin_address, "to": self.contract_address, "value": "0x0", "data": data}
+        signing_admin_address = _checksum_evm_address_for_transaction(self.admin_address, field_name="admin_address")
+        signing_contract_address = _checksum_evm_address_for_transaction(
+            self.contract_address,
+            field_name="contract_address",
+        )
+
+        tx_for_estimate = {"from": signing_admin_address, "to": signing_contract_address, "value": "0x0", "data": data}
         try:
             gas = int(self.rpc.estimate_gas(tx_for_estimate) * 1.2) + 10_000
         except Exception:
@@ -255,8 +282,8 @@ class HubCreditBridgeContractClient:
 
         tx = {
             "chainId": chain_id,
-            "nonce": self.rpc.get_transaction_count(self.admin_address),
-            "to": self.contract_address,
+            "nonce": self.rpc.get_transaction_count(signing_admin_address),
+            "to": signing_contract_address,
             "value": 0,
             "data": data,
             "gas": gas,

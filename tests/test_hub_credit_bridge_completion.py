@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+import sys
 
 import pytest
 
@@ -10,6 +12,7 @@ from main_computer.hub_credit_bridge_completion import (
     BridgeDeployment,
     DepositRecord,
     HubCreditBridgeCompletionService,
+    HubCreditBridgeContractClient,
 )
 from main_computer.hub_credit_ledger import HubCreditLedger
 
@@ -136,3 +139,86 @@ def test_ledger_rejects_local_completed_total_ahead_of_chain(tmp_path: Path) -> 
             chain_completed_credits=1,
             deposit_id="0x" + "cd" * 32,
         )
+
+
+
+def test_contract_client_checksums_transaction_addresses_before_signing(monkeypatch: pytest.MonkeyPatch) -> None:
+    lowercase_contract = "0xe7f1725e7734ce288f8367e1bb143e90bb3f0512"
+    checksum_contract = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
+    lowercase_admin = "0x6bef896c6cbe2a89dc3508c31ab8a2723153a0a4"
+    checksum_admin = "0x6bef896c6Cbe2a89DC3508c31Ab8a2723153A0a4"
+    signed_txs: list[dict] = []
+
+    def fake_to_checksum_address(value: str) -> str:
+        normalized = value.lower()
+        if normalized == lowercase_contract:
+            return checksum_contract
+        if normalized == lowercase_admin:
+            return checksum_admin
+        raise AssertionError(f"unexpected checksum input: {value}")
+
+    class FakeAccount:
+        @staticmethod
+        def from_key(private_key: str) -> SimpleNamespace:
+            assert private_key == "0x" + "11" * 32
+            return SimpleNamespace(address=lowercase_admin)
+
+        @staticmethod
+        def sign_transaction(tx: dict, private_key: str) -> SimpleNamespace:
+            signed_txs.append(dict(tx))
+            assert tx["to"] == checksum_contract
+            return SimpleNamespace(raw_transaction=b"\x12\x34")
+
+    monkeypatch.setitem(sys.modules, "eth_utils", SimpleNamespace(to_checksum_address=fake_to_checksum_address))
+    monkeypatch.setitem(sys.modules, "eth_account", SimpleNamespace(Account=FakeAccount))
+
+    class FakeRpc:
+        def __init__(self) -> None:
+            self.estimated_txs: list[dict] = []
+            self.nonce_addresses: list[str] = []
+
+        def chain_id(self) -> int:
+            return 42424242
+
+        def estimate_gas(self, tx: dict) -> int:
+            self.estimated_txs.append(dict(tx))
+            return 100_000
+
+        def get_transaction_count(self, address: str) -> int:
+            self.nonce_addresses.append(address)
+            return 3
+
+        def gas_price(self) -> int:
+            return 1_000_000_000
+
+        def send_raw_transaction(self, raw_tx: bytes | str) -> str:
+            assert raw_tx == b"\x12\x34"
+            return "0x" + "99" * 32
+
+        def transaction_receipt(self, tx_hash: str) -> dict:
+            return {"status": "0x1", "transactionHash": tx_hash}
+
+    rpc = FakeRpc()
+    client = HubCreditBridgeContractClient(
+        rpc_url="http://127.0.0.1:18545",
+        contract_address=lowercase_contract,
+        chain_id=42424242,
+        admin_private_key="0x" + "11" * 32,
+        admin_address=lowercase_admin,
+        rpc_client=rpc,  # type: ignore[arg-type]
+        receipt_timeout_s=1.0,
+    )
+
+    result = client.complete_deposit(DEPOSIT_ID)
+
+    assert result["tx_hash"] == "0x" + "99" * 32
+    assert rpc.estimated_txs == [
+        {
+            "from": checksum_admin,
+            "to": checksum_contract,
+            "value": "0x0",
+            "data": "0x8c503dc4" + DEPOSIT_ID[2:],
+        }
+    ]
+    assert rpc.nonce_addresses == [checksum_admin]
+    assert signed_txs[0]["to"] == checksum_contract

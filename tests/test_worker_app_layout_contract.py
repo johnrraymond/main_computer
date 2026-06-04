@@ -88,6 +88,7 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert '"/api/applications/worker/multisession-key/request"' in js
     assert '"/api/applications/worker/multisession-keys/load"' in js
     assert '"/api/applications/worker/wallet-balance"' in js
+    assert '"/api/applications/worker/wallet-funding/config"' in js
     assert '"/api/applications/worker/wallet-funding/complete"' in js
     assert '"/api/applications/worker/wallet-funding/balance"' in js
     assert "requestMultiSessionKeySignature" in js
@@ -108,6 +109,8 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert "self._handle_worker_multisession_keys_load()" in dispatch
     assert '"/api/applications/worker/wallet-balance"' in dispatch
     assert "self._handle_worker_wallet_balance()" in dispatch
+    assert '"/api/applications/worker/wallet-funding/config"' in dispatch
+    assert "self._handle_worker_wallet_funding_config()" in dispatch
     assert '"/api/applications/worker/wallet-funding/complete"' in dispatch
     assert "self._handle_worker_wallet_funding_complete()" in dispatch
     assert '"/api/applications/worker/wallet-funding/balance"' in dispatch
@@ -148,13 +151,16 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
     assert 'id="worker-faucet-result-chain"' in html
     assert 'id="worker-faucet-result-runtime"' in html
     assert 'id="worker-hub-credit-card"' in html
-    assert 'id="worker-hub-credit-contract"' in html
+    assert 'id="worker-hub-credit-contract"' not in html
+    assert 'id="worker-hub-credit-escrow-address"' in html
     assert 'id="worker-hub-credit-amount"' in html
     assert 'id="worker-hub-credit-wallet-balance"' in html
     assert 'id="worker-check-hub-credit-balance"' in html
     assert 'id="worker-fund-hub-credit"' in html
     assert "My Bridge Account" in html
     assert "Money on the machine is money on the bridge." in html
+    assert "Bridge address" not in html
+    assert "Bridge contract" in html
     assert "Hub Wallet Credit" not in html
     assert "Fund Hub Wallet Credit" not in html
     assert "Fund Hub Wallet Credit" not in js
@@ -181,6 +187,11 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
     assert "amount_credits: WORKER_FAUCET_AMOUNT_CREDITS" in js
     assert "WORKER_HUB_CREDIT_BRIDGE_ESCROW_ABI" in js
     assert "function workerComputeHubCreditFundingReadiness()" in js
+    assert "workerRefreshHubCreditBridgeConfig" in js
+    assert "workerRequireBridgeContractCode" in js
+    assert "provider.getCode(address)" in js
+    assert "Enter the bridge address." not in js
+    assert "Bridge deployment config is missing the escrow contract address." in js
     assert "async function fundWorkerHubCredit" in js
     assert "async function checkWorkerHubCreditBalance" in js
     assert "async function checkWorkerWalletCreditBalance" in js
@@ -221,7 +232,8 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
 
     assert "workerRequestFaucet" in bindings
     assert "workerHubCreditForm" in bindings
-    assert "workerHubCreditContract" in bindings
+    assert "workerHubCreditContract" not in bindings
+    assert "workerHubCreditEscrowAddress" in bindings
     assert "workerHubCreditWalletBalance" in bindings
     assert "workerFundHubCredit" in bindings
     assert "workerCheckHubCreditBalance" in bindings

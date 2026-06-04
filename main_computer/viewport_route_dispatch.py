@@ -1200,6 +1200,9 @@ def dispatch_get(self) -> None:
         self.server.signal("api-xlag-dev-faucet-status")
         self._send_json(xlag_dev_faucet_status(self.server.config, self.server.energy_chain))
         return
+    if route_path == "/api/applications/worker/wallet-funding/config":
+        self._handle_worker_wallet_funding_config()
+        return
     if urlsplit(self.path).path == "/api/applications/game-editor/asset/read":
         self._handle_game_asset_read()
         return

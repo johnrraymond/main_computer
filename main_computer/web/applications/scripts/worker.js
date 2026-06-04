@@ -47,6 +47,10 @@
     let workerFaucetRuntimeStatus = null;
     let workerFaucetRuntimeEndpointReachable = false;
     let workerFaucetRuntimeCheckInFlight = false;
+    let workerHubCreditBridgeConfig = null;
+    let workerHubCreditBridgeConfigStatus = "idle";
+    let workerHubCreditBridgeConfigError = "";
+    let workerHubCreditBridgeConfigInFlight = false;
     let workerHubCreditFundingInFlight = false;
     let workerHubCreditBalanceInFlight = false;
     let workerWalletCreditBalanceInFlight = false;
@@ -438,7 +442,10 @@
           updatedAt: String(faucet.updatedAt || faucet.updated_at || "")
         },
         walletFunding: {
-          bridgeContractAddress: String(walletFunding.bridgeContractAddress || walletFunding.bridge_contract_address || ""),
+          // The escrow address is deploy-owned.  Do not revive stale/manual
+          // browser storage here; workerRefreshHubCreditBridgeConfig reloads it
+          // from runtime/deployments/current.json through the local viewport.
+          bridgeContractAddress: "",
           amountCredits: String(walletFunding.amountCredits || walletFunding.amount_credits || WORKER_HUB_CREDIT_DEFAULT_AMOUNT),
           walletBalance: workerNormalizeWalletCreditBalance(walletFunding.walletBalance || walletFunding.wallet_balance),
           walletBalanceStatus: String(walletFunding.walletBalanceStatus || walletFunding.wallet_balance_status || "idle"),
@@ -466,9 +473,6 @@
       if (workerFaucetAmount) {
         workerFaucetAmount.value = WORKER_FAUCET_AMOUNT_CREDITS;
         workerFaucetAmount.disabled = true;
-      }
-      if (workerHubCreditContract) {
-        workerHubCreditContract.value = workerBridgeState.walletFunding.bridgeContractAddress || "";
       }
       if (workerHubCreditAmount) {
         workerHubCreditAmount.value = workerBridgeState.walletFunding.amountCredits || WORKER_HUB_CREDIT_DEFAULT_AMOUNT;
@@ -615,6 +619,82 @@
     }
 
 
+    function workerBridgeConfigContractAddress(config = workerHubCreditBridgeConfig) {
+      return String(
+        config?.hub_credit_bridge_escrow_address
+          || config?.contract_address
+          || config?.bridge_contract_address
+          || ""
+      ).trim();
+    }
+
+    function workerBridgeConfigChainIdHex(config = workerHubCreditBridgeConfig) {
+      const raw = config?.chain_id_hex || config?.chainIdHex || config?.chain_id || config?.chainId || "";
+      return workerNormalizeChainIdHex(raw);
+    }
+
+    function workerBridgeConfigDisplayAddress() {
+      const address = workerBridgeConfigContractAddress();
+      if (workerHubCreditBridgeConfigInFlight || workerHubCreditBridgeConfigStatus === "checking") return "Loading deployment…";
+      if (address) return workerShortAddress(address);
+      if (workerHubCreditBridgeConfigError) return workerHubCreditBridgeConfigError;
+      return "Deployment config not loaded";
+    }
+
+    async function workerRefreshHubCreditBridgeConfig({force = false} = {}) {
+      if (workerHubCreditBridgeConfigInFlight) return workerHubCreditBridgeConfig;
+      if (!force && workerHubCreditBridgeConfigStatus === "ready" && workerWalletValidAddress(workerBridgeConfigContractAddress())) {
+        return workerHubCreditBridgeConfig;
+      }
+      workerHubCreditBridgeConfigInFlight = true;
+      workerHubCreditBridgeConfigStatus = "checking";
+      workerHubCreditBridgeConfigError = "";
+      renderWorkerBridgeReadiness();
+      try {
+        const data = await workerGetJson("/api/applications/worker/wallet-funding/config");
+        const contractAddress = String(data.hub_credit_bridge_escrow_address || data.contract_address || "").trim();
+        if (!workerWalletValidAddress(contractAddress)) {
+          throw new Error("Deployment config is missing hub_credit_bridge_escrow.address.");
+        }
+        const configuredChainId = workerNormalizeChainIdHex(data.chain_id_hex || data.chain_id || "");
+        if (configuredChainId && configuredChainId !== WORKER_DEV_CHAIN_ID_HEX) {
+          throw new Error(`Deployment chain ${configuredChainId} does not match ${WORKER_DEV_CHAIN_ID_HEX}.`);
+        }
+        workerHubCreditBridgeConfig = {
+          ...data,
+          hub_credit_bridge_escrow_address: contractAddress,
+          chain_id_hex: configuredChainId || WORKER_DEV_CHAIN_ID_HEX
+        };
+        workerHubCreditBridgeConfigStatus = "ready";
+        workerHubCreditBridgeConfigError = "";
+        workerBridgeState.walletFunding = {
+          ...workerBridgeState.walletFunding,
+          bridgeContractAddress: contractAddress,
+          lastError: String(workerBridgeState.walletFunding?.lastError || "").startsWith("Bridge deployment config")
+            ? ""
+            : workerBridgeState.walletFunding?.lastError || "",
+          updatedAt: workerNowIso()
+        };
+        saveWorkerBridgeState();
+        return workerHubCreditBridgeConfig;
+      } catch (error) {
+        workerHubCreditBridgeConfig = null;
+        workerHubCreditBridgeConfigStatus = "failed";
+        workerHubCreditBridgeConfigError = `Bridge deployment config unavailable: ${error.message || error}`;
+        workerBridgeState.walletFunding = {
+          ...workerBridgeState.walletFunding,
+          bridgeContractAddress: "",
+          lastError: workerHubCreditBridgeConfigError,
+          updatedAt: workerNowIso()
+        };
+        saveWorkerBridgeState();
+        return null;
+      } finally {
+        workerHubCreditBridgeConfigInFlight = false;
+        renderWorkerBridgeReadiness();
+      }
+    }
+
     function workerComputeHubCreditFundingReadiness() {
       loadWorkerBridgeState();
 
@@ -622,7 +702,7 @@
       const address = String(wallet.address || "").trim();
       const chainId = workerNormalizeChainIdHex(wallet.chainId);
       const connected = Boolean(wallet.connected && address);
-      const contractAddress = String(workerHubCreditContract?.value || workerBridgeState.walletFunding.bridgeContractAddress || "").trim();
+      const contractAddress = workerBridgeConfigContractAddress();
       const amountCredits = String(workerHubCreditAmount?.value || workerBridgeState.walletFunding.amountCredits || WORKER_HUB_CREDIT_DEFAULT_AMOUNT).trim();
 
       if (workerHubCreditFundingInFlight) {
@@ -669,10 +749,33 @@
         };
       }
 
+      if (workerHubCreditBridgeConfigInFlight || workerHubCreditBridgeConfigStatus === "checking") {
+        return {
+          ready: false,
+          reason: "Loading bridge deployment config.",
+          address,
+          chainId,
+          contractAddress,
+          amountCredits
+        };
+      }
+
       if (!workerWalletValidAddress(contractAddress)) {
         return {
           ready: false,
-          reason: "Enter the bridge address.",
+          reason: workerHubCreditBridgeConfigError || "Bridge deployment config is missing the escrow contract address.",
+          address,
+          chainId,
+          contractAddress,
+          amountCredits
+        };
+      }
+
+      const deployedChainId = workerBridgeConfigChainIdHex();
+      if (deployedChainId && deployedChainId !== chainId) {
+        return {
+          ready: false,
+          reason: `Deployment is for ${deployedChainId}, but the wallet is on ${chainId || "unknown chain"}.`,
           address,
           chainId,
           contractAddress,
@@ -880,6 +983,10 @@
         workerHubCreditBalance.textContent = hubCreditBalance
           ? `${hubCreditBalance.available_credits} available / ${hubCreditBalance.held_credits} held / ${hubCreditBalance.spent_credits} spent`
           : "Unknown";
+      }
+      if (workerHubCreditEscrowAddress) {
+        workerHubCreditEscrowAddress.textContent = workerBridgeConfigDisplayAddress();
+        workerHubCreditEscrowAddress.title = workerBridgeConfigContractAddress() || workerHubCreditBridgeConfigError || "";
       }
       if (workerHubCreditStatus) {
         if (workerHubCreditFundingInFlight) {
@@ -2049,7 +2156,7 @@
       workerBridgeState.walletFunding = {
         ...fallback,
         ...current,
-        bridgeContractAddress: String(workerHubCreditContract?.value || current.bridgeContractAddress || "").trim(),
+        bridgeContractAddress: workerBridgeConfigContractAddress(),
         amountCredits: String(workerHubCreditAmount?.value || current.amountCredits || WORKER_HUB_CREDIT_DEFAULT_AMOUNT).trim() || WORKER_HUB_CREDIT_DEFAULT_AMOUNT
       };
       saveWorkerBridgeState();
@@ -2073,6 +2180,27 @@
       return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
     }
 
+
+    async function workerRequireBridgeContractCode(provider, contractAddress) {
+      const address = String(contractAddress || "").trim();
+      if (!workerWalletValidAddress(address)) {
+        throw new Error("Bridge deployment config is missing a valid escrow contract address.");
+      }
+      let code = "";
+      try {
+        if (provider && typeof provider.getCode === "function") {
+          code = await workerPromiseWithTimeout(provider.getCode(address), "Bridge contract code check", WORKER_WALLET_BALANCE_TIMEOUT_MS);
+        } else if (provider && typeof provider.send === "function") {
+          code = await workerPromiseWithTimeout(provider.send("eth_getCode", [address, "latest"]), "Bridge contract code check", WORKER_WALLET_BALANCE_TIMEOUT_MS);
+        }
+      } catch (error) {
+        throw new Error(`Could not verify bridge contract code at ${workerShortAddress(address)}: ${error.message || error}`);
+      }
+      if (!code || String(code).toLowerCase() === "0x") {
+        throw new Error(`Bridge address ${workerShortAddress(address)} has no contract code. Redeploy hub-credit-bridge-escrow and refresh the Worker page.`);
+      }
+      return code;
+    }
 
     function workerCreditDepositedEventFromReceipt(contract, receipt, expected) {
       const logs = Array.isArray(receipt?.logs) ? receipt.logs : [];
@@ -2250,6 +2378,7 @@
     async function fundWorkerHubCredit(event) {
       event?.preventDefault?.();
       loadWorkerBridgeState();
+      await workerRefreshHubCreditBridgeConfig({force: true});
       workerSaveHubCreditInputs();
       const readiness = workerComputeHubCreditFundingReadiness();
       if (!readiness.ready) {
@@ -2292,6 +2421,7 @@
         }
 
         const amountUnits = workerCreditsToBaseUnits(readiness.amountCredits);
+        await workerRequireBridgeContractCode(browserProvider, readiness.contractAddress);
         const depositId = workerRandomBytes32Hex(ethers);
         const memo = `my bridge account funding ${workerShortAddress(walletAddress)}`;
         const contract = new ethers.Contract(readiness.contractAddress, WORKER_HUB_CREDIT_BRIDGE_ESCROW_ABI, signer);
@@ -2904,6 +3034,7 @@
       renderWorkerHubs();
       loadWorkerBridgeState();
       renderWorkerBridgeReadiness();
+      workerRefreshHubCreditBridgeConfig();
       workerRefreshFaucetRuntimeStatus();
       if (workerAddHubForm && !workerAddHubForm.dataset.workerBound) {
         workerAddHubForm.dataset.workerBound = "true";
@@ -2984,7 +3115,8 @@
           }
           renderWorkerBridgeReadiness();
           workerRefreshFaucetRuntimeStatus();
-          if (workerSaveStatus) workerSaveStatus.textContent = "Wallet, key, faucet, and bridge-account balances refreshed from local app storage and runtime status.";
+          await workerRefreshHubCreditBridgeConfig({force: true});
+          if (workerSaveStatus) workerSaveStatus.textContent = "Wallet, key, faucet, bridge deployment, and bridge-account balances refreshed from local app storage and runtime status.";
         });
       }
       if (workerFaucetAmount) {
@@ -2998,13 +3130,6 @@
       if (workerHubCreditForm && !workerHubCreditForm.dataset.workerBound) {
         workerHubCreditForm.dataset.workerBound = "true";
         workerHubCreditForm.addEventListener("submit", fundWorkerHubCredit);
-      }
-      if (workerHubCreditContract && !workerHubCreditContract.dataset.workerBound) {
-        workerHubCreditContract.dataset.workerBound = "true";
-        workerHubCreditContract.addEventListener("input", () => {
-          workerSaveHubCreditInputs();
-          renderWorkerBridgeReadiness();
-        });
       }
       if (workerHubCreditAmount && !workerHubCreditAmount.dataset.workerBound) {
         workerHubCreditAmount.dataset.workerBound = "true";

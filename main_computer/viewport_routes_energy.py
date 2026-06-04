@@ -192,6 +192,94 @@ class ViewportEnergyRoutesMixin:
 
         return credits
 
+    def _worker_wallet_funding_current_json_candidates(self) -> list[Path]:
+        candidates: list[Path] = []
+        raw_roots = [
+            getattr(self.server, "debug_root", None),
+            getattr(self.server.config, "workspace", None),
+            getattr(self.server.config, "hub_root", None),
+            Path.cwd(),
+        ]
+        for raw in raw_roots:
+            if raw is None:
+                continue
+            try:
+                base = Path(raw).resolve()
+            except Exception:
+                continue
+            for root in [base, *base.parents]:
+                candidates.append(root / "runtime" / "deployments" / "current.json")
+
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for path in candidates:
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(path)
+        return unique
+
+    def _load_worker_wallet_funding_bridge_config(self) -> dict[str, Any]:
+        last_error = ""
+        for path in self._worker_wallet_funding_current_json_candidates():
+            try:
+                if not path.exists():
+                    continue
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict):
+                    continue
+                contracts = payload.get("contracts") if isinstance(payload.get("contracts"), dict) else {}
+                escrow = contracts.get("hub_credit_bridge_escrow") if isinstance(contracts.get("hub_credit_bridge_escrow"), dict) else {}
+                chain = payload.get("chain") if isinstance(payload.get("chain"), dict) else {}
+                source = payload.get("source")
+                contract_address = str(escrow.get("address") or "").strip()
+                if not re.fullmatch(r"0x[0-9a-fA-F]{40}", contract_address):
+                    raise ValueError("contracts.hub_credit_bridge_escrow.address is missing or invalid.")
+                controller = str(escrow.get("bridge_controller_address") or "").strip()
+                if controller and not re.fullmatch(r"0x[0-9a-fA-F]{40}", controller):
+                    raise ValueError("contracts.hub_credit_bridge_escrow.bridge_controller_address is invalid.")
+                chain_id = int(escrow.get("chain_id") or chain.get("chain_id") or self.server.config.xlag_chain_id or 0)
+                if chain_id <= 0:
+                    raise ValueError("deployment chain_id is missing.")
+                rpc_url = str(chain.get("rpc_url") or chain.get("host_rpc_url") or self.server.config.energy_chain_rpc_url or "").strip()
+                if not rpc_url:
+                    raise ValueError("deployment RPC URL is missing.")
+
+                return {
+                    "ok": True,
+                    "chain_id": chain_id,
+                    "chain_id_hex": hex(chain_id),
+                    "rpc_url": rpc_url,
+                    "hub_credit_bridge_escrow_address": contract_address,
+                    "contract_address": contract_address,
+                    "bridge_controller_address": controller,
+                    "current_json_path": str(path),
+                    "source": source,
+                    "funding_model": "hub_credit_bridge_escrow_wallet_v2",
+                }
+            except Exception as exc:
+                last_error = f"{path}: {exc}"
+                continue
+        detail = f" Last error: {last_error}" if last_error else ""
+        raise FileNotFoundError("Could not find runtime/deployments/current.json with hub_credit_bridge_escrow metadata." + detail)
+
+    def _handle_worker_wallet_funding_config(self) -> None:
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Worker wallet funding config is only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                return
+            config = self._load_worker_wallet_funding_bridge_config()
+            self.server.signal(
+                "api-worker-wallet-funding-config",
+                contract_address=config.get("hub_credit_bridge_escrow_address"),
+                chain_id=config.get("chain_id"),
+            )
+            self._send_json(config)
+        except Exception as exc:
+            self.server.signal("api-worker-wallet-funding-config-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
     def _handle_worker_wallet_balance(self) -> None:
         try:
             if not self._worker_ui_client_is_local():

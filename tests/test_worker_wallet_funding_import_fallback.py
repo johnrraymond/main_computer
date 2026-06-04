@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 from urllib.error import HTTPError
 
 import pytest
@@ -113,3 +114,54 @@ def test_worker_wallet_funding_completion_rejects_bad_deposit_id() -> None:
                 "deposit_id": "not-a-deposit-id",
             },
         )
+
+
+def test_worker_wallet_funding_config_reads_deploy_owned_escrow_address(tmp_path) -> None:
+    deployments = tmp_path / "runtime" / "deployments"
+    deployments.mkdir(parents=True)
+    current_json = deployments / "current.json"
+    current_json.write_text(
+        json.dumps(
+            {
+                "chain": {
+                    "chain_id": 42424242,
+                    "rpc_url": "http://127.0.0.1:18545",
+                },
+                "contracts": {
+                    "hub_credit_bridge_escrow": {
+                        "address": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+                        "bridge_controller_address": "0x6bef896c6Cbe2a89DC3508c31Ab8a2723153A0a4",
+                        "chain_id": 42424242,
+                    }
+                },
+                "hub_admin": {
+                    "address": "0x6bef896c6Cbe2a89DC3508c31Ab8a2723153A0a4",
+                    "wallet_path": "runtime/deployments/hub-admin-wallet.json",
+                    "private_key": "0x" + "1" * 64,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    mixin = ViewportEnergyRoutesMixin()
+    mixin.server = SimpleNamespace(
+        debug_root=tmp_path,
+        config=SimpleNamespace(
+            workspace=tmp_path,
+            hub_root=tmp_path / "runtime" / "hub",
+            xlag_chain_id=42424242,
+            energy_chain_rpc_url="http://127.0.0.1:18545",
+        ),
+    )
+
+    result = mixin._load_worker_wallet_funding_bridge_config()
+
+    assert result["hub_credit_bridge_escrow_address"] == "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
+    assert result["contract_address"] == "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
+    assert result["bridge_controller_address"] == "0x6bef896c6Cbe2a89DC3508c31Ab8a2723153A0a4"
+    assert result["chain_id"] == 42424242
+    assert result["chain_id_hex"] == "0x28757b2"
+    serialized = json.dumps(result)
+    assert "wallet_path" not in serialized
+    assert "private_key" not in serialized
