@@ -104,6 +104,7 @@ def _account_from_dict(payload: dict[str, Any]) -> HubCreditAccount:
         held_credits=positive_int(payload.get("held_credits")),
         spent_credits=positive_int(payload.get("spent_credits")),
         earned_credits=positive_int(payload.get("earned_credits")),
+        bridge_completed_credits=positive_int(payload.get("bridge_completed_credits")),
         created_at=str(payload.get("created_at", "")),
         updated_at=str(payload.get("updated_at", "")),
         metadata=_copy_dict(payload.get("metadata")),
@@ -317,6 +318,7 @@ class HubCreditLedger:
                 "held_credits": sum(account.held_credits for account in accounts),
                 "spent_credits": sum(account.spent_credits for account in accounts),
                 "earned_credits": sum(account.earned_credits for account in accounts),
+                "bridge_completed_credits": sum(account.bridge_completed_credits for account in accounts),
                 "deposited_credits": sum(deposit.credits_granted for deposit in deposits),
                 "purchased_credits": sum(deposit.credits_granted for deposit in deposits),
                 "active_held_credits": sum(hold.credits for hold in holds if hold.status == "held"),
@@ -1198,6 +1200,7 @@ class HubCreditLedger:
                     held_credits=account.held_credits,
                     spent_credits=account.spent_credits,
                     earned_credits=account.earned_credits,
+                    bridge_completed_credits=account.bridge_completed_credits,
                     created_at=account.created_at,
                     updated_at=now,
                     metadata=account.metadata,
@@ -1298,6 +1301,7 @@ class HubCreditLedger:
                 held_credits=account.held_credits,
                 spent_credits=account.spent_credits,
                 earned_credits=account.earned_credits,
+                bridge_completed_credits=account.bridge_completed_credits,
                 created_at=account.created_at,
                 updated_at=now,
                 metadata={**account.metadata, **dict(metadata or {})},
@@ -1324,6 +1328,123 @@ class HubCreditLedger:
             data["transactions"].append(tx.as_dict())
             self._save_unlocked(data)
             return {"ok": True, "account": account.as_dict(), "transaction": tx.as_dict(), "ledger": self._status_from_data(data)}
+
+
+    def record_completed_bridge_deposit(
+        self,
+        *,
+        account_id: str,
+        owner_address: str = "",
+        chain_completed_credits: int,
+        deposit_id: str,
+        completion_tx_hash: str = "",
+        chain_id: int = 0,
+        contract_address: str = "",
+        completed_units: int = 0,
+        deposit_amount_units: int = 0,
+        memo: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Reconcile wallet funding from the escrow contract's completed aggregate.
+
+        The contract is the durable idempotency source.  The hub only stores the
+        latest completed aggregate on the account and credits the positive delta.
+        """
+
+        clean_id = clean_account_id(account_id)
+        clean_chain_completed = positive_int(chain_completed_credits)
+        if clean_chain_completed < 0:
+            raise ValueError("chain_completed_credits must be non-negative.")
+        clean_deposit_id = str(deposit_id or "").strip().lower()
+        if not clean_deposit_id:
+            raise ValueError("deposit_id is required.")
+        now = utc_now()
+        tx_hash = str(completion_tx_hash or "").strip().lower()
+        base_metadata = {
+            **dict(metadata or {}),
+            "deposit_id": clean_deposit_id,
+            "chain_completed_credits": clean_chain_completed,
+            "completed_units": positive_int(completed_units),
+            "deposit_amount_units": positive_int(deposit_amount_units),
+            "completion_tx_hash": tx_hash,
+            "chain_id": positive_int(chain_id),
+            "contract_address": str(contract_address or "").strip().lower(),
+        }
+
+        with self._lock:
+            data = self._load_unlocked()
+            account = self._ensure_account_unlocked(
+                data,
+                clean_id,
+                owner_address=owner_address,
+                metadata={"funding_model": "hub_credit_bridge_escrow_wallet_v2"},
+                now=now,
+            )
+
+            local_completed = positive_int(account.bridge_completed_credits)
+            if clean_chain_completed < local_completed:
+                raise ValueError(
+                    "Hub local bridge_completed_credits is ahead of the chain-completed aggregate "
+                    f"for {clean_id}: local={local_completed}, chain={clean_chain_completed}."
+                )
+
+            delta = clean_chain_completed - local_completed
+            if delta <= 0:
+                return {
+                    "ok": True,
+                    "idempotent": True,
+                    "delta_credits": 0,
+                    "chain_completed_credits": clean_chain_completed,
+                    "local_completed_credits": local_completed,
+                    "deposit_id": clean_deposit_id,
+                    "account": account.as_dict(),
+                    "ledger": self._status_from_data(data),
+                }
+
+            account = HubCreditAccount(
+                account_id=account.account_id,
+                owner_address=owner_address or account.owner_address,
+                available_credits=account.available_credits + delta,
+                held_credits=account.held_credits,
+                spent_credits=account.spent_credits,
+                earned_credits=account.earned_credits,
+                bridge_completed_credits=clean_chain_completed,
+                created_at=account.created_at,
+                updated_at=now,
+                metadata={**account.metadata, "funding_model": "hub_credit_bridge_escrow_wallet_v2"},
+            )
+            tx = HubCreditTransaction(
+                transaction_id=stable_id(
+                    "ctx",
+                    {
+                        "account_id": clean_id,
+                        "type": "bridge_deposit_completed",
+                        "deposit_id": clean_deposit_id,
+                        "chain_completed_credits": clean_chain_completed,
+                    },
+                ),
+                account_id=clean_id,
+                transaction_type="bridge_deposit_completed",
+                credits=delta,
+                created_at=now,
+                deposit_id=clean_deposit_id,
+                memo=memo or f"bridge deposit completed for {clean_id}",
+                metadata=base_metadata,
+            )
+            data["accounts"][clean_id] = account.as_dict()
+            data["transactions"].append(tx.as_dict())
+            self._save_unlocked(data)
+            return {
+                "ok": True,
+                "idempotent": False,
+                "delta_credits": delta,
+                "chain_completed_credits": clean_chain_completed,
+                "local_completed_credits": local_completed,
+                "deposit_id": clean_deposit_id,
+                "account": account.as_dict(),
+                "transaction": tx.as_dict(),
+                "ledger": self._status_from_data(data),
+            }
 
     def record_deposit(self, deposit: CreditDeposit) -> dict[str, Any]:
         """Import a purchase/deposit receipt exactly once.
@@ -1360,6 +1481,7 @@ class HubCreditLedger:
                 held_credits=account.held_credits,
                 spent_credits=account.spent_credits,
                 earned_credits=account.earned_credits,
+                bridge_completed_credits=account.bridge_completed_credits,
                 created_at=account.created_at,
                 updated_at=now,
                 metadata=account.metadata,
@@ -1457,6 +1579,7 @@ class HubCreditLedger:
                 held_credits=account.held_credits + clean_credits,
                 spent_credits=account.spent_credits,
                 earned_credits=account.earned_credits,
+                bridge_completed_credits=account.bridge_completed_credits,
                 created_at=account.created_at,
                 updated_at=now,
                 metadata=account.metadata,
@@ -1524,6 +1647,7 @@ class HubCreditLedger:
                 held_credits=max(0, account.held_credits - released),
                 spent_credits=account.spent_credits,
                 earned_credits=account.earned_credits,
+                bridge_completed_credits=account.bridge_completed_credits,
                 created_at=account.created_at,
                 updated_at=now,
                 metadata=account.metadata,
@@ -1630,6 +1754,7 @@ class HubCreditLedger:
                 held_credits=max(0, account.held_credits - hold.credits),
                 spent_credits=account.spent_credits + clean_charged,
                 earned_credits=account.earned_credits,
+                bridge_completed_credits=account.bridge_completed_credits,
                 created_at=account.created_at,
                 updated_at=now,
                 metadata=account.metadata,
@@ -1782,6 +1907,7 @@ class HubCreditLedger:
             held_credits=worker_account.held_credits,
             spent_credits=worker_account.spent_credits,
             earned_credits=worker_account.earned_credits + clean_credits,
+            bridge_completed_credits=worker_account.bridge_completed_credits,
             created_at=worker_account.created_at,
             updated_at=now,
             metadata=worker_account.metadata,
@@ -1944,7 +2070,7 @@ class HubCreditLedger:
         funded_from_transactions = sum(
             tx.credits
             for tx in transactions
-            if tx.account_id == clean_id and tx.transaction_type in {"admin_adjustment", "deposit_indexed"}
+            if tx.account_id == clean_id and tx.transaction_type in {"admin_adjustment", "deposit_indexed", "bridge_deposit_completed"}
         )
         if funded_from_transactions > 0:
             return funded_from_transactions
@@ -1994,6 +2120,7 @@ class HubCreditLedger:
             held_credits=account.held_credits,
             spent_credits=account.spent_credits,
             earned_credits=account.earned_credits,
+            bridge_completed_credits=account.bridge_completed_credits,
             created_at=account.created_at,
             updated_at=now,
             metadata=account.metadata,
@@ -2023,6 +2150,7 @@ class HubCreditLedger:
                     held_credits=account.held_credits,
                     spent_credits=account.spent_credits,
                     earned_credits=account.earned_credits,
+                    bridge_completed_credits=account.bridge_completed_credits,
                     created_at=account.created_at,
                     updated_at=now,
                     metadata={**account.metadata, **dict(metadata or {})},
@@ -2067,6 +2195,7 @@ class HubCreditLedger:
                 "held_credits": sum(account.held_credits for account in accounts),
                 "spent_credits": sum(account.spent_credits for account in accounts),
                 "earned_credits": sum(account.earned_credits for account in accounts),
+                "bridge_completed_credits": sum(account.bridge_completed_credits for account in accounts),
                 "deposited_credits": sum(deposit.credits_granted for deposit in deposits),
                 "purchased_credits": sum(deposit.credits_granted for deposit in deposits),
                 "active_held_credits": sum(hold.credits for hold in holds if hold.status == "held"),

@@ -88,7 +88,7 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert '"/api/applications/worker/multisession-key/request"' in js
     assert '"/api/applications/worker/multisession-keys/load"' in js
     assert '"/api/applications/worker/wallet-balance"' in js
-    assert '"/api/applications/worker/wallet-funding/import"' in js
+    assert '"/api/applications/worker/wallet-funding/complete"' in js
     assert '"/api/applications/worker/wallet-funding/balance"' in js
     assert "requestMultiSessionKeySignature" in js
     assert "workerLoadMultisessionKeysForWallet" in js
@@ -108,12 +108,12 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert "self._handle_worker_multisession_keys_load()" in dispatch
     assert '"/api/applications/worker/wallet-balance"' in dispatch
     assert "self._handle_worker_wallet_balance()" in dispatch
-    assert '"/api/applications/worker/wallet-funding/import"' in dispatch
-    assert "self._handle_worker_wallet_funding_import()" in dispatch
+    assert '"/api/applications/worker/wallet-funding/complete"' in dispatch
+    assert "self._handle_worker_wallet_funding_complete()" in dispatch
     assert '"/api/applications/worker/wallet-funding/balance"' in dispatch
     assert "self._handle_worker_wallet_funding_balance()" in dispatch
     assert '"/api/hub/v1/credits/multisession-keys/request"' in energy_routes
-    assert '"/api/hub/v1/credits/wallet-funding/import"' in energy_routes
+    assert '"/api/hub/v1/credits/wallet-funding/complete"' in energy_routes
     assert "/api/hub/v1/credits/balance" in energy_routes
     assert '"/api/hub/v1/workers/register"' in energy_routes
     assert "phase12_worker_seller_offer_ui" in energy_routes

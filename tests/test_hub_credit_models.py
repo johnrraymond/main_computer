@@ -58,6 +58,7 @@ class HubCreditModelTests(unittest.TestCase):
         self.assertEqual(account.account_id, "user-one")
         self.assertEqual(account.owner_address, "0xabcdef0000000000000000000000000000000000")
         self.assertEqual(account.as_dict()["available_credits"], 50)
+        self.assertEqual(account.as_dict()["bridge_completed_credits"], 0)
 
         tx = HubCreditTransaction(
             transaction_id="",
