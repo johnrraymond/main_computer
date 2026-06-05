@@ -389,3 +389,15 @@ def test_chat_console_paid_overflow_readiness_styles_prevent_flashy_rebuilds() -
     assert 'item.dataset.chatPaidOverflowExpanded = "false"' in source
     assert 'card.dataset.chatPaidOverflowSmartModal = "true"' in source
 
+
+
+def test_chat_console_paid_overflow_uses_bigint_credit_wei_helpers() -> None:
+    source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
+
+    assert "CHAT_CONSOLE_CREDIT_WEI_PER_CREDIT = 1000000000000000000n" in source
+    assert "function chatConsoleCreditDecimalToWei" in source
+    assert "function chatConsoleCreditWeiToText" in source
+    assert "function chatConsoleCreditWeiProduct" in source
+    assert "Available credit wei" in source
+    assert "Approx hold wei" in source
+    assert "Whole-credit hold" not in source

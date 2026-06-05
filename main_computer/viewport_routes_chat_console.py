@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from main_computer.viewport_state import *  # noqa: F401,F403
+from decimal import Decimal
 import os
 from urllib.parse import parse_qs, quote, urlsplit
 
@@ -12,6 +13,7 @@ from main_computer.chat_ai_subprocess import (
     config_to_payload,
 )
 from main_computer.models import ChatResponse
+from main_computer.credit_units import CREDIT_WEI_PER_CREDIT, credit_decimal_text_to_wei, credit_wei_product, credit_wei_to_decimal_text, positive_credit_wei
 from main_computer.remote_overflow import RemoteOverflowDecisionEngine, RemoteHubExecutionGateway, estimate_remote_request
 
 
@@ -406,6 +408,18 @@ class ViewportChatConsoleRoutesMixin:
         estimate_request["max_output_tokens"] = max_output_tokens
         estimate_request["credits_per_token"] = credits_per_token
         estimate = estimate_remote_request(estimate_request)
+        estimate_details = getattr(estimate, "card", {}).get("details", {}) if isinstance(getattr(estimate, "card", {}), dict) else {}
+        estimated_token_count = int(getattr(estimate, "estimated_input_tokens", 0) or 0) + max_output_tokens
+        credits_per_token_wei = credit_decimal_text_to_wei(
+            credits_per_token,
+            default="0.001",
+            minimum_wei=1_000_000_000_000,
+            maximum_wei=1_000_000 * CREDIT_WEI_PER_CREDIT,
+        )
+        estimated_max_credit_wei = positive_credit_wei(
+            estimate_details.get("estimated_max_credit_wei"),
+            default=credit_wei_product(estimated_token_count, credits_per_token_wei),
+        )
         wallet_address = str((active_key or {}).get("wallet_address") or "").strip().lower()
         multisession_key_id = str((active_key or {}).get("id") or "").strip()
         chain_id = str((active_key or {}).get("chain_id") or "0x28757b2").strip() or "0x28757b2"
@@ -415,14 +429,12 @@ class ViewportChatConsoleRoutesMixin:
             "hub_url": hub_url,
             "remote_enabled": remote_enabled,
             "max_output_tokens": max_output_tokens,
-            "credits_per_token": credits_per_token,
+            "credits_per_token": credit_wei_to_decimal_text(credits_per_token_wei),
+            "credits_per_token_wei": str(credits_per_token_wei),
             "estimated_input_tokens": int(getattr(estimate, "estimated_input_tokens", 0) or 0),
             "estimated_max_credits": required_credits,
-            "estimated_max_credits_approx": (
-                getattr(estimate, "card", {}).get("details", {}).get("estimated_max_credits_approx", "")
-                if isinstance(getattr(estimate, "card", {}), dict)
-                else ""
-            ),
+            "estimated_max_credit_wei": str(estimated_max_credit_wei),
+            "estimated_max_credits_approx": credit_wei_to_decimal_text(estimated_max_credit_wei),
             "estimate_ok": bool(getattr(estimate, "ok", False)),
             "estimate_reason_code": str(getattr(estimate, "reason_code", "") or ""),
             "wallet_address": wallet_address,
@@ -440,10 +452,14 @@ class ViewportChatConsoleRoutesMixin:
             "chain_id": str(context.get("chain_id") or "0x28757b2"),
             "max_output_tokens": int(context.get("max_output_tokens") or 1024),
             "credits_per_token": str(context.get("credits_per_token") or "0.001"),
+            "credits_per_token_wei": str(context.get("credits_per_token_wei") or ""),
             "estimated_input_tokens": int(context.get("estimated_input_tokens") or 0),
             "max_authorized_credits": int(context.get("estimated_max_credits") or 1),
+            "max_authorized_credit_wei": str(context.get("estimated_max_credit_wei") or "0"),
             "required_credits": int(context.get("estimated_max_credits") or 1),
+            "required_credit_wei": str(context.get("estimated_max_credit_wei") or "0"),
             "estimated_max_credits_approx": str(context.get("estimated_max_credits_approx") or ""),
+            "estimated_max_credit_wei": str(context.get("estimated_max_credit_wei") or "0"),
             "approximation_only": True,
             "source": "local_backend_worker_settings",
         }
@@ -458,6 +474,8 @@ class ViewportChatConsoleRoutesMixin:
         enriched["remote_overflow_enabled"] = bool(context.get("remote_enabled"))
         enriched["max_output_tokens"] = int(context.get("max_output_tokens") or 1024)
         enriched["credits_per_token"] = str(context.get("credits_per_token") or "0.001")
+        enriched["credits_per_token_wei"] = str(context.get("credits_per_token_wei") or "")
+        enriched["estimated_max_credit_wei"] = str(context.get("estimated_max_credit_wei") or "0")
         enriched["payment_authorization"] = authorization
         enriched.setdefault("local_only", False)
         enriched["credit"] = {
@@ -467,6 +485,7 @@ class ViewportChatConsoleRoutesMixin:
             "credit_ready": False,
             "estimated_max_credits": int(context.get("estimated_max_credits") or 1),
             "estimated_max_credits_approx": str(context.get("estimated_max_credits_approx") or ""),
+            "estimated_max_credit_wei": str(context.get("estimated_max_credit_wei") or "0"),
             "approximation_only": True,
             "no_credit_hold_created": True,
             "no_credit_spent": True,
@@ -486,6 +505,7 @@ class ViewportChatConsoleRoutesMixin:
         enriched, context = self._chat_console_enrich_remote_overflow_body_with_backend_context(body)
         checks: list[dict[str, Any]] = []
         required_credits = int(context.get("estimated_max_credits") or 1)
+        required_credit_wei = positive_credit_wei(context.get("estimated_max_credit_wei"), default=required_credits * CREDIT_WEI_PER_CREDIT)
         hub_response: dict[str, Any] | None = None
         hub_error = ""
         try:
@@ -541,14 +561,18 @@ class ViewportChatConsoleRoutesMixin:
             )
         )
         account = hub_response.get("account") if isinstance(hub_response, dict) and isinstance(hub_response.get("account"), dict) else {}
+        available_credit_wei = positive_credit_wei(account.get("available_credit_wei"), default=int(account.get("available_credits", 0) or 0) * CREDIT_WEI_PER_CREDIT)
         available_credits = int(account.get("available_credits", 0) or 0)
-        funds_ok = available_credits >= required_credits
+        funds_ok = available_credit_wei >= required_credit_wei
         checks.append(
             self._chat_console_readiness_check(
                 "spendable-credits",
                 "Spendable bridged credits",
                 funds_ok,
-                f"Hub sees available {available_credits}; approximate whole-credit authorization requires {required_credits}.",
+                (
+                    f"Hub sees available {credit_wei_to_decimal_text(available_credit_wei)} credits; "
+                    f"authorization requires {credit_wei_to_decimal_text(required_credit_wei)} credits."
+                ),
             )
         )
         budget_ok = bool(context.get("estimate_ok")) and funds_ok
@@ -558,7 +582,8 @@ class ViewportChatConsoleRoutesMixin:
                 "Approximate authorization",
                 budget_ok,
                 (
-                    f"Approximate budget is {context.get('estimated_max_credits_approx') or required_credits} credits before whole-credit rounding; holding at most {required_credits}."
+                    f"Approximate hold/charge is {credit_wei_to_decimal_text(required_credit_wei)} credits "
+                    f"({required_credit_wei} credit wei)."
                     if context.get("estimate_ok")
                     else "This request could not be estimated safely."
                 ),
@@ -599,14 +624,20 @@ class ViewportChatConsoleRoutesMixin:
             "chain_id": str(context.get("chain_id") or ""),
             "account": account,
             "available_credits": available_credits,
+            "available_credit_wei": str(available_credit_wei),
+            "available_credits_display": credit_wei_to_decimal_text(available_credit_wei),
             "required_credits": required_credits,
+            "required_credit_wei": str(required_credit_wei),
+            "required_credits_display": credit_wei_to_decimal_text(required_credit_wei),
             "credit_ready": funds_ok,
             "funds_ok": funds_ok,
             "max_output_tokens": int(context.get("max_output_tokens") or 1024),
             "credits_per_token": str(context.get("credits_per_token") or "0.001"),
+            "credits_per_token_wei": str(context.get("credits_per_token_wei") or ""),
             "estimated_input_tokens": int(context.get("estimated_input_tokens") or 0),
             "estimated_max_credits": int(context.get("estimated_max_credits") or 1),
             "estimated_max_credits_approx": str(context.get("estimated_max_credits_approx") or ""),
+            "estimated_max_credit_wei": str(context.get("estimated_max_credit_wei") or "0"),
             "checks": checks,
             "hub": hub_response or None,
             "hub_error": hub_error,
@@ -689,6 +720,9 @@ class ViewportChatConsoleRoutesMixin:
         submit_body["bridged_credits"] = int(account.get("bridge_completed_credits", account.get("available_credits", 0)) or 0)
         submit_body["spendable_credits"] = int(account.get("available_credits", 0) or 0)
         submit_body["pending_holds"] = int(account.get("held_credits", 0) or 0)
+        submit_body["bridged_credit_wei"] = str(account.get("bridge_completed_credit_wei", "0") or "0")
+        submit_body["spendable_credit_wei"] = str(account.get("available_credit_wei", "0") or "0")
+        submit_body["pending_hold_credit_wei"] = str(account.get("held_credit_wei", "0") or "0")
         submit_body["willing_worker_count"] = 1 if credit_ready else 0
 
         credit_payload = submit_body.get("credit") if isinstance(submit_body.get("credit"), dict) else {}
@@ -701,8 +735,12 @@ class ViewportChatConsoleRoutesMixin:
             "bridged_credits": int(submit_body.get("bridged_credits") or 0),
             "spendable_credits": int(submit_body.get("spendable_credits") or 0),
             "pending_holds": int(submit_body.get("pending_holds") or 0),
+            "bridged_credit_wei": str(submit_body.get("bridged_credit_wei") or "0"),
+            "spendable_credit_wei": str(submit_body.get("spendable_credit_wei") or "0"),
+            "pending_hold_credit_wei": str(submit_body.get("pending_hold_credit_wei") or "0"),
             "estimated_max_credits": int(readiness.get("estimated_max_credits") or context.get("estimated_max_credits") or 1),
             "estimated_max_credits_approx": str(readiness.get("estimated_max_credits_approx") or context.get("estimated_max_credits_approx") or ""),
+            "estimated_max_credit_wei": str(readiness.get("estimated_max_credit_wei") or context.get("estimated_max_credit_wei") or "0"),
             "approximation_only": True,
             "no_credit_hold_created": True,
             "no_credit_spent": True,

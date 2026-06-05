@@ -515,6 +515,57 @@
       return Number.isFinite(number) ? number : null;
     }
 
+    const CHAT_CONSOLE_CREDIT_WEI_PER_CREDIT = 1000000000000000000n;
+
+    function chatConsoleCreditDecimalToWei(value, fallback = "0") {
+      const raw = String(value ?? fallback ?? "0").trim() || String(fallback ?? "0");
+      const negative = raw.startsWith("-");
+      const text = negative ? raw.slice(1) : raw;
+      const match = text.match(/^(\d+)(?:\.(\d+))?$/);
+      if (!match || negative) {
+        if (raw !== String(fallback ?? "0")) return chatConsoleCreditDecimalToWei(fallback, "0");
+        return 0n;
+      }
+      const whole = BigInt(match[1] || "0");
+      const fractionRaw = match[2] || "";
+      const fraction = (fractionRaw + "000000000000000000").slice(0, 18);
+      let wei = whole * CHAT_CONSOLE_CREDIT_WEI_PER_CREDIT + BigInt(fraction || "0");
+      if (fractionRaw.length > 18 && /[1-9]/.test(fractionRaw.slice(18))) wei += 1n;
+      return wei;
+    }
+
+    function chatConsoleCreditWeiToText(value) {
+      let wei;
+      try {
+        wei = BigInt(String(value ?? "0"));
+      } catch {
+        wei = 0n;
+      }
+      if (wei < 0n) wei = 0n;
+      const whole = wei / CHAT_CONSOLE_CREDIT_WEI_PER_CREDIT;
+      const fraction = wei % CHAT_CONSOLE_CREDIT_WEI_PER_CREDIT;
+      if (fraction === 0n) return whole.toString();
+      return `${whole.toString()}.${fraction.toString().padStart(18, "0").replace(/0+$/, "")}`;
+    }
+
+    function chatConsoleCreditWeiProduct(tokens, creditsPerTokenWei) {
+      let tokenCount;
+      try {
+        tokenCount = BigInt(String(tokens ?? "0"));
+      } catch {
+        tokenCount = 0n;
+      }
+      let perToken;
+      try {
+        perToken = BigInt(String(creditsPerTokenWei ?? "0"));
+      } catch {
+        perToken = 0n;
+      }
+      if (tokenCount < 0n) tokenCount = 0n;
+      if (perToken < 0n) perToken = 0n;
+      return tokenCount * perToken;
+    }
+
     function chatConsoleEstimatedInputTokensForRemoteOverflow(request) {
       const messages = chatConsoleRemoteOverflowMessagesFromPendingRequest(request);
       const contentChars = messages.reduce((total, item) => total + String(item?.content || "").length, 0);
@@ -562,10 +613,16 @@
           account_id: "",
           multisession_key_id: "",
           available_credits: 0,
+          available_credit_wei: "0",
+          available_credits_display: "0",
           required_credits: 1,
-          estimated_max_credits_approx: 0,
+          required_credit_wei: "1000000000000000000",
+          required_credits_display: "1",
+          estimated_max_credits_approx: "0",
+          estimated_max_credit_wei: "0",
           max_output_tokens: 0,
           credits_per_token: "",
+          credits_per_token_wei: "",
           checks: [
             {
               key: "hub-reachability",
@@ -593,10 +650,16 @@
           account_id: "",
           multisession_key_id: "",
           available_credits: 0,
+          available_credit_wei: "0",
+          available_credits_display: "0",
           required_credits: 1,
-          estimated_max_credits_approx: 0,
+          required_credit_wei: "1000000000000000000",
+          required_credits_display: "1",
+          estimated_max_credits_approx: "0",
+          estimated_max_credit_wei: "0",
           max_output_tokens: 0,
           credits_per_token: "",
+          credits_per_token_wei: "",
           checks: [
             {
               key: "hub-reachability",
@@ -649,7 +712,14 @@
       const account = hubReadiness.account && typeof hubReadiness.account === "object" ? hubReadiness.account : {};
       const availableCredits = chatConsoleNumberOrNull(hubReadiness.available_credits ?? account.available_credits) ?? 0;
       const requiredCredits = chatConsoleNumberOrNull(hubReadiness.required_credits) ?? 1;
-      const approximateCredits = chatConsoleNumberOrNull(hubReadiness.estimated_max_credits_approx) ?? 0;
+      const availableCreditWei = String(hubReadiness.available_credit_wei ?? account.available_credit_wei ?? "");
+      const requiredCreditWei = String(hubReadiness.required_credit_wei ?? hubReadiness.estimated_max_credit_wei ?? "");
+      const approximateCredits = String(
+        hubReadiness.estimated_max_credits_approx
+        ?? hubReadiness.required_credits_display
+        ?? chatConsoleCreditWeiToText(requiredCreditWei)
+        ?? ""
+      );
       const maxOutputTokens = chatConsoleNumberOrNull(hubReadiness.max_output_tokens) ?? 0;
       const ready = Boolean(hubReadiness.ready);
       const checks = Array.isArray(hubReadiness.checks) ? hubReadiness.checks : [];
@@ -666,10 +736,16 @@
         account_id: String(hubReadiness.account_id || ""),
         multisession_key_id: String(hubReadiness.multisession_key_id || ""),
         available_credits: availableCredits,
+        available_credit_wei: availableCreditWei,
+        available_credits_display: String(hubReadiness.available_credits_display ?? account.available_credits_display ?? chatConsoleCreditWeiToText(availableCreditWei)),
         required_credits: requiredCredits,
+        required_credit_wei: requiredCreditWei,
+        required_credits_display: String(hubReadiness.required_credits_display ?? chatConsoleCreditWeiToText(requiredCreditWei)),
         estimated_max_credits_approx: approximateCredits,
+        estimated_max_credit_wei: String(hubReadiness.estimated_max_credit_wei ?? requiredCreditWei),
         max_output_tokens: maxOutputTokens,
         credits_per_token: String(hubReadiness.credits_per_token ?? ""),
+        credits_per_token_wei: String(hubReadiness.credits_per_token_wei ?? ""),
         checks,
         hub: hubReadiness,
         updated_at: chatConsoleNow()
@@ -928,11 +1004,13 @@
       metrics.className = "chat-remote-worker-control-readiness-metrics";
       metrics.dataset.chatPaidOverflowReadinessMetrics = "true";
       [
-        ["Available credits", state.available_credits, "available"],
+        ["Available credits", state.available_credits_display ?? state.available_credits, "available"],
+        ["Available credit wei", state.available_credit_wei ?? "", "available-credit-wei"],
         ["Max output tokens", state.max_output_tokens, "max-output-tokens"],
         ["Credits per token", state.credits_per_token, "credits-per-token"],
-        ["Approx required", Number(state.estimated_max_credits_approx || 0).toFixed(6).replace(/0+$/, "").replace(/\.$/, ""), "approx-required"],
-        ["Whole-credit hold", state.required_credits, "whole-credit-hold"],
+        ["Credits/token wei", state.credits_per_token_wei ?? "", "credits-per-token-wei"],
+        ["Approx hold/charge", state.required_credits_display ?? state.estimated_max_credits_approx, "approx-required"],
+        ["Approx hold wei", state.required_credit_wei ?? state.estimated_max_credit_wei ?? "", "required-credit-wei"],
         ["Billing note", "approx only", "billing-note"]
       ].forEach(([label, value, key]) => metrics.append(chatConsolePaidOverflowReadinessMetric(label, value, key)));
 
@@ -1062,11 +1140,13 @@
         }
         chatConsoleUpdatePaidOverflowReadinessRow(rowNode, row, {allDone, phase});
       });
-      chatConsoleUpdatePaidOverflowReadinessMetric(card, "available", state.available_credits);
+      chatConsoleUpdatePaidOverflowReadinessMetric(card, "available", state.available_credits_display ?? state.available_credits);
+      chatConsoleUpdatePaidOverflowReadinessMetric(card, "available-credit-wei", state.available_credit_wei ?? "");
       chatConsoleUpdatePaidOverflowReadinessMetric(card, "max-output-tokens", state.max_output_tokens);
       chatConsoleUpdatePaidOverflowReadinessMetric(card, "credits-per-token", state.credits_per_token);
-      chatConsoleUpdatePaidOverflowReadinessMetric(card, "approx-required", Number(state.estimated_max_credits_approx || 0).toFixed(6).replace(/0+$/, "").replace(/\.$/, ""));
-      chatConsoleUpdatePaidOverflowReadinessMetric(card, "whole-credit-hold", state.required_credits);
+      chatConsoleUpdatePaidOverflowReadinessMetric(card, "credits-per-token-wei", state.credits_per_token_wei ?? "");
+      chatConsoleUpdatePaidOverflowReadinessMetric(card, "approx-required", state.required_credits_display ?? state.estimated_max_credits_approx ?? "");
+      chatConsoleUpdatePaidOverflowReadinessMetric(card, "required-credit-wei", state.required_credit_wei ?? state.estimated_max_credit_wei ?? "");
       chatConsoleUpdateRemoteWorkerPaidOptionAvailability(readiness);
     }
 
@@ -4187,6 +4267,22 @@
         };
       });
       const ready = checks.every((check) => check.ok === true);
+      const maxOutputTokens = Number(normalized.max_output_tokens ?? normalized.maxOutputTokens ?? 1024);
+      const estimatedInputTokens = Number(normalized.estimated_input_tokens ?? normalized.estimatedInputTokens ?? 1);
+      const creditsPerToken = String(normalized.credits_per_token ?? normalized.creditsPerToken ?? "0.001");
+      const creditsPerTokenWei = String(normalized.credits_per_token_wei ?? normalized.creditsPerTokenWei ?? chatConsoleCreditDecimalToWei(creditsPerToken, "0.001").toString());
+      const requiredCreditWei = String(
+        normalized.required_credit_wei
+        ?? normalized.requiredCreditWei
+        ?? normalized.estimated_max_credit_wei
+        ?? normalized.estimatedMaxCreditWei
+        ?? chatConsoleCreditWeiProduct(estimatedInputTokens + maxOutputTokens, creditsPerTokenWei).toString()
+      );
+      const availableCreditWei = String(
+        normalized.available_credit_wei
+        ?? normalized.availableCreditWei
+        ?? chatConsoleCreditDecimalToWei(normalized.available_credits ?? normalized.availableCredits ?? "0", "0").toString()
+      );
       return {
         ready,
         valid: checks.find((check) => check.key === "hub-key-validation")?.ok === true,
@@ -4199,12 +4295,18 @@
         account_id: "wallet:0x0000000000000000000000000000000000000000",
         multisession_key_id: "debug",
         available_credits: Number(normalized.available_credits ?? normalized.availableCredits ?? 0),
+        available_credit_wei: availableCreditWei,
+        available_credits_display: chatConsoleCreditWeiToText(availableCreditWei),
         required_credits: Number(normalized.required_credits ?? normalized.requiredCredits ?? 1),
+        required_credit_wei: requiredCreditWei,
+        required_credits_display: chatConsoleCreditWeiToText(requiredCreditWei),
         credit_ready: checks.find((check) => check.key === "spendable-credits")?.ok === true,
         funds_ok: checks.find((check) => check.key === "spendable-credits")?.ok === true,
-        max_output_tokens: Number(normalized.max_output_tokens ?? normalized.maxOutputTokens ?? 1024),
-        credits_per_token: String(normalized.credits_per_token ?? normalized.creditsPerToken ?? "0.001"),
-        estimated_max_credits_approx: String(normalized.estimated_max_credits_approx ?? normalized.estimatedMaxCreditsApprox ?? "1.025"),
+        max_output_tokens: maxOutputTokens,
+        credits_per_token: creditsPerToken,
+        credits_per_token_wei: creditsPerTokenWei,
+        estimated_max_credits_approx: String(normalized.estimated_max_credits_approx ?? normalized.estimatedMaxCreditsApprox ?? chatConsoleCreditWeiToText(requiredCreditWei)),
+        estimated_max_credit_wei: requiredCreditWei,
         checks
       };
     }
@@ -4222,11 +4324,11 @@
       const scenarios = {
         checking: {hub: "checking", setting: "checking", wallet: "checking", key: "checking", credits: "checking", estimate: "checking"},
         hub_unreachable: {hub: "blocked", setting: "ok", wallet: "ok", key: "blocked", credits: "blocked", estimate: "blocked"},
-        paid_overflow_disabled: {hub: "ok", setting: "blocked", wallet: "ok", key: "ok", credits: "ok", estimate: "ok", available_credits: 3},
+        paid_overflow_disabled: {hub: "ok", setting: "blocked", wallet: "ok", key: "ok", credits: "ok", estimate: "ok", available_credits: 3, required_credit_wei: "1025000000000000000"},
         no_wallet: {hub: "ok", setting: "ok", wallet: "blocked", key: "blocked", credits: "blocked", estimate: "blocked"},
-        invalid_key: {hub: "ok", setting: "ok", wallet: "ok", key: "blocked", credits: "ok", estimate: "ok", available_credits: 3},
-        insufficient_credits: {hub: "ok", setting: "ok", wallet: "ok", key: "ok", credits: "blocked", estimate: "blocked", available_credits: 0},
-        ready: {hub: "ok", setting: "ok", wallet: "ok", key: "ok", credits: "ok", estimate: "ok", available_credits: 3}
+        invalid_key: {hub: "ok", setting: "ok", wallet: "ok", key: "blocked", credits: "ok", estimate: "ok", available_credits: 3, required_credit_wei: "1025000000000000000"},
+        insufficient_credits: {hub: "ok", setting: "ok", wallet: "ok", key: "ok", credits: "blocked", estimate: "blocked", available_credits: 0, required_credit_wei: "4097000000000000000"},
+        ready: {hub: "ok", setting: "ok", wallet: "ok", key: "ok", credits: "ok", estimate: "ok", available_credits: 3, required_credit_wei: "1025000000000000000"}
       };
       return chatConsoleSetPaidOverflowReadinessUtilityState(scenarios[name] || scenarios.invalid_key, {phase: name === "checking" ? "checking" : "resolved"});
     }

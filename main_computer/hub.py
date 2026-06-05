@@ -17,6 +17,13 @@ from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 from main_computer.config import MainComputerConfig
+from main_computer.credit_units import (
+    CREDIT_WEI_PER_CREDIT,
+    credit_decimal_text_to_wei,
+    credit_wei_product,
+    credit_wei_to_decimal_text,
+    credit_wei_to_whole_credits_floor,
+)
 from main_computer.energy import EnergyCreditLedger
 from main_computer.hub_security import (
     HUB_SECURITY_PROFILE,
@@ -113,6 +120,22 @@ def _hub_decimal_text(value: Decimal) -> str:
     if "." in text:
         text = text.rstrip("0").rstrip(".")
     return text or "0"
+
+
+def _hub_credit_wei_from_decimal_text(
+    value: Any,
+    default: str = "0",
+    *,
+    minimum_wei: int | None = None,
+    maximum_wei: int | None = None,
+) -> int:
+    return credit_decimal_text_to_wei(
+        value,
+        default=default,
+        minimum_wei=minimum_wei,
+        maximum_wei=maximum_wei,
+        round_up=True,
+    )
 
 
 def _hub_ceil_decimal_to_int(value: Decimal, *, minimum: int = 0) -> int:
@@ -1302,21 +1325,31 @@ class HubServerHandler(_JsonHandler):
                 "chain_id": requested_chain_id or record_chain_id,
             }
 
-        required_credits = _hub_as_int(
-            authorization.get("required_credits", authorization.get("max_authorized_credits", body.get("required_credits", 0))),
+        required_credit_wei = _hub_as_int(
+            authorization.get("required_credit_wei", authorization.get("max_authorized_credit_wei", body.get("required_credit_wei", 0))),
             0,
             minimum=0,
-            maximum=1_000_000_000,
         )
+        if required_credit_wei <= 0:
+            required_credits = _hub_as_int(
+                authorization.get("required_credits", authorization.get("max_authorized_credits", body.get("required_credits", 0))),
+                0,
+                minimum=0,
+                maximum=1_000_000_000,
+            )
+            required_credit_wei = required_credits * CREDIT_WEI_PER_CREDIT
+        else:
+            required_credits = credit_wei_to_whole_credits_floor(required_credit_wei)
         credit_ready = True
         reason_code = "active"
         user_message = "The selected multi-session key is active on this Hub."
-        if required_credits and account.available_credits < required_credits:
+        if required_credit_wei and account.available_credit_wei < required_credit_wei:
             credit_ready = False
             reason_code = "insufficient_spendable_credits"
             user_message = (
                 f"The Hub sees insufficient spendable credits for this approximate authorization: "
-                f"available={account.available_credits}, required={required_credits}."
+                f"available={credit_wei_to_decimal_text(account.available_credit_wei)}, "
+                f"required={credit_wei_to_decimal_text(required_credit_wei)}."
             )
 
         key_payload = {
@@ -1342,6 +1375,10 @@ class HubServerHandler(_JsonHandler):
             "multisession_key_id": key_id,
             "chain_id": requested_chain_id or record_chain_id,
             "required_credits": required_credits,
+            "required_credit_wei": str(required_credit_wei),
+            "required_credits_display": credit_wei_to_decimal_text(required_credit_wei),
+            "available_credit_wei": str(account.available_credit_wei),
+            "available_credits_display": credit_wei_to_decimal_text(account.available_credit_wei),
             "credit_ready": bool(credit_ready),
             "key": key_payload,
         }
@@ -1507,31 +1544,43 @@ class HubServerHandler(_JsonHandler):
             minimum=1,
             maximum=128_000,
         )
-        credits_per_token_decimal = _hub_as_decimal(
-            authorization.get("credits_per_token", metadata.get("credits_per_token", body.get("credits_per_token"))),
+        credits_per_token_text = str(
+            authorization.get("credits_per_token", metadata.get("credits_per_token", body.get("credits_per_token", "0.001")))
+        ).strip() or "0.001"
+        credits_per_token_wei = _hub_credit_wei_from_decimal_text(
+            credits_per_token_text,
             "0.001",
-            minimum="0.000001",
-            maximum="1000000",
+            minimum_wei=1_000_000_000_000,
+            maximum_wei=1_000_000 * CREDIT_WEI_PER_CREDIT,
         )
-        estimated_credits_decimal = Decimal(estimated_input_tokens + max_output_tokens) * credits_per_token_decimal
-        required_credits = _hub_ceil_decimal_to_int(estimated_credits_decimal, minimum=1)
-        max_authorized_credits = _hub_as_int(
-            authorization.get("max_authorized_credits", authorization.get("estimated_max_credits", required_credits)),
-            required_credits,
+        estimated_token_count = estimated_input_tokens + max_output_tokens
+        estimated_credit_wei = credit_wei_product(estimated_token_count, credits_per_token_wei)
+        if estimated_credit_wei <= 0:
+            estimated_credit_wei = 1
+        max_authorized_credit_wei = _hub_as_int(
+            authorization.get(
+                "max_authorized_credit_wei",
+                authorization.get("estimated_max_credit_wei", authorization.get("required_credit_wei", estimated_credit_wei)),
+            ),
+            estimated_credit_wei,
             minimum=1,
-            maximum=1_000_000_000,
         )
-        if max_authorized_credits < required_credits:
+        if max_authorized_credit_wei < estimated_credit_wei:
             raise HubCreditAuthorizationError(
-                f"Paid overflow authorization is below the Hub estimate: authorized={max_authorized_credits}, required={required_credits}."
+                "Paid overflow authorization is below the Hub estimate: "
+                f"authorized_credit_wei={max_authorized_credit_wei}, required_credit_wei={estimated_credit_wei}."
             )
 
         account_id = wallet_account_id(wallet_address)
         account = self.server.credit_ledger.get_account(account_id)
-        if account.available_credits < required_credits:
+        if account.available_credit_wei < estimated_credit_wei:
             raise HubPaymentRequired(
-                f"Insufficient Compute Credits for account {account_id}: available={account.available_credits}, required={required_credits}."
+                f"Insufficient Compute Credits for account {account_id}: "
+                f"available={credit_wei_to_decimal_text(account.available_credit_wei)}, "
+                f"required={credit_wei_to_decimal_text(estimated_credit_wei)}."
             )
+        required_credits = credit_wei_to_whole_credits_floor(estimated_credit_wei)
+        max_authorized_credits = credit_wei_to_whole_credits_floor(max_authorized_credit_wei)
 
         return {
             "kind": "multisession_key",
@@ -1541,10 +1590,15 @@ class HubServerHandler(_JsonHandler):
             "chain_id": requested_chain_id or record_chain_id,
             "estimated_input_tokens": estimated_input_tokens,
             "max_output_tokens": max_output_tokens,
-            "credits_per_token": _hub_decimal_text(credits_per_token_decimal),
-            "estimated_max_credits_approx": _hub_decimal_text(estimated_credits_decimal),
+            "credits_per_token": credit_wei_to_decimal_text(credits_per_token_wei),
+            "credits_per_token_wei": str(credits_per_token_wei),
+            "estimated_max_credits_approx": credit_wei_to_decimal_text(estimated_credit_wei),
+            "estimated_max_credit_wei": str(estimated_credit_wei),
             "required_credits": required_credits,
+            "required_credit_wei": str(estimated_credit_wei),
+            "required_credits_display": credit_wei_to_decimal_text(estimated_credit_wei),
             "max_authorized_credits": max_authorized_credits,
+            "max_authorized_credit_wei": str(max_authorized_credit_wei),
             "content_chars": content_chars,
             "attachment_count": attachment_count,
             "approximation_only": True,
@@ -1623,10 +1677,11 @@ class HubServerHandler(_JsonHandler):
         charge_result: dict[str, Any] | None = None
         try:
             if payment_authorization:
-                hold_result = self.server.credit_ledger.create_hold(
+                required_credit_wei = int(payment_authorization["required_credit_wei"])
+                hold_result = self.server.credit_ledger.create_hold_credit_wei(
                     account_id=payment_authorization["account_id"],
                     request_id=hub_request_id,
-                    credits=payment_authorization["required_credits"],
+                    credit_wei=required_credit_wei,
                     memo=f"paid remote overflow hold for {remote_overflow_request_id}",
                     metadata={
                         "remote_overflow_request_id": remote_overflow_request_id,
@@ -1634,8 +1689,10 @@ class HubServerHandler(_JsonHandler):
                         "multisession_key_id": payment_authorization["multisession_key_id"],
                         "max_output_tokens": payment_authorization["max_output_tokens"],
                         "credits_per_token": payment_authorization["credits_per_token"],
+                        "credits_per_token_wei": payment_authorization["credits_per_token_wei"],
                         "estimated_input_tokens": payment_authorization["estimated_input_tokens"],
                         "estimated_max_credits_approx": payment_authorization["estimated_max_credits_approx"],
+                        "required_credit_wei": payment_authorization["required_credit_wei"],
                         "approximation_only": True,
                     },
                 )
@@ -1643,15 +1700,19 @@ class HubServerHandler(_JsonHandler):
                     "credit hold created",
                     remote_overflow_request_id=remote_overflow_request_id,
                     hub_request_id=hub_request_id,
-                    message=f"account_id={payment_authorization['account_id']} credits={payment_authorization['required_credits']}",
+                    message=(
+                        f"account_id={payment_authorization['account_id']} "
+                        f"credit_wei={payment_authorization['required_credit_wei']} "
+                        f"credits={payment_authorization['required_credits_display']}"
+                    ),
                 )
 
             prompt_preview = self._remote_overflow_prompt_preview(messages_payload)
             if payment_authorization:
                 content = (
                     "Remote Hub AI response received.\n"
-                    f"Paid overflow charged {payment_authorization['required_credits']} whole credit"
-                    f"{'' if payment_authorization['required_credits'] == 1 else 's'} from the bridged wallet account.\n\n"
+                    f"Paid overflow charged {payment_authorization['required_credits_display']} credit"
+                    f"{'' if payment_authorization['required_credits_display'] == '1' else 's'} from the bridged wallet account.\n\n"
                     f"Prompt preview: {prompt_preview}"
                 )
             else:
@@ -1665,9 +1726,9 @@ class HubServerHandler(_JsonHandler):
             if payment_authorization and hold_result:
                 hold_payload = hold_result.get("hold") if isinstance(hold_result.get("hold"), dict) else {}
                 hold_id = str(hold_payload.get("hold_id") or "")
-                charge_result = self.server.credit_ledger.charge_hold(
+                charge_result = self.server.credit_ledger.charge_hold_credit_wei(
                     hold_id=hold_id,
-                    charged_credits=payment_authorization["required_credits"],
+                    charged_credit_wei=payment_authorization["required_credit_wei"],
                     memo=f"paid remote overflow charge for {remote_overflow_request_id}",
                     metadata={
                         "remote_overflow_request_id": remote_overflow_request_id,
@@ -1675,8 +1736,10 @@ class HubServerHandler(_JsonHandler):
                         "multisession_key_id": payment_authorization["multisession_key_id"],
                         "max_output_tokens": payment_authorization["max_output_tokens"],
                         "credits_per_token": payment_authorization["credits_per_token"],
+                        "credits_per_token_wei": payment_authorization["credits_per_token_wei"],
                         "estimated_input_tokens": payment_authorization["estimated_input_tokens"],
                         "estimated_max_credits_approx": payment_authorization["estimated_max_credits_approx"],
+                        "required_credit_wei": payment_authorization["required_credit_wei"],
                         "approximation_only": True,
                     },
                 )
@@ -1685,18 +1748,24 @@ class HubServerHandler(_JsonHandler):
                 payment_receipt = {
                     "account_id": payment_authorization["account_id"],
                     "wallet_address": payment_authorization["wallet_address"],
-                    "charged_credits": payment_authorization["required_credits"],
+                    "charged_credits": payment_authorization["required_credits_display"],
+                    "charged_credit_wei": payment_authorization["required_credit_wei"],
                     "hold_id": hold_id,
                     "charge_id": str(charge_payload.get("charge_id") or ""),
                     "request_id": hub_request_id,
                     "remote_overflow_request_id": remote_overflow_request_id,
-                    "available_credits_after": account_payload.get("available_credits", 0),
-                    "held_credits_after": account_payload.get("held_credits", 0),
-                    "spent_credits_after": account_payload.get("spent_credits", 0),
+                    "available_credits_after": account_payload.get("available_credits_display", account_payload.get("available_credits", 0)),
+                    "available_credit_wei_after": account_payload.get("available_credit_wei", "0"),
+                    "held_credits_after": account_payload.get("held_credits_display", account_payload.get("held_credits", 0)),
+                    "held_credit_wei_after": account_payload.get("held_credit_wei", "0"),
+                    "spent_credits_after": account_payload.get("spent_credits_display", account_payload.get("spent_credits", 0)),
+                    "spent_credit_wei_after": account_payload.get("spent_credit_wei", "0"),
                     "max_output_tokens": payment_authorization["max_output_tokens"],
                     "credits_per_token": payment_authorization["credits_per_token"],
+                    "credits_per_token_wei": payment_authorization["credits_per_token_wei"],
                     "estimated_input_tokens": payment_authorization["estimated_input_tokens"],
                     "estimated_max_credits_approx": payment_authorization["estimated_max_credits_approx"],
+                    "estimated_max_credit_wei": payment_authorization["estimated_max_credit_wei"],
                     "approximation_only": True,
                     "idempotent": bool(hold_result.get("idempotent") or charge_result.get("idempotent")),
                     "authorization": {
@@ -1711,7 +1780,8 @@ class HubServerHandler(_JsonHandler):
                     hub_request_id=hub_request_id,
                     message=(
                         f"account_id={payment_authorization['account_id']} "
-                        f"charged_credits={payment_authorization['required_credits']} "
+                        f"charged_credit_wei={payment_authorization['required_credit_wei']} "
+                        f"charged_credits={payment_authorization['required_credits_display']} "
                         f"charge_id={payment_receipt['charge_id']}"
                     ),
                 )

@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from main_computer.credit_units import credit_count_to_wei, credit_wei_to_decimal_text, credit_wei_to_whole_credits_floor, positive_credit_wei
 from main_computer.hub_credit_models import (
     CREDIT_LEDGER_VERSION,
     CREDIT_UNIT_KEY,
@@ -105,6 +106,11 @@ def _account_from_dict(payload: dict[str, Any]) -> HubCreditAccount:
         spent_credits=positive_int(payload.get("spent_credits")),
         earned_credits=positive_int(payload.get("earned_credits")),
         bridge_completed_credits=positive_int(payload.get("bridge_completed_credits")),
+        available_credit_wei=payload.get("available_credit_wei"),
+        held_credit_wei=payload.get("held_credit_wei"),
+        spent_credit_wei=payload.get("spent_credit_wei"),
+        earned_credit_wei=payload.get("earned_credit_wei"),
+        bridge_completed_credit_wei=payload.get("bridge_completed_credit_wei"),
         created_at=str(payload.get("created_at", "")),
         updated_at=str(payload.get("updated_at", "")),
         metadata=_copy_dict(payload.get("metadata")),
@@ -117,6 +123,7 @@ def _transaction_from_dict(payload: dict[str, Any]) -> HubCreditTransaction:
         account_id=str(payload.get("account_id", "")),
         transaction_type=str(payload.get("transaction_type", "")),
         credits=positive_int(payload.get("credits")),
+        credit_wei=payload.get("credit_wei"),
         created_at=str(payload.get("created_at", "")),
         request_id=str(payload.get("request_id", "")),
         worker_node_id=str(payload.get("worker_node_id", "")),
@@ -137,6 +144,7 @@ def _deposit_from_dict(payload: dict[str, Any]) -> CreditDeposit:
         payment_amount_base_units=positive_int(payload.get("payment_amount_base_units")),
         credits_granted=positive_int(payload.get("credits_granted")),
         chain_event=ChainEventRef.from_dict(_copy_dict(payload.get("chain_event"))),
+        credits_granted_wei=payload.get("credits_granted_wei"),
         status=str(payload.get("status", "indexed")),
         memo=str(payload.get("memo", "")),
         created_at=str(payload.get("created_at", "")),
@@ -149,6 +157,7 @@ def _hold_from_dict(payload: dict[str, Any]) -> HubCreditHold:
         account_id=str(payload.get("account_id", "")),
         request_id=str(payload.get("request_id", "")),
         credits=positive_int(payload.get("credits")),
+        credit_wei=payload.get("credit_wei"),
         status=str(payload.get("status", "held")),
         created_at=str(payload.get("created_at", "")),
         expires_at=str(payload.get("expires_at", "")),
@@ -164,7 +173,9 @@ def _charge_from_dict(payload: dict[str, Any]) -> RequestCharge:
         request_id=str(payload.get("request_id", "")),
         hold_id=str(payload.get("hold_id", "")),
         charged_credits=positive_int(payload.get("charged_credits")),
+        charged_credit_wei=payload.get("charged_credit_wei"),
         released_credits=positive_int(payload.get("released_credits")),
+        released_credit_wei=payload.get("released_credit_wei"),
         worker_earning_id=str(payload.get("worker_earning_id", "")),
         created_at=str(payload.get("created_at", "")),
     )
@@ -319,10 +330,23 @@ class HubCreditLedger:
                 "spent_credits": sum(account.spent_credits for account in accounts),
                 "earned_credits": sum(account.earned_credits for account in accounts),
                 "bridge_completed_credits": sum(account.bridge_completed_credits for account in accounts),
+                "available_credit_wei": str(sum(account.available_credit_wei for account in accounts)),
+                "held_credit_wei": str(sum(account.held_credit_wei for account in accounts)),
+                "spent_credit_wei": str(sum(account.spent_credit_wei for account in accounts)),
+                "earned_credit_wei": str(sum(account.earned_credit_wei for account in accounts)),
+                "bridge_completed_credit_wei": str(sum(account.bridge_completed_credit_wei for account in accounts)),
+                "available_credits_display": credit_wei_to_decimal_text(sum(account.available_credit_wei for account in accounts)),
+                "held_credits_display": credit_wei_to_decimal_text(sum(account.held_credit_wei for account in accounts)),
+                "spent_credits_display": credit_wei_to_decimal_text(sum(account.spent_credit_wei for account in accounts)),
+                "bridge_completed_credits_display": credit_wei_to_decimal_text(sum(account.bridge_completed_credit_wei for account in accounts)),
                 "deposited_credits": sum(deposit.credits_granted for deposit in deposits),
                 "purchased_credits": sum(deposit.credits_granted for deposit in deposits),
+                "deposited_credit_wei": str(sum(deposit.credits_granted_wei for deposit in deposits)),
+                "purchased_credit_wei": str(sum(deposit.credits_granted_wei for deposit in deposits)),
                 "active_held_credits": sum(hold.credits for hold in holds if hold.status == "held"),
+                "active_held_credit_wei": str(sum(hold.credit_wei for hold in holds if hold.status == "held")),
                 "charged_credits": sum(charge.charged_credits for charge in charges),
+                "charged_credit_wei": str(sum(charge.charged_credit_wei for charge in charges)),
                 "worker_earned_credits": sum(earning.credits for earning in worker_earnings),
                 "worker_claimed_credits": sum(claim.claimed_credits for claim in worker_claims if claim.status in {"claimed", "settled"}),
                 "worker_settlement_exact_credits": sum(batch.total_credits_exact for batch in settlement_batches if batch.status == "settled"),
@@ -1302,6 +1326,11 @@ class HubCreditLedger:
                 spent_credits=account.spent_credits,
                 earned_credits=account.earned_credits,
                 bridge_completed_credits=account.bridge_completed_credits,
+                available_credit_wei=account.available_credit_wei + credit_count_to_wei(clean_credits),
+                held_credit_wei=account.held_credit_wei,
+                spent_credit_wei=account.spent_credit_wei,
+                earned_credit_wei=account.earned_credit_wei,
+                bridge_completed_credit_wei=account.bridge_completed_credit_wei,
                 created_at=account.created_at,
                 updated_at=now,
                 metadata={**account.metadata, **dict(metadata or {})},
@@ -1320,6 +1349,7 @@ class HubCreditLedger:
                 account_id=clean_id,
                 transaction_type="admin_adjustment",
                 credits=clean_credits,
+                credit_wei=credit_count_to_wei(clean_credits),
                 created_at=now,
                 memo=memo,
                 metadata=dict(metadata or {}),
@@ -1409,6 +1439,11 @@ class HubCreditLedger:
                 spent_credits=account.spent_credits,
                 earned_credits=account.earned_credits,
                 bridge_completed_credits=clean_chain_completed,
+                available_credit_wei=account.available_credit_wei + credit_count_to_wei(delta),
+                held_credit_wei=account.held_credit_wei,
+                spent_credit_wei=account.spent_credit_wei,
+                earned_credit_wei=account.earned_credit_wei,
+                bridge_completed_credit_wei=credit_count_to_wei(clean_chain_completed),
                 created_at=account.created_at,
                 updated_at=now,
                 metadata={**account.metadata, "funding_model": "hub_credit_bridge_escrow_wallet_v2"},
@@ -1426,6 +1461,7 @@ class HubCreditLedger:
                 account_id=clean_id,
                 transaction_type="bridge_deposit_completed",
                 credits=delta,
+                credit_wei=credit_count_to_wei(delta),
                 created_at=now,
                 deposit_id=clean_deposit_id,
                 memo=memo or f"bridge deposit completed for {clean_id}",
@@ -1482,6 +1518,11 @@ class HubCreditLedger:
                 spent_credits=account.spent_credits,
                 earned_credits=account.earned_credits,
                 bridge_completed_credits=account.bridge_completed_credits,
+                available_credit_wei=account.available_credit_wei + deposit.credits_granted_wei,
+                held_credit_wei=account.held_credit_wei,
+                spent_credit_wei=account.spent_credit_wei,
+                earned_credit_wei=account.earned_credit_wei,
+                bridge_completed_credit_wei=account.bridge_completed_credit_wei,
                 created_at=account.created_at,
                 updated_at=now,
                 metadata=account.metadata,
@@ -1498,6 +1539,7 @@ class HubCreditLedger:
                 account_id=account.account_id,
                 transaction_type="deposit_indexed",
                 credits=deposit.credits_granted,
+                credit_wei=deposit.credits_granted_wei,
                 created_at=deposit.created_at or now,
                 deposit_id=deposit.deposit_id,
                 memo=deposit.memo,
@@ -1526,7 +1568,26 @@ class HubCreditLedger:
         memo: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Reserve requester credits before request dispatch.
+        return self.create_hold_credit_wei(
+            account_id=account_id,
+            request_id=request_id,
+            credit_wei=credit_count_to_wei(credits),
+            expires_at=expires_at,
+            memo=memo,
+            metadata=metadata,
+        )
+
+    def create_hold_credit_wei(
+        self,
+        *,
+        account_id: str,
+        request_id: str,
+        credit_wei: int | str,
+        expires_at: str = "",
+        memo: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Reserve requester credits in exact atomic units.
 
         Idempotency is by the stable hold id derived from account_id + request_id.
         Calling this again for the same request returns the existing hold and does
@@ -1535,17 +1596,18 @@ class HubCreditLedger:
 
         clean_id = clean_account_id(account_id)
         clean_request = str(request_id or "").strip()
-        clean_credits = positive_int(credits)
+        clean_credit_wei = positive_credit_wei(credit_wei)
         if not clean_request:
             raise ValueError("request_id is required.")
-        if clean_credits <= 0:
-            raise ValueError("credits must be positive.")
+        if clean_credit_wei <= 0:
+            raise ValueError("credit_wei must be positive.")
         now = utc_now()
         hold = HubCreditHold(
             hold_id="",
             account_id=clean_id,
             request_id=clean_request,
-            credits=clean_credits,
+            credits=credit_wei_to_whole_credits_floor(clean_credit_wei),
+            credit_wei=clean_credit_wei,
             status="held",
             created_at=now,
             expires_at=expires_at,
@@ -1566,20 +1628,25 @@ class HubCreditLedger:
                 }
 
             account = self._ensure_account_unlocked(data, clean_id, now=now)
-            if account.available_credits < clean_credits:
+            if account.available_credit_wei < clean_credit_wei:
                 raise ValueError(
                     f"Insufficient Compute Credits for account {clean_id}: "
-                    f"available={account.available_credits}, required={clean_credits}."
+                    f"available_credit_wei={account.available_credit_wei}, required_credit_wei={clean_credit_wei}."
                 )
 
             account = HubCreditAccount(
                 account_id=account.account_id,
                 owner_address=account.owner_address,
-                available_credits=account.available_credits - clean_credits,
-                held_credits=account.held_credits + clean_credits,
+                available_credits=account.available_credits,
+                held_credits=account.held_credits,
                 spent_credits=account.spent_credits,
                 earned_credits=account.earned_credits,
                 bridge_completed_credits=account.bridge_completed_credits,
+                available_credit_wei=account.available_credit_wei - clean_credit_wei,
+                held_credit_wei=account.held_credit_wei + clean_credit_wei,
+                spent_credit_wei=account.spent_credit_wei,
+                earned_credit_wei=account.earned_credit_wei,
+                bridge_completed_credit_wei=account.bridge_completed_credit_wei,
                 created_at=account.created_at,
                 updated_at=now,
                 metadata=account.metadata,
@@ -1588,12 +1655,17 @@ class HubCreditLedger:
                 transaction_id=stable_id("ctx", {"type": "hold_created", "hold_id": hold.hold_id}),
                 account_id=account.account_id,
                 transaction_type="hold_created",
-                credits=clean_credits,
+                credits=credit_wei_to_whole_credits_floor(clean_credit_wei),
+                credit_wei=clean_credit_wei,
                 created_at=now,
                 request_id=clean_request,
                 hold_id=hold.hold_id,
                 memo=memo or f"hold for request {clean_request}",
-                metadata=dict(metadata or {}),
+                metadata={
+                    **dict(metadata or {}),
+                    "credit_wei": str(clean_credit_wei),
+                    "credits_display": credit_wei_to_decimal_text(clean_credit_wei),
+                },
             )
 
             data["accounts"][account.account_id] = account.as_dict()
@@ -1639,15 +1711,20 @@ class HubCreditLedger:
                     "ledger": self._status_from_data(data),
                 }
 
-            released = hold.credits
+            released_wei = hold.credit_wei
             account = HubCreditAccount(
                 account_id=account.account_id,
                 owner_address=account.owner_address,
-                available_credits=account.available_credits + released,
-                held_credits=max(0, account.held_credits - released),
+                available_credits=account.available_credits,
+                held_credits=account.held_credits,
                 spent_credits=account.spent_credits,
                 earned_credits=account.earned_credits,
                 bridge_completed_credits=account.bridge_completed_credits,
+                available_credit_wei=account.available_credit_wei + released_wei,
+                held_credit_wei=max(0, account.held_credit_wei - released_wei),
+                spent_credit_wei=account.spent_credit_wei,
+                earned_credit_wei=account.earned_credit_wei,
+                bridge_completed_credit_wei=account.bridge_completed_credit_wei,
                 created_at=account.created_at,
                 updated_at=now,
                 metadata=account.metadata,
@@ -1657,6 +1734,7 @@ class HubCreditLedger:
                 account_id=hold.account_id,
                 request_id=hold.request_id,
                 credits=hold.credits,
+                credit_wei=hold.credit_wei,
                 status="released",
                 created_at=hold.created_at,
                 expires_at=hold.expires_at,
@@ -1667,12 +1745,17 @@ class HubCreditLedger:
                 transaction_id=stable_id("ctx", {"type": "hold_released", "hold_id": hold.hold_id, "reason": reason}),
                 account_id=account.account_id,
                 transaction_type="hold_released",
-                credits=released,
+                credits=credit_wei_to_whole_credits_floor(released_wei),
+                credit_wei=released_wei,
                 created_at=now,
                 request_id=hold.request_id,
                 hold_id=hold.hold_id,
                 memo=memo or reason or f"released hold for request {hold.request_id}",
-                metadata=dict(metadata or {}),
+                metadata={
+                    **dict(metadata or {}),
+                    "credit_wei": str(released_wei),
+                    "credits_display": credit_wei_to_decimal_text(released_wei),
+                },
             )
 
             data["accounts"][account.account_id] = account.as_dict()
@@ -1697,12 +1780,29 @@ class HubCreditLedger:
         memo: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        return self.charge_hold_credit_wei(
+            hold_id=hold_id,
+            charged_credit_wei=credit_count_to_wei(charged_credits),
+            worker_node_id=worker_node_id,
+            memo=memo,
+            metadata=metadata,
+        )
+
+    def charge_hold_credit_wei(
+        self,
+        *,
+        hold_id: str,
+        charged_credit_wei: int | str,
+        worker_node_id: str = "",
+        memo: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         clean_hold = str(hold_id or "").strip()
-        clean_charged = positive_int(charged_credits)
+        clean_charged_wei = positive_credit_wei(charged_credit_wei)
         if not clean_hold:
             raise ValueError("hold_id is required.")
-        if clean_charged <= 0:
-            raise ValueError("charged_credits must be positive.")
+        if clean_charged_wei <= 0:
+            raise ValueError("charged_credit_wei must be positive.")
         now = utc_now()
 
         with self._lock:
@@ -1739,22 +1839,27 @@ class HubCreditLedger:
 
             if hold.status != "held":
                 raise ValueError(f"Cannot charge hold {hold.hold_id} with status {hold.status}.")
-            if clean_charged > hold.credits:
+            if clean_charged_wei > hold.credit_wei:
                 raise ValueError(
-                    f"Cannot charge {clean_charged} credits from hold {hold.hold_id}; "
-                    f"only {hold.credits} credits were held."
+                    f"Cannot charge {clean_charged_wei} credit wei from hold {hold.hold_id}; "
+                    f"only {hold.credit_wei} credit wei were held."
                 )
 
-            released_credits = max(0, hold.credits - clean_charged)
+            released_wei = max(0, hold.credit_wei - clean_charged_wei)
             account = self._ensure_account_unlocked(data, hold.account_id, now=now)
             account = HubCreditAccount(
                 account_id=account.account_id,
                 owner_address=account.owner_address,
-                available_credits=account.available_credits + released_credits,
-                held_credits=max(0, account.held_credits - hold.credits),
-                spent_credits=account.spent_credits + clean_charged,
+                available_credits=account.available_credits,
+                held_credits=account.held_credits,
+                spent_credits=account.spent_credits,
                 earned_credits=account.earned_credits,
                 bridge_completed_credits=account.bridge_completed_credits,
+                available_credit_wei=account.available_credit_wei + released_wei,
+                held_credit_wei=max(0, account.held_credit_wei - hold.credit_wei),
+                spent_credit_wei=account.spent_credit_wei + clean_charged_wei,
+                earned_credit_wei=account.earned_credit_wei,
+                bridge_completed_credit_wei=account.bridge_completed_credit_wei,
                 created_at=account.created_at,
                 updated_at=now,
                 metadata=account.metadata,
@@ -1766,9 +1871,13 @@ class HubCreditLedger:
                     data,
                     worker_node_id=worker_node_id,
                     request_id=hold.request_id,
-                    credits=clean_charged,
+                    credits=credit_wei_to_whole_credits_floor(clean_charged_wei),
                     now=now,
-                    metadata=metadata,
+                    metadata={
+                        **dict(metadata or {}),
+                        "credit_wei": str(clean_charged_wei),
+                        "credits_display": credit_wei_to_decimal_text(clean_charged_wei),
+                    },
                 )
 
             charge = RequestCharge(
@@ -1776,8 +1885,10 @@ class HubCreditLedger:
                 account_id=account.account_id,
                 request_id=hold.request_id,
                 hold_id=hold.hold_id,
-                charged_credits=clean_charged,
-                released_credits=released_credits,
+                charged_credits=credit_wei_to_whole_credits_floor(clean_charged_wei),
+                charged_credit_wei=clean_charged_wei,
+                released_credits=credit_wei_to_whole_credits_floor(released_wei),
+                released_credit_wei=released_wei,
                 worker_earning_id=earning.earning_id if earning else "",
                 created_at=now,
             )
@@ -1786,46 +1897,57 @@ class HubCreditLedger:
                 account_id=hold.account_id,
                 request_id=hold.request_id,
                 credits=hold.credits,
+                credit_wei=hold.credit_wei,
                 status="charged",
                 created_at=hold.created_at,
                 expires_at=hold.expires_at,
-                released_at=now if released_credits else "",
+                released_at=now if released_wei else "",
                 charged_at=now,
             )
             charge_tx = HubCreditTransaction(
                 transaction_id=stable_id("ctx", {"type": "request_charged", "charge_id": charge.charge_id}),
                 account_id=account.account_id,
                 transaction_type="request_charged",
-                credits=clean_charged,
+                credits=credit_wei_to_whole_credits_floor(clean_charged_wei),
+                credit_wei=clean_charged_wei,
                 created_at=now,
                 request_id=hold.request_id,
                 worker_node_id=worker_node_id,
                 hold_id=hold.hold_id,
                 memo=memo or f"charged request {hold.request_id}",
-                metadata=dict(metadata or {}),
+                metadata={
+                    **dict(metadata or {}),
+                    "credit_wei": str(clean_charged_wei),
+                    "credits_display": credit_wei_to_decimal_text(clean_charged_wei),
+                },
             )
 
             data["accounts"][account.account_id] = account.as_dict()
             data["holds"][hold.hold_id] = charged_hold.as_dict()
             data["charges"][charge.charge_id] = charge.as_dict()
             data["transactions"].append(charge_tx.as_dict())
-            if released_credits:
+            if released_wei:
                 release_tx = HubCreditTransaction(
                     transaction_id=stable_id("ctx", {"type": "hold_released", "hold_id": hold.hold_id, "charge_id": charge.charge_id}),
                     account_id=account.account_id,
                     transaction_type="hold_released",
-                    credits=released_credits,
+                    credits=credit_wei_to_whole_credits_floor(released_wei),
+                    credit_wei=released_wei,
                     created_at=now,
                     request_id=hold.request_id,
                     hold_id=hold.hold_id,
                     memo=f"released unused hold credits for request {hold.request_id}",
-                    metadata=dict(metadata or {}),
+                    metadata={
+                        **dict(metadata or {}),
+                        "credit_wei": str(released_wei),
+                        "credits_display": credit_wei_to_decimal_text(released_wei),
+                    },
                 )
                 data["transactions"].append(release_tx.as_dict())
             self._save_unlocked(data)
             return {
                 "ok": True,
-                "idempotent": False,
+                "idempotent": bool(hold.status == "charged"),
                 "hold": charged_hold.as_dict(),
                 "account": account.as_dict(),
                 "charge": charge.as_dict(),
@@ -2151,6 +2273,11 @@ class HubCreditLedger:
                     spent_credits=account.spent_credits,
                     earned_credits=account.earned_credits,
                     bridge_completed_credits=account.bridge_completed_credits,
+                    available_credit_wei=account.available_credit_wei,
+                    held_credit_wei=account.held_credit_wei,
+                    spent_credit_wei=account.spent_credit_wei,
+                    earned_credit_wei=account.earned_credit_wei,
+                    bridge_completed_credit_wei=account.bridge_completed_credit_wei,
                     created_at=account.created_at,
                     updated_at=now,
                     metadata={**account.metadata, **dict(metadata or {})},
@@ -2196,10 +2323,23 @@ class HubCreditLedger:
                 "spent_credits": sum(account.spent_credits for account in accounts),
                 "earned_credits": sum(account.earned_credits for account in accounts),
                 "bridge_completed_credits": sum(account.bridge_completed_credits for account in accounts),
+                "available_credit_wei": str(sum(account.available_credit_wei for account in accounts)),
+                "held_credit_wei": str(sum(account.held_credit_wei for account in accounts)),
+                "spent_credit_wei": str(sum(account.spent_credit_wei for account in accounts)),
+                "earned_credit_wei": str(sum(account.earned_credit_wei for account in accounts)),
+                "bridge_completed_credit_wei": str(sum(account.bridge_completed_credit_wei for account in accounts)),
+                "available_credits_display": credit_wei_to_decimal_text(sum(account.available_credit_wei for account in accounts)),
+                "held_credits_display": credit_wei_to_decimal_text(sum(account.held_credit_wei for account in accounts)),
+                "spent_credits_display": credit_wei_to_decimal_text(sum(account.spent_credit_wei for account in accounts)),
+                "bridge_completed_credits_display": credit_wei_to_decimal_text(sum(account.bridge_completed_credit_wei for account in accounts)),
                 "deposited_credits": sum(deposit.credits_granted for deposit in deposits),
                 "purchased_credits": sum(deposit.credits_granted for deposit in deposits),
+                "deposited_credit_wei": str(sum(deposit.credits_granted_wei for deposit in deposits)),
+                "purchased_credit_wei": str(sum(deposit.credits_granted_wei for deposit in deposits)),
                 "active_held_credits": sum(hold.credits for hold in holds if hold.status == "held"),
+                "active_held_credit_wei": str(sum(hold.credit_wei for hold in holds if hold.status == "held")),
                 "charged_credits": sum(charge.charged_credits for charge in charges),
+                "charged_credit_wei": str(sum(charge.charged_credit_wei for charge in charges)),
                 "worker_earned_credits": sum(earning.credits for earning in worker_earnings),
                 "worker_claimed_credits": sum(claim.claimed_credits for claim in worker_claims if claim.status in {"claimed", "settled"}),
                 "worker_settlement_exact_credits": sum(batch.total_credits_exact for batch in settlement_batches if batch.status == "settled"),

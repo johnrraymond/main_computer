@@ -27,12 +27,17 @@ class HubCreditLedgerTests(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(result["account"]["account_id"], "user-one")
             self.assertEqual(result["account"]["available_credits"], 125)
+            self.assertEqual(result["account"]["available_credit_wei"], "125000000000000000000")
+            self.assertEqual(result["account"]["available_credits_display"], "125")
             self.assertEqual(result["transaction"]["transaction_type"], "admin_adjustment")
+            self.assertEqual(result["transaction"]["credit_wei"], "125000000000000000000")
 
             reloaded = HubCreditLedger(Path(tmp))
             account = reloaded.get_account("User One")
             self.assertEqual(account.available_credits, 125)
+            self.assertEqual(account.available_credit_wei, 125000000000000000000)
             self.assertEqual(reloaded.status()["totals"]["available_credits"], 125)
+            self.assertEqual(reloaded.status()["totals"]["available_credit_wei"], "125000000000000000000")
             self.assertEqual(len(reloaded.list_transactions(account_id="user-one")), 1)
 
     def test_deposit_import_is_idempotent_by_chain_event(self) -> None:
@@ -62,8 +67,49 @@ class HubCreditLedgerTests(unittest.TestCase):
             self.assertFalse(first["idempotent"])
             self.assertTrue(second["idempotent"])
             self.assertEqual(ledger.get_account("buyer").available_credits, 25)
+            self.assertEqual(ledger.get_account("buyer").available_credit_wei, 25000000000000000000)
             self.assertEqual(ledger.status()["deposit_count"], 1)
             self.assertEqual(len(ledger.list_transactions(account_id="buyer")), 1)
+
+    def test_credit_wei_hold_charge_and_release_preserve_fractional_amounts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = HubCreditLedger(Path(tmp))
+            ledger.issue(account_id="buyer", credits=3, memo="fund buyer")
+
+            hold = ledger.create_hold_credit_wei(
+                account_id="buyer",
+                request_id="req-fractional",
+                credit_wei="1024000000000000000",
+                memo="fractional hold",
+            )
+            self.assertEqual(hold["hold"]["credit_wei"], "1024000000000000000")
+            self.assertEqual(hold["hold"]["credits_display"], "1.024")
+            self.assertEqual(hold["account"]["available_credit_wei"], "1976000000000000000")
+            self.assertEqual(hold["account"]["held_credit_wei"], "1024000000000000000")
+
+            charge = ledger.charge_hold_credit_wei(
+                hold_id=hold["hold"]["hold_id"],
+                charged_credit_wei="1024000000000000000",
+                memo="fractional charge",
+            )
+            self.assertEqual(charge["charge"]["charged_credit_wei"], "1024000000000000000")
+            self.assertEqual(charge["charge"]["charged_credits_display"], "1.024")
+            self.assertEqual(charge["account"]["available_credit_wei"], "1976000000000000000")
+            self.assertEqual(charge["account"]["held_credit_wei"], "0")
+            self.assertEqual(charge["account"]["spent_credit_wei"], "1024000000000000000")
+
+            duplicate = ledger.charge_hold_credit_wei(
+                hold_id=hold["hold"]["hold_id"],
+                charged_credit_wei="1024000000000000000",
+                memo="fractional duplicate",
+            )
+            self.assertTrue(duplicate["idempotent"])
+            self.assertEqual(duplicate["account"]["spent_credit_wei"], "1024000000000000000")
+
+            account = HubCreditLedger(Path(tmp)).get_account("buyer")
+            self.assertEqual(account.available_credit_wei, 1976000000000000000)
+            self.assertEqual(account.spent_credit_wei, 1024000000000000000)
+
 
     def test_hub_credit_api_exposes_balances_transactions_deposits_and_bootstrap(self) -> None:
         with tempfile.TemporaryDirectory() as hub_tmp:
