@@ -18,29 +18,26 @@ cd "$env:USERPROFILE\dsl\main_computer_test"
 python -m unittest discover -s tests -v
 ```
 
-Start the console viewport:
+Start the console viewport directly:
 
 ```powershell
-python -m main_computer.cli viewport --port 8765
+python -m main_computer.cli viewport --host 127.0.0.1 --port 8765
 ```
 
 Quiet server signals:
 
 ```powershell
-python -m main_computer.cli viewport --port 8765 -noverbose
+python -m main_computer.cli viewport --host 127.0.0.1 --port 8765 -noverbose
 ```
 
-Dev control helper for the test backend:
+For local restart/start automation, run the root helper from the repository root and pass the explicit automation marker:
 
 ```powershell
-cd "$env:USERPROFILE\dsl\main_computer_test"
-.\dev-control.ps1 status
-.\dev-control.ps1 start -Mode local
-.\dev-control.ps1 shutdown -Mode local
-.\dev-control.ps1 restart -Mode local
+.\control-main-computer.ps1 status -AutoAllow -Workspace "$PWD" -Port 8765 -HeartbeatPort 8766
+.\control-main-computer.ps1 restart -AutoAllow -Workspace "$PWD" -Port 8765 -HeartbeatPort 8766
 ```
 
-Use `dev-control.ps1` directly for manual work. `control-main-computer.ps1` is a legacy local-mode helper for automated callers and refuses manual runs unless the caller passes `--auto-allow`.
+The root helper is useful after publishing a fresh dev-chain deployment runtime because an already-running viewport must be restarted before it sees the new `runtime/deployments/current.json`.
 
 
 ## ONLYOFFICE local workbook editor
@@ -83,43 +80,130 @@ For a Dockerized Main Computer service, set the callback base to the service URL
 container can reach, for example `http://main-computer:8765` inside the Compose network.
 
 
-## Dev contract deployment runtime
+## Developer dev-chain, faucet, contracts, and Hub setup
 
-Dev contract deployments now publish the same app-facing runtime shape that
+Use this flow when a developer needs the full local test network: local Anvil,
+contract deployment, faucet runtime, Hub credit escrow contract, Hub server,
+worker, and viewport.
+
+Run from the repository root in PowerShell with the project virtual environment
+activated.
+
+Build and test the contracts:
+
+```powershell
+python .\tools\build_contracts.py --test
+```
+
+Deploy a local dev chain and publish the current app-facing deployment runtime:
+
+```powershell
+python .\tools\dev-chain-reset.py --yes --run-id test-machine-dev --environment dev --port-strategy auto
+```
+
+Then verify the generated deployment state:
+
+```powershell
+python .\tools\dev-chain-diagnosis.py --state .\runtime\deployments\current.json
+```
+
+Dev contract deployments publish the same app-facing runtime shape that
 production should use:
 
 ```text
 runtime/deployments/current.json
 ```
 
-`dev-chain-reset.py` still writes the legacy dev-chain files for local operator
-scripts:
+The reset/deploy flow also writes local operator state:
 
 ```text
 runtime/dev-chain/latest.json
 runtime/dev-chain/latest.env
+runtime/deployments/hub-admin-wallet.json
 ```
 
-The app prefers `runtime/deployments/current.json` and only falls back to the
-legacy dev-chain file when the production-shaped deployment publication is
-missing. The deployment publication is sanitized: it contains RPC URL, chain ID,
-public contract addresses, public office addresses, and deployment metadata, but
-not mnemonic or private-key material.
+These files are generated local runtime state. They can include host-specific
+metadata or local development account material, so they stay ignored by Git and
+should not be copied into source control.
 
-Deploy a local dev chain and publish the current deployment:
+After the dev-chain reset succeeds, restart the app so it reloads
+`runtime/deployments/current.json`:
 
 ```powershell
-python .\dev-chain-reset.py --yes --run-id any-user-frobber-v1 --port-strategy auto
+.\control-main-computer.ps1 restart -AutoAllow -Workspace "$PWD" -Port 8765 -HeartbeatPort 8766
 ```
 
-Smoke-check the published deployment:
+Check the faucet readiness endpoint:
 
 ```powershell
-python .\dev-chain-smoke.py
+Invoke-RestMethod http://127.0.0.1:8765/api/xlag/dev/faucet
 ```
 
-The smoke command defaults to `runtime/deployments/current.json`, matching the
-runtime the viewport reads.
+A healthy response reports `ready=True` and these checks as true:
+
+```text
+deployment_runtime
+faucet_account
+loopback_rpc
+dev_chain_reachable
+dev_chain_id
+```
+
+If the UI reports `Deployment runtime is missing or has no faucet account.`, do
+not commit files from `runtime/`. Run the dev-chain reset command above from the
+repository root, then restart the viewport.
+
+Optional contract/faucet smoke:
+
+```powershell
+python .\tools\smoke_fund_contract_preflight.py
+```
+
+The smoke command reads the locally published dev deployment runtime and
+exercises the faucet-to-escrow path.
+
+### Hub server and worker
+
+The dev-chain reset deploys `hub_credit_bridge_escrow` by default and publishes
+it in `runtime/deployments/current.json`. Start the Hub after that file exists.
+
+Start the Hub in its own PowerShell window:
+
+```powershell
+$env:MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"
+python -m main_computer.cli hub --host 127.0.0.1 --port 8770 --hub-root .\runtime\hub
+```
+
+Start a local worker in another PowerShell window:
+
+```powershell
+$env:MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"
+python -m main_computer.cli hub-worker `
+  --provider ollama `
+  --model qwen2.5:1.5b `
+  --host 127.0.0.1 `
+  --port 8771 `
+  --hub-url http://127.0.0.1:8770 `
+  --public-endpoint http://127.0.0.1:8771 `
+  --hub-worker-node-id test-machine-worker-01 `
+  --hub-credits-per-request 1
+```
+
+Replace `qwen2.5:1.5b` with the Ollama model installed on the developer machine when needed.
+
+Start a viewport as a Hub client in another PowerShell window:
+
+```powershell
+$env:MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"
+python -m main_computer.cli viewport --provider hub --hub-url http://127.0.0.1:8770 --host 127.0.0.1 --port 8765
+```
+
+Useful Hub checks:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8770/api/hub/status
+Invoke-RestMethod http://127.0.0.1:8770/api/hub/v1/credits/indexer
+```
 
 Export helper for ChatGPT:
 
@@ -209,7 +293,7 @@ Run the viewport with the matching local defaults; no ONLYOFFICE environment var
 required for the standard Windows/WSL setup:
 
 ```powershell
-.\dev-control.ps1 restart -Mode local
+.\control-main-computer.ps1 restart -AutoAllow -Workspace "$PWD" -Port 8765 -HeartbeatPort 8766
 ```
 
 Doctor check:

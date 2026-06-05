@@ -41,6 +41,97 @@ To use a different installed Ollama model, set `MAIN_COMPUTER_MODEL` before star
 set MAIN_COMPUTER_MODEL=qwen2.5:1.5b
 ```
 
+## Developer dev environment setup
+
+Use this flow when a developer needs the local app plus the local dev-chain, faucet runtime, Hub credit escrow contract, Hub server, and a worker.
+
+Run from the repository root in PowerShell:
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install -e .
+```
+
+Make sure the local prerequisites are reachable:
+
+```powershell
+docker version
+wsl --status
+ollama list
+```
+
+Build and test the Solidity contracts before publishing a dev runtime:
+
+```powershell
+python .\tools\build_contracts.py --test
+```
+
+Deploy the local test chain and publish the app-facing deployment runtime:
+
+```powershell
+python .\tools\dev-chain-reset.py --yes --run-id test-machine-dev --environment dev --port-strategy auto
+python .\tools\dev-chain-diagnosis.py --state .\runtime\deployments\current.json
+```
+
+This generates local runtime files such as `runtime/deployments/current.json`, `runtime/dev-chain/latest.json`, `runtime/dev-chain/latest.env`, and `runtime/deployments/hub-admin-wallet.json`. They are machine-local state and should stay out of Git.
+
+Start or restart the viewport after the runtime exists:
+
+```powershell
+.\control-main-computer.ps1 restart -AutoAllow -Workspace "$PWD" -Port 8765 -HeartbeatPort 8766
+```
+
+Verify the faucet readiness endpoint:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8765/api/xlag/dev/faucet
+```
+
+A healthy dev-chain setup reports `ready=True` with `deployment_runtime=True`, `faucet_account=True`, `dev_chain_reachable=True`, and `chain_id_ok=True`. If the UI reports `Deployment runtime is missing or has no faucet account.`, rerun the dev-chain reset command above from the repository root and restart the viewport.
+
+To exercise the Hub path, use separate PowerShell windows from the repository root.
+
+Start the Hub:
+
+```powershell
+$env:MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"
+python -m main_computer.cli hub --host 127.0.0.1 --port 8770 --hub-root .\runtime\hub
+```
+
+Start a local worker and register it with the Hub:
+
+```powershell
+$env:MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"
+python -m main_computer.cli hub-worker `
+  --provider ollama `
+  --model qwen2.5:1.5b `
+  --host 127.0.0.1 `
+  --port 8771 `
+  --hub-url http://127.0.0.1:8770 `
+  --public-endpoint http://127.0.0.1:8771 `
+  --hub-worker-node-id test-machine-worker-01 `
+  --hub-credits-per-request 1
+```
+
+Replace `qwen2.5:1.5b` with the Ollama model installed on the developer machine when needed.
+
+Start the viewport as a Hub client:
+
+```powershell
+$env:MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"
+python -m main_computer.cli viewport --provider hub --hub-url http://127.0.0.1:8770 --host 127.0.0.1 --port 8765
+```
+
+Useful Hub checks:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8770/api/hub/status
+Invoke-RestMethod http://127.0.0.1:8770/api/hub/v1/credits/indexer
+```
+
 ## Starting from a direct checkout
 
 When running the code directly from this repository, start the system with `start_v2.bat`:
