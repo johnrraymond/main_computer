@@ -106,6 +106,39 @@ class HubProvider(LLMProvider):
             metadata=response_metadata,
         )
 
+    def validate_multisession_key(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Ask the Hub whether a locally cached multi-session key is still usable.
+
+        This readiness call must not reserve or spend credits. It mirrors the
+        local-development loopback fallback used by the remote overflow surface
+        so the Chat Console can show Hub key status before attempting paid work.
+        """
+
+        request_payload = dict(payload or {})
+        original_hub_url = self.hub_url.rstrip("/")
+        fallback_from = ""
+        try:
+            data = self._post_json("/api/hub/v1/credits/multisession-keys/validate", request_payload)
+            hub_url_used = original_hub_url
+        except RuntimeError as exc:
+            fallback_url = self._remote_overflow_loopback_fallback_url()
+            if not fallback_url or not self._is_name_resolution_failure(exc):
+                raise
+            fallback_from = original_hub_url
+            self.hub_url = fallback_url
+            try:
+                data = self._post_json("/api/hub/v1/credits/multisession-keys/validate", request_payload)
+                hub_url_used = fallback_url
+            finally:
+                self.hub_url = original_hub_url
+
+        result = dict(data)
+        result["hub_url"] = hub_url_used
+        if fallback_from:
+            result["hub_url_fallback_from"] = fallback_from
+            result["hub_url_fallback_to"] = hub_url_used
+        return result
+
     def _secure_chat(self, messages: Sequence[ChatMessage]) -> ChatResponse:
         if not hub_transport_is_encrypted_or_loopback(
             self.hub_url,

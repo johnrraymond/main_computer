@@ -133,6 +133,111 @@ class ViewportEnergyRoutesMixin:
         except ValueError:
             return host.lower() in {"localhost"}
 
+
+    def _worker_settings_path(self) -> Path:
+        return self.server.debug_root / "worker_settings.json"
+
+    def _sanitize_worker_settings(self, value: Any) -> dict[str, Any]:
+        settings = value.get("settings") if isinstance(value, dict) and isinstance(value.get("settings"), dict) else value
+        if not isinstance(settings, dict):
+            settings = {}
+
+        def boolish(raw: Any, default: bool = False) -> bool:
+            if isinstance(raw, bool):
+                return raw
+            text = str(raw or "").strip().lower()
+            if text in {"1", "true", "yes", "on", "enabled", "enable"}:
+                return True
+            if text in {"0", "false", "no", "off", "disabled", "disable"}:
+                return False
+            return bool(default)
+
+        def intish(raw: Any, default: int, *, minimum: int = 0, maximum: int = 1_000_000_000) -> int:
+            try:
+                number = int(raw)
+            except (TypeError, ValueError):
+                number = default
+            return min(maximum, max(minimum, number))
+
+        def text(raw: Any, default: str = "") -> str:
+            return str(raw if raw is not None else default).strip()
+
+        cleaned: dict[str, Any] = {
+            "remoteEnabled": boolish(settings.get("remoteEnabled", settings.get("remote_enabled")), False),
+            "remoteMode": text(settings.get("remoteMode", settings.get("remote_mode")), "ask-when-busy"),
+            "remoteCreditsPerToken": text(settings.get("remoteCreditsPerToken", settings.get("remote_credits_per_token")), "0.001"),
+            "remoteMaxOutputTokens": intish(settings.get("remoteMaxOutputTokens", settings.get("remote_max_output_tokens")), 1024, minimum=1, maximum=128_000),
+            "remoteDailyLimit": intish(settings.get("remoteDailyLimit", settings.get("remote_daily_limit")), 100000, minimum=0),
+            "remoteAskBeforeSpend": boolish(settings.get("remoteAskBeforeSpend", settings.get("remote_ask_before_spend")), False),
+            "remoteOnlyWhenBusy": boolish(settings.get("remoteOnlyWhenBusy", settings.get("remote_only_when_busy")), False),
+            "sellerEnabled": boolish(settings.get("sellerEnabled", settings.get("seller_enabled")), False),
+            "rentalEnabled": boolish(settings.get("rentalEnabled", settings.get("rental_enabled")), False),
+            "lockAiModel": boolish(settings.get("lockAiModel", settings.get("lock_ai_model")), False),
+            "registrationHubUrl": self._clean_hub_url(text(settings.get("registrationHubUrl", settings.get("registration_hub_url")), self.server.config.hub_url), allow_empty=True),
+            "nodeId": text(settings.get("nodeId", settings.get("node_id")), "local-worker-001"),
+            "endpoint": text(settings.get("endpoint"), "http://127.0.0.1:8771"),
+            "models": text(settings.get("models"), ""),
+            "capability": text(settings.get("capability"), "chat.completions"),
+            "creditsPerRequest": intish(settings.get("creditsPerRequest", settings.get("credits_per_request")), 5500123, minimum=0),
+            "maxConcurrency": intish(settings.get("maxConcurrency", settings.get("max_concurrency")), 1, minimum=1, maximum=1024),
+            "executionMode": text(settings.get("executionMode", settings.get("execution_mode")), "worker_pull_v0"),
+        }
+        hubs = settings.get("hubs")
+        if isinstance(hubs, list):
+            cleaned["hubs"] = [
+                {
+                    "name": text(hub.get("name"), "Hub"),
+                    "url": text(hub.get("url"), ""),
+                    "role": text(hub.get("role"), "use-provide"),
+                }
+                for hub in hubs
+                if isinstance(hub, dict) and (text(hub.get("name")) or text(hub.get("url")))
+            ]
+        else:
+            cleaned["hubs"] = []
+        return cleaned
+
+    def _load_worker_settings(self) -> dict[str, Any]:
+        path = self._worker_settings_path()
+        try:
+            if not path.exists():
+                return {}
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return self._sanitize_worker_settings(data)
+        except Exception:
+            return {}
+
+    def _save_worker_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
+        cleaned = self._sanitize_worker_settings(settings)
+        path = self._worker_settings_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(cleaned, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        return cleaned
+
+    def _handle_worker_settings_load(self) -> None:
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Worker settings are only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                return
+            settings = self._load_worker_settings()
+            self.server.signal("api-worker-settings-load", saved=bool(settings), remote_enabled=bool(settings.get("remoteEnabled")))
+            self._send_json({"ok": True, "settings": settings})
+        except Exception as exc:
+            self.server.signal("api-worker-settings-load-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+    def _handle_worker_settings_save(self) -> None:
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Worker settings are only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                return
+            settings = self._save_worker_settings(self._read_json())
+            self.server.signal("api-worker-settings-save", remote_enabled=bool(settings.get("remoteEnabled")))
+            self._send_json({"ok": True, "settings": settings})
+        except Exception as exc:
+            self.server.signal("api-worker-settings-save-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
     def _handle_worker_hub_health(self) -> None:
         try:
             if not self._worker_ui_client_is_local():

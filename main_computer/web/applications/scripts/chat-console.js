@@ -28,6 +28,8 @@
       lastCapacitySnapshot: null,
       lastAssessment: null,
       assessmentRefreshInFlight: false,
+      lastHubReadiness: null,
+      hubReadinessRefreshInFlight: false,
       lastChoice: null,
       lastShownAt: "",
       lastCellId: "",
@@ -39,7 +41,10 @@
       resolveChoice: null,
       globalWhenBusyIntent: null,
       lastCloseReason: null,
-      lastIntent: null
+      lastIntent: null,
+      readinessGeneration: 0,
+      readinessSmartCollapse: true,
+      readinessCardState: {}
     };
     const chatConsoleNotebookRenderSignatures = new WeakMap();
 
@@ -505,83 +510,9 @@
       return String(payload.model || config.model || cell.model || payload.preferred_model || "");
     }
 
-    const chatConsoleWorkerSettingsStorageKey = "main-computer-worker-settings-v4";
-    const chatConsoleWorkerBridgeReadinessStorageKey = "main-computer-worker-bridge-readiness-v1";
-
-    function chatConsoleReadLocalStorageJson(key) {
-      try {
-        const raw = localStorage.getItem(key);
-        if (!raw) return {};
-        const parsed = JSON.parse(raw);
-        return parsed && typeof parsed === "object" ? parsed : {};
-      } catch {
-        return {};
-      }
-    }
-
-    function chatConsoleSavedBoolean(value, fallback = false) {
-      if (value === true || value === false) return value;
-      const text = String(value ?? "").trim().toLowerCase();
-      if (["1", "true", "yes", "on", "enabled", "enable"].includes(text)) return true;
-      if (["0", "false", "no", "off", "disabled", "disable"].includes(text)) return false;
-      return Boolean(fallback);
-    }
-
-    function chatConsolePositiveInteger(value, fallback, {minimum = 1, maximum = 128000} = {}) {
-      const parsed = Number.parseInt(String(value ?? ""), 10);
-      const number = Number.isFinite(parsed) ? parsed : fallback;
-      return Math.min(maximum, Math.max(minimum, number));
-    }
-
-    function chatConsolePositiveDecimalNumber(value, fallback, {minimum = 0.000001, maximum = 1000000} = {}) {
-      const parsed = Number(String(value ?? "").trim());
-      const number = Number.isFinite(parsed) ? parsed : fallback;
-      return Math.min(maximum, Math.max(minimum, number));
-    }
-
-    function chatConsoleDecimalSettingString(value, fallback = "0.001") {
-      const number = chatConsolePositiveDecimalNumber(value, Number(fallback) || 0.001);
-      return String(value ?? "").trim() && Number.isFinite(Number(value))
-        ? String(value).trim()
-        : String(number);
-    }
-
-    function chatConsoleLowerAddress(value) {
-      return String(value || "").trim().toLowerCase();
-    }
-
-    function chatConsoleHubCreditBalanceFromWorkerBridgeState(bridgeState) {
-      const funding = bridgeState?.walletFunding && typeof bridgeState.walletFunding === "object"
-        ? bridgeState.walletFunding
-        : bridgeState?.wallet_funding && typeof bridgeState.wallet_funding === "object"
-          ? bridgeState.wallet_funding
-          : {};
-      const balance = funding.balance && typeof funding.balance === "object" ? funding.balance : {};
-      return {
-        walletAddress: chatConsoleLowerAddress(balance.wallet_address || balance.walletAddress || funding.wallet_address || ""),
-        accountId: String(balance.account_id || balance.accountId || funding.accountId || funding.account_id || ""),
-        availableCredits: chatConsolePositiveDecimalNumber(balance.available_credits ?? balance.availableCredits ?? 0, 0, {minimum: 0, maximum: Number.MAX_SAFE_INTEGER}),
-        heldCredits: chatConsolePositiveDecimalNumber(balance.held_credits ?? balance.heldCredits ?? 0, 0, {minimum: 0, maximum: Number.MAX_SAFE_INTEGER}),
-        spentCredits: chatConsolePositiveDecimalNumber(balance.spent_credits ?? balance.spentCredits ?? 0, 0, {minimum: 0, maximum: Number.MAX_SAFE_INTEGER}),
-        raw: balance
-      };
-    }
-
-    function chatConsoleActiveMultisessionKeyFromWorkerBridgeState(bridgeState, walletAddress = "") {
-      const keys = Array.isArray(bridgeState?.multisessionKeys)
-        ? bridgeState.multisessionKeys
-        : Array.isArray(bridgeState?.multisession_keys)
-          ? bridgeState.multisession_keys
-          : [];
-      const activeId = String(bridgeState?.activeMultisessionKeyId || bridgeState?.active_multisession_key_id || "");
-      const wallet = chatConsoleLowerAddress(walletAddress);
-      return keys.find((key) => {
-        if (!key || typeof key !== "object") return false;
-        if (String(key.id || "") !== activeId) return false;
-        if (String(key.status || "active") !== "active") return false;
-        const keyWallet = chatConsoleLowerAddress(key.walletAddress || key.wallet_address || "");
-        return !wallet || keyWallet === wallet;
-      }) || null;
+    function chatConsoleNumberOrNull(value) {
+      const number = Number(value);
+      return Number.isFinite(number) ? number : null;
     }
 
     function chatConsoleEstimatedInputTokensForRemoteOverflow(request) {
@@ -595,78 +526,598 @@
     }
 
     function chatConsoleWorkerPaidOverflowContext(request) {
-      const settings = chatConsoleReadLocalStorageJson(chatConsoleWorkerSettingsStorageKey);
-      const bridgeState = chatConsoleReadLocalStorageJson(chatConsoleWorkerBridgeReadinessStorageKey);
-      const balance = chatConsoleHubCreditBalanceFromWorkerBridgeState(bridgeState);
-      const activeKey = chatConsoleActiveMultisessionKeyFromWorkerBridgeState(bridgeState, balance.walletAddress);
-      const keyWallet = chatConsoleLowerAddress(activeKey?.walletAddress || activeKey?.wallet_address || "");
-      const walletAddress = balance.walletAddress || keyWallet;
-      const remoteEnabled = chatConsoleSavedBoolean(settings.remoteEnabled ?? settings.remote_enabled, false);
-      const maxOutputTokens = chatConsolePositiveInteger(settings.remoteMaxOutputTokens ?? settings.remote_max_output_tokens, 1024, {minimum: 1, maximum: 128000});
-      const creditsPerTokenText = chatConsoleDecimalSettingString(settings.remoteCreditsPerToken ?? settings.remote_credits_per_token, "0.001");
-      const creditsPerToken = chatConsolePositiveDecimalNumber(creditsPerTokenText, 0.001);
-      const estimatedInputTokens = chatConsoleEstimatedInputTokensForRemoteOverflow(request);
-      const estimatedMaxCreditsApprox = (estimatedInputTokens + maxOutputTokens) * creditsPerToken;
-      const estimatedMaxCredits = Math.max(1, Math.ceil(estimatedMaxCreditsApprox));
-      const spendableCredits = Math.max(0, balance.availableCredits);
-      const creditReady = Boolean(
-        remoteEnabled
-        && walletAddress
-        && activeKey
-        && spendableCredits >= estimatedMaxCredits
-      );
-      let blockedReason = "";
-      if (!remoteEnabled) blockedReason = "Paid overflow is disabled in Worker settings.";
-      else if (!walletAddress) blockedReason = "Connect and fund a Worker wallet before using paid overflow.";
-      else if (!activeKey) blockedReason = "Request a multi-session key before using paid overflow.";
-      else if (spendableCredits < estimatedMaxCredits) blockedReason = `Not enough bridged credits for this approximate authorization: available ${spendableCredits}, required ${estimatedMaxCredits}.`;
-
       return {
-        remoteEnabled,
-        maxOutputTokens,
-        creditsPerTokenText,
-        creditsPerToken,
-        estimatedInputTokens,
-        estimatedMaxCredits,
-        estimatedMaxCreditsApprox,
-        spendableCredits,
-        availableCredits: balance.availableCredits,
-        heldCredits: balance.heldCredits,
-        spentCredits: balance.spentCredits,
-        walletAddress,
-        accountId: balance.accountId,
-        activeMultisessionKey: activeKey,
-        activeMultisessionKeyId: String(activeKey?.id || ""),
-        creditReady,
-        blockedReason,
-        balance
+        estimatedInputTokens: chatConsoleEstimatedInputTokensForRemoteOverflow(request),
+        ready: false,
+        hub_checked: false,
+        hub_reachable: null,
+        hub_key_valid: null,
+        hub_credit_ready: null,
+        funds_ok: null,
+        reason_code: "hub_readiness_not_checked",
+        user_message: "Hub readiness has not run yet.",
+        walletAddress: "",
+        accountId: "",
+        activeMultisessionKeyId: "",
+        availableCredits: null,
+        requiredCredits: null,
+        estimatedMaxCreditsApprox: null,
+        maxOutputTokens: null,
+        creditsPerTokenText: ""
       };
     }
 
-    function chatConsoleApplyRemoteHubPaymentReceiptToWorkerStorage(payment) {
-      if (!payment || typeof payment !== "object") return;
-      const walletAddress = chatConsoleLowerAddress(payment.wallet_address || payment.walletAddress || "");
-      if (!walletAddress) return;
-      const bridgeState = chatConsoleReadLocalStorageJson(chatConsoleWorkerBridgeReadinessStorageKey);
-      const walletFunding = bridgeState.walletFunding && typeof bridgeState.walletFunding === "object" ? bridgeState.walletFunding : {};
-      const currentBalance = walletFunding.balance && typeof walletFunding.balance === "object" ? walletFunding.balance : {};
-      bridgeState.walletFunding = {
-        ...walletFunding,
-        balance: {
-          ...currentBalance,
-          wallet_address: walletAddress,
-          account_id: String(payment.account_id || currentBalance.account_id || ""),
-          available_credits: String(payment.available_credits_after ?? currentBalance.available_credits ?? "0"),
-          held_credits: String(payment.held_credits_after ?? currentBalance.held_credits ?? "0"),
-          spent_credits: String(payment.spent_credits_after ?? currentBalance.spent_credits ?? "0"),
+    function chatConsolePaidOverflowReadinessFromContext(paidOverflow = {}, hubReadiness = null, hubError = null) {
+      if (hubError) {
+        return {
+          ready: false,
+          hub_checked: true,
+          hub_reachable: false,
+          hub_key_valid: null,
+          hub_credit_ready: false,
+          funds_ok: false,
+          reason_code: "hub_unreachable",
+          user_message: `Hub readiness could not be checked: ${hubError.message || hubError}`,
+          wallet_address: "",
+          account_id: "",
+          multisession_key_id: "",
+          available_credits: 0,
+          required_credits: 1,
+          estimated_max_credits_approx: 0,
+          max_output_tokens: 0,
+          credits_per_token: "",
+          checks: [
+            {
+              key: "hub-reachability",
+              title: "Hub reachable",
+              ok: false,
+              detail: `Could not contact the configured Hub: ${hubError.message || hubError}`
+            }
+          ],
+          hub: null,
           updated_at: chatConsoleNow()
-        },
-        accountId: String(payment.account_id || walletFunding.accountId || walletFunding.account_id || ""),
-        updatedAt: chatConsoleNow()
+        };
+      }
+
+      if (!hubReadiness) {
+        return {
+          ready: false,
+          hub_checked: false,
+          hub_reachable: null,
+          hub_key_valid: null,
+          hub_credit_ready: null,
+          funds_ok: null,
+          reason_code: "hub_readiness_not_checked",
+          user_message: "Hub readiness has not run yet.",
+          wallet_address: "",
+          account_id: "",
+          multisession_key_id: "",
+          available_credits: 0,
+          required_credits: 1,
+          estimated_max_credits_approx: 0,
+          max_output_tokens: 0,
+          credits_per_token: "",
+          checks: [
+            {
+              key: "hub-reachability",
+              title: "Hub reachable",
+              ok: null,
+              unknownText: "Not checked",
+              detail: "Reachability has not been checked yet."
+            },
+            {
+              key: "paid-overflow-setting",
+              title: "Paid overflow setting",
+              ok: null,
+              unknownText: "Not checked",
+              detail: "The local backend has not loaded the Worker paid overflow policy yet."
+            },
+            {
+              key: "connected-wallet",
+              title: "Connected wallet",
+              ok: null,
+              unknownText: "Not checked",
+              detail: "The local backend has not selected a wallet-backed multi-session key yet."
+            },
+            {
+              key: "hub-key-validation",
+              title: "Multi-session key usable",
+              ok: null,
+              unknownText: "Not checked",
+              detail: "The Hub has not validated the active multi-session key yet."
+            },
+            {
+              key: "spendable-credits",
+              title: "Spendable bridged credits",
+              ok: null,
+              unknownText: "Not checked",
+              detail: "The Hub balance has not been checked yet."
+            },
+            {
+              key: "authorization-budget",
+              title: "Approximate authorization",
+              ok: null,
+              unknownText: "Not checked",
+              detail: "The Hub has not checked the approximate authorization budget yet."
+            }
+          ],
+          hub: null,
+          updated_at: chatConsoleNow()
+        };
+      }
+
+      const account = hubReadiness.account && typeof hubReadiness.account === "object" ? hubReadiness.account : {};
+      const availableCredits = chatConsoleNumberOrNull(hubReadiness.available_credits ?? account.available_credits) ?? 0;
+      const requiredCredits = chatConsoleNumberOrNull(hubReadiness.required_credits) ?? 1;
+      const approximateCredits = chatConsoleNumberOrNull(hubReadiness.estimated_max_credits_approx) ?? 0;
+      const maxOutputTokens = chatConsoleNumberOrNull(hubReadiness.max_output_tokens) ?? 0;
+      const ready = Boolean(hubReadiness.ready);
+      const checks = Array.isArray(hubReadiness.checks) ? hubReadiness.checks : [];
+      return {
+        ready,
+        hub_checked: true,
+        hub_reachable: hubReadiness.hub_reachable === false ? false : true,
+        hub_key_valid: hubReadiness.valid === true,
+        hub_credit_ready: hubReadiness.credit_ready === false ? false : Boolean(hubReadiness.ready),
+        funds_ok: hubReadiness.funds_ok === false ? false : Boolean(hubReadiness.credit_ready !== false),
+        reason_code: String(hubReadiness.reason_code || (ready ? "paid_overflow_ready" : "paid_overflow_not_ready")),
+        user_message: String(hubReadiness.user_message || (ready ? "Paid overflow is ready." : "Paid overflow is not ready.")),
+        wallet_address: String(hubReadiness.wallet_address || ""),
+        account_id: String(hubReadiness.account_id || ""),
+        multisession_key_id: String(hubReadiness.multisession_key_id || ""),
+        available_credits: availableCredits,
+        required_credits: requiredCredits,
+        estimated_max_credits_approx: approximateCredits,
+        max_output_tokens: maxOutputTokens,
+        credits_per_token: String(hubReadiness.credits_per_token ?? ""),
+        checks,
+        hub: hubReadiness,
+        updated_at: chatConsoleNow()
       };
+    }
+
+    const CHAT_CONSOLE_PAID_OVERFLOW_READINESS_CHECKS = [
+      {
+        key: "hub-reachability",
+        shortTitle: "Hub",
+        title: "Hub reachable",
+        dependencies: [],
+        waitingDetail: "Waiting for Hub reachability before this can be known."
+      },
+      {
+        key: "paid-overflow-setting",
+        shortTitle: "Setting",
+        title: "Paid overflow setting",
+        dependencies: [],
+        waitingDetail: "Waiting for the backend paid-overflow setting."
+      },
+      {
+        key: "connected-wallet",
+        shortTitle: "Wallet",
+        title: "Connected wallet",
+        dependencies: [],
+        waitingDetail: "Waiting for backend wallet context."
+      },
+      {
+        key: "hub-key-validation",
+        shortTitle: "Key",
+        title: "Multi-session key usable",
+        dependencies: ["hub-reachability", "connected-wallet"],
+        waitingDetail: "Waiting for Hub and wallet before key validation can be known."
+      },
+      {
+        key: "spendable-credits",
+        shortTitle: "Credits",
+        title: "Spendable bridged credits",
+        dependencies: ["hub-reachability", "connected-wallet"],
+        waitingDetail: "Waiting for Hub and wallet before spendable credits can be known."
+      },
+      {
+        key: "authorization-budget",
+        shortTitle: "Estimate",
+        title: "Approximate authorization",
+        dependencies: ["hub-reachability", "connected-wallet", "spendable-credits"],
+        waitingDetail: "Waiting for spendable credits before the approximate authorization can be known."
+      }
+    ];
+
+    function chatConsolePaidOverflowReadinessDefinitions() {
+      return CHAT_CONSOLE_PAID_OVERFLOW_READINESS_CHECKS.map((item) => ({...item}));
+    }
+
+    function chatConsolePaidOverflowReadinessDefinition(key) {
+      return CHAT_CONSOLE_PAID_OVERFLOW_READINESS_CHECKS.find((item) => item.key === key) || {
+        key,
+        shortTitle: key || "Check",
+        title: key || "Check",
+        dependencies: [],
+        waitingDetail: "Waiting for prerequisite checks."
+      };
+    }
+
+    function chatConsolePaidOverflowReadinessRows(readiness, paidOverflow) {
+      const state = readiness || chatConsolePaidOverflowReadinessFromContext(paidOverflow);
+      const incoming = Array.isArray(state.checks) ? state.checks : [];
+      const byKey = new Map();
+      incoming.forEach((check) => {
+        if (!check || typeof check !== "object") return;
+        const key = String(check.key || "").trim();
+        if (!key) return;
+        byKey.set(key, check);
+      });
+      return chatConsolePaidOverflowReadinessDefinitions().map((definition) => {
+        const check = byKey.get(definition.key) || {};
+        return {
+          key: definition.key,
+          shortTitle: definition.shortTitle,
+          title: String(check.title || definition.title || definition.shortTitle),
+          ok: check.ok === true ? true : (check.ok === false ? false : null),
+          unknownText: String(check.unknownText || check.unknown_text || "Checking"),
+          detail: String(check.detail || check.message || definition.waitingDetail || ""),
+          dependencies: Array.isArray(definition.dependencies) ? definition.dependencies.slice() : [],
+          waitingDetail: definition.waitingDetail || "Waiting for prerequisite checks."
+        };
+      });
+    }
+
+    function chatConsoleReadinessStatusParts(state, unknownText = "Checking") {
+      if (state === "ok" || state === true) return {mark: "✓", className: "ok", label: "Ready"};
+      if (state === "blocked" || state === false) return {mark: "✕", className: "bad", label: "Needs attention"};
+      if (state === "blocked-by-prior") return {mark: "…", className: "waiting", label: "Waiting"};
+      if (state === "inactive") return {mark: "–", className: "inactive", label: "Not active"};
+      return {mark: "?", className: "warn", label: unknownText || "Checking"};
+    }
+
+    function chatConsolePaidOverflowOwnStateForRow(row, phase = "resolved") {
+      if (phase === "checking") return "checking";
+      if (row.ok === true) return "ok";
+      if (row.ok === false) return "blocked";
+      return "checking";
+    }
+
+    function chatConsolePaidOverflowReadinessPipelineRows(readiness, paidOverflow = null, phase = "resolved") {
+      const baseRows = chatConsolePaidOverflowReadinessRows(readiness, paidOverflow).map((row) => ({
+        ...row,
+        ownState: chatConsolePaidOverflowOwnStateForRow(row, phase),
+        effectiveState: chatConsolePaidOverflowOwnStateForRow(row, phase),
+        blockingDependency: "",
+        blockedByPrior: false
+      }));
+      const rowByKey = new Map(baseRows.map((row) => [row.key, row]));
+      baseRows.forEach((row) => {
+        const dependencies = Array.isArray(row.dependencies) ? row.dependencies : [];
+        const blocking = dependencies.find((depKey) => rowByKey.get(depKey)?.effectiveState === "blocked");
+        if (blocking) {
+          row.effectiveState = "blocked-by-prior";
+          row.blockedByPrior = true;
+          row.blockingDependency = blocking;
+          const blockingTitle = rowByKey.get(blocking)?.shortTitle || rowByKey.get(blocking)?.title || blocking;
+          row.detail = `Waiting for ${blockingTitle} before this can be known.`;
+          return;
+        }
+        const pending = dependencies.find((depKey) => {
+          const depState = rowByKey.get(depKey)?.effectiveState;
+          return depState === "checking" || depState === "blocked-by-prior" || depState === "inactive";
+        });
+        if (pending && row.ownState !== "blocked") {
+          row.effectiveState = "checking";
+          row.blockingDependency = pending;
+          row.detail = row.waitingDetail || row.detail;
+        }
+      });
+      return baseRows;
+    }
+
+    function chatConsolePaidOverflowReadinessAllDone(rows) {
+      return rows.length > 0 && rows.every((row) => !["checking"].includes(row.effectiveState));
+    }
+
+    function chatConsolePaidOverflowReadinessRow(row) {
+      const definition = chatConsolePaidOverflowReadinessDefinition(row.key);
+      const parts = chatConsoleReadinessStatusParts(row.effectiveState || row.ownState || "checking", row.unknownText || "Checking");
+      const item = document.createElement("article");
+      item.className = `chat-remote-worker-control-readiness-row ${parts.className}`;
+      item.dataset.chatPaidOverflowReadinessCheck = row.key || "";
+      item.dataset.chatPaidOverflowEffectiveState = row.effectiveState || row.ownState || "checking";
+      item.dataset.chatPaidOverflowOwnState = row.ownState || "checking";
+      item.dataset.chatPaidOverflowSmartCard = "true";
+      item.dataset.chatPaidOverflowExpanded = "false";
+      const mark = document.createElement("div");
+      mark.className = "chat-remote-worker-control-readiness-mark";
+      mark.dataset.chatPaidOverflowReadinessMark = "true";
+      mark.textContent = parts.mark;
+      const title = document.createElement("button");
+      title.type = "button";
+      title.className = "chat-remote-worker-control-readiness-title";
+      title.dataset.chatPaidOverflowReadinessTitle = "true";
+      title.textContent = row.shortTitle || definition.shortTitle || row.title || "";
+      title.title = row.title || definition.title || "";
+      const summary = document.createElement("div");
+      summary.className = "chat-remote-worker-control-readiness-detail";
+      summary.dataset.chatPaidOverflowReadinessSummaryText = "true";
+      summary.textContent = row.detail || "";
+      const badge = document.createElement("div");
+      badge.className = "chat-remote-worker-control-readiness-badge";
+      badge.dataset.chatPaidOverflowReadinessBadge = "true";
+      badge.textContent = parts.label;
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "chat-remote-worker-control-readiness-toggle";
+      toggle.dataset.chatPaidOverflowReadinessToggle = "true";
+      toggle.setAttribute("aria-expanded", "false");
+      toggle.textContent = "+";
+      const detail = document.createElement("div");
+      detail.className = "chat-remote-worker-control-readiness-detail-panel";
+      detail.dataset.chatPaidOverflowReadinessDetail = "true";
+      detail.textContent = row.detail || "";
+      const toggleRow = () => {
+        const expanded = item.dataset.chatPaidOverflowExpanded === "true";
+        chatConsoleSetPaidOverflowReadinessRowExpanded(item, !expanded, {manual: true});
+      };
+      title.addEventListener("click", toggleRow);
+      toggle.addEventListener("click", toggleRow);
+      item.append(mark, title, summary, badge, toggle, detail);
+      return item;
+    }
+
+    function chatConsolePaidOverflowReadinessMetric(label, value, key = "") {
+      const node = document.createElement("div");
+      node.className = "chat-remote-worker-control-readiness-metric";
+      if (key) node.dataset.chatPaidOverflowReadinessMetric = key;
+      const labelNode = document.createElement("div");
+      labelNode.className = "chat-remote-worker-control-readiness-metric-label";
+      labelNode.textContent = label;
+      const valueNode = document.createElement("div");
+      valueNode.className = "chat-remote-worker-control-readiness-metric-value";
+      valueNode.dataset.chatPaidOverflowReadinessMetricValue = key || label;
+      valueNode.textContent = String(value ?? "");
+      node.append(labelNode, valueNode);
+      return node;
+    }
+
+    function chatConsoleSetPaidOverflowReadinessRowExpanded(rowNode, expanded, {manual = false} = {}) {
+      if (!rowNode) return;
+      const key = rowNode.dataset.chatPaidOverflowReadinessCheck || "";
+      if (manual && key) {
+        const cardState = chatConsoleRemoteWorkerControlState.readinessCardState[key] || {};
+        cardState.userExpanded = Boolean(expanded);
+        cardState.manualTouched = true;
+        chatConsoleRemoteWorkerControlState.readinessCardState[key] = cardState;
+      }
+      rowNode.dataset.chatPaidOverflowExpanded = expanded ? "true" : "false";
+      rowNode.classList.toggle("expanded", Boolean(expanded));
+      const toggle = rowNode.querySelector("[data-chat-paid-overflow-readiness-toggle]");
+      if (toggle) {
+        toggle.textContent = expanded ? "−" : "+";
+        toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+      }
+    }
+
+    function chatConsolePaidOverflowReadinessCard(readiness, paidOverflow) {
+      const state = readiness || chatConsolePaidOverflowReadinessFromContext(paidOverflow);
+      const card = document.createElement("section");
+      card.className = "chat-remote-worker-control-readiness-card smart";
+      card.dataset.chatPaidOverflowReadinessCard = "true";
+      card.dataset.chatPaidOverflowSmartModal = "true";
+      const heading = document.createElement("div");
+      heading.className = "chat-remote-worker-control-readiness-heading";
+      const title = document.createElement("button");
+      title.type = "button";
+      title.className = "chat-remote-worker-control-readiness-card-title";
+      title.dataset.chatPaidOverflowReadinessCardTitle = "true";
+      title.textContent = "Paid overflow readiness";
+      title.addEventListener("click", () => chatConsoleTogglePaidOverflowReadinessRows());
+      const badge = document.createElement("span");
+      badge.className = `chat-remote-worker-control-readiness-summary ${state.ready ? "ok" : "bad"}`;
+      badge.dataset.chatPaidOverflowReadinessSummary = "true";
+      badge.textContent = state.ready ? "Ready" : "Blocked";
+      heading.append(title, badge);
+
+      const description = document.createElement("p");
+      description.className = "chat-remote-worker-control-readiness-message";
+      description.dataset.chatPaidOverflowReadinessMessage = "true";
+      description.textContent = state.user_message;
+
+      const rows = document.createElement("div");
+      rows.className = "chat-remote-worker-control-readiness-rows";
+      rows.dataset.chatPaidOverflowReadinessRows = "true";
+      const pipelineRows = chatConsolePaidOverflowReadinessPipelineRows(state, paidOverflow, "resolved");
+      rows.append(...pipelineRows.map(chatConsolePaidOverflowReadinessRow));
+
+      const metrics = document.createElement("div");
+      metrics.className = "chat-remote-worker-control-readiness-metrics";
+      metrics.dataset.chatPaidOverflowReadinessMetrics = "true";
+      [
+        ["Available credits", state.available_credits, "available"],
+        ["Max output tokens", state.max_output_tokens, "max-output-tokens"],
+        ["Credits per token", state.credits_per_token, "credits-per-token"],
+        ["Approx required", Number(state.estimated_max_credits_approx || 0).toFixed(6).replace(/0+$/, "").replace(/\.$/, ""), "approx-required"],
+        ["Whole-credit hold", state.required_credits, "whole-credit-hold"],
+        ["Billing note", "approx only", "billing-note"]
+      ].forEach(([label, value, key]) => metrics.append(chatConsolePaidOverflowReadinessMetric(label, value, key)));
+
+      const note = document.createElement("p");
+      note.className = "chat-remote-worker-control-readiness-note";
+      note.textContent = "These values are authorization estimates only. No credits are held or spent by this modal or by Hub readiness checks.";
+
+      const actions = document.createElement("div");
+      actions.className = "chat-remote-worker-control-readiness-actions";
+      const refresh = document.createElement("button");
+      refresh.type = "button";
+      refresh.className = "chat-remote-worker-control-readiness-refresh";
+      refresh.textContent = "Refresh readiness";
+      refresh.addEventListener("click", () => chatConsoleRefreshRemoteHubReadiness().catch(() => {}));
+      actions.append(refresh);
+
+      card.append(heading, description, rows, metrics, note, actions);
+      return card;
+    }
+
+    function chatConsoleUpdateRemoteWorkerPaidOptionAvailability(readiness = null) {
+      const modal = chatConsoleRemoteWorkerControlState.modal;
+      if (!modal) return;
+      const state = readiness || chatConsoleRemoteWorkerControlState.lastHubReadiness;
+      const ready = Boolean(state?.ready);
+      const reason = state?.user_message || "Paid overflow readiness has not passed.";
+      modal.querySelectorAll('[data-chat-remote-worker-paid-option="true"]').forEach((button) => {
+        button.disabled = !ready;
+        button.title = ready ? "Paid overflow readiness passed." : reason;
+        button.dataset.chatRemoteWorkerPaidReady = ready ? "true" : "false";
+      });
+    }
+
+    function chatConsoleTogglePaidOverflowReadinessRows(expanded = null) {
+      const modal = chatConsoleRemoteWorkerControlState.modal;
+      const rows = modal ? [...modal.querySelectorAll("[data-chat-paid-overflow-readiness-check]")] : [];
+      const shouldExpand = expanded === null ? rows.some((row) => row.dataset.chatPaidOverflowExpanded !== "true") : Boolean(expanded);
+      rows.forEach((row) => chatConsoleSetPaidOverflowReadinessRowExpanded(row, shouldExpand, {manual: true}));
+    }
+
+    function chatConsoleUpdatePaidOverflowReadinessMetric(card, key, value) {
+      const node = card?.querySelector(`[data-chat-paid-overflow-readiness-metric="${key}"] [data-chat-paid-overflow-readiness-metric-value]`);
+      if (node) node.textContent = String(value ?? "");
+    }
+
+    function chatConsoleUpdatePaidOverflowReadinessRow(rowNode, row, {allDone = false, phase = "resolved"} = {}) {
+      if (!rowNode) return;
+      const parts = chatConsoleReadinessStatusParts(row.effectiveState || row.ownState || "checking", row.unknownText || "Checking");
+      rowNode.className = `chat-remote-worker-control-readiness-row ${parts.className}`;
+      rowNode.dataset.chatPaidOverflowEffectiveState = row.effectiveState || row.ownState || "checking";
+      rowNode.dataset.chatPaidOverflowOwnState = row.ownState || "checking";
+      rowNode.dataset.chatPaidOverflowBlockedByPrior = row.blockedByPrior ? "true" : "false";
+      rowNode.dataset.chatPaidOverflowBlockingDependency = row.blockingDependency || "";
+      rowNode.querySelector("[data-chat-paid-overflow-readiness-mark]").textContent = parts.mark;
+      rowNode.querySelector("[data-chat-paid-overflow-readiness-title]").textContent = row.shortTitle || row.title || "";
+      rowNode.querySelector("[data-chat-paid-overflow-readiness-title]").title = row.title || "";
+      rowNode.querySelector("[data-chat-paid-overflow-readiness-summary-text]").textContent = row.detail || "";
+      rowNode.querySelector("[data-chat-paid-overflow-readiness-badge]").textContent = parts.label;
+      rowNode.querySelector("[data-chat-paid-overflow-readiness-detail]").textContent = row.detail || "";
+      const key = row.key || "";
+      const cardState = chatConsoleRemoteWorkerControlState.readinessCardState[key] || {};
+      const previousState = cardState.effectiveState || "";
+      const currentState = row.effectiveState || row.ownState || "checking";
+      const stateChanged = previousState && previousState !== currentState;
+      cardState.effectiveState = currentState;
+      cardState.ownState = row.ownState || "checking";
+      if (stateChanged) {
+        cardState.autoExpandedForState = false;
+        if (currentState === "ok") {
+          cardState.userExpanded = false;
+          cardState.manualTouched = false;
+        }
+      }
+      let expand = rowNode.dataset.chatPaidOverflowExpanded === "true";
+      if (phase === "checking") {
+        // Hold the current shape while checks are in flight; smart collapse runs only after all checks resolve.
+      } else if (allDone && chatConsoleRemoteWorkerControlState.readinessSmartCollapse) {
+        if (currentState === "ok") {
+          expand = false;
+        } else if (currentState === "blocked" && !cardState.autoExpandedForState && cardState.userExpanded !== false) {
+          expand = true;
+          cardState.autoExpandedForState = true;
+        } else if (currentState === "blocked-by-prior" && !cardState.manualTouched) {
+          expand = false;
+        }
+      }
+      chatConsoleRemoteWorkerControlState.readinessCardState[key] = cardState;
+      chatConsoleSetPaidOverflowReadinessRowExpanded(rowNode, expand, {manual: false});
+    }
+
+    function chatConsoleUpdatePaidOverflowReadinessCard(readiness, paidOverflow = null, options = {}) {
+      chatConsoleRemoteWorkerControlState.lastHubReadiness = readiness || null;
+      const modal = chatConsoleRemoteWorkerControlState.modal;
+      if (!modal) return;
+      const context = paidOverflow || chatConsoleWorkerPaidOverflowContext(chatConsolePendingLocalAiRequest(chatConsoleRemoteWorkerControlState.activePendingRequestId));
+      const state = readiness || chatConsolePaidOverflowReadinessFromContext(context);
+      let card = modal.querySelector("[data-chat-paid-overflow-readiness-card]");
+      if (!card) {
+        card = chatConsolePaidOverflowReadinessCard(state, context);
+        modal.append(card);
+        return;
+      }
+      const phase = options.phase || "resolved";
+      const pipelineRows = chatConsolePaidOverflowReadinessPipelineRows(state, context, phase);
+      const allDone = phase !== "checking" && chatConsolePaidOverflowReadinessAllDone(pipelineRows);
+      card.dataset.chatPaidOverflowAllChecksDone = allDone ? "true" : "false";
+      card.dataset.chatPaidOverflowSmartCollapse = chatConsoleRemoteWorkerControlState.readinessSmartCollapse ? "true" : "false";
+      card.classList.toggle("all-done", allDone);
+      card.classList.toggle("checking", phase === "checking");
+      const summary = card.querySelector("[data-chat-paid-overflow-readiness-summary]");
+      if (summary) {
+        summary.className = `chat-remote-worker-control-readiness-summary ${phase === "checking" ? "warn" : (state.ready ? "ok" : "bad")}`;
+        summary.textContent = phase === "checking" ? "Checking" : (state.ready ? "Ready" : "Blocked");
+      }
+      const message = card.querySelector("[data-chat-paid-overflow-readiness-message]");
+      if (message) {
+        message.textContent = phase === "checking"
+          ? "Checking Hub-backed paid overflow readiness. No credits are held or spent by this check."
+          : state.user_message;
+      }
+      const rowsContainer = card.querySelector("[data-chat-paid-overflow-readiness-rows]");
+      pipelineRows.forEach((row) => {
+        let rowNode = rowsContainer?.querySelector(`[data-chat-paid-overflow-readiness-check="${row.key}"]`);
+        if (!rowNode && rowsContainer) {
+          rowNode = chatConsolePaidOverflowReadinessRow(row);
+          rowsContainer.append(rowNode);
+        }
+        chatConsoleUpdatePaidOverflowReadinessRow(rowNode, row, {allDone, phase});
+      });
+      chatConsoleUpdatePaidOverflowReadinessMetric(card, "available", state.available_credits);
+      chatConsoleUpdatePaidOverflowReadinessMetric(card, "max-output-tokens", state.max_output_tokens);
+      chatConsoleUpdatePaidOverflowReadinessMetric(card, "credits-per-token", state.credits_per_token);
+      chatConsoleUpdatePaidOverflowReadinessMetric(card, "approx-required", Number(state.estimated_max_credits_approx || 0).toFixed(6).replace(/0+$/, "").replace(/\.$/, ""));
+      chatConsoleUpdatePaidOverflowReadinessMetric(card, "whole-credit-hold", state.required_credits);
+      chatConsoleUpdateRemoteWorkerPaidOptionAvailability(readiness);
+    }
+
+    async function chatConsoleFetchRemoteHubReadiness({pendingRequest = null} = {}) {
+      const request = pendingRequest || chatConsolePendingLocalAiRequest();
+      const body = chatConsoleBuildRemoteOverflowAssessmentPayload({pendingRequest: request});
+      const response = await fetch("/api/applications/chat-console/ai/remote-overflow/hub-readiness", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        cache: "no-store",
+        body: JSON.stringify(body)
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) throw new Error(data.error || `remote Hub readiness HTTP ${response.status}`);
+      return data.hub_readiness || data.readiness || data;
+    }
+
+    async function chatConsoleRefreshRemoteHubReadiness({pendingRequest = null} = {}) {
+      if (chatConsoleRemoteWorkerControlState.hubReadinessRefreshInFlight) {
+        return chatConsoleRemoteWorkerControlState.lastHubReadiness;
+      }
+      const request = pendingRequest || chatConsolePendingLocalAiRequest();
+      const paidOverflow = chatConsoleWorkerPaidOverflowContext(request);
+      chatConsoleRemoteWorkerControlState.readinessGeneration += 1;
+      const generation = chatConsoleRemoteWorkerControlState.readinessGeneration;
+      let readiness = chatConsolePaidOverflowReadinessFromContext(paidOverflow);
+      chatConsoleUpdatePaidOverflowReadinessCard(readiness, paidOverflow, {phase: "checking", generation});
+
+      chatConsoleRemoteWorkerControlState.hubReadinessRefreshInFlight = true;
       try {
-        localStorage.setItem(chatConsoleWorkerBridgeReadinessStorageKey, JSON.stringify(bridgeState));
-      } catch {}
+        const hubReadiness = await chatConsoleFetchRemoteHubReadiness({pendingRequest: request});
+        readiness = chatConsolePaidOverflowReadinessFromContext(paidOverflow, hubReadiness);
+        chatConsoleUpdatePaidOverflowReadinessCard(readiness, paidOverflow, {phase: "resolved", generation});
+        chatConsoleSetStatus(`paid overflow readiness ${readiness.reason_code || "updated"}`);
+        return readiness;
+      } catch (error) {
+        readiness = chatConsolePaidOverflowReadinessFromContext(paidOverflow, null, error);
+        chatConsoleUpdatePaidOverflowReadinessCard(readiness, paidOverflow, {phase: "resolved", generation});
+        chatConsoleSetStatus(`paid overflow readiness failed: ${error.message || error}`);
+        return readiness;
+      } finally {
+        chatConsoleRemoteWorkerControlState.hubReadinessRefreshInFlight = false;
+      }
+    }
+
+    function chatConsolePaidOverflowReadinessReady(readiness) {
+      return Boolean(readiness?.ready);
+    }
+
+    function chatConsoleRefreshPaidOverflowReadinessAfterPayment() {
+      chatConsoleRefreshRemoteHubReadiness().catch(() => {});
     }
 
     function chatConsoleBuildRemoteOverflowAssessmentPayload({pendingRequest, capacity = null}) {
@@ -683,48 +1134,27 @@
         capability: payload.rag_type || payload.capability || "chat.completions",
         messages: chatConsoleRemoteOverflowMessagesFromPendingRequest(request),
         max_local_concurrency: 1,
-        max_output_tokens: paidOverflow.maxOutputTokens,
-        credits_per_token: paidOverflow.creditsPerTokenText,
-        remote_overflow_enabled: paidOverflow.remoteEnabled,
         local_only: false,
         local_capacity_settings: {
           max_local_concurrency: 1
         },
         local_capacity_snapshot: capacity || chatConsoleRemoteWorkerControlState.lastCapacitySnapshot || null,
-        credit_ready: paidOverflow.creditReady,
-        bridged_credits: paidOverflow.availableCredits,
-        spendable_credits: paidOverflow.spendableCredits,
-        pending_holds: 0,
+        browser_estimate: {
+          estimated_input_tokens: paidOverflow.estimatedInputTokens,
+          approximation_only: true
+        },
         credit: {
-          known: Boolean(paidOverflow.walletAddress),
-          wallet_address: paidOverflow.walletAddress,
-          account_id: paidOverflow.accountId,
-          credit_ready: paidOverflow.creditReady,
-          bridged_credits: paidOverflow.availableCredits,
-          spendable_credits: paidOverflow.spendableCredits,
-          pending_holds: 0,
-          estimated_max_credits: paidOverflow.estimatedMaxCredits,
-          estimated_max_credits_approx: paidOverflow.estimatedMaxCreditsApprox,
+          known: false,
           approximation_only: true,
           no_credit_hold_created: true,
           no_credit_spent: true
         },
         payment_authorization: {
-          kind: "multisession_key",
-          paid_overflow_enabled: paidOverflow.remoteEnabled,
-          wallet_address: paidOverflow.walletAddress,
-          account_id: paidOverflow.accountId,
-          multisession_key_id: paidOverflow.activeMultisessionKeyId,
-          max_output_tokens: paidOverflow.maxOutputTokens,
-          credits_per_token: paidOverflow.creditsPerTokenText,
-          estimated_input_tokens: paidOverflow.estimatedInputTokens,
-          max_authorized_credits: paidOverflow.estimatedMaxCredits,
-          estimated_max_credits_approx: paidOverflow.estimatedMaxCreditsApprox,
+          kind: "backend_worker_paid_overflow_context",
           approximation_only: true
         },
         hub: {
           mode: "mock_safe_template",
-          willing_worker_count: paidOverflow.creditReady ? 1 : 0,
           real_remote_worker_contacted: false,
           private_worker_prices_exposed: false
         }
@@ -826,18 +1256,9 @@
       if (!chatConsoleRemoteWorkerIntentUsesRemoteHubForCurrentRequest(intentMode)) {
         throw new Error(`Remote Hub submit cannot run for intent ${intentMode || "unknown"}.`);
       }
-      const paidOverflowPreflight = chatConsoleWorkerPaidOverflowContext(request);
-      if (!paidOverflowPreflight.remoteEnabled) {
-        throw new Error("Paid overflow is disabled in Worker settings.");
-      }
-      if (!paidOverflowPreflight.walletAddress) {
-        throw new Error("Connect and fund a Worker wallet before using paid overflow.");
-      }
-      if (!paidOverflowPreflight.activeMultisessionKeyId) {
-        throw new Error("Request a multi-session key before using paid overflow.");
-      }
-      if (paidOverflowPreflight.spendableCredits < paidOverflowPreflight.estimatedMaxCredits) {
-        throw new Error(`Not enough bridged credits for this approximate authorization: available ${paidOverflowPreflight.spendableCredits}, required ${paidOverflowPreflight.estimatedMaxCredits}.`);
+      const paidOverflowReadiness = await chatConsoleRefreshRemoteHubReadiness({pendingRequest: request});
+      if (!chatConsolePaidOverflowReadinessReady(paidOverflowReadiness)) {
+        throw new Error(paidOverflowReadiness?.user_message || "Paid overflow readiness did not pass.");
       }
       chatConsoleUpdatePendingLocalAiRequest(request.id, {
         status: "remote_hub_running",
@@ -864,7 +1285,7 @@
         const data = await response.json().catch(() => ({}));
         if (!response.ok || data.ok === false) throw new Error(data.error || `Remote Hub submit returned ${response.status}`);
         const paymentReceipt = data?.remote_overflow_result?.payment || data?.remote_overflow_result?.response?.metadata?.payment || data?.payment || null;
-        chatConsoleApplyRemoteHubPaymentReceiptToWorkerStorage(paymentReceipt);
+        chatConsoleRefreshPaidOverflowReadinessAfterPayment();
         chatConsoleSetRemoteHubExecutionState(request.cell_id || cell?.id || "", {
           mode: intentMode,
           status: "completed",
@@ -946,11 +1367,16 @@
       chatConsolePopulateRemoteWorkerStatusCard(card, status);
     }
 
-    function chatConsoleRemoteWorkerOptionCard({mode, title, kicker, description, details, defaultOption = false}) {
+    function chatConsoleRemoteWorkerOptionCard({mode, title, kicker, description, details, defaultOption = false, paidRemote = false}) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = `chat-remote-worker-control-option-card${defaultOption ? " default" : ""}`;
       button.dataset.chatRemoteWorkerOption = mode;
+      if (paidRemote) {
+        button.dataset.chatRemoteWorkerPaidOption = "true";
+        button.disabled = true;
+        button.title = "Paid overflow readiness has not passed.";
+      }
       button.addEventListener("click", () => chatConsoleChooseRemoteWorkerControlOption(mode, {reason: mode}));
       const kickerNode = document.createElement("span");
       kickerNode.className = "chat-remote-worker-control-option-kicker";
@@ -990,6 +1416,7 @@
         chatConsoleUpdateRemoteWorkerControlLocalCard(snapshot);
         chatConsoleUpdateRemoteWorkerPendingRequestFooter(pendingRequest);
         await chatConsoleRefreshRemoteOverflowAssessment({pendingRequest, capacity: snapshot});
+        await chatConsoleRefreshRemoteHubReadiness({pendingRequest});
         if (!chatConsoleShouldOpenRemoteWorkerControlForCapacity(snapshot)) {
           chatConsoleChooseRemoteWorkerControlOption("wait_local", {
             auto: true,
@@ -1054,6 +1481,15 @@
       const pendingRequest = chatConsolePendingLocalAiRequest(pendingRequestId);
       if (!pendingRequest) return null;
       const canonicalMode = chatConsoleCanonicalRemoteWorkerIntentMode(mode);
+      if (chatConsoleRemoteWorkerIntentUsesRemoteHubForCurrentRequest(canonicalMode)) {
+        const readiness = chatConsoleRemoteWorkerControlState.lastHubReadiness
+          || chatConsolePaidOverflowReadinessFromContext(chatConsoleWorkerPaidOverflowContext(pendingRequest));
+        if (!chatConsolePaidOverflowReadinessReady(readiness)) {
+          chatConsoleUpdateRemoteWorkerPaidOptionAvailability(readiness);
+          chatConsoleSetStatus(`paid overflow readiness blocked: ${readiness.user_message || readiness.reason_code || "not ready"}`);
+          return null;
+        }
+      }
       const cellId = pendingRequest.cell_id || chatConsoleRemoteWorkerControlState.lastCellId;
       const closeReason = chatConsoleBuildRemoteWorkerControlCloseReason({
         reason: context.closeReason || context.reason || canonicalMode,
@@ -1148,7 +1584,7 @@
       const headingWrap = document.createElement("div");
       const eyebrow = document.createElement("div");
       eyebrow.className = "chat-remote-worker-control-eyebrow";
-      eyebrow.textContent = "Phase 5 durable remote-worker intent";
+      eyebrow.textContent = "Paid overflow readiness";
       const title = document.createElement("h2");
       title.id = "chat-remote-worker-control-title";
       title.textContent = "Remote Worker control";
@@ -1160,7 +1596,7 @@
 
       const description = document.createElement("p");
       description.id = "chat-remote-worker-control-description";
-      description.textContent = "Local AI is busy. This panel shows the blocking local worker, a compact read-only remote-overflow assessment, and records the selected intent separately from the modal close reason. No credits are held or spent, and no remote worker is contacted in this phase.";
+      description.textContent = "Local AI is busy. This panel shows the blocking local worker, paid overflow readiness, and a compact read-only remote-overflow assessment. It records the selected intent separately from the modal close reason. No credits are held or spent by this modal or by Hub readiness checks.";
 
       const statusGrid = document.createElement("div");
       statusGrid.className = "chat-remote-worker-control-status-grid";
@@ -1169,6 +1605,10 @@
         chatConsoleRemoteWorkerStatusCard({kind: "local", title: "Current Local AI Worker", ...localStatus}),
         chatConsoleRemoteWorkerStatusCard({kind: "assessment-summary", title: "Remote Overflow Assessment", ...chatConsoleRemoteOverflowAssessmentPlaceholderStatus()})
       );
+
+      const initialPaidOverflowContext = chatConsoleWorkerPaidOverflowContext(boundPendingRequest);
+      const initialPaidOverflowReadiness = chatConsolePaidOverflowReadinessFromContext(initialPaidOverflowContext);
+      const paidOverflowReadinessCard = chatConsolePaidOverflowReadinessCard(initialPaidOverflowReadiness, initialPaidOverflowContext);
 
       const assessmentDetails = document.createElement("details");
       assessmentDetails.className = "chat-remote-worker-control-assessment-details";
@@ -1204,34 +1644,37 @@
           kicker: "This request",
           title: "Use Remote Worker This Once",
           description: "Send this blocked request through the Remote Hub.",
-          details: "The dialog closes immediately; the normal request card shows Remote Hub progress and the answer returns through the regular AI output flow. No credits are held or spent."
+          details: "The dialog closes immediately; the normal request card shows Remote Hub progress. Credits are held and charged only after all readiness checks pass and the Hub request succeeds.",
+          paidRemote: true
         }),
         chatConsoleRemoteWorkerOptionCard({
           mode: "use_remote_when_needed_for_chat",
           kicker: "This chat",
           title: "Use Remote Worker When Needed for This Chat",
           description: "Route this blocked request through the Remote Hub and enable the visible chat option beside the RAG controls.",
-          details: "Uncheck that chat option later to clear the chat-scoped intent. Future automatic chat failover is handled in a later phase."
+          details: "Uncheck that chat option later to clear the chat-scoped intent. Future automatic chat failover is handled in a later phase.",
+          paidRemote: true
         }),
         chatConsoleRemoteWorkerOptionCard({
           mode: "always_when_busy",
           kicker: "Global preference",
           title: "Always Use Remote Worker When Local AI Is Busy",
           description: "Route this blocked request through the Remote Hub and record non-permanent global remote-worker intent for busy-local overflow.",
-          details: "The Worker app global setting is not connected yet, so no permanent Worker setting is changed in this phase."
+          details: "The Worker app global setting is not connected yet, so no permanent Worker setting is changed in this phase.",
+          paidRemote: true
         })
       );
 
       const notice = document.createElement("p");
       notice.className = "chat-remote-worker-control-notice";
-      notice.textContent = "This dialog only asks for a decision. Any option closes it immediately. Wait-local continues through the normal local AI path; Hub options route this blocked request through the Remote Hub and show progress in the regular request card. No credits are held or spent in this phase.";
+      notice.textContent = "This dialog only asks for a decision after readiness is visible. Wait-local continues through the normal local AI path; Hub options route this blocked request through the Remote Hub and show progress in the regular request card. No credits are held or spent by the modal or readiness check; the paid request can spend only after all checks pass.";
 
       const pendingFooter = document.createElement("p");
       pendingFooter.className = "chat-remote-worker-control-pending-footer";
       pendingFooter.dataset.chatRemoteWorkerPendingRequestFooter = "true";
       pendingFooter.textContent = chatConsolePendingLocalAiRequestFooterText(boundPendingRequest);
 
-      modal.append(header, description, statusGrid, assessmentDetails, optionsTitle, optionsGrid, notice, pendingFooter);
+      modal.append(header, description, statusGrid, paidOverflowReadinessCard, assessmentDetails, optionsTitle, optionsGrid, notice, pendingFooter);
       backdrop.append(modal);
       document.body.append(backdrop);
 
@@ -1248,6 +1691,8 @@
       chatConsoleRemoteWorkerControlState.lastThreadId = boundPendingRequest.thread_id || threadId || "";
       chatConsoleRemoteWorkerControlState.activePendingRequestId = boundPendingRequest.id;
       chatConsoleRemoteWorkerControlState.resolveChoice = typeof resolveChoice === "function" ? resolveChoice : null;
+      chatConsoleRemoteWorkerControlState.lastHubReadiness = initialPaidOverflowReadiness;
+      chatConsoleUpdateRemoteWorkerPaidOptionAvailability(initialPaidOverflowReadiness);
 
       chatConsoleRemoteWorkerControlState.escapeHandler = (event) => {
         if (event.key === "Escape") {
@@ -1261,6 +1706,7 @@
       defaultOption?.focus?.({preventScroll: true});
       chatConsoleStartRemoteWorkerControlCapacityWatcher();
       chatConsoleRefreshRemoteOverflowAssessment({pendingRequest: boundPendingRequest, capacity}).catch(() => {});
+      chatConsoleRefreshRemoteHubReadiness({pendingRequest: boundPendingRequest}).catch(() => {});
       chatConsoleSetStatus("remote worker control opened because local AI is busy");
       return backdrop;
     }
@@ -3659,6 +4105,160 @@
       renderChatConsoleNotebook();
     }
 
+
+    function chatConsoleOpenPaidOverflowReadinessUtility() {
+      const existing = chatConsoleRemoteWorkerControlState.modal || document.querySelector("[data-chat-console-remote-worker-control-modal]");
+      if (existing) {
+        existing.querySelector("[data-chat-paid-overflow-readiness-card-title]")?.focus?.({preventScroll: true});
+        chatConsoleRefreshRemoteHubReadiness().catch(() => {});
+        return existing;
+      }
+      const runId = `paid_overflow_readiness_${Date.now().toString(36)}`;
+      const threadId = chatConsoleState?.id || "paid-overflow-readiness-preview";
+      const cell = {
+        id: `paid_overflow_readiness_cell_${Date.now().toString(36)}`,
+        type: "ai",
+        run_id: runId,
+        source: "Paid overflow readiness preview"
+      };
+      const pendingRequest = chatConsoleRegisterPendingLocalAiRequest({
+        cell,
+        runId,
+        threadId,
+        endpoint: "",
+        payload: {
+          run_id: runId,
+          thread_id: threadId,
+          prompt: "Paid overflow readiness preview",
+          messages: [{role: "user", content: "Paid overflow readiness preview"}]
+        }
+      });
+      return chatConsoleShowRemoteWorkerControlModal({
+        cell,
+        runId,
+        threadId,
+        pendingRequest,
+        capacity: {
+          ok: true,
+          busy: true,
+          available_now: false,
+          active_run_count: 1,
+          max_local_concurrency: 1,
+          blocking_run_id: "preview",
+          last_checked_at: chatConsoleNow()
+        }
+      });
+    }
+
+    function chatConsolePaidOverflowReadinessDebugPayload(states = {}) {
+      const normalized = states && typeof states === "object" ? states : {};
+      const keyAliases = {
+        hub: "hub-reachability",
+        setting: "paid-overflow-setting",
+        wallet: "connected-wallet",
+        key: "hub-key-validation",
+        credits: "spendable-credits",
+        estimate: "authorization-budget"
+      };
+      const valueForDefinition = (definition) => {
+        const aliasEntry = Object.entries(keyAliases).find(([, key]) => key === definition.key);
+        const alias = aliasEntry ? aliasEntry[0] : "";
+        return String(normalized[definition.key] ?? normalized[alias] ?? "checking").trim().toLowerCase();
+      };
+      const okForValue = (value) => {
+        if (["ok", "ready", "green", "pass", "passed", "true"].includes(value)) return true;
+        if (["blocked", "bad", "red", "fail", "failed", "false"].includes(value)) return false;
+        return null;
+      };
+      const checks = chatConsolePaidOverflowReadinessDefinitions().map((definition) => {
+        const value = valueForDefinition(definition);
+        const ok = okForValue(value);
+        const detail = ok === true
+          ? `${definition.shortTitle} passed.`
+          : ok === false
+            ? `${definition.shortTitle} is blocking paid overflow.`
+            : `${definition.shortTitle} is checking or waiting for prerequisites.`;
+        return {
+          key: definition.key,
+          title: definition.title,
+          ok,
+          unknownText: value === "inactive" ? "Not active" : "Checking",
+          detail
+        };
+      });
+      const ready = checks.every((check) => check.ok === true);
+      return {
+        ready,
+        valid: checks.find((check) => check.key === "hub-key-validation")?.ok === true,
+        hub_reachable: checks.find((check) => check.key === "hub-reachability")?.ok === true,
+        reason_code: ready ? "paid_overflow_ready" : "paid_overflow_debug_state",
+        user_message: ready
+          ? "Debug readiness state is ready."
+          : "Debug readiness state is blocked or still checking.",
+        wallet_address: "0x0000000000000000000000000000000000000000",
+        account_id: "wallet:0x0000000000000000000000000000000000000000",
+        multisession_key_id: "debug",
+        available_credits: Number(normalized.available_credits ?? normalized.availableCredits ?? 0),
+        required_credits: Number(normalized.required_credits ?? normalized.requiredCredits ?? 1),
+        credit_ready: checks.find((check) => check.key === "spendable-credits")?.ok === true,
+        funds_ok: checks.find((check) => check.key === "spendable-credits")?.ok === true,
+        max_output_tokens: Number(normalized.max_output_tokens ?? normalized.maxOutputTokens ?? 1024),
+        credits_per_token: String(normalized.credits_per_token ?? normalized.creditsPerToken ?? "0.001"),
+        estimated_max_credits_approx: String(normalized.estimated_max_credits_approx ?? normalized.estimatedMaxCreditsApprox ?? "1.025"),
+        checks
+      };
+    }
+
+    function chatConsoleSetPaidOverflowReadinessUtilityState(states = {}, options = {}) {
+      chatConsoleOpenPaidOverflowReadinessUtility();
+      const payload = chatConsolePaidOverflowReadinessDebugPayload(states);
+      const readiness = chatConsolePaidOverflowReadinessFromContext(chatConsoleWorkerPaidOverflowContext(chatConsolePendingLocalAiRequest()), payload);
+      const phase = options.phase || (Object.values(states || {}).some((value) => String(value).toLowerCase() === "checking") ? "checking" : "resolved");
+      chatConsoleUpdatePaidOverflowReadinessCard(readiness, null, {phase});
+      return readiness;
+    }
+
+    function chatConsoleShowPaidOverflowReadinessScenario(name = "invalid_key") {
+      const scenarios = {
+        checking: {hub: "checking", setting: "checking", wallet: "checking", key: "checking", credits: "checking", estimate: "checking"},
+        hub_unreachable: {hub: "blocked", setting: "ok", wallet: "ok", key: "blocked", credits: "blocked", estimate: "blocked"},
+        paid_overflow_disabled: {hub: "ok", setting: "blocked", wallet: "ok", key: "ok", credits: "ok", estimate: "ok", available_credits: 3},
+        no_wallet: {hub: "ok", setting: "ok", wallet: "blocked", key: "blocked", credits: "blocked", estimate: "blocked"},
+        invalid_key: {hub: "ok", setting: "ok", wallet: "ok", key: "blocked", credits: "ok", estimate: "ok", available_credits: 3},
+        insufficient_credits: {hub: "ok", setting: "ok", wallet: "ok", key: "ok", credits: "blocked", estimate: "blocked", available_credits: 0},
+        ready: {hub: "ok", setting: "ok", wallet: "ok", key: "ok", credits: "ok", estimate: "ok", available_credits: 3}
+      };
+      return chatConsoleSetPaidOverflowReadinessUtilityState(scenarios[name] || scenarios.invalid_key, {phase: name === "checking" ? "checking" : "resolved"});
+    }
+
+    window.MainComputerPaidOverflowReadiness = {
+      open: chatConsoleOpenPaidOverflowReadinessUtility,
+      refresh() {
+        chatConsoleOpenPaidOverflowReadinessUtility();
+        return chatConsoleRefreshRemoteHubReadiness();
+      },
+      close(reason = "paid_overflow_readiness_utility_close") {
+        return chatConsoleHideRemoteWorkerControlModal(reason);
+      },
+      setState: chatConsoleSetPaidOverflowReadinessUtilityState,
+      showScenario: chatConsoleShowPaidOverflowReadinessScenario,
+      collapseAll() {
+        chatConsoleTogglePaidOverflowReadinessRows(false);
+      },
+      expandAll() {
+        chatConsoleTogglePaidOverflowReadinessRows(true);
+      },
+      getState() {
+        return {
+          open: Boolean(chatConsoleRemoteWorkerControlState.modal),
+          smartCollapse: chatConsoleRemoteWorkerControlState.readinessSmartCollapse,
+          lastHubReadiness: chatConsoleRemoteWorkerControlState.lastHubReadiness,
+          readinessGeneration: chatConsoleRemoteWorkerControlState.readinessGeneration
+        };
+      }
+    };
+
+
     window.chatConsoleMountEmbedded = chatConsoleMountEmbedded;
     window.chatConsoleMountSpreadsheetEmbedded = chatConsoleMountSpreadsheetEmbedded;
     window.MainComputerChatConsole = {
@@ -3673,6 +4273,7 @@
       closeRemoteWorkerControl(reason = "programmatic_wait_local") {
         return chatConsoleChooseRemoteWorkerControlOption("wait_local", {reason, closeReason: reason});
       },
+      paidOverflowReadiness: window.MainComputerPaidOverflowReadiness,
       getRemoteWorkerControlState() {
         return {
           open: Boolean(chatConsoleRemoteWorkerControlState.modal),

@@ -12,7 +12,7 @@ from main_computer.chat_ai_subprocess import (
     config_to_payload,
 )
 from main_computer.models import ChatResponse
-from main_computer.remote_overflow import RemoteOverflowDecisionEngine, RemoteHubExecutionGateway
+from main_computer.remote_overflow import RemoteOverflowDecisionEngine, RemoteHubExecutionGateway, estimate_remote_request
 
 
 def _should_inline_test_provider(provider: Any) -> bool:
@@ -283,6 +283,335 @@ class ViewportChatConsoleRoutesMixin:
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
 
+
+    def _chat_console_worker_settings_path(self) -> Path:
+        path_method = getattr(self, "_worker_settings_path", None)
+        if callable(path_method):
+            return path_method()
+        return self.server.debug_root / "worker_settings.json"
+
+    def _chat_console_load_worker_settings(self) -> dict[str, Any]:
+        load_method = getattr(self, "_load_worker_settings", None)
+        if callable(load_method):
+            data = load_method()
+            return data if isinstance(data, dict) else {}
+        path = self._chat_console_worker_settings_path()
+        try:
+            if not path.exists():
+                return {}
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _chat_console_bool_setting(self, value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        text = str(value or "").strip().lower()
+        if text in {"1", "true", "yes", "on", "enabled", "enable"}:
+            return True
+        if text in {"0", "false", "no", "off", "disabled", "disable"}:
+            return False
+        return bool(default)
+
+    def _chat_console_int_setting(self, value: Any, default: int, *, minimum: int, maximum: int) -> int:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            number = int(default)
+        return min(int(maximum), max(int(minimum), number))
+
+    def _chat_console_decimal_setting_text(
+        self,
+        value: Any,
+        default: str = "0.001",
+        *,
+        minimum: str = "0.000001",
+        maximum: str = "1000000",
+    ) -> str:
+        try:
+            number = Decimal(str(value).strip())
+            if not number.is_finite():
+                raise ValueError
+        except Exception:
+            number = Decimal(default)
+        number = min(Decimal(maximum), max(Decimal(minimum), number))
+        text = format(number.normalize(), "f")
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
+        return text or "0"
+
+    def _chat_console_worker_multisession_cache(self) -> dict[str, Any]:
+        path = self.server.debug_root / "worker_multisession_keys.json"
+        try:
+            if not path.exists():
+                return {"keys": {}}
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("keys"), dict):
+                return data
+        except Exception:
+            pass
+        return {"keys": {}}
+
+    def _chat_console_active_worker_multisession_key(self, *, hub_url: str = "") -> dict[str, Any] | None:
+        normalized_hub_url = str(hub_url or "").strip().rstrip("/")
+        records: list[dict[str, Any]] = []
+        data = self._chat_console_worker_multisession_cache()
+        for raw in data.get("keys", {}).values():
+            if not isinstance(raw, dict):
+                continue
+            key_id = str(raw.get("id") or "").strip()
+            wallet_address = str(raw.get("wallet_address") or raw.get("walletAddress") or "").strip().lower()
+            if not key_id or not re.fullmatch(r"0x[0-9a-f]{40}", wallet_address):
+                continue
+            record_hub_url = str(raw.get("hub_url") or raw.get("hubUrl") or "").strip().rstrip("/")
+            if normalized_hub_url and record_hub_url and record_hub_url != normalized_hub_url:
+                continue
+            if str(raw.get("status") or "active").strip().lower() != "active":
+                continue
+            records.append(
+                {
+                    "id": key_id,
+                    "status": "active",
+                    "wallet_address": wallet_address,
+                    "chain_id": str(raw.get("chain_id") or raw.get("chainId") or ""),
+                    "hub_url": record_hub_url,
+                    "created_at": str(raw.get("created_at") or raw.get("createdAt") or ""),
+                    "updated_at": str(raw.get("updated_at") or raw.get("updatedAt") or ""),
+                }
+            )
+        records.sort(key=lambda item: (item.get("created_at", ""), item.get("updated_at", ""), item.get("id", "")), reverse=True)
+        return records[0] if records else None
+
+    def _chat_console_backend_paid_overflow_context(self, body: dict[str, Any]) -> dict[str, Any]:
+        settings = self._chat_console_load_worker_settings()
+        hub_url = str(settings.get("registrationHubUrl") or settings.get("registration_hub_url") or self.server.config.hub_url).strip().rstrip("/")
+        active_key = self._chat_console_active_worker_multisession_key(hub_url=hub_url) or self._chat_console_active_worker_multisession_key()
+        if active_key and active_key.get("hub_url"):
+            hub_url = str(active_key.get("hub_url") or hub_url).strip().rstrip("/") or hub_url
+
+        remote_enabled = self._chat_console_bool_setting(settings.get("remoteEnabled", settings.get("remote_enabled")), False)
+        max_output_tokens = self._chat_console_int_setting(
+            settings.get("remoteMaxOutputTokens", settings.get("remote_max_output_tokens")),
+            1024,
+            minimum=1,
+            maximum=128_000,
+        )
+        credits_per_token = self._chat_console_decimal_setting_text(
+            settings.get("remoteCreditsPerToken", settings.get("remote_credits_per_token")),
+            "0.001",
+        )
+
+        estimate_request = dict(body or {})
+        estimate_request["max_output_tokens"] = max_output_tokens
+        estimate_request["credits_per_token"] = credits_per_token
+        estimate = estimate_remote_request(estimate_request)
+        wallet_address = str((active_key or {}).get("wallet_address") or "").strip().lower()
+        multisession_key_id = str((active_key or {}).get("id") or "").strip()
+        chain_id = str((active_key or {}).get("chain_id") or "0x28757b2").strip() or "0x28757b2"
+        required_credits = int(getattr(estimate, "estimated_max_credits", 1) or 1)
+        return {
+            "settings": settings,
+            "hub_url": hub_url,
+            "remote_enabled": remote_enabled,
+            "max_output_tokens": max_output_tokens,
+            "credits_per_token": credits_per_token,
+            "estimated_input_tokens": int(getattr(estimate, "estimated_input_tokens", 0) or 0),
+            "estimated_max_credits": required_credits,
+            "estimated_max_credits_approx": (
+                getattr(estimate, "card", {}).get("details", {}).get("estimated_max_credits_approx", "")
+                if isinstance(getattr(estimate, "card", {}), dict)
+                else ""
+            ),
+            "estimate_ok": bool(getattr(estimate, "ok", False)),
+            "estimate_reason_code": str(getattr(estimate, "reason_code", "") or ""),
+            "wallet_address": wallet_address,
+            "multisession_key_id": multisession_key_id,
+            "chain_id": chain_id,
+            "active_key": active_key,
+        }
+
+    def _chat_console_paid_overflow_authorization_from_backend(self, context: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "kind": "multisession_key",
+            "paid_overflow_enabled": bool(context.get("remote_enabled")),
+            "wallet_address": str(context.get("wallet_address") or ""),
+            "multisession_key_id": str(context.get("multisession_key_id") or ""),
+            "chain_id": str(context.get("chain_id") or "0x28757b2"),
+            "max_output_tokens": int(context.get("max_output_tokens") or 1024),
+            "credits_per_token": str(context.get("credits_per_token") or "0.001"),
+            "estimated_input_tokens": int(context.get("estimated_input_tokens") or 0),
+            "max_authorized_credits": int(context.get("estimated_max_credits") or 1),
+            "required_credits": int(context.get("estimated_max_credits") or 1),
+            "estimated_max_credits_approx": str(context.get("estimated_max_credits_approx") or ""),
+            "approximation_only": True,
+            "source": "local_backend_worker_settings",
+        }
+
+    def _chat_console_enrich_remote_overflow_body_with_backend_context(self, body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        enriched = dict(body or {})
+        context = self._chat_console_backend_paid_overflow_context(enriched)
+        authorization = self._chat_console_paid_overflow_authorization_from_backend(context)
+        enriched["hub_url"] = context.get("hub_url") or enriched.get("hub_url") or self.server.config.hub_url
+        hub_payload = enriched.get("hub") if isinstance(enriched.get("hub"), dict) else {}
+        enriched["hub"] = {**hub_payload, "url": enriched["hub_url"]}
+        enriched["remote_overflow_enabled"] = bool(context.get("remote_enabled"))
+        enriched["max_output_tokens"] = int(context.get("max_output_tokens") or 1024)
+        enriched["credits_per_token"] = str(context.get("credits_per_token") or "0.001")
+        enriched["payment_authorization"] = authorization
+        enriched.setdefault("local_only", False)
+        enriched["credit"] = {
+            **(enriched.get("credit") if isinstance(enriched.get("credit"), dict) else {}),
+            "known": False,
+            "wallet_address": str(context.get("wallet_address") or ""),
+            "credit_ready": False,
+            "estimated_max_credits": int(context.get("estimated_max_credits") or 1),
+            "estimated_max_credits_approx": str(context.get("estimated_max_credits_approx") or ""),
+            "approximation_only": True,
+            "no_credit_hold_created": True,
+            "no_credit_spent": True,
+        }
+        return enriched, context
+
+    def _chat_console_readiness_check(self, key: str, title: str, ok: bool | None, detail: str) -> dict[str, Any]:
+        return {
+            "key": key,
+            "title": title,
+            "ok": ok,
+            "detail": detail,
+            "unknownText": "Not checked",
+        }
+
+    def _chat_console_backend_hub_readiness(self, body: dict[str, Any]) -> dict[str, Any]:
+        enriched, context = self._chat_console_enrich_remote_overflow_body_with_backend_context(body)
+        checks: list[dict[str, Any]] = []
+        required_credits = int(context.get("estimated_max_credits") or 1)
+        hub_response: dict[str, Any] | None = None
+        hub_error = ""
+        try:
+            gateway = RemoteHubExecutionGateway(config=getattr(self.server, "config", None))
+            provider = gateway._provider_for_request(enriched)
+            hub_response = provider.validate_multisession_key(enriched)
+            hub_reachable = bool(hub_response.get("hub_reachable", True) and hub_response.get("ok", True) is not False)
+        except Exception as exc:
+            hub_reachable = False
+            hub_error = str(exc)
+
+        checks.append(
+            self._chat_console_readiness_check(
+                "hub-reachability",
+                "Hub reachable",
+                hub_reachable,
+                "Hub readiness can be checked." if hub_reachable else f"Could not contact the configured Hub: {hub_error or 'unreachable'}",
+            )
+        )
+        checks.append(
+            self._chat_console_readiness_check(
+                "paid-overflow-setting",
+                "Paid overflow setting",
+                bool(context.get("remote_enabled")),
+                "Enabled in Worker buyer settings." if context.get("remote_enabled") else "Disabled. The local backend will not submit a paid Hub request.",
+            )
+        )
+        wallet_address = str(context.get("wallet_address") or "")
+        checks.append(
+            self._chat_console_readiness_check(
+                "connected-wallet",
+                "Connected wallet",
+                bool(wallet_address),
+                f"Wallet: {wallet_address}" if wallet_address else "No backend-known wallet-backed multi-session key is available.",
+            )
+        )
+        key_id = str(context.get("multisession_key_id") or "")
+        hub_valid = bool(hub_response.get("valid")) if isinstance(hub_response, dict) else False
+        checks.append(
+            self._chat_console_readiness_check(
+                "hub-key-validation",
+                "Multi-session key usable",
+                hub_valid,
+                (
+                    "Hub confirms this key is active for the wallet."
+                    if hub_valid
+                    else (
+                        str(hub_response.get("user_message") or "The Hub did not accept the active multi-session key.")
+                        if isinstance(hub_response, dict)
+                        else "The active multi-session key could not be checked with Hub."
+                    )
+                ),
+            )
+        )
+        account = hub_response.get("account") if isinstance(hub_response, dict) and isinstance(hub_response.get("account"), dict) else {}
+        available_credits = int(account.get("available_credits", 0) or 0)
+        funds_ok = available_credits >= required_credits
+        checks.append(
+            self._chat_console_readiness_check(
+                "spendable-credits",
+                "Spendable bridged credits",
+                funds_ok,
+                f"Hub sees available {available_credits}; approximate whole-credit authorization requires {required_credits}.",
+            )
+        )
+        budget_ok = bool(context.get("estimate_ok")) and funds_ok
+        checks.append(
+            self._chat_console_readiness_check(
+                "authorization-budget",
+                "Approximate authorization",
+                budget_ok,
+                (
+                    f"Approximate budget is {context.get('estimated_max_credits_approx') or required_credits} credits before whole-credit rounding; holding at most {required_credits}."
+                    if context.get("estimate_ok")
+                    else "This request could not be estimated safely."
+                ),
+            )
+        )
+
+        ready = bool(
+            hub_reachable
+            and context.get("remote_enabled")
+            and wallet_address
+            and key_id
+            and hub_valid
+            and funds_ok
+            and context.get("estimate_ok")
+        )
+        reason_code = "paid_overflow_ready" if ready else "paid_overflow_not_ready"
+        user_message = "Paid overflow is ready. Hub accepts the key and sees enough spendable bridged credits."
+        if not ready:
+            failing = next((item for item in checks if item.get("ok") is False), None)
+            reason_code = (
+                str((hub_response or {}).get("reason_code") or "")
+                if isinstance(hub_response, dict) and not hub_valid
+                else str((failing or {}).get("key") or "paid_overflow_not_ready")
+            )
+            user_message = str((failing or {}).get("detail") or "Paid overflow readiness did not pass.")
+
+        return {
+            "ok": True,
+            "ready": ready,
+            "valid": hub_valid,
+            "hub_reachable": hub_reachable,
+            "reason_code": reason_code,
+            "user_message": user_message,
+            "paid_overflow_enabled": bool(context.get("remote_enabled")),
+            "wallet_address": wallet_address,
+            "account_id": str((hub_response or {}).get("account_id") or ""),
+            "multisession_key_id": key_id,
+            "chain_id": str(context.get("chain_id") or ""),
+            "account": account,
+            "available_credits": available_credits,
+            "required_credits": required_credits,
+            "credit_ready": funds_ok,
+            "funds_ok": funds_ok,
+            "max_output_tokens": int(context.get("max_output_tokens") or 1024),
+            "credits_per_token": str(context.get("credits_per_token") or "0.001"),
+            "estimated_input_tokens": int(context.get("estimated_input_tokens") or 0),
+            "estimated_max_credits": int(context.get("estimated_max_credits") or 1),
+            "estimated_max_credits_approx": str(context.get("estimated_max_credits_approx") or ""),
+            "checks": checks,
+            "hub": hub_response or None,
+            "hub_error": hub_error,
+        }
+
     def _chat_console_remote_overflow_engine(self) -> RemoteOverflowDecisionEngine:
         def local_capacity_provider(*, thread_id: str = "", max_local_concurrency: int = 1) -> dict[str, Any]:
             return self.server.chat_ai_processes.local_ai_capacity_snapshot(
@@ -297,7 +626,8 @@ class ViewportChatConsoleRoutesMixin:
             body = self._read_json()
             if not isinstance(body, dict):
                 raise ValueError("Remote overflow assessment requires a JSON object.")
-            assessment = self._chat_console_remote_overflow_engine().assess(body)
+            enriched_body, _context = self._chat_console_enrich_remote_overflow_body_with_backend_context(body)
+            assessment = self._chat_console_remote_overflow_engine().assess(enriched_body)
             self.server.signal(
                 "api-chat-console-remote-overflow-assess",
                 action=assessment.action,
@@ -309,31 +639,71 @@ class ViewportChatConsoleRoutesMixin:
             self.server.signal("api-chat-console-remote-overflow-assess-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
-    def _chat_console_remote_hub_submit_body(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Normalize a user-selected Phase 6 Hub submit into an authorization-ready test request.
+    def _handle_chat_console_remote_overflow_hub_readiness(self) -> None:
+        try:
+            body = self._read_json()
+            if not isinstance(body, dict):
+                raise ValueError("Remote Hub readiness requires a JSON object.")
 
-        The read-only modal assessment intentionally leaves credit and hub readiness unknown.
-        Once the user clicks a Hub option, the current pending request is explicitly authorized
-        for the safe Remote Hub test path so the provider can return a result instead of
-        reusing the diagnostic-only blocked assessment.
-        """
+            readiness = self._chat_console_backend_hub_readiness(body)
+            self.server.signal(
+                "api-chat-console-remote-overflow-hub-readiness",
+                valid=bool(readiness.get("valid")),
+                ready=bool(readiness.get("ready")),
+                hub_reachable=bool(readiness.get("hub_reachable")),
+                reason_code=str(readiness.get("reason_code") or ""),
+            )
+            self._send_json({"ok": True, "hub_readiness": readiness})
+        except Exception as exc:
+            self.server.signal("api-chat-console-remote-overflow-hub-readiness-error", error=exc)
+            self._send_json(
+                {
+                    "ok": True,
+                    "hub_readiness": {
+                        "ok": False,
+                        "valid": False,
+                        "ready": False,
+                        "hub_reachable": False,
+                        "reason_code": "hub_unreachable",
+                        "user_message": f"Hub readiness could not be checked: {exc}",
+                    },
+                }
+            )
+
+    def _chat_console_remote_hub_submit_body(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Normalize a user-selected Phase 6 Hub submit with backend-owned paid overflow context."""
 
         submit_body = dict(body)
         if not submit_body.get("remote_hub_current_request"):
             return submit_body
 
-        remote_enabled = bool(submit_body.get("remote_overflow_enabled"))
-        credit_payload = submit_body.get("credit") if isinstance(submit_body.get("credit"), dict) else {}
-        credit_ready = bool(submit_body.get("credit_ready") or credit_payload.get("credit_ready"))
+        submit_body, context = self._chat_console_enrich_remote_overflow_body_with_backend_context(submit_body)
+        readiness = self._chat_console_backend_hub_readiness(submit_body)
+        remote_enabled = bool(readiness.get("paid_overflow_enabled"))
+        credit_ready = bool(readiness.get("ready") and readiness.get("credit_ready"))
+        account = readiness.get("account") if isinstance(readiness.get("account"), dict) else {}
         submit_body["remote_overflow_enabled"] = remote_enabled
         submit_body["local_only"] = bool(submit_body.get("local_only", False))
         submit_body["authorization_granted_by_user"] = bool(submit_body.get("authorization_granted_by_user"))
         submit_body["credit_ready"] = credit_ready
-        submit_body["willing_worker_count"] = max(0, int(submit_body.get("willing_worker_count") or 0))
+        submit_body["bridged_credits"] = int(account.get("bridge_completed_credits", account.get("available_credits", 0)) or 0)
+        submit_body["spendable_credits"] = int(account.get("available_credits", 0) or 0)
+        submit_body["pending_holds"] = int(account.get("held_credits", 0) or 0)
+        submit_body["willing_worker_count"] = 1 if credit_ready else 0
 
+        credit_payload = submit_body.get("credit") if isinstance(submit_body.get("credit"), dict) else {}
         submit_body["credit"] = {
             **credit_payload,
+            "known": bool(readiness.get("hub_reachable")),
+            "wallet_address": str(readiness.get("wallet_address") or context.get("wallet_address") or ""),
+            "account_id": str(readiness.get("account_id") or ""),
             "credit_ready": credit_ready,
+            "bridged_credits": int(submit_body.get("bridged_credits") or 0),
+            "spendable_credits": int(submit_body.get("spendable_credits") or 0),
+            "pending_holds": int(submit_body.get("pending_holds") or 0),
+            "estimated_max_credits": int(readiness.get("estimated_max_credits") or context.get("estimated_max_credits") or 1),
+            "estimated_max_credits_approx": str(readiness.get("estimated_max_credits_approx") or context.get("estimated_max_credits_approx") or ""),
+            "approximation_only": True,
             "no_credit_hold_created": True,
             "no_credit_spent": True,
         }
@@ -348,10 +718,11 @@ class ViewportChatConsoleRoutesMixin:
         submit_body["hub"] = {
             **hub_payload,
             "mode": "remote_hub_current_request",
-            "willing_worker_count": max(0, int(hub_payload.get("willing_worker_count") or submit_body.get("willing_worker_count") or 0)),
+            "willing_worker_count": 1 if credit_ready else 0,
             "preflight_id": str(hub_payload.get("preflight_id") or f"phase6-remote-hub-{preflight_seed}"),
             "real_remote_worker_contacted": False,
             "private_worker_prices_exposed": False,
+            "readiness": readiness,
         }
         return submit_body
 

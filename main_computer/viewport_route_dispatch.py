@@ -1203,6 +1203,9 @@ def dispatch_get(self) -> None:
     if route_path == "/api/applications/worker/wallet-funding/config":
         self._handle_worker_wallet_funding_config()
         return
+    if route_path == "/api/applications/worker/settings":
+        self._handle_worker_settings_load()
+        return
     if urlsplit(self.path).path == "/api/applications/game-editor/asset/read":
         self._handle_game_asset_read()
         return
@@ -1318,6 +1321,9 @@ def dispatch_post(self) -> None:
     if route_path == "/api/applications/chat-console/ai/remote-overflow/assess":
         self._handle_chat_console_remote_overflow_assess()
         return
+    if route_path == "/api/applications/chat-console/ai/remote-overflow/hub-readiness":
+        self._handle_chat_console_remote_overflow_hub_readiness()
+        return
     if route_path == "/api/applications/chat-console/ai/remote-overflow/hub-submit":
         self._handle_chat_console_remote_overflow_hub_submit()
         return
@@ -1347,6 +1353,9 @@ def dispatch_post(self) -> None:
         return
     if self.path == "/api/applications/task/ai":
         self._handle_task_ai()
+        return
+    if self.path == "/api/applications/worker/settings":
+        self._handle_worker_settings_save()
         return
     if self.path == "/api/applications/worker/register-offer":
         self._handle_worker_offer_register()

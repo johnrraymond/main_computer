@@ -1,9 +1,3 @@
-    const workerSettingsStorageKey = "main-computer-worker-settings-v4";
-    const workerLegacySettingsStorageKeys = [
-      "main-computer-worker-settings-v3",
-      "main-computer-worker-settings-v2",
-      "main-computer-worker-settings-v1"
-    ];
     const workerDefaultHubs = [
       {name: "Local Hub", url: "http://127.0.0.1:8770", role: "use-provide"},
       {name: "Friend Hub", url: "https://friend-hub.local", role: "use-only"}
@@ -2815,16 +2809,17 @@
 
     function saveWorkerSettings() {
       const settings = readWorkerFormSettings();
-      try {
-        localStorage.setItem(workerSettingsStorageKey, JSON.stringify(settings));
-        if (workerSaveStatus) {
-          workerSaveStatus.textContent = "Worker marketplace buy/sell settings saved locally.";
-        }
-      } catch {
-        if (workerSaveStatus) {
-          workerSaveStatus.textContent = "Worker settings could not be saved in this browser.";
-        }
-      }
+      workerPostJson("/api/applications/worker/settings", {settings})
+        .then(() => {
+          if (workerSaveStatus) {
+            workerSaveStatus.textContent = "Worker marketplace buy/sell settings saved to the local backend.";
+          }
+        })
+        .catch((error) => {
+          if (workerSaveStatus) {
+            workerSaveStatus.textContent = `Worker settings could not be saved to the local backend: ${error.message || error}`;
+          }
+        });
     }
 
     function assignWorkerValue(element, value) {
@@ -2832,62 +2827,69 @@
       element.value = String(value);
     }
 
+    function applyWorkerSettings(parsed) {
+      if (!parsed || typeof parsed !== "object") return;
+      if (Array.isArray(parsed.hubs)) {
+        workerHubs = parsed.hubs
+          .map((hub) => ({
+            name: String(hub.name || "").trim(),
+            url: String(hub.url || "").trim(),
+            role: String(hub.role || "use-provide")
+          }))
+          .filter((hub) => hub.name || hub.url);
+      }
+      if (workerRemoteEnabled && Object.prototype.hasOwnProperty.call(parsed, "remoteEnabled")) {
+        workerRemoteEnabled.checked = workerSavedBoolean(parsed.remoteEnabled, false);
+      }
+      assignWorkerValue(workerRemoteMode, parsed.remoteMode);
+      assignWorkerValue(workerRemoteCreditsPerToken, parsed.remoteCreditsPerToken);
+      assignWorkerValue(workerRemoteMaxOutputTokens, parsed.remoteMaxOutputTokens);
+      assignWorkerValue(workerRemoteDailyLimit, parsed.remoteDailyLimit);
+      if (workerRemoteAskBeforeSpend && typeof parsed.remoteAskBeforeSpend === "boolean") {
+        workerRemoteAskBeforeSpend.checked = parsed.remoteAskBeforeSpend;
+      }
+      if (workerRemoteOnlyWhenBusy && typeof parsed.remoteOnlyWhenBusy === "boolean") {
+        workerRemoteOnlyWhenBusy.checked = parsed.remoteOnlyWhenBusy;
+      }
+      if (workerRentalEnabled) {
+        if (typeof parsed.sellerEnabled === "boolean") {
+          workerRentalEnabled.checked = parsed.sellerEnabled;
+        } else if (typeof parsed.rentalEnabled === "boolean") {
+          workerRentalEnabled.checked = parsed.rentalEnabled;
+        }
+      }
+      if (workerLockAiModel && typeof parsed.lockAiModel === "boolean") {
+        workerLockAiModel.checked = parsed.lockAiModel;
+      }
+      assignWorkerValue(workerNodeId, parsed.nodeId);
+      assignWorkerValue(workerEndpoint, parsed.endpoint);
+      assignWorkerValue(workerOfferModels, parsed.models);
+      assignWorkerValue(workerOfferCapability, parsed.capability);
+      assignWorkerValue(workerOfferPrice, parsed.creditsPerRequest);
+      assignWorkerValue(workerMaxConcurrency, parsed.maxConcurrency);
+      assignWorkerValue(workerExecutionMode, parsed.executionMode);
+      workerRenderRegistrationHubOptions(parsed.registrationHubUrl);
+      renderWorkerHubs();
+    }
+
+    async function workerLoadSettingsFromBackend() {
+      try {
+        const data = await workerGetJson("/api/applications/worker/settings");
+        applyWorkerSettings(data.settings || {});
+      } catch (error) {
+        workerHubs = [...workerDefaultHubs];
+        renderWorkerHubs();
+        if (workerSaveStatus) {
+          workerSaveStatus.textContent = `Worker settings could not be loaded from the local backend: ${error.message || error}`;
+        }
+      }
+    }
+
     function loadWorkerSettings() {
       if (workerSettingsLoaded) return;
       workerSettingsLoaded = true;
-      try {
-        const raw = [workerSettingsStorageKey, ...workerLegacySettingsStorageKeys]
-          .map((key) => localStorage.getItem(key))
-          .find((value) => value);
-        const parsed = raw ? JSON.parse(raw) : null;
-        if (parsed && Array.isArray(parsed.hubs)) {
-          workerHubs = parsed.hubs
-            .map((hub) => ({
-              name: String(hub.name || "").trim(),
-              url: String(hub.url || "").trim(),
-              role: String(hub.role || "use-provide")
-            }))
-            .filter((hub) => hub.name || hub.url);
-        }
-        if (workerRemoteEnabled && parsed && Object.prototype.hasOwnProperty.call(parsed, "remoteEnabled")) {
-          workerRemoteEnabled.checked = workerSavedBoolean(parsed.remoteEnabled, false);
-        }
-        if (parsed) {
-          assignWorkerValue(workerRemoteMode, parsed.remoteMode);
-          assignWorkerValue(workerRemoteCreditsPerToken, parsed.remoteCreditsPerToken);
-          assignWorkerValue(workerRemoteMaxOutputTokens, parsed.remoteMaxOutputTokens);
-          assignWorkerValue(workerRemoteDailyLimit, parsed.remoteDailyLimit);
-        }
-        if (workerRemoteAskBeforeSpend && parsed && typeof parsed.remoteAskBeforeSpend === "boolean") {
-          workerRemoteAskBeforeSpend.checked = parsed.remoteAskBeforeSpend;
-        }
-        if (workerRemoteOnlyWhenBusy && parsed && typeof parsed.remoteOnlyWhenBusy === "boolean") {
-          workerRemoteOnlyWhenBusy.checked = parsed.remoteOnlyWhenBusy;
-        }
-        if (workerRentalEnabled && parsed) {
-          if (typeof parsed.sellerEnabled === "boolean") {
-            workerRentalEnabled.checked = parsed.sellerEnabled;
-          } else if (typeof parsed.rentalEnabled === "boolean") {
-            workerRentalEnabled.checked = parsed.rentalEnabled;
-          }
-        }
-        if (workerLockAiModel && parsed && typeof parsed.lockAiModel === "boolean") {
-          workerLockAiModel.checked = parsed.lockAiModel;
-        }
-        if (parsed) {
-          assignWorkerValue(workerNodeId, parsed.nodeId);
-          assignWorkerValue(workerEndpoint, parsed.endpoint);
-          assignWorkerValue(workerOfferModels, parsed.models);
-          assignWorkerValue(workerOfferCapability, parsed.capability);
-          assignWorkerValue(workerOfferPrice, parsed.creditsPerRequest);
-          assignWorkerValue(workerMaxConcurrency, parsed.maxConcurrency);
-          assignWorkerValue(workerExecutionMode, parsed.executionMode);
-          workerRenderRegistrationHubOptions(parsed.registrationHubUrl);
-        }
-      } catch {
-        workerHubs = [...workerDefaultHubs];
-      }
       renderWorkerHubs();
+      workerLoadSettingsFromBackend();
     }
 
     function buildWorkerOfferRegistrationPayload() {
