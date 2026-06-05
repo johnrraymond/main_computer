@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from main_computer.config import MainComputerConfig
+from main_computer.credit_units import CREDIT_WEI_PER_CREDIT, credit_decimal_text_to_wei, credit_wei_product, credit_wei_to_decimal_text
 from main_computer.models import ChatMessage
 from main_computer.providers.hub import HubProvider
 
@@ -190,20 +191,21 @@ def estimate_remote_request(request: dict[str, Any]) -> RemoteRequestEstimate:
 
     estimated_input_tokens = max(1, int(math.ceil(content_chars / 4.0)) + attachment_count * 256)
     max_output_tokens = _as_int(request.get("max_output_tokens"), 1024, minimum=1, maximum=128_000)
-    credits_per_token_decimal = _as_decimal(
+    credits_per_token_wei = credit_decimal_text_to_wei(
         request.get("credits_per_token"),
-        "0.001",
-        minimum="0.000001",
-        maximum="1000000",
+        default="0.001",
+        minimum_wei=1_000_000_000_000,
+        maximum_wei=1_000_000 * CREDIT_WEI_PER_CREDIT,
     )
-    credits_per_token = _decimal_text(credits_per_token_decimal)
-    estimated_max_credits_decimal = Decimal(estimated_input_tokens + max_output_tokens) * credits_per_token_decimal
-    estimated_max_credits = _ceil_decimal_to_int(estimated_max_credits_decimal, minimum=1)
-    default_minimum_decimal = min(
-        estimated_max_credits_decimal,
-        max(Decimal(128) * credits_per_token_decimal, Decimal(max_output_tokens // 4) * credits_per_token_decimal),
+    credits_per_token = credit_wei_to_decimal_text(credits_per_token_wei)
+    estimated_token_count = estimated_input_tokens + max_output_tokens
+    estimated_max_credit_wei = credit_wei_product(estimated_token_count, credits_per_token_wei)
+    estimated_max_credits = _ceil_decimal_to_int(Decimal(estimated_max_credit_wei) / Decimal(CREDIT_WEI_PER_CREDIT), minimum=1)
+    default_minimum_credit_wei = min(
+        estimated_max_credit_wei,
+        max(128 * credits_per_token_wei, (max_output_tokens // 4) * credits_per_token_wei),
     )
-    default_minimum = _ceil_decimal_to_int(default_minimum_decimal, minimum=1)
+    default_minimum = _ceil_decimal_to_int(Decimal(default_minimum_credit_wei) / Decimal(CREDIT_WEI_PER_CREDIT), minimum=1)
     minimum_useful_credits = _as_int(
         request.get("minimum_useful_credits"),
         default_minimum,
@@ -211,8 +213,8 @@ def estimate_remote_request(request: dict[str, Any]) -> RemoteRequestEstimate:
         maximum=max(1, estimated_max_credits),
     )
     message = (
-        f"Estimated maximum remote authorization is {estimated_max_credits:,} whole credits "
-        f"(approximately {_decimal_text(estimated_max_credits_decimal)} before ledger rounding)."
+        f"Estimated maximum remote authorization is {credit_wei_to_decimal_text(estimated_max_credit_wei)} credits "
+        f"({estimated_max_credit_wei} credit wei)."
     )
     card = _card(
         "remote_request_estimate",
@@ -229,7 +231,9 @@ def estimate_remote_request(request: dict[str, Any]) -> RemoteRequestEstimate:
             "credits_per_token": credits_per_token,
             "minimum_useful_credits": minimum_useful_credits,
             "estimated_max_credits": estimated_max_credits,
-            "estimated_max_credits_approx": _decimal_text(estimated_max_credits_decimal),
+            "estimated_max_credits_approx": credit_wei_to_decimal_text(estimated_max_credit_wei),
+            "estimated_max_credit_wei": str(estimated_max_credit_wei),
+            "credits_per_token_wei": str(credits_per_token_wei),
             "approximation_only": True,
         },
     )

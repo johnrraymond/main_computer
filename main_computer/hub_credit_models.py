@@ -7,6 +7,13 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from main_computer.credit_units import (
+    credit_count_to_wei,
+    credit_wei_to_decimal_text,
+    credit_wei_to_whole_credits_floor,
+    positive_credit_wei,
+)
+
 
 CREDIT_UNIT_NAME = "Compute Credits"
 CREDIT_UNIT_KEY = "compute_credit"
@@ -66,6 +73,13 @@ def positive_int(value: Any, *, default: int = 0) -> int:
     except (TypeError, ValueError):
         return max(0, int(default))
     return max(0, parsed)
+
+
+def _credit_wei_or_legacy(value: Any, credits: Any) -> int:
+    if value is None or str(value).strip() == "":
+        legacy = positive_int(credits)
+        return credit_count_to_wei(legacy) if legacy > 0 else 0
+    return positive_credit_wei(value)
 
 
 def canonical_json(payload: dict[str, Any]) -> str:
@@ -219,24 +233,53 @@ class HubCreditAccount:
     spent_credits: int = 0
     earned_credits: int = 0
     bridge_completed_credits: int = 0
+    available_credit_wei: int | str | None = None
+    held_credit_wei: int | str | None = None
+    spent_credit_wei: int | str | None = None
+    earned_credit_wei: int | str | None = None
+    bridge_completed_credit_wei: int | str | None = None
     created_at: str = ""
     updated_at: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         now = utc_now()
+        available_wei = _credit_wei_or_legacy(self.available_credit_wei, self.available_credits)
+        held_wei = _credit_wei_or_legacy(self.held_credit_wei, self.held_credits)
+        spent_wei = _credit_wei_or_legacy(self.spent_credit_wei, self.spent_credits)
+        earned_wei = _credit_wei_or_legacy(self.earned_credit_wei, self.earned_credits)
+        bridge_wei = _credit_wei_or_legacy(self.bridge_completed_credit_wei, self.bridge_completed_credits)
         object.__setattr__(self, "account_id", clean_account_id(self.account_id))
         object.__setattr__(self, "owner_address", normalize_address(self.owner_address))
-        object.__setattr__(self, "available_credits", positive_int(self.available_credits))
-        object.__setattr__(self, "held_credits", positive_int(self.held_credits))
-        object.__setattr__(self, "spent_credits", positive_int(self.spent_credits))
-        object.__setattr__(self, "earned_credits", positive_int(self.earned_credits))
-        object.__setattr__(self, "bridge_completed_credits", positive_int(self.bridge_completed_credits))
+        object.__setattr__(self, "available_credit_wei", available_wei)
+        object.__setattr__(self, "held_credit_wei", held_wei)
+        object.__setattr__(self, "spent_credit_wei", spent_wei)
+        object.__setattr__(self, "earned_credit_wei", earned_wei)
+        object.__setattr__(self, "bridge_completed_credit_wei", bridge_wei)
+        object.__setattr__(self, "available_credits", credit_wei_to_whole_credits_floor(available_wei))
+        object.__setattr__(self, "held_credits", credit_wei_to_whole_credits_floor(held_wei))
+        object.__setattr__(self, "spent_credits", credit_wei_to_whole_credits_floor(spent_wei))
+        object.__setattr__(self, "earned_credits", credit_wei_to_whole_credits_floor(earned_wei))
+        object.__setattr__(self, "bridge_completed_credits", credit_wei_to_whole_credits_floor(bridge_wei))
         object.__setattr__(self, "created_at", self.created_at or now)
         object.__setattr__(self, "updated_at", self.updated_at or self.created_at or now)
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        for key in (
+            "available_credit_wei",
+            "held_credit_wei",
+            "spent_credit_wei",
+            "earned_credit_wei",
+            "bridge_completed_credit_wei",
+        ):
+            data[key] = str(data[key])
+        data["available_credits_display"] = credit_wei_to_decimal_text(self.available_credit_wei)
+        data["held_credits_display"] = credit_wei_to_decimal_text(self.held_credit_wei)
+        data["spent_credits_display"] = credit_wei_to_decimal_text(self.spent_credit_wei)
+        data["earned_credits_display"] = credit_wei_to_decimal_text(self.earned_credit_wei)
+        data["bridge_completed_credits_display"] = credit_wei_to_decimal_text(self.bridge_completed_credit_wei)
+        return data
 
 
 @dataclass(frozen=True)
@@ -245,6 +288,7 @@ class HubCreditTransaction:
     account_id: str
     transaction_type: str
     credits: int
+    credit_wei: int | str | None = None
     created_at: str = ""
     request_id: str = ""
     worker_node_id: str = ""
@@ -258,15 +302,20 @@ class HubCreditTransaction:
         tx_type = str(self.transaction_type or "").strip()
         if tx_type not in CREDIT_TRANSACTION_TYPES:
             raise ValueError(f"Unsupported credit transaction type: {tx_type}")
+        credit_wei = _credit_wei_or_legacy(self.credit_wei, self.credits)
         object.__setattr__(self, "transaction_id", self.transaction_id or stable_id("ctx", asdict(self)))
         object.__setattr__(self, "account_id", clean_account_id(self.account_id))
         object.__setattr__(self, "transaction_type", tx_type)
-        object.__setattr__(self, "credits", positive_int(self.credits))
+        object.__setattr__(self, "credit_wei", credit_wei)
+        object.__setattr__(self, "credits", credit_wei_to_whole_credits_floor(credit_wei))
         object.__setattr__(self, "worker_node_id", clean_worker_id(self.worker_node_id, default="") if self.worker_node_id else "")
         object.__setattr__(self, "created_at", self.created_at or utc_now())
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["credit_wei"] = str(self.credit_wei)
+        data["credits_display"] = credit_wei_to_decimal_text(self.credit_wei)
+        return data
 
 
 @dataclass(frozen=True)
@@ -278,6 +327,7 @@ class CreditDeposit:
     payment_amount_base_units: int
     credits_granted: int
     chain_event: ChainEventRef
+    credits_granted_wei: int | str | None = None
     status: str = "indexed"
     memo: str = ""
     created_at: str = ""
@@ -289,13 +339,17 @@ class CreditDeposit:
         object.__setattr__(self, "account_id", clean_account_id(self.account_id))
         object.__setattr__(self, "payer_address", normalize_address(self.payer_address))
         object.__setattr__(self, "payment_asset", normalize_address(self.payment_asset) or "native")
+        grant_wei = _credit_wei_or_legacy(self.credits_granted_wei, self.credits_granted)
         object.__setattr__(self, "payment_amount_base_units", positive_int(self.payment_amount_base_units))
-        object.__setattr__(self, "credits_granted", positive_int(self.credits_granted))
+        object.__setattr__(self, "credits_granted_wei", grant_wei)
+        object.__setattr__(self, "credits_granted", credit_wei_to_whole_credits_floor(grant_wei))
         object.__setattr__(self, "created_at", self.created_at or utc_now())
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["chain_event"] = self.chain_event.as_dict()
+        data["credits_granted_wei"] = str(self.credits_granted_wei)
+        data["credits_granted_display"] = credit_wei_to_decimal_text(self.credits_granted_wei)
         return data
 
 
@@ -305,6 +359,7 @@ class HubCreditHold:
     account_id: str
     request_id: str
     credits: int
+    credit_wei: int | str | None = None
     status: str = "held"
     created_at: str = ""
     expires_at: str = ""
@@ -317,13 +372,18 @@ class HubCreditHold:
             raise ValueError(f"Unsupported credit hold status: {clean_status}")
         object.__setattr__(self, "hold_id", self.hold_id or stable_id("hold", {"account_id": self.account_id, "request_id": self.request_id}))
         object.__setattr__(self, "account_id", clean_account_id(self.account_id))
+        credit_wei = _credit_wei_or_legacy(self.credit_wei, self.credits)
         object.__setattr__(self, "request_id", str(self.request_id or "").strip())
-        object.__setattr__(self, "credits", positive_int(self.credits))
+        object.__setattr__(self, "credit_wei", credit_wei)
+        object.__setattr__(self, "credits", credit_wei_to_whole_credits_floor(credit_wei))
         object.__setattr__(self, "status", clean_status)
         object.__setattr__(self, "created_at", self.created_at or utc_now())
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["credit_wei"] = str(self.credit_wei)
+        data["credits_display"] = credit_wei_to_decimal_text(self.credit_wei)
+        return data
 
 
 @dataclass(frozen=True)
@@ -333,19 +393,30 @@ class RequestCharge:
     request_id: str
     hold_id: str
     charged_credits: int
+    charged_credit_wei: int | str | None = None
     released_credits: int = 0
+    released_credit_wei: int | str | None = None
     worker_earning_id: str = ""
     created_at: str = ""
 
     def __post_init__(self) -> None:
+        charged_wei = _credit_wei_or_legacy(self.charged_credit_wei, self.charged_credits)
+        released_wei = _credit_wei_or_legacy(self.released_credit_wei, self.released_credits)
         object.__setattr__(self, "charge_id", self.charge_id or stable_id("chg", {"account_id": self.account_id, "request_id": self.request_id, "hold_id": self.hold_id}))
         object.__setattr__(self, "account_id", clean_account_id(self.account_id))
-        object.__setattr__(self, "charged_credits", positive_int(self.charged_credits))
-        object.__setattr__(self, "released_credits", positive_int(self.released_credits))
+        object.__setattr__(self, "charged_credit_wei", charged_wei)
+        object.__setattr__(self, "released_credit_wei", released_wei)
+        object.__setattr__(self, "charged_credits", credit_wei_to_whole_credits_floor(charged_wei))
+        object.__setattr__(self, "released_credits", credit_wei_to_whole_credits_floor(released_wei))
         object.__setattr__(self, "created_at", self.created_at or utc_now())
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["charged_credit_wei"] = str(self.charged_credit_wei)
+        data["released_credit_wei"] = str(self.released_credit_wei)
+        data["charged_credits_display"] = credit_wei_to_decimal_text(self.charged_credit_wei)
+        data["released_credits_display"] = credit_wei_to_decimal_text(self.released_credit_wei)
+        return data
 
 
 @dataclass(frozen=True)

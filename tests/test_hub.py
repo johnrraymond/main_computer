@@ -1051,9 +1051,9 @@ class HubServerTests(unittest.TestCase):
                             "wallet_address": wallet,
                             "multisession_key_id": key_id,
                             "chain_id": "0x28757b2",
-                            "max_output_tokens": 10,
-                            "credits_per_token": "0.001",
-                            "max_authorized_credits": 1,
+                            "max_output_tokens": 1,
+                            "credits_per_token": "0.5",
+                            "max_authorized_credit_wei": "1000000000000000000",
                         },
                         "paid_overflow_enabled": True,
                         "pending_request_id": request_id,
@@ -1064,12 +1064,13 @@ class HubServerTests(unittest.TestCase):
                     remote_overflow_request_id="paid-overflow-01",
                     metadata=paid_metadata("paid-overflow-01"),
                 )
-                self.assertIn("Paid overflow charged 1 whole credit", first.content)
+                self.assertIn("Paid overflow charged 1 credit", first.content)
                 self.assertEqual(first.metadata["payment"]["account_id"], account_id)
                 self.assertEqual(first.metadata["payment"]["wallet_address"], wallet)
-                self.assertEqual(first.metadata["payment"]["charged_credits"], 1)
-                self.assertEqual(first.metadata["payment"]["available_credits_after"], 1)
-                self.assertEqual(first.metadata["payment"]["spent_credits_after"], 1)
+                self.assertEqual(first.metadata["payment"]["charged_credits"], "1")
+                self.assertEqual(first.metadata["payment"]["charged_credit_wei"], "1000000000000000000")
+                self.assertEqual(first.metadata["payment"]["available_credits_after"], "1")
+                self.assertEqual(first.metadata["payment"]["spent_credits_after"], "1")
                 self.assertTrue(first.metadata["credit_hold_created"])
                 self.assertTrue(first.metadata["credit_spent"])
 
@@ -1079,21 +1080,21 @@ class HubServerTests(unittest.TestCase):
                     metadata=paid_metadata("paid-overflow-01"),
                 )
                 self.assertTrue(duplicate.metadata["payment"]["idempotent"])
-                self.assertEqual(duplicate.metadata["payment"]["available_credits_after"], 1)
-                self.assertEqual(duplicate.metadata["payment"]["spent_credits_after"], 1)
+                self.assertEqual(duplicate.metadata["payment"]["available_credits_after"], "1")
+                self.assertEqual(duplicate.metadata["payment"]["spent_credits_after"], "1")
 
                 second = provider.remote_overflow_safe_chat(
-                    [ChatMessage(role="user", content="hi again")],
+                    [ChatMessage(role="user", content="hi")],
                     remote_overflow_request_id="paid-overflow-02",
                     metadata=paid_metadata("paid-overflow-02"),
                 )
-                self.assertEqual(second.metadata["payment"]["available_credits_after"], 0)
-                self.assertEqual(second.metadata["payment"]["spent_credits_after"], 2)
+                self.assertEqual(second.metadata["payment"]["available_credits_after"], "0")
+                self.assertEqual(second.metadata["payment"]["spent_credits_after"], "2")
 
                 payload = {
                     "model": "fake-model",
                     "client_node_id": "chat-console-client",
-                    "messages": [{"role": "user", "content": "third"}],
+                    "messages": [{"role": "user", "content": "hi"}],
                     "remote_overflow_request_id": "paid-overflow-03",
                     "metadata": paid_metadata("paid-overflow-03"),
                 }
@@ -1113,6 +1114,92 @@ class HubServerTests(unittest.TestCase):
                 self.assertEqual(account.spent_credits, 2)
                 charges = hub.credit_ledger.list_charges(account_id=account_id)
                 self.assertEqual(len(charges), 2)
+            finally:
+                hub.shutdown()
+                hub.server_close()
+                hub_thread.join(timeout=2)
+
+
+    def test_remote_overflow_safe_chat_charges_exact_credit_wei_without_whole_rounding(self) -> None:
+        wallet = "0x7780097b4756ed08176d288b9acb8d9e878a5269"
+        key_id = "msk_paid_overflow_fractional_test"
+        with tempfile.TemporaryDirectory() as hub_tmp:
+            hub_config = MainComputerConfig(
+                workspace=Path(hub_tmp),
+                model="fake-model",
+                hub_root=Path(hub_tmp) / "hub-runtime",
+            )
+            hub = HubHttpServer(("127.0.0.1", 0), hub_config, verbose=False)
+            account_id = wallet_account_id(wallet)
+            hub.credit_ledger.record_completed_bridge_deposit(
+                account_id=account_id,
+                owner_address=wallet,
+                chain_completed_credits=3,
+                deposit_id="paid-overflow-fractional-funded",
+                memo="test bridge funding",
+            )
+            with hub.multisession_key_store_lock:
+                hub.multisession_key_store_path.parent.mkdir(parents=True, exist_ok=True)
+                hub.multisession_key_store_path.write_text(
+                    json.dumps(
+                        {
+                            "version": "main-computer-multisession-keys-v1",
+                            "keys": {
+                                key_id: {
+                                    "id": key_id,
+                                    "status": "active",
+                                    "created_at": "2026-06-03T00:00:00+00:00",
+                                    "revoked_at": "",
+                                    "wallet_address": wallet,
+                                    "chain_id": "0x28757b2",
+                                    "request_id": "msk-request",
+                                    "origin": "test",
+                                }
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            hub_thread = self._start_server(hub)
+            try:
+                provider = HubProvider(
+                    model="fake-model",
+                    hub_url=f"http://127.0.0.1:{hub.server_port}",
+                    client_node_id="chat-console-client",
+                )
+                metadata = {
+                    "payment_authorization": {
+                        "kind": "multisession_key",
+                        "paid_overflow_enabled": True,
+                        "wallet_address": wallet,
+                        "multisession_key_id": key_id,
+                        "chain_id": "0x28757b2",
+                        "max_output_tokens": 1024,
+                        "credits_per_token": "0.001",
+                        "max_authorized_credit_wei": "1025000000000000000",
+                    },
+                    "paid_overflow_enabled": True,
+                    "pending_request_id": "paid-overflow-fractional-01",
+                }
+
+                result = provider.remote_overflow_safe_chat(
+                    [ChatMessage(role="user", content="hi")],
+                    remote_overflow_request_id="paid-overflow-fractional-01",
+                    metadata=metadata,
+                )
+
+                self.assertIn("Paid overflow charged 1.025 credits", result.content)
+                payment = result.metadata["payment"]
+                self.assertEqual(payment["charged_credits"], "1.025")
+                self.assertEqual(payment["charged_credit_wei"], "1025000000000000000")
+                self.assertEqual(payment["available_credits_after"], "1.975")
+                self.assertEqual(payment["spent_credits_after"], "1.025")
+                account = hub.credit_ledger.get_account(account_id)
+                self.assertEqual(account.available_credit_wei, 1975000000000000000)
+                self.assertEqual(account.spent_credit_wei, 1025000000000000000)
+                charges = hub.credit_ledger.list_charges(account_id=account_id)
+                self.assertEqual(charges[0].charged_credit_wei, 1025000000000000000)
             finally:
                 hub.shutdown()
                 hub.server_close()
@@ -1291,9 +1378,9 @@ class HubServerTests(unittest.TestCase):
                             "wallet_address": wallet,
                             "multisession_key_id": key_id,
                             "chain_id": "0x28757b2",
-                            "max_output_tokens": 10,
-                            "credits_per_token": "0.001",
-                            "max_authorized_credits": 1,
+                            "max_output_tokens": 1,
+                            "credits_per_token": "0.5",
+                            "max_authorized_credit_wei": "1000000000000000000",
                         }
                     },
                 }
