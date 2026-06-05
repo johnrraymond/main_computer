@@ -148,7 +148,6 @@ golden_path_diag_*/
 tmp_diag_server_debug/
 rag_smoke_trace.json
 release_reports/
-missing.txt
 inspect-body.json
 
 # Nested repo/export snapshots
