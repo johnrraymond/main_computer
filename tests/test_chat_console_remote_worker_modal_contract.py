@@ -51,9 +51,9 @@ def test_chat_console_remote_worker_modal_calls_read_only_assessment_endpoint() 
     assert "function chatConsoleRefreshRemoteOverflowAssessment" in source
     assert "/api/applications/chat-console/ai/remote-overflow/assess" in source
     assert "phase4_modal_assessment_cards" in source
-    assert "remote_overflow_enabled: paidOverflow.remoteEnabled" in source
-    assert "max_output_tokens: paidOverflow.maxOutputTokens" in source
-    assert "credits_per_token: paidOverflow.creditsPerTokenText" in source
+    assert "backend_worker_paid_overflow_context" in source
+    assert "browser_estimate" in source
+    assert "estimated_input_tokens: paidOverflow.estimatedInputTokens" in source
     assert "no_credit_hold_created: true" in source
     assert "no_credit_spent: true" in source
     assert "real_remote_worker_contacted: false" in source
@@ -104,7 +104,12 @@ def test_chat_console_remote_worker_modal_records_durable_intent_separate_from_c
     assert "credit_hold_created: false" in source
     assert "credit_spent: false" in source
     assert "function chatConsoleSubmitRemoteHubOnce" in source
+    assert "function chatConsoleFetchRemoteHubReadiness" in source
+    assert "function chatConsoleRefreshRemoteHubReadiness" in source
+    assert "function chatConsolePaidOverflowReadinessCard" in source
+    assert "function chatConsolePaidOverflowReadinessReady" in source
     assert "/api/applications/chat-console/ai/remote-overflow/hub-submit" in source
+    assert "/api/applications/chat-console/ai/remote-overflow/hub-readiness" in source
     assert "remote_execution_source: \"remote_hub\"" in source
     assert "remote_worker_intent_mode: intentMode" in source
     assert "remote_hub_current_request: true" in source
@@ -127,8 +132,8 @@ def test_chat_console_remote_worker_phase_five_intent_scope_rules() -> None:
     assert 'canonicalMode === "remote_once"' in source
     assert 'chatConsoleRemoteWorkerControlState.globalWhenBusyIntent = {' in source
     assert 'permanent_worker_setting_changed: false' in source
-    assert "chatConsoleWorkerSettingsStorageKey" in source
-    assert "chatConsoleWorkerBridgeReadinessStorageKey" in source
+    assert "backend_worker_paid_overflow_context" in source
+    assert "localStorage" not in source
 
 
 def test_chat_console_remote_worker_chat_choice_is_visible_and_reversible_like_rag() -> None:
@@ -232,29 +237,61 @@ def test_chat_console_remote_worker_phase_six_remote_once_uses_remote_hub_as_nor
     assert source.index("chatConsoleHideRemoteWorkerControlModal(closeReason.reason)") < source.index("chatConsoleResolveRemoteWorkerControlChoice(choice, pendingRequest.id)")
 
 
-def test_chat_console_paid_overflow_uses_worker_policy_and_multisession_credit_preflight() -> None:
+def test_chat_console_paid_overflow_uses_backend_policy_and_multisession_credit_preflight() -> None:
     source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
     route_source = (REPO_ROOT / "main_computer" / "viewport_routes_chat_console.py").read_text(encoding="utf-8")
+    energy_source = (REPO_ROOT / "main_computer" / "viewport_routes_energy.py").read_text(encoding="utf-8")
+    dispatch_source = (REPO_ROOT / "main_computer" / "viewport_route_dispatch.py").read_text(encoding="utf-8")
 
-    assert "chatConsoleWorkerSettingsStorageKey" in source
-    assert "main-computer-worker-settings-v4" in source
-    assert "chatConsoleWorkerBridgeReadinessStorageKey" in source
-    assert "main-computer-worker-bridge-readiness-v1" in source
+    assert "localStorage" not in source
+    assert "main-computer-worker-bridge-readiness-v1" not in source
+    assert "main-computer-worker-settings-v4" not in source
     assert "chatConsoleWorkerPaidOverflowContext" in source
-    assert "remoteMaxOutputTokens" in source
-    assert "remoteCreditsPerToken" in source
-    assert "max_output_tokens: paidOverflow.maxOutputTokens" in source
-    assert "credits_per_token: paidOverflow.creditsPerTokenText" in source
+    assert "backend_worker_paid_overflow_context" in source
     assert "payment_authorization" in source
-    assert 'kind: "multisession_key"' in source
-    assert "multisession_key_id" in source
-    assert "max_authorized_credits" in source
-    assert "Not enough bridged credits for this approximate authorization" in source
-    assert "Paid overflow is disabled in Worker settings." in source
-    assert "Request a multi-session key before using paid overflow." in source
+    assert "chatConsoleRefreshRemoteHubReadiness({pendingRequest: request})" in source
+    assert "Paid overflow readiness did not pass." in source
     assert "remote_overflow_enabled: true" not in source
     assert 'submit_body["remote_overflow_enabled"] = True' not in route_source
     assert 'submit_body["credit_ready"] = True' not in route_source
+
+    assert "_chat_console_backend_paid_overflow_context" in route_source
+    assert "_chat_console_enrich_remote_overflow_body_with_backend_context" in route_source
+    assert "estimate_remote_request" in route_source
+    assert "worker_settings.json" in energy_source
+    assert "_handle_worker_settings_load" in energy_source
+    assert "_handle_worker_settings_save" in energy_source
+    assert '"/api/applications/worker/settings"' in dispatch_source
+
+
+def test_chat_console_paid_overflow_modal_checks_hub_multisession_key_before_paid_options() -> None:
+    source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
+    route_source = (REPO_ROOT / "main_computer" / "viewport_routes_chat_console.py").read_text(encoding="utf-8")
+    dispatch_source = (REPO_ROOT / "main_computer" / "viewport_route_dispatch.py").read_text(encoding="utf-8")
+    provider_source = (REPO_ROOT / "main_computer" / "providers" / "hub.py").read_text(encoding="utf-8")
+    hub_source = (REPO_ROOT / "main_computer" / "hub.py").read_text(encoding="utf-8")
+
+    assert "Paid overflow readiness" in source
+    assert "Multi-session key usable" in source
+    assert "Hub reachable" in source
+    assert "No credits are held or spent by this modal or by Hub readiness checks." in source
+    assert "data-chat-paid-overflow-readiness-card" in source
+    assert "chatPaidOverflowReadinessCheck" in source
+    assert "data-chat-remote-worker-paid-option" in source
+    assert 'button.disabled = true' in source
+    assert "chatConsoleRefreshRemoteHubReadiness({pendingRequest: boundPendingRequest})" in source
+    assert "await chatConsoleRefreshRemoteHubReadiness({pendingRequest})" in source
+    assert "chatConsolePaidOverflowReadinessReady(paidOverflowReadiness)" in source
+    assert "valid: False" not in source
+
+    assert "def _handle_chat_console_remote_overflow_hub_readiness" in route_source
+    assert "_chat_console_backend_hub_readiness(body)" in route_source
+    assert "provider.validate_multisession_key(enriched)" in route_source
+    assert "/api/applications/chat-console/ai/remote-overflow/hub-readiness" in dispatch_source
+    assert "def validate_multisession_key" in provider_source
+    assert "/api/hub/v1/credits/multisession-keys/validate" in provider_source
+    assert "def _handle_multisession_key_validate" in hub_source
+    assert 'path == "/api/hub/v1/credits/multisession-keys/validate"' in hub_source
 
 
 def test_chat_console_remote_worker_modal_has_styles() -> None:
@@ -266,6 +303,9 @@ def test_chat_console_remote_worker_modal_has_styles() -> None:
     assert ".chat-remote-worker-control-status-card" in css
     assert ".chat-remote-worker-control-assessment-details" in css
     assert ".chat-remote-worker-control-assessment-details-summary" in css
+    assert ".chat-remote-worker-control-readiness-card" in css
+    assert ".chat-remote-worker-control-readiness-row" in css
+    assert ".chat-remote-worker-control-readiness-metrics" in css
     assert ".chat-remote-worker-control-option-grid" in css
     assert ".chat-remote-worker-control-option-card" in css
     assert ".chat-remote-worker-control-option-card.default" in css
@@ -291,3 +331,61 @@ def test_chat_console_remote_worker_busy_preflight_waits_before_local_fetch() ->
     fetch_index = source.index("const response = await fetch(endpoint")
     assert preflight_index < fetch_index
     assert local_start_index < fetch_index
+
+
+def test_chat_console_paid_overflow_readiness_uses_smart_card_state_pipeline() -> None:
+    source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
+
+    assert "readinessSmartCollapse: true" in source
+    assert "readinessCardState: {}" in source
+    assert "CHAT_CONSOLE_PAID_OVERFLOW_READINESS_CHECKS" in source
+    assert 'shortTitle: "Hub"' in source
+    assert 'shortTitle: "Setting"' in source
+    assert 'shortTitle: "Wallet"' in source
+    assert 'shortTitle: "Key"' in source
+    assert 'shortTitle: "Credits"' in source
+    assert 'shortTitle: "Estimate"' in source
+    assert 'dependencies: ["hub-reachability", "connected-wallet"]' in source
+    assert 'dependencies: ["hub-reachability", "connected-wallet", "spendable-credits"]' in source
+    assert "chatConsolePaidOverflowReadinessPipelineRows" in source
+    assert "chatConsolePaidOverflowReadinessAllDone" in source
+    assert '"blocked-by-prior"' in source
+    assert "Waiting for Hub and wallet before key validation can be known." in source
+    assert "A check may only show red for its own reason" not in source
+    assert "smart collapse runs only after all checks resolve" in source
+    assert "phase === \"checking\"" in source
+    assert "allDone && chatConsoleRemoteWorkerControlState.readinessSmartCollapse" in source
+    assert "current.replaceWith(next)" not in source
+
+
+def test_chat_console_paid_overflow_readiness_exposes_user_utility() -> None:
+    source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
+
+    assert "window.MainComputerPaidOverflowReadiness" in source
+    assert "chatConsoleOpenPaidOverflowReadinessUtility" in source
+    assert "chatConsoleSetPaidOverflowReadinessUtilityState" in source
+    assert "chatConsoleShowPaidOverflowReadinessScenario" in source
+    assert "showScenario: chatConsoleShowPaidOverflowReadinessScenario" in source
+    assert "collapseAll()" in source
+    assert "expandAll()" in source
+    assert "paidOverflowReadiness: window.MainComputerPaidOverflowReadiness" in source
+    assert "hub_unreachable" in source
+    assert "invalid_key" in source
+    assert "insufficient_credits" in source
+    assert "ready" in source
+
+
+def test_chat_console_paid_overflow_readiness_styles_prevent_flashy_rebuilds() -> None:
+    css = CHAT_CONSOLE_CSS.read_text(encoding="utf-8")
+    source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
+
+    assert ".chat-remote-worker-control-readiness-card.smart" in css
+    assert "contain: layout paint" in css
+    assert ".chat-remote-worker-control-readiness-toggle" in css
+    assert ".chat-remote-worker-control-readiness-detail-panel" in css
+    assert ".chat-remote-worker-control-readiness-row.expanded" in css
+    assert "transition: max-height 180ms ease, opacity 160ms ease, padding-top 160ms ease" in css
+    assert 'item.dataset.chatPaidOverflowSmartCard = "true"' in source
+    assert 'item.dataset.chatPaidOverflowExpanded = "false"' in source
+    assert 'card.dataset.chatPaidOverflowSmartModal = "true"' in source
+

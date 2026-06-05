@@ -1119,6 +1119,127 @@ class HubServerTests(unittest.TestCase):
                 hub_thread.join(timeout=2)
 
 
+    def test_multisession_key_validate_endpoint_reports_hub_key_readiness_without_spending(self) -> None:
+        wallet = "0x7780097b4756ed08176d288b9acb8d9e878a5269"
+        key_id = "msk_readiness_test"
+        with tempfile.TemporaryDirectory() as hub_tmp:
+            hub_config = MainComputerConfig(
+                workspace=Path(hub_tmp),
+                model="fake-model",
+                hub_root=Path(hub_tmp) / "hub-runtime",
+            )
+            hub = HubHttpServer(("127.0.0.1", 0), hub_config, verbose=False)
+            account_id = wallet_account_id(wallet)
+            hub.credit_ledger.record_completed_bridge_deposit(
+                account_id=account_id,
+                owner_address=wallet,
+                chain_completed_credits=2,
+                deposit_id="readiness-funded",
+                memo="test bridge funding",
+            )
+            with hub.multisession_key_store_lock:
+                hub.multisession_key_store_path.parent.mkdir(parents=True, exist_ok=True)
+                hub.multisession_key_store_path.write_text(
+                    json.dumps(
+                        {
+                            "version": "main-computer-multisession-keys-v1",
+                            "keys": {
+                                key_id: {
+                                    "id": key_id,
+                                    "status": "active",
+                                    "created_at": "2026-06-03T00:00:00+00:00",
+                                    "revoked_at": "",
+                                    "wallet_address": wallet,
+                                    "chain_id": "0x28757b2",
+                                    "request_id": "msk-readiness-request",
+                                    "origin": "test",
+                                },
+                                "msk_revoked": {
+                                    "id": "msk_revoked",
+                                    "status": "revoked",
+                                    "created_at": "2026-06-03T00:00:00+00:00",
+                                    "revoked_at": "2026-06-03T00:01:00+00:00",
+                                    "wallet_address": wallet,
+                                    "chain_id": "0x28757b2",
+                                    "request_id": "msk-revoked-request",
+                                    "origin": "test",
+                                },
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            hub_thread = self._start_server(hub)
+            try:
+                provider = HubProvider(
+                    model="fake-model",
+                    hub_url=f"http://127.0.0.1:{hub.server_port}",
+                    client_node_id="chat-console-client",
+                )
+                ready = provider.validate_multisession_key(
+                    {
+                        "payment_authorization": {
+                            "kind": "multisession_key",
+                            "paid_overflow_enabled": True,
+                            "wallet_address": wallet,
+                            "multisession_key_id": key_id,
+                            "chain_id": "0x28757b2",
+                            "max_authorized_credits": 1,
+                        }
+                    }
+                )
+                self.assertTrue(ready["ok"])
+                self.assertTrue(ready["valid"])
+                self.assertTrue(ready["ready"])
+                self.assertTrue(ready["credit_ready"])
+                self.assertEqual(ready["reason_code"], "active")
+                self.assertEqual(ready["account_id"], account_id)
+                self.assertEqual(ready["account"]["available_credits"], 2)
+
+                revoked = provider.validate_multisession_key(
+                    {
+                        "payment_authorization": {
+                            "kind": "multisession_key",
+                            "wallet_address": wallet,
+                            "multisession_key_id": "msk_revoked",
+                            "chain_id": "0x28757b2",
+                            "max_authorized_credits": 1,
+                        }
+                    }
+                )
+                self.assertFalse(revoked["valid"])
+                self.assertFalse(revoked["ready"])
+                self.assertEqual(revoked["reason_code"], "key_not_active")
+                self.assertEqual(revoked["account_id"], account_id)
+
+                too_expensive = provider.validate_multisession_key(
+                    {
+                        "payment_authorization": {
+                            "kind": "multisession_key",
+                            "wallet_address": wallet,
+                            "multisession_key_id": key_id,
+                            "chain_id": "0x28757b2",
+                            "max_authorized_credits": 3,
+                        }
+                    }
+                )
+                self.assertTrue(too_expensive["valid"])
+                self.assertFalse(too_expensive["ready"])
+                self.assertFalse(too_expensive["credit_ready"])
+                self.assertEqual(too_expensive["reason_code"], "insufficient_spendable_credits")
+
+                account = hub.credit_ledger.get_account(account_id)
+                self.assertEqual(account.available_credits, 2)
+                self.assertEqual(account.held_credits, 0)
+                self.assertEqual(account.spent_credits, 0)
+                self.assertEqual(hub.credit_ledger.list_charges(account_id=account_id), [])
+            finally:
+                hub.shutdown()
+                hub.server_close()
+                hub_thread.join(timeout=2)
+
+
     def test_remote_overflow_safe_chat_rejects_disabled_paid_overflow_before_hold(self) -> None:
         wallet = "0x7780097b4756ed08176d288b9acb8d9e878a5269"
         key_id = "msk_paid_overflow_disabled_test"

@@ -59,8 +59,11 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert "container-type: inline-size" in css
     assert "@container (max-width: 1150px)" in css
 
-    # The remote payment policy is stored locally with the rest of the Worker market settings.
-    assert "main-computer-worker-settings-v4" in js
+    # The remote payment policy is saved to the local backend so Chat Console
+    # readiness does not rely on browser localStorage as credit/key truth.
+    assert '"/api/applications/worker/settings"' in js
+    assert "workerLoadSettingsFromBackend" in js
+    assert "applyWorkerSettings" in js
     assert "remoteCreditsPerToken" in js
     assert 'workerPositiveDecimalString(workerElementValue(workerRemoteCreditsPerToken, "0.001"), "0.001")' in js
     assert "workerSavedBoolean(parsed.remoteEnabled, false)" in js
@@ -90,6 +93,7 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert 'mode: settings.executionMode' in js
     assert '"/api/applications/worker/register-offer"' in js
     assert '"/api/applications/worker/hub-health"' in js
+    assert '"/api/applications/worker/settings"' in js
     assert '"/api/applications/worker/multisession-key/request"' in js
     assert '"/api/applications/worker/multisession-keys/load"' in js
     assert '"/api/applications/worker/wallet-balance"' in js
@@ -108,6 +112,9 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert "self._handle_worker_offer_register()" in dispatch
     assert '"/api/applications/worker/hub-health"' in dispatch
     assert "self._handle_worker_hub_health()" in dispatch
+    assert '"/api/applications/worker/settings"' in dispatch
+    assert "self._handle_worker_settings_load()" in dispatch
+    assert "self._handle_worker_settings_save()" in dispatch
     assert '"/api/applications/worker/multisession-key/request"' in dispatch
     assert "self._handle_worker_multisession_key_request()" in dispatch
     assert '"/api/applications/worker/multisession-keys/load"' in dispatch

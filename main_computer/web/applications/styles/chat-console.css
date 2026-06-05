@@ -646,7 +646,7 @@
       backdrop-filter: blur(2px);
     }
     .chat-remote-worker-control-modal {
-      width: min(900px, 100%);
+      width: min(1120px, 100%);
       max-height: min(760px, calc(100vh - 48px));
       overflow: auto;
       border: 1px solid var(--gold);
@@ -738,6 +738,260 @@
     .chat-remote-worker-control-assessment-details:not([open]) .chat-remote-worker-control-assessment-grid {
       display: none;
     }
+    .chat-remote-worker-control-readiness-card {
+      border: 1px solid rgba(230, 181, 74, 0.42);
+      border-radius: 16px;
+      background: rgba(230, 181, 74, 0.06);
+      margin-top: 14px;
+      padding: 14px;
+    }
+    .chat-remote-worker-control-readiness-heading {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    .chat-remote-worker-control-readiness-heading h3 {
+      color: var(--gold);
+      font-size: 14px;
+      font-weight: 900;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .chat-remote-worker-control-readiness-summary,
+    .chat-remote-worker-control-readiness-badge {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 9px;
+      font-size: 11px;
+      font-weight: 900;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .chat-remote-worker-control-readiness-summary.ok,
+    .chat-remote-worker-control-readiness-row.ok .chat-remote-worker-control-readiness-badge {
+      border-color: rgba(85, 214, 120, 0.5);
+      color: #55d678;
+      background: rgba(85, 214, 120, 0.08);
+    }
+    .chat-remote-worker-control-readiness-summary.bad,
+    .chat-remote-worker-control-readiness-row.bad .chat-remote-worker-control-readiness-badge {
+      border-color: rgba(255, 112, 112, 0.55);
+      color: #ff8a8a;
+      background: rgba(255, 112, 112, 0.08);
+    }
+    .chat-remote-worker-control-readiness-row.warn .chat-remote-worker-control-readiness-badge {
+      border-color: rgba(230, 181, 74, 0.55);
+      color: var(--gold);
+      background: rgba(230, 181, 74, 0.08);
+    }
+    .chat-remote-worker-control-readiness-message,
+    .chat-remote-worker-control-readiness-note {
+      color: var(--ink) !important;
+      font-size: 13px;
+      font-weight: 800;
+      margin: 8px 0 !important;
+    }
+    .chat-remote-worker-control-readiness-note {
+      color: var(--muted) !important;
+      font-size: 12px;
+    }
+    .chat-remote-worker-control-readiness-rows {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .chat-remote-worker-control-readiness-row {
+      display: grid;
+      grid-template-columns: 28px minmax(160px, 0.7fr) minmax(0, 1.5fr) auto;
+      align-items: center;
+      gap: 10px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.035);
+      padding: 10px;
+    }
+    .chat-remote-worker-control-readiness-mark {
+      width: 24px;
+      height: 24px;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      color: #070806;
+      font-weight: 900;
+      background: var(--muted);
+    }
+    .chat-remote-worker-control-readiness-row.ok .chat-remote-worker-control-readiness-mark {
+      background: #55d678;
+    }
+    .chat-remote-worker-control-readiness-row.bad .chat-remote-worker-control-readiness-mark {
+      background: #ff8a8a;
+    }
+    .chat-remote-worker-control-readiness-row.warn .chat-remote-worker-control-readiness-mark {
+      background: var(--gold);
+    }
+    .chat-remote-worker-control-readiness-title {
+      color: var(--gold);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .chat-remote-worker-control-readiness-detail {
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .chat-remote-worker-control-readiness-metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .chat-remote-worker-control-readiness-metric {
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: rgba(255, 255, 255, 0.035);
+      padding: 9px;
+    }
+    .chat-remote-worker-control-readiness-metric-label {
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .chat-remote-worker-control-readiness-metric-value {
+      color: var(--ink);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 14px;
+      font-weight: 900;
+      margin-top: 4px;
+      overflow-wrap: anywhere;
+    }
+    .chat-remote-worker-control-readiness-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .chat-remote-worker-control-readiness-refresh {
+      border-radius: 999px;
+      padding: 7px 11px;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .chat-remote-worker-control-readiness-card.smart {
+      contain: layout paint;
+    }
+    .chat-remote-worker-control-readiness-card-title,
+    .chat-remote-worker-control-readiness-title,
+    .chat-remote-worker-control-readiness-toggle {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      font: inherit;
+      padding: 0;
+      text-align: left;
+    }
+    .chat-remote-worker-control-readiness-card-title {
+      color: var(--gold);
+      font-size: 14px;
+      font-weight: 900;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .chat-remote-worker-control-readiness-card-title:hover,
+    .chat-remote-worker-control-readiness-card-title:focus-visible,
+    .chat-remote-worker-control-readiness-title:hover,
+    .chat-remote-worker-control-readiness-title:focus-visible,
+    .chat-remote-worker-control-readiness-toggle:hover,
+    .chat-remote-worker-control-readiness-toggle:focus-visible {
+      color: #ffe08a;
+      outline: none;
+    }
+    .chat-remote-worker-control-readiness-row {
+      grid-template-columns: 26px minmax(72px, 0.42fr) minmax(0, 1.4fr) auto 28px;
+      min-height: 48px;
+      transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+    }
+    .chat-remote-worker-control-readiness-row.waiting .chat-remote-worker-control-readiness-badge {
+      border-color: rgba(148, 163, 184, 0.55);
+      color: #cbd5e1;
+      background: rgba(148, 163, 184, 0.08);
+    }
+    .chat-remote-worker-control-readiness-row.inactive .chat-remote-worker-control-readiness-badge {
+      border-color: rgba(148, 163, 184, 0.35);
+      color: var(--muted);
+      background: rgba(148, 163, 184, 0.05);
+    }
+    .chat-remote-worker-control-readiness-row.waiting .chat-remote-worker-control-readiness-mark {
+      background: #cbd5e1;
+    }
+    .chat-remote-worker-control-readiness-row.inactive .chat-remote-worker-control-readiness-mark {
+      background: var(--muted);
+    }
+    .chat-remote-worker-control-readiness-toggle {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--ink);
+      display: grid;
+      font-size: 16px;
+      font-weight: 900;
+      height: 26px;
+      line-height: 1;
+      place-items: center;
+      text-align: center;
+      width: 26px;
+    }
+    .chat-remote-worker-control-readiness-row.bad {
+      border-color: rgba(255, 112, 112, 0.5);
+      box-shadow: 0 0 0 1px rgba(255, 112, 112, 0.08);
+    }
+    .chat-remote-worker-control-readiness-row.ok {
+      border-color: rgba(85, 214, 120, 0.35);
+    }
+    .chat-remote-worker-control-readiness-detail-panel {
+      color: var(--ink);
+      font-size: 12px;
+      grid-column: 3 / -1;
+      line-height: 1.35;
+      max-height: 0;
+      opacity: 0;
+      overflow: hidden;
+      transition: max-height 180ms ease, opacity 160ms ease, padding-top 160ms ease;
+    }
+    .chat-remote-worker-control-readiness-row.expanded .chat-remote-worker-control-readiness-detail-panel {
+      max-height: 120px;
+      opacity: 1;
+      padding-top: 4px;
+    }
+    .chat-remote-worker-control-readiness-row[data-chat-paid-overflow-effective-state="checking"] .chat-remote-worker-control-readiness-detail,
+    .chat-remote-worker-control-readiness-card.checking .chat-remote-worker-control-readiness-message {
+      color: var(--gold) !important;
+    }
+    .chat-remote-worker-control-readiness-card.all-done .chat-remote-worker-control-readiness-row.ok .chat-remote-worker-control-readiness-detail-panel {
+      max-height: 0;
+      opacity: 0;
+      padding-top: 0;
+    }
+    @media (max-width: 820px) {
+      .chat-remote-worker-control-readiness-row {
+        grid-template-columns: 26px minmax(60px, 0.6fr) minmax(0, 1fr) 28px;
+      }
+      .chat-remote-worker-control-readiness-row .chat-remote-worker-control-readiness-badge {
+        display: none;
+      }
+      .chat-remote-worker-control-readiness-detail-panel {
+        grid-column: 2 / -1;
+      }
+    }
+
     .chat-remote-worker-control-status-heading {
       display: flex;
       align-items: flex-start;
@@ -832,6 +1086,15 @@
       font-weight: 800;
       line-height: 1.35;
     }
+    .chat-remote-worker-control-option-card:disabled {
+      cursor: not-allowed;
+      opacity: 0.48;
+    }
+    .chat-remote-worker-control-option-card:disabled:hover,
+    .chat-remote-worker-control-option-card:disabled:focus-visible {
+      border-color: var(--line);
+      box-shadow: none;
+    }
     .chat-remote-worker-control-notice {
       color: var(--muted) !important;
       font-size: 12px;
@@ -853,8 +1116,16 @@
     }
     @media (max-width: 760px) {
       .chat-remote-worker-control-status-grid,
-      .chat-remote-worker-control-option-grid {
+      .chat-remote-worker-control-option-grid,
+      .chat-remote-worker-control-readiness-metrics {
         grid-template-columns: 1fr;
+      }
+      .chat-remote-worker-control-readiness-row {
+        grid-template-columns: 28px 1fr;
+      }
+      .chat-remote-worker-control-readiness-detail,
+      .chat-remote-worker-control-readiness-badge {
+        grid-column: 2;
       }
     }
 

@@ -1167,6 +1167,185 @@ class HubServerHandler(_JsonHandler):
             "key": key_payload,
         }
 
+    def _handle_multisession_key_validate(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Return Hub-side readiness for a locally cached multi-session key.
+
+        This endpoint is diagnostic/readiness-only: invalid keys and insufficient
+        credits return HTTP 200 with valid/ready flags instead of spending,
+        holding, or revealing any private key material.
+        """
+
+        authorization = body.get("payment_authorization")
+        if not isinstance(authorization, dict):
+            authorization = body.get("metadata", {}).get("payment_authorization") if isinstance(body.get("metadata"), dict) else {}
+        if not isinstance(authorization, dict):
+            authorization = {}
+
+        wallet_value = (
+            authorization.get("wallet_address")
+            or body.get("wallet_address")
+            or (body.get("credit", {}).get("wallet_address") if isinstance(body.get("credit"), dict) else "")
+            or ""
+        )
+        try:
+            wallet_address = normalize_address(wallet_value)
+        except ValueError:
+            return {
+                "ok": True,
+                "valid": False,
+                "ready": False,
+                "hub_reachable": True,
+                "reason_code": "bad_wallet_address",
+                "user_message": "Paid overflow needs a valid connected wallet address before Hub key validation can pass.",
+            }
+
+        key_id = str(
+            authorization.get("multisession_key_id")
+            or authorization.get("key_id")
+            or body.get("multisession_key_id")
+            or body.get("key_id")
+            or ""
+        ).strip()
+        if not key_id:
+            account_id = wallet_account_id(wallet_address)
+            account = self.server.credit_ledger.get_account(account_id)
+            return {
+                "ok": True,
+                "valid": False,
+                "ready": False,
+                "hub_reachable": True,
+                "reason_code": "missing_multisession_key_id",
+                "user_message": "Paid overflow needs an active multi-session key before this Hub can spend bridged credits.",
+                "wallet_address": wallet_address,
+                "account_id": account_id,
+                "account": account.as_dict(),
+            }
+
+        requested_chain_id = str(
+            authorization.get("chain_id")
+            or body.get("chain_id")
+            or ""
+        ).strip().lower()
+
+        with self.server.multisession_key_store_lock:
+            data = self._load_multisession_key_store_unlocked()
+            record = data.get("keys", {}).get(key_id)
+            if not isinstance(record, dict):
+                record = None
+            else:
+                record = dict(record)
+
+        account_id = wallet_account_id(wallet_address)
+        account = self.server.credit_ledger.get_account(account_id)
+        account_payload = account.as_dict()
+
+        if not record or record.get("status") != "active":
+            return {
+                "ok": True,
+                "valid": False,
+                "ready": False,
+                "hub_reachable": True,
+                "reason_code": "key_not_active",
+                "user_message": "The selected multi-session key is not active on this Hub.",
+                "wallet_address": wallet_address,
+                "account_id": account_id,
+                "account": account_payload,
+                "multisession_key_id": key_id,
+            }
+
+        try:
+            record_wallet = normalize_address(record.get("wallet_address"))
+        except ValueError:
+            record_wallet = ""
+        if record_wallet != wallet_address:
+            return {
+                "ok": True,
+                "valid": False,
+                "ready": False,
+                "hub_reachable": True,
+                "reason_code": "key_wallet_mismatch",
+                "user_message": "The selected multi-session key belongs to a different wallet.",
+                "wallet_address": wallet_address,
+                "account_id": account_id,
+                "account": account_payload,
+                "multisession_key_id": key_id,
+            }
+
+        record_chain_id = str(record.get("chain_id") or "").strip().lower()
+        if requested_chain_id and record_chain_id and requested_chain_id != record_chain_id:
+            return {
+                "ok": True,
+                "valid": False,
+                "ready": False,
+                "hub_reachable": True,
+                "reason_code": "chain_id_mismatch",
+                "user_message": "The selected multi-session key was issued for a different chain.",
+                "wallet_address": wallet_address,
+                "account_id": account_id,
+                "account": account_payload,
+                "multisession_key_id": key_id,
+                "chain_id": requested_chain_id,
+                "record_chain_id": record_chain_id,
+            }
+        if (requested_chain_id or record_chain_id) and (requested_chain_id or record_chain_id) != HUB_MULTISESSION_KEY_EXPECTED_CHAIN_ID:
+            return {
+                "ok": True,
+                "valid": False,
+                "ready": False,
+                "hub_reachable": True,
+                "reason_code": "unsupported_chain_id",
+                "user_message": "Paid overflow is only enabled for the local dev chain.",
+                "wallet_address": wallet_address,
+                "account_id": account_id,
+                "account": account_payload,
+                "multisession_key_id": key_id,
+                "chain_id": requested_chain_id or record_chain_id,
+            }
+
+        required_credits = _hub_as_int(
+            authorization.get("required_credits", authorization.get("max_authorized_credits", body.get("required_credits", 0))),
+            0,
+            minimum=0,
+            maximum=1_000_000_000,
+        )
+        credit_ready = True
+        reason_code = "active"
+        user_message = "The selected multi-session key is active on this Hub."
+        if required_credits and account.available_credits < required_credits:
+            credit_ready = False
+            reason_code = "insufficient_spendable_credits"
+            user_message = (
+                f"The Hub sees insufficient spendable credits for this approximate authorization: "
+                f"available={account.available_credits}, required={required_credits}."
+            )
+
+        key_payload = {
+            "id": str(record.get("id") or key_id),
+            "status": str(record.get("status") or ""),
+            "wallet_address": record_wallet,
+            "chain_id": record_chain_id,
+            "created_at": str(record.get("created_at") or ""),
+            "revoked_at": str(record.get("revoked_at") or ""),
+            "request_id": str(record.get("request_id") or ""),
+            "origin": str(record.get("origin") or ""),
+        }
+        return {
+            "ok": True,
+            "valid": True,
+            "ready": bool(credit_ready),
+            "hub_reachable": True,
+            "reason_code": reason_code,
+            "user_message": user_message,
+            "wallet_address": wallet_address,
+            "account_id": account_id,
+            "account": account_payload,
+            "multisession_key_id": key_id,
+            "chain_id": requested_chain_id or record_chain_id,
+            "required_credits": required_credits,
+            "credit_ready": bool(credit_ready),
+            "key": key_payload,
+        }
+
     def _worker_settlement_precision_places(self, worker_node_id: str, explicit: Any = None) -> int:
         if explicit is not None and str(explicit).strip() != "":
             return normalize_worker_payout_precision_places(explicit)
@@ -1890,6 +2069,12 @@ class HubServerHandler(_JsonHandler):
                     status = HTTPStatus.CONFLICT if "not spendable" in str(exc) else HTTPStatus.BAD_REQUEST
                     self._send_json({"ok": False, "error": str(exc)}, status=status)
                 return
+            if path == "/api/hub/v1/credits/multisession-keys/validate":
+                try:
+                    self._send_json(self._handle_multisession_key_validate(self._read_json()))
+                except Exception as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
             if path in {"/api/hub/workers/register", "/api/hub/v1/workers/register"}:
                 body = self._read_json()
                 capabilities = dict(body.get("capabilities", {})) if isinstance(body.get("capabilities"), dict) else {}
@@ -2421,7 +2606,7 @@ def serve_hub(config: MainComputerConfig, host: str = "127.0.0.1", port: int = D
         "POST /api/hub/v1/workers/results, GET/POST /api/hub/v1/workers/claims, "
         "GET /api/hub/v1/workers/settlements, POST /api/hub/v1/workers/settlements/batches, POST /api/hub/v1/workers/settlements/proofs, POST /api/hub/v1/workers/settlements/chain-executions, "
         "POST /api/hub/sessions/start, POST /api/hub/sessions/chat, "
-        "POST /api/hub/remote-overflow/safe-chat, POST /api/hub/payouts/claim"
+        "POST /api/hub/remote-overflow/safe-chat, POST /api/hub/v1/credits/multisession-keys/validate, POST /api/hub/payouts/claim"
     )
     try:
         server.serve_forever()
