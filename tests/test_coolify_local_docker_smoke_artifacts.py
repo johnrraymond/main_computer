@@ -172,7 +172,7 @@ def test_local_docker_python_script_repairs_existing_generated_env(tmp_path: Pat
 
     env_text = "\n".join(
         [
-            "APP_PORT=8000",
+            "APP_PORT=18000",
             "DB_USERNAME=coolify",
             "DB_DATABASE=coolify",
             "DB_PASSWORD=keep-this-db-secret",
@@ -192,10 +192,12 @@ def test_local_docker_python_script_repairs_existing_generated_env(tmp_path: Pat
         "DB_HOST",
         "DB_PORT",
         "LATEST_REALTIME_VERSION",
+        "MUX_ENABLED",
         "REDIS_HOST",
         "REDIS_PORT",
         "ROOT_USER_EMAIL",
         "ROOT_USER_PASSWORD",
+        "SSH_MUX_ENABLED",
     ]
     assert "DB_PASSWORD=keep-this-db-secret" in repaired
     assert "REDIS_PASSWORD=keep-this-redis-secret" in repaired
@@ -215,7 +217,7 @@ def test_local_docker_python_script_preserves_valid_existing_root_credentials(tm
 
     env_text = "\n".join(
         [
-            "APP_PORT=8000",
+            "APP_PORT=18000",
             "DB_HOST=postgres",
             "DB_PORT=5432",
             "REDIS_HOST=redis",
@@ -230,7 +232,7 @@ def test_local_docker_python_script_preserves_valid_existing_root_credentials(tm
 
     repaired, changed = module.upsert_env_values(env_text)
 
-    assert changed == []
+    assert changed == ["MUX_ENABLED", "SSH_MUX_ENABLED"]
     assert "ROOT_USER_EMAIL=owner@example.com" in repaired
     assert "ROOT_USER_PASSWORD=Keep-This-Root-Secret1!" in repaired
 
@@ -249,11 +251,11 @@ def test_local_docker_python_script_detects_boot_user_setup_page() -> None:
 
     assert module.is_boot_user_setup_page(
         "Create your account\nBoot User Setup\nThis user will be the root user with full admin access.",
-        "http://127.0.0.1:8000",
+        "http://127.0.0.1:18000",
     )
     assert not module.is_boot_user_setup_page(
         "<html><body>Login</body></html>",
-        "http://127.0.0.1:8000/login",
+        "http://127.0.0.1:18000/login",
     )
 
 
@@ -315,15 +317,15 @@ def test_local_docker_python_script_detects_onboarding_and_login_pages() -> None
 
     assert module.is_onboarding_page(
         "Welcome to Coolify\nConnect your first server and start deploying in minutes\nSkip Setup",
-        "http://127.0.0.1:8000/onboarding",
+        "http://127.0.0.1:18000/onboarding",
     )
-    assert not module.is_onboarding_page("<html><body>Dashboard</body></html>", "http://127.0.0.1:8000")
+    assert not module.is_onboarding_page("<html><body>Dashboard</body></html>", "http://127.0.0.1:18000")
 
     assert module.is_login_page(
         '<form action="/login" method="POST"><input name="email"><input name="password"></form>',
-        "http://127.0.0.1:8000/login",
+        "http://127.0.0.1:18000/login",
     )
-    assert not module.is_login_page("<html><body>Welcome to Coolify</body></html>", "http://127.0.0.1:8000/onboarding")
+    assert not module.is_login_page("<html><body>Welcome to Coolify</body></html>", "http://127.0.0.1:18000/onboarding")
 
 
 def test_local_docker_python_script_builds_login_payload_from_env(tmp_path: Path) -> None:
@@ -841,7 +843,7 @@ def test_local_docker_db_root_bootstrap_creates_local_root_identity(monkeypatch,
     module.env_file(tmp_path).write_text(
         "\n".join(
             [
-                "APP_PORT=8000",
+                "APP_PORT=18000",
                 "DB_HOST=postgres",
                 "DB_PORT=5432",
                 "REDIS_HOST=redis",
@@ -957,7 +959,7 @@ def test_local_docker_dashboard_bootstrap_reports_root_404_when_db_bootstrap_fai
     ok, detail = module.dashboard_bootstrap_status(tmp_path, auto_bootstrap=True)
 
     assert not ok
-    assert calls == ["root-user", "bootstrap-db", "get:http://127.0.0.1:8000"]
+    assert calls == ["root-user", "bootstrap-db", "get:http://127.0.0.1:18000"]
     assert "root user is missing in DB" in detail
     assert "failed to create generated local Coolify root user in DB" in detail
     assert "dashboard bootstrap probe failed" in detail
@@ -1143,7 +1145,7 @@ def test_local_docker_onboarding_status_accepts_api_smoke_when_projects_route_is
         return (
             True,
             "Welcome to Coolify\nConnect your first server\nSkip Setup",
-            "http://127.0.0.1:8000/onboarding",
+            "http://127.0.0.1:18000/onboarding",
             "200",
         )
 
@@ -1167,7 +1169,7 @@ def test_local_docker_onboarding_status_accepts_api_smoke_when_projects_route_is
     assert calls == [
         "skip",
         "login",
-        "get:http://127.0.0.1:8000/projects",
+        "get:http://127.0.0.1:18000/projects",
         "token",
         "project:token-value",
     ]

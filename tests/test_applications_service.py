@@ -29,7 +29,7 @@ class FakeApplicationsRunner:
         if command[:3] == ["docker", "compose", "version"]:
             return subprocess.CompletedProcess(command, 0, stdout="Docker Compose version ok\n", stderr="")
         if command[:2] == ["docker", "ps"]:
-            return subprocess.CompletedProcess(command, 0, stdout="main-computer-applications-onlyoffice-1\n", stderr="")
+            return subprocess.CompletedProcess(command, 0, stdout="mc-applications-coolify\n", stderr="")
         if "compose" in command and "config" in command and "--quiet" in command:
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
         if "compose" in command and "up" in command and "-d" in command:
@@ -40,7 +40,6 @@ class FakeApplicationsRunner:
                 0,
                 stdout="\n".join(
                     [
-                        '{"Service":"onlyoffice","State":"running"}',
                         '{"Service":"postgres","State":"running"}',
                         '{"Service":"redis","State":"running"}',
                         '{"Service":"soketi","State":"running"}',
@@ -61,7 +60,16 @@ def make_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "docker-compose.applications.yml").write_text(
-        "services:\n  onlyoffice:\n    image: onlyoffice/documentserver:latest\n",
+        """services:
+  postgres:
+    image: postgres:15-alpine
+  redis:
+    image: redis:7-alpine
+  soketi:
+    image: quay.io/soketi/soketi:1.4-16-debian
+  coolify:
+    image: ghcr.io/coollabsio/coolify:latest
+""",
         encoding="utf-8",
     )
     tools_dir = repo / "tools" / "local-prod"
@@ -76,7 +84,8 @@ def test_applications_compose_declares_application_servers_not_executor_or_chain
     compose = (repo / "docker-compose.applications.yml").read_text(encoding="utf-8")
 
     assert "name: main-computer-applications" in compose
-    assert "\n  onlyoffice:" in compose
+    assert "\n  onlyoffice:" not in compose
+    assert "onlyoffice/documentserver" not in compose
     assert "\n  gitea:" not in compose
     gitea_compose = (repo / "docker-compose.gitea.yml").read_text(encoding="utf-8")
     assert "name: main-computer-gitea" in gitea_compose
@@ -105,7 +114,7 @@ def test_boot_writes_app_env_and_starts_applications_compose(tmp_path: Path) -> 
     assert state["docker"]["state"] == "ready"
     assert state["compose"]["started"] is True
     assert state["coolify"]["state"] == "ready"
-    assert state["applications"] == ["onlyoffice", "coolify"]
+    assert state["applications"] == ["coolify"]
 
     env_file = repo / "runtime" / "applications_service" / "applications.env"
     coolify_env = repo / "runtime" / "applications_service" / "coolify" / "source" / ".env"
@@ -116,21 +125,21 @@ def test_boot_writes_app_env_and_starts_applications_compose(tmp_path: Path) -> 
     assert "MAIN_COMPUTER_ONLYOFFICE_PORT=18084" in env_text
     assert "MAIN_COMPUTER_GITEA_HTTP_PORT" not in env_text
     assert "COOLIFY_LOCAL_STATE=" in env_text
+    assert "APP_PORT=18000" in env_text
     assert "APP_KEY=base64:" in env_text
 
     compose_up_calls = [call for call in runner.calls if "compose" in call and "up" in call and "-d" in call]
-    assert len(compose_up_calls) == 2
+    assert len(compose_up_calls) == 1
     assert "--project-name" in compose_up_calls[0]
     assert "main-computer-applications" in compose_up_calls[0]
     assert "--env-file" in compose_up_calls[0]
     assert str(env_file) in compose_up_calls[0]
     assert str(repo / "docker-compose.applications.yml") in compose_up_calls[0]
     assert compose_up_calls[0][-4:] == ["postgres", "redis", "soketi", "coolify"]
-    assert compose_up_calls[1][-1:] == ["onlyoffice"]
+    assert all("onlyoffice" not in call for call in compose_up_calls)
 
     coolify_boot_calls = [call for call in runner.calls if len(call) >= 3 and str(call[1]).endswith("coolify-local-docker.py")]
     assert [call[2] for call in coolify_boot_calls] == ["init", "wait", "ensure-infra"]
-    assert runner.calls.index(coolify_boot_calls[1]) < runner.calls.index(compose_up_calls[1])
 
     loaded = load_applications_service_state(repo)
     assert loaded["ok"] is True
@@ -139,39 +148,20 @@ def test_boot_writes_app_env_and_starts_applications_compose(tmp_path: Path) -> 
 
 
 
-class CreatedOnlyOfficeRunner(FakeApplicationsRunner):
-    def __call__(self, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if "compose" in command and "ps" in command:
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout="\n".join(
-                    [
-                        '{"Service":"onlyoffice","State":"created"}',
-                        '{"Service":"postgres","State":"running"}',
-                        '{"Service":"redis","State":"running"}',
-                        '{"Service":"soketi","State":"running"}',
-                        '{"Service":"coolify","State":"running"}',
-                    ]
-                )
-                + "\n",
-                stderr="",
-            )
-        return super().__call__(command, **kwargs)
-
-
-def test_boot_does_not_report_ready_when_onlyoffice_is_created_not_running(tmp_path: Path) -> None:
+def test_boot_does_not_start_docker_onlyoffice_after_coolify(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
-    runner = CreatedOnlyOfficeRunner()
+    runner = FakeApplicationsRunner()
     service = ApplicationsService(root=repo, runner=runner, sleep_func=lambda _: None, output_func=None)
 
     state = service.boot()
 
-    assert state["ok"] is False
-    assert state["state"] == "down"
+    assert state["ok"] is True
     assert state["coolify"]["state"] == "ready"
-    assert state["application_servers"]["state"] == "partial"
-    assert state["application_servers"]["non_running_services"] == {"onlyoffice": "created"}
+    assert state["application_servers"]["state"] == "skipped"
+    assert state["application_servers"]["expected_applications"] == []
+    compose_up_calls = [call for call in runner.calls if "compose" in call and "up" in call and "-d" in call]
+    assert compose_up_calls
+    assert all("onlyoffice" not in call for call in compose_up_calls)
 
 
 def test_applications_boot_ignores_legacy_coolify_project_env_for_stack_name(monkeypatch, tmp_path: Path) -> None:
@@ -230,6 +220,7 @@ def test_applications_env_heals_bad_prior_compose_project_and_container_names(tm
                 "COOLIFY_REDIS_CONTAINER_NAME=mc-coolify-main-computer-test-unleashed-redis",
                 "COOLIFY_SOKETI_CONTAINER_NAME=mc-coolify-main-computer-test-unleashed-realtime",
                 "COOLIFY_NETWORK_NAME=main-computer-coolify-main-computer-test-unleashed_default",
+                "APP_PORT=8000",
                 "",
             ]
         ),
@@ -250,6 +241,8 @@ def test_applications_env_heals_bad_prior_compose_project_and_container_names(tm
     assert "COOLIFY_REDIS_CONTAINER_NAME=mc-applications-coolify-redis" in env_text
     assert "COOLIFY_SOKETI_CONTAINER_NAME=mc-applications-coolify-realtime" in env_text
     assert "COOLIFY_NETWORK_NAME=main-computer-applications" in env_text
+    assert "APP_PORT=18000" in env_text
+    assert "APP_PORT=8000" not in env_text
     assert "main-computer-coolify-main-computer-test-unleashed" not in env_text
     assert "mc-coolify-main-computer-test-unleashed" not in env_text
 
@@ -340,7 +333,30 @@ def test_applications_pid_mismatch_does_not_block_boot(tmp_path: Path) -> None:
     assert state["service"]["pid_claim"]["state"] == "not-terminated"
     assert state["service"]["pid_claim"]["prior_command_matches_pid_file"] is False
 
-def test_applications_service_processes_named_app_server_restart_request(tmp_path: Path) -> None:
+def test_applications_service_processes_named_coolify_restart_request(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    runner = FakeApplicationsRunner()
+    service = ApplicationsService(
+        root=repo,
+        runner=runner,
+        sleep_func=lambda _: None,
+        output_func=None,
+        heartbeat_interval_s=30,
+        light_check_interval_s=999,
+    )
+
+    enqueue_applications_action(repo, action="restart", target="coolify", source="test")
+    state = service.boot(watch=True, max_watch_loops=1)
+
+    assert state["ok"] is True
+    assert pending_control_requests(repo, channel="applications") == []
+    restart_calls = [call for call in runner.calls if "compose" in call and "up" in call and "--force-recreate" in call]
+    assert restart_calls
+    assert "coolify" in restart_calls[-1]
+    assert "onlyoffice" not in restart_calls[-1]
+
+
+def test_applications_service_no_longer_accepts_onlyoffice_docker_restart(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
     runner = FakeApplicationsRunner()
     service = ApplicationsService(
@@ -356,10 +372,7 @@ def test_applications_service_processes_named_app_server_restart_request(tmp_pat
     state = service.boot(watch=True, max_watch_loops=1)
 
     assert state["ok"] is True
-    assert pending_control_requests(repo, channel="applications") == []
-    restart_calls = [call for call in runner.calls if "compose" in call and "up" in call and "--force-recreate" in call]
-    assert restart_calls
-    assert "onlyoffice" in restart_calls[-1]
+    assert state["last_control_results"][-1]["result"]["state"] == "unknown-target"
 
 
 def test_applications_service_rejects_unknown_app_server_restart_target(tmp_path: Path) -> None:

@@ -49,7 +49,7 @@ services:
   coolify:
     image: ghcr.io/coollabsio/coolify:latest
     ports:
-      - "127.0.0.1:8000:8080"
+      - "127.0.0.1:18000:8080"
 """.lstrip(),
         encoding="utf-8",
     )

@@ -203,6 +203,89 @@ function Invoke-WslOnlyOffice {
   }
 }
 
+
+function Test-WslNativeOnlyOfficeInstalled {
+  if ($Mode -ne "wsl") {
+    return $true
+  }
+
+  Ensure-WslDistroInstalledAndReady -DistroName $Distro
+
+  $check = 'dpkg-query -s onlyoffice-documentserver 2>/dev/null | grep -q "^Status: install ok installed$"'
+  & wsl.exe -d $Distro -u root -- bash -lc $check
+  return ($LASTEXITCODE -eq 0)
+}
+
+function Ensure-WslNativeOnlyOfficeInstalled {
+  if ($Mode -ne "wsl") {
+    return
+  }
+
+  if (Test-WslNativeOnlyOfficeInstalled) {
+    Write-Host "ONLYOFFICE native package is installed in WSL distro '$Distro'."
+    return
+  }
+
+  Write-Host "ONLYOFFICE native package is not installed in WSL distro '$Distro'."
+  Write-Host "Installing ONLYOFFICE Docs native package for WSL mode before startup..."
+  Invoke-WslOnlyOffice "wsl-install-onlyoffice.sh" @("--port", "$Port", "--jwt-secret", "$JwtSecret")
+
+  if (-not (Test-WslNativeOnlyOfficeInstalled)) {
+    throw "ONLYOFFICE native install completed, but onlyoffice-documentserver is still not installed in WSL distro '$Distro'."
+  }
+
+  Write-Host "ONLYOFFICE native package is installed in WSL distro '$Distro'."
+}
+
+
+function Remove-StaleApplicationsDockerOnlyOffice {
+  if ($Mode -ne "wsl") {
+    return
+  }
+
+  $docker = Get-Command docker -CommandType Application -ErrorAction SilentlyContinue
+  if ($null -eq $docker) {
+    return
+  }
+
+  $rows = @(& docker ps -a `
+    --filter "name=main-computer-applications-onlyoffice" `
+    --format "{{.ID}}`t{{.Names}}`t{{.Image}}`t{{.Ports}}" 2>$null)
+
+  if ($LASTEXITCODE -ne 0) {
+    return
+  }
+
+  foreach ($row in $rows) {
+    $text = [string]$row
+    if ([string]::IsNullOrWhiteSpace($text)) {
+      continue
+    }
+
+    $parts = $text -split "`t", 4
+    if ($parts.Count -lt 3) {
+      continue
+    }
+
+    $containerId = $parts[0].Trim()
+    $containerName = $parts[1].Trim()
+    $image = $parts[2].Trim()
+    $ports = $(if ($parts.Count -ge 4) { $parts[3].Trim() } else { "" })
+
+    $isMainComputerApplicationsOnlyOffice = $containerName -match '^main-computer-applications-onlyoffice(?:-|$)'
+    $isOnlyOfficeImage = $image -match '^onlyoffice/documentserver(?::|$)'
+    $publishesManagedPort = $ports -match [regex]::Escape(":$Port->80/tcp")
+
+    if ($containerId -and $isMainComputerApplicationsOnlyOffice -and $isOnlyOfficeImage -and $publishesManagedPort) {
+      Write-Host "Removing stale Docker applications ONLYOFFICE container before WSL startup: $containerName"
+      & docker rm -f $containerId | Out-Host
+      if ($LASTEXITCODE -ne 0) {
+        throw "Could not remove stale Docker applications ONLYOFFICE container '$containerName' (exit code $LASTEXITCODE)."
+      }
+    }
+  }
+}
+
 function Invoke-DockerOnlyOffice {
   param([Parameter(Mandatory = $true)][string]$DockerAction)
 
@@ -1037,10 +1120,13 @@ Write-Host "Main Computer callback app port: $AppPort"
 if ($Mode -eq "wsl") {
   switch ($Action) {
     "install" {
+      Remove-StaleApplicationsDockerOnlyOffice
       Invoke-WslOnlyOffice "wsl-install-onlyoffice.sh" @("--port", "$Port", "--jwt-secret", "$JwtSecret")
       Ensure-OnlyOfficeBridges
     }
     "start" {
+      Remove-StaleApplicationsDockerOnlyOffice
+      Ensure-WslNativeOnlyOfficeInstalled
       Invoke-WslOnlyOffice "wsl-start-onlyoffice.sh" @("--port", "$Port")
       Ensure-OnlyOfficeBridges
     }
@@ -1057,6 +1143,7 @@ if ($Mode -eq "wsl") {
       Show-OnlyOfficeBridgeStatus
     }
     "bridge-start" {
+      Remove-StaleApplicationsDockerOnlyOffice
       Ensure-OnlyOfficeBridges
     }
     "bridge-start-elevated" {

@@ -151,7 +151,7 @@ def test_registry_rejects_duplicate_controller_ids(tmp_path: Path) -> None:
                     {
                         "id": "coolify-local",
                         "kind": "coolify",
-                        "base_url": "http://localhost:8000",
+                        "base_url": "http://localhost:18000",
                         "roles": ["local-prod"],
                     },
                     {

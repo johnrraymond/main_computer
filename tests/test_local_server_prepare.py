@@ -31,7 +31,7 @@ class FakeCoolify:
         infra_ok: bool = True,
         infra_sequence: list[tuple[bool, str]] | None = None,
         up_return_code: int = 0,
-        dashboard_url: str = "http://127.0.0.1:8000",
+        dashboard_url: str = "http://127.0.0.1:18000",
     ) -> None:
         self.infra_ok = infra_ok
         self.infra_sequence = list(infra_sequence or [])
@@ -56,7 +56,7 @@ class FakeCoolify:
         self.write_initial_state_calls += 1
         path = self.env_file(root)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("APP_PORT=8000\n", encoding="utf-8")
+        path.write_text("APP_PORT=18000\n", encoding="utf-8")
 
     def up(self, root: Path, *, force_init: bool = False) -> int:
         self.up_calls += 1
@@ -384,7 +384,7 @@ def test_prepare_local_publish_returns_structured_ready_result(tmp_path: Path, m
 
     assert payload["ok"] is True
     assert payload["stage"] == "ready"
-    assert payload["dashboard_url"] == "http://127.0.0.1:8000"
+    assert payload["dashboard_url"] == "http://127.0.0.1:18000"
     assert payload["api_token_path"].endswith("api-token.txt")
     assert payload["project_uuid"] == "project-uuid"
     assert payload["environment_uuid"] == "environment-uuid"

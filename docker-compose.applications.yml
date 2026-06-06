@@ -1,21 +1,6 @@
 name: main-computer-applications
 
 services:
-  # Application server: ONLYOFFICE Docs.
-  onlyoffice:
-    image: onlyoffice/documentserver:${MAIN_COMPUTER_ONLYOFFICE_IMAGE_TAG:-latest}
-    restart: unless-stopped
-    environment:
-      JWT_ENABLED: ${MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED:-true}
-      JWT_SECRET: ${MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET:?MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET is required}
-    ports:
-      - "127.0.0.1:${MAIN_COMPUTER_ONLYOFFICE_PORT:-18084}:80"
-    volumes:
-      - onlyoffice-data:/var/www/onlyoffice/Data
-      - onlyoffice-logs:/var/log/onlyoffice
-      - onlyoffice-lib:/var/lib/onlyoffice
-      - onlyoffice-db:/var/lib/postgresql
-
   # Application server: Coolify and its required application dependencies.
   postgres:
     container_name: ${COOLIFY_POSTGRES_CONTAINER_NAME:-mc-applications-coolify-db}
@@ -91,7 +76,7 @@ services:
       APP_NAME: ${APP_NAME:-Coolify}
       APP_KEY: ${APP_KEY:?APP_KEY is required}
       APP_ID: ${APP_ID:?APP_ID is required}
-      APP_URL: http://127.0.0.1:${APP_PORT:-8000}
+      APP_URL: http://127.0.0.1:${APP_PORT:-18000}
       DB_CONNECTION: pgsql
       DB_HOST: ${DB_HOST:-postgres}
       DB_PORT: ${DB_PORT:-5432}
@@ -111,7 +96,7 @@ services:
       ROOT_USER_EMAIL: ${ROOT_USER_EMAIL:?ROOT_USER_EMAIL is required}
       ROOT_USER_PASSWORD: ${ROOT_USER_PASSWORD:?ROOT_USER_PASSWORD is required}
     ports:
-      - "127.0.0.1:${APP_PORT:-8000}:8080"
+      - "127.0.0.1:${APP_PORT:-18000}:8080"
     volumes:
       - ${COOLIFY_LOCAL_STATE:?COOLIFY_LOCAL_STATE is required}/coolify:/var/www/html/storage/app
       - /var/run/docker.sock:/var/run/docker.sock
@@ -120,12 +105,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 30
-
-volumes:
-  onlyoffice-data:
-  onlyoffice-logs:
-  onlyoffice-lib:
-  onlyoffice-db:
 
 networks:
   default:

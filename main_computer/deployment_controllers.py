@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 CONTROLLER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$")
 DEFAULT_LOCAL_COOLIFY_ID = "coolify-local"
+DEFAULT_LOCAL_COOLIFY_PORT = "18000"
 
 
 class DeploymentControllerError(ValueError):
@@ -128,7 +129,15 @@ def _normalize_string_list(value: object, *, default: tuple[str, ...] = ()) -> t
 
 
 def default_local_coolify_base_url() -> str:
-    return _normalize_url(os.environ.get("MAIN_COMPUTER_COOLIFY_LOCAL_URL") or "http://localhost:8000")
+    configured_url = os.environ.get("MAIN_COMPUTER_COOLIFY_LOCAL_URL")
+    if configured_url:
+        return _normalize_url(configured_url)
+    port = str(
+        os.environ.get("MAIN_COMPUTER_COOLIFY_APP_PORT")
+        or os.environ.get("APP_PORT")
+        or DEFAULT_LOCAL_COOLIFY_PORT
+    ).strip()
+    return _normalize_url(f"http://localhost:{port}")
 
 
 def default_local_coolify_token_ref() -> str:
