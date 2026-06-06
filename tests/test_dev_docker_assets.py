@@ -12,7 +12,6 @@ def test_dev_docker_compose_defines_core_services() -> None:
     for service in (
         "main-computer:",
         "hub-worker:",
-        "ethereum-dev:",
         "executor-image:",
         "executor-smoke:",
     ):
@@ -28,14 +27,15 @@ def test_dev_docker_compose_defines_core_services() -> None:
     assert "docker/dev/app.Dockerfile" in compose
     assert "docker/executor/Dockerfile" in compose
     assert "MAIN_COMPUTER_EXECUTOR_ENABLED: \"0\"" in compose
-    assert "MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL: http://ethereum-dev:8545" in compose
+    assert "MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL: ${MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL:-http://host.docker.internal:18545}" in compose
     assert compose.count('MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK: "1"') >= 2
     assert "git-server:" not in compose
     assert "git-server-prod:" not in compose
     assert "gitea/gitea:1.24" not in compose
     assert "profiles: [\"git\"]" not in compose
-    assert "entrypoint:\n      - anvil" in compose
-    assert "- --chain-id\n      - \"42424242\"" in compose
+    assert "ethereum-dev:" not in compose
+    assert "MAIN_COMPUTER_ETHEREUM_RPC_PORT" not in compose
+    assert "entrypoint:\n      - anvil" not in compose
 
 
 def test_gitea_has_standalone_shared_http_compose_stack() -> None:
@@ -106,7 +106,7 @@ def test_readme_points_to_dev_docker_stack() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "## Dev Docker stack" in readme
-    assert "docker compose -f docker-compose.dev.yml up --build ethereum-dev" in readme
+    assert "python .\\tools\\dev-chain-reset.py --yes --run-id test-machine-dev --environment dev --port-strategy replace-project" in readme
     assert "python -m main_computer.cli hub --host 127.0.0.1 --port 8770" in readme
     assert "deploy/coolify/hub/docker-compose.yml" not in readme
     assert "docker compose -f docker-compose.gitea.yml up -d gitea" in readme

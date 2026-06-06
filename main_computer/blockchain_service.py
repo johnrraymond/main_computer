@@ -19,16 +19,23 @@ SleepFunc = Callable[[float], None]
 TimeFunc = Callable[[], float]
 OutputFunc = Callable[[str], None]
 RpcProbeFunc = Callable[[str, int], dict[str, Any]]
+ContractCodeProbeFunc = Callable[[str, str], dict[str, Any]]
 
 
 DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
 DEFAULT_LIGHT_CHECK_INTERVAL_S = 60.0
 DEFAULT_CHAIN_ID = 42424242
 DEFAULT_RPC_URL = "http://127.0.0.1:18545"
+DEPLOYMENT_CURRENT_RELATIVE_PATH = Path("runtime") / "deployments" / "current.json"
 SERVICE_NAME = "main-computer-blockchain-service"
-DEV_COMPOSE_SERVICE = "ethereum-dev"
-DEV_RUNTIME_SOURCE = "blockchain-service-dev-compose"
+DEPLOYMENT_RUNTIME_SOURCE = "runtime-deployments-current"
 EXTERNAL_RUNTIME_SOURCE = "blockchain-service-env"
+REQUIRED_CONTRACT_KEYS = ("hub_credit_bridge_escrow",)
+DEV_CHAIN_RESET_COMMAND = (
+    "python .\\tools\\dev-chain-reset.py --yes --run-id test-machine-dev "
+    "--environment dev --port-strategy replace-project"
+)
+DEV_CHAIN_DIAGNOSIS_COMMAND = "python .\\tools\\dev-chain-diagnosis.py --state .\\runtime\\deployments\\current.json"
 DEFAULT_DEV_OFFICES = (
     {
         "office": "O0",
@@ -171,6 +178,61 @@ def _probe_json_rpc_chain_id(rpc_url: str, expected_chain_id: int) -> dict[str, 
     }
 
 
+
+def _post_json_rpc(rpc_url: str, method: str, params: list[Any]) -> tuple[dict[str, Any] | None, str | None]:
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode("utf-8")
+    request = Request(
+        rpc_url,
+        data=body,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=2.0) as response:
+            payload = json.loads(response.read(64 * 1024).decode("utf-8", errors="replace"))
+    except (OSError, URLError, TimeoutError, json.JSONDecodeError) as exc:
+        return None, str(exc)
+    if not isinstance(payload, dict):
+        return None, "JSON-RPC endpoint returned a non-object response"
+    return payload, None
+
+
+def _probe_json_rpc_contract_code(rpc_url: str, address: str) -> dict[str, Any]:
+    payload, error = _post_json_rpc(rpc_url, "eth_getCode", [address, "latest"])
+    if error:
+        return {
+            "ok": False,
+            "state": "down",
+            "message": "blockchain JSON-RPC endpoint did not answer eth_getCode",
+            "rpc_url": rpc_url,
+            "address": address,
+            "error": error,
+        }
+    result = payload.get("result") if isinstance(payload, dict) else None
+    if not isinstance(result, str):
+        return {
+            "ok": False,
+            "state": "invalid-response",
+            "message": "blockchain JSON-RPC endpoint returned an invalid eth_getCode result",
+            "rpc_url": rpc_url,
+            "address": address,
+            "payload": payload,
+        }
+    has_code = result not in ("", "0x", "0X")
+    return {
+        "ok": has_code,
+        "state": "code-present" if has_code else "missing-code",
+        "message": (
+            "contract code is present at the configured address"
+            if has_code
+            else "configured contract address has no deployed code on the connected chain"
+        ),
+        "rpc_url": rpc_url,
+        "address": address,
+        "code_size_hex_chars": max(0, len(result) - 2) if result.startswith(("0x", "0X")) else len(result),
+    }
+
+
 def load_blockchain_service_state(root: Path | str) -> dict[str, Any]:
     state_path = Path(root).resolve() / "runtime" / "blockchain_service" / "state.json"
     if not state_path.exists():
@@ -204,14 +266,14 @@ def load_blockchain_service_state(root: Path | str) -> dict[str, Any]:
 class BlockchainService:
     """Boot and keep alive the blockchain substrate.
 
-    Production should provide ``~/.env.blockchain``. Until that exists, this
-    service defaults to the checked-in dev Anvil chain:
+    Production may provide ``~/.env.blockchain``. Local development without an
+    external env must use the deployment-owned golden path:
 
-        docker compose -f docker-compose.dev.yml up -d ethereum-dev
+        python tools/dev-chain-reset.py --yes --run-id test-machine-dev --environment dev --port-strategy replace-project
 
-    The service reconciles and monitors the blockchain substrate. Deployment
-    manifests such as runtime/deployments/current.json are deploy-owned and
-    must not be written by Hub runtime services.
+    The service only verifies the configured chain and deployed contract code.
+    It does not start a fallback Compose chain and must not write deployment
+    manifests such as runtime/deployments/current.json.
     """
 
     def __init__(
@@ -226,6 +288,7 @@ class BlockchainService:
         time_func: TimeFunc | None = None,
         output_func: OutputFunc | None = print,
         rpc_probe_func: RpcProbeFunc | None = None,
+        contract_code_probe_func: ContractCodeProbeFunc | None = None,
         heartbeat_interval_s: float = DEFAULT_HEARTBEAT_INTERVAL_S,
         light_check_interval_s: float = DEFAULT_LIGHT_CHECK_INTERVAL_S,
     ) -> None:
@@ -233,14 +296,11 @@ class BlockchainService:
         self.runtime_dir = self.root / "runtime" / "blockchain_service"
         self.state_path = self.runtime_dir / "state.json"
         self.docker_command = (docker_command or "docker").strip() or "docker"
+        # Kept as an accepted constructor/CLI option for compatibility. The
+        # blockchain service no longer starts a Compose-managed dev chain.
         self.compose_file = Path(compose_file) if compose_file else self.root / "docker-compose.dev.yml"
         if not self.compose_file.is_absolute():
             self.compose_file = (self.root / self.compose_file).resolve()
-        self.compose_project = (
-            os.environ.get("MAIN_COMPUTER_BLOCKCHAIN_COMPOSE_PROJECT")
-            or os.environ.get("MAIN_COMPUTER_DEV_COMPOSE_PROJECT")
-            or ""
-        ).strip()
         env_override = blockchain_env_path or os.environ.get("MAIN_COMPUTER_BLOCKCHAIN_ENV")
         self.blockchain_env_path = Path(env_override).expanduser() if env_override else _default_blockchain_env_path()
         self.runner = runner or subprocess.run
@@ -248,6 +308,7 @@ class BlockchainService:
         self.time = time_func or time.monotonic
         self.output = output_func
         self.rpc_probe = rpc_probe_func or _probe_json_rpc_chain_id
+        self.contract_code_probe = contract_code_probe_func or _probe_json_rpc_contract_code
         self.heartbeat_interval_s = max(1.0, float(heartbeat_interval_s))
         self.light_check_interval_s = max(self.heartbeat_interval_s, float(light_check_interval_s))
         self._last_state: dict[str, Any] = {}
@@ -357,108 +418,219 @@ class BlockchainService:
                 "source": EXTERNAL_RUNTIME_SOURCE,
                 "environment": environment,
                 "offices": offices,
+                "contracts": {},
             }
 
-        rpc_url = os.environ.get("MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL") or DEFAULT_RPC_URL
-        chain_id = _coerce_int(os.environ.get("MAIN_COMPUTER_ENERGY_CHAIN_ID"), default=DEFAULT_CHAIN_ID)
+        return self._deployment_current_config()
+
+    def _deployment_current_path(self) -> Path:
+        return self.root / DEPLOYMENT_CURRENT_RELATIVE_PATH
+
+    def _deployment_current_config(self) -> dict[str, Any]:
+        path = self._deployment_current_path()
+        if not path.exists():
+            return {
+                "ok": False,
+                "mode": "deployment-current",
+                "state": "missing-deployment-current",
+                "message": (
+                    "runtime/deployments/current.json is missing; the blockchain golden path has not been "
+                    f"published. Run: {DEV_CHAIN_RESET_COMMAND}"
+                ),
+                "deployment_path": str(path),
+                "reset_command": DEV_CHAIN_RESET_COMMAND,
+                "diagnosis_command": DEV_CHAIN_DIAGNOSIS_COMMAND,
+            }
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return {
+                "ok": False,
+                "mode": "deployment-current",
+                "state": "invalid-deployment-current",
+                "message": "runtime/deployments/current.json could not be read as valid JSON",
+                "deployment_path": str(path),
+                "error": str(exc),
+                "reset_command": DEV_CHAIN_RESET_COMMAND,
+                "diagnosis_command": DEV_CHAIN_DIAGNOSIS_COMMAND,
+            }
+        if not isinstance(payload, dict):
+            return {
+                "ok": False,
+                "mode": "deployment-current",
+                "state": "invalid-deployment-current",
+                "message": "runtime/deployments/current.json must contain a JSON object",
+                "deployment_path": str(path),
+                "reset_command": DEV_CHAIN_RESET_COMMAND,
+                "diagnosis_command": DEV_CHAIN_DIAGNOSIS_COMMAND,
+            }
+
+        chain = payload.get("chain") if isinstance(payload.get("chain"), dict) else {}
+        deployment_rpc_url = str(chain.get("rpc_url") or chain.get("host_rpc_url") or DEFAULT_RPC_URL)
+        env_rpc_url = os.environ.get("MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL")
+        rpc_url = env_rpc_url or deployment_rpc_url
+        chain_id = _coerce_int(os.environ.get("MAIN_COMPUTER_ENERGY_CHAIN_ID") or chain.get("chain_id"), default=DEFAULT_CHAIN_ID)
+        rpc_source = "environment" if env_rpc_url else "deployment-current"
+        contracts = payload.get("contracts") or payload.get("deployments") or {}
+        if not isinstance(contracts, dict):
+            contracts = {}
+
+        missing_required: list[str] = []
+        invalid_required: list[str] = []
+        for key in REQUIRED_CONTRACT_KEYS:
+            record = contracts.get(key)
+            address = record.get("address") if isinstance(record, dict) else None
+            if address is None:
+                missing_required.append(key)
+            elif not _valid_address(address):
+                invalid_required.append(key)
+
+        if missing_required or invalid_required:
+            parts: list[str] = []
+            if missing_required:
+                parts.append("missing " + ", ".join(missing_required))
+            if invalid_required:
+                parts.append("invalid address for " + ", ".join(invalid_required))
+            return {
+                "ok": False,
+                "mode": "deployment-current",
+                "state": "incomplete-deployment-current",
+                "message": (
+                    "runtime/deployments/current.json is not a usable golden-path deployment "
+                    f"({'; '.join(parts)}). Run: {DEV_CHAIN_RESET_COMMAND}"
+                ),
+                "deployment_path": str(path),
+                "rpc_url": rpc_url,
+                "chain_id": chain_id,
+                "contracts": contracts,
+                "rpc_source": rpc_source,
+                "reset_command": DEV_CHAIN_RESET_COMMAND,
+                "diagnosis_command": DEV_CHAIN_DIAGNOSIS_COMMAND,
+            }
+
+        source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
         return {
             "ok": True,
-            "mode": "dev-compose",
+            "mode": "deployment-current",
             "state": "configured",
-            "message": ".env.blockchain is absent; using checked-in dev ethereum-dev chain",
+            "message": "using deployment-owned runtime/deployments/current.json golden-path blockchain config",
             "env_path": str(self.blockchain_env_path),
+            "deployment_path": str(path),
             "rpc_url": rpc_url,
             "chain_id": chain_id,
-            "source": DEV_RUNTIME_SOURCE,
-            "environment": "dev",
-            "offices": _default_dev_office_records(),
-            "compose_file": str(self.compose_file),
-            "compose_project": self.compose_project or None,
-            "compose_service": DEV_COMPOSE_SERVICE,
-            "rpc_source": "environment" if os.environ.get("MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL") else "default",
+            "source": DEPLOYMENT_RUNTIME_SOURCE,
+            "deployment_source": source.get("kind") or "unknown",
+            "deployment_run_id": payload.get("run_id"),
+            "environment": str(payload.get("environment") or "dev"),
+            "offices": payload.get("offices") if isinstance(payload.get("offices"), list) else [],
+            "contracts": contracts,
+            "rpc_source": rpc_source,
+            "reset_command": DEV_CHAIN_RESET_COMMAND,
+            "diagnosis_command": DEV_CHAIN_DIAGNOSIS_COMMAND,
         }
 
     def _runtime_config_status(self, config: dict[str, Any]) -> dict[str, Any]:
         if not config.get("ok"):
-            return self._component(ok=False, state="blocked", message="blockchain config is not ready")
+            return self._component(
+                ok=False,
+                state="blocked",
+                message=str(config.get("message") or "blockchain config is not ready"),
+                reset_command=config.get("reset_command"),
+                diagnosis_command=config.get("diagnosis_command"),
+            )
 
         return self._component(
             ok=True,
             state="ready",
-            message="blockchain runtime config is available in memory; deployment manifests are deploy-owned",
+            message="blockchain runtime config is available; deployment manifests are deploy-owned",
             source=config.get("source"),
+            deployment_source=config.get("deployment_source"),
+            deployment_path=config.get("deployment_path"),
             environment=str(config.get("environment") or "external"),
             rpc_url=config.get("rpc_url"),
             chain_id=config.get("chain_id"),
             offices=config.get("offices") or [],
+            contracts=config.get("contracts") or {},
         )
 
-    def _reconcile_dev_chain_without_resetting_running_default(self, config: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-        """Use an already-running default dev chain before touching compose.
-
-        The development blockchain is stateful enough that a normal application
-        refresh should not reset it. If the configured/default RPC endpoint is
-        already answering with the expected chain id, this method reports the
-        chain ready and deliberately skips docker compose. Compose is only used
-        when the default RPC endpoint is not already up.
-        """
-
-        rpc_url = str(config.get("rpc_url") or DEFAULT_RPC_URL)
-        chain_id = int(config.get("chain_id") or DEFAULT_CHAIN_ID)
-        rpc = self.rpc_probe(rpc_url, chain_id)
-        if rpc.get("ok"):
-            docker = self._component(
+    def _contract_code_status(self, config: dict[str, Any], rpc: dict[str, Any]) -> dict[str, Any]:
+        if not config.get("ok"):
+            return self._component(ok=False, state="blocked", message="blockchain config is not ready")
+        if config.get("mode") != "deployment-current":
+            return self._component(
                 ok=True,
-                state="not-touched",
-                message="default dev blockchain RPC is already up; docker was not touched",
-                compose_action="skipped",
-                reused_existing_rpc=True,
-                rpc_url=rpc_url,
+                state="not-required",
+                message="external blockchain mode does not require deployment-current contract-code checks",
             )
-            compose = self._component(
-                ok=True,
-                state="already-running",
-                message="default dev blockchain RPC is already up; ethereum-dev compose start was skipped",
-                compose_file=str(self.compose_file),
-                compose_service=DEV_COMPOSE_SERVICE,
-                compose_action="skipped",
-                started=False,
-                reused_existing_rpc=True,
-                rpc_url=rpc_url,
-            )
-            return docker, compose, rpc
-
-        docker = self._reconcile_docker_engine()
-        if docker.get("ok"):
-            compose = self._reconcile_dev_compose_stack()
-        else:
-            compose = self._component(
+        if not rpc.get("ok"):
+            return self._component(
                 ok=False,
                 state="blocked",
-                message="docker is not ready; ethereum-dev was not started",
-                compose_file=str(self.compose_file),
-                compose_service=DEV_COMPOSE_SERVICE,
-                compose_action="blocked",
+                message="RPC is not ready; deployed contract code could not be verified",
+                reset_command=config.get("reset_command"),
+                diagnosis_command=config.get("diagnosis_command"),
             )
-        rpc = self.rpc_probe(rpc_url, chain_id)
-        return docker, compose, rpc
+
+        rpc_url = str(config.get("rpc_url") or DEFAULT_RPC_URL)
+        contracts = config.get("contracts") if isinstance(config.get("contracts"), dict) else {}
+        checked: dict[str, Any] = {}
+        failures: list[str] = []
+        for key in REQUIRED_CONTRACT_KEYS:
+            record = contracts.get(key)
+            address = _valid_address(record.get("address")) if isinstance(record, dict) else None
+            if not address:
+                checked[key] = {
+                    "ok": False,
+                    "state": "missing-address",
+                    "message": "required contract address is missing from runtime/deployments/current.json",
+                }
+                failures.append(key)
+                continue
+            probe = self.contract_code_probe(rpc_url, address)
+            checked[key] = probe
+            if not probe.get("ok"):
+                failures.append(key)
+
+        if failures:
+            return self._component(
+                ok=False,
+                state="missing-contract-code",
+                message=(
+                    "configured deployment does not match the connected chain; required contract code is missing "
+                    f"for {', '.join(failures)}. Run: {DEV_CHAIN_DIAGNOSIS_COMMAND}"
+                ),
+                checked_contracts=checked,
+                reset_command=config.get("reset_command"),
+                diagnosis_command=config.get("diagnosis_command"),
+            )
+
+        return self._component(
+            ok=True,
+            state="ready",
+            message="required deployment contract code is present on the connected chain",
+            checked_contracts=checked,
+        )
 
     def _full_boot_reconcile(self) -> dict[str, Any]:
         state = self._base_state("booting")
         config = self._chain_config()
         runtime = self._runtime_config_status(config)
-
-        if not config.get("ok"):
-            docker = self._component(ok=False, state="blocked", message="blockchain config is not ready")
-            compose = self._component(ok=False, state="blocked", message="blockchain config is not ready")
-            rpc = self._component(ok=False, state="blocked", message="blockchain config is not ready")
-        elif config.get("mode") == "dev-compose":
-            docker, compose, rpc = self._reconcile_dev_chain_without_resetting_running_default(config)
-        else:
-            docker = self._component(ok=True, state="not-required", message="external blockchain mode does not require local docker")
-            compose = self._component(ok=True, state="not-required", message="external blockchain mode does not start ethereum-dev")
+        docker = self._component(
+            ok=True,
+            state="not-required",
+            message="blockchain service does not start Docker; use tools/dev-chain-reset.py for local dev-chain lifecycle",
+        )
+        compose = self._component(
+            ok=True,
+            state="removed",
+            message="legacy Compose dev-chain fallback has been removed; runtime/deployments/current.json is the local golden path",
+        )
+        if config.get("ok"):
             rpc = self.rpc_probe(str(config.get("rpc_url") or DEFAULT_RPC_URL), int(config.get("chain_id") or DEFAULT_CHAIN_ID))
-        ok = bool(config.get("ok") and runtime.get("ok") and docker.get("ok") and compose.get("ok") and rpc.get("ok"))
+        else:
+            rpc = self._component(ok=False, state="blocked", message="blockchain config is not ready")
+        contracts = self._contract_code_status(config, rpc)
+        ok = bool(config.get("ok") and runtime.get("ok") and docker.get("ok") and compose.get("ok") and rpc.get("ok") and contracts.get("ok"))
         state.update(
             {
                 "ok": ok,
@@ -471,12 +643,14 @@ class BlockchainService:
                 "docker": docker,
                 "compose": compose,
                 "rpc": rpc,
+                "contracts": contracts,
                 "components": {
                     "config": config,
                     "runtime": runtime,
                     "docker": docker,
                     "compose": compose,
                     "rpc": rpc,
+                    "contracts": contracts,
                 },
             }
         )
@@ -486,17 +660,22 @@ class BlockchainService:
     def _light_keepalive(self, state: dict[str, Any]) -> dict[str, Any]:
         config = self._chain_config()
         runtime = self._runtime_config_status(config)
-        if not config.get("ok"):
-            docker = self._component(ok=False, state="blocked", message="blockchain config is not ready")
-            compose = self._component(ok=False, state="blocked", message="blockchain config is not ready")
-            rpc = self._component(ok=False, state="blocked", message="blockchain config is not ready")
-        elif config.get("mode") == "dev-compose":
-            docker, compose, rpc = self._reconcile_dev_chain_without_resetting_running_default(config)
-        else:
-            docker = self._component(ok=True, state="not-required", message="external blockchain mode does not require local docker")
-            compose = self._component(ok=True, state="not-required", message="external blockchain mode does not start ethereum-dev")
+        docker = self._component(
+            ok=True,
+            state="not-required",
+            message="blockchain service does not start Docker; use tools/dev-chain-reset.py for local dev-chain lifecycle",
+        )
+        compose = self._component(
+            ok=True,
+            state="removed",
+            message="legacy Compose dev-chain fallback has been removed; runtime/deployments/current.json is the local golden path",
+        )
+        if config.get("ok"):
             rpc = self.rpc_probe(str(config.get("rpc_url") or DEFAULT_RPC_URL), int(config.get("chain_id") or DEFAULT_CHAIN_ID))
-        ok = bool(config.get("ok") and runtime.get("ok") and compose.get("ok") and rpc.get("ok"))
+        else:
+            rpc = self._component(ok=False, state="blocked", message="blockchain config is not ready")
+        contracts = self._contract_code_status(config, rpc)
+        ok = bool(config.get("ok") and runtime.get("ok") and compose.get("ok") and rpc.get("ok") and contracts.get("ok"))
         state.update(
             {
                 "ok": ok,
@@ -510,88 +689,18 @@ class BlockchainService:
                 "docker": docker,
                 "compose": compose,
                 "rpc": rpc,
+                "contracts": contracts,
                 "components": {
                     "config": config,
                     "runtime": runtime,
                     "docker": docker,
                     "compose": compose,
                     "rpc": rpc,
+                    "contracts": contracts,
                 },
             }
         )
         return state
-
-    def _reconcile_docker_engine(self) -> dict[str, Any]:
-        version = self._run([self.docker_command, "version"], timeout=12)
-        if version.returncode != 0:
-            return self._component(
-                ok=False,
-                state="down",
-                message="docker engine is not responding",
-                returncode=version.returncode,
-                stdout=_truncate(version.stdout),
-                error=_truncate(version.stderr) or "docker version failed",
-            )
-        compose = self._run([self.docker_command, "compose", "version"], timeout=12)
-        if compose.returncode != 0:
-            return self._component(
-                ok=False,
-                state="compose-missing",
-                message="docker compose is not available",
-                returncode=compose.returncode,
-                stdout=_truncate(compose.stdout),
-                error=_truncate(compose.stderr) or "docker compose version failed",
-            )
-        return self._component(ok=True, state="ready", message="docker engine and compose are available")
-
-    def _compose_command(self, *args: str) -> list[str]:
-        command = [self.docker_command, "compose"]
-        if self.compose_project:
-            command.extend(["--project-name", self.compose_project])
-        command.extend(["-f", str(self.compose_file), *args])
-        return command
-
-    def _reconcile_dev_compose_stack(self) -> dict[str, Any]:
-        if not self.compose_file.exists():
-            return self._component(
-                ok=False,
-                state="missing-compose-file",
-                message="docker-compose.dev.yml is missing",
-                compose_file=str(self.compose_file),
-                compose_project=self.compose_project or None,
-            )
-        up = self._run(self._compose_command("up", "-d", DEV_COMPOSE_SERVICE), timeout=120)
-        if up.returncode != 0:
-            return self._component(
-                ok=False,
-                state="start-failed",
-                message="docker compose failed to start ethereum-dev",
-                command=up.args if isinstance(up.args, list) else self._compose_command("up", "-d", DEV_COMPOSE_SERVICE),
-                returncode=up.returncode,
-                stdout=_truncate(up.stdout),
-                error=_truncate(up.stderr) or "docker compose up failed",
-                compose_file=str(self.compose_file),
-                compose_project=self.compose_project or None,
-            )
-        return self._check_dev_compose_stack(started=True)
-
-    def _check_dev_compose_stack(self, *, started: bool = False) -> dict[str, Any]:
-        ps = self._run(self._compose_command("ps", "--services", "--status", "running"), timeout=30)
-        services = sorted({line.strip() for line in str(ps.stdout or "").splitlines() if line.strip()})
-        ok = ps.returncode == 0 and DEV_COMPOSE_SERVICE in services
-        return self._component(
-            ok=ok,
-            state="ready" if ok else "starting",
-            message="ethereum-dev compose service is running" if ok else "ethereum-dev compose service is not running yet",
-            compose_file=str(self.compose_file),
-            compose_project=self.compose_project or None,
-            compose_service=DEV_COMPOSE_SERVICE,
-            started=started,
-            running_services=services,
-            returncode=ps.returncode,
-            stdout=_truncate(ps.stdout),
-            error=_truncate(ps.stderr),
-        )
 
     def _emit_completed_process_to_main_log(self, result: subprocess.CompletedProcess[str]) -> None:
         command = result.args if isinstance(result.args, list) else []

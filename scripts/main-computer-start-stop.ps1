@@ -207,11 +207,9 @@ function Get-ModeDefaultEnvironment([string]$RootPath, [string]$Mode) {
     MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET = "main-computer-onlyoffice-local-secret"
     MAIN_COMPUTER_DEV_COMPOSE_PROJECT = "main-computer-unleashed"
     MAIN_COMPUTER_EXECUTOR_COMPOSE_PROJECT = "main-computer-unleashed"
-    MAIN_COMPUTER_BLOCKCHAIN_COMPOSE_PROJECT = "main-computer-unleashed"
     MAIN_COMPUTER_DOCKER_VIEWPORT_PORT = "18765"
     MAIN_COMPUTER_HUB_PORT = "8770"
     MAIN_COMPUTER_HUB_WORKER_PORT = "8771"
-    MAIN_COMPUTER_ETHEREUM_RPC_PORT = "18545"
     MAIN_COMPUTER_HUB_URL = "http://127.0.0.1:8770"
     OLLAMA_BASE_URL = "http://127.0.0.1:11434"
     MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL = "http://127.0.0.1:18545"
@@ -716,7 +714,7 @@ function New-StartSession(
     "main-computer-applications"
 
   $devComposeProject = Get-SafeDockerName `
-    (Get-EnvFirstValue @("MAIN_COMPUTER_DEV_COMPOSE_PROJECT", "MAIN_COMPUTER_EXECUTOR_COMPOSE_PROJECT", "MAIN_COMPUTER_BLOCKCHAIN_COMPOSE_PROJECT") "main-computer-unleashed") `
+    (Get-EnvFirstValue @("MAIN_COMPUTER_DEV_COMPOSE_PROJECT", "MAIN_COMPUTER_EXECUTOR_COMPOSE_PROJECT") "main-computer-unleashed") `
     "main-computer-unleashed"
 
   $localPlatformProject = Get-SafeDockerName `
@@ -799,15 +797,14 @@ function New-StartSession(
     )
     docker_stacks = @(
       [ordered]@{
-        name = "executor-and-blockchain-unleashed"
+        name = "executor-unleashed"
         docker_command = "docker"
         compose_file = $devCompose
         project_name = $devComposeProject
         env_file = $null
-        started_by = @("main_computer.executor_service", "main_computer.blockchain_service")
+        started_by = @("main_computer.executor_service")
         start_commands = @(
-          @("docker", "compose", "--project-name", $devComposeProject, "-f", $devCompose, "up", "-d"),
-          @("docker", "compose", "--project-name", $devComposeProject, "-f", $devCompose, "up", "-d", "ethereum-dev")
+          @("docker", "compose", "--project-name", $devComposeProject, "-f", $devCompose, "--profile", "executor", "build", "executor-image")
         )
         stop_command = @("docker", "compose", "--project-name", $devComposeProject, "-f", $devCompose, "down", "--remove-orphans")
       },
@@ -1582,7 +1579,7 @@ function Get-DockerStacks([string]$RootPath, [object]$Session) {
     "main-computer-applications"
 
   $devComposeProject = Get-SafeDockerName `
-    (Get-EnvFirstValue @("MAIN_COMPUTER_DEV_COMPOSE_PROJECT", "MAIN_COMPUTER_EXECUTOR_COMPOSE_PROJECT", "MAIN_COMPUTER_BLOCKCHAIN_COMPOSE_PROJECT") "main-computer-unleashed") `
+    (Get-EnvFirstValue @("MAIN_COMPUTER_DEV_COMPOSE_PROJECT", "MAIN_COMPUTER_EXECUTOR_COMPOSE_PROJECT") "main-computer-unleashed") `
     "main-computer-unleashed"
 
   $localPlatformProject = Get-SafeDockerName `

@@ -207,8 +207,17 @@ class ViewportEnergyRoutesMixin:
         except Exception:
             return {}
 
-    def _save_worker_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
-        cleaned = self._sanitize_worker_settings(settings)
+    def _save_worker_settings(self, settings: dict[str, Any], *, changed_fields: list[str] | None = None) -> dict[str, Any]:
+        incoming = self._sanitize_worker_settings(settings)
+        allowed_changes = {str(field or "").strip() for field in (changed_fields or []) if str(field or "").strip()}
+        if allowed_changes:
+            cleaned = self._sanitize_worker_settings(self._load_worker_settings())
+            for key in allowed_changes:
+                if key in incoming:
+                    cleaned[key] = incoming[key]
+            cleaned = self._sanitize_worker_settings(cleaned)
+        else:
+            cleaned = incoming
         path = self._worker_settings_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(cleaned, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
@@ -231,7 +240,11 @@ class ViewportEnergyRoutesMixin:
             if not self._worker_ui_client_is_local():
                 self._send_json({"ok": False, "error": "Worker settings are only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
                 return
-            settings = self._save_worker_settings(self._read_json())
+            body = self._read_json()
+            changed_fields = body.get("changed_fields") if isinstance(body, dict) else None
+            if not isinstance(changed_fields, list):
+                changed_fields = None
+            settings = self._save_worker_settings(body, changed_fields=changed_fields)
             self.server.signal("api-worker-settings-save", remote_enabled=bool(settings.get("remoteEnabled")))
             self._send_json({"ok": True, "settings": settings})
         except Exception as exc:

@@ -39,7 +39,7 @@ class FakeRunner:
         if "compose" in command and "up" in command and "-d" in command:
             return subprocess.CompletedProcess(command, 0, stdout="started\n", stderr="")
         if "compose" in command and "ps" in command:
-            return subprocess.CompletedProcess(command, 0, stdout="hub\nethereum-dev\n", stderr="")
+            return subprocess.CompletedProcess(command, 0, stdout="hub\nexecutor-image\n", stderr="")
         return subprocess.CompletedProcess(command, 99, stdout="", stderr=f"unexpected command: {command!r}")
 
 

@@ -6,25 +6,26 @@ wrap the hub runtime in Docker.
 The old dev-stack hub service has been removed, and this stack no longer
 includes an Ollama service. Run the hub on the host or point workers at a
 remote hub; run Ollama on the host or point workers at a remote model server.
-This stack keeps only supporting dev services such as Anvil, optional workers,
-ONLYOFFICE, and executor image targets.
+This stack keeps only optional workers, ONLYOFFICE, and executor image targets.
+The app-facing Anvil dev chain is managed by `tools/dev-chain-reset.py`, not Docker Compose.
 
 ## What this brings up
 
 ```text
 docker-compose.dev.yml
 ├─ hub-worker       optional Ollama-backed worker on :8771
-├─ ethereum-dev     Anvil JSON-RPC dev chain on :8545
 ├─ main-computer    optional viewport container on :8765
 ├─ onlyoffice       optional ONLYOFFICE Docs service
 └─ executor-image   build target for the existing DockerExecutor image
 ```
 
-## Start the shared dev chain service
+## Start the shared dev chain
 
 ```powershell
-docker compose -f docker-compose.dev.yml up --build ethereum-dev
+python .\tools\dev-chain-reset.py --yes --run-id test-machine-dev --environment dev --port-strategy replace-project
 ```
+
+This publishes `runtime/deployments/current.json`, which the app verifies before using bridge contracts.
 
 ## Start the hub on the host
 
@@ -187,5 +188,6 @@ python -m main_computer.cli chat `
 
 ## Ethereum dev chain
 
-The `ethereum-dev` service runs Anvil on chain id `42424242`. It is a contract
-and indexer test dependency, not a runtime dependency of the host hub.
+The app-facing Anvil soft chain runs on chain id `42424242` and is owned by
+`tools/dev-chain-reset.py`. It publishes `runtime/deployments/current.json` and
+keeps Docker Compose from starting a second chain on the same RPC port.

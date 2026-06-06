@@ -415,7 +415,14 @@ def verify_state(
         env,
         contract="AlphaBetaLockout",
         keys=("alpha-beta-lockout", "AlphaBetaLockout", "alpha"),
-        env_keys=("ALPHA_BETA_LOCKOUT_ADDRESS",),
+        env_keys=("ALPHA_BETA_LOCKOUT_ADDRESS", "MAIN_COMPUTER_ALPHA_BETA_LOCKOUT_CONTRACT_ADDRESS"),
+    )
+    hub_credit_bridge_escrow = extract_contract_address(
+        state,
+        env,
+        contract="HubCreditBridgeEscrow",
+        keys=("hub_credit_bridge_escrow", "hub-credit-bridge-escrow", "HubCreditBridgeEscrow"),
+        env_keys=("HUB_CREDIT_BRIDGE_ESCROW_ADDRESS", "MAIN_COMPUTER_HUB_CREDIT_BRIDGE_ESCROW_ADDRESS"),
     )
 
     summary = {
@@ -425,6 +432,7 @@ def verify_state(
         "contracts": {
             "alpha-beta-lockout": alpha,
             "xlag-bridge-reserve": xlag,
+            "hub_credit_bridge_escrow": hub_credit_bridge_escrow,
         },
     }
 
@@ -433,7 +441,11 @@ def verify_state(
     append_check(results, "chain-id", chain_id == chain_id_expected, f"chain_id={chain_id}, expected={chain_id_expected}")
     append_check(results, "block-number", block_number >= 0, f"block={block_number}")
 
-    for key, address in (("alpha-beta-lockout", alpha), ("xlag-bridge-reserve", xlag)):
+    for key, address in (
+        ("alpha-beta-lockout", alpha),
+        ("xlag-bridge-reserve", xlag),
+        ("hub_credit_bridge_escrow", hub_credit_bridge_escrow),
+    ):
         code = str(rpc(url, "eth_getCode", [address, "latest"], timeout=timeout))
         append_check(results, f"{key}.code", code not in ("0x", "0x0", ""), f"code bytes={max((len(code) - 2) // 2, 0)}")
 

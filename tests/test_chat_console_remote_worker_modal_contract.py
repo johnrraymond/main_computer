@@ -119,6 +119,18 @@ def test_chat_console_remote_worker_modal_records_durable_intent_separate_from_c
     assert "phase6-remote-hub-" in source
 
 
+def test_chat_console_paid_overflow_readiness_rechecks_stay_silent_after_first_resolved_state() -> None:
+    source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
+
+    assert "function chatConsolePaidOverflowReadinessHasResolved" in source
+    assert "function chatConsolePaidOverflowReadinessStateChanged" in source
+    assert "const hadResolvedReadiness = chatConsolePaidOverflowReadinessHasResolved(previousReadiness);" in source
+    assert "if (!hadResolvedReadiness) {\n        chatConsoleUpdatePaidOverflowReadinessCard(readiness, paidOverflow, {phase: \"checking\", generation});\n      }" in source
+    assert "chatConsolePaidOverflowReadinessStateChanged(currentReadiness, nextReadiness, paidOverflow)" in source
+    assert "chatConsoleRemoteWorkerControlState.lastHubReadiness = nextReadiness;" in source
+    assert 'if (phase === "checking") return "checking";' not in source
+
+
 def test_chat_console_remote_worker_phase_five_intent_scope_rules() -> None:
     source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
 
@@ -282,6 +294,10 @@ def test_chat_console_paid_overflow_modal_checks_hub_multisession_key_before_pai
     assert "chatConsoleRefreshRemoteHubReadiness({pendingRequest: boundPendingRequest})" in source
     assert "await chatConsoleRefreshRemoteHubReadiness({pendingRequest})" in source
     assert "chatConsolePaidOverflowReadinessReady(paidOverflowReadiness)" in source
+    assert "function chatConsoleSavePaidOverflowSetting" in source
+    assert 'changed_fields: ["remoteEnabled"]' in source
+    assert 'data-chat-paid-overflow-setting-toggle' in source
+    assert 'chatConsoleRefreshRemoteHubReadiness({force: true})' in source
     assert "valid: False" not in source
 
     assert "def _handle_chat_console_remote_overflow_hub_readiness" in route_source

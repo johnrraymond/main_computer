@@ -72,7 +72,7 @@ python .\tools\build_contracts.py --test
 Deploy the local test chain and publish the app-facing deployment runtime:
 
 ```powershell
-python .\tools\dev-chain-reset.py --yes --run-id test-machine-dev --environment dev --port-strategy auto
+python .\tools\dev-chain-reset.py --yes --run-id test-machine-dev --environment dev --port-strategy replace-project
 python .\tools\dev-chain-diagnosis.py --state .\runtime\deployments\current.json
 ```
 
@@ -228,3 +228,16 @@ python -m playwright install chromium
 ```
 
 Some tests expect Docker Desktop, WSL, Ollama, local ports, or other external services to be available.
+
+
+## Dev Docker stack
+
+The dev Compose stack is for optional containerized app/worker/support targets. It intentionally does not start a fallback chain on port `18545`; the app-facing blockchain golden path is published by `tools/dev-chain-reset.py`.
+
+```powershell
+python .\tools\dev-chain-reset.py --yes --run-id test-machine-dev --environment dev --port-strategy replace-project
+python -m main_computer.cli hub --host 127.0.0.1 --port 8770
+docker compose -f docker-compose.gitea.yml up -d gitea
+docker compose -f docker-compose.dev.yml --profile smoke run --rm executor-smoke
+```
+

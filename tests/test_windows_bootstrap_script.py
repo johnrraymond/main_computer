@@ -1159,9 +1159,9 @@ def test_python_bootstrapper_writes_mode_scoped_template_ports_and_projects() ->
     assert 'env["MAIN_COMPUTER_INSTANCE_NAME"] = instance_name' in cli
     assert 'env["MAIN_COMPUTER_DEV_COMPOSE_PROJECT"] = dev_compose_project' in cli
     assert 'env["MAIN_COMPUTER_EXECUTOR_COMPOSE_PROJECT"] = dev_compose_project' in cli
-    assert 'env["MAIN_COMPUTER_BLOCKCHAIN_COMPOSE_PROJECT"] = dev_compose_project' in cli
+    assert 'env["MAIN_COMPUTER_BLOCKCHAIN_COMPOSE_PROJECT"]' not in cli
     assert 'env["MAIN_COMPUTER_HUB_PORT"] = str(profile.get("hub_port", mode_defaults["hub_port"]))' in cli
-    assert 'env["MAIN_COMPUTER_ETHEREUM_RPC_PORT"] = str(profile.get("ethereum_rpc_port", mode_defaults["ethereum_rpc_port"]))' in cli
+    assert 'env["MAIN_COMPUTER_ETHEREUM_RPC_PORT"]' not in cli
     assert 'env["OLLAMA_BASE_URL"] = "http://127.0.0.1:11434"' in cli
     assert ("ollama" + "_host_port") not in cli
     assert ("MAIN_COMPUTER_" + "OLLAMA_HOST_PORT") not in cli

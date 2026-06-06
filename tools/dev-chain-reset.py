@@ -153,7 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_DEPLOYMENT_ENVIRONMENT,
         help="Deployment environment name for the production-shaped runtime publication.",
     )
-    parser.add_argument("--service", default="ethereum-dev", help="Accepted for compatibility; not used by soft deploy.")
+    parser.add_argument("--service", default="soft-chain", help="Accepted for compatibility; not used by soft deploy.")
     parser.add_argument("--chain-id", type=int, default=DEFAULT_CHAIN_ID)
     parser.add_argument("--host-rpc-url", default=DEFAULT_HOST_RPC_URL)
     parser.add_argument(
@@ -631,6 +631,38 @@ def run_command(
     return completed
 
 
+def print_output(text: str | None, *, stream=None) -> None:
+    if not text:
+        return
+    print(text, end="" if text.endswith("\n") else "\n", file=stream or sys.stdout)
+
+
+def is_transient_forge_block_fetch_warning(line: str) -> bool:
+    stripped = line.strip()
+    return (
+        " ERROR alloy_provider::blocks: failed to fetch block number=" in stripped
+        and " err=error sending request for url " in stripped
+    )
+
+
+def split_transient_forge_warnings(stderr: str | None) -> tuple[list[str], list[str]]:
+    transient: list[str] = []
+    remaining: list[str] = []
+    for line in (stderr or "").splitlines():
+        if is_transient_forge_block_fetch_warning(line):
+            transient.append(line)
+        else:
+            remaining.append(line)
+    return transient, remaining
+
+
+def code_byte_count(code: object) -> int:
+    clean = str(code or "").removeprefix("0x")
+    if not clean or clean == "0":
+        return 0
+    return max(len(clean) // 2, 0)
+
+
 def docker_ps_command() -> list[str]:
     return [docker_executable(), "ps", "-a", "--format", "{{.ID}}\t{{.Names}}\t{{.Ports}}"]
 
@@ -788,14 +820,43 @@ def wait_for_rpc(url: str, chain_id: int, timeout_s: float) -> None:
     raise RuntimeError(f"RPC did not become ready at {url}: {last_error}")
 
 
-def rpc(url: str, method: str, params: list | None = None) -> object:
+def rpc(url: str, method: str, params: list | None = None, *, timeout_s: float = 3.0) -> object:
     payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}).encode("utf-8")
     request = Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
-    with urlopen(request, timeout=3) as response:
+    with urlopen(request, timeout=timeout_s) as response:
         data = json.loads(response.read().decode("utf-8"))
     if "error" in data:
         raise RuntimeError(data["error"])
     return data["result"]
+
+
+def verify_deployed_contract_code(args: argparse.Namespace, rid: str, spec: DeploymentSpec, address: str) -> int:
+    # Forge runs inside the Docker network and therefore uses container_rpc_url(...).
+    # This Python process runs on the host, so post-deploy verification must use the
+    # host-published RPC URL. Using the Docker-only container hostname from here can
+    # stall on host DNS/connect retries and look like a hung deploy.
+    del rid
+    url = args.host_rpc_url
+    deadline = time.monotonic() + min(max(float(args.wait_timeout_s), 1.0), 5.0)
+    last_error: Exception | None = None
+    log(f"Verifying {spec.key}.code via {url}")
+    while True:
+        try:
+            code = rpc(url, "eth_getCode", [address, "latest"], timeout_s=1.0)
+            byte_count = code_byte_count(code)
+            if byte_count > 0:
+                log(f"PASS: {spec.key}.code: code bytes={byte_count}")
+                return byte_count
+            last_error = RuntimeError("eth_getCode returned empty code")
+        except Exception as exc:  # noqa: BLE001 - deployment verification retry loop
+            last_error = exc
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.25)
+    raise RuntimeError(
+        f"{spec.key} deployed to {address}, but no contract code was readable at that address via {url}: {last_error}. "
+        "Run `python .\\tools\\dev-chain-diagnosis.py --state .\\runtime\\deployments\\current.json` after fixing the RPC."
+    )
 
 
 def parse_deployment_address(output: str) -> str | None:
@@ -970,10 +1031,13 @@ def env_payload(payload: dict) -> str:
     deployments = payload.get("deployments", {})
     xlag = deployments.get("xlag-bridge-reserve", {})
     alpha = deployments.get("alpha-beta-lockout", {})
+    hub_credit_bridge_escrow = deployments.get("hub_credit_bridge_escrow", {})
     if xlag.get("address"):
         lines.append(f"MAIN_COMPUTER_XLAG_CONTRACT_ADDRESS={xlag['address']}")
     if alpha.get("address"):
         lines.append(f"MAIN_COMPUTER_ALPHA_BETA_LOCKOUT_CONTRACT_ADDRESS={alpha['address']}")
+    if hub_credit_bridge_escrow.get("address"):
+        lines.append(f"MAIN_COMPUTER_HUB_CREDIT_BRIDGE_ESCROW_ADDRESS={hub_credit_bridge_escrow['address']}")
     for index, office in enumerate(payload.get("offices", [])):
         lines.append(f"MAIN_COMPUTER_DEV_OFFICE_{index}_ADDRESS={office['address']}")
         if office.get("private_key"):
@@ -1005,12 +1069,30 @@ def deployed_contracts(args: argparse.Namespace, rid: str, hub_admin_address: st
     result: dict[str, dict] = {}
     for spec in deployment_specs(args, hub_admin_address):
         command = docker_deploy_command(args, spec, contracts_root, rid)
-        completed = run_command(command, timeout_s=args.deploy_timeout_s)
+        completed = run_command(command, timeout_s=args.deploy_timeout_s, check=False, echo=False)
+        if completed.returncode != 0:
+            print_output(completed.stdout)
+            print_output(completed.stderr, stream=sys.stderr)
+            raise RuntimeError(f"command failed: {display_command(command)}")
+
+        transient_warnings, stderr_lines = split_transient_forge_warnings(completed.stderr)
+        print_output(completed.stdout)
+        if stderr_lines:
+            print_output("\n".join(stderr_lines), stream=sys.stderr)
+
         output = (completed.stdout or "") + "\n" + (completed.stderr or "")
         address = parse_deployment_address(output)
         tx_hash = parse_transaction_hash(output)
         if not address:
             raise RuntimeError(f"could not parse deployed address for {spec.key}")
+
+        verify_deployed_contract_code(args, rid, spec, address)
+        if transient_warnings:
+            log(
+                f"NOTE: forge emitted {len(transient_warnings)} transient block-fetch warning(s) while deploying "
+                f"{spec.key}; the deployed contract code was verified after the warning."
+            )
+
         result[spec.key] = deployment_record(spec, address=address, transaction_hash=tx_hash)
     return result
 
