@@ -13,9 +13,11 @@ DEFAULT_ENERGY_CHAIN_ID = 42424242
 DEFAULT_XLAG_CHAIN_ID = 42424242
 DEFAULT_HUB_URL = "http://127.0.0.1:8770"
 DEFAULT_HUB_ROOT = Path("runtime/hub")
+DEFAULT_ONLYOFFICE_MODE = "wsl"
 DEFAULT_ONLYOFFICE_PUBLIC_URL = "http://127.0.0.1:18084"
 DEFAULT_ONLYOFFICE_INTERNAL_URL = DEFAULT_ONLYOFFICE_PUBLIC_URL
 DEFAULT_ONLYOFFICE_DOCUMENT_SERVER_URL = DEFAULT_ONLYOFFICE_PUBLIC_URL
+DEFAULT_ONLYOFFICE_BROWSER_PUBLIC_URL: str | None = None
 DEFAULT_ONLYOFFICE_STORAGE_ROOT = Path("runtime/onlyoffice/workbooks")
 DEFAULT_ONLYOFFICE_JWT_SECRET = "main-computer-onlyoffice-local-secret"
 
@@ -136,12 +138,17 @@ class MainComputerConfig:
     hub_credits_per_request: int = 1
     hub_root: Path = DEFAULT_HUB_ROOT
     onlyoffice_enabled: bool = False
+    onlyoffice_mode: str = DEFAULT_ONLYOFFICE_MODE
     onlyoffice_public_url: str = DEFAULT_ONLYOFFICE_PUBLIC_URL
     onlyoffice_internal_url: str = DEFAULT_ONLYOFFICE_INTERNAL_URL
     onlyoffice_callback_base_url: str | None = None
+    # Browser-facing override used by Docker/Desktop localhost smoke tests.
+    # This does not change WSL startup/bridge management.
+    onlyoffice_browser_public_url: str | None = DEFAULT_ONLYOFFICE_BROWSER_PUBLIC_URL
     # Backward-compatible alias used by the first ONLYOFFICE app spike.
     onlyoffice_document_server_url: str = DEFAULT_ONLYOFFICE_DOCUMENT_SERVER_URL
     onlyoffice_public_base_url: str | None = None
+    onlyoffice_jwt_enabled: bool = True
     onlyoffice_jwt_secret: str | None = DEFAULT_ONLYOFFICE_JWT_SECRET
     onlyoffice_storage_root: Path = DEFAULT_ONLYOFFICE_STORAGE_ROOT
     fallback: bool = False
@@ -220,6 +227,20 @@ class MainComputerConfig:
         dev_chain_run_id, _dev_chain_run_id_source = _env_text("MAIN_COMPUTER_DEV_CHAIN_RUN_ID")
         dev_chain_offices = _dev_chain_offices_from_env()
 
+        onlyoffice_mode = (
+            os.environ.get("MAIN_COMPUTER_ONLYOFFICE_MODE", DEFAULT_ONLYOFFICE_MODE).strip().lower()
+            or DEFAULT_ONLYOFFICE_MODE
+        )
+        if onlyoffice_mode == "wsl-native":
+            onlyoffice_mode = "wsl"
+        onlyoffice_jwt_enabled = env_flag("MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED", True)
+        onlyoffice_jwt_secret = (
+            os.environ.get("MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET", "").strip()
+            or DEFAULT_ONLYOFFICE_JWT_SECRET
+        )
+        if not onlyoffice_jwt_enabled:
+            onlyoffice_jwt_secret = None
+
         return cls(
             workspace=workspace,
             provider=provider,
@@ -254,6 +275,7 @@ class MainComputerConfig:
             hub_credits_per_request=max(1, hub_credits_per_request),
             hub_root=Path(os.environ.get("MAIN_COMPUTER_HUB_ROOT", str(DEFAULT_HUB_ROOT))),
             onlyoffice_enabled=env_flag("MAIN_COMPUTER_ONLYOFFICE_ENABLED"),
+            onlyoffice_mode=onlyoffice_mode,
             onlyoffice_public_url=(
                 os.environ.get("MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL", "").strip().rstrip("/")
                 or os.environ.get("MAIN_COMPUTER_ONLYOFFICE_DOCUMENT_SERVER_URL", "").strip().rstrip("/")
@@ -270,6 +292,11 @@ class MainComputerConfig:
                 or os.environ.get("MAIN_COMPUTER_ONLYOFFICE_PUBLIC_BASE_URL", "").strip().rstrip("/")
                 or None
             ),
+            onlyoffice_browser_public_url=(
+                os.environ.get("MAIN_COMPUTER_ONLYOFFICE_BROWSER_PUBLIC_URL", "").strip().rstrip("/")
+                or os.environ.get("MAIN_COMPUTER_ONLYOFFICE_TWIDDLE_PUBLIC_URL", "").strip().rstrip("/")
+                or DEFAULT_ONLYOFFICE_BROWSER_PUBLIC_URL
+            ),
             onlyoffice_document_server_url=(
                 os.environ.get("MAIN_COMPUTER_ONLYOFFICE_DOCUMENT_SERVER_URL", "").strip().rstrip("/")
                 or os.environ.get("MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL", "").strip().rstrip("/")
@@ -278,10 +305,8 @@ class MainComputerConfig:
             onlyoffice_public_base_url=(
                 os.environ.get("MAIN_COMPUTER_ONLYOFFICE_PUBLIC_BASE_URL", "").strip().rstrip("/") or None
             ),
-            onlyoffice_jwt_secret=(
-                os.environ.get("MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET", "").strip()
-                or DEFAULT_ONLYOFFICE_JWT_SECRET
-            ),
+            onlyoffice_jwt_enabled=onlyoffice_jwt_enabled,
+            onlyoffice_jwt_secret=onlyoffice_jwt_secret,
             onlyoffice_storage_root=Path(
                 os.environ.get("MAIN_COMPUTER_ONLYOFFICE_STORAGE_ROOT", str(DEFAULT_ONLYOFFICE_STORAGE_ROOT))
             ),

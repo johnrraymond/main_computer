@@ -204,12 +204,18 @@ function Get-ModeDefaultEnvironment([string]$RootPath, [string]$Mode) {
     MAIN_COMPUTER_GITEA_COMPOSE_PROJECT = "main-computer-gitea"
     MAIN_COMPUTER_APPLICATIONS_COMPOSE_PROJECT = "main-computer-applications"
     MAIN_COMPUTER_ONLYOFFICE_ENABLED = "1"
-    MAIN_COMPUTER_ONLYOFFICE_MODE = "wsl"
-    MAIN_COMPUTER_ONLYOFFICE_PORT = "18084"
+    MAIN_COMPUTER_ONLYOFFICE_MODE = "docker"
+    MAIN_COMPUTER_ONLYOFFICE_PORT = "18085"
     MAIN_COMPUTER_ONLYOFFICE_PROJECT = "main-computer-onlyoffice"
-    MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL = "http://127.0.0.1:18084"
-    MAIN_COMPUTER_ONLYOFFICE_INTERNAL_URL = "http://127.0.0.1:18084"
-    MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET = "main-computer-onlyoffice-local-secret"
+    MAIN_COMPUTER_ONLYOFFICE_CONTAINER_NAME = "main-computer-onlyoffice-documentserver"
+    MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL = "http://127.0.0.1:18085"
+    MAIN_COMPUTER_ONLYOFFICE_INTERNAL_URL = "http://127.0.0.1:18085"
+    MAIN_COMPUTER_ONLYOFFICE_BROWSER_PUBLIC_URL = "http://127.0.0.1:18085"
+    MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL = "http://host.docker.internal:$port"
+    MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED = "false"
+    MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET = ""
+    MAIN_COMPUTER_ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS = "true"
+    MAIN_COMPUTER_ONLYOFFICE_ALLOW_META_IP_ADDRESS = "true"
     MAIN_COMPUTER_ONLYOFFICE_WSL_DISTRO = $onlyOfficeWslDistro
     MAIN_COMPUTER_DEV_COMPOSE_PROJECT = "main-computer-unleashed"
     MAIN_COMPUTER_EXECUTOR_COMPOSE_PROJECT = "main-computer-unleashed"
@@ -867,7 +873,9 @@ function Invoke-MainComputerOnlyOfficeControl {
   $onlyOfficePortText = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_PORT" "18084"
   $appPortText = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_CONTROL_PORT" "8765"
   $projectName = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_PROJECT" "main-computer-onlyoffice"
-  $jwtSecret = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET" "main-computer-onlyoffice-local-secret"
+  $jwtEnabled = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED" $(if ($mode -eq "docker") { "false" } else { "true" })
+  $jwtSecret = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET" $(if ($jwtEnabled -eq "false" -or $jwtEnabled -eq "0" -or $jwtEnabled -eq "disabled") { "" } else { "main-computer-onlyoffice-local-secret" })
+  $containerName = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_CONTAINER_NAME" "main-computer-onlyoffice-documentserver"
   $distro = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_WSL_DISTRO" "Ubuntu"
   if ([string]::IsNullOrWhiteSpace($distro)) {
     $distro = "Ubuntu"
@@ -884,18 +892,31 @@ function Invoke-MainComputerOnlyOfficeControl {
     return
   }
 
+  $env:MAIN_COMPUTER_ONLYOFFICE_CONTAINER_NAME = $containerName
+  $env:MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED = $jwtEnabled
+  $env:MAIN_COMPUTER_ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS" "true"
+  $env:MAIN_COMPUTER_ONLYOFFICE_ALLOW_META_IP_ADDRESS = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_ALLOW_META_IP_ADDRESS" "true"
+
   Write-Host ""
   Write-Host ("ONLYOFFICE startup control: {0} mode={1} port={2} appPort={3} distro={4}" -f $OnlyOfficeAction, $mode, $onlyOfficePort, $appPort, $distro)
   try {
-    & powershell -NoProfile -ExecutionPolicy Bypass `
-      -File $controlScript `
-      $OnlyOfficeAction `
-      -Mode $mode `
-      -Port $onlyOfficePort `
-      -AppPort $appPort `
-      -Distro $distro `
-      -ProjectName $projectName `
-      -JwtSecret $jwtSecret
+    $controlArgs = @(
+      "-NoProfile",
+      "-ExecutionPolicy", "Bypass",
+      "-File", $controlScript,
+      $OnlyOfficeAction,
+      "-Mode", $mode,
+      "-Port", $onlyOfficePort,
+      "-AppPort", $appPort,
+      "-Distro", $distro,
+      "-ProjectName", $projectName,
+      "-JwtEnabled", $jwtEnabled
+    )
+    if (-not [string]::IsNullOrWhiteSpace($jwtSecret)) {
+      $controlArgs += @("-JwtSecret", $jwtSecret)
+    }
+
+    & powershell @controlArgs
 
     if ($LASTEXITCODE -ne 0) {
       if ($OnlyOfficeAction -eq "bridge-status") {
