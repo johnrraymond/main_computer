@@ -967,7 +967,7 @@
       transition: max-height 180ms ease, opacity 160ms ease, padding-top 160ms ease;
     }
     .chat-remote-worker-control-readiness-row.expanded .chat-remote-worker-control-readiness-detail-panel {
-      max-height: 180px;
+      max-height: 520px;
       opacity: 1;
       padding-top: 4px;
     }
@@ -991,6 +991,78 @@
       font-size: 11px;
       grid-column: 2;
       line-height: 1.3;
+    }
+    .chat-remote-worker-control-paid-overflow-funding {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+      padding: 10px;
+    }
+    .chat-remote-worker-control-paid-overflow-funding-title {
+      color: var(--gold);
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .chat-remote-worker-control-paid-overflow-funding-grid {
+      display: grid;
+      gap: 6px 8px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      margin: 0;
+    }
+    .chat-remote-worker-control-paid-overflow-funding-grid div {
+      min-width: 0;
+    }
+    .chat-remote-worker-control-paid-overflow-funding-grid dt {
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+    .chat-remote-worker-control-paid-overflow-funding-grid dd {
+      color: var(--ink);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      font-weight: 800;
+      margin: 2px 0 0;
+      overflow-wrap: anywhere;
+    }
+    .chat-remote-worker-control-paid-overflow-funding-form {
+      display: grid;
+      gap: 8px;
+    }
+    .chat-remote-worker-control-paid-overflow-funding-form label {
+      align-items: center;
+      display: grid;
+      gap: 6px;
+      grid-template-columns: auto minmax(90px, 1fr);
+    }
+    .chat-remote-worker-control-paid-overflow-funding-form input {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: var(--ink);
+      min-width: 0;
+      padding: 6px 8px;
+    }
+    .chat-remote-worker-control-paid-overflow-funding-actions {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .chat-remote-worker-control-paid-overflow-funding-actions button {
+      border-radius: 999px;
+      padding: 6px 10px;
+    }
+    .chat-remote-worker-control-paid-overflow-funding-status {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      overflow-wrap: anywhere;
     }
     .chat-remote-worker-control-readiness-row[data-chat-paid-overflow-effective-state="checking"] .chat-remote-worker-control-readiness-detail,
     .chat-remote-worker-control-readiness-card.checking .chat-remote-worker-control-readiness-message {

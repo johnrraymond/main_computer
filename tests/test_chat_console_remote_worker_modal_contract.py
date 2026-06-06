@@ -417,3 +417,25 @@ def test_chat_console_paid_overflow_uses_bigint_credit_wei_helpers() -> None:
     assert "Available credit wei" in source
     assert "Approx hold wei" in source
     assert "Whole-credit hold" not in source
+
+
+def test_chat_console_paid_overflow_credits_row_exposes_funding_controls() -> None:
+    source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
+    css = CHAT_CONSOLE_CSS.read_text(encoding="utf-8")
+    route_source = (REPO_ROOT / "main_computer" / "viewport_routes_chat_console.py").read_text(encoding="utf-8")
+
+    assert "chatConsolePaidOverflowFundingControl" in source
+    assert 'row.key === "spendable-credits"' in source
+    assert "Funding controls" in source
+    assert "Check Balances" in source
+    assert "Fund" in source
+    assert "data-chat-paid-overflow-funding-amount" in source
+    assert "CHAT_CONSOLE_WORKER_BRIDGE_READINESS_STORAGE_KEY" in source
+    assert "/api/applications/worker/wallet-funding/config" in source
+    assert "/api/applications/worker/wallet-balance" in source
+    assert "/api/applications/worker/wallet-funding/balance" in source
+    assert "/api/applications/worker/wallet-funding/complete" in source
+    assert "chatConsoleRefreshRemoteHubReadiness({force: true})" in source
+    assert '"hub_url": str(context.get("hub_url") or "")' in route_source
+    assert ".chat-remote-worker-control-paid-overflow-funding" in css
+    assert "max-height: 520px" in css
