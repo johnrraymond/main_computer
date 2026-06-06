@@ -21,6 +21,42 @@ services:
     ports:
       - "127.0.0.1:28200:8055"
 
+  blog-local:
+    build:
+      context: "../site-server"
+    image: "main-computer-site-blog-site-prod:latest"
+    restart: unless-stopped
+    environment:
+      SITE_ID: "blog-site"
+      SITE_NAME: "Blog Site"
+      SITE_KIND: "blog"
+      SITE_LANE: "local"
+      MC_SITE_ID: "blog-site"
+      MC_RUNTIME_LANE: "local"
+      CONTENT_ROOT: "/app/runtime/websites"
+    volumes:
+      - "../../../runtime/websites:/app/runtime/websites:ro"
+    ports:
+      - "0.0.0.0:18081:8080"
+
+  blog-dev:
+    build:
+      context: "../site-server"
+    image: "main-computer-site-blog-site-dev:latest"
+    restart: unless-stopped
+    environment:
+      SITE_ID: "blog-site"
+      SITE_NAME: "Blog Site"
+      SITE_KIND: "blog"
+      SITE_LANE: "dev"
+      MC_SITE_ID: "blog-site"
+      MC_RUNTIME_LANE: "dev"
+      CONTENT_ROOT: "/app/runtime/websites"
+    volumes:
+      - "../../../runtime/websites:/app/runtime/websites:ro"
+    ports:
+      - "0.0.0.0:18083:8080"
+
   hub-local:
     build:
       context: "../site-server"
@@ -66,78 +102,6 @@ services:
       - "../../../runtime/websites:/app/runtime/websites:ro"
     ports:
       - "0.0.0.0:18082:8080"
-
-  johnrraymond-prod:
-    build:
-      context: "../site-server"
-    image: "main-computer-site-johnrraymond-prod:latest"
-    restart: unless-stopped
-    environment:
-      SITE_ID: "johnrraymond"
-      SITE_NAME: "johnrraymond"
-      SITE_KIND: "static-site"
-      SITE_LANE: "local"
-      MC_SITE_ID: "johnrraymond"
-      MC_RUNTIME_LANE: "local"
-      CONTENT_ROOT: "/app/runtime/websites"
-    volumes:
-      - "../../../runtime/websites:/app/runtime/websites:ro"
-    ports:
-      - "0.0.0.0:18118:8080"
-
-  johnrraymond-dev:
-    build:
-      context: "../site-server"
-    image: "main-computer-site-johnrraymond-dev:latest"
-    restart: unless-stopped
-    environment:
-      SITE_ID: "johnrraymond"
-      SITE_NAME: "johnrraymond"
-      SITE_KIND: "static-site"
-      SITE_LANE: "dev"
-      MC_SITE_ID: "johnrraymond"
-      MC_RUNTIME_LANE: "dev"
-      CONTENT_ROOT: "/app/runtime/websites"
-    volumes:
-      - "../../../runtime/websites:/app/runtime/websites:ro"
-    ports:
-      - "0.0.0.0:18119:8080"
-
-  zzzzz-prod:
-    build:
-      context: "../site-server"
-    image: "main-computer-site-zzzzz-prod:latest"
-    restart: unless-stopped
-    environment:
-      SITE_ID: "zzzzz"
-      SITE_NAME: "zzzzz"
-      SITE_KIND: "static-site"
-      SITE_LANE: "local"
-      MC_SITE_ID: "zzzzz"
-      MC_RUNTIME_LANE: "local"
-      CONTENT_ROOT: "/app/runtime/websites"
-    volumes:
-      - "../../../runtime/websites:/app/runtime/websites:ro"
-    ports:
-      - "0.0.0.0:18104:8080"
-
-  zzzzz-dev:
-    build:
-      context: "../site-server"
-    image: "main-computer-site-zzzzz-dev:latest"
-    restart: unless-stopped
-    environment:
-      SITE_ID: "zzzzz"
-      SITE_NAME: "zzzzz"
-      SITE_KIND: "static-site"
-      SITE_LANE: "dev"
-      MC_SITE_ID: "zzzzz"
-      MC_RUNTIME_LANE: "dev"
-      CONTENT_ROOT: "/app/runtime/websites"
-    volumes:
-      - "../../../runtime/websites:/app/runtime/websites:ro"
-    ports:
-      - "0.0.0.0:18105:8080"
 
 volumes:
   hub-site_directus_database_20260519170018:

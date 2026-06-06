@@ -36,8 +36,8 @@ APPLICATIONS_SERVICE_PID_FILENAME = ".main_computer_applications_service.pid"
 DEFAULT_COMPOSE_FILE = "docker-compose.applications.yml"
 DEFAULT_COMPOSE_PROJECT = "main-computer-applications"
 DEFAULT_COOLIFY_STATE_SUBDIR = "coolify-local-docker"
-DEFAULT_COOLIFY_APP_PORT = "18000"
-LEGACY_COOLIFY_APP_PORT = "8000"
+DEFAULT_COOLIFY_APP_PORT = "8000"
+TEMPORARY_COOLIFY_APP_PORT = "18000"
 DEFAULT_COOLIFY_SOKETI_PORT = "6001"
 DEFAULT_COOLIFY_SOKETI_TERMINAL_PORT = "6002"
 
@@ -250,7 +250,7 @@ def _configured_coolify_app_port(existing: dict[str, str]) -> str:
     if explicit:
         return explicit
     existing_value = str(existing.get("APP_PORT") or "").strip()
-    if existing_value and existing_value != LEGACY_COOLIFY_APP_PORT:
+    if existing_value and existing_value != TEMPORARY_COOLIFY_APP_PORT:
         return existing_value
     return DEFAULT_COOLIFY_APP_PORT
 

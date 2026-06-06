@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 CONTROLLER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$")
 DEFAULT_LOCAL_COOLIFY_ID = "coolify-local"
-DEFAULT_LOCAL_COOLIFY_PORT = "18000"
+DEFAULT_LOCAL_COOLIFY_PORT = "8000"
 
 
 class DeploymentControllerError(ValueError):
