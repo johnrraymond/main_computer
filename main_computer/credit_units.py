@@ -27,6 +27,42 @@ def positive_credit_wei(value: Any, *, default: int = 0) -> int:
     return max(0, parsed)
 
 
+
+
+def credit_wei_to_display_text(credit_wei: Any, *, unit: str = "credits") -> str:
+    """Return user-facing credit text from integer credit wei.
+
+    This is display-only. Backend decisions must compare the integer
+    *_credit_wei values directly.
+    """
+
+    amount_text = credit_wei_to_decimal_text(credit_wei)
+    return f"{amount_text} {unit}"
+
+
+def eth_wei_to_decimal_text(wei: Any) -> str:
+    amount = positive_credit_wei(wei)
+    whole, remainder = divmod(amount, CREDIT_WEI_PER_CREDIT)
+    if remainder == 0:
+        return str(whole)
+    frac = str(remainder).rjust(CREDIT_WEI_DECIMALS, "0").rstrip("0")
+    return f"{whole}.{frac}"
+
+
+def eth_wei_to_display_text(wei: Any) -> str:
+    return f"{eth_wei_to_decimal_text(wei)} ETH"
+
+
+def require_credit_wei(value: Any, *, field_name: str = "credit_wei", allow_zero: bool = False) -> int:
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise CreditUnitError(f"{field_name} must be an integer credit-wei value.") from exc
+    if parsed < 0 or (parsed == 0 and not allow_zero):
+        raise CreditUnitError(f"{field_name} must be {'non-negative' if allow_zero else 'positive'}.")
+    return parsed
+
+
 def credit_count_to_wei(credits: Any) -> int:
     try:
         parsed = int(credits)

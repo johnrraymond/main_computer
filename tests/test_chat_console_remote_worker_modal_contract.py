@@ -432,9 +432,10 @@ def test_chat_console_paid_overflow_uses_bigint_credit_wei_helpers() -> None:
     assert "CHAT_CONSOLE_CREDIT_WEI_PER_CREDIT = 1000000000000000000n" in source
     assert "function chatConsoleCreditDecimalToWei" in source
     assert "function chatConsoleCreditWeiToText" in source
+    assert "function chatConsoleCreditWeiToDisplayText" in source
     assert "function chatConsoleCreditWeiProduct" in source
-    assert "Available credit wei" in source
-    assert "Approx hold wei" in source
+    assert "Available credit wei" not in source
+    assert "Approx hold wei" not in source
     assert "Whole-credit hold" not in source
 
 

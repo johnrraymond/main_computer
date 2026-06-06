@@ -25,7 +25,7 @@ def normalized_deposit_payload(**overrides):
         "payer_address": "0x3333333333333333333333333333333333333333",
         "payment_asset": "native",
         "payment_amount_base_units": 1_000_000_000_000_000_000,
-        "credits_granted": 100,
+        "credits_granted_wei": "100000000000000000000",
         "memo": "dev-chain funding receipt",
     }
     payload.update(overrides)
@@ -48,7 +48,7 @@ class HubCreditIndexerTests(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertFalse(result["idempotent"])
             self.assertEqual(result["deposit"]["account_id"], "user-one")
-            self.assertEqual(result["deposit"]["credits_granted"], 100)
+            self.assertEqual(result["deposit"]["credits_granted_wei"], "100000000000000000000")
             self.assertEqual(result["account"]["available_credits"], 100)
             self.assertEqual(result["transaction"]["transaction_type"], "deposit_indexed")
             self.assertEqual(ledger.status()["totals"]["deposited_credits"], 100)
@@ -82,7 +82,7 @@ class HubCreditIndexerTests(unittest.TestCase):
                 wallet_address=wallet,
                 payer_address=wallet,
                 tx_hash="0x4444444444444444444444444444444444444444444444444444444444444444",
-                credits_granted=250,
+                credits_granted_wei="250000000000000000000",
             )
 
             result = indexer.import_wallet_funding(payload)
@@ -104,8 +104,8 @@ class HubCreditIndexerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "tx_hash"):
                 indexer.import_deposit(bad_hash)
 
-            bad_credits = normalized_deposit_payload(credits_granted=0)
-            with self.assertRaisesRegex(ValueError, "credits_granted"):
+            bad_credits = normalized_deposit_payload(credits_granted_wei=0)
+            with self.assertRaisesRegex(ValueError, "credits_granted_wei"):
                 indexer.import_deposit(bad_credits)
 
             missing_account = normalized_deposit_payload(account_id="")
@@ -156,7 +156,7 @@ class HubCreditIndexerTests(unittest.TestCase):
                 with urlopen(f"{hub_base}/api/hub/v1/credits/deposits?account_id=user-one", timeout=5) as response:
                     deposits = json.loads(response.read().decode("utf-8"))
                 self.assertEqual(deposits["deposit_count"], 1)
-                self.assertEqual(deposits["deposits"][0]["credits_granted"], 100)
+                self.assertEqual(deposits["deposits"][0]["credits_granted_wei"], "100000000000000000000")
 
                 with urlopen(f"{hub_base}/api/hub/v1/credits/transactions?account_id=user-one", timeout=5) as response:
                     transactions = json.loads(response.read().decode("utf-8"))
@@ -194,7 +194,7 @@ class HubCreditIndexerTests(unittest.TestCase):
                             wallet_address=wallet,
                             payer_address=wallet,
                             tx_hash="0x6666666666666666666666666666666666666666666666666666666666666666",
-                            credits_granted=777,
+                            credits_granted_wei="777000000000000000000",
                         )
                     ).encode("utf-8"),
                     headers={"Content-Type": "application/json"},
@@ -234,7 +234,7 @@ class HubCreditIndexerTests(unittest.TestCase):
                 hub_base = f"http://127.0.0.1:{hub.server_port}"
                 bad_request = Request(
                     f"{hub_base}/api/hub/v1/credits/deposits/import",
-                    data=json.dumps(normalized_deposit_payload(credits_granted=0)).encode("utf-8"),
+                    data=json.dumps(normalized_deposit_payload(credits_granted_wei=0)).encode("utf-8"),
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
@@ -242,7 +242,7 @@ class HubCreditIndexerTests(unittest.TestCase):
                     urlopen(bad_request, timeout=5)
                 self.assertEqual(raised.exception.code, 400)
                 body = json.loads(raised.exception.read().decode("utf-8"))
-                self.assertIn("credits_granted", body["error"])
+                self.assertIn("credits_granted_wei", body["error"])
             finally:
                 hub.shutdown()
                 hub.server_close()

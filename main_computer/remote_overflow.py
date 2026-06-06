@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from main_computer.config import MainComputerConfig
-from main_computer.credit_units import CREDIT_WEI_PER_CREDIT, credit_decimal_text_to_wei, credit_wei_product, credit_wei_to_decimal_text
+from main_computer.credit_units import CREDIT_WEI_PER_CREDIT, credit_decimal_text_to_wei, credit_wei_product, credit_wei_to_decimal_text, credit_wei_to_display_text, positive_credit_wei
 from main_computer.models import ChatMessage
 from main_computer.providers.hub import HubProvider
 
@@ -121,25 +121,64 @@ class RemoteRequestEstimate:
     estimated_input_tokens: int
     max_output_tokens: int
     credits_per_token: str
-    minimum_useful_credits: int
-    estimated_max_credits: int
+    credits_per_token_wei: int
+    minimum_useful_credit_wei: int
+    estimated_max_credit_wei: int
+    minimum_useful_credits_display: str
+    estimated_max_credits_display: str
     message: str
     card: dict[str, Any]
+
+    @property
+    def minimum_useful_credits(self) -> int:
+        return self.minimum_useful_credit_wei // CREDIT_WEI_PER_CREDIT
+
+    @property
+    def estimated_max_credits(self) -> int:
+        return self.estimated_max_credit_wei // CREDIT_WEI_PER_CREDIT
 
 
 @dataclass(frozen=True)
 class CreditReadiness:
     ok: bool
     reason_code: str
-    bridged_credits: int
-    spendable_credits: int
-    pending_holds: int
-    daily_remote_limit: int
-    daily_remote_used: int
-    minimum_useful_credits: int
-    estimated_max_credits: int
+    bridged_credit_wei: int
+    spendable_credit_wei: int
+    pending_hold_credit_wei: int
+    daily_remote_limit_credit_wei: int
+    daily_remote_used_credit_wei: int
+    minimum_useful_credit_wei: int
+    estimated_max_credit_wei: int
     message: str
     card: dict[str, Any]
+
+    @property
+    def bridged_credits(self) -> int:
+        return self.bridged_credit_wei // CREDIT_WEI_PER_CREDIT
+
+    @property
+    def spendable_credits(self) -> int:
+        return self.spendable_credit_wei // CREDIT_WEI_PER_CREDIT
+
+    @property
+    def pending_holds(self) -> int:
+        return self.pending_hold_credit_wei // CREDIT_WEI_PER_CREDIT
+
+    @property
+    def daily_remote_limit(self) -> int:
+        return self.daily_remote_limit_credit_wei // CREDIT_WEI_PER_CREDIT
+
+    @property
+    def daily_remote_used(self) -> int:
+        return self.daily_remote_used_credit_wei // CREDIT_WEI_PER_CREDIT
+
+    @property
+    def minimum_useful_credits(self) -> int:
+        return self.minimum_useful_credit_wei // CREDIT_WEI_PER_CREDIT
+
+    @property
+    def estimated_max_credits(self) -> int:
+        return self.estimated_max_credit_wei // CREDIT_WEI_PER_CREDIT
 
 
 @dataclass(frozen=True)
@@ -170,7 +209,7 @@ def estimate_remote_request(request: dict[str, Any]) -> RemoteRequestEstimate:
             "This request could not be estimated safely, so remote workers were not offered.",
             {"reason_code": "cost_estimate_unavailable"},
         )
-        return RemoteRequestEstimate(False, "cost_estimate_unavailable", 0, 0, 0, 0, 0, card["message"], card)
+        return RemoteRequestEstimate(False, "cost_estimate_unavailable", 0, 0, "0", 0, 0, 0, "0", "0", card["message"], card)
 
     messages = _messages_from_request(request)
     content_chars = sum(len(str(item.get("content") or "")) for item in messages)
@@ -187,7 +226,7 @@ def estimate_remote_request(request: dict[str, Any]) -> RemoteRequestEstimate:
             "This request has no estimable prompt content, so remote workers were not offered.",
             {"reason_code": "cost_estimate_unavailable", "message_count": len(messages)},
         )
-        return RemoteRequestEstimate(False, "cost_estimate_unavailable", 0, 0, 0, 0, 0, card["message"], card)
+        return RemoteRequestEstimate(False, "cost_estimate_unavailable", 0, 0, "0", 0, 0, 0, "0", "0", card["message"], card)
 
     estimated_input_tokens = max(1, int(math.ceil(content_chars / 4.0)) + attachment_count * 256)
     max_output_tokens = _as_int(request.get("max_output_tokens"), 1024, minimum=1, maximum=128_000)
@@ -199,22 +238,20 @@ def estimate_remote_request(request: dict[str, Any]) -> RemoteRequestEstimate:
     )
     credits_per_token = credit_wei_to_decimal_text(credits_per_token_wei)
     estimated_token_count = estimated_input_tokens + max_output_tokens
-    estimated_max_credit_wei = credit_wei_product(estimated_token_count, credits_per_token_wei)
-    estimated_max_credits = _ceil_decimal_to_int(Decimal(estimated_max_credit_wei) / Decimal(CREDIT_WEI_PER_CREDIT), minimum=1)
+    estimated_max_credit_wei = max(1, credit_wei_product(estimated_token_count, credits_per_token_wei))
     default_minimum_credit_wei = min(
         estimated_max_credit_wei,
         max(128 * credits_per_token_wei, (max_output_tokens // 4) * credits_per_token_wei),
     )
-    default_minimum = _ceil_decimal_to_int(Decimal(default_minimum_credit_wei) / Decimal(CREDIT_WEI_PER_CREDIT), minimum=1)
-    minimum_useful_credits = _as_int(
-        request.get("minimum_useful_credits"),
-        default_minimum,
-        minimum=1,
-        maximum=max(1, estimated_max_credits),
+    minimum_useful_credit_wei = positive_credit_wei(
+        request.get("minimum_useful_credit_wei"),
+        default=default_minimum_credit_wei,
     )
+    if minimum_useful_credit_wei <= 0:
+        minimum_useful_credit_wei = default_minimum_credit_wei
+    minimum_useful_credit_wei = min(minimum_useful_credit_wei, estimated_max_credit_wei)
     message = (
-        f"Estimated maximum remote authorization is {credit_wei_to_decimal_text(estimated_max_credit_wei)} credits "
-        f"({estimated_max_credit_wei} credit wei)."
+        f"Estimated maximum remote authorization is {credit_wei_to_display_text(estimated_max_credit_wei)}."
     )
     card = _card(
         "remote_request_estimate",
@@ -229,10 +266,11 @@ def estimate_remote_request(request: dict[str, Any]) -> RemoteRequestEstimate:
             "estimated_input_tokens": estimated_input_tokens,
             "max_output_tokens": max_output_tokens,
             "credits_per_token": credits_per_token,
-            "minimum_useful_credits": minimum_useful_credits,
-            "estimated_max_credits": estimated_max_credits,
-            "estimated_max_credits_approx": credit_wei_to_decimal_text(estimated_max_credit_wei),
+            "minimum_useful_credit_wei": str(minimum_useful_credit_wei),
+            "minimum_useful_credits_display": credit_wei_to_decimal_text(minimum_useful_credit_wei),
             "estimated_max_credit_wei": str(estimated_max_credit_wei),
+            "estimated_max_credits_display": credit_wei_to_decimal_text(estimated_max_credit_wei),
+            "estimated_max_credits_approx": credit_wei_to_decimal_text(estimated_max_credit_wei),
             "credits_per_token_wei": str(credits_per_token_wei),
             "approximation_only": True,
         },
@@ -243,8 +281,11 @@ def estimate_remote_request(request: dict[str, Any]) -> RemoteRequestEstimate:
         estimated_input_tokens,
         max_output_tokens,
         credits_per_token,
-        minimum_useful_credits,
-        estimated_max_credits,
+        credits_per_token_wei,
+        minimum_useful_credit_wei,
+        estimated_max_credit_wei,
+        credit_wei_to_decimal_text(minimum_useful_credit_wei),
+        credit_wei_to_decimal_text(estimated_max_credit_wei),
         message,
         card,
     )
@@ -253,14 +294,24 @@ def estimate_remote_request(request: dict[str, Any]) -> RemoteRequestEstimate:
 def assess_credit_readiness(request: dict[str, Any], estimate: RemoteRequestEstimate) -> CreditReadiness:
     credit = request.get("credit")
     credit_payload = credit if isinstance(credit, dict) else request
+    required_credit_wei = estimate.estimated_max_credit_wei
 
     if _as_bool(credit_payload.get("credit_ready"), False):
-        default_balance = max(estimate.estimated_max_credits, estimate.minimum_useful_credits)
-        bridged_credits = _as_int(credit_payload.get("bridged_credits"), default_balance, minimum=0)
-        spendable_credits = _as_int(credit_payload.get("spendable_credits"), default_balance, minimum=0)
-    elif any(key in credit_payload for key in ("bridged_credits", "spendable_credits", "pending_holds", "daily_remote_limit", "daily_remote_used")):
-        bridged_credits = _as_int(credit_payload.get("bridged_credits"), 0, minimum=0)
-        spendable_credits = _as_int(credit_payload.get("spendable_credits"), 0, minimum=0)
+        default_balance_wei = max(estimate.estimated_max_credit_wei, estimate.minimum_useful_credit_wei)
+        bridged_credit_wei = positive_credit_wei(credit_payload.get("bridged_credit_wei"), default=default_balance_wei)
+        spendable_credit_wei = positive_credit_wei(credit_payload.get("spendable_credit_wei"), default=default_balance_wei)
+    elif any(
+        key in credit_payload
+        for key in (
+            "bridged_credit_wei",
+            "spendable_credit_wei",
+            "pending_hold_credit_wei",
+            "daily_remote_limit_credit_wei",
+            "daily_remote_used_credit_wei",
+        )
+    ):
+        bridged_credit_wei = positive_credit_wei(credit_payload.get("bridged_credit_wei"), default=0)
+        spendable_credit_wei = positive_credit_wei(credit_payload.get("spendable_credit_wei"), default=0)
     else:
         card = _card(
             "credit_readiness",
@@ -269,8 +320,10 @@ def assess_credit_readiness(request: dict[str, Any], estimate: RemoteRequestEsti
             "Remote workers were not offered because bridged credit state is not known to this assessment.",
             {
                 "reason_code": "credit_state_unknown",
-                "minimum_useful_credits": estimate.minimum_useful_credits,
-                "estimated_max_credits": estimate.estimated_max_credits,
+                "minimum_useful_credit_wei": str(estimate.minimum_useful_credit_wei),
+                "minimum_useful_credits_display": credit_wei_to_decimal_text(estimate.minimum_useful_credit_wei),
+                "estimated_max_credit_wei": str(estimate.estimated_max_credit_wei),
+                "estimated_max_credits_display": credit_wei_to_decimal_text(estimate.estimated_max_credit_wei),
                 "no_credit_hold_created": True,
             },
         )
@@ -282,36 +335,56 @@ def assess_credit_readiness(request: dict[str, Any], estimate: RemoteRequestEsti
             0,
             0,
             0,
-            estimate.minimum_useful_credits,
-            estimate.estimated_max_credits,
+            estimate.minimum_useful_credit_wei,
+            estimate.estimated_max_credit_wei,
             card["message"],
             card,
         )
 
-    pending_holds = _as_int(credit_payload.get("pending_holds"), 0, minimum=0)
-    daily_remote_limit = _as_int(credit_payload.get("daily_remote_limit"), 0, minimum=0)
-    daily_remote_used = _as_int(credit_payload.get("daily_remote_used"), 0, minimum=0)
+    pending_hold_credit_wei = positive_credit_wei(credit_payload.get("pending_hold_credit_wei"), default=0)
+    daily_remote_limit_credit_wei = positive_credit_wei(credit_payload.get("daily_remote_limit_credit_wei"), default=0)
+    daily_remote_used_credit_wei = positive_credit_wei(credit_payload.get("daily_remote_used_credit_wei"), default=0)
+    unheld_spendable_credit_wei = max(0, spendable_credit_wei - pending_hold_credit_wei)
 
-    required_credits = estimate.estimated_max_credits
     ok = True
     reason_code = "credit_ready"
-    message = "Spendable bridged credits are sufficient for this remote request estimate."
-    if bridged_credits < required_credits:
+    message = (
+        f"Spendable bridged credits are sufficient for this remote request estimate "
+        f"({credit_wei_to_display_text(required_credit_wei)} required)."
+    )
+    if bridged_credit_wei < required_credit_wei:
         ok = False
         reason_code = "insufficient_bridged_credits"
-        message = "Remote workers were not offered because bridged credits are below this request's estimated authorization budget."
-    elif spendable_credits < required_credits:
+        message = (
+            "Remote workers were not offered because bridged credits are below this request's estimated authorization budget: "
+            f"{credit_wei_to_display_text(bridged_credit_wei)} available, "
+            f"{credit_wei_to_display_text(required_credit_wei)} required."
+        )
+    elif spendable_credit_wei < required_credit_wei:
         ok = False
         reason_code = "insufficient_spendable_credits"
-        message = "Remote workers were not offered because spendable credits are below this request's estimated authorization budget."
-    elif max(0, spendable_credits - pending_holds) < required_credits:
+        message = (
+            "Remote workers were not offered because spendable credits are below this request's estimated authorization budget: "
+            f"{credit_wei_to_display_text(spendable_credit_wei)} spendable, "
+            f"{credit_wei_to_display_text(required_credit_wei)} required."
+        )
+    elif unheld_spendable_credit_wei < required_credit_wei:
         ok = False
         reason_code = "pending_holds_exhaust_budget"
-        message = "Remote workers were not offered because pending holds exhaust this request's estimated authorization budget."
-    elif daily_remote_limit and (daily_remote_used + required_credits) > daily_remote_limit:
+        message = (
+            "Remote workers were not offered because pending holds exhaust this request's estimated authorization budget: "
+            f"{credit_wei_to_display_text(unheld_spendable_credit_wei)} unheld spendable, "
+            f"{credit_wei_to_display_text(required_credit_wei)} required."
+        )
+    elif daily_remote_limit_credit_wei and (daily_remote_used_credit_wei + required_credit_wei) > daily_remote_limit_credit_wei:
         ok = False
         reason_code = "daily_remote_limit_exceeded"
-        message = "Remote workers were not offered because the daily remote spend limit would be exceeded."
+        message = (
+            "Remote workers were not offered because the daily remote spend limit would be exceeded: "
+            f"{credit_wei_to_display_text(daily_remote_used_credit_wei)} used plus "
+            f"{credit_wei_to_display_text(required_credit_wei)} required exceeds "
+            f"{credit_wei_to_display_text(daily_remote_limit_credit_wei)}."
+        )
 
     card = _card(
         "credit_readiness",
@@ -320,13 +393,22 @@ def assess_credit_readiness(request: dict[str, Any], estimate: RemoteRequestEsti
         message,
         {
             "reason_code": reason_code,
-            "bridged_credits": bridged_credits,
-            "spendable_credits": spendable_credits,
-            "pending_holds": pending_holds,
-            "daily_remote_limit": daily_remote_limit,
-            "daily_remote_used": daily_remote_used,
-            "minimum_useful_credits": estimate.minimum_useful_credits,
-            "estimated_max_credits": estimate.estimated_max_credits,
+            "bridged_credit_wei": str(bridged_credit_wei),
+            "bridged_credits_display": credit_wei_to_decimal_text(bridged_credit_wei),
+            "spendable_credit_wei": str(spendable_credit_wei),
+            "spendable_credits_display": credit_wei_to_decimal_text(spendable_credit_wei),
+            "pending_hold_credit_wei": str(pending_hold_credit_wei),
+            "pending_holds_display": credit_wei_to_decimal_text(pending_hold_credit_wei),
+            "unheld_spendable_credit_wei": str(unheld_spendable_credit_wei),
+            "unheld_spendable_credits_display": credit_wei_to_decimal_text(unheld_spendable_credit_wei),
+            "daily_remote_limit_credit_wei": str(daily_remote_limit_credit_wei),
+            "daily_remote_limit_credits_display": credit_wei_to_decimal_text(daily_remote_limit_credit_wei),
+            "daily_remote_used_credit_wei": str(daily_remote_used_credit_wei),
+            "daily_remote_used_credits_display": credit_wei_to_decimal_text(daily_remote_used_credit_wei),
+            "minimum_useful_credit_wei": str(estimate.minimum_useful_credit_wei),
+            "minimum_useful_credits_display": credit_wei_to_decimal_text(estimate.minimum_useful_credit_wei),
+            "estimated_max_credit_wei": str(estimate.estimated_max_credit_wei),
+            "estimated_max_credits_display": credit_wei_to_decimal_text(estimate.estimated_max_credit_wei),
             "no_credit_minted": True,
             "no_credit_hold_created": True,
         },
@@ -334,17 +416,16 @@ def assess_credit_readiness(request: dict[str, Any], estimate: RemoteRequestEsti
     return CreditReadiness(
         ok,
         reason_code,
-        bridged_credits,
-        spendable_credits,
-        pending_holds,
-        daily_remote_limit,
-        daily_remote_used,
-        estimate.minimum_useful_credits,
-        estimate.estimated_max_credits,
+        bridged_credit_wei,
+        spendable_credit_wei,
+        pending_hold_credit_wei,
+        daily_remote_limit_credit_wei,
+        daily_remote_used_credit_wei,
+        estimate.minimum_useful_credit_wei,
+        estimate.estimated_max_credit_wei,
         message,
         card,
     )
-
 
 def probe_hub_availability(request: dict[str, Any], estimate: RemoteRequestEstimate, credit: CreditReadiness) -> HubAvailability:
     hub = request.get("hub")
@@ -698,13 +779,18 @@ class RemoteOverflowDecisionEngine:
             "configured_credits_per_token": estimate.credits_per_token,
             "estimated_input_tokens": estimate.estimated_input_tokens,
             "authorized_output_token_limit": estimate.max_output_tokens,
-            "estimated_max_credits": estimate.estimated_max_credits,
-            "minimum_useful_credits": estimate.minimum_useful_credits,
+            "estimated_max_credit_wei": str(estimate.estimated_max_credit_wei),
+            "estimated_max_credits_display": credit_wei_to_decimal_text(estimate.estimated_max_credit_wei),
+            "minimum_useful_credit_wei": str(estimate.minimum_useful_credit_wei),
+            "minimum_useful_credits_display": credit_wei_to_decimal_text(estimate.minimum_useful_credit_wei),
             "credit_readiness": {
                 "reason_code": credit.reason_code,
-                "bridged_credits": credit.bridged_credits,
-                "spendable_credits": credit.spendable_credits,
-                "pending_holds": credit.pending_holds,
+                "bridged_credit_wei": str(credit.bridged_credit_wei),
+                "bridged_credits_display": credit_wei_to_decimal_text(credit.bridged_credit_wei),
+                "spendable_credit_wei": str(credit.spendable_credit_wei),
+                "spendable_credits_display": credit_wei_to_decimal_text(credit.spendable_credit_wei),
+                "pending_hold_credit_wei": str(credit.pending_hold_credit_wei),
+                "pending_holds_display": credit_wei_to_decimal_text(credit.pending_hold_credit_wei),
             },
             "preflight_id": hub.preflight_id,
             "private_worker_prices_exposed": False,
@@ -720,7 +806,8 @@ class RemoteOverflowDecisionEngine:
                 {
                     "reason_code": "remote_authorization_required",
                     "willing_worker_count": hub.willing_worker_count,
-                    "estimated_max_credits": estimate.estimated_max_credits,
+                    "estimated_max_credit_wei": str(estimate.estimated_max_credit_wei),
+                    "estimated_max_credits_display": credit_wei_to_decimal_text(estimate.estimated_max_credit_wei),
                     "safe_remote_hub_path": True,
                 },
             )
@@ -841,7 +928,7 @@ class RemoteHubExecutionGateway:
         )
         payment = metadata.get("payment") if isinstance(metadata.get("payment"), dict) else {}
         credit_hold_created = bool(payment.get("hold_id"))
-        credit_spent = _as_int(payment.get("charged_credits"), 0, minimum=0) > 0
+        credit_spent = positive_credit_wei(payment.get("charged_credit_wei"), default=0) > 0
         metadata["credit_hold_created"] = credit_hold_created
         metadata["credit_spent"] = credit_spent
         metadata["no_credit_hold_created"] = not credit_hold_created

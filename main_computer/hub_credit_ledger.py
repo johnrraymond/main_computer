@@ -188,6 +188,7 @@ def _earning_from_dict(payload: dict[str, Any]) -> WorkerEarning:
         request_id=str(payload.get("request_id", "")),
         credits=positive_int(payload.get("credits")),
         worker_commitment=str(payload.get("worker_commitment", "")),
+        earned_credit_wei=payload.get("earned_credit_wei"),
         status=str(payload.get("status", "earned")),
         batch_id=str(payload.get("batch_id", "")),
         created_at=str(payload.get("created_at", "")),
@@ -202,6 +203,7 @@ def _claim_from_dict(payload: dict[str, Any]) -> WorkerClaim:
         claim_id=str(payload.get("claim_id", "")),
         worker_node_id=str(payload.get("worker_node_id", "")),
         claimed_credits=positive_int(payload.get("claimed_credits")),
+        claimed_credit_wei=payload.get("claimed_credit_wei"),
         earning_ids=[str(item) for item in earning_ids],
         status=str(payload.get("status", "claimed")),
         idempotency_key=str(payload.get("idempotency_key", "")),
@@ -223,6 +225,9 @@ def _batch_from_dict(payload: dict[str, Any]) -> WorkerSettlementBatch:
         total_credits_published=positive_int(payload.get("total_credits_published")),
         dust_credits=positive_int(payload.get("dust_credits")),
         worker_count=positive_int(payload.get("worker_count")),
+        total_credit_wei_exact=payload.get("total_credit_wei_exact"),
+        total_credit_wei_published=payload.get("total_credit_wei_published"),
+        dust_credit_wei=payload.get("dust_credit_wei"),
         batch_root=str(payload.get("batch_root", "")),
         status=str(payload.get("status", "draft")),
         worker_node_id=str(payload.get("worker_node_id", "")),
@@ -581,21 +586,24 @@ class HubCreditLedger:
                     raise ValueError(f"Claim {claim_id} is already included in a settlement batch.")
                 selected_claims.append(claim)
 
-            exact_total = sum(claim.claimed_credits for claim in selected_claims)
+            exact_total = sum(claim.claimed_credit_wei for claim in selected_claims)
             published, dust, precision, bucket_size = truncate_worker_payout_for_precision(exact_total, precision_places=precision)
             batch = WorkerSettlementBatch(
                 batch_id="",
                 window_start=selected_claims[0].created_at if selected_claims else now,
                 window_end=now,
-                total_credits_exact=exact_total,
-                total_credits_published=published,
-                dust_credits=dust,
+                total_credits_exact=0,
+                total_credits_published=0,
+                dust_credits=0,
                 worker_count=1 if selected_claims else 0,
+                total_credit_wei_exact=exact_total,
+                total_credit_wei_published=published,
+                dust_credit_wei=dust,
                 status="opened",
                 worker_node_id=clean_worker,
                 claim_ids=selected_ids,
                 precision_places=precision,
-                rounding_bucket_credits=bucket_size,
+                rounding_bucket_credit_wei=bucket_size,
                 bridge_account_id=bridge_account_id,
                 created_at=now,
                 metadata={
@@ -671,10 +679,13 @@ class HubCreditLedger:
                 batch_id=batch.batch_id,
                 window_start=batch.window_start,
                 window_end=batch.window_end,
-                total_credits_exact=batch.total_credits_exact,
-                total_credits_published=batch.total_credits_published,
-                dust_credits=batch.dust_credits,
+                total_credits_exact=0,
+                total_credits_published=0,
+                dust_credits=0,
                 worker_count=batch.worker_count,
+                total_credit_wei_exact=batch.total_credit_wei_exact,
+                total_credit_wei_published=batch.total_credit_wei_published,
+                dust_credit_wei=batch.dust_credit_wei,
                 batch_root=batch.batch_root,
                 status="settled",
                 worker_node_id=batch.worker_node_id,
@@ -720,7 +731,8 @@ class HubCreditLedger:
                 settled_claim = WorkerClaim(
                     claim_id=claim.claim_id,
                     worker_node_id=claim.worker_node_id,
-                    claimed_credits=claim.claimed_credits,
+                    claimed_credits=0,
+                    claimed_credit_wei=claim.claimed_credit_wei,
                     earning_ids=claim.earning_ids,
                     status="settled",
                     idempotency_key=claim.idempotency_key,
@@ -739,7 +751,8 @@ class HubCreditLedger:
                 transaction_id=stable_id("ctx", {"type": "batch_settled", "batch_id": updated_batch.batch_id}),
                 account_id=updated_batch.worker_node_id or "worker-settlement",
                 transaction_type="batch_settled",
-                credits=updated_batch.total_credits_published,
+                credits=0,
+                credit_wei=updated_batch.total_credit_wei_published,
                 created_at=now,
                 worker_node_id=updated_batch.worker_node_id,
                 batch_id=updated_batch.batch_id,
@@ -1042,10 +1055,10 @@ class HubCreditLedger:
                     raise ValueError(f"Earning {earning_id} has already been claimed.")
                 selected_earnings.append(earning)
 
-            credits = sum(earning.credits for earning in selected_earnings)
-            if requested_claim_credits is not None and requested_claim_credits != credits:
-                raise ValueError(f"claim_credits mismatch: requested {requested_claim_credits}, selected earnings total {credits}.")
-            if credits <= 0:
+            claimed_credit_wei = sum(earning.earned_credit_wei for earning in selected_earnings)
+            if requested_claim_credits is not None and credit_count_to_wei(requested_claim_credits) != claimed_credit_wei:
+                raise ValueError(f"claim_credits mismatch: requested {requested_claim_credits}, selected earnings total {credit_wei_to_decimal_text(claimed_credit_wei)}.")
+            if claimed_credit_wei <= 0:
                 return {
                     "ok": True,
                     "idempotent": False,
@@ -1059,7 +1072,8 @@ class HubCreditLedger:
             claim = WorkerClaim(
                 claim_id="",
                 worker_node_id=clean_worker,
-                claimed_credits=credits,
+                claimed_credits=0,
+                claimed_credit_wei=claimed_credit_wei,
                 earning_ids=selected_ids,
                 idempotency_key=clean_key,
                 created_at=now,
@@ -1070,7 +1084,8 @@ class HubCreditLedger:
                 transaction_id=stable_id("ctx", {"type": "worker_claimed", "claim_id": claim.claim_id}),
                 account_id=clean_worker,
                 transaction_type="worker_claimed",
-                credits=credits,
+                credits=0,
+                credit_wei=claimed_credit_wei,
                 created_at=now,
                 worker_node_id=clean_worker,
                 memo=memo or f"worker claimed {len(selected_ids)} earning(s)",
@@ -1087,7 +1102,8 @@ class HubCreditLedger:
                 "ok": True,
                 "idempotent": False,
                 "claim": claim.as_dict(),
-                "claimed_credits": credits,
+                "claimed_credit_wei": str(claimed_credit_wei),
+                "claimed_credits_display": credit_wei_to_decimal_text(claimed_credit_wei),
                 "claimed_count": len(selected_ids),
                 "transaction": claim_tx.as_dict(),
                 "worker_claim_totals": self._worker_claim_totals_from_data(data, clean_worker),
@@ -1365,7 +1381,7 @@ class HubCreditLedger:
         *,
         account_id: str,
         owner_address: str = "",
-        chain_completed_credits: int,
+        chain_completed_credit_wei: int | str,
         deposit_id: str,
         completion_tx_hash: str = "",
         chain_id: int = 0,
@@ -1377,14 +1393,12 @@ class HubCreditLedger:
     ) -> dict[str, Any]:
         """Reconcile wallet funding from the escrow contract's completed aggregate.
 
-        The contract is the durable idempotency source.  The hub only stores the
-        latest completed aggregate on the account and credits the positive delta.
+        The contract reports completed base units.  Those units are the canonical
+        credit wei amount; they are not divided into whole credits.
         """
 
         clean_id = clean_account_id(account_id)
-        clean_chain_completed = positive_int(chain_completed_credits)
-        if clean_chain_completed < 0:
-            raise ValueError("chain_completed_credits must be non-negative.")
+        clean_chain_completed_wei = positive_credit_wei(chain_completed_credit_wei)
         clean_deposit_id = str(deposit_id or "").strip().lower()
         if not clean_deposit_id:
             raise ValueError("deposit_id is required.")
@@ -1393,9 +1407,10 @@ class HubCreditLedger:
         base_metadata = {
             **dict(metadata or {}),
             "deposit_id": clean_deposit_id,
-            "chain_completed_credits": clean_chain_completed,
-            "completed_units": positive_int(completed_units),
-            "deposit_amount_units": positive_int(deposit_amount_units),
+            "chain_completed_credit_wei": str(clean_chain_completed_wei),
+            "chain_completed_credits_display": credit_wei_to_decimal_text(clean_chain_completed_wei),
+            "completed_units": str(positive_int(completed_units)),
+            "deposit_amount_units": str(positive_int(deposit_amount_units)),
             "completion_tx_hash": tx_hash,
             "chain_id": positive_int(chain_id),
             "contract_address": str(contract_address or "").strip().lower(),
@@ -1411,21 +1426,25 @@ class HubCreditLedger:
                 now=now,
             )
 
-            local_completed = positive_int(account.bridge_completed_credits)
-            if clean_chain_completed < local_completed:
+            local_completed_wei = positive_credit_wei(account.bridge_completed_credit_wei)
+            if clean_chain_completed_wei < local_completed_wei:
                 raise ValueError(
-                    "Hub local bridge_completed_credits is ahead of the chain-completed aggregate "
-                    f"for {clean_id}: local={local_completed}, chain={clean_chain_completed}."
+                    "Hub local bridge_completed_credit_wei is ahead of the chain-completed aggregate "
+                    f"for {clean_id}: local={credit_wei_to_decimal_text(local_completed_wei)} credits, "
+                    f"chain={credit_wei_to_decimal_text(clean_chain_completed_wei)} credits."
                 )
 
-            delta = clean_chain_completed - local_completed
-            if delta <= 0:
+            delta_wei = clean_chain_completed_wei - local_completed_wei
+            if delta_wei <= 0:
                 return {
                     "ok": True,
                     "idempotent": True,
-                    "delta_credits": 0,
-                    "chain_completed_credits": clean_chain_completed,
-                    "local_completed_credits": local_completed,
+                    "delta_credit_wei": "0",
+                    "delta_credits_display": credit_wei_to_decimal_text(0),
+                    "chain_completed_credit_wei": str(clean_chain_completed_wei),
+                    "chain_completed_credits_display": credit_wei_to_decimal_text(clean_chain_completed_wei),
+                    "local_completed_credit_wei": str(local_completed_wei),
+                    "local_completed_credits_display": credit_wei_to_decimal_text(local_completed_wei),
                     "deposit_id": clean_deposit_id,
                     "account": account.as_dict(),
                     "ledger": self._status_from_data(data),
@@ -1434,16 +1453,16 @@ class HubCreditLedger:
             account = HubCreditAccount(
                 account_id=account.account_id,
                 owner_address=owner_address or account.owner_address,
-                available_credits=account.available_credits + delta,
+                available_credits=account.available_credits,
                 held_credits=account.held_credits,
                 spent_credits=account.spent_credits,
                 earned_credits=account.earned_credits,
-                bridge_completed_credits=clean_chain_completed,
-                available_credit_wei=account.available_credit_wei + credit_count_to_wei(delta),
+                bridge_completed_credits=account.bridge_completed_credits,
+                available_credit_wei=account.available_credit_wei + delta_wei,
                 held_credit_wei=account.held_credit_wei,
                 spent_credit_wei=account.spent_credit_wei,
                 earned_credit_wei=account.earned_credit_wei,
-                bridge_completed_credit_wei=credit_count_to_wei(clean_chain_completed),
+                bridge_completed_credit_wei=clean_chain_completed_wei,
                 created_at=account.created_at,
                 updated_at=now,
                 metadata={**account.metadata, "funding_model": "hub_credit_bridge_escrow_wallet_v2"},
@@ -1455,13 +1474,13 @@ class HubCreditLedger:
                         "account_id": clean_id,
                         "type": "bridge_deposit_completed",
                         "deposit_id": clean_deposit_id,
-                        "chain_completed_credits": clean_chain_completed,
+                        "chain_completed_credit_wei": str(clean_chain_completed_wei),
                     },
                 ),
                 account_id=clean_id,
                 transaction_type="bridge_deposit_completed",
-                credits=delta,
-                credit_wei=credit_count_to_wei(delta),
+                credits=0,
+                credit_wei=delta_wei,
                 created_at=now,
                 deposit_id=clean_deposit_id,
                 memo=memo or f"bridge deposit completed for {clean_id}",
@@ -1473,9 +1492,12 @@ class HubCreditLedger:
             return {
                 "ok": True,
                 "idempotent": False,
-                "delta_credits": delta,
-                "chain_completed_credits": clean_chain_completed,
-                "local_completed_credits": local_completed,
+                "delta_credit_wei": str(delta_wei),
+                "delta_credits_display": credit_wei_to_decimal_text(delta_wei),
+                "chain_completed_credit_wei": str(clean_chain_completed_wei),
+                "chain_completed_credits_display": credit_wei_to_decimal_text(clean_chain_completed_wei),
+                "local_completed_credit_wei": str(local_completed_wei),
+                "local_completed_credits_display": credit_wei_to_decimal_text(local_completed_wei),
                 "deposit_id": clean_deposit_id,
                 "account": account.as_dict(),
                 "transaction": tx.as_dict(),
@@ -1631,7 +1653,8 @@ class HubCreditLedger:
             if account.available_credit_wei < clean_credit_wei:
                 raise ValueError(
                     f"Insufficient Compute Credits for account {clean_id}: "
-                    f"available_credit_wei={account.available_credit_wei}, required_credit_wei={clean_credit_wei}."
+                    f"{credit_wei_to_decimal_text(account.available_credit_wei)} credits available, "
+                    f"{credit_wei_to_decimal_text(clean_credit_wei)} credits required."
                 )
 
             account = HubCreditAccount(
@@ -1841,8 +1864,8 @@ class HubCreditLedger:
                 raise ValueError(f"Cannot charge hold {hold.hold_id} with status {hold.status}.")
             if clean_charged_wei > hold.credit_wei:
                 raise ValueError(
-                    f"Cannot charge {clean_charged_wei} credit wei from hold {hold.hold_id}; "
-                    f"only {hold.credit_wei} credit wei were held."
+                    f"Cannot charge {credit_wei_to_decimal_text(clean_charged_wei)} credits from hold {hold.hold_id}; "
+                    f"only {credit_wei_to_decimal_text(hold.credit_wei)} credits were held."
                 )
 
             released_wei = max(0, hold.credit_wei - clean_charged_wei)
@@ -1871,7 +1894,8 @@ class HubCreditLedger:
                     data,
                     worker_node_id=worker_node_id,
                     request_id=hold.request_id,
-                    credits=credit_wei_to_whole_credits_floor(clean_charged_wei),
+                    credits=0,
+                    earned_credit_wei=clean_charged_wei,
                     now=now,
                     metadata={
                         **dict(metadata or {}),
@@ -1960,16 +1984,17 @@ class HubCreditLedger:
         *,
         worker_node_id: str,
         request_id: str,
-        credits: int,
+        credits: int = 0,
+        earned_credit_wei: int | str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         clean_worker = clean_worker_id(worker_node_id)
         clean_request = str(request_id or "").strip()
-        clean_credits = positive_int(credits)
+        clean_earned_wei = positive_credit_wei(earned_credit_wei, default=credit_count_to_wei(credits))
         if not clean_request:
             raise ValueError("request_id is required.")
-        if clean_credits <= 0:
-            raise ValueError("credits must be positive.")
+        if clean_earned_wei <= 0:
+            raise ValueError("earned_credit_wei must be positive.")
         now = utc_now()
 
         with self._lock:
@@ -1978,7 +2003,8 @@ class HubCreditLedger:
                 data,
                 worker_node_id=clean_worker,
                 request_id=clean_request,
-                credits=clean_credits,
+                credits=0,
+                earned_credit_wei=clean_earned_wei,
                 now=now,
                 metadata=metadata,
             )
@@ -1997,18 +2023,20 @@ class HubCreditLedger:
         *,
         worker_node_id: str,
         request_id: str,
-        credits: int,
-        now: str,
+        credits: int = 0,
+        earned_credit_wei: int | str | None = None,
+        now: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> WorkerEarning:
         clean_worker = clean_worker_id(worker_node_id)
         clean_request = str(request_id or "").strip()
-        clean_credits = positive_int(credits)
+        clean_earned_wei = positive_credit_wei(earned_credit_wei, default=credit_count_to_wei(credits))
         candidate = WorkerEarning(
             earning_id="",
             worker_node_id=clean_worker,
             request_id=clean_request,
-            credits=clean_credits,
+            credits=0,
+            earned_credit_wei=clean_earned_wei,
             worker_commitment=make_worker_commitment(
                 worker_node_id=clean_worker,
                 request_id=clean_request,
@@ -2028,8 +2056,13 @@ class HubCreditLedger:
             available_credits=worker_account.available_credits,
             held_credits=worker_account.held_credits,
             spent_credits=worker_account.spent_credits,
-            earned_credits=worker_account.earned_credits + clean_credits,
+            earned_credits=0,
             bridge_completed_credits=worker_account.bridge_completed_credits,
+            available_credit_wei=worker_account.available_credit_wei,
+            held_credit_wei=worker_account.held_credit_wei,
+            spent_credit_wei=worker_account.spent_credit_wei,
+            earned_credit_wei=worker_account.earned_credit_wei + clean_earned_wei,
+            bridge_completed_credit_wei=worker_account.bridge_completed_credit_wei,
             created_at=worker_account.created_at,
             updated_at=now,
             metadata=worker_account.metadata,
@@ -2038,7 +2071,8 @@ class HubCreditLedger:
             transaction_id=stable_id("ctx", {"type": "worker_earned", "earning_id": candidate.earning_id}),
             account_id=worker_account.account_id,
             transaction_type="worker_earned",
-            credits=clean_credits,
+            credits=0,
+            credit_wei=clean_earned_wei,
             created_at=now,
             request_id=clean_request,
             worker_node_id=clean_worker,
@@ -2085,13 +2119,13 @@ class HubCreditLedger:
             for earning_id in sorted(claimed_earning_ids)
             if earning_id in finalized_by_id
         ]
-        already_claimed_units = sum(finalized_by_id[earning_id].credits for earning_id in claimed_finalized_ids)
-        claimable_units = sum(earning.credits for earning in claimable_earnings)
+        already_claimed_units = sum(finalized_by_id[earning_id].earned_credit_wei for earning_id in claimed_finalized_ids)
+        claimable_units = sum(earning.earned_credit_wei for earning in claimable_earnings)
 
         return {
             "ok": True,
             "worker_node_id": clean_worker,
-            "finalized_earning_units": sum(earning.credits for earning in finalized_earnings),
+            "finalized_earning_units": sum(earning.earned_credit_wei for earning in finalized_earnings),
             "claimable_units": claimable_units,
             "already_claimed_units": already_claimed_units,
             "earning_count": len(finalized_earnings),
@@ -2145,7 +2179,7 @@ class HubCreditLedger:
             for claim in sorted(worker_claims, key=lambda item: item.created_at)
             if claim.status == "claimed" and claim.claim_id not in batched_claim_ids
         ]
-        exact_units = sum(claim.claimed_credits for claim in settleable_claims)
+        exact_units = sum(claim.claimed_credit_wei for claim in settleable_claims)
         published_units, dust_units, precision, bucket_size = truncate_worker_payout_for_precision(
             exact_units,
             precision_places=precision,
@@ -2166,10 +2200,10 @@ class HubCreditLedger:
             "settleable_claim_ids": [claim.claim_id for claim in settleable_claims],
             "batched_claim_ids": sorted(batched_claim_ids),
             "settled_claim_ids": sorted(settled_claim_ids),
-            "claimed_units_total": sum(claim.claimed_credits for claim in worker_claims),
-            "settled_units_exact": sum(batch.total_credits_exact for batch in settled_batches),
-            "settled_units_published": sum(batch.total_credits_published for batch in settled_batches),
-            "bridge_retained_units": sum(batch.dust_credits for batch in settled_batches),
+            "claimed_units_total": sum(claim.claimed_credit_wei for claim in worker_claims),
+            "settled_units_exact": sum(batch.total_credit_wei_exact for batch in settled_batches),
+            "settled_units_published": sum(batch.total_credit_wei_published for batch in settled_batches),
+            "bridge_retained_units": sum(batch.dust_credit_wei for batch in settled_batches),
             "open_batch_count": len(open_batches),
             "settled_batch_count": len(settled_batches),
             "can_create_batch": exact_units > 0,
