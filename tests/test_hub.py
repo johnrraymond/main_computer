@@ -1012,7 +1012,7 @@ class HubServerTests(unittest.TestCase):
             hub.credit_ledger.record_completed_bridge_deposit(
                 account_id=account_id,
                 owner_address=wallet,
-                chain_completed_credits=2,
+                chain_completed_credit_wei=2_000_000_000_000_000_000,
                 deposit_id="paid-overflow-funded",
                 memo="test bridge funding",
             )
@@ -1067,7 +1067,7 @@ class HubServerTests(unittest.TestCase):
                 self.assertIn("Paid overflow charged 1 credit", first.content)
                 self.assertEqual(first.metadata["payment"]["account_id"], account_id)
                 self.assertEqual(first.metadata["payment"]["wallet_address"], wallet)
-                self.assertEqual(first.metadata["payment"]["charged_credits"], "1")
+                self.assertEqual(first.metadata["payment"]["charged_credits_display"], "1")
                 self.assertEqual(first.metadata["payment"]["charged_credit_wei"], "1000000000000000000")
                 self.assertEqual(first.metadata["payment"]["available_credits_after"], "1")
                 self.assertEqual(first.metadata["payment"]["spent_credits_after"], "1")
@@ -1134,7 +1134,7 @@ class HubServerTests(unittest.TestCase):
             hub.credit_ledger.record_completed_bridge_deposit(
                 account_id=account_id,
                 owner_address=wallet,
-                chain_completed_credits=3,
+                chain_completed_credit_wei=3_000_000_000_000_000_000,
                 deposit_id="paid-overflow-fractional-funded",
                 memo="test bridge funding",
             )
@@ -1191,7 +1191,7 @@ class HubServerTests(unittest.TestCase):
 
                 self.assertIn("Paid overflow charged 1.025 credits", result.content)
                 payment = result.metadata["payment"]
-                self.assertEqual(payment["charged_credits"], "1.025")
+                self.assertEqual(payment["charged_credits_display"], "1.025")
                 self.assertEqual(payment["charged_credit_wei"], "1025000000000000000")
                 self.assertEqual(payment["available_credits_after"], "1.975")
                 self.assertEqual(payment["spent_credits_after"], "1.025")
@@ -1220,7 +1220,7 @@ class HubServerTests(unittest.TestCase):
             hub.credit_ledger.record_completed_bridge_deposit(
                 account_id=account_id,
                 owner_address=wallet,
-                chain_completed_credits=2,
+                chain_completed_credit_wei=2_000_000_000_000_000_000,
                 deposit_id="readiness-funded",
                 memo="test bridge funding",
             )
@@ -1272,7 +1272,7 @@ class HubServerTests(unittest.TestCase):
                             "wallet_address": wallet,
                             "multisession_key_id": key_id,
                             "chain_id": "0x28757b2",
-                            "max_authorized_credits": 1,
+                            "max_authorized_credit_wei": "1000000000000000000",
                         }
                     }
                 )
@@ -1291,7 +1291,7 @@ class HubServerTests(unittest.TestCase):
                             "wallet_address": wallet,
                             "multisession_key_id": "msk_revoked",
                             "chain_id": "0x28757b2",
-                            "max_authorized_credits": 1,
+                            "max_authorized_credit_wei": "1000000000000000000",
                         }
                     }
                 )
@@ -1307,7 +1307,7 @@ class HubServerTests(unittest.TestCase):
                             "wallet_address": wallet,
                             "multisession_key_id": key_id,
                             "chain_id": "0x28757b2",
-                            "max_authorized_credits": 3,
+                            "max_authorized_credit_wei": "3000000000000000000",
                         }
                     }
                 )
@@ -1341,7 +1341,7 @@ class HubServerTests(unittest.TestCase):
             hub.credit_ledger.record_completed_bridge_deposit(
                 account_id=account_id,
                 owner_address=wallet,
-                chain_completed_credits=2,
+                chain_completed_credit_wei=2_000_000_000_000_000_000,
                 deposit_id="paid-overflow-disabled-funded",
                 memo="test bridge funding",
             )

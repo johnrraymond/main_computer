@@ -459,15 +459,13 @@ class HubCreditBridgeCompletionService:
 
         after = client.deposit_record(deposit_id)
         completed_units = positive_int(client.completed_deposit_units(after.account or before.account))
-        if completed_units % COMPUTE_CREDIT_BASE_UNITS:
-            raise ValueError("completedDepositUnits is not divisible by 1e18 whole-credit units.")
-        chain_completed_credits = completed_units // COMPUTE_CREDIT_BASE_UNITS
+        chain_completed_credit_wei = completed_units
 
         account_id = wallet_account_id(after.account or before.account)
         ledger_result = self.ledger.record_completed_bridge_deposit(
             account_id=account_id,
             owner_address=after.account or before.account,
-            chain_completed_credits=chain_completed_credits,
+            chain_completed_credit_wei=chain_completed_credit_wei,
             deposit_id=deposit_id,
             completion_tx_hash=tx_hash,
             chain_id=deployment.chain_id,
@@ -491,8 +489,10 @@ class HubCreditBridgeCompletionService:
             "account_id": account_id,
             "deposit": after.as_dict(),
             "completed_units": str(completed_units),
-            "chain_completed_credits": chain_completed_credits,
-            "delta_credits": ledger_result.get("delta_credits", 0),
+            "chain_completed_credit_wei": str(chain_completed_credit_wei),
+            "chain_completed_credits_display": ledger_result.get("chain_completed_credits_display", "0"),
+            "delta_credit_wei": str(ledger_result.get("delta_credit_wei", "0")),
+            "delta_credits_display": ledger_result.get("delta_credits_display", "0"),
             "idempotent": bool(ledger_result.get("idempotent")),
             "completion_sent": completion_sent,
             "completion_tx_hash": tx_hash,

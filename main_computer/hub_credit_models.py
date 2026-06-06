@@ -20,7 +20,7 @@ CREDIT_UNIT_KEY = "compute_credit"
 CREDIT_LEDGER_VERSION = "hub-credit-ledger-v0"
 CREDIT_BASE_UNITS_PER_CREDIT = 1_000_000
 DEFAULT_WORKER_PAYOUT_PRECISION_PLACES = 3
-MAX_WORKER_PAYOUT_PRECISION_PLACES = 6
+MAX_WORKER_PAYOUT_PRECISION_PLACES = 18
 
 CREDIT_TRANSACTION_TYPES = {
     "deposit_indexed",
@@ -162,7 +162,7 @@ def normalize_worker_payout_precision_places(value: Any = None) -> int:
 
 def worker_payout_bucket_size_for_precision(value: Any = None) -> int:
     precision = normalize_worker_payout_precision_places(value)
-    scale = MAX_WORKER_PAYOUT_PRECISION_PLACES - precision
+    scale = 18 - precision
     return 10 ** max(0, scale)
 
 
@@ -426,6 +426,7 @@ class WorkerEarning:
     request_id: str
     credits: int
     worker_commitment: str
+    earned_credit_wei: int | str | None = None
     status: str = "earned"
     batch_id: str = ""
     created_at: str = ""
@@ -434,20 +435,27 @@ class WorkerEarning:
         clean_status = str(self.status or "earned").strip()
         if clean_status not in WORKER_EARNING_STATUSES:
             raise ValueError(f"Unsupported worker earning status: {clean_status}")
-        object.__setattr__(self, "worker_node_id", clean_worker_id(self.worker_node_id))
-        object.__setattr__(self, "earning_id", self.earning_id or stable_id("earn", {"worker_node_id": self.worker_node_id, "request_id": self.request_id}))
-        object.__setattr__(self, "credits", positive_int(self.credits))
+        clean_worker = clean_worker_id(self.worker_node_id)
+        earned_wei = _credit_wei_or_legacy(self.earned_credit_wei, self.credits)
+        object.__setattr__(self, "worker_node_id", clean_worker)
+        object.__setattr__(self, "earned_credit_wei", earned_wei)
+        object.__setattr__(self, "earning_id", self.earning_id or stable_id("earn", {"worker_node_id": clean_worker, "request_id": self.request_id, "earned_credit_wei": str(earned_wei)}))
+        object.__setattr__(self, "credits", credit_wei_to_whole_credits_floor(earned_wei))
         object.__setattr__(self, "status", clean_status)
         object.__setattr__(self, "created_at", self.created_at or utc_now())
 
     def as_private_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["earned_credit_wei"] = str(self.earned_credit_wei)
+        data["earned_credits_display"] = credit_wei_to_decimal_text(self.earned_credit_wei)
+        return data
 
     def as_public_dict(self) -> dict[str, Any]:
         return {
             "earning_id": self.earning_id,
             "worker_commitment": self.worker_commitment,
-            "credits": self.credits,
+            "earned_credit_wei": str(self.earned_credit_wei),
+            "earned_credits_display": credit_wei_to_decimal_text(self.earned_credit_wei),
             "status": self.status,
             "batch_id": self.batch_id,
             "created_at": self.created_at,
@@ -459,6 +467,7 @@ class WorkerClaim:
     claim_id: str
     worker_node_id: str
     claimed_credits: int
+    claimed_credit_wei: int | str | None = None
     earning_ids: list[str] = field(default_factory=list)
     status: str = "claimed"
     idempotency_key: str = ""
@@ -472,22 +481,28 @@ class WorkerClaim:
             raise ValueError(f"Unsupported worker claim status: {clean_status}")
         clean_worker = clean_worker_id(self.worker_node_id)
         clean_earning_ids = [str(item or "").strip() for item in (self.earning_ids or []) if str(item or "").strip()]
+        claimed_wei = _credit_wei_or_legacy(self.claimed_credit_wei, self.claimed_credits)
+        clean_key = str(self.idempotency_key or "").strip()
         object.__setattr__(self, "worker_node_id", clean_worker)
         object.__setattr__(self, "earning_ids", clean_earning_ids)
-        object.__setattr__(self, "claimed_credits", positive_int(self.claimed_credits))
+        object.__setattr__(self, "claimed_credit_wei", claimed_wei)
+        object.__setattr__(self, "claimed_credits", credit_wei_to_whole_credits_floor(claimed_wei))
         object.__setattr__(self, "status", clean_status)
-        object.__setattr__(self, "idempotency_key", str(self.idempotency_key or "").strip())
+        object.__setattr__(self, "idempotency_key", clean_key)
         object.__setattr__(self, "settlement_tx_hash", str(self.settlement_tx_hash or "").strip())
         object.__setattr__(self, "claim_id", self.claim_id or stable_id("wclaim", {
             "worker_node_id": clean_worker,
             "earning_ids": clean_earning_ids,
-            "claimed_credits": positive_int(self.claimed_credits),
-            "idempotency_key": str(self.idempotency_key or "").strip(),
+            "claimed_credit_wei": str(claimed_wei),
+            "idempotency_key": clean_key,
         }))
         object.__setattr__(self, "created_at", self.created_at or utc_now())
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["claimed_credit_wei"] = str(self.claimed_credit_wei)
+        data["claimed_credits_display"] = credit_wei_to_decimal_text(self.claimed_credit_wei)
+        return data
 
 
 @dataclass(frozen=True)
@@ -499,12 +514,16 @@ class WorkerSettlementBatch:
     total_credits_published: int
     dust_credits: int
     worker_count: int
+    total_credit_wei_exact: int | str | None = None
+    total_credit_wei_published: int | str | None = None
+    dust_credit_wei: int | str | None = None
     batch_root: str = ""
     status: str = "draft"
     worker_node_id: str = ""
     claim_ids: list[str] = field(default_factory=list)
     precision_places: int = DEFAULT_WORKER_PAYOUT_PRECISION_PLACES
     rounding_bucket_credits: int = 0
+    rounding_bucket_credit_wei: int | str | None = None
     bridge_account_id: str = "bridge-worker-payout-dust"
     payout_rail: str = ""
     operator_id: str = ""
@@ -521,9 +540,12 @@ class WorkerSettlementBatch:
         if clean_status not in WORKER_BATCH_STATUSES:
             raise ValueError(f"Unsupported worker batch status: {clean_status}")
         precision = normalize_worker_payout_precision_places(self.precision_places)
-        bucket_size = positive_int(self.rounding_bucket_credits, default=worker_payout_bucket_size_for_precision(precision))
-        if bucket_size <= 0:
-            bucket_size = worker_payout_bucket_size_for_precision(precision)
+        bucket_size_wei = positive_credit_wei(self.rounding_bucket_credit_wei, default=worker_payout_bucket_size_for_precision(precision))
+        if bucket_size_wei <= 0:
+            bucket_size_wei = worker_payout_bucket_size_for_precision(precision)
+        exact_wei = _credit_wei_or_legacy(self.total_credit_wei_exact, self.total_credits_exact)
+        published_wei = _credit_wei_or_legacy(self.total_credit_wei_published, self.total_credits_published)
+        dust_wei = _credit_wei_or_legacy(self.dust_credit_wei, self.dust_credits)
         claim_ids = [str(item or "").strip() for item in (self.claim_ids or []) if str(item or "").strip()]
         object.__setattr__(
             self,
@@ -533,20 +555,24 @@ class WorkerSettlementBatch:
                 {
                     "window_start": self.window_start,
                     "window_end": self.window_end,
-                    "total": self.total_credits_published,
+                    "total_credit_wei_published": str(published_wei),
                     "claim_ids": claim_ids,
                 },
             ),
         )
-        object.__setattr__(self, "total_credits_exact", positive_int(self.total_credits_exact))
-        object.__setattr__(self, "total_credits_published", positive_int(self.total_credits_published))
-        object.__setattr__(self, "dust_credits", positive_int(self.dust_credits))
+        object.__setattr__(self, "total_credit_wei_exact", exact_wei)
+        object.__setattr__(self, "total_credit_wei_published", published_wei)
+        object.__setattr__(self, "dust_credit_wei", dust_wei)
+        object.__setattr__(self, "total_credits_exact", credit_wei_to_whole_credits_floor(exact_wei))
+        object.__setattr__(self, "total_credits_published", credit_wei_to_whole_credits_floor(published_wei))
+        object.__setattr__(self, "dust_credits", credit_wei_to_whole_credits_floor(dust_wei))
         object.__setattr__(self, "worker_count", positive_int(self.worker_count))
         object.__setattr__(self, "status", clean_status)
         object.__setattr__(self, "worker_node_id", clean_worker_id(self.worker_node_id, default="") if self.worker_node_id else "")
         object.__setattr__(self, "claim_ids", claim_ids)
         object.__setattr__(self, "precision_places", precision)
-        object.__setattr__(self, "rounding_bucket_credits", bucket_size)
+        object.__setattr__(self, "rounding_bucket_credit_wei", bucket_size_wei)
+        object.__setattr__(self, "rounding_bucket_credits", credit_wei_to_whole_credits_floor(bucket_size_wei))
         object.__setattr__(self, "bridge_account_id", clean_account_id(self.bridge_account_id, default="bridge-worker-payout-dust"))
         object.__setattr__(self, "payout_rail", str(self.payout_rail or "").strip())
         object.__setattr__(self, "operator_id", clean_account_id(self.operator_id, default="") if self.operator_id else "")
@@ -583,22 +609,33 @@ class WorkerSettlementBatch:
             batch_id="",
             window_start=window_start,
             window_end=window_end,
-            total_credits_exact=exact_total,
-            total_credits_published=published,
-            dust_credits=dust,
+            total_credits_exact=0,
+            total_credits_published=0,
+            dust_credits=0,
             worker_count=worker_count,
+            total_credit_wei_exact=exact_total,
+            total_credit_wei_published=published,
+            dust_credit_wei=dust,
             batch_root=batch_root,
             status=status,
             worker_node_id=worker_node_id,
             claim_ids=list(claim_ids or []),
             precision_places=precision,
-            rounding_bucket_credits=clean_bucket,
+            rounding_bucket_credit_wei=clean_bucket,
             bridge_account_id=bridge_account_id,
             metadata=dict(metadata or {}),
         )
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["total_credit_wei_exact"] = str(self.total_credit_wei_exact)
+        data["total_credit_wei_published"] = str(self.total_credit_wei_published)
+        data["dust_credit_wei"] = str(self.dust_credit_wei)
+        data["rounding_bucket_credit_wei"] = str(self.rounding_bucket_credit_wei)
+        data["total_credits_exact_display"] = credit_wei_to_decimal_text(self.total_credit_wei_exact)
+        data["total_credits_published_display"] = credit_wei_to_decimal_text(self.total_credit_wei_published)
+        data["dust_credits_display"] = credit_wei_to_decimal_text(self.dust_credit_wei)
+        return data
 
 @dataclass(frozen=True)
 class RequestReceipt:

@@ -578,6 +578,10 @@
       return `${whole.toString()}.${fraction.toString().padStart(18, "0").replace(/0+$/, "")}`;
     }
 
+    function chatConsoleCreditWeiToDisplayText(value) {
+      return `${chatConsoleCreditWeiToText(value)} credits`;
+    }
+
     function chatConsoleCreditWeiProduct(tokens, creditsPerTokenWei) {
       let tokenCount;
       try {
@@ -699,9 +703,12 @@
       return {
         wallet_address: String(data.wallet_address || ""),
         account_id: String(data.account_id || account.account_id || ""),
-        available_credits: String(account.available_credits ?? data.available_credits ?? "0"),
-        held_credits: String(account.held_credits ?? data.held_credits ?? "0"),
-        spent_credits: String(account.spent_credits ?? data.spent_credits ?? "0"),
+        available_credits: String(account.available_credits_display ?? data.available_credits_display ?? account.available_credits ?? data.available_credits ?? "0"),
+        held_credits: String(account.held_credits_display ?? data.held_credits_display ?? account.held_credits ?? data.held_credits ?? "0"),
+        spent_credits: String(account.spent_credits_display ?? data.spent_credits_display ?? account.spent_credits ?? data.spent_credits ?? "0"),
+        available_credits_display: String(account.available_credits_display ?? data.available_credits_display ?? account.available_credits ?? data.available_credits ?? "0"),
+        held_credits_display: String(account.held_credits_display ?? data.held_credits_display ?? account.held_credits ?? data.held_credits ?? "0"),
+        spent_credits_display: String(account.spent_credits_display ?? data.spent_credits_display ?? account.spent_credits ?? data.spent_credits ?? "0"),
         funding_model: String(data.funding_model || ""),
         updated_at: chatConsoleNow()
       };
@@ -1008,7 +1015,7 @@
           ...balancedState.walletFunding,
           balance: hubBalance,
           accountId: hubBalance?.account_id || "",
-          lastStatus: `My bridge account has ${hubBalance?.available_credits || "0"} spendable credits.`,
+          lastStatus: `My bridge account has ${hubBalance?.available_credits_display || hubBalance?.available_credits || "0"} spendable credits.`,
           lastError: "",
           updatedAt: chatConsoleNow()
         };
@@ -1373,7 +1380,7 @@
         const bridgeBalanceNode = chatConsoleFundingValueNode(wrapper, "bridge-balance");
         if (bridgeBalanceNode) {
           bridgeBalanceNode.textContent = hubBalance
-            ? `${hubBalance.available_credits} available / ${hubBalance.held_credits} held / ${hubBalance.spent_credits} spent`
+            ? `${hubBalance.available_credits_display || hubBalance.available_credits} available / ${hubBalance.held_credits_display || hubBalance.held_credits} held / ${hubBalance.spent_credits_display || hubBalance.spent_credits} spent`
             : "Unknown";
         }
         const contractNode = chatConsoleFundingValueNode(wrapper, "bridge-contract");
@@ -2032,14 +2039,14 @@
       const metrics = document.createElement("div");
       metrics.className = "chat-remote-worker-control-readiness-metrics";
       metrics.dataset.chatPaidOverflowReadinessMetrics = "true";
+      const creditsPerTokenText = state.credits_per_token_wei
+        ? `${chatConsoleCreditWeiToText(state.credits_per_token_wei)} credits/token`
+        : (state.credits_per_token || "");
       [
-        ["Available credits", state.available_credits_display ?? state.available_credits, "available"],
-        ["Available credit wei", state.available_credit_wei ?? "", "available-credit-wei"],
+        ["Available credits", state.available_credits_display ?? chatConsoleCreditWeiToDisplayText(state.available_credit_wei), "available"],
         ["Max output tokens", state.max_output_tokens, "max-output-tokens"],
-        ["Credits per token", state.credits_per_token, "credits-per-token"],
-        ["Credits/token wei", state.credits_per_token_wei ?? "", "credits-per-token-wei"],
-        ["Approx hold/charge", state.required_credits_display ?? state.estimated_max_credits_approx, "approx-required"],
-        ["Approx hold wei", state.required_credit_wei ?? state.estimated_max_credit_wei ?? "", "required-credit-wei"],
+        ["Credits per token", creditsPerTokenText, "credits-per-token"],
+        ["Approx hold/charge", state.required_credits_display ?? state.estimated_max_credits_approx ?? chatConsoleCreditWeiToDisplayText(state.required_credit_wei ?? state.estimated_max_credit_wei), "approx-required"],
         ["Billing note", "approx only", "billing-note"]
       ].forEach(([label, value, key]) => metrics.append(chatConsolePaidOverflowReadinessMetric(label, value, key)));
 
@@ -2193,13 +2200,13 @@
         }
         chatConsoleUpdatePaidOverflowReadinessRow(rowNode, row, {allDone, phase, autoCollapseAllReady});
       });
-      chatConsoleUpdatePaidOverflowReadinessMetric(card, "available", state.available_credits_display ?? state.available_credits);
-      chatConsoleUpdatePaidOverflowReadinessMetric(card, "available-credit-wei", state.available_credit_wei ?? "");
+      const creditsPerTokenText = state.credits_per_token_wei
+        ? `${chatConsoleCreditWeiToText(state.credits_per_token_wei)} credits/token`
+        : (state.credits_per_token || "");
+      chatConsoleUpdatePaidOverflowReadinessMetric(card, "available", state.available_credits_display ?? chatConsoleCreditWeiToDisplayText(state.available_credit_wei));
       chatConsoleUpdatePaidOverflowReadinessMetric(card, "max-output-tokens", state.max_output_tokens);
-      chatConsoleUpdatePaidOverflowReadinessMetric(card, "credits-per-token", state.credits_per_token);
-      chatConsoleUpdatePaidOverflowReadinessMetric(card, "credits-per-token-wei", state.credits_per_token_wei ?? "");
-      chatConsoleUpdatePaidOverflowReadinessMetric(card, "approx-required", state.required_credits_display ?? state.estimated_max_credits_approx ?? "");
-      chatConsoleUpdatePaidOverflowReadinessMetric(card, "required-credit-wei", state.required_credit_wei ?? state.estimated_max_credit_wei ?? "");
+      chatConsoleUpdatePaidOverflowReadinessMetric(card, "credits-per-token", creditsPerTokenText);
+      chatConsoleUpdatePaidOverflowReadinessMetric(card, "approx-required", state.required_credits_display ?? state.estimated_max_credits_approx ?? chatConsoleCreditWeiToDisplayText(state.required_credit_wei ?? state.estimated_max_credit_wei));
       chatConsoleUpdateRemoteWorkerPaidOptionAvailability(readiness);
       chatConsoleSyncPaidOverflowSettingControls(state);
       chatConsoleRenderPaidOverflowFundingControls(state);
@@ -2450,7 +2457,13 @@
           provider: data?.remote_overflow_result?.response?.provider || data?.output_cell?.provider || "remote-hub-ai",
           model: data?.remote_overflow_result?.response?.model || data?.output_cell?.model || body.model || "",
           credit_hold_created: Boolean(paymentReceipt?.hold_id),
-          credit_spent: Number(paymentReceipt?.charged_credits || 0) > 0,
+          credit_spent: (() => {
+            try {
+              return BigInt(String(paymentReceipt?.charged_credit_wei ?? "0")) > 0n;
+            } catch {
+              return false;
+            }
+          })(),
           payment: paymentReceipt || null
         });
         return data;
@@ -3130,7 +3143,7 @@
           execution.pending_request_id ? `pending ${chatConsoleShortRemoteWorkerId(execution.pending_request_id, 18)}` : "",
           "Remote Hub AI",
           execution.credit_spent
-            ? `charged ${execution.payment?.charged_credits || ""} credits`.trim()
+            ? `charged ${execution.payment?.charged_credits_display || chatConsoleCreditWeiToDisplayText(execution.payment?.charged_credit_wei || "0")}`.trim()
             : "no credits spent"
         ].filter(Boolean).join(" | ")
       });

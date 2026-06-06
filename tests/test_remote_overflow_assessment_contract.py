@@ -115,9 +115,9 @@ def test_local_busy_insufficient_credit_blocks_before_hub() -> None:
             "remote_overflow_enabled": True,
             "messages": [{"role": "user", "content": "please do work"}],
             "max_output_tokens": 1000,
-            "credits_per_token": 10,
-            "bridged_credits": 10,
-            "spendable_credits": 10,
+            "credits_per_token": "10",
+            "bridged_credit_wei": "10000000000000000000",
+            "spendable_credit_wei": "10000000000000000000",
             "willing_worker_count": 4,
         }
     ).as_dict()

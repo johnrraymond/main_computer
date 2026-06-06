@@ -157,7 +157,8 @@ class HubCreditIndexer:
             payer_address=_require_evm_address({"payer_address": payer_address_raw}, "payer_address"),
             payment_asset=_clean_payment_asset(payload.get("payment_asset", "native")),
             payment_amount_base_units=_require_positive_int(payload, "payment_amount_base_units"),
-            credits_granted=_require_positive_int(payload, "credits_granted"),
+            credits_granted=0,
+            credits_granted_wei=_require_positive_int(payload, "credits_granted_wei"),
             chain_event=event,
             memo=str(payload.get("memo", "")).strip() or "escrow deposit receipt import",
         )

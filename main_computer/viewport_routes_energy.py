@@ -282,33 +282,21 @@ class ViewportEnergyRoutesMixin:
         fraction_text = str(fraction).rjust(18, "0").rstrip("0")
         return f"{whole}.{fraction_text}"
 
-    def _worker_base_units_to_hub_credits(self, value: Any) -> int:
+    def _worker_base_units_to_hub_credit_wei(self, value: Any) -> int:
         base_units = int(value or 0)
         if base_units <= 0:
             raise ValueError("payment_amount_base_units must be positive.")
-        whole_credits, remainder = divmod(base_units, 10**18)
-        if remainder:
-            raise ValueError("wallet funding imports must be whole credits; payment_amount_base_units is not divisible by 1e18.")
-        if whole_credits <= 0:
-            raise ValueError("credits_granted must be positive.")
-        return whole_credits
+        return base_units
 
-    def _worker_wallet_funding_credits_granted(self, *, receipt: dict[str, Any], body: dict[str, Any], payment_amount_base_units: int) -> int:
-        raw_value = receipt.get("credits_granted", body.get("credits_granted", None))
+    def _worker_wallet_funding_credits_granted_wei(self, *, receipt: dict[str, Any], body: dict[str, Any], payment_amount_base_units: int) -> int:
+        raw_value = receipt.get("credits_granted_wei", body.get("credits_granted_wei", None))
         if raw_value is None or str(raw_value).strip() == "":
-            return self._worker_base_units_to_hub_credits(payment_amount_base_units)
+            return self._worker_base_units_to_hub_credit_wei(payment_amount_base_units)
 
-        credits = int(raw_value or 0)
-        if credits <= 0:
-            return self._worker_base_units_to_hub_credits(payment_amount_base_units)
-
-        # Older Worker UI builds forwarded credits_granted as wei/base units.
-        # Hub ledger credits are whole credits, so normalize the legacy receipt
-        # shape before forwarding the import to Hub.
-        if credits == payment_amount_base_units or credits >= 10**18:
-            return self._worker_base_units_to_hub_credits(credits)
-
-        return credits
+        credits_wei = int(raw_value or 0)
+        if credits_wei <= 0:
+            return self._worker_base_units_to_hub_credit_wei(payment_amount_base_units)
+        return credits_wei
 
     def _worker_wallet_funding_current_json_candidates(self) -> list[Path]:
         candidates: list[Path] = []
@@ -639,7 +627,7 @@ class ViewportEnergyRoutesMixin:
                 "payer_address": str(receipt.get("payer_address", body.get("payer_address", wallet_address)) or wallet_address),
                 "payment_asset": str(receipt.get("payment_asset", body.get("payment_asset", "native")) or "native"),
                 "payment_amount_base_units": payment_amount_base_units,
-                "credits_granted": self._worker_wallet_funding_credits_granted(
+                "credits_granted_wei": self._worker_wallet_funding_credits_granted_wei(
                     receipt=receipt,
                     body=body,
                     payment_amount_base_units=payment_amount_base_units,
