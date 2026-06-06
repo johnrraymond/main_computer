@@ -15,7 +15,7 @@ def test_windows_bootstrapper_targets_native_windows_wsl_executor_shape() -> Non
 
     assert "Windows-first Main Computer bootstrapper" in script
     assert "Primary runtime: native Windows Python process." in script
-    assert 'ValidateSet("auto", "disabled", "wsl", "docker")' in script
+    assert 'ValidateSet("auto", "disabled", "docker")' in script
     assert '$OnlyOfficeMode = "auto"' in script
 
     assert '$env:MAIN_COMPUTER_EXECUTOR_ENABLED = "1"' in script
@@ -364,9 +364,9 @@ def test_windows_bootstrapper_repairs_stale_wsl_executor_entrypoint_contract() -
 def test_windows_bootstrapper_uses_fixed_onlyoffice_lane_ports_and_projects() -> None:
     script = (ROOT / "bootstrap-main-computer-windows.ps1").read_text(encoding="utf-8")
 
-    assert "-DefaultOnlyOfficePort 18084" in script
-    assert "-DefaultOnlyOfficePort 28084" in script
-    assert "-DefaultOnlyOfficePort 38084" in script
+    assert "-DefaultOnlyOfficePort 18085" in script
+    assert "-DefaultOnlyOfficePort 28085" in script
+    assert "-DefaultOnlyOfficePort 38085" in script
     assert "ONLYOFFICE lane" in script
     assert "ProjectName = $ModeProfile.OnlyOfficeProjectName" in script
     assert "http://host.docker.internal:$Port" in script
@@ -453,7 +453,7 @@ def test_onlyoffice_control_waits_for_docker_readiness_with_compose_project() ->
 
     assert "[string]$ProjectName = \"\"" in control
     assert "[int]$ReadyTimeoutSeconds = 300" in control
-    assert "docker compose -f $composePath -p $ProjectName up -d onlyoffice" in control
+    assert 'Invoke-DockerComposeOnlyOffice @("up", "-d", "onlyoffice")' in control
     assert "--wait-seconds $ReadyTimeoutSeconds --poll-seconds $ReadyPollSeconds" in control
     assert "COMPOSE_PROJECT_NAME" in control
 
@@ -967,7 +967,7 @@ def test_python_stage0_accepts_regular_bootstrap_compatibility_knobs() -> None:
         "[string]$BindHost = \"0.0.0.0\"",
         "[string]$Workspace = \"\"",
         "[int]$StartTimeoutSeconds = 90",
-        "[ValidateSet(\"auto\", \"disabled\", \"wsl\", \"docker\")]",
+        "[ValidateSet(\"auto\", \"disabled\", \"docker\")]",
         "[string]$OnlyOfficeMode = \"auto\"",
         "[string]$LocalServerMode = \"auto\"",
         "[string]$LocalCoolifyMode = \"auto\"",
@@ -1055,7 +1055,7 @@ def test_python_target_launcher_passes_regular_knobs_to_python_installer() -> No
         "[int]$HeartbeatPort = 0",
         "[string]$BindHost = \"0.0.0.0\"",
         "[string]$Workspace = \"\"",
-        "[ValidateSet(\"auto\", \"disabled\", \"wsl\", \"docker\")]",
+        "[ValidateSet(\"auto\", \"disabled\", \"docker\")]",
         "[string]$OnlyOfficeMode = \"auto\"",
         "[switch]$InstallOnlyOffice",
         "[switch]$BuildWslRuntimeIfMissing",

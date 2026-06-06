@@ -157,11 +157,6 @@ function Get-ModeDefaultEnvironment([string]$RootPath, [string]$Mode) {
     $normalized = "unleashed"
   }
 
-  $onlyOfficeWslDistro = $env:MAIN_COMPUTER_ONLYOFFICE_WSL_DISTRO
-  if ([string]::IsNullOrWhiteSpace($onlyOfficeWslDistro)) {
-    $onlyOfficeWslDistro = "Ubuntu"
-  }
-
   switch ($normalized) {
     "safe" {
       $label = "Safe Mode"
@@ -216,7 +211,6 @@ function Get-ModeDefaultEnvironment([string]$RootPath, [string]$Mode) {
     MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET = ""
     MAIN_COMPUTER_ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS = "true"
     MAIN_COMPUTER_ONLYOFFICE_ALLOW_META_IP_ADDRESS = "true"
-    MAIN_COMPUTER_ONLYOFFICE_WSL_DISTRO = $onlyOfficeWslDistro
     MAIN_COMPUTER_DEV_COMPOSE_PROJECT = "main-computer-unleashed"
     MAIN_COMPUTER_EXECUTOR_COMPOSE_PROJECT = "main-computer-unleashed"
     MAIN_COMPUTER_DOCKER_VIEWPORT_PORT = "18765"
@@ -857,33 +851,32 @@ function Invoke-MainComputerOnlyOfficeControl {
 
   $enabled = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_ENABLED" "1"
   if ($enabled -eq "0" -or $enabled -eq "false" -or $enabled -eq "disabled") {
-    Write-Host "ONLYOFFICE startup bridge management skipped because MAIN_COMPUTER_ONLYOFFICE_ENABLED=$enabled."
+    Write-Host "ONLYOFFICE Docker startup skipped because MAIN_COMPUTER_ONLYOFFICE_ENABLED=$enabled."
     return
   }
 
-  $mode = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_MODE" "wsl"
-  if ([string]::IsNullOrWhiteSpace($mode) -or $mode -eq "wsl-native") {
-    $mode = "wsl"
+  $mode = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_MODE" "docker"
+  if ([string]::IsNullOrWhiteSpace($mode)) {
+    $mode = "docker"
+  }
+  if ($mode -ne "docker" -and $mode -ne "disabled") {
+    Write-Warning "MAIN_COMPUTER_ONLYOFFICE_MODE=$mode is unsupported; using Docker ONLYOFFICE mode instead."
+    $mode = "docker"
   }
   if ($mode -eq "disabled") {
-    Write-Host "ONLYOFFICE startup bridge management skipped because MAIN_COMPUTER_ONLYOFFICE_MODE=disabled."
+    Write-Host "ONLYOFFICE Docker startup skipped because MAIN_COMPUTER_ONLYOFFICE_MODE=disabled."
     return
   }
 
-  $onlyOfficePortText = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_PORT" "18084"
+  $onlyOfficePortText = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_PORT" "18085"
   $appPortText = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_CONTROL_PORT" "8765"
   $projectName = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_PROJECT" "main-computer-onlyoffice"
-  $jwtEnabled = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED" $(if ($mode -eq "docker") { "false" } else { "true" })
+  $jwtEnabled = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED" "false"
   $jwtSecret = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET" $(if ($jwtEnabled -eq "false" -or $jwtEnabled -eq "0" -or $jwtEnabled -eq "disabled") { "" } else { "main-computer-onlyoffice-local-secret" })
   $containerName = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_CONTAINER_NAME" "main-computer-onlyoffice-documentserver"
-  $distro = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_WSL_DISTRO" "Ubuntu"
-  if ([string]::IsNullOrWhiteSpace($distro)) {
-    $distro = "Ubuntu"
-  }
-
-  $onlyOfficePort = 18084
+  $onlyOfficePort = 18085
   $appPort = 8765
-  try { $onlyOfficePort = [int]$onlyOfficePortText } catch { $onlyOfficePort = 18084 }
+  try { $onlyOfficePort = [int]$onlyOfficePortText } catch { $onlyOfficePort = 18085 }
   try { $appPort = [int]$appPortText } catch { $appPort = 8765 }
 
   $controlScript = Join-Path $RootPath "tools\onlyoffice\onlyoffice-control.ps1"
@@ -898,7 +891,7 @@ function Invoke-MainComputerOnlyOfficeControl {
   $env:MAIN_COMPUTER_ONLYOFFICE_ALLOW_META_IP_ADDRESS = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_ALLOW_META_IP_ADDRESS" "true"
 
   Write-Host ""
-  Write-Host ("ONLYOFFICE startup control: {0} mode={1} port={2} appPort={3} distro={4}" -f $OnlyOfficeAction, $mode, $onlyOfficePort, $appPort, $distro)
+  Write-Host ("ONLYOFFICE Docker control: {0} mode={1} port={2} appPort={3}" -f $OnlyOfficeAction, $mode, $onlyOfficePort, $appPort)
   try {
     $controlArgs = @(
       "-NoProfile",
@@ -908,7 +901,6 @@ function Invoke-MainComputerOnlyOfficeControl {
       "-Mode", $mode,
       "-Port", $onlyOfficePort,
       "-AppPort", $appPort,
-      "-Distro", $distro,
       "-ProjectName", $projectName,
       "-JwtEnabled", $jwtEnabled
     )
@@ -919,11 +911,7 @@ function Invoke-MainComputerOnlyOfficeControl {
     & powershell @controlArgs
 
     if ($LASTEXITCODE -ne 0) {
-      if ($OnlyOfficeAction -eq "bridge-status") {
-        Write-Host "ONLYOFFICE bridge-status reported not-ready diagnostics; see output above. Exit code: $LASTEXITCODE"
-      } else {
-        Write-Warning "ONLYOFFICE control action '$OnlyOfficeAction' returned exit code $LASTEXITCODE."
-      }
+      Write-Warning "ONLYOFFICE control action '$OnlyOfficeAction' returned exit code $LASTEXITCODE."
     }
   } catch {
     Write-Warning "ONLYOFFICE control action '$OnlyOfficeAction' failed: $($_.Exception.Message)"
@@ -1060,7 +1048,7 @@ function Show-MainComputerStatus([string]$RootPath) {
   Write-Host ("Status via Python: " + $pythonCommand)
   & $pythonCommand @statusArgs
   $statusExitCode = $LASTEXITCODE
-  Invoke-MainComputerOnlyOfficeControl $RootPath $launchContext "bridge-status"
+  Invoke-MainComputerOnlyOfficeControl $RootPath $launchContext "status"
   return $statusExitCode
 }
 
@@ -1788,12 +1776,12 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false) {
   Set-MainComputerLaunchEnvironment $launchContext
   $controlRoot = Get-ControlRoot $RootPath $launchContext
 
-  $removeOnlyOfficeBridgesOnStop = Get-LaunchEnvironmentValue $launchContext "MAIN_COMPUTER_ONLYOFFICE_REMOVE_BRIDGES_ON_STOP" "0"
-  if ($removeOnlyOfficeBridgesOnStop -eq "1" -or $removeOnlyOfficeBridgesOnStop -eq "true" -or $removeOnlyOfficeBridgesOnStop -eq "yes") {
-    Invoke-MainComputerOnlyOfficeControl $RootPath $launchContext "bridge-stop"
+  $stopOnlyOfficeOnStop = Get-LaunchEnvironmentValue $launchContext "MAIN_COMPUTER_ONLYOFFICE_STOP_ON_STOP" "0"
+  if ($stopOnlyOfficeOnStop -eq "1" -or $stopOnlyOfficeOnStop -eq "true" -or $stopOnlyOfficeOnStop -eq "yes") {
+    Invoke-MainComputerOnlyOfficeControl $RootPath $launchContext "stop"
   } else {
-    Write-Host "Leaving ONLYOFFICE WSL bridge portproxies installed so the next start_v2.bat does not require elevation."
-    Write-Host "Set MAIN_COMPUTER_ONLYOFFICE_REMOVE_BRIDGES_ON_STOP=1 or run tools\onlyoffice\onlyoffice-control.ps1 bridge-stop to remove them."
+    Write-Host "Leaving ONLYOFFICE Docker container running for faster next startup."
+    Write-Host "Set MAIN_COMPUTER_ONLYOFFICE_STOP_ON_STOP=1 or run tools\onlyoffice\onlyoffice-control.ps1 stop to stop it."
   }
 
   $sessionPath = Get-StartSessionPath $RootPath

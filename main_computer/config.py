@@ -13,13 +13,13 @@ DEFAULT_ENERGY_CHAIN_ID = 42424242
 DEFAULT_XLAG_CHAIN_ID = 42424242
 DEFAULT_HUB_URL = "http://127.0.0.1:8770"
 DEFAULT_HUB_ROOT = Path("runtime/hub")
-DEFAULT_ONLYOFFICE_MODE = "wsl"
-DEFAULT_ONLYOFFICE_PUBLIC_URL = "http://127.0.0.1:18084"
+DEFAULT_ONLYOFFICE_MODE = "docker"
+DEFAULT_ONLYOFFICE_PUBLIC_URL = "http://127.0.0.1:18085"
 DEFAULT_ONLYOFFICE_INTERNAL_URL = DEFAULT_ONLYOFFICE_PUBLIC_URL
 DEFAULT_ONLYOFFICE_DOCUMENT_SERVER_URL = DEFAULT_ONLYOFFICE_PUBLIC_URL
 DEFAULT_ONLYOFFICE_BROWSER_PUBLIC_URL: str | None = None
 DEFAULT_ONLYOFFICE_STORAGE_ROOT = Path("runtime/onlyoffice/workbooks")
-DEFAULT_ONLYOFFICE_JWT_SECRET = "main-computer-onlyoffice-local-secret"
+DEFAULT_ONLYOFFICE_JWT_SECRET: str | None = None
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -231,13 +231,14 @@ class MainComputerConfig:
             os.environ.get("MAIN_COMPUTER_ONLYOFFICE_MODE", DEFAULT_ONLYOFFICE_MODE).strip().lower()
             or DEFAULT_ONLYOFFICE_MODE
         )
-        if onlyoffice_mode == "wsl-native":
-            onlyoffice_mode = "wsl"
-        onlyoffice_jwt_enabled = env_flag("MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED", True)
-        onlyoffice_jwt_secret = (
-            os.environ.get("MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET", "").strip()
-            or DEFAULT_ONLYOFFICE_JWT_SECRET
+        if onlyoffice_mode not in {"docker", "external", "disabled"}:
+            onlyoffice_mode = DEFAULT_ONLYOFFICE_MODE
+
+        onlyoffice_jwt_enabled = env_flag(
+            "MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED",
+            onlyoffice_mode not in {"docker", "external", "disabled"},
         )
+        onlyoffice_jwt_secret = os.environ.get("MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET", "").strip() or DEFAULT_ONLYOFFICE_JWT_SECRET
         if not onlyoffice_jwt_enabled:
             onlyoffice_jwt_secret = None
 

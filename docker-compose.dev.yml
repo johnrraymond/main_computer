@@ -39,7 +39,7 @@ services:
       MAIN_COMPUTER_EXECUTOR_ENABLED: "0"
       MAIN_COMPUTER_EXECUTOR_IMAGE: main-computer-executor:latest
       MAIN_COMPUTER_EXECUTOR_ROOT: /workspace/runtime/executor
-      MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL: http://127.0.0.1:${MAIN_COMPUTER_ONLYOFFICE_PORT:-18084}
+      MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL: http://127.0.0.1:${MAIN_COMPUTER_ONLYOFFICE_PORT:-18085}
       MAIN_COMPUTER_ONLYOFFICE_INTERNAL_URL: http://onlyoffice:80
       MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL: http://main-computer:8765
       MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET: ${MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET:-main-computer-onlyoffice-local-secret}
@@ -96,7 +96,7 @@ services:
   # standalone machine-wide docker-compose.gitea.yml stack on HTTP localhost:3000
   # so dev, debug, safe, and applications modes do not start competing Git servers.
 
-  # Optional ONLYOFFICE Docs service. Windows local installs prefer WSL-native
+  # Optional ONLYOFFICE Docs service. Windows local installs use Docker
   # ONLYOFFICE via tools/onlyoffice/onlyoffice-control.ps1; this Docker profile
   # keeps dev/prod container deployments available with the same app config.
   onlyoffice:
@@ -107,7 +107,7 @@ services:
       JWT_ENABLED: ${MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED:-true}
       JWT_SECRET: ${MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET:-main-computer-onlyoffice-local-secret}
     ports:
-      - "127.0.0.1:${MAIN_COMPUTER_ONLYOFFICE_PORT:-18084}:80"
+      - "127.0.0.1:${MAIN_COMPUTER_ONLYOFFICE_PORT:-18085}:80"
     volumes:
       - onlyoffice-data:/var/www/onlyoffice/Data
       - onlyoffice-logs:/var/log/onlyoffice

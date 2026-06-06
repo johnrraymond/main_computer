@@ -28,7 +28,7 @@ MODE_DEFAULTS = {
         "distribution_suffix": "unleashed",
         "port": 8765,
         "heartbeat_port": 8766,
-        "onlyoffice_port": 18084,
+        "onlyoffice_port": 18085,
         "docker_viewport_port": 18765,
         "hub_port": 18770,
         "hub_worker_port": 18771,
@@ -44,7 +44,7 @@ MODE_DEFAULTS = {
         "distribution_suffix": "debug",
         "port": 28865,
         "heartbeat_port": 28866,
-        "onlyoffice_port": 28084,
+        "onlyoffice_port": 28085,
         "docker_viewport_port": 28765,
         "hub_port": 28770,
         "hub_worker_port": 28771,
@@ -60,7 +60,7 @@ MODE_DEFAULTS = {
         "distribution_suffix": "safe",
         "port": 38865,
         "heartbeat_port": 38866,
-        "onlyoffice_port": 38084,
+        "onlyoffice_port": 38085,
         "docker_viewport_port": 38765,
         "hub_port": 38770,
         "hub_worker_port": 38771,
@@ -114,7 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bind-host", default="0.0.0.0")
     parser.add_argument("--workspace", type=Path)
     parser.add_argument("--start-timeout-seconds", type=int, default=90)
-    parser.add_argument("--onlyoffice-mode", choices=["auto", "disabled", "wsl", "docker"], default="auto")
+    parser.add_argument("--onlyoffice-mode", choices=["auto", "disabled", "docker"], default="auto")
     parser.add_argument("--local-server-mode", choices=["auto", "disabled", "required"], default="auto")
     parser.add_argument("--local-coolify-mode", choices=["auto", "disabled", "required"], default="auto")
     parser.add_argument("--onlyoffice-port", type=int)
@@ -249,8 +249,6 @@ def _effective_onlyoffice_mode(value: str) -> str:
     requested = str(value or "auto").strip().lower()
     if requested == "disabled":
         return "disabled"
-    if requested == "wsl":
-        return "wsl"
     if requested == "docker":
         if shutil.which("docker") is None:
             raise RuntimeError("ONLYOFFICE mode 'docker' requires Docker, but docker was not found on PATH.")
@@ -1499,7 +1497,7 @@ def run_install_time_service_preparation(
     else:
         print("Local Coolify startup deferred to the tree launcher.", flush=True)
 
-    if args.onlyoffice_mode in {"wsl", "docker"} or args.install_onlyoffice:
+    if args.onlyoffice_mode == "docker" or args.install_onlyoffice:
         start_onlyoffice_if_requested(
             args=args,
             install_root=install_root,

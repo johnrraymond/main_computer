@@ -1284,7 +1284,7 @@ def collect_onlyoffice_state(
     expected_ports = compose_service_default_host_ports(onlyoffice_service, env=os.environ) if onlyoffice_service else []
     if not expected_ports:
         env_port = str(os.environ.get("MAIN_COMPUTER_ONLYOFFICE_PORT") or "").strip()
-        fallback_port = int(env_port) if env_port.isdigit() else 18084
+        fallback_port = int(env_port) if env_port.isdigit() else 18085
         expected_ports = [
             {
                 "raw": "MAIN_COMPUTER_ONLYOFFICE_PORT or default",

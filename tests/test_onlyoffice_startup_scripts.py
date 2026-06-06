@@ -10,84 +10,54 @@ def read(rel: str) -> str:
     return (REPO / rel).read_text(encoding="utf-8")
 
 
-def test_onlyoffice_control_manages_both_wsl_bridges() -> None:
+def test_onlyoffice_control_is_docker_only() -> None:
     text = read("tools/onlyoffice/onlyoffice-control.ps1")
 
-    assert '"bridge-start"' in text
-    assert '"bridge-status"' in text
-    assert '"bridge-stop"' in text
-    assert '"bridge-start-elevated"' in text
-    assert '"bridge-stop-elevated"' in text
+    assert '[ValidateSet("install", "start", "stop", "status", "doctor")]' in text
+    assert '[ValidateSet("docker")]' in text
+    assert '[int]$Port = 18085' in text
+    assert 'Invoke-DockerOnlyOffice "start"' in text
+    assert 'Invoke-DockerOnlyOffice "status"' in text
+    assert 'http://127.0.0.1:$Port' in text
+    assert 'http://host.docker.internal:$AppPort' in text
+    assert 'MAIN_COMPUTER_ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS = "true"' in text
+    assert 'MAIN_COMPUTER_ONLYOFFICE_ALLOW_META_IP_ADDRESS = "true"' in text
 
-    # Browser/Windows -> WSL-hosted ONLYOFFICE Docs API.
-    assert '127.0.0.1:$Port -> $ResolvedWslIp`:$Port' in text
-    assert 'Set-PortProxyEntry -ListenAddress "127.0.0.1" -ListenPort $Port' in text
-
-    # WSL-hosted ONLYOFFICE -> Windows Main Computer file/callback endpoints.
-    assert '$ResolvedWslGatewayIp`:$AppPort -> 127.0.0.1:$AppPort' in text
-    assert 'Set-PortProxyEntry -ListenAddress $ResolvedWslGatewayIp -ListenPort $AppPort' in text
-
-    # ONLYOFFICE must be allowed to fetch the WSL gateway private IP URL in local mode.
-    assert 'allowPrivateIPAddress' in text
-    assert 'Ensure-WslPrivateIpDownloadAllowed' in text
-
-    # The embedded Python must be passed in a way that preserves quotes through
-    # PowerShell -> wsl.exe -> Python. A here-doc string passed through bash -lc
-    # lost quotes around Path("/etc/...") on Windows.
-    assert 'function Invoke-WslPythonAsRoot' in text
-    assert 'base64.b64decode' in text
-    assert "python3 - <<'PY'" not in text
-
-    # bridge-start should be idempotent: if the existing bridges are healthy,
-    # normal start_v2.bat must not request elevation again.
-    assert '$initialStatus = Get-OnlyOfficeBridgeStatus' in text
-    assert 'ONLYOFFICE WSL bridges are already ready; no elevated changes are needed.' in text
-    assert text.index('$initialStatus.ready') < text.index('Invoke-ElevatedSelf "bridge-start-elevated"')
-
-    # The elevated UAC child must not re-enter WSL startup/configuration work.
-    assert 'Start-OnlyOfficeWindowsBridgeEntries' in text
-    assert 'Ensure-WslPrivateIpDownloadAllowed' in text
-    assert text.index('Ensure-WslPrivateIpDownloadAllowed') < text.index('Invoke-ElevatedSelf "bridge-start-elevated"')
-    elevated_case = text.split('"bridge-start-elevated" {', 1)[1].split('"bridge-status"', 1)[0]
-    assert 'Ensure-WslDistroInstalledAndReady' not in elevated_case
-    assert 'Get-WslOnlyOfficeIp' not in elevated_case
-    assert 'Get-WslGatewayIp' not in elevated_case
-    assert 'wsl.exe' not in elevated_case
+    forbidden = [
+        "wsl.exe",
+        "netsh interface portproxy",
+        "New-NetFirewallRule",
+        "Get-NetFirewallRule",
+        "bridge-start",
+        "bridge-status",
+        "bridge-stop",
+        "Invoke-WslOnlyOffice",
+        "Set-PortProxyEntry",
+        "Ensure-WslPrivateIpDownloadAllowed",
+    ]
+    for needle in forbidden:
+        assert needle not in text
 
 
-def test_onlyoffice_wsl_start_removes_stale_applications_docker_container() -> None:
-    text = read("tools/onlyoffice/onlyoffice-control.ps1")
-
-    assert 'function Remove-StaleApplicationsDockerOnlyOffice' in text
-    assert '--filter "name=main-computer-applications-onlyoffice"' in text
-    assert "'^onlyoffice/documentserver(?::|$)'" in text
-    assert 'Remove-StaleApplicationsDockerOnlyOffice' in text
-    assert text.index('"start" {') < text.index('Remove-StaleApplicationsDockerOnlyOffice', text.index('"start" {')) < text.index('Invoke-WslOnlyOffice "wsl-start-onlyoffice.sh"')
-
-
-def test_onlyoffice_wsl_start_installs_native_package_when_missing() -> None:
-    text = read("tools/onlyoffice/onlyoffice-control.ps1")
-
-    assert 'function Test-WslNativeOnlyOfficeInstalled' in text
-    assert 'function Ensure-WslNativeOnlyOfficeInstalled' in text
-    assert 'dpkg-query -s onlyoffice-documentserver' in text
-    assert 'wsl-install-onlyoffice.sh' in text
-
-    start_case = text.split('"start" {', 1)[1].split('"stop"', 1)[0]
-    assert start_case.index('Remove-StaleApplicationsDockerOnlyOffice') < start_case.index('Ensure-WslNativeOnlyOfficeInstalled')
-    assert start_case.index('Ensure-WslNativeOnlyOfficeInstalled') < start_case.index('Invoke-WslOnlyOffice "wsl-start-onlyoffice.sh"')
+def test_onlyoffice_wsl_helper_scripts_removed() -> None:
+    for rel in [
+        "tools/onlyoffice/wsl-install-onlyoffice.sh",
+        "tools/onlyoffice/wsl-start-onlyoffice.sh",
+        "tools/onlyoffice/wsl-status-onlyoffice.sh",
+        "tools/onlyoffice/wsl-stop-onlyoffice.sh",
+    ]:
+        assert not (REPO / rel).exists(), rel
 
 
-def test_start_v2_helper_invokes_onlyoffice_startup_control() -> None:
+def test_start_v2_helper_invokes_docker_onlyoffice_control_without_bridge_management() -> None:
     text = read("scripts/main-computer-start-stop.ps1")
 
     assert 'function Invoke-MainComputerOnlyOfficeControl' in text
     assert 'Invoke-MainComputerOnlyOfficeControl $RootPath $launchContext "start"' in text
-    assert 'Invoke-MainComputerOnlyOfficeControl $RootPath $launchContext "bridge-status"' in text
-    assert 'Invoke-MainComputerOnlyOfficeControl $RootPath $launchContext "bridge-stop"' in text
-    assert 'ONLYOFFICE bridge-status reported not-ready diagnostics; see output above.' in text
-    assert 'MAIN_COMPUTER_ONLYOFFICE_REMOVE_BRIDGES_ON_STOP' in text
-    assert 'Leaving ONLYOFFICE WSL bridge portproxies installed' in text
+    assert 'Invoke-MainComputerOnlyOfficeControl $RootPath $launchContext "status"' in text
+    assert 'Invoke-MainComputerOnlyOfficeControl $RootPath $launchContext "stop"' in text
+    assert 'MAIN_COMPUTER_ONLYOFFICE_STOP_ON_STOP' in text
+    assert 'Leaving ONLYOFFICE Docker container running for faster next startup.' in text
 
     assert 'MAIN_COMPUTER_ONLYOFFICE_ENABLED = "1"' in text
     assert 'MAIN_COMPUTER_ONLYOFFICE_MODE = "docker"' in text
@@ -106,6 +76,17 @@ def test_start_v2_helper_invokes_onlyoffice_startup_control() -> None:
     assert '$controlArgs += @("-JwtSecret", $jwtSecret)' in text
     assert '& powershell @controlArgs' in text
 
+    forbidden = [
+        "bridge-status",
+        "bridge-stop",
+        "ONLYOFFICE WSL bridge",
+        "MAIN_COMPUTER_ONLYOFFICE_REMOVE_BRIDGES_ON_STOP",
+        "MAIN_COMPUTER_ONLYOFFICE_WSL_DISTRO",
+        '"-Distro", $distro',
+    ]
+    for needle in forbidden:
+        assert needle not in text
+
 
 def test_onlyoffice_docker_compose_uses_18085_no_jwt_and_private_ip_allowance() -> None:
     text = read("docker-compose.onlyoffice.yml")
@@ -116,40 +97,24 @@ def test_onlyoffice_docker_compose_uses_18085_no_jwt_and_private_ip_allowance() 
     assert 'ALLOW_PRIVATE_IP_ADDRESS: ${MAIN_COMPUTER_ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS:-true}' in text
     assert 'ALLOW_META_IP_ADDRESS: ${MAIN_COMPUTER_ONLYOFFICE_ALLOW_META_IP_ADDRESS:-true}' in text
     assert '127.0.0.1:${MAIN_COMPUTER_ONLYOFFICE_PORT:-18085}:80' in text
+    assert 'ONLYOFFICE Docker uses 18085' in text
 
-    assert '[ValidateSet("wsl", "docker")]' in control
+    assert '[ValidateSet("docker")]' in control
     assert '[string]$JwtEnabled = ""' in control
-    assert '$JwtEnabled = ConvertTo-MainComputerBoolText $JwtEnabled ($Mode -ne "docker")' in control
+    assert '$JwtEnabled = ConvertTo-MainComputerBoolText $JwtEnabled $false' in control
     assert '$env:MAIN_COMPUTER_ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS = "true"' in control
     assert '$env:MAIN_COMPUTER_ONLYOFFICE_ALLOW_META_IP_ADDRESS = "true"' in control
     assert 'Invoke-DockerOnlyOffice "status"' in control
-
-
-def test_onlyoffice_wsl_distro_is_managed_and_configurable() -> None:
-    control = read("tools/onlyoffice/onlyoffice-control.ps1")
-    start_stop = read("scripts/main-computer-start-stop.ps1")
-
-    assert 'MAIN_COMPUTER_ONLYOFFICE_WSL_DISTRO' in control
-    assert 'Get-WslDistroNames' in control
-    assert 'Test-WslDistroExists' in control
-    assert 'Install-WslDistro' in control
-    assert 'Ensure-WslDistroInstalledAndReady -DistroName $Distro' in control
-    assert 'wsl.exe --install -d $DistroName' in control
-    assert 'wsl.exe -d $DistroName -u root -- bash -lc "true"' in control
-    assert 'lsb_release' not in control
-
-    assert '$onlyOfficeWslDistro = $env:MAIN_COMPUTER_ONLYOFFICE_WSL_DISTRO' in start_stop
-    assert 'MAIN_COMPUTER_ONLYOFFICE_WSL_DISTRO = $onlyOfficeWslDistro' in start_stop
-    assert 'Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_WSL_DISTRO" "Ubuntu"' in start_stop
-    assert '-Distro $distro' in start_stop
 
 
 def test_onlyoffice_docker_browser_load_smoke_helper_is_isolated() -> None:
     text = read("tools/onlyoffice/test-onlyoffice-docker-browser-load.ps1")
 
     assert '[int]$Port = 18085' in text
-    assert '[int]$CurrentWslPort = 18084' in text
+    assert 'main-computer-onlyoffice-documentserver' in text
     assert 'mc-onlyoffice-docker-twiddle' in text
+    assert 'CurrentWslPort' not in text
+    assert 'Current WSL ONLYOFFICE port' not in text
     assert 'main-computer-applications-onlyoffice-1' in text
     assert '--restart", "no"' in text
     assert '"-p", $Publish' in text

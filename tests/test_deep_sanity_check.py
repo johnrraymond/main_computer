@@ -296,14 +296,14 @@ def test_resolves_onlyoffice_compose_default_port(tmp_path: Path) -> None:
     service = {
         "ports": [
             {
-                "raw": '"127.0.0.1:${MAIN_COMPUTER_ONLYOFFICE_PORT:-18084}:80"',
+                "raw": '"127.0.0.1:${MAIN_COMPUTER_ONLYOFFICE_PORT:-18085}:80"',
             }
         ]
     }
 
     ports = module.compose_service_default_host_ports(service, env={})
 
-    assert ports[0]["host_port"] == 18084
+    assert ports[0]["host_port"] == 18085
     assert ports[0]["container_port"] == 80
 
 
@@ -316,7 +316,7 @@ services:
   onlyoffice:
     image: onlyoffice/documentserver:${MAIN_COMPUTER_ONLYOFFICE_IMAGE_TAG:-latest}
     ports:
-      - "127.0.0.1:${MAIN_COMPUTER_ONLYOFFICE_PORT:-18084}:80"
+      - "127.0.0.1:${MAIN_COMPUTER_ONLYOFFICE_PORT:-18085}:80"
 """.lstrip(),
         encoding="utf-8",
     )
@@ -367,7 +367,7 @@ services:
     )
 
     messages = [finding.message for finding in findings]
-    assert state["expected_ports"][0]["host_port"] == 18084
+    assert state["expected_ports"][0]["host_port"] == 18085
     assert state["running_containers"] == ["main-computer-onlyoffice-debug-onlyoffice-1"]
     assert state["stopped_or_created_containers"] == ["main-computer-onlyoffice-onlyoffice-1"]
     assert "ONLYOFFICE is running, but not on the expected current-repo port." in messages

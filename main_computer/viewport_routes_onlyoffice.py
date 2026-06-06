@@ -5,11 +5,8 @@ import binascii
 import io
 import hashlib
 import hmac
-import ipaddress
 import mimetypes
 import posixpath
-import subprocess
-import sys
 import tempfile
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
@@ -126,7 +123,7 @@ class ViewportOnlyOfficeRoutesMixin:
                 "ok": True,
                 "enabled": bool(getattr(self.server.config, "onlyoffice_enabled", False)),
                 "mode": self._onlyoffice_effective_mode(),
-                "default_mode": "docker" if self._onlyoffice_effective_mode() == "docker" else "wsl-native",
+                "default_mode": self._onlyoffice_effective_mode(),
                 "configured_public_url": configured_public_url,
                 "browser_public_url_override": browser_public_url_override,
                 "public_url": public_url,
@@ -289,29 +286,17 @@ class ViewportOnlyOfficeRoutesMixin:
 
     def _onlyoffice_effective_mode(self) -> str:
         configured = str(getattr(self.server.config, "onlyoffice_mode", "") or "").strip().lower()
-        if configured in {"docker", "external"}:
+        if configured in {"docker", "external", "disabled"}:
             return configured
-        if self._onlyoffice_browser_public_url_override():
-            return "wsl-browser-override"
-        return "wsl"
+        return "docker"
 
     def _onlyoffice_public_url(self) -> str:
         public_url = str(getattr(self.server.config, "onlyoffice_public_url", "") or "").strip().rstrip("/")
         legacy_url = str(getattr(self.server.config, "onlyoffice_document_server_url", "") or "").strip().rstrip("/")
-        if (
-            legacy_url
-            and legacy_url != "http://127.0.0.1:18084"
-            and (not public_url or public_url == "http://127.0.0.1:18084")
-        ):
-            return legacy_url
-        return public_url or legacy_url or "http://127.0.0.1:18084"
+        return public_url or legacy_url or "http://127.0.0.1:18085"
 
     def _onlyoffice_browser_public_url_override(self) -> str:
-        """Return an optional browser-facing ONLYOFFICE Docs URL override.
-
-        This lets the web page load api.js from a Docker/Desktop localhost bind
-        while leaving the WSL/native control path configured as-is.
-        """
+        """Return an optional browser-facing ONLYOFFICE Docs URL override."""
 
         return str(getattr(self.server.config, "onlyoffice_browser_public_url", "") or "").strip().rstrip("/")
 
@@ -319,16 +304,9 @@ class ViewportOnlyOfficeRoutesMixin:
         return self._onlyoffice_browser_public_url_override() or self._onlyoffice_public_url()
 
     def _onlyoffice_browser_public_url_candidates(self) -> list[str]:
-        """Return browser-side Document Server URL candidates for local WSL mode.
-
-        Windows localhost/portproxy can be less reliable for Chromium script and
-        websocket traffic than a direct WSL address.  Prefer the current WSL
-        distro IP when Main Computer is using local WSL ONLYOFFICE Docs, then
-        retain the configured loopback spellings as fallbacks.
-        """
+        """Return browser-side Document Server URL candidates for local Docker mode."""
 
         candidates: list[str] = []
-        browser_override = self._onlyoffice_browser_public_url_override()
 
         def add(value: str | None) -> None:
             clean = str(value or "").strip().rstrip("/")
@@ -358,32 +336,11 @@ class ViewportOnlyOfficeRoutesMixin:
                 netloc = f"{host}:{port}" if port else host
                 add(urlunsplit((parsed.scheme, netloc, path, "", "")))
 
-        def add_wsl_docs_ip_candidate(value: str | None) -> None:
-            if not self._onlyoffice_uses_local_wsl_docs():
-                return
-            host = self._onlyoffice_wsl_distro_ip()
-            if not host:
-                return
-            try:
-                parsed = urlsplit(str(value or "").strip().rstrip("/"))
-                if parsed.scheme not in {"http", "https"}:
-                    return
-                port = parsed.port or (443 if parsed.scheme == "https" else 80)
-            except Exception:
-                return
-            path = (parsed.path or "").rstrip("/")
-            netloc = f"{host}:{port}" if port else host
-            add(urlunsplit((parsed.scheme, netloc, path, "", "")))
-
-        add_loopback_aliases(browser_override)
-        if browser_override:
-            return candidates
-
-        add_wsl_docs_ip_candidate(self._onlyoffice_public_url())
+        add_loopback_aliases(self._onlyoffice_browser_public_url_override())
         add_loopback_aliases(self._onlyoffice_public_url())
         add_loopback_aliases(self._onlyoffice_internal_url())
-        add_loopback_aliases("http://127.0.0.1:18084")
-        add_loopback_aliases("http://localhost:18084")
+        add_loopback_aliases("http://127.0.0.1:18085")
+        add_loopback_aliases("http://localhost:18085")
         return candidates
 
     def _onlyoffice_internal_url(self) -> str:
@@ -400,21 +357,11 @@ class ViewportOnlyOfficeRoutesMixin:
         configured = str(getattr(self.server.config, "onlyoffice_callback_base_url", "") or "").strip().rstrip("/")
         if not configured:
             configured = str(getattr(self.server.config, "onlyoffice_public_base_url", "") or "").strip().rstrip("/")
-
-        # In WSL-native ONLYOFFICE mode, a loopback callback configured from the
-        # Windows/browser point of view is not reachable from Document Server.
-        # Rewrite only loopback defaults/overrides to the WSL gateway; preserve
-        # explicit non-loopback URLs for tunnels, LAN hosts, or reverse proxies.
-        if configured and not self._onlyoffice_url_is_loopback(configured):
-            return configured
-
-        if self._onlyoffice_uses_local_wsl_docs():
-            wsl_base = self._onlyoffice_wsl_callback_base_url()
-            if wsl_base:
-                return wsl_base
-
         if configured:
             return configured
+
+        if self._onlyoffice_effective_mode() == "docker":
+            return f"http://host.docker.internal:{self.server.server_port}"
 
         host = str(self.headers.get("Host") or f"127.0.0.1:{self.server.server_port}").strip()
         scheme = "https" if self.headers.get("X-Forwarded-Proto", "").lower() == "https" else "http"
@@ -424,139 +371,6 @@ class ViewportOnlyOfficeRoutesMixin:
         # Backward-compatible helper name; this is the URL ONLYOFFICE uses to
         # call back to Main Computer, not the Document Server URL.
         return self._onlyoffice_callback_base_url()
-
-    def _onlyoffice_wsl_callback_base_url(self) -> str | None:
-        """Return a Windows-host URL that WSL-native ONLYOFFICE can reach.
-
-        The browser can load ONLYOFFICE Docs from 127.0.0.1:18084 through WSL
-        localhost forwarding, but the Document Server process is inside WSL.
-        For workbook downloads and callbacks, its 127.0.0.1 is WSL itself, not
-        the Windows-hosted Main Computer process. In the default local WSL
-        topology, use WSL's default gateway address for the Windows host.
-        """
-
-        if sys.platform != "win32":
-            return None
-        if not self._onlyoffice_uses_local_wsl_docs():
-            return None
-
-        host = self._onlyoffice_wsl_windows_host()
-        if not host:
-            return None
-
-        return f"http://{host}:{self.server.server_port}"
-
-    def _onlyoffice_uses_local_wsl_docs(self) -> bool:
-        if self._onlyoffice_browser_public_url_override():
-            return False
-        urls = [self._onlyoffice_public_url(), self._onlyoffice_internal_url()]
-        return any(self._onlyoffice_url_is_local_docs_default(url) for url in urls)
-
-    def _onlyoffice_url_is_loopback(self, url: str) -> bool:
-        try:
-            parsed = urlsplit(str(url or ""))
-        except Exception:
-            return False
-        return (parsed.hostname or "").lower() in {"127.0.0.1", "localhost", "::1"}
-
-    def _onlyoffice_url_is_local_docs_default(self, url: str) -> bool:
-        try:
-            parsed = urlsplit(url)
-        except Exception:
-            return False
-
-        host = (parsed.hostname or "").lower()
-        if host not in {"127.0.0.1", "localhost", "::1"}:
-            return False
-
-        try:
-            port = parsed.port
-        except ValueError:
-            return False
-
-        return (port or (443 if parsed.scheme == "https" else 80)) == 18084
-
-    def _onlyoffice_wsl_distro_ip(self) -> str | None:
-        if sys.platform != "win32":
-            return None
-        if not self._onlyoffice_uses_local_wsl_docs():
-            return None
-        return self._onlyoffice_detect_wsl_distro_ip()
-
-    def _onlyoffice_detect_wsl_distro_ip(self) -> str | None:
-        command = [
-            "wsl.exe",
-            "--",
-            "bash",
-            "-lc",
-            "hostname -I | awk '{print $1}'",
-        ]
-        try:
-            completed = subprocess.run(
-                command,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=2,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return None
-
-        if completed.returncode != 0:
-            return None
-
-        host = (completed.stdout or "").strip().split()[0].strip() if completed.stdout else ""
-        if not host:
-            return None
-
-        try:
-            ipaddress.ip_address(host)
-        except ValueError:
-            return None
-
-        return host
-
-    def _onlyoffice_wsl_windows_host(self) -> str | None:
-        cached = getattr(self.server, "_onlyoffice_wsl_windows_host_cache", None)
-        if cached is not None:
-            return cached or None
-
-        host = self._onlyoffice_detect_wsl_windows_host()
-        setattr(self.server, "_onlyoffice_wsl_windows_host_cache", host or "")
-        return host
-
-    def _onlyoffice_detect_wsl_windows_host(self) -> str | None:
-        command = [
-            "wsl.exe",
-            "--",
-            "bash",
-            "-lc",
-            "ip -4 route show default | sed -n 's/^default via \\([^ ]*\\).*/\\1/p' | head -n1",
-        ]
-        try:
-            completed = subprocess.run(
-                command,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=2,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return None
-
-        if completed.returncode != 0:
-            return None
-
-        host = (completed.stdout or "").strip().splitlines()[0].strip() if completed.stdout else ""
-        if not host:
-            return None
-
-        try:
-            ipaddress.ip_address(host)
-        except ValueError:
-            return None
-
-        return host
 
     def _onlyoffice_probe_url(self, url: str, *, timeout_s: float = 0.75) -> dict[str, Any]:
         started = time.perf_counter()

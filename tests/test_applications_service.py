@@ -122,7 +122,7 @@ def test_boot_writes_app_env_and_starts_applications_compose(tmp_path: Path) -> 
     assert coolify_env.exists()
 
     env_text = env_file.read_text(encoding="utf-8")
-    assert "MAIN_COMPUTER_ONLYOFFICE_PORT=18084" in env_text
+    assert "MAIN_COMPUTER_ONLYOFFICE_PORT=18085" in env_text
     assert "MAIN_COMPUTER_GITEA_HTTP_PORT" not in env_text
     assert "COOLIFY_LOCAL_STATE=" in env_text
     assert "APP_PORT=18000" in env_text

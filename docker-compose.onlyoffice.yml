@@ -11,7 +11,7 @@ services:
       ALLOW_PRIVATE_IP_ADDRESS: ${MAIN_COMPUTER_ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS:-true}
       ALLOW_META_IP_ADDRESS: ${MAIN_COMPUTER_ONLYOFFICE_ALLOW_META_IP_ADDRESS:-true}
     ports:
-      # Local platform site publishing owns 18080-18083 and WSL-native ONLYOFFICE owns 18084.
+      # Local platform site publishing owns 18080-18083; ONLYOFFICE Docker uses 18085.
       - "127.0.0.1:${MAIN_COMPUTER_ONLYOFFICE_PORT:-18085}:80"
     volumes:
       - onlyoffice-data:/var/www/onlyoffice/Data

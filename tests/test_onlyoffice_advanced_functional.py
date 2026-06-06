@@ -91,8 +91,8 @@ class OnlyOfficeAdvancedFunctionalTests(unittest.TestCase):
             MainComputerConfig(
                 workspace=self.workspace,
                 onlyoffice_storage_root=Path("runtime/onlyoffice-functional/workbooks"),
-                onlyoffice_public_url="http://127.0.0.1:18084",
-                onlyoffice_internal_url="http://127.0.0.1:18084",
+                onlyoffice_public_url="http://127.0.0.1:18085",
+                onlyoffice_internal_url="http://127.0.0.1:18085",
             ),
             verbose=False,
         )

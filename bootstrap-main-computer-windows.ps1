@@ -64,7 +64,7 @@ param(
 
     [int]$PrecheckFirewallTimeoutSeconds = 20,
 
-    [ValidateSet("auto", "disabled", "wsl", "docker")]
+    [ValidateSet("auto", "disabled", "docker")]
     [string]$OnlyOfficeMode = "auto",
 
     [ValidateSet("auto", "disabled", "required")]
@@ -76,7 +76,7 @@ param(
     [ValidateSet("auto", "disabled", "required")]
     [string]$LocalCoolifyMode = "auto",
 
-    [int]$OnlyOfficePort = 18084,
+    [int]$OnlyOfficePort = 18085,
 
     [switch]$InstallOnlyOffice,
 
@@ -764,9 +764,9 @@ function Get-MainComputerModeIsolationProfiles {
     )
 
     return @(
-        (New-ModeIsolationProfile -Root $Root -InstallInstanceName $InstallInstanceName -InstanceStoreRoot $InstanceStoreRoot -Key "unleashed" -Label "Unleashed Mode" -RuntimeProfileName "test" -DistributionSuffix "unleashed" -DefaultPort 8765 -DefaultHeartbeatPort 8766 -DefaultOnlyOfficePort 18084 -DefaultLocalServerPortStart 18080 -LocalServerGeneratedPortStart 18100 -LocalServerGeneratedPortEnd 18199 -GuidanceLevel "developer"),
-        (New-ModeIsolationProfile -Root $Root -InstallInstanceName $InstallInstanceName -InstanceStoreRoot $InstanceStoreRoot -Key "debug" -Label "Debug" -RuntimeProfileName "test" -DistributionSuffix "debug" -DefaultPort 28865 -DefaultHeartbeatPort 28866 -DefaultOnlyOfficePort 28084 -DefaultLocalServerPortStart 28080 -LocalServerGeneratedPortStart 28100 -LocalServerGeneratedPortEnd 28199 -GuidanceLevel "debug"),
-        (New-ModeIsolationProfile -Root $Root -InstallInstanceName $InstallInstanceName -InstanceStoreRoot $InstanceStoreRoot -Key "safe" -Label "Safe Mode" -RuntimeProfileName "prod" -DistributionSuffix "safe" -DefaultPort $SafePort -DefaultHeartbeatPort $SafeHeartbeatPort -DefaultOnlyOfficePort 38084 -DefaultLocalServerPortStart 38080 -LocalServerGeneratedPortStart 38100 -LocalServerGeneratedPortEnd 38199 -GuidanceLevel "guided")
+        (New-ModeIsolationProfile -Root $Root -InstallInstanceName $InstallInstanceName -InstanceStoreRoot $InstanceStoreRoot -Key "unleashed" -Label "Unleashed Mode" -RuntimeProfileName "test" -DistributionSuffix "unleashed" -DefaultPort 8765 -DefaultHeartbeatPort 8766 -DefaultOnlyOfficePort 18085 -DefaultLocalServerPortStart 18080 -LocalServerGeneratedPortStart 18100 -LocalServerGeneratedPortEnd 18199 -GuidanceLevel "developer"),
+        (New-ModeIsolationProfile -Root $Root -InstallInstanceName $InstallInstanceName -InstanceStoreRoot $InstanceStoreRoot -Key "debug" -Label "Debug" -RuntimeProfileName "test" -DistributionSuffix "debug" -DefaultPort 28865 -DefaultHeartbeatPort 28866 -DefaultOnlyOfficePort 28085 -DefaultLocalServerPortStart 28080 -LocalServerGeneratedPortStart 28100 -LocalServerGeneratedPortEnd 28199 -GuidanceLevel "debug"),
+        (New-ModeIsolationProfile -Root $Root -InstallInstanceName $InstallInstanceName -InstanceStoreRoot $InstanceStoreRoot -Key "safe" -Label "Safe Mode" -RuntimeProfileName "prod" -DistributionSuffix "safe" -DefaultPort $SafePort -DefaultHeartbeatPort $SafeHeartbeatPort -DefaultOnlyOfficePort 38085 -DefaultLocalServerPortStart 38080 -LocalServerGeneratedPortStart 38100 -LocalServerGeneratedPortEnd 38199 -GuidanceLevel "guided")
     )
 }
 
@@ -1706,24 +1706,15 @@ function Ensure-WslScopedFirewallRule {
     return $true
 }
 
-function Set-OnlyOfficeWslCallbackEnvironment {
+function Set-OnlyOfficeDockerCallbackEnvironment {
     param([Parameter(Mandatory = $true)]$ModeProfile)
 
     if ($script:EffectiveOnlyOfficeMode -eq "disabled") {
         return
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($ModeProfile.WslHostGatewayIp)) {
-        $env:MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL = "http://$($ModeProfile.WslHostGatewayIp):$Port"
-        Add-BootstrapStatus "ONLYOFFICE callback" "OK" $env:MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL
-    }
-    elseif (-not [string]::IsNullOrWhiteSpace($script:WslHostGatewayIp)) {
-        $env:MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL = "http://$($script:WslHostGatewayIp):$Port"
-        Add-BootstrapStatus "ONLYOFFICE callback" "OK" $env:MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL
-    }
-    else {
-        Add-BootstrapStatus "ONLYOFFICE callback" "WARN" "Could not resolve WSL gateway callback URL; WSL-hosted ONLYOFFICE may not reach Main Computer."
-    }
+    $env:MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL = "http://host.docker.internal:$Port"
+    Add-BootstrapStatus "ONLYOFFICE callback" "OK" $env:MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL
 }
 
 function Resolve-OnlyOfficeRuntimeMode {
@@ -1731,10 +1722,6 @@ function Resolve-OnlyOfficeRuntimeMode {
 
     if ($RequestedMode -eq "disabled") {
         return "disabled"
-    }
-
-    if ($RequestedMode -eq "wsl") {
-        return "wsl"
     }
 
     $docker = Resolve-CommandPath "docker"
@@ -4487,16 +4474,12 @@ function Configure-AppEnvironment {
         $env:MAIN_COMPUTER_ONLYOFFICE_PROJECT = $ModeProfile.OnlyOfficeProjectName
         $env:MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL = "http://127.0.0.1:$OnlyOfficePort"
         $env:MAIN_COMPUTER_ONLYOFFICE_INTERNAL_URL = "http://127.0.0.1:$OnlyOfficePort"
-        if (-not $env:MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET) {
-            $env:MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET = "main-computer-onlyoffice-local-secret"
-        }
-        if ($script:EffectiveOnlyOfficeMode -eq "docker") {
-            $env:MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL = "http://host.docker.internal:$Port"
-            Add-BootstrapStatus "ONLYOFFICE callback" "OK" $env:MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL
-        }
-        else {
-            Set-OnlyOfficeWslCallbackEnvironment -ModeProfile $ModeProfile
-        }
+        $env:MAIN_COMPUTER_ONLYOFFICE_BROWSER_PUBLIC_URL = "http://127.0.0.1:$OnlyOfficePort"
+        $env:MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED = "false"
+        $env:MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET = ""
+        $env:MAIN_COMPUTER_ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS = "true"
+        $env:MAIN_COMPUTER_ONLYOFFICE_ALLOW_META_IP_ADDRESS = "true"
+        Set-OnlyOfficeDockerCallbackEnvironment -ModeProfile $ModeProfile
     }
 }
 

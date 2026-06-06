@@ -290,7 +290,7 @@
         const status = await onlyofficeApi("/api/applications/onlyoffice/status", {probe: true, timeout_s: 1.5});
         onlyofficeState.serverStatus = status;
         const serverOk = Boolean(status.server_probe && status.server_probe.ok);
-        const publicUrl = status.public_url || status.document_server_url || "http://127.0.0.1:18084";
+        const publicUrl = status.public_url || status.document_server_url || "http://127.0.0.1:18085";
         const callbackBase = status.callback_base_url || "";
         onlyofficeSetServerStatus(
           serverOk ? "Document Server online" : "Document Server offline",
@@ -383,7 +383,7 @@
         pushAll(status.browser_public_url_candidates);
         pushAll([status.public_url, status.document_server_url, status.internal_url]);
       }
-      pushAll(["http://127.0.0.1:18084", "http://localhost:18084"]);
+      pushAll(["http://127.0.0.1:18085", "http://localhost:18085"]);
       return candidates;
     }
 
@@ -498,7 +498,7 @@
       ].join(" ");
 
       let score = box.area;
-      if (/18084|onlyoffice|web-apps|documenteditor|spreadsheet/i.test(joined)) score += 1000000;
+      if (/18085|onlyoffice|web-apps|documenteditor|spreadsheet/i.test(joined)) score += 1000000;
       if (onlyofficeEditorHost && onlyofficeEditorHost.contains(iframe)) score += 500000;
       if (box.width > 150 && box.height > 80) score += 100000;
       if (/about:blank/i.test(source)) score -= 50000;

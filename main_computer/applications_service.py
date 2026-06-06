@@ -690,7 +690,7 @@ class ApplicationsService:
             values = {
                 "MAIN_COMPUTER_APPLICATIONS_STATE": str(applications_state),
                 "MAIN_COMPUTER_ONLYOFFICE_IMAGE_TAG": _first_non_empty(os.environ.get("MAIN_COMPUTER_ONLYOFFICE_IMAGE_TAG"), existing_app.get("MAIN_COMPUTER_ONLYOFFICE_IMAGE_TAG"), default="latest"),
-                "MAIN_COMPUTER_ONLYOFFICE_PORT": _first_non_empty(os.environ.get("MAIN_COMPUTER_ONLYOFFICE_PORT"), existing_app.get("MAIN_COMPUTER_ONLYOFFICE_PORT"), default="18084"),
+                "MAIN_COMPUTER_ONLYOFFICE_PORT": _first_non_empty(os.environ.get("MAIN_COMPUTER_ONLYOFFICE_PORT"), existing_app.get("MAIN_COMPUTER_ONLYOFFICE_PORT"), default="18085"),
                 "MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED": _bool_env(_first_non_empty(os.environ.get("MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED"), existing_app.get("MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED")), True),
                 "MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET": _first_non_empty(os.environ.get("MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET"), existing_app.get("MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET"), default=_stable_secret(merged_existing, "MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET")),
                 "COOLIFY_LOCAL_STATE": str(coolify_state),
