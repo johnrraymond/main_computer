@@ -313,30 +313,154 @@
       return data;
     }
 
+    const onlyofficeApiScriptPath = "/web-apps/apps/api/documents/api.js";
+
+    function onlyofficeNormalizeServerUrl(value) {
+      const text = String(value || "").trim().replace(/\/+$/, "");
+      return text || "";
+    }
+
+    function onlyofficePushCandidate(candidates, value) {
+      const clean = onlyofficeNormalizeServerUrl(value);
+      if (clean && !candidates.includes(clean)) {
+        candidates.push(clean);
+      }
+    }
+
+    function onlyofficeServerUrlVariants(value) {
+      const clean = onlyofficeNormalizeServerUrl(value);
+      if (!clean) return [];
+
+      const variants = [clean];
+      let parsed = null;
+      try {
+        parsed = new URL(clean, window.location.href);
+      } catch {
+        return variants;
+      }
+
+      if (!/^https?:$/.test(parsed.protocol)) {
+        return variants;
+      }
+
+      const configuredHost = (parsed.hostname || "").toLowerCase();
+      const configuredPort = parsed.port || (parsed.protocol === "https:" ? "443" : "80");
+      const localHosts = new Set(["127.0.0.1", "localhost", "::1"]);
+      const addHostVariant = (host) => {
+        if (!host) return;
+        try {
+          const clone = new URL(parsed.href);
+          clone.hostname = host;
+          clone.port = configuredPort;
+          onlyofficePushCandidate(variants, clone.href);
+        } catch {}
+      };
+
+      if (localHosts.has(configuredHost)) {
+        addHostVariant("127.0.0.1");
+        addHostVariant("localhost");
+        const pageHost = String(window.location.hostname || "").trim();
+        if (pageHost && !localHosts.has(pageHost.toLowerCase())) {
+          addHostVariant(pageHost);
+        }
+      }
+
+      return variants;
+    }
+
+    function onlyofficeCandidateDocumentServerUrls(preferredUrl, status = onlyofficeState.serverStatus) {
+      const candidates = [];
+      const pushAll = (values) => {
+        for (const value of values || []) {
+          for (const variant of onlyofficeServerUrlVariants(value)) {
+            onlyofficePushCandidate(candidates, variant);
+          }
+        }
+      };
+
+      pushAll([preferredUrl]);
+      if (status) {
+        pushAll(status.browser_public_url_candidates);
+        pushAll([status.public_url, status.document_server_url, status.internal_url]);
+      }
+      pushAll(["http://127.0.0.1:18084", "http://localhost:18084"]);
+      return candidates;
+    }
+
+    function onlyofficeApiScriptUrl(baseUrl, attempt) {
+      return new URL(`${baseUrl}${onlyofficeApiScriptPath}`, window.location.href).href;
+    }
+
+    function onlyofficeDescribeApiLoadFailure(failures) {
+      const tried = failures.map((failure) => failure.url).join(", ");
+      const last = failures.length ? failures[failures.length - 1].error : "no candidate URL was available";
+      const mixedContentHint = window.location.protocol === "https:"
+        ? " The page is using HTTPS, so the browser may block an HTTP ONLYOFFICE API URL as mixed content."
+        : "";
+      return `Could not load ONLYOFFICE API. Tried: ${tried || "none"}. Last error: ${last}.${mixedContentHint}`;
+    }
+
+    function onlyofficeLoadApiScript(baseUrl, attempt) {
+      return new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        let settled = false;
+        const finish = (callback, value) => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timeout);
+          callback(value);
+        };
+        const timeout = window.setTimeout(() => {
+          script.remove();
+          finish(reject, new Error(`timed out loading ${baseUrl}`));
+        }, 8000);
+
+        script.src = onlyofficeApiScriptUrl(baseUrl, attempt);
+        script.async = true;
+        script.referrerPolicy = "no-referrer";
+        script.dataset.mainComputerOnlyofficeApi = "1";
+        script.dataset.onlyofficeBaseUrl = baseUrl;
+        script.onload = () => finish(resolve, baseUrl);
+        script.onerror = () => {
+          script.remove();
+          finish(reject, new Error(`network/browser error loading ${baseUrl}`));
+        };
+        document.head.appendChild(script);
+      });
+    }
+
+    async function onlyofficeLoadApiFromCandidates(candidates) {
+      const failures = [];
+      for (let index = 0; index < candidates.length; index += 1) {
+        const candidate = candidates[index];
+        try {
+          await onlyofficeLoadApiScript(candidate, index + 1);
+          if (window.DocsAPI && window.DocsAPI.DocEditor) {
+            return candidate;
+          }
+          failures.push({url: candidate, error: "script loaded but DocsAPI.DocEditor was not found"});
+        } catch (error) {
+          failures.push({url: candidate, error: error.message || String(error)});
+        }
+      }
+      throw new Error(onlyofficeDescribeApiLoadFailure(failures));
+    }
+
     async function loadOnlyOfficeApi(documentServerUrl) {
-      const cleanUrl = String(documentServerUrl || "").replace(/\/+$/, "");
-      if (window.DocsAPI && window.DocsAPI.DocEditor && onlyofficeState.documentServerUrl === cleanUrl) {
-        return;
+      const candidates = onlyofficeCandidateDocumentServerUrls(documentServerUrl);
+      if (window.DocsAPI && window.DocsAPI.DocEditor && candidates.includes(onlyofficeState.documentServerUrl)) {
+        return onlyofficeState.documentServerUrl;
       }
       if (onlyofficeState.loadingApi) {
-        await onlyofficeState.loadingApi;
-        return;
+        return await onlyofficeState.loadingApi;
       }
-      onlyofficeState.documentServerUrl = cleanUrl;
-      onlyofficeState.loadingApi = new Promise((resolve, reject) => {
-        const script = document.createElement("script");
-        script.src = `${cleanUrl}/web-apps/apps/api/documents/api.js`;
-        script.async = true;
-        script.onload = () => resolve();
-        script.onerror = () => reject(new Error(`Could not load ONLYOFFICE API from ${cleanUrl}`));
-        document.head.appendChild(script);
+      onlyofficeState.loadingApi = onlyofficeLoadApiFromCandidates(candidates).then((loadedUrl) => {
+        onlyofficeState.documentServerUrl = loadedUrl;
+        return loadedUrl;
       }).finally(() => {
         onlyofficeState.loadingApi = null;
       });
-      await onlyofficeState.loadingApi;
-      if (!window.DocsAPI || !window.DocsAPI.DocEditor) {
-        throw new Error("ONLYOFFICE API loaded, but DocsAPI.DocEditor was not found.");
-      }
+      return await onlyofficeState.loadingApi;
     }
 
     const onlyofficeViewportFixState = {
@@ -537,7 +661,10 @@
       onlyofficeResetEditorViewportFix();
       onlyofficeSetStatus("Preparing ONLYOFFICE editor...");
       const data = await onlyofficeApi("/api/applications/onlyoffice/config", {path: cleanPath});
-      await loadOnlyOfficeApi(data.public_url || data.document_server_url);
+      const loadedDocumentServerUrl = await loadOnlyOfficeApi(data.public_url || data.document_server_url);
+      if (loadedDocumentServerUrl && loadedDocumentServerUrl !== (data.public_url || data.document_server_url)) {
+        onlyofficeSetServerUrl(`ONLYOFFICE: ${data.public_url || data.document_server_url} · browser API: ${loadedDocumentServerUrl}`);
+      }
       if (onlyofficeState.editor && typeof onlyofficeState.editor.destroyEditor === "function") {
         onlyofficeState.editor.destroyEditor();
       }

@@ -58,6 +58,9 @@ class ViewportOnlyOfficeTests(unittest.TestCase):
         self.assertIn('id="onlyoffice-editor-host"', APPLICATIONS_INDEX_HTML)
         self.assertIn('id="onlyoffice-server-status"', APPLICATIONS_INDEX_HTML)
         self.assertIn("onlyofficeScheduleEditorViewportFix", APPLICATIONS_INDEX_HTML)
+        self.assertIn("onlyofficeCandidateDocumentServerUrls", APPLICATIONS_INDEX_HTML)
+        self.assertIn("mainComputerOnlyofficeApi", APPLICATIONS_INDEX_HTML)
+        self.assertIn("browser API:", APPLICATIONS_INDEX_HTML)
         self.assertIn("onlyoffice-contained-editor-stage", APPLICATIONS_INDEX_HTML)
         self.assertIn("onlyoffice-contained-editor-frame", APPLICATIONS_INDEX_HTML)
         self.assertIn('id="stage-advanced-toggle"', APPLICATIONS_INDEX_HTML)
@@ -125,42 +128,147 @@ class ViewportOnlyOfficeTests(unittest.TestCase):
         self.assertEqual(status["internal_url"], "http://127.0.0.1:18084")
         self.assertEqual(status["callback_base_url"], self.base)
         self.assertEqual(status["public_api_url"], "http://127.0.0.1:18084/web-apps/apps/api/documents/api.js")
+        self.assertIn("http://127.0.0.1:18084", status["browser_public_url_candidates"])
+        self.assertIn("http://localhost:18084", status["browser_public_url_candidates"])
         self.assertIn("server_probe", status)
 
-    def test_onlyoffice_configured_callback_base_url_wins_without_wsl_probe(self) -> None:
+    def test_onlyoffice_windows_wsl_browser_candidates_prefer_distro_ip(self) -> None:
+        with patch(
+            "main_computer.viewport_routes_onlyoffice.ViewportOnlyOfficeRoutesMixin._onlyoffice_wsl_distro_ip",
+            return_value="172.18.91.248",
+        ):
+            status = self.post_json("/api/applications/onlyoffice/status", {"probe": False})
+
+        self.assertEqual(status["browser_public_url_candidates"][0], "http://172.18.91.248:18084")
+        self.assertIn("http://127.0.0.1:18084", status["browser_public_url_candidates"])
+        self.assertIn("http://localhost:18084", status["browser_public_url_candidates"])
+
+    def test_onlyoffice_browser_public_url_override_uses_twiddle_without_wsl_gateway(self) -> None:
+        self.post_json("/api/applications/onlyoffice/create", {"path": "Twiddle.xlsx"})
+        callback_base = f"http://host.docker.internal:{self.server.server_port}"
+        self.server.config = replace(
+            self.server.config,
+            onlyoffice_browser_public_url="http://127.0.0.1:18085",
+            onlyoffice_callback_base_url=callback_base,
+        )
+
+        with patch(
+            "main_computer.viewport_routes_onlyoffice.ViewportOnlyOfficeRoutesMixin._onlyoffice_wsl_callback_base_url",
+            return_value=f"http://172.21.0.99:{self.server.server_port}",
+        ) as gateway:
+            status = self.post_json("/api/applications/onlyoffice/status", {"probe": False})
+            config = self.post_json("/api/applications/onlyoffice/config", {"path": "Twiddle.xlsx"})
+
+        self.assertTrue(status["ok"])
+        self.assertEqual(status["mode"], "wsl-browser-override")
+        self.assertEqual(status["configured_public_url"], "http://127.0.0.1:18084")
+        self.assertEqual(status["browser_public_url_override"], "http://127.0.0.1:18085")
+        self.assertEqual(status["public_url"], "http://127.0.0.1:18085")
+        self.assertEqual(status["internal_url"], "http://127.0.0.1:18084")
+        self.assertEqual(status["callback_base_url"], callback_base)
+        self.assertEqual(status["public_api_url"], "http://127.0.0.1:18085/web-apps/apps/api/documents/api.js")
+        self.assertEqual(status["browser_public_url_candidates"][0], "http://127.0.0.1:18085")
+        self.assertIn("http://localhost:18085", status["browser_public_url_candidates"])
+
+        self.assertTrue(config["ok"])
+        self.assertEqual(config["public_url"], "http://127.0.0.1:18085")
+        self.assertEqual(config["configured_public_url"], "http://127.0.0.1:18084")
+        self.assertEqual(config["internal_url"], "http://127.0.0.1:18084")
+        self.assertEqual(config["callback_base_url"], callback_base)
+        self.assertTrue(config["config"]["document"]["url"].startswith(callback_base))
+        self.assertTrue(config["config"]["editorConfig"]["callbackUrl"].startswith(callback_base))
+        gateway.assert_not_called()
+
+    def test_onlyoffice_docker_mode_uses_18085_host_callback_and_no_token(self) -> None:
+        self.post_json("/api/applications/onlyoffice/create", {"path": "Docker.xlsx"})
+        callback_base = f"http://host.docker.internal:{self.server.server_port}"
+        self.server.config = replace(
+            self.server.config,
+            onlyoffice_mode="docker",
+            onlyoffice_public_url="http://127.0.0.1:18085",
+            onlyoffice_internal_url="http://127.0.0.1:18085",
+            onlyoffice_browser_public_url="http://127.0.0.1:18085",
+            onlyoffice_callback_base_url=callback_base,
+            onlyoffice_jwt_enabled=False,
+            onlyoffice_jwt_secret=None,
+        )
+
+        with patch(
+            "main_computer.viewport_routes_onlyoffice.ViewportOnlyOfficeRoutesMixin._onlyoffice_wsl_callback_base_url",
+            return_value=f"http://172.21.0.99:{self.server.server_port}",
+        ) as gateway:
+            status = self.post_json("/api/applications/onlyoffice/status", {"probe": False})
+            config = self.post_json("/api/applications/onlyoffice/config", {"path": "Docker.xlsx"})
+
+        self.assertEqual(status["mode"], "docker")
+        self.assertEqual(status["public_url"], "http://127.0.0.1:18085")
+        self.assertEqual(status["internal_url"], "http://127.0.0.1:18085")
+        self.assertEqual(status["callback_base_url"], callback_base)
+        self.assertFalse(status["jwt_enabled"])
+        self.assertFalse(status["jwt_configured"])
+
+        editor_config = config["config"]
+        self.assertNotIn("token", editor_config)
+        self.assertTrue(editor_config["document"]["url"].startswith(callback_base))
+        self.assertTrue(editor_config["editorConfig"]["callbackUrl"].startswith(callback_base))
+        gateway.assert_not_called()
+
+    def test_onlyoffice_configured_non_loopback_callback_base_url_wins_without_wsl_probe(self) -> None:
         self.post_json("/api/applications/onlyoffice/create", {"path": "Gateway.xlsx"})
         expected_base = f"http://172.21.0.1:{self.server.server_port}"
         self.server.config = replace(self.server.config, onlyoffice_callback_base_url=expected_base)
 
-        completed = type("Completed", (), {"returncode": 0, "stdout": "172.21.0.1\n"})()
-        with patch("main_computer.viewport_routes_onlyoffice.sys.platform", "win32"), patch(
-            "main_computer.viewport_routes_onlyoffice.subprocess.run",
-            return_value=completed,
-        ) as run:
+        with patch(
+            "main_computer.viewport_routes_onlyoffice.ViewportOnlyOfficeRoutesMixin._onlyoffice_wsl_callback_base_url",
+            return_value=f"http://172.21.0.99:{self.server.server_port}",
+        ) as gateway:
             config = self.post_json("/api/applications/onlyoffice/config", {"path": "Gateway.xlsx"})
 
         self.assertEqual(config["callback_base_url"], expected_base)
         self.assertTrue(config["config"]["document"]["url"].startswith(expected_base))
         self.assertTrue(config["config"]["editorConfig"]["callbackUrl"].startswith(expected_base))
-        run.assert_not_called()
+        gateway.assert_not_called()
+
+    def test_onlyoffice_configured_loopback_callback_base_url_is_rewritten_for_wsl(self) -> None:
+        self.post_json("/api/applications/onlyoffice/create", {"path": "Gateway.xlsx"})
+        loopback_base = f"http://localhost:{self.server.server_port}"
+        gateway_host = "172.21.0.1"
+        expected_base = f"http://{gateway_host}:{self.server.server_port}"
+        self.server.config = replace(self.server.config, onlyoffice_callback_base_url=loopback_base)
+
+        with patch(
+            "main_computer.viewport_routes_onlyoffice.ViewportOnlyOfficeRoutesMixin._onlyoffice_wsl_callback_base_url",
+            return_value=expected_base,
+        ) as gateway:
+            config = self.post_json("/api/applications/onlyoffice/config", {"path": "Gateway.xlsx"})
+
+        self.assertEqual(config["callback_base_url"], expected_base)
+        self.assertTrue(config["config"]["document"]["url"].startswith(expected_base))
+        self.assertTrue(config["config"]["editorConfig"]["callbackUrl"].startswith(expected_base))
+        gateway.assert_called()
 
     def test_onlyoffice_windows_wsl_local_docs_uses_gateway_callback_url(self) -> None:
         self.post_json("/api/applications/onlyoffice/create", {"path": "Gateway.xlsx"})
         gateway_host = "172.21.0.1"
         expected_base = f"http://{gateway_host}:{self.server.server_port}"
-        completed = type("Completed", (), {"returncode": 0, "stdout": f"{gateway_host}\n"})()
-
-        with patch("main_computer.viewport_routes_onlyoffice.sys.platform", "win32"), patch(
-            "main_computer.viewport_routes_onlyoffice.subprocess.run",
-            return_value=completed,
-        ) as run:
+        with patch(
+            "main_computer.viewport_routes_onlyoffice.ViewportOnlyOfficeRoutesMixin._onlyoffice_wsl_callback_base_url",
+            return_value=expected_base,
+        ) as gateway:
             config = self.post_json("/api/applications/onlyoffice/config", {"path": "Gateway.xlsx"})
 
         self.assertEqual(config["callback_base_url"], expected_base)
         self.assertTrue(config["config"]["document"]["url"].startswith(expected_base))
         self.assertTrue(config["config"]["editorConfig"]["callbackUrl"].startswith(expected_base))
-        run.assert_called_once()
-        self.assertEqual(run.call_args.args[0][0], "wsl.exe")
+        gateway.assert_called()
+
+    def test_onlyoffice_browser_loader_uses_plain_api_script_without_cors_mode(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        source = (repo_root / "main_computer/web/applications/scripts/onlyoffice-app.js").read_text(encoding="utf-8")
+        self.assertIn("function onlyofficeApiScriptUrl(baseUrl, attempt)", source)
+        self.assertNotIn("_mc_onlyoffice_api", source)
+        self.assertNotIn("script.crossOrigin", source)
+        self.assertIn("browser_public_url_candidates", source)
 
     def test_onlyoffice_control_scripts_and_compose_use_reserved_port(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
@@ -190,8 +298,11 @@ class ViewportOnlyOfficeTests(unittest.TestCase):
         self.assertIn("MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL=http://$callbackHostForHelp`:$AppPort", control)
         self.assertIn("wsl.exe -d $Distro -u root", control)
         self.assertIn("ONLYOFFICE WSL bridges are already ready; no elevated changes are needed.", control)
-        self.assertIn("MAIN_COMPUTER_ONLYOFFICE_PORT:-18084", compose)
-        self.assertIn("127.0.0.1:${MAIN_COMPUTER_ONLYOFFICE_PORT:-18084}:80", compose)
+        self.assertIn("MAIN_COMPUTER_ONLYOFFICE_PORT:-18085", compose)
+        self.assertIn("127.0.0.1:${MAIN_COMPUTER_ONLYOFFICE_PORT:-18085}:80", compose)
+        self.assertIn("MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED:-false", compose)
+        self.assertIn("ALLOW_PRIVATE_IP_ADDRESS", compose)
+        self.assertIn("ALLOW_META_IP_ADDRESS", compose)
         self.assertIn("Local platform site publishing owns 18080-18083", compose)
 
     def test_onlyoffice_bridge_start_is_idempotent_for_firewall_and_portproxy(self) -> None:
@@ -202,8 +313,8 @@ class ViewportOnlyOfficeTests(unittest.TestCase):
         self.assertIn("function Test-OnlyOfficeBridgeConfigurationReady", control)
         self.assertIn("Portproxy already present:", control)
         self.assertIn("Refreshing existing portproxy because its listener failed verification:", control)
-        self.assertIn("-Force:$forceCallbackProxyRefresh", control)
-        self.assertIn("-Force:$forceApiProxyRefresh", control)
+        self.assertIn("-ElevatedForceCallbackProxyRefresh:$forceCallbackProxyRefresh", control)
+        self.assertIn("-ElevatedForceApiProxyRefresh:$forceApiProxyRefresh", control)
         self.assertIn("Firewall rule already present:", control)
         self.assertIn("no elevated firewall or portproxy changes are needed", control)
         self.assertIn("Test-OnlyOfficeBridgeConfigurationReady $initialStatus", control)
@@ -257,6 +368,13 @@ class ViewportOnlyOfficeTests(unittest.TestCase):
         self.assertIn('Invoke-MainComputerOnlyOfficeControl $RootPath $launchContext "start"', start_stop)
         self.assertIn('"bridge-stop"', start_stop)
         self.assertIn("MAIN_COMPUTER_ONLYOFFICE_REMOVE_BRIDGES_ON_STOP", start_stop)
+        self.assertIn("MAIN_COMPUTER_ONLYOFFICE_MODE = \"docker\"", start_stop)
+        self.assertIn("MAIN_COMPUTER_ONLYOFFICE_PORT = \"18085\"", start_stop)
+        self.assertIn("MAIN_COMPUTER_ONLYOFFICE_CONTAINER_NAME = \"main-computer-onlyoffice-documentserver\"", start_stop)
+        self.assertIn("MAIN_COMPUTER_ONLYOFFICE_BROWSER_PUBLIC_URL = \"http://127.0.0.1:18085\"", start_stop)
+        self.assertIn("MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL = \"http://host.docker.internal:$port\"", start_stop)
+        self.assertIn("MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED = \"false\"", start_stop)
+        self.assertIn("MAIN_COMPUTER_ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS = \"true\"", start_stop)
         self.assertIn("Leaving ONLYOFFICE WSL bridge portproxies installed", start_stop)
         self.assertIn("next start_v2.bat does not require elevation", start_stop)
 
@@ -283,6 +401,7 @@ class ViewportOnlyOfficeTests(unittest.TestCase):
         self.assertEqual(config["public_url"], "http://127.0.0.1:18084")
         self.assertEqual(config["internal_url"], "http://127.0.0.1:18084")
         self.assertEqual(config["callback_base_url"], self.base)
+        self.assertIn("http://localhost:18084", config["browser_public_url_candidates"])
         self.assertIn("/api/applications/onlyoffice/file?", editor_config["document"]["url"])
         self.assertIn("/api/applications/onlyoffice/callback?", editor_config["editorConfig"]["callbackUrl"])
         self.assertTrue(editor_config["document"]["url"].startswith(self.base))
@@ -340,17 +459,46 @@ class ViewportOnlyOfficeTests(unittest.TestCase):
 
     def test_onlyoffice_from_env_uses_local_wsl_defaults(self) -> None:
         config = MainComputerConfig.from_env()
+        self.assertEqual(config.onlyoffice_mode, "wsl")
         self.assertEqual(config.onlyoffice_public_url, "http://127.0.0.1:18084")
         self.assertEqual(config.onlyoffice_internal_url, "http://127.0.0.1:18084")
+        self.assertIsNone(config.onlyoffice_browser_public_url)
+        self.assertTrue(config.onlyoffice_jwt_enabled)
         self.assertEqual(config.onlyoffice_jwt_secret, "main-computer-onlyoffice-local-secret")
 
     def test_cli_config_preserves_onlyoffice_env_defaults_for_viewport(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["viewport", "-noverbose"])
         config = _config_from_args(args)
+        self.assertEqual(config.onlyoffice_mode, "wsl")
         self.assertEqual(config.onlyoffice_public_url, "http://127.0.0.1:18084")
         self.assertEqual(config.onlyoffice_internal_url, "http://127.0.0.1:18084")
+        self.assertIsNone(config.onlyoffice_browser_public_url)
+        self.assertTrue(config.onlyoffice_jwt_enabled)
         self.assertEqual(config.onlyoffice_jwt_secret, "main-computer-onlyoffice-local-secret")
+
+
+    def test_onlyoffice_from_env_can_disable_jwt_for_docker_mode(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "MAIN_COMPUTER_ONLYOFFICE_MODE": "docker",
+                "MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL": "http://127.0.0.1:18085",
+                "MAIN_COMPUTER_ONLYOFFICE_INTERNAL_URL": "http://127.0.0.1:18085",
+                "MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL": "http://host.docker.internal:8765",
+                "MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED": "false",
+                "MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET": "",
+            },
+            clear=False,
+        ):
+            config = MainComputerConfig.from_env()
+
+        self.assertEqual(config.onlyoffice_mode, "docker")
+        self.assertEqual(config.onlyoffice_public_url, "http://127.0.0.1:18085")
+        self.assertEqual(config.onlyoffice_internal_url, "http://127.0.0.1:18085")
+        self.assertEqual(config.onlyoffice_callback_base_url, "http://host.docker.internal:8765")
+        self.assertFalse(config.onlyoffice_jwt_enabled)
+        self.assertIsNone(config.onlyoffice_jwt_secret)
 
 
 if __name__ == "__main__":

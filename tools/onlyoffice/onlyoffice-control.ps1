@@ -14,6 +14,8 @@ param(
 
   [string]$JwtSecret = "",
 
+  [string]$JwtEnabled = "",
+
   [string]$ComposeFile = "docker-compose.onlyoffice.yml",
 
   [string]$ProjectName = "",
@@ -38,11 +40,36 @@ $ErrorActionPreference = "Stop"
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptRoot)
 
+function ConvertTo-MainComputerBoolText([string]$Value, [bool]$Default) {
+  $normalized = ([string]$Value).Trim().ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($normalized)) {
+    return $(if ($Default) { "true" } else { "false" })
+  }
+  if (@("1", "true", "yes", "on", "enabled") -contains $normalized) {
+    return "true"
+  }
+  if (@("0", "false", "no", "off", "disabled") -contains $normalized) {
+    return "false"
+  }
+  return $(if ($Default) { "true" } else { "false" })
+}
+
+if (-not $JwtEnabled) {
+  if ($env:MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED) {
+    $JwtEnabled = $env:MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED
+  } else {
+    $JwtEnabled = ConvertTo-MainComputerBoolText "" ($Mode -ne "docker")
+  }
+}
+$JwtEnabled = ConvertTo-MainComputerBoolText $JwtEnabled ($Mode -ne "docker")
+
 if (-not $JwtSecret) {
   if ($env:MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET) {
     $JwtSecret = $env:MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET
-  } else {
+  } elseif ($JwtEnabled -eq "true") {
     $JwtSecret = "main-computer-onlyoffice-local-secret"
+  } else {
+    $JwtSecret = ""
   }
 }
 
@@ -295,18 +322,33 @@ function Invoke-DockerOnlyOffice {
   }
 
   $env:MAIN_COMPUTER_ONLYOFFICE_PORT = [string]$Port
+  $env:MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED = $JwtEnabled
   $env:MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET = $JwtSecret
+  if (-not $env:MAIN_COMPUTER_ONLYOFFICE_CONTAINER_NAME) {
+    $env:MAIN_COMPUTER_ONLYOFFICE_CONTAINER_NAME = "main-computer-onlyoffice-documentserver"
+  }
+  if (-not $env:MAIN_COMPUTER_ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS) {
+    $env:MAIN_COMPUTER_ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS = "true"
+  }
+  if (-not $env:MAIN_COMPUTER_ONLYOFFICE_ALLOW_META_IP_ADDRESS) {
+    $env:MAIN_COMPUTER_ONLYOFFICE_ALLOW_META_IP_ADDRESS = "true"
+  }
   $env:MAIN_COMPUTER_ONLYOFFICE_PROJECT = $ProjectName
   $env:COMPOSE_PROJECT_NAME = $ProjectName
 
   Write-Host "compose file: $composePath"
   Write-Host "compose project: $ProjectName"
+  Write-Host "container name: $env:MAIN_COMPUTER_ONLYOFFICE_CONTAINER_NAME"
+  Write-Host "JWT enabled: $JwtEnabled"
+  Write-Host "allow private IP downloads: $env:MAIN_COMPUTER_ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS"
+  Write-Host "allow meta IP downloads: $env:MAIN_COMPUTER_ONLYOFFICE_ALLOW_META_IP_ADDRESS"
 
   if ($DockerAction -eq "start") {
     & docker compose -f $composePath -p $ProjectName up -d onlyoffice
     if ($LASTEXITCODE -ne 0) {
       throw "Docker ONLYOFFICE command failed with exit code $LASTEXITCODE."
     }
+    Invoke-DockerOnlyOffice "status"
   } elseif ($DockerAction -eq "stop") {
     & docker compose -f $composePath -p $ProjectName stop onlyoffice
     if ($LASTEXITCODE -ne 0) {
@@ -1195,7 +1237,7 @@ if ($Mode -eq "wsl") {
       Write-Host "Docker mode does not use WSL bridge-start-elevated."
     }
     "bridge-status" {
-      Write-Host "Docker mode does not use WSL bridge-status."
+      Invoke-DockerOnlyOffice "status"
     }
     "bridge-stop" {
       Write-Host "Docker mode does not use WSL bridge-stop."
@@ -1207,13 +1249,22 @@ if ($Mode -eq "wsl") {
 }
 
 Write-Host ""
-Write-Host "Use these Main Computer env vars for local Windows/WSL mode:"
-Write-Host "  MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL=http://127.0.0.1:$Port"
-Write-Host "  MAIN_COMPUTER_ONLYOFFICE_INTERNAL_URL=http://127.0.0.1:$Port"
-if ($Action -eq "bridge-start-elevated" -or $Action -eq "bridge-stop-elevated") {
-  $callbackHostForHelp = $(if (-not [string]::IsNullOrWhiteSpace($WslGatewayIp)) { $WslGatewayIp } else { "127.0.0.1" })
+if ($Mode -eq "docker") {
+  Write-Host "Use these Main Computer env vars for local Docker ONLYOFFICE mode:"
+  Write-Host "  MAIN_COMPUTER_ONLYOFFICE_MODE=docker"
+  Write-Host "  MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL=http://127.0.0.1:$Port"
+  Write-Host "  MAIN_COMPUTER_ONLYOFFICE_INTERNAL_URL=http://127.0.0.1:$Port"
+  Write-Host "  MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL=http://host.docker.internal:$AppPort"
+  Write-Host "  MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED=$JwtEnabled"
 } else {
-  $callbackHostForHelp = try { Get-WslGatewayIp } catch { "127.0.0.1" }
+  Write-Host "Use these Main Computer env vars for local Windows/WSL mode:"
+  Write-Host "  MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL=http://127.0.0.1:$Port"
+  Write-Host "  MAIN_COMPUTER_ONLYOFFICE_INTERNAL_URL=http://127.0.0.1:$Port"
+  if ($Action -eq "bridge-start-elevated" -or $Action -eq "bridge-stop-elevated") {
+    $callbackHostForHelp = $(if (-not [string]::IsNullOrWhiteSpace($WslGatewayIp)) { $WslGatewayIp } else { "127.0.0.1" })
+  } else {
+    $callbackHostForHelp = try { Get-WslGatewayIp } catch { "127.0.0.1" }
+  }
+  Write-Host "  MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL=http://$callbackHostForHelp`:$AppPort"
+  Write-Host "  MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET=<same secret used above>"
 }
-Write-Host "  MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL=http://$callbackHostForHelp`:$AppPort"
-Write-Host "  MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET=<same secret used above>"
