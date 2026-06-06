@@ -5591,7 +5591,7 @@ def publish_website(
     lane: object = "local",
     dry_run: bool = False,
     verify: bool = True,
-    timeout_s: float = 45.0,
+    timeout_s: float = 600.0,
 ) -> dict[str, Any]:
     requested_lane = normalize_publish_request_lane(lane, "local")
     if requested_lane in REMOTE_PUBLISH_LANE_NAMES:

@@ -125,7 +125,7 @@ def test_boot_writes_app_env_and_starts_applications_compose(tmp_path: Path) -> 
     assert "MAIN_COMPUTER_ONLYOFFICE_PORT=18085" in env_text
     assert "MAIN_COMPUTER_GITEA_HTTP_PORT" not in env_text
     assert "COOLIFY_LOCAL_STATE=" in env_text
-    assert "APP_PORT=18000" in env_text
+    assert "APP_PORT=8000" in env_text
     assert "APP_KEY=base64:" in env_text
 
     compose_up_calls = [call for call in runner.calls if "compose" in call and "up" in call and "-d" in call]
@@ -220,7 +220,7 @@ def test_applications_env_heals_bad_prior_compose_project_and_container_names(tm
                 "COOLIFY_REDIS_CONTAINER_NAME=mc-coolify-main-computer-test-unleashed-redis",
                 "COOLIFY_SOKETI_CONTAINER_NAME=mc-coolify-main-computer-test-unleashed-realtime",
                 "COOLIFY_NETWORK_NAME=main-computer-coolify-main-computer-test-unleashed_default",
-                "APP_PORT=8000",
+                "APP_PORT=18000",
                 "",
             ]
         ),
@@ -241,8 +241,8 @@ def test_applications_env_heals_bad_prior_compose_project_and_container_names(tm
     assert "COOLIFY_REDIS_CONTAINER_NAME=mc-applications-coolify-redis" in env_text
     assert "COOLIFY_SOKETI_CONTAINER_NAME=mc-applications-coolify-realtime" in env_text
     assert "COOLIFY_NETWORK_NAME=main-computer-applications" in env_text
-    assert "APP_PORT=18000" in env_text
-    assert "APP_PORT=8000" not in env_text
+    assert "APP_PORT=8000" in env_text
+    assert "APP_PORT=18000" not in env_text
     assert "main-computer-coolify-main-computer-test-unleashed" not in env_text
     assert "mc-coolify-main-computer-test-unleashed" not in env_text
 

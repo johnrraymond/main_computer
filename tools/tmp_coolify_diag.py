@@ -12,7 +12,7 @@ from pathlib import Path
 _configured_port = (
     os.environ.get("MAIN_COMPUTER_COOLIFY_APP_PORT")
     or os.environ.get("APP_PORT")
-    or "18000"
+    or "8000"
 )
 BASE = (
     os.environ.get("COOLIFY_LOCAL_URL")

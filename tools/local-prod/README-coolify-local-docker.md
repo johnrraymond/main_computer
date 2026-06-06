@@ -171,7 +171,7 @@ python .\tools\local-prod\coolify-local-docker.py status
 The dashboard defaults to:
 
 ```text
-http://127.0.0.1:18000
+http://127.0.0.1:8000
 ```
 
 ## Deploy smoke
