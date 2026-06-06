@@ -321,3 +321,14 @@ MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET=<stable-secret>
 
 
 ONLYOFFICE Docs uses port `18084` by default because local platform site publishing owns ports `18080`-`18083`.
+
+
+### ONLYOFFICE WSL distro
+
+When `MAIN_COMPUTER_ONLYOFFICE_MODE=wsl`, Main Computer manages a WSL distro for ONLYOFFICE. The default distro name is `Ubuntu`. Override it only when you intentionally want a different WSL distro name:
+
+```powershell
+$env:MAIN_COMPUTER_ONLYOFFICE_WSL_DISTRO = "Ubuntu-24.04"
+```
+
+If the configured distro is missing, startup attempts to install it with `wsl.exe --install -d <distro>` before running ONLYOFFICE WSL commands.

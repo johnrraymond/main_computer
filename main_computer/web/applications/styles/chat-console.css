@@ -752,6 +752,15 @@
       gap: 12px;
       margin-bottom: 8px;
     }
+    .chat-remote-worker-control-readiness-card.collapsed .chat-remote-worker-control-readiness-heading {
+      margin-bottom: 0;
+    }
+    .chat-remote-worker-control-readiness-heading-actions {
+      align-items: center;
+      display: flex;
+      flex: 0 0 auto;
+      gap: 8px;
+    }
     .chat-remote-worker-control-readiness-heading h3 {
       color: var(--gold);
       font-size: 14px;
@@ -889,6 +898,7 @@
     }
     .chat-remote-worker-control-readiness-card-title,
     .chat-remote-worker-control-readiness-title,
+    .chat-remote-worker-control-readiness-card-toggle,
     .chat-remote-worker-control-readiness-toggle {
       appearance: none;
       border: 0;
@@ -910,6 +920,8 @@
     .chat-remote-worker-control-readiness-card-title:focus-visible,
     .chat-remote-worker-control-readiness-title:hover,
     .chat-remote-worker-control-readiness-title:focus-visible,
+    .chat-remote-worker-control-readiness-card-toggle:hover,
+    .chat-remote-worker-control-readiness-card-toggle:focus-visible,
     .chat-remote-worker-control-readiness-toggle:hover,
     .chat-remote-worker-control-readiness-toggle:focus-visible {
       color: #ffe08a;
@@ -936,6 +948,7 @@
     .chat-remote-worker-control-readiness-row.inactive .chat-remote-worker-control-readiness-mark {
       background: var(--muted);
     }
+    .chat-remote-worker-control-readiness-card-toggle,
     .chat-remote-worker-control-readiness-toggle {
       border: 1px solid var(--line);
       border-radius: 999px;
@@ -1063,6 +1076,13 @@
       font-size: 11px;
       font-weight: 800;
       overflow-wrap: anywhere;
+    }
+    .chat-remote-worker-control-readiness-card.collapsed .chat-remote-worker-control-readiness-message,
+    .chat-remote-worker-control-readiness-card.collapsed .chat-remote-worker-control-readiness-rows,
+    .chat-remote-worker-control-readiness-card.collapsed .chat-remote-worker-control-readiness-metrics,
+    .chat-remote-worker-control-readiness-card.collapsed .chat-remote-worker-control-readiness-note,
+    .chat-remote-worker-control-readiness-card.collapsed .chat-remote-worker-control-readiness-actions {
+      display: none;
     }
     .chat-remote-worker-control-readiness-row[data-chat-paid-overflow-effective-state="checking"] .chat-remote-worker-control-readiness-detail,
     .chat-remote-worker-control-readiness-card.checking .chat-remote-worker-control-readiness-message {

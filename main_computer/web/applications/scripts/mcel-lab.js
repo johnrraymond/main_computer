@@ -4597,6 +4597,7 @@
       state.status = "refreshing";
       state.lastAt = new Date().toISOString();
       let refreshedMountedApp = false;
+      let mountedRefreshUnavailable = false;
       try {
         const child = frame.contentWindow;
         const childDocument = child?.document;
@@ -4608,15 +4609,10 @@
             .finally(() => {
               window.setTimeout(() => inspectMcelCanonicalAppSpecimen(`${reason}:app-refresh-complete`), 80);
             });
+        } else if (hasTaskManagerRoot) {
+          mountedRefreshUnavailable = true;
+          window.setTimeout(() => inspectMcelCanonicalAppSpecimen(`${reason}:app-refresh-unavailable`), 80);
         } else {
-          const refreshButton = hasTaskManagerRoot ? childDocument?.querySelector?.("#task-refresh") : null;
-          if (refreshButton) {
-            refreshedMountedApp = true;
-            refreshButton.click();
-            window.setTimeout(() => inspectMcelCanonicalAppSpecimen(`${reason}:app-refresh-clicked`), 180);
-          }
-        }
-        if (!refreshedMountedApp) {
           frame.contentWindow?.location?.reload();
         }
       } catch (error) {
@@ -4627,7 +4623,9 @@
         "MCEL_CANONICAL_SPECIMEN_REFRESHING",
         refreshedMountedApp
           ? "Canonical app specimen mounted-app refresh requested."
-          : "Canonical app specimen iframe refresh requested."
+          : mountedRefreshUnavailable
+            ? "Canonical app specimen mounted-app refresh unavailable; specimen was inspected without synthetic control clicks."
+            : "Canonical app specimen iframe refresh requested."
       );
       renderMcelCanonicalAppSpecimenStatus(reason);
       return selectedMcelCanonicalAppSpecimen();

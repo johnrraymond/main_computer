@@ -57,6 +57,9 @@
       lastIntent: null,
       readinessGeneration: 0,
       readinessSmartCollapse: true,
+      readinessAutoCollapsedAllReady: false,
+      readinessSectionExpanded: true,
+      readinessSectionManualTouched: false,
       readinessCardState: {}
     };
     const chatConsoleNotebookRenderSignatures = new WeakMap();
@@ -1737,6 +1740,10 @@
       return rows.length > 0 && rows.every((row) => !["checking"].includes(row.effectiveState));
     }
 
+    function chatConsolePaidOverflowReadinessAllReady(rows) {
+      return rows.length > 0 && rows.every((row) => row.effectiveState === "ok");
+    }
+
     function chatConsolePaidOverflowReadinessHasResolved(readiness) {
       return Boolean(readiness && readiness.hub_checked === true);
     }
@@ -1962,6 +1969,23 @@
       }
     }
 
+    function chatConsoleSetPaidOverflowReadinessCardExpanded(card, expanded, {manual = false} = {}) {
+      if (!card) return;
+      const isExpanded = Boolean(expanded);
+      if (manual) chatConsoleRemoteWorkerControlState.readinessSectionManualTouched = true;
+      chatConsoleRemoteWorkerControlState.readinessSectionExpanded = isExpanded;
+      card.dataset.chatPaidOverflowReadinessCardExpanded = isExpanded ? "true" : "false";
+      card.classList.toggle("collapsed", !isExpanded);
+      const toggle = card.querySelector("[data-chat-paid-overflow-readiness-card-toggle]");
+      if (toggle) {
+        toggle.textContent = isExpanded ? "−" : "+";
+        toggle.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+        toggle.setAttribute("aria-label", isExpanded ? "Collapse Paid overflow readiness" : "Expand Paid overflow readiness");
+      }
+      const title = card.querySelector("[data-chat-paid-overflow-readiness-card-title]");
+      if (title) title.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+    }
+
     function chatConsolePaidOverflowReadinessCard(readiness, paidOverflow) {
       const state = readiness || chatConsolePaidOverflowReadinessFromContext(paidOverflow);
       const card = document.createElement("section");
@@ -1974,13 +1998,25 @@
       title.type = "button";
       title.className = "chat-remote-worker-control-readiness-card-title";
       title.dataset.chatPaidOverflowReadinessCardTitle = "true";
+      title.setAttribute("aria-expanded", "true");
       title.textContent = "Paid overflow readiness";
-      title.addEventListener("click", () => chatConsoleTogglePaidOverflowReadinessRows());
+      title.addEventListener("click", () => chatConsoleTogglePaidOverflowReadinessCard());
+      const headingActions = document.createElement("div");
+      headingActions.className = "chat-remote-worker-control-readiness-heading-actions";
       const badge = document.createElement("span");
       badge.className = `chat-remote-worker-control-readiness-summary ${state.ready ? "ok" : "bad"}`;
       badge.dataset.chatPaidOverflowReadinessSummary = "true";
       badge.textContent = state.ready ? "Ready" : "Blocked";
-      heading.append(title, badge);
+      const cardToggle = document.createElement("button");
+      cardToggle.type = "button";
+      cardToggle.className = "chat-remote-worker-control-readiness-card-toggle";
+      cardToggle.dataset.chatPaidOverflowReadinessCardToggle = "true";
+      cardToggle.setAttribute("aria-expanded", "true");
+      cardToggle.setAttribute("aria-label", "Collapse Paid overflow readiness");
+      cardToggle.textContent = "−";
+      cardToggle.addEventListener("click", () => chatConsoleTogglePaidOverflowReadinessCard());
+      headingActions.append(badge, cardToggle);
+      heading.append(title, headingActions);
 
       const description = document.createElement("p");
       description.className = "chat-remote-worker-control-readiness-message";
@@ -2021,6 +2057,7 @@
       actions.append(refresh);
 
       card.append(heading, description, rows, metrics, note, actions);
+      chatConsoleSetPaidOverflowReadinessCardExpanded(card, chatConsoleRemoteWorkerControlState.readinessSectionExpanded !== false);
       return card;
     }
 
@@ -2037,6 +2074,15 @@
       });
     }
 
+    function chatConsoleTogglePaidOverflowReadinessCard(expanded = null) {
+      const modal = chatConsoleRemoteWorkerControlState.modal;
+      const card = modal?.querySelector("[data-chat-paid-overflow-readiness-card]");
+      if (!card) return;
+      const currentlyExpanded = card.dataset.chatPaidOverflowReadinessCardExpanded !== "false";
+      const shouldExpand = expanded === null ? !currentlyExpanded : Boolean(expanded);
+      chatConsoleSetPaidOverflowReadinessCardExpanded(card, shouldExpand, {manual: true});
+    }
+
     function chatConsoleTogglePaidOverflowReadinessRows(expanded = null) {
       const modal = chatConsoleRemoteWorkerControlState.modal;
       const rows = modal ? [...modal.querySelectorAll("[data-chat-paid-overflow-readiness-check]")] : [];
@@ -2049,7 +2095,7 @@
       if (node) node.textContent = String(value ?? "");
     }
 
-    function chatConsoleUpdatePaidOverflowReadinessRow(rowNode, row, {allDone = false, phase = "resolved"} = {}) {
+    function chatConsoleUpdatePaidOverflowReadinessRow(rowNode, row, {allDone = false, phase = "resolved", autoCollapseAllReady = false} = {}) {
       if (!rowNode) return;
       const parts = chatConsoleReadinessStatusParts(row.effectiveState || row.ownState || "checking", row.unknownText || "Checking");
       rowNode.className = `chat-remote-worker-control-readiness-row ${parts.className}`;
@@ -2080,10 +2126,10 @@
       let expand = rowNode.dataset.chatPaidOverflowExpanded === "true";
       if (phase === "checking") {
         // Hold the current shape while checks are in flight; smart collapse runs only after all checks resolve.
+      } else if (autoCollapseAllReady && currentState === "ok") {
+        expand = false;
       } else if (allDone && chatConsoleRemoteWorkerControlState.readinessSmartCollapse) {
-        if (currentState === "ok") {
-          expand = false;
-        } else if (currentState === "blocked" && !cardState.autoExpandedForState && cardState.userExpanded !== false) {
+        if (currentState === "blocked" && !cardState.autoExpandedForState && cardState.userExpanded !== false) {
           expand = true;
           cardState.autoExpandedForState = true;
         } else if (currentState === "blocked-by-prior" && !cardState.manualTouched) {
@@ -2109,7 +2155,21 @@
       const phase = options.phase || "resolved";
       const pipelineRows = chatConsolePaidOverflowReadinessPipelineRows(state, context, phase);
       const allDone = phase !== "checking" && chatConsolePaidOverflowReadinessAllDone(pipelineRows);
+      const allReady = phase !== "checking" && chatConsolePaidOverflowReadinessAllReady(pipelineRows);
+      const autoCollapseAllReady = allReady
+        && chatConsoleRemoteWorkerControlState.readinessSmartCollapse
+        && !chatConsoleRemoteWorkerControlState.readinessAutoCollapsedAllReady;
+      if (autoCollapseAllReady) {
+        chatConsoleRemoteWorkerControlState.readinessAutoCollapsedAllReady = true;
+        chatConsoleSetPaidOverflowReadinessCardExpanded(card, false);
+      } else if (allDone && !allReady && chatConsoleRemoteWorkerControlState.readinessSmartCollapse && !chatConsoleRemoteWorkerControlState.readinessSectionManualTouched) {
+        chatConsoleSetPaidOverflowReadinessCardExpanded(card, true);
+      } else {
+        chatConsoleSetPaidOverflowReadinessCardExpanded(card, chatConsoleRemoteWorkerControlState.readinessSectionExpanded !== false);
+      }
       card.dataset.chatPaidOverflowAllChecksDone = allDone ? "true" : "false";
+      card.dataset.chatPaidOverflowAllReady = allReady ? "true" : "false";
+      card.dataset.chatPaidOverflowAutoCollapsedAllReady = autoCollapseAllReady ? "true" : "false";
       card.dataset.chatPaidOverflowSmartCollapse = chatConsoleRemoteWorkerControlState.readinessSmartCollapse ? "true" : "false";
       card.classList.toggle("all-done", allDone);
       card.classList.toggle("checking", phase === "checking");
@@ -2131,7 +2191,7 @@
           rowNode = chatConsolePaidOverflowReadinessRow(row);
           rowsContainer.append(rowNode);
         }
-        chatConsoleUpdatePaidOverflowReadinessRow(rowNode, row, {allDone, phase});
+        chatConsoleUpdatePaidOverflowReadinessRow(rowNode, row, {allDone, phase, autoCollapseAllReady});
       });
       chatConsoleUpdatePaidOverflowReadinessMetric(card, "available", state.available_credits_display ?? state.available_credits);
       chatConsoleUpdatePaidOverflowReadinessMetric(card, "available-credit-wei", state.available_credit_wei ?? "");
@@ -2699,6 +2759,11 @@
         chatConsoleRemoteWorkerStatusCard({kind: "local", title: "Current Local AI Worker", ...localStatus}),
         chatConsoleRemoteWorkerStatusCard({kind: "assessment-summary", title: "Remote Overflow Assessment", ...chatConsoleRemoteOverflowAssessmentPlaceholderStatus()})
       );
+
+      chatConsoleRemoteWorkerControlState.readinessCardState = {};
+      chatConsoleRemoteWorkerControlState.readinessAutoCollapsedAllReady = false;
+      chatConsoleRemoteWorkerControlState.readinessSectionExpanded = true;
+      chatConsoleRemoteWorkerControlState.readinessSectionManualTouched = false;
 
       const initialPaidOverflowContext = chatConsoleWorkerPaidOverflowContext(boundPendingRequest);
       const initialPaidOverflowReadiness = chatConsolePaidOverflowReadinessFromContext(initialPaidOverflowContext);
@@ -5360,15 +5425,19 @@
       setState: chatConsoleSetPaidOverflowReadinessUtilityState,
       showScenario: chatConsoleShowPaidOverflowReadinessScenario,
       collapseAll() {
+        chatConsoleTogglePaidOverflowReadinessCard(false);
         chatConsoleTogglePaidOverflowReadinessRows(false);
       },
       expandAll() {
+        chatConsoleTogglePaidOverflowReadinessCard(true);
         chatConsoleTogglePaidOverflowReadinessRows(true);
       },
       getState() {
         return {
           open: Boolean(chatConsoleRemoteWorkerControlState.modal),
           smartCollapse: chatConsoleRemoteWorkerControlState.readinessSmartCollapse,
+          autoCollapsedAllReady: chatConsoleRemoteWorkerControlState.readinessAutoCollapsedAllReady,
+          sectionExpanded: chatConsoleRemoteWorkerControlState.readinessSectionExpanded,
           lastHubReadiness: chatConsoleRemoteWorkerControlState.lastHubReadiness,
           readinessGeneration: chatConsoleRemoteWorkerControlState.readinessGeneration
         };
