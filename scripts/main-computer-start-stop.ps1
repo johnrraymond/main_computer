@@ -157,6 +157,11 @@ function Get-ModeDefaultEnvironment([string]$RootPath, [string]$Mode) {
     $normalized = "unleashed"
   }
 
+  $onlyOfficeWslDistro = $env:MAIN_COMPUTER_ONLYOFFICE_WSL_DISTRO
+  if ([string]::IsNullOrWhiteSpace($onlyOfficeWslDistro)) {
+    $onlyOfficeWslDistro = "Ubuntu"
+  }
+
   switch ($normalized) {
     "safe" {
       $label = "Safe Mode"
@@ -205,6 +210,7 @@ function Get-ModeDefaultEnvironment([string]$RootPath, [string]$Mode) {
     MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL = "http://127.0.0.1:18084"
     MAIN_COMPUTER_ONLYOFFICE_INTERNAL_URL = "http://127.0.0.1:18084"
     MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET = "main-computer-onlyoffice-local-secret"
+    MAIN_COMPUTER_ONLYOFFICE_WSL_DISTRO = $onlyOfficeWslDistro
     MAIN_COMPUTER_DEV_COMPOSE_PROJECT = "main-computer-unleashed"
     MAIN_COMPUTER_EXECUTOR_COMPOSE_PROJECT = "main-computer-unleashed"
     MAIN_COMPUTER_DOCKER_VIEWPORT_PORT = "18765"
@@ -863,6 +869,10 @@ function Invoke-MainComputerOnlyOfficeControl {
   $appPortText = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_CONTROL_PORT" "8765"
   $projectName = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_PROJECT" "main-computer-onlyoffice"
   $jwtSecret = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET" "main-computer-onlyoffice-local-secret"
+  $distro = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ONLYOFFICE_WSL_DISTRO" "Ubuntu"
+  if ([string]::IsNullOrWhiteSpace($distro)) {
+    $distro = "Ubuntu"
+  }
 
   $onlyOfficePort = 18084
   $appPort = 8765
@@ -876,7 +886,7 @@ function Invoke-MainComputerOnlyOfficeControl {
   }
 
   Write-Host ""
-  Write-Host ("ONLYOFFICE startup control: {0} mode={1} port={2} appPort={3}" -f $OnlyOfficeAction, $mode, $onlyOfficePort, $appPort)
+  Write-Host ("ONLYOFFICE startup control: {0} mode={1} port={2} appPort={3} distro={4}" -f $OnlyOfficeAction, $mode, $onlyOfficePort, $appPort, $distro)
   try {
     & powershell -NoProfile -ExecutionPolicy Bypass `
       -File $controlScript `
@@ -884,6 +894,7 @@ function Invoke-MainComputerOnlyOfficeControl {
       -Mode $mode `
       -Port $onlyOfficePort `
       -AppPort $appPort `
+      -Distro $distro `
       -ProjectName $projectName `
       -JwtSecret $jwtSecret
 

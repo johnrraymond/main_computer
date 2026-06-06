@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory = $true, Position = 0)]
-  [ValidateSet("install", "start", "stop", "status", "doctor", "bridge-start", "bridge-status", "bridge-stop")]
+  [ValidateSet("install", "start", "stop", "status", "doctor", "bridge-start", "bridge-status", "bridge-stop", "bridge-start-elevated", "bridge-stop-elevated")]
   [string]$Action,
 
   [ValidateSet("wsl", "docker")]
@@ -10,7 +10,7 @@ param(
 
   [int]$AppPort = 8765,
 
-  [string]$Distro = "Ubuntu",
+  [string]$Distro = "",
 
   [string]$JwtSecret = "",
 
@@ -22,7 +22,15 @@ param(
 
   [int]$ReadyPollSeconds = 5,
 
-  [switch]$NoElevate
+  [switch]$NoElevate,
+
+  [string]$WslIp = "",
+
+  [string]$WslGatewayIp = "",
+
+  [switch]$ForceApiProxyRefresh,
+
+  [switch]$ForceCallbackProxyRefresh
 )
 
 $ErrorActionPreference = "Stop"
@@ -48,8 +56,17 @@ if (-not $ProjectName) {
   }
 }
 
+if ([string]::IsNullOrWhiteSpace($Distro)) {
+  if ($env:MAIN_COMPUTER_ONLYOFFICE_WSL_DISTRO) {
+    $Distro = $env:MAIN_COMPUTER_ONLYOFFICE_WSL_DISTRO
+  } else {
+    $Distro = "Ubuntu"
+  }
+}
+
 $script:OnlyOfficeApiFirewallRuleName = "Main Computer ONLYOFFICE WSL API bridge $Port"
 $script:OnlyOfficeCallbackFirewallRuleName = "Main Computer ONLYOFFICE WSL callback bridge $AppPort"
+$script:WslDistroReadyCache = @{}
 
 function Write-Section {
   param([string]$Title)
@@ -81,11 +98,90 @@ function Quote-Bash {
   return "'" + ($Value -replace "'", "'\''") + "'"
 }
 
+function Get-WslDistroNames {
+  $wsl = Get-Command wsl.exe -CommandType Application -ErrorAction SilentlyContinue
+  if ($null -eq $wsl) {
+    throw "wsl.exe was not found. Install or enable Windows Subsystem for Linux, then rerun start_v2.bat."
+  }
+
+  $raw = @(& wsl.exe -l -q 2>$null)
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warning "Could not list WSL distributions before install. wsl.exe -l -q failed with exit code $LASTEXITCODE."
+    return @()
+  }
+
+  $names = @()
+  foreach ($line in $raw) {
+    $clean = ([string]$line) -replace "`0", ""
+    $clean = $clean.Trim()
+    if (-not [string]::IsNullOrWhiteSpace($clean)) {
+      $names += $clean
+    }
+  }
+  return $names
+}
+
+function Test-WslDistroExists {
+  param([Parameter(Mandatory = $true)][string]$DistroName)
+
+  foreach ($name in @(Get-WslDistroNames)) {
+    if ($name -eq $DistroName) {
+      return $true
+    }
+  }
+  return $false
+}
+
+function Install-WslDistro {
+  param([Parameter(Mandatory = $true)][string]$DistroName)
+
+  Write-Host "WSL distro '$DistroName' is not installed."
+  Write-Host "Installing WSL distro '$DistroName' for ONLYOFFICE WSL mode..."
+  & wsl.exe --install -d $DistroName
+  if ($LASTEXITCODE -ne 0) {
+    throw "Could not install WSL distro '$DistroName'. wsl.exe --install -d $DistroName failed with exit code $LASTEXITCODE."
+  }
+}
+
+function Assert-WslDistroReady {
+  param([Parameter(Mandatory = $true)][string]$DistroName)
+
+  & wsl.exe -d $DistroName -u root -- bash -lc "true" 2>$null
+  if ($LASTEXITCODE -ne 0) {
+    throw "WSL distro '$DistroName' is installed but is not ready for ONLYOFFICE commands. A Windows restart or first-run WSL initialization may be required. After that completes, rerun .\start_v2.bat."
+  }
+}
+
+function Ensure-WslDistroInstalledAndReady {
+  param([Parameter(Mandatory = $true)][string]$DistroName)
+
+  if ([string]::IsNullOrWhiteSpace($DistroName)) {
+    throw "ONLYOFFICE WSL distro name is empty. Set MAIN_COMPUTER_ONLYOFFICE_WSL_DISTRO or pass -Distro."
+  }
+
+  if ($script:WslDistroReadyCache.ContainsKey($DistroName)) {
+    return
+  }
+
+  if (-not (Test-WslDistroExists -DistroName $DistroName)) {
+    Install-WslDistro -DistroName $DistroName
+    if (-not (Test-WslDistroExists -DistroName $DistroName)) {
+      throw "WSL distro '$DistroName' installation was requested, but the distro is not registered yet. A Windows restart or first-run WSL initialization may be required. After that completes, rerun .\start_v2.bat."
+    }
+  }
+
+  Assert-WslDistroReady -DistroName $DistroName
+  $script:WslDistroReadyCache[$DistroName] = $true
+  Write-Host "WSL distro '$DistroName' is ready for ONLYOFFICE WSL mode."
+}
+
 function Invoke-WslOnlyOffice {
   param(
     [Parameter(Mandatory = $true)][string]$ScriptName,
     [string[]]$ExtraArgs = @()
   )
+
+  Ensure-WslDistroInstalledAndReady -DistroName $Distro
 
   $wslRepo = Convert-WindowsPathToWslPath $repoRoot
   $quotedRepo = Quote-Bash $wslRepo
@@ -177,7 +273,13 @@ function Quote-WindowsArgument {
 }
 
 function Invoke-ElevatedSelf {
-  param([Parameter(Mandatory = $true)][string]$ElevatedAction)
+  param(
+    [Parameter(Mandatory = $true)][string]$ElevatedAction,
+    [string]$ElevatedWslIp = "",
+    [string]$ElevatedWslGatewayIp = "",
+    [switch]$ElevatedForceApiProxyRefresh,
+    [switch]$ElevatedForceCallbackProxyRefresh
+  )
 
   if ($NoElevate) {
     throw "Administrator rights are required for $ElevatedAction, and -NoElevate was supplied."
@@ -196,6 +298,18 @@ function Invoke-ElevatedSelf {
   )
   if ($JwtSecret) {
     $args += @("-JwtSecret", $JwtSecret)
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ElevatedWslIp)) {
+    $args += @("-WslIp", $ElevatedWslIp)
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ElevatedWslGatewayIp)) {
+    $args += @("-WslGatewayIp", $ElevatedWslGatewayIp)
+  }
+  if ($ElevatedForceApiProxyRefresh) {
+    $args += "-ForceApiProxyRefresh"
+  }
+  if ($ElevatedForceCallbackProxyRefresh) {
+    $args += "-ForceCallbackProxyRefresh"
   }
 
   Write-Warning "Administrator rights are required to manage Windows portproxy/firewall rules."
@@ -774,11 +888,59 @@ function Test-OnlyOfficeBridgeConfigurationReady {
   )
 }
 
+function Start-OnlyOfficeWindowsBridgeEntries {
+  param(
+    [Parameter(Mandatory = $true)][string]$ResolvedWslIp,
+    [Parameter(Mandatory = $true)][string]$ResolvedWslGatewayIp,
+    [switch]$RefreshApiProxy,
+    [switch]$RefreshCallbackProxy
+  )
+
+  if ([string]::IsNullOrWhiteSpace($ResolvedWslIp)) {
+    throw "Cannot start ONLYOFFICE Windows bridge because the WSL distro IP is empty."
+  }
+  if ([string]::IsNullOrWhiteSpace($ResolvedWslGatewayIp)) {
+    throw "Cannot start ONLYOFFICE Windows callback bridge because the Windows WSL gateway IP is empty."
+  }
+
+  $iphlpsvc = Get-Service iphlpsvc -ErrorAction SilentlyContinue
+  if ($null -ne $iphlpsvc -and $iphlpsvc.Status -ne "Running") {
+    Start-Service iphlpsvc
+  }
+
+  Write-Host "Ensuring Windows -> ONLYOFFICE API bridge:"
+  Write-Host "  127.0.0.1:$Port -> $ResolvedWslIp`:$Port"
+  Set-PortProxyEntry -ListenAddress "127.0.0.1" -ListenPort $Port -ConnectAddress $ResolvedWslIp -ConnectPort $Port -Force:$RefreshApiProxy
+
+  Write-Host "Ensuring ONLYOFFICE/WSL -> Main Computer callback bridge:"
+  Write-Host "  $ResolvedWslGatewayIp`:$AppPort -> 127.0.0.1:$AppPort"
+  Set-PortProxyEntry -ListenAddress $ResolvedWslGatewayIp -ListenPort $AppPort -ConnectAddress "127.0.0.1" -ConnectPort $AppPort -Force:$RefreshCallbackProxy
+  Ensure-FirewallRule -DisplayName $script:OnlyOfficeCallbackFirewallRuleName -LocalAddress $ResolvedWslGatewayIp -LocalPort $AppPort
+}
+
+function Remove-OnlyOfficeWindowsBridgeEntries {
+  param([string]$ResolvedWslGatewayIp = "")
+
+  Remove-PortProxyEntry -ListenAddress "127.0.0.1" -ListenPort $Port
+  if (-not [string]::IsNullOrWhiteSpace($ResolvedWslGatewayIp)) {
+    Remove-PortProxyEntry -ListenAddress $ResolvedWslGatewayIp -ListenPort $AppPort
+  }
+  Remove-FirewallRuleIfPresent $script:OnlyOfficeApiFirewallRuleName
+  Remove-FirewallRuleIfPresent $script:OnlyOfficeCallbackFirewallRuleName
+}
+
 function Ensure-OnlyOfficeBridges {
   if ($Mode -ne "wsl") {
     Write-Host "Bridge management is only required for WSL mode."
     return
   }
+
+  Ensure-WslDistroInstalledAndReady -DistroName $Distro
+
+  # WSL-side ONLYOFFICE configuration must be done by the already-working
+  # non-elevated WSL context. The UAC child process is Windows-only and only
+  # manages portproxy/firewall state.
+  Ensure-WslPrivateIpDownloadAllowed
 
   $initialStatus = Get-OnlyOfficeBridgeStatus
   if ($initialStatus.ready) {
@@ -793,20 +955,16 @@ function Ensure-OnlyOfficeBridges {
     return
   }
 
-  if (-not (Test-IsWindowsAdmin)) {
-    Invoke-ElevatedSelf "bridge-start"
-    return
+  $resolvedWslIp = [string]$initialStatus.wsl_ip
+  if ([string]::IsNullOrWhiteSpace($resolvedWslIp)) {
+    $resolvedWslIp = Get-WslOnlyOfficeIp
   }
 
-  $iphlpsvc = Get-Service iphlpsvc -ErrorAction SilentlyContinue
-  if ($null -ne $iphlpsvc -and $iphlpsvc.Status -ne "Running") {
-    Start-Service iphlpsvc
+  $resolvedWslGatewayIp = [string]$initialStatus.wsl_gateway_ip
+  if ([string]::IsNullOrWhiteSpace($resolvedWslGatewayIp)) {
+    $resolvedWslGatewayIp = Get-WslGatewayIp
   }
 
-  Ensure-WslPrivateIpDownloadAllowed
-
-  $wslIp = Get-WslOnlyOfficeIp
-  $wslGateway = Get-WslGatewayIp
   $forceApiProxyRefresh = [bool](
     $initialStatus.onlyoffice_api_proxy.present -and
     (-not $initialStatus.onlyoffice_api_proxy.healthcheck.ok -or -not $initialStatus.onlyoffice_api_proxy.api_js.ok)
@@ -816,14 +974,22 @@ function Ensure-OnlyOfficeBridges {
     (-not $initialStatus.callback_proxy.windows_bridge_open -or -not $initialStatus.callback_proxy.wsl_probe.ok)
   )
 
-  Write-Host "Ensuring Windows -> ONLYOFFICE API bridge:"
-  Write-Host "  127.0.0.1:$Port -> $wslIp`:$Port"
-  Set-PortProxyEntry -ListenAddress "127.0.0.1" -ListenPort $Port -ConnectAddress $wslIp -ConnectPort $Port -Force:$forceApiProxyRefresh
+  if (-not (Test-IsWindowsAdmin)) {
+    Invoke-ElevatedSelf "bridge-start-elevated" `
+      -ElevatedWslIp $resolvedWslIp `
+      -ElevatedWslGatewayIp $resolvedWslGatewayIp `
+      -ElevatedForceApiProxyRefresh:$forceApiProxyRefresh `
+      -ElevatedForceCallbackProxyRefresh:$forceCallbackProxyRefresh
+    $status = Get-OnlyOfficeBridgeStatus
+    Write-OnlyOfficeBridgeStatus $status
+    return
+  }
 
-  Write-Host "Ensuring ONLYOFFICE/WSL -> Main Computer callback bridge:"
-  Write-Host "  $wslGateway`:$AppPort -> 127.0.0.1:$AppPort"
-  Set-PortProxyEntry -ListenAddress $wslGateway -ListenPort $AppPort -ConnectAddress "127.0.0.1" -ConnectPort $AppPort -Force:$forceCallbackProxyRefresh
-  Ensure-FirewallRule -DisplayName $script:OnlyOfficeCallbackFirewallRuleName -LocalAddress $wslGateway -LocalPort $AppPort
+  Start-OnlyOfficeWindowsBridgeEntries `
+    -ResolvedWslIp $resolvedWslIp `
+    -ResolvedWslGatewayIp $resolvedWslGatewayIp `
+    -RefreshApiProxy:$forceApiProxyRefresh `
+    -RefreshCallbackProxy:$forceCallbackProxyRefresh
 
   $status = Get-OnlyOfficeBridgeStatus
   Write-OnlyOfficeBridgeStatus $status
@@ -835,20 +1001,18 @@ function Remove-OnlyOfficeBridges {
     return
   }
 
+  $resolvedWslGatewayIp = ""
+  try { $resolvedWslGatewayIp = Get-WslGatewayIp } catch { $resolvedWslGatewayIp = "" }
+
   if (-not (Test-IsWindowsAdmin)) {
-    Invoke-ElevatedSelf "bridge-stop"
+    Invoke-ElevatedSelf "bridge-stop-elevated" -ElevatedWslGatewayIp $resolvedWslGatewayIp
+    Write-Host "Removed ONLYOFFICE WSL bridge portproxies/firewall rules."
+    $status = Get-OnlyOfficeBridgeStatus
+    Write-OnlyOfficeBridgeStatus $status
     return
   }
 
-  $wslGateway = ""
-  try { $wslGateway = Get-WslGatewayIp } catch { $wslGateway = "" }
-
-  Remove-PortProxyEntry -ListenAddress "127.0.0.1" -ListenPort $Port
-  if ($wslGateway) {
-    Remove-PortProxyEntry -ListenAddress $wslGateway -ListenPort $AppPort
-  }
-  Remove-FirewallRuleIfPresent $script:OnlyOfficeApiFirewallRuleName
-  Remove-FirewallRuleIfPresent $script:OnlyOfficeCallbackFirewallRuleName
+  Remove-OnlyOfficeWindowsBridgeEntries -ResolvedWslGatewayIp $resolvedWslGatewayIp
 
   Write-Host "Removed ONLYOFFICE WSL bridge portproxies/firewall rules."
   $status = Get-OnlyOfficeBridgeStatus
@@ -895,11 +1059,28 @@ if ($Mode -eq "wsl") {
     "bridge-start" {
       Ensure-OnlyOfficeBridges
     }
+    "bridge-start-elevated" {
+      if (-not (Test-IsWindowsAdmin)) {
+        throw "bridge-start-elevated must run with Administrator rights."
+      }
+      Start-OnlyOfficeWindowsBridgeEntries `
+        -ResolvedWslIp $WslIp `
+        -ResolvedWslGatewayIp $WslGatewayIp `
+        -RefreshApiProxy:$ForceApiProxyRefresh `
+        -RefreshCallbackProxy:$ForceCallbackProxyRefresh
+    }
     "bridge-status" {
       Show-OnlyOfficeBridgeStatus
     }
     "bridge-stop" {
       Remove-OnlyOfficeBridges
+    }
+    "bridge-stop-elevated" {
+      if (-not (Test-IsWindowsAdmin)) {
+        throw "bridge-stop-elevated must run with Administrator rights."
+      }
+      Remove-OnlyOfficeWindowsBridgeEntries -ResolvedWslGatewayIp $WslGatewayIp
+      Write-Host "Removed ONLYOFFICE WSL bridge portproxies/firewall rules."
     }
   }
 } else {
@@ -923,11 +1104,17 @@ if ($Mode -eq "wsl") {
     "bridge-start" {
       Write-Host "Docker mode does not use WSL bridge-start."
     }
+    "bridge-start-elevated" {
+      Write-Host "Docker mode does not use WSL bridge-start-elevated."
+    }
     "bridge-status" {
       Write-Host "Docker mode does not use WSL bridge-status."
     }
     "bridge-stop" {
       Write-Host "Docker mode does not use WSL bridge-stop."
+    }
+    "bridge-stop-elevated" {
+      Write-Host "Docker mode does not use WSL bridge-stop-elevated."
     }
   }
 }
@@ -936,6 +1123,10 @@ Write-Host ""
 Write-Host "Use these Main Computer env vars for local Windows/WSL mode:"
 Write-Host "  MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL=http://127.0.0.1:$Port"
 Write-Host "  MAIN_COMPUTER_ONLYOFFICE_INTERNAL_URL=http://127.0.0.1:$Port"
-$callbackHostForHelp = try { Get-WslGatewayIp } catch { "127.0.0.1" }
+if ($Action -eq "bridge-start-elevated" -or $Action -eq "bridge-stop-elevated") {
+  $callbackHostForHelp = $(if (-not [string]::IsNullOrWhiteSpace($WslGatewayIp)) { $WslGatewayIp } else { "127.0.0.1" })
+} else {
+  $callbackHostForHelp = try { Get-WslGatewayIp } catch { "127.0.0.1" }
+}
 Write-Host "  MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL=http://$callbackHostForHelp`:$AppPort"
 Write-Host "  MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET=<same secret used above>"

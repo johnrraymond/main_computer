@@ -353,6 +353,9 @@ def test_chat_console_paid_overflow_readiness_uses_smart_card_state_pipeline() -
     source = CHAT_CONSOLE_JS.read_text(encoding="utf-8")
 
     assert "readinessSmartCollapse: true" in source
+    assert "readinessAutoCollapsedAllReady: false" in source
+    assert "readinessSectionExpanded: true" in source
+    assert "readinessSectionManualTouched: false" in source
     assert "readinessCardState: {}" in source
     assert "CHAT_CONSOLE_PAID_OVERFLOW_READINESS_CHECKS" in source
     assert 'shortTitle: "Hub"' in source
@@ -365,12 +368,26 @@ def test_chat_console_paid_overflow_readiness_uses_smart_card_state_pipeline() -
     assert 'dependencies: ["hub-reachability", "connected-wallet", "spendable-credits"]' in source
     assert "chatConsolePaidOverflowReadinessPipelineRows" in source
     assert "chatConsolePaidOverflowReadinessAllDone" in source
+    assert "chatConsolePaidOverflowReadinessAllReady" in source
     assert '"blocked-by-prior"' in source
     assert "Waiting for Hub and wallet before key validation can be known." in source
     assert "A check may only show red for its own reason" not in source
     assert "smart collapse runs only after all checks resolve" in source
     assert "phase === \"checking\"" in source
     assert "allDone && chatConsoleRemoteWorkerControlState.readinessSmartCollapse" in source
+    assert "autoCollapseAllReady && currentState === \"ok\"" in source
+    assert "function chatConsoleSetPaidOverflowReadinessCardExpanded" in source
+    assert "function chatConsoleTogglePaidOverflowReadinessCard" in source
+    assert "chatConsoleSetPaidOverflowReadinessCardExpanded(card, false);" in source
+    assert "card.dataset.chatPaidOverflowReadinessCardExpanded" in source
+    assert "data-chat-paid-overflow-readiness-card-toggle" in source
+    assert "card.dataset.chatPaidOverflowAutoCollapsedAllReady" in source
+    assert "chatConsoleRemoteWorkerControlState.readinessAutoCollapsedAllReady = false" in source
+    assert "chatConsoleRemoteWorkerControlState.readinessSectionExpanded = true" in source
+    assert "chatConsoleRemoteWorkerControlState.readinessSectionManualTouched = false" in source
+    assert "autoCollapsedAllReady: chatConsoleRemoteWorkerControlState.readinessAutoCollapsedAllReady" in source
+    assert "sectionExpanded: chatConsoleRemoteWorkerControlState.readinessSectionExpanded" in source
+    assert "if (currentState === \"ok\") {\n          expand = false;" not in source
     assert "current.replaceWith(next)" not in source
 
 
@@ -398,6 +415,8 @@ def test_chat_console_paid_overflow_readiness_styles_prevent_flashy_rebuilds() -
     assert ".chat-remote-worker-control-readiness-card.smart" in css
     assert "contain: layout paint" in css
     assert ".chat-remote-worker-control-readiness-toggle" in css
+    assert ".chat-remote-worker-control-readiness-card-toggle" in css
+    assert ".chat-remote-worker-control-readiness-card.collapsed" in css
     assert ".chat-remote-worker-control-readiness-detail-panel" in css
     assert ".chat-remote-worker-control-readiness-row.expanded" in css
     assert "transition: max-height 180ms ease, opacity 160ms ease, padding-top 160ms ease" in css

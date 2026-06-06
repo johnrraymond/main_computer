@@ -444,54 +444,182 @@ function updateTaskAiTicker(message) {
   setApplicationWidgetTicker(taskAiPane, `AI brief | ${cleaned.slice(0, 220) || "ready"}`);
 }
 
+const taskProcessSurfaceHoldState = new WeakMap();
+let taskProcessRefreshHoldDepth = 0;
+let taskManagerRefreshPromise = null;
+let taskManagerRefreshQueued = false;
+let taskManagerRefreshQueuedArgs = [];
+
+function taskProcessSurfaceTargets() {
+  return [taskProcessTable, taskAllProcessTable].filter(Boolean);
+}
+
+function taskProcessSurfaceStateFor(target) {
+  let state = taskProcessSurfaceHoldState.get(target);
+  if (!state) {
+    state = {
+      lastGoodHtml: "",
+      lastGoodHeight: 140,
+      lastScrollTop: 0,
+      lastScrollLeft: 0,
+      overlay: null,
+    };
+    taskProcessSurfaceHoldState.set(target, state);
+  }
+  return state;
+}
+
+function taskProcessSurfaceDirectChild(target, selector) {
+  return Array.from(target?.children || []).find((child) => child.matches?.(selector)) || null;
+}
+
+function taskProcessSurfaceDirectTable(target) {
+  return taskProcessSurfaceDirectChild(target, "table.task-table");
+}
+
+function taskProcessSurfaceDirectEmpty(target) {
+  return taskProcessSurfaceDirectChild(target, ".task-empty");
+}
+
 function taskProcessSurfaceHasRows(target) {
-  return Boolean(target?.querySelector?.(".task-table tbody tr"));
+  return Boolean(taskProcessSurfaceDirectTable(target)?.querySelector?.("tbody tr"));
 }
-function taskProcessSurfaceHoldOverlay(target) {
-  if (!target || !taskProcessSurfaceHasRows(target)) return null;
-  const height = Math.max(140, Math.ceil(target.getBoundingClientRect?.().height || 0));
+
+function rememberTaskProcessSurface(target) {
+  const table = taskProcessSurfaceDirectTable(target);
+  if (!table || !table.querySelector("tbody tr")) return false;
+
+  const state = taskProcessSurfaceStateFor(target);
+  const height = Math.max(140, Math.ceil(target.getBoundingClientRect?.().height || target.scrollHeight || 0));
+  state.lastGoodHtml = table.outerHTML;
+  state.lastGoodHeight = height;
+  state.lastScrollTop = target.scrollTop || 0;
+  state.lastScrollLeft = target.scrollLeft || 0;
   target.style.setProperty("--task-process-refresh-hold-height", `${height}px`);
-  const overlay = document.createElement("div");
-  overlay.className = "task-process-refresh-hold";
-  overlay.setAttribute("aria-hidden", "true");
-  overlay.innerHTML = target.innerHTML;
-  return overlay;
+  return true;
 }
-function releaseTaskProcessSurfaceHold(target, overlay) {
-  const release = () => {
-    overlay?.remove?.();
-    target?.removeAttribute?.("data-task-refresh-hold");
-    target?.style?.removeProperty?.("--task-process-refresh-hold-height");
-  };
-  const raf = typeof window.requestAnimationFrame === "function"
-    ? window.requestAnimationFrame.bind(window)
-    : (callback) => window.setTimeout(callback, 16);
-  raf(() => raf(release));
+
+function showTaskProcessSurfaceHold(target, reason = "refresh") {
+  if (!target) return false;
+  const state = taskProcessSurfaceStateFor(target);
+  if (!state.lastGoodHtml) return false;
+
+  if (!state.overlay) {
+    state.overlay = document.createElement("div");
+    state.overlay.className = "task-process-refresh-hold";
+    state.overlay.setAttribute("aria-hidden", "true");
+  }
+  if (state.overlay.innerHTML !== state.lastGoodHtml) {
+    state.overlay.innerHTML = state.lastGoodHtml;
+  }
+
+  target.setAttribute("data-task-refresh-hold", "1");
+  target.setAttribute("data-task-refresh-hold-reason", reason);
+  target.style.setProperty("--task-process-refresh-hold-height", `${state.lastGoodHeight || 140}px`);
+
+  if (!state.overlay.parentNode) {
+    target.appendChild(state.overlay);
+  }
+
+  state.overlay.scrollTop = state.lastScrollTop || 0;
+  state.overlay.scrollLeft = state.lastScrollLeft || 0;
+  return true;
 }
+
+function releaseTaskProcessSurfaceHold(target) {
+  const state = target ? taskProcessSurfaceStateFor(target) : null;
+  state?.overlay?.remove?.();
+  target?.removeAttribute?.("data-task-refresh-hold");
+  target?.removeAttribute?.("data-task-refresh-hold-reason");
+  target?.style?.removeProperty?.("--task-process-refresh-hold-height");
+}
+
+function beginTaskProcessSurfaceRefreshHold(reason = "refresh") {
+  const targets = taskProcessSurfaceTargets();
+  let hasHoldableSurface = false;
+
+  targets.forEach((target) => {
+    if (rememberTaskProcessSurface(target) || taskProcessSurfaceStateFor(target).lastGoodHtml) {
+      hasHoldableSurface = true;
+    }
+  });
+
+  if (!hasHoldableSurface) return false;
+
+  taskProcessRefreshHoldDepth += 1;
+  targets.forEach((target) => showTaskProcessSurfaceHold(target, reason));
+  return true;
+}
+
+function finishTaskProcessSurfaceRefreshHold(reason = "settled") {
+  taskProcessRefreshHoldDepth = Math.max(0, taskProcessRefreshHoldDepth - 1);
+
+  taskProcessSurfaceTargets().forEach((target) => {
+    if (rememberTaskProcessSurface(target)) {
+      releaseTaskProcessSurfaceHold(target);
+      return;
+    }
+
+    if (taskProcessRefreshHoldDepth === 0 && taskProcessSurfaceDirectEmpty(target)) {
+      releaseTaskProcessSurfaceHold(target);
+      return;
+    }
+
+    if (taskProcessSurfaceStateFor(target).lastGoodHtml) {
+      showTaskProcessSurfaceHold(target, `${reason}:waiting-for-final-surface`);
+    }
+  });
+}
+
+function refreshTaskProcessSurfaceHold(reason = "mutation") {
+  taskProcessSurfaceTargets().forEach((target) => {
+    if (rememberTaskProcessSurface(target)) {
+      if (taskProcessRefreshHoldDepth === 0) {
+        releaseTaskProcessSurfaceHold(target);
+      }
+      return;
+    }
+
+    const state = taskProcessSurfaceStateFor(target);
+    const table = taskProcessSurfaceDirectTable(target);
+    const empty = taskProcessSurfaceDirectEmpty(target);
+    if (taskProcessRefreshHoldDepth > 0 && state.lastGoodHtml && (!table || empty || !taskProcessSurfaceHasRows(target))) {
+      showTaskProcessSurfaceHold(target, reason);
+    }
+  });
+}
+
 function commitTaskProcessSurface(target, html) {
   if (!target) return;
-  const overlay = taskProcessSurfaceHoldOverlay(target);
+  const scrollTop = target.scrollTop || 0;
+  const scrollLeft = target.scrollLeft || 0;
   const template = document.createElement("template");
   template.innerHTML = String(html || "").trim();
   const nodes = Array.from(template.content.childNodes);
-  const scrollTop = target.scrollTop || 0;
-  const scrollLeft = target.scrollLeft || 0;
-  if (overlay) {
-    nodes.push(overlay);
-    target.setAttribute("data-task-refresh-hold", "1");
-  }
+
   if (typeof target.replaceChildren === "function") {
     target.replaceChildren(...nodes);
   } else {
     target.innerHTML = "";
     nodes.forEach((node) => target.appendChild(node));
   }
+
   target.scrollTop = scrollTop;
   target.scrollLeft = scrollLeft;
-  if (overlay) {
-    overlay.scrollTop = scrollTop;
-    overlay.scrollLeft = scrollLeft;
-    releaseTaskProcessSurfaceHold(target, overlay);
+
+  if (rememberTaskProcessSurface(target)) {
+    if (taskProcessRefreshHoldDepth === 0) {
+      releaseTaskProcessSurfaceHold(target);
+    } else {
+      showTaskProcessSurfaceHold(target, "committed-while-refreshing");
+    }
+    return;
+  }
+
+  if (taskProcessRefreshHoldDepth > 0) {
+    showTaskProcessSurfaceHold(target, "committed-empty-while-refreshing");
+  } else if (taskProcessSurfaceDirectEmpty(target)) {
+    releaseTaskProcessSurfaceHold(target);
   }
 }
 function renderTaskProcessRows(target, items, emptyMessage) {
@@ -671,8 +799,33 @@ ${escapeHtml(item.note || "")}</div>
     </div>
   `).join("");
 }
-async function refreshTaskManager() {
+function refreshTaskManager(...args) {
+  if (taskManagerRefreshPromise) {
+    taskManagerRefreshQueued = true;
+    taskManagerRefreshQueuedArgs = args;
+    refreshTaskProcessSurfaceHold("coalesced-refresh");
+    return taskManagerRefreshPromise;
+  }
+
+  taskManagerRefreshPromise = runTaskManagerRefresh(...args)
+    .finally(() => {
+      taskManagerRefreshPromise = null;
+      if (taskManagerRefreshQueued) {
+        const queuedArgs = taskManagerRefreshQueuedArgs;
+        taskManagerRefreshQueued = false;
+        taskManagerRefreshQueuedArgs = [];
+        window.setTimeout(() => {
+          refreshTaskManager(...queuedArgs).catch(() => null);
+        }, 0);
+      }
+    });
+
+  return taskManagerRefreshPromise;
+}
+
+async function runTaskManagerRefresh() {
   const firstLoad = !taskManagerLoadingShown;
+  const holdingProcessSurfaces = !firstLoad && beginTaskProcessSurfaceRefreshHold("refreshTaskManager");
   if (firstLoad) {
     taskManagerStatus.textContent = "Loading task snapshot...";
     setApplicationWidgetTicker(taskOverviewCard, "Loading task snapshot...");
@@ -722,15 +875,23 @@ async function refreshTaskManager() {
     const message = `Task manager failed: ${error.message || error}`;
     taskManagerStatus.textContent = "Task manager unavailable.";
     updateTaskServerPanel(taskManagerSnapshotCache?.server || {}, taskManagerSnapshotCache?.overview || {}, "viewport offline | heartbeat path still available");
-    taskProcessTable.innerHTML = '<div class="task-empty">Server process view unavailable.</div>';
-    if (taskAllProcessTable) taskAllProcessTable.innerHTML = '<div class="task-empty">All-process view unavailable.</div>';
+    commitTaskProcessSurface(taskProcessTable, '<div class="task-empty">Server process view unavailable.</div>');
+    if (taskAllProcessTable) commitTaskProcessSurface(taskAllProcessTable, '<div class="task-empty">All-process view unavailable.</div>');
     taskConnectionTable.innerHTML = '<div class="task-empty">Connection view unavailable.</div>';
     if (taskHardwareTable) taskHardwareTable.innerHTML = '<div class="task-empty">Hardware utilization view unavailable.</div>';
     setApplicationWidgetTicker(taskOverviewCard, message);
     setApplicationWidgetTicker(taskNotebookPane, "Notebook waiting for viewport recovery.");
     throw error;
+  } finally {
+    if (holdingProcessSurfaces) {
+      const raf = typeof window.requestAnimationFrame === "function"
+        ? window.requestAnimationFrame.bind(window)
+        : (callback) => window.setTimeout(callback, 16);
+      raf(() => raf(() => finishTaskProcessSurfaceRefreshHold("refreshTaskManager")));
+    }
   }
 }
+
 function scheduleTaskManagerAutoRefresh() {
   stopTaskManagerAutoRefresh();
   if (!taskAutoRefresh.checked) return;
