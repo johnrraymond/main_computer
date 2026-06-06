@@ -34,6 +34,15 @@
       paidOverflowSettingSaveInFlight: false,
       paidOverflowSettingSaveGeneration: 0,
       paidOverflowSettingPendingValue: null,
+      paidOverflowFundingBridgeConfig: null,
+      paidOverflowFundingBridgeConfigStatus: "idle",
+      paidOverflowFundingBridgeConfigError: "",
+      paidOverflowFundingBridgeConfigInFlight: false,
+      paidOverflowFundingInFlight: false,
+      paidOverflowFundingBalanceInFlight: false,
+      paidOverflowFundingWalletBalanceInFlight: false,
+      paidOverflowFundingStatus: "",
+      paidOverflowFundingEthersModulePromise: null,
       lastChoice: null,
       lastShownAt: "",
       lastCellId: "",
@@ -520,6 +529,20 @@
     }
 
     const CHAT_CONSOLE_CREDIT_WEI_PER_CREDIT = 1000000000000000000n;
+    const CHAT_CONSOLE_WORKER_BRIDGE_READINESS_STORAGE_KEY = "main-computer-worker-" + "bridge-readiness-v1";
+    const CHAT_CONSOLE_HUB_CREDIT_DEFAULT_AMOUNT = "1";
+    const CHAT_CONSOLE_DEV_CHAIN_ID_DECIMAL = 42424242;
+    const CHAT_CONSOLE_DEV_CHAIN_ID_HEX = "0x28757b2";
+    const CHAT_CONSOLE_DEV_CHAIN_NAME = "Main Computer Dev Chain";
+    const CHAT_CONSOLE_DEV_CHAIN_RPC_URL = "http://127.0.0.1:18545";
+    const CHAT_CONSOLE_DEV_CHAIN_CURRENCY_NAME = "Main Computer XLAG Credit";
+    const CHAT_CONSOLE_DEV_CHAIN_CURRENCY_SYMBOL = "MCXLAG";
+    const CHAT_CONSOLE_ETHERS_ESM_URL = "https://cdn.jsdelivr.net/npm/ethers@6.13.4/+esm";
+    const CHAT_CONSOLE_HUB_CREDIT_BRIDGE_ESCROW_ABI = [
+      "function depositFor(address account,uint256 amountUnits,bytes32 depositId,string memo) payable returns (bool)",
+      "event CreditDeposited(bytes32 indexed depositId,address indexed account,address indexed payer,uint256 amountUnits,string memo)"
+    ];
+
 
     function chatConsoleCreditDecimalToWei(value, fallback = "0") {
       const raw = String(value ?? fallback ?? "0").trim() || String(fallback ?? "0");
@@ -570,6 +593,823 @@
       return tokenCount * perToken;
     }
 
+
+    function chatConsoleWorkerBridgeDefaultState() {
+      return {
+        recoveryEmails: [],
+        recoveryWallets: [],
+        recoveryConfirmedAt: "",
+        multisessionKeys: [],
+        activeMultisessionKeyId: "",
+        faucet: {
+          amountCredits: "1",
+          lastStatus: "Not requested",
+          lastTxHash: "",
+          lastResult: null,
+          lastError: "",
+          updatedAt: ""
+        },
+        walletFunding: {
+          bridgeContractAddress: "",
+          amountCredits: CHAT_CONSOLE_HUB_CREDIT_DEFAULT_AMOUNT,
+          walletBalance: null,
+          walletBalanceStatus: "idle",
+          walletBalanceError: "",
+          balance: null,
+          accountId: "",
+          lastStatus: "Not funded",
+          lastTxHash: "",
+          lastError: "",
+          updatedAt: ""
+        }
+      };
+    }
+
+    function chatConsoleLowerAddress(value) {
+      return String(value || "").trim().toLowerCase();
+    }
+
+    function chatConsoleWalletValidAddress(value) {
+      return /^0x[0-9a-fA-F]{40}$/.test(String(value || ""));
+    }
+
+    function chatConsoleShortAddress(value) {
+      const clean = String(value || "").trim();
+      if (!clean) return "—";
+      return clean.length > 18 ? `${clean.slice(0, 10)}…${clean.slice(-6)}` : clean;
+    }
+
+    function chatConsoleNormalizeChainIdHex(value) {
+      const text = String(value || "").trim().toLowerCase();
+      if (!text) return "";
+      if (/^0x[0-9a-f]+$/.test(text)) return `0x${BigInt(text).toString(16)}`;
+      if (/^[0-9]+$/.test(text)) return `0x${BigInt(text).toString(16)}`;
+      return text;
+    }
+
+    function chatConsoleDecimalChainId(value) {
+      const normalized = chatConsoleNormalizeChainIdHex(value);
+      if (!normalized) return 0;
+      try {
+        return Number(BigInt(normalized));
+      } catch {
+        return 0;
+      }
+    }
+
+    function chatConsoleFormatCreditBaseUnits(value) {
+      try {
+        const units = BigInt(value?.toString ? value.toString() : value ?? 0);
+        const whole = units / CHAT_CONSOLE_CREDIT_WEI_PER_CREDIT;
+        const fractional = units % CHAT_CONSOLE_CREDIT_WEI_PER_CREDIT;
+        if (fractional === 0n) return whole.toString();
+        const fractionText = fractional.toString().padStart(18, "0").replace(/0+$/, "");
+        const visibleFraction = fractionText.length > 6 ? fractionText.slice(0, 6).replace(/0+$/, "") : fractionText;
+        return visibleFraction ? `${whole.toString()}.${visibleFraction}` : whole.toString();
+      } catch {
+        return "";
+      }
+    }
+
+    function chatConsoleNormalizeWalletCreditBalance(data) {
+      if (!data || typeof data !== "object") return null;
+      const balanceBaseUnits = String(data.balance_base_units ?? data.base_units ?? "");
+      const availableCredits = String(
+        data.available_credits
+          ?? data.balance_credits
+          ?? data.credits
+          ?? (balanceBaseUnits ? chatConsoleFormatCreditBaseUnits(balanceBaseUnits) : "0")
+      );
+      return {
+        wallet_address: String(data.wallet_address || ""),
+        available_credits: availableCredits,
+        balance_base_units: balanceBaseUnits,
+        chain_id: chatConsoleNormalizeChainIdHex(data.chain_id || data.chainId || ""),
+        source: String(data.source || ""),
+        updated_at: String(data.updated_at || data.updatedAt || chatConsoleNow())
+      };
+    }
+
+    function chatConsoleNormalizeHubCreditBalance(data) {
+      if (!data || typeof data !== "object") return null;
+      const account = data.account && typeof data.account === "object" ? data.account : {};
+      return {
+        wallet_address: String(data.wallet_address || ""),
+        account_id: String(data.account_id || account.account_id || ""),
+        available_credits: String(account.available_credits ?? data.available_credits ?? "0"),
+        held_credits: String(account.held_credits ?? data.held_credits ?? "0"),
+        spent_credits: String(account.spent_credits ?? data.spent_credits ?? "0"),
+        funding_model: String(data.funding_model || ""),
+        updated_at: chatConsoleNow()
+      };
+    }
+
+    function chatConsoleNormalizeWorkerBridgeState(parsed) {
+      const fallback = chatConsoleWorkerBridgeDefaultState();
+      const state = parsed && typeof parsed === "object" ? parsed : {};
+      const walletFunding = state.walletFunding && typeof state.walletFunding === "object"
+        ? state.walletFunding
+        : state.wallet_funding && typeof state.wallet_funding === "object"
+          ? state.wallet_funding
+          : {};
+      const faucet = state.faucet && typeof state.faucet === "object" ? state.faucet : {};
+      const multisessionKeys = Array.isArray(state.multisessionKeys) ? state.multisessionKeys : [];
+      return {
+        recoveryEmails: Array.isArray(state.recoveryEmails) ? state.recoveryEmails : [],
+        recoveryWallets: Array.isArray(state.recoveryWallets) ? state.recoveryWallets : [],
+        recoveryConfirmedAt: String(state.recoveryConfirmedAt || state.recovery_confirmed_at || ""),
+        multisessionKeys: multisessionKeys
+          .map((key) => ({
+            id: String(key?.id || ""),
+            status: String(key?.status || "active"),
+            createdAt: String(key?.createdAt || key?.created_at || ""),
+            revokedAt: String(key?.revokedAt || key?.revoked_at || ""),
+            walletAddress: String(key?.walletAddress || key?.wallet_address || "")
+          }))
+          .filter((key) => key.id),
+        activeMultisessionKeyId: String(state.activeMultisessionKeyId || state.active_multisession_key_id || ""),
+        faucet: {
+          amountCredits: "1",
+          lastStatus: String(faucet.lastStatus || faucet.last_status || fallback.faucet.lastStatus),
+          lastTxHash: String(faucet.lastTxHash || faucet.last_tx_hash || ""),
+          lastResult: faucet.lastResult || faucet.last_result || null,
+          lastError: String(faucet.lastError || faucet.last_error || ""),
+          updatedAt: String(faucet.updatedAt || faucet.updated_at || "")
+        },
+        walletFunding: {
+          bridgeContractAddress: String(walletFunding.bridgeContractAddress || walletFunding.bridge_contract_address || ""),
+          amountCredits: String(walletFunding.amountCredits || walletFunding.amount_credits || CHAT_CONSOLE_HUB_CREDIT_DEFAULT_AMOUNT),
+          walletBalance: chatConsoleNormalizeWalletCreditBalance(walletFunding.walletBalance || walletFunding.wallet_balance),
+          walletBalanceStatus: String(walletFunding.walletBalanceStatus || walletFunding.wallet_balance_status || "idle"),
+          walletBalanceError: String(walletFunding.walletBalanceError || walletFunding.wallet_balance_error || ""),
+          balance: chatConsoleNormalizeHubCreditBalance(walletFunding.balance),
+          accountId: String(walletFunding.accountId || walletFunding.account_id || ""),
+          lastStatus: String(walletFunding.lastStatus || walletFunding.last_status || fallback.walletFunding.lastStatus),
+          lastTxHash: String(walletFunding.lastTxHash || walletFunding.last_tx_hash || ""),
+          lastError: String(walletFunding.lastError || walletFunding.last_error || ""),
+          updatedAt: String(walletFunding.updatedAt || walletFunding.updated_at || "")
+        }
+      };
+    }
+
+    function chatConsoleLoadWorkerBridgeState() {
+      try {
+        return chatConsoleNormalizeWorkerBridgeState(JSON.parse(window["local" + "Storage"].getItem(CHAT_CONSOLE_WORKER_BRIDGE_READINESS_STORAGE_KEY) || "null"));
+      } catch {
+        return chatConsoleWorkerBridgeDefaultState();
+      }
+    }
+
+    function chatConsoleSaveWorkerBridgeState(state) {
+      const normalized = chatConsoleNormalizeWorkerBridgeState(state);
+      try {
+        window["local" + "Storage"].setItem(CHAT_CONSOLE_WORKER_BRIDGE_READINESS_STORAGE_KEY, JSON.stringify(normalized));
+        window.dispatchEvent(new CustomEvent("main-computer-worker-bridge-state-updated", {detail: normalized}));
+      } catch {}
+      return normalized;
+    }
+
+    function chatConsoleReadinessWalletAddress(readiness = null) {
+      const state = readiness || chatConsoleRemoteWorkerControlState.lastHubReadiness || {};
+      const hub = state.hub && typeof state.hub === "object" ? state.hub : {};
+      return chatConsoleLowerAddress(state.wallet_address || hub.wallet_address || "");
+    }
+
+    function chatConsoleReadinessChainId(readiness = null) {
+      const state = readiness || chatConsoleRemoteWorkerControlState.lastHubReadiness || {};
+      const hub = state.hub && typeof state.hub === "object" ? state.hub : {};
+      return chatConsoleNormalizeChainIdHex(state.chain_id || hub.chain_id || CHAT_CONSOLE_DEV_CHAIN_ID_HEX);
+    }
+
+    function chatConsoleFundingHubUrlFromReadiness(readiness = null) {
+      const state = readiness || chatConsoleRemoteWorkerControlState.lastHubReadiness || {};
+      const hub = state.hub && typeof state.hub === "object" ? state.hub : {};
+      return String(state.hub_url || hub.hub_url || "").trim().replace(/\/+$/, "") || "http://127.0.0.1:8770";
+    }
+
+    function chatConsolePaidOverflowFundingBridgeContractAddress(config = chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfig) {
+      return String(config?.hub_credit_bridge_escrow_address || config?.contract_address || config?.bridge_contract_address || "").trim();
+    }
+
+    function chatConsolePaidOverflowFundingBridgeConfigDisplayAddress() {
+      if (chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfigInFlight
+        || chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfigStatus === "checking") {
+        return "Loading deployment…";
+      }
+      const address = chatConsolePaidOverflowFundingBridgeContractAddress();
+      if (address) return chatConsoleShortAddress(address);
+      if (chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfigError) {
+        return chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfigError;
+      }
+      return "Deployment config not loaded";
+    }
+
+    async function chatConsoleFetchJson(path) {
+      const response = await fetch(path, {method: "GET", headers: {"Accept": "application/json"}, cache: "no-store"});
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.error || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+      return data;
+    }
+
+    async function chatConsolePostJson(path, payload) {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: {"Content-Type": "application/json", "Accept": "application/json"},
+        cache: "no-store",
+        body: JSON.stringify(payload)
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.error || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+      return data;
+    }
+
+    async function chatConsoleRefreshPaidOverflowFundingBridgeConfig({force = false} = {}) {
+      const status = chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfigStatus;
+      const current = chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfig;
+      if (chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfigInFlight) return current;
+      if (!force && status === "ready" && chatConsoleWalletValidAddress(chatConsolePaidOverflowFundingBridgeContractAddress(current))) return current;
+      chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfigInFlight = true;
+      chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfigStatus = "checking";
+      chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfigError = "";
+      chatConsoleRenderPaidOverflowFundingControls();
+      try {
+        const data = await chatConsoleFetchJson("/api/applications/worker/wallet-funding/config");
+        const contractAddress = String(data.hub_credit_bridge_escrow_address || data.contract_address || "").trim();
+        if (!chatConsoleWalletValidAddress(contractAddress)) throw new Error("Deployment config is missing hub_credit_bridge_escrow.address.");
+        const configuredChainId = chatConsoleNormalizeChainIdHex(data.chain_id_hex || data.chain_id || "");
+        if (configuredChainId && configuredChainId !== CHAT_CONSOLE_DEV_CHAIN_ID_HEX) {
+          throw new Error(`Deployment chain ${configuredChainId} does not match ${CHAT_CONSOLE_DEV_CHAIN_ID_HEX}.`);
+        }
+        chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfig = {
+          ...data,
+          hub_credit_bridge_escrow_address: contractAddress,
+          chain_id_hex: configuredChainId || CHAT_CONSOLE_DEV_CHAIN_ID_HEX
+        };
+        chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfigStatus = "ready";
+        chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfigError = "";
+        const bridgeState = chatConsoleLoadWorkerBridgeState();
+        bridgeState.walletFunding = {
+          ...bridgeState.walletFunding,
+          bridgeContractAddress: contractAddress,
+          lastError: String(bridgeState.walletFunding?.lastError || "").startsWith("Bridge deployment config") ? "" : bridgeState.walletFunding?.lastError || "",
+          updatedAt: chatConsoleNow()
+        };
+        chatConsoleSaveWorkerBridgeState(bridgeState);
+        return chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfig;
+      } catch (error) {
+        chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfig = null;
+        chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfigStatus = "failed";
+        chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfigError = `Bridge deployment config unavailable: ${error.message || error}`;
+        return null;
+      } finally {
+        chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfigInFlight = false;
+        chatConsoleRenderPaidOverflowFundingControls();
+      }
+    }
+
+    function chatConsolePaidOverflowFundingAmountFromModal() {
+      const modal = chatConsoleRemoteWorkerControlState.modal;
+      const input = modal?.querySelector("[data-chat-paid-overflow-funding-amount]");
+      return String(input instanceof HTMLInputElement ? input.value : "").trim();
+    }
+
+    function chatConsoleSavePaidOverflowFundingInputs() {
+      const bridgeState = chatConsoleLoadWorkerBridgeState();
+      const amount = chatConsolePaidOverflowFundingAmountFromModal() || bridgeState.walletFunding.amountCredits || CHAT_CONSOLE_HUB_CREDIT_DEFAULT_AMOUNT;
+      bridgeState.walletFunding = {
+        ...bridgeState.walletFunding,
+        bridgeContractAddress: chatConsolePaidOverflowFundingBridgeContractAddress(),
+        amountCredits: amount || CHAT_CONSOLE_HUB_CREDIT_DEFAULT_AMOUNT
+      };
+      chatConsoleSaveWorkerBridgeState(bridgeState);
+      return bridgeState;
+    }
+
+    function chatConsoleComputePaidOverflowFundingReadiness(readiness = null) {
+      const bridgeState = chatConsoleLoadWorkerBridgeState();
+      const walletFunding = bridgeState.walletFunding || {};
+      const address = chatConsoleReadinessWalletAddress(readiness);
+      const chainId = chatConsoleReadinessChainId(readiness);
+      const contractAddress = chatConsolePaidOverflowFundingBridgeContractAddress() || String(walletFunding.bridgeContractAddress || "");
+      const amountCredits = chatConsolePaidOverflowFundingAmountFromModal() || walletFunding.amountCredits || CHAT_CONSOLE_HUB_CREDIT_DEFAULT_AMOUNT;
+
+      if (chatConsoleRemoteWorkerControlState.paidOverflowFundingInFlight) {
+        return {ready: false, reason: "Funding my bridge account is pending.", address, chainId, contractAddress, amountCredits};
+      }
+      if (!chatConsoleWalletValidAddress(address)) {
+        return {ready: false, reason: "Connect a Worker wallet and request a multi-session key on the Worker page before funding.", address, chainId, contractAddress, amountCredits};
+      }
+      if (chainId !== CHAT_CONSOLE_DEV_CHAIN_ID_HEX) {
+        return {ready: false, reason: `Wallet is connected on ${chainId || "unknown chain"}. Switch the browser wallet to ${CHAT_CONSOLE_DEV_CHAIN_ID_HEX}.`, address, chainId, contractAddress, amountCredits};
+      }
+      if (chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfigInFlight
+        || chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfigStatus === "checking") {
+        return {ready: false, reason: "Loading bridge deployment config.", address, chainId, contractAddress, amountCredits};
+      }
+      if (!chatConsoleWalletValidAddress(contractAddress)) {
+        return {ready: false, reason: chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfigError || "Bridge deployment config is missing the escrow contract address.", address, chainId, contractAddress, amountCredits};
+      }
+
+      let amountUnits = "";
+      try {
+        amountUnits = chatConsoleCreditDecimalToWei(amountCredits, CHAT_CONSOLE_HUB_CREDIT_DEFAULT_AMOUNT).toString();
+        if (BigInt(amountUnits) <= 0n) throw new Error("Credits must be greater than zero.");
+      } catch (error) {
+        return {ready: false, reason: error.message || String(error), address, chainId, contractAddress, amountCredits};
+      }
+
+      const walletBalanceUnits = String(walletFunding.walletBalance?.balance_base_units || "");
+      if (!/^\d+$/.test(walletBalanceUnits)) {
+        return {ready: false, reason: "Check my wallet balance before funding.", address, chainId, contractAddress, amountCredits};
+      }
+      if (BigInt(amountUnits) > BigInt(walletBalanceUnits)) {
+        return {
+          ready: false,
+          reason: BigInt(walletBalanceUnits) === 0n ? "Request Faucet Funds for this wallet before funding the bridge." : "Amount exceeds my wallet balance.",
+          address,
+          chainId,
+          contractAddress,
+          amountCredits
+        };
+      }
+      return {ready: true, reason: "Ready to fund my bridge account.", address, chainId, contractAddress, amountCredits};
+    }
+
+    function chatConsoleSetPaidOverflowFundingStatus(message = "") {
+      chatConsoleRemoteWorkerControlState.paidOverflowFundingStatus = String(message || "");
+      chatConsoleRenderPaidOverflowFundingControls();
+    }
+
+    async function chatConsoleCheckPaidOverflowFundingBalances() {
+      chatConsoleSavePaidOverflowFundingInputs();
+      await chatConsoleRefreshPaidOverflowFundingBridgeConfig({force: false});
+      const readiness = chatConsoleRemoteWorkerControlState.lastHubReadiness;
+      const walletAddress = chatConsoleReadinessWalletAddress(readiness);
+      if (!chatConsoleWalletValidAddress(walletAddress)) {
+        chatConsoleSetPaidOverflowFundingStatus("Connect a Worker wallet before checking balances.");
+        return null;
+      }
+
+      const bridgeState = chatConsoleLoadWorkerBridgeState();
+      chatConsoleRemoteWorkerControlState.paidOverflowFundingWalletBalanceInFlight = true;
+      bridgeState.walletFunding = {
+        ...bridgeState.walletFunding,
+        walletBalance: null,
+        walletBalanceStatus: "checking",
+        walletBalanceError: "",
+        updatedAt: chatConsoleNow()
+      };
+      chatConsoleSaveWorkerBridgeState(bridgeState);
+      chatConsoleRenderPaidOverflowFundingControls();
+
+      try {
+        const walletBalance = chatConsoleNormalizeWalletCreditBalance(await chatConsolePostJson("/api/applications/worker/wallet-balance", {
+          wallet_address: walletAddress
+        }));
+        const nextState = chatConsoleLoadWorkerBridgeState();
+        nextState.walletFunding = {
+          ...nextState.walletFunding,
+          walletBalance,
+          walletBalanceStatus: "loaded",
+          walletBalanceError: "",
+          lastError: "",
+          updatedAt: chatConsoleNow()
+        };
+        chatConsoleSaveWorkerBridgeState(nextState);
+      } catch (error) {
+        const failedState = chatConsoleLoadWorkerBridgeState();
+        const message = `Wallet balance check failed: ${error.message || error}`;
+        failedState.walletFunding = {
+          ...failedState.walletFunding,
+          walletBalance: null,
+          walletBalanceStatus: "failed",
+          walletBalanceError: message,
+          lastError: message,
+          updatedAt: chatConsoleNow()
+        };
+        chatConsoleSaveWorkerBridgeState(failedState);
+      } finally {
+        chatConsoleRemoteWorkerControlState.paidOverflowFundingWalletBalanceInFlight = false;
+        chatConsoleRenderPaidOverflowFundingControls();
+      }
+
+      chatConsoleRemoteWorkerControlState.paidOverflowFundingBalanceInFlight = true;
+      chatConsoleRenderPaidOverflowFundingControls();
+      try {
+        const hubBalance = chatConsoleNormalizeHubCreditBalance(await chatConsolePostJson("/api/applications/worker/wallet-funding/balance", {
+          hub_url: chatConsoleFundingHubUrlFromReadiness(readiness),
+          wallet_address: walletAddress
+        }));
+        const balancedState = chatConsoleLoadWorkerBridgeState();
+        balancedState.walletFunding = {
+          ...balancedState.walletFunding,
+          balance: hubBalance,
+          accountId: hubBalance?.account_id || "",
+          lastStatus: `My bridge account has ${hubBalance?.available_credits || "0"} spendable credits.`,
+          lastError: "",
+          updatedAt: chatConsoleNow()
+        };
+        chatConsoleSaveWorkerBridgeState(balancedState);
+        chatConsoleSetPaidOverflowFundingStatus(balancedState.walletFunding.lastStatus);
+        await chatConsoleRefreshRemoteHubReadiness({force: true});
+        return hubBalance;
+      } catch (error) {
+        const errorState = chatConsoleLoadWorkerBridgeState();
+        const message = `Balance check failed: ${error.message || error}`;
+        errorState.walletFunding = {
+          ...errorState.walletFunding,
+          lastStatus: message,
+          lastError: message,
+          updatedAt: chatConsoleNow()
+        };
+        chatConsoleSaveWorkerBridgeState(errorState);
+        chatConsoleSetPaidOverflowFundingStatus(message);
+        return null;
+      } finally {
+        chatConsoleRemoteWorkerControlState.paidOverflowFundingBalanceInFlight = false;
+        chatConsoleRenderPaidOverflowFundingControls();
+      }
+    }
+
+    async function chatConsoleEthersModule() {
+      if (!chatConsoleRemoteWorkerControlState.paidOverflowFundingEthersModulePromise) {
+        chatConsoleRemoteWorkerControlState.paidOverflowFundingEthersModulePromise = import(CHAT_CONSOLE_ETHERS_ESM_URL);
+      }
+      return await chatConsoleRemoteWorkerControlState.paidOverflowFundingEthersModulePromise;
+    }
+
+    async function chatConsoleWalletProviderContext() {
+      const injectedProvider = window.ethereum;
+      if (!injectedProvider || typeof injectedProvider.request !== "function") {
+        throw new Error("No browser wallet provider is available. Open the Worker page and connect a wallet first.");
+      }
+      const ethers = await chatConsoleEthersModule();
+      await injectedProvider.request({method: "eth_requestAccounts"});
+      const browserProvider = new ethers.BrowserProvider(injectedProvider);
+      return {ethers, injectedProvider, browserProvider};
+    }
+
+    function chatConsoleDevWalletChainParams() {
+      return {
+        chainId: CHAT_CONSOLE_DEV_CHAIN_ID_HEX,
+        chainName: CHAT_CONSOLE_DEV_CHAIN_NAME,
+        nativeCurrency: {
+          name: CHAT_CONSOLE_DEV_CHAIN_CURRENCY_NAME,
+          symbol: CHAT_CONSOLE_DEV_CHAIN_CURRENCY_SYMBOL,
+          decimals: 18
+        },
+        rpcUrls: [CHAT_CONSOLE_DEV_CHAIN_RPC_URL],
+        blockExplorerUrls: []
+      };
+    }
+
+    async function chatConsoleEnsureDevWalletChain(injectedProvider) {
+      const current = chatConsoleNormalizeChainIdHex(await injectedProvider.request({method: "eth_chainId"}));
+      if (current === CHAT_CONSOLE_DEV_CHAIN_ID_HEX) return current;
+      try {
+        await injectedProvider.request({method: "wallet_switchEthereumChain", params: [{chainId: CHAT_CONSOLE_DEV_CHAIN_ID_HEX}]});
+      } catch (error) {
+        if (error && typeof error === "object" && (error.code === 4902 || error.code === -32603)) {
+          await injectedProvider.request({method: "wallet_addEthereumChain", params: [chatConsoleDevWalletChainParams()]});
+          await injectedProvider.request({method: "wallet_switchEthereumChain", params: [{chainId: CHAT_CONSOLE_DEV_CHAIN_ID_HEX}]});
+        } else {
+          throw error;
+        }
+      }
+      return chatConsoleNormalizeChainIdHex(await injectedProvider.request({method: "eth_chainId"}));
+    }
+
+    function chatConsoleRandomBytes32Hex(ethers) {
+      if (ethers && typeof ethers.randomBytes === "function" && typeof ethers.hexlify === "function") {
+        return ethers.hexlify(ethers.randomBytes(32));
+      }
+      const bytes = new Uint8Array(32);
+      crypto.getRandomValues(bytes);
+      return `0x${Array.from(bytes).map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+    }
+
+    async function chatConsoleRequireBridgeContractCode(provider, contractAddress) {
+      const address = String(contractAddress || "").trim();
+      if (!chatConsoleWalletValidAddress(address)) throw new Error("Bridge deployment config is missing a valid escrow contract address.");
+      let code = "";
+      try {
+        if (provider && typeof provider.getCode === "function") {
+          code = await provider.getCode(address);
+        } else if (provider && typeof provider.send === "function") {
+          code = await provider.send("eth_getCode", [address, "latest"]);
+        }
+      } catch (error) {
+        throw new Error(`Could not verify bridge contract code at ${chatConsoleShortAddress(address)}: ${error.message || error}`);
+      }
+      if (!code || String(code).toLowerCase() === "0x") {
+        throw new Error(`Bridge address ${chatConsoleShortAddress(address)} has no contract code. Redeploy hub-credit-bridge-escrow and refresh.`);
+      }
+      return code;
+    }
+
+    function chatConsoleReceiptLogIndex(receipt, contractAddress) {
+      const target = chatConsoleLowerAddress(contractAddress);
+      const logs = Array.isArray(receipt?.logs) ? receipt.logs : [];
+      const match = logs.find((log) => chatConsoleLowerAddress(log?.address || "") === target);
+      const index = match?.logIndex ?? match?.index ?? 0;
+      const parsed = Number(index);
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+    }
+
+    function chatConsoleCreditDepositedEventFromReceipt(contract, receipt, expected) {
+      const logs = Array.isArray(receipt?.logs) ? receipt.logs : [];
+      const expectedContract = chatConsoleLowerAddress(expected.contractAddress);
+      const expectedDepositId = String(expected.depositId || "").toLowerCase();
+      const expectedAccount = chatConsoleLowerAddress(expected.account);
+      const expectedAmount = BigInt(expected.amountUnits || 0);
+      for (const log of logs) {
+        if (chatConsoleLowerAddress(log?.address || "") !== expectedContract) continue;
+        try {
+          const parsed = contract.interface.parseLog(log);
+          if (!parsed || parsed.name !== "CreditDeposited") continue;
+          const args = parsed.args || {};
+          const actualDepositId = String(args.depositId || args[0] || "").toLowerCase();
+          const actualAccount = chatConsoleLowerAddress(args.account || args[1] || "");
+          const actualAmount = BigInt(args.amountUnits || args[3] || 0);
+          if (actualDepositId !== expectedDepositId) throw new Error("CreditDeposited depositId did not match the submitted deposit id.");
+          if (actualAccount !== expectedAccount) throw new Error("CreditDeposited account did not match the connected wallet.");
+          if (actualAmount !== expectedAmount) throw new Error("CreditDeposited amount did not match the submitted amount.");
+          return {
+            depositId: actualDepositId,
+            account: actualAccount,
+            payer: chatConsoleLowerAddress(args.payer || args[2] || ""),
+            amountUnits: actualAmount,
+            logIndex: Number(log.logIndex ?? log.index ?? 0) || 0
+          };
+        } catch (error) {
+          if (String(error?.message || error).includes("did not match")) throw error;
+        }
+      }
+      throw new Error("Funding receipt did not include the expected CreditDeposited event.");
+    }
+
+    async function chatConsoleFundPaidOverflowBridgeCredits(event = null) {
+      event?.preventDefault?.();
+      chatConsoleSavePaidOverflowFundingInputs();
+      await chatConsoleRefreshPaidOverflowFundingBridgeConfig({force: true});
+      const readiness = chatConsoleRemoteWorkerControlState.lastHubReadiness;
+      const fundingReadiness = chatConsoleComputePaidOverflowFundingReadiness(readiness);
+      if (!fundingReadiness.ready) {
+        chatConsoleSetPaidOverflowFundingStatus(fundingReadiness.reason);
+        return;
+      }
+
+      chatConsoleRemoteWorkerControlState.paidOverflowFundingInFlight = true;
+      const pendingState = chatConsoleLoadWorkerBridgeState();
+      pendingState.walletFunding = {
+        ...pendingState.walletFunding,
+        lastStatus: "Waiting for wallet confirmation…",
+        lastError: "",
+        updatedAt: chatConsoleNow()
+      };
+      chatConsoleSaveWorkerBridgeState(pendingState);
+      chatConsoleRenderPaidOverflowFundingControls();
+      try {
+        const context = await chatConsoleWalletProviderContext();
+        const {ethers, injectedProvider} = context;
+        await chatConsoleEnsureDevWalletChain(injectedProvider);
+        const browserProvider = new ethers.BrowserProvider(injectedProvider);
+        const signer = await browserProvider.getSigner();
+        const signerAddress = chatConsoleLowerAddress(await signer.getAddress());
+        const walletAddress = chatConsoleLowerAddress(fundingReadiness.address);
+        if (signerAddress !== walletAddress) {
+          throw new Error(`Wallet signer changed from ${chatConsoleShortAddress(walletAddress)} to ${chatConsoleShortAddress(signerAddress)}.`);
+        }
+
+        const amountUnits = chatConsoleCreditDecimalToWei(fundingReadiness.amountCredits, CHAT_CONSOLE_HUB_CREDIT_DEFAULT_AMOUNT).toString();
+        await chatConsoleRequireBridgeContractCode(browserProvider, fundingReadiness.contractAddress);
+        const depositId = chatConsoleRandomBytes32Hex(ethers);
+        const memo = `my bridge account funding ${chatConsoleShortAddress(walletAddress)}`;
+        const contract = new ethers.Contract(fundingReadiness.contractAddress, CHAT_CONSOLE_HUB_CREDIT_BRIDGE_ESCROW_ABI, signer);
+        const tx = await contract.depositFor(walletAddress, amountUnits, depositId, memo, {value: amountUnits});
+        const submittedState = chatConsoleLoadWorkerBridgeState();
+        submittedState.walletFunding = {
+          ...submittedState.walletFunding,
+          lastStatus: `Funding transaction submitted: ${tx.hash || "pending"}`,
+          lastTxHash: tx.hash || "",
+          lastError: "",
+          updatedAt: chatConsoleNow()
+        };
+        chatConsoleSaveWorkerBridgeState(submittedState);
+        chatConsoleRenderPaidOverflowFundingControls();
+
+        const receipt = typeof tx.wait === "function" ? await tx.wait() : null;
+        const txHash = String(receipt?.hash || receipt?.transactionHash || tx.hash || "");
+        const depositedEvent = chatConsoleCreditDepositedEventFromReceipt(contract, receipt, {
+          contractAddress: fundingReadiness.contractAddress,
+          depositId,
+          account: walletAddress,
+          amountUnits
+        });
+        const completionResult = await chatConsolePostJson("/api/applications/worker/wallet-funding/complete", {
+          hub_url: chatConsoleFundingHubUrlFromReadiness(readiness),
+          wallet_address: walletAddress,
+          deposit_receipt: {
+            wallet_address: walletAddress,
+            chain_id: chatConsoleDecimalChainId(readiness?.chain_id || CHAT_CONSOLE_DEV_CHAIN_ID_HEX) || CHAT_CONSOLE_DEV_CHAIN_ID_DECIMAL,
+            contract_address: fundingReadiness.contractAddress,
+            tx_hash: txHash,
+            log_index: depositedEvent.logIndex ?? chatConsoleReceiptLogIndex(receipt, fundingReadiness.contractAddress),
+            block_number: Number(receipt?.blockNumber || 0),
+            deposit_id: depositId
+          }
+        });
+
+        const hubBalance = chatConsoleNormalizeHubCreditBalance(completionResult);
+        const completedState = chatConsoleLoadWorkerBridgeState();
+        completedState.walletFunding = {
+          ...completedState.walletFunding,
+          bridgeContractAddress: fundingReadiness.contractAddress,
+          amountCredits: fundingReadiness.amountCredits,
+          balance: hubBalance || completedState.walletFunding.balance,
+          accountId: String(completionResult.account_id || hubBalance?.account_id || ""),
+          lastStatus: completionResult.idempotent
+            ? "Funding was already completed; my bridge balance is current."
+            : `My bridge account funded for ${chatConsoleShortAddress(walletAddress)}.`,
+          lastTxHash: txHash,
+          lastCompletionTxHash: String(completionResult.completion_tx_hash || ""),
+          lastDepositId: depositId,
+          lastError: "",
+          updatedAt: chatConsoleNow()
+        };
+        chatConsoleSaveWorkerBridgeState(completedState);
+        chatConsoleSetPaidOverflowFundingStatus(completedState.walletFunding.lastStatus);
+        await chatConsoleCheckPaidOverflowFundingBalances();
+        await chatConsoleRefreshRemoteHubReadiness({force: true});
+      } catch (error) {
+        const failedState = chatConsoleLoadWorkerBridgeState();
+        const message = `Funding failed: ${error.message || error}`;
+        failedState.walletFunding = {
+          ...failedState.walletFunding,
+          lastStatus: message,
+          lastError: message,
+          updatedAt: chatConsoleNow()
+        };
+        chatConsoleSaveWorkerBridgeState(failedState);
+        chatConsoleSetPaidOverflowFundingStatus(message);
+      } finally {
+        chatConsoleRemoteWorkerControlState.paidOverflowFundingInFlight = false;
+        chatConsoleRenderPaidOverflowFundingControls();
+      }
+    }
+
+    function chatConsolePaidOverflowFundingControl() {
+      const wrapper = document.createElement("div");
+      wrapper.className = "chat-remote-worker-control-paid-overflow-funding";
+      wrapper.dataset.chatPaidOverflowFundingControl = "true";
+
+      const title = document.createElement("div");
+      title.className = "chat-remote-worker-control-paid-overflow-funding-title";
+      title.textContent = "Funding controls";
+
+      const grid = document.createElement("dl");
+      grid.className = "chat-remote-worker-control-paid-overflow-funding-grid";
+      [
+        ["My wallet", "wallet"],
+        ["My wallet balance", "wallet-balance"],
+        ["My bridge balance", "bridge-balance"],
+        ["Bridge contract", "bridge-contract"],
+        ["Last funding", "last-funding"],
+        ["Transaction", "transaction"]
+      ].forEach(([label, key]) => {
+        const item = document.createElement("div");
+        const term = document.createElement("dt");
+        term.textContent = label;
+        const value = document.createElement("dd");
+        value.dataset.chatPaidOverflowFundingValue = key;
+        value.textContent = "—";
+        item.append(term, value);
+        grid.append(item);
+      });
+
+      const form = document.createElement("form");
+      form.className = "chat-remote-worker-control-paid-overflow-funding-form";
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        chatConsoleFundPaidOverflowBridgeCredits(event).catch(() => {});
+      });
+      const label = document.createElement("label");
+      const labelText = document.createElement("span");
+      labelText.textContent = "Amount";
+      const amount = document.createElement("input");
+      amount.type = "number";
+      amount.min = "0.000001";
+      amount.step = "0.000001";
+      amount.value = chatConsoleLoadWorkerBridgeState().walletFunding.amountCredits || CHAT_CONSOLE_HUB_CREDIT_DEFAULT_AMOUNT;
+      amount.dataset.chatPaidOverflowFundingAmount = "true";
+      amount.addEventListener("input", () => {
+        chatConsoleSavePaidOverflowFundingInputs();
+        chatConsoleRenderPaidOverflowFundingControls();
+      });
+      label.append(labelText, amount);
+      form.append(label);
+
+      const actions = document.createElement("div");
+      actions.className = "chat-remote-worker-control-paid-overflow-funding-actions";
+      const check = document.createElement("button");
+      check.type = "button";
+      check.dataset.chatPaidOverflowFundingCheckBalances = "true";
+      check.textContent = "Check Balances";
+      check.addEventListener("click", () => {
+        chatConsoleCheckPaidOverflowFundingBalances().catch((error) => {
+          chatConsoleSetPaidOverflowFundingStatus(`Balance check failed: ${error.message || error}`);
+        });
+      });
+      const fund = document.createElement("button");
+      fund.type = "submit";
+      fund.dataset.chatPaidOverflowFundingFund = "true";
+      fund.textContent = "Fund";
+      const status = document.createElement("span");
+      status.className = "chat-remote-worker-control-paid-overflow-funding-status";
+      status.dataset.chatPaidOverflowFundingStatus = "true";
+      actions.append(check, fund, status);
+      form.append(actions);
+
+      wrapper.append(title, grid, form);
+      setTimeout(() => chatConsoleRenderPaidOverflowFundingControls(), 0);
+      return wrapper;
+    }
+
+    function chatConsoleFundingValueNode(wrapper, key) {
+      return wrapper?.querySelector(`[data-chat-paid-overflow-funding-value="${key}"]`) || null;
+    }
+
+    function chatConsoleRenderPaidOverflowFundingControls(readiness = null) {
+      const modal = chatConsoleRemoteWorkerControlState.modal;
+      if (!modal) return;
+      const state = readiness || chatConsoleRemoteWorkerControlState.lastHubReadiness;
+      const bridgeState = chatConsoleLoadWorkerBridgeState();
+      const walletFunding = bridgeState.walletFunding || {};
+      const fundingReadiness = chatConsoleComputePaidOverflowFundingReadiness(state);
+      const checkingBalances = chatConsoleRemoteWorkerControlState.paidOverflowFundingBalanceInFlight
+        || chatConsoleRemoteWorkerControlState.paidOverflowFundingWalletBalanceInFlight;
+      const walletBalance = walletFunding.walletBalance || null;
+      const hubBalance = walletFunding.balance || null;
+      modal.querySelectorAll("[data-chat-paid-overflow-funding-control]").forEach((wrapper) => {
+        const walletNode = chatConsoleFundingValueNode(wrapper, "wallet");
+        if (walletNode) {
+          walletNode.textContent = fundingReadiness.address
+            ? `${chatConsoleShortAddress(fundingReadiness.address)}${fundingReadiness.chainId ? ` on ${fundingReadiness.chainId}` : ""}`
+            : "Connect wallet first";
+        }
+        const walletBalanceNode = chatConsoleFundingValueNode(wrapper, "wallet-balance");
+        if (walletBalanceNode) {
+          if (!fundingReadiness.address) walletBalanceNode.textContent = "Connect wallet first";
+          else if (chatConsoleRemoteWorkerControlState.paidOverflowFundingWalletBalanceInFlight || walletFunding.walletBalanceStatus === "checking") walletBalanceNode.textContent = "Checking my wallet balance…";
+          else if (walletBalance) walletBalanceNode.textContent = walletBalance.balance_base_units === "0"
+            ? "0 credits available — Request Faucet Funds first"
+            : `${walletBalance.available_credits} credits available to fund`;
+          else if (walletFunding.walletBalanceStatus === "failed" && walletFunding.walletBalanceError) walletBalanceNode.textContent = walletFunding.walletBalanceError;
+          else walletBalanceNode.textContent = "Check balances to load.";
+        }
+        const bridgeBalanceNode = chatConsoleFundingValueNode(wrapper, "bridge-balance");
+        if (bridgeBalanceNode) {
+          bridgeBalanceNode.textContent = hubBalance
+            ? `${hubBalance.available_credits} available / ${hubBalance.held_credits} held / ${hubBalance.spent_credits} spent`
+            : "Unknown";
+        }
+        const contractNode = chatConsoleFundingValueNode(wrapper, "bridge-contract");
+        if (contractNode) {
+          contractNode.textContent = chatConsolePaidOverflowFundingBridgeConfigDisplayAddress();
+          contractNode.title = fundingReadiness.contractAddress || chatConsoleRemoteWorkerControlState.paidOverflowFundingBridgeConfigError || "";
+        }
+        const lastFundingNode = chatConsoleFundingValueNode(wrapper, "last-funding");
+        if (lastFundingNode) lastFundingNode.textContent = walletFunding.lastError || walletFunding.lastStatus || "Not funded";
+        const txNode = chatConsoleFundingValueNode(wrapper, "transaction");
+        if (txNode) txNode.textContent = walletFunding.lastTxHash || "—";
+
+        const amountInput = wrapper.querySelector("[data-chat-paid-overflow-funding-amount]");
+        if (amountInput instanceof HTMLInputElement && document.activeElement !== amountInput) {
+          amountInput.value = walletFunding.amountCredits || CHAT_CONSOLE_HUB_CREDIT_DEFAULT_AMOUNT;
+        }
+        const check = wrapper.querySelector("[data-chat-paid-overflow-funding-check-balances]");
+        if (check instanceof HTMLButtonElement) {
+          check.disabled = checkingBalances || !chatConsoleWalletValidAddress(fundingReadiness.address);
+          check.textContent = checkingBalances ? "Checking…" : "Check Balances";
+          check.toggleAttribute("aria-busy", checkingBalances);
+        }
+        const fund = wrapper.querySelector("[data-chat-paid-overflow-funding-fund]");
+        if (fund instanceof HTMLButtonElement) {
+          fund.disabled = !fundingReadiness.ready;
+          fund.textContent = chatConsoleRemoteWorkerControlState.paidOverflowFundingInFlight ? "Funding…" : "Fund";
+          fund.toggleAttribute("aria-busy", chatConsoleRemoteWorkerControlState.paidOverflowFundingInFlight);
+        }
+        const status = wrapper.querySelector("[data-chat-paid-overflow-funding-status]");
+        if (status) {
+          status.textContent = chatConsoleRemoteWorkerControlState.paidOverflowFundingStatus
+            || walletFunding.lastError
+            || walletFunding.lastStatus
+            || fundingReadiness.reason;
+        }
+      });
+    }
+
+
     function chatConsoleEstimatedInputTokensForRemoteOverflow(request) {
       const messages = chatConsoleRemoteOverflowMessagesFromPendingRequest(request);
       const contentChars = messages.reduce((total, item) => total + String(item?.content || "").length, 0);
@@ -614,6 +1454,7 @@
           funds_ok: false,
           reason_code: "hub_unreachable",
           user_message: `Hub readiness could not be checked: ${hubError.message || hubError}`,
+          hub_url: "",
           wallet_address: "",
           account_id: "",
           multisession_key_id: "",
@@ -652,6 +1493,7 @@
           funds_ok: null,
           reason_code: "hub_readiness_not_checked",
           user_message: "Hub readiness has not run yet.",
+          hub_url: "",
           wallet_address: "",
           account_id: "",
           multisession_key_id: "",
@@ -739,6 +1581,7 @@
         funds_ok: hubReadiness.funds_ok === false ? false : Boolean(hubReadiness.credit_ready !== false),
         reason_code: String(hubReadiness.reason_code || (ready ? "paid_overflow_ready" : "paid_overflow_not_ready")),
         user_message: String(hubReadiness.user_message || (ready ? "Paid overflow is ready." : "Paid overflow is not ready.")),
+        hub_url: String(hubReadiness.hub_url || hubReadiness.hub?.hub_url || ""),
         wallet_address: String(hubReadiness.wallet_address || ""),
         account_id: String(hubReadiness.account_id || ""),
         multisession_key_id: String(hubReadiness.multisession_key_id || ""),
@@ -1033,6 +1876,9 @@
       if (row.key === "paid-overflow-setting") {
         detail.append(chatConsolePaidOverflowSettingControl(row));
       }
+      if (row.key === "spendable-credits") {
+        detail.append(chatConsolePaidOverflowFundingControl(row));
+      }
     }
 
     function chatConsolePaidOverflowReadinessRow(row) {
@@ -1296,6 +2142,7 @@
       chatConsoleUpdatePaidOverflowReadinessMetric(card, "required-credit-wei", state.required_credit_wei ?? state.estimated_max_credit_wei ?? "");
       chatConsoleUpdateRemoteWorkerPaidOptionAvailability(readiness);
       chatConsoleSyncPaidOverflowSettingControls(state);
+      chatConsoleRenderPaidOverflowFundingControls(state);
     }
 
     async function chatConsoleFetchRemoteHubReadiness({pendingRequest = null} = {}) {
@@ -1953,6 +2800,7 @@
       defaultOption?.focus?.({preventScroll: true});
       chatConsoleStartRemoteWorkerControlCapacityWatcher();
       chatConsoleRefreshRemoteOverflowAssessment({pendingRequest: boundPendingRequest, capacity}).catch(() => {});
+      chatConsoleRefreshPaidOverflowFundingBridgeConfig({force: false}).catch(() => {});
       chatConsoleRefreshRemoteHubReadiness({pendingRequest: boundPendingRequest}).catch(() => {});
       chatConsoleSetStatus("remote worker control opened because local AI is busy");
       return backdrop;

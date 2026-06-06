@@ -618,6 +618,7 @@ class ViewportChatConsoleRoutesMixin:
             "reason_code": reason_code,
             "user_message": user_message,
             "paid_overflow_enabled": bool(context.get("remote_enabled")),
+            "hub_url": str(context.get("hub_url") or ""),
             "wallet_address": wallet_address,
             "account_id": str((hub_response or {}).get("account_id") or ""),
             "multisession_key_id": key_id,
