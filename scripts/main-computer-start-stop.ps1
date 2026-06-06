@@ -834,8 +834,7 @@ function New-StartSession(
         env_file = $applicationsEnv
         started_by = @("main_computer.applications_service")
         start_commands = @(
-          @("docker", "compose", "--project-name", $applicationsProject, "--env-file", $applicationsEnv, "-f", $applicationsCompose, "up", "-d", "--remove-orphans", "postgres", "redis", "soketi", "coolify"),
-          @("docker", "compose", "--project-name", $applicationsProject, "--env-file", $applicationsEnv, "-f", $applicationsCompose, "up", "-d", "--remove-orphans", "onlyoffice")
+          @("docker", "compose", "--project-name", $applicationsProject, "--env-file", $applicationsEnv, "-f", $applicationsCompose, "up", "-d", "--remove-orphans", "postgres", "redis", "soketi", "coolify")
         )
         stop_command = @("docker", "compose", "--project-name", $applicationsProject, "--env-file", $applicationsEnv, "-f", $applicationsCompose, "down", "--remove-orphans")
       }

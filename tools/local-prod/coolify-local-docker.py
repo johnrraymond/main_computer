@@ -24,7 +24,7 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 
 
 PROJECT_NAME = "main-computer-coolify-local"
-DEFAULT_APP_PORT = 8000
+DEFAULT_APP_PORT = 18000
 DEFAULT_DASHBOARD_URL = f"http://127.0.0.1:{DEFAULT_APP_PORT}"
 DEFAULT_COOLIFY_PORT_BASE = 17000
 DEFAULT_SOKETI_PORT_BASE = 17100

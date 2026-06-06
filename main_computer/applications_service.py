@@ -36,12 +36,12 @@ APPLICATIONS_SERVICE_PID_FILENAME = ".main_computer_applications_service.pid"
 DEFAULT_COMPOSE_FILE = "docker-compose.applications.yml"
 DEFAULT_COMPOSE_PROJECT = "main-computer-applications"
 DEFAULT_COOLIFY_STATE_SUBDIR = "coolify-local-docker"
-DEFAULT_COOLIFY_APP_PORT = "8000"
+DEFAULT_COOLIFY_APP_PORT = "18000"
+LEGACY_COOLIFY_APP_PORT = "8000"
 DEFAULT_COOLIFY_SOKETI_PORT = "6001"
 DEFAULT_COOLIFY_SOKETI_TERMINAL_PORT = "6002"
 
 APPLICATION_SERVERS = (
-    "onlyoffice",
     "coolify",
 )
 
@@ -52,12 +52,9 @@ COOLIFY_CORE_SERVICES = (
     "coolify",
 )
 
-POST_COOLIFY_APPLICATION_SERVERS = (
-    "onlyoffice",
-)
+POST_COOLIFY_APPLICATION_SERVERS: tuple[str, ...] = ()
 
 APPLICATION_RESTART_TARGETS: dict[str, tuple[str, ...]] = {
-    "onlyoffice": ("onlyoffice",),
     "coolify": ("coolify",),
     "postgres": ("postgres",),
     "redis": ("redis",),
@@ -66,9 +63,9 @@ APPLICATION_RESTART_TARGETS: dict[str, tuple[str, ...]] = {
     "coolify-redis": ("redis",),
     "coolify-soketi": ("soketi",),
     "coolify-stack": ("postgres", "redis", "soketi", "coolify"),
-    "app-servers": ("onlyoffice", "coolify"),
-    "applications-servers": ("onlyoffice", "coolify"),
-    "all": ("onlyoffice", "coolify"),
+    "app-servers": ("coolify",),
+    "applications-servers": ("coolify",),
+    "all": ("coolify",),
 }
 
 
@@ -248,6 +245,16 @@ def _first_non_empty(*values: object, default: str = "") -> str:
     return default
 
 
+def _configured_coolify_app_port(existing: dict[str, str]) -> str:
+    explicit = _first_non_empty(os.environ.get("MAIN_COMPUTER_COOLIFY_APP_PORT"), os.environ.get("APP_PORT"))
+    if explicit:
+        return explicit
+    existing_value = str(existing.get("APP_PORT") or "").strip()
+    if existing_value and existing_value != LEGACY_COOLIFY_APP_PORT:
+        return existing_value
+    return DEFAULT_COOLIFY_APP_PORT
+
+
 def _safe_docker_name(value: str, *, max_length: int = 63, fallback: str = "main-computer") -> str:
     candidate = re.sub(r"[^a-z0-9_.-]+", "-", str(value or "").strip().lower()).strip("-_.")
     if not candidate:
@@ -296,10 +303,11 @@ class ApplicationsService:
     """Boot and keep alive the local application-server substrate.
 
     The executor service owns execution infrastructure. This service owns
-    product/application servers only: ONLYOFFICE, Coolify, and the internal
-    dependencies required by those applications. The shared Gitea Git server is
-    a standalone docker-compose.gitea.yml stack so applications boot never owns
-    localhost:3000.
+    product/application servers only: Coolify and the internal dependencies
+    required by that application. ONLYOFFICE is managed by the dedicated
+    Windows/WSL startup control path, not by the applications Docker stack.
+    The shared Gitea Git server is a standalone docker-compose.gitea.yml stack
+    so applications boot never owns localhost:3000.
     """
 
     def __init__(
@@ -711,7 +719,7 @@ class ApplicationsService:
                 "APP_ID": _first_non_empty(os.environ.get("APP_ID"), existing_app.get("APP_ID"), default="main-computer-local-coolify"),
                 "APP_NAME": _first_non_empty(os.environ.get("APP_NAME"), existing_app.get("APP_NAME"), default="Main Computer Coolify"),
                 "APP_ENV": _first_non_empty(os.environ.get("APP_ENV"), existing_app.get("APP_ENV"), default="production"),
-                "APP_PORT": _first_non_empty(os.environ.get("MAIN_COMPUTER_COOLIFY_APP_PORT"), os.environ.get("APP_PORT"), existing_app.get("APP_PORT"), default=DEFAULT_COOLIFY_APP_PORT),
+                "APP_PORT": _configured_coolify_app_port(existing_app),
                 "APP_KEY": _first_non_empty(os.environ.get("APP_KEY"), existing_app.get("APP_KEY"), default=_stable_secret(merged_existing, "APP_KEY", prefix="base64:", base64_bytes=32)),
                 "DB_CONNECTION": _first_non_empty(os.environ.get("DB_CONNECTION"), existing_app.get("DB_CONNECTION"), default="pgsql"),
                 "DB_HOST": _first_non_empty(os.environ.get("DB_HOST"), existing_app.get("DB_HOST"), default="postgres"),
@@ -1026,6 +1034,18 @@ class ApplicationsService:
 
     def _reconcile_application_servers_stack(self) -> dict[str, Any]:
         app_services = list(POST_COOLIFY_APPLICATION_SERVERS)
+        if not app_services:
+            return self._component(
+                ok=True,
+                state="skipped",
+                message="no post-Coolify Docker application servers are managed by the applications stack",
+                compose_file=str(self.compose_file),
+                env_file=str(self.env_file),
+                compose_project=self.compose_project,
+                started=False,
+                expected_applications=[],
+            )
+
         up = self._run(self._compose_command("up", "-d", "--remove-orphans", *app_services), timeout=self.compose_up_timeout_s)
         if up.returncode != 0:
             return self._component(

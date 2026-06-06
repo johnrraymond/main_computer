@@ -331,4 +331,4 @@ When `MAIN_COMPUTER_ONLYOFFICE_MODE=wsl`, Main Computer manages a WSL distro for
 $env:MAIN_COMPUTER_ONLYOFFICE_WSL_DISTRO = "Ubuntu-24.04"
 ```
 
-If the configured distro is missing, startup attempts to install it with `wsl.exe --install -d <distro>` before running ONLYOFFICE WSL commands.
+If the configured distro is missing, startup attempts to install it with `wsl.exe --install -d <distro>` before running ONLYOFFICE WSL commands. If the distro exists but the native `onlyoffice-documentserver` package is missing, startup runs the same native WSL install path before starting ONLYOFFICE services.

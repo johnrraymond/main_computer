@@ -9,7 +9,16 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-BASE = os.environ.get("COOLIFY_LOCAL_URL", "http://127.0.0.1:8000").rstrip("/")
+_configured_port = (
+    os.environ.get("MAIN_COMPUTER_COOLIFY_APP_PORT")
+    or os.environ.get("APP_PORT")
+    or "18000"
+)
+BASE = (
+    os.environ.get("COOLIFY_LOCAL_URL")
+    or os.environ.get("MAIN_COMPUTER_COOLIFY_LOCAL_URL")
+    or f"http://127.0.0.1:{_configured_port}"
+).rstrip("/")
 ROOT = Path.cwd()
 STATE = ROOT / "runtime" / "coolify-local-docker"
 TOKEN_FILE = STATE / "api-token.txt"

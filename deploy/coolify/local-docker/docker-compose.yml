@@ -78,7 +78,7 @@ services:
       APP_NAME: ${APP_NAME:-Coolify}
       APP_KEY: ${APP_KEY:?APP_KEY is required}
       APP_ID: ${APP_ID:?APP_ID is required}
-      APP_URL: http://127.0.0.1:${APP_PORT:-8000}
+      APP_URL: http://127.0.0.1:${APP_PORT:-18000}
       DB_CONNECTION: pgsql
       DB_HOST: ${DB_HOST:-postgres}
       DB_PORT: ${DB_PORT:-5432}
@@ -102,7 +102,7 @@ services:
       MUX_ENABLED: "false"
       SSH_MUX_ENABLED: "false"
     ports:
-      - "127.0.0.1:${APP_PORT:-8000}:8080"
+      - "127.0.0.1:${APP_PORT:-18000}:8080"
     volumes:
       - ${COOLIFY_LOCAL_STATE:?COOLIFY_LOCAL_STATE is required}/coolify:/var/www/html/storage/app
       - /var/run/docker.sock:/var/run/docker.sock

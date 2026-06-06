@@ -55,6 +55,29 @@ def test_onlyoffice_control_manages_both_wsl_bridges() -> None:
     assert 'wsl.exe' not in elevated_case
 
 
+def test_onlyoffice_wsl_start_removes_stale_applications_docker_container() -> None:
+    text = read("tools/onlyoffice/onlyoffice-control.ps1")
+
+    assert 'function Remove-StaleApplicationsDockerOnlyOffice' in text
+    assert '--filter "name=main-computer-applications-onlyoffice"' in text
+    assert "'^onlyoffice/documentserver(?::|$)'" in text
+    assert 'Remove-StaleApplicationsDockerOnlyOffice' in text
+    assert text.index('"start" {') < text.index('Remove-StaleApplicationsDockerOnlyOffice', text.index('"start" {')) < text.index('Invoke-WslOnlyOffice "wsl-start-onlyoffice.sh"')
+
+
+def test_onlyoffice_wsl_start_installs_native_package_when_missing() -> None:
+    text = read("tools/onlyoffice/onlyoffice-control.ps1")
+
+    assert 'function Test-WslNativeOnlyOfficeInstalled' in text
+    assert 'function Ensure-WslNativeOnlyOfficeInstalled' in text
+    assert 'dpkg-query -s onlyoffice-documentserver' in text
+    assert 'wsl-install-onlyoffice.sh' in text
+
+    start_case = text.split('"start" {', 1)[1].split('"stop"', 1)[0]
+    assert start_case.index('Remove-StaleApplicationsDockerOnlyOffice') < start_case.index('Ensure-WslNativeOnlyOfficeInstalled')
+    assert start_case.index('Ensure-WslNativeOnlyOfficeInstalled') < start_case.index('Invoke-WslOnlyOffice "wsl-start-onlyoffice.sh"')
+
+
 def test_start_v2_helper_invokes_onlyoffice_startup_control() -> None:
     text = read("scripts/main-computer-start-stop.ps1")
 
