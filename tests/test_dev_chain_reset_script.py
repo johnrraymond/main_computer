@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -199,6 +200,22 @@ def test_hub_admin_private_key_is_not_published(tmp_path: Path) -> None:
     assert public["contracts"]["hub_credit_bridge_escrow"]["bridge_controller_address"] == wallet.address
 
 
+def test_env_payload_publishes_hub_credit_bridge_escrow_address() -> None:
+    reset = load_dev_chain_reset()
+    payload = {
+        "run_id": "unit",
+        "chain": {"host_rpc_url": "http://127.0.0.1:18545", "chain_id": 42424242},
+        "deployments": {
+            "hub_credit_bridge_escrow": {"address": "0x3333333333333333333333333333333333333333"},
+        },
+        "offices": [],
+    }
+
+    env = reset.env_payload(payload)
+
+    assert "MAIN_COMPUTER_HUB_CREDIT_BRIDGE_ESCROW_ADDRESS=0x3333333333333333333333333333333333333333" in env
+
+
 def test_parse_deployment_address_from_forge_json_and_text() -> None:
     reset = load_dev_chain_reset()
     payload = {
@@ -212,6 +229,53 @@ def test_parse_deployment_address_from_forge_json_and_text() -> None:
         reset.parse_deployment_address("Deployed to: 0x2222222222222222222222222222222222222222")
         == "0x2222222222222222222222222222222222222222"
     )
+
+
+def test_deployed_contracts_suppresses_transient_forge_warning_after_code_verification(monkeypatch, capsys) -> None:
+    reset = load_dev_chain_reset()
+    parser = reset.build_parser()
+    args = parser.parse_args(["--yes", "--run-id", "unit"])
+    deployed = [
+        "0x1111111111111111111111111111111111111111",
+        "0x2222222222222222222222222222222222222222",
+        "0x3333333333333333333333333333333333333333",
+    ]
+    run_count = {"value": 0}
+
+    def fake_run_command(command, *, timeout_s=None, check=True, echo=True):
+        index = run_count["value"]
+        run_count["value"] += 1
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"deployedTo": deployed[index], "transactionHash": "0x" + str(index + 1) * 64}) + "\n",
+            stderr=(
+                "2026-06-05T23:14:06.037244Z ERROR alloy_provider::blocks: "
+                "failed to fetch block number=3 err=error sending request for url "
+                "(http://main-computer-dev-chain-unit:8545/)\n"
+            ),
+        )
+
+    def fake_rpc(url, method, params=None, *, timeout_s=3.0):
+        assert url == args.host_rpc_url
+        assert timeout_s == 1.0
+        assert method == "eth_getCode"
+        assert params[1] == "latest"
+        return "0x60006000"
+
+    monkeypatch.setattr(reset, "run_command", fake_run_command)
+    monkeypatch.setattr(reset, "rpc", fake_rpc)
+
+    result = reset.deployed_contracts(args, "unit", "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    captured = capsys.readouterr()
+
+    assert run_count["value"] == 3
+    assert result["hub_credit_bridge_escrow"]["address"] == deployed[2]
+    assert "alloy_provider::blocks" not in captured.out
+    assert "alloy_provider::blocks" not in captured.err
+    assert "Verifying hub_credit_bridge_escrow.code via http://127.0.0.1:18545" in captured.out
+    assert "PASS: hub_credit_bridge_escrow.code" in captured.out
+    assert "transient block-fetch warning" in captured.out
 
 
 def test_parse_docker_port_owners_and_published_port_detection() -> None:

@@ -560,11 +560,9 @@ function Set-RunnerEnvironment {{
     $env:MAIN_COMPUTER_GITEA_COMPOSE_PROJECT = "main-computer-gitea"
     $env:MAIN_COMPUTER_DEV_COMPOSE_PROJECT = $SelectedMode.DevComposeProject
     $env:MAIN_COMPUTER_EXECUTOR_COMPOSE_PROJECT = $SelectedMode.DevComposeProject
-    $env:MAIN_COMPUTER_BLOCKCHAIN_COMPOSE_PROJECT = $SelectedMode.DevComposeProject
     $env:MAIN_COMPUTER_DOCKER_VIEWPORT_PORT = "$($SelectedMode.DockerViewportPort)"
     $env:MAIN_COMPUTER_HUB_PORT = "$($SelectedMode.HubPort)"
     $env:MAIN_COMPUTER_HUB_WORKER_PORT = "$($SelectedMode.HubWorkerPort)"
-    $env:MAIN_COMPUTER_ETHEREUM_RPC_PORT = "$($SelectedMode.EthereumRpcPort)"
     $env:MAIN_COMPUTER_HUB_URL = "http://127.0.0.1:$($SelectedMode.HubPort)"
     $env:OLLAMA_BASE_URL = "http://127.0.0.1:11434"
     $env:MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL = "http://127.0.0.1:$($SelectedMode.EthereumRpcPort)"
@@ -1317,14 +1315,12 @@ def _service_env(
     env["MAIN_COMPUTER_GITEA_COMPOSE_PROJECT"] = "main-computer-gitea"
     env["MAIN_COMPUTER_DEV_COMPOSE_PROJECT"] = dev_compose_project
     env["MAIN_COMPUTER_EXECUTOR_COMPOSE_PROJECT"] = dev_compose_project
-    env["MAIN_COMPUTER_BLOCKCHAIN_COMPOSE_PROJECT"] = dev_compose_project
     env["MAIN_COMPUTER_DOCKER_VIEWPORT_PORT"] = str(profile.get("docker_viewport_port", mode_defaults["docker_viewport_port"]))
     env["MAIN_COMPUTER_HUB_PORT"] = str(profile.get("hub_port", mode_defaults["hub_port"]))
     env["MAIN_COMPUTER_HUB_WORKER_PORT"] = str(profile.get("hub_worker_port", mode_defaults["hub_worker_port"]))
-    env["MAIN_COMPUTER_ETHEREUM_RPC_PORT"] = str(profile.get("ethereum_rpc_port", mode_defaults["ethereum_rpc_port"]))
     env["MAIN_COMPUTER_HUB_URL"] = f"http://127.0.0.1:{env['MAIN_COMPUTER_HUB_PORT']}"
     env["OLLAMA_BASE_URL"] = "http://127.0.0.1:11434"
-    env["MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL"] = f"http://127.0.0.1:{env['MAIN_COMPUTER_ETHEREUM_RPC_PORT']}"
+    env["MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL"] = f"http://127.0.0.1:{profile.get('ethereum_rpc_port', mode_defaults['ethereum_rpc_port'])}"
     env["MAIN_COMPUTER_ENERGY_CHAIN_ID"] = "42424242"
 
     if local_server_mode == "disabled":

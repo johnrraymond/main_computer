@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_dev_chain_smoke():
-    spec = importlib.util.spec_from_file_location("dev_chain_diagnosis", ROOT / "dev-chain-diagnosis.py")
+    spec = importlib.util.spec_from_file_location("dev_chain_diagnosis", ROOT / "tools" / "dev-chain-diagnosis.py")
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -71,6 +71,7 @@ def test_verify_state_reads_chain_and_contract_configuration(monkeypatch) -> Non
     offices = smoke.DEFAULT_ANVIL_OFFICES
     alpha = "0x5fbdb2315678afecb367f032d93f642f64180aa3"
     xlag = "0xe7f1725e7734ce288f8367e1bb143e90bb3f0512"
+    hub_credit_bridge_escrow = "0xcf7ed3acca5a467e9e704c703e8d87f634fb0fc9"
 
     state = {
         "dry_run": False,
@@ -83,6 +84,10 @@ def test_verify_state_reads_chain_and_contract_configuration(monkeypatch) -> Non
         "deployments": {
             "alpha-beta-lockout": {"target": "AlphaBetaLockout.sol:AlphaBetaLockout", "address": alpha},
             "xlag-bridge-reserve": {"target": "src/XLagBridgeReserve.sol:XLagBridgeReserve", "address": xlag},
+            "hub_credit_bridge_escrow": {
+                "target": "src/HubCreditBridgeEscrow.sol:HubCreditBridgeEscrow",
+                "address": hub_credit_bridge_escrow,
+            },
         },
     }
 
@@ -173,6 +178,8 @@ def test_verify_state_reads_chain_and_contract_configuration(monkeypatch) -> Non
     assert ok
     assert all(result.ok for result in results)
     assert summary["contracts"]["xlag-bridge-reserve"] == xlag
+    assert summary["contracts"]["hub_credit_bridge_escrow"] == hub_credit_bridge_escrow
+    assert any(result.name == "hub_credit_bridge_escrow.code" and result.ok for result in results)
     assert summary["observed"]["xlag"]["max_payout_wei"] == 10**18
     assert summary["observed"]["xlag"]["next_proposal_id"] == 5
     assert summary["observed"]["xlag"]["wallet_smoke_nonce"] == 0

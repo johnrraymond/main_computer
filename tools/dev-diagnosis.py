@@ -107,8 +107,8 @@ ROLES: tuple[Role, ...] = (
         label="energy-chain",
         port=18545,
         url="http://127.0.0.1:18545",
-        docker_service="ethereum-dev",
-        declared=("docker-compose.dev.yml service ethereum-dev", "Anvil JSON-RPC endpoint"),
+        docker_service=None,
+        declared=("tools/dev-chain-reset.py managed Anvil soft chain", "runtime/deployments/current.json"),
         probe_kind="eth_chain_id",
         process_needles=("anvil",),
     ),
@@ -290,7 +290,7 @@ def docker_compose_ps(repo: Path, compose_file: Path) -> tuple[dict[str, dict[st
         service = str(record.get("Service") or record.get("service") or record.get("Name") or "")
         if not service:
             # Compose sometimes only exposes a container name. Infer the service from
-            # main-computer-dev-ethereum-dev-1 style names when possible.
+            # main-computer-dev-service-1 style names when possible.
             name = str(record.get("Name") or record.get("name") or "")
             match = re.match(r"main-computer-dev-(.+)-\d+$", name)
             if match:
@@ -614,7 +614,7 @@ def expected_energy_chain_id(repo: Path, compose_config: dict[str, Any] | None) 
         if isinstance(raw_services, dict):
             services = raw_services
 
-    for service_name in ("ethereum-dev", "hub", "main-computer"):
+    for service_name in ("hub", "main-computer"):
         service = services.get(service_name)
         if not isinstance(service, dict):
             continue
@@ -639,7 +639,6 @@ def expected_energy_chain_id(repo: Path, compose_config: dict[str, Any] | None) 
     for preferred in (
         "environment MAIN_COMPUTER_ENERGY_CHAIN_ID",
         "main_computer/config.py DEFAULT_ENERGY_CHAIN_ID",
-        "docker-compose.dev.yml service ethereum-dev command",
     ):
         if preferred in by_source:
             chosen = by_source[preferred]
@@ -1169,15 +1168,12 @@ def main(argv: list[str] | None = None) -> int:
 
     anvil_logs = ""
     anvil_info: dict[str, Any] = {}
-    if not args.no_docker:
-        anvil_logs, _ = docker_logs(repo, compose_file, "ethereum-dev")
-        anvil_info = parse_anvil_logs(anvil_logs)
 
     runtime_results: list[RuntimeResult] = []
     for role in active_roles:
         probe = probe_role(role, expected_chain, args.timeout)
         if role.key == "energy-chain" and anvil_logs:
-            probe.detail["ethereum_dev_logs_tail"] = anvil_logs[-3500:]
+            probe.detail["dev_chain_logs_tail"] = anvil_logs[-3500:]
         listeners = listeners_by_port.get(role.port, [])
         command_processes = find_command_processes(process_by_pid, role)
         docker_record = docker_records.get(role.docker_service or "") if role.docker_service else None

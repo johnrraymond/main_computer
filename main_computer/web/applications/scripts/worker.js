@@ -6,6 +6,7 @@
     let workerHubs = [...workerDefaultHubs];
 
     const workerBridgeReadinessStorageKey = "main-computer-worker-bridge-readiness-v1";
+    const WORKER_SETTINGS_POLL_INTERVAL_MS = 2500;
     const WORKER_DEV_CHAIN_ID_DECIMAL = 42424242;
     const WORKER_DEV_CHAIN_ID_HEX = "0x28757b2";
     const WORKER_FAUCET_AMOUNT_CREDITS = "1";
@@ -51,6 +52,11 @@
     let workerMultisessionInFlight = false;
     let workerWalletHydrationPromise = null;
     let workerWalletPageLoadHydrationAttempted = false;
+    let workerSettingsPollTimer = null;
+    let workerSettingsPollInFlight = false;
+    let workerRemoteEnabledLastLocalEditAt = 0;
+    let workerRemoteEnabledLastSaveCompletedAt = 0;
+    let workerRemoteEnabledSaveSerial = 0;
 
     function workerDefaultBridgeState() {
       return {
@@ -2782,6 +2788,23 @@
       workerRenderRegistrationHubOptions();
     }
 
+    function workerSettingsChangedFields(changedFields = null) {
+      if (!Array.isArray(changedFields)) return null;
+      const fields = changedFields
+        .map((field) => String(field || "").trim())
+        .filter(Boolean);
+      return fields.length ? fields : null;
+    }
+
+    function workerApplyRemoteEnabledFromBackend(value, {requestStartedAt = 0, force = false} = {}) {
+      if (!workerRemoteEnabled) return false;
+      const startedAt = Number(requestStartedAt || 0);
+      if (!force && startedAt && startedAt < workerRemoteEnabledLastLocalEditAt) return false;
+      if (!force && startedAt && startedAt < workerRemoteEnabledLastSaveCompletedAt) return false;
+      workerRemoteEnabled.checked = workerSavedBoolean(value, false);
+      return true;
+    }
+
     function readWorkerFormSettings() {
       const models = workerOfferModelsArray();
       return {
@@ -2807,10 +2830,26 @@
       };
     }
 
-    function saveWorkerSettings() {
+    function saveWorkerSettings({changedFields = null, remoteEnabledSerial = 0} = {}) {
       const settings = readWorkerFormSettings();
-      workerPostJson("/api/applications/worker/settings", {settings})
-        .then(() => {
+      const requestStartedAt = Date.now();
+      const fields = workerSettingsChangedFields(changedFields);
+      const payload = {settings};
+      if (fields) payload.changed_fields = fields;
+      const tracksRemoteEnabled = !fields || fields.includes("remoteEnabled");
+      workerPostJson("/api/applications/worker/settings", payload)
+        .then((data) => {
+          const responseSettings = data?.settings && typeof data.settings === "object" ? data.settings : {};
+          if (tracksRemoteEnabled && Object.prototype.hasOwnProperty.call(responseSettings, "remoteEnabled")) {
+            if (remoteEnabledSerial) {
+              if (remoteEnabledSerial === workerRemoteEnabledSaveSerial) {
+                workerApplyRemoteEnabledFromBackend(responseSettings.remoteEnabled, {force: true});
+                workerRemoteEnabledLastSaveCompletedAt = Date.now();
+              }
+            } else if (workerApplyRemoteEnabledFromBackend(responseSettings.remoteEnabled, {requestStartedAt})) {
+              workerRemoteEnabledLastSaveCompletedAt = Date.now();
+            }
+          }
           if (workerSaveStatus) {
             workerSaveStatus.textContent = "Worker marketplace buy/sell settings saved to the local backend.";
           }
@@ -2827,7 +2866,7 @@
       element.value = String(value);
     }
 
-    function applyWorkerSettings(parsed) {
+    function applyWorkerSettings(parsed, {requestStartedAt = 0, source = "load"} = {}) {
       if (!parsed || typeof parsed !== "object") return;
       if (Array.isArray(parsed.hubs)) {
         workerHubs = parsed.hubs
@@ -2838,8 +2877,8 @@
           }))
           .filter((hub) => hub.name || hub.url);
       }
-      if (workerRemoteEnabled && Object.prototype.hasOwnProperty.call(parsed, "remoteEnabled")) {
-        workerRemoteEnabled.checked = workerSavedBoolean(parsed.remoteEnabled, false);
+      if (Object.prototype.hasOwnProperty.call(parsed, "remoteEnabled")) {
+        workerApplyRemoteEnabledFromBackend(parsed.remoteEnabled, {requestStartedAt});
       }
       assignWorkerValue(workerRemoteMode, parsed.remoteMode);
       assignWorkerValue(workerRemoteCreditsPerToken, parsed.remoteCreditsPerToken);
@@ -2873,9 +2912,10 @@
     }
 
     async function workerLoadSettingsFromBackend() {
+      const requestStartedAt = Date.now();
       try {
         const data = await workerGetJson("/api/applications/worker/settings");
-        applyWorkerSettings(data.settings || {});
+        applyWorkerSettings(data.settings || {}, {requestStartedAt, source: "load"});
       } catch (error) {
         workerHubs = [...workerDefaultHubs];
         renderWorkerHubs();
@@ -2885,11 +2925,35 @@
       }
     }
 
+    async function workerPollRemoteEnabledFromBackend() {
+      if (workerSettingsPollInFlight) return;
+      workerSettingsPollInFlight = true;
+      const requestStartedAt = Date.now();
+      try {
+        const data = await workerGetJson("/api/applications/worker/settings");
+        const settings = data.settings && typeof data.settings === "object" ? data.settings : {};
+        if (Object.prototype.hasOwnProperty.call(settings, "remoteEnabled")) {
+          workerApplyRemoteEnabledFromBackend(settings.remoteEnabled, {requestStartedAt, source: "poll"});
+        }
+      } catch {
+        // Polling is a silent cross-window synchronization path. The initial load
+        // and explicit saves keep the visible error/status behavior.
+      } finally {
+        workerSettingsPollInFlight = false;
+      }
+    }
+
+    function workerStartSettingsPolling() {
+      if (workerSettingsPollTimer) return;
+      workerSettingsPollTimer = setInterval(workerPollRemoteEnabledFromBackend, WORKER_SETTINGS_POLL_INTERVAL_MS);
+    }
+
     function loadWorkerSettings() {
       if (workerSettingsLoaded) return;
       workerSettingsLoaded = true;
       renderWorkerHubs();
       workerLoadSettingsFromBackend();
+      workerStartSettingsPolling();
     }
 
     function buildWorkerOfferRegistrationPayload() {
@@ -3050,12 +3114,21 @@
       }
     }
 
-    function bindWorkerAutosaveSetting(element, eventName = "change") {
+    function bindWorkerAutosaveSetting(element, eventName = "change", changedFields = null) {
       if (!element) return;
       const datasetKey = eventName === "input" ? "workerAutosaveInputBound" : "workerAutosaveChangeBound";
       if (element.dataset[datasetKey]) return;
       element.dataset[datasetKey] = "true";
-      element.addEventListener(eventName, saveWorkerSettings);
+      element.addEventListener(eventName, () => {
+        const fields = workerSettingsChangedFields(changedFields);
+        let remoteEnabledSerial = 0;
+        if (fields?.includes("remoteEnabled")) {
+          workerRemoteEnabledLastLocalEditAt = Date.now();
+          workerRemoteEnabledSaveSerial += 1;
+          remoteEnabledSerial = workerRemoteEnabledSaveSerial;
+        }
+        saveWorkerSettings({changedFields: fields, remoteEnabledSerial});
+      });
     }
 
     function initWorkerApp() {
@@ -3113,16 +3186,14 @@
         workerSaveSettings.dataset.workerBound = "true";
         workerSaveSettings.addEventListener("click", saveWorkerSettings);
       }
-      [
-        workerRemoteEnabled,
-        workerRemoteMode,
-        workerRemoteCreditsPerToken,
-        workerRemoteMaxOutputTokens,
-        workerRemoteDailyLimit,
-        workerRemoteAskBeforeSpend,
-        workerRemoteOnlyWhenBusy
-      ].forEach((element) => bindWorkerAutosaveSetting(element, "change"));
-      bindWorkerAutosaveSetting(workerRemoteCreditsPerToken, "input");
+      bindWorkerAutosaveSetting(workerRemoteEnabled, "change", ["remoteEnabled"]);
+      bindWorkerAutosaveSetting(workerRemoteMode, "change", ["remoteMode"]);
+      bindWorkerAutosaveSetting(workerRemoteCreditsPerToken, "change", ["remoteCreditsPerToken"]);
+      bindWorkerAutosaveSetting(workerRemoteCreditsPerToken, "input", ["remoteCreditsPerToken"]);
+      bindWorkerAutosaveSetting(workerRemoteMaxOutputTokens, "change", ["remoteMaxOutputTokens"]);
+      bindWorkerAutosaveSetting(workerRemoteDailyLimit, "change", ["remoteDailyLimit"]);
+      bindWorkerAutosaveSetting(workerRemoteAskBeforeSpend, "change", ["remoteAskBeforeSpend"]);
+      bindWorkerAutosaveSetting(workerRemoteOnlyWhenBusy, "change", ["remoteOnlyWhenBusy"]);
       if (workerPauseRentals && !workerPauseRentals.dataset.workerBound) {
         workerPauseRentals.dataset.workerBound = "true";
         workerPauseRentals.addEventListener("click", () => {

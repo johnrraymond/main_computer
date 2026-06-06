@@ -33,7 +33,7 @@ services:
       MAIN_COMPUTER_HUB_URL: ${MAIN_COMPUTER_HUB_URL:-http://host.docker.internal:8770}
       MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK: "1"
       MAIN_COMPUTER_HUB_CLIENT_NODE_ID: docker-dev-client
-      MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL: http://ethereum-dev:8545
+      MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL: ${MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL:-http://host.docker.internal:18545}
       MAIN_COMPUTER_ENERGY_CHAIN_ID: "42424242"
       OLLAMA_BASE_URL: "${MAIN_COMPUTER_DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
       MAIN_COMPUTER_EXECUTOR_ENABLED: "0"
@@ -51,9 +51,6 @@ services:
       # The dev-control Docker mode sets MAIN_COMPUTER_DOCKER_VIEWPORT_PORT
       # and keeps the Docker viewport away from the local 8765 viewport.
       - "${MAIN_COMPUTER_DOCKER_VIEWPORT_PORT:-18765}:8765"
-    depends_on:
-      - ethereum-dev
-
 
   # Start with --profile worker after the host or remote Ollama service has
   # the requested model available and a host/remote hub is reachable at
@@ -94,24 +91,6 @@ services:
     ports:
       - "${MAIN_COMPUTER_HUB_WORKER_PORT:-8771}:8771"
 
-  ethereum-dev:
-    image: ghcr.io/foundry-rs/foundry:latest
-    # Pin the executable separately from its flags. The Foundry image has used
-    # different default ENTRYPOINT/CMD shapes across tags; passing only flags as
-    # the command prevents Anvil from silently falling back to its defaults.
-    entrypoint:
-      - anvil
-    command:
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8545"
-      - --chain-id
-      - "42424242"
-    volumes:
-      - ethereum-dev-data:/data
-    ports:
-      - "${MAIN_COMPUTER_ETHEREUM_RPC_PORT:-18545}:8545"
 
   # Gitea is no longer defined in the dev stack. Main Computer uses the
   # standalone machine-wide docker-compose.gitea.yml stack on HTTP localhost:3000
@@ -171,7 +150,6 @@ services:
 
 volumes:
   main-computer-dev-runtime:
-  ethereum-dev-data:
   onlyoffice-data:
   onlyoffice-logs:
   onlyoffice-lib:

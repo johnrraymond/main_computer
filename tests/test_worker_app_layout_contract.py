@@ -66,8 +66,14 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert "applyWorkerSettings" in js
     assert "remoteCreditsPerToken" in js
     assert 'workerPositiveDecimalString(workerElementValue(workerRemoteCreditsPerToken, "0.001"), "0.001")' in js
-    assert "workerSavedBoolean(parsed.remoteEnabled, false)" in js
-    assert 'bindWorkerAutosaveSetting(workerRemoteCreditsPerToken, "input")' in js
+    assert "workerApplyRemoteEnabledFromBackend(parsed.remoteEnabled, {requestStartedAt})" in js
+    assert "workerPollRemoteEnabledFromBackend" in js
+    assert "WORKER_SETTINGS_POLL_INTERVAL_MS = 2500" in js
+    assert "workerRemoteEnabledLastLocalEditAt" in js
+    assert "startedAt < workerRemoteEnabledLastLocalEditAt" in js
+    assert 'bindWorkerAutosaveSetting(workerRemoteEnabled, "change", ["remoteEnabled"])' in js
+    assert 'bindWorkerAutosaveSetting(workerRemoteCreditsPerToken, "input", ["remoteCreditsPerToken"])' in js
+    assert "changed_fields" in js
     assert "remoteMaxOutputTokens" in js
     assert "remoteAskBeforeSpend" in js
     assert "workerRemoteCreditsPerToken" in bindings
@@ -115,6 +121,8 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert '"/api/applications/worker/settings"' in dispatch
     assert "self._handle_worker_settings_load()" in dispatch
     assert "self._handle_worker_settings_save()" in dispatch
+    assert "changed_fields" in energy_routes
+    assert "changed_fields=changed_fields" in energy_routes
     assert '"/api/applications/worker/multisession-key/request"' in dispatch
     assert "self._handle_worker_multisession_key_request()" in dispatch
     assert '"/api/applications/worker/multisession-keys/load"' in dispatch

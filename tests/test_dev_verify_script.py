@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_dev_verify():
-    spec = importlib.util.spec_from_file_location("dev_diagnosis", ROOT / "dev-diagnosis.py")
+    spec = importlib.util.spec_from_file_location("dev_diagnosis", ROOT / "tools" / "dev-diagnosis.py")
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -18,16 +18,12 @@ def load_dev_verify():
     return module
 
 
-def test_expected_energy_chain_id_uses_project_default_and_compose_command() -> None:
+def test_expected_energy_chain_id_uses_project_default_and_app_env() -> None:
     dev_verify = load_dev_verify()
 
     compose_config = {
         "services": {
-            "ethereum-dev": {
-                "entrypoint": ["anvil"],
-                "command": ["--host", "0.0.0.0", "--port", "8545", "--chain-id", "42424242"],
-            },
-            "hub": {
+            "main-computer": {
                 "environment": {
                     "MAIN_COMPUTER_ENERGY_CHAIN_ID": "42424242",
                 }
@@ -39,7 +35,7 @@ def test_expected_energy_chain_id_uses_project_default_and_compose_command() -> 
 
     assert expected == 42424242
     assert any("DEFAULT_ENERGY_CHAIN_ID" in source for source in sources)
-    assert any("ethereum-dev" in source and "42424242" in source for source in sources)
+    assert any("main-computer" in source and "42424242" in source for source in sources)
 
 
 def test_eth_chain_id_probe_accepts_expected_chain(monkeypatch) -> None:
@@ -77,12 +73,12 @@ def test_local_listener_without_process_command_is_host_local() -> None:
 def test_anvil_log_parser_reads_chain_id_and_bind_address() -> None:
     dev_verify = load_dev_verify()
     log_text = """
-ethereum-dev-1  | Chain ID
-ethereum-dev-1  | ==================
-ethereum-dev-1  |
-ethereum-dev-1  | 42424242
-ethereum-dev-1  |
-ethereum-dev-1  | Listening on 0.0.0.0:8545
+dev-chain-1  | Chain ID
+dev-chain-1  | ==================
+dev-chain-1  |
+dev-chain-1  | 42424242
+dev-chain-1  |
+dev-chain-1  | Listening on 0.0.0.0:8545
 """
 
     info = dev_verify.parse_anvil_logs(log_text)

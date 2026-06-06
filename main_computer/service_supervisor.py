@@ -630,7 +630,7 @@ class ServiceSupervisor:
         if target in {"applications", "applications_service", "applications-service"}:
             return self._restart_child("applications", source=source, parameters=parameters)
 
-        if target in {"blockchain", "chain", "anvil", "ethereum", "ethereum-dev"}:
+        if target in {"blockchain", "chain", "anvil", "ethereum"}:
             return self._restart_child("blockchain", source=source, parameters=parameters)
 
         if target in {"main-log", "main_log", "logging", "logger"}:
