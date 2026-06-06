@@ -45,39 +45,36 @@ The root helper is useful after publishing a fresh dev-chain deployment runtime 
 The `ONLYOFFICE` application is separate from the existing `Spreadsheet` app. It stores native `.xlsx`
 workbooks and opens them through ONLYOFFICE Docs.
 
-Windows local installs default to ONLYOFFICE Docs running natively in WSL, not Docker. The control wrapper runs WSL service actions as root with `wsl.exe -u root` so the native package install does not stop for a Linux sudo password prompt:
+Windows local installs default to ONLYOFFICE Docs running in Docker and published on the Windows loopback address. The control wrapper starts the Docker Compose service and waits for the Document Server health check:
 
 ```powershell
 cd "$env:USERPROFILE\dsl\main_computer_test"
-.\tools\onlyoffice\onlyoffice-control.ps1 install -Mode wsl -Port 18084
-.\tools\onlyoffice\onlyoffice-control.ps1 start -Mode wsl -Port 18084
-.\tools\onlyoffice\onlyoffice-control.ps1 doctor -Mode wsl -Port 18084
+.\tools\onlyoffice\onlyoffice-control.ps1 install -Mode docker -Port 18085
+.\tools\onlyoffice\onlyoffice-control.ps1 start -Mode docker -Port 18085
+.\tools\onlyoffice\onlyoffice-control.ps1 doctor -Mode docker -Port 18085
 ```
 
 Main Computer defaults to:
 
 ```text
-MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL=http://127.0.0.1:18084
-MAIN_COMPUTER_ONLYOFFICE_INTERNAL_URL=http://127.0.0.1:18084
-MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL=<auto-detected for local WSL unless explicitly set>
-MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET=main-computer-onlyoffice-local-secret
+MAIN_COMPUTER_ONLYOFFICE_MODE=docker
+MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL=http://127.0.0.1:18085
+MAIN_COMPUTER_ONLYOFFICE_INTERNAL_URL=http://127.0.0.1:18085
+MAIN_COMPUTER_ONLYOFFICE_BROWSER_PUBLIC_URL=http://127.0.0.1:18085
+MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL=http://host.docker.internal:8765
+MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED=false
+MAIN_COMPUTER_ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS=true
+MAIN_COMPUTER_ONLYOFFICE_ALLOW_META_IP_ADDRESS=true
 ```
 
-For the default Windows/WSL topology, the browser still opens Main Computer at
-`http://127.0.0.1:8765`, but ONLYOFFICE receives workbook file and callback URLs using WSL's
-Windows-host gateway address. The local dev controller binds the Windows viewport on `0.0.0.0` by
-default so the WSL-native Document Server can download and save workbooks without manual env vars.
+For the default local Docker topology, the browser opens Main Computer at
+`http://127.0.0.1:8765`, loads ONLYOFFICE from `http://127.0.0.1:18085`,
+and the Document Server receives workbook file and callback URLs through
+`http://host.docker.internal:8765`.
 
-Docker remains available for containerized development or production-style deployments. Local Docker ONLYOFFICE binds to `127.0.0.1` by default so the editor port is not exposed to the LAN:
-
-
-```powershell
-$env:MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET = "main-computer-onlyoffice-local-secret"
-.\tools\onlyoffice\onlyoffice-control.ps1 start -Mode docker -Port 18084
-```
-
-For a Dockerized Main Computer service, set the callback base to the service URL that the ONLYOFFICE
-container can reach, for example `http://main-computer:8765` inside the Compose network.
+For a Dockerized Main Computer service running on the same Compose network as ONLYOFFICE,
+set the callback base to the service URL that the ONLYOFFICE container can reach, for example
+`http://main-computer:8765`.
 
 
 ## Developer dev-chain, faucet, contracts, and Hub setup
@@ -272,14 +269,13 @@ Level 5 health
 The standalone `ONLYOFFICE` app uses native `.xlsx` files and keeps the existing
 `Spreadsheet` app unchanged.
 
-Windows local installs default to **WSL-native ONLYOFFICE Docs** rather than
-Docker. The default local Document Server URL is:
+Windows local installs default to **Docker ONLYOFFICE Docs**. The default local Document Server URL is:
 
 ```text
-http://127.0.0.1:18084
+http://127.0.0.1:18085
 ```
 
-Install and control the WSL-native server:
+Install and control the Docker server:
 
 ```powershell
 cd "$env:USERPROFILE\dsl\main_computer_test"
@@ -290,7 +286,7 @@ cd "$env:USERPROFILE\dsl\main_computer_test"
 ```
 
 Run the viewport with the matching local defaults; no ONLYOFFICE environment variables are
-required for the standard Windows/WSL setup:
+required for the standard Windows Docker setup:
 
 ```powershell
 .\control-main-computer.ps1 restart -AutoAllow -Workspace "$PWD" -Port 8765 -HeartbeatPort 8766
@@ -302,33 +298,15 @@ Doctor check:
 .\tools\onlyoffice\onlyoffice-control.ps1 doctor
 ```
 
-Docker remains available as a fallback, but is not the default Windows local
-path:
-
-```powershell
-.\tools\onlyoffice\onlyoffice-control.ps1 start -Mode docker
-```
-
-For production, set stable public/internal URLs and a long-lived JWT secret:
+For production, set stable public/internal URLs and enable a long-lived JWT secret if the
+Document Server is configured to require one:
 
 ```text
 MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL=https://office.example.com
 MAIN_COMPUTER_ONLYOFFICE_INTERNAL_URL=http://onlyoffice:80
 MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL=https://main.example.com
+MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED=true
 MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET=<stable-secret>
 ```
 
-
-
-ONLYOFFICE Docs uses port `18084` by default because local platform site publishing owns ports `18080`-`18083`.
-
-
-### ONLYOFFICE WSL distro
-
-When `MAIN_COMPUTER_ONLYOFFICE_MODE=wsl`, Main Computer manages a WSL distro for ONLYOFFICE. The default distro name is `Ubuntu`. Override it only when you intentionally want a different WSL distro name:
-
-```powershell
-$env:MAIN_COMPUTER_ONLYOFFICE_WSL_DISTRO = "Ubuntu-24.04"
-```
-
-If the configured distro is missing, startup attempts to install it with `wsl.exe --install -d <distro>` before running ONLYOFFICE WSL commands. If the distro exists but the native `onlyoffice-documentserver` package is missing, startup runs the same native WSL install path before starting ONLYOFFICE services.
+ONLYOFFICE Docs uses port `18085` by default because local platform site publishing owns ports `18080`-`18083`.

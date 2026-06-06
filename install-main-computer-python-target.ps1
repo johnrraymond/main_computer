@@ -59,7 +59,7 @@ param(
 
     [int]$StartTimeoutSeconds = 90,
 
-    [ValidateSet("auto", "disabled", "wsl", "docker")]
+    [ValidateSet("auto", "disabled", "docker")]
     [string]$OnlyOfficeMode = "auto",
 
     [ValidateSet("auto", "disabled", "required")]
@@ -71,7 +71,7 @@ param(
     [ValidateSet("auto", "disabled", "required")]
     [string]$LocalCoolifyMode = "auto",
 
-    [int]$OnlyOfficePort = 18084,
+    [int]$OnlyOfficePort = 18085,
 
     [ValidateSet("disabled", "auto", "required")]
     [string]$MathicsInstallMode = "disabled",

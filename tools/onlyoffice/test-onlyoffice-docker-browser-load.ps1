@@ -9,9 +9,12 @@
 
   Defaults:
     Docker test port:        18085
-    Existing WSL test port:  18084
     Container name:          mc-onlyoffice-docker-twiddle
     JWT/private-IP mode:     JWT disabled, private/meta IP callbacks allowed
+
+  The default port matches Main Computer's local Docker ONLYOFFICE provider.
+  Stop the managed provider container before using this isolated throwaway
+  smoke test on the same port.
 
   The helper leaves the container running by default so you can inspect the
   opened Chrome tabs and DevTools console. Pass -RemoveWhenDone to remove the
@@ -20,8 +23,6 @@
 
 param(
   [int]$Port = 18085,
-
-  [int]$CurrentWslPort = 18084,
 
   [string]$ContainerName = "mc-onlyoffice-docker-twiddle",
 
@@ -39,15 +40,12 @@ param(
 $ErrorActionPreference = "Stop"
 
 $ForbiddenContainerNames = @(
-  "main-computer-applications-onlyoffice-1"
+  "main-computer-applications-onlyoffice-1",
+  "main-computer-onlyoffice-documentserver"
 )
 
 if ($ForbiddenContainerNames -contains $ContainerName) {
   throw "Refusing to reuse reserved container name '$ContainerName'. Use isolated test name 'mc-onlyoffice-docker-twiddle'."
-}
-
-if ($Port -eq $CurrentWslPort) {
-  throw "Docker test port $Port collides with the current WSL ONLYOFFICE port. Use 18085 for this throwaway Docker test."
 }
 
 function Write-Section {
@@ -328,7 +326,6 @@ $Publish = "127.0.0.1:${Port}:80"
 
 Write-Section "ONLYOFFICE Docker browser-speak test"
 Write-Host "Docker test port: $Port"
-Write-Host "Current WSL ONLYOFFICE port left alone: $CurrentWslPort"
 Write-Host "Container name: $ContainerName"
 Write-Host "Image: $Image"
 Write-Host "JWT enabled: false"

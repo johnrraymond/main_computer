@@ -227,14 +227,14 @@ function Resolve-RunnerMode {
     $normalized = ($ModeName.Trim().ToLowerInvariant() -replace "\s+", "-")
     switch ($normalized) {
         "unleashed" {
-            return (New-DevModeProfile -Key "unleashed" -Label "Unleashed Mode" -DistributionSuffix "unleashed" -GuidanceLevel "developer" -Port 8765 -HeartbeatPort 8766 -OnlyOfficePort 18084 -LocalServerPortStart 18080 -LocalServerGeneratedPortStart 18100 -LocalServerGeneratedPortEnd 18199 -CoolifyPort 17056 -CoolifySoketiPort 17156 -CoolifySoketiTerminalPort 17256)
+            return (New-DevModeProfile -Key "unleashed" -Label "Unleashed Mode" -DistributionSuffix "unleashed" -GuidanceLevel "developer" -Port 8765 -HeartbeatPort 8766 -OnlyOfficePort 18085 -LocalServerPortStart 18080 -LocalServerGeneratedPortStart 18100 -LocalServerGeneratedPortEnd 18199 -CoolifyPort 17056 -CoolifySoketiPort 17156 -CoolifySoketiTerminalPort 17256)
         }
         "unleashed-mode" { return (Resolve-RunnerMode -ModeName "Unleashed") }
         "debug" {
-            return (New-DevModeProfile -Key "debug" -Label "Debug" -DistributionSuffix "debug" -GuidanceLevel "debug" -Port 28865 -HeartbeatPort 28866 -OnlyOfficePort 28084 -LocalServerPortStart 28080 -LocalServerGeneratedPortStart 28100 -LocalServerGeneratedPortEnd 28199 -CoolifyPort 27056 -CoolifySoketiPort 27156 -CoolifySoketiTerminalPort 27256)
+            return (New-DevModeProfile -Key "debug" -Label "Debug" -DistributionSuffix "debug" -GuidanceLevel "debug" -Port 28865 -HeartbeatPort 28866 -OnlyOfficePort 28085 -LocalServerPortStart 28080 -LocalServerGeneratedPortStart 28100 -LocalServerGeneratedPortEnd 28199 -CoolifyPort 27056 -CoolifySoketiPort 27156 -CoolifySoketiTerminalPort 27256)
         }
         "safe" {
-            return (New-DevModeProfile -Key "safe" -Label "Safe Mode" -DistributionSuffix "safe" -GuidanceLevel "guided" -Port 38865 -HeartbeatPort 38866 -OnlyOfficePort 38084 -LocalServerPortStart 38080 -LocalServerGeneratedPortStart 38100 -LocalServerGeneratedPortEnd 38199 -CoolifyPort 37056 -CoolifySoketiPort 37156 -CoolifySoketiTerminalPort 37256)
+            return (New-DevModeProfile -Key "safe" -Label "Safe Mode" -DistributionSuffix "safe" -GuidanceLevel "guided" -Port 38865 -HeartbeatPort 38866 -OnlyOfficePort 38085 -LocalServerPortStart 38080 -LocalServerGeneratedPortStart 38100 -LocalServerGeneratedPortEnd 38199 -CoolifyPort 37056 -CoolifySoketiPort 37156 -CoolifySoketiTerminalPort 37256)
         }
         "safe-mode" { return (Resolve-RunnerMode -ModeName "Safe") }
     }
@@ -315,15 +315,17 @@ function Set-RunnerEnvironment {
     }
 
     $env:MAIN_COMPUTER_ONLYOFFICE_ENABLED = "1"
-    $env:MAIN_COMPUTER_ONLYOFFICE_MODE = "auto"
+    $env:MAIN_COMPUTER_ONLYOFFICE_MODE = "docker"
     $env:MAIN_COMPUTER_ONLYOFFICE_PORT = "$($SelectedMode.OnlyOfficePort)"
     $env:MAIN_COMPUTER_ONLYOFFICE_PROJECT = $SelectedMode.OnlyOfficeProject
     $env:MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL = "http://127.0.0.1:$($SelectedMode.OnlyOfficePort)"
     $env:MAIN_COMPUTER_ONLYOFFICE_INTERNAL_URL = "http://127.0.0.1:$($SelectedMode.OnlyOfficePort)"
+    $env:MAIN_COMPUTER_ONLYOFFICE_BROWSER_PUBLIC_URL = "http://127.0.0.1:$($SelectedMode.OnlyOfficePort)"
     $env:MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL = "http://host.docker.internal:$($SelectedMode.Port)"
-    if ([string]::IsNullOrWhiteSpace($env:MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET)) {
-        $env:MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET = "main-computer-onlyoffice-local-secret"
-    }
+    $env:MAIN_COMPUTER_ONLYOFFICE_JWT_ENABLED = "false"
+    $env:MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET = ""
+    $env:MAIN_COMPUTER_ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS = "true"
+    $env:MAIN_COMPUTER_ONLYOFFICE_ALLOW_META_IP_ADDRESS = "true"
 }
 
 function Resolve-ControlAction {

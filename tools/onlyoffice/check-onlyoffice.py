@@ -88,7 +88,7 @@ def print_checks(base: str, checks: dict[str, dict[str, object]], prefix: str = 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check a local ONLYOFFICE Docs endpoint.")
-    parser.add_argument("--url", default="http://127.0.0.1:18084", help="ONLYOFFICE public URL")
+    parser.add_argument("--url", default="http://127.0.0.1:18085", help="ONLYOFFICE public URL")
     parser.add_argument("--timeout", type=float, default=5.0)
     parser.add_argument("--wait-seconds", type=float, default=0.0, help="poll until ready for this many seconds")
     parser.add_argument("--poll-seconds", type=float, default=5.0, help="delay between readiness polls")
