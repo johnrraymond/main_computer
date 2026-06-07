@@ -346,9 +346,14 @@
   position: absolute;
   inset: 0;
   z-index: 5;
-  overflow: auto;
+  overflow: hidden;
   pointer-events: none;
   background: #010201;
+  scrollbar-width: none;
+}
+
+.task-process-refresh-hold::-webkit-scrollbar {
+  display: none;
 }
 
 .task-table {

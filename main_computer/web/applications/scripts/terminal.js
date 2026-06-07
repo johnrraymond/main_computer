@@ -871,6 +871,9 @@ async function runTaskManagerRefresh() {
     renderTaskHardware(data.hardware || {});
     renderTaskSchedules(data.schedules || []);
     updateTaskManagerWidgetTickers(taskManagerSnapshotCache, summary, firstLoad ? "Task snapshot ready" : "Task snapshot refreshed");
+    if (typeof scheduleTaskManagerMcelAppSemantics === "function") {
+      scheduleTaskManagerMcelAppSemantics(firstLoad ? "first-snapshot" : "refresh");
+    }
   } catch (error) {
     const message = `Task manager failed: ${error.message || error}`;
     taskManagerStatus.textContent = "Task manager unavailable.";
@@ -881,6 +884,9 @@ async function runTaskManagerRefresh() {
     if (taskHardwareTable) taskHardwareTable.innerHTML = '<div class="task-empty">Hardware utilization view unavailable.</div>';
     setApplicationWidgetTicker(taskOverviewCard, message);
     setApplicationWidgetTicker(taskNotebookPane, "Notebook waiting for viewport recovery.");
+    if (typeof scheduleTaskManagerMcelAppSemantics === "function") {
+      scheduleTaskManagerMcelAppSemantics("refresh-error");
+    }
     throw error;
   } finally {
     if (holdingProcessSurfaces) {
