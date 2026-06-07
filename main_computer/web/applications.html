@@ -12,6 +12,7 @@
     <!-- @include applications/styles/app-layout.css -->
     <!-- @include applications/styles/document.css -->
     <!-- @include applications/styles/chat-console.css -->
+    <!-- @include applications/styles/email.css -->
     <!-- @include applications/styles/calculator.css -->
     <!-- @include applications/styles/spreadsheet.css -->
     <!-- @include applications/styles/onlyoffice.css -->
@@ -78,6 +79,10 @@
         <a class="app-card ready" href="/applications/chat-console" data-app="chat-console" data-activity-open="snapshots">
           <strong>Chat Console</strong>
           <span>AI/code/Terminal/Mathics notebook cells</span>
+        </a>
+        <a class="app-card ready" href="/applications/email" data-app="email" data-activity-open="streams" data-mc-component-id="applications.card.email" data-mc-component-kind="action" data-mc-component-label="Open Email" data-mc-component-owner="applications.launcher" data-mc-feature-id="applications.launching">
+          <strong>Email</strong>
+          <span>Gmail, Yahoo, POP/IMAP, Outlook, iCloud, drafts, and compose</span>
         </a>
         <a class="app-card ready" href="/applications/git-tools" data-app="git-tools" data-activity-open="snapshots">
           <strong>Git Tools</strong>
@@ -163,6 +168,7 @@
           <!-- @include applications/apps/task-manager.html -->
           <!-- @include applications/apps/terminal.html -->
           <!-- @include applications/apps/chat-console.html -->
+          <!-- @include applications/apps/email.html -->
           <!-- @include applications/apps/git-tools.html -->
           <!-- @include applications/apps/code-editor.html -->
           <!-- @include applications/apps/file-explorer.html -->
@@ -243,7 +249,7 @@
               <li>Heartbeat emits live time-series activity.</li>
               <li>Task Manager exposes process snapshots, server lifecycle, connections, and hardware rollups.</li>
               <li>Terminal and Aider activity are represented as subprocess-capable streams.</li>
-              <li>Git Tools, File Explorer, Game Editor, Code Editor, Chat Console, Spreadsheet, Document Editor, and Calculator contribute fixtures and snapshots.</li>
+              <li>Email, Git Tools, File Explorer, Game Editor, Code Editor, Chat Console, Spreadsheet, Document Editor, and Calculator contribute fixtures and snapshots.</li>
               <li>Future VLC/backend drivers can report hidden launch, control hook ready, stream hook ready, first frame captured, visible-window warnings, process exits, and stalls.</li>
             </ul>
           </div>
@@ -281,6 +287,7 @@
     <!-- @include applications/scripts/chat-console-state.js -->
     <!-- @include applications/scripts/chat-console-code-runtime.js -->
     <!-- @include applications/scripts/chat-console.js -->
+    <!-- @include applications/scripts/email.js -->
     <!-- @include applications/scripts/file-explorer.js -->
     <!-- @include applications/scripts/code-editor-file-map.js -->
     <!-- @include applications/scripts/code-editor-aider-output.js -->

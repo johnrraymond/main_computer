@@ -39,6 +39,7 @@ from main_computer.website_project_manifest import (
 )
 
 from main_computer.viewport_state import *  # noqa: F401,F403
+from main_computer.email_client import EmailClientConfigError, check_email_account
 from main_computer.chat_ai_subprocess import append_text_log, config_to_payload
 from main_computer.models import ChatResponse
 from main_computer.website_builder_rag_pipeline import (
@@ -173,6 +174,24 @@ def _website_publish_error_message(result: object) -> str:
 
 
 class ViewportApplicationRoutesMixin:
+
+    def _handle_email_check_mail(self) -> None:
+        try:
+            payload = self._read_json()
+            result = check_email_account(payload)
+            self.server.signal(
+                "api-email-check",
+                protocol=result.get("account", {}).get("protocol"),
+                host=result.get("account", {}).get("host"),
+                count=result.get("count"),
+            )
+            self._send_json(result)
+        except EmailClientConfigError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self.server.signal("api-email-check-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
 
     def _handle_deployment_controllers(self) -> None:
         try:
