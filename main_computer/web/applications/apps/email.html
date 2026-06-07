@@ -194,13 +194,6 @@
             data-mc-widget-label="Email Inbox"
             data-mc-component-owner="email.mail-main"
           >
-            <div class="email-category-tabs" aria-label="Message categories" data-mc-component-id="email.categories" data-mc-component-kind="navigation" data-mc-component-label="Email Categories" data-mc-widget-id="email.categories" data-mc-widget-kind="navigation" data-mc-widget-class="navigation" data-mc-widget-label="Email Categories" data-mc-component-owner="email.inbox">
-              <button type="button" class="active" data-email-category="all">All</button>
-              <button type="button" data-email-category="primary">Primary</button>
-              <button type="button" data-email-category="offers">Offers</button>
-              <button type="button" data-email-category="social">Social</button>
-              <button type="button" data-email-category="newsletters">Newsletters</button>
-            </div>
             <div class="email-list-toolbar" data-mc-component-id="email.toolbar" data-mc-component-kind="toolbar" data-mc-component-label="Email Toolbar" data-mc-widget-id="email.toolbar" data-mc-widget-kind="toolbar" data-mc-widget-class="toolbar" data-mc-widget-label="Email Toolbar" data-mc-component-owner="email.inbox">
               <span>Inbox</span>
               <button type="button" id="email-refresh" data-mc-component-id="email.refresh" data-mc-component-kind="action" data-mc-component-label="Refresh Email" data-mc-widget-id="email.refresh" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Refresh Email" data-mc-component-owner="email.toolbar">Refresh</button>
@@ -319,17 +312,72 @@
     >
       <div class="email-config-shell">
         <aside class="email-config-tabs" aria-label="Email config tabs" data-mc-component-id="email.config-tabs" data-mc-component-kind="navigation" data-mc-component-label="Email Config Tabs" data-mc-widget-id="email.config-tabs" data-mc-widget-kind="navigation" data-mc-widget-class="navigation" data-mc-widget-label="Email Config Tabs" data-mc-component-owner="email.config">
-          <button type="button" class="active" data-email-config-tab="imap" aria-pressed="true" data-mc-component-id="email.config-tabs.imap" data-mc-component-kind="action" data-mc-component-label="POP IMAP Config Tab" data-mc-widget-id="email.config-tabs-imap" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="POP IMAP Config Tab" data-mc-component-owner="email.config-tabs">POP/IMAP</button>
-          <button type="button" data-email-config-tab="gmail" aria-pressed="false" data-mc-component-id="email.config-tabs.gmail" data-mc-component-kind="action" data-mc-component-label="Gmail Config Tab" data-mc-widget-id="email.config-tabs-gmail" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Gmail Config Tab" data-mc-component-owner="email.config-tabs">Gmail</button>
-          <button type="button" data-email-config-tab="yahoo" aria-pressed="false" data-mc-component-id="email.config-tabs.yahoo" data-mc-component-kind="action" data-mc-component-label="Yahoo Config Tab" data-mc-widget-id="email.config-tabs-yahoo" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Yahoo Config Tab" data-mc-component-owner="email.config-tabs">Yahoo</button>
+          <button type="button" class="active" data-email-config-tab="gmail" aria-pressed="true" data-mc-component-id="email.config-tabs.gmail" data-mc-component-kind="action" data-mc-component-label="Gmail Config Tab" data-mc-widget-id="email.config-tabs-gmail" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Gmail Config Tab" data-mc-component-owner="email.config-tabs">Gmail accounts</button>
+          <button type="button" data-email-config-tab="yahoo" aria-pressed="false" data-mc-component-id="email.config-tabs.yahoo" data-mc-component-kind="action" data-mc-component-label="Yahoo Config Tab" data-mc-widget-id="email.config-tabs-yahoo" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Yahoo Config Tab" data-mc-component-owner="email.config-tabs">Yahoo accounts</button>
+          <button type="button" data-email-config-tab="raw" aria-pressed="false" data-mc-component-id="email.config-tabs.raw" data-mc-component-kind="action" data-mc-component-label="Raw Account Config Tab" data-mc-widget-id="email.config-tabs-raw" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Raw Account Config Tab" data-mc-component-owner="email.config-tabs">Raw accounts</button>
         </aside>
 
         <section class="email-config-content" data-mc-component-id="email.config-content" data-mc-component-kind="panel" data-mc-component-label="Email Config Content" data-mc-widget-id="email.config-content" data-mc-widget-kind="panel" data-mc-widget-class="panel" data-mc-widget-label="Email Config Content" data-mc-component-owner="email.config">
-          <form class="email-config-card email-config-subpanel active" id="email-imap-config-panel" data-email-config-panel="imap" data-mc-component-id="email.config.imap" data-mc-component-kind="form" data-mc-component-label="POP IMAP Account Setup" data-mc-widget-id="email.config-imap" data-mc-widget-kind="form" data-mc-widget-class="form" data-mc-widget-label="POP IMAP Account Setup" data-mc-component-owner="email.config-content">
+          <form class="email-config-card email-config-subpanel active" id="email-gmail-config-panel" data-email-config-panel="gmail" data-mc-component-id="email.config.gmail" data-mc-component-kind="form" data-mc-component-label="Gmail Account Setup" data-mc-widget-id="email.config-gmail" data-mc-widget-kind="form" data-mc-widget-class="form" data-mc-widget-label="Gmail Account Setup" data-mc-component-owner="email.config-content">
             <div class="email-pane-head">
               <div>
-                <strong>POP/IMAP common services</strong>
-                <span>Use built-in presets for Outlook.com, Microsoft 365, iCloud Mail, AOL Mail, Fastmail, Zoho Mail, Proton Mail Bridge, or custom servers.</span>
+                <strong>Gmail accounts</strong>
+                <span>Add multiple Gmail accounts with OAuth handoff. Each Gmail address is staged separately.</span>
+              </div>
+            </div>
+            <div class="email-config-grid">
+              <label>
+                Gmail address
+                <input id="email-gmail-address-input" type="email" autocomplete="email" placeholder="name@gmail.com">
+              </label>
+              <label>
+                OAuth client ID
+                <input id="email-gmail-client-id-input" spellcheck="false" placeholder="Google OAuth client ID">
+              </label>
+            </div>
+            <div class="email-connect-actions" role="group" aria-label="Gmail setup actions">
+              <button type="button" id="email-connect-gmail" data-email-provider="gmail" data-mc-component-id="email.connect.gmail" data-mc-component-kind="action" data-mc-component-label="Connect Gmail" data-mc-widget-id="email.connect-gmail" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Connect Gmail" data-mc-component-owner="email.config.gmail">Add Gmail account</button>
+              <button type="button" id="email-open-gmail-oauth" data-email-provider="gmail" data-mc-component-id="email.oauth.gmail" data-mc-component-kind="action" data-mc-component-label="Open Gmail OAuth" data-mc-widget-id="email.oauth-gmail" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Open Gmail OAuth" data-mc-component-owner="email.config.gmail">Open Gmail consent</button>
+            </div>
+            <output id="email-gmail-config-status" role="status" aria-live="polite">Gmail OAuth setup ready.</output>
+            <section class="email-config-account-list" aria-label="Gmail accounts staged" data-mc-component-id="email.config.gmail-list" data-mc-component-kind="list" data-mc-component-label="Gmail Account List" data-mc-widget-id="email.config-gmail-list" data-mc-widget-kind="list" data-mc-widget-class="list" data-mc-widget-label="Gmail Account List" data-mc-component-owner="email.config.gmail">
+              <strong>Gmail accounts</strong>
+              <div id="email-gmail-account-list" class="email-config-account-items">No Gmail accounts staged yet.</div>
+            </section>
+          </form>
+
+          <form class="email-config-card email-config-subpanel" id="email-yahoo-config-panel" data-email-config-panel="yahoo" hidden data-mc-component-id="email.config.yahoo" data-mc-component-kind="form" data-mc-component-label="Yahoo Account Setup" data-mc-widget-id="email.config-yahoo" data-mc-widget-kind="form" data-mc-widget-class="form" data-mc-widget-label="Yahoo Account Setup" data-mc-component-owner="email.config-content">
+            <div class="email-pane-head">
+              <div>
+                <strong>Yahoo accounts</strong>
+                <span>Add multiple Yahoo accounts with OAuth handoff. Each Yahoo address is staged separately.</span>
+              </div>
+            </div>
+            <div class="email-config-grid">
+              <label>
+                Yahoo address
+                <input id="email-yahoo-address-input" type="email" autocomplete="email" placeholder="name@yahoo.com">
+              </label>
+              <label>
+                OAuth client ID
+                <input id="email-yahoo-client-id-input" spellcheck="false" placeholder="Yahoo OAuth client ID">
+              </label>
+            </div>
+            <div class="email-connect-actions" role="group" aria-label="Yahoo setup actions">
+              <button type="button" id="email-connect-yahoo" data-email-provider="yahoo" data-mc-component-id="email.connect.yahoo" data-mc-component-kind="action" data-mc-component-label="Connect Yahoo" data-mc-widget-id="email.connect-yahoo" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Connect Yahoo" data-mc-component-owner="email.config.yahoo">Add Yahoo account</button>
+              <button type="button" id="email-open-yahoo-oauth" data-email-provider="yahoo" data-mc-component-id="email.oauth.yahoo" data-mc-component-kind="action" data-mc-component-label="Open Yahoo OAuth" data-mc-widget-id="email.oauth-yahoo" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Open Yahoo OAuth" data-mc-component-owner="email.config.yahoo">Open Yahoo consent</button>
+            </div>
+            <output id="email-yahoo-config-status" role="status" aria-live="polite">Yahoo OAuth setup ready.</output>
+            <section class="email-config-account-list" aria-label="Yahoo accounts staged" data-mc-component-id="email.config.yahoo-list" data-mc-component-kind="list" data-mc-component-label="Yahoo Account List" data-mc-widget-id="email.config-yahoo-list" data-mc-widget-kind="list" data-mc-widget-class="list" data-mc-widget-label="Yahoo Account List" data-mc-component-owner="email.config.yahoo">
+              <strong>Yahoo accounts</strong>
+              <div id="email-yahoo-account-list" class="email-config-account-items">No Yahoo accounts staged yet.</div>
+            </section>
+          </form>
+          <form class="email-config-card email-config-subpanel" id="email-raw-config-panel" data-email-config-panel="raw" hidden data-mc-component-id="email.config.raw" data-mc-component-kind="form" data-mc-component-label="Raw Account Setup" data-mc-widget-id="email.config-raw" data-mc-widget-kind="form" data-mc-widget-class="form" data-mc-widget-label="Raw Account Setup" data-mc-component-owner="email.config-content">
+            <div class="email-pane-head">
+              <div>
+                <strong>Raw POP/IMAP accounts</strong>
+                <span>Add as many raw POP/IMAP accounts as needed. Use presets for Outlook.com, Microsoft 365, iCloud Mail, AOL Mail, Fastmail, Zoho Mail, Proton Mail Bridge, or enter custom servers.</span>
               </div>
             </div>
 
@@ -407,59 +455,16 @@
             </div>
 
             <div class="email-connect-actions" role="group" aria-label="POP IMAP setup actions">
-              <button type="button" id="email-save-server-account" data-mc-component-id="email.config.imap.save" data-mc-component-kind="action" data-mc-component-label="Save POP IMAP Account" data-mc-widget-id="email.config-imap-save" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Save POP IMAP Account" data-mc-component-owner="email.config.imap">Save account</button>
-              <button type="button" id="email-check-server-account" data-mc-component-id="email.config.imap.check" data-mc-component-kind="action" data-mc-component-label="Check POP IMAP Mail" data-mc-widget-id="email.config-imap-check" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Check POP IMAP Mail" data-mc-component-owner="email.config.imap">Check mail</button>
+              <button type="button" id="email-save-server-account" data-mc-component-id="email.config.raw.save" data-mc-component-kind="action" data-mc-component-label="Save Raw Account" data-mc-widget-id="email.config-raw-save" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Save Raw Account" data-mc-component-owner="email.config.raw">Add raw account</button>
+              <button type="button" id="email-check-server-account" data-mc-component-id="email.config.raw.check" data-mc-component-kind="action" data-mc-component-label="Check Raw Mail" data-mc-widget-id="email.config-raw-check" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Check Raw Mail" data-mc-component-owner="email.config.raw">Check raw mail</button>
             </div>
-            <output id="email-server-config-status" role="status" aria-live="polite">Pick a preset or enter custom POP/IMAP details. Passwords are only sent to the backend bridge for an explicit Check mail action.</output>
+            <output id="email-server-config-status" role="status" aria-live="polite">Add a raw account with POP/IMAP details. Passwords are only sent to the backend bridge for an explicit Check mail action.</output>
+            <section class="email-config-account-list" aria-label="Raw accounts staged" data-mc-component-id="email.config.raw-list" data-mc-component-kind="list" data-mc-component-label="Raw Account List" data-mc-widget-id="email.config-raw-list" data-mc-widget-kind="list" data-mc-widget-class="list" data-mc-widget-label="Raw Account List" data-mc-component-owner="email.config.raw">
+              <strong>Raw accounts</strong>
+              <div id="email-raw-account-list" class="email-config-account-items">No raw accounts staged yet.</div>
+            </section>
           </form>
 
-          <form class="email-config-card email-config-subpanel" id="email-gmail-config-panel" data-email-config-panel="gmail" hidden data-mc-component-id="email.config.gmail" data-mc-component-kind="form" data-mc-component-label="Gmail Account Setup" data-mc-widget-id="email.config-gmail" data-mc-widget-kind="form" data-mc-widget-class="form" data-mc-widget-label="Gmail Account Setup" data-mc-component-owner="email.config-content">
-            <div class="email-pane-head">
-              <div>
-                <strong>Gmail</strong>
-                <span>Prepare OAuth handoff for Gmail API access or use the POP/IMAP tab with app-password/bridge credentials.</span>
-              </div>
-            </div>
-            <div class="email-config-grid">
-              <label>
-                Gmail address
-                <input id="email-gmail-address-input" type="email" autocomplete="email" placeholder="name@gmail.com">
-              </label>
-              <label>
-                OAuth client ID
-                <input id="email-gmail-client-id-input" spellcheck="false" placeholder="Google OAuth client ID">
-              </label>
-            </div>
-            <div class="email-connect-actions" role="group" aria-label="Gmail setup actions">
-              <button type="button" id="email-connect-gmail" data-email-provider="gmail" data-mc-component-id="email.connect.gmail" data-mc-component-kind="action" data-mc-component-label="Connect Gmail" data-mc-widget-id="email.connect-gmail" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Connect Gmail" data-mc-component-owner="email.config.gmail">Stage Gmail</button>
-              <button type="button" id="email-open-gmail-oauth" data-email-provider="gmail" data-mc-component-id="email.oauth.gmail" data-mc-component-kind="action" data-mc-component-label="Open Gmail OAuth" data-mc-widget-id="email.oauth-gmail" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Open Gmail OAuth" data-mc-component-owner="email.config.gmail">Open Gmail consent</button>
-            </div>
-            <output id="email-gmail-config-status" role="status" aria-live="polite">Gmail OAuth setup ready.</output>
-          </form>
-
-          <form class="email-config-card email-config-subpanel" id="email-yahoo-config-panel" data-email-config-panel="yahoo" hidden data-mc-component-id="email.config.yahoo" data-mc-component-kind="form" data-mc-component-label="Yahoo Account Setup" data-mc-widget-id="email.config-yahoo" data-mc-widget-kind="form" data-mc-widget-class="form" data-mc-widget-label="Yahoo Account Setup" data-mc-component-owner="email.config-content">
-            <div class="email-pane-head">
-              <div>
-                <strong>Yahoo Mail</strong>
-                <span>Prepare Yahoo OAuth handoff, or use the POP/IMAP tab with Yahoo IMAP/SMTP settings and app-password flow.</span>
-              </div>
-            </div>
-            <div class="email-config-grid">
-              <label>
-                Yahoo address
-                <input id="email-yahoo-address-input" type="email" autocomplete="email" placeholder="name@yahoo.com">
-              </label>
-              <label>
-                OAuth client ID
-                <input id="email-yahoo-client-id-input" spellcheck="false" placeholder="Yahoo OAuth client ID">
-              </label>
-            </div>
-            <div class="email-connect-actions" role="group" aria-label="Yahoo setup actions">
-              <button type="button" id="email-connect-yahoo" data-email-provider="yahoo" data-mc-component-id="email.connect.yahoo" data-mc-component-kind="action" data-mc-component-label="Connect Yahoo" data-mc-widget-id="email.connect-yahoo" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Connect Yahoo" data-mc-component-owner="email.config.yahoo">Stage Yahoo</button>
-              <button type="button" id="email-open-yahoo-oauth" data-email-provider="yahoo" data-mc-component-id="email.oauth.yahoo" data-mc-component-kind="action" data-mc-component-label="Open Yahoo OAuth" data-mc-widget-id="email.oauth-yahoo" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Open Yahoo OAuth" data-mc-component-owner="email.config.yahoo">Open Yahoo consent</button>
-            </div>
-            <output id="email-yahoo-config-status" role="status" aria-live="polite">Yahoo OAuth setup ready.</output>
-          </form>
         </section>
       </div>
     </section>

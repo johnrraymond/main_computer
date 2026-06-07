@@ -31,6 +31,16 @@
     });
 
     const emailMailServicePresets = Object.freeze({
+      system: {
+        id: "system",
+        label: "Email setup",
+        domainHints: [],
+        defaultProtocol: "imap",
+        imap: {host: "", port: 993, security: "ssl"},
+        pop3: {host: "", port: 995, security: "ssl"},
+        smtp: {host: "", port: 587, security: "starttls"},
+        authHint: "These are local system messages that explain how to set up the email client."
+      },
       custom: {
         id: "custom",
         label: "Custom mail server",
@@ -133,160 +143,93 @@
       }
     });
 
-    const emailStorageKey = "main-computer-email-app-v3";
+    const emailStorageKey = "main-computer-email-app-v5";
     const emailCheckEndpoint = "/api/applications/email/check";
 
     const emailSeedMessages = Object.freeze([
       {
-        id: "seed-linkedin-job-alert",
-        accountId: "demo-gmail",
-        provider: "gmail",
+        id: "system-welcome",
+        accountId: "system",
+        provider: "system",
         folder: "inbox",
-        from: "LinkedIn Job Alerts",
-        to: "you@gmail.com",
-        subject: "Software Engineer roles near you",
-        excerpt: "New jobs matching your saved search were posted this morning.",
-        body: "New jobs matching your saved search were posted this morning.\n\nReview the listings, save the ones you want to revisit, or archive this alert after you are done.",
+        from: "Email setup",
+        to: "you",
+        subject: "Welcome to the Email app",
+        excerpt: "Start here to learn how the Email app works before connecting an account.",
+        body: "Welcome to the Email app.\n\nThis inbox starts with local system messages instead of fake mail. Click each message to learn how setup, privacy, account checks, composing, and replies work.\n\nWhen you connect a real account from Config, live mailbox previews can replace these local instructions.",
         date: "2026-06-07T16:23:00.000Z",
-        labels: ["Primary"],
+        labels: ["System"],
         priority: false,
         unread: true
       },
       {
-        id: "seed-dell-support",
-        accountId: "demo-outlook",
-        provider: "outlook",
+        id: "system-config",
+        accountId: "system",
+        provider: "system",
         folder: "inbox",
-        from: "Dell Notifications",
-        to: "you@outlook.com",
-        subject: "A Dell representative will respond to your support request",
-        excerpt: "Your support case is open and assigned to the next available representative.",
-        body: "Your support case is open and assigned to the next available representative.\n\nCase details and next steps will appear in this thread when the service team responds.",
-        date: "2026-06-07T15:05:00.000Z",
-        labels: ["Support"],
-        priority: true,
+        from: "Email setup",
+        to: "you",
+        subject: "Connect Gmail, Yahoo, or POP/IMAP",
+        excerpt: "Use Config to add Gmail, Yahoo, Outlook, iCloud, Fastmail, Zoho, AOL, Proton Bridge, or custom servers.",
+        body: "Open Config to connect accounts.\n\nUse the POP/IMAP tab for common mail services such as Outlook.com, Microsoft 365, iCloud Mail, AOL Mail, Fastmail, Zoho Mail, Proton Mail Bridge, Yahoo Mail, Gmail IMAP, or a custom server.\n\nUse the Gmail and Yahoo tabs when you want to stage OAuth handoff details for those providers.",
+        date: "2026-06-07T16:22:00.000Z",
+        labels: ["Config"],
+        priority: false,
         unread: true
       },
       {
-        id: "seed-travel-itinerary",
-        accountId: "demo-yahoo",
-        provider: "yahoo",
+        id: "system-check-mail",
+        accountId: "system",
+        provider: "system",
         folder: "inbox",
-        from: "Virtual Vacations",
-        to: "you@yahoo.com",
-        subject: "Your weekend itinerary is ready",
-        excerpt: "Hotel check-in, flight confirmation, and local recommendations are inside.",
-        body: "Your weekend itinerary is ready.\n\nHotel check-in, flight confirmation, and local recommendations are included below. Reply if you want help changing any reservation details.",
-        date: "2026-06-06T13:40:00.000Z",
-        labels: ["Travel"],
+        from: "Email setup",
+        to: "you",
+        subject: "How Check mail works",
+        excerpt: "The backend bridge can do a one-time POP/IMAP header check without saving the password.",
+        body: "Check mail is a one-time backend bridge action.\n\nFor POP/IMAP accounts, enter the password or app password only when you click Check mail. The app sends it to the local backend for that check and does not save or echo it back in browser state.\n\nThe current bridge returns a safe header preview; full sync, attachments, and durable token storage can be layered behind the same account configuration.",
+        date: "2026-06-07T16:21:00.000Z",
+        labels: ["Privacy"],
         priority: false,
         unread: false
       },
       {
-        id: "seed-security-alert",
-        accountId: "demo-gmail",
-        provider: "gmail",
+        id: "system-compose-reply",
+        accountId: "system",
+        provider: "system",
         folder: "inbox",
-        from: "GitHub",
-        to: "you@gmail.com",
-        subject: "Security alert for a repository dependency",
-        excerpt: "A dependency in one of your repositories has a security advisory.",
-        body: "A dependency in one of your repositories has a security advisory.\n\nOpen the repository security tab to review the affected package and available upgrade paths.",
-        date: "2026-06-05T19:18:00.000Z",
-        labels: ["Security"],
-        priority: true,
-        unread: false
-      },
-      {
-        id: "seed-bank-statement",
-        accountId: "demo-outlook",
-        provider: "outlook",
-        folder: "inbox",
-        from: "City Bank",
-        to: "you@outlook.com",
-        subject: "Your monthly statement is available",
-        excerpt: "Your statement is ready to view in online banking.",
-        body: "Your monthly statement is available.\n\nSign in to online banking to view or download the statement. This message does not include account details.",
-        date: "2026-06-05T14:25:00.000Z",
-        labels: ["Finance"],
+        from: "Email setup",
+        to: "you",
+        subject: "Compose is a modal; replies stay inline",
+        excerpt: "New messages open in a compose modal, while replies appear inside the selected message view.",
+        body: "New message opens a compose modal so the mailbox list stays clean.\n\nWhen you select a message and click Reply, the reply editor opens inline below that message. Queue Send stores the draft locally until a provider bridge is ready to deliver it.",
+        date: "2026-06-07T16:20:00.000Z",
+        labels: ["Compose"],
         priority: false,
         unread: false
       },
       {
-        id: "seed-newsletter",
-        accountId: "demo-yahoo",
-        provider: "yahoo",
+        id: "system-local-state",
+        accountId: "system",
+        provider: "system",
         folder: "inbox",
-        from: "Morning Brief",
-        to: "you@yahoo.com",
-        subject: "Today’s headlines and market notes",
-        excerpt: "A quick summary of the stories people are following today.",
-        body: "Today’s headlines and market notes are ready.\n\nThis newsletter contains a short digest, links to full stories, and a market snapshot.",
-        date: "2026-06-04T12:00:00.000Z",
-        labels: ["Newsletter"],
-        priority: false,
-        unread: false
-      },
-      {
-        id: "seed-sent-followup",
-        accountId: "demo-gmail",
-        provider: "gmail",
-        folder: "sent",
-        from: "you@gmail.com",
-        to: "team@example.com",
-        subject: "Follow-up on the project timeline",
-        excerpt: "Thanks for the update. I will review the timeline and reply with notes.",
-        body: "Thanks for the update. I will review the timeline and reply with notes.",
-        date: "2026-06-04T10:30:00.000Z",
-        labels: ["Sent"],
+        from: "Email setup",
+        to: "you",
+        subject: "What is stored locally",
+        excerpt: "The app keeps local UI state, staged account settings, and draft queues in browser storage.",
+        body: "The Email app keeps local UI state, staged account settings, and drafts in browser storage.\n\nPasswords are not stored by the Email UI. For real sending and syncing, connect a provider bridge that handles OAuth tokens or server credentials on the backend side.",
+        date: "2026-06-07T16:19:00.000Z",
+        labels: ["Local"],
         priority: false,
         unread: false
       }
     ]);
 
-    const emailSeedAccounts = Object.freeze([
-      {
-        id: "demo-gmail",
-        provider: "gmail",
-        address: "you@gmail.com",
-        displayName: "Gmail",
-        connectionType: "oauth",
-        status: "ready",
-        connectedAt: "2026-06-07T16:10:00.000Z",
-        scopes: emailOauthProviderCatalog.gmail.scopes.slice(),
-        handoffUrl: "",
-        tokenEndpoint: emailOauthProviderCatalog.gmail.tokenEndpoint
-      },
-      {
-        id: "demo-outlook",
-        provider: "outlook",
-        address: "you@outlook.com",
-        displayName: "Outlook.com",
-        connectionType: "imap",
-        protocol: "imap",
-        status: "ready",
-        connectedAt: "2026-06-07T15:45:00.000Z",
-        incoming: {...emailMailServicePresets.outlook.imap},
-        smtp: {...emailMailServicePresets.outlook.smtp}
-      },
-      {
-        id: "demo-yahoo",
-        provider: "yahoo",
-        address: "you@yahoo.com",
-        displayName: "Yahoo Mail",
-        connectionType: "oauth",
-        status: "ready",
-        connectedAt: "2026-06-07T14:38:00.000Z",
-        scopes: emailOauthProviderCatalog.yahoo.scopes.slice(),
-        handoffUrl: "",
-        tokenEndpoint: emailOauthProviderCatalog.yahoo.tokenEndpoint
-      }
-    ]);
+    const emailSeedAccounts = Object.freeze([]);
 
     const emailAppState = window.emailAppState || (window.emailAppState = {
       initialized: false,
       activeTab: "mail",
-      activeConfigTab: "imap",
+      activeConfigTab: "gmail",
       activeMailView: "list",
       accounts: [],
       messages: [],
@@ -312,7 +255,14 @@
     function emailFormatTime(value) {
       const date = new Date(value || Date.now());
       if (Number.isNaN(date.getTime())) return String(value || "unknown time");
-      return date.toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
+      const now = new Date();
+      if (date.toDateString() === now.toDateString()) {
+        return date.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
+      }
+      if (date.getFullYear() === now.getFullYear()) {
+        return date.toLocaleDateString([], {month: "short", day: "numeric"});
+      }
+      return date.toLocaleDateString([], {month: "short", day: "numeric", year: "2-digit"});
     }
 
     function emailEscapeHtml(value) {
@@ -354,7 +304,7 @@
       return {
         initialized: false,
         activeTab: "mail",
-        activeConfigTab: "imap",
+        activeConfigTab: "gmail",
         activeMailView: "list",
         accounts: emailSeedAccounts.map((account) => ({
           ...account,
@@ -384,7 +334,8 @@
       if (!Array.isArray(emailAppState.messages)) emailAppState.messages = [];
       if (!Array.isArray(emailAppState.drafts)) emailAppState.drafts = [];
       emailAppState.activeTab = ["mail", "config"].includes(emailAppState.activeTab) ? emailAppState.activeTab : "mail";
-      emailAppState.activeConfigTab = ["imap", "gmail", "yahoo"].includes(emailAppState.activeConfigTab) ? emailAppState.activeConfigTab : "imap";
+      emailAppState.activeConfigTab = emailAppState.activeConfigTab === "imap" ? "raw" : emailAppState.activeConfigTab;
+      emailAppState.activeConfigTab = ["gmail", "yahoo", "raw"].includes(emailAppState.activeConfigTab) ? emailAppState.activeConfigTab : "gmail";
       emailAppState.activeMailView = ["list", "thread"].includes(emailAppState.activeMailView) ? emailAppState.activeMailView : "list";
       emailAppState.selectedAccountId = String(emailAppState.selectedAccountId || "all");
       emailAppState.selectedFolder = String(emailAppState.selectedFolder || "inbox");
@@ -482,16 +433,27 @@
       emailRenderTabs();
       if (emailAppState.activeTab === "mail") {
         emailSearchInput?.focus();
-      } else if (emailAppState.activeConfigTab === "imap") {
+      } else if (emailAppState.activeConfigTab === "raw") {
         emailImapAddressInput?.focus();
+      } else if (emailAppState.activeConfigTab === "yahoo") {
+        emailYahooAddressInput?.focus();
+      } else {
+        emailGmailAddressInput?.focus();
       }
     }
 
     function emailSwitchConfigTab(tabName) {
-      emailAppState.activeConfigTab = ["imap", "gmail", "yahoo"].includes(tabName) ? tabName : "imap";
+      emailAppState.activeConfigTab = ["gmail", "yahoo", "raw"].includes(tabName) ? tabName : "gmail";
       emailAppState.activeTab = "config";
       emailSaveState();
       emailRenderTabs();
+      if (emailAppState.activeConfigTab === "raw") {
+        emailImapAddressInput?.focus();
+      } else if (emailAppState.activeConfigTab === "yahoo") {
+        emailYahooAddressInput?.focus();
+      } else {
+        emailGmailAddressInput?.focus();
+      }
     }
 
     function emailStateToken(prefix = "email") {
@@ -877,6 +839,36 @@
         || null;
     }
 
+    function emailAccountConnectionLabel(account) {
+      if (account.connectionType === "oauth") return "OAuth";
+      return String(account.protocol || account.connectionType || "raw").toUpperCase();
+    }
+
+    function emailRenderConfigAccountBucket(node, accounts, emptyText) {
+      if (!node) return;
+      if (!accounts.length) {
+        node.textContent = emptyText;
+        return;
+      }
+      node.innerHTML = accounts.map((account) => {
+        const status = account.status || "staged";
+        const connection = emailAccountConnectionLabel(account);
+        return `<article class="email-config-account-item">
+          <strong>${emailEscapeHtml(account.address || account.displayName || "(no address)")}</strong>
+          <span>${emailEscapeHtml(connection)} · ${emailEscapeHtml(status)}</span>
+        </article>`;
+      }).join("");
+    }
+
+    function emailRenderConfigAccountLists() {
+      const gmailAccounts = emailAppState.accounts.filter((account) => account.provider === "gmail" && account.connectionType === "oauth");
+      const yahooAccounts = emailAppState.accounts.filter((account) => account.provider === "yahoo" && account.connectionType === "oauth");
+      const rawAccounts = emailAppState.accounts.filter((account) => account.connectionType !== "oauth");
+      emailRenderConfigAccountBucket(emailGmailAccountList, gmailAccounts, "No Gmail accounts staged yet.");
+      emailRenderConfigAccountBucket(emailYahooAccountList, yahooAccounts, "No Yahoo accounts staged yet.");
+      emailRenderConfigAccountBucket(emailRawAccountList, rawAccounts, "No raw accounts staged yet.");
+    }
+
     function emailRenderAccounts() {
       if (!emailAccountList) return;
       const accountCount = emailAppState.accounts.length;
@@ -888,7 +880,7 @@
         `<button type="button" class="email-account-button ${allActive ? "active" : ""}" data-email-account="all"><strong>All accounts</strong><span>Unified inbox</span></button>`,
         ...emailAppState.accounts.map((account) => {
           const active = emailAppState.selectedAccountId === account.id;
-          const connection = account.connectionType === "oauth" ? "OAuth" : String(account.protocol || account.connectionType || "imap").toUpperCase();
+          const connection = emailAccountConnectionLabel(account);
           return `<button type="button" class="email-account-button ${active ? "active" : ""}" data-email-account="${emailEscapeHtml(account.id)}"><strong>${emailEscapeHtml(account.address)}</strong><span>${emailEscapeHtml(emailProviderLabel(account.provider))} · ${emailEscapeHtml(connection)} · ${emailEscapeHtml(account.status || "ready")}</span></button>`;
         })
       ];
@@ -1081,6 +1073,7 @@
       emailRenderTabs();
       emailRenderServerFormDefaults();
       emailRenderAccounts();
+      emailRenderConfigAccountLists();
       emailRenderFolders();
       emailRenderMessages();
       emailRenderThread();
@@ -1318,12 +1311,12 @@
     function emailCheckSelectedAccount() {
       const selected = emailAppState.accounts.find((account) => account.id === emailAppState.selectedAccountId) || emailAppState.accounts.find((account) => account.connectionType !== "oauth");
       if (!selected || selected.connectionType === "oauth") {
-        emailSwitchConfigTab("imap");
-        if (emailServerConfigStatus) emailServerConfigStatus.textContent = "Use POP/IMAP Check mail for common providers, or the Gmail/Yahoo subtabs for OAuth handoff.";
+        emailSwitchConfigTab("raw");
+        if (emailServerConfigStatus) emailServerConfigStatus.textContent = "Use Raw accounts for POP/IMAP checks, or Gmail/Yahoo accounts for OAuth handoff."
         emailSetStatus("open config to check mail");
         return;
       }
-      emailSwitchConfigTab("imap");
+      emailSwitchConfigTab("raw");
       const preset = emailPreset(selected.provider);
       if (emailImapPresetSelect) emailImapPresetSelect.value = selected.provider || "custom";
       if (emailImapProtocolSelect) emailImapProtocolSelect.value = selected.protocol || preset.defaultProtocol || "imap";
@@ -1357,9 +1350,9 @@
         button.addEventListener("click", () => emailSwitchTab(button.dataset.emailTab || "mail"));
       });
       emailConfigTabButtons.forEach((button) => {
-        button.addEventListener("click", () => emailSwitchConfigTab(button.dataset.emailConfigTab || "imap"));
+        button.addEventListener("click", () => emailSwitchConfigTab(button.dataset.emailConfigTab || "gmail"));
       });
-      emailOpenConfig?.addEventListener("click", () => emailSwitchConfigTab("imap"));
+      emailOpenConfig?.addEventListener("click", () => emailSwitchConfigTab("gmail"));
       emailNewMessage?.addEventListener("click", emailNewCompose);
       emailCloseCompose?.addEventListener("click", emailDismissComposeModal);
       emailComposeModal?.addEventListener("cancel", () => {

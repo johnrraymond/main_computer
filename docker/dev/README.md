@@ -38,7 +38,15 @@ python -m main_computer.cli hub --network dev
 
 The local QBFT test profile listens on `127.0.0.1:8780` and talks to the
 non-validator RPC node at `http://127.0.0.1:30010` after the smoke lab has
-published `runtime/deployments/current.json`:
+published `runtime/deployments/current.json`. The smoke lab uses London/EIP-1559
+from genesis and does not deploy through legacy transactions or older-EVM compiler downgrades:
+
+```powershell
+python .\tools\smoke_besu_qbft_one_validator.py up --deploy-contracts
+python -m main_computer.cli hub --network test
+```
+
+Equivalent split form:
 
 ```powershell
 python .\tools\smoke_besu_qbft_one_validator.py up

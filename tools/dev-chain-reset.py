@@ -57,6 +57,9 @@ HUB_CREDIT_BRIDGE_ESCROW_DEPLOY_CHOICE = "hub-credit-bridge-escrow"
 HUB_ADMIN_PREVIEW_ADDRESS = "0x0000000000000000000000000000000000000a11"
 DEFAULT_HUB_ADMIN_FUNDING_WEI = "10000000000000000000"
 DEFAULT_PRIVATE_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+DEFAULT_DEPLOYER_ADDRESS = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+# Constructor returns 32 zero bytes using PUSH0 (0x5f), so eth_estimateGas fails on pre-Shanghai chains.
+PUSH0_CANARY_INITCODE = "0x5f60005260206000f3"
 DEFAULT_OFFICE_KEYS = [
     {
         "office": "O0",
@@ -513,7 +516,16 @@ def metadata_path(path: Path, root: Path) -> str:
         return str(resolved)
 
 
+def hub_admin_wallet_filename(chain_id: int) -> str:
+    return f"hub-admin-wallet-{int(chain_id)}.json"
+
+
 def hub_admin_wallet_path(args: argparse.Namespace, root: Path) -> Path:
+    env_name = validate_environment_name(args.environment)
+    return deployment_output_root(args, root) / env_name / hub_admin_wallet_filename(args.chain_id)
+
+
+def legacy_hub_admin_wallet_path(args: argparse.Namespace, root: Path) -> Path:
     return deployment_output_root(args, root) / HUB_ADMIN_WALLET_FILENAME
 
 
@@ -589,11 +601,38 @@ def create_hub_admin_wallet(args: argparse.Namespace, root: Path, path: Path) ->
 def resolve_hub_admin_wallet(args: argparse.Namespace, root: Path, *, create_missing: bool) -> HubAdminWallet | None:
     if not hub_admin_required(args):
         return None
+
     path = hub_admin_wallet_path(args, root)
     existing = load_hub_admin_wallet(path, args.chain_id)
     if existing is not None:
         log(f"Loaded Hub admin wallet: {metadata_path(path, root)} ({existing.address})")
         return existing
+
+    # Older dev-chain resets stored a single wallet at runtime/deployments/hub-admin-wallet.json.
+    # Do not let that dev wallet block testnet/mainnet deploys; reuse it only when it matches
+    # the requested chain id, and migrate it into the chain-scoped location.
+    legacy_path = legacy_hub_admin_wallet_path(args, root)
+    if legacy_path != path and legacy_path.exists():
+        try:
+            legacy_wallet = load_hub_admin_wallet(legacy_path, args.chain_id)
+        except ValueError as exc:
+            if "does not match requested chain_id" not in str(exc):
+                raise
+            log(f"Ignoring legacy Hub admin wallet for a different chain: {metadata_path(legacy_path, root)}")
+        else:
+            if legacy_wallet is not None:
+                migrated = write_hub_admin_wallet(
+                    path,
+                    chain_id=args.chain_id,
+                    address=legacy_wallet.address,
+                    private_key=str(legacy_wallet.private_key),
+                )
+                log(
+                    "Migrated legacy Hub admin wallet to chain-scoped path: "
+                    f"{metadata_path(path, root)} ({migrated.address})"
+                )
+                return migrated
+
     if not create_missing:
         return HubAdminWallet(path=path, address=HUB_ADMIN_PREVIEW_ADDRESS, private_key=None, source="dry-run-preview")
     return create_hub_admin_wallet(args, root, path)
@@ -851,6 +890,75 @@ def wait_for_rpc(url: str, chain_id: int, timeout_s: float) -> None:
             last_error = exc
             time.sleep(0.5)
     raise RuntimeError(f"RPC did not become ready at {url}: {last_error}")
+
+
+def parse_rpc_int(value: object, *, field: str) -> int:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value, 16 if value.startswith("0x") else 10)
+        except ValueError as exc:
+            raise RuntimeError(f"{field} was not a valid integer: {value!r}") from exc
+    raise RuntimeError(f"{field} was not a valid integer: {value!r}")
+
+
+def latest_block_base_fee_per_gas(url: str) -> int:
+    block = rpc(url, "eth_getBlockByNumber", ["latest", False])
+    if not isinstance(block, dict):
+        raise RuntimeError(f"eth_getBlockByNumber returned an unexpected payload: {block!r}")
+    if "baseFeePerGas" not in block:
+        raise RuntimeError(
+            "external chain is not EIP-1559/London-capable: latest block has no baseFeePerGas. "
+            "Regenerate or reconfigure the chain with London active at genesis instead of using legacy transactions."
+        )
+    return parse_rpc_int(block["baseFeePerGas"], field="latest block baseFeePerGas")
+
+
+def require_eip1559_chain(url: str) -> int:
+    base_fee = latest_block_base_fee_per_gas(url)
+    if base_fee <= 0:
+        raise RuntimeError(
+            f"external chain reported baseFeePerGas={base_fee}; Main Computer test/main networks must use a real "
+            "EIP-1559 base fee, not a zero-base-fee compatibility shortcut."
+        )
+    log(f"EIP-1559 preflight passed: latest baseFeePerGas={base_fee} wei")
+    return base_fee
+
+
+def require_push0_chain(url: str, *, from_address: str = DEFAULT_DEPLOYER_ADDRESS) -> int:
+    """Require a Shanghai-or-newer execution fork by estimating a tiny PUSH0 contract creation.
+
+    Solidity 0.8.20+ defaults to Shanghai bytecode and emits PUSH0. A chain can be
+    EIP-1559/London-capable while still rejecting that opcode, so external deploys
+    must prove both transaction-fee and opcode compatibility before publishing the
+    golden deployment runtime.
+    """
+
+    try:
+        estimate = rpc(
+            url,
+            "eth_estimateGas",
+            [{"from": from_address, "data": PUSH0_CANARY_INITCODE}],
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        if "0x5f" in message or "PUSH0" in message.upper() or "invalid opcode" in message.lower():
+            raise RuntimeError(
+                "external chain is not Shanghai/PUSH0-capable: eth_estimateGas rejected a PUSH0 canary. "
+                "Regenerate or reconfigure the chain with Shanghai active at genesis instead of compiling "
+                "contracts for an older EVM."
+            ) from exc
+        raise
+    gas = parse_rpc_int(estimate, field="PUSH0 canary gas estimate")
+    log(f"Shanghai/PUSH0 preflight passed: PUSH0 canary estimate={gas} gas")
+    return gas
+
+
+def require_modern_external_chain(url: str) -> tuple[int, int]:
+    base_fee = require_eip1559_chain(url)
+    push0_gas = require_push0_chain(url)
+    return base_fee, push0_gas
 
 
 def rpc(url: str, method: str, params: list | None = None, *, timeout_s: float = 3.0) -> object:
@@ -1275,6 +1383,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if getattr(args, "external_chain", False):
             wait_for_rpc(args.host_rpc_url, args.chain_id, args.wait_timeout_s)
+            require_modern_external_chain(args.host_rpc_url)
         else:
             ensure_network(args, rid)
             remove_existing_container(args, rid)

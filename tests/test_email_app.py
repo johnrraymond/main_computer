@@ -44,10 +44,16 @@ def test_email_application_is_routed_and_included() -> None:
         "id=\"email-back-to-list\"",
         "id=\"email-compose-modal\"",
         "id=\"email-reply-form\"",
-        "data-email-config-tab=\"imap\"",
+        "data-email-config-tab=\"raw\"",
+        "id=\"email-gmail-account-list\"",
+        "id=\"email-yahoo-account-list\"",
+        "id=\"email-raw-account-list\"",
+        "Add Gmail account",
+        "Add Yahoo account",
+        "Add raw account",
         "data-email-config-tab=\"gmail\"",
         "data-email-config-tab=\"yahoo\"",
-        "POP/IMAP common services",
+        "Raw POP/IMAP accounts",
         "Outlook.com",
         "Microsoft 365 / Exchange Online",
         "iCloud Mail",
@@ -84,6 +90,16 @@ def test_email_default_layout_is_list_first_without_internal_specimen_copy() -> 
     assert "MCEL email specimen is ready" not in APPLICATIONS_INDEX_HTML
     assert "mcel-lab@maincomputer.local" not in APPLICATIONS_INDEX_HTML
     assert "email-mcel-proof" not in APPLICATIONS_INDEX_HTML
+    for fake in ["LinkedIn Job Alerts", "Dell Notifications", "Virtual Vacations", "City Bank", "Morning Brief"]:
+        assert fake not in APPLICATIONS_INDEX_HTML
+    assert "data-email-category" not in APPLICATIONS_INDEX_HTML
+    assert "Offers" not in APPLICATIONS_INDEX_HTML
+    assert "Social" not in APPLICATIONS_INDEX_HTML
+    assert "Newsletters" not in APPLICATIONS_INDEX_HTML
+    assert "Welcome to the Email app" in APPLICATIONS_INDEX_HTML
+    assert "How Check mail works" in APPLICATIONS_INDEX_HTML
+    assert 'const emailSeedAccounts = Object.freeze([]);' in APPLICATIONS_INDEX_HTML
+    assert 'main-computer-email-app-v5' in APPLICATIONS_INDEX_HTML
 
     assert 'id="email-list-view"' in APPLICATIONS_INDEX_HTML
     assert 'id="email-thread-view"' in APPLICATIONS_INDEX_HTML
@@ -96,6 +112,20 @@ def test_email_default_layout_is_list_first_without_internal_specimen_copy() -> 
     assert 'function emailReturnToMessageList()' in APPLICATIONS_INDEX_HTML
     assert 'class="email-compose-modal"' in APPLICATIONS_INDEX_HTML
     assert 'function emailSaveInlineReply' in APPLICATIONS_INDEX_HTML
+    assert 'date.toDateString() === now.toDateString()' in APPLICATIONS_INDEX_HTML
+    assert 'date.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})' in APPLICATIONS_INDEX_HTML
+
+def test_email_config_is_split_into_gmail_yahoo_and_raw_account_buckets() -> None:
+    assert 'data-email-config-tab="gmail"' in APPLICATIONS_INDEX_HTML
+    assert 'data-email-config-tab="yahoo"' in APPLICATIONS_INDEX_HTML
+    assert 'data-email-config-tab="raw"' in APPLICATIONS_INDEX_HTML
+    assert 'data-email-config-tab="imap"' not in APPLICATIONS_INDEX_HTML
+    assert 'id="email-gmail-account-list"' in APPLICATIONS_INDEX_HTML
+    assert 'id="email-yahoo-account-list"' in APPLICATIONS_INDEX_HTML
+    assert 'id="email-raw-account-list"' in APPLICATIONS_INDEX_HTML
+    assert "function emailRenderConfigAccountLists" in APPLICATIONS_INDEX_HTML
+    assert 'activeConfigTab: "gmail"' in APPLICATIONS_INDEX_HTML
+    assert '["gmail", "yahoo", "raw"]' in APPLICATIONS_INDEX_HTML
 
 
 def test_email_mailbox_css_uses_component_adaptive_rows_without_horizontal_spill() -> None:
@@ -109,13 +139,64 @@ def test_email_mailbox_css_uses_component_adaptive_rows_without_horizontal_spill
     )
     css = css_path.read_text(encoding="utf-8")
 
+    assert "grid-template-rows: auto auto minmax(0, 1fr);" in css
     assert "container-name: email-mail-main" in css
     assert "@container email-mail-main" in css
     assert "overflow-x: hidden" in css
-    assert "fit-content(4.75rem)" in css
+    assert "display: block;\n      inline-size: 100%;" in css
+    assert "grid-template-columns: minmax(0, 1fr);" in css
+    assert "grid-template-rows: minmax(0, 1fr);" in css
+    assert "grid-column: 1 / -1;" in css
+    assert "grid-row: 1 / -1;" in css
+    assert "fit-content(5.25rem)" in css
     assert "minmax(0, 1fr)" in css
     assert "minmax(16rem, 1fr)" not in css
     assert "@container email-tab-panel (max-width: 760px)" in css
+    assert ".email-config-account-list" in css
+    assert "grid-template-columns: minmax(170px, 220px) minmax(0, 1fr);" in css
+
+
+def test_email_thread_reader_is_compact_and_does_not_stretch_system_labels() -> None:
+    css_path = (
+        Path(__file__).resolve().parents[1]
+        / "main_computer"
+        / "web"
+        / "applications"
+        / "styles"
+        / "email.css"
+    )
+    css = css_path.read_text(encoding="utf-8")
+
+    assert ".email-thread-card {\n      display: flex;" in css
+    assert "justify-content: flex-start;" in css
+    assert "min-height: 12rem" not in css
+    assert "width: min(78ch, 100%);" in css
+    assert "background: rgba(7, 8, 6, 0.38);" in css
+    assert ".email-label-row {\n      display: flex;" in css
+    assert "align-items: flex-start;" in css
+    assert "flex: 0 0 auto;" in css
+    assert "white-space: nowrap;" in css
+
+
+def test_email_config_forms_are_compact_cards_not_stretched_panels() -> None:
+    css_path = (
+        Path(__file__).resolve().parents[1]
+        / "main_computer"
+        / "web"
+        / "applications"
+        / "styles"
+        / "email.css"
+    )
+    css = css_path.read_text(encoding="utf-8")
+
+    assert "Email config panes are forms, not presentation canvases" in css
+    assert ".email-config-card.email-config-subpanel" in css
+    assert "grid-auto-rows: max-content;" in css
+    assert "align-content: start;" in css
+    assert "width: min(980px, 100%);" in css
+    assert "min-height: 2.45rem;" in css
+    assert "height: auto;" in css
+    assert "border-left: 3px solid rgba(246, 199, 91, 0.62);" in css
 
 
 def test_email_components_have_near_standard_mc_widget_metadata() -> None:

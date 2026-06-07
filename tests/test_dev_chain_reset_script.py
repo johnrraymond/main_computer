@@ -136,7 +136,7 @@ def test_dry_run_writes_soft_chroot_outputs(tmp_path: Path, monkeypatch) -> None
     assert escrow["payment_asset"] == "native"
     assert escrow["approval_required"] is False
     assert escrow["bridge_controller_address"] == current["hub_admin"]["address"]
-    assert current["hub_admin"]["wallet_path"] == "deployments/hub-admin-wallet.json"
+    assert current["hub_admin"]["wallet_path"] == "deployments/dev/hub-admin-wallet-42424242.json"
     assert not (deploy_root / "hub-admin-wallet.json").exists()
     assert "private_key" not in json.dumps(current)
     assert "mnemonic" not in json.dumps(current)
@@ -162,7 +162,7 @@ def test_hub_admin_wallet_is_created_and_reused(tmp_path: Path, monkeypatch) -> 
     first = reset.resolve_hub_admin_wallet(args, tmp_path, create_missing=True)
     second = reset.resolve_hub_admin_wallet(args, tmp_path, create_missing=True)
 
-    wallet_path = tmp_path / "deployments" / "hub-admin-wallet.json"
+    wallet_path = tmp_path / "deployments" / "dev" / "hub-admin-wallet-42424242.json"
     payload = json.loads(wallet_path.read_text(encoding="utf-8"))
     assert first is not None
     assert second is not None
@@ -173,6 +173,56 @@ def test_hub_admin_wallet_is_created_and_reused(tmp_path: Path, monkeypatch) -> 
     assert payload["chain_id"] == 42424242
     assert payload["address"] == first.address
     assert payload["private_key"] == first.private_key
+
+
+def test_external_chain_uses_chain_scoped_hub_admin_wallet_when_dev_wallet_exists(tmp_path: Path, monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+    monkeypatch.setattr(reset, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        reset,
+        "derive_address_for_private_key",
+        lambda args, root, private_key: "0x9999999999999999999999999999999999999999",
+    )
+    deploy_root = tmp_path / "deployments"
+    legacy_wallet = deploy_root / "hub-admin-wallet.json"
+    legacy_wallet.parent.mkdir(parents=True)
+    legacy_wallet.write_text(
+        json.dumps(
+            {
+                "schema": "main-computer.hub-admin-wallet.v1",
+                "chain_id": 42424242,
+                "address": "0x1234567890123456789012345678901234567890",
+                "private_key": "0x" + "1" * 64,
+                "source": "generated-local-dev",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    parser = reset.build_parser()
+    args = parser.parse_args(
+        [
+            "--yes",
+            "--external-chain",
+            "--environment",
+            "test",
+            "--chain-id",
+            "42424241",
+            "--deployment-output-dir",
+            str(deploy_root),
+        ]
+    )
+
+    wallet = reset.resolve_hub_admin_wallet(args, tmp_path, create_missing=True)
+
+    chain_wallet = deploy_root / "test" / "hub-admin-wallet-42424241.json"
+    payload = json.loads(chain_wallet.read_text(encoding="utf-8"))
+    assert wallet is not None
+    assert wallet.path == chain_wallet
+    assert wallet.address == "0x9999999999999999999999999999999999999999"
+    assert payload["chain_id"] == 42424241
+    assert payload["address"] == wallet.address
+    assert json.loads(legacy_wallet.read_text(encoding="utf-8"))["chain_id"] == 42424242
 
 
 def test_hub_admin_private_key_is_not_published(tmp_path: Path) -> None:
@@ -341,6 +391,102 @@ def test_reset_refuses_to_write_when_prod_lock_exists(tmp_path: Path, monkeypatc
     assert code == 1
     assert not (tmp_path / "runtime" / "deployments" / "current.json").exists()
     assert not (tmp_path / "runtime" / "dev-chain" / "latest.json").exists()
+
+
+
+
+def test_external_chain_requires_eip1559_latest_block(monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+    seen: list[tuple[str, str, list | None]] = []
+
+    def fake_rpc(url, method, params=None, *, timeout_s=3.0):
+        seen.append((url, method, params))
+        assert url == "http://127.0.0.1:30010"
+        assert method == "eth_getBlockByNumber"
+        return {"number": "0x7", "baseFeePerGas": "0x3b9aca00"}
+
+    monkeypatch.setattr(reset, "rpc", fake_rpc)
+
+    assert reset.require_eip1559_chain("http://127.0.0.1:30010") == 1_000_000_000
+    assert seen == [("http://127.0.0.1:30010", "eth_getBlockByNumber", ["latest", False])]
+
+
+def test_external_chain_rejects_non_london_or_zero_base_fee(monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+
+    monkeypatch.setattr(reset, "rpc", lambda *args, **kwargs: {"number": "0x7"})
+    try:
+        reset.require_eip1559_chain("http://127.0.0.1:30010")
+    except RuntimeError as exc:
+        assert "no baseFeePerGas" in str(exc)
+        assert "instead of using legacy transactions" in str(exc)
+    else:
+        raise AssertionError("expected non-London chain to fail EIP-1559 preflight")
+
+    monkeypatch.setattr(reset, "rpc", lambda *args, **kwargs: {"number": "0x7", "baseFeePerGas": "0x0"})
+    try:
+        reset.require_eip1559_chain("http://127.0.0.1:30010")
+    except RuntimeError as exc:
+        assert "zero-base-fee" in str(exc)
+    else:
+        raise AssertionError("expected zero-base-fee chain to fail EIP-1559 preflight")
+
+
+def test_external_chain_push0_preflight_estimates_shanghai_canary(monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+    seen: list[tuple[str, str, list | None]] = []
+
+    def fake_rpc(url, method, params=None, *, timeout_s=3.0):
+        seen.append((url, method, params))
+        assert method == "eth_estimateGas"
+        assert params == [{"from": reset.DEFAULT_DEPLOYER_ADDRESS, "data": reset.PUSH0_CANARY_INITCODE}]
+        return "0xd7d4"
+
+    monkeypatch.setattr(reset, "rpc", fake_rpc)
+
+    assert reset.require_push0_chain("http://127.0.0.1:30010") == 55252
+    assert seen == [
+        (
+            "http://127.0.0.1:30010",
+            "eth_estimateGas",
+            [{"from": reset.DEFAULT_DEPLOYER_ADDRESS, "data": reset.PUSH0_CANARY_INITCODE}],
+        )
+    ]
+
+
+def test_external_chain_push0_preflight_rejects_pre_shanghai_chain(monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+
+    def fake_rpc(*args, **kwargs):
+        raise RuntimeError({"code": -32000, "message": "Invalid opcode: 0x5f"})
+
+    monkeypatch.setattr(reset, "rpc", fake_rpc)
+
+    try:
+        reset.require_push0_chain("http://127.0.0.1:30010")
+    except RuntimeError as exc:
+        assert "not Shanghai/PUSH0-capable" in str(exc)
+        assert "Shanghai active at genesis" in str(exc)
+    else:
+        raise AssertionError("expected pre-Shanghai chain to fail PUSH0 preflight")
+
+
+def test_external_chain_modern_preflight_requires_eip1559_and_push0(monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+    calls: list[str] = []
+
+    def fake_rpc(url, method, params=None, *, timeout_s=3.0):
+        calls.append(method)
+        if method == "eth_getBlockByNumber":
+            return {"number": "0x7", "baseFeePerGas": "0x3b9aca00"}
+        if method == "eth_estimateGas":
+            return "0xd7d4"
+        raise AssertionError(method)
+
+    monkeypatch.setattr(reset, "rpc", fake_rpc)
+
+    assert reset.require_modern_external_chain("http://127.0.0.1:30010") == (1_000_000_000, 55252)
+    assert calls == ["eth_getBlockByNumber", "eth_estimateGas"]
 
 
 def test_external_chain_mode_reuses_existing_qbft_network_for_deploy_commands(monkeypatch) -> None:

@@ -75,6 +75,8 @@ DEFAULT_DEPLOYMENT_SOURCE_KIND = "qbft-smoke-testnet-deploy"
 DEFAULT_FOUNDRY_IMAGE = "ghcr.io/foundry-rs/foundry:latest"
 DEFAULT_DEPLOYER_PRIVATE_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 DEFAULT_FUNDED_ACCOUNT_BALANCE = "0x21e19e0c9bab2400000"  # 10000 * 10^18 wei
+DEFAULT_GENESIS_BASE_FEE_PER_GAS = "0x3b9aca00"  # 1 gwei; London/EIP-1559 active from genesis.
+DEFAULT_SHANGHAI_TIME = 0  # Enables PUSH0-era bytecode from genesis for modern Solidity/Foundry deploys.
 DEFAULT_FUNDED_ACCOUNTS = [
     "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
     "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
@@ -277,6 +279,8 @@ def write_qbft_config(
             "config": {
                 "chainId": chain_id,
                 "berlinBlock": 0,
+                "londonBlock": 0,
+                "shanghaiTime": DEFAULT_SHANGHAI_TIME,
                 "qbft": {
                     "blockperiodseconds": block_period_seconds,
                     "epochlength": 30000,
@@ -287,6 +291,7 @@ def write_qbft_config(
             "timestamp": "0x58ee40ba",
             "gasLimit": "0x47b760",
             "difficulty": "0x1",
+            "baseFeePerGas": DEFAULT_GENESIS_BASE_FEE_PER_GAS,
             "mixHash": "0x63746963616c2062797a616e74696e65206661756c7420746f6c6572616e6365",
             "coinbase": "0x0000000000000000000000000000000000000000",
             "alloc": genesis_alloc(),
