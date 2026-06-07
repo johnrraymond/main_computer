@@ -450,6 +450,51 @@ class HeartbeatStatusPayloadTests(unittest.TestCase):
         self.assertFalse(payload["heartbeat"]["ready"])
 
 
+def test_task_manager_mcel_adapter_is_default_on_with_query_disable_for_regular_app() -> None:
+    script = (Path(__file__).resolve().parents[1] / "main_computer" / "web" / "applications" / "scripts" / "task-manager.js").read_text(encoding="utf-8")
+
+    assert "function taskManagerMcelFlagValue(search = window.location.search)" in script
+    assert 'new URLSearchParams(String(search || "")).get("mcel")' in script
+    assert 'const taskManagerMcelEnableValues = new Set(["1", "true", "on", "yes", "enabled"])' in script
+    assert 'const taskManagerMcelDisableValues = new Set(["0", "false", "off", "no", "disabled"])' in script
+    assert "if (taskManagerMcelDisableValues.has(queryValue))" in script
+    assert "return false;" in script[script.index("function taskManagerMcelAppEnabled"):script.index("function applyTaskManagerMcelAppSemantics")]
+    assert "return true;" in script[script.index("function taskManagerMcelAppEnabled"):script.index("function applyTaskManagerMcelAppSemantics")]
+    assert 'localStorage.getItem(key)' in script
+    assert '"taskManagerMcelDisabled"' in script
+    assert '"taskManagerMcelEnabled"' not in script[script.index("function taskManagerMcelAppEnabled"):script.index("function applyTaskManagerMcelAppSemantics")]
+
+
+def test_task_manager_mcel_app_enrichment_is_passive_and_scheduled() -> None:
+    script = (Path(__file__).resolve().parents[1] / "main_computer" / "web" / "applications" / "scripts" / "task-manager.js").read_text(encoding="utf-8")
+    terminal = (Path(__file__).resolve().parents[1] / "main_computer" / "web" / "applications" / "scripts" / "terminal.js").read_text(encoding="utf-8")
+
+    assert "function applyTaskManagerMcelAppSemantics(reason = \"app-refresh\")" in script
+    assert "adapter.applyTaskManagerMcelSemantics({" in script
+    assert 'mode: "app"' in script
+    assert 'report: false' in script
+    assert 'taskManagerApp?.setAttribute?.("data-task-manager-mcel-mode", "passive")' in script
+    assert "window.taskManagerMcelStatus = function taskManagerMcelStatus()" in script
+    assert 'scheduleTaskManagerMcelAppSemantics("init")' in script
+    assert 'scheduleTaskManagerMcelAppSemantics(firstLoad ? "first-snapshot" : "refresh")' in terminal
+    assert 'scheduleTaskManagerMcelAppSemantics("refresh-error")' in terminal
+    assert ".click(" not in script[script.index("function applyTaskManagerMcelAppSemantics"):script.index("function initTaskManagerApp")]
+    assert "addEventListener" not in script[script.index("function applyTaskManagerMcelAppSemantics"):script.index("function initTaskManagerApp")]
+
+
+def test_task_manager_refresh_hold_overlay_does_not_expose_scrollbars() -> None:
+    css = (Path(__file__).resolve().parents[1] / "main_computer" / "web" / "applications" / "styles" / "task-manager.css").read_text(encoding="utf-8")
+
+    hold_block_start = css.index(".task-process-refresh-hold {")
+    hold_block_end = css.index("}", hold_block_start)
+    hold_block = css[hold_block_start:hold_block_end]
+
+    assert "overflow: hidden;" in hold_block
+    assert "scrollbar-width: none;" in hold_block
+    assert ".task-process-refresh-hold::-webkit-scrollbar" in css
+    assert "display: none;" in css[css.index(".task-process-refresh-hold::-webkit-scrollbar"):]
+
+
 if __name__ == "__main__":
     unittest.main()
 
