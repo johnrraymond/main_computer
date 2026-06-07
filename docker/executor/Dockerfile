@@ -26,7 +26,7 @@ RUN apt-get update \
         zip \
     && rm -rf /var/lib/apt/lists/*
 
-COPY main-computer-exec /usr/local/bin/main-computer-exec
+COPY docker/executor/main-computer-exec /usr/local/bin/main-computer-exec
 RUN chmod 0755 /usr/local/bin/main-computer-exec \
     && mkdir -p /inputs /outputs /workspace \
     && chmod 0777 /outputs /workspace

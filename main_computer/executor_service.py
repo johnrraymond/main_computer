@@ -28,6 +28,7 @@ ProcessTerminator = Callable[[int], None]
 DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
 DEFAULT_LIGHT_CHECK_INTERVAL_S = 180.0
 DEFAULT_DOCKER_START_TIMEOUT_S = 45.0
+DEFAULT_EXECUTOR_IMAGE = "main-computer-executor:latest"
 SERVICE_NAME = "main-computer-executor-service"
 EXECUTOR_SERVICE_PID_FILENAME = ".main_computer_executor_service.pid"
 
@@ -384,6 +385,7 @@ class ExecutorService:
         self.wsl_distribution = (wsl_distribution or "MainComputerExecutorTest").strip() or "MainComputerExecutorTest"
         self.wsl_command = (wsl_command or "wsl.exe").strip() or "wsl.exe"
         self.docker_command = (docker_command or "docker").strip() or "docker"
+        self.executor_image = (os.environ.get("MAIN_COMPUTER_EXECUTOR_IMAGE") or DEFAULT_EXECUTOR_IMAGE).strip() or DEFAULT_EXECUTOR_IMAGE
         self.powershell_command = (powershell_command or "powershell.exe").strip() or "powershell.exe"
         self.compose_file = Path(compose_file) if compose_file else self.root / "docker-compose.dev.yml"
         if not self.compose_file.is_absolute():
@@ -443,7 +445,7 @@ class ExecutorService:
     def watch(self, *, max_watch_loops: int | None = None) -> dict[str, Any]:
         """Stay resident and finish boot before switching to keepalive.
 
-        Until WSL, Docker, and the compose stack are all proven ready, watch mode
+        Until WSL, Docker, and the executor image build are all proven ready, watch mode
         keeps trying the full boot reconcile on the heartbeat cadence. Once boot
         is proven, watch mode only runs light keepalive checks unless the
         repo-owned executor entrypoint changes.
@@ -887,8 +889,8 @@ class ExecutorService:
     def _light_keepalive(self, state: dict[str, Any]) -> dict[str, Any]:
         """Run the cheapest useful checks after boot.
 
-        The light path proves that Docker still answers and that the compose
-        project still has running services. It does not touch WSL because WSL
+        The light path proves that Docker still answers and that the executor
+        Docker image is still available. It does not touch WSL because WSL
         repair/proof is handled by full boot reconcile before boot is complete.
         """
 
@@ -1434,30 +1436,33 @@ class ExecutorService:
                 message="debug compose file is missing",
                 compose_file=str(self.compose_file),
                 compose_project=self.compose_project or None,
+                image=self.executor_image,
             )
 
-        command = self._compose_command("up", "-d")
+        command = self._compose_command("--profile", "executor", "build", "executor-image")
         result = self._run(
             command,
-            timeout=120,
+            timeout=300,
         )
         ok = result.returncode == 0
         output = result.stderr or result.stdout or ""
         payload = self._component(
             ok=ok,
             state="ready" if ok else "down",
-            message="debug compose stack is up" if ok else "debug compose stack did not start",
+            message="executor Docker image is built" if ok else "executor Docker image build failed",
             compose_file=str(self.compose_file),
             compose_project=self.compose_project or None,
-            started=ok,
+            image=self.executor_image,
+            built=ok,
+            started=False,
             stdout=_truncate(result.stdout or "", 2000),
             error="" if ok else _truncate(output),
         )
         if not ok:
             payload.update(
                 {
-                    "warning": _compose_failure_warning(output, action="start the debug stack"),
-                    "remediation": _compose_failure_remediation(output, action="the debug stack"),
+                    "warning": _compose_failure_warning(output, action="build the executor Docker image"),
+                    "remediation": _compose_failure_remediation(output, action="the executor Docker image build"),
                     "returncode": result.returncode,
                     "failed_command": _command_display(command),
                 }
@@ -1472,39 +1477,31 @@ class ExecutorService:
                 message="debug compose file is missing",
                 compose_file=str(self.compose_file),
                 compose_project=self.compose_project or None,
+                image=self.executor_image,
             )
 
-        command = self._compose_command("ps", "--services", "--status", "running")
+        command = [self.docker_command, "image", "inspect", self.executor_image]
         result = self._run(
             command,
             timeout=15,
         )
-        services = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
-        ok = result.returncode == 0 and bool(services)
+        ok = result.returncode == 0
         output = result.stderr or result.stdout or ""
         payload = self._component(
             ok=ok,
             state="ready" if ok else "down",
-            message="compose stack has running services" if ok else "compose stack has no running services",
+            message="executor Docker image is available" if ok else "executor Docker image is missing",
             compose_file=str(self.compose_file),
             compose_project=self.compose_project or None,
-            running_services=services,
-            error="" if result.returncode == 0 else _truncate(output),
+            image=self.executor_image,
+            built=ok,
+            error="" if ok else _truncate(output),
         )
-        if result.returncode != 0:
+        if not ok:
             payload.update(
                 {
-                    "warning": _compose_failure_warning(output, action="inspect the debug stack"),
-                    "remediation": _compose_failure_remediation(output, action="the debug stack"),
-                    "returncode": result.returncode,
-                    "failed_command": _command_display(command),
-                }
-            )
-        elif not services:
-            payload.update(
-                {
-                    "warning": "Docker Compose reported zero running services for the debug stack.",
-                    "remediation": "Inspect docker compose ps -a and docker compose logs for exited containers, then restart the debug stack.",
+                    "warning": "Docker executor image is missing; the executor service will rebuild it.",
+                    "remediation": "Re-run start_v2.bat or run the executor service boot check to rebuild the executor image.",
                     "returncode": result.returncode,
                     "failed_command": _command_display(command),
                 }
