@@ -36,10 +36,10 @@ class FakeRunner:
             return subprocess.CompletedProcess(command, 0, stdout="Docker Compose version ok\n", stderr="")
         if command[:2] and command[0].endswith("docker") and command[1] == "ps":
             return subprocess.CompletedProcess(command, 0, stdout="main-computer-dev-hub-1\n", stderr="")
-        if "compose" in command and "up" in command and "-d" in command:
-            return subprocess.CompletedProcess(command, 0, stdout="started\n", stderr="")
-        if "compose" in command and "ps" in command:
-            return subprocess.CompletedProcess(command, 0, stdout="hub\nexecutor-image\n", stderr="")
+        if "compose" in command and "build" in command and "executor-image" in command:
+            return subprocess.CompletedProcess(command, 0, stdout="built executor image\n", stderr="")
+        if command[:3] and command[0].endswith("docker") and command[1:3] == ["image", "inspect"]:
+            return subprocess.CompletedProcess(command, 0, stdout='[{"Id":"sha256:test"}]\n', stderr="")
         return subprocess.CompletedProcess(command, 99, stdout="", stderr=f"unexpected command: {command!r}")
 
 
@@ -49,7 +49,16 @@ def make_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
     executor.parent.mkdir(parents=True)
     executor.write_text("#!/usr/bin/env bash\necho main-computer-exec 1\n", encoding="utf-8")
     compose = repo / "docker-compose.dev.yml"
-    compose.write_text("services:\n  hub:\n    image: test\n", encoding="utf-8")
+    compose.write_text(
+        "services:\n"
+        "  executor-image:\n"
+        "    image: main-computer-executor:latest\n"
+        "    build:\n"
+        "      context: .\n"
+        "      dockerfile: docker/executor/Dockerfile\n"
+        "    profiles: [\"executor\"]\n",
+        encoding="utf-8",
+    )
     fake_wsl = tmp_path / "wsl.exe"
     fake_wsl.write_text("", encoding="utf-8")
     fake_wsl.chmod(0o755)
@@ -96,7 +105,17 @@ def test_parse_wsl_distributions_tolerates_nul_and_default_marker() -> None:
     ]
 
 
-def test_boot_repairs_wsl_shim_to_repo_entrypoint_and_starts_compose(tmp_path: Path) -> None:
+def test_executor_dockerfile_copies_entrypoint_from_context_root() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    dockerfile = (repo / "docker" / "executor" / "Dockerfile").read_text(encoding="utf-8")
+    compose = (repo / "docker-compose.dev.yml").read_text(encoding="utf-8")
+
+    assert "dockerfile: docker/executor/Dockerfile" in compose
+    assert "COPY docker/executor/main-computer-exec /usr/local/bin/main-computer-exec" in dockerfile
+    assert "COPY main-computer-exec /usr/local/bin/main-computer-exec" not in dockerfile
+
+
+def test_boot_repairs_wsl_shim_to_repo_entrypoint_and_builds_executor_image(tmp_path: Path) -> None:
     repo, fake_wsl, fake_docker = make_repo(tmp_path)
     runner = FakeRunner()
     service = ExecutorService(
@@ -113,7 +132,9 @@ def test_boot_repairs_wsl_shim_to_repo_entrypoint_and_starts_compose(tmp_path: P
     assert state["state"] == "ready"
     assert state["wsl"]["entrypoint_contract_ok"] is True
     assert state["docker"]["engine_available"] is True
-    assert state["compose"]["started"] is True
+    assert state["compose"]["built"] is True
+    assert state["compose"]["started"] is False
+    assert state["compose"]["image"] == "main-computer-executor:latest"
     assert service.state_path.exists()
 
     shim_commands = [call for call in runner.calls if call[:1] == [str(fake_wsl)] and "cat > /usr/local/bin/main-computer-exec" in call[-1]]
@@ -123,8 +144,11 @@ def test_boot_repairs_wsl_shim_to_repo_entrypoint_and_starts_compose(tmp_path: P
     assert "docker/executor/main-computer-exec" in shim_script
     assert "$@" in shim_script
 
-    compose_up_calls = [call for call in runner.calls if call[:1] == [str(fake_docker)] and "compose" in call and "up" in call]
-    assert len(compose_up_calls) == 1
+    compose_build_calls = [call for call in runner.calls if call[:1] == [str(fake_docker)] and "compose" in call and "build" in call]
+    assert len(compose_build_calls) == 1
+    assert "--profile" in compose_build_calls[0]
+    assert "executor" in compose_build_calls[0]
+    assert compose_build_calls[0][-2:] == ["build", "executor-image"]
 
     loaded = load_executor_service_state(repo)
     assert loaded["ok"] is True
@@ -193,7 +217,7 @@ def test_boot_reports_docker_timeout_without_traceback(tmp_path: Path) -> None:
 
 class ComposeAddressPoolFailureRunner(FakeRunner):
     def __call__(self, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if "compose" in command and "up" in command and "-d" in command:
+        if "compose" in command and "build" in command and "executor-image" in command:
             return subprocess.CompletedProcess(
                 command,
                 1,
@@ -209,7 +233,7 @@ class ComposeAddressPoolFailureRunner(FakeRunner):
         return super().__call__(command, **kwargs)
 
 
-def test_boot_warns_when_compose_stack_cannot_allocate_network(tmp_path: Path) -> None:
+def test_boot_warns_when_executor_image_build_cannot_allocate_network(tmp_path: Path) -> None:
     repo, fake_wsl, fake_docker = make_repo(tmp_path)
     output_lines: list[str] = []
     service = ExecutorService(
@@ -267,8 +291,11 @@ def test_watch_retries_full_boot_on_heartbeat_until_boot_is_proven(tmp_path: Pat
     assert state["boot_proven"] is True
     assert runner.docker_version_attempts == 3
     assert [value for value in sleep_calls if value == 30] == [30, 30]
-    compose_up_calls = [call for call in runner.calls if call[:1] == [str(fake_docker)] and "compose" in call and "up" in call]
-    assert len(compose_up_calls) == 1
+    compose_build_calls = [call for call in runner.calls if call[:1] == [str(fake_docker)] and "compose" in call and "build" in call]
+    assert len(compose_build_calls) == 1
+    assert "--profile" in compose_build_calls[0]
+    assert "executor" in compose_build_calls[0]
+    assert compose_build_calls[0][-2:] == ["build", "executor-image"]
 
 
 def test_watch_mode_heartbeats_without_repeating_expensive_boot_work(tmp_path: Path) -> None:
@@ -288,11 +315,11 @@ def test_watch_mode_heartbeats_without_repeating_expensive_boot_work(tmp_path: P
 
     assert state["ok"] is True
     shim_calls = [call for call in runner.calls if call[:1] == [str(fake_wsl)] and "cat > /usr/local/bin/main-computer-exec" in call[-1]]
-    compose_up_calls = [call for call in runner.calls if call[:1] == [str(fake_docker)] and "compose" in call and "up" in call]
-    docker_ps_calls = [call for call in runner.calls if call[:2] == [str(fake_docker), "ps"]]
+    compose_build_calls = [call for call in runner.calls if call[:1] == [str(fake_docker)] and "compose" in call and "build" in call]
+    docker_image_inspect_calls = [call for call in runner.calls if call[:3] == [str(fake_docker), "image", "inspect"]]
     assert len(shim_calls) == 1
-    assert len(compose_up_calls) == 1
-    assert docker_ps_calls == []
+    assert len(compose_build_calls) == 1
+    assert docker_image_inspect_calls == []
 
 
 def test_missing_wsl_distro_installs_without_reset_then_finishes_boot(tmp_path: Path) -> None:
@@ -499,8 +526,10 @@ def test_executor_compose_project_env_scopes_dev_template_for_installed_modes(mo
         "main-computer-dev-main-computer-test-debug",
         "-f",
         str(repo / "docker-compose.dev.yml"),
-        "up",
-        "-d",
+        "--profile",
+        "executor",
+        "build",
+        "executor-image",
     ]
     assert expected in runner.calls
     assert state["compose"]["compose_project"] == "main-computer-dev-main-computer-test-debug"

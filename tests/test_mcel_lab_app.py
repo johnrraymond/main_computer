@@ -36,6 +36,7 @@ def test_mcel_lab_is_registered_as_separate_application() -> None:
     assert "<!-- @include applications/scripts/mcel-supervisor.js -->" in html
     assert "<!-- @include applications/scripts/mcel-kernel.js -->" in html
     assert "<!-- @include applications/scripts/mcel-core.js -->" in html
+    assert "<!-- @include applications/scripts/task-manager-mcel.js -->" in html
     assert "<!-- @include applications/scripts/mcel-lab.js -->" in html
     assert (
         html.index("mcel-contract.js")
@@ -56,6 +57,7 @@ def test_mcel_lab_is_registered_as_separate_application() -> None:
         < html.index("mcel-supervisor.js")
         < html.index("mcel-kernel.js")
         < html.index("mcel-core.js")
+        < html.index("task-manager-mcel.js")
         < html.index("mcel-lab.js")
     )
     assert "<!-- @include applications/scripts/dom-bindings/mcel-lab.js -->" in dom_bindings
@@ -74,6 +76,7 @@ def test_mcel_lab_mounts_task_manager_as_canonical_specimen() -> None:
     app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
     bindings = (WEB_APP / "scripts" / "dom-bindings" / "mcel-lab.js").read_text(encoding="utf-8")
     lab = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    adapter = (WEB_APP / "scripts" / "task-manager-mcel.js").read_text(encoding="utf-8")
     css = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
 
     assert 'id="mcel-canonical-app-frame"' in app
@@ -114,16 +117,19 @@ def test_mcel_lab_mounts_task_manager_as_canonical_specimen() -> None:
     assert "injectMcelCanonicalAppSpecimenChrome" in lab
     assert "applyMcelCanonicalTaskManagerLens" in lab
     assert "applyMcelCanonicalTaskManagerEnrichment" in lab
-    assert "MCEL_CANONICAL_TASK_MANAGER_REGION_ENRICHMENT" in lab
-    assert "MCEL_CANONICAL_TASK_MANAGER_COMPONENT_ENRICHMENT" in lab
-    assert "MCEL_CANONICAL_TASK_MANAGER_FIELD_ENRICHMENT" in lab
-    assert "MCEL_CANONICAL_TASK_MANAGER_PANEL_LENS" in lab
-    assert "MCEL_CANONICAL_TASK_MANAGER_ACTION_LENS" in lab
+    assert "mcelTaskManagerMcelAdapter" in lab
+    assert "applyTaskManagerMcelSemantics" in lab
+    assert "TaskManagerMcel" in lab
+    assert "REGION_ENRICHMENT" in adapter
+    assert "COMPONENT_ENRICHMENT" in adapter
+    assert "FIELD_ENRICHMENT" in adapter
+    assert "PANEL_LENS" in adapter
+    assert "ACTION_LENS" in adapter
     assert "MCEL_CANONICAL_SPECIMEN_LENS_STYLE_ID" in lab
-    assert "MCEL_CANONICAL_TASK_MANAGER_ENRICHMENT_STYLE_ID" in lab
-    assert "data-mcel-task-enrichment" in lab
-    assert "data-mcel-fit" in lab
-    assert "data-mcel-region" in lab
+    assert "ENRICHMENT_STYLE_ID" in adapter
+    assert "data-mcel-task-enrichment" in adapter
+    assert "data-mcel-fit" in adapter
+    assert "data-mcel-region" in adapter
     assert "mcel-lens-hud" in lab
     assert "data-mcel-action-risk" in lab
     assert "MCEL_CANONICAL_SPECIMEN_RIBBON_ID" in lab
@@ -164,6 +170,7 @@ def test_mcel_lab_task_manager_specimen_route_is_valid_and_observational() -> No
 def test_mcel_lab_task_manager_lens_is_lab_only_and_risk_aware() -> None:
     app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
     lab = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    adapter = (WEB_APP / "scripts" / "task-manager-mcel.js").read_text(encoding="utf-8")
     css = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
     specimen_block = lab[
         lab.index("const MCEL_CANONICAL_TASK_MANAGER_REQUIRED_IDS"):
@@ -177,8 +184,8 @@ def test_mcel_lab_task_manager_lens_is_lab_only_and_risk_aware() -> None:
     assert "applyMcelCanonicalTaskManagerLens" in specimen_block
     assert "data-mcel-canonical-lens" in specimen_block
     assert "data-mcel-action-risk" in specimen_block
-    assert "process-destructive" in specimen_block
-    assert "deferred-mutation" in specimen_block
+    assert "process-destructive" in adapter
+    assert "deferred-mutation" in adapter
     assert "lab-side inspector lens active" in specimen_block
     assert "lens application never clicks Task Manager controls" in specimen_block
     assert "no inline labels or risk badges" in specimen_block
@@ -192,21 +199,22 @@ def test_mcel_lab_task_manager_lens_is_lab_only_and_risk_aware() -> None:
 def test_mcel_lab_task_manager_enrichment_is_role_based_before_render() -> None:
     app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
     lab = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    adapter = (WEB_APP / "scripts" / "task-manager-mcel.js").read_text(encoding="utf-8")
     specimen_block = lab[
         lab.index("const MCEL_CANONICAL_TASK_MANAGER_REQUIRED_IDS"):
         lab.index("function openMcelDiagnosticsDrawer")
     ]
-    enrichment_style = lab[
-        lab.index("function ensureMcelCanonicalTaskManagerEnrichmentStyle"):
-        lab.index("function applyMcelElementEnrichment")
+    enrichment_style = adapter[
+        adapter.index("function ensureEnrichmentStyle"):
+        adapter.index("function applyElementEnrichment")
     ]
 
     assert "Enrich MCEL Model" in app
     assert "reads the legacy DOM into a MCEL enrichment model" in app
     assert "regions, components, fields, actions, and fit laws" in specimen_block
-    assert "structural containers preserve app geometry" in specimen_block
-    assert "constrained regions use compact leaf-control fit policies" in specimen_block
-    assert "checkbox controls reserve a fixed input slot and shrinkable label slot" in specimen_block
+    assert "structural containers preserve app geometry" in adapter
+    assert "constrained regions use compact leaf-control fit policies" in adapter
+    assert "checkbox controls reserve a fixed input slot and shrinkable label slot" in adapter
     assert "data-mcel-layout-region" in specimen_block
     assert "[data-mcel-region=\"command-status-rail\"]" in enrichment_style
     assert "[data-mcel-fit=\"compact-controls\"]" in enrichment_style
