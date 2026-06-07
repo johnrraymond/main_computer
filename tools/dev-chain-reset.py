@@ -48,6 +48,7 @@ DEFAULT_CHAIN_ID = 42424242
 DEFAULT_HOST_RPC_URL = "http://127.0.0.1:18545"
 DEFAULT_PROJECT_NAME = "main-computer-dev"
 DEFAULT_DEPLOYMENT_ENVIRONMENT = "dev"
+DEFAULT_EXTERNAL_CHAIN_SOURCE_KIND = "external-chain-deploy"
 DEPLOYMENT_SCHEMA = "main-computer.deployment.v1"
 HUB_ADMIN_WALLET_SCHEMA = "main-computer.hub-admin-wallet.v1"
 HUB_ADMIN_WALLET_FILENAME = "hub-admin-wallet.json"
@@ -164,6 +165,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--container-rpc-url", default=None)
     parser.add_argument(
+        "--external-chain",
+        action="store_true",
+        help="Deploy to an already-running chain instead of creating/replacing an Anvil container.",
+    )
+    parser.add_argument(
+        "--external-docker-network",
+        default=None,
+        help="Docker network used by the already-running chain. Needed when Foundry runs in Docker.",
+    )
+    parser.add_argument(
+        "--external-chain-container",
+        default=None,
+        help="Container name for the already-running chain/RPC node, recorded in deployment metadata.",
+    )
+    parser.add_argument(
+        "--source-kind",
+        default=None,
+        help="Source kind recorded in the sanitized runtime deployment publication.",
+    )
+    parser.add_argument(
         "--port-strategy",
         choices=("replace-project", "replace-any", "auto", "fail"),
         default="replace-project",
@@ -223,15 +244,23 @@ def validate_environment_name(value: str) -> str:
 
 
 def network_name(args: argparse.Namespace, rid: str) -> str:
+    if getattr(args, "external_chain", False) and getattr(args, "external_docker_network", None):
+        return str(args.external_docker_network)
     return f"{args.project_name}-soft-{rid}"
 
 
 def container_name(args: argparse.Namespace, rid: str) -> str:
+    if getattr(args, "external_chain", False) and getattr(args, "external_chain_container", None):
+        return str(args.external_chain_container)
     return f"{args.project_name}-chain-{rid}"
 
 
 def container_rpc_url(args: argparse.Namespace, rid: str) -> str:
-    return args.container_rpc_url or f"http://{container_name(args, rid)}:8545"
+    if args.container_rpc_url:
+        return args.container_rpc_url
+    if getattr(args, "external_chain", False):
+        return args.host_rpc_url
+    return f"http://{container_name(args, rid)}:8545"
 
 
 def parse_offices(value: str | None) -> list[str]:
@@ -386,32 +415,40 @@ def host_rpc_url_with_port(url: str, port: int) -> str:
     return urlunsplit((parsed.scheme, netloc, parsed.path or "", parsed.query, parsed.fragment))
 
 
+def docker_run_base(args: argparse.Namespace, *, use_network: bool = False, rid: str | None = None) -> list[str]:
+    command = [docker_executable(), "run", "--rm"]
+    if use_network:
+        if not rid:
+            raise ValueError("rid is required for networked Docker commands")
+        command.extend(["--network", network_name(args, rid)])
+    return command
+
+
 def docker_deploy_command(args: argparse.Namespace, spec: DeploymentSpec, contracts_root: Path, rid: str) -> list[str]:
     root = repo_root()
-    return [
-        docker_executable(),
-        "run",
-        "--rm",
-        "--network",
-        network_name(args, rid),
-        "-v",
-        f"{docker_mount_path(root)}:/workspace",
-        "-w",
-        "/workspace/contracts",
-        "--entrypoint",
-        "forge",
-        args.foundry_image,
-        "create",
-        spec.target,
-        "--rpc-url",
-        container_rpc_url(args, rid),
-        "--private-key",
-        args.private_key,
-        "--broadcast",
-        "--json",
-        "--constructor-args",
-        *spec.constructor_args,
-    ]
+    command = docker_run_base(args, use_network=True, rid=rid)
+    command.extend(
+        [
+            "-v",
+            f"{docker_mount_path(root)}:/workspace",
+            "-w",
+            "/workspace/contracts",
+            "--entrypoint",
+            "forge",
+            args.foundry_image,
+            "create",
+            spec.target,
+            "--rpc-url",
+            container_rpc_url(args, rid),
+            "--private-key",
+            args.private_key,
+            "--broadcast",
+            "--json",
+            "--constructor-args",
+            *spec.constructor_args,
+        ]
+    )
+    return command
 
 
 def docker_cast_command(
@@ -423,11 +460,7 @@ def docker_cast_command(
     use_network: bool = False,
 ) -> list[str]:
     actual_root = root or repo_root()
-    command = [docker_executable(), "run", "--rm"]
-    if use_network:
-        if not rid:
-            raise ValueError("rid is required for networked cast commands")
-        command.extend(["--network", network_name(args, rid)])
+    command = docker_run_base(args, use_network=use_network, rid=rid)
     command.extend(
         [
             "-v",
@@ -923,23 +956,27 @@ def deploy_payload(
     deployments: dict[str, dict],
     hub_admin: dict | None = None,
 ) -> dict:
+    chain_payload = {
+        "chain_id": args.chain_id,
+        "host_rpc_url": args.host_rpc_url,
+        "rpc_url": args.host_rpc_url,
+        "container_rpc_url": container_rpc_url(args, rid),
+        "network": network_name(args, rid),
+        "container": container_name(args, rid),
+    }
+    if not getattr(args, "external_chain", False):
+        chain_payload["accounts"] = args.accounts
+        chain_payload["mnemonic"] = args.mnemonic
+
     return {
         "schema": DEPLOYMENT_SCHEMA,
         "environment": validate_environment_name(args.environment),
         "project_name": args.project_name,
+        "source_kind": args.source_kind or (DEFAULT_EXTERNAL_CHAIN_SOURCE_KIND if getattr(args, "external_chain", False) else "dev-chain-reset"),
         "run_id": rid,
         "dry_run": dry_run,
         "created_at": dt.datetime.now(dt.UTC).isoformat(),
-        "chain": {
-            "chain_id": args.chain_id,
-            "host_rpc_url": args.host_rpc_url,
-            "rpc_url": args.host_rpc_url,
-            "container_rpc_url": container_rpc_url(args, rid),
-            "network": network_name(args, rid),
-            "container": container_name(args, rid),
-            "accounts": args.accounts,
-            "mnemonic": args.mnemonic,
-        },
+        "chain": chain_payload,
         "offices": office_records(args),
         "deployer": {
             "address": DEFAULT_OFFICE_KEYS[0]["address"] if args.private_key == DEFAULT_PRIVATE_KEY else None,
@@ -979,7 +1016,7 @@ def public_deployment_payload(payload: dict) -> dict:
         "deployments": public_contract_records(payload.get("deployments") or {}),
         "offices": public_office_records(payload.get("offices") or []),
         "source": {
-            "kind": "dev-chain-reset",
+            "kind": payload.get("source_kind") or "dev-chain-reset",
             "project_name": payload.get("project_name") or DEFAULT_PROJECT_NAME,
         },
     }
@@ -1107,6 +1144,13 @@ def validate_args(args: argparse.Namespace) -> None:
     host_rpc_endpoint(args.host_rpc_url)
     if args.host_port is not None:
         args.host_rpc_url = host_rpc_url_with_port(args.host_rpc_url, args.host_port)
+    if getattr(args, "external_chain", False):
+        if not str(args.container_rpc_url or "").strip():
+            args.container_rpc_url = args.host_rpc_url
+        if not str(args.external_docker_network or "").strip():
+            raise ValueError("--external-docker-network is required with --external-chain")
+        if not str(args.external_chain_container or "").strip():
+            args.external_chain_container = None
 
 
 def print_plan(args: argparse.Namespace, rid: str, hub_admin: HubAdminWallet | None = None) -> None:
@@ -1117,21 +1161,28 @@ def print_plan(args: argparse.Namespace, rid: str, hub_admin: HubAdminWallet | N
     log(f"Run directory: {run_dir}")
     log(f"Host RPC URL: {args.host_rpc_url}")
     log(f"Container RPC URL: {container_rpc_url(args, rid)}")
-    log(f"Host port strategy: {args.port_strategy}")
+    if getattr(args, "external_chain", False):
+        log("Chain mode: external already-running chain")
+        log(f"External Docker network: {network_name(args, rid)}")
+        log(f"External chain container: {container_name(args, rid)}")
+    else:
+        log(f"Host port strategy: {args.port_strategy}")
     if hub_admin is not None:
         log(f"Hub admin wallet: {metadata_path(hub_admin.path, root)}")
         log(f"Hub admin address: {hub_admin.address}")
     log()
     log("Planned commands:")
-    log("$ " + display_command(network_inspect_command(args, rid)) + " || " + display_command(network_create_command(args, rid)))
-    log("$ " + display_command(container_remove_command(args, rid)) + "  # ignored if container does not exist")
-    log("$ " + display_command(anvil_command(args, rid)))
+    if getattr(args, "external_chain", False):
+        log("# using existing external chain/RPC; no Anvil container will be started or replaced")
+    else:
+        log("$ " + display_command(network_inspect_command(args, rid)) + " || " + display_command(network_create_command(args, rid)))
+        log("$ " + display_command(container_remove_command(args, rid)) + "  # ignored if container does not exist")
+        log("$ " + display_command(anvil_command(args, rid)))
     if not args.no_deploy:
         if hub_admin is not None:
             log("$ " + display_command(hub_admin_fund_command(args, rid, hub_admin, root)))
         for spec in deployment_specs(args, hub_admin.address if hub_admin else None):
             log("$ " + display_command(docker_deploy_command(args, spec, root / "contracts", rid)))
-
 
 
 def deployment_output_root(args: argparse.Namespace, root: Path) -> Path:
@@ -1199,7 +1250,7 @@ def main(argv: list[str] | None = None) -> int:
             deployment_output_root(args, root),
             action="run dev-chain reset",
         )
-        if args.port_strategy == "auto" and not args.dry_run:
+        if args.port_strategy == "auto" and not args.dry_run and not getattr(args, "external_chain", False):
             prepare_host_rpc_port(args)
 
         create_admin_wallet = bool(args.yes and not args.dry_run)
@@ -1222,12 +1273,15 @@ def main(argv: list[str] | None = None) -> int:
             log("Refusing to run without --yes. Use --dry-run to preview.")
             return 2
 
-        ensure_network(args, rid)
-        remove_existing_container(args, rid)
-        if args.port_strategy != "auto":
-            prepare_host_rpc_port(args)
-        run_command(anvil_command(args, rid))
-        wait_for_rpc(args.host_rpc_url, args.chain_id, args.wait_timeout_s)
+        if getattr(args, "external_chain", False):
+            wait_for_rpc(args.host_rpc_url, args.chain_id, args.wait_timeout_s)
+        else:
+            ensure_network(args, rid)
+            remove_existing_container(args, rid)
+            if args.port_strategy != "auto":
+                prepare_host_rpc_port(args)
+            run_command(anvil_command(args, rid))
+            wait_for_rpc(args.host_rpc_url, args.chain_id, args.wait_timeout_s)
 
         deployments: dict[str, dict]
         if args.no_deploy:

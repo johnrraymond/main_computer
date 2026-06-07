@@ -29,9 +29,27 @@ This publishes `runtime/deployments/current.json`, which the app verifies before
 
 ## Start the hub on the host
 
+Use the named Hub network profiles rather than hardcoding the Hub bind port.
+The dev profile listens on `127.0.0.1:8770` and talks to the Anvil dev chain:
+
 ```powershell
-$env:MAIN_COMPUTER_HUB_ROOT = "runtime\hub"
-python -m main_computer.cli hub --host 127.0.0.1 --port 8770
+python -m main_computer.cli hub --network dev
+```
+
+The local QBFT test profile listens on `127.0.0.1:8780` and talks to the
+non-validator RPC node at `http://127.0.0.1:30010` after the smoke lab has
+published `runtime/deployments/current.json`:
+
+```powershell
+python .\tools\smoke_besu_qbft_one_validator.py up
+python .\tools\smoke_besu_qbft_one_validator.py deploy
+python -m main_computer.cli hub --network test
+```
+
+Override the Hub bind port only when running extra instances:
+
+```powershell
+python -m main_computer.cli hub --network test --port 8888 --hub-runtime-dir .\runtime\hub\test-alt
 ```
 
 ## Pull a model into host or remote Ollama

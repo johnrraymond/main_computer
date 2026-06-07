@@ -32,7 +32,7 @@ exclude = [
 ]
 
 [tool.setuptools.package-data]
-main_computer = ["web/**/*.html", "web/**/*.css", "web/**/*.js", "web/**/*.map", "web/**/*.json", "web/**/*.md", "web/**/LICENSE"]
+main_computer = ["config/*.json", "web/**/*.html", "web/**/*.css", "web/**/*.js", "web/**/*.map", "web/**/*.json", "web/**/*.md", "web/**/LICENSE"]
 
 [tool.pytest.ini_options]
 markers = [

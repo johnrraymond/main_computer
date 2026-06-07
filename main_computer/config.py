@@ -13,6 +13,12 @@ DEFAULT_ENERGY_CHAIN_ID = 42424242
 DEFAULT_XLAG_CHAIN_ID = 42424242
 DEFAULT_HUB_URL = "http://127.0.0.1:8770"
 DEFAULT_HUB_ROOT = Path("runtime/hub")
+DEFAULT_HUB_NETWORK = "dev"
+DEFAULT_HUB_NETWORK_KIND = "dev"
+DEFAULT_HUB_BIND_HOST = "127.0.0.1"
+DEFAULT_HUB_BIND_PORT = 8770
+DEFAULT_CHAIN_RPC_URL = DEFAULT_ENERGY_CHAIN_RPC_URL
+DEFAULT_CHAIN_ID = DEFAULT_ENERGY_CHAIN_ID
 DEFAULT_ONLYOFFICE_MODE = "docker"
 DEFAULT_ONLYOFFICE_PUBLIC_URL = "http://127.0.0.1:18085"
 DEFAULT_ONLYOFFICE_INTERNAL_URL = DEFAULT_ONLYOFFICE_PUBLIC_URL
@@ -137,6 +143,16 @@ class MainComputerConfig:
     hub_worker_endpoint: str | None = None
     hub_credits_per_request: int = 1
     hub_root: Path = DEFAULT_HUB_ROOT
+    hub_network: str = DEFAULT_HUB_NETWORK
+    hub_network_display_name: str = "Main Computer Local Devnet"
+    hub_network_kind: str = DEFAULT_HUB_NETWORK_KIND
+    hub_network_config_path: Path | None = None
+    hub_bind_host: str = DEFAULT_HUB_BIND_HOST
+    hub_bind_port: int = DEFAULT_HUB_BIND_PORT
+    chain_rpc_url: str | None = DEFAULT_CHAIN_RPC_URL
+    chain_id: int | None = DEFAULT_CHAIN_ID
+    chain_rpc_url_source: str = "default"
+    chain_id_source: str = "default"
     onlyoffice_enabled: bool = False
     onlyoffice_mode: str = DEFAULT_ONLYOFFICE_MODE
     onlyoffice_public_url: str = DEFAULT_ONLYOFFICE_PUBLIC_URL
@@ -216,9 +232,26 @@ class MainComputerConfig:
             hub_credits_per_request = int(os.environ.get("MAIN_COMPUTER_HUB_CREDITS_PER_REQUEST", "1"))
         except ValueError:
             hub_credits_per_request = 1
+        try:
+            hub_bind_port = int(os.environ.get("MAIN_COMPUTER_HUB_PORT", str(DEFAULT_HUB_BIND_PORT)))
+        except ValueError:
+            hub_bind_port = DEFAULT_HUB_BIND_PORT
         energy_chain_rpc_url = os.environ.get("MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL") or DEFAULT_ENERGY_CHAIN_RPC_URL
         energy_chain_rpc_url_source = "env" if os.environ.get("MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL") else "default"
         energy_chain_id, energy_chain_id_source = _energy_chain_id_from_env()
+        chain_rpc_url = os.environ.get("MAIN_COMPUTER_CHAIN_RPC_URL") or energy_chain_rpc_url
+        chain_rpc_url_source = "env" if os.environ.get("MAIN_COMPUTER_CHAIN_RPC_URL") else energy_chain_rpc_url_source
+        chain_id_env = os.environ.get("MAIN_COMPUTER_CHAIN_ID")
+        if chain_id_env:
+            try:
+                chain_id = int(chain_id_env, 0)
+                chain_id_source = "env"
+            except ValueError:
+                chain_id = energy_chain_id
+                chain_id_source = "default-invalid-env"
+        else:
+            chain_id = energy_chain_id
+            chain_id_source = energy_chain_id_source
         xlag_contract_address, xlag_contract_address_source = _env_text("MAIN_COMPUTER_XLAG_CONTRACT_ADDRESS")
         xlag_chain_id, xlag_chain_id_source = _xlag_chain_id_from_env()
         alpha_beta_lockout_contract_address, alpha_beta_lockout_contract_address_source = _env_text(
@@ -275,6 +308,18 @@ class MainComputerConfig:
             hub_worker_endpoint=os.environ.get("MAIN_COMPUTER_HUB_WORKER_ENDPOINT") or None,
             hub_credits_per_request=max(1, hub_credits_per_request),
             hub_root=Path(os.environ.get("MAIN_COMPUTER_HUB_ROOT", str(DEFAULT_HUB_ROOT))),
+            hub_network=os.environ.get("MAIN_COMPUTER_HUB_NETWORK", DEFAULT_HUB_NETWORK).strip() or DEFAULT_HUB_NETWORK,
+            hub_network_display_name=os.environ.get("MAIN_COMPUTER_HUB_NETWORK_DISPLAY_NAME", "Main Computer Local Devnet").strip() or "Main Computer Local Devnet",
+            hub_network_kind=os.environ.get("MAIN_COMPUTER_HUB_NETWORK_KIND", DEFAULT_HUB_NETWORK_KIND).strip() or DEFAULT_HUB_NETWORK_KIND,
+            hub_network_config_path=Path(os.environ["MAIN_COMPUTER_HUB_NETWORKS_FILE"])
+            if os.environ.get("MAIN_COMPUTER_HUB_NETWORKS_FILE")
+            else None,
+            hub_bind_host=os.environ.get("MAIN_COMPUTER_HUB_HOST", DEFAULT_HUB_BIND_HOST).strip() or DEFAULT_HUB_BIND_HOST,
+            hub_bind_port=max(1, min(65535, hub_bind_port)),
+            chain_rpc_url=chain_rpc_url,
+            chain_id=chain_id,
+            chain_rpc_url_source=chain_rpc_url_source,
+            chain_id_source=chain_id_source,
             onlyoffice_enabled=env_flag("MAIN_COMPUTER_ONLYOFFICE_ENABLED"),
             onlyoffice_mode=onlyoffice_mode,
             onlyoffice_public_url=(

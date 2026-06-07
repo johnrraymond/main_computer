@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+from dataclasses import replace
 from pathlib import Path
 
 from main_computer.catalog import ProjectCatalog
@@ -12,6 +14,16 @@ from main_computer.harness import run_from_args as run_harness_from_args
 from main_computer.log_rotator import run_from_args as run_log_rotator_from_args
 from main_computer.heartbeat import HeartbeatConfig, serve as serve_heartbeat
 from main_computer.hub import DEFAULT_HUB_PORT, DEFAULT_HUB_WORKER_PORT, register_worker_with_hub, serve_hub, serve_hub_worker
+from main_computer.hub_networks import (
+    HubNetworkConfigError,
+    env_chain_id_override,
+    env_chain_rpc_url_override,
+    env_hub_host_override,
+    env_hub_network_name,
+    env_hub_port_override,
+    env_hub_runtime_dir_override,
+    load_hub_network_registry,
+)
 from main_computer.openclaw_bridge import DEFAULT_OPENCLAW_BRIDGE_PORT, serve as serve_openclaw_bridge
 from main_computer.recurrent_thinking import run_from_args as run_recurrent_thinking_from_args
 from main_computer.static_code_analyzer import emit_report as emit_code_stats_report
@@ -23,7 +35,7 @@ from main_computer.viewport import serve
 
 def _config_from_args(args: argparse.Namespace) -> MainComputerConfig:
     base = MainComputerConfig.from_env()
-    return MainComputerConfig(
+    config = MainComputerConfig(
         workspace=Path(args.workspace) if args.workspace else base.workspace,
         provider=args.provider or base.provider,
         model=args.model or base.model,
@@ -38,6 +50,10 @@ def _config_from_args(args: argparse.Namespace) -> MainComputerConfig:
         energy_chain_id=base.energy_chain_id,
         energy_chain_rpc_url_source=base.energy_chain_rpc_url_source,
         energy_chain_id_source=base.energy_chain_id_source,
+        chain_rpc_url=base.chain_rpc_url,
+        chain_id=base.chain_id,
+        chain_rpc_url_source=base.chain_rpc_url_source,
+        chain_id_source=base.chain_id_source,
         xlag_contract_address=base.xlag_contract_address,
         xlag_contract_address_source=base.xlag_contract_address_source,
         xlag_chain_id=base.xlag_chain_id,
@@ -58,6 +74,12 @@ def _config_from_args(args: argparse.Namespace) -> MainComputerConfig:
         hub_worker_endpoint=getattr(args, "hub_worker_endpoint", None) or base.hub_worker_endpoint,
         hub_credits_per_request=getattr(args, "hub_credits_per_request", None) if getattr(args, "hub_credits_per_request", None) is not None else base.hub_credits_per_request,
         hub_root=getattr(args, "hub_root", None) or base.hub_root,
+        hub_network=base.hub_network,
+        hub_network_display_name=base.hub_network_display_name,
+        hub_network_kind=base.hub_network_kind,
+        hub_network_config_path=base.hub_network_config_path,
+        hub_bind_host=base.hub_bind_host,
+        hub_bind_port=base.hub_bind_port,
         fallback=bool(getattr(args, "fallback", False) or base.fallback),
         install_mode=base.install_mode,
         mode_label=base.mode_label,
@@ -95,6 +117,64 @@ def _config_from_args(args: argparse.Namespace) -> MainComputerConfig:
         onlyoffice_storage_root=base.onlyoffice_storage_root,
     )
 
+    should_resolve_hub_network = bool(
+        getattr(args, "use_hub_network_defaults", False)
+        or getattr(args, "network", None)
+        or env_hub_network_name()
+    )
+    if not should_resolve_hub_network:
+        return config
+
+    registry = load_hub_network_registry(getattr(args, "network_config", None))
+    selected_network = getattr(args, "network", None) or env_hub_network_name() or registry.default_network
+    profile = registry.get(selected_network)
+
+    env_runtime_dir = env_hub_runtime_dir_override()
+    if env_runtime_dir is None and os.environ.get("MAIN_COMPUTER_HUB_ROOT"):
+        env_runtime_dir = base.hub_root
+    env_chain_rpc_url = env_chain_rpc_url_override()
+    if env_chain_rpc_url is None and base.energy_chain_rpc_url_source == "env":
+        env_chain_rpc_url = base.energy_chain_rpc_url
+    env_chain_id = env_chain_id_override()
+    if env_chain_id is None and base.energy_chain_id_source == "env":
+        env_chain_id = base.energy_chain_id
+
+    profile = profile.with_overrides(
+        hub_host=env_hub_host_override(),
+        hub_port=env_hub_port_override(),
+        hub_runtime_dir=env_runtime_dir,
+        chain_rpc_url=env_chain_rpc_url,
+        chain_id=env_chain_id if env_chain_id is not None else profile.chain_id,
+    )
+    profile = profile.with_overrides(
+        hub_host=getattr(args, "host", None),
+        hub_port=getattr(args, "port", None),
+        hub_runtime_dir=getattr(args, "hub_runtime_dir", None) or getattr(args, "hub_root", None),
+        chain_rpc_url=getattr(args, "chain_rpc_url", None),
+        chain_id=getattr(args, "chain_id", None) if getattr(args, "chain_id", None) is not None else profile.chain_id,
+    )
+    profile.validate_runnable()
+
+    source = f"hub-network:{profile.network_key}"
+    return replace(
+        config,
+        hub_network=profile.network_key,
+        hub_network_display_name=profile.display_name,
+        hub_network_kind=profile.kind,
+        hub_network_config_path=registry.source_path,
+        hub_bind_host=profile.hub_host,
+        hub_bind_port=profile.hub_port,
+        hub_root=profile.hub_runtime_dir,
+        hub_url=getattr(args, "hub_url", None) or f"http://{profile.hub_host}:{profile.hub_port}",
+        energy_chain_rpc_url=profile.chain_rpc_url,
+        energy_chain_id=profile.chain_id,
+        energy_chain_rpc_url_source=source,
+        energy_chain_id_source=source,
+        chain_rpc_url=profile.chain_rpc_url,
+        chain_id=profile.chain_id,
+        chain_rpc_url_source=source,
+        chain_id_source=source,
+    )
 
 def cmd_chat(args: argparse.Namespace) -> int:
     computer = MainComputer.build(_config_from_args(args))
@@ -162,7 +242,8 @@ def cmd_heartbeat(args: argparse.Namespace) -> int:
 
 
 def cmd_hub(args: argparse.Namespace) -> int:
-    serve_hub(_config_from_args(args), host=args.host, port=args.port, verbose=args.verbose)
+    config = _config_from_args(args)
+    serve_hub(config, host=config.hub_bind_host, port=config.hub_bind_port, verbose=args.verbose)
     return 0
 
 
@@ -338,8 +419,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     hub = sub.add_parser("hub", help="Start the Main Computer hub broker.")
     add_common_options(hub)
-    hub.add_argument("--host", default="127.0.0.1", help="Host/interface to bind.")
-    hub.add_argument("--port", type=int, default=DEFAULT_HUB_PORT, help="Port to bind.")
+    hub.add_argument("--network", help="Hub network key from the configured network registry. Defaults to the registry default.")
+    hub.add_argument("--network-config", type=Path, help="Path to a Hub network registry JSON file.")
+    hub.add_argument("--host", default=None, help="Hub bind host override. Defaults to the selected network profile.")
+    hub.add_argument("--port", type=int, default=None, help="Hub bind port override. Defaults to the selected network profile.")
+    hub.add_argument("--hub-runtime-dir", type=Path, help="Hub runtime root override. Alias for the profile hub_runtime_dir.")
+    hub.add_argument("--chain-rpc-url", help="Chain RPC URL override for the selected network.")
+    hub.add_argument("--chain-id", help="Chain id override for the selected network. Accepts decimal or 0x-prefixed hex.")
     hub.add_argument(
         "-noverbose",
         "--noverbose",
@@ -348,7 +434,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="Suppress hub request logging.",
     )
-    hub.set_defaults(func=cmd_hub)
+    hub.set_defaults(func=cmd_hub, use_hub_network_defaults=True)
 
     hub_worker = sub.add_parser("hub-worker", help="Start a local model worker and optionally register it with a hub.")
     add_common_options(hub_worker)

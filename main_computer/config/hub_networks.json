@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "default_network": "dev",
+  "networks": {
+    "dev": {
+      "network_key": "dev",
+      "display_name": "Main Computer Local Devnet",
+      "kind": "dev",
+      "chain_id": 42424242,
+      "chain_rpc_url": "http://127.0.0.1:18545",
+      "hub_host": "127.0.0.1",
+      "hub_port": 8770,
+      "hub_runtime_dir": "runtime/hub/dev",
+      "native_currency": {
+        "name": "Main Computer Dev Coin",
+        "symbol": "MCD",
+        "decimals": 18
+      },
+      "contracts": {}
+    },
+    "test": {
+      "network_key": "test",
+      "display_name": "Main Computer Local QBFT Testnet",
+      "kind": "testnet",
+      "chain_id": 42424241,
+      "chain_rpc_url": "http://127.0.0.1:30010",
+      "hub_host": "127.0.0.1",
+      "hub_port": 8780,
+      "hub_runtime_dir": "runtime/hub/test",
+      "native_currency": {
+        "name": "Main Computer Test Coin",
+        "symbol": "MCT",
+        "decimals": 18
+      },
+      "contracts": {}
+    },
+    "main": {
+      "network_key": "main",
+      "display_name": "Main Computer Mainnet",
+      "kind": "mainnet",
+      "chain_id": null,
+      "chain_rpc_url": null,
+      "hub_host": "127.0.0.1",
+      "hub_port": 8790,
+      "hub_runtime_dir": "runtime/hub/main",
+      "native_currency": {
+        "name": "Main Computer",
+        "symbol": "MC",
+        "decimals": 18
+      },
+      "contracts": {}
+    }
+  }
+}

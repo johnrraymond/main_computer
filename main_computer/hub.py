@@ -1883,6 +1883,23 @@ class HubServerHandler(_JsonHandler):
         if path in {"/api/hub/status", "/api/hub/v1/status"}:
             status = self.server.registry.status()
             status["api_version"] = "v1" if path.startswith("/api/hub/v1/") else "legacy"
+            status["network"] = {
+                "network_key": self.server.config.hub_network,
+                "display_name": self.server.config.hub_network_display_name,
+                "kind": self.server.config.hub_network_kind,
+                "chain_id": self.server.config.chain_id,
+                "chain_id_hex": hex(self.server.config.chain_id) if self.server.config.chain_id is not None else None,
+                "chain_rpc_url": self.server.config.chain_rpc_url,
+                "chain_rpc_url_source": self.server.config.chain_rpc_url_source,
+                "chain_id_source": self.server.config.chain_id_source,
+                "hub_url": self.server.config.hub_url,
+                "hub_host": self.server.config.hub_bind_host,
+                "hub_port": self.server.config.hub_bind_port,
+                "hub_runtime_dir": str(self.server.hub_root),
+                "network_config_path": str(self.server.config.hub_network_config_path)
+                if self.server.config.hub_network_config_path
+                else None,
+            }
             status["security"] = {
                 "high_security_default": self.server.config.hub_high_security,
                 "hub_blind_envelopes": self.server.config.hub_high_security,
@@ -2665,6 +2682,10 @@ def serve_hub(config: MainComputerConfig, host: str = "127.0.0.1", port: int = D
     server = HubHttpServer((host, port), config, verbose=verbose)
     scheme_note = "https required for remote peers; local http is allowed for loopback development"
     print(f"Main Computer hub server: http://{host}:{server.server_port}")
+    print(
+        f"Hub network: {config.hub_network} ({config.hub_network_kind}) "
+        f"chain_id={config.chain_id} rpc={config.chain_rpc_url} runtime={server.hub_root}"
+    )
     print(f"Hub security: high-security={config.hub_high_security} profile={HUB_SECURITY_PROFILE}; {scheme_note}")
     print(f"Hub admin/control site: http://{host}:{server.server_port}/admin")
     print(

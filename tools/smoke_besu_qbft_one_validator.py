@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Run and monitor a local four-validator plus non-validator RPC Besu QBFT smoke lab.
 
-This is intentionally self-contained and exploratory. It does not change the
-hub, deploy contracts, or register a chain profile. It only proves that local
-Besu containers can generate a QBFT genesis, start four validator nodes from it,
-peer over a private Docker network, expose validator JSON-RPC for inspection,
-start one non-validator RPC node for hub/tool traffic, produce blocks, and stay
-running long enough to inspect.
+This is intentionally self-contained enough to operate as the local QBFT
+testnet harness. It proves that local Besu containers can generate a QBFT
+genesis, start four validator nodes from it, peer over a private Docker network,
+expose validator JSON-RPC for inspection, start one non-validator RPC node for
+hub/tool traffic, produce blocks, and publish the same deployment-runtime shape
+as the Anvil dev-chain reset path when contracts are deployed.
 
 Default container names:
   smoke-besu-qbft-genesis
@@ -30,6 +30,7 @@ Common workflows:
   python tools/smoke_besu_qbft_one_validator.py up
   python tools/smoke_besu_qbft_one_validator.py monitor
   python tools/smoke_besu_qbft_one_validator.py check
+  python tools/smoke_besu_qbft_one_validator.py deploy
   python tools/smoke_besu_qbft_one_validator.py down
 
 The default command is "up", so this also starts the lab and leaves it running:
@@ -68,10 +69,22 @@ DEFAULT_CHAIN_ID = 42424241
 DEFAULT_PORT_BASE = 30000
 DEFAULT_PORT_OFFSET = 1
 DEFAULT_PUBLIC_RPC_PORT = 30010
+DEFAULT_DEPLOYMENT_ENVIRONMENT = "test"
+DEFAULT_DEPLOYMENT_PROJECT_NAME = "main-computer-qbft-testnet"
+DEFAULT_DEPLOYMENT_SOURCE_KIND = "qbft-smoke-testnet-deploy"
+DEFAULT_FOUNDRY_IMAGE = "ghcr.io/foundry-rs/foundry:latest"
+DEFAULT_DEPLOYER_PRIVATE_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+DEFAULT_FUNDED_ACCOUNT_BALANCE = "0x21e19e0c9bab2400000"  # 10000 * 10^18 wei
+DEFAULT_FUNDED_ACCOUNTS = [
+    "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+    "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+    "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
+    "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
+]
 P2P_PORT = 30303
 RPC_CONTAINER_PORT = 8545
 METADATA_FILE = "smoke-lab.json"
-COMMANDS = {"up", "monitor", "check", "down", "restart", "smoke"}
+COMMANDS = {"up", "monitor", "check", "down", "restart", "smoke", "deploy"}
 
 
 def repo_root() -> Path:
@@ -237,6 +250,21 @@ def rpc_node_ip(docker_subnet: str) -> str:
     return ip
 
 
+
+def genesis_alloc() -> dict[str, dict[str, str]]:
+    """Fund deterministic local deployer/office accounts in the QBFT genesis.
+
+    The dev Anvil chain has deterministic funded accounts. The local QBFT
+    testnet needs the same property so the existing Dockerized Foundry deployer
+    can publish contracts without a special funding path.
+    """
+
+    alloc: dict[str, dict[str, str]] = {}
+    for address in DEFAULT_FUNDED_ACCOUNTS:
+        clean = address.lower().removeprefix("0x")
+        alloc[clean] = {"balance": DEFAULT_FUNDED_ACCOUNT_BALANCE}
+    return alloc
+
 def write_qbft_config(
     path: Path,
     *,
@@ -261,7 +289,7 @@ def write_qbft_config(
             "difficulty": "0x1",
             "mixHash": "0x63746963616c2062797a616e74696e65206661756c7420746f6c6572616e6365",
             "coinbase": "0x0000000000000000000000000000000000000000",
-            "alloc": {},
+            "alloc": genesis_alloc(),
         },
         "blockchain": {
             "nodes": {
@@ -823,6 +851,127 @@ def print_chain_summary(status: dict[str, Any], *, verbose: bool = False) -> Non
                 print(f"  {label}: url={node['url']} down error={node.get('error')}")
 
 
+
+def default_deployment_run_id() -> str:
+    return "qbft-testnet-" + _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def resolve_deployment_output_dir(args: argparse.Namespace) -> Path:
+    configured = Path(args.deployment_output_dir)
+    if configured.is_absolute():
+        return configured.resolve()
+    return (repo_root() / configured).resolve()
+
+
+def smoke_deployment_output_dir(runtime_dir: Path) -> Path:
+    return runtime_dir / "deployments"
+
+
+def deployment_command(args: argparse.Namespace, *, runtime_dir: Path, public_rpc_url: str, chain_id: int) -> list[str]:
+    run_id = args.deployment_run_id or default_deployment_run_id()
+    command = [
+        sys.executable,
+        str(repo_root() / "tools" / "dev-chain-reset.py"),
+        "--yes",
+        "--external-chain",
+        "--run-id",
+        run_id,
+        "--project-name",
+        args.deployment_project_name,
+        "--environment",
+        args.deployment_environment,
+        "--source-kind",
+        DEFAULT_DEPLOYMENT_SOURCE_KIND,
+        "--chain-id",
+        str(chain_id),
+        "--host-rpc-url",
+        public_rpc_url,
+        "--container-rpc-url",
+        f"http://{RPC_NODE_CONTAINER}:{RPC_CONTAINER_PORT}",
+        "--external-docker-network",
+        DOCKER_NETWORK,
+        "--external-chain-container",
+        RPC_NODE_CONTAINER,
+        "--output-dir",
+        str(smoke_deployment_output_dir(runtime_dir)),
+        "--deployment-output-dir",
+        str(resolve_deployment_output_dir(args)),
+        "--foundry-image",
+        args.foundry_image,
+        "--private-key",
+        args.private_key,
+        "--hub-admin-funding-wei",
+        str(args.hub_admin_funding_wei),
+        "--max-payout-wei",
+        str(args.max_payout_wei),
+        "--payout-delay-blocks",
+        str(args.payout_delay_blocks),
+        "--reset-delay-blocks",
+        str(args.reset_delay_blocks),
+        "--wait-timeout-s",
+        str(args.timeout_seconds),
+        "--deploy-timeout-s",
+        str(args.deploy_timeout_seconds),
+    ]
+    for deployment in args.deploy or []:
+        command.extend(["--deploy", deployment])
+    return command
+
+
+
+def funded_deployer_balance_wei(public_rpc_url: str) -> int:
+    balance = rpc_call(public_rpc_url, "eth_getBalance", [DEFAULT_FUNDED_ACCOUNTS[0], "latest"], timeout_seconds=2.0)
+    return hex_int(balance, default=0)
+
+def deploy_testnet(args: argparse.Namespace) -> int:
+    if not docker_available():
+        print("Docker is required for the QBFT testnet contract deployment.", file=sys.stderr)
+        return 2
+
+    runtime_dir = resolve_runtime_dir(args)
+    public_rpc_port = metadata_public_rpc_port(args, runtime_dir)
+    public_rpc_url = rpc_url_for_port(public_rpc_port)
+    metadata = load_metadata(runtime_dir) or {}
+    chain_id = int(metadata.get("chain_id", args.chain_id))
+
+    try:
+        wait_for_rpc(public_rpc_url, timeout_seconds=args.timeout_seconds)
+        verify_chain_ids([public_rpc_url], expected_chain_id=chain_id)
+        deployer_balance = funded_deployer_balance_wei(public_rpc_url)
+    except Exception as exc:  # noqa: BLE001 - operator-facing script
+        print(f"QBFT testnet RPC is not ready for deployment: {exc}", file=sys.stderr)
+        print("Start it first with: python tools/smoke_besu_qbft_one_validator.py up", file=sys.stderr)
+        return 1
+
+    if deployer_balance <= 0:
+        print(
+            "The QBFT testnet deployer has no native balance. Restart the smoke lab so the updated "
+            "genesis funds the deterministic dev deployer:",
+            file=sys.stderr,
+        )
+        print("  python tools/smoke_besu_qbft_one_validator.py down", file=sys.stderr)
+        print("  python tools/smoke_besu_qbft_one_validator.py up", file=sys.stderr)
+        return 1
+
+    command = deployment_command(args, runtime_dir=runtime_dir, public_rpc_url=public_rpc_url, chain_id=chain_id)
+    print("Deploying Main Computer contracts to the local QBFT testnet.")
+    print(f"  app RPC: {public_rpc_url}")
+    print(f"  Docker RPC: http://{RPC_NODE_CONTAINER}:{RPC_CONTAINER_PORT}")
+    print(f"  chain_id: {chain_id}")
+    print(f"  deployer_balance_wei: {deployer_balance}")
+    print(f"  publication: {resolve_deployment_output_dir(args) / 'current.json'}")
+    print()
+    completed = run(command, check=False)
+    if completed.returncode == 0:
+        print()
+        print("QBFT testnet deployment published the app-facing runtime manifest.")
+        print(f"  {resolve_deployment_output_dir(args) / 'current.json'}")
+        print()
+        print("Run the Hub against it with:")
+        print("  python -m main_computer.cli hub --network test")
+    return completed.returncode
+
+
 def stop_smoke_containers() -> None:
     for container in all_smoke_containers():
         docker_rm_force(container)
@@ -947,10 +1096,16 @@ def start_lab(args: argparse.Namespace, *, cleanup_on_failure: bool = False) -> 
         print()
         print("Use this RPC endpoint for hub/dev tooling:")
         print(f"  {public_rpc_url}")
+        print("Deploy contracts and publish runtime/deployments/current.json:")
+        print("  python tools/smoke_besu_qbft_one_validator.py deploy")
         print("Monitor blocks:")
         print("  python tools/smoke_besu_qbft_one_validator.py monitor")
         print("Stop the lab:")
         print("  python tools/smoke_besu_qbft_one_validator.py down")
+
+        if args.deploy_contracts:
+            print()
+            return deploy_testnet(args)
         return 0
 
     except Exception as exc:
@@ -1096,9 +1251,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run, monitor, or stop a self-contained four-validator plus non-validator RPC Besu QBFT smoke lab in Docker.",
         epilog=(
-            "Commands: up, monitor, check, down, restart, smoke. "
+            "Commands: up, deploy, monitor, check, down, restart, smoke. "
             "Default command: up. Examples: "
             "python tools/smoke_besu_qbft_one_validator.py up; "
+            "python tools/smoke_besu_qbft_one_validator.py deploy; "
             "python tools/smoke_besu_qbft_one_validator.py monitor; "
             "python tools/smoke_besu_qbft_one_validator.py down."
         ),
@@ -1152,6 +1308,29 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="With smoke, leave validators running after verification. The up command always leaves them running.",
     )
+    parser.add_argument(
+        "--deploy-contracts",
+        action="store_true",
+        help="After up/restart, deploy the Main Computer contracts and publish runtime/deployments/current.json.",
+    )
+    parser.add_argument("--foundry-image", default=DEFAULT_FOUNDRY_IMAGE, help=f"Foundry Docker image for contract deployment. Default: {DEFAULT_FOUNDRY_IMAGE}")
+    parser.add_argument("--private-key", default=DEFAULT_DEPLOYER_PRIVATE_KEY, help="Deployer private key funded in the QBFT genesis.")
+    parser.add_argument("--deployment-run-id", default=None, help="Run id passed to the deployment publication. Defaults to qbft-testnet-<timestamp>.")
+    parser.add_argument("--deployment-project-name", default=DEFAULT_DEPLOYMENT_PROJECT_NAME)
+    parser.add_argument("--deployment-environment", default=DEFAULT_DEPLOYMENT_ENVIRONMENT)
+    parser.add_argument("--deployment-output-dir", default=str(Path("runtime") / "deployments"))
+    parser.add_argument(
+        "--deploy",
+        choices=("alpha-beta-lockout", "xlag-bridge-reserve", "hub-credit-bridge-escrow"),
+        action="append",
+        default=[],
+        help="Deploy only a selected root contract. May be repeated. Defaults to all root contracts.",
+    )
+    parser.add_argument("--hub-admin-funding-wei", default="10000000000000000000")
+    parser.add_argument("--max-payout-wei", default="1000000000000000000")
+    parser.add_argument("--payout-delay-blocks", default="1")
+    parser.add_argument("--reset-delay-blocks", default="1")
+    parser.add_argument("--deploy-timeout-seconds", type=float, default=120.0)
     parser.add_argument("--interval-seconds", type=float, default=1.0, help="Monitor polling interval. Default: 1.0")
     parser.add_argument("--verbose", action="store_true", help="Print per-validator monitor details.")
     parser.add_argument("--once", action="store_true", help="For monitor, print one status sample and exit.")
@@ -1175,6 +1354,8 @@ def main(argv: list[str] | None = None) -> int:
         return restart(args)
     if args.command == "smoke":
         return smoke(args)
+    if args.command == "deploy":
+        return deploy_testnet(args)
 
     print(f"Unknown command: {args.command}", file=sys.stderr)
     return 2

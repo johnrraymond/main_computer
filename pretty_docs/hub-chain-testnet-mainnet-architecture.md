@@ -143,10 +143,29 @@ Common commands:
 
 ```powershell
 python tools/smoke_besu_qbft_one_validator.py up
+python tools/smoke_besu_qbft_one_validator.py deploy
 python tools/smoke_besu_qbft_one_validator.py monitor
 python tools/smoke_besu_qbft_one_validator.py check
 python tools/smoke_besu_qbft_one_validator.py down
 python tools/smoke_besu_qbft_one_validator.py smoke
+```
+
+The `deploy` command is the bridge into the golden app path. It delegates the
+contract deployment and runtime publication to the same deployment machinery as
+`tools/dev-chain-reset.py`, but in external-chain mode against the running QBFT
+RPC node. The app-facing output is still:
+
+```text
+runtime/deployments/current.json
+```
+
+For the local QBFT testnet, that publication records:
+
+```text
+environment: test
+chain id:    42424241
+RPC URL:     http://127.0.0.1:30010
+source:      qbft-smoke-testnet-deploy
 ```
 
 What the local QBFT lab has proven so far:
@@ -159,6 +178,8 @@ each validator can see the other three peers
 blocks are produced
 the QBFT validator set reports four validators
 the network continues producing blocks with one validator stopped
+a dedicated non-validator RPC node can expose app/tool traffic on 30010
+the QBFT testnet can publish the same runtime deployment shape as the dev chain
 ```
 
 That last point is the important architectural proof. It shows why four
@@ -181,10 +202,10 @@ What will a remote testnet need?
 
 ## The testnet we are aiming for
 
-The near-term testnet should be a promoted version of the local QBFT lab, but
-with a cleaner access layer.
+The near-term testnet is now the promoted version of the local QBFT lab: same
+golden deployment runtime, but backed by Besu/QBFT instead of Anvil.
 
-The next target shape is:
+The current local target shape is:
 
 ```text
 4 QBFT validator nodes
@@ -207,6 +228,18 @@ non-validator RPC node  ->  http://127.0.0.1:30010
       v
 Hub / viewport / tools
 ```
+
+Run the Hub against the dev or test profile with the actual repo entrypoint:
+
+```powershell
+python -m main_computer.cli hub --network dev
+python -m main_computer.cli hub --network test
+```
+
+The test profile listens on `http://127.0.0.1:8780` and talks to the QBFT
+non-validator RPC node at `http://127.0.0.1:30010`. The dev profile listens on
+`http://127.0.0.1:8770` and talks to the Anvil dev-chain RPC at
+`http://127.0.0.1:18545`.
 
 Remote testnet version:
 

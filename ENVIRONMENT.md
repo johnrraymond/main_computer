@@ -164,12 +164,27 @@ exercises the faucet-to-escrow path.
 The dev-chain reset deploys `hub_credit_bridge_escrow` by default and publishes
 it in `runtime/deployments/current.json`. Start the Hub after that file exists.
 
-Start the Hub in its own PowerShell window:
+Start the Hub in its own PowerShell window with a named network profile:
 
 ```powershell
 $env:MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"
-python -m main_computer.cli hub --host 127.0.0.1 --port 8770 --hub-root .\runtime\hub
+python -m main_computer.cli hub --network dev
 ```
+
+For the local QBFT testnet path, start/deploy the smoke lab first and use the
+test profile:
+
+```powershell
+python .\tools\smoke_besu_qbft_one_validator.py down
+python .\tools\smoke_besu_qbft_one_validator.py up
+python .\tools\smoke_besu_qbft_one_validator.py deploy
+$env:MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"
+python -m main_computer.cli hub --network test
+```
+
+The dev Hub defaults to `http://127.0.0.1:8770`; the test Hub defaults to
+`http://127.0.0.1:8780`. Override bind/runtime details only when needed, for
+example `--network test --port 8888 --hub-runtime-dir .\runtime\hub\test-alt`.
 
 Start a local worker in another PowerShell window:
 

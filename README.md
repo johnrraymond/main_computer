@@ -78,6 +78,23 @@ python .\tools\dev-chain-diagnosis.py --state .\runtime\deployments\current.json
 
 This generates local runtime files such as `runtime/deployments/current.json`, `runtime/dev-chain/latest.json`, `runtime/dev-chain/latest.env`, and `runtime/deployments/hub-admin-wallet.json`. They are machine-local state and should stay out of Git.
 
+To publish the same app-facing deployment runtime from the local QBFT testnet
+instead of Anvil, restart the QBFT lab with the current genesis, deploy the
+contracts through its non-validator RPC node, then start the Hub with the test
+profile:
+
+```powershell
+python .\tools\smoke_besu_qbft_one_validator.py down
+python .\tools\smoke_besu_qbft_one_validator.py up
+python .\tools\smoke_besu_qbft_one_validator.py deploy
+python -m main_computer.cli hub --network test
+```
+
+The testnet deployment writes `runtime/deployments/current.json` with
+`environment=test`, chain id `42424241`, and RPC URL `http://127.0.0.1:30010`,
+so the existing golden runtime lookup can consume it without a separate testnet
+code path.
+
 Start or restart the viewport after the runtime exists:
 
 ```powershell
@@ -94,11 +111,29 @@ A healthy dev-chain setup reports `ready=True` with `deployment_runtime=True`, `
 
 To exercise the Hub path, use separate PowerShell windows from the repository root.
 
-Start the Hub:
+Start the Hub with the documented network profile. The default `dev`
+profile listens on `127.0.0.1:8770`, uses `runtime/hub/dev`, and talks to the
+Anvil dev-chain RPC at `http://127.0.0.1:18545`:
 
 ```powershell
 $env:MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"
-python -m main_computer.cli hub --host 127.0.0.1 --port 8770 --hub-root .\runtime\hub
+python -m main_computer.cli hub --network dev
+```
+
+To run the Hub against the local QBFT testnet after the smoke lab and testnet
+deployment publication are up, use the `test` profile. It listens on
+`127.0.0.1:8780`, uses `runtime/hub/test`, and talks to the non-validator RPC
+node at `http://127.0.0.1:30010`:
+
+```powershell
+$env:MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"
+python -m main_computer.cli hub --network test
+```
+
+The old explicit form remains available for one-off overrides:
+
+```powershell
+python -m main_computer.cli hub --network test --host 127.0.0.1 --port 8888 --hub-runtime-dir .\runtime\hub\test-alt
 ```
 
 Start a local worker and register it with the Hub:
