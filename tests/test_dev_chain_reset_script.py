@@ -341,3 +341,101 @@ def test_reset_refuses_to_write_when_prod_lock_exists(tmp_path: Path, monkeypatc
     assert code == 1
     assert not (tmp_path / "runtime" / "deployments" / "current.json").exists()
     assert not (tmp_path / "runtime" / "dev-chain" / "latest.json").exists()
+
+
+def test_external_chain_mode_reuses_existing_qbft_network_for_deploy_commands(monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+    monkeypatch.setattr(reset, "docker_executable", lambda: "docker")
+    parser = reset.build_parser()
+    args = parser.parse_args(
+        [
+            "--yes",
+            "--external-chain",
+            "--run-id",
+            "qbft-unit",
+            "--project-name",
+            "main-computer-qbft-testnet",
+            "--environment",
+            "test",
+            "--chain-id",
+            "42424241",
+            "--host-rpc-url",
+            "http://127.0.0.1:30010",
+            "--container-rpc-url",
+            "http://smoke-besu-qbft-rpc:8545",
+            "--external-docker-network",
+            "smoke-besu-qbft-network",
+            "--external-chain-container",
+            "smoke-besu-qbft-rpc",
+            "--source-kind",
+            "qbft-smoke-testnet-deploy",
+        ]
+    )
+
+    reset.validate_args(args)
+    rid = reset.resolved_run_id(args)
+    spec = reset.deployment_specs(args)[1]
+    cmd = reset.docker_deploy_command(args, spec, ROOT / "contracts", rid)
+
+    assert reset.network_name(args, rid) == "smoke-besu-qbft-network"
+    assert reset.container_name(args, rid) == "smoke-besu-qbft-rpc"
+    assert reset.container_rpc_url(args, rid) == "http://smoke-besu-qbft-rpc:8545"
+    assert cmd[:5] == ["docker", "run", "--rm", "--network", "smoke-besu-qbft-network"]
+    assert "http://smoke-besu-qbft-rpc:8545" in cmd
+    assert "src/XLagBridgeReserve.sol:XLagBridgeReserve" in cmd
+
+
+def test_external_chain_dry_run_writes_test_publication_without_anvil_secrets(tmp_path: Path, monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+    monkeypatch.setattr(reset, "repo_root", lambda: tmp_path)
+    deploy_root = tmp_path / "runtime" / "deployments"
+    code = reset.main(
+        [
+            "--dry-run",
+            "--external-chain",
+            "--run-id",
+            "qbft-dry-run",
+            "--project-name",
+            "main-computer-qbft-testnet",
+            "--environment",
+            "test",
+            "--chain-id",
+            "42424241",
+            "--host-rpc-url",
+            "http://127.0.0.1:30010",
+            "--container-rpc-url",
+            "http://smoke-besu-qbft-rpc:8545",
+            "--external-docker-network",
+            "smoke-besu-qbft-network",
+            "--external-chain-container",
+            "smoke-besu-qbft-rpc",
+            "--source-kind",
+            "qbft-smoke-testnet-deploy",
+            "--output-dir",
+            str(tmp_path / "runtime" / "smoke-besu-qbft-four-validators" / "deployments"),
+            "--deployment-output-dir",
+            str(deploy_root),
+        ]
+    )
+
+    assert code == 0
+    current = json.loads((deploy_root / "current.json").read_text(encoding="utf-8"))
+    latest = json.loads((deploy_root / "test" / "latest.json").read_text(encoding="utf-8"))
+
+    assert current == latest
+    assert current["environment"] == "test"
+    assert current["source"] == {
+        "kind": "qbft-smoke-testnet-deploy",
+        "project_name": "main-computer-qbft-testnet",
+    }
+    assert current["chain"] == {
+        "chain_id": 42424241,
+        "rpc_url": "http://127.0.0.1:30010",
+        "host_rpc_url": "http://127.0.0.1:30010",
+        "container_rpc_url": "http://smoke-besu-qbft-rpc:8545",
+        "network": "smoke-besu-qbft-network",
+        "container": "smoke-besu-qbft-rpc",
+    }
+    assert "mnemonic" not in json.dumps(current)
+    assert "private_key" not in json.dumps(current)
+    assert current["contracts"]["hub_credit_bridge_escrow"]["payment_asset"] == "native"

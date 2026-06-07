@@ -81,3 +81,86 @@ def test_public_rpc_port_must_not_collide_with_validator_ports() -> None:
 
     with pytest.raises(RuntimeError, match="unique"):
         module.assert_host_ports_available([30001, 30002, 30010, 30010])
+
+
+def test_qbft_genesis_funds_dev_deployer_accounts(tmp_path: Path) -> None:
+    module = _load_smoke_module()
+    config_path = tmp_path / "qbftConfigFile.json"
+
+    module.write_qbft_config(
+        config_path,
+        chain_id=42424241,
+        block_period_seconds=2,
+        request_timeout_seconds=4,
+    )
+
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    alloc = config["genesis"]["alloc"]
+
+    assert alloc["f39fd6e51aad88f6f4ce6ab8827279cfffb92266"]["balance"] == module.DEFAULT_FUNDED_ACCOUNT_BALANCE
+    assert len(alloc) == 4
+
+
+def test_deploy_command_delegates_to_dev_chain_reset_external_publication(tmp_path: Path, monkeypatch) -> None:
+    module = _load_smoke_module()
+    captured: dict[str, list[str]] = {}
+
+    args = module.parse_args(
+        [
+            "deploy",
+            "--runtime-dir",
+            str(tmp_path / "runtime" / "qbft"),
+            "--deployment-run-id",
+            "qbft-unit",
+        ]
+    )
+
+    monkeypatch.setattr(module, "docker_available", lambda: True)
+    monkeypatch.setattr(module, "wait_for_rpc", lambda url, *, timeout_seconds: None)
+    monkeypatch.setattr(module, "verify_chain_ids", lambda urls, *, expected_chain_id: ["0x28757b1"])
+    monkeypatch.setattr(module, "funded_deployer_balance_wei", lambda url: 10**18)
+
+    def fake_run(command, *, check=True, capture=False):
+        captured["command"] = command
+        return module.subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(module, "run", fake_run)
+
+    code = module.deploy_testnet(args)
+
+    assert code == 0
+    command = captured["command"]
+    assert command[:4] == [module.sys.executable, str(module.repo_root() / "tools" / "dev-chain-reset.py"), "--yes", "--external-chain"]
+    assert "--environment" in command
+    assert command[command.index("--environment") + 1] == "test"
+    assert "--source-kind" in command
+    assert command[command.index("--source-kind") + 1] == "qbft-smoke-testnet-deploy"
+    assert "--host-rpc-url" in command
+    assert command[command.index("--host-rpc-url") + 1] == "http://127.0.0.1:30010"
+    assert "--container-rpc-url" in command
+    assert command[command.index("--container-rpc-url") + 1] == "http://smoke-besu-qbft-rpc:8545"
+    assert "--external-docker-network" in command
+    assert command[command.index("--external-docker-network") + 1] == "smoke-besu-qbft-network"
+    assert "--external-chain-container" in command
+    assert command[command.index("--external-chain-container") + 1] == "smoke-besu-qbft-rpc"
+    assert "--output-dir" in command
+    assert command[command.index("--output-dir") + 1].endswith("runtime/qbft/deployments")
+    assert "--deployment-output-dir" in command
+    assert command[command.index("--deployment-output-dir") + 1].endswith("runtime/deployments")
+
+
+def test_deploy_command_refuses_old_unfunded_qbft_genesis(tmp_path: Path, monkeypatch, capsys) -> None:
+    module = _load_smoke_module()
+    args = module.parse_args(["deploy", "--runtime-dir", str(tmp_path / "runtime" / "qbft")])
+
+    monkeypatch.setattr(module, "docker_available", lambda: True)
+    monkeypatch.setattr(module, "wait_for_rpc", lambda url, *, timeout_seconds: None)
+    monkeypatch.setattr(module, "verify_chain_ids", lambda urls, *, expected_chain_id: ["0x28757b1"])
+    monkeypatch.setattr(module, "funded_deployer_balance_wei", lambda url: 0)
+
+    code = module.deploy_testnet(args)
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert "deployer has no native balance" in captured.err
+    assert "smoke_besu_qbft_one_validator.py down" in captured.err
