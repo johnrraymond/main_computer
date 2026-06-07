@@ -172,10 +172,19 @@ python -m main_computer.cli hub --network dev
 ```
 
 For the local QBFT testnet path, start/deploy the smoke lab first and use the
-test profile:
+test profile. The smoke lab uses a London/EIP-1559 + Shanghai/PUSH0 genesis; deployment preflight
+fails if the external chain does not expose a real `baseFeePerGas` and rejects pre-Shanghai chains that cannot execute `PUSH0` bytecode.
 
 ```powershell
 python .\tools\smoke_besu_qbft_one_validator.py down
+python .\tools\smoke_besu_qbft_one_validator.py up --deploy-contracts
+$env:MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"
+python -m main_computer.cli hub --network test
+```
+
+Equivalent split form:
+
+```powershell
 python .\tools\smoke_besu_qbft_one_validator.py up
 python .\tools\smoke_besu_qbft_one_validator.py deploy
 $env:MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"

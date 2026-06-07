@@ -79,12 +79,19 @@ python .\tools\dev-chain-diagnosis.py --state .\runtime\deployments\current.json
 This generates local runtime files such as `runtime/deployments/current.json`, `runtime/dev-chain/latest.json`, `runtime/dev-chain/latest.env`, and `runtime/deployments/hub-admin-wallet.json`. They are machine-local state and should stay out of Git.
 
 To publish the same app-facing deployment runtime from the local QBFT testnet
-instead of Anvil, restart the QBFT lab with the current genesis, deploy the
-contracts through its non-validator RPC node, then start the Hub with the test
-profile:
+instead of Anvil, restart the QBFT lab with the current London/EIP-1559 + Shanghai/PUSH0 genesis,
+deploy the contracts through its non-validator RPC node, then start the Hub with
+the test profile:
 
 ```powershell
 python .\tools\smoke_besu_qbft_one_validator.py down
+python .\tools\smoke_besu_qbft_one_validator.py up --deploy-contracts
+python -m main_computer.cli hub --network test
+```
+
+Equivalent split form:
+
+```powershell
 python .\tools\smoke_besu_qbft_one_validator.py up
 python .\tools\smoke_besu_qbft_one_validator.py deploy
 python -m main_computer.cli hub --network test

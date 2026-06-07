@@ -125,6 +125,7 @@ Current defaults:
 
 ```text
 chain id:       42424241
+fee model:      London / EIP-1559 and Shanghai/PUSH0 from genesis, with a real base fee
 Docker network: smoke-besu-qbft-network
 Docker subnet:  172.28.241.0/24
 runtime:        runtime/smoke-besu-qbft-four-validators
@@ -153,7 +154,10 @@ python tools/smoke_besu_qbft_one_validator.py smoke
 The `deploy` command is the bridge into the golden app path. It delegates the
 contract deployment and runtime publication to the same deployment machinery as
 `tools/dev-chain-reset.py`, but in external-chain mode against the running QBFT
-RPC node. The app-facing output is still:
+RPC node. External-chain deployment performs an EIP-1559 preflight and refuses
+to proceed if the chain does not expose `baseFeePerGas`; it should not fall back
+to legacy transactions or a zero-base-fee compatibility chain. The app-facing
+output is still:
 
 ```text
 runtime/deployments/current.json

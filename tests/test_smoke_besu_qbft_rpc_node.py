@@ -95,8 +95,14 @@ def test_qbft_genesis_funds_dev_deployer_accounts(tmp_path: Path) -> None:
     )
 
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    alloc = config["genesis"]["alloc"]
+    genesis = config["genesis"]
+    alloc = genesis["alloc"]
 
+    assert genesis["config"]["londonBlock"] == 0
+    assert genesis["config"]["shanghaiTime"] == module.DEFAULT_SHANGHAI_TIME
+    assert genesis["baseFeePerGas"] == module.DEFAULT_GENESIS_BASE_FEE_PER_GAS
+    assert genesis["baseFeePerGas"] != "0x0"
+    assert "zeroBaseFee" not in genesis["config"]
     assert alloc["f39fd6e51aad88f6f4ce6ab8827279cfffb92266"]["balance"] == module.DEFAULT_FUNDED_ACCOUNT_BALANCE
     assert len(alloc) == 4
 

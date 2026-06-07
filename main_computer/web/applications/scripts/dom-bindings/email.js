@@ -39,6 +39,9 @@
     const emailOpenYahooOauth = document.querySelector("#email-open-yahoo-oauth");
     const emailGmailConfigStatus = document.querySelector("#email-gmail-config-status");
     const emailYahooConfigStatus = document.querySelector("#email-yahoo-config-status");
+    const emailGmailAccountList = document.querySelector("#email-gmail-account-list");
+    const emailYahooAccountList = document.querySelector("#email-yahoo-account-list");
+    const emailRawAccountList = document.querySelector("#email-raw-account-list");
     const emailAccountSummary = document.querySelector("#email-account-summary");
     const emailAccountList = document.querySelector("#email-account-list");
     const emailFolderButtons = document.querySelectorAll("[data-email-folder]");
