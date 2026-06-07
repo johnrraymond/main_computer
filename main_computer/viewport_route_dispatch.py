@@ -1267,6 +1267,9 @@ def dispatch_post(self) -> None:
     if self.path == "/api/applications/terminal/suggest":
         self._handle_terminal_suggest()
         return
+    if route_path == "/api/applications/email/check":
+        self._handle_email_check_mail()
+        return
     if route_path == "/api/applications/deployment/controller/save":
         self._handle_deployment_controller_save()
         return

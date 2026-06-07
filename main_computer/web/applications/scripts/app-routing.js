@@ -138,6 +138,7 @@
       const isTaskManager = normalizedApp === "task-manager";
       const isTerminal = normalizedApp === "terminal";
       const isChatConsole = normalizedApp === "chat-console";
+      const isEmail = normalizedApp === "email";
       const isGitTools = normalizedApp === "git-tools";
       const isCodeEditor = normalizedApp === "code-editor";
       const isFileExplorer = normalizedApp === "file-explorer";
@@ -168,6 +169,7 @@
       taskManagerApp.style.display = isTaskManager ? "grid" : "none";
       terminalApp.style.display = isTerminal ? "grid" : "none";
       chatConsoleApp.style.display = isChatConsole ? "grid" : "none";
+      if (emailApp) emailApp.style.display = isEmail ? "grid" : "none";
       gitToolsApp.style.display = isGitTools ? "grid" : "none";
       codeEditorApp.style.display = isCodeEditor ? "grid" : "none";
       systemFileExplorerApp.style.display = isFileExplorer ? "grid" : "none";
@@ -176,7 +178,7 @@
       if (mcelLabApp) mcelLabApp.style.display = isMcelLab ? "grid" : "none";
       if (workerApp) workerApp.style.display = isWorker ? "grid" : "none";
       if (walletApp) walletApp.style.display = isWallet ? "grid" : "none";
-      stubMessage.style.display = isWebgl || isCalculator || isDocument || isSpreadsheet || isOnlyOffice || isTaskManager || isTerminal || isChatConsole || isGitTools || isCodeEditor || isFileExplorer || isGameEditor || isWebsiteBuilder || isMcelLab || isWorker || isWallet ? "none" : "grid";
+      stubMessage.style.display = isWebgl || isCalculator || isDocument || isSpreadsheet || isOnlyOffice || isTaskManager || isTerminal || isChatConsole || isEmail || isGitTools || isCodeEditor || isFileExplorer || isGameEditor || isWebsiteBuilder || isMcelLab || isWorker || isWallet ? "none" : "grid";
       demoControls.style.display = isWebgl ? "grid" : "none";
       layoutDesktopIcons(normalizedApp);
       if (isWebgl) {
@@ -229,6 +231,10 @@
         running = false;
         glStatus.textContent = "chat console ready";
         initChatConsoleApp();
+      } else if (isEmail) {
+        running = false;
+        glStatus.textContent = "email ready";
+        initEmailApp();
       } else if (isGitTools) {
         running = false;
         glStatus.textContent = "git tools ready";
