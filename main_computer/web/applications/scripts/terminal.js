@@ -1,3 +1,42 @@
+    function loadScript(src) {
+      return new Promise((resolve, reject) => {
+        let requestedUrl = src;
+        try {
+          requestedUrl = new URL(src, document.baseURI).href;
+        } catch (error) {
+          requestedUrl = src;
+        }
+        const existingScript = Array.from(document.scripts).find((script) => {
+          return script.src === requestedUrl || script.getAttribute("src") === src;
+        });
+        if (existingScript) {
+          if (existingScript.dataset.mainComputerLoaded === "true") {
+            resolve();
+            return;
+          }
+          existingScript.addEventListener("load", () => {
+            existingScript.dataset.mainComputerLoaded = "true";
+            resolve();
+          }, { once: true });
+          existingScript.addEventListener("error", () => {
+            reject(new Error(`failed to load script: ${src}`));
+          }, { once: true });
+          return;
+        }
+        const script = document.createElement("script");
+        script.src = src;
+        script.async = true;
+        script.onload = () => {
+          script.dataset.mainComputerLoaded = "true";
+          resolve();
+        };
+        script.onerror = () => {
+          reject(new Error(`failed to load script: ${src}`));
+        };
+        document.head.appendChild(script);
+      });
+    }
+
     async function initXtermTerminal() {
       if (xterm) {
         return;

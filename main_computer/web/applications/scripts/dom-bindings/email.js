@@ -1,6 +1,5 @@
     const emailApp = document.querySelector("#email-app");
     const emailSyncStatus = document.querySelector("#email-sync-status");
-    const emailResetDemo = document.querySelector("#email-reset-demo");
     const emailCheckMail = document.querySelector("#email-check-mail");
     const emailOpenConfig = document.querySelector("#email-open-config");
     const emailNewMessage = document.querySelector("#email-new-message");
@@ -12,8 +11,6 @@
     const emailCloseCompose = document.querySelector("#email-close-compose");
     const emailTabButtons = document.querySelectorAll("[data-email-tab]");
     const emailTabPanels = document.querySelectorAll("[data-email-panel]");
-    const emailConfigTabButtons = document.querySelectorAll("[data-email-config-tab]");
-    const emailConfigPanels = document.querySelectorAll("[data-email-config-panel]");
     const emailImapPresetSelect = document.querySelector("#email-imap-preset-select");
     const emailImapAddressInput = document.querySelector("#email-imap-address-input");
     const emailImapDisplayNameInput = document.querySelector("#email-imap-display-name-input");
@@ -29,18 +26,6 @@
     const emailSaveServerAccount = document.querySelector("#email-save-server-account");
     const emailCheckServerAccount = document.querySelector("#email-check-server-account");
     const emailServerConfigStatus = document.querySelector("#email-server-config-status");
-    const emailGmailAddressInput = document.querySelector("#email-gmail-address-input");
-    const emailGmailClientIdInput = document.querySelector("#email-gmail-client-id-input");
-    const emailYahooAddressInput = document.querySelector("#email-yahoo-address-input");
-    const emailYahooClientIdInput = document.querySelector("#email-yahoo-client-id-input");
-    const emailConnectGmail = document.querySelector("#email-connect-gmail");
-    const emailConnectYahoo = document.querySelector("#email-connect-yahoo");
-    const emailOpenGmailOauth = document.querySelector("#email-open-gmail-oauth");
-    const emailOpenYahooOauth = document.querySelector("#email-open-yahoo-oauth");
-    const emailGmailConfigStatus = document.querySelector("#email-gmail-config-status");
-    const emailYahooConfigStatus = document.querySelector("#email-yahoo-config-status");
-    const emailGmailAccountList = document.querySelector("#email-gmail-account-list");
-    const emailYahooAccountList = document.querySelector("#email-yahoo-account-list");
     const emailRawAccountList = document.querySelector("#email-raw-account-list");
     const emailAccountSummary = document.querySelector("#email-account-summary");
     const emailAccountList = document.querySelector("#email-account-list");
@@ -70,8 +55,3 @@
     const emailSaveDraft = document.querySelector("#email-save-draft");
     const emailSendMessage = document.querySelector("#email-send-message");
     const emailComposeStatus = document.querySelector("#email-compose-status");
-    const emailSmartProvider = document.querySelector("#email-smart-provider");
-    const emailSmartPriority = document.querySelector("#email-smart-priority");
-    const emailSmartDrafts = document.querySelector("#email-smart-drafts");
-    const emailMcelPreview = document.querySelector("#email-mcel-preview");
-    const emailSmartReport = document.querySelector("#email-smart-report");

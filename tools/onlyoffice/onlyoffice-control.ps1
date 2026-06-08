@@ -27,6 +27,8 @@ $ErrorActionPreference = "Stop"
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptRoot)
+$script:MainComputerOnlyOfficeNeedsFinalStatus = $false
+$script:MainComputerOnlyOfficeLastComposeExitCode = 0
 
 function Write-Section {
   param([Parameter(Mandatory = $true)][string]$Title)
@@ -71,7 +73,10 @@ function Resolve-PythonCommand {
 }
 
 function Invoke-DockerComposeOnlyOffice {
-  param([Parameter(Mandatory = $true)][string[]]$ComposeArgs)
+  param(
+    [Parameter(Mandatory = $true)][string[]]$ComposeArgs,
+    [switch]$AllowFailure
+  )
 
   $composePath = Join-Path $repoRoot $ComposeFile
   if (-not (Test-Path -LiteralPath $composePath -PathType Leaf)) {
@@ -79,9 +84,63 @@ function Invoke-DockerComposeOnlyOffice {
   }
 
   & docker compose -f $composePath -p $ProjectName @ComposeArgs
-  if ($LASTEXITCODE -ne 0) {
-    throw "docker compose $($ComposeArgs -join ' ') failed with exit code $LASTEXITCODE."
+  $exitCode = [int]$LASTEXITCODE
+  $script:MainComputerOnlyOfficeLastComposeExitCode = $exitCode
+  if ($exitCode -ne 0 -and -not $AllowFailure) {
+    throw "docker compose $($ComposeArgs -join ' ') failed with exit code $exitCode."
   }
+}
+
+function Get-DockerOnlyOfficeContainerId {
+  $composePath = Join-Path $repoRoot $ComposeFile
+
+  $composeContainerId = (& docker compose -f $composePath -p $ProjectName ps -q onlyoffice 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1)
+  if (-not [string]::IsNullOrWhiteSpace([string]$composeContainerId)) {
+    return [string]$composeContainerId
+  }
+
+  $containerName = [string]$env:MAIN_COMPUTER_ONLYOFFICE_CONTAINER_NAME
+  if ([string]::IsNullOrWhiteSpace($containerName)) {
+    return ""
+  }
+
+  $nameFilter = "name=^/$containerName$"
+  $namedContainerId = (& docker ps -q --filter $nameFilter 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1)
+  if (-not [string]::IsNullOrWhiteSpace([string]$namedContainerId)) {
+    return [string]$namedContainerId
+  }
+
+  $inspectLine = (& docker inspect --format "{{.State.Running}} {{.Id}}" $containerName 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1)
+  if ([string]$inspectLine -match '^true\s+(?<id>\S+)') {
+    return [string]$Matches["id"]
+  }
+
+  return ""
+}
+
+function Wait-DockerOnlyOfficeContainer {
+  $timeout = [Math]::Max(0, $ReadyTimeoutSeconds)
+  $pollSeconds = [Math]::Max(1, $ReadyPollSeconds)
+  $deadline = [DateTime]::UtcNow.AddSeconds($timeout)
+  $attempt = 0
+
+  while ($true) {
+    $attempt += 1
+    $containerId = Get-DockerOnlyOfficeContainerId
+    if (-not [string]::IsNullOrWhiteSpace([string]$containerId)) {
+      Write-Host "ONLYOFFICE container is visible after $attempt docker/container inspection attempt(s): $containerId"
+      return
+    }
+
+    if ([DateTime]::UtcNow -ge $deadline) {
+      break
+    }
+
+    Write-Host "[wait attempt $attempt] ONLYOFFICE container is not visible yet; retrying in ${pollSeconds}s."
+    Start-Sleep -Seconds $pollSeconds
+  }
+
+  throw "Docker ONLYOFFICE container did not appear within $timeout seconds."
 }
 
 function Invoke-DockerOnlyOfficeStatus {
@@ -135,8 +194,13 @@ function Invoke-DockerOnlyOffice {
 
   switch ($DockerAction) {
     "start" {
-      Invoke-DockerComposeOnlyOffice @("up", "-d", "onlyoffice")
-      Invoke-DockerOnlyOfficeStatus
+      Invoke-DockerComposeOnlyOffice @("up", "-d", "onlyoffice") -AllowFailure
+      $composeExitCode = $script:MainComputerOnlyOfficeLastComposeExitCode
+      if ($composeExitCode -ne 0) {
+        Write-Warning "docker compose up -d onlyoffice returned exit code $composeExitCode; waiting to see whether ONLYOFFICE still appears."
+      }
+      Wait-DockerOnlyOfficeContainer
+      $script:MainComputerOnlyOfficeNeedsFinalStatus = $true
     }
     "stop" {
       Invoke-DockerComposeOnlyOffice @("stop", "onlyoffice")
@@ -196,6 +260,11 @@ switch ($Action) {
   "doctor" {
     Invoke-DockerOnlyOffice "status"
   }
+}
+
+if ($script:MainComputerOnlyOfficeNeedsFinalStatus) {
+  Write-Section "ONLYOFFICE final readiness recheck"
+  Invoke-DockerOnlyOfficeStatus
 }
 
 Write-Host ""

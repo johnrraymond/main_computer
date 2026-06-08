@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
 import re
@@ -191,7 +192,6 @@ class ViewportApplicationRoutesMixin:
         except Exception as exc:
             self.server.signal("api-email-check-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
-
 
     def _handle_deployment_controllers(self) -> None:
         try:

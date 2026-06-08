@@ -52,10 +52,14 @@ DEFAULT_EXTERNAL_CHAIN_SOURCE_KIND = "external-chain-deploy"
 DEPLOYMENT_SCHEMA = "main-computer.deployment.v1"
 HUB_ADMIN_WALLET_SCHEMA = "main-computer.hub-admin-wallet.v1"
 HUB_ADMIN_WALLET_FILENAME = "hub-admin-wallet.json"
+SMOKE_CLIENT_WALLET_SCHEMA = "main-computer.smoke-client-wallet.v1"
+SMOKE_CLIENT_WALLET_FILENAME = "smoke-client-wallet.json"
 HUB_CREDIT_BRIDGE_ESCROW_KEY = "hub_credit_bridge_escrow"
 HUB_CREDIT_BRIDGE_ESCROW_DEPLOY_CHOICE = "hub-credit-bridge-escrow"
 HUB_ADMIN_PREVIEW_ADDRESS = "0x0000000000000000000000000000000000000a11"
+SMOKE_CLIENT_PREVIEW_ADDRESS = "0x000000000000000000000000000000000000c11e"
 DEFAULT_HUB_ADMIN_FUNDING_WEI = "10000000000000000000"
+DEFAULT_SMOKE_CLIENT_FUNDING_WEI = "5000000000000000000"
 DEFAULT_PRIVATE_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 DEFAULT_DEPLOYER_ADDRESS = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 # Constructor returns 32 zero bytes using PUSH0 (0x5f), so eth_estimateGas fails on pre-Shanghai chains.
@@ -98,6 +102,14 @@ class DeploymentSpec:
 
 @dataclass(frozen=True)
 class HubAdminWallet:
+    path: Path
+    address: str
+    private_key: str | None
+    source: str
+
+
+@dataclass(frozen=True)
+class SmokeClientWallet:
     path: Path
     address: str
     private_key: str | None
@@ -214,7 +226,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--hub-admin-funding-wei",
         default=DEFAULT_HUB_ADMIN_FUNDING_WEI,
-        help="Native wei sent from the Anvil deployer to the Hub admin wallet before escrow deployment.",
+        help="Native wei sent from the deployer to the Hub admin wallet before escrow deployment.",
+    )
+    parser.add_argument(
+        "--smoke-client-funding-wei",
+        default=DEFAULT_SMOKE_CLIENT_FUNDING_WEI,
+        help="Native wei sent from the deployer to the chain-scoped smoke client wallet for Hub client testing.",
+    )
+    parser.add_argument(
+        "--skip-smoke-client-wallet",
+        action="store_true",
+        help="Do not create, fund, or publish the per-network smoke client wallet.",
     )
     parser.add_argument("--max-payout-wei", default="1000000000000000000")
     parser.add_argument("--payout-delay-blocks", default="1")
@@ -638,7 +660,108 @@ def resolve_hub_admin_wallet(args: argparse.Namespace, root: Path, *, create_mis
     return create_hub_admin_wallet(args, root, path)
 
 
+
+def smoke_client_wallet_filename(chain_id: int) -> str:
+    return f"smoke-client-wallet-{int(chain_id)}.json"
+
+
+def smoke_client_wallet_path(args: argparse.Namespace, root: Path) -> Path:
+    env_name = validate_environment_name(args.environment)
+    return deployment_output_root(args, root) / env_name / smoke_client_wallet_filename(args.chain_id)
+
+
+def load_smoke_client_wallet(path: Path, chain_id: int) -> SmokeClientWallet | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid smoke client wallet JSON: {path}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"invalid smoke client wallet record: {path}")
+    if payload.get("schema") != SMOKE_CLIENT_WALLET_SCHEMA:
+        raise ValueError(f"unexpected smoke client wallet schema in {path}")
+    wallet_chain_id = payload.get("chain_id")
+    if int(wallet_chain_id) != int(chain_id):
+        raise ValueError(f"smoke client wallet chain_id {wallet_chain_id!r} does not match requested chain_id {chain_id}")
+    address = payload.get("address")
+    private_key = payload.get("private_key")
+    if not is_address(address):
+        raise ValueError(f"invalid smoke client wallet address in {path}")
+    if not is_private_key(private_key):
+        raise ValueError(f"invalid smoke client private key in {path}")
+    return SmokeClientWallet(path=path, address=str(address), private_key=str(private_key), source=str(payload.get("source") or "loaded-local-dev"))
+
+
+def write_smoke_client_wallet(path: Path, *, chain_id: int, address: str, private_key: str) -> SmokeClientWallet:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema": SMOKE_CLIENT_WALLET_SCHEMA,
+        "chain_id": chain_id,
+        "address": address,
+        "private_key": private_key,
+        "created_at": dt.datetime.now(dt.UTC).isoformat(),
+        "source": "generated-local-smoke-client",
+    }
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if os.name != "nt":
+        os.chmod(tmp_path, 0o600)
+    tmp_path.replace(path)
+    if os.name != "nt":
+        os.chmod(path, 0o600)
+    return SmokeClientWallet(path=path, address=address, private_key=private_key, source="generated-local-smoke-client")
+
+
+def create_smoke_client_wallet(args: argparse.Namespace, root: Path, path: Path) -> SmokeClientWallet:
+    while True:
+        private_key = "0x" + secrets.token_hex(32)
+        if int(private_key, 16) != 0:
+            break
+    address = derive_address_for_private_key(args, root, private_key)
+    if address.lower() == str(DEFAULT_OFFICE_KEYS[0]["address"]).lower():
+        raise RuntimeError("generated smoke client wallet unexpectedly matched the deployer address")
+    wallet = write_smoke_client_wallet(path, chain_id=args.chain_id, address=address, private_key=private_key)
+    log(f"Created smoke client wallet: {metadata_path(path, root)} ({address})")
+    return wallet
+
+
+def resolve_smoke_client_wallet(args: argparse.Namespace, root: Path, *, create_missing: bool) -> SmokeClientWallet | None:
+    if getattr(args, "skip_smoke_client_wallet", False):
+        return None
+
+    path = smoke_client_wallet_path(args, root)
+    existing = load_smoke_client_wallet(path, args.chain_id)
+    if existing is not None:
+        log(f"Loaded smoke client wallet: {metadata_path(path, root)} ({existing.address})")
+        return existing
+
+    if not create_missing:
+        return SmokeClientWallet(path=path, address=SMOKE_CLIENT_PREVIEW_ADDRESS, private_key=None, source="dry-run-preview")
+    return create_smoke_client_wallet(args, root, path)
+
+
 def public_hub_admin_record(value: object, root: Path) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    address = value.get("address")
+    wallet_path = value.get("wallet_path")
+    if not is_address(address):
+        return None
+    record = {
+        "address": address,
+        "wallet_path": str(wallet_path or ""),
+    }
+    if value.get("source"):
+        record["source"] = value.get("source")
+    if value.get("funding_wei"):
+        record["funding_wei"] = str(value.get("funding_wei"))
+    return record
+
+
+
+def public_smoke_client_record(value: object, root: Path) -> dict | None:
+    del root
     if not isinstance(value, dict):
         return None
     address = value.get("address")
@@ -665,6 +788,45 @@ def hub_admin_payload(wallet: HubAdminWallet | None, root: Path, args: argparse.
         "source": wallet.source,
         "funding_wei": str(args.hub_admin_funding_wei),
     }
+
+
+
+def smoke_client_payload(wallet: SmokeClientWallet | None, root: Path, args: argparse.Namespace) -> dict | None:
+    if wallet is None:
+        return None
+    return {
+        "address": wallet.address,
+        "wallet_path": metadata_path(wallet.path, root),
+        "source": wallet.source,
+        "funding_wei": str(args.smoke_client_funding_wei),
+    }
+
+
+def smoke_client_fund_command(args: argparse.Namespace, rid: str, wallet: SmokeClientWallet, root: Path) -> list[str]:
+    return docker_cast_command(
+        args,
+        [
+            "send",
+            wallet.address,
+            "--value",
+            str(args.smoke_client_funding_wei),
+            "--rpc-url",
+            container_rpc_url(args, rid),
+            "--private-key",
+            args.private_key,
+            "--json",
+        ],
+        root=root,
+        rid=rid,
+        use_network=True,
+    )
+
+
+def fund_smoke_client_wallet(args: argparse.Namespace, rid: str, wallet: SmokeClientWallet | None, root: Path) -> None:
+    if wallet is None or wallet.private_key is None:
+        return
+    log(f"Funding smoke client wallet {wallet.address} with {args.smoke_client_funding_wei} wei")
+    run_command(smoke_client_fund_command(args, rid, wallet, root), timeout_s=args.deploy_timeout_s)
 
 
 def fund_hub_admin_wallet(args: argparse.Namespace, rid: str, wallet: HubAdminWallet | None, root: Path) -> None:
@@ -1063,6 +1225,7 @@ def deploy_payload(
     dry_run: bool,
     deployments: dict[str, dict],
     hub_admin: dict | None = None,
+    smoke_client: dict | None = None,
 ) -> dict:
     chain_payload = {
         "chain_id": args.chain_id,
@@ -1091,6 +1254,7 @@ def deploy_payload(
             "private_key": args.private_key,
         },
         "hub_admin": hub_admin,
+        "smoke_client": smoke_client,
         "deployments": deployments,
     }
 
@@ -1106,6 +1270,7 @@ def public_deployment_payload(payload: dict) -> dict:
     chain = dict(payload.get("chain") or {})
     root = repo_root()
     public_hub_admin = public_hub_admin_record(payload.get("hub_admin"), root)
+    public_smoke_client = public_smoke_client_record(payload.get("smoke_client"), root)
     public_payload = {
         "schema": DEPLOYMENT_SCHEMA,
         "environment": str(payload.get("environment") or DEFAULT_DEPLOYMENT_ENVIRONMENT),
@@ -1130,6 +1295,8 @@ def public_deployment_payload(payload: dict) -> dict:
     }
     if public_hub_admin is not None:
         public_payload["hub_admin"] = public_hub_admin
+    if public_smoke_client is not None:
+        public_payload["smoke_client"] = public_smoke_client
     return public_payload
 
 
@@ -1183,6 +1350,11 @@ def env_payload(payload: dict) -> str:
         lines.append(f"MAIN_COMPUTER_ALPHA_BETA_LOCKOUT_CONTRACT_ADDRESS={alpha['address']}")
     if hub_credit_bridge_escrow.get("address"):
         lines.append(f"MAIN_COMPUTER_HUB_CREDIT_BRIDGE_ESCROW_ADDRESS={hub_credit_bridge_escrow['address']}")
+    smoke_client = payload.get("smoke_client") if isinstance(payload.get("smoke_client"), dict) else {}
+    if smoke_client.get("address"):
+        lines.append(f"MAIN_COMPUTER_SMOKE_CLIENT_ADDRESS={smoke_client['address']}")
+    if smoke_client.get("wallet_path"):
+        lines.append(f"MAIN_COMPUTER_SMOKE_CLIENT_WALLET_PATH={smoke_client['wallet_path']}")
     for index, office in enumerate(payload.get("offices", [])):
         lines.append(f"MAIN_COMPUTER_DEV_OFFICE_{index}_ADDRESS={office['address']}")
         if office.get("private_key"):
@@ -1247,6 +1419,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--accounts must be greater than one for the local office key pool")
     if int(str(args.hub_admin_funding_wei), 0) <= 0:
         raise ValueError("--hub-admin-funding-wei must be greater than zero")
+    if not getattr(args, "skip_smoke_client_wallet", False) and int(str(args.smoke_client_funding_wei), 0) <= 0:
+        raise ValueError("--smoke-client-funding-wei must be greater than zero")
     parse_offices(args.offices)
     validate_environment_name(args.environment)
     host_rpc_endpoint(args.host_rpc_url)
@@ -1261,7 +1435,12 @@ def validate_args(args: argparse.Namespace) -> None:
             args.external_chain_container = None
 
 
-def print_plan(args: argparse.Namespace, rid: str, hub_admin: HubAdminWallet | None = None) -> None:
+def print_plan(
+    args: argparse.Namespace,
+    rid: str,
+    hub_admin: HubAdminWallet | None = None,
+    smoke_client: SmokeClientWallet | None = None,
+) -> None:
     root = repo_root()
     run_dir = output_root(args, root) / "runs" / rid
     log(f"Repository root: {root}")
@@ -1278,6 +1457,9 @@ def print_plan(args: argparse.Namespace, rid: str, hub_admin: HubAdminWallet | N
     if hub_admin is not None:
         log(f"Hub admin wallet: {metadata_path(hub_admin.path, root)}")
         log(f"Hub admin address: {hub_admin.address}")
+    if smoke_client is not None:
+        log(f"Smoke client wallet: {metadata_path(smoke_client.path, root)}")
+        log(f"Smoke client address: {smoke_client.address}")
     log()
     log("Planned commands:")
     if getattr(args, "external_chain", False):
@@ -1289,6 +1471,8 @@ def print_plan(args: argparse.Namespace, rid: str, hub_admin: HubAdminWallet | N
     if not args.no_deploy:
         if hub_admin is not None:
             log("$ " + display_command(hub_admin_fund_command(args, rid, hub_admin, root)))
+        if smoke_client is not None:
+            log("$ " + display_command(smoke_client_fund_command(args, rid, smoke_client, root)))
         for spec in deployment_specs(args, hub_admin.address if hub_admin else None):
             log("$ " + display_command(docker_deploy_command(args, spec, root / "contracts", rid)))
 
@@ -1363,7 +1547,8 @@ def main(argv: list[str] | None = None) -> int:
 
         create_admin_wallet = bool(args.yes and not args.dry_run)
         hub_admin = resolve_hub_admin_wallet(args, root, create_missing=create_admin_wallet)
-        print_plan(args, rid, hub_admin)
+        smoke_client = resolve_smoke_client_wallet(args, root, create_missing=create_admin_wallet)
+        print_plan(args, rid, hub_admin, smoke_client)
 
         if args.dry_run:
             payload = deploy_payload(
@@ -1372,6 +1557,7 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=True,
                 deployments=planned_deployments(args, hub_admin.address if hub_admin else None),
                 hub_admin=hub_admin_payload(hub_admin, root, args),
+                smoke_client=smoke_client_payload(smoke_client, root, args),
             )
             write_outputs(args, rid, payload)
             return 0
@@ -1397,6 +1583,7 @@ def main(argv: list[str] | None = None) -> int:
             deployments = {}
         else:
             fund_hub_admin_wallet(args, rid, hub_admin, root)
+            fund_smoke_client_wallet(args, rid, smoke_client, root)
             deployments = deployed_contracts(args, rid, hub_admin.address if hub_admin else None)
 
         payload = deploy_payload(
@@ -1405,6 +1592,7 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=False,
             deployments=deployments,
             hub_admin=hub_admin_payload(hub_admin, root, args),
+            smoke_client=smoke_client_payload(smoke_client, root, args),
         )
         write_outputs(args, rid, payload)
         return 0
