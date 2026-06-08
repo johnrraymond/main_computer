@@ -137,6 +137,9 @@ def test_dry_run_writes_soft_chroot_outputs(tmp_path: Path, monkeypatch) -> None
     assert escrow["approval_required"] is False
     assert escrow["bridge_controller_address"] == current["hub_admin"]["address"]
     assert current["hub_admin"]["wallet_path"] == "deployments/dev/hub-admin-wallet-42424242.json"
+    assert current["smoke_client"]["address"] == "0x000000000000000000000000000000000000c11e"
+    assert current["smoke_client"]["wallet_path"] == "deployments/dev/smoke-client-wallet-42424242.json"
+    assert current["smoke_client"]["funding_wei"] == "5000000000000000000"
     assert not (deploy_root / "hub-admin-wallet.json").exists()
     assert "private_key" not in json.dumps(current)
     assert "mnemonic" not in json.dumps(current)
@@ -170,6 +173,40 @@ def test_hub_admin_wallet_is_created_and_reused(tmp_path: Path, monkeypatch) -> 
     assert second.address == first.address
     assert second.private_key == first.private_key
     assert payload["schema"] == "main-computer.hub-admin-wallet.v1"
+    assert payload["chain_id"] == 42424242
+    assert payload["address"] == first.address
+    assert payload["private_key"] == first.private_key
+
+
+
+def test_smoke_client_wallet_is_created_and_reused(tmp_path: Path, monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+    monkeypatch.setattr(reset, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        reset,
+        "derive_address_for_private_key",
+        lambda args, root, private_key: "0x2222222222222222222222222222222222222222",
+    )
+    parser = reset.build_parser()
+    args = parser.parse_args([
+        "--yes",
+        "--run-id",
+        "unit-smoke-wallet",
+        "--deployment-output-dir",
+        str(tmp_path / "deployments"),
+    ])
+
+    first = reset.resolve_smoke_client_wallet(args, tmp_path, create_missing=True)
+    second = reset.resolve_smoke_client_wallet(args, tmp_path, create_missing=True)
+
+    wallet_path = tmp_path / "deployments" / "dev" / "smoke-client-wallet-42424242.json"
+    payload = json.loads(wallet_path.read_text(encoding="utf-8"))
+    assert first is not None
+    assert second is not None
+    assert first.address == "0x2222222222222222222222222222222222222222"
+    assert second.address == first.address
+    assert second.private_key == first.private_key
+    assert payload["schema"] == "main-computer.smoke-client-wallet.v1"
     assert payload["chain_id"] == 42424242
     assert payload["address"] == first.address
     assert payload["private_key"] == first.private_key
@@ -258,12 +295,18 @@ def test_env_payload_publishes_hub_credit_bridge_escrow_address() -> None:
         "deployments": {
             "hub_credit_bridge_escrow": {"address": "0x3333333333333333333333333333333333333333"},
         },
+        "smoke_client": {
+            "address": "0x2222222222222222222222222222222222222222",
+            "wallet_path": "runtime/deployments/dev/smoke-client-wallet-42424242.json",
+        },
         "offices": [],
     }
 
     env = reset.env_payload(payload)
 
     assert "MAIN_COMPUTER_HUB_CREDIT_BRIDGE_ESCROW_ADDRESS=0x3333333333333333333333333333333333333333" in env
+    assert "MAIN_COMPUTER_SMOKE_CLIENT_ADDRESS=0x2222222222222222222222222222222222222222" in env
+    assert "MAIN_COMPUTER_SMOKE_CLIENT_WALLET_PATH=runtime/deployments/dev/smoke-client-wallet-42424242.json" in env
 
 
 def test_parse_deployment_address_from_forge_json_and_text() -> None:
@@ -582,6 +625,8 @@ def test_external_chain_dry_run_writes_test_publication_without_anvil_secrets(tm
         "network": "smoke-besu-qbft-network",
         "container": "smoke-besu-qbft-rpc",
     }
+    assert current["smoke_client"]["wallet_path"] == "runtime/deployments/test/smoke-client-wallet-42424241.json"
+    assert current["smoke_client"]["address"] == "0x000000000000000000000000000000000000c11e"
     assert "mnemonic" not in json.dumps(current)
     assert "private_key" not in json.dumps(current)
     assert current["contracts"]["hub_credit_bridge_escrow"]["payment_asset"] == "native"

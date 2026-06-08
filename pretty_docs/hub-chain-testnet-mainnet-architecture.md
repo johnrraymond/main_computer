@@ -245,6 +245,20 @@ non-validator RPC node at `http://127.0.0.1:30010`. The dev profile listens on
 `http://127.0.0.1:8770` and talks to the Anvil dev-chain RPC at
 `http://127.0.0.1:18545`.
 
+
+The client verification path is now network-aware too:
+
+```powershell
+python .\scripts\smoke_hub_network_client.py --network dev
+python .\scripts\smoke_hub_network_client.py --network test
+```
+
+That smoke is intentionally outside the Hub. It checks the selected Hub profile,
+the chain RPC identity, EIP-1559 and Shanghai/PUSH0 readiness, deployed contract
+code, the per-network funded smoke wallet, and a real paid worker/credit/claim
+flow through the Hub API. This is the first complete local proof that dev and
+test can use the same golden pathway.
+
 Remote testnet version:
 
 ```text

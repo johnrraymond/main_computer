@@ -226,6 +226,19 @@ Invoke-RestMethod http://127.0.0.1:8770/api/hub/status
 Invoke-RestMethod http://127.0.0.1:8770/api/hub/v1/credits/indexer
 ```
 
+
+End-to-end Hub client smoke checks are network-aware. They verify the selected
+Hub profile, chain RPC, deployment manifest, deployed contract code, the funded
+smoke client wallet, and a real paid worker/credit/claim flow:
+
+```powershell
+python .\scripts\smoke_hub_network_client.py --network dev
+python .\scripts\smoke_hub_network_client.py --network test
+```
+
+Run the matching Hub first: `python -m main_computer.cli hub --network dev` or
+`python -m main_computer.cli hub --network test`.
+
 Export helper for ChatGPT:
 
 ```powershell

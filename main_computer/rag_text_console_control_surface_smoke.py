@@ -14,16 +14,22 @@ cannot choose the right canonical terminal command from the supplied context.
 Core contract:
   - Exact commands run only when they perfectly match the canonical /act grammar.
   - Fuzzy or natural text goes through Ollama /api/chat.
-  - The model returns a canonical /act command, not an executable UI action.
-  - The trusted broker parses the canonical command, applies paranoia, mints an
-    action id, and emits render packets.
+  - The model returns one ChatGPT-like assistant message string.
+  - Executable mount points appear only inside fenced ```computer blocks.
+  - Each ```computer block contains one or more exact single-command /act strings.
+  - The trusted broker parses each fenced command, applies paranoia and plan
+    limits, mints action/plan ids, and emits packets/render mounts.
   - Terminal "run" is the default when the user asks to run something.
   - Paranoia determines whether a runnable terminal command auto-runs,
     requires confirmation, downgrades to prefill, or is blocked.
   - If terminal context shows the user is already working in a relevant terminal,
     "now run git status" should target and clone that terminal with run-in.
   - If the same request is out of the blue, it should create a new terminal.
-  - Assistant prose that merely talks about slash commands remains inert.
+  - Multiple terminal commands inside one ```computer block become one broker-
+    validated terminal plan packet.
+  - Terminal owns executed/failed/skipped/interrupted plan state.
+  - Assistant prose or non-computer code fences that merely talk about slash
+    commands remain inert.
 
 Run from repo root:
 
@@ -69,6 +75,13 @@ DEFAULT_MODEL = (
 )
 
 PARANOIA_LEVELS = ("relaxed", "normal", "strict", "locked")
+PLAN_AUTO_RUN_STEP_LIMITS = {
+    "locked": 0,
+    "strict": 3,
+    "normal": 3,
+    "relaxed": 8,
+}
+DEFAULT_PLAN_REQUEST = "now run git status and then run the tests"
 
 
 APP_CAPABILITY_REGISTRY: dict[str, Any] = {
@@ -88,6 +101,12 @@ APP_CAPABILITY_REGISTRY: dict[str, Any] = {
             "so the broker creates a new terminal session"
         ),
         "paranoia": "broker decides autoRun/confirmation/prefill/block after parsing the canonical command",
+        "command_plans": (
+            "multiple terminal commands are represented as a broker/RAG command_plan made from "
+            "multiple exact single-command /act strings; the /act parser itself does not parse plans"
+        ),
+        "terminal_execution_state": "terminal app, not broker, owns executed/failed/skipped/interrupted state",
+        "plan_auto_run_limits": PLAN_AUTO_RUN_STEP_LIMITS,
     },
     "apps": [
         {
@@ -146,6 +165,12 @@ APP_CAPABILITY_REGISTRY: dict[str, Any] = {
                     "auto_run": False,
                     "terminal_session": "reuse and clone an existing terminal session without running",
                 },
+                {
+                    "canonical": "/act terminal interrupt <terminal-ref>",
+                    "action": "interrupt_terminal",
+                    "auto_run": "terminal control action; blocked by locked paranoia",
+                    "terminal_session": "target an existing terminal session",
+                },
             ],
             "terminal_refs": ["active", "last", "term_<id>"],
             "paranoia_policy": {
@@ -153,6 +178,11 @@ APP_CAPABILITY_REGISTRY: dict[str, Any] = {
                 "normal": "auto-run read-only and dry-run/test commands; confirm mutation/unknown commands",
                 "strict": "auto-run read-only only; confirm dry-run/test and mutation/unknown commands",
                 "locked": "never auto-run; prefill only",
+            },
+            "plan_policy": {
+                "plan_shape": "RAG may return kind=command_plan with canonical_commands; each string must parse as one exact /act command",
+                "auto_run_step_limits": PLAN_AUTO_RUN_STEP_LIMITS,
+                "execution_state_owner": "terminal",
             },
         },
         {
@@ -174,16 +204,30 @@ APP_CAPABILITY_REGISTRY: dict[str, Any] = {
 }
 
 
-SYSTEM_PROMPT = """
-You are the Main Computer text-console slash-command resolver.
+SYSTEM_PROMPT = r"""
+You are the Main Computer text-console assistant.
+
+Return one normal assistant message as markdown-like text, not JSON.
+
+CRITICAL: When the user asks to run, prepare, stop, interrupt, open, mount, or otherwise control the computer, the response MUST include at least one fenced code block with language `computer`. Never return only prose for an executable/control request.
+
+When you want the computer to do something, include a fenced code block with
+language `computer`.
+
+Inside a `computer` fence:
+- Write only exact /act commands, one per line.
+- Do not include explanations, bullets, JSON, comments, or prose.
+- One /act line means one action.
+- Multiple /act lines in the same fence mean one sequential terminal plan.
+- The /act grammar is strictly single-command only. Never invent /act terminal plan syntax.
+
+Outside a `computer` fence:
+- Write normal assistant prose before and/or after the mount point.
+- You may explain what you are doing, but prose is non-authoritative and inert.
+- The validated commands inside the `computer` fence are the contract.
 
 Use only the supplied app capability registry and terminal context. Do not
-invent commands. Return only a JSON object with this shape:
-
-{
-  "canonical_command": "/act ...",
-  "reason": "brief reason"
-}
+invent commands.
 
 Rules:
 - If the user asks to run something, prefer /act terminal run <command> --cwd repo-root.
@@ -193,19 +237,57 @@ Rules:
 - If there is no open terminal or the request comes out of the blue, use
   /act terminal run <command> --cwd repo-root so the broker creates a new terminal.
 - If the user asks to prepare but not execute a command, use /act terminal prefill <command> --cwd repo-root.
+- If the user asks to stop, cancel, halt, or interrupt the active terminal command, use /act terminal interrupt active.
 - If the user asks to show hidden files, use /act file manager show hidden files.
 - If the user writes a fuzzy command like /list directory .., decode it to /act file manager list directory ...
-- Return a command that the trusted parser can accept exactly.
-- Do not include markdown.
+- Return commands that the trusted parser can accept exactly.
 
 Examples:
+
 User request: now run git status
 Terminal context: active terminal term_git with recent_commands ["git status", "git diff"]
-Return: {"canonical_command": "/act terminal run-in active \"git status\" --cwd repo-root", "reason": "The active terminal is already a git terminal, so reuse it."}
+Return:
+I'll reuse the active terminal for this.
+
+```computer
+/act terminal run-in active "git status" --cwd repo-root
+```
+
+I'll use the terminal result as the next-turn context.
 
 User request: now run git status
 Terminal context: no open terminals
-Return: {"canonical_command": "/act terminal run \"git status\" --cwd repo-root", "reason": "There is no open terminal to reuse, so create a new one."}
+Return:
+I'll open a terminal and run the status check.
+
+```computer
+/act terminal run "git status" --cwd repo-root
+```
+
+I'll use the terminal output to continue.
+
+User request: now run git status and then run the tests
+Terminal context: active terminal term_git with recent_commands ["git status", "git diff"]
+Return:
+I'll run the repository check and then the tests in the active terminal.
+
+```computer
+/act terminal run-in active "git status" --cwd repo-root
+/act terminal run-in active "python -m pytest" --cwd repo-root
+```
+
+I'll stop at the first failing command and use the terminal result as context.
+
+User request: stop that command
+Terminal context: active terminal term_git
+Return:
+I'll interrupt the active terminal command.
+
+```computer
+/act terminal interrupt active
+```
+
+Then I'll wait for the terminal state update.
 """.strip()
 
 
@@ -270,13 +352,32 @@ class SmokeReport:
     terminal_mutation_normal_packet: dict[str, Any]
     terminal_mutation_relaxed_packet: dict[str, Any]
     terminal_locked_packet: dict[str, Any]
+    terminal_plan_model_payload: dict[str, Any]
+    terminal_plan_mount_payload: dict[str, Any]
+    terminal_plan_inline_render_blocks: list[dict[str, Any]]
+    terminal_plan_packet: dict[str, Any]
+    terminal_plan_result_packet: dict[str, Any]
+    terminal_plan_render_packet: dict[str, Any]
+    terminal_plan_failure_packet: dict[str, Any]
+    terminal_plan_failure_result_packet: dict[str, Any]
+    terminal_plan_mutation_pause_packet: dict[str, Any]
+    terminal_plan_mutation_pause_result_packet: dict[str, Any]
+    terminal_plan_locked_packet: dict[str, Any]
+    terminal_plan_locked_result_packet: dict[str, Any]
+    terminal_plan_interrupt_command_packet: dict[str, Any]
+    terminal_plan_interrupt_result_packet: dict[str, Any]
+    terminal_plan_max_step_rejection: dict[str, Any]
     contextual_request: str
     contextual_terminal_context: dict[str, Any]
     contextual_model_payload: dict[str, Any]
+    contextual_mount_payload: dict[str, Any]
+    contextual_inline_render_blocks: list[dict[str, Any]]
     contextual_rag_packet: dict[str, Any]
     out_of_blue_request: str
     out_of_blue_terminal_context: dict[str, Any]
     out_of_blue_model_payload: dict[str, Any]
+    out_of_blue_mount_payload: dict[str, Any]
+    out_of_blue_inline_render_blocks: list[dict[str, Any]]
     out_of_blue_rag_packet: dict[str, Any]
     inert_prose_blocks: list[dict[str, Any]]
     warnings: list[str]
@@ -489,6 +590,22 @@ def parse_terminal_command(text: str, tokens: list[str], app_len: int) -> Parsed
             options={"autoRun": False, "executionMode": "mount"},
         )
 
+    if first == "interrupt":
+        if len(tail) != 1:
+            return None
+        terminal_ref = tail[0]
+        return ParsedSlashCommand(
+            raw_input=text,
+            prefix="/act",
+            canonical_command=f"/act terminal interrupt {quote_arg(terminal_ref)}",
+            app_phrase="terminal",
+            app_id="terminal",
+            action_phrase="interrupt",
+            action="interrupt_terminal",
+            args={"terminal_ref": terminal_ref},
+            options={"terminalRef": terminal_ref, "requestedExecution": "interrupt"},
+        )
+
     if first not in {"run", "prefill", "run-in", "prefill-in"}:
         return None
 
@@ -676,6 +793,29 @@ def decide_terminal_safety(parsed: ParsedSlashCommand, paranoia: str) -> Termina
             reason="Terminal mount has no command to run.",
         )
 
+    if parsed.action == "interrupt_terminal":
+        if level == "locked":
+            return TerminalSafetyDecision(
+                paranoia=level,
+                risk="control",
+                requested_mode="interrupt",
+                execution_mode="prefill",
+                auto_run=False,
+                requires_confirmation=False,
+                blocked=False,
+                reason="Locked paranoia prepares terminal control actions instead of auto-running them.",
+            )
+        return TerminalSafetyDecision(
+            paranoia=level,
+            risk="control",
+            requested_mode="interrupt",
+            execution_mode="auto_run",
+            auto_run=True,
+            requires_confirmation=False,
+            blocked=False,
+            reason="Interrupt is a terminal control action that targets an existing terminal.",
+        )
+
     if parsed.action in {"prefill_command", "prefill_in_terminal"}:
         return TerminalSafetyDecision(
             paranoia=level,
@@ -860,7 +1000,7 @@ def resolve_action_terminal_context(parsed: ParsedSlashCommand, terminal_context
     args = dict(parsed.args)
     options = dict(parsed.options)
 
-    if parsed.action in {"run_in_terminal", "prefill_in_terminal"}:
+    if parsed.action in {"run_in_terminal", "prefill_in_terminal", "interrupt_terminal"}:
         ref = args.get("terminal_ref", "active")
         resolved = resolve_terminal_reference(ref, terminal_context)
         if resolved is None:
@@ -913,9 +1053,10 @@ def make_user_payload(request_text: str, terminal_context: dict[str, Any] | None
             "terminal_context": terminal_context or make_empty_terminal_context(),
             "app_capability_registry": APP_CAPABILITY_REGISTRY,
             "task": (
-                "Resolve user_request into a canonical slash command. "
-                "Use terminal_context to decide whether to run in an existing terminal "
-                "or create a new terminal."
+                "Return one assistant message string. Put executable computer actions only "
+                "inside fenced ```computer blocks. Inside each computer fence, write one "
+                "or more exact single-command /act strings, one per line. Use terminal_context "
+                "to decide whether to run in an existing terminal or create a new terminal."
             ),
         }
     )
@@ -929,6 +1070,8 @@ def call_ollama_chat(
     terminal_context: dict[str, Any] | None,
     timeout: float,
     think: bool | None,
+    debug_label: str,
+    print_ai_response: bool,
 ) -> tuple[dict[str, Any], str]:
     url = f"{base_url.rstrip('/')}/api/chat"
     payload: dict[str, Any] = {
@@ -938,7 +1081,6 @@ def call_ollama_chat(
             {"role": "user", "content": make_user_payload(request_text, terminal_context)},
         ],
         "stream": False,
-        "format": "json",
         "options": {
             "temperature": 0,
             "num_predict": 700,
@@ -978,18 +1120,322 @@ def call_ollama_chat(
     if not isinstance(message, dict):
         raise AssertionError(f"Ollama response missing message object: {one_line(raw)}")
 
-    content = message.get("content")
-    if not isinstance(content, str) or not content.strip():
-        raise AssertionError(f"Ollama response missing message.content text: {one_line(raw)}")
+    content_value = message.get("content")
+    content = content_value if isinstance(content_value, str) else ""
+    thinking_value = message.get("thinking")
+    thinking = thinking_value if isinstance(thinking_value, str) else None
 
-    return parse_model_payload(content), raw
+    debug_text = format_ai_response_debug(
+        label=debug_label,
+        request_text=request_text,
+        content=content,
+        raw_http_body=raw,
+        thinking=thinking,
+        force_thinking=not content.strip(),
+    )
+
+    if not content.strip():
+        print(debug_text)
+        raise AssertionError(
+            "Ollama response had empty message.content, so there is no executable assistant "
+            "message to parse. The smoke intentionally does not promote message.thinking into "
+            "an executable ```computer mount. Try the default --think false mode, or pass "
+            "--think false explicitly if this was run with --think omit/true."
+        )
+
+    if print_ai_response:
+        print(debug_text)
+
+    try:
+        return parse_assistant_control_message(content), raw
+    except AssertionError as exc:
+        if not print_ai_response:
+            print(debug_text)
+        raise AssertionError(
+            f"{exc}\n\nThe live AI response failed the text-console mount contract. "
+            "The full assistant content and fence diagnostics were printed above."
+        ) from exc
+
+
+COMPUTER_FENCE_RE = re.compile(
+    r"```[ \t]*(?P<language>computer)[^\n]*\n(?P<body>.*?)```",
+    flags=re.DOTALL | re.IGNORECASE,
+)
+
+
+CODE_FENCE_START_RE = re.compile(r"```[ \t]*(?P<language>[^\n`]*)", flags=re.IGNORECASE)
+
+
+def assistant_control_message_diagnostics(content: str) -> dict[str, Any]:
+    message = str(content)
+    fence_languages = [match.group("language").strip() for match in CODE_FENCE_START_RE.finditer(message)]
+    computer_fence_starts = [
+        match.group("language").strip()
+        for match in CODE_FENCE_START_RE.finditer(message)
+        if normalize(match.group("language").strip()).startswith("computer")
+    ]
+    act_like_lines = [
+        line.strip()
+        for line in message.splitlines()
+        if "/act" in line
+    ]
+
+    likely_issue = "unknown"
+    if not fence_languages and not act_like_lines:
+        likely_issue = "no_code_fence_or_act_lines"
+    elif computer_fence_starts and len(COMPUTER_FENCE_RE.findall(message)) == 0:
+        likely_issue = "computer_fence_started_but_not_closed_or_missing_newline"
+    elif fence_languages and not computer_fence_starts:
+        likely_issue = "code_fences_present_but_not_language_computer"
+    elif act_like_lines and not computer_fence_starts:
+        likely_issue = "act_lines_outside_computer_fence"
+    elif len(COMPUTER_FENCE_RE.findall(message)) > 0:
+        likely_issue = "computer_fence_present_check_fence_body"
+
+    return {
+        "messageLength": len(message),
+        "lineCount": len(message.splitlines()) or 1,
+        "codeFenceMarkerCount": message.count("```"),
+        "codeFenceStartLanguages": fence_languages,
+        "computerFenceStartCount": len(computer_fence_starts),
+        "completeComputerFenceCount": len(COMPUTER_FENCE_RE.findall(message)),
+        "actLikeLineCount": len(act_like_lines),
+        "actLikeLines": act_like_lines[:20],
+        "likelyIssue": likely_issue,
+        "oneLinePreview": one_line(message, limit=800),
+    }
+
+
+def format_ai_response_debug(
+    *,
+    label: str,
+    request_text: str,
+    content: str,
+    raw_http_body: str | None = None,
+    thinking: str | None = None,
+    force_thinking: bool = False,
+) -> str:
+    diagnostics = assistant_control_message_diagnostics(content)
+    has_thinking = isinstance(thinking, str) and bool(thinking.strip())
+    lines = [
+        "",
+        f"=== Ollama assistant response: {label} ===",
+        f"request: {request_text}",
+        "diagnostics:",
+        json.dumps(diagnostics, ensure_ascii=False, indent=2, sort_keys=True),
+        f"message_content_length: {len(content)}",
+        f"message_thinking_length: {len(thinking) if isinstance(thinking, str) else 0}",
+        "content:",
+        content if content else "<empty message.content>",
+    ]
+    if has_thinking:
+        lines.extend(
+            [
+                "thinking:",
+                thinking if force_thinking else one_line(thinking, limit=2000),
+            ]
+        )
+    lines.append("=== end Ollama assistant response ===")
+    if raw_http_body is not None:
+        lines.extend(
+            [
+                f"raw_http_body_length: {len(raw_http_body)}",
+                f"raw_http_body_preview: {one_line(raw_http_body, limit=2400)}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def commands_from_computer_fence(source: str) -> tuple[list[str], list[str]]:
+    commands: list[str] = []
+    invalid_lines: list[str] = []
+
+    for line in source.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("/act "):
+            commands.append(stripped)
+        else:
+            invalid_lines.append(stripped)
+
+    return commands, invalid_lines
+
+
+def derived_payload_from_computer_commands(commands: list[str]) -> dict[str, Any]:
+    if len(commands) == 1:
+        return {
+            "canonical_command": commands[0],
+            "reason": "Derived from a broker-validated assistant ```computer mount.",
+        }
+
+    return {
+        "kind": "command_plan",
+        "canonical_commands": commands,
+        "mode": "sequential",
+        "stop_on_failure": True,
+        "reason": "Derived from a broker-validated multi-command assistant ```computer mount.",
+    }
+
+
+def parse_assistant_control_message(content: str) -> dict[str, Any]:
+    message = content.strip()
+    if not message:
+        raise AssertionError("assistant message was empty")
+
+    mounts: list[dict[str, Any]] = []
+    for index, match in enumerate(COMPUTER_FENCE_RE.finditer(message), start=1):
+        source = match.group("body").strip()
+        commands, invalid_lines = commands_from_computer_fence(source)
+        mount_id = "mount_" + hashlib.sha256(f"{index}\n{source}".encode("utf-8")).hexdigest()[:12]
+        source_range = {"start": match.start(), "end": match.end()}
+
+        derived_payload: dict[str, Any] = {}
+        if commands:
+            derived_payload = derived_payload_from_computer_commands(commands)
+
+        mounts.append(
+            {
+                "mountId": mount_id,
+                "language": "computer",
+                "sourceRange": source_range,
+                "source": source,
+                "canonicalCommands": commands,
+                "invalidLines": invalid_lines,
+                "derivedPayload": derived_payload,
+                "leadingText": message[: match.start()],
+                "trailingText": message[match.end() :],
+            }
+        )
+
+    if not mounts:
+        diagnostics = assistant_control_message_diagnostics(message)
+        raise AssertionError(
+            "AI response did not contain an executable ```computer mount. "
+            f"Diagnostics: {json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)}. "
+            f"Content: {one_line(message)}"
+        )
+
+    return {
+        "kind": "assistant_text_console_message",
+        "message": message,
+        "computer_mounts": mounts,
+    }
+
+
+def assistant_message_from_commands(
+    *,
+    leading_text: str,
+    commands: list[str],
+    trailing_text: str,
+) -> dict[str, Any]:
+    message = (
+        leading_text.strip()
+        + "\n\n```computer\n"
+        + "\n".join(commands)
+        + "\n```\n\n"
+        + trailing_text.strip()
+    )
+    return parse_assistant_control_message(message)
+
+
+def first_computer_mount(model_payload: dict[str, Any]) -> dict[str, Any]:
+    if model_payload.get("kind") != "assistant_text_console_message":
+        raise AssertionError(f"Expected assistant_text_console_message, got {model_payload!r}")
+
+    mounts = model_payload.get("computer_mounts")
+    if not isinstance(mounts, list) or not mounts:
+        raise AssertionError(f"Assistant message has no computer mounts: {model_payload!r}")
+
+    mount = mounts[0]
+    if not isinstance(mount, dict):
+        raise AssertionError(f"Assistant computer mount is not an object: {mount!r}")
+    return mount
+
+
+def payload_from_first_computer_mount(model_payload: dict[str, Any]) -> dict[str, Any]:
+    if model_payload.get("kind") != "assistant_text_console_message":
+        return model_payload
+
+    mount = first_computer_mount(model_payload)
+    invalid_lines = mount.get("invalidLines") or []
+    if invalid_lines:
+        raise AssertionError(f"Computer mount contains non-/act lines: {invalid_lines!r}")
+
+    payload = mount.get("derivedPayload")
+    if not isinstance(payload, dict) or not payload:
+        raise AssertionError(f"Computer mount did not derive a command payload: {mount!r}")
+    return payload
+
+
+def render_inline_assistant_message_blocks(
+    assistant_payload: dict[str, Any],
+    mount_renders: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if assistant_payload.get("kind") != "assistant_text_console_message":
+        raise AssertionError(f"Expected assistant_text_console_message, got {assistant_payload!r}")
+
+    message = assistant_payload.get("message")
+    mounts = assistant_payload.get("computer_mounts")
+    if not isinstance(message, str) or not isinstance(mounts, list):
+        raise AssertionError(f"Malformed assistant message payload: {assistant_payload!r}")
+
+    blocks: list[dict[str, Any]] = []
+    cursor = 0
+    for mount in mounts:
+        if not isinstance(mount, dict):
+            raise AssertionError(f"Malformed mount: {mount!r}")
+        source_range = mount.get("sourceRange")
+        if not isinstance(source_range, dict):
+            raise AssertionError(f"Mount missing sourceRange: {mount!r}")
+        start = int(source_range.get("start", -1))
+        end = int(source_range.get("end", -1))
+        if start < cursor or end < start or end > len(message):
+            raise AssertionError(f"Invalid mount sourceRange {source_range!r} for message length {len(message)}")
+
+        before = message[cursor:start]
+        if before.strip():
+            blocks.append({"kind": "markdown", "text": before.strip(), "brokerMounts": []})
+
+        mount_id = mount.get("mountId")
+        render = mount_renders.get(mount_id)
+        if render is None:
+            raise AssertionError(f"No broker render supplied for computer mount {mount_id!r}")
+
+        if isinstance(render, RenderPacket):
+            render_payload: Any = asdict(render)
+        else:
+            render_payload = render
+
+        blocks.append(
+            {
+                "kind": "computer_mount",
+                "mountId": mount_id,
+                "language": "computer",
+                "source": mount.get("source", ""),
+                "sourceRange": source_range,
+                "brokerRender": render_payload,
+            }
+        )
+        cursor = end
+
+    rest = message[cursor:]
+    if rest.strip():
+        blocks.append({"kind": "markdown", "text": rest.strip(), "brokerMounts": []})
+
+    return blocks
 
 
 def strip_json_code_fence(text: str) -> str:
     stripped = text.strip()
-    fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", stripped, flags=re.DOTALL | re.IGNORECASE)
-    if fenced:
-        return fenced.group(1).strip()
+    exact_fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", stripped, flags=re.DOTALL | re.IGNORECASE)
+    if exact_fence:
+        return exact_fence.group(1).strip()
+
+    embedded_fence = re.search(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.DOTALL | re.IGNORECASE)
+    if embedded_fence:
+        return embedded_fence.group(1).strip()
+
     return stripped
 
 
@@ -1025,17 +1471,223 @@ def extract_balanced_json_object(text: str) -> str:
     raise ValueError("no balanced JSON object found")
 
 
+def extract_probable_json_object(text: str) -> str:
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end < start:
+        raise ValueError("no probable JSON object found")
+    return text[start : end + 1]
+
+
+def strip_loose_json_string(value: str) -> str:
+    stripped = value.strip().rstrip(",").strip()
+    if len(stripped) >= 2 and stripped[0] == '"' and stripped[-1] == '"':
+        stripped = stripped[1:-1]
+    return stripped.replace('\\"', '"').replace("\\\\", "\\").strip()
+
+
+def loose_json_string_field(text: str, field: str) -> str | None:
+    match = re.search(
+        rf'"{re.escape(field)}"\s*:\s*"(.*?)"\s*(?=,|\}})',
+        text,
+        flags=re.DOTALL,
+    )
+    if not match:
+        return None
+    return strip_loose_json_string('"' + match.group(1) + '"')
+
+
+def loose_json_bool_field(text: str, field: str) -> bool | None:
+    match = re.search(rf'"{re.escape(field)}"\s*:\s*(true|false)', text, flags=re.IGNORECASE)
+    if not match:
+        return None
+    return match.group(1).lower() == "true"
+
+
+def loose_json_act_command_field(text: str, field: str) -> str | None:
+    match = re.search(
+        rf'"{re.escape(field)}"\s*:\s*"(/act\s+.*?)"\s*(?=,|\}})',
+        text,
+        flags=re.DOTALL,
+    )
+    if not match:
+        return None
+    return strip_loose_json_string('"' + match.group(1) + '"')
+
+
+def loose_json_act_command_array(text: str, field: str) -> list[str]:
+    match = re.search(rf'"{re.escape(field)}"\s*:\s*\[(.*?)\]', text, flags=re.DOTALL)
+    if not match:
+        return []
+
+    body = match.group(1)
+    commands: list[str] = []
+    for command_match in re.finditer(r'"(/act\s+.*?)"\s*(?=,|\]|$)', body, flags=re.DOTALL):
+        command = strip_loose_json_string('"' + command_match.group(1) + '"')
+        if command:
+            commands.append(command)
+    return commands
+
+
+def parse_loose_model_payload(text: str) -> dict[str, Any]:
+    candidate = extract_probable_json_object(text)
+    payload: dict[str, Any] = {}
+
+    kind = loose_json_string_field(candidate, "kind")
+    if kind is not None:
+        payload["kind"] = kind
+
+    canonical_commands = loose_json_act_command_array(candidate, "canonical_commands")
+    if canonical_commands:
+        payload["canonical_commands"] = canonical_commands
+        payload.setdefault("kind", "command_plan")
+
+    canonical_command = loose_json_act_command_field(candidate, "canonical_command")
+    if canonical_command is not None:
+        payload["canonical_command"] = canonical_command
+
+    mode = loose_json_string_field(candidate, "mode")
+    if mode is not None:
+        payload["mode"] = mode
+
+    stop_on_failure = loose_json_bool_field(candidate, "stop_on_failure")
+    if stop_on_failure is not None:
+        payload["stop_on_failure"] = stop_on_failure
+
+    needs_terminal_selection = loose_json_bool_field(candidate, "needs_terminal_selection")
+    if needs_terminal_selection is not None:
+        payload["needs_terminal_selection"] = needs_terminal_selection
+
+    reason = loose_json_string_field(candidate, "reason")
+    if reason is not None:
+        payload["reason"] = reason
+
+    if not (
+        payload.get("needs_terminal_selection")
+        or isinstance(payload.get("canonical_command"), str)
+        or payload.get("kind") == "command_plan"
+    ):
+        raise ValueError(f"could not recover model payload from text: {one_line(text)}")
+
+    return payload
+
+
 def parse_model_payload(content: str) -> dict[str, Any]:
     text = strip_json_code_fence(content)
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        parsed = json.loads(extract_balanced_json_object(text))
+
+    decode_errors: list[str] = []
+    for candidate_factory in (
+        lambda: text,
+        lambda: extract_balanced_json_object(text),
+        lambda: extract_probable_json_object(text),
+    ):
+        try:
+            parsed = json.loads(candidate_factory())
+            break
+        except (json.JSONDecodeError, ValueError) as exc:
+            decode_errors.append(str(exc))
+    else:
+        try:
+            parsed = parse_loose_model_payload(text)
+        except ValueError as exc:
+            raise ValueError(
+                "Could not parse Ollama message.content as a model payload. "
+                f"Errors: {decode_errors}. Content: {one_line(text)}"
+            ) from exc
 
     if not isinstance(parsed, dict):
         raise AssertionError(f"Model did not return a JSON object: {type(parsed).__name__}")
 
     return parsed
+
+def validate_assistant_control_message_parser() -> list[str]:
+    failures: list[str] = []
+
+    if "```computer" not in SYSTEM_PROMPT:
+        failures.append("SYSTEM_PROMPT must instruct the model to use fenced ```computer mounts")
+    if "MUST include at least one fenced code block" not in SYSTEM_PROMPT:
+        failures.append("SYSTEM_PROMPT must explicitly require a computer fence for executable/control requests")
+    if "Return only a JSON object" in SYSTEM_PROMPT or '"canonical_command"' in SYSTEM_PROMPT:
+        failures.append("SYSTEM_PROMPT should not ask the model for JSON command payloads")
+
+    sample = """I'll run both checks in the active terminal.
+
+```computer
+/act terminal run-in active "git status" --cwd repo-root
+/act terminal run-in active "python -m pytest" --cwd repo-root
+```
+
+I'll stop at the first failing command and use the result as context.
+"""
+
+    try:
+        parsed = parse_assistant_control_message(sample)
+    except Exception as exc:
+        failures.append(f"assistant message with computer mount was not parsed: {exc}")
+        return failures
+
+    if parsed.get("kind") != "assistant_text_console_message":
+        failures.append(f"assistant message parser returned wrong kind: {parsed!r}")
+
+    mounts = parsed.get("computer_mounts")
+    if not isinstance(mounts, list) or len(mounts) != 1:
+        failures.append(f"expected one computer mount, got {mounts!r}")
+        return failures
+
+    mount = mounts[0]
+    source_range = mount.get("sourceRange", {})
+    start = source_range.get("start")
+    end = source_range.get("end")
+    message = parsed.get("message", "")
+    if not isinstance(start, int) or not isinstance(end, int) or "```computer" not in message[start:end]:
+        failures.append(f"mount sourceRange should cover the fenced computer block, got {source_range!r}")
+
+    if "I'll run both checks" not in mount.get("leadingText", ""):
+        failures.append("computer mount did not preserve leading assistant text")
+    if "use the result as context" not in mount.get("trailingText", ""):
+        failures.append("computer mount did not preserve trailing assistant text")
+
+    derived = mount.get("derivedPayload")
+    if not isinstance(derived, dict) or derived.get("kind") != "command_plan":
+        failures.append(f"multi-line computer mount should derive command_plan, got {derived!r}")
+    else:
+        commands = derived.get("canonical_commands")
+        if commands != [
+            '/act terminal run-in active "git status" --cwd repo-root',
+            '/act terminal run-in active "python -m pytest" --cwd repo-root',
+        ]:
+            failures.append(f"derived canonical_commands mismatch: {commands!r}")
+        if derived.get("stop_on_failure") is not True:
+            failures.append("derived computer plan should default stop_on_failure to true")
+
+    non_computer = """This is documentation only.
+
+```text
+/act terminal run "git status" --cwd repo-root
+```
+
+Do not execute it.
+"""
+    try:
+        parse_assistant_control_message(non_computer)
+        failures.append("non-computer code fence should not become an executable assistant control message")
+    except AssertionError:
+        pass
+
+    empty_content_debug = format_ai_response_debug(
+        label="empty-content-regression",
+        request_text="now run git status and then run the tests",
+        content="",
+        raw_http_body='{"message":{"content":"","thinking":"planned but not emitted"}}',
+        thinking="planned but not emitted",
+        force_thinking=True,
+    )
+    if "<empty message.content>" not in empty_content_debug:
+        failures.append("empty-content Ollama debug output should make empty message.content explicit")
+    if "thinking:" not in empty_content_debug or "planned but not emitted" not in empty_content_debug:
+        failures.append("empty-content Ollama debug output should include message.thinking for diagnosis")
+
+    return failures
 
 
 def deterministic_model_payload_for_offline_contract(
@@ -1048,47 +1700,332 @@ def deterministic_model_payload_for_offline_contract(
     has_terminal = isinstance(terminals, list) and bool(terminals)
     active_terminal = resolve_terminal_reference("active", context)
 
-    if "git status" in lowered or ("run" in lowered and "status" in lowered):
+    if any(word in lowered for word in ("stop", "interrupt", "cancel", "halt")) and "command" in lowered:
+        return assistant_message_from_commands(
+            leading_text="I'll interrupt the active terminal command.",
+            commands=["/act terminal interrupt active"],
+            trailing_text="Then I'll wait for the terminal state update.",
+        )
+
+    wants_git_status = "git status" in lowered or ("run" in lowered and "status" in lowered)
+    wants_tests = "pytest" in lowered or "test" in lowered or "tests" in lowered
+    wants_sequence = "then" in lowered or " and " in f" {lowered} "
+    if wants_git_status and wants_tests and wants_sequence:
+        if active_terminal is not None:
+            return assistant_message_from_commands(
+                leading_text="I'll run the repository check and then the tests in the active terminal.",
+                commands=[
+                    '/act terminal run-in active "git status" --cwd repo-root',
+                    '/act terminal run-in active "python -m pytest" --cwd repo-root',
+                ],
+                trailing_text="I'll stop at the first failing command and use the terminal result as context.",
+            )
+        return assistant_message_from_commands(
+            leading_text="I'll open a terminal and run the repository check followed by the tests.",
+            commands=[
+                '/act terminal run "git status" --cwd repo-root',
+                '/act terminal run "python -m pytest" --cwd repo-root',
+            ],
+            trailing_text="I'll stop at the first failing command and use the terminal result as context.",
+        )
+
+    if wants_git_status:
         if active_terminal is not None and ("now" in lowered or "open terminal" in lowered or "there" in lowered):
-            return {
-                "canonical_command": '/act terminal run-in active "git status" --cwd repo-root',
-                "reason": "The active terminal is already a git terminal, so reuse and clone it.",
-            }
+            return assistant_message_from_commands(
+                leading_text="I'll reuse the active terminal for this git status check.",
+                commands=['/act terminal run-in active "git status" --cwd repo-root'],
+                trailing_text="I'll use the terminal result as the next-turn context.",
+            )
         if has_terminal and "open terminal" in lowered and active_terminal is None:
-            return {
-                "needs_terminal_selection": True,
-                "reason": "The request refers to an open terminal, but the context has no unambiguous active terminal.",
-            }
-        return {
-            "canonical_command": '/act terminal run "git status" --cwd repo-root',
-            "reason": "No relevant terminal context was supplied, so create a new terminal.",
-        }
+            return assistant_message_from_commands(
+                leading_text="I'll ask the broker to resolve which open terminal should run this.",
+                commands=['/act terminal run-in active "git status" --cwd repo-root'],
+                trailing_text="The frontend should show a terminal selection mount if the active terminal is ambiguous.",
+            )
+        return assistant_message_from_commands(
+            leading_text="I'll open a terminal and run the git status check.",
+            commands=['/act terminal run "git status" --cwd repo-root'],
+            trailing_text="I'll use the terminal output to continue.",
+        )
 
     if "dry" in lowered and "patch" in lowered:
-        return {
-            "canonical_command": '/act terminal run "python new_patch.py patch.zip --dry-run" --cwd repo-root',
-            "reason": "The user asks to run a patch dry-run command.",
-        }
+        return assistant_message_from_commands(
+            leading_text="I'll run the patch dry-run command in a terminal.",
+            commands=['/act terminal run "python new_patch.py patch.zip --dry-run" --cwd repo-root'],
+            trailing_text="I'll inspect the dry-run output before suggesting any apply step.",
+        )
+
     if "list" in lowered and "directory" in lowered and ".." in lowered:
-        return {
-            "canonical_command": "/act file manager list directory ..",
-            "reason": "The fuzzy slash request asks the file manager to list the parent directory.",
-        }
+        return assistant_message_from_commands(
+            leading_text="I'll ask the file manager to list the parent directory.",
+            commands=["/act file manager list directory .."],
+            trailing_text="I'll use the listing as context.",
+        )
+
     if "hidden" in lowered and "file" in lowered:
-        return {
-            "canonical_command": "/act file manager show hidden files",
-            "reason": "The request asks the file manager to show hidden files.",
-        }
+        return assistant_message_from_commands(
+            leading_text="I'll ask the file manager to show hidden files.",
+            commands=["/act file manager show hidden files"],
+            trailing_text="Hidden files should now be visible in the file manager.",
+        )
+
     raise AssertionError(f"offline contract fixture does not know how to resolve: {request_text!r}")
 
 
 def canonical_command_from_model(model_payload: dict[str, Any]) -> str:
-    if model_payload.get("needs_terminal_selection"):
-        raise AssertionError(f"Model requested terminal selection instead of a canonical command: {model_payload!r}")
-    value = model_payload.get("canonical_command")
+    payload = payload_from_first_computer_mount(model_payload)
+
+    if payload.get("needs_terminal_selection"):
+        raise AssertionError(f"Model requested terminal selection instead of a canonical command: {payload!r}")
+    value = payload.get("canonical_command")
     if not isinstance(value, str) or not value.strip():
-        raise AssertionError(f"Model payload missing canonical_command string: {model_payload!r}")
+        raise AssertionError(f"Model payload missing canonical_command string: {payload!r}")
     return value.strip()
+
+
+def model_payload_kind(model_payload: dict[str, Any]) -> str:
+    payload = payload_from_first_computer_mount(model_payload)
+
+    if payload.get("needs_terminal_selection"):
+        return "terminal_selection"
+    if payload.get("kind") == "command_plan":
+        return "command_plan"
+    if isinstance(payload.get("canonical_command"), str):
+        return "canonical_command"
+    raise AssertionError(f"Unsupported model payload shape: {payload!r}")
+
+
+def canonical_commands_from_plan_payload(model_payload: dict[str, Any]) -> list[str]:
+    payload = payload_from_first_computer_mount(model_payload)
+
+    if payload.get("kind") != "command_plan":
+        raise AssertionError(f"Expected command_plan payload, got {payload!r}")
+
+    commands = payload.get("canonical_commands")
+    if not isinstance(commands, list) or len(commands) < 2:
+        raise AssertionError("command_plan must contain at least two canonical_commands")
+
+    cleaned: list[str] = []
+    for command in commands:
+        if not isinstance(command, str) or not command.strip():
+            raise AssertionError(f"Invalid plan command: {command!r}")
+        cleaned.append(command.strip())
+
+    return cleaned
+
+
+def plan_step_id(index: int) -> str:
+    return f"step_{index}"
+
+
+def stable_plan_id(canonical_commands: list[str], terminal_session_id: str) -> str:
+    digest_source = terminal_session_id + "\n" + "\n".join(canonical_commands)
+    return "plan_" + hashlib.sha256(digest_source.encode("utf-8")).hexdigest()[:12]
+
+
+def terminal_plan_view_id(plan_id: str, steps: list[dict[str, Any]]) -> str:
+    digest_source = plan_id + json.dumps(
+        [{"stepId": step.get("stepId"), "command": step.get("command")} for step in steps],
+        sort_keys=True,
+    )
+    return "view_plan_" + hashlib.sha256(digest_source.encode("utf-8")).hexdigest()[:12]
+
+
+def plan_risk_label(risk: str) -> str:
+    return "test" if risk == "dry_run_or_test" else risk
+
+
+def broker_plan_rejection(
+    *,
+    reason: str,
+    canonical_commands: list[str],
+    paranoia: str,
+    max_auto_run_steps: int,
+    auto_run_steps: int,
+) -> dict[str, Any]:
+    return {
+        "kind": "broker_plan_rejection",
+        "reason": reason,
+        "paranoia": paranoia,
+        "maxAutoRunSteps": max_auto_run_steps,
+        "autoRunSteps": auto_run_steps,
+        "canonicalCommands": canonical_commands,
+    }
+
+
+def broker_build_terminal_plan_packet(
+    model_payload: dict[str, Any],
+    *,
+    origin: str,
+    paranoia: str,
+    terminal_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    canonical_commands = canonical_commands_from_plan_payload(model_payload)
+    level = normalize(paranoia or DEFAULT_PARANOIA)
+    if level not in PARANOIA_LEVELS:
+        level = DEFAULT_PARANOIA
+
+    steps: list[dict[str, Any]] = []
+    terminal_session_id = ""
+    auto_run_steps = 0
+
+    for index, canonical_command in enumerate(canonical_commands, start=1):
+        parsed = exact_parse_slash_command(canonical_command)
+        if not parsed:
+            raise AssertionError(f"Plan command did not parse exactly: {canonical_command!r}")
+        if parsed.app_id != "terminal":
+            raise AssertionError(f"Plan command must target terminal, got {parsed.app_id!r}")
+
+        parsed = resolve_action_terminal_context(parsed, terminal_context)
+        if parsed.args.get("terminal_resolution") == "needs_terminal_selection":
+            raise AssertionError(f"Plan command needs terminal selection: {canonical_command!r}")
+
+        action = mint_broker_action(parsed)
+        decision = decide_terminal_safety(parsed, level)
+        session_id = parsed.args.get("terminal_session_id", "")
+        if not session_id:
+            raise AssertionError(f"Plan command did not resolve a terminal session: {canonical_command!r}")
+        if not terminal_session_id:
+            terminal_session_id = session_id
+        elif session_id != terminal_session_id:
+            raise AssertionError(
+                f"Plan commands must target the same terminal session: {terminal_session_id!r} != {session_id!r}"
+            )
+
+        if decision.auto_run:
+            auto_run_steps += 1
+
+        steps.append(
+            {
+                "stepId": plan_step_id(index),
+                "actionId": f"{action.action_id}_step_{index}",
+                "canonicalCommand": parsed.canonical_command,
+                "command": parsed.args.get("command", ""),
+                "cwd": parsed.args.get("cwd", "repo-root"),
+                "terminalSessionId": session_id,
+                "parentViewId": parsed.args.get("parent_view_id", ""),
+                "risk": plan_risk_label(decision.risk),
+                "rawRisk": decision.risk,
+                "executionMode": decision.execution_mode,
+                "autoRun": decision.auto_run,
+                "requiresConfirmation": decision.requires_confirmation,
+                "blocked": decision.blocked,
+                "status": "pending",
+                "brokerDecisionReason": decision.reason,
+            }
+        )
+
+    max_auto_run_steps = PLAN_AUTO_RUN_STEP_LIMITS[level]
+    if auto_run_steps > max_auto_run_steps:
+        return broker_plan_rejection(
+            reason="too_many_auto_run_steps",
+            canonical_commands=canonical_commands,
+            paranoia=level,
+            max_auto_run_steps=max_auto_run_steps,
+            auto_run_steps=auto_run_steps,
+        )
+
+    payload = payload_from_first_computer_mount(model_payload)
+    plan_id = stable_plan_id(canonical_commands, terminal_session_id)
+    return {
+        "kind": "terminal_command_plan_packet",
+        "planId": plan_id,
+        "terminalSessionId": terminal_session_id,
+        "mode": str(payload.get("mode") or "sequential"),
+        "stopOnFailure": bool(payload.get("stop_on_failure", True)),
+        "origin": origin,
+        "paranoia": level,
+        "brokerPolicy": {
+            "autoRunStepLimit": max_auto_run_steps,
+            "autoRunSteps": auto_run_steps,
+            "executionStateOwner": "terminal",
+        },
+        "steps": steps,
+    }
+
+
+FAKE_TERMINAL_EXIT_CODES = {
+    "git status": 0,
+    "python -m pytest": 0,
+    "python -m pytest failing_test": 1,
+    "python new_patch.py patch.zip --dry-run": 0,
+}
+
+
+def fake_terminal_consume_plan_packet(
+    packet: dict[str, Any],
+    *,
+    interrupt_step_id: str | None = None,
+) -> dict[str, Any]:
+    if packet.get("kind") != "terminal_command_plan_packet":
+        raise AssertionError(f"Fake terminal expected terminal_command_plan_packet, got {packet.get('kind')!r}")
+
+    result_steps: list[dict[str, Any]] = []
+    plan_status = "completed"
+    stopped = False
+
+    for step in packet.get("steps", []):
+        result_step = dict(step)
+
+        if stopped:
+            result_step["status"] = "skipped"
+            result_steps.append(result_step)
+            continue
+
+        if step.get("blocked"):
+            result_step["status"] = "blocked"
+            plan_status = "blocked"
+            stopped = True
+            result_steps.append(result_step)
+            continue
+
+        if step.get("executionMode") == "prefill":
+            result_step["status"] = "prepared"
+            if plan_status == "completed":
+                plan_status = "prepared"
+            result_steps.append(result_step)
+            continue
+
+        if step.get("requiresConfirmation"):
+            result_step["status"] = "requires_confirmation"
+            plan_status = "paused"
+            stopped = True
+            result_steps.append(result_step)
+            continue
+
+        if not step.get("autoRun"):
+            result_step["status"] = "prepared"
+            if plan_status == "completed":
+                plan_status = "prepared"
+            result_steps.append(result_step)
+            continue
+
+        if interrupt_step_id == step.get("stepId"):
+            result_step["status"] = "interrupted"
+            plan_status = "paused"
+            stopped = True
+            result_steps.append(result_step)
+            continue
+
+        exit_code = FAKE_TERMINAL_EXIT_CODES.get(str(step.get("command") or ""), 0)
+        result_step["exitCode"] = exit_code
+        if exit_code == 0:
+            result_step["status"] = "executed"
+        else:
+            result_step["status"] = "failed"
+            plan_status = "failed"
+            if packet.get("stopOnFailure", True):
+                stopped = True
+        result_steps.append(result_step)
+
+    return {
+        "kind": "terminal_plan_result_packet",
+        "planId": packet["planId"],
+        "terminalSessionId": packet["terminalSessionId"],
+        "terminalViewId": terminal_plan_view_id(packet["planId"], result_steps),
+        "status": plan_status,
+        "steps": result_steps,
+    }
 
 
 def mint_broker_action(parsed: ParsedSlashCommand) -> BrokerAction:
@@ -1197,6 +2134,8 @@ def build_terminal_render_packet(action: BrokerAction, *, origin: str, paranoia:
 
     if action.action == "mount_terminal":
         answer = "Mounted Terminal."
+    elif action.action == "interrupt_terminal":
+        answer = f"Interrupting Terminal command in {action.args.get('terminal_label', session_id)}."
     elif action.action in {"prefill_command", "prefill_in_terminal"}:
         if reused_existing:
             answer = f"Prepared Terminal command in {action.args.get('terminal_label', session_id)} without running it: {command!r}."
@@ -1246,6 +2185,7 @@ def build_terminal_render_packet(action: BrokerAction, *, origin: str, paranoia:
             "reusedExistingSession": reused_existing,
             "targetResolution": action.args.get("terminal_resolution", ""),
             "terminalRef": action.args.get("terminal_ref", ""),
+            "commandKind": "interrupt" if action.action == "interrupt_terminal" else "command",
             "command": command,
             "cwd": cwd,
             "requestedMode": decision.requested_mode,
@@ -1328,6 +2268,51 @@ def broker_parse_and_render(
     action = mint_broker_action(parsed)
     packet = build_render_packet(action, origin=origin, paranoia=paranoia)
     return parsed, action, packet
+
+
+def build_terminal_plan_render_packet(
+    plan_packet: dict[str, Any],
+    result_packet: dict[str, Any],
+    *,
+    origin: str,
+) -> RenderPacket:
+    steps = result_packet.get("steps", [])
+    mounted_object = {
+        "kind": "mounted_app",
+        "appId": "terminal",
+        "label": "Terminal",
+        "surface": TEXT_CONSOLE_SURFACE,
+        "terminal": {
+            "kind": "terminal_plan_view",
+            "planId": plan_packet.get("planId"),
+            "terminalSessionId": plan_packet.get("terminalSessionId"),
+            "terminalViewId": result_packet.get("terminalViewId"),
+            "status": result_packet.get("status"),
+            "steps": steps,
+        },
+        "display": {
+            "title": "Terminal",
+            "subtitle": "Terminal command plan",
+        },
+    }
+    return RenderPacket(
+        answer_markdown=f"Running a {len(plan_packet.get('steps', []))}-step terminal plan in Terminal 1.",
+        command_card={
+            "kind": "canonical_command_plan",
+            "label": "Equivalent command plan",
+            "commands": [step.get("canonicalCommand") for step in plan_packet.get("steps", [])],
+            "origin": origin,
+        },
+        broker_mounts=[
+            {
+                "kind": "auto_mount",
+                "plan_id": plan_packet.get("planId"),
+                "surface": TEXT_CONSOLE_SURFACE,
+                "placement": "inline_after_answer",
+            }
+        ],
+        mounted_object=mounted_object,
+    )
 
 
 def inspect_ai_result_blocks(markdown: str) -> list[dict[str, Any]]:
@@ -1543,11 +2528,145 @@ def validate_terminal_selection_packet(packet: RenderPacket) -> list[str]:
     return failures
 
 
+def validate_terminal_plan_packet(
+    packet: dict[str, Any],
+    *,
+    expected_step_count: int,
+    expected_session_id: str,
+) -> list[str]:
+    failures: list[str] = []
+    if packet.get("kind") != "terminal_command_plan_packet":
+        failures.append(f"expected terminal_command_plan_packet, got {packet.get('kind')!r}")
+        return failures
+
+    if not packet.get("planId"):
+        failures.append("plan packet must include a planId")
+    if packet.get("terminalSessionId") != expected_session_id:
+        failures.append(f"plan session expected {expected_session_id!r}, got {packet.get('terminalSessionId')!r}")
+
+    steps = packet.get("steps")
+    if not isinstance(steps, list) or len(steps) != expected_step_count:
+        failures.append(f"plan should include {expected_step_count} steps, got {len(steps) if isinstance(steps, list) else steps!r}")
+        return failures
+
+    action_ids = [step.get("actionId") for step in steps]
+    if len(set(action_ids)) != len(action_ids):
+        failures.append("plan step action ids must be unique")
+    for index, step in enumerate(steps, start=1):
+        expected_step_id = plan_step_id(index)
+        if step.get("stepId") != expected_step_id:
+            failures.append(f"step {index} id expected {expected_step_id!r}, got {step.get('stepId')!r}")
+        if not step.get("canonicalCommand"):
+            failures.append(f"{expected_step_id} missing canonicalCommand")
+        elif exact_parse_slash_command(str(step["canonicalCommand"])) is None:
+            failures.append(f"{expected_step_id} canonicalCommand does not parse exactly")
+        if step.get("terminalSessionId") != expected_session_id:
+            failures.append(f"{expected_step_id} expected terminal session {expected_session_id!r}, got {step.get('terminalSessionId')!r}")
+        if "command" not in step:
+            failures.append(f"{expected_step_id} missing command")
+        if "cwd" not in step:
+            failures.append(f"{expected_step_id} missing cwd")
+        if step.get("risk") not in {"read_only", "test", "mutation", "unknown", "destructive", "control"}:
+            failures.append(f"{expected_step_id} unexpected risk {step.get('risk')!r}")
+        if step.get("executionMode") not in {"auto_run", "confirmation_required", "prefill", "blocked"}:
+            failures.append(f"{expected_step_id} unexpected executionMode {step.get('executionMode')!r}")
+        if step.get("status") != "pending":
+            failures.append(f"{expected_step_id} broker packet status must be pending, got {step.get('status')!r}")
+    return failures
+
+
+def validate_terminal_plan_result_packet(
+    packet: dict[str, Any],
+    *,
+    expected_status: str,
+    expected_step_statuses: list[str],
+) -> list[str]:
+    failures: list[str] = []
+    if packet.get("kind") != "terminal_plan_result_packet":
+        failures.append(f"expected terminal_plan_result_packet, got {packet.get('kind')!r}")
+        return failures
+    if packet.get("status") != expected_status:
+        failures.append(f"plan result status expected {expected_status!r}, got {packet.get('status')!r}")
+    steps = packet.get("steps")
+    if not isinstance(steps, list):
+        failures.append("plan result steps must be a list")
+        return failures
+    actual_statuses = [str(step.get("status")) for step in steps]
+    if actual_statuses != expected_step_statuses:
+        failures.append(f"plan step statuses expected {expected_step_statuses!r}, got {actual_statuses!r}")
+    for step in steps:
+        status = step.get("status")
+        if status in {"executed", "failed"} and "exitCode" not in step:
+            failures.append(f"{step.get('stepId')} terminal-owned {status!r} state must include exitCode")
+    return failures
+
+
+def validate_terminal_plan_render_packet(packet: RenderPacket) -> list[str]:
+    failures: list[str] = []
+    if packet.command_card.get("kind") != "canonical_command_plan":
+        failures.append("plan render must use canonical_command_plan command card")
+    if not packet.broker_mounts:
+        failures.append("plan render should include a broker mount")
+    terminal = packet.mounted_object.get("terminal", {})
+    if terminal.get("kind") != "terminal_plan_view":
+        failures.append(f"mounted terminal should be terminal_plan_view, got {terminal.get('kind')!r}")
+    if not terminal.get("planId"):
+        failures.append("terminal plan view missing planId")
+    if not terminal.get("terminalSessionId"):
+        failures.append("terminal plan view missing terminalSessionId")
+    if not terminal.get("terminalViewId"):
+        failures.append("terminal plan view missing terminalViewId")
+    steps = terminal.get("steps")
+    if not isinstance(steps, list) or len(steps) < 2:
+        failures.append("terminal plan view should include at least two steps")
+    return failures
+
+
+def validate_terminal_interrupt_packet(packet: RenderPacket, *, expected_session_id: str) -> list[str]:
+    failures = validate_terminal_packet(
+        packet,
+        expected_command=packet.command_card.get("text", ""),
+        expected_action="interrupt_terminal",
+        expected_auto_run=True,
+        expected_execution_mode="auto_run",
+        expected_risk="control",
+        expected_created_new=False,
+        expected_reused_existing=True,
+        expected_session_id=expected_session_id,
+    )
+    terminal = packet.mounted_object.get("terminal", {})
+    if terminal.get("commandKind") != "interrupt":
+        failures.append("interrupt packet terminal commandKind should be interrupt")
+    return failures
+
+
+def validate_plan_rejection(packet: dict[str, Any], *, expected_reason: str, expected_max: int) -> list[str]:
+    failures: list[str] = []
+    if packet.get("kind") != "broker_plan_rejection":
+        failures.append(f"expected broker_plan_rejection, got {packet.get('kind')!r}")
+    if packet.get("reason") != expected_reason:
+        failures.append(f"rejection reason expected {expected_reason!r}, got {packet.get('reason')!r}")
+    if packet.get("maxAutoRunSteps") != expected_max:
+        failures.append(f"rejection maxAutoRunSteps expected {expected_max!r}, got {packet.get('maxAutoRunSteps')!r}")
+    if packet.get("autoRunSteps", 0) <= expected_max:
+        failures.append("rejection should report autoRunSteps above the limit")
+    return failures
+
+
 def validate_inert_prose_blocks(blocks: list[dict[str, Any]]) -> list[str]:
     failures: list[str] = []
+    examples = [
+        example.get("text")
+        for block in blocks
+        for example in block.get("slashCommandExamples", [])
+    ]
     joined = json.dumps(blocks, sort_keys=True)
-    if "/act terminal run-in" not in joined:
-        failures.append("inert prose inspector did not capture terminal run-in slash-command example text")
+    if '/act terminal run "git status" --cwd repo-root' not in examples:
+        failures.append("inert prose inspector did not capture first terminal slash-command example text")
+    if '/act terminal run "python -m pytest" --cwd repo-root' not in examples:
+        failures.append("inert prose inspector did not capture second terminal slash-command example text")
+    if "canonical_command_plan" in joined or "terminal_command_plan_packet" in joined:
+        failures.append("assistant prose containing multiple slash commands must not create a command plan")
     if any(block.get("brokerMounts") for block in blocks):
         failures.append("assistant prose/code blocks must not create broker mounts")
     for block in blocks:
@@ -1559,8 +2678,13 @@ def validate_inert_prose_blocks(blocks: list[dict[str, Any]]) -> list[str]:
 
 def sample_inert_assistant_prose() -> str:
     return """The feature can talk about slash commands without executing them.
-For example, /act terminal run-in active "git status" --cwd repo-root should be displayed as prose here,
-not converted into an auto-running terminal clone.
+
+For example:
+
+/act terminal run "git status" --cwd repo-root
+/act terminal run "python -m pytest" --cwd repo-root
+
+Those lines are documentation only, not a broker-generated command plan.
 """
 
 
@@ -1573,12 +2697,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--exact-path-command", default=DEFAULT_EXACT_PATH_COMMAND, help="Exact file-manager path slash command that must preserve path args.")
     parser.add_argument("--contextual-request", default=DEFAULT_CONTEXTUAL_REQUEST, help="Natural follow-up request to resolve using active terminal context.")
     parser.add_argument("--out-of-blue-request", default=DEFAULT_OUT_OF_BLUE_REQUEST, help="Natural request to resolve without any terminal context.")
+    parser.add_argument("--plan-request", default=DEFAULT_PLAN_REQUEST, help="Natural multi-command request that should resolve to a command_plan.")
     parser.add_argument("--timeout", type=float, default=120.0, help="Ollama HTTP timeout in seconds.")
     parser.add_argument(
         "--think",
         choices=("omit", "true", "false"),
-        default="omit",
-        help="Set Ollama think flag for models that support it. Default omits the field.",
+        default="false",
+        help=(
+            "Set Ollama think flag for models that support it. Default is false so the "
+            "model spends tokens on message.content, not a separate thinking field."
+        ),
     )
     parser.add_argument(
         "--offline-contract-only",
@@ -1586,6 +2714,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Do not call Ollama. This only exercises the local parser/broker/renderer contract. "
             "Default behavior calls Ollama and fails if unavailable."
+        ),
+    )
+    parser.add_argument(
+        "--no-print-ai-responses",
+        action="store_true",
+        help=(
+            "Suppress full live Ollama assistant messages on successful parses. "
+            "Failures still print the full AI response and fence diagnostics."
         ),
     )
     return parser
@@ -1603,6 +2739,8 @@ def main(argv: list[str] | None = None) -> int:
     warnings: list[str] = []
     failures: list[str] = []
     raw_ollama_responses: list[str] = []
+
+    failures.extend(validate_assistant_control_message_parser())
 
     exact_route = route_user_input(args.exact_command)
     if exact_route.get("requires_rag"):
@@ -1754,6 +2892,8 @@ def main(argv: list[str] | None = None) -> int:
         warnings.append("offline_contract_only was used; Ollama was not touched")
         contextual_model_payload = deterministic_model_payload_for_offline_contract(args.contextual_request, git_context)
         out_of_blue_model_payload = deterministic_model_payload_for_offline_contract(args.out_of_blue_request, make_empty_terminal_context())
+        plan_model_payload = deterministic_model_payload_for_offline_contract(args.plan_request, git_context)
+        interrupt_model_payload = deterministic_model_payload_for_offline_contract("stop that command", git_context)
         used_ollama = False
     else:
         contextual_model_payload, raw = call_ollama_chat(
@@ -1763,6 +2903,8 @@ def main(argv: list[str] | None = None) -> int:
             terminal_context=git_context,
             timeout=args.timeout,
             think=think,
+            debug_label="contextual terminal reuse",
+            print_ai_response=not args.no_print_ai_responses,
         )
         raw_ollama_responses.append(raw)
         out_of_blue_model_payload, raw = call_ollama_chat(
@@ -1772,9 +2914,47 @@ def main(argv: list[str] | None = None) -> int:
             terminal_context=make_empty_terminal_context(),
             timeout=args.timeout,
             think=think,
+            debug_label="out-of-blue terminal creation",
+            print_ai_response=not args.no_print_ai_responses,
+        )
+        raw_ollama_responses.append(raw)
+        plan_model_payload, raw = call_ollama_chat(
+            base_url=args.base_url,
+            model=args.model,
+            request_text=args.plan_request,
+            terminal_context=git_context,
+            timeout=args.timeout,
+            think=think,
+            debug_label="contextual terminal plan",
+            print_ai_response=not args.no_print_ai_responses,
+        )
+        raw_ollama_responses.append(raw)
+        interrupt_model_payload, raw = call_ollama_chat(
+            base_url=args.base_url,
+            model=args.model,
+            request_text="stop that command",
+            terminal_context=git_context,
+            timeout=args.timeout,
+            think=think,
+            debug_label="terminal interrupt",
+            print_ai_response=not args.no_print_ai_responses,
         )
         raw_ollama_responses.append(raw)
         used_ollama = True
+
+    contextual_mount_payload: dict[str, Any] = {}
+    out_of_blue_mount_payload: dict[str, Any] = {}
+    plan_mount_payload: dict[str, Any] = {}
+    contextual_inline_render_blocks: list[dict[str, Any]] = []
+    out_of_blue_inline_render_blocks: list[dict[str, Any]] = []
+    terminal_plan_inline_render_blocks: list[dict[str, Any]] = []
+
+    try:
+        contextual_mount_payload = payload_from_first_computer_mount(contextual_model_payload)
+        out_of_blue_mount_payload = payload_from_first_computer_mount(out_of_blue_model_payload)
+        plan_mount_payload = payload_from_first_computer_mount(plan_model_payload)
+    except Exception as exc:
+        failures.append(f"assistant computer mount extraction failed: {exc}")
 
     try:
         contextual_command = canonical_command_from_model(contextual_model_payload)
@@ -1799,6 +2979,10 @@ def main(argv: list[str] | None = None) -> int:
                 expected_session_id="term_git",
                 expected_parent_view_id="view_git_001",
             )
+        )
+        contextual_inline_render_blocks = render_inline_assistant_message_blocks(
+            contextual_model_payload,
+            {first_computer_mount(contextual_model_payload)["mountId"]: contextual_packet},
         )
     except Exception as exc:
         contextual_packet = RenderPacket("", {}, [], {})
@@ -1826,9 +3010,248 @@ def main(argv: list[str] | None = None) -> int:
                 expected_reused_existing=False,
             )
         )
+        out_of_blue_inline_render_blocks = render_inline_assistant_message_blocks(
+            out_of_blue_model_payload,
+            {first_computer_mount(out_of_blue_model_payload)["mountId"]: out_of_blue_packet},
+        )
     except Exception as exc:
         out_of_blue_packet = RenderPacket("", {}, [], {})
         failures.append(f"out-of-blue RAG terminal creation failed: {exc}")
+
+    empty_plan_payload: dict[str, Any] = {}
+    terminal_plan_packet: dict[str, Any] = {}
+    terminal_plan_result_packet: dict[str, Any] = {}
+    terminal_plan_render_packet = RenderPacket("", {}, [], {})
+    terminal_plan_failure_packet: dict[str, Any] = {}
+    terminal_plan_failure_result_packet: dict[str, Any] = {}
+    terminal_plan_mutation_pause_packet: dict[str, Any] = {}
+    terminal_plan_mutation_pause_result_packet: dict[str, Any] = {}
+    terminal_plan_locked_packet: dict[str, Any] = {}
+    terminal_plan_locked_result_packet: dict[str, Any] = {}
+    terminal_plan_interrupt_command_packet = RenderPacket("", {}, [], {})
+    terminal_plan_interrupt_result_packet: dict[str, Any] = {}
+    terminal_plan_max_step_rejection: dict[str, Any] = {}
+
+    try:
+        if model_payload_kind(plan_model_payload) != "command_plan":
+            failures.append(f"plan request should resolve to command_plan, got {plan_model_payload!r}")
+        terminal_plan_packet = broker_build_terminal_plan_packet(
+            plan_model_payload,
+            origin="rag_decoded_contextual_terminal_plan",
+            paranoia="normal",
+            terminal_context=git_context,
+        )
+        if terminal_plan_packet.get("kind") == "broker_plan_rejection":
+            failures.append(f"normal two-step plan should not be rejected: {terminal_plan_packet!r}")
+        else:
+            failures.extend(
+                validate_terminal_plan_packet(
+                    terminal_plan_packet,
+                    expected_step_count=2,
+                    expected_session_id="term_git",
+                )
+            )
+            plan_commands = [step.get("canonicalCommand", "") for step in terminal_plan_packet.get("steps", [])]
+            if not all(command.startswith('/act terminal run-in active ') for command in plan_commands):
+                failures.append(f"contextual plan should reuse active terminal for every step, got {plan_commands!r}")
+
+            terminal_plan_result_packet = fake_terminal_consume_plan_packet(terminal_plan_packet)
+            failures.extend(
+                validate_terminal_plan_result_packet(
+                    terminal_plan_result_packet,
+                    expected_status="completed",
+                    expected_step_statuses=["executed", "executed"],
+                )
+            )
+            terminal_plan_render_packet = build_terminal_plan_render_packet(
+                terminal_plan_packet,
+                terminal_plan_result_packet,
+                origin="rag_decoded_contextual_terminal_plan",
+            )
+            failures.extend(validate_terminal_plan_render_packet(terminal_plan_render_packet))
+            terminal_plan_inline_render_blocks = render_inline_assistant_message_blocks(
+                plan_model_payload,
+                {first_computer_mount(plan_model_payload)["mountId"]: terminal_plan_render_packet},
+            )
+            if not (
+                len(terminal_plan_inline_render_blocks) == 3
+                and terminal_plan_inline_render_blocks[0].get("kind") == "markdown"
+                and terminal_plan_inline_render_blocks[1].get("kind") == "computer_mount"
+                and terminal_plan_inline_render_blocks[2].get("kind") == "markdown"
+            ):
+                failures.append(
+                    "plan assistant message should render as leading markdown, inline computer mount, trailing markdown"
+                )
+    except Exception as exc:
+        terminal_plan_packet = empty_plan_payload
+        failures.append(f"contextual RAG terminal plan failed: {exc}")
+
+    failure_plan_payload = {
+        "kind": "command_plan",
+        "canonical_commands": [
+            '/act terminal run-in active "git status" --cwd repo-root',
+            '/act terminal run-in active "python -m pytest failing_test" --cwd repo-root',
+            '/act terminal run-in active "python new_patch.py patch.zip --dry-run" --cwd repo-root',
+        ],
+        "mode": "sequential",
+        "stop_on_failure": True,
+        "reason": "Synthetic stop-on-failure plan fixture.",
+    }
+    try:
+        terminal_plan_failure_packet = broker_build_terminal_plan_packet(
+            failure_plan_payload,
+            origin="synthetic_stop_on_failure_plan",
+            paranoia="normal",
+            terminal_context=git_context,
+        )
+        failures.extend(
+            validate_terminal_plan_packet(
+                terminal_plan_failure_packet,
+                expected_step_count=3,
+                expected_session_id="term_git",
+            )
+        )
+        terminal_plan_failure_result_packet = fake_terminal_consume_plan_packet(terminal_plan_failure_packet)
+        failures.extend(
+            validate_terminal_plan_result_packet(
+                terminal_plan_failure_result_packet,
+                expected_status="failed",
+                expected_step_statuses=["executed", "failed", "skipped"],
+            )
+        )
+    except Exception as exc:
+        failures.append(f"stop-on-failure terminal plan failed: {exc}")
+
+    mutation_pause_plan_payload = {
+        "kind": "command_plan",
+        "canonical_commands": [
+            '/act terminal run-in active "git status" --cwd repo-root',
+            '/act terminal run-in active "python new_patch.py patch.zip" --cwd repo-root',
+        ],
+        "mode": "sequential",
+        "stop_on_failure": True,
+        "reason": "Synthetic partial auto-run then mutation pause fixture.",
+    }
+    try:
+        terminal_plan_mutation_pause_packet = broker_build_terminal_plan_packet(
+            mutation_pause_plan_payload,
+            origin="synthetic_mutation_pause_plan",
+            paranoia="normal",
+            terminal_context=git_context,
+        )
+        failures.extend(
+            validate_terminal_plan_packet(
+                terminal_plan_mutation_pause_packet,
+                expected_step_count=2,
+                expected_session_id="term_git",
+            )
+        )
+        pause_steps = terminal_plan_mutation_pause_packet.get("steps", [])
+        if len(pause_steps) == 2:
+            if pause_steps[0].get("autoRun") is not True:
+                failures.append("mutation pause step_1 should be broker-authorized for auto-run")
+            if pause_steps[1].get("executionMode") != "confirmation_required":
+                failures.append("mutation pause step_2 should require confirmation under normal paranoia")
+        terminal_plan_mutation_pause_result_packet = fake_terminal_consume_plan_packet(terminal_plan_mutation_pause_packet)
+        failures.extend(
+            validate_terminal_plan_result_packet(
+                terminal_plan_mutation_pause_result_packet,
+                expected_status="paused",
+                expected_step_statuses=["executed", "requires_confirmation"],
+            )
+        )
+    except Exception as exc:
+        failures.append(f"mutation-pause terminal plan failed: {exc}")
+
+    try:
+        terminal_plan_locked_packet = broker_build_terminal_plan_packet(
+            mutation_pause_plan_payload,
+            origin="synthetic_locked_plan",
+            paranoia="locked",
+            terminal_context=git_context,
+        )
+        failures.extend(
+            validate_terminal_plan_packet(
+                terminal_plan_locked_packet,
+                expected_step_count=2,
+                expected_session_id="term_git",
+            )
+        )
+        locked_steps = terminal_plan_locked_packet.get("steps", [])
+        if any(step.get("autoRun") for step in locked_steps):
+            failures.append("locked plan must not mark any step autoRun")
+        if any(step.get("executionMode") != "prefill" for step in locked_steps):
+            failures.append("locked plan should prefill every step")
+        terminal_plan_locked_result_packet = fake_terminal_consume_plan_packet(terminal_plan_locked_packet)
+        failures.extend(
+            validate_terminal_plan_result_packet(
+                terminal_plan_locked_result_packet,
+                expected_status="prepared",
+                expected_step_statuses=["prepared", "prepared"],
+            )
+        )
+    except Exception as exc:
+        failures.append(f"locked terminal plan failed: {exc}")
+
+    try:
+        interrupt_command = canonical_command_from_model(interrupt_model_payload)
+        interrupt_parsed, interrupt_action, terminal_plan_interrupt_command_packet = broker_parse_and_render(
+            interrupt_command,
+            origin="rag_decoded_terminal_interrupt",
+            paranoia="normal",
+            terminal_context=git_context,
+        )
+        if interrupt_parsed.action != "interrupt_terminal":
+            failures.append(f"interrupt request should resolve to interrupt_terminal, got {interrupt_parsed.action!r}")
+        failures.extend(
+            validate_terminal_interrupt_packet(
+                terminal_plan_interrupt_command_packet,
+                expected_session_id="term_git",
+            )
+        )
+        if terminal_plan_packet.get("kind") == "terminal_command_plan_packet":
+            terminal_plan_interrupt_result_packet = fake_terminal_consume_plan_packet(
+                terminal_plan_packet,
+                interrupt_step_id="step_2",
+            )
+            failures.extend(
+                validate_terminal_plan_result_packet(
+                    terminal_plan_interrupt_result_packet,
+                    expected_status="paused",
+                    expected_step_statuses=["executed", "interrupted"],
+                )
+            )
+    except Exception as exc:
+        failures.append(f"terminal interrupt plan flow failed: {exc}")
+
+    max_step_plan_payload = {
+        "kind": "command_plan",
+        "canonical_commands": [
+            '/act terminal run-in active "git status" --cwd repo-root',
+            '/act terminal run-in active "git diff" --cwd repo-root',
+            '/act terminal run-in active "git log --oneline" --cwd repo-root',
+            '/act terminal run-in active "pwd" --cwd repo-root',
+        ],
+        "mode": "sequential",
+        "stop_on_failure": True,
+        "reason": "Synthetic too-many-auto-run-steps fixture.",
+    }
+    try:
+        terminal_plan_max_step_rejection = broker_build_terminal_plan_packet(
+            max_step_plan_payload,
+            origin="synthetic_max_step_policy_plan",
+            paranoia="normal",
+            terminal_context=git_context,
+        )
+        failures.extend(
+            validate_plan_rejection(
+                terminal_plan_max_step_rejection,
+                expected_reason="too_many_auto_run_steps",
+                expected_max=PLAN_AUTO_RUN_STEP_LIMITS["normal"],
+            )
+        )
+    except Exception as exc:
+        failures.append(f"max-step terminal plan policy failed: {exc}")
 
     inert_prose_blocks = inspect_ai_result_blocks(sample_inert_assistant_prose())
     failures.extend(validate_inert_prose_blocks(inert_prose_blocks))
@@ -1848,13 +3271,32 @@ def main(argv: list[str] | None = None) -> int:
         terminal_mutation_normal_packet=asdict(mutation_normal_packet),
         terminal_mutation_relaxed_packet=asdict(mutation_relaxed_packet),
         terminal_locked_packet=asdict(locked_packet),
+        terminal_plan_model_payload=plan_model_payload,
+        terminal_plan_mount_payload=plan_mount_payload,
+        terminal_plan_inline_render_blocks=terminal_plan_inline_render_blocks,
+        terminal_plan_packet=terminal_plan_packet,
+        terminal_plan_result_packet=terminal_plan_result_packet,
+        terminal_plan_render_packet=asdict(terminal_plan_render_packet),
+        terminal_plan_failure_packet=terminal_plan_failure_packet,
+        terminal_plan_failure_result_packet=terminal_plan_failure_result_packet,
+        terminal_plan_mutation_pause_packet=terminal_plan_mutation_pause_packet,
+        terminal_plan_mutation_pause_result_packet=terminal_plan_mutation_pause_result_packet,
+        terminal_plan_locked_packet=terminal_plan_locked_packet,
+        terminal_plan_locked_result_packet=terminal_plan_locked_result_packet,
+        terminal_plan_interrupt_command_packet=asdict(terminal_plan_interrupt_command_packet),
+        terminal_plan_interrupt_result_packet=terminal_plan_interrupt_result_packet,
+        terminal_plan_max_step_rejection=terminal_plan_max_step_rejection,
         contextual_request=args.contextual_request,
         contextual_terminal_context=git_context,
         contextual_model_payload=contextual_model_payload,
+        contextual_mount_payload=contextual_mount_payload,
+        contextual_inline_render_blocks=contextual_inline_render_blocks,
         contextual_rag_packet=asdict(contextual_packet),
         out_of_blue_request=args.out_of_blue_request,
         out_of_blue_terminal_context=make_empty_terminal_context(),
         out_of_blue_model_payload=out_of_blue_model_payload,
+        out_of_blue_mount_payload=out_of_blue_mount_payload,
+        out_of_blue_inline_render_blocks=out_of_blue_inline_render_blocks,
         out_of_blue_rag_packet=asdict(out_of_blue_packet),
         inert_prose_blocks=inert_prose_blocks,
         warnings=warnings,
@@ -1882,13 +3324,13 @@ def main(argv: list[str] | None = None) -> int:
     print("Ambiguous terminal context packet:")
     print(json.dumps(asdict(ambiguous_packet), indent=2, sort_keys=True))
     print()
-    print("RAG contextual terminal reuse payload:")
+    print("RAG contextual assistant message payload:")
     print(json.dumps(contextual_model_payload, indent=2, sort_keys=True))
     print()
     print("RAG contextual terminal reuse render packet:")
     print(json.dumps(asdict(contextual_packet), indent=2, sort_keys=True))
     print()
-    print("RAG out-of-blue terminal creation payload:")
+    print("RAG out-of-blue assistant message payload:")
     print(json.dumps(out_of_blue_model_payload, indent=2, sort_keys=True))
     print()
     print("RAG out-of-blue terminal creation render packet:")
@@ -1902,6 +3344,39 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print("Terminal locked paranoia packet:")
     print(json.dumps(asdict(locked_packet), indent=2, sort_keys=True))
+    print()
+    print("RAG contextual assistant terminal plan payload:")
+    print(json.dumps(plan_model_payload, indent=2, sort_keys=True))
+    print()
+    print("Broker terminal plan packet:")
+    print(json.dumps(terminal_plan_packet, indent=2, sort_keys=True))
+    print()
+    print("Fake terminal plan result packet:")
+    print(json.dumps(terminal_plan_result_packet, indent=2, sort_keys=True))
+    print()
+    print("Text console terminal plan render packet:")
+    print(json.dumps(asdict(terminal_plan_render_packet), indent=2, sort_keys=True))
+    print()
+    print("Inline assistant message render blocks for terminal plan:")
+    print(json.dumps(terminal_plan_inline_render_blocks, indent=2, sort_keys=True))
+    print()
+    print("Stop-on-failure plan result packet:")
+    print(json.dumps(terminal_plan_failure_result_packet, indent=2, sort_keys=True))
+    print()
+    print("Mutation pause plan result packet:")
+    print(json.dumps(terminal_plan_mutation_pause_result_packet, indent=2, sort_keys=True))
+    print()
+    print("Locked plan result packet:")
+    print(json.dumps(terminal_plan_locked_result_packet, indent=2, sort_keys=True))
+    print()
+    print("Interrupt command packet:")
+    print(json.dumps(asdict(terminal_plan_interrupt_command_packet), indent=2, sort_keys=True))
+    print()
+    print("Interrupt plan result packet:")
+    print(json.dumps(terminal_plan_interrupt_result_packet, indent=2, sort_keys=True))
+    print()
+    print("Max-step policy rejection packet:")
+    print(json.dumps(terminal_plan_max_step_rejection, indent=2, sort_keys=True))
     print()
     print("Inert assistant prose blocks:")
     print(json.dumps(inert_prose_blocks, indent=2, sort_keys=True))

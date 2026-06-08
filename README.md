@@ -102,6 +102,20 @@ The testnet deployment writes `runtime/deployments/current.json` with
 so the existing golden runtime lookup can consume it without a separate testnet
 code path.
 
+
+Each dev/test deployment also publishes a chain-funded smoke client wallet in the
+network-scoped deployment directory. Use the network-aware Hub client smoke to
+verify the Hub, chain RPC, deployment manifest, contract code, smoke wallet
+balance, and a paid worker/credit/claim flow:
+
+```powershell
+python .\scripts\smoke_hub_network_client.py --network dev
+python .\scripts\smoke_hub_network_client.py --network test
+```
+
+The smoke reads `runtime/deployments/<network>/latest.json` by default and uses
+the Hub network registry to find the Hub URL and chain RPC URL.
+
 Start or restart the viewport after the runtime exists:
 
 ```powershell

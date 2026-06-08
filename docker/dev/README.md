@@ -60,6 +60,17 @@ Override the Hub bind port only when running extra instances:
 python -m main_computer.cli hub --network test --port 8888 --hub-runtime-dir .\runtime\hub\test-alt
 ```
 
+
+Verify the running Hub against the selected network with the end-to-end client
+smoke. It checks Hub status, chain RPC identity, EIP-1559/Shanghai support,
+deployed contract code, the funded smoke client wallet, and a paid
+worker/credit/claim flow:
+
+```powershell
+python .\scripts\smoke_hub_network_client.py --network dev
+python .\scripts\smoke_hub_network_client.py --network test
+```
+
 ## Pull a model into host or remote Ollama
 
 ```powershell

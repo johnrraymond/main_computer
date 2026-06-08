@@ -837,3 +837,239 @@
         justify-content: space-between;
       }
     }
+
+    /* MCEL is the Email app layout layer: app CSS skins these regions, it does not invent a parallel layout system. */
+    body[data-active-app="email"] #email-app[data-mcel-layout="email-app"] {
+      display: grid !important;
+      height: 100% !important;
+      min-height: 0 !important;
+      grid-template-rows: minmax(0, 1fr) !important;
+      overflow: hidden !important;
+    }
+
+    body:not([data-active-app="email"]) #email-app[data-mcel-layout="email-app"] {
+      display: none !important;
+    }
+
+    [data-mcel-layout="email-shell"] {
+      display: grid !important;
+      grid-template-rows: auto auto minmax(0, 1fr) !important;
+      gap: 0.75rem !important;
+      width: 100% !important;
+      max-width: 100% !important;
+      min-height: 0 !important;
+      padding: clamp(0.75rem, 1.35vw, 1.05rem) !important;
+      border: 1px solid rgba(201, 192, 170, 0.16) !important;
+      border-radius: 18px !important;
+      background: rgba(15, 17, 12, 0.86) !important;
+      overflow: hidden !important;
+    }
+
+    [data-mcel-layout-region="email-header"] {
+      display: grid !important;
+      grid-template-columns: minmax(13rem, 18rem) minmax(14rem, 1fr) max-content !important;
+      gap: 0.85rem !important;
+      align-items: center !important;
+      min-height: 3.25rem !important;
+      padding: 0 !important;
+      border: 0 !important;
+    }
+
+    [data-mcel-layout-region="email-app-tabs"] {
+      display: inline-flex !important;
+      width: max-content !important;
+      max-width: 100% !important;
+      padding: 0.22rem !important;
+      border: 1px solid rgba(201, 192, 170, 0.16) !important;
+      border-radius: 14px !important;
+      background: rgba(7, 8, 6, 0.28) !important;
+    }
+
+    [data-mcel-layout-region="email-mail-panel"],
+    [data-mcel-layout-region="email-config-panel"] {
+      display: grid !important;
+      min-height: 0 !important;
+      overflow: hidden !important;
+    }
+
+    [data-mcel-layout="email-mail-workspace"] {
+      display: grid !important;
+      grid-template-columns: minmax(240px, 280px) minmax(0, 1fr) !important;
+      grid-template-rows: minmax(0, 1fr) !important;
+      gap: 0.9rem !important;
+      min-width: 0 !important;
+      min-height: 0 !important;
+      overflow: hidden !important;
+    }
+
+    [data-mcel-layout-region="email-account-rail"] {
+      display: grid !important;
+      grid-template-rows: auto auto minmax(0, auto) !important;
+      gap: 0.85rem !important;
+      min-width: 0 !important;
+      min-height: 0 !important;
+      padding: 0.85rem !important;
+      border: 1px solid rgba(201, 192, 170, 0.14) !important;
+      border-radius: 16px !important;
+      background: rgba(7, 8, 6, 0.32) !important;
+      overflow: auto !important;
+    }
+
+    [data-mcel-layout-region="email-account-card"] {
+      display: grid !important;
+      gap: 0.65rem !important;
+      padding: 0 0 0.7rem !important;
+      border-bottom: 1px solid rgba(201, 192, 170, 0.12) !important;
+    }
+
+    [data-mcel-layout-region="email-folder-nav"] {
+      display: grid !important;
+      gap: 0.35rem !important;
+      min-width: 0 !important;
+    }
+
+    [data-mcel-layout-region="email-folder-nav"] button,
+    .email-account-button {
+      display: grid !important;
+      grid-template-columns: minmax(0, 1fr) max-content !important;
+      align-items: center !important;
+      width: 100% !important;
+      min-width: 0 !important;
+      min-height: 2.45rem !important;
+      padding: 0.55rem 0.65rem !important;
+      border-radius: 12px !important;
+      text-align: left !important;
+      white-space: normal !important;
+    }
+
+    .email-account-button {
+      grid-template-columns: minmax(0, 1fr) !important;
+      justify-items: stretch !important;
+      gap: 0.15rem !important;
+      border: 1px solid transparent !important;
+      background: transparent !important;
+    }
+
+    .email-account-button strong,
+    .email-account-button span {
+      min-width: 0 !important;
+      overflow: hidden !important;
+      text-overflow: ellipsis !important;
+    }
+
+    .email-account-button strong {
+      font-size: 0.94rem !important;
+      line-height: 1.2 !important;
+    }
+
+    .email-account-button span {
+      white-space: normal !important;
+      line-height: 1.25 !important;
+    }
+
+    [data-mcel-layout-region="email-message-workspace"] {
+      display: grid !important;
+      grid-template-columns: minmax(0, 1fr) !important;
+      grid-template-rows: minmax(0, 1fr) !important;
+      min-width: 0 !important;
+      min-height: min(680px, 70vh) !important;
+      border: 1px solid rgba(201, 192, 170, 0.14) !important;
+      border-radius: 16px !important;
+      background: rgba(7, 8, 6, 0.28) !important;
+      overflow: hidden !important;
+    }
+
+    [data-mcel-layout-region="email-message-list-pane"],
+    [data-mcel-layout-region="email-thread-pane"] {
+      display: grid !important;
+      grid-column: 1 / -1 !important;
+      grid-row: 1 / -1 !important;
+      min-width: 0 !important;
+      min-height: 0 !important;
+      overflow: hidden !important;
+      border: 0 !important;
+      border-radius: inherit !important;
+      background: transparent !important;
+    }
+
+    [data-mcel-layout-region="email-message-list-pane"] {
+      grid-template-rows: auto minmax(0, 1fr) !important;
+    }
+
+    [data-mcel-layout-region="email-thread-pane"] {
+      grid-template-rows: auto minmax(0, 1fr) auto !important;
+    }
+
+    [data-mcel-layout-region="email-empty-state"] {
+      place-self: center !important;
+      display: grid !important;
+      gap: 0.45rem !important;
+      width: min(34rem, calc(100% - 2rem)) !important;
+      padding: 1.25rem !important;
+      border: 1px solid rgba(201, 192, 170, 0.16) !important;
+      border-radius: 16px !important;
+      background: rgba(7, 8, 6, 0.46) !important;
+      text-align: center !important;
+    }
+
+    [data-mcel-layout="email-config-workspace"] {
+      display: grid !important;
+      grid-template-columns: minmax(0, 1fr) !important;
+      min-width: 0 !important;
+      min-height: 0 !important;
+      overflow: auto !important;
+    }
+
+    [data-mcel-layout-region="email-config-content"] {
+      display: grid !important;
+      place-items: start center !important;
+      min-width: 0 !important;
+      padding: 0 !important;
+      border: 0 !important;
+      background: transparent !important;
+    }
+
+    [data-mcel-layout-region="email-server-form"] {
+      width: min(1040px, 100%) !important;
+      display: grid !important;
+      gap: 0.9rem !important;
+      padding: 1rem !important;
+      border: 1px solid rgba(201, 192, 170, 0.14) !important;
+      border-radius: 16px !important;
+      background: rgba(7, 8, 6, 0.32) !important;
+    }
+
+    [data-mcel-layout-region="email-server-fields"] {
+      display: grid !important;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)) !important;
+      gap: 0.85rem !important;
+      align-items: start !important;
+    }
+
+    [data-mcel-layout-region="email-server-actions"] {
+      display: flex !important;
+      flex-wrap: wrap !important;
+      justify-content: flex-start !important;
+      gap: 0.65rem !important;
+    }
+
+    [data-mcel-layout-region="email-config-account-list"] {
+      display: grid !important;
+      gap: 0.55rem !important;
+      min-width: 0 !important;
+    }
+
+    @media (max-width: 940px) {
+      [data-mcel-layout-region="email-header"] {
+        grid-template-columns: 1fr !important;
+      }
+
+      [data-mcel-layout="email-mail-workspace"] {
+        grid-template-columns: 1fr !important;
+      }
+
+      [data-mcel-layout-region="email-account-rail"] {
+        max-height: 20rem !important;
+      }
+    }
+

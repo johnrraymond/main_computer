@@ -1,34 +1,5 @@
-    const emailOauthProviderCatalog = Object.freeze({
-      gmail: {
-        id: "gmail",
-        label: "Gmail",
-        domainHints: ["gmail.com", "googlemail.com"],
-        authEndpoint: "https://accounts.google.com/o/oauth2/v2/auth",
-        tokenEndpoint: "https://oauth2.googleapis.com/token",
-        scopes: [
-          "https://www.googleapis.com/auth/gmail.readonly",
-          "https://www.googleapis.com/auth/gmail.modify",
-          "https://www.googleapis.com/auth/gmail.send"
-        ],
-        oauthExtras: {
-          access_type: "offline",
-          include_granted_scopes: "true",
-          prompt: "consent"
-        }
-      },
-      yahoo: {
-        id: "yahoo",
-        label: "Yahoo Mail",
-        domainHints: ["yahoo.com", "ymail.com", "rocketmail.com"],
-        authEndpoint: "https://api.login.yahoo.com/oauth2/request_auth",
-        tokenEndpoint: "https://api.login.yahoo.com/oauth2/get_token",
-        scopes: ["openid", "mail-r"],
-        oauthExtras: {
-          prompt: "consent",
-          language: "en-us"
-        }
-      }
-    });
+    const emailStorageKey = "main-computer-email-app-v6";
+    const emailCheckEndpoint = "/api/applications/email/check";
 
     const emailMailServicePresets = Object.freeze({
       system: {
@@ -39,7 +10,7 @@
         imap: {host: "", port: 993, security: "ssl"},
         pop3: {host: "", port: 995, security: "ssl"},
         smtp: {host: "", port: 587, security: "starttls"},
-        authHint: "These are local system messages that explain how to set up the email client."
+        authHint: "These local setup notes explain the IMAP / POP3 mail client."
       },
       custom: {
         id: "custom",
@@ -49,17 +20,17 @@
         imap: {host: "", port: 993, security: "ssl"},
         pop3: {host: "", port: 995, security: "ssl"},
         smtp: {host: "", port: 587, security: "starttls"},
-        authHint: "Use the username, password, app password, or bridge credential supplied by your mail provider."
+        authHint: "Use the username, password, app password, or bridge credential supplied by the mail provider."
       },
       gmail: {
         id: "gmail",
-        label: "Gmail",
+        label: "Gmail mail servers",
         domainHints: ["gmail.com", "googlemail.com"],
         defaultProtocol: "imap",
         imap: {host: "imap.gmail.com", port: 993, security: "ssl"},
         pop3: {host: "pop.gmail.com", port: 995, security: "ssl"},
         smtp: {host: "smtp.gmail.com", port: 587, security: "starttls"},
-        authHint: "Gmail usually requires OAuth or an app password for external clients."
+        authHint: "Use a Google app password when the account allows one."
       },
       outlook: {
         id: "outlook",
@@ -79,17 +50,17 @@
         imap: {host: "outlook.office365.com", port: 993, security: "ssl"},
         pop3: {host: "outlook.office365.com", port: 995, security: "ssl"},
         smtp: {host: "smtp.office365.com", port: 587, security: "starttls"},
-        authHint: "Tenant policy may require OAuth or app-password/SMTP AUTH enablement."
+        authHint: "Tenant policy may require an app password or explicit IMAP/POP/SMTP permission."
       },
       yahoo: {
         id: "yahoo",
-        label: "Yahoo Mail",
+        label: "Yahoo mail servers",
         domainHints: ["yahoo.com", "ymail.com", "rocketmail.com"],
         defaultProtocol: "imap",
         imap: {host: "imap.mail.yahoo.com", port: 993, security: "ssl"},
         pop3: {host: "pop.mail.yahoo.com", port: 995, security: "ssl"},
         smtp: {host: "smtp.mail.yahoo.com", port: 465, security: "ssl"},
-        authHint: "Yahoo third-party clients typically use an app password or OAuth handoff."
+        authHint: "Use the provider's app-password mail-server path when available."
       },
       icloud: {
         id: "icloud",
@@ -119,7 +90,7 @@
         imap: {host: "imap.fastmail.com", port: 993, security: "ssl"},
         pop3: {host: "pop.fastmail.com", port: 995, security: "ssl"},
         smtp: {host: "smtp.fastmail.com", port: 465, security: "ssl"},
-        authHint: "Fastmail recommends app-specific passwords for external mail clients."
+        authHint: "Fastmail supports app passwords for IMAP, POP, and SMTP."
       },
       zoho: {
         id: "zoho",
@@ -129,107 +100,58 @@
         imap: {host: "imap.zoho.com", port: 993, security: "ssl"},
         pop3: {host: "pop.zoho.com", port: 995, security: "ssl"},
         smtp: {host: "smtp.zoho.com", port: 465, security: "ssl"},
-        authHint: "Some Zoho accounts use pro/datacenter-specific hosts; check the account's server configuration page when needed."
+        authHint: "Zoho account policy can require app passwords or IMAP/POP enablement."
       },
       protonbridge: {
         id: "protonbridge",
         label: "Proton Mail Bridge",
         domainHints: ["proton.me", "protonmail.com"],
         defaultProtocol: "imap",
-        imap: {host: "127.0.0.1", port: 1143, security: "none"},
-        pop3: {host: "", port: 995, security: "ssl"},
-        smtp: {host: "127.0.0.1", port: 1025, security: "none"},
-        authHint: "Proton Mail requires the local Proton Mail Bridge credentials shown inside Bridge."
+        imap: {host: "127.0.0.1", port: 1143, security: "starttls"},
+        pop3: {host: "127.0.0.1", port: 995, security: "ssl"},
+        smtp: {host: "127.0.0.1", port: 1025, security: "starttls"},
+        authHint: "Use the local Proton Mail Bridge credentials and ports."
       }
     });
 
-    const emailStorageKey = "main-computer-email-app-v5";
-    const emailCheckEndpoint = "/api/applications/email/check";
-
+    const emailSeedAccounts = Object.freeze([]);
     const emailSeedMessages = Object.freeze([
       {
-        id: "system-welcome",
+        id: "setup-welcome",
         accountId: "system",
         provider: "system",
         folder: "inbox",
-        from: "Email setup",
+        from: "Main Computer <mail@maincomputer.local>",
         to: "you",
-        subject: "Welcome to the Email app",
-        excerpt: "Start here to learn how the Email app works before connecting an account.",
-        body: "Welcome to the Email app.\n\nThis inbox starts with local system messages instead of fake mail. Click each message to learn how setup, privacy, account checks, composing, and replies work.\n\nWhen you connect a real account from Config, live mailbox previews can replace these local instructions.",
-        date: "2026-06-07T16:23:00.000Z",
-        labels: ["System"],
-        priority: false,
+        subject: "Email is IMAP / POP3 only now",
+        excerpt: "Provider-specific sign-in paths were removed. Add a mail server account and use Check mail.",
+        body: "Open Config to add an IMAP or POP3 account.\n\nUse an app password when a provider requires one. Passwords are never saved by the browser UI; they are sent only for an explicit Check mail action.",
+        date: new Date().toISOString(),
+        labels: ["Setup", "Mail servers"],
+        priority: true,
         unread: true
       },
       {
-        id: "system-config",
+        id: "setup-mcel",
         accountId: "system",
         provider: "system",
         folder: "inbox",
-        from: "Email setup",
+        from: "MCEL Layout <layout@maincomputer.local>",
         to: "you",
-        subject: "Connect Gmail, Yahoo, or POP/IMAP",
-        excerpt: "Use Config to add Gmail, Yahoo, Outlook, iCloud, Fastmail, Zoho, AOL, Proton Bridge, or custom servers.",
-        body: "Open Config to connect accounts.\n\nUse the POP/IMAP tab for common mail services such as Outlook.com, Microsoft 365, iCloud Mail, AOL Mail, Fastmail, Zoho Mail, Proton Mail Bridge, Yahoo Mail, Gmail IMAP, or a custom server.\n\nUse the Gmail and Yahoo tabs when you want to stage OAuth handoff details for those providers.",
-        date: "2026-06-07T16:22:00.000Z",
-        labels: ["Config"],
-        priority: false,
-        unread: true
-      },
-      {
-        id: "system-check-mail",
-        accountId: "system",
-        provider: "system",
-        folder: "inbox",
-        from: "Email setup",
-        to: "you",
-        subject: "How Check mail works",
-        excerpt: "The backend bridge can do a one-time POP/IMAP header check without saving the password.",
-        body: "Check mail is a one-time backend bridge action.\n\nFor POP/IMAP accounts, enter the password or app password only when you click Check mail. The app sends it to the local backend for that check and does not save or echo it back in browser state.\n\nThe current bridge returns a safe header preview; full sync, attachments, and durable token storage can be layered behind the same account configuration.",
-        date: "2026-06-07T16:21:00.000Z",
-        labels: ["Privacy"],
-        priority: false,
-        unread: false
-      },
-      {
-        id: "system-compose-reply",
-        accountId: "system",
-        provider: "system",
-        folder: "inbox",
-        from: "Email setup",
-        to: "you",
-        subject: "Compose is a modal; replies stay inline",
-        excerpt: "New messages open in a compose modal, while replies appear inside the selected message view.",
-        body: "New message opens a compose modal so the mailbox list stays clean.\n\nWhen you select a message and click Reply, the reply editor opens inline below that message. Queue Send stores the draft locally until a provider bridge is ready to deliver it.",
-        date: "2026-06-07T16:20:00.000Z",
-        labels: ["Compose"],
-        priority: false,
-        unread: false
-      },
-      {
-        id: "system-local-state",
-        accountId: "system",
-        provider: "system",
-        folder: "inbox",
-        from: "Email setup",
-        to: "you",
-        subject: "What is stored locally",
-        excerpt: "The app keeps local UI state, staged account settings, and draft queues in browser storage.",
-        body: "The Email app keeps local UI state, staged account settings, and drafts in browser storage.\n\nPasswords are not stored by the Email UI. For real sending and syncing, connect a provider bridge that handles OAuth tokens or server credentials on the backend side.",
-        date: "2026-06-07T16:19:00.000Z",
-        labels: ["Local"],
+        subject: "Email layout is routed through MCEL",
+        excerpt: "The email shell, rail, workspace, forms, and empty states use MCEL layout attributes as the layout layer.",
+        body: "MCEL owns the layout contract for this app. The email shell, account rail, mailbox workspace, config form, cards, and empty states are laid out through data-mcel layout regions instead of provider-specific handoff surfaces.",
+        date: new Date(Date.now() - 3600_000).toISOString(),
+        labels: ["MCEL", "Layout"],
         priority: false,
         unread: false
       }
     ]);
 
-    const emailSeedAccounts = Object.freeze([]);
-
-    const emailAppState = window.emailAppState || (window.emailAppState = {
+    const emailAppState = {
       initialized: false,
       activeTab: "mail",
-      activeConfigTab: "gmail",
+      activeConfigTab: "raw",
       activeMailView: "list",
       accounts: [],
       messages: [],
@@ -239,17 +161,22 @@
       selectedMessageId: "",
       search: "",
       replyDraft: "",
-      lastHandoffUrl: "",
-      lastProvider: "gmail",
       lastSyncAt: "",
-      mcel: {
-        status: "pending",
-        failed: false
-      }
-    });
+      mcel: {status: "pending", updatedAt: ""}
+    };
 
     function emailNowIso() {
       return new Date().toISOString();
+    }
+
+    function emailEscapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      })[char]);
     }
 
     function emailFormatTime(value) {
@@ -265,30 +192,20 @@
       return date.toLocaleDateString([], {month: "short", day: "numeric", year: "2-digit"});
     }
 
-    function emailEscapeHtml(value) {
-      return String(value ?? "").replace(/[&<>"']/g, (char) => ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#39;"
-      })[char]);
+    function emailProviderLabel(providerId) {
+      return (emailMailServicePresets[providerId] || emailMailServicePresets.custom).label;
     }
 
     function emailPreset(presetId) {
       return emailMailServicePresets[presetId] || emailMailServicePresets.custom;
     }
 
-    function emailOauthProvider(providerId) {
-      return emailOauthProviderCatalog[providerId] || emailOauthProviderCatalog.gmail;
-    }
-
-    function emailProviderLabel(providerId) {
-      return (emailMailServicePresets[providerId] || emailOauthProviderCatalog[providerId] || emailMailServicePresets.custom).label;
-    }
-
     function emailNormalizeAddress(value) {
       return String(value || "").trim().toLowerCase();
+    }
+
+    function emailValidAddress(address) {
+      return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(emailNormalizeAddress(address));
     }
 
     function emailAddressProviderGuess(address) {
@@ -296,19 +213,14 @@
       return Object.values(emailMailServicePresets).find((provider) => (provider.domainHints || []).includes(domain))?.id || "";
     }
 
-    function emailValidAddress(address) {
-      return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(emailNormalizeAddress(address));
-    }
-
     function emailNewState() {
       return {
         initialized: false,
         activeTab: "mail",
-        activeConfigTab: "gmail",
+        activeConfigTab: "raw",
         activeMailView: "list",
         accounts: emailSeedAccounts.map((account) => ({
           ...account,
-          scopes: Array.isArray(account.scopes) ? account.scopes.slice() : undefined,
           incoming: account.incoming ? {...account.incoming} : undefined,
           smtp: account.smtp ? {...account.smtp} : undefined
         })),
@@ -319,52 +231,42 @@
         selectedMessageId: "",
         search: "",
         replyDraft: "",
-        lastHandoffUrl: "",
-        lastProvider: "gmail",
         lastSyncAt: emailNowIso(),
         mcel: {
-          status: "pending",
-          failed: false
+          status: "layout-layer-active",
+          updatedAt: emailNowIso()
         }
       };
     }
 
     function emailEnsureStateShape() {
-      if (!Array.isArray(emailAppState.accounts)) emailAppState.accounts = [];
-      if (!Array.isArray(emailAppState.messages)) emailAppState.messages = [];
-      if (!Array.isArray(emailAppState.drafts)) emailAppState.drafts = [];
+      emailAppState.accounts = Array.isArray(emailAppState.accounts) ? emailAppState.accounts : [];
+      emailAppState.messages = Array.isArray(emailAppState.messages) ? emailAppState.messages : [];
+      emailAppState.drafts = Array.isArray(emailAppState.drafts) ? emailAppState.drafts : [];
       emailAppState.activeTab = ["mail", "config"].includes(emailAppState.activeTab) ? emailAppState.activeTab : "mail";
-      emailAppState.activeConfigTab = emailAppState.activeConfigTab === "imap" ? "raw" : emailAppState.activeConfigTab;
-      emailAppState.activeConfigTab = ["gmail", "yahoo", "raw"].includes(emailAppState.activeConfigTab) ? emailAppState.activeConfigTab : "gmail";
+      emailAppState.activeConfigTab = "raw";
       emailAppState.activeMailView = ["list", "thread"].includes(emailAppState.activeMailView) ? emailAppState.activeMailView : "list";
       emailAppState.selectedAccountId = String(emailAppState.selectedAccountId || "all");
       emailAppState.selectedFolder = String(emailAppState.selectedFolder || "inbox");
       emailAppState.selectedMessageId = String(emailAppState.selectedMessageId || "");
       emailAppState.search = String(emailAppState.search || "");
       emailAppState.replyDraft = String(emailAppState.replyDraft || "");
-      emailAppState.lastHandoffUrl = String(emailAppState.lastHandoffUrl || "");
-      emailAppState.lastProvider = String(emailAppState.lastProvider || "gmail");
       emailAppState.lastSyncAt = String(emailAppState.lastSyncAt || "");
-      if (!emailAppState.mcel || typeof emailAppState.mcel !== "object") {
-        emailAppState.mcel = {status: "pending", failed: false};
-      }
+      emailAppState.mcel = {
+        status: "layout-layer-active",
+        updatedAt: emailNowIso()
+      };
     }
 
     function emailLoadState() {
+      Object.assign(emailAppState, emailNewState());
       try {
-        const raw = localStorage.getItem(emailStorageKey);
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (parsed && typeof parsed === "object") {
-            Object.assign(emailAppState, parsed);
-          }
+        const saved = JSON.parse(localStorage.getItem(emailStorageKey) || "{}");
+        if (saved && typeof saved === "object") {
+          Object.assign(emailAppState, saved);
         }
-      } catch {
-        // Use seeded state when local storage is unavailable or corrupt.
-      }
-      emailEnsureStateShape();
-      if (!emailAppState.accounts.length && !emailAppState.messages.length) {
-        Object.assign(emailAppState, emailNewState());
+      } catch (error) {
+        console.warn("Email state reset after load failure", error);
       }
       emailEnsureStateShape();
     }
@@ -374,7 +276,7 @@
       try {
         localStorage.setItem(emailStorageKey, JSON.stringify({
           activeTab: emailAppState.activeTab,
-          activeConfigTab: emailAppState.activeConfigTab,
+          activeConfigTab: "raw",
           activeMailView: emailAppState.activeMailView,
           accounts: emailAppState.accounts,
           messages: emailAppState.messages,
@@ -384,193 +286,217 @@
           selectedMessageId: emailAppState.selectedMessageId,
           search: emailAppState.search,
           replyDraft: emailAppState.replyDraft,
-          lastHandoffUrl: emailAppState.lastHandoffUrl,
-          lastProvider: emailAppState.lastProvider,
           lastSyncAt: emailAppState.lastSyncAt,
           mcel: emailAppState.mcel
         }));
-      } catch {
-        // Local state is best-effort.
+      } catch (error) {
+        console.warn("Email state save failed", error);
       }
     }
 
-    function emailSetStatus(message) {
-      if (emailSyncStatus) emailSyncStatus.textContent = String(message || "email ready");
+    function emailSetStatus(text) {
+      if (emailSyncStatus) emailSyncStatus.textContent = text;
     }
 
-    function emailOutputForProvider(providerId) {
-      if (providerId === "gmail") return emailGmailConfigStatus;
-      if (providerId === "yahoo") return emailYahooConfigStatus;
-      return emailServerConfigStatus;
+    function emailActivateMcelLayout() {
+      if (!emailApp) return;
+      emailApp.setAttribute("data-mcel-state", "layout-layer-active");
+      emailApp.setAttribute("data-mcel-fit", "app-fill");
+      emailAppState.mcel = {status: "layout-layer-active", updatedAt: emailNowIso()};
+    }
+
+    function emailSwitchTab(tabName) {
+      emailAppState.activeTab = tabName === "config" ? "config" : "mail";
+      emailTabButtons.forEach((button) => {
+        const active = button.dataset.emailTab === emailAppState.activeTab;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-pressed", String(active));
+      });
+      emailTabPanels.forEach((panel) => {
+        panel.hidden = panel.dataset.emailPanel !== emailAppState.activeTab;
+        panel.classList.toggle("email-tab-panel-active", panel.dataset.emailPanel === emailAppState.activeTab);
+      });
+      if (emailAppState.activeTab === "config") {
+        emailApplyServicePreset(emailImapPresetSelect?.value || "outlook");
+      }
+      emailSaveState();
+    }
+
+    function emailSetMailView(viewName) {
+      emailAppState.activeMailView = viewName === "thread" ? "thread" : "list";
+      if (emailMailMain) emailMailMain.dataset.emailMailView = emailAppState.activeMailView;
+      if (emailListView) emailListView.hidden = emailAppState.activeMailView !== "list";
+      if (emailThreadView) emailThreadView.hidden = emailAppState.activeMailView !== "thread";
+      emailSaveState();
+    }
+
+    function emailSelectedMessage() {
+      return emailAppState.messages.find((message) => message.id === emailAppState.selectedMessageId) || null;
+    }
+
+    function emailSelectedAccount() {
+      if (emailAppState.selectedAccountId === "all") return null;
+      return emailAppState.accounts.find((account) => account.id === emailAppState.selectedAccountId) || null;
+    }
+
+    function emailFilteredMessages() {
+      const query = emailNormalizeAddress(emailAppState.search);
+      return emailAppState.messages.filter((message) => {
+        if (emailAppState.selectedAccountId !== "all" && message.accountId !== emailAppState.selectedAccountId) return false;
+        const folder = emailAppState.selectedFolder;
+        if (folder === "priority" && !message.priority) return false;
+        if (folder !== "all" && folder !== "priority" && message.folder !== folder) return false;
+        if (!query) return true;
+        return [message.from, message.to, message.subject, message.excerpt, message.body, ...(message.labels || [])]
+          .join(" ")
+          .toLowerCase()
+          .includes(query);
+      }).sort((left, right) => String(right.date || "").localeCompare(String(left.date || "")));
     }
 
     function emailRenderTabs() {
       emailTabButtons.forEach((button) => {
         const active = button.dataset.emailTab === emailAppState.activeTab;
         button.classList.toggle("active", active);
-        button.setAttribute("aria-pressed", active ? "true" : "false");
+        button.setAttribute("aria-pressed", String(active));
       });
       emailTabPanels.forEach((panel) => {
         const active = panel.dataset.emailPanel === emailAppState.activeTab;
         panel.hidden = !active;
         panel.classList.toggle("email-tab-panel-active", active);
       });
-      emailConfigTabButtons.forEach((button) => {
-        const active = button.dataset.emailConfigTab === emailAppState.activeConfigTab;
+    }
+
+    function emailRenderAccounts() {
+      if (emailAccountSummary) {
+        emailAccountSummary.textContent = emailAppState.accounts.length
+          ? `${emailAppState.accounts.length} IMAP/POP3 account${emailAppState.accounts.length === 1 ? "" : "s"}`
+          : "No accounts connected.";
+      }
+      if (emailAccountList) {
+        const accountButtons = [
+          `<button type="button" class="email-account-button ${emailAppState.selectedAccountId === "all" ? "active" : ""}" data-email-account="all">
+            <strong>All accounts</strong>
+            <span>${emailAppState.accounts.length || 0} configured</span>
+          </button>`,
+          ...emailAppState.accounts.map((account) => `
+            <button type="button" class="email-account-button ${emailAppState.selectedAccountId === account.id ? "active" : ""}" data-email-account="${emailEscapeHtml(account.id)}">
+              <strong>${emailEscapeHtml(account.displayName || account.address)}</strong>
+              <span>${emailEscapeHtml(emailProviderLabel(account.provider))} · ${emailEscapeHtml((account.protocol || "imap").toUpperCase())} · ${emailEscapeHtml(account.status || "saved")}</span>
+            </button>`)
+        ];
+        emailAccountList.innerHTML = accountButtons.join("");
+        emailAccountList.querySelectorAll("[data-email-account]").forEach((button) => {
+          button.addEventListener("click", () => {
+            emailAppState.selectedAccountId = button.dataset.emailAccount || "all";
+            emailAppState.activeMailView = "list";
+            emailAppState.selectedMessageId = "";
+            emailSaveState();
+            renderEmailApp();
+          });
+        });
+      }
+      if (emailRawAccountList) {
+        emailRawAccountList.innerHTML = emailAppState.accounts.length
+          ? emailAppState.accounts.map((account) => `
+              <article class="email-config-account">
+                <strong>${emailEscapeHtml(account.displayName || account.address)}</strong>
+                <span>${emailEscapeHtml(account.address)} · ${emailEscapeHtml((account.protocol || "imap").toUpperCase())} · ${emailEscapeHtml(account.incoming?.host || "")}</span>
+              </article>`).join("")
+          : "No mail server accounts staged yet.";
+      }
+    }
+
+    function emailRenderFolderCounts() {
+      const counts = emailAppState.messages.reduce((acc, message) => {
+        acc.all += 1;
+        acc[message.folder] = (acc[message.folder] || 0) + 1;
+        if (message.priority) acc.priority += 1;
+        return acc;
+      }, {all: 0, inbox: 0, sent: 0, drafts: emailAppState.drafts.length, priority: 0, trash: 0, spam: 0});
+      Object.entries(counts).forEach(([folder, count]) => {
+        const node = document.querySelector(`#email-count-${CSS.escape(folder)}`);
+        if (node) node.textContent = String(count);
+      });
+      emailFolderButtons.forEach((button) => {
+        const active = button.dataset.emailFolder === emailAppState.selectedFolder;
         button.classList.toggle("active", active);
-        button.setAttribute("aria-pressed", active ? "true" : "false");
-      });
-      emailConfigPanels.forEach((panel) => {
-        const active = panel.dataset.emailConfigPanel === emailAppState.activeConfigTab;
-        panel.hidden = !active;
-        panel.classList.toggle("active", active);
+        button.setAttribute("aria-pressed", String(active));
       });
     }
 
-    function emailSwitchTab(tabName) {
-      emailAppState.activeTab = tabName === "config" ? "config" : "mail";
-      emailSaveState();
-      emailRenderTabs();
-      if (emailAppState.activeTab === "mail") {
-        emailSearchInput?.focus();
-      } else if (emailAppState.activeConfigTab === "raw") {
-        emailImapAddressInput?.focus();
-      } else if (emailAppState.activeConfigTab === "yahoo") {
-        emailYahooAddressInput?.focus();
-      } else {
-        emailGmailAddressInput?.focus();
-      }
-    }
-
-    function emailSwitchConfigTab(tabName) {
-      emailAppState.activeConfigTab = ["gmail", "yahoo", "raw"].includes(tabName) ? tabName : "gmail";
-      emailAppState.activeTab = "config";
-      emailSaveState();
-      emailRenderTabs();
-      if (emailAppState.activeConfigTab === "raw") {
-        emailImapAddressInput?.focus();
-      } else if (emailAppState.activeConfigTab === "yahoo") {
-        emailYahooAddressInput?.focus();
-      } else {
-        emailGmailAddressInput?.focus();
-      }
-    }
-
-    function emailStateToken(prefix = "email") {
-      const raw = `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      try {
-        return btoa(raw).replace(/=+$/g, "").replace(/\+/g, "-").replace(/\//g, "_");
-      } catch {
-        return raw.replace(/[^a-z0-9_-]/gi, "");
-      }
-    }
-
-    function emailBuildOAuthPlan(providerId, address, clientId) {
-      const provider = emailOauthProvider(providerId);
-      const state = emailStateToken(provider.id);
-      const nonce = emailStateToken(`${provider.id}-nonce`);
-      const redirectUri = `${window.location.origin}/applications/email`;
-      const params = new URLSearchParams({
-        client_id: clientId,
-        redirect_uri: redirectUri,
-        response_type: "code",
-        scope: provider.scopes.join(" "),
-        state
-      });
-      Object.entries(provider.oauthExtras || {}).forEach(([key, value]) => {
-        params.set(key, value);
-      });
-      if (provider.id === "yahoo") {
-        params.set("nonce", nonce);
-      }
-      const url = `${provider.authEndpoint}?${params.toString()}`;
-      return {
-        provider: provider.id,
-        providerLabel: provider.label,
-        address,
-        clientId,
-        redirectUri,
-        state,
-        nonce,
-        scopes: provider.scopes.slice(),
-        authEndpoint: provider.authEndpoint,
-        tokenEndpoint: provider.tokenEndpoint,
-        url
-      };
-    }
-
-    function emailOAuthFormValues(providerId) {
-      if (providerId === "yahoo") {
-        return {
-          address: emailNormalizeAddress(emailYahooAddressInput?.value || ""),
-          clientId: String(emailYahooClientIdInput?.value || "").trim()
-        };
-      }
-      return {
-        address: emailNormalizeAddress(emailGmailAddressInput?.value || ""),
-        clientId: String(emailGmailClientIdInput?.value || "").trim()
-      };
-    }
-
-    function emailConnectProvider(providerId = "gmail") {
-      const provider = emailOauthProvider(providerId);
-      const output = emailOutputForProvider(provider.id);
-      const {address, clientId} = emailOAuthFormValues(provider.id);
-      const guessedProvider = emailAddressProviderGuess(address);
-      if (!emailValidAddress(address)) {
-        emailSetStatus("email address required");
-        if (output) output.textContent = `Enter a valid ${provider.label} address before preparing OAuth.`;
-        (provider.id === "yahoo" ? emailYahooAddressInput : emailGmailAddressInput)?.focus();
-        return null;
-      }
-      const plan = emailBuildOAuthPlan(provider.id, address, clientId || "CLIENT_ID_REQUIRED");
-      const mismatch = guessedProvider && guessedProvider !== provider.id;
-      const existing = emailAppState.accounts.find((account) => account.address === address && account.provider === provider.id);
-      const account = existing || {
-        id: `${provider.id}-${Date.now()}`,
-        provider: provider.id,
-        address,
-        displayName: address,
-        connectionType: "oauth",
-        connectedAt: emailNowIso(),
-        scopes: provider.scopes.slice(),
-        handoffUrl: "",
-        tokenEndpoint: provider.tokenEndpoint
-      };
-      account.status = clientId ? "pending-oauth" : "needs-client-id";
-      account.handoffUrl = clientId ? plan.url : "";
-      account.redirectUri = plan.redirectUri;
-      account.state = plan.state;
-      account.tokenEndpoint = plan.tokenEndpoint;
-      account.scopes = provider.scopes.slice();
-      if (!existing) emailAppState.accounts.unshift(account);
-      emailAppState.selectedAccountId = account.id;
-      emailAppState.lastHandoffUrl = account.handoffUrl;
-      emailAppState.lastProvider = provider.id;
-      emailAppState.lastSyncAt = emailNowIso();
-      const warning = mismatch ? ` Address domain looks like ${emailProviderLabel(guessedProvider)}.` : "";
-      const ready = clientId
-        ? `${provider.label} handoff URL prepared for ${address}.${warning}`
-        : `${provider.label} account staged for ${address}; paste an OAuth client ID to open provider consent.${warning}`;
-      emailSetStatus(clientId ? `${provider.label} handoff ready` : `${provider.label} needs client ID`);
-      if (output) output.textContent = ready;
-      emailSaveState();
-      renderEmailApp();
-      return plan;
-    }
-
-    function emailOpenProviderConsent(providerId = "gmail") {
-      const plan = emailConnectProvider(providerId);
-      const output = emailOutputForProvider(providerId);
-      const url = plan?.url || "";
-      if (!url || url.includes("CLIENT_ID_REQUIRED")) {
-        if (output) output.textContent = "Provider consent needs a real OAuth client ID first.";
-        emailSetStatus("client ID required");
-        (providerId === "yahoo" ? emailYahooClientIdInput : emailGmailClientIdInput)?.focus();
+    function emailRenderMessageList() {
+      if (!emailMessageList) return;
+      const messages = emailFilteredMessages();
+      if (!messages.length) {
+        emailMessageList.innerHTML = `
+          <article class="email-empty-state" data-mcel-layout-region="email-empty-state" data-mcel-role="mail-empty-state" data-mcel-kind="empty-state" data-mcel-fit="centered-empty-card">
+            <strong>No messages here</strong>
+            <span>Add an IMAP/POP3 account, enter the password or app password, then Check mail.</span>
+          </article>`;
         return;
       }
-      window.open(url, "main-computer-email-oauth", "noopener,noreferrer,width=980,height=760");
-      if (output) output.textContent = `Opened ${plan.providerLabel} authorization handoff. Token exchange remains a backend bridge boundary.`;
+      emailMessageList.innerHTML = messages.map((message) => `
+        <button type="button" class="email-message-item ${message.id === emailAppState.selectedMessageId ? "active" : ""} ${message.unread ? "unread" : ""}" data-email-message="${emailEscapeHtml(message.id)}">
+          <span class="email-row-check" aria-hidden="true"></span>
+          <span class="email-row-unread" aria-hidden="true">${message.unread ? "•" : ""}</span>
+          <span class="email-row-sender">${emailEscapeHtml(message.from || "(unknown sender)")}</span>
+          <span class="email-row-subject"><strong>${emailEscapeHtml(message.subject || "(no subject)")}</strong><span>${emailEscapeHtml(message.excerpt || "")}</span></span>
+          <span class="email-row-date">${emailEscapeHtml(emailFormatTime(message.date))}</span>
+        </button>`).join("");
+      emailMessageList.querySelectorAll("[data-email-message]").forEach((button) => {
+        button.addEventListener("click", () => {
+          emailAppState.selectedMessageId = button.dataset.emailMessage || "";
+          const selected = emailSelectedMessage();
+          if (selected) selected.unread = false;
+          emailSetMailView("thread");
+          emailSaveState();
+          renderEmailApp();
+        });
+      });
+    }
+
+    function emailRenderThread() {
+      const message = emailSelectedMessage();
+      if (!message) {
+        if (emailThreadProvider) emailThreadProvider.textContent = "No message selected";
+        if (emailThreadSubject) emailThreadSubject.textContent = "Select a message";
+        if (emailThreadMeta) emailThreadMeta.textContent = "Open a message from the list.";
+        if (emailThreadLabels) emailThreadLabels.innerHTML = "";
+        if (emailThreadBody) emailThreadBody.textContent = "Choose a message to read it here.";
+        return;
+      }
+      const account = emailAppState.accounts.find((item) => item.id === message.accountId);
+      if (emailThreadProvider) emailThreadProvider.textContent = `${emailProviderLabel(message.provider)}${account ? ` · ${account.address}` : ""}`;
+      if (emailThreadSubject) emailThreadSubject.textContent = message.subject || "(no subject)";
+      if (emailThreadMeta) emailThreadMeta.textContent = `${message.from || "(unknown sender)"} → ${message.to || "you"} · ${emailFormatTime(message.date)}`;
+      if (emailThreadLabels) {
+        emailThreadLabels.innerHTML = (message.labels || []).map((label) => `<span class="email-label">${emailEscapeHtml(label)}</span>`).join("");
+      }
+      if (emailThreadBody) emailThreadBody.textContent = message.body || message.excerpt || "";
+    }
+
+    function emailRenderServerFormDefaults() {
+      const preset = emailPreset(emailImapPresetSelect?.value || "outlook");
+      if (emailServerConfigStatus) emailServerConfigStatus.textContent = preset.authHint || "Add an IMAP/POP3 account.";
+    }
+
+    function emailLiveMessageToState(message, account, fallbackProvider = "custom") {
+      return {
+        id: String(message.id || `live-${Date.now()}-${Math.random().toString(16).slice(2)}`),
+        accountId: account.id,
+        provider: account.provider || fallbackProvider || "custom",
+        folder: "inbox",
+        from: String(message.from || "(unknown sender)"),
+        to: String(message.to || account.address),
+        subject: String(message.subject || "(no subject)"),
+        excerpt: String(message.excerpt || "Fetched through the local mail bridge.").slice(0, 220),
+        body: String(message.body || message.excerpt || "Fetched through the local mail bridge."),
+        date: message.date || emailNowIso(),
+        labels: Array.isArray(message.labels) ? message.labels.slice(0, 6) : ["Live"],
+        priority: Boolean(message.priority),
+        unread: message.unread !== false
+      };
     }
 
     function emailApplyServicePreset(presetId = emailImapPresetSelect?.value || "custom", {preserveAddress = true} = {}) {
@@ -585,9 +511,7 @@
       if (emailSmtpPortInput) emailSmtpPortInput.value = String(preset.smtp?.port || "");
       if (emailSmtpSecuritySelect) emailSmtpSecuritySelect.value = preset.smtp?.security || "starttls";
       if (!preserveAddress && emailImapAddressInput) emailImapAddressInput.value = "";
-      if (emailServerConfigStatus) {
-        emailServerConfigStatus.textContent = `${preset.label} preset loaded. ${preset.authHint || ""}`.trim();
-      }
+      emailRenderServerFormDefaults();
     }
 
     function emailApplyProtocolForCurrentPreset() {
@@ -597,9 +521,6 @@
       if (emailIncomingHostInput) emailIncomingHostInput.value = incoming.host || "";
       if (emailIncomingPortInput) emailIncomingPortInput.value = String(incoming.port || "");
       if (emailIncomingSecuritySelect) emailIncomingSecuritySelect.value = incoming.security || "ssl";
-      if (emailServerConfigStatus) {
-        emailServerConfigStatus.textContent = `${preset.label} ${protocol.toUpperCase()} settings loaded. ${preset.authHint || ""}`.trim();
-      }
     }
 
     function emailMaybeApplyPresetFromAddress(address) {
@@ -614,28 +535,30 @@
 
     function emailServerFormValues({includePassword = false} = {}) {
       const provider = emailImapPresetSelect?.value || "custom";
-      const protocol = emailImapProtocolSelect?.value || "imap";
+      const preset = emailPreset(provider);
+      const protocol = emailImapProtocolSelect?.value || preset.defaultProtocol || "imap";
       const address = emailNormalizeAddress(emailImapAddressInput?.value || "");
       const username = String(emailImapUsernameInput?.value || address).trim();
-      const incoming = {
-        host: String(emailIncomingHostInput?.value || "").trim(),
-        port: Number.parseInt(String(emailIncomingPortInput?.value || ""), 10),
-        security: emailIncomingSecuritySelect?.value || "ssl"
-      };
-      const smtp = {
-        host: String(emailSmtpHostInput?.value || "").trim(),
-        port: Number.parseInt(String(emailSmtpPortInput?.value || ""), 10),
-        security: emailSmtpSecuritySelect?.value || "starttls"
-      };
       const config = {
         provider,
-        providerLabel: emailProviderLabel(provider),
+        providerLabel: preset.label,
         address,
         displayName: String(emailImapDisplayNameInput?.value || "").trim(),
-        username,
         protocol,
-        incoming,
-        smtp
+        host: String(emailIncomingHostInput?.value || "").trim(),
+        port: Number.parseInt(String(emailIncomingPortInput?.value || ""), 10),
+        security: emailIncomingSecuritySelect?.value || "ssl",
+        username,
+        incoming: {
+          host: String(emailIncomingHostInput?.value || "").trim(),
+          port: Number.parseInt(String(emailIncomingPortInput?.value || ""), 10),
+          security: emailIncomingSecuritySelect?.value || "ssl"
+        },
+        smtp: {
+          host: String(emailSmtpHostInput?.value || "").trim(),
+          port: Number.parseInt(String(emailSmtpPortInput?.value || ""), 10),
+          security: emailSmtpSecuritySelect?.value || "starttls"
+        }
       };
       if (includePassword) {
         config.password = String(emailImapPasswordInput?.value || "");
@@ -645,73 +568,51 @@
 
     function emailValidateServerConfig(config, {passwordRequired = false} = {}) {
       if (!emailValidAddress(config.address)) return "Enter a valid account email address.";
-      if (!config.username) return "Username is required.";
       if (!["imap", "pop3"].includes(config.protocol)) return "Protocol must be IMAP or POP3.";
-      if (!config.incoming.host) return "Incoming server is required.";
-      if (!Number.isFinite(config.incoming.port) || config.incoming.port < 1 || config.incoming.port > 65535) return "Incoming port must be between 1 and 65535.";
+      if (!config.host) return "Incoming server is required.";
+      if (!Number.isFinite(config.port) || config.port < 1 || config.port > 65535) return "Incoming port must be between 1 and 65535.";
+      if (!config.username) return "Username is required.";
       if (!config.smtp.host) return "SMTP server is required.";
       if (!Number.isFinite(config.smtp.port) || config.smtp.port < 1 || config.smtp.port > 65535) return "SMTP port must be between 1 and 65535.";
-      if (passwordRequired && !config.password) return "Enter the password or app password for this one-time Check mail action.";
+      if (passwordRequired && !config.password) return "Enter the password or app password for this Check mail action.";
       return "";
     }
 
-    function emailUpsertServerAccount(config, status = "configured") {
-      const existing = emailAppState.accounts.find((account) => account.address === config.address && account.provider === config.provider && account.connectionType !== "oauth");
+    function emailUpsertServerAccount(config, status = "saved") {
+      const existing = emailAppState.accounts.find((account) => account.address === config.address && account.provider === config.provider);
       const account = existing || {
-        id: `${config.provider}-${Date.now()}`,
+        id: `server-${config.provider}-${Date.now()}`,
         provider: config.provider,
         address: config.address,
+        displayName: config.displayName || config.address,
+        connectionType: "server",
         connectedAt: emailNowIso()
       };
-      account.displayName = config.displayName || config.address;
-      account.connectionType = config.protocol;
+      account.status = status;
       account.protocol = config.protocol;
       account.username = config.username;
-      account.status = status;
       account.incoming = {...config.incoming};
       account.smtp = {...config.smtp};
-      account.authHint = emailPreset(config.provider).authHint || "";
-      account.lastCheckedAt = status.includes("checked") ? emailNowIso() : account.lastCheckedAt || "";
       if (!existing) emailAppState.accounts.unshift(account);
       emailAppState.selectedAccountId = account.id;
       emailAppState.lastSyncAt = emailNowIso();
       return account;
     }
 
-    function emailSaveServerAccountConfig() {
+    function emailSaveConfiguredServerAccount() {
       const config = emailServerFormValues();
       const error = emailValidateServerConfig(config);
       if (error) {
         if (emailServerConfigStatus) emailServerConfigStatus.textContent = error;
-        emailSetStatus("server config needs attention");
+        emailSetStatus("account setup incomplete");
         return null;
       }
-      const account = emailUpsertServerAccount(config, "configured");
+      const account = emailUpsertServerAccount(config, "saved");
       emailSaveState();
       renderEmailApp();
-      if (emailServerConfigStatus) {
-        emailServerConfigStatus.textContent = `${config.providerLabel} account saved for ${config.address}. Use Check mail when you are ready to send the password to the backend bridge.`;
-      }
-      emailSetStatus(`${config.providerLabel} account configured`);
+      if (emailServerConfigStatus) emailServerConfigStatus.textContent = `${config.providerLabel} account saved for ${config.address}. Use Check mail when you are ready to send the password to the backend bridge.`;
+      emailSetStatus("account saved");
       return account;
-    }
-
-    function emailLiveMessageToState(message, account, fallbackProvider) {
-      return {
-        id: String(message.id || `live-${Date.now()}-${Math.random().toString(16).slice(2)}`),
-        accountId: account.id,
-        provider: account.provider || fallbackProvider || "custom",
-        folder: "inbox",
-        from: String(message.from || "(unknown sender)"),
-        to: String(message.to || account.address),
-        subject: String(message.subject || "(no subject)"),
-        excerpt: String(message.excerpt || "Fetched through the local backend mail bridge.").slice(0, 220),
-        body: String(message.body || message.excerpt || "Fetched through the local backend mail bridge."),
-        date: message.date || emailNowIso(),
-        labels: Array.isArray(message.labels) ? message.labels.slice(0, 6) : ["Live"],
-        priority: Boolean(message.priority),
-        unread: message.unread !== false
-      };
     }
 
     async function emailCheckConfiguredServerAccount() {
@@ -725,7 +626,7 @@
       const account = emailUpsertServerAccount(config, "checking");
       emailSaveState();
       renderEmailApp();
-      if (emailServerConfigStatus) emailServerConfigStatus.textContent = `Checking ${config.providerLabel} through ${config.protocol.toUpperCase()} bridge…`;
+      if (emailServerConfigStatus) emailServerConfigStatus.textContent = `Checking ${config.providerLabel} through ${config.protocol.toUpperCase()}…`;
       emailSetStatus(`checking ${config.providerLabel}`);
       try {
         const response = await fetch(emailCheckEndpoint, {
@@ -755,13 +656,10 @@
           ...liveMessages,
           ...emailAppState.messages.filter((message) => !liveIds.has(message.id))
         ];
-        if (liveMessages[0]) {
-          emailAppState.selectedMessageId = "";
-          emailAppState.selectedFolder = "inbox";
-          emailAppState.activeTab = "mail";
-          emailAppState.activeMailView = "list";
-          emailAppState.replyDraft = "";
-        }
+        emailAppState.selectedFolder = "inbox";
+        emailAppState.activeTab = "mail";
+        emailAppState.activeMailView = "list";
+        emailAppState.replyDraft = "";
         emailAppState.lastSyncAt = emailNowIso();
         emailSaveState();
         renderEmailApp();
@@ -780,391 +678,6 @@
       }
     }
 
-    function emailMessagesForView() {
-      const search = String(emailAppState.search || "").trim().toLowerCase();
-      const accountId = emailAppState.selectedAccountId;
-      const folder = emailAppState.selectedFolder;
-      const visibleDrafts = emailAppState.drafts
-        .filter((draft) => accountId === "all" || draft.accountId === accountId)
-        .map((draft) => ({
-          ...draft,
-          id: draft.id,
-          folder: "drafts",
-          from: draft.from,
-          excerpt: draft.body,
-          labels: ["Draft", draft.tone || "concise"],
-          unread: false,
-          draft: true
-        }));
-      const messages = folder === "drafts"
-        ? visibleDrafts
-        : emailAppState.messages
-            .filter((message) => accountId === "all" || message.accountId === accountId)
-            .filter((message) => {
-              if (folder === "all") return true;
-              if (folder === "priority") return Boolean(message.priority);
-              return message.folder === folder;
-            });
-      return messages
-        .filter((message) => {
-          if (!search) return true;
-          return [
-            message.from,
-            message.to,
-            message.subject,
-            message.excerpt,
-            message.body,
-            ...(message.labels || [])
-          ].join(" ").toLowerCase().includes(search);
-        })
-        .sort((left, right) => String(right.date || "").localeCompare(String(left.date || "")));
-    }
-
-    function emailFolderCounts() {
-      const accountId = emailAppState.selectedAccountId;
-      const messages = emailAppState.messages.filter((message) => accountId === "all" || message.accountId === accountId);
-      return {
-        inbox: messages.filter((message) => message.folder === "inbox").length,
-        priority: messages.filter((message) => message.priority).length,
-        sent: messages.filter((message) => message.folder === "sent").length,
-        drafts: emailAppState.drafts.filter((draft) => accountId === "all" || draft.accountId === accountId).length,
-        all: messages.length
-      };
-    }
-
-    function emailSelectedMessage() {
-      return emailMessagesForView().find((message) => message.id === emailAppState.selectedMessageId)
-        || emailAppState.messages.find((message) => message.id === emailAppState.selectedMessageId)
-        || emailMessagesForView()[0]
-        || null;
-    }
-
-    function emailAccountConnectionLabel(account) {
-      if (account.connectionType === "oauth") return "OAuth";
-      return String(account.protocol || account.connectionType || "raw").toUpperCase();
-    }
-
-    function emailRenderConfigAccountBucket(node, accounts, emptyText) {
-      if (!node) return;
-      if (!accounts.length) {
-        node.textContent = emptyText;
-        return;
-      }
-      node.innerHTML = accounts.map((account) => {
-        const status = account.status || "staged";
-        const connection = emailAccountConnectionLabel(account);
-        return `<article class="email-config-account-item">
-          <strong>${emailEscapeHtml(account.address || account.displayName || "(no address)")}</strong>
-          <span>${emailEscapeHtml(connection)} · ${emailEscapeHtml(status)}</span>
-        </article>`;
-      }).join("");
-    }
-
-    function emailRenderConfigAccountLists() {
-      const gmailAccounts = emailAppState.accounts.filter((account) => account.provider === "gmail" && account.connectionType === "oauth");
-      const yahooAccounts = emailAppState.accounts.filter((account) => account.provider === "yahoo" && account.connectionType === "oauth");
-      const rawAccounts = emailAppState.accounts.filter((account) => account.connectionType !== "oauth");
-      emailRenderConfigAccountBucket(emailGmailAccountList, gmailAccounts, "No Gmail accounts staged yet.");
-      emailRenderConfigAccountBucket(emailYahooAccountList, yahooAccounts, "No Yahoo accounts staged yet.");
-      emailRenderConfigAccountBucket(emailRawAccountList, rawAccounts, "No raw accounts staged yet.");
-    }
-
-    function emailRenderAccounts() {
-      if (!emailAccountList) return;
-      const accountCount = emailAppState.accounts.length;
-      if (emailAccountSummary) {
-        emailAccountSummary.textContent = accountCount ? `${accountCount} account${accountCount === 1 ? "" : "s"} available.` : "No accounts connected.";
-      }
-      const allActive = emailAppState.selectedAccountId === "all";
-      const buttons = [
-        `<button type="button" class="email-account-button ${allActive ? "active" : ""}" data-email-account="all"><strong>All accounts</strong><span>Unified inbox</span></button>`,
-        ...emailAppState.accounts.map((account) => {
-          const active = emailAppState.selectedAccountId === account.id;
-          const connection = emailAccountConnectionLabel(account);
-          return `<button type="button" class="email-account-button ${active ? "active" : ""}" data-email-account="${emailEscapeHtml(account.id)}"><strong>${emailEscapeHtml(account.address)}</strong><span>${emailEscapeHtml(emailProviderLabel(account.provider))} · ${emailEscapeHtml(connection)} · ${emailEscapeHtml(account.status || "ready")}</span></button>`;
-        })
-      ];
-      emailAccountList.innerHTML = buttons.join("");
-      emailAccountList.querySelectorAll("[data-email-account]").forEach((button) => {
-        button.addEventListener("click", () => {
-          emailAppState.selectedAccountId = button.dataset.emailAccount || "all";
-          emailAppState.selectedMessageId = "";
-          emailAppState.activeMailView = "list";
-          emailAppState.replyDraft = "";
-          emailSaveState();
-          renderEmailApp();
-        });
-      });
-    }
-
-    function emailRenderFolders() {
-      const counts = emailFolderCounts();
-      Object.entries(counts).forEach(([folder, count]) => {
-        const node = document.querySelector(`#email-count-${folder}`);
-        if (node) node.textContent = String(count);
-      });
-      emailFolderButtons.forEach((button) => {
-        button.classList.toggle("active", button.dataset.emailFolder === emailAppState.selectedFolder);
-      });
-    }
-
-    function emailRenderMessages() {
-      if (!emailMessageList) return;
-      const messages = emailMessagesForView();
-      if (!messages.length) {
-        emailMessageList.innerHTML = `<div class="email-empty-state" role="listitem"><strong>No messages</strong><span>Try All Mail, clear search, or configure another account.</span></div>`;
-        return;
-      }
-      emailMessageList.innerHTML = messages.map((message) => {
-        const active = message.id === emailAppState.selectedMessageId;
-        const unread = message.unread && !message.draft;
-        const excerpt = String(message.excerpt || message.body || "").replace(/\s+/g, " ").trim();
-        const subject = message.draft ? `Draft: ${message.subject || "(no subject)"}` : (message.subject || "(no subject)");
-        const dateText = emailFormatTime(message.date);
-        return `<button type="button" class="email-message-item ${active ? "active" : ""} ${unread ? "unread" : ""}" data-email-message="${emailEscapeHtml(message.id)}" role="listitem" aria-label="${emailEscapeHtml(subject)} from ${emailEscapeHtml(message.from)}">
-          <span class="email-row-check" aria-hidden="true"></span>
-          <span class="email-row-unread" aria-hidden="true">${unread ? "•" : ""}</span>
-          <strong class="email-row-sender">${emailEscapeHtml(message.from || "(unknown sender)")}</strong>
-          <span class="email-row-subject"><strong>${emailEscapeHtml(subject)}</strong><span>${excerpt ? ` · ${emailEscapeHtml(excerpt)}` : ""}</span></span>
-          <time class="email-row-date" datetime="${emailEscapeHtml(message.date || "")}">${emailEscapeHtml(dateText)}</time>
-        </button>`;
-      }).join("");
-      emailMessageList.querySelectorAll("[data-email-message]").forEach((button) => {
-        button.addEventListener("click", () => {
-          emailAppState.selectedMessageId = button.dataset.emailMessage || "";
-          const message = emailSelectedMessage();
-          if (message && !message.draft) message.unread = false;
-          emailAppState.activeMailView = "thread";
-          emailAppState.replyDraft = "";
-          emailSaveState();
-          renderEmailApp();
-        });
-      });
-    }
-
-    function emailRenderMailView() {
-      const showingThread = emailAppState.activeMailView === "thread" && Boolean(emailAppState.selectedMessageId);
-      if (emailMailMain) {
-        emailMailMain.dataset.emailMailView = showingThread ? "thread" : "list";
-      }
-      if (emailListView) {
-        emailListView.hidden = showingThread;
-      }
-      if (emailThreadView) {
-        emailThreadView.hidden = !showingThread;
-      }
-      if (!showingThread && emailReplyForm) {
-        emailReplyForm.hidden = true;
-      }
-    }
-
-    function emailRenderThread() {
-      const message = emailAppState.selectedMessageId
-        ? (emailAppState.messages.find((item) => item.id === emailAppState.selectedMessageId)
-          || emailAppState.drafts.find((item) => item.id === emailAppState.selectedMessageId)
-          || null)
-        : null;
-      if (!message) {
-        if (emailThreadProvider) emailThreadProvider.textContent = "No message selected";
-        if (emailThreadSubject) emailThreadSubject.textContent = "Select a message";
-        if (emailThreadMeta) emailThreadMeta.textContent = "Open a message from the list.";
-        if (emailThreadLabels) emailThreadLabels.innerHTML = "";
-        if (emailThreadBody) emailThreadBody.textContent = "Choose a message to read it here.";
-        if (emailReplyForm) emailReplyForm.hidden = true;
-        return;
-      }
-      if (emailThreadProvider) emailThreadProvider.textContent = `${emailProviderLabel(message.provider)} · ${message.folder || "mail"}`;
-      if (emailThreadSubject) emailThreadSubject.textContent = message.subject || "(no subject)";
-      if (emailThreadMeta) emailThreadMeta.textContent = `From ${message.from} to ${message.to} · ${emailFormatTime(message.date)}`;
-      if (emailThreadLabels) {
-        emailThreadLabels.innerHTML = (message.labels || []).map((label) => `<span class="email-label">${emailEscapeHtml(label)}</span>`).join("");
-      }
-      if (emailThreadBody) emailThreadBody.textContent = message.body || message.excerpt || "";
-      if (emailReplyForm) {
-        emailReplyForm.hidden = !emailAppState.replyDraft;
-      }
-      if (emailReplyBody && emailReplyBody.value !== emailAppState.replyDraft) {
-        emailReplyBody.value = emailAppState.replyDraft;
-      }
-      if (emailReplyStatus && emailAppState.replyDraft) {
-        emailReplyStatus.textContent = "Reply ready.";
-      }
-    }
-
-    function emailRenderSmartLayer() {
-      const priorityCount = emailAppState.messages.filter((message) => message.priority).length;
-      const draftCount = emailAppState.drafts.length;
-      const selected = emailSelectedMessage();
-      if (emailSmartProvider) {
-        const providers = [...new Set(emailAppState.accounts.map((account) => emailProviderLabel(account.provider)))];
-        emailSmartProvider.textContent = providers.length ? providers.join(" + ") : "Common mail ready";
-      }
-      if (emailSmartPriority) emailSmartPriority.textContent = `${priorityCount} thread${priorityCount === 1 ? "" : "s"}`;
-      if (emailSmartDrafts) emailSmartDrafts.textContent = `${draftCount} saved`;
-      if (emailSmartReport) {
-        const report = {
-          selectedThread: selected?.id || "",
-          folder: emailAppState.selectedFolder,
-          account: emailAppState.selectedAccountId,
-          visibleMessages: emailMessagesForView().length,
-          accounts: emailAppState.accounts.map((account) => ({
-            provider: account.provider,
-            address: account.address,
-            connectionType: account.connectionType,
-            protocol: account.protocol,
-            status: account.status,
-            incoming: account.incoming ? {...account.incoming} : undefined
-          })),
-          checkEndpoint: emailCheckEndpoint,
-          mcel: emailAppState.mcel,
-          lastSyncAt: emailAppState.lastSyncAt
-        };
-        emailSmartReport.textContent = JSON.stringify(report, null, 2);
-      }
-    }
-
-    function emailRenderMcelProof() {
-      const source = `
-        <section data-mc="panel" data-mc-kind="mailbox" data-mc-flow="task" data-mc-rank="primary" data-mc-state="ready" data-mc-density="compact" data-mc-words="Email mailbox inbox reply compose POP IMAP Gmail Yahoo Outlook iCloud">
-          <button data-mc="command" data-mc-kind="primary" data-mc-flow="forward" data-mc-rank="primary" data-mc-state="ready">Open message</button>
-        </section>`;
-      try {
-        if (window.MCEL?.compile) {
-          const compiled = window.MCEL.compile(source, {theme: "theme-machine", reason: "email-app:hidden-contract"});
-          const auditNode = document.createElement("div");
-          auditNode.hidden = true;
-          auditNode.innerHTML = compiled.runtimeHtml || source;
-          const audit = window.MCEL.audit?.(source, auditNode, {reason: "email-app:hidden-audit"});
-          emailAppState.mcel = {
-            status: audit?.failed ? "audit-warning" : "compiled",
-            failed: Boolean(audit?.failed),
-            contractVersion: window.MCEL.version || ""
-          };
-        } else {
-          emailAppState.mcel = {status: "fallback-source", failed: false};
-        }
-      } catch (error) {
-        emailAppState.mcel = {
-          status: "fallback-after-error",
-          failed: true,
-          error: String(error?.message || error || "MCEL failed")
-        };
-      }
-    }
-
-    function emailRenderServerFormDefaults() {
-      if (!emailImapPresetSelect) return;
-      const preset = emailPreset(emailImapPresetSelect.value || "custom");
-      if (!emailIncomingHostInput?.value && preset.id !== "custom") {
-        emailApplyServicePreset(preset.id);
-      }
-      const address = emailNormalizeAddress(emailImapAddressInput?.value || "");
-      if (address && emailImapUsernameInput && !emailImapUsernameInput.value.trim()) {
-        emailImapUsernameInput.value = address;
-      }
-    }
-
-    function renderEmailApp() {
-      if (!emailApp) return;
-      emailEnsureStateShape();
-      if (emailSearchInput && emailSearchInput.value !== emailAppState.search) {
-        emailSearchInput.value = emailAppState.search;
-      }
-      emailRenderTabs();
-      emailRenderServerFormDefaults();
-      emailRenderAccounts();
-      emailRenderConfigAccountLists();
-      emailRenderFolders();
-      emailRenderMessages();
-      emailRenderThread();
-      emailRenderMailView();
-      emailRenderMcelProof();
-      emailRenderSmartLayer();
-      emailSaveState();
-    }
-
-    function emailSetComposeModalOpen(open) {
-      if (!emailComposeModal) return;
-      if (open) {
-        emailComposeModal.hidden = false;
-        if (typeof emailComposeModal.showModal === "function" && !emailComposeModal.open) {
-          emailComposeModal.showModal();
-        } else {
-          emailComposeModal.setAttribute("open", "");
-        }
-        window.setTimeout(() => emailComposeTo?.focus(), 0);
-        return;
-      }
-      if (typeof emailComposeModal.close === "function" && emailComposeModal.open) {
-        emailComposeModal.close();
-      }
-      emailComposeModal.hidden = true;
-      emailComposeModal.removeAttribute("open");
-    }
-
-    function emailDismissComposeModal() {
-      emailSetComposeModalOpen(false);
-      emailSetStatus("compose closed");
-    }
-
-    function emailReturnToMessageList() {
-      emailAppState.activeMailView = "list";
-      emailAppState.replyDraft = "";
-      emailSaveState();
-      renderEmailApp();
-      emailSearchInput?.focus();
-    }
-
-    function emailArchiveSelected() {
-      const message = emailSelectedMessage();
-      if (!message || message.draft) return;
-      message.folder = "all";
-      message.unread = false;
-      message.labels = [...new Set([...(message.labels || []), "Archived"])];
-      emailAppState.selectedMessageId = "";
-      emailAppState.activeMailView = "list";
-      emailAppState.replyDraft = "";
-      emailSetStatus("message archived locally");
-      emailSaveState();
-      renderEmailApp();
-    }
-
-    function emailTogglePrioritySelected() {
-      const message = emailSelectedMessage();
-      if (!message || message.draft) return;
-      message.priority = !message.priority;
-      const labels = new Set(message.labels || []);
-      if (message.priority) {
-        labels.add("Priority");
-      } else {
-        labels.delete("Priority");
-      }
-      message.labels = [...labels];
-      emailSetStatus(message.priority ? "marked priority" : "priority cleared");
-      emailSaveState();
-      renderEmailApp();
-    }
-
-    function emailReplySelected() {
-      const message = emailSelectedMessage();
-      if (!message) return;
-      emailAppState.activeMailView = "thread";
-      emailAppState.replyDraft = `\n\nOn ${emailFormatTime(message.date)}, ${message.from} wrote:\n> ${(message.body || message.excerpt || "").split("\n").join("\n> ")}`;
-      emailSaveState();
-      renderEmailApp();
-      window.setTimeout(() => emailReplyBody?.focus(), 0);
-      emailSetStatus("inline reply ready");
-    }
-
-    function emailNewCompose() {
-      if (emailComposeTo) emailComposeTo.value = "";
-      if (emailComposeSubject) emailComposeSubject.value = "";
-      if (emailComposeBody) emailComposeBody.value = "";
-      emailSwitchTab("mail");
-      emailSetComposeModalOpen(true);
-      emailSetStatus("compose ready");
-    }
-
     function emailSelectedAccountForCompose() {
       if (emailAppState.selectedAccountId !== "all") {
         return emailAppState.accounts.find((account) => account.id === emailAppState.selectedAccountId) || emailAppState.accounts[0] || null;
@@ -1172,7 +685,33 @@
       return emailAppState.accounts[0] || null;
     }
 
-    function emailSaveDraftFromCompose({queued = false} = {}) {
+    function emailAddressFromHeader(value) {
+      const text = String(value || "").trim();
+      const bracketed = text.match(/<([^>]+)>/);
+      if (bracketed) return bracketed[1].trim();
+      return text.split(/[,;]/)[0].trim();
+    }
+
+    function emailLocalSentMessageFromDraft(draft, labels = ["Queued", "Local"], extra = {}) {
+      return {
+        id: extra.id || `queued-${Date.now()}`,
+        accountId: draft.accountId,
+        provider: draft.provider,
+        folder: "sent",
+        from: draft.from,
+        to: draft.to,
+        subject: draft.subject,
+        excerpt: draft.body.slice(0, 140),
+        body: draft.body,
+        date: draft.date,
+        labels,
+        priority: false,
+        unread: false,
+        ...extra
+      };
+    }
+
+    async function emailSaveDraftFromCompose({queued = false} = {}) {
       const account = emailSelectedAccountForCompose();
       const to = String(emailComposeTo?.value || "").trim();
       const subject = String(emailComposeSubject?.value || "").trim();
@@ -1195,37 +734,21 @@
       };
       emailAppState.drafts.unshift(draft);
       if (queued) {
-        emailAppState.messages.unshift({
-          id: `queued-${Date.now()}`,
-          accountId: draft.accountId,
-          provider: draft.provider,
-          folder: "sent",
-          from: draft.from,
-          to: draft.to,
-          subject: draft.subject,
-          excerpt: draft.body.slice(0, 140),
-          body: draft.body,
-          date: draft.date,
-          labels: ["Queued", "Local"],
-          priority: false,
-          unread: false
-        });
+        emailAppState.messages.unshift(emailLocalSentMessageFromDraft(draft));
       }
       emailSaveState();
       renderEmailApp();
       if (emailComposeStatus) {
         emailComposeStatus.textContent = queued
-          ? "Message queued locally. A provider bridge can deliver it after authentication."
+          ? "Message queued locally. SMTP delivery bridge is not active yet."
           : "Draft saved locally.";
       }
       emailSetStatus(queued ? "send queued locally" : "draft saved");
-      if (queued) {
-        emailSetComposeModalOpen(false);
-      }
+      if (queued) emailSetComposeModalOpen(false);
       return draft;
     }
 
-    function emailSaveInlineReply({queued = true} = {}) {
+    async function emailSaveInlineReply({queued = true} = {}) {
       const message = emailSelectedMessage();
       const body = String(emailReplyBody?.value || "").trim();
       if (!message) {
@@ -1236,14 +759,14 @@
         if (emailReplyStatus) emailReplyStatus.textContent = "Write a reply before sending.";
         return null;
       }
-      const account = emailSelectedAccountForCompose();
+      const account = emailAppState.accounts.find((item) => item.id === message.accountId) || emailSelectedAccountForCompose();
       const subject = message.subject.startsWith("Re:") ? message.subject : `Re: ${message.subject}`;
       const draft = {
         id: `reply-${Date.now()}`,
         accountId: account?.id || message.accountId || "local",
         provider: account?.provider || message.provider || "custom",
         from: account?.address || message.to || "local@maincomputer.local",
-        to: message.from,
+        to: emailAddressFromHeader(message.from),
         subject,
         body,
         date: emailNowIso(),
@@ -1252,21 +775,7 @@
       };
       emailAppState.drafts.unshift(draft);
       if (queued) {
-        emailAppState.messages.unshift({
-          id: `queued-reply-${Date.now()}`,
-          accountId: draft.accountId,
-          provider: draft.provider,
-          folder: "sent",
-          from: draft.from,
-          to: draft.to,
-          subject: draft.subject,
-          excerpt: draft.body.slice(0, 140),
-          body: draft.body,
-          date: draft.date,
-          labels: ["Queued", "Reply"],
-          priority: false,
-          unread: false
-        });
+        emailAppState.messages.unshift(emailLocalSentMessageFromDraft(draft, ["Queued", "Reply"], {id: `queued-reply-${Date.now()}`}));
       }
       emailAppState.replyDraft = "";
       if (emailReplyBody) emailReplyBody.value = "";
@@ -1277,29 +786,49 @@
       return draft;
     }
 
-    function emailSmartDraftForSelected() {
-      const message = emailSelectedMessage();
-      const tone = emailComposeTone?.value || "concise";
-      const greeting = tone === "formal" ? "Hello," : "Hi,";
-      const close = tone === "formal" ? "Best regards," : tone === "friendly" ? "Thanks!" : "Thanks,";
-      const subject = message ? (message.subject.startsWith("Re:") ? message.subject : `Re: ${message.subject}`) : "Follow-up";
-      const to = message?.from || "";
-      const body = message
-        ? `${greeting}\n\nI read your note about "${message.subject}". I’ll review the details and follow up with the next step.\n\n${close}`
-        : `${greeting}\n\nI’m following up with the requested details.\n\n${close}`;
-      if (emailReplyForm && !emailReplyForm.hidden && emailReplyBody) {
-        emailReplyBody.value = body;
-        emailAppState.replyDraft = body;
-        if (emailReplyStatus) emailReplyStatus.textContent = `Smart ${tone} reply created locally.`;
-        emailSetStatus("smart reply ready");
-        emailSaveState();
-        return;
+    function emailSetComposeModalOpen(open) {
+      if (!emailComposeModal) return;
+      if (open) {
+        emailComposeModal.hidden = false;
+        if (typeof emailComposeModal.showModal === "function") emailComposeModal.showModal();
+        emailComposeTo?.focus();
+      } else {
+        if (emailComposeModal.open && typeof emailComposeModal.close === "function") emailComposeModal.close();
+        emailComposeModal.hidden = true;
       }
-      if (emailComposeTo) emailComposeTo.value = to;
-      if (emailComposeSubject) emailComposeSubject.value = subject;
-      if (emailComposeBody) emailComposeBody.value = body;
-      if (emailComposeStatus) emailComposeStatus.textContent = `Smart ${tone} draft created locally.`;
+    }
+
+    function emailSmartDraftFromContext() {
+      const selected = emailSelectedMessage();
+      const tone = emailComposeTone?.value || "concise";
+      const subject = selected ? (selected.subject.startsWith("Re:") ? selected.subject : `Re: ${selected.subject}`) : "Follow up";
+      const body = selected
+        ? `Hi,\n\nThanks for the note about "${selected.subject}".\n\nI'll follow up with a ${tone} response shortly.\n\nBest,`
+        : `Hi,\n\nWriting a ${tone} note from Main Computer.\n\nBest,`;
+      if (emailComposeSubject && !emailComposeSubject.value.trim()) emailComposeSubject.value = subject;
+      if (emailComposeBody && !emailComposeBody.value.trim()) emailComposeBody.value = body;
+      if (emailComposeStatus) emailComposeStatus.textContent = "Smart draft inserted locally.";
       emailSetStatus("smart draft ready");
+    }
+
+    function emailArchiveSelected() {
+      const message = emailSelectedMessage();
+      if (!message) return;
+      message.folder = "all";
+      message.unread = false;
+      emailSetStatus("message archived locally");
+      emailAppState.activeMailView = "list";
+      emailSaveState();
+      renderEmailApp();
+    }
+
+    function emailTogglePrioritySelected() {
+      const message = emailSelectedMessage();
+      if (!message) return;
+      message.priority = !message.priority;
+      emailSetStatus(message.priority ? "message starred" : "message unstarred");
+      emailSaveState();
+      renderEmailApp();
     }
 
     function emailRefreshLocal() {
@@ -1309,14 +838,14 @@
     }
 
     function emailCheckSelectedAccount() {
-      const selected = emailAppState.accounts.find((account) => account.id === emailAppState.selectedAccountId) || emailAppState.accounts.find((account) => account.connectionType !== "oauth");
-      if (!selected || selected.connectionType === "oauth") {
-        emailSwitchConfigTab("raw");
-        if (emailServerConfigStatus) emailServerConfigStatus.textContent = "Use Raw accounts for POP/IMAP checks, or Gmail/Yahoo accounts for OAuth handoff."
-        emailSetStatus("open config to check mail");
-        return;
+      const selected = emailSelectedAccount() || emailAppState.accounts[0] || null;
+      if (!selected) {
+        emailSwitchTab("config");
+        if (emailServerConfigStatus) emailServerConfigStatus.textContent = "Add an IMAP/POP3 account before checking mail.";
+        emailSetStatus("add account to check mail");
+        return null;
       }
-      emailSwitchConfigTab("raw");
+      emailSwitchTab("config");
       const preset = emailPreset(selected.provider);
       if (emailImapPresetSelect) emailImapPresetSelect.value = selected.provider || "custom";
       if (emailImapProtocolSelect) emailImapProtocolSelect.value = selected.protocol || preset.defaultProtocol || "imap";
@@ -1331,87 +860,70 @@
       if (emailSmtpSecuritySelect) emailSmtpSecuritySelect.value = selected.smtp?.security || preset.smtp?.security || "starttls";
       if (emailServerConfigStatus) emailServerConfigStatus.textContent = "Enter this account's password or app password, then click Check mail. Passwords are not saved.";
       emailImapPasswordInput?.focus();
+      return null;
     }
 
-    function emailResetDemoState() {
-      Object.assign(emailAppState, emailNewState(), {initialized: true});
-      try {
-        localStorage.removeItem(emailStorageKey);
-      } catch {
-        // best-effort
-      }
-      emailApplyServicePreset("outlook");
-      emailSetStatus("email demo reset");
-      renderEmailApp();
+    function renderEmailApp() {
+      emailActivateMcelLayout();
+      emailRenderTabs();
+      emailRenderAccounts();
+      emailRenderFolderCounts();
+      emailRenderMessageList();
+      emailRenderThread();
+      emailRenderServerFormDefaults();
+      if (emailSearchInput && emailSearchInput.value !== emailAppState.search) emailSearchInput.value = emailAppState.search;
+      emailSetMailView(emailAppState.activeMailView);
     }
 
     function emailBindEvents() {
       emailTabButtons.forEach((button) => {
         button.addEventListener("click", () => emailSwitchTab(button.dataset.emailTab || "mail"));
       });
-      emailConfigTabButtons.forEach((button) => {
-        button.addEventListener("click", () => emailSwitchConfigTab(button.dataset.emailConfigTab || "gmail"));
-      });
-      emailOpenConfig?.addEventListener("click", () => emailSwitchConfigTab("gmail"));
-      emailNewMessage?.addEventListener("click", emailNewCompose);
-      emailCloseCompose?.addEventListener("click", emailDismissComposeModal);
-      emailComposeModal?.addEventListener("cancel", () => {
-        emailComposeModal.hidden = true;
-        emailSetStatus("compose closed");
-      });
-      emailBackToList?.addEventListener("click", emailReturnToMessageList);
-      emailCancelReply?.addEventListener("click", () => {
-        emailAppState.replyDraft = "";
-        if (emailReplyBody) emailReplyBody.value = "";
+      emailOpenConfig?.addEventListener("click", () => emailSwitchTab("config"));
+      emailCheckMail?.addEventListener("click", emailCheckSelectedAccount);
+      emailNewMessage?.addEventListener("click", () => emailSetComposeModalOpen(true));
+      emailBackToList?.addEventListener("click", () => emailSetMailView("list"));
+      emailRefresh?.addEventListener("click", emailRefreshLocal);
+      emailSearchInput?.addEventListener("input", () => {
+        emailAppState.search = String(emailSearchInput.value || "");
         emailSaveState();
         renderEmailApp();
-        emailSetStatus("reply cancelled");
       });
-      emailReplyBody?.addEventListener("input", () => {
-        emailAppState.replyDraft = emailReplyBody.value || "";
-        emailSaveState();
-      });
-      emailReplyForm?.addEventListener("submit", (event) => {
-        event.preventDefault();
-        emailSaveInlineReply({queued: true});
-      });
-      emailImapPresetSelect?.addEventListener("change", () => emailApplyServicePreset(emailImapPresetSelect.value || "custom"));
-      emailImapProtocolSelect?.addEventListener("change", emailApplyProtocolForCurrentPreset);
-      emailImapAddressInput?.addEventListener("input", () => emailMaybeApplyPresetFromAddress(emailImapAddressInput.value));
-      emailConnectGmail?.addEventListener("click", () => emailConnectProvider("gmail"));
-      emailConnectYahoo?.addEventListener("click", () => emailConnectProvider("yahoo"));
-      emailOpenGmailOauth?.addEventListener("click", () => emailOpenProviderConsent("gmail"));
-      emailOpenYahooOauth?.addEventListener("click", () => emailOpenProviderConsent("yahoo"));
-      emailSaveServerAccount?.addEventListener("click", emailSaveServerAccountConfig);
-      emailCheckServerAccount?.addEventListener("click", emailCheckConfiguredServerAccount);
-      emailCheckMail?.addEventListener("click", emailCheckSelectedAccount);
-      emailResetDemo?.addEventListener("click", emailResetDemoState);
-      emailRefresh?.addEventListener("click", emailRefreshLocal);
       emailFolderButtons.forEach((button) => {
         button.addEventListener("click", () => {
           emailAppState.selectedFolder = button.dataset.emailFolder || "inbox";
-          emailAppState.selectedMessageId = "";
           emailAppState.activeMailView = "list";
-          emailAppState.replyDraft = "";
+          emailAppState.selectedMessageId = "";
           emailSaveState();
           renderEmailApp();
         });
       });
-      emailSearchInput?.addEventListener("input", () => {
-        emailAppState.search = emailSearchInput.value || "";
-        emailAppState.selectedMessageId = "";
-        emailAppState.activeMailView = "list";
-        emailAppState.replyDraft = "";
-        renderEmailApp();
-      });
-      emailArchiveMessage?.addEventListener("click", emailArchiveSelected);
-      emailMarkPriority?.addEventListener("click", emailTogglePrioritySelected);
-      emailReplyMessage?.addEventListener("click", emailReplySelected);
-      emailSmartDraft?.addEventListener("click", emailSmartDraftForSelected);
-      emailSaveDraft?.addEventListener("click", () => emailSaveDraftFromCompose());
+      emailImapPresetSelect?.addEventListener("change", () => emailApplyServicePreset(emailImapPresetSelect.value || "custom"));
+      emailImapProtocolSelect?.addEventListener("change", emailApplyProtocolForCurrentPreset);
+      emailImapAddressInput?.addEventListener("input", () => emailMaybeApplyPresetFromAddress(emailImapAddressInput.value));
+      emailSaveServerAccount?.addEventListener("click", emailSaveConfiguredServerAccount);
+      emailCheckServerAccount?.addEventListener("click", emailCheckConfiguredServerAccount);
+      emailCloseCompose?.addEventListener("click", () => emailSetComposeModalOpen(false));
       emailComposeForm?.addEventListener("submit", (event) => {
         event.preventDefault();
         emailSaveDraftFromCompose({queued: true});
+      });
+      emailSaveDraft?.addEventListener("click", () => emailSaveDraftFromCompose({queued: false}));
+      emailSmartDraft?.addEventListener("click", emailSmartDraftFromContext);
+      emailArchiveMessage?.addEventListener("click", emailArchiveSelected);
+      emailMarkPriority?.addEventListener("click", emailTogglePrioritySelected);
+      emailReplyMessage?.addEventListener("click", () => {
+        if (!emailSelectedMessage()) return;
+        if (emailReplyForm) emailReplyForm.hidden = false;
+        emailReplyBody?.focus();
+      });
+      emailCancelReply?.addEventListener("click", () => {
+        if (emailReplyForm) emailReplyForm.hidden = true;
+        if (emailReplyBody) emailReplyBody.value = "";
+      });
+      emailReplyForm?.addEventListener("submit", (event) => {
+        event.preventDefault();
+        emailSaveInlineReply({queued: true});
       });
     }
 
@@ -1430,8 +942,7 @@
 
     if (typeof window !== "undefined") {
       window.initEmailApp = initEmailApp;
-      window.renderEmailApp = renderEmailApp;
-      window.emailBuildOAuthPlan = emailBuildOAuthPlan;
-      window.emailApplyServicePreset = emailApplyServicePreset;
       window.emailCheckServerAccount = emailCheckConfiguredServerAccount;
+      window.emailSaveServerAccount = emailSaveConfiguredServerAccount;
+      window.emailMcelLayoutActive = () => emailApp?.getAttribute("data-mcel-state") === "layout-layer-active";
     }

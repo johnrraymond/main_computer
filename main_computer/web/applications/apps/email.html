@@ -1,5 +1,5 @@
 <section
-  class="email-app mc-app"
+  class="email-app mc-app" data-mcel-layout="email-app" data-mcel-role="mail-client-app" data-mcel-kind="app" data-mcel-fit-context="root"
   id="email-app"
   aria-label="Email client"
   data-mc="app"
@@ -25,7 +25,7 @@
   style="display: none;"
 >
   <div
-    class="email-shell app-widget mc-app-shell"
+    class="email-shell app-widget mc-app-shell" data-mcel-layout="email-shell" data-mcel-layout-region="email-shell" data-mcel-role="mail-client-shell" data-mcel-kind="layout" data-mcel-fit-context="structural"
     data-widget-label="Email"
     data-mc="panel"
     data-mc-kind="shell"
@@ -46,7 +46,7 @@
     data-mc-component-owner="email.root"
   >
     <header
-      class="email-topbar mc-app-header"
+      class="email-topbar mc-app-header" data-mcel-layout-region="email-header" data-mcel-role="mail-toolbar" data-mcel-kind="toolbar" data-mcel-fit="toolbar-flow"
       data-mc="panel"
       data-mc-kind="header"
       data-mc-flow="task"
@@ -63,7 +63,7 @@
     >
       <div class="email-brand" data-mc-component-id="email.brand" data-mc-component-kind="group" data-mc-component-label="Email Brand" data-mc-widget-id="email.brand" data-mc-widget-kind="group" data-mc-widget-class="group" data-mc-widget-label="Email Brand" data-mc-component-owner="email.header">
         <strong>Email</strong>
-        <span>Unified inbox</span>
+        <span>IMAP / POP3 mail</span>
       </div>
       <label class="email-search-label">
         <span class="email-sr-only">Search mail</span>
@@ -77,7 +77,7 @@
     </header>
 
     <nav
-      class="email-app-tabs"
+      class="email-app-tabs" data-mcel-layout-region="email-app-tabs" data-mcel-role="mail-mode-tabs" data-mcel-kind="navigation" data-mcel-fit="tab-row"
       aria-label="Email app tabs"
       data-mc="navigation"
       data-mc-kind="navigation"
@@ -98,7 +98,7 @@
     </nav>
 
     <section
-      class="email-tab-panel email-tab-panel-active"
+      class="email-tab-panel email-tab-panel-active" data-mcel-layout-region="email-mail-panel" data-mcel-role="mail-workspace-panel" data-mcel-kind="workspace" data-mcel-fit="panel-fill"
       id="email-mail-panel"
       data-email-panel="mail"
       aria-label="Email mailbox"
@@ -116,9 +116,9 @@
       data-mc-widget-label="Email Mailbox"
       data-mc-component-owner="email.shell"
     >
-      <section class="email-client-frame mc-app-workspace" data-mc-component-id="email.workspace" data-mc-component-kind="workspace" data-mc-component-label="Email Workspace" data-mc-widget-id="email.workspace" data-mc-widget-kind="workspace" data-mc-widget-class="workspace" data-mc-widget-label="Email Workspace" data-mc-component-owner="email.mail-panel">
+      <section class="email-client-frame mc-app-workspace" data-mcel-layout="email-mail-workspace" data-mcel-layout-region="email-mail-workspace" data-mcel-role="mail-rail-and-workspace" data-mcel-kind="layout" data-mcel-fit="rail-main-grid" data-mc-component-id="email.workspace" data-mc-component-kind="workspace" data-mc-component-label="Email Workspace" data-mc-widget-id="email.workspace" data-mc-widget-kind="workspace" data-mc-widget-class="workspace" data-mc-widget-label="Email Workspace" data-mc-component-owner="email.mail-panel">
         <aside
-          class="email-sidebar mc-app-pane mc-app-tools"
+          class="email-sidebar mc-app-pane mc-app-tools" data-mcel-layout-region="email-account-rail" data-mcel-role="mail-account-rail" data-mcel-kind="rail" data-mcel-width-policy="readable-rail" data-mcel-fit="rail-scroll"
           aria-label="Email accounts and folders"
           data-mc="panel"
           data-mc-kind="navigation"
@@ -136,7 +136,7 @@
         >
           <button type="button" class="email-compose-launch" id="email-new-message" data-mc-component-id="email.compose-launch" data-mc-component-kind="action" data-mc-component-label="New Email Message" data-mc-widget-id="email.compose-launch" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="New Email Message" data-mc-component-owner="email.accounts">New message</button>
 
-          <section class="email-account-list-card" aria-label="Connected email accounts" data-mc-component-id="email.account-list" data-mc-component-kind="list" data-mc-component-label="Email Account List" data-mc-widget-id="email.account-list" data-mc-widget-kind="list" data-mc-widget-class="list" data-mc-widget-label="Email Account List" data-mc-component-owner="email.accounts">
+          <section class="email-account-list-card" data-mcel-layout-region="email-account-card" data-mcel-role="mail-account-list-card" data-mcel-kind="card" data-mcel-fit="readable-card-list" aria-label="Connected email accounts" data-mc-component-id="email.account-list" data-mc-component-kind="list" data-mc-component-label="Email Account List" data-mc-widget-id="email.account-list" data-mc-widget-kind="list" data-mc-widget-class="list" data-mc-widget-label="Email Account List" data-mc-component-owner="email.accounts">
             <div class="email-pane-head">
               <div>
                 <strong>Accounts</strong>
@@ -146,7 +146,7 @@
             <div class="email-account-list" id="email-account-list"></div>
           </section>
 
-          <nav class="email-folder-list" aria-label="Email folders" data-mc-component-id="email.folders" data-mc-component-kind="navigation" data-mc-component-label="Email Folders" data-mc-widget-id="email.folders" data-mc-widget-kind="navigation" data-mc-widget-class="navigation" data-mc-widget-label="Email Folders" data-mc-component-owner="email.accounts">
+          <nav class="email-folder-list" data-mcel-layout-region="email-folder-nav" data-mcel-role="mail-folder-nav" data-mcel-kind="navigation" data-mcel-fit="full-width-nav" aria-label="Email folders" data-mc-component-id="email.folders" data-mc-component-kind="navigation" data-mc-component-label="Email Folders" data-mc-widget-id="email.folders" data-mc-widget-kind="navigation" data-mc-widget-class="navigation" data-mc-widget-label="Email Folders" data-mc-component-owner="email.accounts">
             <button type="button" class="active" data-email-folder="inbox">Inbox <span id="email-count-inbox">0</span></button>
             <button type="button" data-email-folder="priority">Starred <span id="email-count-priority">0</span></button>
             <button type="button" data-email-folder="sent">Sent <span id="email-count-sent">0</span></button>
@@ -158,7 +158,7 @@
         </aside>
 
         <main
-          class="email-mail-main"
+          class="email-mail-main" data-mcel-layout-region="email-message-workspace" data-mcel-role="mail-message-workspace" data-mcel-kind="workspace" data-mcel-fit="workspace-fill"
           id="email-mail-main"
           aria-label="Email message area"
           data-email-mail-view="list"
@@ -177,7 +177,7 @@
           data-mc-component-owner="email.workspace"
         >
           <section
-            class="email-message-column mc-app-pane mc-app-primary"
+            class="email-message-column mc-app-pane mc-app-primary" data-mcel-layout-region="email-message-list-pane" data-mcel-role="mail-message-list" data-mcel-kind="feed" data-mcel-fit="feed-fill"
             id="email-list-view"
             aria-label="Email message list"
             data-mc="panel"
@@ -202,7 +202,7 @@
           </section>
 
           <section
-            class="email-thread-column mc-app-pane"
+            class="email-thread-column mc-app-pane" data-mcel-layout-region="email-thread-pane" data-mcel-role="mail-thread-detail" data-mcel-kind="detail" data-mcel-fit="detail-fill"
             id="email-thread-view"
             aria-label="Selected email thread"
             hidden
@@ -253,12 +253,12 @@
       </section>
     </section>
 
-    <dialog class="email-compose-modal" id="email-compose-modal" aria-label="Compose email" data-mc-component-id="email.compose-modal" data-mc-component-kind="dialog" data-mc-component-label="Compose Email Modal" data-mc-widget-id="email.compose-modal" data-mc-widget-kind="dialog" data-mc-widget-class="dialog" data-mc-widget-label="Compose Email Modal" data-mc-component-owner="email.shell">
-      <form class="email-compose" id="email-compose-form" method="dialog" data-mc-component-id="email.compose" data-mc-component-kind="form" data-mc-component-label="Email Compose" data-mc-widget-id="email.compose" data-mc-widget-kind="form" data-mc-widget-class="form" data-mc-widget-label="Email Compose" data-mc-component-owner="email.compose-modal">
+    <dialog class="email-compose-modal" data-mcel-layout-region="email-compose-modal" data-mcel-role="mail-compose-modal" data-mcel-kind="dialog" data-mcel-fit="modal-form" id="email-compose-modal" aria-label="Compose email" data-mc-component-id="email.compose-modal" data-mc-component-kind="dialog" data-mc-component-label="Compose Email Modal" data-mc-widget-id="email.compose-modal" data-mc-widget-kind="dialog" data-mc-widget-class="dialog" data-mc-widget-label="Compose Email Modal" data-mc-component-owner="email.shell">
+      <form class="email-compose" data-mcel-layout-region="email-compose-form" data-mcel-role="mail-compose-form" data-mcel-kind="form" data-mcel-fit="stacked-form" id="email-compose-form" method="dialog" data-mc-component-id="email.compose" data-mc-component-kind="form" data-mc-component-label="Email Compose" data-mc-widget-id="email.compose" data-mc-widget-kind="form" data-mc-widget-class="form" data-mc-widget-label="Email Compose" data-mc-component-owner="email.compose-modal">
         <div class="email-pane-head">
           <div>
             <strong>New message</strong>
-            <span>Draft locally; send is queued until the selected account has an authenticated provider bridge.</span>
+            <span>Draft locally; delivery waits for a plain mail-server sender bridge.</span>
           </div>
           <div class="email-compose-window-actions">
             <select id="email-compose-tone" aria-label="Compose tone">
@@ -284,14 +284,14 @@
         <div class="email-compose-actions" role="group" aria-label="Compose actions">
           <button type="button" id="email-smart-draft" data-mc-component-id="email.smart-draft" data-mc-component-kind="action" data-mc-component-label="Create Smart Draft" data-mc-widget-id="email.smart-draft" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Create Smart Draft" data-mc-component-owner="email.compose">Smart draft</button>
           <button type="button" id="email-save-draft" data-mc-component-id="email.save-draft" data-mc-component-kind="action" data-mc-component-label="Save Draft" data-mc-widget-id="email.save-draft" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Save Draft" data-mc-component-owner="email.compose">Save Draft</button>
-          <button type="submit" id="email-send-message" data-mc-component-id="email.send" data-mc-component-kind="action" data-mc-component-label="Queue Email Send" data-mc-widget-id="email.send" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Queue Email Send" data-mc-component-owner="email.compose">Queue Send</button>
+          <button type="submit" id="email-send-message" data-mc-component-id="email.send" data-mc-component-kind="action" data-mc-component-label="Queue Email Send" data-mc-widget-id="email.send" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Queue Email Send" data-mc-component-owner="email.compose">Queue local draft</button>
         </div>
         <output id="email-compose-status" role="status" aria-live="polite">Compose ready.</output>
       </form>
     </dialog>
 
     <section
-      class="email-tab-panel email-config-panel"
+      class="email-tab-panel email-config-panel" data-mcel-layout-region="email-config-panel" data-mcel-role="mail-config-panel" data-mcel-kind="settings" data-mcel-fit="panel-fill"
       id="email-config-panel"
       data-email-panel="config"
       aria-label="Email configuration"
@@ -310,78 +310,17 @@
       data-mc-widget-label="Email Config"
       data-mc-component-owner="email.shell"
     >
-      <div class="email-config-shell">
-        <aside class="email-config-tabs" aria-label="Email config tabs" data-mc-component-id="email.config-tabs" data-mc-component-kind="navigation" data-mc-component-label="Email Config Tabs" data-mc-widget-id="email.config-tabs" data-mc-widget-kind="navigation" data-mc-widget-class="navigation" data-mc-widget-label="Email Config Tabs" data-mc-component-owner="email.config">
-          <button type="button" class="active" data-email-config-tab="gmail" aria-pressed="true" data-mc-component-id="email.config-tabs.gmail" data-mc-component-kind="action" data-mc-component-label="Gmail Config Tab" data-mc-widget-id="email.config-tabs-gmail" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Gmail Config Tab" data-mc-component-owner="email.config-tabs">Gmail accounts</button>
-          <button type="button" data-email-config-tab="yahoo" aria-pressed="false" data-mc-component-id="email.config-tabs.yahoo" data-mc-component-kind="action" data-mc-component-label="Yahoo Config Tab" data-mc-widget-id="email.config-tabs-yahoo" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Yahoo Config Tab" data-mc-component-owner="email.config-tabs">Yahoo accounts</button>
-          <button type="button" data-email-config-tab="raw" aria-pressed="false" data-mc-component-id="email.config-tabs.raw" data-mc-component-kind="action" data-mc-component-label="Raw Account Config Tab" data-mc-widget-id="email.config-tabs-raw" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Raw Account Config Tab" data-mc-component-owner="email.config-tabs">Raw accounts</button>
-        </aside>
-
-        <section class="email-config-content" data-mc-component-id="email.config-content" data-mc-component-kind="panel" data-mc-component-label="Email Config Content" data-mc-widget-id="email.config-content" data-mc-widget-kind="panel" data-mc-widget-class="panel" data-mc-widget-label="Email Config Content" data-mc-component-owner="email.config">
-          <form class="email-config-card email-config-subpanel active" id="email-gmail-config-panel" data-email-config-panel="gmail" data-mc-component-id="email.config.gmail" data-mc-component-kind="form" data-mc-component-label="Gmail Account Setup" data-mc-widget-id="email.config-gmail" data-mc-widget-kind="form" data-mc-widget-class="form" data-mc-widget-label="Gmail Account Setup" data-mc-component-owner="email.config-content">
+      <div class="email-config-shell" data-mcel-layout="email-config-workspace" data-mcel-layout-region="email-config-workspace" data-mcel-role="mail-config-workspace" data-mcel-kind="layout" data-mcel-fit="settings-layout">
+        <section class="email-config-content" data-mcel-layout-region="email-config-content" data-mcel-role="mail-config-content" data-mcel-kind="panel" data-mcel-fit="form-panel" data-mc-component-id="email.config-content" data-mc-component-kind="panel" data-mc-component-label="Email Config Content" data-mc-widget-id="email.config-content" data-mc-widget-kind="panel" data-mc-widget-class="panel" data-mc-widget-label="Email Config Content" data-mc-component-owner="email.config">
+          <form class="email-config-card email-config-subpanel active" id="email-raw-config-panel" data-email-config-panel="raw" data-mcel-layout-region="email-server-form" data-mcel-role="mail-server-account-form" data-mcel-kind="form" data-mcel-fit="stacked-form" data-mc-component-id="email.config.raw" data-mc-component-kind="form" data-mc-component-label="IMAP POP Account Setup" data-mc-widget-id="email.config-raw" data-mc-widget-kind="form" data-mc-widget-class="form" data-mc-widget-label="IMAP POP Account Setup" data-mc-component-owner="email.config-content">
             <div class="email-pane-head">
               <div>
-                <strong>Gmail accounts</strong>
-                <span>Add multiple Gmail accounts with OAuth handoff. Each Gmail address is staged separately.</span>
-              </div>
-            </div>
-            <div class="email-config-grid">
-              <label>
-                Gmail address
-                <input id="email-gmail-address-input" type="email" autocomplete="email" placeholder="name@gmail.com">
-              </label>
-              <label>
-                OAuth client ID
-                <input id="email-gmail-client-id-input" spellcheck="false" placeholder="Google OAuth client ID">
-              </label>
-            </div>
-            <div class="email-connect-actions" role="group" aria-label="Gmail setup actions">
-              <button type="button" id="email-connect-gmail" data-email-provider="gmail" data-mc-component-id="email.connect.gmail" data-mc-component-kind="action" data-mc-component-label="Connect Gmail" data-mc-widget-id="email.connect-gmail" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Connect Gmail" data-mc-component-owner="email.config.gmail">Add Gmail account</button>
-              <button type="button" id="email-open-gmail-oauth" data-email-provider="gmail" data-mc-component-id="email.oauth.gmail" data-mc-component-kind="action" data-mc-component-label="Open Gmail OAuth" data-mc-widget-id="email.oauth-gmail" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Open Gmail OAuth" data-mc-component-owner="email.config.gmail">Open Gmail consent</button>
-            </div>
-            <output id="email-gmail-config-status" role="status" aria-live="polite">Gmail OAuth setup ready.</output>
-            <section class="email-config-account-list" aria-label="Gmail accounts staged" data-mc-component-id="email.config.gmail-list" data-mc-component-kind="list" data-mc-component-label="Gmail Account List" data-mc-widget-id="email.config-gmail-list" data-mc-widget-kind="list" data-mc-widget-class="list" data-mc-widget-label="Gmail Account List" data-mc-component-owner="email.config.gmail">
-              <strong>Gmail accounts</strong>
-              <div id="email-gmail-account-list" class="email-config-account-items">No Gmail accounts staged yet.</div>
-            </section>
-          </form>
-
-          <form class="email-config-card email-config-subpanel" id="email-yahoo-config-panel" data-email-config-panel="yahoo" hidden data-mc-component-id="email.config.yahoo" data-mc-component-kind="form" data-mc-component-label="Yahoo Account Setup" data-mc-widget-id="email.config-yahoo" data-mc-widget-kind="form" data-mc-widget-class="form" data-mc-widget-label="Yahoo Account Setup" data-mc-component-owner="email.config-content">
-            <div class="email-pane-head">
-              <div>
-                <strong>Yahoo accounts</strong>
-                <span>Add multiple Yahoo accounts with OAuth handoff. Each Yahoo address is staged separately.</span>
-              </div>
-            </div>
-            <div class="email-config-grid">
-              <label>
-                Yahoo address
-                <input id="email-yahoo-address-input" type="email" autocomplete="email" placeholder="name@yahoo.com">
-              </label>
-              <label>
-                OAuth client ID
-                <input id="email-yahoo-client-id-input" spellcheck="false" placeholder="Yahoo OAuth client ID">
-              </label>
-            </div>
-            <div class="email-connect-actions" role="group" aria-label="Yahoo setup actions">
-              <button type="button" id="email-connect-yahoo" data-email-provider="yahoo" data-mc-component-id="email.connect.yahoo" data-mc-component-kind="action" data-mc-component-label="Connect Yahoo" data-mc-widget-id="email.connect-yahoo" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Connect Yahoo" data-mc-component-owner="email.config.yahoo">Add Yahoo account</button>
-              <button type="button" id="email-open-yahoo-oauth" data-email-provider="yahoo" data-mc-component-id="email.oauth.yahoo" data-mc-component-kind="action" data-mc-component-label="Open Yahoo OAuth" data-mc-widget-id="email.oauth-yahoo" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Open Yahoo OAuth" data-mc-component-owner="email.config.yahoo">Open Yahoo consent</button>
-            </div>
-            <output id="email-yahoo-config-status" role="status" aria-live="polite">Yahoo OAuth setup ready.</output>
-            <section class="email-config-account-list" aria-label="Yahoo accounts staged" data-mc-component-id="email.config.yahoo-list" data-mc-component-kind="list" data-mc-component-label="Yahoo Account List" data-mc-widget-id="email.config-yahoo-list" data-mc-widget-kind="list" data-mc-widget-class="list" data-mc-widget-label="Yahoo Account List" data-mc-component-owner="email.config.yahoo">
-              <strong>Yahoo accounts</strong>
-              <div id="email-yahoo-account-list" class="email-config-account-items">No Yahoo accounts staged yet.</div>
-            </section>
-          </form>
-          <form class="email-config-card email-config-subpanel" id="email-raw-config-panel" data-email-config-panel="raw" hidden data-mc-component-id="email.config.raw" data-mc-component-kind="form" data-mc-component-label="Raw Account Setup" data-mc-widget-id="email.config-raw" data-mc-widget-kind="form" data-mc-widget-class="form" data-mc-widget-label="Raw Account Setup" data-mc-component-owner="email.config-content">
-            <div class="email-pane-head">
-              <div>
-                <strong>Raw POP/IMAP accounts</strong>
-                <span>Add as many raw POP/IMAP accounts as needed. Use presets for Outlook.com, Microsoft 365, iCloud Mail, AOL Mail, Fastmail, Zoho Mail, Proton Mail Bridge, or enter custom servers.</span>
+                <strong>IMAP / POP3 accounts</strong>
+                <span>Use mail-server credentials or provider app passwords. Provider-specific sign-in integrations have been removed.</span>
               </div>
             </div>
 
-            <div class="email-config-grid">
+            <div class="email-config-grid" data-mcel-layout-region="email-server-fields" data-mcel-role="mail-server-fields" data-mcel-kind="form-grid" data-mcel-fit="responsive-field-grid">
               <label>
                 Service preset
                 <select id="email-imap-preset-select">
@@ -454,14 +393,14 @@
               </label>
             </div>
 
-            <div class="email-connect-actions" role="group" aria-label="POP IMAP setup actions">
-              <button type="button" id="email-save-server-account" data-mc-component-id="email.config.raw.save" data-mc-component-kind="action" data-mc-component-label="Save Raw Account" data-mc-widget-id="email.config-raw-save" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Save Raw Account" data-mc-component-owner="email.config.raw">Add raw account</button>
-              <button type="button" id="email-check-server-account" data-mc-component-id="email.config.raw.check" data-mc-component-kind="action" data-mc-component-label="Check Raw Mail" data-mc-widget-id="email.config-raw-check" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Check Raw Mail" data-mc-component-owner="email.config.raw">Check raw mail</button>
+            <div class="email-connect-actions" role="group" aria-label="POP IMAP setup actions" data-mcel-layout-region="email-server-actions" data-mcel-role="mail-server-actions" data-mcel-kind="actions" data-mcel-fit="action-row">
+              <button type="button" id="email-save-server-account" data-mc-component-id="email.config.raw.save" data-mc-component-kind="action" data-mc-component-label="Save Mail Server Account" data-mc-widget-id="email.config-raw-save" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Save Mail Server Account" data-mc-component-owner="email.config.raw">Add account</button>
+              <button type="button" id="email-check-server-account" data-mc-component-id="email.config.raw.check" data-mc-component-kind="action" data-mc-component-label="Check Mail Server" data-mc-widget-id="email.config-raw-check" data-mc-widget-kind="action" data-mc-widget-class="action" data-mc-widget-label="Check Mail Server" data-mc-component-owner="email.config.raw">Check mail</button>
             </div>
-            <output id="email-server-config-status" role="status" aria-live="polite">Add a raw account with POP/IMAP details. Passwords are only sent to the backend bridge for an explicit Check mail action.</output>
-            <section class="email-config-account-list" aria-label="Raw accounts staged" data-mc-component-id="email.config.raw-list" data-mc-component-kind="list" data-mc-component-label="Raw Account List" data-mc-widget-id="email.config-raw-list" data-mc-widget-kind="list" data-mc-widget-class="list" data-mc-widget-label="Raw Account List" data-mc-component-owner="email.config.raw">
-              <strong>Raw accounts</strong>
-              <div id="email-raw-account-list" class="email-config-account-items">No raw accounts staged yet.</div>
+            <output id="email-server-config-status" role="status" aria-live="polite">Add an IMAP or POP3 account. Passwords are only sent to the backend bridge for an explicit Check mail action.</output>
+            <section class="email-config-account-list" aria-label="Mail server accounts staged" data-mcel-layout-region="email-config-account-list" data-mcel-role="mail-config-account-list" data-mcel-kind="list" data-mcel-fit="card-list" data-mc-component-id="email.config.raw-list" data-mc-component-kind="list" data-mc-component-label="Mail Server Account List" data-mc-widget-id="email.config-raw-list" data-mc-widget-kind="list" data-mc-widget-class="list" data-mc-widget-label="Mail Server Account List" data-mc-component-owner="email.config.raw">
+              <strong>Mail server accounts</strong>
+              <div id="email-raw-account-list" class="email-config-account-items">No mail server accounts staged yet.</div>
             </section>
           </form>
 

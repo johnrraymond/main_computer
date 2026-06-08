@@ -128,6 +128,7 @@ runtime/start_stop/main-computer-launcher.json
 
 # Local Main Computer runtime/state
 .main-computer/
+.main_computer/
 .main_computer_browser_profile/
 main_computer/.main_computer_browser_profile/
 .prod.lock

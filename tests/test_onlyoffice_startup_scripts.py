@@ -18,6 +18,15 @@ def test_onlyoffice_control_is_docker_only() -> None:
     assert '[int]$Port = 18085' in text
     assert 'Invoke-DockerOnlyOffice "start"' in text
     assert 'Invoke-DockerOnlyOffice "status"' in text
+    assert 'function Get-DockerOnlyOfficeContainerId' in text
+    assert 'function Wait-DockerOnlyOfficeContainer' in text
+    assert 'docker compose up -d onlyoffice returned exit code $composeExitCode' in text
+    assert 'docker compose -f $composePath -p $ProjectName ps -q onlyoffice' in text
+    assert 'docker ps -q --filter $nameFilter' in text
+    assert 'docker inspect --format "{{.State.Running}} {{.Id}}" $containerName' in text
+    assert 'ONLYOFFICE container is visible after $attempt docker/container inspection attempt(s)' in text
+    assert '$script:MainComputerOnlyOfficeNeedsFinalStatus = $true' in text
+    assert 'ONLYOFFICE final readiness recheck' in text
     assert 'http://127.0.0.1:$Port' in text
     assert 'http://host.docker.internal:$AppPort' in text
     assert 'MAIN_COMPUTER_ONLYOFFICE_ALLOW_PRIVATE_IP_ADDRESS = "true"' in text
@@ -47,6 +56,22 @@ def test_onlyoffice_wsl_helper_scripts_removed() -> None:
         "tools/onlyoffice/wsl-stop-onlyoffice.sh",
     ]:
         assert not (REPO / rel).exists(), rel
+
+
+def test_onlyoffice_docs_install_script_is_tracked_with_onlyoffice_tools() -> None:
+    script = REPO / "tools/onlyoffice/docs-install.sh"
+
+    assert script.is_file()
+    text = script.read_text(encoding="utf-8")
+    assert "Copyright (C) Ascensio System SIA" in text
+    assert "SPDX-License-Identifier: AGPL-3.0-only" in text
+
+
+def test_main_computer_underscore_runtime_typo_is_ignored() -> None:
+    text = read(".gitignore")
+
+    assert ".main-computer/" in text
+    assert ".main_computer/" in text
 
 
 def test_start_v2_helper_invokes_docker_onlyoffice_control_without_bridge_management() -> None:
