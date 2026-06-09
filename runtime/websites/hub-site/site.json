@@ -225,7 +225,7 @@
       "service_uuid": "v11lha4aoh6sd1msc0z6i7dc",
       "site_slug": "hub-site",
       "source_path": "runtime/websites/hub-site",
-      "ssh_password": "mGU^6serd435&Yn",
+      "ssh_password": "",
       "use_local_server": false,
       "uuid": "v11lha4aoh6sd1msc0z6i7dc"
     }

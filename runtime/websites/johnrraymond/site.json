@@ -311,7 +311,7 @@
       "remote_root": "/srv/main-computer/sites",
       "site_slug": "johnrraymond",
       "source_path": "runtime/websites/johnrraymond",
-      "ssh_password": "kHJIKL7&^*dddasi",
+      "ssh_password": "",
       "use_local_server": false
     }
   },
