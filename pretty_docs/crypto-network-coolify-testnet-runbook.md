@@ -111,7 +111,7 @@ container IP outside the Docker subnet
 duplicate host ports
 fewer than four validators
 no non-validator RPC node
-mainnet templates without an explicit acknowledgement
+the mainnet seed without an explicit acknowledgement
 ```
 
 Actual deployment can come after the planner proves the layout. The deploy step

@@ -133,17 +133,17 @@ def test_duplicate_port_seed_is_rejected(tmp_path: Path) -> None:
         raise AssertionError("duplicate host port should have been rejected")
 
 
-def test_mainnet_template_requires_acknowledgement() -> None:
+def test_mainnet_seed_requires_acknowledgement() -> None:
     module = _load_module()
 
     try:
-        module.build_plan("mainnet-template")
+        module.build_plan("mainnet")
     except module.PlanError as exc:
         assert "--allow-mainnet" in str(exc)
     else:
-        raise AssertionError("mainnet template should require acknowledgement")
+        raise AssertionError("mainnet seed should require acknowledgement")
 
-    plan = module.build_plan("mainnet-template", allow_mainnet=True)
+    plan = module.build_plan("mainnet", allow_mainnet=True)
     assert plan.environment == "mainnet"
 
 

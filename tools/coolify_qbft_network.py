@@ -174,8 +174,8 @@ NETWORK_SEEDS: dict[str, dict[str, Any]] = {
             {"id": "rpc-1", "role": "rpc", "host": "rpc-a", "container_ip": "172.28.241.20", "rpc_host_port": 30010, "p2p_host_port": 30320},
         ],
     },
-    "mainnet-template": {
-        "description": "Disabled-by-default template; copy before real mainnet use.",
+    "mainnet": {
+        "description": "Single-host QBFT mainnet plan managed by Coolify; requires explicit acknowledgement.",
         "environment": "mainnet",
         "chain_id": 42424240,
         "compose_project": "main-computer-qbft-mainnet",
@@ -338,7 +338,7 @@ def build_plan(
     name, seed = load_seed(seed_name_or_path)
 
     if seed.get("requires_mainnet_ack") and not allow_mainnet:
-        raise PlanError("Mainnet template requires --allow-mainnet. Copy the template and review it before real use.")
+        raise PlanError("Mainnet seed requires --allow-mainnet. Review the plan before real mainnet use.")
 
     chain_id = require_int(seed.get("chain_id"), name="chain_id", maximum=2**63 - 1)
     environment = str(seed.get("environment") or "test").strip().lower()
@@ -2285,7 +2285,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--out", default="", help="Output directory for the write action.")
     parser.add_argument("--besu-image", default="", help="Override the Besu image tag in the seed.")
     parser.add_argument("--public-rpc", action="store_true", help="Bind the non-validator RPC host port to 0.0.0.0 for operator access.")
-    parser.add_argument("--allow-mainnet", action="store_true", help="Allow planning from a seed marked requires_mainnet_ack.")
+    parser.add_argument("--allow-mainnet", action="store_true", help="Allow planning from a seed marked requires_mainnet_ack, such as mainnet.")
 
     parser.add_argument("--single-host", default="", help="Override a single-host seed with this SSH target/address, e.g. root@157.245.92.74.")
     parser.add_argument("--target-address", default="", help="Override the public host/IP used in the plan.")

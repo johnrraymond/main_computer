@@ -19,16 +19,16 @@ def _hub_args(*items: str):
 
 
 class HubNetworkRegistryTests(unittest.TestCase):
-    def test_default_registry_defines_dev_test_and_reserved_main(self) -> None:
+    def test_default_registry_defines_dev_test_testnet_and_reserved_mainnet(self) -> None:
         registry = load_hub_network_registry()
 
         self.assertEqual(registry.default_network, "dev")
-        self.assertEqual(set(registry.networks), {"dev", "test", "testnet", "main"})
+        self.assertEqual(set(registry.networks), {"dev", "test", "testnet", "mainnet"})
 
         dev = registry.get("dev")
         test = registry.get("test")
         testnet = registry.get("testnet")
-        main = registry.get("main")
+        mainnet = registry.get("mainnet")
 
         self.assertEqual(dev.chain_id, 42424242)
         self.assertEqual(dev.chain_rpc_url, "http://127.0.0.1:18545")
@@ -46,10 +46,11 @@ class HubNetworkRegistryTests(unittest.TestCase):
         self.assertEqual(testnet.hub_port, 8785)
         self.assertEqual(testnet.hub_runtime_dir, Path("runtime/hub/testnet"))
 
-        self.assertEqual(main.kind, "mainnet")
-        self.assertIsNone(main.chain_id)
-        self.assertIsNone(main.chain_rpc_url)
-        self.assertEqual(main.hub_port, 8790)
+        self.assertEqual(mainnet.kind, "mainnet")
+        self.assertIsNone(mainnet.chain_id)
+        self.assertIsNone(mainnet.chain_rpc_url)
+        self.assertEqual(mainnet.hub_port, 8790)
+        self.assertEqual(mainnet.hub_runtime_dir, Path("runtime/hub/mainnet"))
 
         self.assertNotEqual(dev.hub_port, test.hub_port)
         self.assertNotEqual(dev.hub_runtime_dir, test.hub_runtime_dir)
@@ -204,7 +205,7 @@ class HubNetworkRegistryTests(unittest.TestCase):
     def test_mainnet_profile_is_present_but_not_runnable_without_deploy_values(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(HubNetworkConfigError) as raised:
-                _config_from_args(_hub_args("--network", "main"))
+                _config_from_args(_hub_args("--network", "mainnet"))
 
         self.assertIn("not runnable", str(raised.exception))
         self.assertIn("chain_id", str(raised.exception))
@@ -215,7 +216,7 @@ class HubNetworkRegistryTests(unittest.TestCase):
             config = _config_from_args(
                 _hub_args(
                     "--network",
-                    "main",
+                    "mainnet",
                     "--chain-rpc-url",
                     "https://rpc.main-computer.example",
                     "--chain-id",
@@ -223,10 +224,10 @@ class HubNetworkRegistryTests(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(config.hub_network, "main")
+        self.assertEqual(config.hub_network, "mainnet")
         self.assertEqual(config.hub_network_kind, "mainnet")
         self.assertEqual(config.hub_bind_port, 8790)
-        self.assertEqual(config.hub_root, Path("runtime/hub/main"))
+        self.assertEqual(config.hub_root, Path("runtime/hub/mainnet"))
         self.assertEqual(config.chain_rpc_url, "https://rpc.main-computer.example")
         self.assertEqual(config.chain_id, 0x1234)
 
