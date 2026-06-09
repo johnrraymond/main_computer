@@ -500,6 +500,7 @@ $exportItems = @(
   "docker",
   "deploy/local-platform",
   "deploy/coolify/local-docker",
+  "deploy/coolify/push_site_scp.py",
   "proto-dev",
   "control-main-computer.ps1",
   "dev-control.ps1",

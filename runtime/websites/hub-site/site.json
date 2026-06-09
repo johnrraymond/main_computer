@@ -38,6 +38,9 @@
       },
       "permissions_status": "pending_deploy",
       "provider": "directus",
+      "publish": {
+        "url": "https://directus.com"
+      },
       "required": true,
       "runtime": "deployed",
       "schema": {
@@ -50,7 +53,7 @@
         "image": "directus/directus:11.5.1",
         "internal_url": "http://hub-site-directus:8055",
         "kind": "directus",
-        "last_verified_at": "2026-06-06T23:11:11+00:00",
+        "last_verified_at": "2026-06-09T20:25:09+00:00",
         "ping_status": "ready",
         "public_url": "http://127.0.0.1:28200",
         "status": "service_reachable"
@@ -104,7 +107,7 @@
         "requested": true,
         "service": "hub-site-directus",
         "status": "ready",
-        "updated_at": "2026-06-06T23:11:11+00:00",
+        "updated_at": "2026-06-09T20:25:09+00:00",
         "verified": true
       },
       "sqlite_database": {
@@ -127,7 +130,7 @@
     "post_route_prefix": "/blog/",
     "route": "/blog",
     "status": "ready",
-    "updated_at": "2026-06-06T23:11:05+00:00"
+    "updated_at": "2026-06-09T20:02:04+00:00"
   },
   "builder": {
     "engine": "grapesjs",
@@ -165,7 +168,7 @@
         "post_route_prefix": "/blog/",
         "route": "/blog",
         "status": "ready",
-        "updated_at": "2026-06-06T23:11:05+00:00"
+        "updated_at": "2026-06-09T20:02:04+00:00"
       },
       "routes": {
         "index": "/blog",
@@ -182,16 +185,16 @@
     "dev_url": "http://localhost:18082/",
     "lanes": {
       "dev": {
-        "last_publish_verified": true,
-        "last_published_at": "2026-06-06T23:11:11+00:00",
-        "last_published_service": "hub-dev",
-        "last_published_url": "http://localhost:18082/",
         "port": 18082,
         "service": "hub-dev",
         "status_url": "http://localhost:18082/api/site/status",
         "url": "http://localhost:18082/"
       },
       "local": {
+        "last_publish_verified": true,
+        "last_published_at": "2026-06-09T20:25:09+00:00",
+        "last_published_service": "hub-local",
+        "last_published_url": "http://localhost:18080/",
         "port": 18080,
         "service": "hub-local",
         "status_url": "http://localhost:18080/api/site/status",
@@ -209,14 +212,21 @@
       "project": "hub-site"
     },
     "remote_prod": {
-      "accepted_at": "2026-05-21T04:21:47+00:00",
+      "accepted_at": "2026-06-09T20:16:08+00:00",
       "application_uuid": "",
-      "controller_id": "coolify-local",
-      "domain": "http://127.0.0.1:18085/",
+      "controller_id": "",
+      "domain": "http://hub.greatlibrary.io/",
       "environment": "production",
       "project": "hub-site",
+      "publish_mode": "scp",
+      "remote_host": "root@198.199.75.153",
+      "remote_root": "/srv/main-computer/sites",
       "resource_uuid": "v11lha4aoh6sd1msc0z6i7dc",
       "service_uuid": "v11lha4aoh6sd1msc0z6i7dc",
+      "site_slug": "hub-site",
+      "source_path": "runtime/websites/hub-site",
+      "ssh_password": "mGU^6serd435&Yn",
+      "use_local_server": false,
       "uuid": "v11lha4aoh6sd1msc0z6i7dc"
     }
   },
@@ -235,5 +245,5 @@
     "kind": "host_runtime_site",
     "path": "runtime/websites/hub-site"
   },
-  "updated_at": "2026-06-08T05:09:01+00:00"
+  "updated_at": "2026-06-09T20:25:09+00:00"
 }

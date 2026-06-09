@@ -1,0 +1,14 @@
+{
+  "api_routes": [
+    "/api/site/status",
+    "/api/site/blog/runtime",
+    "/api/site/blog/posts",
+    "/api/site/blog/posts/<slug>"
+  ],
+  "entrypoint": ".main-computer/runtime/app.py",
+  "packaged_at": "2026-06-09T20:06:59+00:00",
+  "runtime_id": "main-computer-site-runtime",
+  "sha256": "782588f5a67211690514d222c6172d384e66d21eaa0fac6c8f9b0f9db44afb38",
+  "site_id": "hub-site",
+  "source": "deploy/local-platform/site-server/app.py"
+}
