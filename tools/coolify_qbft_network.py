@@ -47,9 +47,11 @@ DEFAULT_COOLIFY_TOKEN_ENV = "MAIN_COMPUTER_COOLIFY_TOKEN"
 DEFAULT_COOLIFY_API_TIMEOUT_S = 25.0
 DEFAULT_COOLIFY_API_RETRIES = 1
 DEFAULT_COOLIFY_API_RETRY_SLEEP_S = 2.0
-DEFAULT_RPC_WAIT_TIMEOUT_S = 420.0
+DEFAULT_RPC_WAIT_TIMEOUT_S = 0.0
 DEFAULT_RPC_POLL_INTERVAL_S = 2.0
+DEFAULT_RPC_MIN_PEERS_AUTO = -1
 DEFAULT_FOUNDRY_IMAGE = "ghcr.io/foundry-rs/foundry:latest"
+DEFAULT_DEPLOY_CONTRACTS_TIMEOUT_S = 0.0
 DEFAULT_DEPLOYMENT_SOURCE_KIND = "coolify-qbft-testnet-deploy"
 DEFAULT_GENESIS_BASE_FEE_PER_GAS = "0x3b9aca00"
 DEFAULT_FUNDED_ACCOUNT_BALANCE = "0x21e19e0c9bab2400000"  # 10000 * 10^18 wei
@@ -101,12 +103,36 @@ NETWORK_SEEDS: dict[str, dict[str, Any]] = {
                 "p2p_host_port": 30311,
             },
             {
+                "id": "validator-2",
+                "role": "validator",
+                "host": "testnet-a",
+                "container_ip": "172.28.241.12",
+                "rpc_host_port": 30002,
+                "p2p_host_port": 30312,
+            },
+            {
+                "id": "validator-3",
+                "role": "validator",
+                "host": "testnet-a",
+                "container_ip": "172.28.241.13",
+                "rpc_host_port": 30003,
+                "p2p_host_port": 30313,
+            },
+            {
+                "id": "validator-4",
+                "role": "validator",
+                "host": "testnet-a",
+                "container_ip": "172.28.241.14",
+                "rpc_host_port": 30004,
+                "p2p_host_port": 30314,
+            },
+            {
                 "id": "rpc-1",
                 "role": "rpc",
                 "host": "testnet-a",
-                "container_ip": "172.28.241.10",
+                "container_ip": "172.28.241.20",
                 "rpc_host_port": 30010,
-                "p2p_host_port": 30310,
+                "p2p_host_port": 30320,
             },
         ],
     },
@@ -1726,16 +1752,51 @@ def json_rpc(url: str, method: str, params: list[Any] | None = None, *, timeout_
     return payload.get("result")
 
 
+def default_rpc_min_peers(plan: NetworkPlan) -> int:
+    """Return the default peer readiness requirement for the operator RPC node.
+
+    A one-node dev chain can legitimately have zero peers.  Any topology with a
+    dedicated RPC node or more than one Besu service should prove at least one
+    peer before contracts are deployed, otherwise the RPC process may be up while
+    the QBFT network is not actually connected or producing blocks.
+    """
+
+    besu_services = [service for service in plan.services if service.role in {"validator", "rpc"}]
+    return 1 if len(besu_services) > 1 else 0
+
+
+def rpc_min_peers_from_args(plan: NetworkPlan, args: argparse.Namespace) -> int:
+    value = int(getattr(args, "rpc_min_peers", DEFAULT_RPC_MIN_PEERS_AUTO))
+    if value >= 0:
+        return value
+    return default_rpc_min_peers(plan)
+
+
 def wait_for_rpc(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
     rpc_url = infer_external_rpc_url(plan, args)
     expected_chain_id = hex(plan.chain_id)
     timeout_s = float(getattr(args, "rpc_timeout_s", DEFAULT_RPC_WAIT_TIMEOUT_S))
-    deadline = time.monotonic() + timeout_s
+    poll_interval_s = float(getattr(args, "rpc_poll_interval_s", DEFAULT_RPC_POLL_INTERVAL_S))
+    min_peers = rpc_min_peers_from_args(plan, args)
+    require_block_advance = not bool(getattr(args, "no_rpc_require_block_advance", False))
+    deadline = None if timeout_s <= 0 else time.monotonic() + timeout_s
     last_error: object = None
     last_chain_id = ""
+    last_block_number: int | None = None
+    last_peer_count: int | None = None
+    first_observed_block: int | None = None
+    block_advanced = False
     attempt = 0
-    operator_log(args, "wait-rpc start", rpc_url=rpc_url, expected_chain_id=expected_chain_id, timeout_s=timeout_s)
-    while time.monotonic() < deadline:
+    operator_log(
+        args,
+        "wait-rpc start",
+        rpc_url=rpc_url,
+        expected_chain_id=expected_chain_id,
+        timeout_s=timeout_s,
+        min_peers=min_peers,
+        require_block_advance=require_block_advance,
+    )
+    while deadline is None or time.monotonic() < deadline:
         attempt += 1
         try:
             chain_id = str(json_rpc(rpc_url, "eth_chainId", timeout_s=8.0))
@@ -1746,33 +1807,103 @@ def wait_for_rpc(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
             block_number = int(block_hex, 16)
             peer_hex = str(json_rpc(rpc_url, "net_peerCount", timeout_s=8.0))
             peer_count = int(peer_hex, 16)
-            operator_log(args, "wait-rpc probe", attempt=attempt, chain_id=chain_id, block_number=block_number, peer_count=peer_count)
-            if block_number >= 1:
-                operator_log(args, "wait-rpc done", block_number=block_number, peer_count=peer_count)
+            last_block_number = block_number
+            last_peer_count = peer_count
+            if first_observed_block is None:
+                first_observed_block = block_number
+            if block_number > first_observed_block:
+                block_advanced = True
+            operator_log(
+                args,
+                "wait-rpc probe",
+                attempt=attempt,
+                chain_id=chain_id,
+                block_number=block_number,
+                peer_count=peer_count,
+                first_observed_block=first_observed_block,
+                block_advanced=block_advanced,
+            )
+
+            not_ready_reasons: list[str] = []
+            if block_number < 1:
+                not_ready_reasons.append(f"block_number {block_number} < 1")
+            if peer_count < min_peers:
+                not_ready_reasons.append(f"peer_count {peer_count} < required {min_peers}")
+            if require_block_advance and not block_advanced:
+                not_ready_reasons.append(
+                    f"block has not advanced beyond first observed block {first_observed_block}"
+                )
+
+            if not not_ready_reasons:
+                operator_log(
+                    args,
+                    "wait-rpc done",
+                    block_number=block_number,
+                    peer_count=peer_count,
+                    first_observed_block=first_observed_block,
+                    block_advanced=block_advanced,
+                )
                 return {
                     "ok": True,
                     "rpc_url": rpc_url,
                     "chain_id": chain_id,
                     "block_number": block_number,
                     "peer_count": peer_count,
+                    "first_observed_block": first_observed_block,
+                    "block_advanced": block_advanced,
+                    "min_peers": min_peers,
                 }
+
+            last_error = "; ".join(not_ready_reasons)
+            operator_log(args, "wait-rpc not-ready", attempt=attempt, reason=last_error)
         except Exception as exc:  # noqa: BLE001 - operator-facing retry loop
             last_error = str(exc)
             operator_log(args, "wait-rpc retry", attempt=attempt, error=last_error)
-        time.sleep(float(getattr(args, "rpc_poll_interval_s", DEFAULT_RPC_POLL_INTERVAL_S)))
-    raise CoolifyError(f"Timed out waiting for RPC {rpc_url}; last_chain_id={last_chain_id!r}; last_error={last_error!r}")
+        time.sleep(poll_interval_s)
+    raise CoolifyError(
+        f"Timed out waiting for RPC {rpc_url}; "
+        f"last_chain_id={last_chain_id!r}; "
+        f"last_block_number={last_block_number!r}; "
+        f"last_peer_count={last_peer_count!r}; "
+        f"first_observed_block={first_observed_block!r}; "
+        f"block_advanced={block_advanced!r}; "
+        f"min_peers={min_peers!r}; "
+        f"last_error={last_error!r}"
+    )
+
+
+def process_timeout_arg(timeout_s: float | None) -> float | None:
+    """Return a subprocess timeout, treating zero/negative values as unbounded."""
+    if timeout_s is None:
+        return None
+    timeout = float(timeout_s)
+    if timeout <= 0:
+        return None
+    return timeout
 
 
 def safe_subprocess_run(command: list[str], *, dry_run: bool = False, timeout_s: float | None = None) -> dict[str, Any]:
     if dry_run:
         return {"ok": True, "dry_run": True, "command": command}
-    completed = subprocess.run(command, text=True, capture_output=True, timeout=timeout_s)
+    resolved_timeout = process_timeout_arg(timeout_s)
+    try:
+        completed = subprocess.run(command, text=True, capture_output=True, timeout=resolved_timeout)
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "ok": False,
+            "returncode": None,
+            "command": command,
+            "stdout": exc.stdout or "",
+            "stderr": exc.stderr or "ERROR: timed out\n",
+            "timeout_s": timeout_s,
+        }
     return {
         "ok": completed.returncode == 0,
         "returncode": completed.returncode,
         "command": command,
         "stdout": completed.stdout,
         "stderr": completed.stderr,
+        "timeout_s": resolved_timeout,
     }
 
 
@@ -1802,6 +1933,10 @@ def deploy_contracts(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, A
         rpc_url,
         "--container-rpc-url",
         rpc_url,
+        "--wait-timeout-s",
+        str(float(getattr(args, "rpc_timeout_s", DEFAULT_RPC_WAIT_TIMEOUT_S))),
+        "--deploy-timeout-s",
+        str(float(getattr(args, "deploy_contracts_timeout_s", DEFAULT_DEPLOY_CONTRACTS_TIMEOUT_S))),
         "--external-docker-network",
         str(getattr(args, "foundry_docker_network", "") or "bridge"),
         "--external-chain-container",
@@ -1815,7 +1950,7 @@ def deploy_contracts(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, A
     result = safe_subprocess_run(
         command,
         dry_run=bool(getattr(args, "dry_run", False)),
-        timeout_s=float(getattr(args, "deploy_contracts_timeout_s", 1800.0)),
+        timeout_s=float(getattr(args, "deploy_contracts_timeout_s", DEFAULT_DEPLOY_CONTRACTS_TIMEOUT_S)),
     )
     result.update({"rpc_url": rpc_url, "run_id": run_id, "deployment_output_dir": deployment_output})
     operator_log(args, "deploy-contracts result", ok=result.get("ok"), returncode=result.get("returncode", "dry-run"))
@@ -2067,12 +2202,13 @@ def coolify_sync(plan: NetworkPlan, args: argparse.Namespace, *, deploy: bool = 
         if deploy_result is None:
             return {"ok": False, "stage": "deploy-service", "service_uuid": service_uuid, "context": result_context, "tried": tried}
 
-    operator_log(args, "coolify-sync done", service_uuid=service_uuid, deployed=bool(deploy_result))
+    operator_log(args, "coolify-sync done", service_uuid=service_uuid, deploy_requested=bool(deploy_result))
     return {
         "ok": True,
         "service_uuid": service_uuid,
         "service_name": service_name,
         "deployed": bool(deploy_result),
+        "deploy_requested": bool(deploy_result),
         "deploy_result": deploy_result,
         "context": result_context,
         "tried": tried,
@@ -2182,6 +2318,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--rpc-url", default="", help="Externally reachable non-validator RPC URL. Inferred from --public-rpc when possible.")
     parser.add_argument("--rpc-timeout-s", type=float, default=DEFAULT_RPC_WAIT_TIMEOUT_S)
     parser.add_argument("--rpc-poll-interval-s", type=float, default=DEFAULT_RPC_POLL_INTERVAL_S)
+    parser.add_argument(
+        "--rpc-min-peers",
+        type=int,
+        default=DEFAULT_RPC_MIN_PEERS_AUTO,
+        help="Minimum net_peerCount required before RPC is ready. Default: 0 for one Besu node, 1 for multi-node topologies.",
+    )
+    parser.add_argument(
+        "--no-rpc-require-block-advance",
+        action="store_true",
+        help="Do not require eth_blockNumber to advance across successful probes before deploy-contracts.",
+    )
     parser.add_argument("--skip-wait-rpc", action="store_true", help="Skip wait-rpc phase in apply.")
 
     parser.add_argument("--all", action="store_true", help="For apply: deploy Compose, wait for RPC, and deploy contracts.")
@@ -2192,7 +2339,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--deployment-output-dir", default="", help="Override runtime deployment output directory.")
     parser.add_argument("--foundry-image", default=DEFAULT_FOUNDRY_IMAGE)
     parser.add_argument("--foundry-docker-network", default="bridge", help="Docker network for local Foundry container; bridge works for public RPC URLs.")
-    parser.add_argument("--deploy-contracts-timeout-s", type=float, default=1800.0)
+    parser.add_argument("--deploy-contracts-timeout-s", type=float, default=DEFAULT_DEPLOY_CONTRACTS_TIMEOUT_S)
     parser.add_argument("--quiet", action="store_true", help="Suppress operator progress logs; final JSON is still printed.")
     return parser.parse_args(argv)
 
@@ -2228,8 +2375,8 @@ def render_operator_runbook() -> str:
 
         Recommended server size
         -----------------------
-        Minimum for Coolify plus the low-resource testnet (one validator plus one RPC node): 2 vCPU, 4 GB RAM.
-        Better: 4 vCPU, 8 GB RAM. Tiny 1-2 GB boxes can publish Docker ports
+        Minimum for Coolify plus the four-validator testnet and one dedicated RPC node: 4 vCPU, 8 GB RAM.
+        Smaller 2 vCPU / 4 GB boxes may work for short rehearsals, but tiny 1-2 GB boxes can publish Docker ports
         while Besu is still starved or unhealthy.
 
         1. Prepare the remote Linux server
@@ -2309,8 +2456,8 @@ def render_operator_runbook() -> str:
         it prints and pass them to apply with --coolify-project-uuid,
         --coolify-server-uuid, and --coolify-environment.
 
-        7. Deploy the low-resource testnet
-        ---------------------------------
+        7. Deploy the four-validator testnet
+        ------------------------------------
 
             python .\tools\coolify_qbft_network.py apply testnet --all `
               --single-host root@$hostIp `

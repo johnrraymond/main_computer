@@ -342,6 +342,105 @@ class TerminalSafetyDecision:
 
 
 @dataclass(frozen=True)
+class TextConsoleConfig:
+    """Smoke-local prototype for the text console's intended context owner.
+
+    This is deliberately not a production config yet. The smoke proves the shape
+    first: the text console owns its current directory, context root, and working
+    directory explicitly, and only adapts to legacy MainComputerConfig while the
+    catalog/router still require it.
+    """
+
+    current_directory: Path
+    context_root: Path
+    working_directory: Path
+    provider: str
+    model: str
+    ollama_base_url: str
+    ollama_timeout_s: float
+    ollama_think: bool | str | None
+
+    @classmethod
+    def from_repo_root(
+        cls,
+        *,
+        base_url: str,
+        model: str,
+        timeout: float,
+        think: bool | str | None,
+    ) -> "TextConsoleConfig":
+        repo_root = Path.cwd().resolve()
+        return cls(
+            current_directory=repo_root,
+            context_root=repo_root,
+            working_directory=repo_root,
+            provider="ollama",
+            model=model,
+            ollama_base_url=base_url,
+            ollama_timeout_s=timeout,
+            ollama_think=think,
+        )
+
+    def validate_repo_root(self) -> list[str]:
+        failures: list[str] = []
+        if not self.current_directory.exists():
+            failures.append(f"text console current_directory does not exist: {self.current_directory}")
+        if not self.context_root.exists():
+            failures.append(f"text console context_root does not exist: {self.context_root}")
+        if not self.working_directory.exists():
+            failures.append(f"text console working_directory does not exist: {self.working_directory}")
+        if self.context_root != self.current_directory:
+            failures.append(
+                "text console smoke prototype expected context_root to equal current_directory: "
+                f"{self.context_root} != {self.current_directory}"
+            )
+        if self.working_directory != self.current_directory:
+            failures.append(
+                "text console smoke prototype expected working_directory to equal current_directory: "
+                f"{self.working_directory} != {self.current_directory}"
+            )
+        if not (self.current_directory / "main_computer").is_dir():
+            failures.append(
+                "text console smoke must be run from the repo root; expected a main_computer/ "
+                f"package under {self.current_directory}"
+            )
+        if not (self.current_directory / "pyproject.toml").is_file():
+            failures.append(
+                "text console smoke must be run from the repo root; expected pyproject.toml "
+                f"under {self.current_directory}"
+            )
+        return failures
+
+    def to_legacy_main_computer_config(self, main_config_cls: Any) -> Any:
+        """Adapt the proven text-console config into legacy MainComputerConfig.
+
+        MainComputerConfig is not the source of truth for this smoke. It remains
+        only an adapter because MainComputer.build/catalog still accept that type.
+        """
+
+        return main_config_cls(
+            workspace=self.context_root,
+            provider=self.provider,
+            model=self.model,
+            ollama_base_url=self.ollama_base_url,
+            ollama_timeout_s=self.ollama_timeout_s,
+            ollama_think=self.ollama_think,
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "current_directory": str(self.current_directory),
+            "context_root": str(self.context_root),
+            "working_directory": str(self.working_directory),
+            "provider": self.provider,
+            "model": self.model,
+            "ollama_base_url": self.ollama_base_url,
+            "ollama_timeout_s": self.ollama_timeout_s,
+            "ollama_think": self.ollama_think,
+        }
+
+
+@dataclass(frozen=True)
 class SmokeReport:
     ok: bool
     base_url: str
@@ -384,7 +483,7 @@ class SmokeReport:
     out_of_blue_mount_payload: dict[str, Any]
     out_of_blue_inline_render_blocks: list[dict[str, Any]]
     out_of_blue_rag_packet: dict[str, Any]
-    chat_console_full_context_smoke: list[dict[str, Any]]
+    text_console_intended_pathway_smoke: list[dict[str, Any]]
     inert_prose_blocks: list[dict[str, Any]]
     warnings: list[str]
     failures: list[str]
@@ -2695,10 +2794,10 @@ Those lines are documentation only, not a broker-generated command plan.
 
 
 def chat_console_context_section_breakdown(context_text: str) -> dict[str, Any]:
-    """Return coarse character counts for the real chat-console context pack.
+    """Return coarse character counts for the text-console intended context pack.
 
     This is intentionally diagnostic only. It does not trim, repair, or synthesize
-    model input. The point is to expose exactly what the UI-style model call is
+    model input. The point is to expose exactly what the text-console intended model call is
     feeding to Ollama when a smoke turn succeeds or fails.
     """
     section_names = {
@@ -2803,21 +2902,99 @@ def terminal_ollama_event_metrics(metadata: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_real_chat_console_model_input(
+def chat_console_request_payload(messages: list[Any], *, model: str, think: bool | str | None) -> dict[str, Any]:
+    request_messages = [
+        {"role": str(getattr(message, "role", "") or ""), "content": str(getattr(message, "content", "") or "")}
+        for message in messages
+    ]
+    payload: dict[str, Any] = {"model": model, "messages": request_messages, "stream": True}
+    if think is not None:
+        payload["think"] = think
+    else:
+        payload["think"] = None
+    return payload
+
+
+def chat_console_request_sha256(messages: list[Any], *, model: str, think: bool | str | None) -> str:
+    payload = chat_console_request_payload(messages, model=model, think=think)
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def validate_text_console_model_input_diagnostics(diagnostics: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    config = diagnostics.get("text_console_config") if isinstance(diagnostics, dict) else {}
+    context_root = str(config.get("context_root") or "") if isinstance(config, dict) else ""
+    current_directory = str(config.get("current_directory") or "") if isinstance(config, dict) else ""
+    working_directory = str(config.get("working_directory") or "") if isinstance(config, dict) else ""
+    context_text = str(diagnostics.get("context_pack_text") or "") if isinstance(diagnostics, dict) else ""
+    legacy_default = str((Path.home() / "dsl").resolve())
+
+    if not context_root:
+        failures.append("text-console intended pathway did not record a context_root")
+    if context_root and not Path(context_root).exists():
+        failures.append(f"text-console intended pathway context_root does not exist: {context_root}")
+    if current_directory and not Path(current_directory).exists():
+        failures.append(f"text-console intended pathway current_directory does not exist: {current_directory}")
+    if working_directory and not Path(working_directory).exists():
+        failures.append(f"text-console intended pathway working_directory does not exist: {working_directory}")
+    if context_root and current_directory and Path(context_root) != Path(current_directory):
+        failures.append(
+            "text-console intended pathway expected context_root to equal current_directory: "
+            f"{context_root} != {current_directory}"
+        )
+    if working_directory and current_directory and Path(working_directory) != Path(current_directory):
+        failures.append(
+            "text-console intended pathway expected working_directory to equal current_directory: "
+            f"{working_directory} != {current_directory}"
+        )
+    if context_root and f"Workspace root: {context_root}" not in context_text:
+        failures.append(
+            "text-console intended pathway context pack was not rooted at its TextConsoleConfig context_root; "
+            f"expected Workspace root: {context_root!r}"
+        )
+    if context_text and "- main_computer: present" not in context_text:
+        failures.append("text-console intended pathway context pack did not mark main_computer as present")
+    normalized_context = context_text.lower().replace("/", "\\")
+    normalized_legacy = legacy_default.lower().replace("/", "\\")
+    if normalized_legacy and normalized_legacy in normalized_context:
+        failures.append(
+            "text-console intended pathway leaked the legacy MainComputerConfig default workspace "
+            f"into the context pack: {legacy_default}"
+        )
+    if context_text and "Workspace root:" in context_text and "missing\n- main_computer_test: missing" in context_text and "- main_computer: missing" in context_text:
+        failures.append(
+            "text-console intended pathway produced the all-missing legacy workspace context instead of repo-root context"
+        )
+    return failures
+
+
+def build_text_console_intended_model_input(
     *,
     request_text: str,
     base_url: str,
     model: str,
     timeout: float,
-    think: bool | None,
+    think: bool | str | None,
 ) -> tuple[Any, Any, list[Any], dict[str, Any]]:
-    """Build the same full-context message stack used by chat_console_ai.
+    """Build the intended text-console pathway under smoke control.
 
-    This deliberately uses the application modules instead of the small smoke
-    control prompt. The smoke should fail if this real path starves the model
-    context or cannot produce the expected mount.
+    Phase 1 + 2 smoke contract:
+      TextConsoleConfig owns current_directory/context_root/working_directory.
+      For now it adapts into legacy MainComputerConfig only because the existing
+      catalog/router entrypoint still takes that config type. The legacy config
+      must not decide the text-console root.
     """
-    repo_root = Path.cwd()
+
+    text_console_config = TextConsoleConfig.from_repo_root(
+        base_url=base_url,
+        model=model,
+        timeout=timeout,
+        think=think,
+    )
+    config_failures = text_console_config.validate_repo_root()
+
+    repo_root = text_console_config.current_directory
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
 
@@ -2826,14 +3003,7 @@ def build_real_chat_console_model_input(
     from main_computer.models import ChatMessage
     from main_computer.router import MainComputer, SYSTEM_PROMPT as ROUTER_SYSTEM_PROMPT
 
-    config = MainComputerConfig(
-        workspace=repo_root,
-        provider="ollama",
-        model=model,
-        ollama_base_url=base_url,
-        ollama_timeout_s=timeout,
-        ollama_think=think,
-    )
+    config = text_console_config.to_legacy_main_computer_config(MainComputerConfig)
     computer = MainComputer.build(config)
     context_pack = computer.context_pack(request_text)
     web_search_context, web_search_text = computer._web_search_context(request_text)
@@ -2858,7 +3028,7 @@ def build_real_chat_console_model_input(
         ]
         file_terms = [term for term in terms if term not in PRIORITY_PROJECTS]
         matched_files = catalog._context_file_matches(file_terms, max_matches=12) if catalog is not None else []
-        workspace = Path(getattr(catalog, "workspace", Path.cwd()))
+        workspace = Path(getattr(catalog, "workspace", text_console_config.context_root))
         matched_file_paths = [path.relative_to(workspace).as_posix() for path in matched_files]
         matched_projects = [
             project for project in catalog.list_projects()
@@ -2871,7 +3041,17 @@ def build_real_chat_console_model_input(
     message_payloads = chat_console_message_payloads(messages)
     diagnostics = {
         "request_text": request_text,
-        "workspace": str(repo_root),
+        "text_console_config": text_console_config.to_payload(),
+        "legacy_main_computer_config_adapter": {
+            "workspace": str(getattr(config, "workspace", "")),
+            "provider": str(getattr(config, "provider", "")),
+            "model": str(getattr(config, "model", "")),
+            "ollama_base_url": str(getattr(config, "ollama_base_url", "")),
+            "ollama_timeout_s": getattr(config, "ollama_timeout_s", None),
+            "ollama_think": getattr(config, "ollama_think", None),
+        },
+        "config_validation_failures": config_failures,
+        "workspace": str(text_console_config.context_root),
         "context_pack_text": str(getattr(context_pack, "text", "") or ""),
         "context_pack_chars": len(str(getattr(context_pack, "text", "") or "")),
         "context_pack_manifest_chars": int(getattr(context_pack, "manifest_chars", 0) or 0),
@@ -2891,11 +3071,38 @@ def build_real_chat_console_model_input(
         "system_prompt_chars": sum(item["content_chars"] for item in message_payloads if item["role"] == "system"),
         "input_chars": sum(item["content_chars"] for item in message_payloads),
         "request_bytes_estimate": chat_console_request_bytes(messages, model=model, think=think),
+        "request_sha256": chat_console_request_sha256(messages, model=model, think=think),
+        "request_payload": chat_console_request_payload(messages, model=model, think=think),
     }
+    diagnostics["text_console_model_input_failures"] = validate_text_console_model_input_diagnostics(diagnostics)
     return computer, context_pack, messages, diagnostics
 
 
-def run_chat_console_full_context_turn(
+def build_real_chat_console_model_input(
+    *,
+    request_text: str,
+    base_url: str,
+    model: str,
+    timeout: float,
+    think: bool | str | None,
+) -> tuple[Any, Any, list[Any], dict[str, Any]]:
+    """Backward-compatible alias for older diagnostics.
+
+    The smoke no longer treats this as a UI lookalike. It builds the intended
+    text-console pathway from TextConsoleConfig and records that legacy
+    MainComputerConfig is only an adapter.
+    """
+
+    return build_text_console_intended_model_input(
+        request_text=request_text,
+        base_url=base_url,
+        model=model,
+        timeout=timeout,
+        think=think,
+    )
+
+
+def run_text_console_intended_pathway_turn(
     *,
     label: str,
     request_text: str,
@@ -2908,7 +3115,7 @@ def run_chat_console_full_context_turn(
  ) -> tuple[dict[str, Any], list[str]]:
     turn_failures: list[str] = []
     try:
-        computer, context_pack, messages, diagnostics = build_real_chat_console_model_input(
+        computer, context_pack, messages, diagnostics = build_text_console_intended_model_input(
             request_text=request_text,
             base_url=base_url,
             model=model,
@@ -2922,10 +3129,10 @@ def run_chat_console_full_context_turn(
                 "request_text": request_text,
                 "expect_mount": expect_mount,
                 "ok": False,
-                "stage": "build_real_chat_console_model_input",
+                "stage": "build_text_console_intended_model_input",
                 "error": repr(exc),
             },
-            [f"chat-console full-context turn {label!r} could not build real model input: {exc!r}"],
+            [f"text-console intended-pathway turn {label!r} could not build text-console intended model input: {exc!r}"],
         )
 
     record: dict[str, Any] = {
@@ -2934,16 +3141,28 @@ def run_chat_console_full_context_turn(
         "expect_mount": expect_mount,
         "model_input": diagnostics,
     }
+
+    model_input_failures = []
+    for item in list(diagnostics.get("config_validation_failures", []) or []):
+        model_input_failures.append(f"text-console config validation failed for {label!r}: {item}")
+    for item in list(diagnostics.get("text_console_model_input_failures", []) or []):
+        model_input_failures.append(f"text-console intended model input failed for {label!r}: {item}")
+    turn_failures.extend(model_input_failures)
+
     if offline_contract_only:
-        record.update({"ok": True, "skipped_ollama": True, "reason": "offline_contract_only"})
+        record.update({"ok": not turn_failures, "skipped_ollama": True, "reason": "offline_contract_only"})
+        return record, turn_failures
+
+    if model_input_failures:
+        record.update({"ok": False, "stage": "text_console_model_input_validation"})
         return record, turn_failures
 
     provider = getattr(computer, "provider", None)
     try:
         if provider is not None:
             for attr, value in {
-                "diagnostic_run_id": f"smoke_chat_console_full_context_{normalize(label).replace('-', '_')}",
-                "diagnostic_label": f"chat_console_full_context_smoke:{label}",
+                "diagnostic_run_id": f"smoke_text_console_intended_pathway_{normalize(label).replace('-', '_')}",
+                "diagnostic_label": f"text_console_intended_pathway_smoke:{label}",
             }.items():
                 try:
                     setattr(provider, attr, value)
@@ -2952,7 +3171,7 @@ def run_chat_console_full_context_turn(
         response = provider.chat(messages) if provider is not None else computer.provider.chat(messages)
     except Exception as exc:
         record.update({"ok": False, "stage": "provider.chat", "error": repr(exc)})
-        return record, [f"chat-console full-context turn {label!r} provider call failed: {exc!r}"]
+        return record, [f"text-console intended-pathway turn {label!r} provider call failed: {exc!r}"]
 
     content = str(getattr(response, "content", "") or "")
     metadata = getattr(response, "metadata", {}) if isinstance(getattr(response, "metadata", {}), dict) else {}
@@ -2986,15 +3205,15 @@ def run_chat_console_full_context_turn(
     response_chars = len(content)
     if done_reason == "length":
         turn_failures.append(
-            "chat-console full-context turn "
+            "text-console intended-pathway turn "
             f"{label!r} exhausted the model context: done_reason='length', "
             f"prompt_eval_count={terminal_metrics.get('prompt_eval_count')}, "
             f"eval_count={eval_count}, response={content!r}. "
-            "This smoke uses the real chat-console context pack; a one-token answer here is a context budget failure."
+            "This smoke uses the text-console intended context pack; a one-token answer here is a context budget failure."
         )
     elif eval_count <= 1 and response_chars <= 5:
         turn_failures.append(
-            "chat-console full-context turn "
+            "text-console intended-pathway turn "
             f"{label!r} produced a suspicious one-token response: "
             f"eval_count={eval_count}, response={content!r}, done_reason={done_reason!r}."
         )
@@ -3006,19 +3225,19 @@ def run_chat_console_full_context_turn(
     )
     if expect_mount and not has_mount:
         turn_failures.append(
-            f"chat-console full-context turn {label!r} expected a model-produced ```computer mount "
+            f"text-console intended-pathway turn {label!r} expected a model-produced ```computer mount "
             f"with exact /act lines, but got none. diagnostics={diagnostics_out!r}; parse_error={parse_error!r}"
         )
     if not expect_mount and has_mount:
         turn_failures.append(
-            f"chat-console full-context setup turn {label!r} unexpectedly produced a computer mount: {parsed_payload!r}"
+            f"text-console intended-pathway setup turn {label!r} unexpectedly produced a computer mount: {parsed_payload!r}"
         )
 
     record["ok"] = not turn_failures
     return record, turn_failures
 
 
-def run_chat_console_full_context_smoke(
+def run_text_console_intended_pathway_smoke(
     *,
     base_url: str,
     model: str,
@@ -3027,10 +3246,10 @@ def run_chat_console_full_context_smoke(
     offline_contract_only: bool,
     mount_request: str,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Run the non-cheating UI-golden-path smoke.
+    """Run the smoke-proven text-console intended pathway.
 
-    Every turn uses the same chat-console model input construction as the page:
-    router prompt + deterministic workspace context pack + notebook prompt + user
+    Every turn uses the smoke-local TextConsoleConfig prototype:
+    current repo-root directory + deterministic workspace context pack + notebook prompt + user
     message. The expectations belong to the smoke fixture only; runtime code
     still merely parses whatever assistant text the model returns.
     """
@@ -3054,7 +3273,7 @@ def run_chat_console_full_context_smoke(
     records: list[dict[str, Any]] = []
     failures: list[str] = []
     for turn in script:
-        record, turn_failures = run_chat_console_full_context_turn(
+        record, turn_failures = run_text_console_intended_pathway_turn(
             label=turn["label"],
             request_text=turn["request_text"],
             expect_mount=bool(turn["expect_mount"]),
@@ -3109,16 +3328,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--chat-console-mount-request",
         default=DEFAULT_CHAT_CONSOLE_MOUNT_REQUEST,
         help=(
-            "Final real chat-console full-context smoke turn. This is a smoke fixture "
+            "Final text-console intended-pathway smoke turn. This is a smoke fixture "
             "expectation only; runtime code must not synthesize /act from prose."
         ),
     )
     parser.add_argument(
+        "--skip-text-console-intended-pathway-smoke",
         "--skip-chat-console-full-context-smoke",
+        dest="skip_text_console_intended_pathway_smoke",
         action="store_true",
         help=(
-            "Skip the real chat-console full-context live smoke. Use only when debugging "
-            "the older isolated control-contract smoke."
+            "Skip the text-console intended-pathway live smoke. The older "
+            "--skip-chat-console-full-context-smoke name remains as a compatibility alias."
         ),
     )
     return parser
@@ -3136,7 +3357,7 @@ def main(argv: list[str] | None = None) -> int:
     warnings: list[str] = []
     failures: list[str] = []
     raw_ollama_responses: list[str] = []
-    chat_console_full_context_smoke: list[dict[str, Any]] = []
+    text_console_intended_pathway_smoke: list[dict[str, Any]] = []
 
     failures.extend(validate_assistant_control_message_parser())
 
@@ -3340,17 +3561,17 @@ def main(argv: list[str] | None = None) -> int:
         raw_ollama_responses.append(raw)
         used_ollama = True
 
-    if args.skip_chat_console_full_context_smoke:
-        warnings.append("skip_chat_console_full_context_smoke was used; the real UI-style context path was not tested")
-        chat_console_full_context_smoke = [
+    if args.skip_text_console_intended_pathway_smoke:
+        warnings.append("skip_text_console_intended_pathway_smoke was used; the text-console intended pathway was not tested")
+        text_console_intended_pathway_smoke = [
             {
                 "ok": True,
                 "skipped": True,
-                "reason": "--skip-chat-console-full-context-smoke",
+                "reason": "--skip-text-console-intended-pathway-smoke",
             }
         ]
     else:
-        chat_console_full_context_smoke, chat_context_failures = run_chat_console_full_context_smoke(
+        text_console_intended_pathway_smoke, chat_context_failures = run_text_console_intended_pathway_smoke(
             base_url=args.base_url,
             model=args.model,
             timeout=args.timeout,
@@ -3716,7 +3937,7 @@ def main(argv: list[str] | None = None) -> int:
         out_of_blue_mount_payload=out_of_blue_mount_payload,
         out_of_blue_inline_render_blocks=out_of_blue_inline_render_blocks,
         out_of_blue_rag_packet=asdict(out_of_blue_packet),
-        chat_console_full_context_smoke=chat_console_full_context_smoke,
+        text_console_intended_pathway_smoke=text_console_intended_pathway_smoke,
         inert_prose_blocks=inert_prose_blocks,
         warnings=warnings,
         failures=failures,
@@ -3797,8 +4018,8 @@ def main(argv: list[str] | None = None) -> int:
     print("Max-step policy rejection packet:")
     print(json.dumps(terminal_plan_max_step_rejection, indent=2, sort_keys=True))
     print()
-    print("Real chat-console full-context smoke:")
-    print(json.dumps(chat_console_full_context_smoke, indent=2, sort_keys=True))
+    print("Text-console intended-pathway smoke:")
+    print(json.dumps(text_console_intended_pathway_smoke, indent=2, sort_keys=True))
     print()
     print("Inert assistant prose blocks:")
     print(json.dumps(inert_prose_blocks, indent=2, sort_keys=True))
