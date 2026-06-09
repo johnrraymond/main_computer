@@ -557,6 +557,63 @@
       border-radius: 4px;
       padding: 1px 4px;
     }
+    .chat-output-part.mount_request {
+      white-space: normal;
+      border-color: rgba(31, 209, 122, 0.36);
+      background: #04100a;
+    }
+    .chat-output-mount-request {
+      display: grid;
+      gap: 8px;
+    }
+    .chat-mount-request-card {
+      display: grid;
+      gap: 8px;
+      border: 1px solid rgba(31, 209, 122, 0.42);
+      border-radius: 8px;
+      background: #07140d;
+      padding: 10px;
+    }
+    .chat-mount-request-eyebrow {
+      color: var(--gold);
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .chat-mount-request-heading {
+      color: var(--ink);
+      font-size: 14px;
+      font-weight: 900;
+    }
+    .chat-mount-request-note,
+    .chat-mount-request-meta {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .chat-mount-request-command-list {
+      display: grid;
+      gap: 6px;
+      margin: 0;
+      padding-left: 22px;
+    }
+    .chat-mount-request-command-list code {
+      display: inline-block;
+      color: var(--gold);
+      background: #010201;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      padding: 4px 6px;
+      font: 800 12px Consolas, "Lucida Console", monospace;
+      white-space: pre-wrap;
+    }
+    .chat-mount-request-warning {
+      color: var(--coral);
+      font-size: 12px;
+      font-weight: 900;
+    }
     .chat-output-image,
     .chat-output-plot {
       display: grid;

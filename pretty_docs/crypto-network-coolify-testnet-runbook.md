@@ -53,6 +53,71 @@ the Hub is not the blockchain and should not own consensus.
 Coolify does not change that rule. It can host or supervise supporting services,
 but validator duties, validator data, and public RPC policy must remain explicit.
 
+
+## Single-file topology planner direction
+
+The remote deploy should not stay as a manual sequence of SSH steps. The planned
+operator shape is one self-contained planner script:
+
+```text
+tools/coolify_qbft_network.py
+```
+
+The editable configuration lives inside that file as `NETWORK_SEEDS`. Treat it
+like an fstab-style table:
+
+```text
+network seed
+  hosts
+    host id -> ssh address, public address, Coolify URL, runtime root
+  services
+    service id -> role, host, container IP, RPC host port, P2P host port
+```
+
+The key design rule is:
+
+```text
+every hosted app/service receives an explicit host port at build time,
+even when different services live on different IP addresses
+```
+
+That makes the topology promotable. A single-host rehearsal, a two-host split,
+and a one-host-per-validator layout are all just different seed tables.
+
+The first planner actions should be safe/read-only:
+
+```powershell
+python .\tools\coolify_qbft_network.py list
+python .\tools\coolify_qbft_network.py validate testnet
+python .\tools\coolify_qbft_network.py plan testnet
+python .\tools\coolify_qbft_network.py compose testnet --host testnet-a
+python .\tools\coolify_qbft_network.py write testnet --out runtime\coolify-qbft\testnet
+```
+
+The generated output is the handoff into Coolify Raw Docker Compose:
+
+```text
+runtime/coolify-qbft/testnet/plan.json
+runtime/coolify-qbft/testnet/operator-commands.txt
+runtime/coolify-qbft/testnet/docker-compose.<host-id>.yml
+```
+
+The script should refuse unsafe layouts before anything is deployed:
+
+```text
+duplicate service ids
+unknown hosts
+container IP outside the Docker subnet
+duplicate host ports
+fewer than four validators
+no non-validator RPC node
+mainnet templates without an explicit acknowledgement
+```
+
+Actual deployment can come after the planner proves the layout. The deploy step
+should call Coolify or SSH only after the same seed has already rendered a stable
+plan and Compose file.
+
 ## Correct install sequence for the testnet machine
 
 The crypto-network rule is:
@@ -297,6 +362,255 @@ narrower long-lived token afterward.
 Main Computer runtime state should refer to the token indirectly, for example
 through an environment variable or local runtime file, not through source code.
 
+
+## No-SSH apply path
+
+The preferred remote testnet path is now a Coolify-API apply run, not a manual
+SSH/mkdir/paste workflow.
+
+Operator command shape:
+
+```powershell
+python .\tools\coolify_qbft_network.py apply testnet --all `
+  --single-host root@157.245.92.74 `
+  --coolify-url "http://157.245.92.74:8000" `
+  --coolify-token "<token>" `
+  --public-rpc
+```
+
+Use `--coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN` instead of
+`--coolify-token` when possible.
+
+The generated Docker Compose includes a one-shot service:
+
+```text
+qbft-bootstrap
+```
+
+`qbft-bootstrap` runs inside the Coolify-managed stack and writes the chain
+identity files into a persistent named Docker volume before the validators start:
+
+```text
+genesis.json
+qbftConfigFile.json
+static-nodes-all.json
+validator-1/data/key
+validator-1/static-nodes.json
+validator-2/data/key
+validator-2/static-nodes.json
+validator-3/data/key
+validator-3/static-nodes.json
+validator-4/data/key
+validator-4/static-nodes.json
+rpc-node/static-nodes.json
+network-metadata.json
+```
+
+That removes the manual host-prep command:
+
+```bash
+mkdir -p /srv/main-computer/qbft-testnet/runtime
+```
+
+The script refuses to regenerate an existing network unless the Compose
+environment explicitly sets:
+
+```text
+QBFT_RESET_CHAIN=true
+```
+
+For first public operator access without SSH tunneling, `--public-rpc` exposes
+only the non-validator RPC host port. Validator RPC remains loopback-only and
+single-host validator P2P is not published outside the Coolify private network.
+Use a firewall/DNS policy before keeping public RPC open.
+
+The apply phases are:
+
+```text
+coolify-check
+coolify-sync
+wait-rpc
+deploy-contracts
+```
+
+`coolify-sync` first discovers the Coolify project and server, then discovers or
+creates the target environment before creating/updating the service through the
+API. Coolify 4.1.x service creation requires a real project, server, and project
+environment; if the environment does not exist, Coolify returns `Environment not
+found.` The script lists `/api/v1/projects/<project_uuid>/environments` and
+creates the default `test` environment with `POST /api/v1/projects/<project_uuid>/environments`
+before calling `POST /api/v1/services`.
+
+Coolify's project API documents environment list/create endpoints under
+`/projects/{uuid}/environments`, and API requests use bearer tokens scoped to
+the active team.
+
+### Fresh Coolify rebuild: no service UUID exists yet
+
+On a brand-new Coolify install, `coolify-discover` can return projects, servers,
+and environments, but no services:
+
+```text
+services : {}
+```
+
+That means there is no Coolify service UUID to pass yet. Do not pass an empty
+string such as `--coolify-service-uuid ""`; an empty service UUID is not a create
+request. `--coolify-service-uuid` is only for adopting or updating an existing
+Coolify service.
+
+For first creation, use the project UUID, server UUID, and desired environment
+name returned by discovery, and omit `--coolify-service-uuid`:
+
+```powershell
+python .\tools\coolify_qbft_network.py apply testnet --all `
+  --single-host root@<TESTNET_MACHINE_IP> `
+  --coolify-url "http://<TESTNET_MACHINE_IP>:8000" `
+  --coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN `
+  --coolify-project-uuid "<project-uuid-from-discover>" `
+  --coolify-server-uuid "<server-uuid-from-discover>" `
+  --coolify-environment "test" `
+  --public-rpc
+```
+
+Use the Coolify server UUID even when the discovered server is named `localhost`
+and its IP is `host.docker.internal`; that is Coolify's local server record. The
+`--single-host root@<TESTNET_MACHINE_IP>` argument is still the SSH/runtime host
+that the QBFT planner uses for public addresses and RPC inference.
+
+After the first successful apply, run discovery again. The newly-created service
+will appear under `services`, and its `uuid` becomes the value to reuse later
+with `--coolify-service-uuid` for explicit updates.
+
+The dashboard URL must be a normal base URL:
+
+```text
+http://<TESTNET_MACHINE_IP>:8000
+```
+
+Do not include a duplicated scheme or misplaced slash, for example
+`http://http://<TESTNET_MACHINE_IP>/:8000`.
+
+The script auto-selects project/server when there is exactly one project and one
+server. If there are multiple choices, inspect them:
+
+```powershell
+python .\tools\coolify_qbft_network.py coolify-discover testnet `
+  --coolify-url "http://157.245.92.74:8000" `
+  --coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN
+```
+
+Then rerun with explicit names or UUIDs:
+
+```powershell
+python .\tools\coolify_qbft_network.py apply testnet --all `
+  --single-host root@157.245.92.74 `
+  --coolify-url "http://157.245.92.74:8000" `
+  --coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN `
+  --coolify-project-uuid "<project-uuid>" `
+  --coolify-server-uuid "<server-uuid>" `
+  --coolify-environment test `
+  --public-rpc
+```
+
+The service creation request sends `environment_uuid` plus `environment_name`
+and sends `docker_compose_raw` as base64, because Coolify 4.1 rejects the plain
+`docker_compose` field on `POST /api/v1/services`.
+
+If the installed Coolify build still refuses service creation by API, create one
+`Docker Compose Empty` resource once in the UI and rerun with:
+
+```powershell
+python .\tools\coolify_qbft_network.py apply testnet --all `
+  --coolify-url "http://157.245.92.74:8000" `
+  --coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN `
+  --coolify-service-uuid "<uuid>" `
+  --single-host root@157.245.92.74 `
+  --public-rpc
+```
+
+That fallback still keeps the actual chain deployment in the script. The manual
+UI step is only resource adoption if the Coolify API cannot create an empty
+Compose service on that version.
+
+
+### Service exists but Coolify shows `Starting (unhealthy)`
+
+After the first create attempt, the service record can exist even when the
+deployment did not reach Docker container creation. First rediscover and capture
+the service UUID:
+
+```powershell
+$disc = python .\tools\coolify_qbft_network.py coolify-discover testnet `
+  --coolify-url "http://<TESTNET_MACHINE_IP>:8000" `
+  --coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN `
+  --quiet | ConvertFrom-Json
+
+$disc.services | Format-Table uuid,name,status,project_uuid,server_uuid
+
+$serviceUuid = ($disc.services | Where-Object {
+  $_.name -eq "main-computer-qbft-testnet-testnet-a"
+}).uuid
+
+$serviceUuid
+```
+
+Then rerun against that existing service instead of trying to create a second
+one:
+
+```powershell
+python .\tools\coolify_qbft_network.py apply testnet --all `
+  --single-host root@<TESTNET_MACHINE_IP> `
+  --coolify-url "http://<TESTNET_MACHINE_IP>:8000" `
+  --coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN `
+  --coolify-service-uuid $serviceUuid `
+  --public-rpc
+```
+
+If the Coolify UI log tabs show only messages like these:
+
+```text
+Error response from daemon: No such container: qbft-bootstrap-<suffix>
+Error response from daemon: No such container: rpc-1-<suffix>
+Error response from daemon: No such container: validator-1-<suffix>
+```
+
+do not treat the per-container log panes as the root cause. That symptom means
+Coolify has a service/container naming plan, but Docker never created the
+container or the failed deployment removed it before logs were available. Look
+for the deployment/worker error instead.
+
+From the testnet machine, collect the Docker and Coolify evidence before
+deleting anything:
+
+```bash
+docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' \
+  | grep -E 'qbft|validator|rpc|coolify' || true
+
+docker compose ls --all | grep -E 'qbft|coolify' || true
+docker network ls | grep -E 'qbft|coolify' || true
+docker volume ls | grep -E 'qbft|coolify' || true
+
+docker logs --tail=300 coolify 2>&1 || true
+docker logs --tail=300 coolify-worker 2>&1 || true
+docker logs --tail=300 coolify-queue 2>&1 || true
+```
+
+Also verify that the chain image can be pulled and started on that host:
+
+```bash
+docker pull hyperledger/besu:latest
+docker run --rm hyperledger/besu:latest --version
+```
+
+Common root causes at this point are Compose validation errors, image pull
+failures, port conflicts, Coolify worker/queue failures, or `qbft-bootstrap`
+failing before the validator and RPC services are created. On a fresh host with
+no chain state, deleting the failed Coolify service and recreating it is usually
+safe. Once any QBFT volumes or validator keys exist, preserve evidence and state
+first; do not prune Docker volumes or networks as a debugging shortcut.
+
+
 ## What is safe to deploy through Coolify first
 
 First resource should be a harmless smoke service, not the validator set:
@@ -431,4 +745,7 @@ https://docs.docker.com/engine/storage/drivers/
 https://coolify.io/docs/get-started/installation
 https://coolify.io/docs/knowledge-base/server/firewall
 https://coolify.io/docs/api-reference/authorization
+https://coolify.io/docs/api-reference/api/operations/get-environments
+https://coolify.io/docs/api-reference/api/operations/list-services
+https://coolify.io/docs/api-reference/api/operations/update-service-by-uuid
 ```

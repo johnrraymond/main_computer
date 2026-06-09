@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ SUPPORTED_OUTPUT_PART_KINDS = {
     "warning",
     "error",
     "action",
+    "mount_request",
 }
 
 NOTEBOOK_AI_SYSTEM_PROMPT = """You are writing into a typed notebook console.
@@ -68,8 +70,16 @@ SETVAR.
 Terminal snippets must be reviewable commands only. Do not claim they were
 executed. Do not instruct the system to auto-run terminal commands.
 
-Do not claim that any snippet was executed unless the user actually ran an
-evaluation cell and provided the result."""
+For text-console control requests, you may ask for a future mounted local
+computer action by including a fenced block tagged exactly as computer. Inside
+that fence, write one or more exact /act lines only. A single /act line is a
+single mount request; multiple /act lines in one computer fence are a sequential
+plan request. The current UI renders these as preview-only mount requests and
+does not mount or execute them.
+
+Do not claim that any snippet or computer mount request was executed unless the
+user actually ran an evaluation cell or terminal action and provided the
+result."""
 
 
 def now_ms() -> int:
@@ -143,17 +153,135 @@ def output_part(kind: str, title: str, content: Any, **extra: Any) -> dict[str, 
     return part
 
 
+COMPUTER_MOUNT_FENCE_RE = re.compile(
+    r"```[ \t]*(?P<language>computer)[^\n]*\n(?P<body>.*?)```",
+    flags=re.DOTALL | re.IGNORECASE,
+)
+
+
+def computer_mount_commands(source: str) -> tuple[list[str], list[str]]:
+    commands: list[str] = []
+    invalid_lines: list[str] = []
+    for line in str(source or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("/act "):
+            commands.append(stripped)
+        else:
+            invalid_lines.append(stripped)
+    return commands, invalid_lines
+
+
+def _computer_mount_request_kind(commands: list[str]) -> str:
+    if len(commands) > 1:
+        return "command_plan"
+    if commands:
+        return "command"
+    return "empty"
+
+
+def _computer_mount_request_payload(index: int, source: str, start: int, end: int) -> dict[str, Any]:
+    commands, invalid_lines = computer_mount_commands(source)
+    mount_id = "mount-" + source_hash(f"{index}\n{source}")[:12]
+    return {
+        "mount_id": mount_id,
+        "surface": "text_console",
+        "language": "computer",
+        "status": "requested_not_mounted",
+        "request_kind": _computer_mount_request_kind(commands),
+        "canonical_commands": commands,
+        "invalid_lines": invalid_lines,
+        "raw": source,
+        "source_range": {"start": start, "end": end},
+        "note": "Preview only: the text console detected a computer mount request but did not mount or execute it.",
+    }
+
+
+def _computer_mount_request_part(
+    index: int,
+    source: str,
+    start: int,
+    end: int,
+    provider_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    request_payload = _computer_mount_request_payload(index, source, start, end)
+    command_count = len(request_payload["canonical_commands"])
+    invalid_count = len(request_payload["invalid_lines"])
+    title = "Mount requested"
+    if command_count > 1:
+        title = f"Mount requested: {command_count}-step plan"
+    elif command_count == 1:
+        title = "Mount requested: command"
+    elif invalid_count:
+        title = "Mount requested: needs repair"
+
+    return output_part(
+        "mount_request",
+        title,
+        request_payload,
+        metadata={
+            **(provider_metadata or {}),
+            "mount_id": request_payload["mount_id"],
+            "surface": request_payload["surface"],
+            "language": request_payload["language"],
+            "status": request_payload["status"],
+            "request_kind": request_payload["request_kind"],
+            "command_count": command_count,
+            "invalid_line_count": invalid_count,
+        },
+    )
+
+
+def exact_act_command_source(source: str) -> tuple[list[str], list[str]]:
+    commands, invalid_lines = computer_mount_commands(source)
+    if not commands or invalid_lines:
+        return [], invalid_lines
+    return commands, []
+
+
+def exact_act_command_source_to_parts(source: str) -> list[dict[str, Any]]:
+    commands, invalid_lines = exact_act_command_source(source)
+    if not commands or invalid_lines:
+        return []
+    return [_computer_mount_request_part(1, "\n".join(commands), 0, len(str(source or "")), {"provider": "deterministic", "model": "exact-act-preview"})]
+
+
 def ai_response_to_parts(response: ChatResponse) -> list[dict[str, Any]]:
-    snippets = parse_fenced_code_snippets(response.content)
-    parts: list[dict[str, Any]] = [
-        output_part(
-            "markdown",
-            "AI response",
-            response.content,
-            snippets=snippets,
-            metadata={"provider": response.provider, "model": response.model},
+    content = str(response.content or "")
+    provider_metadata = {"provider": response.provider, "model": response.model}
+    parts: list[dict[str, Any]] = []
+    cursor = 0
+
+    for mount_index, match in enumerate(COMPUTER_MOUNT_FENCE_RE.finditer(content), start=1):
+        leading = content[cursor:match.start()]
+        if leading.strip():
+            parts.append(
+                output_part(
+                    "markdown",
+                    "AI response",
+                    leading,
+                    snippets=parse_fenced_code_snippets(leading),
+                    metadata=provider_metadata,
+                )
+            )
+
+        source = match.group("body").strip()
+        parts.append(_computer_mount_request_part(mount_index, source, match.start(), match.end(), provider_metadata))
+        cursor = match.end()
+
+    trailing = content[cursor:]
+    if trailing.strip() or not parts:
+        parts.append(
+            output_part(
+                "markdown",
+                "AI response",
+                trailing if parts else content,
+                snippets=parse_fenced_code_snippets(trailing if parts else content),
+                metadata=provider_metadata,
+            )
         )
-    ]
+
     return parts
 
 

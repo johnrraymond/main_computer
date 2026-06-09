@@ -5065,6 +5065,69 @@
       renderChatConsoleNotebook();
       chatConsoleNotebook.querySelector(`[data-cell-id="${variants[targetIndex].id}"]`)?.scrollIntoView({block: "center"});
     }
+    function chatConsoleMountRequestPayload(part) {
+      return part?.content && typeof part.content === "object" && !Array.isArray(part.content) ? part.content : {};
+    }
+
+    function chatConsoleMountRequestCommands(payload) {
+      return Array.isArray(payload?.canonical_commands) ? payload.canonical_commands.map((item) => String(item || "")).filter(Boolean) : [];
+    }
+
+    function chatConsoleMountRequestInvalidLines(payload) {
+      return Array.isArray(payload?.invalid_lines) ? payload.invalid_lines.map((item) => String(item || "")).filter(Boolean) : [];
+    }
+
+    function renderChatConsoleMountRequestPart(part) {
+      const payload = chatConsoleMountRequestPayload(part);
+      const commands = chatConsoleMountRequestCommands(payload);
+      const invalidLines = chatConsoleMountRequestInvalidLines(payload);
+      const card = document.createElement("div");
+      card.className = "chat-mount-request-card";
+      card.dataset.mountStatus = String(payload.status || "requested_not_mounted");
+      card.dataset.mountId = String(payload.mount_id || "");
+
+      const eyebrow = document.createElement("div");
+      eyebrow.className = "chat-mount-request-eyebrow";
+      eyebrow.textContent = "Computer mount requested";
+
+      const heading = document.createElement("div");
+      heading.className = "chat-mount-request-heading";
+      const label = commands.length > 1 ? `${commands.length}-step terminal plan` : commands.length === 1 ? "terminal command" : "computer mount";
+      heading.textContent = `${label} · preview only`;
+
+      const note = document.createElement("p");
+      note.className = "chat-mount-request-note";
+      note.textContent = "The assistant requested an inline mount. This UI is showing the request only; nothing was mounted or executed.";
+
+      card.append(eyebrow, heading, note);
+
+      if (commands.length) {
+        const list = document.createElement("ol");
+        list.className = "chat-mount-request-command-list";
+        commands.forEach((command) => {
+          const item = document.createElement("li");
+          const code = document.createElement("code");
+          code.textContent = command;
+          item.append(code);
+          list.append(item);
+        });
+        card.append(list);
+      }
+
+      if (invalidLines.length) {
+        const warning = document.createElement("div");
+        warning.className = "chat-mount-request-warning";
+        warning.textContent = `Needs repair: ${invalidLines.length} non-/act line${invalidLines.length === 1 ? "" : "s"} inside the computer fence.`;
+        card.append(warning);
+      }
+
+      const meta = document.createElement("div");
+      meta.className = "chat-mount-request-meta";
+      meta.textContent = `status: ${payload.status || "requested_not_mounted"}${payload.mount_id ? ` · ${payload.mount_id}` : ""}`;
+      card.append(meta);
+      return card;
+    }
+
     function renderChatConsoleOutputPart(outputCell, part) {
       const section = document.createElement("section");
       section.className = `chat-output-part ${part.kind || "text"}`;
@@ -5074,6 +5137,9 @@
       if (part.kind === "markdown") {
         content.className = "chat-output-markdown";
         content.innerHTML = renderChatConsoleMarkdown(part.content || "");
+      } else if (part.kind === "mount_request") {
+        content.className = "chat-output-mount-request";
+        content.append(renderChatConsoleMountRequestPart(part));
       } else if (part.kind === "image" || part.kind === "plot") {
         content.className = part.kind === "plot" ? "chat-output-plot" : "chat-output-image";
         const dataUrl = part.metadata?.data_url || part.content?.data_url || "";
@@ -5108,7 +5174,29 @@
       });
       return table;
     }
+    function serializeChatConsoleMountRequestText(part) {
+      const payload = chatConsoleMountRequestPayload(part);
+      const commands = chatConsoleMountRequestCommands(payload);
+      const invalidLines = chatConsoleMountRequestInvalidLines(payload);
+      const lines = [
+        "Computer mount requested",
+        "preview only: nothing was mounted or executed",
+        `status: ${payload.status || "requested_not_mounted"}`
+      ];
+      if (payload.mount_id) lines.push(`mount id: ${payload.mount_id}`);
+      if (commands.length) {
+        lines.push("commands:");
+        commands.forEach((command, index) => lines.push(`${index + 1}. ${command}`));
+      }
+      if (invalidLines.length) {
+        lines.push("invalid lines:");
+        invalidLines.forEach((line) => lines.push(`- ${line}`));
+      }
+      return lines.join("\n");
+    }
+
     function serializeChatConsolePartContent(part) {
+      if (part?.kind === "mount_request") return serializeChatConsoleMountRequestText(part);
       if (typeof part.content === "string") return part.content;
       if (part.content === null || part.content === undefined) return "";
       return JSON.stringify(part.content, null, 2);
@@ -5141,6 +5229,8 @@
         let body = "";
         if (part.kind === "markdown") {
           body = renderChatConsoleMarkdown(part.content || "");
+        } else if (part.kind === "mount_request") {
+          body = `<pre>${escapeHtml(serializeChatConsoleMountRequestText(part))}</pre>`;
         } else if (part.kind === "image" || part.kind === "plot") {
           const dataUrl = part.metadata?.data_url || part.content?.data_url || "";
           body = dataUrl

@@ -1018,6 +1018,24 @@ class ViewportChatConsoleRoutesMixin:
                 run_id = str(body.get("run_id") or cell.get("run_id") or f"chat_ai_{int(time.time() * 1000)}").strip()
                 thread_id = self._chat_console_thread_id(body, cell)
                 log_path = self._chat_console_session_log_path(run_id)
+                preview_parts = exact_act_command_source_to_parts(source)
+                if preview_parts:
+                    output_cell = build_output_cell(cell, preview_parts, status="ok", provider="deterministic", model="exact-act-preview")
+                    output_cell.setdefault("metadata", {})
+                    output_cell["metadata"] = {
+                        **(output_cell.get("metadata") if isinstance(output_cell.get("metadata"), dict) else {}),
+                        "run_id": run_id,
+                        "thread_id": thread_id,
+                        "activity_filter": "mount_request",
+                        "deterministic_exact_act_preview": True,
+                        "no_model_call": True,
+                        "mounted": False,
+                        "executed": False,
+                    }
+                    self.server.signal("api-chat-console-exact-act-preview", command_count=len(preview_parts[0]["content"].get("canonical_commands", [])))
+                    response_json = {"ok": True, "status": "completed", "output_cell": output_cell, "run_id": run_id, "thread_id": thread_id, "log_file": str(log_path)}
+                    self._send_json(response_json)
+                    return
                 attachments = self._chat_console_evaluation_attachments(cell.get("attachments") if isinstance(cell.get("attachments"), list) else [])
                 append_text_log(
                     log_path,

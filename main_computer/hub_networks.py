@@ -251,6 +251,125 @@ def load_hub_network_registry(path: str | Path | None = None) -> HubNetworkRegis
     )
 
 
+def deployment_manifest_path(network_key: str, *, repo_root: str | Path | None = None) -> Path:
+    """Return the network-scoped deployment manifest path for runtime defaults."""
+
+    root = Path(repo_root) if repo_root is not None else Path.cwd()
+    return root / "runtime" / "deployments" / network_key / "latest.json"
+
+
+def load_network_deployment_manifest(
+    network_key: str,
+    *,
+    repo_root: str | Path | None = None,
+    manifest_path: str | Path | None = None,
+    required: bool = False,
+) -> tuple[Path, dict[str, Any]] | None:
+    """Load a network-scoped deployment manifest if it exists.
+
+    The source registry owns stable network identity.  The runtime deployment
+    manifest owns deploy-time values such as the actual RPC URL for a Coolify
+    surface.  This loader deliberately does not fall back to current.json because
+    current.json is an active pointer and can refer to a different network.
+    """
+
+    path = Path(manifest_path) if manifest_path is not None and str(manifest_path).strip() else deployment_manifest_path(network_key, repo_root=repo_root)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        if required:
+            raise HubNetworkConfigError(f"Hub network deployment manifest not found: {path}") from None
+        return None
+    except json.JSONDecodeError as exc:
+        raise HubNetworkConfigError(f"Hub network deployment manifest is not valid JSON: {path}: {exc}") from None
+    if not isinstance(payload, dict):
+        raise HubNetworkConfigError(f"Hub network deployment manifest root is not an object: {path}")
+    return path, payload
+
+
+def _manifest_chain_values(manifest: dict[str, Any], *, manifest_path: Path | None = None) -> tuple[int | None, str | None]:
+    label = str(manifest_path or "deployment manifest")
+    if str(manifest.get("schema")) != "main-computer.deployment.v1":
+        raise HubNetworkConfigError(f"Hub network deployment manifest has unexpected schema: {label}")
+    chain = manifest.get("chain")
+    if not isinstance(chain, dict):
+        raise HubNetworkConfigError(f"Hub network deployment manifest is missing chain object: {label}")
+    chain_id = _parse_int(chain.get("chain_id"), field=f"{label}.chain.chain_id", required=False)
+    rpc_url = _clean_text(chain.get("rpc_url") or chain.get("host_rpc_url"), field=f"{label}.chain.rpc_url", required=False)
+    return chain_id, rpc_url
+
+
+def profile_with_deployment_manifest_defaults(
+    profile: HubNetworkProfile,
+    manifest: dict[str, Any],
+    *,
+    manifest_path: str | Path | None = None,
+) -> HubNetworkProfile:
+    """Fill missing runnable fields from a matching deployment manifest.
+
+    A concrete source-registry value remains authoritative.  If both the profile
+    and manifest specify chain_id or chain_rpc_url, they must agree.  If the
+    profile intentionally leaves a field blank, the manifest may supply it.
+    """
+
+    path = Path(manifest_path) if manifest_path is not None and str(manifest_path).strip() else None
+    manifest_environment = str(manifest.get("environment") or "").strip()
+    if manifest_environment != profile.network_key:
+        label = f": {path}" if path else ""
+        raise HubNetworkConfigError(
+            f"Hub network deployment manifest environment {manifest_environment!r} does not match "
+            f"selected network {profile.network_key!r}{label}"
+        )
+
+    manifest_chain_id, manifest_rpc_url = _manifest_chain_values(manifest, manifest_path=path)
+
+    if profile.chain_id is not None and manifest_chain_id is not None and int(profile.chain_id) != int(manifest_chain_id):
+        label = f" in {path}" if path else ""
+        raise HubNetworkConfigError(
+            f"Hub network deployment manifest chain_id {manifest_chain_id} does not match "
+            f"selected network {profile.network_key!r} chain_id {profile.chain_id}{label}"
+        )
+    if profile.chain_rpc_url and manifest_rpc_url and str(profile.chain_rpc_url) != str(manifest_rpc_url):
+        label = f" in {path}" if path else ""
+        raise HubNetworkConfigError(
+            f"Hub network deployment manifest RPC URL {manifest_rpc_url!r} does not match "
+            f"selected network {profile.network_key!r} RPC URL {profile.chain_rpc_url!r}{label}"
+        )
+
+    return profile.with_overrides(
+        chain_id=profile.chain_id if profile.chain_id is not None else manifest_chain_id,
+        chain_rpc_url=profile.chain_rpc_url or manifest_rpc_url,
+    )
+
+
+def resolve_profile_runtime_defaults(
+    profile: HubNetworkProfile,
+    *,
+    repo_root: str | Path | None = None,
+    manifest_path: str | Path | None = None,
+) -> HubNetworkProfile:
+    """Fill missing runnable profile values from runtime/deployments/<network>/latest.json.
+
+    This is intentionally opt-in-by-need: local profiles such as dev/test already
+    have concrete loopback RPC values and are not affected by stale runtime files.
+    Dynamic profiles such as testnet/main can become runnable after deployment
+    without copying or editing hub_networks.json.
+    """
+
+    if profile.chain_id is not None and profile.chain_rpc_url and not manifest_path:
+        return profile
+    loaded = load_network_deployment_manifest(
+        profile.network_key,
+        repo_root=repo_root,
+        manifest_path=manifest_path,
+        required=bool(manifest_path),
+    )
+    if loaded is None:
+        return profile
+    path, manifest = loaded
+    return profile_with_deployment_manifest_defaults(profile, manifest, manifest_path=path)
+
+
 def env_hub_network_name() -> str | None:
     value = os.environ.get("MAIN_COMPUTER_HUB_NETWORK") or os.environ.get("MAIN_COMPUTER_NETWORK")
     if value and value.strip():

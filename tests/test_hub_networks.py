@@ -23,10 +23,11 @@ class HubNetworkRegistryTests(unittest.TestCase):
         registry = load_hub_network_registry()
 
         self.assertEqual(registry.default_network, "dev")
-        self.assertEqual(set(registry.networks), {"dev", "test", "main"})
+        self.assertEqual(set(registry.networks), {"dev", "test", "testnet", "main"})
 
         dev = registry.get("dev")
         test = registry.get("test")
+        testnet = registry.get("testnet")
         main = registry.get("main")
 
         self.assertEqual(dev.chain_id, 42424242)
@@ -38,6 +39,12 @@ class HubNetworkRegistryTests(unittest.TestCase):
         self.assertEqual(test.chain_rpc_url, "http://127.0.0.1:30010")
         self.assertEqual(test.hub_port, 8780)
         self.assertEqual(test.hub_runtime_dir, Path("runtime/hub/test"))
+
+        self.assertEqual(testnet.kind, "testnet")
+        self.assertEqual(testnet.chain_id, 42424241)
+        self.assertIsNone(testnet.chain_rpc_url)
+        self.assertEqual(testnet.hub_port, 8785)
+        self.assertEqual(testnet.hub_runtime_dir, Path("runtime/hub/testnet"))
 
         self.assertEqual(main.kind, "mainnet")
         self.assertIsNone(main.chain_id)
@@ -79,6 +86,59 @@ class HubNetworkRegistryTests(unittest.TestCase):
         self.assertEqual(config.chain_id_source, "hub-network:test")
         self.assertEqual(config.energy_chain_rpc_url, "http://127.0.0.1:30010")
         self.assertEqual(config.energy_chain_id, 42424241)
+
+    def test_testnet_network_uses_runtime_deployment_manifest_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            manifest_path = root / "runtime" / "deployments" / "testnet" / "latest.json"
+            manifest_path.parent.mkdir(parents=True)
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "main-computer.deployment.v1",
+                        "environment": "testnet",
+                        "chain": {
+                            "chain_id": 42424241,
+                            "rpc_url": "http://198.199.75.153:30010",
+                        },
+                        "contracts": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(root)
+                with patch.dict(os.environ, {}, clear=True):
+                    config = _config_from_args(_hub_args("--network", "testnet"))
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(config.hub_network, "testnet")
+        self.assertEqual(config.hub_network_display_name, "Main Computer Coolify Testnet")
+        self.assertEqual(config.hub_network_kind, "testnet")
+        self.assertEqual(config.hub_bind_port, 8785)
+        self.assertEqual(config.hub_url, "http://127.0.0.1:8785")
+        self.assertEqual(config.hub_root, Path("runtime/hub/testnet"))
+        self.assertEqual(config.chain_rpc_url, "http://198.199.75.153:30010")
+        self.assertEqual(config.chain_id, 42424241)
+        self.assertEqual(config.chain_rpc_url_source, "hub-network:testnet")
+        self.assertEqual(config.chain_id_source, "hub-network:testnet")
+
+    def test_testnet_network_is_not_runnable_until_manifest_or_override_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(tempdir)
+                with patch.dict(os.environ, {}, clear=True):
+                    with self.assertRaises(HubNetworkConfigError) as raised:
+                        _config_from_args(_hub_args("--network", "testnet"))
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertIn("not runnable", str(raised.exception))
+        self.assertIn("chain_rpc_url", str(raised.exception))
 
     def test_command_line_overrides_every_runtime_network_field(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
