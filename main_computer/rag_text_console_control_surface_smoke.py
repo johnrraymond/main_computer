@@ -50,7 +50,7 @@ Environment:
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 import hashlib
 import json
 import os
@@ -60,11 +60,6 @@ import sys
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
 
 TEXT_CONSOLE_SURFACE = "text_console"
@@ -88,15 +83,10 @@ PLAN_AUTO_RUN_STEP_LIMITS = {
     "relaxed": 8,
 }
 DEFAULT_PLAN_REQUEST = "now run git status and then run the tests"
-DEFAULT_CHAT_PATHWAY_SETUP_REQUESTS = (
-    "hi",
-    "What project is active?",
-)
-DEFAULT_CHAT_PATHWAY_CONTROL_REQUEST = (
+DEFAULT_CHAT_CONSOLE_MOUNT_REQUEST = (
     "Use a computer mount and request Terminal to list the files in main_computer. "
     "Do not just describe the files."
 )
-
 
 
 APP_CAPABILITY_REGISTRY: dict[str, Any] = {
@@ -394,7 +384,7 @@ class SmokeReport:
     out_of_blue_mount_payload: dict[str, Any]
     out_of_blue_inline_render_blocks: list[dict[str, Any]]
     out_of_blue_rag_packet: dict[str, Any]
-    chat_pathway_turn_reports: list[dict[str, Any]]
+    chat_console_full_context_smoke: list[dict[str, Any]]
     inert_prose_blocks: list[dict[str, Any]]
     warnings: list[str]
     failures: list[str]
@@ -1260,317 +1250,6 @@ def format_ai_response_debug(
             ]
         )
     return "\n".join(lines)
-
-
-
-def _message_history_preview(messages: list[Any]) -> list[dict[str, Any]]:
-    preview: list[dict[str, Any]] = []
-    for index, message in enumerate(messages, start=1):
-        role = str(getattr(message, "role", "") or "")
-        content = str(getattr(message, "content", "") or "")
-        attachments = getattr(message, "attachments", None)
-        preview.append(
-            {
-                "index": index,
-                "role": role,
-                "content_chars": len(content),
-                "content_preview": one_line(content, limit=500),
-                "attachment_count": len(attachments) if isinstance(attachments, list) else 0,
-            }
-        )
-    return preview
-
-
-def call_chat_console_ai_pathway(
-    *,
-    base_url: str,
-    model: str,
-    request_text: str,
-    timeout: float,
-    think: bool | str | None,
-    debug_label: str,
-) -> dict[str, Any]:
-    """Call Ollama through the same message/provider path used by chat-console AI cells.
-
-    This intentionally does not use the stricter smoke-specific control prompt or
-    structured JSON user payload. It builds the router context + notebook prompt
-    messages the UI subprocess builds, then lets the normal OllamaProvider.chat
-    streaming path produce the assistant response.
-    """
-
-    from main_computer.chat_console import ai_response_to_parts, build_notebook_ai_messages
-    from main_computer.config import MainComputerConfig
-    from main_computer.models import ChatMessage
-    from main_computer.router import MainComputer, SYSTEM_PROMPT as ROUTER_SYSTEM_PROMPT
-
-    config = MainComputerConfig.from_env()
-    config = replace(
-        config,
-        provider="ollama",
-        model=model,
-        ollama_base_url=base_url,
-        ollama_timeout_s=timeout,
-        ollama_think=think if think is not None else config.ollama_think,
-        workspace=Path.cwd(),
-    )
-    computer = MainComputer.build(config)
-    provider = getattr(computer, "provider", None)
-    if provider is None or not hasattr(provider, "chat"):
-        raise AssertionError("chat-console pathway smoke could not build an Ollama chat provider")
-
-    context_pack = computer.context_pack(request_text)
-    web_search_context, web_search_text = computer._web_search_context(request_text)
-    messages = [
-        ChatMessage(role="system", content=ROUTER_SYSTEM_PROMPT),
-        ChatMessage(role="system", content=context_pack.text),
-        *([ChatMessage(role="system", content=web_search_text)] if web_search_text else []),
-        *build_notebook_ai_messages(request_text, []),
-    ]
-    response = provider.chat(messages)
-    content = str(getattr(response, "content", "") or "")
-    output_parts = ai_response_to_parts(response)
-    mount_request_parts = [part for part in output_parts if part.get("kind") == "mount_request"]
-    diagnostics = assistant_control_message_diagnostics(content)
-
-    return {
-        "label": debug_label,
-        "request": request_text,
-        "provider": str(getattr(response, "provider", "") or ""),
-        "model": str(getattr(response, "model", "") or ""),
-        "content": content,
-        "content_chars": len(content),
-        "diagnostics": diagnostics,
-        "message_history": _message_history_preview(messages),
-        "web_search": web_search_context,
-        "workspace_context": {
-            "manifest_chars": getattr(context_pack, "manifest_chars", None),
-            "evidence_count": len(getattr(context_pack, "evidence", []) or []),
-        },
-        "output_parts": output_parts,
-        "mount_request_parts": mount_request_parts,
-        "mount_request_part_count": len(mount_request_parts),
-        "metadata": getattr(response, "metadata", {}) if isinstance(getattr(response, "metadata", {}), dict) else {},
-    }
-
-
-def synthetic_chat_console_ai_pathway_report(
-    *,
-    request_text: str,
-    debug_label: str,
-    content: str,
-    provider: str = "offline-fixture",
-    model: str = "offline-fixture",
-) -> dict[str, Any]:
-    from main_computer.chat_console import ai_response_to_parts
-    from main_computer.models import ChatResponse
-
-    response = ChatResponse(content=content, provider=provider, model=model, metadata={})
-    output_parts = ai_response_to_parts(response)
-    mount_request_parts = [part for part in output_parts if part.get("kind") == "mount_request"]
-    return {
-        "label": debug_label,
-        "request": request_text,
-        "provider": provider,
-        "model": model,
-        "content": content,
-        "content_chars": len(content),
-        "diagnostics": assistant_control_message_diagnostics(content),
-        "message_history": [],
-        "web_search": {"offline": True},
-        "workspace_context": {"offline": True},
-        "output_parts": output_parts,
-        "mount_request_parts": mount_request_parts,
-        "mount_request_part_count": len(mount_request_parts),
-        "metadata": {},
-    }
-
-
-def validate_chat_pathway_turn_report(
-    report: dict[str, Any],
-    *,
-    expect_mount: bool,
-    expect_terminal_commands: bool = False,
-) -> list[str]:
-    label = str(report.get("label") or "")
-    content = str(report.get("content") or "")
-    diagnostics = report.get("diagnostics") if isinstance(report.get("diagnostics"), dict) else assistant_control_message_diagnostics(content)
-    mount_request_parts = report.get("mount_request_parts") if isinstance(report.get("mount_request_parts"), list) else []
-    failures: list[str] = []
-
-    if report.get("error"):
-        failures.append(f"chat-console pathway turn {label!r} raised before producing a response: {report.get('error')}")
-        return failures
-
-    complete_computer_fence_count = int(diagnostics.get("completeComputerFenceCount") or 0)
-    content_chars = len(content)
-
-    if expect_mount:
-        if complete_computer_fence_count < 1:
-            failures.append(
-                "chat-console pathway turn "
-                f"{label!r} expected a computer mount but received none; "
-                f"content_chars={content_chars}; diagnostics={json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)}"
-            )
-        if not mount_request_parts:
-            failures.append(
-                "chat-console pathway turn "
-                f"{label!r} expected the UI part renderer to emit a mount_request part but got none"
-            )
-
-        try:
-            payload = parse_assistant_control_message(content)
-        except AssertionError as exc:
-            failures.append(f"chat-console pathway turn {label!r} could not parse a valid assistant computer mount: {exc}")
-            return failures
-
-        commands: list[str] = []
-        invalid_lines: list[str] = []
-        for mount in payload.get("computer_mounts", []):
-            commands.extend(str(command) for command in mount.get("canonicalCommands", []))
-            invalid_lines.extend(str(line) for line in mount.get("invalidLines", []))
-        if invalid_lines:
-            failures.append(f"chat-console pathway turn {label!r} had invalid lines inside computer mount: {invalid_lines!r}")
-        if not commands:
-            failures.append(f"chat-console pathway turn {label!r} produced a computer mount with no exact /act commands")
-
-        for command in commands:
-            try:
-                parsed = exact_parse_slash_command(command)
-            except Exception as exc:
-                failures.append(f"chat-console pathway turn {label!r} produced unparseable /act command {command!r}: {exc}")
-                continue
-            if expect_terminal_commands and parsed.app_id != "terminal":
-                failures.append(
-                    f"chat-console pathway turn {label!r} should request Terminal commands, "
-                    f"but parsed {command!r} as app_id={parsed.app_id!r}"
-                )
-    else:
-        if complete_computer_fence_count > 0 or mount_request_parts:
-            failures.append(
-                "chat-console pathway setup turn "
-                f"{label!r} should not request a computer mount; diagnostics="
-                f"{json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)}"
-            )
-
-    return failures
-
-
-def run_chat_pathway_mount_expectation_smoke(
-    *,
-    base_url: str,
-    model: str,
-    setup_requests: list[str],
-    control_request: str,
-    timeout: float,
-    think: bool | str | None,
-    offline: bool,
-) -> tuple[list[dict[str, Any]], list[str]]:
-    """Run a scripted UI-chat-path smoke with per-turn mount expectations."""
-
-    turns: list[dict[str, Any]] = [
-        {
-            "label": f"chat setup turn {index}",
-            "request": request,
-            "expect_mount": False,
-            "expect_terminal_commands": False,
-        }
-        for index, request in enumerate(setup_requests, start=1)
-    ]
-    turns.append(
-        {
-            "label": "chat terminal mount request turn",
-            "request": control_request,
-            "expect_mount": True,
-            "expect_terminal_commands": True,
-        }
-    )
-
-    reports: list[dict[str, Any]] = []
-    failures: list[str] = []
-
-    for turn in turns:
-        label = str(turn["label"])
-        request_text = str(turn["request"])
-        if offline:
-            if turn["expect_mount"]:
-                content_payload = assistant_message_from_commands(
-                    commands=['/act terminal run "dir main_computer" --cwd repo-root'],
-                    leading_text="I'll request a terminal mount to list the project files.",
-                    trailing_text="This offline fixture only proves the parser/render contract.",
-                )
-                content = str(content_payload.get("message") or "")
-            else:
-                content = "System online. I can help with the current workspace."
-            report = synthetic_chat_console_ai_pathway_report(
-                request_text=request_text,
-                debug_label=label,
-                content=content,
-            )
-        else:
-            try:
-                report = call_chat_console_ai_pathway(
-                    base_url=base_url,
-                    model=model,
-                    request_text=request_text,
-                    timeout=timeout,
-                    think=think,
-                    debug_label=label,
-                )
-            except Exception as exc:
-                report = {
-                    "label": label,
-                    "request": request_text,
-                    "expect_mount": bool(turn["expect_mount"]),
-                    "error": repr(exc),
-                    "content": "",
-                    "content_chars": 0,
-                    "diagnostics": assistant_control_message_diagnostics(""),
-                    "output_parts": [],
-                    "mount_request_parts": [],
-                    "mount_request_part_count": 0,
-                }
-
-        report["expect_mount"] = bool(turn["expect_mount"])
-        report["expect_terminal_commands"] = bool(turn["expect_terminal_commands"])
-        reports.append(report)
-        failures.extend(
-            validate_chat_pathway_turn_report(
-                report,
-                expect_mount=bool(turn["expect_mount"]),
-                expect_terminal_commands=bool(turn["expect_terminal_commands"]),
-            )
-        )
-
-    return reports, failures
-
-
-def call_live_control_payload_or_fixture(
-    *,
-    base_url: str,
-    model: str,
-    request_text: str,
-    terminal_context: dict[str, Any] | None,
-    timeout: float,
-    think: bool | None,
-    debug_label: str,
-    print_ai_response: bool,
-    fallback_payload: dict[str, Any],
-) -> tuple[dict[str, Any], str, str | None]:
-    try:
-        payload, raw = call_ollama_chat(
-            base_url=base_url,
-            model=model,
-            request_text=request_text,
-            terminal_context=terminal_context,
-            timeout=timeout,
-            think=think,
-            debug_label=debug_label,
-            print_ai_response=print_ai_response,
-        )
-        return payload, raw, None
-    except AssertionError as exc:
-        return fallback_payload, "", str(exc)
-
 
 
 def commands_from_computer_fence(source: str) -> tuple[list[str], list[str]]:
@@ -3015,6 +2694,381 @@ Those lines are documentation only, not a broker-generated command plan.
 """
 
 
+def chat_console_context_section_breakdown(context_text: str) -> dict[str, Any]:
+    """Return coarse character counts for the real chat-console context pack.
+
+    This is intentionally diagnostic only. It does not trim, repair, or synthesize
+    model input. The point is to expose exactly what the UI-style model call is
+    feeding to Ollama when a smoke turn succeeds or fails.
+    """
+    section_names = {
+        "Deterministic workspace context pack:": "header",
+        "Priority main computer projects:": "priority_projects",
+        "Matched projects:": "matched_projects",
+        "Pinned project guidance:": "pinned_project_guidance",
+        "Pinned guidance excerpts:": "pinned_guidance_excerpts",
+        "Matched files:": "matched_files",
+        "Matched file excerpts:": "matched_file_excerpts",
+        "Main computer file manifest:": "main_computer_file_manifest",
+    }
+    counts: dict[str, int] = {}
+    line_counts: dict[str, int] = {}
+    current = "preamble"
+    for raw_line in str(context_text or "").splitlines(keepends=True):
+        stripped = raw_line.strip()
+        if stripped in section_names:
+            current = section_names[stripped]
+        counts[current] = counts.get(current, 0) + len(raw_line)
+        line_counts[current] = line_counts.get(current, 0) + 1
+    return {
+        "total_chars": len(str(context_text or "")),
+        "section_chars": counts,
+        "section_lines": line_counts,
+    }
+
+
+def chat_console_context_evidence_breakdown(evidence: Any) -> dict[str, Any]:
+    items = list(evidence or [])
+    by_kind: dict[str, dict[str, Any]] = {}
+    paths_by_kind: dict[str, list[str]] = {}
+    for item in items:
+        kind = str(getattr(item, "kind", "") or "unknown")
+        path = str(getattr(item, "path", "") or "")
+        chars = int(getattr(item, "chars", 0) or 0)
+        bucket = by_kind.setdefault(kind, {"count": 0, "chars": 0})
+        bucket["count"] += 1
+        bucket["chars"] += chars
+        if path:
+            paths_by_kind.setdefault(kind, [])
+            if len(paths_by_kind[kind]) < 40:
+                paths_by_kind[kind].append(path)
+    return {
+        "total_items": len(items),
+        "by_kind": by_kind,
+        "paths_by_kind": paths_by_kind,
+    }
+
+
+def chat_console_message_payloads(messages: list[Any]) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for index, message in enumerate(messages):
+        content = str(getattr(message, "content", "") or "")
+        attachments = list(getattr(message, "attachments", []) or [])
+        payloads.append(
+            {
+                "index": index,
+                "role": str(getattr(message, "role", "") or ""),
+                "content": content,
+                "content_chars": len(content),
+                "attachment_count": len(attachments),
+            }
+        )
+    return payloads
+
+
+def chat_console_request_bytes(messages: list[Any], *, model: str, think: bool | None) -> int:
+    request_messages = [
+        {"role": str(getattr(message, "role", "") or ""), "content": str(getattr(message, "content", "") or "")}
+        for message in messages
+    ]
+    payload: dict[str, Any] = {"model": model, "messages": request_messages, "stream": True}
+    if think is not None:
+        payload["think"] = think
+    else:
+        payload["think"] = None
+    return len(json.dumps(payload).encode("utf-8"))
+
+
+def terminal_ollama_event_metrics(metadata: dict[str, Any]) -> dict[str, Any]:
+    events = metadata.get("raw_stream_events") if isinstance(metadata, dict) else []
+    if not isinstance(events, list):
+        events = []
+    terminal_event: dict[str, Any] = {}
+    for event in events:
+        if isinstance(event, dict) and event.get("done") is True:
+            terminal_event = event
+    def as_int(key: str) -> int:
+        try:
+            return int(terminal_event.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+    return {
+        "done": bool(terminal_event.get("done")) if terminal_event else False,
+        "done_reason": str(terminal_event.get("done_reason") or "") if terminal_event else "",
+        "prompt_eval_count": as_int("prompt_eval_count"),
+        "eval_count": as_int("eval_count"),
+        "total_duration": as_int("total_duration"),
+        "line_count": len(events),
+        "raw_stream_events": events,
+    }
+
+
+def build_real_chat_console_model_input(
+    *,
+    request_text: str,
+    base_url: str,
+    model: str,
+    timeout: float,
+    think: bool | None,
+) -> tuple[Any, Any, list[Any], dict[str, Any]]:
+    """Build the same full-context message stack used by chat_console_ai.
+
+    This deliberately uses the application modules instead of the small smoke
+    control prompt. The smoke should fail if this real path starves the model
+    context or cannot produce the expected mount.
+    """
+    repo_root = Path.cwd()
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
+    from main_computer.chat_console import build_notebook_ai_messages
+    from main_computer.config import MainComputerConfig
+    from main_computer.models import ChatMessage
+    from main_computer.router import MainComputer, SYSTEM_PROMPT as ROUTER_SYSTEM_PROMPT
+
+    config = MainComputerConfig(
+        workspace=repo_root,
+        provider="ollama",
+        model=model,
+        ollama_base_url=base_url,
+        ollama_timeout_s=timeout,
+        ollama_think=think,
+    )
+    computer = MainComputer.build(config)
+    context_pack = computer.context_pack(request_text)
+    web_search_context, web_search_text = computer._web_search_context(request_text)
+    messages = [
+        ChatMessage(role="system", content=ROUTER_SYSTEM_PROMPT),
+        ChatMessage(role="system", content=context_pack.text),
+        *([ChatMessage(role="system", content=web_search_text)] if web_search_text else []),
+        *build_notebook_ai_messages(request_text, []),
+    ]
+
+    catalog = getattr(computer, "catalog", None)
+    terms: list[str] = []
+    project_terms: list[str] = []
+    file_terms: list[str] = []
+    matched_file_paths: list[str] = []
+    matched_project_names: list[str] = []
+    try:
+        terms = list(catalog._context_terms(request_text)) if catalog is not None else []
+        from main_computer.catalog import PRIORITY_PROJECTS
+        project_terms = [
+            term for term in terms if "." not in term and (len(term) >= 5 or "_" in term or "-" in term)
+        ]
+        file_terms = [term for term in terms if term not in PRIORITY_PROJECTS]
+        matched_files = catalog._context_file_matches(file_terms, max_matches=12) if catalog is not None else []
+        workspace = Path(getattr(catalog, "workspace", Path.cwd()))
+        matched_file_paths = [path.relative_to(workspace).as_posix() for path in matched_files]
+        matched_projects = [
+            project for project in catalog.list_projects()
+            if any(term in project.name.lower() for term in project_terms)
+        ] if catalog is not None else []
+        matched_project_names = [project.name for project in matched_projects[:12]]
+    except Exception as exc:
+        matched_file_paths = [f"[could not inspect matcher internals: {exc!r}]"]
+
+    message_payloads = chat_console_message_payloads(messages)
+    diagnostics = {
+        "request_text": request_text,
+        "workspace": str(repo_root),
+        "context_pack_text": str(getattr(context_pack, "text", "") or ""),
+        "context_pack_chars": len(str(getattr(context_pack, "text", "") or "")),
+        "context_pack_manifest_chars": int(getattr(context_pack, "manifest_chars", 0) or 0),
+        "context_pack_evidence": [asdict(item) for item in list(getattr(context_pack, "evidence", ()) or ())],
+        "context_section_breakdown": chat_console_context_section_breakdown(str(getattr(context_pack, "text", "") or "")),
+        "context_evidence_breakdown": chat_console_context_evidence_breakdown(getattr(context_pack, "evidence", ())),
+        "context_terms": terms,
+        "project_terms": project_terms,
+        "file_terms": file_terms,
+        "matcher_matched_projects": matched_project_names,
+        "matcher_matched_files": matched_file_paths,
+        "web_search": web_search_context,
+        "web_search_text": web_search_text,
+        "messages": message_payloads,
+        "message_count": len(messages),
+        "message_chars": [item["content_chars"] for item in message_payloads],
+        "system_prompt_chars": sum(item["content_chars"] for item in message_payloads if item["role"] == "system"),
+        "input_chars": sum(item["content_chars"] for item in message_payloads),
+        "request_bytes_estimate": chat_console_request_bytes(messages, model=model, think=think),
+    }
+    return computer, context_pack, messages, diagnostics
+
+
+def run_chat_console_full_context_turn(
+    *,
+    label: str,
+    request_text: str,
+    expect_mount: bool,
+    base_url: str,
+    model: str,
+    timeout: float,
+    think: bool | None,
+    offline_contract_only: bool,
+ ) -> tuple[dict[str, Any], list[str]]:
+    turn_failures: list[str] = []
+    try:
+        computer, context_pack, messages, diagnostics = build_real_chat_console_model_input(
+            request_text=request_text,
+            base_url=base_url,
+            model=model,
+            timeout=timeout,
+            think=think,
+        )
+    except Exception as exc:
+        return (
+            {
+                "label": label,
+                "request_text": request_text,
+                "expect_mount": expect_mount,
+                "ok": False,
+                "stage": "build_real_chat_console_model_input",
+                "error": repr(exc),
+            },
+            [f"chat-console full-context turn {label!r} could not build real model input: {exc!r}"],
+        )
+
+    record: dict[str, Any] = {
+        "label": label,
+        "request_text": request_text,
+        "expect_mount": expect_mount,
+        "model_input": diagnostics,
+    }
+    if offline_contract_only:
+        record.update({"ok": True, "skipped_ollama": True, "reason": "offline_contract_only"})
+        return record, turn_failures
+
+    provider = getattr(computer, "provider", None)
+    try:
+        if provider is not None:
+            for attr, value in {
+                "diagnostic_run_id": f"smoke_chat_console_full_context_{normalize(label).replace('-', '_')}",
+                "diagnostic_label": f"chat_console_full_context_smoke:{label}",
+            }.items():
+                try:
+                    setattr(provider, attr, value)
+                except Exception:
+                    pass
+        response = provider.chat(messages) if provider is not None else computer.provider.chat(messages)
+    except Exception as exc:
+        record.update({"ok": False, "stage": "provider.chat", "error": repr(exc)})
+        return record, [f"chat-console full-context turn {label!r} provider call failed: {exc!r}"]
+
+    content = str(getattr(response, "content", "") or "")
+    metadata = getattr(response, "metadata", {}) if isinstance(getattr(response, "metadata", {}), dict) else {}
+    terminal_metrics = terminal_ollama_event_metrics(metadata)
+    diagnostics_out = assistant_control_message_diagnostics(content)
+    parsed_payload: dict[str, Any] | None = None
+    parse_error = ""
+    try:
+        parsed_payload = parse_assistant_control_message(content)
+    except Exception as exc:
+        parse_error = str(exc)
+
+    record.update(
+        {
+            "ok": True,
+            "skipped_ollama": False,
+            "provider": getattr(response, "provider", ""),
+            "model": getattr(response, "model", ""),
+            "response": content,
+            "response_chars": len(content),
+            "assistant_message_diagnostics": diagnostics_out,
+            "ollama_terminal_metrics": terminal_metrics,
+            "response_metadata": metadata,
+            "parsed_assistant_payload": parsed_payload,
+            "parse_error": parse_error,
+        }
+    )
+
+    done_reason = terminal_metrics.get("done_reason")
+    eval_count = int(terminal_metrics.get("eval_count") or 0)
+    response_chars = len(content)
+    if done_reason == "length":
+        turn_failures.append(
+            "chat-console full-context turn "
+            f"{label!r} exhausted the model context: done_reason='length', "
+            f"prompt_eval_count={terminal_metrics.get('prompt_eval_count')}, "
+            f"eval_count={eval_count}, response={content!r}. "
+            "This smoke uses the real chat-console context pack; a one-token answer here is a context budget failure."
+        )
+    elif eval_count <= 1 and response_chars <= 5:
+        turn_failures.append(
+            "chat-console full-context turn "
+            f"{label!r} produced a suspicious one-token response: "
+            f"eval_count={eval_count}, response={content!r}, done_reason={done_reason!r}."
+        )
+
+    has_mount = bool(
+        parsed_payload
+        and isinstance(parsed_payload.get("computer_mounts"), list)
+        and parsed_payload.get("computer_mounts")
+    )
+    if expect_mount and not has_mount:
+        turn_failures.append(
+            f"chat-console full-context turn {label!r} expected a model-produced ```computer mount "
+            f"with exact /act lines, but got none. diagnostics={diagnostics_out!r}; parse_error={parse_error!r}"
+        )
+    if not expect_mount and has_mount:
+        turn_failures.append(
+            f"chat-console full-context setup turn {label!r} unexpectedly produced a computer mount: {parsed_payload!r}"
+        )
+
+    record["ok"] = not turn_failures
+    return record, turn_failures
+
+
+def run_chat_console_full_context_smoke(
+    *,
+    base_url: str,
+    model: str,
+    timeout: float,
+    think: bool | None,
+    offline_contract_only: bool,
+    mount_request: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Run the non-cheating UI-golden-path smoke.
+
+    Every turn uses the same chat-console model input construction as the page:
+    router prompt + deterministic workspace context pack + notebook prompt + user
+    message. The expectations belong to the smoke fixture only; runtime code
+    still merely parses whatever assistant text the model returns.
+    """
+    script = [
+        {
+            "label": "setup greeting",
+            "request_text": "hi",
+            "expect_mount": False,
+        },
+        {
+            "label": "setup workspace orientation",
+            "request_text": "What project is active?",
+            "expect_mount": False,
+        },
+        {
+            "label": "terminal mount request",
+            "request_text": mount_request,
+            "expect_mount": True,
+        },
+    ]
+    records: list[dict[str, Any]] = []
+    failures: list[str] = []
+    for turn in script:
+        record, turn_failures = run_chat_console_full_context_turn(
+            label=turn["label"],
+            request_text=turn["request_text"],
+            expect_mount=bool(turn["expect_mount"]),
+            base_url=base_url,
+            model=model,
+            timeout=timeout,
+            think=think,
+            offline_contract_only=offline_contract_only,
+        )
+        records.append(record)
+        failures.extend(turn_failures)
+    return records, failures
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="RAG text-console terminal-context smoke test.")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Ollama base URL. Default: %(default)s")
@@ -3025,24 +3079,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--contextual-request", default=DEFAULT_CONTEXTUAL_REQUEST, help="Natural follow-up request to resolve using active terminal context.")
     parser.add_argument("--out-of-blue-request", default=DEFAULT_OUT_OF_BLUE_REQUEST, help="Natural request to resolve without any terminal context.")
     parser.add_argument("--plan-request", default=DEFAULT_PLAN_REQUEST, help="Natural multi-command request that should resolve to a command_plan.")
-    parser.add_argument(
-        "--chat-pathway-setup-request",
-        action="append",
-        default=None,
-        help=(
-            "Setup request for the UI chat-console pathway smoke. May be supplied multiple "
-            "times. These turns must not produce computer mounts. Defaults to a greeting "
-            "and workspace-orientation request."
-        ),
-    )
-    parser.add_argument(
-        "--chat-pathway-control-request",
-        default=DEFAULT_CHAT_PATHWAY_CONTROL_REQUEST,
-        help=(
-            "Final UI chat-console pathway request that should make the model produce a "
-            "previewable ```computer mount with exact /act Terminal command(s)."
-        ),
-    )
     parser.add_argument("--timeout", type=float, default=120.0, help="Ollama HTTP timeout in seconds.")
     parser.add_argument(
         "--think",
@@ -3069,6 +3105,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "Failures still print the full AI response and fence diagnostics."
         ),
     )
+    parser.add_argument(
+        "--chat-console-mount-request",
+        default=DEFAULT_CHAT_CONSOLE_MOUNT_REQUEST,
+        help=(
+            "Final real chat-console full-context smoke turn. This is a smoke fixture "
+            "expectation only; runtime code must not synthesize /act from prose."
+        ),
+    )
+    parser.add_argument(
+        "--skip-chat-console-full-context-smoke",
+        action="store_true",
+        help=(
+            "Skip the real chat-console full-context live smoke. Use only when debugging "
+            "the older isolated control-contract smoke."
+        ),
+    )
     return parser
 
 
@@ -3084,12 +3136,7 @@ def main(argv: list[str] | None = None) -> int:
     warnings: list[str] = []
     failures: list[str] = []
     raw_ollama_responses: list[str] = []
-    chat_pathway_turn_reports: list[dict[str, Any]] = []
-    chat_pathway_setup_requests = [
-        str(item or "").strip()
-        for item in (args.chat_pathway_setup_request or list(DEFAULT_CHAT_PATHWAY_SETUP_REQUESTS))
-        if str(item or "").strip()
-    ]
+    chat_console_full_context_smoke: list[dict[str, Any]] = []
 
     failures.extend(validate_assistant_control_message_parser())
 
@@ -3245,30 +3292,9 @@ def main(argv: list[str] | None = None) -> int:
         out_of_blue_model_payload = deterministic_model_payload_for_offline_contract(args.out_of_blue_request, make_empty_terminal_context())
         plan_model_payload = deterministic_model_payload_for_offline_contract(args.plan_request, git_context)
         interrupt_model_payload = deterministic_model_payload_for_offline_contract("stop that command", git_context)
-        chat_pathway_turn_reports, chat_pathway_failures = run_chat_pathway_mount_expectation_smoke(
-            base_url=args.base_url,
-            model=args.model,
-            setup_requests=chat_pathway_setup_requests,
-            control_request=args.chat_pathway_control_request,
-            timeout=args.timeout,
-            think=think,
-            offline=True,
-        )
-        failures.extend(chat_pathway_failures)
         used_ollama = False
     else:
-        chat_pathway_turn_reports, chat_pathway_failures = run_chat_pathway_mount_expectation_smoke(
-            base_url=args.base_url,
-            model=args.model,
-            setup_requests=chat_pathway_setup_requests,
-            control_request=args.chat_pathway_control_request,
-            timeout=args.timeout,
-            think=think,
-            offline=False,
-        )
-        failures.extend(chat_pathway_failures)
-
-        contextual_model_payload, raw, error = call_live_control_payload_or_fixture(
+        contextual_model_payload, raw = call_ollama_chat(
             base_url=args.base_url,
             model=args.model,
             request_text=args.contextual_request,
@@ -3277,14 +3303,9 @@ def main(argv: list[str] | None = None) -> int:
             think=think,
             debug_label="contextual terminal reuse",
             print_ai_response=not args.no_print_ai_responses,
-            fallback_payload=deterministic_model_payload_for_offline_contract(args.contextual_request, git_context),
         )
-        if raw:
-            raw_ollama_responses.append(raw)
-        if error:
-            failures.append(f"structured smoke Ollama call failed for contextual terminal reuse: {error}")
-
-        out_of_blue_model_payload, raw, error = call_live_control_payload_or_fixture(
+        raw_ollama_responses.append(raw)
+        out_of_blue_model_payload, raw = call_ollama_chat(
             base_url=args.base_url,
             model=args.model,
             request_text=args.out_of_blue_request,
@@ -3293,14 +3314,9 @@ def main(argv: list[str] | None = None) -> int:
             think=think,
             debug_label="out-of-blue terminal creation",
             print_ai_response=not args.no_print_ai_responses,
-            fallback_payload=deterministic_model_payload_for_offline_contract(args.out_of_blue_request, make_empty_terminal_context()),
         )
-        if raw:
-            raw_ollama_responses.append(raw)
-        if error:
-            failures.append(f"structured smoke Ollama call failed for out-of-blue terminal creation: {error}")
-
-        plan_model_payload, raw, error = call_live_control_payload_or_fixture(
+        raw_ollama_responses.append(raw)
+        plan_model_payload, raw = call_ollama_chat(
             base_url=args.base_url,
             model=args.model,
             request_text=args.plan_request,
@@ -3309,14 +3325,9 @@ def main(argv: list[str] | None = None) -> int:
             think=think,
             debug_label="contextual terminal plan",
             print_ai_response=not args.no_print_ai_responses,
-            fallback_payload=deterministic_model_payload_for_offline_contract(args.plan_request, git_context),
         )
-        if raw:
-            raw_ollama_responses.append(raw)
-        if error:
-            failures.append(f"structured smoke Ollama call failed for contextual terminal plan: {error}")
-
-        interrupt_model_payload, raw, error = call_live_control_payload_or_fixture(
+        raw_ollama_responses.append(raw)
+        interrupt_model_payload, raw = call_ollama_chat(
             base_url=args.base_url,
             model=args.model,
             request_text="stop that command",
@@ -3325,13 +3336,29 @@ def main(argv: list[str] | None = None) -> int:
             think=think,
             debug_label="terminal interrupt",
             print_ai_response=not args.no_print_ai_responses,
-            fallback_payload=deterministic_model_payload_for_offline_contract("stop that command", git_context),
         )
-        if raw:
-            raw_ollama_responses.append(raw)
-        if error:
-            failures.append(f"structured smoke Ollama call failed for terminal interrupt: {error}")
+        raw_ollama_responses.append(raw)
         used_ollama = True
+
+    if args.skip_chat_console_full_context_smoke:
+        warnings.append("skip_chat_console_full_context_smoke was used; the real UI-style context path was not tested")
+        chat_console_full_context_smoke = [
+            {
+                "ok": True,
+                "skipped": True,
+                "reason": "--skip-chat-console-full-context-smoke",
+            }
+        ]
+    else:
+        chat_console_full_context_smoke, chat_context_failures = run_chat_console_full_context_smoke(
+            base_url=args.base_url,
+            model=args.model,
+            timeout=args.timeout,
+            think=think,
+            offline_contract_only=args.offline_contract_only,
+            mount_request=args.chat_console_mount_request,
+        )
+        failures.extend(chat_context_failures)
 
     contextual_mount_payload: dict[str, Any] = {}
     out_of_blue_mount_payload: dict[str, Any] = {}
@@ -3689,7 +3716,7 @@ def main(argv: list[str] | None = None) -> int:
         out_of_blue_mount_payload=out_of_blue_mount_payload,
         out_of_blue_inline_render_blocks=out_of_blue_inline_render_blocks,
         out_of_blue_rag_packet=asdict(out_of_blue_packet),
-        chat_pathway_turn_reports=chat_pathway_turn_reports,
+        chat_console_full_context_smoke=chat_console_full_context_smoke,
         inert_prose_blocks=inert_prose_blocks,
         warnings=warnings,
         failures=failures,
@@ -3715,9 +3742,6 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print("Ambiguous terminal context packet:")
     print(json.dumps(asdict(ambiguous_packet), indent=2, sort_keys=True))
-    print()
-    print("Chat-console pathway scripted mount expectation turns:")
-    print(json.dumps(chat_pathway_turn_reports, indent=2, sort_keys=True))
     print()
     print("RAG contextual assistant message payload:")
     print(json.dumps(contextual_model_payload, indent=2, sort_keys=True))
@@ -3772,6 +3796,9 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print("Max-step policy rejection packet:")
     print(json.dumps(terminal_plan_max_step_rejection, indent=2, sort_keys=True))
+    print()
+    print("Real chat-console full-context smoke:")
+    print(json.dumps(chat_console_full_context_smoke, indent=2, sort_keys=True))
     print()
     print("Inert assistant prose blocks:")
     print(json.dumps(inert_prose_blocks, indent=2, sort_keys=True))
