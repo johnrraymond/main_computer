@@ -50,15 +50,15 @@
       },
       "contracts": {}
     },
-    "main": {
-      "network_key": "main",
+    "mainnet": {
+      "network_key": "mainnet",
       "display_name": "Main Computer Mainnet",
       "kind": "mainnet",
       "chain_id": null,
       "chain_rpc_url": null,
       "hub_host": "127.0.0.1",
       "hub_port": 8790,
-      "hub_runtime_dir": "runtime/hub/main",
+      "hub_runtime_dir": "runtime/hub/mainnet",
       "native_currency": {
         "name": "Main Computer",
         "symbol": "MC",
