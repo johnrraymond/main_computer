@@ -61,6 +61,12 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+_REPO_ROOT_FOR_IMPORTS = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT_FOR_IMPORTS) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT_FOR_IMPORTS))
+
+from main_computer.chat_console import TextConsoleConfig
+
 
 TEXT_CONSOLE_SURFACE = "text_console"
 DEFAULT_EXACT_COMMAND = "/act file manager show hidden files"
@@ -341,103 +347,8 @@ class TerminalSafetyDecision:
     reason: str
 
 
-@dataclass(frozen=True)
-class TextConsoleConfig:
-    """Smoke-local prototype for the text console's intended context owner.
-
-    This is deliberately not a production config yet. The smoke proves the shape
-    first: the text console owns its current directory, context root, and working
-    directory explicitly, and only adapts to legacy MainComputerConfig while the
-    catalog/router still require it.
-    """
-
-    current_directory: Path
-    context_root: Path
-    working_directory: Path
-    provider: str
-    model: str
-    ollama_base_url: str
-    ollama_timeout_s: float
-    ollama_think: bool | str | None
-
-    @classmethod
-    def from_repo_root(
-        cls,
-        *,
-        base_url: str,
-        model: str,
-        timeout: float,
-        think: bool | str | None,
-    ) -> "TextConsoleConfig":
-        repo_root = Path.cwd().resolve()
-        return cls(
-            current_directory=repo_root,
-            context_root=repo_root,
-            working_directory=repo_root,
-            provider="ollama",
-            model=model,
-            ollama_base_url=base_url,
-            ollama_timeout_s=timeout,
-            ollama_think=think,
-        )
-
-    def validate_repo_root(self) -> list[str]:
-        failures: list[str] = []
-        if not self.current_directory.exists():
-            failures.append(f"text console current_directory does not exist: {self.current_directory}")
-        if not self.context_root.exists():
-            failures.append(f"text console context_root does not exist: {self.context_root}")
-        if not self.working_directory.exists():
-            failures.append(f"text console working_directory does not exist: {self.working_directory}")
-        if self.context_root != self.current_directory:
-            failures.append(
-                "text console smoke prototype expected context_root to equal current_directory: "
-                f"{self.context_root} != {self.current_directory}"
-            )
-        if self.working_directory != self.current_directory:
-            failures.append(
-                "text console smoke prototype expected working_directory to equal current_directory: "
-                f"{self.working_directory} != {self.current_directory}"
-            )
-        if not (self.current_directory / "main_computer").is_dir():
-            failures.append(
-                "text console smoke must be run from the repo root; expected a main_computer/ "
-                f"package under {self.current_directory}"
-            )
-        if not (self.current_directory / "pyproject.toml").is_file():
-            failures.append(
-                "text console smoke must be run from the repo root; expected pyproject.toml "
-                f"under {self.current_directory}"
-            )
-        return failures
-
-    def to_legacy_main_computer_config(self, main_config_cls: Any) -> Any:
-        """Adapt the proven text-console config into legacy MainComputerConfig.
-
-        MainComputerConfig is not the source of truth for this smoke. It remains
-        only an adapter because MainComputer.build/catalog still accept that type.
-        """
-
-        return main_config_cls(
-            workspace=self.context_root,
-            provider=self.provider,
-            model=self.model,
-            ollama_base_url=self.ollama_base_url,
-            ollama_timeout_s=self.ollama_timeout_s,
-            ollama_think=self.ollama_think,
-        )
-
-    def to_payload(self) -> dict[str, Any]:
-        return {
-            "current_directory": str(self.current_directory),
-            "context_root": str(self.context_root),
-            "working_directory": str(self.working_directory),
-            "provider": self.provider,
-            "model": self.model,
-            "ollama_base_url": self.ollama_base_url,
-            "ollama_timeout_s": self.ollama_timeout_s,
-            "ollama_think": self.ollama_think,
-        }
+# TextConsoleConfig is now the production text-console context component.
+# The smoke imports it instead of maintaining a second lookalike implementation.
 
 
 @dataclass(frozen=True)
