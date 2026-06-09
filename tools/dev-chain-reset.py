@@ -241,8 +241,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-payout-wei", default="1000000000000000000")
     parser.add_argument("--payout-delay-blocks", default="1")
     parser.add_argument("--reset-delay-blocks", default="1")
-    parser.add_argument("--wait-timeout-s", type=float, default=30.0)
-    parser.add_argument("--deploy-timeout-s", type=float, default=120.0)
+    parser.add_argument("--wait-timeout-s", type=float, default=0.0)
+    parser.add_argument("--deploy-timeout-s", type=float, default=0.0)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument(
         "--deployment-output-dir",
@@ -840,6 +840,16 @@ def display_command(command: list[str]) -> str:
     return " ".join(command)
 
 
+def process_timeout_arg(timeout_s: float | None) -> float | None:
+    """Return a subprocess timeout, treating zero/negative values as unbounded."""
+    if timeout_s is None:
+        return None
+    timeout = float(timeout_s)
+    if timeout <= 0:
+        return None
+    return timeout
+
+
 def run_command(
     command: list[str],
     *,
@@ -854,7 +864,7 @@ def run_command(
         errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        timeout=timeout_s,
+        timeout=process_timeout_arg(timeout_s),
     )
     if echo and completed.stdout:
         print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n")
@@ -1038,10 +1048,23 @@ def remove_existing_container(args: argparse.Namespace, rid: str) -> None:
         log(f"Removed existing soft-chain container {container_name(args, rid)}")
 
 
+def timeout_deadline(timeout_s: float | None) -> float | None:
+    if timeout_s is None:
+        return None
+    timeout = float(timeout_s)
+    if timeout <= 0:
+        return None
+    return time.monotonic() + timeout
+
+
+def deadline_expired(deadline: float | None) -> bool:
+    return deadline is not None and time.monotonic() >= deadline
+
+
 def wait_for_rpc(url: str, chain_id: int, timeout_s: float) -> None:
-    deadline = time.time() + timeout_s
+    deadline = timeout_deadline(timeout_s)
     last_error: Exception | None = None
-    while time.time() < deadline:
+    while not deadline_expired(deadline):
         try:
             actual = rpc(url, "eth_chainId")
             actual_id = int(str(actual), 16)
@@ -1052,6 +1075,7 @@ def wait_for_rpc(url: str, chain_id: int, timeout_s: float) -> None:
             last_error = exc
             time.sleep(0.5)
     raise RuntimeError(f"RPC did not become ready at {url}: {last_error}")
+
 
 
 def parse_rpc_int(value: object, *, field: str) -> int:
@@ -1117,13 +1141,43 @@ def require_push0_chain(url: str, *, from_address: str = DEFAULT_DEPLOYER_ADDRES
     return gas
 
 
-def require_modern_external_chain(url: str) -> tuple[int, int]:
-    base_fee = require_eip1559_chain(url)
-    push0_gas = require_push0_chain(url)
-    return base_fee, push0_gas
+def is_final_external_chain_preflight_error(exc: Exception) -> bool:
+    message = str(exc)
+    return (
+        "external chain is not EIP-1559/London-capable" in message
+        or "external chain reported baseFeePerGas=" in message
+        or "external chain is not Shanghai/PUSH0-capable" in message
+    )
 
 
-def rpc(url: str, method: str, params: list | None = None, *, timeout_s: float = 3.0) -> object:
+def require_modern_external_chain(url: str, *, wait_timeout_s: float = 0.0) -> tuple[int, int]:
+    """Wait until the external chain passes EIP-1559 and PUSH0 preflights.
+
+    A slow QBFT network can answer one JSON-RPC request and then miss the next one
+    while validators are still settling. Treat transport timeouts as "not ready
+    yet" and retry indefinitely when wait_timeout_s <= 0.
+    """
+
+    deadline = timeout_deadline(wait_timeout_s)
+    attempt = 0
+    last_error: Exception | None = None
+    while not deadline_expired(deadline):
+        attempt += 1
+        try:
+            base_fee = require_eip1559_chain(url)
+            push0_gas = require_push0_chain(url)
+            return base_fee, push0_gas
+        except Exception as exc:  # noqa: BLE001 - operator-facing retry loop
+            if is_final_external_chain_preflight_error(exc):
+                raise
+            last_error = exc
+            if attempt == 1 or attempt % 10 == 0:
+                log(f"Waiting for external chain preflight via {url}: {exc}")
+            time.sleep(1.0)
+    raise RuntimeError(f"external chain did not pass preflight via {url}: {last_error}")
+
+
+def rpc(url: str, method: str, params: list | None = None, *, timeout_s: float = 30.0) -> object:
     payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}).encode("utf-8")
     request = Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
     with urlopen(request, timeout=timeout_s) as response:
@@ -1140,7 +1194,7 @@ def verify_deployed_contract_code(args: argparse.Namespace, rid: str, spec: Depl
     # stall on host DNS/connect retries and look like a hung deploy.
     del rid
     url = args.host_rpc_url
-    deadline = time.monotonic() + min(max(float(args.wait_timeout_s), 1.0), 5.0)
+    deadline = timeout_deadline(args.wait_timeout_s)
     last_error: Exception | None = None
     log(f"Verifying {spec.key}.code via {url}")
     while True:
@@ -1153,7 +1207,7 @@ def verify_deployed_contract_code(args: argparse.Namespace, rid: str, spec: Depl
             last_error = RuntimeError("eth_getCode returned empty code")
         except Exception as exc:  # noqa: BLE001 - deployment verification retry loop
             last_error = exc
-        if time.monotonic() >= deadline:
+        if deadline_expired(deadline):
             break
         time.sleep(0.25)
     raise RuntimeError(
@@ -1569,7 +1623,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if getattr(args, "external_chain", False):
             wait_for_rpc(args.host_rpc_url, args.chain_id, args.wait_timeout_s)
-            require_modern_external_chain(args.host_rpc_url)
+            require_modern_external_chain(args.host_rpc_url, wait_timeout_s=args.wait_timeout_s)
         else:
             ensure_network(args, rid)
             remove_existing_container(args, rid)

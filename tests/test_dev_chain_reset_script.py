@@ -630,3 +630,50 @@ def test_external_chain_dry_run_writes_test_publication_without_anvil_secrets(tm
     assert "mnemonic" not in json.dumps(current)
     assert "private_key" not in json.dumps(current)
     assert current["contracts"]["hub_credit_bridge_escrow"]["payment_asset"] == "native"
+
+
+def test_zero_timeouts_are_unbounded_for_subprocesses(monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+    seen: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        seen["timeout"] = kwargs.get("timeout")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(reset.subprocess, "run", fake_run)
+
+    reset.run_command(["echo", "ok"], timeout_s=0.0)
+
+    assert seen["timeout"] is None
+
+
+def test_external_chain_preflight_retries_transient_rpc_timeouts(monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+    monkeypatch.setattr(reset.time, "sleep", lambda _seconds: None)
+    calls: list[str] = []
+
+    def fake_rpc(url, method, params=None, *, timeout_s=30.0):
+        assert url == "http://127.0.0.1:30010"
+        calls.append(method)
+        if calls == ["eth_getBlockByNumber", "eth_estimateGas"]:
+            raise TimeoutError("timed out")
+        if method == "eth_getBlockByNumber":
+            return {"number": "0x7", "baseFeePerGas": "0x3b9aca00"}
+        if method == "eth_estimateGas":
+            return "0xd7d4"
+        raise AssertionError(f"unexpected method {method}")
+
+    monkeypatch.setattr(reset, "rpc", fake_rpc)
+
+    assert reset.require_modern_external_chain("http://127.0.0.1:30010", wait_timeout_s=0.0) == (1_000_000_000, 55252)
+    assert calls == ["eth_getBlockByNumber", "eth_estimateGas", "eth_getBlockByNumber", "eth_estimateGas"]
+
+
+def test_dev_chain_reset_defaults_wait_and_deploy_forever() -> None:
+    reset = load_dev_chain_reset()
+    parser = reset.build_parser()
+    args = parser.parse_args(["--dry-run"])
+
+    assert args.wait_timeout_s == 0.0
+    assert args.deploy_timeout_s == 0.0
+
