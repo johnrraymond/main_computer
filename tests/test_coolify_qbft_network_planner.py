@@ -20,7 +20,7 @@ def _load_module():
     return module
 
 
-def test_default_testnet_plan_has_one_validator_and_dedicated_rpc() -> None:
+def test_default_testnet_plan_has_four_validators_and_dedicated_rpc() -> None:
     module = _load_module()
 
     plan = module.build_plan("testnet")
@@ -28,7 +28,7 @@ def test_default_testnet_plan_has_one_validator_and_dedicated_rpc() -> None:
 
     assert plan.environment == "testnet"
     assert plan.chain_id == 42424241
-    assert len([service for service in services if service.role == "validator"]) == 1
+    assert len([service for service in services if service.role == "validator"]) == 4
     assert len([service for service in services if service.role == "rpc"]) == 1
     assert module.rpc_target_service(plan).id == "rpc-1"
     assert module.rpc_target_service(plan).rpc_host_port == 30010
@@ -43,7 +43,7 @@ def test_default_plan_assigns_globally_unique_host_ports() -> None:
         ports.extend([service.rpc_host_port, service.p2p_host_port])
 
     assert len(ports) == len(set(ports))
-    assert {30001, 30010, 30310, 30311}.issubset(set(ports))
+    assert {30001, 30002, 30003, 30004, 30010, 30311, 30312, 30313, 30314, 30320}.issubset(set(ports))
 
 
 def test_compose_render_contains_bootstrap_dedicated_rpc_and_managed_volume() -> None:
@@ -65,6 +65,9 @@ def test_compose_render_contains_bootstrap_dedicated_rpc_and_managed_volume() ->
     assert "    command: |" not in compose
     assert "mc-qbft-rpc" in compose
     assert "rpc-1:" in compose
+    assert "validator-2:" in compose
+    assert "validator-3:" in compose
+    assert "validator-4:" in compose
     assert "waiting for QBFT bootstrap files for rpc-1" in compose
     assert "--data-path=/smoke/rpc-node/data" in compose
 
@@ -81,11 +84,12 @@ def test_bootstrap_command_escapes_shell_dollars_for_docker_compose() -> None:
     assert "$${QBFT_RESET_CHAIN:-false}" in bootstrap_entrypoint_script
     assert "\"$$BESU\" operator generate-blockchain-config" in bootstrap_entrypoint_script
     assert "set -- $$(find /tmp/qbft-networkFiles/keys" in bootstrap_entrypoint_script
-    assert "if [ \"$$#\" -ne 1 ]" in bootstrap_entrypoint_script
+    assert "if [ \"$$#\" -ne 4 ]" in bootstrap_entrypoint_script
     assert "pub=$$(tr -d" in bootstrap_entrypoint_script
     assert "pub=$${pub#0x}" in bootstrap_entrypoint_script
     assert "$${#pub}" in bootstrap_entrypoint_script
     assert "$$ENODE_1" in bootstrap_entrypoint_script
+    assert "$$ENODE_4" in bootstrap_entrypoint_script
 
 
 def test_bind_runtime_root_mode_uses_coolify_directory_hint() -> None:
@@ -115,8 +119,8 @@ def test_duplicate_port_seed_is_rejected(tmp_path: Path) -> None:
     seed = json.loads(json.dumps(module.NETWORK_SEEDS["testnet"]))
     duplicate = dict(seed["services"][0])
     duplicate["id"] = "validator-duplicate"
-    duplicate["container_ip"] = "172.28.241.12"
-    duplicate["p2p_host_port"] = 30312
+    duplicate["container_ip"] = "172.28.241.30"
+    duplicate["p2p_host_port"] = 30311
     seed["services"].append(duplicate)
     seed_path = tmp_path / "bad-seed.json"
     seed_path.write_text(json.dumps(seed), encoding="utf-8")
@@ -206,6 +210,8 @@ def test_deploy_contracts_dry_run_uses_public_rpc_without_remote_ssh() -> None:
     assert "--host-rpc-url" in command
     assert command[command.index("--host-rpc-url") + 1] == "http://157.245.92.74:30010"
     assert command[command.index("--environment") + 1] == "testnet"
+    assert command[command.index("--wait-timeout-s") + 1] == "0.0"
+    assert command[command.index("--deploy-timeout-s") + 1] == "0.0"
     assert command[command.index("--external-docker-network") + 1] == "bridge"
 
 
@@ -558,6 +564,122 @@ def test_coolify_sync_create_path_uses_api_only_and_does_not_require_ssh(monkeyp
 
 
 
+
+def test_wait_for_rpc_requires_peer_and_block_advancement(monkeypatch) -> None:
+    module = _load_module()
+
+    plan = module.build_plan("testnet", public_rpc=True)
+    args = module.parse_args(
+        [
+            "wait-rpc",
+            "testnet",
+            "--rpc-url",
+            "http://127.0.0.1:30010",
+            "--rpc-timeout-s",
+            "20",
+            "--rpc-poll-interval-s",
+            "0",
+            "--quiet",
+        ]
+    )
+    blocks = iter(["0x5", "0x5", "0x6"])
+    peers = iter(["0x0", "0x1", "0x1"])
+    calls: list[str] = []
+
+    def fake_json_rpc(url: str, method: str, params=None, *, timeout_s: float = 8.0):  # noqa: ANN001
+        calls.append(method)
+        assert url == "http://127.0.0.1:30010"
+        if method == "eth_chainId":
+            return "0x28757b1"
+        if method == "eth_blockNumber":
+            return next(blocks)
+        if method == "net_peerCount":
+            return next(peers)
+        raise AssertionError(method)
+
+    monkeypatch.setattr(module, "json_rpc", fake_json_rpc)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    result = module.wait_for_rpc(plan, args)
+
+    assert result["ok"] is True
+    assert result["block_number"] == 6
+    assert result["peer_count"] == 1
+    assert result["first_observed_block"] == 5
+    assert result["block_advanced"] is True
+    assert result["min_peers"] == 1
+    assert calls.count("eth_chainId") == 3
+
+
+def test_wait_for_rpc_allows_zero_peers_for_single_besu_plan(monkeypatch) -> None:
+    module = _load_module()
+
+    seed = {
+        "description": "single besu test",
+        "environment": "testnet",
+        "chain_id": 42424241,
+        "compose_project": "single-besu-test",
+        "docker_network": "single-besu-network",
+        "docker_subnet": "172.28.250.0/24",
+        "besu_image": "hyperledger/besu:latest",
+        "runtime_root": "/tmp/single-besu",
+        "public_rpc": True,
+        "hosts": {
+            "host-a": {
+                "ssh": "root@198.51.100.10",
+                "address": "198.51.100.10",
+                "coolify_url": "http://198.51.100.10:8000",
+                "runtime_root": "/tmp/single-besu",
+            }
+        },
+        "services": [
+            {
+                "id": "validator-1",
+                "role": "validator",
+                "host": "host-a",
+                "container_ip": "172.28.250.11",
+                "rpc_host_port": 30010,
+                "p2p_host_port": 30311,
+            }
+        ],
+    }
+    module.NETWORK_SEEDS["single-besu-test"] = seed
+    plan = module.build_plan("single-besu-test", public_rpc=True)
+    args = module.parse_args(
+        [
+            "wait-rpc",
+            "testnet",
+            "--rpc-url",
+            "http://127.0.0.1:30010",
+            "--rpc-timeout-s",
+            "20",
+            "--rpc-poll-interval-s",
+            "0",
+            "--quiet",
+        ]
+    )
+    blocks = iter(["0x0", "0x2"])
+
+    def fake_json_rpc(url: str, method: str, params=None, *, timeout_s: float = 8.0):  # noqa: ANN001
+        if method == "eth_chainId":
+            return "0x28757b1"
+        if method == "eth_blockNumber":
+            return next(blocks)
+        if method == "net_peerCount":
+            return "0x0"
+        raise AssertionError(method)
+
+    monkeypatch.setattr(module, "json_rpc", fake_json_rpc)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    result = module.wait_for_rpc(plan, args)
+
+    assert result["ok"] is True
+    assert result["block_number"] == 2
+    assert result["peer_count"] == 0
+    assert result["min_peers"] == 0
+
+
 def test_main_without_args_prints_operator_runbook(capsys) -> None:
     module = _load_module()
 
@@ -569,7 +691,7 @@ def test_main_without_args_prints_operator_runbook(capsys) -> None:
     assert "1. Prepare the remote Linux server" in captured.out
     assert "2. Install Coolify on the remote server" in captured.out
     assert "3. Create a Coolify API token" in captured.out
-    assert "7. Deploy the low-resource testnet" in captured.out
+    assert "7. Deploy the four-validator testnet" in captured.out
     assert "python .\\tools\\coolify_qbft_network.py apply testnet --all" in captured.out
     assert "the following arguments are required" not in captured.err
 
@@ -583,3 +705,13 @@ def test_docs_action_prints_same_operator_runbook(capsys) -> None:
     assert code == 0
     assert "curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash" in captured.out
     assert "http://<SERVER_IP>:30010" in captured.out
+
+
+def test_apply_defaults_wait_indefinitely_for_rpc_and_contract_deploy() -> None:
+    module = _load_module()
+
+    args = module.parse_args(["apply", "testnet", "--all"])
+
+    assert args.rpc_timeout_s == 0.0
+    assert args.deploy_contracts_timeout_s == 0.0
+
