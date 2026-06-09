@@ -43,6 +43,7 @@ from main_computer.viewport_state import *  # noqa: F401,F403
 from main_computer.email_client import EmailClientConfigError, check_email_account
 from main_computer.chat_ai_subprocess import append_text_log, config_to_payload
 from main_computer.models import ChatResponse
+from main_computer.text_console import TextConsoleConfig, build_text_console_model_input, chat_response_from_text_console_model_input
 from main_computer.website_builder_rag_pipeline import (
     build_evidence as build_website_builder_rag_evidence,
     build_proposal_evidence as build_website_builder_rag_proposal_evidence,
@@ -2121,31 +2122,79 @@ class ViewportApplicationRoutesMixin:
                 self.server.signal("api-chat-rejected", reason="empty-prompt")
                 self._send_json({"error": "Prompt is required."}, status=HTTPStatus.BAD_REQUEST)
                 return
+
+            text_console_config = TextConsoleConfig.from_current_directory(
+                self.server.debug_root,
+                provider=self.server.config.provider,
+                model=self.server.config.model,
+                base_url=self.server.config.ollama_base_url,
+                timeout=self.server.config.ollama_timeout_s,
+                think=self.server.config.ollama_think,
+            )
+            config_failures = text_console_config.validate_repo_root()
+            if config_failures:
+                self.server.signal(
+                    "api-chat-text-console-config-invalid",
+                    root=str(text_console_config.context_root),
+                    failures="|".join(config_failures),
+                )
+                self._send_json(
+                    {
+                        "error": "Text console context root is invalid.",
+                        "details": config_failures,
+                    },
+                    status=HTTPStatus.BAD_GATEWAY,
+                )
+                return
+
+            inline_test_provider = _mounted_editor_should_inline_test_provider(
+                getattr(getattr(self.server, "computer", None), "provider", None)
+            )
+            if inline_test_provider:
+                response = self.server.computer.chat(prompt)
+                self.server.signal(
+                    "api-chat-complete",
+                    provider=response.provider,
+                    model=response.model,
+                    response_chars=len(response.content),
+                    context_root=str(text_console_config.context_root),
+                    inline_test_provider=True,
+                )
+                self._send_json(asdict(response))
+                return
+
             self.server.signal(
                 "api-chat-start",
-                provider=self.server.provider_name,
-                model=self.server.config.model,
+                provider=text_console_config.provider,
+                model=text_console_config.model,
                 prompt_chars=len(prompt),
+                context_root=str(text_console_config.context_root),
+                working_directory=str(text_console_config.working_directory),
             )
-            context_pack = None
-            if hasattr(self.server.computer, "context_pack"):
-                context_pack = self.server.computer.context_pack(prompt)
-                self.server.signal(
-                    "api-chat-context-selected",
-                    evidence_count=len(context_pack.evidence),
-                    manifest_chars=context_pack.manifest_chars,
-                    paths="|".join(self._context_evidence_paths(context_pack)),
-                    files="|".join(self._context_evidence_paths(context_pack, kind="file")),
-                )
-            if context_pack is not None:
-                response = self.server.computer.chat(prompt, context_pack=context_pack)
-            else:
-                response = self.server.computer.chat(prompt)
+
+            model_input = build_text_console_model_input(
+                text_console_config=text_console_config,
+                source=prompt,
+                base_config=self.server.config,
+            )
+            context_pack = model_input.context_pack
+            self.server.signal(
+                "api-chat-context-selected",
+                evidence_count=len(context_pack.evidence),
+                manifest_chars=context_pack.manifest_chars,
+                paths="|".join(self._context_evidence_paths(context_pack)),
+                files="|".join(self._context_evidence_paths(context_pack, kind="file")),
+                context_root=str(text_console_config.context_root),
+                request_sha256=model_input.request_sha256,
+            )
+
+            response = chat_response_from_text_console_model_input(model_input)
             self.server.signal(
                 "api-chat-complete",
                 provider=response.provider,
                 model=response.model,
                 response_chars=len(response.content),
+                context_root=str(text_console_config.context_root),
             )
             self._send_json(asdict(response))
         except Exception as exc:

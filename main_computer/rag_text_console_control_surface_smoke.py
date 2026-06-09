@@ -65,7 +65,13 @@ _REPO_ROOT_FOR_IMPORTS = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT_FOR_IMPORTS) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT_FOR_IMPORTS))
 
-from main_computer.chat_console import TextConsoleConfig
+from main_computer.text_console import (
+    TextConsoleConfig,
+    build_text_console_model_input,
+    text_console_request_bytes,
+    text_console_request_payload,
+    text_console_request_sha256,
+)
 
 
 TEXT_CONSOLE_SURFACE = "text_console"
@@ -2909,21 +2915,16 @@ def build_text_console_intended_model_input(
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
 
-    from main_computer.chat_console import build_notebook_ai_messages
-    from main_computer.config import MainComputerConfig
-    from main_computer.models import ChatMessage
-    from main_computer.router import MainComputer, SYSTEM_PROMPT as ROUTER_SYSTEM_PROMPT
-
-    config = text_console_config.to_legacy_main_computer_config(MainComputerConfig)
-    computer = MainComputer.build(config)
-    context_pack = computer.context_pack(request_text)
-    web_search_context, web_search_text = computer._web_search_context(request_text)
-    messages = [
-        ChatMessage(role="system", content=ROUTER_SYSTEM_PROMPT),
-        ChatMessage(role="system", content=context_pack.text),
-        *([ChatMessage(role="system", content=web_search_text)] if web_search_text else []),
-        *build_notebook_ai_messages(request_text, []),
-    ]
+    model_input = build_text_console_model_input(
+        text_console_config=text_console_config,
+        source=request_text,
+    )
+    config = model_input.legacy_config
+    computer = model_input.computer
+    context_pack = model_input.context_pack
+    web_search_context = model_input.web_search_context
+    web_search_text = model_input.web_search_text
+    messages = model_input.messages
 
     catalog = getattr(computer, "catalog", None)
     terms: list[str] = []
@@ -2981,9 +2982,9 @@ def build_text_console_intended_model_input(
         "message_chars": [item["content_chars"] for item in message_payloads],
         "system_prompt_chars": sum(item["content_chars"] for item in message_payloads if item["role"] == "system"),
         "input_chars": sum(item["content_chars"] for item in message_payloads),
-        "request_bytes_estimate": chat_console_request_bytes(messages, model=model, think=think),
-        "request_sha256": chat_console_request_sha256(messages, model=model, think=think),
-        "request_payload": chat_console_request_payload(messages, model=model, think=think),
+        "request_bytes_estimate": text_console_request_bytes(messages, model=model, think=think),
+        "request_sha256": text_console_request_sha256(messages, model=model, think=think),
+        "request_payload": text_console_request_payload(messages, model=model, think=think),
     }
     diagnostics["text_console_model_input_failures"] = validate_text_console_model_input_diagnostics(diagnostics)
     return computer, context_pack, messages, diagnostics
@@ -3159,8 +3160,8 @@ def run_text_console_intended_pathway_smoke(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Run the smoke-proven text-console intended pathway.
 
-    Every turn uses the smoke-local TextConsoleConfig prototype:
-    current repo-root directory + deterministic workspace context pack + notebook prompt + user
+    Every turn uses the production TextConsoleConfig component:
+    current repo-root directory + deterministic workspace context pack + text-console prompt + user
     message. The expectations belong to the smoke fixture only; runtime code
     still merely parses whatever assistant text the model returns.
     """
