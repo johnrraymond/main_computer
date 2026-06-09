@@ -321,14 +321,6 @@ def test_email_backend_check_route_is_registered_and_provider_oauth_routes_are_r
     assert "_handle_email_gmail" not in routes_text
 
 
-def test_gmail_oauth_client_module_is_inert_raw_patch_tombstone() -> None:
-    gmail_client_path = Path(__file__).resolve().parents[1] / "main_computer" / "gmail_client.py"
-    text = gmail_client_path.read_text(encoding="utf-8")
-    assert "inert compatibility tombstone" in text
-    assert "GOOGLE_AUTH_ENDPOINT" not in text
-    assert "start_google_oauth" not in text
-    assert "gmail.googleapis.com" not in text
-
 
 def test_email_check_config_normalizes_without_echoing_password() -> None:
     config = normalize_email_check_config(

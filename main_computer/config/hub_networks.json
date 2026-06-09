@@ -34,6 +34,22 @@
       },
       "contracts": {}
     },
+    "testnet": {
+      "network_key": "testnet",
+      "display_name": "Main Computer Coolify Testnet",
+      "kind": "testnet",
+      "chain_id": 42424241,
+      "chain_rpc_url": null,
+      "hub_host": "127.0.0.1",
+      "hub_port": 8785,
+      "hub_runtime_dir": "runtime/hub/testnet",
+      "native_currency": {
+        "name": "Main Computer Test Coin",
+        "symbol": "MCT",
+        "decimals": 18
+      },
+      "contracts": {}
+    },
     "main": {
       "network_key": "main",
       "display_name": "Main Computer Mainnet",

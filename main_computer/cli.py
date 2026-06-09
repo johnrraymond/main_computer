@@ -23,6 +23,7 @@ from main_computer.hub_networks import (
     env_hub_port_override,
     env_hub_runtime_dir_override,
     load_hub_network_registry,
+    resolve_profile_runtime_defaults,
 )
 from main_computer.openclaw_bridge import DEFAULT_OPENCLAW_BRIDGE_PORT, serve as serve_openclaw_bridge
 from main_computer.recurrent_thinking import run_from_args as run_recurrent_thinking_from_args
@@ -153,6 +154,7 @@ def _config_from_args(args: argparse.Namespace) -> MainComputerConfig:
         chain_rpc_url=getattr(args, "chain_rpc_url", None),
         chain_id=getattr(args, "chain_id", None) if getattr(args, "chain_id", None) is not None else profile.chain_id,
     )
+    profile = resolve_profile_runtime_defaults(profile)
     profile.validate_runnable()
 
     source = f"hub-network:{profile.network_key}"

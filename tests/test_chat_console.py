@@ -6,6 +6,8 @@ from pathlib import Path
 from main_computer.chat_console import (
     NOTEBOOK_AI_SYSTEM_PROMPT,
     ai_response_to_parts,
+    computer_mount_commands,
+    exact_act_command_source_to_parts,
     build_notebook_ai_messages,
     build_output_cell,
     mathics_result_to_parts,
@@ -59,6 +61,86 @@ class ChatConsoleHelperTests(unittest.TestCase):
         self.assertEqual(snippets[1]["suggested_target_cell_types"][0], "javascript")
         self.assertEqual(snippets[2]["suggested_target_cell_types"][0], "basic")
 
+    def test_computer_mount_commands_extracts_only_exact_act_lines(self) -> None:
+        commands, invalid_lines = computer_mount_commands(
+            """
+            /act terminal run-in active "git status" --cwd repo-root
+            explain this first
+            /act terminal run-in active "python -m pytest" --cwd repo-root
+            """
+        )
+        self.assertEqual(
+            commands,
+            [
+                '/act terminal run-in active "git status" --cwd repo-root',
+                '/act terminal run-in active "python -m pytest" --cwd repo-root',
+            ],
+        )
+        self.assertEqual(invalid_lines, ["explain this first"])
+
+    def test_exact_act_command_source_to_parts_surfaces_preview_without_model(self) -> None:
+        parts = exact_act_command_source_to_parts(
+            '/act terminal run "dir main_computer" --cwd repo-root\n'
+            '/act terminal run "git status" --cwd repo-root'
+        )
+
+        self.assertEqual([part["kind"] for part in parts], ["mount_request"])
+        mount = parts[0]
+        self.assertEqual(mount["content"]["status"], "requested_not_mounted")
+        self.assertEqual(mount["content"]["request_kind"], "command_plan")
+        self.assertEqual(
+            mount["content"]["canonical_commands"],
+            [
+                '/act terminal run "dir main_computer" --cwd repo-root',
+                '/act terminal run "git status" --cwd repo-root',
+            ],
+        )
+        self.assertEqual(mount["content"]["invalid_lines"], [])
+        self.assertEqual(mount["metadata"]["provider"], "deterministic")
+        self.assertEqual(mount["metadata"]["model"], "exact-act-preview")
+        self.assertEqual(mount["metadata"]["command_count"], 2)
+
+    def test_exact_act_command_source_to_parts_rejects_mixed_prose(self) -> None:
+        self.assertEqual(
+            exact_act_command_source_to_parts('please run this\n/act terminal run "git status" --cwd repo-root'),
+            [],
+        )
+        self.assertEqual(exact_act_command_source_to_parts("Use a computer mount and run git status"), [])
+
+    def test_ai_response_parts_surface_computer_mount_requests_without_execution(self) -> None:
+        parts = ai_response_to_parts(
+            ChatResponse(
+                content=(
+                    "I will run a two-step check.\n\n"
+                    "```computer\n"
+                    '/act terminal run-in active "git status" --cwd repo-root\n'
+                    '/act terminal run-in active "python -m pytest" --cwd repo-root\n'
+                    "```\n\n"
+                    "Then I will read the result."
+                ),
+                provider="fake",
+                model="fake-model",
+            )
+        )
+
+        self.assertEqual([part["kind"] for part in parts], ["markdown", "mount_request", "markdown"])
+        mount = parts[1]
+        self.assertEqual(mount["content"]["status"], "requested_not_mounted")
+        self.assertEqual(mount["content"]["surface"], "text_console")
+        self.assertEqual(mount["content"]["request_kind"], "command_plan")
+        self.assertEqual(
+            mount["content"]["canonical_commands"],
+            [
+                '/act terminal run-in active "git status" --cwd repo-root',
+                '/act terminal run-in active "python -m pytest" --cwd repo-root',
+            ],
+        )
+        self.assertEqual(mount["content"]["invalid_lines"], [])
+        self.assertIn("Preview only", mount["content"]["note"])
+        self.assertEqual(mount["metadata"]["command_count"], 2)
+        self.assertEqual(parts[0]["content"].strip(), "I will run a two-step check.")
+        self.assertEqual(parts[2]["content"].strip(), "Then I will read the result.")
+
     def test_output_cell_can_hold_mixed_parts(self) -> None:
         cell = build_output_cell(
             {"id": "cell-1", "type": "ai", "source": "hello", "variant_index": 2},
@@ -101,6 +183,12 @@ class ChatConsoleHelperTests(unittest.TestCase):
     def test_notebook_ai_prompt_keeps_terminal_snippets_manual(self) -> None:
         self.assertIn("Terminal snippets must be reviewable commands only", NOTEBOOK_AI_SYSTEM_PROMPT)
         self.assertIn("Do not instruct the system to auto-run terminal commands", NOTEBOOK_AI_SYSTEM_PROMPT)
+
+    def test_notebook_ai_prompt_describes_preview_only_computer_mount_requests(self) -> None:
+        self.assertIn("fenced block tagged exactly as computer", NOTEBOOK_AI_SYSTEM_PROMPT)
+        self.assertIn("one or more exact /act lines only", NOTEBOOK_AI_SYSTEM_PROMPT)
+        self.assertIn("preview-only mount requests", NOTEBOOK_AI_SYSTEM_PROMPT)
+        self.assertIn("does not mount or execute", NOTEBOOK_AI_SYSTEM_PROMPT)
 
     def test_notebook_ai_prompt_guides_code_cell_shared_variables(self) -> None:
         self.assertIn("JavaScript, Python, and BASIC snippets should be complete standalone code", NOTEBOOK_AI_SYSTEM_PROMPT)
@@ -146,6 +234,15 @@ class ChatConsoleHelperTests(unittest.TestCase):
         self.assertIn("application/x-main-computer-output-cell+json", html)
         self.assertIn("metadata?.data_url", html)
         self.assertIn("Snippet", html)
+
+    def test_frontend_renders_computer_mount_requests_as_preview_cards(self) -> None:
+        html = APPLICATIONS_INDEX_HTML
+        self.assertIn("function renderChatConsoleMountRequestPart", html)
+        self.assertIn('part.kind === "mount_request"', html)
+        self.assertIn("Computer mount requested", html)
+        self.assertIn("nothing was mounted or executed", html)
+        self.assertIn("chat-mount-request-card", html)
+        self.assertIn("serializeChatConsoleMountRequestText", html)
 
     def test_frontend_splits_cell_tabs_and_simple_insert_widget(self) -> None:
         html = APPLICATIONS_INDEX_HTML

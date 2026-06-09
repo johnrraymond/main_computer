@@ -1,5 +1,19 @@
     const emailStorageKey = "main-computer-email-app-v6";
     const emailCheckEndpoint = "/api/applications/email/check";
+    const emailTabQueryKey = "tab";
+    const emailRestorableStateKeys = Object.freeze([
+      "activeMailView",
+      "accounts",
+      "messages",
+      "drafts",
+      "selectedAccountId",
+      "selectedFolder",
+      "selectedMessageId",
+      "search",
+      "replyDraft",
+      "lastSyncAt",
+      "mcel"
+    ]);
 
     const emailMailServicePresets = Object.freeze({
       system: {
@@ -258,16 +272,24 @@
       };
     }
 
+    function emailRestorePersistedState(saved) {
+      if (!saved || typeof saved !== "object" || Array.isArray(saved)) return;
+      emailRestorableStateKeys.forEach((key) => {
+        if (Object.prototype.hasOwnProperty.call(saved, key)) {
+          emailAppState[key] = saved[key];
+        }
+      });
+    }
+
     function emailLoadState() {
       Object.assign(emailAppState, emailNewState());
       try {
-        const saved = JSON.parse(localStorage.getItem(emailStorageKey) || "{}");
-        if (saved && typeof saved === "object") {
-          Object.assign(emailAppState, saved);
-        }
+        emailRestorePersistedState(JSON.parse(localStorage.getItem(emailStorageKey) || "{}"));
       } catch (error) {
         console.warn("Email state reset after load failure", error);
       }
+      emailAppState.activeTab = "mail";
+      emailAppState.activeConfigTab = "raw";
       emailEnsureStateShape();
     }
 
@@ -275,8 +297,6 @@
       emailEnsureStateShape();
       try {
         localStorage.setItem(emailStorageKey, JSON.stringify({
-          activeTab: emailAppState.activeTab,
-          activeConfigTab: "raw",
           activeMailView: emailAppState.activeMailView,
           accounts: emailAppState.accounts,
           messages: emailAppState.messages,
@@ -294,6 +314,35 @@
       }
     }
 
+    function emailTabFromLocation(search = window.location.search) {
+      try {
+        const requested = new URLSearchParams(String(search || "")).get(emailTabQueryKey);
+        return requested === "config" ? "config" : "mail";
+      } catch {
+        return "mail";
+      }
+    }
+
+    function syncEmailTabRoute(tabName, {replace = false} = {}) {
+      if (typeof window === "undefined") return;
+      if (typeof applicationFromPath === "function" && applicationFromPath(window.location.pathname) !== "email") return;
+      const normalizedTab = tabName === "config" ? "config" : "mail";
+      const url = new URL(window.location.href);
+      if (normalizedTab === "config") {
+        url.searchParams.set(emailTabQueryKey, "config");
+      } else {
+        url.searchParams.delete(emailTabQueryKey);
+      }
+      const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+      if (`${window.location.pathname}${window.location.search}${window.location.hash}` === nextUrl) return;
+      const state = {...(window.history.state || {}), app: "email", emailTab: normalizedTab};
+      if (replace) {
+        window.history.replaceState(state, "", nextUrl);
+      } else {
+        window.history.pushState(state, "", nextUrl);
+      }
+    }
+
     function emailSetStatus(text) {
       if (emailSyncStatus) emailSyncStatus.textContent = text;
     }
@@ -305,7 +354,9 @@
       emailAppState.mcel = {status: "layout-layer-active", updatedAt: emailNowIso()};
     }
 
-    function emailSwitchTab(tabName) {
+    function emailSwitchTab(tabName, options = {}) {
+      const syncRoute = options.syncRoute !== false;
+      const saveState = options.saveState !== false;
       emailAppState.activeTab = tabName === "config" ? "config" : "mail";
       emailTabButtons.forEach((button) => {
         const active = button.dataset.emailTab === emailAppState.activeTab;
@@ -319,7 +370,8 @@
       if (emailAppState.activeTab === "config") {
         emailApplyServicePreset(emailImapPresetSelect?.value || "outlook");
       }
-      emailSaveState();
+      if (syncRoute) syncEmailTabRoute(emailAppState.activeTab, {replace: Boolean(options.replaceRoute)});
+      if (saveState) emailSaveState();
     }
 
     function emailSetMailView(viewName) {
@@ -657,7 +709,7 @@
           ...emailAppState.messages.filter((message) => !liveIds.has(message.id))
         ];
         emailAppState.selectedFolder = "inbox";
-        emailAppState.activeTab = "mail";
+        emailSwitchTab("mail", {saveState: false});
         emailAppState.activeMailView = "list";
         emailAppState.replyDraft = "";
         emailAppState.lastSyncAt = emailNowIso();
@@ -935,6 +987,7 @@
         emailApplyServicePreset(emailImapPresetSelect?.value || "outlook");
         emailAppState.initialized = true;
       }
+      emailSwitchTab(emailTabFromLocation(), {syncRoute: false, saveState: false});
       emailSetStatus("email ready");
       renderEmailApp();
       emailSearchInput?.focus();

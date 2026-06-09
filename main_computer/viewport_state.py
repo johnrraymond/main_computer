@@ -46,6 +46,7 @@ from main_computer.chat_console import (
     ai_response_to_parts,
     build_notebook_ai_messages,
     build_output_cell,
+    exact_act_command_source_to_parts,
     mathics_result_to_parts,
     terminal_result_to_parts,
     validate_evaluation_cell,
