@@ -24,6 +24,9 @@
       },
       "permissions_status": "ready",
       "provider": "directus",
+      "publish": {
+        "url": "https://directus-johnrraymond.greatlibrary.io"
+      },
       "required": true,
       "runtime": "deployed",
       "schema": {
@@ -301,7 +304,7 @@
       "project": "johnrraymond"
     },
     "remote_prod": {
-      "accepted_at": "2026-05-24T01:58:23+00:00",
+      "accepted_at": "2026-06-09T21:39:15+00:00",
       "controller_id": "",
       "domain": "https://johnrraymond.greatlibrary.io/",
       "environment": "production",
@@ -311,7 +314,7 @@
       "remote_root": "/srv/main-computer/sites",
       "site_slug": "johnrraymond",
       "source_path": "runtime/websites/johnrraymond",
-      "ssh_password": "",
+      "ssh_password_file": "runtime/websites/johnrraymond/ssh_password.local",
       "use_local_server": false
     }
   },
@@ -343,5 +346,5 @@
     "kind": "host_runtime_site",
     "path": "runtime/websites/johnrraymond"
   },
-  "updated_at": "2026-06-01T23:48:18+00:00"
+  "updated_at": "2026-06-09T21:39:20+00:00"
 }

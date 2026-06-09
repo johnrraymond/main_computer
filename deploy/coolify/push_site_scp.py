@@ -17,6 +17,7 @@ import paramiko
 
 
 SITE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+LOCAL_SECRET_FILENAMES = {"ssh_password.local"}
 
 
 def fail(message: str, code: int = 1) -> None:
@@ -55,6 +56,9 @@ def zip_site_contents(source_dir: Path, zip_path: Path) -> None:
 
             if relative.startswith("/") or relative.startswith("../") or "/../" in relative:
                 fail(f"refusing unsafe zip path: {relative}")
+            if path.name in LOCAL_SECRET_FILENAMES:
+                print(f"skip local secret: {relative}")
+                continue
 
             zf.write(path, relative)
 

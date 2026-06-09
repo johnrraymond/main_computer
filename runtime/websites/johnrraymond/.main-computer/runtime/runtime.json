@@ -6,9 +6,9 @@
     "/api/site/blog/posts/<slug>"
   ],
   "entrypoint": ".main-computer/runtime/app.py",
-  "packaged_at": "2026-05-24T21:40:22+00:00",
+  "packaged_at": "2026-06-09T21:39:20+00:00",
   "runtime_id": "main-computer-site-runtime",
-  "sha256": "865f49031f56ee5afe0bc16416b0dcca4a486d574f0e20b26c61db7ca964727c",
+  "sha256": "782588f5a67211690514d222c6172d384e66d21eaa0fac6c8f9b0f9db44afb38",
   "site_id": "johnrraymond",
   "source": "deploy/local-platform/site-server/app.py"
 }

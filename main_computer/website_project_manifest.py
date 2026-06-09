@@ -52,6 +52,7 @@ REMOTE_PUBLISH_MODES = {"scp", "local_server"}
 DEFAULT_REMOTE_PUBLISH_ROOT = "/srv/main-computer/sites"
 PUBLISH_SCP_SCRIPT = Path("deploy") / "coolify" / "push_site_scp.py"
 PUBLISH_LOCAL_SERVER_SCRIPT = Path("deploy") / "coolify" / "push_site_local.py"
+PUBLISH_SSH_PASSWORD_FILENAME = "ssh_password.local"
 SITE_RUNTIME_SOURCE = Path("deploy") / "local-platform" / "site-server" / "app.py"
 SITE_RUNTIME_DIR = Path(".main-computer") / "runtime"
 SITE_RUNTIME_ENTRYPOINT = SITE_RUNTIME_DIR / "app.py"
@@ -3640,6 +3641,47 @@ def _publish_directus_url_from_manifest(manifest: dict[str, Any]) -> str:
     return str(publish.get("url") or publish.get("public_url") or publish.get("internal_url") or "").strip().rstrip("/")
 
 
+
+def default_publish_ssh_password_file(repo_root: Path, project_path: Path) -> str:
+    return (project_path / PUBLISH_SSH_PASSWORD_FILENAME).relative_to(repo_root).as_posix()
+
+
+def validate_publish_ssh_password_file(repo_root: Path, value: object) -> str:
+    rel_path = _repo_relative_path_from_value(repo_root, value, "SSH password file")
+    if rel_path.name != PUBLISH_SSH_PASSWORD_FILENAME:
+        raise WebsiteProjectError(f"SSH password file must be named {PUBLISH_SSH_PASSWORD_FILENAME}.")
+    target = (repo_root / rel_path).resolve()
+    try:
+        target.relative_to(repo_root.resolve())
+    except ValueError as exc:
+        raise WebsiteProjectError("SSH password file must stay inside the repository.") from exc
+    return rel_path.as_posix()
+
+
+def write_publish_ssh_password(repo_root: Path, password_file: object, password: object) -> None:
+    text = str(password or "")
+    if not text:
+        return
+    rel_path = validate_publish_ssh_password_file(repo_root, password_file)
+    target = repo_root / rel_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    try:
+        target.chmod(0o600)
+    except OSError:
+        pass
+
+
+def read_publish_ssh_password(repo_root: Path, password_file: object) -> str:
+    raw = str(password_file or "").strip()
+    if not raw:
+        return ""
+    rel_path = validate_publish_ssh_password_file(repo_root, raw)
+    target = repo_root / rel_path
+    if not target.is_file():
+        return ""
+    return target.read_text(encoding="utf-8").strip()
+
 def save_website_publish_target(
     repo_root: Path,
     site_id: object,
@@ -3656,6 +3698,7 @@ def save_website_publish_target(
     remote_host: object = None,
     remote_root: object = None,
     ssh_password: object = None,
+    ssh_password_file: object = None,
     resource_uuid: object = None,
     service_uuid: object = None,
     application_uuid: object = None,
@@ -3712,8 +3755,16 @@ def save_website_publish_target(
         updated["remote_host"] = str(remote_host or "").strip()
     if remote_root is not None:
         updated["remote_root"] = validate_remote_publish_root(remote_root)
-    if ssh_password is not None:
-        updated["ssh_password"] = str(ssh_password or "")
+    if lane_key == "remote_prod":
+        updated.pop("ssh_password", None)
+        default_password_file = default_publish_ssh_password_file(repo_root, project_model.path)
+        requested_password_file = str(ssh_password_file or "").strip() if ssh_password_file is not None else ""
+        password_file = requested_password_file or updated.get("ssh_password_file") or default_password_file
+        updated["ssh_password_file"] = validate_publish_ssh_password_file(repo_root, password_file)
+        if ssh_password is not None and str(ssh_password or ""):
+            write_publish_ssh_password(repo_root, updated["ssh_password_file"], ssh_password)
+    elif ssh_password is not None:
+        updated.pop("ssh_password", None)
     for key, value in {
         "resource_uuid": resource_uuid,
         "service_uuid": service_uuid,
@@ -3754,25 +3805,25 @@ def normalize_remote_publish_mode(value: object) -> str:
     return mode
 
 
-def _repo_relative_path_from_value(repo_root: Path, value: object) -> Path:
+def _repo_relative_path_from_value(repo_root: Path, value: object, field_label: str = "Publish source path") -> Path:
     raw = str(value or "").strip().replace("\\", "/")
     if not raw:
-        raise WebsiteProjectError("Publish source path is required.")
+        raise WebsiteProjectError(f"{field_label} is required.")
     candidate = Path(raw)
     if candidate.is_absolute():
         try:
             candidate = candidate.resolve().relative_to(repo_root.resolve())
         except ValueError as exc:
-            raise WebsiteProjectError("Publish source path must be inside the repository.") from exc
+            raise WebsiteProjectError(f"{field_label} must be inside the repository.") from exc
     normalized_parts: list[str] = []
     for part in candidate.parts:
         if part in {"", "."}:
             continue
         if part == "..":
-            raise WebsiteProjectError("Publish source path cannot contain '..'.")
+            raise WebsiteProjectError(f"{field_label} cannot contain '..'.")
         normalized_parts.append(part)
     if not normalized_parts:
-        raise WebsiteProjectError("Publish source path is required.")
+        raise WebsiteProjectError(f"{field_label} is required.")
     return Path(*normalized_parts)
 
 
@@ -3913,7 +3964,7 @@ def _remote_publish_command(
     return command
 
 
-def _remote_publish_env_preview(target: dict[str, Any]) -> dict[str, str]:
+def _remote_publish_env_preview(repo_root: Path, target: dict[str, Any]) -> dict[str, str]:
     mode = normalize_remote_publish_mode(target.get("publish_mode"))
     env = {
         "MAIN_COMPUTER_PUBLISH_MODE": mode,
@@ -3923,13 +3974,16 @@ def _remote_publish_env_preview(target: dict[str, Any]) -> dict[str, str]:
     }
     if mode == "scp":
         env["MAIN_COMPUTER_PUBLISH_HOST"] = str(target.get("remote_host") or "")
-        if target.get("ssh_password"):
+        password_file = str(target.get("ssh_password_file") or "").strip()
+        if password_file:
+            env["MAIN_COMPUTER_PUBLISH_SSH_PASSWORD_FILE"] = password_file
+        if read_publish_ssh_password(repo_root, password_file):
             env["MAIN_COMPUTER_SSH_PASSWORD"] = "<set>"
             env["MAIN_COMPUTER_PUBLISH_SSH_PASSWORD"] = "<set>"
     return env
 
 
-def _remote_publish_runtime_env(target: dict[str, Any]) -> dict[str, str]:
+def _remote_publish_runtime_env(repo_root: Path, target: dict[str, Any]) -> dict[str, str]:
     env = dict(os.environ)
     mode = normalize_remote_publish_mode(target.get("publish_mode"))
     env.update(
@@ -3942,7 +3996,10 @@ def _remote_publish_runtime_env(target: dict[str, Any]) -> dict[str, str]:
     )
     if mode == "scp":
         env["MAIN_COMPUTER_PUBLISH_HOST"] = str(target.get("remote_host") or "")
-        password = str(target.get("ssh_password") or "").strip()
+        password_file = str(target.get("ssh_password_file") or "").strip()
+        if password_file:
+            env["MAIN_COMPUTER_PUBLISH_SSH_PASSWORD_FILE"] = password_file
+        password = read_publish_ssh_password(repo_root, password_file)
         if password:
             env["MAIN_COMPUTER_SSH_PASSWORD"] = password
             env["MAIN_COMPUTER_PUBLISH_SSH_PASSWORD"] = password
@@ -3984,7 +4041,7 @@ def remote_publish_plan(repo_root: Path, site_id: object, lane: object = "remote
         "command_script": script.as_posix(),
         "command_script_exists": script_exists,
         "command": _remote_publish_command(target, display=True),
-        "env": _remote_publish_env_preview(target),
+        "env": _remote_publish_env_preview(repo_root, target),
         "remote_coolify_compose": remote_publish_compose_yaml(
             target["site_slug"],
             target.get("remote_root"),
@@ -4157,7 +4214,7 @@ def publish_website_remote_deploy(
         capture_output=True,
         timeout=timeout_s,
         check=False,
-        env=_remote_publish_runtime_env(runtime_target),
+        env=_remote_publish_runtime_env(repo_root, runtime_target),
     )
     ok = completed.returncode == 0
     result: dict[str, Any] = {

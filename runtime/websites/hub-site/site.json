@@ -212,7 +212,7 @@
       "project": "hub-site"
     },
     "remote_prod": {
-      "accepted_at": "2026-06-09T20:16:08+00:00",
+      "accepted_at": "2026-06-09T21:40:08+00:00",
       "application_uuid": "",
       "controller_id": "",
       "domain": "http://hub.greatlibrary.io/",
@@ -225,7 +225,7 @@
       "service_uuid": "v11lha4aoh6sd1msc0z6i7dc",
       "site_slug": "hub-site",
       "source_path": "runtime/websites/hub-site",
-      "ssh_password": "",
+      "ssh_password_file": "runtime/websites/hub-site/ssh_password.local",
       "use_local_server": false,
       "uuid": "v11lha4aoh6sd1msc0z6i7dc"
     }
@@ -245,5 +245,5 @@
     "kind": "host_runtime_site",
     "path": "runtime/websites/hub-site"
   },
-  "updated_at": "2026-06-09T20:25:09+00:00"
+  "updated_at": "2026-06-09T21:40:12+00:00"
 }
