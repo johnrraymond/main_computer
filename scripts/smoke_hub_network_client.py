@@ -474,8 +474,8 @@ def run_smoke(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run an end-to-end Hub network client smoke against dev/test/main profiles.")
-    parser.add_argument("--network", default="dev", help="Hub network profile to smoke: dev, test, or main.")
+    parser = argparse.ArgumentParser(description="Run an end-to-end Hub network client smoke against dev/test/testnet/mainnet profiles.")
+    parser.add_argument("--network", default="dev", help="Hub network profile to smoke: dev, test, testnet, or mainnet.")
     parser.add_argument("--hub-url", default=None, help="Override the Hub URL. Defaults to the profile Hub host/port.")
     parser.add_argument("--network-config", default=None, help="Override the Hub networks JSON path.")
     parser.add_argument("--deployment-manifest", default=None, help="Override deployment manifest path.")
