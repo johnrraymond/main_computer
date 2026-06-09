@@ -112,6 +112,22 @@ class CatalogTests(unittest.TestCase):
         self.assertTrue(any(path.endswith("TODO.md") for path in evidence_paths))
         self.assertTrue(any(path.endswith("viewport.py") for path in evidence_paths))
 
+    def test_catalog_context_pack_does_not_treat_control_words_as_file_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            make_workspace(root)
+            (root / "main_computer" / "activity.py").write_text("# activity\n", encoding="utf-8")
+            (root / "main_computer" / "terminal_suggestions.py").write_text("# terminal\n", encoding="utf-8")
+
+            pack = ProjectCatalog(root).build_context_pack(
+                "Use a computer mount and request Terminal to list the files in main_computer. "
+                "Do not just describe the files."
+            )
+
+        self.assertIn("main_computer", pack.text)
+        self.assertNotIn("Matched file excerpts:", pack.text)
+        self.assertFalse(any(item.kind == "excerpt" for item in pack.evidence))
+
     def test_catalog_context_pack_auto_includes_missing_guidance(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
