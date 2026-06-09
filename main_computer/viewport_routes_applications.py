@@ -267,6 +267,7 @@ class ViewportApplicationRoutesMixin:
                 remote_host=body.get("remote_host") or body.get("ssh_host"),
                 remote_root=body.get("remote_root"),
                 ssh_password=body.get("ssh_password"),
+                ssh_password_file=body.get("ssh_password_file"),
                 resource_uuid=body.get("resource_uuid"),
                 service_uuid=body.get("service_uuid"),
                 application_uuid=body.get("application_uuid"),

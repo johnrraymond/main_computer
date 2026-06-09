@@ -87,8 +87,32 @@ def test_site_saves_scp_publish_command_config_without_conflating_slug_and_sourc
     assert remote["source_path"] == "runtime/websites/hub-site"
     assert remote["remote_host"] == "root@publish.greatlibrary.io"
     assert remote["remote_root"] == "/srv/main-computer/sites"
-    assert remote["ssh_password"] == "secret-password"
+    assert remote["ssh_password_file"] == "runtime/websites/hub-site/ssh_password.local"
+    assert "ssh_password" not in remote
+    assert (tmp_path / "runtime" / "websites" / "hub-site" / "ssh_password.local").read_text(encoding="utf-8") == "secret-password"
 
+
+
+def test_site_ignores_legacy_inline_ssh_password(tmp_path: Path) -> None:
+    project = create_website_project(tmp_path, "hub-site", "Hub Site")
+    manifest = dict(project.manifest)
+    manifest["publish_targets"] = {
+        "remote_prod": {
+            "accepted_at": "2026-01-01T00:00:00+00:00",
+            "publish_mode": "scp",
+            "site_slug": "johnrraymond",
+            "source_path": "runtime/websites/hub-site",
+            "remote_host": "root@publish.greatlibrary.io",
+            "remote_root": "/srv/main-computer/sites",
+            "ssh_password": "legacy-secret",
+        }
+    }
+    (project.path / "site.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    remote = load_website_project(tmp_path, "hub-site").to_dict(tmp_path)["publish_targets"]["remote_prod"]
+
+    assert "ssh_password" not in remote
+    assert remote["ssh_password_file"] == "runtime/websites/hub-site/ssh_password.local"
 
 def test_site_saves_local_server_publish_command_mode_without_remote_ssh_fields(tmp_path: Path) -> None:
     create_website_project(tmp_path, "hub-site", "Hub Site")

@@ -227,3 +227,6 @@ runtime/websites/*
 # These are local diagnostics and should not be committed.
 runtime/websites/*/__*probe*/
 runtime/websites/*/__*probe*/**
+
+# Per-site SSH publish passwords must stay local, even for versioned runtime sites.
+runtime/websites/*/ssh_password.local

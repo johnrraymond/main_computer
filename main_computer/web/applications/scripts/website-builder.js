@@ -363,7 +363,8 @@
           source_path: remoteRaw.source_path || (siteId ? `runtime/websites/${siteId}` : ""),
           remote_host: remoteRaw.remote_host || "",
           remote_root: remoteRaw.remote_root || websiteBuilderDefaultRemoteRoot,
-          ssh_password: remoteRaw.ssh_password || "",
+          ssh_password: "",
+          ssh_password_file: remoteRaw.ssh_password_file || (siteId ? `runtime/websites/${siteId}/ssh_password.local` : ""),
           resource_uuid: remoteRaw.resource_uuid || "",
           service_uuid: remoteRaw.service_uuid || "",
           application_uuid: remoteRaw.application_uuid || "",
@@ -598,6 +599,7 @@
         source_path: websiteBuilderPublishingSourcePath?.value || remote.source_path || "",
         remote_host: websiteBuilderPublishingSshHost?.value || "",
         ssh_password: websiteBuilderPublishingSshPassword?.value || "",
+        ssh_password_file: remote.ssh_password_file || "",
         remote_root: websiteBuilderPublishingRemoteRoot?.value || remote.remote_root || websiteBuilderDefaultRemoteRoot,
         published_host_domain: websiteBuilderPublishingDomain?.value || "",
         publish_directus_url: websiteBuilderPublishDirectusUrl?.value || ""
@@ -718,6 +720,7 @@
         remote_host: String(visibleSetup.remote_host || "").trim(),
         remote_root: String(visibleSetup.remote_root || "").trim(),
         ssh_password: String(visibleSetup.ssh_password || ""),
+        ssh_password_file: String(visibleSetup.ssh_password_file || "").trim(),
         published_host_domain: String(visibleSetup.published_host_domain || "").trim(),
         publish_directus_url: String(visibleSetup.publish_directus_url || "").trim()
       });
@@ -750,7 +753,8 @@
         site_slug: remote.site_slug || remote.project || site?.id || "",
         source_path: remote.source_path || (site?.id ? `runtime/websites/${site.id}` : ""),
         remote_host: remote.remote_host || "",
-        ssh_password: remote.ssh_password || "",
+        ssh_password: "",
+        ssh_password_file: remote.ssh_password_file || (site?.id ? `runtime/websites/${site.id}/ssh_password.local` : ""),
         remote_root: remote.remote_root || websiteBuilderDefaultRemoteRoot,
         published_host_domain: remote.domain || "",
         publish_directus_url: remote.publish_directus_url || websiteBuilderPublishDirectusUrlFromSite(site)
@@ -817,6 +821,7 @@
               remote_host: useLocal ? "" : remoteHost,
               remote_root: remoteRoot,
               ssh_password: useLocal ? "" : String(visibleSetup.ssh_password || ""),
+              ssh_password_file: String(visibleSetup.ssh_password_file || ""),
               environment: websiteBuilderRemoteProdEnvironment?.value || "production",
               domain: String(visibleSetup.published_host_domain || "").trim(),
               publish_directus_url: String(visibleSetup.publish_directus_url || "").trim()
@@ -946,6 +951,7 @@
             source_path: site?.repo_relative_path || (site?.id ? `runtime/websites/${site.id}` : ""),
             remote_host: "",
             ssh_password: "",
+            ssh_password_file: site?.id ? `runtime/websites/${site.id}/ssh_password.local` : "",
             remote_root: websiteBuilderDefaultRemoteRoot,
             published_host_domain: "",
             publish_directus_url: websiteBuilderPublishDirectusUrlFromSite(site)
