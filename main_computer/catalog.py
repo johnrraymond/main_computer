@@ -59,6 +59,7 @@ PINNED_CONTEXT_FILENAMES = ("README.md", "TODO.md", "missing.txt")
 CONTEXT_STOPWORDS = {
     "about",
     "also",
+    "and",
     "are",
     "answer",
     "context",
@@ -79,6 +80,46 @@ CONTEXT_STOPWORDS = {
     "visible",
     "whether",
     "workspace",
+}
+
+
+# File excerpt retrieval is intentionally narrower than project matching.
+# Natural text-console control requests often contain broad words such as
+# "computer", "terminal", "mount", and "files".  Those words describe the
+# control surface, not a source file.  Treating them as file-match terms caused
+# the chat console to attach large, irrelevant excerpts from nearly every path
+# under main_computer, exhausting small Ollama context windows before the model
+# had room to answer.
+CONTEXT_FILE_STOPWORDS = CONTEXT_STOPWORDS | {
+    "action",
+    "actions",
+    "command",
+    "commands",
+    "computer",
+    "describe",
+    "directory",
+    "directories",
+    "file",
+    "files",
+    "folder",
+    "folders",
+    "into",
+    "just",
+    "local",
+    "main",
+    "mount",
+    "mounted",
+    "not",
+    "request",
+    "requested",
+    "run",
+    "running",
+    "runs",
+    "terminal",
+    "terminals",
+    "use",
+    "using",
+    "with",
 }
 
 
@@ -211,7 +252,7 @@ class ProjectCatalog:
                 lines.append(f"--- {relative} ---")
                 lines.append(excerpt if excerpt else "[no readable excerpt]")
 
-        file_terms = [term for term in terms if term not in PRIORITY_PROJECTS]
+        file_terms = self._context_file_terms(terms)
         matched_files = self._context_file_matches(file_terms, max_matches=max_matches)
         if matched_files:
             lines.append("")
@@ -284,11 +325,11 @@ class ProjectCatalog:
 
     def _context_terms(self, query: str) -> list[str]:
         lowered = query.lower()
-        terms = [
-            term
-            for term in re.findall(r"[a-z0-9_.-]+", lowered)
-            if len(term) >= 3 and term not in CONTEXT_STOPWORDS
-        ]
+        terms: list[str] = []
+        for raw_term in re.findall(r"[a-z0-9_.-]+", lowered):
+            term = raw_term.strip("._-")
+            if len(term) >= 3 and term not in CONTEXT_STOPWORDS:
+                terms.append(term)
         if "todo" in lowered:
             terms.append("todo.md")
         if "readme" in lowered or "read me" in lowered:
@@ -306,13 +347,38 @@ class ProjectCatalog:
                 ordered.append(term)
         return ordered
 
+    def _context_file_terms(self, terms: list[str]) -> list[str]:
+        """Return query terms that are safe to use for source-file excerpt lookup.
+
+        Project names and broad control-surface words are useful for choosing
+        project-level context, but they are too noisy for file excerpt lookup.
+        Matching those terms against full project-prefixed paths can attach a
+        wall of unrelated files to ordinary chat-console control requests.
+        """
+
+        filtered: list[str] = []
+        for term in terms:
+            normalized = str(term or "").strip().lower()
+            if not normalized:
+                continue
+            if normalized in PRIORITY_PROJECTS or normalized in CONTEXT_FILE_STOPWORDS:
+                continue
+            if normalized not in filtered:
+                filtered.append(normalized)
+        return filtered
+
     def _context_file_matches(self, terms: list[str], *, max_matches: int) -> list[Path]:
         matches: list[Path] = []
         roots = [self.workspace / name for name in PRIORITY_PROJECTS if (self.workspace / name).is_dir()]
+        if not terms:
+            return matches
         for root in roots:
             for relative in self._manifest_files(root, max_files=200):
                 absolute = root / relative
-                haystack = f"{root.name}/{relative.as_posix()}".lower()
+                # Match only the path inside the project root.  Including the
+                # project directory name (for example "main_computer/") made a
+                # request containing "computer" match nearly every file.
+                haystack = relative.as_posix().lower()
                 if any(term in haystack for term in terms):
                     matches.append(absolute)
                     if len(matches) >= max_matches:

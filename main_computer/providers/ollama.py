@@ -762,11 +762,24 @@ class OllamaProvider(LLMProvider):
                 return 0
 
         terminal_eval_count = terminal_int("eval_count")
+        terminal_prompt_eval_count = terminal_int("prompt_eval_count")
+        terminal_total_duration = terminal_int("total_duration")
         terminal_done_reason = (
             str(terminal_event.get("done_reason") or "")
             if isinstance(terminal_event, dict)
             else ""
         )
+        if (
+            terminal_done_reason == "length"
+            and terminal_eval_count <= 2
+            and len(final_content.strip()) <= 16
+        ):
+            raise_terminal_stream_error(
+                "context_length_exhausted_before_useful_output",
+                "Ollama stopped because the prompt exhausted the model context before useful output "
+                f"could be generated; prompt_eval_count={terminal_prompt_eval_count}, "
+                f"eval_count={terminal_eval_count}, partial_content={final_content!r}",
+            )
         if not final_content and (final_thinking or terminal_eval_count > 0):
             if final_thinking:
                 fault_type = "thinking_only_no_visible_final_response"
@@ -815,6 +828,10 @@ class OllamaProvider(LLMProvider):
                 "thinking": final_thinking,
                 "first_output_ms": first_ms,
                 "duration_ms": duration_ms,
+                "done_reason": terminal_done_reason,
+                "eval_count": terminal_eval_count,
+                "prompt_eval_count": terminal_prompt_eval_count,
+                "total_duration": terminal_total_duration,
                 **thinking_metadata,
             },
         )
