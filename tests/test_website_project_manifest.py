@@ -794,7 +794,9 @@ def test_remote_publish_runs_saved_scp_command_and_never_generates_local_compose
     assert captured["env"]["MAIN_COMPUTER_PUBLISH_SOURCE"] == "runtime/websites/hub-site"
     assert captured["env"]["MAIN_COMPUTER_PUBLISH_HOST"] == "root@publish.greatlibrary.io"
     assert captured["env"]["MAIN_COMPUTER_PUBLISH_REMOTE_ROOT"] == "/srv/main-computer/sites"
+    assert captured["env"]["MAIN_COMPUTER_PUBLISH_SSH_PASSWORD_FILE"] == "runtime/websites/hub-site/ssh_password.local"
     assert captured["env"]["MAIN_COMPUTER_SSH_PASSWORD"] == "secret-password"
+    assert result["publish_command"]["env"]["MAIN_COMPUTER_PUBLISH_SSH_PASSWORD_FILE"] == "runtime/websites/hub-site/ssh_password.local"
     assert result["publish_command"]["env"]["MAIN_COMPUTER_SSH_PASSWORD"] == "<set>"
     assert result["publish_command"]["returncode"] == 0
     runtime_entrypoint = tmp_path / "runtime" / "websites" / "hub-site" / ".main-computer" / "runtime" / "app.py"
@@ -845,6 +847,7 @@ def test_remote_publish_dry_run_keeps_publish_slug_and_source_site_separate(tmp_
         "MAIN_COMPUTER_PUBLISH_SOURCE": "runtime/websites/hub-site",
         "MAIN_COMPUTER_PUBLISH_REMOTE_ROOT": "/srv/main-computer/sites",
         "MAIN_COMPUTER_PUBLISH_HOST": "root@publish.greatlibrary.io",
+        "MAIN_COMPUTER_PUBLISH_SSH_PASSWORD_FILE": "runtime/websites/hub-site/ssh_password.local",
         "MAIN_COMPUTER_SSH_PASSWORD": "<set>",
         "MAIN_COMPUTER_PUBLISH_SSH_PASSWORD": "<set>",
     }

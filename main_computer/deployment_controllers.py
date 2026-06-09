@@ -313,7 +313,7 @@ def site_publish_targets(site: dict[str, Any] | None, repo_root: Path) -> dict[s
             "source_path": str(remote_prod.get("source_path") or (f"runtime/websites/{site_id}" if site_id else "")),
             "remote_host": str(remote_prod.get("remote_host") or ""),
             "remote_root": str(remote_prod.get("remote_root") or "/srv/main-computer/sites"),
-            "ssh_password": str(remote_prod.get("ssh_password") or ""),
+            "ssh_password_file": str(remote_prod.get("ssh_password_file") or (f"runtime/websites/{site_id}/ssh_password.local" if site_id else "")),
             "resource_uuid": str(remote_prod.get("resource_uuid") or ""),
             "service_uuid": str(remote_prod.get("service_uuid") or ""),
             "application_uuid": str(remote_prod.get("application_uuid") or ""),
