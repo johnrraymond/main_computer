@@ -1805,11 +1805,19 @@
         const rpc = network.chain_rpc_url || "not configured";
         const hub = network.hub_public_url || network.hub_url || network.hub_endpoint || "not configured";
         const defaultMarker = network.is_default ? " · default" : "";
+        const contractsStatus = network.contracts_status || "unknown";
+        const contractsCount = Number(network.contracts_count || 0);
+        const contractsText = contractsStatus === "known" && contractsCount > 0
+          ? `${contractsStatus} (${contractsCount})`
+          : contractsStatus;
+        const contractsError = network.contracts_manifest_error && contractsStatus !== "known"
+          ? `<br>contracts detail: ${htmlText(network.contracts_manifest_error)}`
+          : "";
         card.innerHTML = `
           <h3>${htmlText(network.name || key.toUpperCase())}</h3>
           <span class="badge ${badgeState}">${htmlText(network.status_text || network.state)}${defaultMarker}</span>
           <p>${htmlText(network.label || `Energy Credits ${key}`)}</p>
-          <div class="service-meta">${hubLabel}: ${htmlText(hub)}<br>${rpcLabel}: ${htmlText(rpc)}<br>chain id: ${htmlText(chainId)}<br>contracts: ${htmlText(network.contracts_status || "unknown")}</div>
+          <div class="service-meta">${hubLabel}: ${htmlText(hub)}<br>${rpcLabel}: ${htmlText(rpc)}<br>chain id: ${htmlText(chainId)}<br>contracts: ${htmlText(contractsText)}${contractsError}</div>
           <div class="network-summary">${htmlText(network.summary || "status unknown")}</div>
         `;
         target.append(card);
