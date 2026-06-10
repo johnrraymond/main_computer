@@ -431,6 +431,9 @@ class ExecutorService:
             root=str(self.root),
         )
 
+        if watch:
+            self._write_starting_state(pid_claim=pid_claim)
+
         state = self._full_boot_reconcile()
         state["service"]["watching"] = bool(watch)
         state["service"]["pid_file"] = str(self.pid_path)
@@ -523,6 +526,33 @@ class ExecutorService:
         finally:
             self._release_pid_file()
         return self._last_state or state
+
+    def _write_starting_state(self, *, pid_claim: dict[str, Any]) -> dict[str, Any]:
+        """Publish a current resident-service heartbeat before slow boot checks run.
+
+        Unsafe shutdowns can leave a previous ready state on disk. Watch mode must
+        supersede that stale telemetry as soon as the new executor process has
+        claimed ownership, before WSL/Docker/Compose reconciliation can block.
+        """
+
+        state = self._base_state("starting")
+        state.update(
+            {
+                "boot_proven": False,
+                "message": "executor service starting; boot reconcile pending",
+            }
+        )
+        state["service"].update(
+            {
+                "pid_file": str(self.pid_path),
+                "pid_claim": pid_claim,
+                "state": "starting",
+                "watching": True,
+                "heartbeat_at": _now_iso(),
+            }
+        )
+        self._write_state(state)
+        return state
 
     def _base_state(self, phase: str) -> dict[str, Any]:
         return {
