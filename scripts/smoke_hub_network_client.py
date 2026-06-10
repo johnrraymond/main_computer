@@ -424,7 +424,7 @@ def run_smoke(
 ) -> dict[str, Any]:
     registry = load_hub_network_registry(network_config)
     profile = registry.get(network)
-    hub_url = (hub_url_override or f"http://{profile.hub_host}:{profile.hub_port}").rstrip("/")
+    hub_url = (hub_url_override or profile.hub_url).rstrip("/")
     scope_value = clean_scope(scope)
 
     manifest_path, manifest = load_deployment_manifest(profile.network_key, deployment_manifest, repo_root=repo_root)

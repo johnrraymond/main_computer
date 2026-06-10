@@ -52,9 +52,10 @@ def _parse_port(value: object, *, field: str) -> int:
     return parsed
 
 
-def _parse_optional_path(value: object, *, field: str) -> Path:
-    text = _clean_text(value, field=field, required=True)
-    assert text is not None
+def _parse_optional_path(value: object, *, field: str, required: bool = True) -> Path | None:
+    text = _clean_text(value, field=field, required=required)
+    if text is None:
+        return None
     return Path(text)
 
 
@@ -74,6 +75,17 @@ def _normalize_contracts(value: object) -> dict[str, str]:
     return contracts
 
 
+def _default_hub_url(host: str, port: int) -> str:
+    return f"http://{host}:{port}"
+
+
+def _first_present(payload: dict[str, object], *keys: str, default: object = None) -> object:
+    for key in keys:
+        if key in payload:
+            return payload.get(key)
+    return default
+
+
 @dataclass(frozen=True)
 class HubNetworkProfile:
     network_key: str
@@ -81,12 +93,30 @@ class HubNetworkProfile:
     kind: str
     chain_id: int | None
     chain_rpc_url: str | None
-    hub_host: str
-    hub_port: int
+    hub_bind_host: str
+    hub_bind_port: int
+    hub_public_url: str | None
     hub_runtime_dir: Path
+    deployment_manifest_path: Path | None
     native_currency: dict[str, Any]
     contracts: dict[str, str]
     source_path: Path
+
+    @property
+    def hub_host(self) -> str:
+        """Backward-compatible alias for older callers."""
+
+        return self.hub_bind_host
+
+    @property
+    def hub_port(self) -> int:
+        """Backward-compatible alias for older callers."""
+
+        return self.hub_bind_port
+
+    @property
+    def hub_url(self) -> str:
+        return self.hub_public_url or _default_hub_url(self.hub_bind_host, self.hub_bind_port)
 
     @classmethod
     def from_mapping(cls, network_key: str, payload: object, *, source_path: Path) -> "HubNetworkProfile":
@@ -109,14 +139,33 @@ class HubNetworkProfile:
             field=f"networks.{network_key}.chain_rpc_url",
             required=False,
         )
-        hub_host = _clean_text(
-            payload.get("hub_host", "127.0.0.1"),
-            field=f"networks.{network_key}.hub_host",
+
+        bind_host = _clean_text(
+            _first_present(payload, "hub_bind_host", "hub_host", default="127.0.0.1"),
+            field=f"networks.{network_key}.hub_bind_host",
         )
-        hub_port = _parse_port(payload.get("hub_port"), field=f"networks.{network_key}.hub_port")
+        assert bind_host is not None
+        bind_port = _parse_port(
+            _first_present(payload, "hub_bind_port", "hub_port"),
+            field=f"networks.{network_key}.hub_bind_port",
+        )
+        hub_public_url = _clean_text(
+            payload.get("hub_public_url"),
+            field=f"networks.{network_key}.hub_public_url",
+            required=False,
+        )
+        if hub_public_url is None and ("hub_host" in payload or "hub_port" in payload):
+            hub_public_url = _default_hub_url(bind_host, bind_port)
+
         hub_runtime_dir = _parse_optional_path(
             payload.get("hub_runtime_dir"),
             field=f"networks.{network_key}.hub_runtime_dir",
+        )
+        assert hub_runtime_dir is not None
+        deployment_path = _parse_optional_path(
+            payload.get("deployment_manifest_path"),
+            field=f"networks.{network_key}.deployment_manifest_path",
+            required=False,
         )
         native_currency = payload.get("native_currency") or {}
         if not isinstance(native_currency, dict):
@@ -127,9 +176,11 @@ class HubNetworkProfile:
             kind=kind or "dev",
             chain_id=chain_id,
             chain_rpc_url=chain_rpc_url,
-            hub_host=hub_host or "127.0.0.1",
-            hub_port=hub_port,
+            hub_bind_host=bind_host or "127.0.0.1",
+            hub_bind_port=bind_port,
+            hub_public_url=hub_public_url,
             hub_runtime_dir=hub_runtime_dir,
+            deployment_manifest_path=deployment_path,
             native_currency=dict(native_currency),
             contracts=_normalize_contracts(payload.get("contracts")),
             source_path=source_path,
@@ -140,21 +191,38 @@ class HubNetworkProfile:
         *,
         hub_host: str | None = None,
         hub_port: int | str | None = None,
+        hub_bind_host: str | None = None,
+        hub_bind_port: int | str | None = None,
+        hub_public_url: str | None = None,
         hub_runtime_dir: Path | str | None = None,
         chain_rpc_url: str | None = None,
         chain_id: int | str | object = _MISSING,
     ) -> "HubNetworkProfile":
         updates: dict[str, object] = {}
-        if hub_host is not None and str(hub_host).strip():
-            updates["hub_host"] = str(hub_host).strip()
-        if hub_port is not None:
-            updates["hub_port"] = _parse_port(hub_port, field="hub_port override")
+        old_default_url = _default_hub_url(self.hub_bind_host, self.hub_bind_port)
+
+        chosen_host = hub_bind_host if hub_bind_host is not None else hub_host
+        chosen_port = hub_bind_port if hub_bind_port is not None else hub_port
+        if chosen_host is not None and str(chosen_host).strip():
+            updates["hub_bind_host"] = str(chosen_host).strip()
+        if chosen_port is not None:
+            updates["hub_bind_port"] = _parse_port(chosen_port, field="hub_bind_port override")
         if hub_runtime_dir is not None and str(hub_runtime_dir).strip():
             updates["hub_runtime_dir"] = Path(str(hub_runtime_dir).strip())
         if chain_rpc_url is not None and str(chain_rpc_url).strip():
             updates["chain_rpc_url"] = str(chain_rpc_url).strip()
         if chain_id is not _MISSING:
             updates["chain_id"] = _parse_int(chain_id, field="chain_id override", required=False)
+
+        if hub_public_url is not None and str(hub_public_url).strip():
+            updates["hub_public_url"] = str(hub_public_url).strip()
+        elif any(key in updates for key in ("hub_bind_host", "hub_bind_port")) and (
+            self.hub_public_url is None or self.hub_public_url == old_default_url
+        ):
+            new_host = str(updates.get("hub_bind_host", self.hub_bind_host))
+            new_port = int(updates.get("hub_bind_port", self.hub_bind_port))
+            updates["hub_public_url"] = _default_hub_url(new_host, new_port)
+
         return replace(self, **updates)
 
     def validate_runnable(self) -> None:
@@ -178,10 +246,14 @@ class HubNetworkProfile:
             "chain_id": self.chain_id,
             "chain_id_hex": hex(self.chain_id) if self.chain_id is not None else None,
             "chain_rpc_url": self.chain_rpc_url,
-            "hub_host": self.hub_host,
-            "hub_port": self.hub_port,
-            "hub_url": f"http://{self.hub_host}:{self.hub_port}",
+            "hub_bind_host": self.hub_bind_host,
+            "hub_bind_port": self.hub_bind_port,
+            "hub_public_url": self.hub_public_url,
+            "hub_host": self.hub_bind_host,
+            "hub_port": self.hub_bind_port,
+            "hub_url": self.hub_url,
             "hub_runtime_dir": str(self.hub_runtime_dir),
+            "deployment_manifest_path": str(self.deployment_manifest_path) if self.deployment_manifest_path else None,
             "native_currency": dict(self.native_currency),
             "contracts": dict(self.contracts),
             "source_path": str(self.source_path),
@@ -256,6 +328,20 @@ def deployment_manifest_path(network_key: str, *, repo_root: str | Path | None =
 
     root = Path(repo_root) if repo_root is not None else Path.cwd()
     return root / "runtime" / "deployments" / network_key / "latest.json"
+
+
+def _resolve_profile_deployment_manifest_path(
+    profile: HubNetworkProfile,
+    *,
+    repo_root: str | Path | None = None,
+) -> Path:
+    if profile.deployment_manifest_path is None:
+        return deployment_manifest_path(profile.network_key, repo_root=repo_root)
+    path = profile.deployment_manifest_path
+    if path.is_absolute():
+        return path
+    root = Path(repo_root) if repo_root is not None else Path.cwd()
+    return root / path
 
 
 def load_network_deployment_manifest(
@@ -348,26 +434,32 @@ def resolve_profile_runtime_defaults(
     repo_root: str | Path | None = None,
     manifest_path: str | Path | None = None,
 ) -> HubNetworkProfile:
-    """Fill missing runnable profile values from runtime/deployments/<network>/latest.json.
+    """Fill missing runnable profile values from its deployment manifest.
 
-    This is intentionally opt-in-by-need: local profiles such as dev/test already
-    have concrete loopback RPC values and are not affected by stale runtime files.
-    Dynamic profiles such as testnet/main can become runnable after deployment
-    without copying or editing hub_networks.json.
+    Local profiles such as dev/test already have concrete loopback RPC values and
+    are not affected by stale runtime files.  Dynamic profiles can still fill
+    missing values from their network-scoped manifest path.
     """
 
     if profile.chain_id is not None and profile.chain_rpc_url and not manifest_path:
         return profile
-    loaded = load_network_deployment_manifest(
-        profile.network_key,
-        repo_root=repo_root,
-        manifest_path=manifest_path,
-        required=bool(manifest_path),
+
+    path = (
+        Path(manifest_path)
+        if manifest_path is not None and str(manifest_path).strip()
+        else _resolve_profile_deployment_manifest_path(profile, repo_root=repo_root)
     )
-    if loaded is None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        if manifest_path:
+            raise HubNetworkConfigError(f"Hub network deployment manifest not found: {path}") from None
         return profile
-    path, manifest = loaded
-    return profile_with_deployment_manifest_defaults(profile, manifest, manifest_path=path)
+    except json.JSONDecodeError as exc:
+        raise HubNetworkConfigError(f"Hub network deployment manifest is not valid JSON: {path}: {exc}") from None
+    if not isinstance(payload, dict):
+        raise HubNetworkConfigError(f"Hub network deployment manifest root is not an object: {path}")
+    return profile_with_deployment_manifest_defaults(profile, payload, manifest_path=path)
 
 
 def env_hub_network_name() -> str | None:
@@ -378,16 +470,23 @@ def env_hub_network_name() -> str | None:
 
 
 def env_hub_host_override() -> str | None:
-    value = os.environ.get("MAIN_COMPUTER_HUB_HOST")
+    value = os.environ.get("MAIN_COMPUTER_HUB_BIND_HOST") or os.environ.get("MAIN_COMPUTER_HUB_HOST")
     if value and value.strip():
         return value.strip()
     return None
 
 
 def env_hub_port_override() -> int | None:
-    value = os.environ.get("MAIN_COMPUTER_HUB_PORT")
+    value = os.environ.get("MAIN_COMPUTER_HUB_BIND_PORT") or os.environ.get("MAIN_COMPUTER_HUB_PORT")
     if value and value.strip():
-        return _parse_port(value, field="MAIN_COMPUTER_HUB_PORT")
+        return _parse_port(value, field="MAIN_COMPUTER_HUB_BIND_PORT")
+    return None
+
+
+def env_hub_public_url_override() -> str | None:
+    value = os.environ.get("MAIN_COMPUTER_HUB_PUBLIC_URL")
+    if value and value.strip():
+        return value.strip()
     return None
 
 
