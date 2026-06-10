@@ -5,14 +5,18 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl wget \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY . /app
 
-RUN python -m pip install --upgrade pip \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl wget \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --upgrade pip \
     && python -m pip install --no-cache-dir -e .
+
+EXPOSE 8790
 
 ENTRYPOINT ["python", "-m", "main_computer.cli", "hub"]
 CMD ["--network", "mainnet", "--host", "0.0.0.0", "--port", "8790", "--hub-runtime-dir", "/data/main-computer/hub/mainnet"]
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD wget -qO- http://127.0.0.1:8790/api/hub/status >/dev/null || exit 1

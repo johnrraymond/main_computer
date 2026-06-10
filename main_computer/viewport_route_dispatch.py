@@ -642,9 +642,13 @@ def _control_panel_network_status_cards() -> dict[str, object]:
     cards: list[dict[str, object]] = []
     for key in ordered_keys:
         profile = registry.networks[key]
-        hub_url = f"http://{profile.hub_host}:{profile.hub_port}"
-        hub_endpoint = f"{profile.hub_host}:{profile.hub_port}"
-        hub_tcp_probe = _control_panel_connect(profile.hub_host, profile.hub_port, timeout_s=0.18)
+        hub_url = profile.hub_url.rstrip("/")
+        hub_endpoint = hub_url
+        hub_host, hub_port = _control_panel_endpoint_parts(hub_url)
+        if hub_host and hub_port is not None:
+            hub_tcp_probe = _control_panel_connect(hub_host, hub_port, timeout_s=0.18)
+        else:
+            hub_tcp_probe = {"ok": False, "error": "hub public URL is not configured"}
         hub_status_probe: dict[str, object] = {
             "ok": False,
             "status": None,

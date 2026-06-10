@@ -327,6 +327,28 @@ def effective_dockerfile_location(profile: HubNetworkProfile, args: argparse.Nam
     return str(getattr(args, "dockerfile_location", "") or default_dockerfile_location(profile))
 
 
+def coolify_domain_with_backend_port(profile: HubNetworkProfile) -> str:
+    """Return the Coolify domain value, with the backend container port when needed.
+
+    Coolify strips the port from generated public Host rules but uses it to set the
+    reverse-proxy upstream port. The public Hub URL remains profile.hub_public_url.
+    """
+    public_url = str(profile.hub_public_url or "").strip().rstrip("/")
+    if not public_url:
+        return public_url
+    try:
+        parsed = urllib.parse.urlsplit(public_url)
+    except ValueError:
+        return public_url
+    if parsed.port is not None or not parsed.hostname:
+        return public_url
+    host = parsed.hostname
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = f"{host}:{profile.hub_bind_port}"
+    return urllib.parse.urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+
+
 def application_payload(
     profile: HubNetworkProfile,
     args: argparse.Namespace,
@@ -346,7 +368,7 @@ def application_payload(
         "base_directory": args.base_directory,
         "dockerfile_location": effective_dockerfile_location(profile, args),
         "ports_exposes": str(profile.hub_bind_port),
-        "domains": profile.hub_public_url,
+        "domains": coolify_domain_with_backend_port(profile),
         "start_command": hub_start_command(profile, runtime_dir),
         "health_check_enabled": True,
         "health_check_path": args.health_path,
