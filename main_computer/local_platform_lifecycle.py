@@ -37,8 +37,9 @@ from main_computer.website_project_manifest import (
 DEFAULT_DOCKER_TIMEOUT_SECONDS = 90.0
 COMPOSE_SCOPE_AGGREGATE = "aggregate"
 COMPOSE_SCOPE_SITE = "site"
+DEFAULT_COMPOSE_SCOPE = COMPOSE_SCOPE_SITE
 COMPOSE_SCOPE_ALIASES = {
-    "": COMPOSE_SCOPE_AGGREGATE,
+    "": DEFAULT_COMPOSE_SCOPE,
     "aggregate": COMPOSE_SCOPE_AGGREGATE,
     "all": COMPOSE_SCOPE_AGGREGATE,
     "all-sites": COMPOSE_SCOPE_AGGREGATE,
@@ -85,7 +86,7 @@ class WebsiteDockerPlan:
         }
 
 
-def normalize_compose_scope(value: object = COMPOSE_SCOPE_AGGREGATE) -> str:
+def normalize_compose_scope(value: object = DEFAULT_COMPOSE_SCOPE) -> str:
     scope = str(value or "").strip().lower()
     normalized = COMPOSE_SCOPE_ALIASES.get(scope)
     if normalized is None:
@@ -120,7 +121,7 @@ def _docker_command_for_action(
     service: str,
     *,
     site_id: str,
-    compose_scope: str = COMPOSE_SCOPE_AGGREGATE,
+    compose_scope: str = DEFAULT_COMPOSE_SCOPE,
     tail: int = 200,
 ) -> list[str]:
     base = _docker_compose_base(repo_root, site_id, compose_scope)
@@ -139,7 +140,7 @@ def lifecycle_plan(
     *,
     lane: object = "prod",
     action: str = "publish",
-    compose_scope: object = COMPOSE_SCOPE_AGGREGATE,
+    compose_scope: object = DEFAULT_COMPOSE_SCOPE,
     tail: int = 200,
 ) -> WebsiteDockerPlan:
     action_name = str(action or "").strip().lower()
@@ -216,7 +217,7 @@ def install_site(
     repo_root: Path,
     site_id: object,
     *,
-    compose_scope: object = COMPOSE_SCOPE_AGGREGATE,
+    compose_scope: object = DEFAULT_COMPOSE_SCOPE,
 ) -> dict[str, Any]:
     """Ensure a website is registered for local Docker lanes and regenerate Compose."""
 
@@ -256,7 +257,7 @@ def _ensure_generated_compose(
     repo_root: Path,
     site_id: object,
     *,
-    compose_scope: object = COMPOSE_SCOPE_AGGREGATE,
+    compose_scope: object = DEFAULT_COMPOSE_SCOPE,
 ) -> dict[str, Any]:
     clean_compose_scope = normalize_compose_scope(compose_scope)
     if clean_compose_scope == COMPOSE_SCOPE_SITE:
@@ -280,7 +281,7 @@ def verify_site(
     site_id: object,
     *,
     lane: object = "prod",
-    compose_scope: object = COMPOSE_SCOPE_AGGREGATE,
+    compose_scope: object = DEFAULT_COMPOSE_SCOPE,
     timeout_s: float = 30.0,
 ) -> dict[str, Any]:
     plan = lifecycle_plan(repo_root, site_id, lane=lane, action="verify", compose_scope=compose_scope)
@@ -326,7 +327,7 @@ def website_docker_action(
     lane: object = "prod",
     dry_run: bool = False,
     verify: bool = True,
-    compose_scope: object = COMPOSE_SCOPE_AGGREGATE,
+    compose_scope: object = DEFAULT_COMPOSE_SCOPE,
     tail: int = 200,
     timeout_s: float = DEFAULT_DOCKER_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
@@ -443,9 +444,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-verify", action="store_true", help="Do not probe the status URL after publish.")
     parser.add_argument(
         "--compose-scope",
-        default=COMPOSE_SCOPE_AGGREGATE,
-        choices=[COMPOSE_SCOPE_AGGREGATE, COMPOSE_SCOPE_SITE],
-        help="Compose file scope to use. Defaults to the legacy aggregate all-websites file.",
+        default=DEFAULT_COMPOSE_SCOPE,
+        choices=[COMPOSE_SCOPE_SITE, COMPOSE_SCOPE_AGGREGATE],
+        help=(
+            "Compose file scope to use. Defaults to the site-local compose file. "
+            "Use aggregate for the legacy all-websites file."
+        ),
     )
     parser.add_argument("--tail", type=int, default=200, help="Number of log lines for logs action.")
     parser.add_argument("--timeout", type=float, default=DEFAULT_DOCKER_TIMEOUT_SECONDS, help="Docker command timeout in seconds.")
