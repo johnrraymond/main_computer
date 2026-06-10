@@ -37,6 +37,10 @@ DEFAULT_RETRY_SLEEP_S = 2.0
 DEFAULT_DOCKERFILE_LOCATION = "/Dockerfile.hub"
 DEFAULT_BASE_DIRECTORY = "/"
 DEFAULT_HEALTH_PATH = "/api/hub/status"
+DEFAULT_JSON_RPC_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "MainComputerHubDeployer/1.0"
+)
 
 
 class CoolifyHubDeployError(RuntimeError):
@@ -231,9 +235,23 @@ def client_from_args(args: argparse.Namespace) -> CoolifyClient:
     )
 
 
-def json_rpc(url: str, method: str, params: list[Any] | None = None, *, timeout_s: float = 8.0) -> Any:
+def json_rpc(
+    url: str,
+    method: str,
+    params: list[Any] | None = None,
+    *,
+    timeout_s: float = 8.0,
+    user_agent: str = DEFAULT_JSON_RPC_USER_AGENT,
+) -> Any:
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}).encode("utf-8")
-    request = urllib.request.Request(url, data=body, headers={"content-type": "application/json"}, method="POST")
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    clean_user_agent = str(user_agent or "").strip()
+    if clean_user_agent:
+        headers["User-Agent"] = clean_user_agent
+    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(request, timeout=timeout_s) as response:
             payload = json.loads(response.read().decode("utf-8"))
@@ -248,12 +266,13 @@ def verify_rpc(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[str
     if not profile.chain_rpc_url:
         raise CoolifyHubDeployError(f"Hub network {profile.network_key!r} has no chain_rpc_url.")
     expected = hex(int(profile.chain_id or 0))
-    chain_id = str(json_rpc(profile.chain_rpc_url, "eth_chainId", timeout_s=args.rpc_timeout_s))
+    user_agent = str(getattr(args, "rpc_user_agent", DEFAULT_JSON_RPC_USER_AGENT) or "").strip()
+    chain_id = str(json_rpc(profile.chain_rpc_url, "eth_chainId", timeout_s=args.rpc_timeout_s, user_agent=user_agent))
     if chain_id.lower() != expected.lower():
         raise CoolifyHubDeployError(
             f"RPC chain id mismatch for {profile.network_key}: expected {expected}, got {chain_id}."
         )
-    block_hex = str(json_rpc(profile.chain_rpc_url, "eth_blockNumber", timeout_s=args.rpc_timeout_s))
+    block_hex = str(json_rpc(profile.chain_rpc_url, "eth_blockNumber", timeout_s=args.rpc_timeout_s, user_agent=user_agent))
     block_number = int(block_hex, 16)
     return {"ok": True, "rpc_url": profile.chain_rpc_url, "chain_id": chain_id, "block_number": block_number}
 
@@ -431,6 +450,164 @@ def list_resources(client: CoolifyClient, path: str, *preferred_keys: str) -> tu
     return response, body_items(response.body, *preferred_keys)
 
 
+def project_environments_path(project_uuid: str) -> str:
+    return f"/api/v1/projects/{urllib.parse.quote(project_uuid)}/environments"
+
+
+def list_project_environments(
+    client: CoolifyClient,
+    *,
+    project_uuid: str,
+    tried: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    path = project_environments_path(project_uuid)
+    response, environments = list_resources(client, path, "environments")
+    tried.append(
+        {
+            "operation": "list-environments",
+            "path": path,
+            "response": response_to_dict(response),
+            "count": len(environments),
+        }
+    )
+    if not response.ok:
+        raise CoolifyHubDeployError(f"Could not list Coolify environments for project {project_uuid!r}.")
+    return environments
+
+
+def select_environment_by_exact_name(items: list[dict[str, Any]], name: str) -> tuple[str, list[dict[str, Any]]]:
+    clean = str(name or "").strip().lower()
+    matches = [
+        item
+        for item in items
+        if item_name(item).lower() == clean or str(item.get("name") or "").strip().lower() == clean
+    ]
+    if len(matches) == 1:
+        return item_uuid(matches[0]), matches
+    if len(matches) > 1:
+        return "", matches
+    return "", []
+
+
+def environment_response_uuid(body: Any) -> str:
+    if isinstance(body, dict):
+        uuid = item_uuid(body)
+        if uuid:
+            return uuid
+        environment = body.get("environment")
+        if isinstance(environment, dict):
+            uuid = item_uuid(environment)
+            if uuid:
+                return uuid
+        data = body.get("data")
+        if isinstance(data, dict):
+            uuid = item_uuid(data)
+            if uuid:
+                return uuid
+    return ""
+
+
+def create_project_environment(
+    client: CoolifyClient,
+    *,
+    project_uuid: str,
+    environment_name: str,
+    tried: list[dict[str, Any]],
+) -> dict[str, Any]:
+    path = project_environments_path(project_uuid)
+    payload = {"name": environment_name}
+    response = client.request("POST", path, payload)
+    tried.append(
+        {
+            "operation": "create-environment",
+            "path": path,
+            "payload": payload,
+            "response": response_to_dict(response),
+        }
+    )
+    if response.ok:
+        return {
+            "source": "created",
+            "environment_name": environment_name,
+            "environment_uuid": environment_response_uuid(response.body),
+            "response": response_to_dict(response),
+        }
+    if response.status in {409, 422}:
+        return {
+            "source": "create-race-or-existing",
+            "environment_name": environment_name,
+            "environment_uuid": "",
+            "response": response_to_dict(response),
+        }
+    raise CoolifyHubDeployError(
+        f"Coolify environment create failed with HTTP {response.status}: {response.body}"
+    )
+
+
+def ensure_project_environment(
+    client: CoolifyClient,
+    profile: HubNetworkProfile,
+    args: argparse.Namespace,
+    tried: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if args.coolify_environment_uuid:
+        if not str(args.coolify_environment_name or "").strip():
+            args.coolify_environment_name = profile.network_key
+        return {
+            "source": "explicit_uuid",
+            "environment_name": args.coolify_environment_name,
+            "environment_uuid": args.coolify_environment_uuid,
+        }
+
+    environment_name = str(args.coolify_environment_name or "").strip() or profile.network_key
+    args.coolify_environment_name = environment_name
+    environments = list_project_environments(client, project_uuid=args.coolify_project_uuid, tried=tried)
+    uuid, matches = select_environment_by_exact_name(environments, environment_name)
+    if uuid:
+        args.coolify_environment_uuid = uuid
+        return {
+            "source": "existing",
+            "environment_name": environment_name,
+            "environment_uuid": uuid,
+            "matches": [item_summary(item) for item in matches],
+        }
+    if len(matches) > 1:
+        raise CoolifyHubDeployError(
+            f"Multiple Coolify environments named {environment_name!r} already exist in project "
+            f"{args.coolify_project_uuid!r}; pass --coolify-environment-uuid."
+        )
+
+    if getattr(args, "no_create_environment", False):
+        raise CoolifyHubDeployError(
+            f"Coolify environment {environment_name!r} does not exist in project {args.coolify_project_uuid!r}. "
+            "Create it in Coolify or rerun without --no-create-environment."
+        )
+
+    created = create_project_environment(
+        client,
+        project_uuid=args.coolify_project_uuid,
+        environment_name=environment_name,
+        tried=tried,
+    )
+    if created.get("environment_uuid"):
+        args.coolify_environment_uuid = str(created["environment_uuid"])
+        return created
+
+    # Some Coolify versions return only a message after create. Re-list to get
+    # the environment UUID before creating the application.
+    environments = list_project_environments(client, project_uuid=args.coolify_project_uuid, tried=tried)
+    uuid, matches = select_environment_by_exact_name(environments, environment_name)
+    if uuid:
+        args.coolify_environment_uuid = uuid
+        created["environment_uuid"] = uuid
+        created["matches"] = [item_summary(item) for item in matches]
+        return created
+    raise CoolifyHubDeployError(
+        f"Created Coolify environment {environment_name!r}, but could not confirm it in project "
+        f"{args.coolify_project_uuid!r}."
+    )
+
+
 def resolve_exact_resource_uuid(
     client: CoolifyClient,
     *,
@@ -494,6 +671,11 @@ def resolve_coolify_context(client: CoolifyClient, profile: HubNetworkProfile, a
         explicit_name=args.coolify_project_name,
         tried=tried,
     )
+    if not args.coolify_project_uuid:
+        raise CoolifyHubDeployError("Coolify project is required. Pass --coolify-project-uuid or --coolify-project-name.")
+
+    environment = ensure_project_environment(client, profile, args, tried)
+
     args.coolify_server_uuid = resolve_exact_resource_uuid(
         client,
         path="/api/v1/servers",
@@ -504,17 +686,14 @@ def resolve_coolify_context(client: CoolifyClient, profile: HubNetworkProfile, a
         tried=tried,
         infer_if_single=True,
     )
-    if not args.coolify_project_uuid:
-        raise CoolifyHubDeployError("Coolify project is required. Pass --coolify-project-uuid or --coolify-project-name.")
     if not args.coolify_server_uuid:
         raise CoolifyHubDeployError("Coolify server is required. Pass --coolify-server-uuid or --coolify-server-name.")
-    if not args.coolify_environment_name and not args.coolify_environment_uuid:
-        raise CoolifyHubDeployError("Coolify environment is required. Pass --coolify-environment-name or --coolify-environment-uuid.")
     return {
         "project_uuid": args.coolify_project_uuid,
         "server_uuid": args.coolify_server_uuid,
         "environment_name": args.coolify_environment_name,
         "environment_uuid": args.coolify_environment_uuid,
+        "environment": environment,
     }
 
 
@@ -619,15 +798,25 @@ def trigger_deploy(client: CoolifyClient, *, application_uuid: str, force: bool,
     raise CoolifyHubDeployError("Coolify deploy failed on all known endpoints.")
 
 
+def hub_status_request(status_url: str, *, user_agent: str = DEFAULT_JSON_RPC_USER_AGENT) -> urllib.request.Request:
+    headers = {"Accept": "application/json"}
+    clean_user_agent = str(user_agent or "").strip()
+    if clean_user_agent:
+        headers["User-Agent"] = clean_user_agent
+    return urllib.request.Request(status_url, headers=headers, method="GET")
+
+
 def wait_for_hub(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[str, Any]:
     if args.hub_wait_timeout_s <= 0:
         return {"ok": True, "skipped": True, "reason": "hub_wait_timeout_s <= 0"}
     status_url = profile.hub_url.rstrip("/") + args.health_path
     deadline = time.monotonic() + args.hub_wait_timeout_s
     last_error: object = None
+    user_agent = str(getattr(args, "hub_status_user_agent", DEFAULT_JSON_RPC_USER_AGENT) or "").strip()
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(status_url, timeout=args.hub_status_timeout_s) as response:
+            request = hub_status_request(status_url, user_agent=user_agent)
+            with urllib.request.urlopen(request, timeout=args.hub_status_timeout_s) as response:
                 payload = json.loads(response.read().decode("utf-8"))
             network = payload.get("network") if isinstance(payload, dict) else {}
             if isinstance(network, dict):
@@ -801,6 +990,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--coolify-environment-name", default="", help="Coolify environment name.")
     parser.add_argument("--coolify-environment-uuid", default="", help="Coolify environment UUID if known.")
     parser.add_argument(
+        "--no-create-environment",
+        action="store_true",
+        help="Fail if the named Coolify environment is missing instead of creating it.",
+    )
+    parser.add_argument(
         "--coolify-server-uuid",
         default="",
         help="Coolify server UUID. If omitted with --coolify-server-name, apply infers it only when exactly one server exists.",
@@ -818,6 +1012,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--health-path", default=DEFAULT_HEALTH_PATH)
 
     parser.add_argument("--rpc-timeout-s", type=float, default=8.0)
+    parser.add_argument(
+        "--rpc-user-agent",
+        default=os.environ.get("MAIN_COMPUTER_RPC_USER_AGENT", DEFAULT_JSON_RPC_USER_AGENT),
+        help=(
+            "User-Agent used for JSON-RPC preflight requests. "
+            "Some HTTPS RPC edges reject Python urllib's default identity."
+        ),
+    )
     parser.add_argument(
         "--rpc-check",
         choices=["auto", "require", "warn", "skip"],
@@ -838,6 +1040,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--hub-wait-timeout-s", type=float, default=120.0)
     parser.add_argument("--hub-wait-poll-s", type=float, default=5.0)
     parser.add_argument("--hub-status-timeout-s", type=float, default=8.0)
+    parser.add_argument(
+        "--hub-status-user-agent",
+        default=os.environ.get("MAIN_COMPUTER_HUB_STATUS_USER_AGENT", DEFAULT_JSON_RPC_USER_AGENT),
+        help=(
+            "User-Agent used for public Hub status checks. "
+            "Some HTTPS edges reject Python urllib's default identity."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", help="Render the plan without network or Coolify calls.")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     return parser.parse_args(argv)
