@@ -266,6 +266,261 @@ REPO_EDIT_FENCE_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+
+STRUCTURED_FENCE_RE = re.compile(
+    r"```[ \t]*(?P<language>computer|repo-edit|repo_edit)[^\n]*\n"
+    r"(?P<body>.*?)\n?[ \t]*```",
+    re.IGNORECASE | re.DOTALL,
+)
+
+TERMINAL_RUN_ACT_RE = re.compile(r'^/act terminal run "(?P<command>[^"\r\n]+)" --cwd repo-root$')
+TERMINAL_RUN_IN_ACTIVE_ACT_RE = re.compile(
+    r'^/act terminal run-in active "(?P<command>[^"\r\n]+)" --cwd repo-root$'
+)
+TERMINAL_INTERRUPT_ACTIVE_ACT_RE = re.compile(r"^/act terminal interrupt active$")
+ABSOLUTE_WINDOWS_PATH_RE = re.compile(r"[A-Za-z]:\\|\\Users\\", re.IGNORECASE)
+
+
+def _artifact_hash(*parts: Any) -> str:
+    joined = "\n".join(str(part) for part in parts)
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:12]
+
+
+def _structured_text_block(content: str, start: int, end: int) -> dict[str, Any]:
+    return {
+        "kind": "text",
+        "content": content,
+        "source_range": {"start": start, "end": end},
+    }
+
+
+def _terminal_command_validation(raw_command: str) -> dict[str, Any]:
+    command = str(raw_command or "").strip()
+    report: dict[str, Any] = {
+        "raw": command,
+        "ok": False,
+        "action": "",
+        "command": "",
+        "cwd": "",
+        "supported": False,
+        "failures": [],
+    }
+    if not command.startswith("/act "):
+        report["failures"].append("line is not an /act request")
+        return report
+
+    run_match = TERMINAL_RUN_ACT_RE.match(command)
+    if run_match:
+        inner = run_match.group("command")
+        report.update(
+            {
+                "ok": True,
+                "action": "terminal_run",
+                "command": inner,
+                "cwd": "repo-root",
+                "supported": True,
+            }
+        )
+    else:
+        run_in_match = TERMINAL_RUN_IN_ACTIVE_ACT_RE.match(command)
+        if run_in_match:
+            inner = run_in_match.group("command")
+            report.update(
+                {
+                    "ok": True,
+                    "action": "terminal_run_in_active",
+                    "command": inner,
+                    "cwd": "repo-root",
+                    "supported": False,
+                    "note": "Active-terminal reuse is previewed here; this text head only executes new repo-root terminal runs.",
+                }
+            )
+        elif TERMINAL_INTERRUPT_ACTIVE_ACT_RE.match(command):
+            report.update(
+                {
+                    "ok": True,
+                    "action": "terminal_interrupt_active",
+                    "command": "",
+                    "cwd": "",
+                    "supported": False,
+                    "note": "Active-terminal interruption is previewed here; this text head does not interrupt terminal sessions.",
+                }
+            )
+        else:
+            report["failures"].append("command is not one of the canonical text-console terminal /act forms")
+            return report
+
+    if ABSOLUTE_WINDOWS_PATH_RE.search(command):
+        report["ok"] = False
+        report["failures"].append("command contains an absolute Windows path; use repo-root and relative paths")
+
+    return report
+
+
+def _computer_mount_artifact(index: int, body: str, start: int, end: int) -> dict[str, Any]:
+    commands: list[str] = []
+    invalid_lines: list[str] = []
+    for line in str(body or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("/act "):
+            commands.append(stripped)
+        else:
+            invalid_lines.append(stripped)
+
+    command_reports = [_terminal_command_validation(command) for command in commands]
+    failures: list[str] = []
+    failures.extend(f"non-/act line inside computer fence: {line!r}" for line in invalid_lines)
+    for report in command_reports:
+        failures.extend(str(failure) for failure in report.get("failures", []) or [])
+
+    all_valid = bool(commands) and not invalid_lines and all(bool(report.get("ok")) for report in command_reports)
+    can_execute = all_valid and all(
+        report.get("action") == "terminal_run" and bool(report.get("supported"))
+        for report in command_reports
+    )
+    if can_execute:
+        state = "ready"
+    elif all_valid:
+        state = "preview"
+    else:
+        state = "preview"
+
+    return {
+        "artifact_id": "mount-" + _artifact_hash(index, body, start, end),
+        "kind": "computer_mount",
+        "language": "computer",
+        "surface": "text_console",
+        "state": state,
+        "historical": False,
+        "request_kind": "command_plan" if len(commands) > 1 else ("command" if commands else "empty"),
+        "canonical_commands": commands,
+        "invalid_lines": invalid_lines,
+        "command_reports": command_reports,
+        "can_execute": can_execute,
+        "validation": {
+            "ok": not failures and bool(commands),
+            "failures": failures or ([] if commands else ["computer fence did not contain any /act commands"]),
+        },
+        "raw": body,
+        "source_range": {"start": start, "end": end},
+        "note": "Preview only until the user explicitly runs this mount request.",
+    }
+
+
+def _repo_edit_validation(payload: Any, raw_body: str) -> dict[str, Any]:
+    failures: list[str] = []
+    if ABSOLUTE_WINDOWS_PATH_RE.search(raw_body):
+        failures.append("repo-edit block contains an absolute Windows path")
+    if not isinstance(payload, dict):
+        failures.append("repo-edit block did not parse to a JSON object")
+    else:
+        if payload.get("mode") != "repo_root_edit_request":
+            failures.append("repo-edit mode must be repo_root_edit_request")
+        if payload.get("target_root") != "repo-root":
+            failures.append("repo-edit target_root must be repo-root")
+        if payload.get("requires_confirmation") is not True:
+            failures.append("repo-edit requires_confirmation must be true")
+        blocked_reasons = payload.get("blocked_reasons")
+        if not isinstance(blocked_reasons, list):
+            failures.append("repo-edit blocked_reasons must be a list")
+        request = str(payload.get("request_for_editor") or "").strip()
+        if not request:
+            failures.append("repo-edit request_for_editor is required")
+        if ABSOLUTE_WINDOWS_PATH_RE.search(request):
+            failures.append("repo-edit request_for_editor contains an absolute Windows path")
+        if re.search(r"(?:^|[/\\])\.\.(?:[/\\]|$)", request):
+            failures.append("repo-edit request_for_editor must not target parent directories")
+    return {"ok": not failures, "failures": failures}
+
+
+def _repo_edit_artifact(index: int, body: str, start: int, end: int) -> dict[str, Any]:
+    parsed: dict[str, Any] | None = None
+    parse_error = ""
+    try:
+        parsed_payload = parse_jsonish(body)
+        parsed = parsed_payload
+    except Exception as exc:
+        parse_error = repr(exc)
+
+    validation = _repo_edit_validation(parsed, body)
+    if parse_error:
+        validation = {
+            "ok": False,
+            "failures": [f"repo-edit JSON parse failed: {parse_error}", *validation["failures"]],
+        }
+
+    return {
+        "artifact_id": "repo-edit-" + _artifact_hash(index, body, start, end),
+        "kind": "repo_edit_handoff",
+        "language": "repo-edit",
+        "surface": "text_console",
+        "state": "ready" if validation["ok"] else "preview",
+        "historical": False,
+        "target_root": str((parsed or {}).get("target_root") or ""),
+        "request_for_editor": str((parsed or {}).get("request_for_editor") or ""),
+        "requires_confirmation": bool((parsed or {}).get("requires_confirmation") is True),
+        "blocked_reasons": (parsed or {}).get("blocked_reasons") if isinstance((parsed or {}).get("blocked_reasons"), list) else [],
+        "parsed": parsed,
+        "parse_error": parse_error,
+        "validation": validation,
+        "raw": body,
+        "source_range": {"start": start, "end": end},
+        "note": "Repo-root edit handoff only. It is not an applied edit.",
+    }
+
+
+def parse_text_console_response_artifacts(content: str) -> dict[str, Any]:
+    """Split a model response into display blocks and structured text-console artifacts.
+
+    This parser intentionally recognizes only explicit fenced `computer` and
+    `repo-edit` blocks. It does not execute commands and does not apply edits.
+    """
+
+    raw = str(content or "")
+    blocks: list[dict[str, Any]] = []
+    artifacts: list[dict[str, Any]] = []
+    cursor = 0
+    artifact_index = 0
+
+    for match in STRUCTURED_FENCE_RE.finditer(raw):
+        if match.start() > cursor:
+            leading = raw[cursor : match.start()]
+            if leading:
+                blocks.append(_structured_text_block(leading, cursor, match.start()))
+
+        artifact_index += 1
+        language = match.group("language").lower().replace("_", "-")
+        body = match.group("body").strip()
+        if language == "computer":
+            artifact = _computer_mount_artifact(artifact_index, body, match.start(), match.end())
+        else:
+            artifact = _repo_edit_artifact(artifact_index, body, match.start(), match.end())
+        artifacts.append(artifact)
+        blocks.append(
+            {
+                "kind": "artifact",
+                "artifact_id": artifact["artifact_id"],
+                "artifact_kind": artifact["kind"],
+                "source_range": {"start": match.start(), "end": match.end()},
+            }
+        )
+        cursor = match.end()
+
+    if cursor < len(raw):
+        trailing = raw[cursor:]
+        if trailing:
+            blocks.append(_structured_text_block(trailing, cursor, len(raw)))
+
+    return {
+        "version": 1,
+        "surface": "text_console",
+        "artifact_count": len(artifacts),
+        "artifacts": artifacts,
+        "blocks": blocks or [_structured_text_block(raw, 0, len(raw))],
+    }
+
 ACTION_PREFLIGHT_PROMPT = """\
 You are the Main Computer text-console action-context preflight.
 
@@ -698,6 +953,7 @@ def run_text_console_operator(
 def chat_response_from_text_console_operator_run(run: TextConsoleOperatorRun) -> ChatResponse:
     model_input = run.base_model_input
     context_pack = model_input.context_pack
+    text_console_artifacts = parse_text_console_response_artifacts(run.final_content)
     return ChatResponse(
         content=run.final_content,
         provider=run.final_provider,
@@ -708,6 +964,7 @@ def chat_response_from_text_console_operator_run(run: TextConsoleOperatorRun) ->
                 "manifest_chars": int(getattr(context_pack, "manifest_chars", 0) or 0),
                 "evidence": [asdict(item) for item in list(getattr(context_pack, "evidence", ()) or ())],
             },
+            "text_console_artifacts": text_console_artifacts,
             "web_search": model_input.web_search_context,
             "text_console_config": model_input.text_console_config.to_payload(),
             "legacy_main_computer_config_adapter": {
@@ -794,6 +1051,7 @@ def build_text_console_model_input(
 def chat_response_from_text_console_model_input(model_input: TextConsoleModelInput) -> ChatResponse:
     provider_response = model_input.computer.provider.chat(model_input.messages)
     context_pack = model_input.context_pack
+    text_console_artifacts = parse_text_console_response_artifacts(provider_response.content)
     return ChatResponse(
         content=provider_response.content,
         provider=provider_response.provider,
@@ -804,6 +1062,7 @@ def chat_response_from_text_console_model_input(model_input: TextConsoleModelInp
                 "manifest_chars": int(getattr(context_pack, "manifest_chars", 0) or 0),
                 "evidence": [asdict(item) for item in list(getattr(context_pack, "evidence", ()) or ())],
             },
+            "text_console_artifacts": text_console_artifacts,
             "web_search": model_input.web_search_context,
             "text_console_config": model_input.text_console_config.to_payload(),
             "legacy_main_computer_config_adapter": {

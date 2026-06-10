@@ -107,6 +107,72 @@
     .entry.assistant .role { color: var(--accent); }
     .entry.error .role { color: var(--danger); }
 
+    .entry-content { display: grid; gap: 10px; }
+    .model-text { white-space: pre-wrap; }
+
+    .structured-block {
+      white-space: normal;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px;
+      background: rgba(17, 20, 15, 0.86);
+      box-shadow: inset 0 0 0 1px rgba(143, 227, 136, 0.08);
+    }
+
+    .structured-block.ready,
+    .structured-block.executed { border-color: rgba(143, 227, 136, 0.75); }
+    .structured-block.preview { border-color: rgba(255, 207, 90, 0.7); }
+    .structured-block.failed { border-color: rgba(255, 107, 95, 0.75); }
+    .structured-block.historical { opacity: 0.88; }
+
+    .structured-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .structured-title { color: var(--accent); font-weight: 700; }
+    .structured-state {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 8px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .structured-note,
+    .structured-meta,
+    .structured-failures {
+      color: var(--muted);
+      font-size: 13px;
+      margin: 6px 0;
+    }
+
+    .structured-failures { color: var(--danger); }
+    .structured-code {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #070807;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      margin: 8px 0;
+      color: var(--ink);
+    }
+
+    .structured-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+
+    .structured-actions button { min-width: 0; }
+    .terminal-result { margin-top: 10px; }
+
     form {
       display: grid;
       grid-template-columns: 1fr auto;
@@ -514,6 +580,179 @@
       target.textContent = content;
     }
 
+    function artifactsById(artifactsEnvelope) {
+      const map = new Map();
+      const artifacts = Array.isArray(artifactsEnvelope?.artifacts) ? artifactsEnvelope.artifacts : [];
+      artifacts.forEach((artifact) => {
+        if (artifact && artifact.artifact_id) map.set(artifact.artifact_id, artifact);
+      });
+      return map;
+    }
+
+    function artifactStateLabel(artifact, historical) {
+      if (historical) return "historical";
+      if (!artifact) return "preview";
+      return artifact.state || "preview";
+    }
+
+    function appendFailures(target, failures) {
+      if (!Array.isArray(failures) || !failures.length) return;
+      const failureBox = document.createElement("div");
+      failureBox.className = "structured-failures";
+      failureBox.textContent = `Validation: ${failures.join("; ")}`;
+      target.append(failureBox);
+    }
+
+    function mountRunnableCommands(artifact) {
+      const reports = Array.isArray(artifact?.command_reports) ? artifact.command_reports : [];
+      return reports
+        .filter((report) => report && report.action === "terminal_run" && report.supported && report.command)
+        .map((report) => String(report.command));
+    }
+
+    function renderComputerMount(artifact, options = {}) {
+      const historical = Boolean(options.historical);
+      const state = artifactStateLabel(artifact, historical);
+      const card = document.createElement("div");
+      card.className = `structured-block mount-card ${state}`;
+      card.dataset.artifactId = artifact?.artifact_id || "";
+      card.dataset.artifactKind = "computer_mount";
+
+      const header = document.createElement("div");
+      header.className = "structured-header";
+      const title = document.createElement("div");
+      title.className = "structured-title";
+      const count = Array.isArray(artifact?.canonical_commands) ? artifact.canonical_commands.length : 0;
+      title.textContent = count > 1 ? `Terminal mount request (${count}-step plan)` : "Terminal mount request";
+      const badge = document.createElement("span");
+      badge.className = "structured-state";
+      badge.textContent = state;
+      header.append(title, badge);
+      card.append(header);
+
+      const note = document.createElement("div");
+      note.className = "structured-note";
+      note.textContent = historical
+        ? "Historical mount artifact restored for display only. It was not re-run on reload."
+        : (artifact?.note || "Preview only until explicitly run.");
+      card.append(note);
+
+      const commands = Array.isArray(artifact?.canonical_commands) ? artifact.canonical_commands : [];
+      const code = document.createElement("div");
+      code.className = "structured-code";
+      code.textContent = commands.length ? commands.join("\n") : (artifact?.raw || "(empty computer block)");
+      card.append(code);
+
+      appendFailures(card, artifact?.validation?.failures);
+
+      const actions = document.createElement("div");
+      actions.className = "structured-actions";
+      const canExecute = Boolean(artifact?.can_execute) && commands.length > 0;
+      const runButton = document.createElement("button");
+      runButton.type = "button";
+      runButton.textContent = historical ? "Run again" : (commands.length > 1 ? "Run plan" : "Run command");
+      runButton.disabled = !canExecute;
+      runButton.title = canExecute
+        ? "Run through the controlled Terminal endpoint from repo root."
+        : "This mount is not executable by this text head. Check validation or unsupported active-terminal action.";
+      runButton.addEventListener("click", () => executeComputerMount(card, artifact));
+      actions.append(runButton);
+      card.append(actions);
+
+      return card;
+    }
+
+    function renderRepoEditHandoff(artifact, options = {}) {
+      const historical = Boolean(options.historical);
+      const state = artifactStateLabel(artifact, historical);
+      const card = document.createElement("div");
+      card.className = `structured-block repo-edit-card ${state}`;
+      card.dataset.artifactId = artifact?.artifact_id || "";
+      card.dataset.artifactKind = "repo_edit_handoff";
+
+      const header = document.createElement("div");
+      header.className = "structured-header";
+      const title = document.createElement("div");
+      title.className = "structured-title";
+      title.textContent = "Repo-root edit handoff";
+      const badge = document.createElement("span");
+      badge.className = "structured-state";
+      badge.textContent = state;
+      header.append(title, badge);
+      card.append(header);
+
+      const note = document.createElement("div");
+      note.className = "structured-note";
+      note.textContent = historical
+        ? "Historical repo-edit handoff restored for display only. It was not applied on reload."
+        : (artifact?.note || "Handoff only. No files have been changed.");
+      card.append(note);
+
+      const meta = document.createElement("div");
+      meta.className = "structured-meta";
+      meta.textContent = `target_root: ${artifact?.target_root || "repo-root"}`;
+      card.append(meta);
+
+      const request = document.createElement("div");
+      request.className = "structured-code";
+      request.textContent = artifact?.raw || JSON.stringify(artifact?.parsed || {}, null, 2);
+      card.append(request);
+
+      appendFailures(card, artifact?.validation?.failures);
+
+      const actions = document.createElement("div");
+      actions.className = "structured-actions";
+      const copyButton = document.createElement("button");
+      copyButton.type = "button";
+      copyButton.textContent = "Copy handoff";
+      copyButton.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(artifact?.raw || JSON.stringify(artifact?.parsed || {}, null, 2));
+          copyButton.textContent = "Copied";
+        } catch (error) {
+          copyButton.textContent = "Copy failed";
+        }
+      });
+      actions.append(copyButton);
+      card.append(actions);
+
+      return card;
+    }
+
+    function renderModelContent(target, content, artifactsEnvelope, options = {}) {
+      const hasStructuredArtifacts = artifactsEnvelope
+        && Array.isArray(artifactsEnvelope.blocks)
+        && Array.isArray(artifactsEnvelope.artifacts)
+        && artifactsEnvelope.artifacts.length > 0;
+      if (!hasStructuredArtifacts) {
+        renderPlainTextContent(target, content);
+        return;
+      }
+
+      target.textContent = "";
+      target.classList.add("entry-content");
+      const map = artifactsById(artifactsEnvelope);
+      artifactsEnvelope.blocks.forEach((block) => {
+        if (!block || block.kind === "text") {
+          const text = document.createElement("div");
+          text.className = "model-text";
+          text.textContent = block?.content || "";
+          if (text.textContent) target.append(text);
+          return;
+        }
+
+        if (block.kind === "artifact") {
+          const artifact = map.get(block.artifact_id);
+          if (!artifact) return;
+          if (artifact.kind === "computer_mount") {
+            target.append(renderComputerMount(artifact, options));
+          } else if (artifact.kind === "repo_edit_handoff") {
+            target.append(renderRepoEditHandoff(artifact, options));
+          }
+        }
+      });
+    }
+
     function renderEntry(role, content, kind = "", options = {}) {
       const renderMode = options.renderMode || (kind === "error" ? "plain" : "model");
       const entry = document.createElement("div");
@@ -526,7 +765,11 @@
       const text = document.createElement("div");
       text.setAttribute("data-raw-content", content);
       text.dataset.renderMode = renderMode;
-      renderPlainTextContent(text, content);
+      if (renderMode === "model") {
+        renderModelContent(text, content, options.artifacts, {historical: Boolean(options.historical)});
+      } else {
+        renderPlainTextContent(text, content);
+      }
       entry.append(label, text);
       log.append(entry);
       log.scrollTop = log.scrollHeight;
@@ -534,16 +777,20 @@
 
     function addEntry(role, content, kind = "", options = {}) {
       const renderMode = options.renderMode || (kind === "error" ? "plain" : "model");
-      const saved = {role, content, kind, renderMode};
+      const saved = {role, content, kind, renderMode, artifacts: options.artifacts || null};
       session.entries.push(saved);
       session.entries = session.entries.slice(-200);
       saveSession();
-      renderEntry(role, content, kind, {renderMode});
+      renderEntry(role, content, kind, {renderMode, artifacts: options.artifacts || null});
     }
 
     function restoreSession() {
       log.textContent = "";
-      session.entries.forEach((entry) => renderEntry(entry.role, entry.content, entry.kind, {renderMode: entry.renderMode || "plain"}));
+      session.entries.forEach((entry) => renderEntry(entry.role, entry.content, entry.kind, {
+        renderMode: entry.renderMode || "plain",
+        artifacts: entry.artifacts || null,
+        historical: true
+      }));
       promptBox.value = session.draft || "";
     }
 
@@ -573,6 +820,75 @@
       workingIndicator.setAttribute("aria-hidden", isWorking ? "false" : "true");
       sendButton.disabled = isWorking;
       if (!isWorking) stopWorkingCountdown();
+    }
+
+
+    function terminalResultText(result) {
+      const lines = [];
+      lines.push(`$ ${result.command || ""}`);
+      lines.push(`cwd: ${result.cwd || "."}`);
+      lines.push(`exit: ${result.exit_code === null || result.exit_code === undefined ? "timeout" : result.exit_code}`);
+      const stdout = String(result.stdout || "").trimEnd();
+      const stderr = String(result.stderr || "").trimEnd();
+      if (stdout) lines.push("\nstdout:\n" + stdout);
+      if (stderr) lines.push("\nstderr:\n" + stderr);
+      if (result.error) lines.push("\nerror:\n" + result.error);
+      return lines.join("\n");
+    }
+
+    function setMountCardState(card, state) {
+      ["ready", "preview", "executed", "failed", "historical"].forEach((name) => card.classList.remove(name));
+      card.classList.add(state);
+      const badge = card.querySelector(".structured-state");
+      if (badge) badge.textContent = state;
+    }
+
+    async function runTerminalCommandFromMount(command) {
+      const response = await fetch("/api/applications/terminal/run", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({command, cwd: ".", timeout_s: 15})
+      });
+      const data = await response.json().catch(async () => ({error: await response.text()}));
+      if (!response.ok) {
+        const error = new Error(data.error || `HTTP ${response.status}`);
+        error.result = data;
+        throw error;
+      }
+      return data;
+    }
+
+    async function executeComputerMount(card, artifact) {
+      const commands = mountRunnableCommands(artifact);
+      if (!commands.length) return;
+      const confirmed = window.confirm(
+        `Run ${commands.length} Terminal command${commands.length === 1 ? "" : "s"} from repo root?\n\n${commands.join("\n")}`
+      );
+      if (!confirmed) return;
+
+      setMountCardState(card, "preview");
+      const resultBox = document.createElement("div");
+      resultBox.className = "terminal-result structured-code";
+      resultBox.textContent = "running through controlled Terminal endpoint...";
+      card.append(resultBox);
+
+      const results = [];
+      try {
+        for (const command of commands) {
+          const result = await runTerminalCommandFromMount(command);
+          results.push(result);
+          if (Number(result.exit_code) !== 0) break;
+        }
+        resultBox.textContent = results.map(terminalResultText).join("\n\n---\n\n");
+        setMountCardState(card, results.every((result) => Number(result.exit_code) === 0) ? "executed" : "failed");
+        addEntry("terminal", resultBox.textContent, "assistant", {renderMode: "plain"});
+      } catch (error) {
+        const result = error.result || {command: commands[results.length] || "", error: String(error.message || error)};
+        results.push(result);
+        resultBox.textContent = results.map(terminalResultText).join("\n\n---\n\n");
+        setMountCardState(card, "failed");
+        addEntry("terminal", resultBox.textContent, "assistant", {renderMode: "plain"});
+      }
     }
 
     function formatTime(ms) {
@@ -684,7 +1000,7 @@
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-        addEntry("main computer", data.content, "assistant");
+        addEntry("main computer", data.content, "assistant", {artifacts: data.metadata?.text_console_artifacts || null});
         statusLine.textContent = `${data.provider} / ${data.model}`;
       } catch (error) {
         addEntry("error", String(error.message || error), "error", {renderMode: "plain"});

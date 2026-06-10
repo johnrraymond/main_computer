@@ -18,7 +18,6 @@
     const workerNetworkAssignedRing = document.querySelector("#worker-network-assigned-ring");
     const workerNetworkSignatureStatus = document.querySelector("#worker-network-signature-status");
     const workerNetworkRuntime = document.querySelector("#worker-network-runtime");
-    const workerNetworkConnectWallet = document.querySelector("#worker-network-connect-wallet");
     const workerNetworkSignOrder = document.querySelector("#worker-network-sign-order");
     const workerFleetMainnet = document.querySelector("#worker-fleet-mainnet");
     const workerFleetTestnet = document.querySelector("#worker-fleet-testnet");

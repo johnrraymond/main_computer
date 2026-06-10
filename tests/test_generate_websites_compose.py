@@ -22,7 +22,7 @@ from main_computer.local_platform_compose import (
     write_generated_site_compose,
     write_generated_websites_compose,
 )
-from main_computer.local_platform_registry import default_registry_data, save_local_platform_registry
+from main_computer.local_platform_registry import default_registry_data, load_local_platform_registry, save_local_platform_registry
 
 
 _LOCAL_PLATFORM_ENV_PREFIX = "MAIN_COMPUTER_LOCAL_PLATFORM_"
@@ -774,6 +774,173 @@ def test_generate_websites_compose_cli_writes_file(tmp_path: Path) -> None:
     assert payload["service_count"] == 4
     assert "hub-local" in payload["services"]
     assert (tmp_path / GENERATED_COMPOSE_RELATIVE_PATH).exists()
+
+
+
+def test_generate_websites_compose_cli_writes_selected_site_scoped_files(tmp_path: Path) -> None:
+    data = default_registry_data()
+    _add_registry_site(data, "greatlibrary", 18110, 18111)
+    _add_registry_site(data, "johnrraymond", 18112, 18113)
+    save_local_platform_registry(tmp_path, data)
+    _write_site_manifest(tmp_path, "greatlibrary", name="The Great Library")
+    _write_site_manifest(tmp_path, "hub-site", name="Hub Site", kind="hub-site")
+    _write_site_manifest(tmp_path, "johnrraymond", name="John R Raymond")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "tools/local-platform/generate-websites-compose.py",
+            "--repo-root",
+            str(tmp_path),
+            "--site",
+            "greatlibrary",
+            "--site",
+            "hub-site",
+            "--site",
+            "johnrraymond",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr + completed.stdout
+    payload = json.loads(completed.stdout)
+    assert payload["ok"] is True
+    assert payload["scope"] == "site"
+    assert payload["site_count"] == 3
+    assert [site["site_id"] for site in payload["sites"]] == ["greatlibrary", "hub-site", "johnrraymond"]
+
+    generated_by_site: dict[str, str] = {}
+    for site_id in ["greatlibrary", "hub-site", "johnrraymond"]:
+        compose_path = (
+            tmp_path
+            / "runtime"
+            / "websites"
+            / site_id
+            / ".main-computer"
+            / "local-platform"
+            / "docker-compose.yml"
+        )
+        assert compose_path.exists()
+        generated_by_site[site_id] = compose_path.read_text(encoding="utf-8")
+        assert f'name: "main-computer-website-{site_id}"' in generated_by_site[site_id]
+
+    assert "greatlibrary-prod:" in generated_by_site["greatlibrary"]
+    assert "greatlibrary-dev:" in generated_by_site["greatlibrary"]
+    assert "hub-local:" in generated_by_site["hub-site"]
+    assert "hub-dev:" in generated_by_site["hub-site"]
+    assert "johnrraymond-prod:" in generated_by_site["johnrraymond"]
+    assert "johnrraymond-dev:" in generated_by_site["johnrraymond"]
+
+    assert "hub-local:" not in generated_by_site["greatlibrary"]
+    assert "johnrraymond-prod:" not in generated_by_site["greatlibrary"]
+    assert "greatlibrary-prod:" not in generated_by_site["hub-site"]
+    assert "johnrraymond-prod:" not in generated_by_site["hub-site"]
+    assert "greatlibrary-prod:" not in generated_by_site["johnrraymond"]
+    assert "hub-local:" not in generated_by_site["johnrraymond"]
+
+    check_completed = subprocess.run(
+        [
+            sys.executable,
+            "tools/local-platform/generate-websites-compose.py",
+            "--repo-root",
+            str(tmp_path),
+            "--site",
+            "greatlibrary",
+            "--site",
+            "hub-site",
+            "--site",
+            "johnrraymond",
+            "--check",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert check_completed.returncode == 0, check_completed.stderr + check_completed.stdout
+    check_payload = json.loads(check_completed.stdout)
+    assert check_payload["ok"] is True
+    assert check_payload["scope"] == "site"
+    assert check_payload["stale"] is False
+
+
+def test_generate_websites_compose_cli_materializes_missing_site_registration_from_manifest(tmp_path: Path) -> None:
+    save_local_platform_registry(tmp_path, default_registry_data())
+    site_dir = tmp_path / "runtime" / "websites" / "johnrraymond"
+    site_dir.mkdir(parents=True, exist_ok=True)
+    (site_dir / "site.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "site_model": "2.0",
+                "id": "johnrraymond",
+                "name": "John R Raymond",
+                "kind": "static-site",
+                "local_platform": {
+                    "lanes": {
+                        "local": {
+                            "service": "johnrraymond-prod",
+                            "port": 18118,
+                            "url": "http://localhost:18118/",
+                            "status_url": "http://localhost:18118/api/site/status",
+                        },
+                        "dev": {
+                            "service": "johnrraymond-dev",
+                            "port": 18119,
+                            "url": "http://localhost:18119/",
+                            "status_url": "http://localhost:18119/api/site/status",
+                        },
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "tools/local-platform/generate-websites-compose.py",
+            "--repo-root",
+            str(tmp_path),
+            "--site",
+            "johnrraymond",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr + completed.stdout
+    payload = json.loads(completed.stdout)
+    assert payload["ok"] is True
+    assert payload["sites"][0]["site_id"] == "johnrraymond"
+    assert payload["sites"][0]["registered"] is True
+
+    registry = load_local_platform_registry(tmp_path)
+    assert registry.resolve("johnrraymond", "prod").port == 18118
+    assert registry.resolve("johnrraymond", "dev").port == 18119
+
+    compose_path = (
+        tmp_path
+        / "runtime"
+        / "websites"
+        / "johnrraymond"
+        / ".main-computer"
+        / "local-platform"
+        / "docker-compose.yml"
+    )
+    text = compose_path.read_text(encoding="utf-8")
+    assert 'name: "main-computer-website-johnrraymond"' in text
+    assert "johnrraymond-prod:" in text
+    assert "johnrraymond-dev:" in text
+    assert '- "0.0.0.0:18118:8080"' in text
+    assert '- "0.0.0.0:18119:8080"' in text
 
 
 def test_generate_websites_compose_cli_check_detects_stale_file(tmp_path: Path) -> None:
