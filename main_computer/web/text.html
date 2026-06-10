@@ -589,10 +589,16 @@
       return map;
     }
 
-    function artifactStateLabel(artifact, historical) {
-      if (historical) return "historical";
+    function artifactStateValue(artifact) {
       if (!artifact) return "preview";
       return artifact.state || "preview";
+    }
+
+    function artifactStateLabel(artifact, historical) {
+      const state = artifactStateValue(artifact);
+      if (historical && (state === "executed" || state === "failed")) return `${state} · historical`;
+      if (historical) return "historical";
+      return state;
     }
 
     function appendFailures(target, failures) {
@@ -612,9 +618,10 @@
 
     function renderComputerMount(artifact, options = {}) {
       const historical = Boolean(options.historical);
-      const state = artifactStateLabel(artifact, historical);
+      const state = artifactStateValue(artifact);
+      const stateLabel = artifactStateLabel(artifact, historical);
       const card = document.createElement("div");
-      card.className = `structured-block mount-card ${state}`;
+      card.className = `structured-block mount-card ${state}${historical ? " historical" : ""}`;
       card.dataset.artifactId = artifact?.artifact_id || "";
       card.dataset.artifactKind = "computer_mount";
 
@@ -626,7 +633,7 @@
       title.textContent = count > 1 ? `Terminal mount request (${count}-step plan)` : "Terminal mount request";
       const badge = document.createElement("span");
       badge.className = "structured-state";
-      badge.textContent = state;
+      badge.textContent = stateLabel;
       header.append(title, badge);
       card.append(header);
 
@@ -659,14 +666,17 @@
       actions.append(runButton);
       card.append(actions);
 
+      appendMountExecutionResult(card, artifact);
+
       return card;
     }
 
     function renderRepoEditHandoff(artifact, options = {}) {
       const historical = Boolean(options.historical);
-      const state = artifactStateLabel(artifact, historical);
+      const state = artifactStateValue(artifact);
+      const stateLabel = artifactStateLabel(artifact, historical);
       const card = document.createElement("div");
-      card.className = `structured-block repo-edit-card ${state}`;
+      card.className = `structured-block repo-edit-card ${state}${historical ? " historical" : ""}`;
       card.dataset.artifactId = artifact?.artifact_id || "";
       card.dataset.artifactKind = "repo_edit_handoff";
 
@@ -677,7 +687,7 @@
       title.textContent = "Repo-root edit handoff";
       const badge = document.createElement("span");
       badge.className = "structured-state";
-      badge.textContent = state;
+      badge.textContent = stateLabel;
       header.append(title, badge);
       card.append(header);
 
@@ -836,6 +846,40 @@
       return lines.join("\n");
     }
 
+    function mountExecutionResultText(artifact) {
+      const results = Array.isArray(artifact?.execution_results) ? artifact.execution_results : [];
+      return results.length ? results.map(terminalResultText).join("\n\n---\n\n") : "";
+    }
+
+    function appendMountExecutionResult(card, artifact) {
+      const text = mountExecutionResultText(artifact);
+      if (!text) return null;
+      const resultBox = document.createElement("div");
+      resultBox.className = "terminal-result structured-code";
+      resultBox.textContent = text;
+      card.append(resultBox);
+      return resultBox;
+    }
+
+    function serializeTerminalResult(result) {
+      return {
+        command: String(result?.command || ""),
+        cwd: String(result?.cwd || "."),
+        exit_code: result?.exit_code === undefined ? null : result.exit_code,
+        stdout: String(result?.stdout || ""),
+        stderr: String(result?.stderr || ""),
+        error: result?.error ? String(result.error) : ""
+      };
+    }
+
+    function persistMountExecutionResult(artifact, results, state) {
+      if (!artifact) return;
+      artifact.state = state;
+      artifact.execution_results = results.map(serializeTerminalResult);
+      artifact.executed_at = new Date().toISOString();
+      saveSession();
+    }
+
     function setMountCardState(card, state) {
       ["ready", "preview", "executed", "failed", "historical"].forEach((name) => card.classList.remove(name));
       card.classList.add(state);
@@ -867,10 +911,13 @@
       if (!confirmed) return;
 
       setMountCardState(card, "preview");
-      const resultBox = document.createElement("div");
-      resultBox.className = "terminal-result structured-code";
+      let resultBox = card.querySelector(".terminal-result");
+      if (!resultBox) {
+        resultBox = document.createElement("div");
+        resultBox.className = "terminal-result structured-code";
+        card.append(resultBox);
+      }
       resultBox.textContent = "running through controlled Terminal endpoint...";
-      card.append(resultBox);
 
       const results = [];
       try {
@@ -880,14 +927,15 @@
           if (Number(result.exit_code) !== 0) break;
         }
         resultBox.textContent = results.map(terminalResultText).join("\n\n---\n\n");
-        setMountCardState(card, results.every((result) => Number(result.exit_code) === 0) ? "executed" : "failed");
-        addEntry("terminal", resultBox.textContent, "assistant", {renderMode: "plain"});
+        const state = results.every((result) => Number(result.exit_code) === 0) ? "executed" : "failed";
+        setMountCardState(card, state);
+        persistMountExecutionResult(artifact, results, state);
       } catch (error) {
         const result = error.result || {command: commands[results.length] || "", error: String(error.message || error)};
         results.push(result);
         resultBox.textContent = results.map(terminalResultText).join("\n\n---\n\n");
         setMountCardState(card, "failed");
-        addEntry("terminal", resultBox.textContent, "assistant", {renderMode: "plain"});
+        persistMountExecutionResult(artifact, results, "failed");
       }
     }
 

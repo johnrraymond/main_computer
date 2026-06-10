@@ -143,3 +143,12 @@ def test_operator_chat_response_includes_text_console_artifact_metadata(monkeypa
     assert envelope["artifact_count"] == 1
     assert envelope["artifacts"][0]["kind"] == "computer_mount"
     assert envelope["artifacts"][0]["can_execute"] is True
+
+def test_text_console_mount_execution_does_not_duplicate_terminal_transcript():
+    page = (Path(__file__).resolve().parents[1] / "main_computer" / "web" / "text.html").read_text(encoding="utf-8")
+
+    assert 'addEntry("terminal"' not in page
+    assert "persistMountExecutionResult(artifact, results, state)" in page
+    assert "artifact.execution_results = results.map(serializeTerminalResult)" in page
+    assert "appendMountExecutionResult(card, artifact)" in page
+
