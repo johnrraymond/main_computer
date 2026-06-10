@@ -21,6 +21,7 @@ def _args(**overrides):
     defaults = {
         "coolify_project_uuid": "project-uuid",
         "coolify_server_uuid": "server-uuid",
+        "coolify_server_name": "",
         "coolify_environment_name": "mainnet",
         "coolify_environment_uuid": "",
         "coolify_destination_uuid": "",
@@ -32,9 +33,25 @@ def _args(**overrides):
         "health_path": "/api/hub/status",
         "github_app_uuid": "",
         "deploy_key_uuid": "",
+        "hub_runtime_dir": "",
+        "coolify_application_name": "",
+        "rpc_check": "auto",
+        "skip_rpc_check": False,
+        "hub_health_check": "auto",
+        "no_wait_hub": False,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
+
+
+class FakeCoolifyClient:
+    def __init__(self, body):
+        self.body = body
+        self.requests = []
+
+    def request(self, method: str, path: str, payload=None):
+        self.requests.append((method, path, payload))
+        return coolify_hub_service.CoolifyResponse(ok=True, status=200, method=method, path=path, body=self.body)
 
 
 class CoolifyHubServiceTests(unittest.TestCase):
@@ -55,7 +72,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(payload["dockerfile_location"], "/Dockerfile.hub")
         self.assertEqual(payload["ports_exposes"], "8790")
         self.assertEqual(payload["domains"], "https://mainnet.greatlibrary.io")
-        self.assertEqual(payload["urls"], "https://mainnet.greatlibrary.io")
+        self.assertNotIn("urls", payload)
         self.assertEqual(
             payload["start_command"],
             "--network mainnet --host 0.0.0.0 --port 8790 --hub-runtime-dir /data/main-computer/hub/mainnet",
@@ -78,6 +95,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertNotIn("environment_name", payload)
         self.assertNotIn("environment_uuid", payload)
         self.assertNotIn("git_repository", payload)
+        self.assertNotIn("urls", payload)
         self.assertEqual(payload["ports_exposes"], "8785")
         self.assertEqual(payload["domains"], "https://testnet.greatlibrary.io")
 
@@ -103,7 +121,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
 
     def test_plan_result_uses_stable_service_name_and_volume(self) -> None:
         profile = coolify_hub_service.load_hub_network_registry().get("testnet")
-        args = _args(coolify_environment_name="testnet", hub_runtime_dir="", coolify_application_name="")
+        args = _args(coolify_environment_name="testnet")
         plan = coolify_hub_service.plan_result(profile, args)
 
         self.assertEqual(plan["service_name"], "main-computer-testnet-hub")
@@ -111,6 +129,67 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(plan["volume_name"], "testnet_hub_state")
         self.assertEqual(plan["chain_id"], 42424241)
         self.assertEqual(plan["public_url"], "https://testnet.greatlibrary.io")
+        self.assertNotIn("urls", plan["application_payload"])
+
+    def test_resolve_server_infers_single_server_when_uuid_and_name_omitted(self) -> None:
+        client = FakeCoolifyClient({"servers": [{"uuid": "server-only", "name": "primary"}]})
+        tried = []
+
+        uuid = coolify_hub_service.resolve_exact_resource_uuid(
+            client,
+            path="/api/v1/servers",
+            preferred_keys=("servers",),
+            resource_kind="server",
+            explicit_uuid="",
+            explicit_name="",
+            tried=tried,
+            infer_if_single=True,
+        )
+
+        self.assertEqual(uuid, "server-only")
+        self.assertEqual(client.requests[0][1], "/api/v1/servers")
+        self.assertEqual(tried[0]["resolver"], "single")
+
+    def test_resolve_server_refuses_to_infer_when_multiple_servers_exist(self) -> None:
+        client = FakeCoolifyClient(
+            {"servers": [{"uuid": "server-a", "name": "alpha"}, {"uuid": "server-b", "name": "beta"}]}
+        )
+
+        with self.assertRaises(coolify_hub_service.CoolifyHubDeployError) as ctx:
+            coolify_hub_service.resolve_exact_resource_uuid(
+                client,
+                path="/api/v1/servers",
+                preferred_keys=("servers",),
+                resource_kind="server",
+                explicit_uuid="",
+                explicit_name="",
+                tried=[],
+                infer_if_single=True,
+            )
+
+        self.assertIn("Multiple Coolify servers were returned", str(ctx.exception))
+        self.assertIn("--coolify-server-uuid", str(ctx.exception))
+
+    def test_testnet_check_modes_warn_by_default(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("testnet")
+        args = _args(rpc_check="auto", hub_health_check="auto")
+
+        self.assertEqual(coolify_hub_service.rpc_check_mode(profile, args), "warn")
+        self.assertEqual(coolify_hub_service.hub_health_check_mode(profile, args), "warn")
+
+    def test_mainnet_check_modes_require_by_default(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
+        args = _args(rpc_check="auto", hub_health_check="auto")
+
+        self.assertEqual(coolify_hub_service.rpc_check_mode(profile, args), "require")
+        self.assertEqual(coolify_hub_service.hub_health_check_mode(profile, args), "require")
+
+    def test_legacy_skip_flags_override_check_modes(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
+        args = _args(rpc_check="require", hub_health_check="require", skip_rpc_check=True, no_wait_hub=True)
+
+        self.assertEqual(coolify_hub_service.rpc_check_mode(profile, args), "skip")
+        self.assertEqual(coolify_hub_service.hub_health_check_mode(profile, args), "skip")
 
 
 if __name__ == "__main__":
