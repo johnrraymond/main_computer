@@ -145,6 +145,50 @@ def test_mainnet_seed_requires_acknowledgement() -> None:
 
     plan = module.build_plan("mainnet", allow_mainnet=True)
     assert plan.environment == "mainnet"
+    services = list(plan.services)
+    assert len([service for service in services if service.role == "validator"]) == 1
+    assert len([service for service in services if service.role == "rpc"]) == 1
+    assert plan.topology_policy.minimum_validators == 1
+    assert "single-validator bring-up mode" in "\n".join(plan.warnings)
+
+
+def test_topology_policy_controls_validator_minimum() -> None:
+    module = _load_module()
+    seed = json.loads(json.dumps(module.NETWORK_SEEDS["testnet"]))
+    seed["services"] = [
+        service
+        for service in seed["services"]
+        if service["role"] != "validator" or service["id"] == "validator-1"
+    ]
+    seed["topology_policy"]["minimum_validators"] = 2
+    module.NETWORK_SEEDS["policy-min-validator-test"] = seed
+
+    try:
+        module.build_plan("policy-min-validator-test")
+    except module.PlanError as exc:
+        message = str(exc)
+        assert "topology_policy.minimum_validators=2" in message
+        assert "found 1 validators" in message
+    else:
+        raise AssertionError("seed violating configured validator minimum should fail")
+
+
+def test_topology_policy_controls_rpc_minimum() -> None:
+    module = _load_module()
+    seed = json.loads(json.dumps(module.NETWORK_SEEDS["mainnet"]))
+    seed["requires_mainnet_ack"] = False
+    seed["services"] = [service for service in seed["services"] if service["role"] != "rpc"]
+    seed["topology_policy"]["minimum_rpc_nodes"] = 1
+    module.NETWORK_SEEDS["policy-min-rpc-test"] = seed
+
+    try:
+        module.build_plan("policy-min-rpc-test")
+    except module.PlanError as exc:
+        message = str(exc)
+        assert "topology_policy.minimum_rpc_nodes=1" in message
+        assert "found 0 rpc nodes" in message
+    else:
+        raise AssertionError("seed violating configured RPC minimum should fail")
 
 
 def test_single_host_override_updates_address_and_coolify_url() -> None:
@@ -691,7 +735,7 @@ def test_main_without_args_prints_operator_runbook(capsys) -> None:
     assert "1. Prepare the remote Linux server" in captured.out
     assert "2. Install Coolify on the remote server" in captured.out
     assert "3. Create a Coolify API token" in captured.out
-    assert "7. Deploy the four-validator testnet" in captured.out
+    assert "7. Deploy the selected QBFT network" in captured.out
     assert "python .\\tools\\coolify_qbft_network.py apply testnet --all" in captured.out
     assert "the following arguments are required" not in captured.err
 

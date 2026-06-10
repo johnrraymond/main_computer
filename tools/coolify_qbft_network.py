@@ -83,6 +83,12 @@ NETWORK_SEEDS: dict[str, dict[str, Any]] = {
         "besu_image": DEFAULT_BESU_IMAGE,
         "runtime_root": "/srv/main-computer/qbft-testnet/runtime",
         "public_rpc": False,
+        "topology_policy": {
+            "minimum_validators": 4,
+            "minimum_rpc_nodes": 1,
+            "validator_warning_below": 4,
+            "validator_warning": "Testnet topology is below the configured four-validator fault-tolerance target.",
+        },
         "hosts": {
             "testnet-a": {
                 "ssh": "root@TESTNET_MACHINE_IP",
@@ -185,6 +191,12 @@ NETWORK_SEEDS: dict[str, dict[str, Any]] = {
         "runtime_root": "/srv/main-computer/qbft-mainnet/runtime",
         "public_rpc": False,
         "requires_mainnet_ack": True,
+        "topology_policy": {
+            "minimum_validators": 1,
+            "minimum_rpc_nodes": 1,
+            "validator_warning_below": 4,
+            "validator_warning": "Mainnet is in single-validator bring-up mode; this proves the Hub/RPC/worker path but is not fault-tolerant.",
+        },
         "hosts": {
             "mainnet-a": {
                 "ssh": "root@MAINNET_MACHINE_IP",
@@ -195,9 +207,6 @@ NETWORK_SEEDS: dict[str, dict[str, Any]] = {
         },
         "services": [
             {"id": "validator-1", "role": "validator", "host": "mainnet-a", "container_ip": "172.28.242.11", "rpc_host_port": 31001, "p2p_host_port": 31311},
-            {"id": "validator-2", "role": "validator", "host": "mainnet-a", "container_ip": "172.28.242.12", "rpc_host_port": 31002, "p2p_host_port": 31312},
-            {"id": "validator-3", "role": "validator", "host": "mainnet-a", "container_ip": "172.28.242.13", "rpc_host_port": 31003, "p2p_host_port": 31313},
-            {"id": "validator-4", "role": "validator", "host": "mainnet-a", "container_ip": "172.28.242.14", "rpc_host_port": 31004, "p2p_host_port": 31314},
             {"id": "rpc-1", "role": "rpc", "host": "mainnet-a", "container_ip": "172.28.242.20", "rpc_host_port": 31010, "p2p_host_port": 31320},
         ],
     },
@@ -241,6 +250,14 @@ class PlannedService:
 
 
 @dataclass(frozen=True)
+class TopologyPolicy:
+    minimum_validators: int
+    minimum_rpc_nodes: int
+    validator_warning_below: int | None
+    validator_warning: str
+
+
+@dataclass(frozen=True)
 class NetworkPlan:
     name: str
     description: str
@@ -251,6 +268,7 @@ class NetworkPlan:
     docker_subnet: str
     besu_image: str
     public_rpc: bool
+    topology_policy: TopologyPolicy
     hosts: tuple[PlannedHost, ...]
     services: tuple[PlannedService, ...]
     warnings: tuple[str, ...]
@@ -266,6 +284,7 @@ class NetworkPlan:
             "docker_subnet": self.docker_subnet,
             "besu_image": self.besu_image,
             "public_rpc": self.public_rpc,
+            "topology_policy": asdict(self.topology_policy),
             "hosts": [asdict(host) for host in self.hosts],
             "services": [asdict(service) for service in self.services],
             "warnings": list(self.warnings),
@@ -288,6 +307,45 @@ def require_int(value: object, *, name: str, minimum: int = 1, maximum: int = 65
     if number < minimum or number > maximum:
         raise PlanError(f"{name} must be between {minimum} and {maximum}: {number}")
     return number
+
+
+def parse_topology_policy(seed: dict[str, Any]) -> TopologyPolicy:
+    raw = seed.get("topology_policy") or {}
+    if not isinstance(raw, dict):
+        raise PlanError("seed.topology_policy must be an object when present")
+
+    minimum_validators = require_int(
+        raw.get("minimum_validators", 1),
+        name="topology_policy.minimum_validators",
+        minimum=1,
+        maximum=100,
+    )
+    minimum_rpc_nodes = require_int(
+        raw.get("minimum_rpc_nodes", 0),
+        name="topology_policy.minimum_rpc_nodes",
+        minimum=0,
+        maximum=100,
+    )
+
+    warning_below_raw = raw.get("validator_warning_below")
+    validator_warning_below: int | None
+    if warning_below_raw is None:
+        validator_warning_below = None
+    else:
+        validator_warning_below = require_int(
+            warning_below_raw,
+            name="topology_policy.validator_warning_below",
+            minimum=1,
+            maximum=100,
+        )
+
+    validator_warning = str(raw.get("validator_warning") or "").strip()
+    return TopologyPolicy(
+        minimum_validators=minimum_validators,
+        minimum_rpc_nodes=minimum_rpc_nodes,
+        validator_warning_below=validator_warning_below,
+        validator_warning=validator_warning,
+    )
 
 
 
@@ -341,6 +399,7 @@ def build_plan(
         raise PlanError("Mainnet seed requires --allow-mainnet. Review the plan before real mainnet use.")
 
     chain_id = require_int(seed.get("chain_id"), name="chain_id", maximum=2**63 - 1)
+    topology_policy = parse_topology_policy(seed)
     environment = str(seed.get("environment") or "test").strip().lower()
     compose_project = safe_id(seed.get("compose_project") or f"main-computer-qbft-{name}", kind="compose_project")
     docker_network = safe_id(seed.get("docker_network") or f"{compose_project}-network", kind="docker_network")
@@ -461,8 +520,16 @@ def build_plan(
     rpc_nodes = [service for service in services if service.role == "rpc"]
     if not validators:
         raise PlanError("QBFT seed must define at least one validator")
-    if environment == "mainnet" and len(validators) < 4:
-        raise PlanError(f"QBFT mainnet seed must define at least four validators; found {len(validators)}")
+    if len(validators) < topology_policy.minimum_validators:
+        raise PlanError(
+            f"Seed {name!r} violates topology_policy.minimum_validators="
+            f"{topology_policy.minimum_validators}; found {len(validators)} validators"
+        )
+    if len(rpc_nodes) < topology_policy.minimum_rpc_nodes:
+        raise PlanError(
+            f"Seed {name!r} violates topology_policy.minimum_rpc_nodes="
+            f"{topology_policy.minimum_rpc_nodes}; found {len(rpc_nodes)} rpc nodes"
+        )
 
     warnings: list[str] = []
     image = str(besu_image or seed.get("besu_image") or DEFAULT_BESU_IMAGE).strip()
@@ -470,8 +537,17 @@ def build_plan(
         warnings.append("BESU image is using ':latest'. Pin a known-good Besu image tag before persistent remote use.")
     if effective_public_rpc:
         warnings.append("public_rpc=true binds RPC ports to 0.0.0.0. Add TLS/rate-limit/method policy before opening firewalls.")
-    if len(validators) < 4:
-        warnings.append("Testnet seed has fewer than four validators; use only for disposable low-resource rehearsal.")
+    if (
+        topology_policy.validator_warning_below is not None
+        and len(validators) < topology_policy.validator_warning_below
+    ):
+        warnings.append(
+            topology_policy.validator_warning
+            or (
+                f"Topology has fewer than {topology_policy.validator_warning_below} validators; "
+                "review the seed topology_policy before persistent use."
+            )
+        )
     if not rpc_nodes:
         warnings.append("No dedicated non-validator RPC node is configured; the first validator is also the operator RPC target.")
     if len({service.host for service in services}) > 1:
@@ -489,6 +565,7 @@ def build_plan(
         docker_subnet=docker_subnet,
         besu_image=image,
         public_rpc=effective_public_rpc,
+        topology_policy=topology_policy,
         hosts=tuple(sorted(hosts.values(), key=lambda item: item.id)),
         services=tuple(sorted(services, key=lambda item: item.id)),
         warnings=tuple(warnings),
@@ -2375,7 +2452,8 @@ def render_operator_runbook() -> str:
 
         Recommended server size
         -----------------------
-        Minimum for Coolify plus the four-validator testnet and one dedicated RPC node: 4 vCPU, 8 GB RAM.
+        Minimum for Coolify plus the default four-validator testnet and one dedicated RPC node: 4 vCPU, 8 GB RAM.
+        The mainnet seed is intentionally lighter for bring-up: one validator plus one dedicated RPC node on its own box.
         Smaller 2 vCPU / 4 GB boxes may work for short rehearsals, but tiny 1-2 GB boxes can publish Docker ports
         while Besu is still starved or unhealthy.
 
@@ -2456,7 +2534,7 @@ def render_operator_runbook() -> str:
         it prints and pass them to apply with --coolify-project-uuid,
         --coolify-server-uuid, and --coolify-environment.
 
-        7. Deploy the four-validator testnet
+        7. Deploy the selected QBFT network
         ------------------------------------
 
             python .\tools\coolify_qbft_network.py apply testnet --all `

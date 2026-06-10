@@ -65,6 +65,7 @@ _REPO_ROOT_FOR_IMPORTS = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT_FOR_IMPORTS) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT_FOR_IMPORTS))
 
+from main_computer.models import ChatMessage
 from main_computer.text_console import (
     TextConsoleConfig,
     build_text_console_model_input,
@@ -99,6 +100,53 @@ DEFAULT_CHAT_CONSOLE_MOUNT_REQUEST = (
     "Use a computer mount and request Terminal to list the files in main_computer. "
     "Do not just describe the files."
 )
+DEFAULT_EXPECTED_TEXT_CONSOLE_MOUNT_COMMAND = '/act terminal run "dir main_computer" --cwd repo-root'
+DEFAULT_FULL_REPORT_PATH = "diagnostics_output/rag_text_console_control_surface_smoke_report.json"
+
+TEXT_CONSOLE_ACTION_GRAMMAR_PROMPT = f"""Text-console computer action grammar for this smoke:
+
+The text console may display preview-only computer action requests. A preview
+request is not execution.
+
+When a user explicitly asks for a computer mount, Terminal request, local command,
+file listing, git command, test run, or similar local action, include a fenced
+block tagged exactly as computer.
+
+Inside a computer fence, write only exact /act lines. For terminal requests in
+this smoke, use only these canonical forms:
+
+Run a new terminal command from the repository root:
+  /act terminal run "<command>" --cwd repo-root
+
+Run a command in the active terminal from the repository root:
+  /act terminal run-in active "<command>" --cwd repo-root
+
+Interrupt the active terminal:
+  /act terminal interrupt active
+
+Rules:
+- Do not invent /act verbs.
+- Do not use /act list, /act open, /act execute, /act shell, or /act terminal ls.
+- Do not put absolute Windows paths in /act lines.
+- Use repo-root as the cwd vocabulary for repository-relative commands.
+- Put terminal commands inside double quotes.
+- Do not claim the command executed.
+
+For the smoke fixture request about listing files in main_computer, use exactly:
+  {DEFAULT_EXPECTED_TEXT_CONSOLE_MOUNT_COMMAND}
+
+Example:
+
+User:
+Use Terminal to list the files in main_computer.
+
+Assistant:
+I will request a preview-only terminal action for that directory.
+
+```computer
+{DEFAULT_EXPECTED_TEXT_CONSOLE_MOUNT_COMMAND}
+```
+"""
 
 
 APP_CAPABILITY_REGISTRY: dict[str, Any] = {
@@ -1345,6 +1393,107 @@ def parse_assistant_control_message(content: str) -> dict[str, Any]:
     }
 
 
+
+def text_console_messages_with_action_grammar(messages: list[Any]) -> list[Any]:
+    """Insert the smoke-only action grammar prompt before the user message."""
+
+    grammar_message = ChatMessage(role="system", content=TEXT_CONSOLE_ACTION_GRAMMAR_PROMPT)
+    if messages and str(getattr(messages[-1], "role", "") or "") == "user":
+        return [*messages[:-1], grammar_message, messages[-1]]
+    return [*messages, grammar_message]
+
+
+def validate_text_console_mount_commands(
+    parsed_payload: dict[str, Any] | None,
+    *,
+    expected_commands: list[str] | None = None,
+) -> dict[str, Any]:
+    """Validate that model-produced computer fences contain broker-parseable canonical /act commands.
+
+    The older smoke accepted any line that merely started with /act. This validator
+    is intentionally stricter: the line must parse through the broker grammar and
+    already be in the canonical form that parser would return.
+    """
+
+    expected = list(expected_commands or [])
+    commands: list[str] = []
+    invalid_lines: list[str] = []
+    reports: list[dict[str, Any]] = []
+    failures: list[str] = []
+
+    mounts = []
+    if isinstance(parsed_payload, dict):
+        maybe_mounts = parsed_payload.get("computer_mounts")
+        if isinstance(maybe_mounts, list):
+            mounts = maybe_mounts
+
+    if not mounts:
+        failures.append("assistant payload has no computer_mounts to validate")
+
+    for mount_index, mount in enumerate(mounts):
+        if not isinstance(mount, dict):
+            failures.append(f"computer_mounts[{mount_index}] is not an object: {mount!r}")
+            continue
+        for invalid in list(mount.get("invalidLines") or []):
+            invalid_lines.append(str(invalid))
+            failures.append(f"computer mount {mount_index} contains non-/act line inside computer fence: {invalid!r}")
+        for command in list(mount.get("canonicalCommands") or []):
+            command_text = str(command)
+            commands.append(command_text)
+            report: dict[str, Any] = {"command": command_text, "ok": False, "failures": []}
+            parsed = exact_parse_slash_command(command_text)
+            if parsed is None:
+                report["failures"].append("command is not accepted by exact_parse_slash_command")
+            else:
+                report["parsed"] = asdict(parsed)
+                if parsed.canonical_command != command_text:
+                    report["failures"].append(
+                        "command is parseable but not canonical; "
+                        f"parser canonicalized it to {parsed.canonical_command!r}"
+                    )
+                if parsed.app_phrase != "terminal":
+                    report["failures"].append(
+                        f"expected a terminal /act command for this text-console mount smoke, got {parsed.app_phrase!r}"
+                    )
+                if parsed.action not in {
+                    "run_command",
+                    "run_in_terminal",
+                    "prefill_command",
+                    "prefill_in_terminal",
+                    "interrupt_terminal",
+                }:
+                    report["failures"].append(f"terminal action is not in the allowed smoke grammar: {parsed.action!r}")
+                if parsed.action in {
+                    "run_command",
+                    "run_in_terminal",
+                    "prefill_command",
+                    "prefill_in_terminal",
+                }:
+                    if parsed.args.get("cwd") != "repo-root":
+                        report["failures"].append(
+                            f"terminal command cwd must be repo-root, got {parsed.args.get('cwd')!r}"
+                        )
+            if re.search(r"[A-Za-z]:\\", command_text) or "\\Users\\" in command_text:
+                report["failures"].append("command contains an absolute Windows path; use repo-root plus relative paths")
+
+            report["ok"] = not report["failures"]
+            if report["failures"]:
+                failures.append(f"{command_text!r}: " + "; ".join(report["failures"]))
+            reports.append(report)
+
+    if expected and commands != expected:
+        failures.append(f"expected computer commands {expected!r}, got {commands!r}")
+
+    return {
+        "ok": not failures,
+        "commands": commands,
+        "expected_commands": expected,
+        "invalid_lines": invalid_lines,
+        "reports": reports,
+        "failures": failures,
+    }
+
+
 def assistant_message_from_commands(
     *,
     leading_text: str,
@@ -1446,6 +1595,77 @@ def render_inline_assistant_message_blocks(
         blocks.append({"kind": "markdown", "text": rest.strip(), "brokerMounts": []})
 
     return blocks
+
+
+def validate_inline_assistant_mount_render_blocks(
+    assistant_payload: dict[str, Any],
+    render_blocks: list[dict[str, Any]],
+) -> list[str]:
+    """Validate inline mount rendering without requiring prose on both sides.
+
+    The renderer contract is that any prose that exists before or after a
+    ```computer block is preserved, and that the mount block appears at the
+    correct position. A bare mount fence, prose-before-only, and
+    prose-before-and-after are all valid shapes.
+    """
+
+    failures: list[str] = []
+    if assistant_payload.get("kind") != "assistant_text_console_message":
+        return [f"expected assistant_text_console_message, got {assistant_payload!r}"]
+
+    mounts = assistant_payload.get("computer_mounts")
+    if not isinstance(mounts, list) or not mounts:
+        return [f"assistant message has no computer_mounts: {assistant_payload!r}"]
+
+    mount_blocks = [block for block in render_blocks if block.get("kind") == "computer_mount"]
+    if len(mount_blocks) != len(mounts):
+        failures.append(
+            f"expected {len(mounts)} inline computer_mount block(s), got {len(mount_blocks)}: {render_blocks!r}"
+        )
+
+    for index, mount in enumerate(mounts):
+        if not isinstance(mount, dict):
+            failures.append(f"computer_mounts[{index}] is not an object: {mount!r}")
+            continue
+        if index >= len(mount_blocks):
+            continue
+        block = mount_blocks[index]
+        if block.get("mountId") != mount.get("mountId"):
+            failures.append(
+                f"mount block {index} has mountId {block.get('mountId')!r}, expected {mount.get('mountId')!r}"
+            )
+        if block.get("source") != mount.get("source"):
+            failures.append(
+                f"mount block {index} source {block.get('source')!r} did not preserve {mount.get('source')!r}"
+            )
+
+    expected_kinds: list[str] = []
+    for mount in mounts:
+        if not isinstance(mount, dict):
+            continue
+        if str(mount.get("leadingText") or "").strip():
+            expected_kinds.append("markdown")
+        expected_kinds.append("computer_mount")
+        if str(mount.get("trailingText") or "").strip():
+            expected_kinds.append("markdown")
+
+    actual_kinds = [str(block.get("kind") or "") for block in render_blocks]
+    if actual_kinds != expected_kinds:
+        failures.append(
+            "inline render blocks should preserve only existing surrounding prose; "
+            f"expected kinds {expected_kinds!r}, got {actual_kinds!r}"
+        )
+
+    for index, block in enumerate(render_blocks):
+        kind = block.get("kind")
+        if kind == "markdown" and not str(block.get("text") or "").strip():
+            failures.append(f"markdown render block {index} is empty: {block!r}")
+        elif kind == "computer_mount" and not block.get("brokerRender"):
+            failures.append(f"computer_mount render block {index} is missing brokerRender: {block!r}")
+        elif kind not in {"markdown", "computer_mount"}:
+            failures.append(f"unexpected inline render block kind at {index}: {block!r}")
+
+    return failures
 
 
 def strip_json_code_fence(text: str) -> str:
@@ -2924,7 +3144,7 @@ def build_text_console_intended_model_input(
     context_pack = model_input.context_pack
     web_search_context = model_input.web_search_context
     web_search_text = model_input.web_search_text
-    messages = model_input.messages
+    messages = text_console_messages_with_action_grammar(model_input.messages)
 
     catalog = getattr(computer, "catalog", None)
     terms: list[str] = []
@@ -2977,6 +3197,11 @@ def build_text_console_intended_model_input(
         "matcher_matched_files": matched_file_paths,
         "web_search": web_search_context,
         "web_search_text": web_search_text,
+        "text_console_action_grammar_prompt": TEXT_CONSOLE_ACTION_GRAMMAR_PROMPT,
+        "text_console_action_grammar_prompt_chars": len(TEXT_CONSOLE_ACTION_GRAMMAR_PROMPT),
+        "text_console_action_grammar_prompt_sha256": hashlib.sha256(
+            TEXT_CONSOLE_ACTION_GRAMMAR_PROMPT.encode("utf-8")
+        ).hexdigest(),
         "messages": message_payloads,
         "message_count": len(messages),
         "message_chars": [item["content_chars"] for item in message_payloads],
@@ -3019,6 +3244,7 @@ def run_text_console_intended_pathway_turn(
     label: str,
     request_text: str,
     expect_mount: bool,
+    expected_mount_commands: list[str] | None = None,
     base_url: str,
     model: str,
     timeout: float,
@@ -3051,6 +3277,7 @@ def run_text_console_intended_pathway_turn(
         "label": label,
         "request_text": request_text,
         "expect_mount": expect_mount,
+        "expected_mount_commands": list(expected_mount_commands or []),
         "model_input": diagnostics,
     }
 
@@ -3135,10 +3362,23 @@ def run_text_console_intended_pathway_turn(
         and isinstance(parsed_payload.get("computer_mounts"), list)
         and parsed_payload.get("computer_mounts")
     )
+    mount_command_validation: dict[str, Any] = {}
+    if parsed_payload:
+        mount_command_validation = validate_text_console_mount_commands(
+            parsed_payload,
+            expected_commands=expected_mount_commands if expect_mount else None,
+        )
+    record["mount_command_validation"] = mount_command_validation
+
     if expect_mount and not has_mount:
         turn_failures.append(
             f"text-console intended-pathway turn {label!r} expected a model-produced ```computer mount "
             f"with exact /act lines, but got none. diagnostics={diagnostics_out!r}; parse_error={parse_error!r}"
+        )
+    if expect_mount and has_mount and mount_command_validation and not mount_command_validation.get("ok"):
+        turn_failures.append(
+            f"text-console intended-pathway turn {label!r} produced a computer fence, but the /act commands "
+            f"were not valid canonical text-console mount commands: {mount_command_validation!r}"
         )
     if not expect_mount and has_mount:
         turn_failures.append(
@@ -3157,6 +3397,7 @@ def run_text_console_intended_pathway_smoke(
     think: bool | None,
     offline_contract_only: bool,
     mount_request: str,
+    expected_mount_command: str,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Run the smoke-proven text-console intended pathway.
 
@@ -3180,6 +3421,7 @@ def run_text_console_intended_pathway_smoke(
             "label": "terminal mount request",
             "request_text": mount_request,
             "expect_mount": True,
+            "expected_mount_commands": [expected_mount_command],
         },
     ]
     records: list[dict[str, Any]] = []
@@ -3189,6 +3431,7 @@ def run_text_console_intended_pathway_smoke(
             label=turn["label"],
             request_text=turn["request_text"],
             expect_mount=bool(turn["expect_mount"]),
+            expected_mount_commands=list(turn.get("expected_mount_commands") or []),
             base_url=base_url,
             model=model,
             timeout=timeout,
@@ -3199,6 +3442,188 @@ def run_text_console_intended_pathway_smoke(
         failures.extend(turn_failures)
     return records, failures
 
+
+
+def compact_preview(text: Any, *, limit: int = 220) -> str:
+    value = one_line(str(text or ""))
+    if len(value) <= limit:
+        return value
+    return value[: max(0, limit - 1)] + "…"
+
+
+def extract_payload_commands(payload: Any) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    commands: list[str] = []
+    for mount in list(payload.get("computer_mounts") or []):
+        if not isinstance(mount, dict):
+            continue
+        canonical_commands = mount.get("canonicalCommands")
+        if isinstance(canonical_commands, list):
+            commands.extend(str(command) for command in canonical_commands)
+            continue
+        canonical_command = mount.get("canonical_command") or mount.get("source")
+        if canonical_command:
+            commands.append(str(canonical_command))
+    return commands
+
+
+def compact_packet_command(packet: Any) -> str:
+    if not isinstance(packet, dict):
+        return ""
+    mounted_object = packet.get("mounted_object")
+    if isinstance(mounted_object, dict):
+        command = mounted_object.get("canonical_command")
+        if command:
+            return str(command)
+        options = mounted_object.get("options")
+        if isinstance(options, dict):
+            command = options.get("canonicalCommand") or options.get("command")
+            if command:
+                return str(command)
+    command = packet.get("canonical_command")
+    return str(command or "")
+
+
+def write_smoke_report(report: SmokeReport, path_text: str) -> Path:
+    path = Path(path_text)
+    if path.parent != Path(""):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def format_text_console_record_summary(record: dict[str, Any]) -> list[str]:
+    label = str(record.get("label") or "<unknown>")
+    ok = bool(record.get("ok"))
+    expect_mount = bool(record.get("expect_mount"))
+    skipped = bool(record.get("skipped_ollama"))
+    lines = [
+        f"- {label}: {'PASS' if ok else 'FAIL'} "
+        f"({'mount expected' if expect_mount else 'no mount expected'}"
+        f"{', offline' if skipped else ''})"
+    ]
+
+    model_input = record.get("model_input") if isinstance(record.get("model_input"), dict) else {}
+    text_console_config = (
+        model_input.get("text_console_config") if isinstance(model_input.get("text_console_config"), dict) else {}
+    )
+    context_root = text_console_config.get("context_root") or model_input.get("workspace")
+    if context_root:
+        lines.append(f"  context_root: {context_root}")
+    if model_input:
+        lines.append(
+            "  model_input: "
+            f"messages={model_input.get('message_count')} "
+            f"input_chars={model_input.get('input_chars')} "
+            f"context_pack_chars={model_input.get('context_pack_chars')} "
+            f"request_sha256={model_input.get('request_sha256')}"
+        )
+        grammar_sha = model_input.get("text_console_action_grammar_prompt_sha256")
+        if grammar_sha:
+            lines.append(f"  action_grammar_sha256: {grammar_sha}")
+
+    response = str(record.get("response") or "")
+    if response:
+        if expect_mount:
+            lines.append("  response:")
+            for response_line in response.splitlines():
+                lines.append(f"    {response_line}")
+        else:
+            lines.append(f"  response_preview: {compact_preview(response)}")
+
+    validation = record.get("mount_command_validation")
+    if isinstance(validation, dict) and validation:
+        lines.append(f"  mount_validation: {'PASS' if validation.get('ok') else 'FAIL'}")
+        expected = list(validation.get("expected_commands") or [])
+        actual = list(validation.get("commands") or [])
+        if expected:
+            lines.append("    expected:")
+            for command in expected:
+                lines.append(f"      {command}")
+        if actual:
+            lines.append("    actual:")
+            for command in actual:
+                lines.append(f"      {command}")
+        failures = list(validation.get("failures") or [])
+        invalid_lines = list(validation.get("invalid_lines") or [])
+        if invalid_lines:
+            lines.append(f"    invalid_lines: {invalid_lines!r}")
+        if failures:
+            lines.append("    failures:")
+            for failure in failures:
+                lines.append(f"      {failure}")
+
+    metrics = record.get("ollama_terminal_metrics")
+    if isinstance(metrics, dict) and metrics:
+        lines.append(
+            "  ollama: "
+            f"done_reason={metrics.get('done_reason')!r} "
+            f"prompt_eval_count={metrics.get('prompt_eval_count')} "
+            f"eval_count={metrics.get('eval_count')}"
+        )
+
+    parse_error = str(record.get("parse_error") or "")
+    if parse_error:
+        lines.append(f"  parse_error: {parse_error}")
+
+    return lines
+
+
+def print_concise_smoke_summary(report: SmokeReport, *, report_path: Path, stream: Any = None) -> None:
+    out = stream if stream is not None else sys.stdout
+    print(f"RAG text-console terminal-context smoke: {'PASS' if report.ok else 'FAIL'}", file=out)
+    print(
+        f"used_ollama={report.used_ollama} "
+        f"base_url={report.base_url!r} model={report.model!r} paranoia={report.paranoia!r}",
+        file=out,
+    )
+    print(f"full_report={report_path}", file=out)
+
+    if report.warnings:
+        print("", file=out)
+        print("Warnings:", file=out)
+        for warning in report.warnings:
+            print(f"- {warning}", file=out)
+
+    if report.failures:
+        print("", file=out)
+        print("Failures:", file=out)
+        for failure in report.failures:
+            print(f"- {failure}", file=out)
+
+    print("", file=out)
+    print("Broker/parser contract checks:", file=out)
+    print(f"- exact file-manager command: {compact_packet_command(report.exact_render_packet) or 'ok'}", file=out)
+    print(f"- terminal run: {compact_packet_command(report.terminal_exact_run_packet) or 'ok'}", file=out)
+    print(f"- terminal run-in active: {compact_packet_command(report.terminal_run_in_active_packet) or 'ok'}", file=out)
+    print(f"- mutation normal packet: {compact_packet_command(report.terminal_mutation_normal_packet) or 'ok'}", file=out)
+    print(f"- locked paranoia packet: {compact_packet_command(report.terminal_locked_packet) or 'ok'}", file=out)
+    print("- inert prose slash-command examples: ok", file=out)
+
+    if report.used_ollama:
+        print("", file=out)
+        print("Legacy RAG terminal fixtures:", file=out)
+        contextual_commands = extract_payload_commands(report.contextual_model_payload)
+        out_of_blue_commands = extract_payload_commands(report.out_of_blue_model_payload)
+        plan_commands = extract_payload_commands(report.terminal_plan_model_payload)
+        print(
+            f"- contextual reuse request {report.contextual_request!r}: "
+            f"{contextual_commands or compact_preview(report.contextual_model_payload)}",
+            file=out,
+        )
+        print(
+            f"- out-of-blue request {report.out_of_blue_request!r}: "
+            f"{out_of_blue_commands or compact_preview(report.out_of_blue_model_payload)}",
+            file=out,
+        )
+        print(f"- terminal plan fixture: {plan_commands or 'ok'}", file=out)
+
+    print("", file=out)
+    print("Text-console intended pathway:", file=out)
+    for record in report.text_console_intended_pathway_smoke:
+        for line in format_text_console_record_summary(record):
+            print(line, file=out)
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="RAG text-console terminal-context smoke test.")
@@ -3232,8 +3657,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--no-print-ai-responses",
         action="store_true",
         help=(
-            "Suppress full live Ollama assistant messages on successful parses. "
-            "Failures still print the full AI response and fence diagnostics."
+            "Compatibility flag. The smoke now defaults to a concise pass/fail summary; "
+            "full live assistant debug output is printed only with --print-ai-responses."
+        ),
+    )
+    parser.add_argument(
+        "--print-ai-responses",
+        action="store_true",
+        help=(
+            "Print full live Ollama assistant debug blocks while the smoke runs. "
+            "Default is off so bare runs stay readable."
+        ),
+    )
+    parser.add_argument(
+        "--full-report-path",
+        default=DEFAULT_FULL_REPORT_PATH,
+        help=(
+            "Where to write the full diagnostic JSON report. Default: %(default)s"
+        ),
+    )
+    parser.add_argument(
+        "--print-full-report",
+        action="store_true",
+        help=(
+            "Also print the full diagnostic JSON report to stdout/stderr. "
+            "Default is to write it to --full-report-path and print a concise summary."
         ),
     )
     parser.add_argument(
@@ -3242,6 +3690,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Final text-console intended-pathway smoke turn. This is a smoke fixture "
             "expectation only; runtime code must not synthesize /act from prose."
+        ),
+    )
+    parser.add_argument(
+        "--expected-text-console-mount-command",
+        default=DEFAULT_EXPECTED_TEXT_CONSOLE_MOUNT_COMMAND,
+        help=(
+            "Exact canonical command the final text-console intended-pathway smoke turn must produce. "
+            "The smoke fails if the model invents a different /act grammar."
         ),
     )
     parser.add_argument(
@@ -3435,7 +3891,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout=args.timeout,
             think=think,
             debug_label="contextual terminal reuse",
-            print_ai_response=not args.no_print_ai_responses,
+            print_ai_response=args.print_ai_responses and not args.no_print_ai_responses,
         )
         raw_ollama_responses.append(raw)
         out_of_blue_model_payload, raw = call_ollama_chat(
@@ -3446,7 +3902,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout=args.timeout,
             think=think,
             debug_label="out-of-blue terminal creation",
-            print_ai_response=not args.no_print_ai_responses,
+            print_ai_response=args.print_ai_responses and not args.no_print_ai_responses,
         )
         raw_ollama_responses.append(raw)
         plan_model_payload, raw = call_ollama_chat(
@@ -3457,7 +3913,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout=args.timeout,
             think=think,
             debug_label="contextual terminal plan",
-            print_ai_response=not args.no_print_ai_responses,
+            print_ai_response=args.print_ai_responses and not args.no_print_ai_responses,
         )
         raw_ollama_responses.append(raw)
         interrupt_model_payload, raw = call_ollama_chat(
@@ -3468,7 +3924,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout=args.timeout,
             think=think,
             debug_label="terminal interrupt",
-            print_ai_response=not args.no_print_ai_responses,
+            print_ai_response=args.print_ai_responses and not args.no_print_ai_responses,
         )
         raw_ollama_responses.append(raw)
         used_ollama = True
@@ -3490,6 +3946,7 @@ def main(argv: list[str] | None = None) -> int:
             think=think,
             offline_contract_only=args.offline_contract_only,
             mount_request=args.chat_console_mount_request,
+            expected_mount_command=args.expected_text_console_mount_command,
         )
         failures.extend(chat_context_failures)
 
@@ -3624,15 +4081,12 @@ def main(argv: list[str] | None = None) -> int:
                 plan_model_payload,
                 {first_computer_mount(plan_model_payload)["mountId"]: terminal_plan_render_packet},
             )
-            if not (
-                len(terminal_plan_inline_render_blocks) == 3
-                and terminal_plan_inline_render_blocks[0].get("kind") == "markdown"
-                and terminal_plan_inline_render_blocks[1].get("kind") == "computer_mount"
-                and terminal_plan_inline_render_blocks[2].get("kind") == "markdown"
-            ):
-                failures.append(
-                    "plan assistant message should render as leading markdown, inline computer mount, trailing markdown"
+            failures.extend(
+                validate_inline_assistant_mount_render_blocks(
+                    plan_model_payload,
+                    terminal_plan_inline_render_blocks,
                 )
+            )
     except Exception as exc:
         terminal_plan_packet = empty_plan_payload
         failures.append(f"contextual RAG terminal plan failed: {exc}")
@@ -3855,86 +4309,21 @@ def main(argv: list[str] | None = None) -> int:
         failures=failures,
     )
 
+    report_path = write_smoke_report(report, args.full_report_path)
+
     if failures:
-        print("RAG text-console terminal-context smoke: FAIL", file=sys.stderr)
-        print(json.dumps(report.to_dict(), indent=2, sort_keys=True), file=sys.stderr)
-        if raw_ollama_responses:
-            print("Raw Ollama response envelopes:", file=sys.stderr)
-            for raw in raw_ollama_responses:
-                print(raw, file=sys.stderr)
+        print_concise_smoke_summary(report, report_path=report_path, stream=sys.stderr)
+        if args.print_full_report:
+            print("", file=sys.stderr)
+            print("Full diagnostic report:", file=sys.stderr)
+            print(json.dumps(report.to_dict(), indent=2, sort_keys=True), file=sys.stderr)
         return 1
 
-    print("RAG text-console terminal-context smoke: PASS")
-    print(f"used_ollama={used_ollama} base_url={args.base_url!r} model={args.model!r} paranoia={args.paranoia!r}")
-    print()
-    print("Exact terminal run creates a new terminal packet:")
-    print(json.dumps(asdict(terminal_run_packet), indent=2, sort_keys=True))
-    print()
-    print("Exact terminal run-in active clones existing terminal packet:")
-    print(json.dumps(asdict(terminal_run_in_packet), indent=2, sort_keys=True))
-    print()
-    print("Ambiguous terminal context packet:")
-    print(json.dumps(asdict(ambiguous_packet), indent=2, sort_keys=True))
-    print()
-    print("RAG contextual assistant message payload:")
-    print(json.dumps(contextual_model_payload, indent=2, sort_keys=True))
-    print()
-    print("RAG contextual terminal reuse render packet:")
-    print(json.dumps(asdict(contextual_packet), indent=2, sort_keys=True))
-    print()
-    print("RAG out-of-blue assistant message payload:")
-    print(json.dumps(out_of_blue_model_payload, indent=2, sort_keys=True))
-    print()
-    print("RAG out-of-blue terminal creation render packet:")
-    print(json.dumps(asdict(out_of_blue_packet), indent=2, sort_keys=True))
-    print()
-    print("Terminal mutation at normal paranoia packet:")
-    print(json.dumps(asdict(mutation_normal_packet), indent=2, sort_keys=True))
-    print()
-    print("Terminal mutation at relaxed paranoia packet:")
-    print(json.dumps(asdict(mutation_relaxed_packet), indent=2, sort_keys=True))
-    print()
-    print("Terminal locked paranoia packet:")
-    print(json.dumps(asdict(locked_packet), indent=2, sort_keys=True))
-    print()
-    print("RAG contextual assistant terminal plan payload:")
-    print(json.dumps(plan_model_payload, indent=2, sort_keys=True))
-    print()
-    print("Broker terminal plan packet:")
-    print(json.dumps(terminal_plan_packet, indent=2, sort_keys=True))
-    print()
-    print("Fake terminal plan result packet:")
-    print(json.dumps(terminal_plan_result_packet, indent=2, sort_keys=True))
-    print()
-    print("Text console terminal plan render packet:")
-    print(json.dumps(asdict(terminal_plan_render_packet), indent=2, sort_keys=True))
-    print()
-    print("Inline assistant message render blocks for terminal plan:")
-    print(json.dumps(terminal_plan_inline_render_blocks, indent=2, sort_keys=True))
-    print()
-    print("Stop-on-failure plan result packet:")
-    print(json.dumps(terminal_plan_failure_result_packet, indent=2, sort_keys=True))
-    print()
-    print("Mutation pause plan result packet:")
-    print(json.dumps(terminal_plan_mutation_pause_result_packet, indent=2, sort_keys=True))
-    print()
-    print("Locked plan result packet:")
-    print(json.dumps(terminal_plan_locked_result_packet, indent=2, sort_keys=True))
-    print()
-    print("Interrupt command packet:")
-    print(json.dumps(asdict(terminal_plan_interrupt_command_packet), indent=2, sort_keys=True))
-    print()
-    print("Interrupt plan result packet:")
-    print(json.dumps(terminal_plan_interrupt_result_packet, indent=2, sort_keys=True))
-    print()
-    print("Max-step policy rejection packet:")
-    print(json.dumps(terminal_plan_max_step_rejection, indent=2, sort_keys=True))
-    print()
-    print("Text-console intended-pathway smoke:")
-    print(json.dumps(text_console_intended_pathway_smoke, indent=2, sort_keys=True))
-    print()
-    print("Inert assistant prose blocks:")
-    print(json.dumps(inert_prose_blocks, indent=2, sort_keys=True))
+    print_concise_smoke_summary(report, report_path=report_path)
+    if args.print_full_report:
+        print()
+        print("Full diagnostic report:")
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
     return 0
 
 
