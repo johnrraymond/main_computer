@@ -102,17 +102,23 @@ runtime/coolify-qbft/testnet/operator-commands.txt
 runtime/coolify-qbft/testnet/docker-compose.<host-id>.yml
 ```
 
-The script should refuse unsafe layouts before anything is deployed:
+The script should refuse unsafe layouts before anything is deployed. Topology
+minimums come from each seed's `topology_policy`, not from hardcoded
+testnet/mainnet assumptions:
 
 ```text
 duplicate service ids
 unknown hosts
 container IP outside the Docker subnet
 duplicate host ports
-fewer than four validators
-no non-validator RPC node
+validator count below topology_policy.minimum_validators
+RPC node count below topology_policy.minimum_rpc_nodes
 the mainnet seed without an explicit acknowledgement
 ```
+
+This lets the default `testnet` seed require four validators while the current
+lightweight `mainnet` bring-up seed can intentionally require one validator plus
+one dedicated RPC node.
 
 Actual deployment can come after the planner proves the layout. The deploy step
 should call Coolify or SSH only after the same seed has already rendered a stable
@@ -388,7 +394,8 @@ qbft-bootstrap
 ```
 
 `qbft-bootstrap` runs inside the Coolify-managed stack and writes the chain
-identity files into a persistent named Docker volume before the validators start:
+identity files into a persistent named Docker volume before the validators start.
+For the default four-validator testnet seed that means:
 
 ```text
 genesis.json
@@ -405,6 +412,9 @@ validator-4/static-nodes.json
 rpc-node/static-nodes.json
 network-metadata.json
 ```
+
+A lighter one-validator mainnet bring-up seed writes the same file classes, but
+only for the validator services actually present in that seed.
 
 That removes the manual host-prep command:
 
