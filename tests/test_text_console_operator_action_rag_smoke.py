@@ -190,3 +190,102 @@ def test_preflight_booleans_are_diagnostic_selected_specs_are_authoritative():
     assert report["ok"] is True
     assert report["derived"]["needs_mount"] is True
     assert report["boolean_notes"]
+
+
+def test_production_text_console_operator_chat_uses_action_specs(monkeypatch):
+    import main_computer.text_console as prod
+    from main_computer.config import MainComputerConfig
+    from main_computer.models import ChatResponse
+    from types import SimpleNamespace
+
+    root = Path(__file__).resolve().parents[1]
+    calls = []
+
+    class FakeProvider:
+        name = "fake"
+        model = "fake-model"
+
+        def chat(self, messages):
+            calls.append(messages)
+            joined = "\n".join(str(message.content) for message in messages)
+            if prod.ACTION_PREFLIGHT_PROMPT in joined:
+                return ChatResponse(
+                    content=json.dumps(
+                        {
+                            "needs_mount": True,
+                            "needs_edit": False,
+                            "needs_answer_only": False,
+                            "selected_spec_ids": ["terminal"],
+                            "reason": "User asked Terminal to list files.",
+                        }
+                    ),
+                    provider="fake",
+                    model="fake-model",
+                )
+            return ChatResponse(
+                content='```computer\n/act terminal run "dir main_computer" --cwd repo-root\n```',
+                provider="fake",
+                model="fake-model",
+            )
+
+    class FakeComputer:
+        provider = FakeProvider()
+
+        def context_pack(self, prompt):
+            return SimpleNamespace(
+                text=(
+                    "Deterministic workspace context pack:\n"
+                    f"Workspace root: {root}\n"
+                    "Main computer file manifest:\n"
+                    "- main_computer:\n"
+                    "  - text_console.py\n"
+                ),
+                evidence=[],
+                manifest_chars=64,
+            )
+
+        def _web_search_context(self, prompt):
+            return {"attempted": False, "results": []}, ""
+
+    fake_computer = FakeComputer()
+    monkeypatch.setattr(prod.MainComputer, "build", classmethod(lambda cls, config=None: fake_computer))
+
+    text_console_config = prod.TextConsoleConfig.from_current_directory(
+        root,
+        provider="ollama",
+        model="fake-model",
+        base_url="http://127.0.0.1:11434",
+        timeout=120.0,
+        think=False,
+    )
+    response = prod.run_text_console_operator_chat(
+        text_console_config=text_console_config,
+        prompt="Use Terminal to list the files in main_computer.",
+        base_config=MainComputerConfig(workspace=root),
+    )
+
+    assert response.content == '```computer\n/act terminal run "dir main_computer" --cwd repo-root\n```'
+    operator = response.metadata["text_console_operator"]
+    assert operator["selected_spec_ids"] == ["terminal"]
+    assert len(calls) == 2
+
+    preflight_joined = "\n".join(message.content for message in calls[0])
+    final_joined = "\n".join(message.content for message in calls[1])
+    assert "Available text-console action spec catalog" in preflight_joined
+    assert "Deterministic workspace context pack" not in preflight_joined
+    assert "Selected text-console action spec: terminal" in final_joined
+    assert '/act terminal run "<command>" --cwd repo-root' in final_joined
+
+
+def test_production_action_specs_have_compact_runtime_sections():
+    import main_computer.text_console as prod
+
+    root = Path(__file__).resolve().parents[1]
+    specs = prod.load_action_specs(root)
+    prompt = prod.selected_action_specs_prompt(specs, ["terminal", "repo_edit"])
+
+    assert "Selected text-console action spec: terminal" in prompt
+    assert "Selected text-console action spec: repo_edit" in prompt
+    assert '/act terminal run "<command>" --cwd repo-root' in prompt
+    assert '"mode": "repo_root_edit_request"' in prompt
+    assert len(prompt) < len(specs["terminal"].text) + len(specs["repo_edit"].text)

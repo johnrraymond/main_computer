@@ -9,6 +9,7 @@ from main_computer.text_console import (
     TEXT_CONSOLE_AI_SYSTEM_PROMPT,
     TextConsoleConfig,
     build_text_console_model_input,
+    run_text_console_operator_chat,
 )
 from main_computer.viewport_routes_applications import ViewportApplicationRoutesMixin
 
@@ -121,8 +122,9 @@ def test_api_chat_handler_uses_text_console_route_not_chat_console_route():
 
     assert "TextConsoleConfig.from_current_directory" in source
     assert "self.server.debug_root" in source
-    assert "build_text_console_model_input" in source
-    assert "chat_response_from_text_console_model_input" in source
+    assert "run_text_console_operator_chat" in source
+    assert "build_text_console_model_input" not in source
+    assert "chat_response_from_text_console_model_input" not in source
     assert "self.server.computer.context_pack(prompt)" not in source
     assert "inline_test_provider" in source
 

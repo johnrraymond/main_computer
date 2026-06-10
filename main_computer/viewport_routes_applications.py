@@ -43,7 +43,7 @@ from main_computer.viewport_state import *  # noqa: F401,F403
 from main_computer.email_client import EmailClientConfigError, check_email_account
 from main_computer.chat_ai_subprocess import append_text_log, config_to_payload
 from main_computer.models import ChatResponse
-from main_computer.text_console import TextConsoleConfig, build_text_console_model_input, chat_response_from_text_console_model_input
+from main_computer.text_console import TextConsoleConfig, run_text_console_operator_chat
 from main_computer.website_builder_rag_pipeline import (
     build_evidence as build_website_builder_rag_evidence,
     build_proposal_evidence as build_website_builder_rag_proposal_evidence,
@@ -2173,23 +2173,37 @@ class ViewportApplicationRoutesMixin:
                 working_directory=str(text_console_config.working_directory),
             )
 
-            model_input = build_text_console_model_input(
+            response = run_text_console_operator_chat(
                 text_console_config=text_console_config,
-                source=prompt,
+                prompt=prompt,
                 base_config=self.server.config,
             )
-            context_pack = model_input.context_pack
+            workspace_context = dict(response.metadata.get("workspace_context", {}) or {})
+            operator_metadata = dict(response.metadata.get("text_console_operator", {}) or {})
             self.server.signal(
                 "api-chat-context-selected",
-                evidence_count=len(context_pack.evidence),
-                manifest_chars=context_pack.manifest_chars,
-                paths="|".join(self._context_evidence_paths(context_pack)),
-                files="|".join(self._context_evidence_paths(context_pack, kind="file")),
+                evidence_count=len(workspace_context.get("evidence", []) or []),
+                manifest_chars=workspace_context.get("manifest_chars", 0),
+                paths="|".join(
+                    str(item.get("path", ""))
+                    for item in list(workspace_context.get("evidence", []) or [])
+                    if isinstance(item, dict) and item.get("path")
+                ),
+                files="|".join(
+                    str(item.get("path", ""))
+                    for item in list(workspace_context.get("evidence", []) or [])
+                    if isinstance(item, dict) and item.get("kind") == "file" and item.get("path")
+                ),
                 context_root=str(text_console_config.context_root),
-                request_sha256=model_input.request_sha256,
+                request_sha256=str(
+                    dict(operator_metadata.get("final", {}) or {}).get(
+                        "request_sha256",
+                        dict(response.metadata.get("text_console_model_input", {}) or {}).get("request_sha256", ""),
+                    )
+                ),
+                selected_specs="|".join(str(item) for item in list(operator_metadata.get("selected_spec_ids", []) or [])),
             )
 
-            response = chat_response_from_text_console_model_input(model_input)
             self.server.signal(
                 "api-chat-complete",
                 provider=response.provider,
