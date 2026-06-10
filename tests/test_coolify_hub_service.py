@@ -20,10 +20,12 @@ spec.loader.exec_module(coolify_hub_service)
 def _args(**overrides):
     defaults = {
         "coolify_project_uuid": "project-uuid",
+        "coolify_project_name": "",
         "coolify_server_uuid": "server-uuid",
         "coolify_server_name": "",
         "coolify_environment_name": "mainnet",
         "coolify_environment_uuid": "",
+        "no_create_environment": False,
         "coolify_destination_uuid": "",
         "git_repo": "https://github.com/example/main_computer.git",
         "git_branch": "main",
@@ -36,9 +38,11 @@ def _args(**overrides):
         "hub_runtime_dir": "",
         "coolify_application_name": "",
         "rpc_check": "auto",
+        "rpc_user_agent": coolify_hub_service.DEFAULT_JSON_RPC_USER_AGENT,
         "skip_rpc_check": False,
         "hub_health_check": "auto",
         "no_wait_hub": False,
+        "hub_status_user_agent": coolify_hub_service.DEFAULT_JSON_RPC_USER_AGENT,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -52,6 +56,37 @@ class FakeCoolifyClient:
     def request(self, method: str, path: str, payload=None):
         self.requests.append((method, path, payload))
         return coolify_hub_service.CoolifyResponse(ok=True, status=200, method=method, path=path, body=self.body)
+
+
+class RouteCoolifyClient:
+    def __init__(self, routes):
+        self.routes = {key: list(value) for key, value in routes.items()}
+        self.requests = []
+
+    def request(self, method: str, path: str, payload=None):
+        method = method.upper()
+        self.requests.append((method, path, payload))
+        key = (method, path)
+        responses = self.routes.get(key)
+        if not responses:
+            return coolify_hub_service.CoolifyResponse(
+                ok=False,
+                status=404,
+                method=method,
+                path=path,
+                body={"message": f"no fake route for {method} {path}"},
+            )
+        response = responses.pop(0)
+        if isinstance(response, coolify_hub_service.CoolifyResponse):
+            return response
+        status = int(response.pop("_status", 200)) if isinstance(response, dict) else 200
+        return coolify_hub_service.CoolifyResponse(
+            ok=200 <= status < 300,
+            status=status,
+            method=method,
+            path=path,
+            body=response,
+        )
 
 
 class CoolifyHubServiceTests(unittest.TestCase):
@@ -146,6 +181,91 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(plan["application_payload"]["dockerfile_location"], "/Dockerfile.hub.testnet")
         self.assertNotIn("urls", plan["application_payload"])
 
+    def test_resolve_context_creates_missing_hub_environment(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
+        args = _args(
+            coolify_project_uuid="",
+            coolify_project_name="My first project",
+            coolify_server_uuid="",
+            coolify_environment_name="mainnet-hub",
+        )
+        client = RouteCoolifyClient(
+            {
+                ("GET", "/api/v1/projects"): [
+                    {"projects": [{"uuid": "project-uuid", "name": "My first project"}]}
+                ],
+                ("GET", "/api/v1/projects/project-uuid/environments"): [
+                    {
+                        "environments": [
+                            {"uuid": "env-production", "name": "production"},
+                            {"uuid": "env-mainnet", "name": "mainnet"},
+                        ]
+                    }
+                ],
+                ("POST", "/api/v1/projects/project-uuid/environments"): [
+                    {"uuid": "env-mainnet-hub", "name": "mainnet-hub"}
+                ],
+                ("GET", "/api/v1/servers"): [
+                    {"servers": [{"uuid": "server-only", "name": "localhost"}]}
+                ],
+            }
+        )
+        tried = []
+
+        context = coolify_hub_service.resolve_coolify_context(client, profile, args, tried)
+
+        self.assertEqual(args.coolify_environment_name, "mainnet-hub")
+        self.assertEqual(args.coolify_environment_uuid, "env-mainnet-hub")
+        self.assertEqual(context["environment"]["source"], "created")
+        self.assertEqual(context["environment_uuid"], "env-mainnet-hub")
+        self.assertIn(
+            ("POST", "/api/v1/projects/project-uuid/environments", {"name": "mainnet-hub"}),
+            client.requests,
+        )
+
+    def test_resolve_context_reuses_existing_hub_environment(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
+        args = _args(
+            coolify_project_uuid="project-uuid",
+            coolify_server_uuid="server-only",
+            coolify_environment_name="mainnet-hub",
+        )
+        client = RouteCoolifyClient(
+            {
+                ("GET", "/api/v1/projects/project-uuid/environments"): [
+                    {"environments": [{"uuid": "env-mainnet-hub", "name": "mainnet-hub"}]}
+                ],
+            }
+        )
+
+        context = coolify_hub_service.resolve_coolify_context(client, profile, args, [])
+
+        self.assertEqual(context["environment"]["source"], "existing")
+        self.assertEqual(args.coolify_environment_uuid, "env-mainnet-hub")
+        self.assertFalse(any(request[0] == "POST" for request in client.requests))
+
+    def test_resolve_context_can_refuse_missing_environment_creation(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
+        args = _args(
+            coolify_project_uuid="project-uuid",
+            coolify_server_uuid="server-only",
+            coolify_environment_name="mainnet-hub",
+            no_create_environment=True,
+        )
+        client = RouteCoolifyClient(
+            {
+                ("GET", "/api/v1/projects/project-uuid/environments"): [
+                    {"environments": [{"uuid": "env-mainnet", "name": "mainnet"}]}
+                ],
+            }
+        )
+
+        with self.assertRaises(coolify_hub_service.CoolifyHubDeployError) as ctx:
+            coolify_hub_service.resolve_coolify_context(client, profile, args, [])
+
+        self.assertIn("mainnet-hub", str(ctx.exception))
+        self.assertFalse(any(request[0] == "POST" for request in client.requests))
+
     def test_resolve_server_infers_single_server_when_uuid_and_name_omitted(self) -> None:
         client = FakeCoolifyClient({"servers": [{"uuid": "server-only", "name": "primary"}]})
         tried = []
@@ -219,6 +339,95 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertIn("--network\", \"mainnet", mainnet_dockerfile)
         self.assertIn("--port\", \"8790", mainnet_dockerfile)
         self.assertIn("/data/main-computer/hub/mainnet", mainnet_dockerfile)
+
+
+    def test_json_rpc_uses_operator_headers_for_https_edges(self) -> None:
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self) -> bytes:
+                return b'{"jsonrpc":"2.0","id":1,"result":"0x28757b0"}'
+
+        def fake_urlopen(request, timeout):
+            captured["request"] = request
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        original_urlopen = coolify_hub_service.urllib.request.urlopen
+        coolify_hub_service.urllib.request.urlopen = fake_urlopen
+        try:
+            result = coolify_hub_service.json_rpc(
+                "https://mainnet-rpc.greatlibrary.io",
+                "eth_chainId",
+                timeout_s=3.0,
+                user_agent="UnitTestAgent/1.0",
+            )
+        finally:
+            coolify_hub_service.urllib.request.urlopen = original_urlopen
+
+        self.assertEqual(result, "0x28757b0")
+        self.assertEqual(captured["timeout"], 3.0)
+        request = captured["request"]
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.get_header("Content-type"), "application/json")
+        self.assertEqual(request.get_header("Accept"), "application/json")
+        self.assertEqual(request.get_header("User-agent"), "UnitTestAgent/1.0")
+
+
+    def test_hub_status_request_uses_operator_headers_for_https_edges(self) -> None:
+        request = coolify_hub_service.hub_status_request(
+            "https://mainnet-hub.greatlibrary.io/api/hub/status",
+            user_agent="UnitTestHubAgent/1.0",
+        )
+
+        self.assertEqual(request.get_method(), "GET")
+        self.assertEqual(request.get_header("Accept"), "application/json")
+        self.assertEqual(request.get_header("User-agent"), "UnitTestHubAgent/1.0")
+
+    def test_wait_for_hub_uses_operator_headers_for_public_status_check(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
+        args = _args(
+            hub_wait_timeout_s=1.0,
+            hub_wait_poll_s=0.01,
+            hub_status_timeout_s=2.5,
+            hub_status_user_agent="UnitTestHubAgent/2.0",
+        )
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self) -> bytes:
+                return b'{"network":{"network_key":"mainnet","chain_id":42424240}}'
+
+        def fake_urlopen(request, timeout):
+            captured["request"] = request
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        original_urlopen = coolify_hub_service.urllib.request.urlopen
+        coolify_hub_service.urllib.request.urlopen = fake_urlopen
+        try:
+            result = coolify_hub_service.wait_for_hub(profile, args)
+        finally:
+            coolify_hub_service.urllib.request.urlopen = original_urlopen
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(captured["timeout"], 2.5)
+        request = captured["request"]
+        self.assertEqual(request.full_url, "https://mainnet-hub.greatlibrary.io/api/hub/status")
+        self.assertEqual(request.get_header("Accept"), "application/json")
+        self.assertEqual(request.get_header("User-agent"), "UnitTestHubAgent/2.0")
 
 
 if __name__ == "__main__":
