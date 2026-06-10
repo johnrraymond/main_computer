@@ -436,6 +436,45 @@ def test_watch_claims_pid_file_and_prints_boot_status(tmp_path: Path) -> None:
     assert not service.pid_path.exists()
 
 
+def test_watch_boot_writes_starting_heartbeat_before_full_reconcile(tmp_path: Path) -> None:
+    repo, fake_wsl, fake_docker = make_repo(tmp_path)
+    service = ExecutorService(
+        root=repo,
+        wsl_command=str(fake_wsl),
+        docker_command=str(fake_docker),
+        runner=FakeRunner(),
+        sleep_func=lambda _: None,
+        output_func=None,
+        heartbeat_interval_s=30,
+        light_check_interval_s=300,
+    )
+
+    def verifying_reconcile() -> dict[str, object]:
+        starting = json.loads(service.state_path.read_text(encoding="utf-8"))
+        pid_entry = json.loads(service.pid_path.read_text(encoding="utf-8"))
+        assert starting["state"] == "starting"
+        assert starting["boot_proven"] is False
+        assert starting["service"]["state"] == "starting"
+        assert starting["service"]["watching"] is True
+        assert starting["service"]["heartbeat_at"]
+        assert starting["service"]["pid_claim"]["written"] is True
+        assert starting["service"]["pid"] == pid_entry["pid"]
+        raise RuntimeError("full reconcile was intentionally blocked")
+
+    service._full_boot_reconcile = verifying_reconcile  # type: ignore[method-assign]
+
+    try:
+        service.boot(watch=True, max_watch_loops=1)
+    except RuntimeError as exc:
+        assert str(exc) == "full reconcile was intentionally blocked"
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("boot should have stopped inside the fake reconcile")
+
+    starting = json.loads(service.state_path.read_text(encoding="utf-8"))
+    assert starting["state"] == "starting"
+    assert starting["service"]["pid_claim"]["state"] == "new"
+
+
 def test_pid_claim_terminates_prior_service_only_when_live_command_matches_pid_file_and_root(tmp_path: Path) -> None:
     repo, fake_wsl, fake_docker = make_repo(tmp_path)
     prior_pid = 43210

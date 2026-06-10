@@ -114,6 +114,72 @@ def test_supervisor_restarts_child_process_when_it_exits(tmp_path: Path) -> None
     assert state["children"]["executor"]["state"] == "running"
 
 
+def test_supervisor_restarts_running_executor_when_heartbeat_state_is_old_generation(tmp_path: Path, monkeypatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("MAIN_COMPUTER_EXECUTOR_HEARTBEAT_STARTUP_GRACE_S", "1")
+    starts_by_module: dict[str, int] = {}
+    terminated: list[int] = []
+    clock = {"now": 0.0}
+
+    def fake_time() -> float:
+        clock["now"] += 100.0
+        return clock["now"]
+
+    def factory(command: list[str], cwd: Path, stdout: Path, stderr: Path) -> FakeProcess:
+        module = command[2]
+        starts_by_module[module] = starts_by_module.get(module, 0) + 1
+        process = FakeProcess([None])
+        if module == "main_computer.executor_service" and starts_by_module[module] == 1:
+            (repo / "runtime" / "executor_service").mkdir(parents=True, exist_ok=True)
+            (repo / ".main_computer_executor_service.pid").write_text(
+                json.dumps(
+                    {
+                        "pid": process.pid,
+                        "service": "main-computer-executor-service",
+                        "root": str(repo.resolve()),
+                        "command_line": "python -m main_computer.executor_service --root repo boot --watch",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (repo / "runtime" / "executor_service" / "state.json").write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "state": "ready",
+                        "root": str(repo.resolve()),
+                        "policy": {"stale_after_s": 600.0},
+                        "service": {
+                            "pid": process.pid - 1,
+                            "state": "watching",
+                            "heartbeat_at": "2000-01-01T00:00:00+00:00",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+        return process
+
+    supervisor = ServiceSupervisor(
+        root=repo,
+        python_command="python",
+        poll_interval_s=5,
+        sleep_func=lambda _: None,
+        time_func=fake_time,
+        output_func=None,
+        process_terminator=terminated.append,
+        process_factory=factory,
+    )
+
+    state = supervisor.supervise(max_loops=2)
+
+    assert starts_by_module["main_computer.executor_service"] == 2
+    assert len(terminated) == 1
+    assert state["children"]["executor"]["restart_count"] == 1
+    assert state["children"]["executor"]["state"] == "running"
+
+
 def test_supervisor_pid_takeover_only_kills_matching_prior_process_and_still_boots(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
