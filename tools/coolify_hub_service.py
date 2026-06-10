@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Create or update Coolify Hub application resources for public networks.
 
-This script intentionally manages only the Hub application service. It does not
-create or mutate the QBFT chain resources. The committed network registry remains
-the source of truth for chain ids, RPC URLs, Hub public URLs, and container ports.
+This script manages only the Hub application service. The Besu/QBFT chain
+resources are handled by the network deployer. For testnet, RPC and public Hub
+checks are post-deploy health checks by default, not blockers for creating or
+updating the Coolify application.
 """
 
 from __future__ import annotations
@@ -26,11 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from main_computer.hub_networks import (  # noqa: E402
-    HubNetworkConfigError,
-    HubNetworkProfile,
-    load_hub_network_registry,
-)
+from main_computer.hub_networks import HubNetworkConfigError, HubNetworkProfile, load_hub_network_registry  # noqa: E402
 
 
 DEFAULT_TOKEN_ENV = "MAIN_COMPUTER_COOLIFY_TOKEN"
@@ -237,8 +234,11 @@ def client_from_args(args: argparse.Namespace) -> CoolifyClient:
 def json_rpc(url: str, method: str, params: list[Any] | None = None, *, timeout_s: float = 8.0) -> Any:
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}).encode("utf-8")
     request = urllib.request.Request(url, data=body, headers={"content-type": "application/json"}, method="POST")
-    with urllib.request.urlopen(request, timeout=timeout_s) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, socket.timeout, OSError) as exc:
+        raise CoolifyHubDeployError(f"JSON-RPC {method} failed for {url}: {type(exc).__name__}: {exc}") from exc
     if "error" in payload:
         raise CoolifyHubDeployError(f"{method} returned JSON-RPC error: {payload['error']}")
     return payload.get("result")
@@ -255,12 +255,7 @@ def verify_rpc(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[str
         )
     block_hex = str(json_rpc(profile.chain_rpc_url, "eth_blockNumber", timeout_s=args.rpc_timeout_s))
     block_number = int(block_hex, 16)
-    return {
-        "ok": True,
-        "rpc_url": profile.chain_rpc_url,
-        "chain_id": chain_id,
-        "block_number": block_number,
-    }
+    return {"ok": True, "rpc_url": profile.chain_rpc_url, "chain_id": chain_id, "block_number": block_number}
 
 
 def validate_remote_profile(profile: HubNetworkProfile) -> None:
@@ -284,8 +279,7 @@ def validate_remote_profile(profile: HubNetworkProfile) -> None:
         )
     if profile.hub_bind_host != "0.0.0.0":
         raise CoolifyHubDeployError(
-            f"Remote Hub network {profile.network_key!r} must bind inside the container on 0.0.0.0, "
-            f"got {profile.hub_bind_host!r}."
+            f"Remote Hub network {profile.network_key!r} must bind inside the container on 0.0.0.0, got {profile.hub_bind_host!r}."
         )
 
 
@@ -317,7 +311,6 @@ def hub_start_command(profile: HubNetworkProfile, runtime_dir: str) -> str:
 
 
 def shell_word(value: str) -> str:
-    # These values are simple operator/config tokens; JSON payloads should stay readable.
     text = str(value)
     if not text or any(ch.isspace() for ch in text):
         return json.dumps(text)
@@ -344,7 +337,6 @@ def application_payload(
         "dockerfile_location": args.dockerfile_location,
         "ports_exposes": str(profile.hub_bind_port),
         "domains": profile.hub_public_url,
-        "urls": profile.hub_public_url,
         "start_command": hub_start_command(profile, runtime_dir),
         "health_check_enabled": True,
         "health_check_path": args.health_path,
@@ -373,12 +365,7 @@ def application_update_payload(
 
 
 def storage_payload(profile: HubNetworkProfile, *, runtime_dir: str) -> dict[str, Any]:
-    return {
-        "type": "persistent",
-        "name": hub_volume_name(profile.network_key),
-        "mount_path": runtime_dir,
-        "host_path": runtime_dir,
-    }
+    return {"type": "persistent", "name": hub_volume_name(profile.network_key), "mount_path": runtime_dir, "host_path": runtime_dir}
 
 
 def storage_matches(item: dict[str, Any], *, name: str, mount_path: str) -> bool:
@@ -421,29 +408,51 @@ def resolve_exact_resource_uuid(
     explicit_uuid: str,
     explicit_name: str,
     tried: list[dict[str, Any]],
+    infer_if_single: bool = False,
 ) -> str:
     clean_uuid = str(explicit_uuid or "").strip()
     if clean_uuid:
         return clean_uuid
     clean_name = str(explicit_name or "").strip()
-    if not clean_name:
+    if not clean_name and not infer_if_single:
         return ""
     response, items = list_resources(client, path, *preferred_keys)
-    tried.append({"operation": f"list-{resource_kind}s", "path": path, "response": response_to_dict(response), "count": len(items)})
+    tried.append(
+        {
+            "operation": f"list-{resource_kind}s",
+            "path": path,
+            "response": response_to_dict(response),
+            "count": len(items),
+            "resolver": "name" if clean_name else "single",
+        }
+    )
     if not response.ok:
-        raise CoolifyHubDeployError(f"Could not list Coolify {resource_kind}s to resolve {clean_name!r}.")
-    uuid, matches = select_by_exact_name(items, clean_name)
-    if uuid:
-        return uuid
-    if len(matches) > 1:
-        raise CoolifyHubDeployError(f"Multiple Coolify {resource_kind}s named {clean_name!r}; pass the UUID explicitly.")
-    raise CoolifyHubDeployError(f"No Coolify {resource_kind} named {clean_name!r} was returned by the API.")
+        target = clean_name if clean_name else "the only available resource"
+        raise CoolifyHubDeployError(f"Could not list Coolify {resource_kind}s to resolve {target!r}.")
+    if clean_name:
+        uuid, matches = select_by_exact_name(items, clean_name)
+        if uuid:
+            return uuid
+        if len(matches) > 1:
+            raise CoolifyHubDeployError(f"Multiple Coolify {resource_kind}s named {clean_name!r}; pass the UUID explicitly.")
+        raise CoolifyHubDeployError(f"No Coolify {resource_kind} named {clean_name!r} was returned by the API.")
+    candidates = [item for item in items if item_uuid(item)]
+    if len(candidates) == 1:
+        return item_uuid(candidates[0])
+    if len(candidates) > 1:
+        summaries = [item_summary(item) for item in candidates]
+        raise CoolifyHubDeployError(
+            f"Multiple Coolify {resource_kind}s were returned; pass --coolify-{resource_kind}-uuid "
+            f"or --coolify-{resource_kind}-name. Matches: {summaries}"
+        )
+    raise CoolifyHubDeployError(
+        f"No Coolify {resource_kind} with a UUID was returned by the API; pass --coolify-{resource_kind}-uuid explicitly."
+    )
 
 
 def resolve_coolify_context(client: CoolifyClient, profile: HubNetworkProfile, args: argparse.Namespace, tried: list[dict[str, Any]]) -> dict[str, Any]:
     if not str(args.coolify_environment_name or "").strip():
         args.coolify_environment_name = profile.network_key
-
     args.coolify_project_uuid = resolve_exact_resource_uuid(
         client,
         path="/api/v1/projects",
@@ -461,15 +470,14 @@ def resolve_coolify_context(client: CoolifyClient, profile: HubNetworkProfile, a
         explicit_uuid=args.coolify_server_uuid,
         explicit_name=args.coolify_server_name,
         tried=tried,
+        infer_if_single=True,
     )
-
     if not args.coolify_project_uuid:
         raise CoolifyHubDeployError("Coolify project is required. Pass --coolify-project-uuid or --coolify-project-name.")
     if not args.coolify_server_uuid:
         raise CoolifyHubDeployError("Coolify server is required. Pass --coolify-server-uuid or --coolify-server-name.")
     if not args.coolify_environment_name and not args.coolify_environment_uuid:
         raise CoolifyHubDeployError("Coolify environment is required. Pass --coolify-environment-name or --coolify-environment-uuid.")
-
     return {
         "project_uuid": args.coolify_project_uuid,
         "server_uuid": args.coolify_server_uuid,
@@ -478,16 +486,9 @@ def resolve_coolify_context(client: CoolifyClient, profile: HubNetworkProfile, a
     }
 
 
-def find_application(
-    client: CoolifyClient,
-    *,
-    service_name: str,
-    explicit_uuid: str,
-    tried: list[dict[str, Any]],
-) -> tuple[str, dict[str, Any]]:
+def find_application(client: CoolifyClient, *, service_name: str, explicit_uuid: str, tried: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
     if explicit_uuid:
         return explicit_uuid, {"source": "explicit_uuid", "uuid": explicit_uuid}
-
     response, apps = list_applications(client)
     tried.append({"operation": "list-applications", "response": response_to_dict(response), "count": len(apps)})
     if not response.ok:
@@ -510,22 +511,13 @@ def choose_endpoint(args: argparse.Namespace) -> str:
     return "/api/v1/applications/public"
 
 
-def create_application(
-    client: CoolifyClient,
-    profile: HubNetworkProfile,
-    args: argparse.Namespace,
-    *,
-    service_name: str,
-    runtime_dir: str,
-    tried: list[dict[str, Any]],
-) -> str:
+def create_application(client: CoolifyClient, profile: HubNetworkProfile, args: argparse.Namespace, *, service_name: str, runtime_dir: str, tried: list[dict[str, Any]]) -> str:
     endpoint = choose_endpoint(args)
     payload = application_payload(profile, args, service_name=service_name, runtime_dir=runtime_dir)
     if args.github_app_uuid:
         payload["github_app_uuid"] = args.github_app_uuid
     if args.deploy_key_uuid:
         payload["private_key_uuid"] = args.deploy_key_uuid
-
     response = client.request("POST", endpoint, payload)
     tried.append({"operation": "create-application", "path": endpoint, "payload_keys": sorted(payload), "response": response_to_dict(response)})
     if not response.ok:
@@ -538,16 +530,7 @@ def create_application(
     return uuid
 
 
-def update_application(
-    client: CoolifyClient,
-    profile: HubNetworkProfile,
-    args: argparse.Namespace,
-    *,
-    application_uuid: str,
-    service_name: str,
-    runtime_dir: str,
-    tried: list[dict[str, Any]],
-) -> None:
+def update_application(client: CoolifyClient, profile: HubNetworkProfile, args: argparse.Namespace, *, application_uuid: str, service_name: str, runtime_dir: str, tried: list[dict[str, Any]]) -> None:
     payload = application_update_payload(profile, args, service_name=service_name, runtime_dir=runtime_dir)
     paths = [f"/api/v1/applications/{urllib.parse.quote(application_uuid)}"]
     methods = ["PATCH", "PUT"]
@@ -562,15 +545,7 @@ def update_application(
     raise CoolifyHubDeployError("Coolify application update failed on all known endpoints.")
 
 
-def ensure_storage(
-    client: CoolifyClient,
-    profile: HubNetworkProfile,
-    args: argparse.Namespace,
-    *,
-    application_uuid: str,
-    runtime_dir: str,
-    tried: list[dict[str, Any]],
-) -> dict[str, Any]:
+def ensure_storage(client: CoolifyClient, profile: HubNetworkProfile, args: argparse.Namespace, *, application_uuid: str, runtime_dir: str, tried: list[dict[str, Any]]) -> dict[str, Any]:
     name = hub_volume_name(profile.network_key)
     list_path = f"/api/v1/applications/{urllib.parse.quote(application_uuid)}/storages"
     response = client.request("GET", list_path)
@@ -581,25 +556,14 @@ def ensure_storage(
         if len(matches) == 1:
             return {"ok": True, "source": "existing", "storage": item_summary(matches[0])}
         if len(matches) > 1:
-            raise CoolifyHubDeployError(
-                f"Multiple persistent storages match {name!r}/{runtime_dir!r}; refusing to guess."
-            )
-
+            raise CoolifyHubDeployError(f"Multiple persistent storages match {name!r}/{runtime_dir!r}; refusing to guess.")
     if args.no_create_storage:
-        return {
-            "ok": False,
-            "source": "skipped",
-            "message": "Persistent storage create skipped by --no-create-storage.",
-        }
-
+        return {"ok": False, "source": "skipped", "message": "Persistent storage create skipped by --no-create-storage."}
     payload = storage_payload(profile, runtime_dir=runtime_dir)
     response = client.request("POST", list_path, payload)
     tried.append({"operation": "create-storage", "path": list_path, "payload": payload, "response": response_to_dict(response)})
     if response.ok:
         return {"ok": True, "source": "created", "response": response_to_dict(response)}
-
-    # Older Coolify builds may not expose storage endpoints. Do not claim a safe
-    # mainnet apply when the state volume could not be confirmed.
     raise CoolifyHubDeployError(
         "Could not confirm/create persistent Hub storage through the Coolify API. "
         "Create the storage in the Coolify UI, then rerun so the script can confirm it. "
@@ -607,13 +571,7 @@ def ensure_storage(
     )
 
 
-def trigger_deploy(
-    client: CoolifyClient,
-    *,
-    application_uuid: str,
-    force: bool,
-    tried: list[dict[str, Any]],
-) -> dict[str, Any]:
+def trigger_deploy(client: CoolifyClient, *, application_uuid: str, force: bool, tried: list[dict[str, Any]]) -> dict[str, Any]:
     query = urllib.parse.urlencode({"uuid": application_uuid, "force": "true" if force else "false"})
     paths = [
         f"/api/v1/deploy?{query}",
@@ -648,7 +606,7 @@ def wait_for_hub(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[s
                 last_error = f"unexpected Hub status network={network_key!r} chain_id={chain_id!r}"
             else:
                 last_error = "Hub status response has no network object"
-        except Exception as exc:  # noqa: BLE001 - operator summary should capture last failure.
+        except Exception as exc:  # noqa: BLE001
             last_error = f"{type(exc).__name__}: {exc}"
         time.sleep(args.hub_wait_poll_s)
     raise CoolifyHubDeployError(f"Hub status did not become ready at {status_url}: {last_error}")
@@ -677,6 +635,29 @@ def plan_result(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[st
     }
 
 
+def check_mode_for_profile(profile: HubNetworkProfile, mode: str, *, testnet_default: str = "warn", mainnet_default: str = "require") -> str:
+    clean = str(mode or "auto").strip().lower()
+    if clean != "auto":
+        return clean
+    return mainnet_default if profile.kind == "mainnet" else testnet_default
+
+
+def rpc_check_mode(profile: HubNetworkProfile, args: argparse.Namespace) -> str:
+    if getattr(args, "skip_rpc_check", False):
+        return "skip"
+    return check_mode_for_profile(profile, args.rpc_check, testnet_default="warn", mainnet_default="require")
+
+
+def hub_health_check_mode(profile: HubNetworkProfile, args: argparse.Namespace) -> str:
+    if getattr(args, "no_wait_hub", False):
+        return "skip"
+    return check_mode_for_profile(profile, args.hub_health_check, testnet_default="warn", mainnet_default="require")
+
+
+def warning_payload(phase: str, mode: str, exc: BaseException) -> dict[str, Any]:
+    return {"phase": phase, "mode": mode, "ok": False, "error": str(exc), "error_type": type(exc).__name__}
+
+
 def apply(args: argparse.Namespace) -> dict[str, Any]:
     profile = load_profile(args)
     plan = plan_result(profile, args)
@@ -684,9 +665,21 @@ def apply(args: argparse.Namespace) -> dict[str, Any]:
         return {"ok": True, "dry_run": True, "plan": plan}
 
     phases: list[dict[str, Any]] = []
-    if not args.skip_rpc_check:
-        rpc = verify_rpc(profile, args)
-        phases.append({"phase": "verify-rpc", "result": rpc})
+    warnings: list[dict[str, Any]] = []
+
+    rpc_mode = rpc_check_mode(profile, args)
+    if rpc_mode != "skip":
+        try:
+            rpc = verify_rpc(profile, args)
+            phases.append({"phase": "verify-rpc", "mode": rpc_mode, "result": rpc})
+        except CoolifyHubDeployError as exc:
+            warning = warning_payload("verify-rpc", rpc_mode, exc)
+            phases.append({"phase": "verify-rpc", "mode": rpc_mode, "result": warning})
+            if rpc_mode == "require":
+                raise
+            warnings.append(warning)
+    else:
+        phases.append({"phase": "verify-rpc", "mode": rpc_mode, "result": {"ok": True, "skipped": True}})
 
     client = client_from_args(args)
     token, token_source = resolve_token(args)
@@ -699,42 +692,15 @@ def apply(args: argparse.Namespace) -> dict[str, Any]:
     context = resolve_coolify_context(client, profile, args, tried)
     phases.append({"phase": "coolify-context", "result": context})
 
-    application_uuid, existing = find_application(
-        client,
-        service_name=plan["service_name"],
-        explicit_uuid=args.coolify_application_uuid,
-        tried=tried,
-    )
+    application_uuid, existing = find_application(client, service_name=plan["service_name"], explicit_uuid=args.coolify_application_uuid, tried=tried)
     if application_uuid:
-        update_application(
-            client,
-            profile,
-            args,
-            application_uuid=application_uuid,
-            service_name=plan["service_name"],
-            runtime_dir=plan["runtime_dir"],
-            tried=tried,
-        )
+        update_application(client, profile, args, application_uuid=application_uuid, service_name=plan["service_name"], runtime_dir=plan["runtime_dir"], tried=tried)
         application_action = "updated"
     else:
-        application_uuid = create_application(
-            client,
-            profile,
-            args,
-            service_name=plan["service_name"],
-            runtime_dir=plan["runtime_dir"],
-            tried=tried,
-        )
+        application_uuid = create_application(client, profile, args, service_name=plan["service_name"], runtime_dir=plan["runtime_dir"], tried=tried)
         application_action = "created"
 
-    storage = ensure_storage(
-        client,
-        profile,
-        args,
-        application_uuid=application_uuid,
-        runtime_dir=plan["runtime_dir"],
-        tried=tried,
-    )
+    storage = ensure_storage(client, profile, args, application_uuid=application_uuid, runtime_dir=plan["runtime_dir"], tried=tried)
     phases.append(
         {
             "phase": "coolify-application",
@@ -754,9 +720,19 @@ def apply(args: argparse.Namespace) -> dict[str, Any]:
         deploy_result = trigger_deploy(client, application_uuid=application_uuid, force=args.force_deploy, tried=tried)
         phases.append({"phase": "deploy", "result": deploy_result})
 
-    if not args.no_wait_hub and not args.no_deploy:
-        hub = wait_for_hub(profile, args)
-        phases.append({"phase": "wait-hub", "result": hub})
+    hub_mode = hub_health_check_mode(profile, args)
+    if hub_mode != "skip" and not args.no_deploy:
+        try:
+            hub = wait_for_hub(profile, args)
+            phases.append({"phase": "wait-hub", "mode": hub_mode, "result": hub})
+        except CoolifyHubDeployError as exc:
+            warning = warning_payload("wait-hub", hub_mode, exc)
+            phases.append({"phase": "wait-hub", "mode": hub_mode, "result": warning})
+            if hub_mode == "require":
+                raise
+            warnings.append(warning)
+    elif not args.no_deploy:
+        phases.append({"phase": "wait-hub", "mode": hub_mode, "result": {"ok": True, "skipped": True}})
 
     return {
         "ok": True,
@@ -765,6 +741,7 @@ def apply(args: argparse.Namespace) -> dict[str, Any]:
         "application_action": application_action,
         "deployed": deploy_result is not None,
         "plan": plan,
+        "warnings": warnings,
         "phases": phases,
     }
 
@@ -788,10 +765,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--coolify-application-uuid", default="", help="Existing Coolify application UUID to update.")
     parser.add_argument("--coolify-application-name", default="", help="Application name. Defaults to main-computer-<network>-hub.")
     parser.add_argument("--coolify-project-uuid", default="", help="Coolify project UUID.")
-    parser.add_argument("--coolify-project-name", default="", help="Reserved for operator notes; API create requires UUID.")
+    parser.add_argument("--coolify-project-name", default="", help="Project name to resolve exactly.")
     parser.add_argument("--coolify-environment-name", default="", help="Coolify environment name.")
     parser.add_argument("--coolify-environment-uuid", default="", help="Coolify environment UUID if known.")
-    parser.add_argument("--coolify-server-uuid", default="", help="Coolify server UUID.")
+    parser.add_argument(
+        "--coolify-server-uuid",
+        default="",
+        help="Coolify server UUID. If omitted with --coolify-server-name, apply infers it only when exactly one server exists.",
+    )
     parser.add_argument("--coolify-server-name", default="", help="Coolify server name to resolve exactly.")
     parser.add_argument("--coolify-destination-uuid", default="", help="Destination UUID if the server has multiple Docker destinations.")
 
@@ -805,17 +786,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--health-path", default=DEFAULT_HEALTH_PATH)
 
     parser.add_argument("--rpc-timeout-s", type=float, default=8.0)
-    parser.add_argument("--skip-rpc-check", action="store_true", help="Skip eth_chainId/eth_blockNumber verification.")
+    parser.add_argument(
+        "--rpc-check",
+        choices=["auto", "require", "warn", "skip"],
+        default="auto",
+        help="RPC verification mode. auto warns on testnet and requires on mainnet.",
+    )
+    parser.add_argument("--skip-rpc-check", action="store_true", help="Legacy alias for --rpc-check skip.")
     parser.add_argument("--no-create-storage", action="store_true", help="Do not create missing persistent storage.")
     parser.add_argument("--no-deploy", action="store_true", help="Create/update only; do not trigger deploy.")
     parser.add_argument("--force-deploy", action="store_true", help="Ask Coolify to force rebuild/redeploy.")
-    parser.add_argument("--no-wait-hub", action="store_true", help="Do not wait for /api/hub/status after deploy.")
+    parser.add_argument(
+        "--hub-health-check",
+        choices=["auto", "require", "warn", "skip"],
+        default="auto",
+        help="Hub public status check mode. auto warns on testnet and requires on mainnet.",
+    )
+    parser.add_argument("--no-wait-hub", action="store_true", help="Legacy alias for --hub-health-check skip.")
     parser.add_argument("--hub-wait-timeout-s", type=float, default=120.0)
     parser.add_argument("--hub-wait-poll-s", type=float, default=5.0)
     parser.add_argument("--hub-status-timeout-s", type=float, default=8.0)
     parser.add_argument("--dry-run", action="store_true", help="Render the plan without network or Coolify calls.")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-
     return parser.parse_args(argv)
 
 
@@ -829,10 +821,10 @@ def main(argv: list[str] | None = None) -> int:
             result = apply(args)
     except (CoolifyHubDeployError, HubNetworkConfigError) as exc:
         result = {"ok": False, "error": str(exc), "error_type": type(exc).__name__}
-        if not args.json:
-            print(json.dumps(result, indent=2, sort_keys=True))
-        else:
+        if args.json:
             print(json.dumps(result, sort_keys=True))
+        else:
+            print(json.dumps(result, indent=2, sort_keys=True))
         return 2
 
     if args.json:
