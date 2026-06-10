@@ -44,11 +44,22 @@ python .\tools\local-platform\website-docker.py verify hub-site --lane dev
 python .\tools\local-platform\website-docker.py logs hub-site --lane dev
 ```
 
-The lifecycle command uses:
+By default, the lifecycle command uses a site-local Compose file:
 
 ```text
 runtime/local-platform/sites.json
-deploy/local-platform/generated/docker-compose.websites.yml
+runtime/websites/<site-id>/.main-computer/local-platform/docker-compose.yml
+```
+
+That keeps each website under its own Docker Compose project, such as
+`main-computer-website-hub-site`, instead of requiring the legacy all-websites
+Compose file to be edited or regenerated for normal site work.
+
+The legacy aggregate file remains available for compatibility and migration:
+
+```powershell
+python .\tools\local-platform\website-docker.py start hub-site --lane dev --compose-scope aggregate
+python .\tools\local-platform\website-docker.py stop hub-site --lane dev --compose-scope aggregate
 ```
 
 The older `publish-website.py` and `publish-website.ps1` commands remain
@@ -67,21 +78,30 @@ Stop the platform:
 powershell -ExecutionPolicy Bypass -File .\tools\local-platform\down-local-platform.ps1
 ```
 
-Generate the registry-backed website Compose file:
+Generate selected site-local Compose files:
+
+```powershell
+python .\tools\local-platform\generate-websites-compose.py --repo-root . --site hub-site --site johnrraymond
+```
+
+Generated site files are written to:
+
+```text
+runtime/websites/<site-id>/.main-computer/local-platform/docker-compose.yml
+```
+
+Generate the legacy aggregate all-websites Compose file only when explicitly
+needed:
 
 ```powershell
 python .\tools\local-platform\generate-websites-compose.py --repo-root .
 ```
 
-The generated file is written to:
+The aggregate generated file is written to:
 
 ```text
 deploy/local-platform/generated/docker-compose.websites.yml
 ```
-
-The current publish wrapper still uses the existing fixed Compose services for
-compatibility. The generated file is the Phase 4 foundation for the later
-website Docker lifecycle command and new-site provisioning flow.
 
 The site server reads files from `runtime/websites/<site-id>/`, so edits saved
 by the Website Builder are visible to the local Docker service after publish.
