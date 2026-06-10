@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from main_computer.hub_networks import load_hub_network_registry
@@ -95,37 +96,28 @@ class ControlPanelNetworkUrlTests(unittest.TestCase):
         self.assertIn(("testnet-hub.greatlibrary.io", 443), connect_calls)
         self.assertIn(("mainnet-hub.greatlibrary.io", 443), connect_calls)
 
-    def test_remote_contract_status_uses_deployment_manifests_as_ground_truth(self) -> None:
+
+    def test_remote_cards_use_deployment_manifests_for_contract_truth(self) -> None:
         registry = load_hub_network_registry()
 
         with patch("main_computer.viewport_route_dispatch.load_hub_network_registry", return_value=registry), patch(
             "main_computer.viewport_route_dispatch._control_panel_connect", return_value={"ok": False}
         ), patch("main_computer.viewport_route_dispatch._control_panel_rpc_probe", return_value={"ok": True}):
-            payload = _control_panel_network_status_cards()
+            payload = _control_panel_network_status_cards(Path.cwd())
 
-        mainnet = next(network for network in payload["networks"] if network["network_key"] == "mainnet")
         testnet = next(network for network in payload["networks"] if network["network_key"] == "testnet")
+        mainnet = next(network for network in payload["networks"] if network["network_key"] == "mainnet")
 
-        self.assertEqual(mainnet["contracts_status"], "known")
-        self.assertEqual(mainnet["contracts_count"], 3)
-        self.assertEqual(mainnet["contracts_source"], "deployment-manifest")
-        self.assertTrue(str(mainnet["contracts_manifest_path"]).endswith("runtime/deployments/mainnet/latest.json"))
-        self.assertEqual(
-            mainnet["contracts"]["hub_credit_bridge_escrow"],
-            "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
-        )
-        self.assertEqual(mainnet["contracts_manifest"]["environment"], "mainnet")
-
-        self.assertEqual(testnet["contracts_status"], "known")
-        self.assertEqual(testnet["contracts_count"], 3)
-        self.assertEqual(testnet["contracts_source"], "deployment-manifest")
-        self.assertTrue(str(testnet["contracts_manifest_path"]).endswith("runtime/deployments/testnet/latest.json"))
-        self.assertEqual(
-            testnet["contracts"]["hub_credit_bridge_escrow"],
-            "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
-        )
-        self.assertEqual(testnet["contracts_manifest"]["environment"], "testnet")
-
+        for network in (testnet, mainnet):
+            self.assertEqual(network["contracts_status"], "known")
+            self.assertEqual(network["contracts_source"], "deployment-manifest")
+            self.assertEqual(network["contracts_count"], 3)
+            self.assertEqual(network["contracts_manifest_error"], "")
+            self.assertTrue(str(network["contracts_manifest_path"]).endswith(f"runtime/deployments/{network['network_key']}/latest.json"))
+            self.assertEqual(
+                set(network["contracts"]),
+                {"alpha-beta-lockout", "hub_credit_bridge_escrow", "xlag-bridge-reserve"},
+            )
 
 
 if __name__ == "__main__":
