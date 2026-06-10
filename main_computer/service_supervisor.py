@@ -29,6 +29,10 @@ from main_computer.service_control import (
     enqueue_applications_action,
     pending_control_requests,
 )
+from main_computer.executor_service import (
+    EXECUTOR_SERVICE_PID_FILENAME,
+    SERVICE_NAME as EXECUTOR_SERVICE_NAME,
+)
 
 
 SleepFunc = Callable[[float], None]
@@ -48,6 +52,8 @@ MAIN_LOG_READY_TIMEOUT_S = 3.0
 MAIN_LOG_RESTART_EMIT_TIMEOUT_S = 0.2
 MAIN_LOG_STREAM_EMIT_TIMEOUT_S = 0.05
 STREAM_DRAIN_JOIN_TIMEOUT_S = 2.0
+EXECUTOR_CHILD_NAME = "executor"
+EXECUTOR_HEARTBEAT_STARTUP_GRACE_S = 90.0
 
 
 def resolve_python_command(python_command: str | None = None) -> str:
@@ -285,6 +291,7 @@ class ChildRuntime:
     stdout_handle: TextIO | None = None
     stderr_handle: TextIO | None = None
     stream_threads: tuple[threading.Thread, ...] = ()
+    started_monotonic: float = 0.0
 
     def close_logs(self) -> None:
         for handle_name in ("stdout_handle", "stderr_handle"):
@@ -359,6 +366,10 @@ class ServiceSupervisor:
         self._shutdown_requested = False
         self._shutdown_reason = ""
         self._replacement_started = False
+        self.executor_heartbeat_startup_grace_s = max(
+            self.poll_interval_s,
+            _coerce_float_env("MAIN_COMPUTER_EXECUTOR_HEARTBEAT_STARTUP_GRACE_S", EXECUTOR_HEARTBEAT_STARTUP_GRACE_S),
+        )
         self.main_log_host = _main_log_host_from_environment()
         self.main_log_port = _main_log_port_from_environment()
         self.main_log_url = _main_log_url_from_environment()
@@ -399,6 +410,15 @@ class ServiceSupervisor:
                         )
                         child.close_logs()
                         self._start_child(spec, restart_count=restart_count, last_exit_code=int(exit_code))
+                        continue
+
+                    heartbeat_problem = self._executor_heartbeat_restart_reason(child)
+                    if heartbeat_problem:
+                        self._restart_child(
+                            spec.name,
+                            source="supervisor-heartbeat-watchdog",
+                            parameters={"reason": heartbeat_problem},
+                        )
 
                 self._process_control_queue()
                 if self._shutdown_requested:
@@ -841,6 +861,98 @@ class ServiceSupervisor:
             stderr_handle.close()
         self._emit("replacement supervisor started", pid=process.pid, stdout=str(stdout_path), stderr=str(stderr_path))
 
+    def _executor_heartbeat_restart_reason(self, child: ChildRuntime) -> str | None:
+        """Return a restart reason when the executor child is alive but telemetry is stale.
+
+        The executor service owns ``runtime/executor_service/state.json``. After a
+        crash/reboot, an old state file can survive while a newly started executor
+        claims its PID and then blocks before its first heartbeat write. The
+        supervisor must treat that as an unhealthy running child instead of
+        waiting forever for ``process.poll()`` to report an exit.
+        """
+
+        if child.spec.name != EXECUTOR_CHILD_NAME:
+            return None
+
+        elapsed_s = max(0.0, self.time() - float(child.started_monotonic or 0.0))
+        if elapsed_s < self.executor_heartbeat_startup_grace_s:
+            return None
+
+        pid_path = self.root / EXECUTOR_SERVICE_PID_FILENAME
+        pid_entry, pid_error = self._read_json_or_pid_file(pid_path)
+        if pid_error:
+            return f"executor PID file is {pid_error}"
+        if not pid_entry:
+            return "executor PID file is missing after startup grace"
+        if str(pid_entry.get("service") or "") != EXECUTOR_SERVICE_NAME:
+            return "executor PID file is not owned by the executor service"
+        pid_root_value = pid_entry.get("root")
+        if pid_root_value:
+            pid_root = _safe_resolved_path(pid_root_value)
+            if pid_root != str(self.root):
+                return f"executor PID file root mismatch: {pid_root}"
+        claimed_pid = _pid_from_entry(pid_entry)
+
+        state_path = self.root / "runtime" / "executor_service" / "state.json"
+        state, state_error = self._read_json_or_pid_file(state_path)
+        if state_error:
+            return f"executor heartbeat state is {state_error}"
+        if not state:
+            return "executor heartbeat state is missing after startup grace"
+
+        state_root_value = state.get("root")
+        if state_root_value:
+            state_root = _safe_resolved_path(state_root_value)
+            if state_root != str(self.root):
+                return f"executor heartbeat state root mismatch: {state_root}"
+
+        service = state.get("service") if isinstance(state.get("service"), dict) else {}
+        state_pid = _pid_from_entry(service)
+        if claimed_pid is not None and state_pid is not None and state_pid != claimed_pid:
+            return f"executor heartbeat belongs to pid {state_pid}, but PID file claims pid {claimed_pid}"
+
+        heartbeat = str(service.get("heartbeat_at") or "").strip()
+        if not heartbeat:
+            return "executor heartbeat_at is missing"
+
+        age_s = self._heartbeat_age_s(heartbeat)
+        if age_s is None:
+            return "executor heartbeat_at is invalid"
+
+        policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+        try:
+            stale_after_s = float(policy.get("stale_after_s") or 600.0)
+        except (TypeError, ValueError):
+            stale_after_s = 600.0
+
+        if age_s > stale_after_s:
+            return f"executor heartbeat is stale ({int(age_s)}s old)"
+
+        return None
+
+    def _read_json_or_pid_file(self, path: Path) -> tuple[dict[str, Any], str]:
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return {}, "missing"
+        except OSError as exc:
+            return {}, f"unreadable: {exc}"
+
+        entry = _pid_entry_from_text(raw)
+        if entry.get("parse_error"):
+            return {}, f"invalid: {entry['parse_error']}"
+        return entry, ""
+
+    @staticmethod
+    def _heartbeat_age_s(value: str) -> float | None:
+        try:
+            stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - stamp.astimezone(timezone.utc)).total_seconds())
+
     def _start_child(self, spec: ChildSpec, *, restart_count: int = 0, last_exit_code: int | None = None) -> ChildRuntime:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         stdout_path = self.runtime_dir / f"{spec.name}-{stamp}.stdout.log"
@@ -898,6 +1010,7 @@ class ServiceSupervisor:
             restart_count=restart_count,
             last_exit_code=last_exit_code,
             stdout_handle=stdout_handle,
+            started_monotonic=self.time(),
             stderr_handle=stderr_handle,
             stream_threads=stream_threads,
         )
