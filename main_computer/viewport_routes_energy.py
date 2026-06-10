@@ -1056,13 +1056,30 @@ class ViewportEnergyRoutesMixin:
             raise ValueError("Hub URL must start with http:// or https://.")
         return clean
 
+    def _hub_json_request_headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
+        headers = {
+            "User-Agent": "MainComputerWorker/0.1",
+            "Accept": "application/json",
+        }
+        if extra:
+            headers.update({str(key): str(value) for key, value in extra.items()})
+        return headers
+
     def _fetch_hub_status(self, hub_url: str) -> dict[str, Any]:
+        request = Request(
+            self._clean_hub_url(hub_url) + "/api/hub/status",
+            headers=self._hub_json_request_headers(),
+        )
         try:
-            with urlopen(self._clean_hub_url(hub_url) + "/api/hub/status", timeout=2.0) as response:
+            with urlopen(request, timeout=2.0) as response:
                 data = json.loads(response.read().decode("utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("Hub returned a non-object response.")
             return {"reachable": True, "status": data}
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace").strip()
+            detail = body or exc.reason or "Forbidden"
+            return {"reachable": False, "http_status": exc.code, "error": f"Hub returned HTTP {exc.code}: {detail}"}
         except Exception as exc:
             return {"reachable": False, "error": str(exc)}
 
@@ -1082,7 +1099,7 @@ class ViewportEnergyRoutesMixin:
         request = Request(
             self._clean_hub_url(local_hub_url) + "/api/hub/upstreams/register",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=self._hub_json_request_headers({"Content-Type": "application/json"}),
             method="POST",
         )
         try:
@@ -1103,7 +1120,7 @@ class ViewportEnergyRoutesMixin:
         request = Request(
             self._clean_hub_url(hub_url) + "/api/hub/v1/credits/multisession-keys/request",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=self._hub_json_request_headers({"Content-Type": "application/json"}),
             method="POST",
         )
         try:
@@ -1122,8 +1139,12 @@ class ViewportEnergyRoutesMixin:
 
     def _fetch_worker_wallet_funding_balance_from_hub(self, *, hub_url: str, wallet_address: str) -> dict[str, Any]:
         query = urlencode({"wallet_address": wallet_address})
+        request = Request(
+            self._clean_hub_url(hub_url) + f"/api/hub/v1/credits/balance?{query}",
+            headers=self._hub_json_request_headers(),
+        )
         try:
-            with urlopen(self._clean_hub_url(hub_url) + f"/api/hub/v1/credits/balance?{query}", timeout=5.0) as response:
+            with urlopen(request, timeout=5.0) as response:
                 data = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
@@ -1164,7 +1185,7 @@ class ViewportEnergyRoutesMixin:
         request = Request(
             hub_base + "/api/hub/v1/credits/wallet-funding/complete",
             data=encoded,
-            headers={"Content-Type": "application/json"},
+            headers=self._hub_json_request_headers({"Content-Type": "application/json"}),
             method="POST",
         )
         try:
@@ -1214,7 +1235,7 @@ class ViewportEnergyRoutesMixin:
             request = Request(
                 hub_base + path,
                 data=encoded,
-                headers={"Content-Type": "application/json"},
+                headers=self._hub_json_request_headers({"Content-Type": "application/json"}),
                 method="POST",
             )
             try:
@@ -1253,7 +1274,7 @@ class ViewportEnergyRoutesMixin:
         request = Request(
             self._clean_hub_url(hub_url) + "/api/hub/v1/workers/register",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=self._hub_json_request_headers({"Content-Type": "application/json"}),
             method="POST",
         )
         try:

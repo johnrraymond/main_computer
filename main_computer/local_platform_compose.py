@@ -23,6 +23,7 @@ from main_computer.local_platform_registry import (
 
 
 COMPOSE_PROJECT_NAME = "main-computer-local-platform-unleashed"
+LEGACY_COMPOSE_PROJECT_NAMES = ("main-computer-local-platform",)
 ENV_COMPOSE_PROJECT = "MAIN_COMPUTER_LOCAL_PLATFORM_COMPOSE_PROJECT"
 ENV_GENERATED_COMPOSE_PATH = "MAIN_COMPUTER_LOCAL_PLATFORM_GENERATED_COMPOSE_PATH"
 GENERATED_COMPOSE_RELATIVE_PATH = PurePosixPath("deploy/local-platform/generated/docker-compose.websites.yml")
@@ -93,6 +94,11 @@ class GeneratedDirectusService:
 
 def compose_project_name() -> str:
     return str(os.environ.get(ENV_COMPOSE_PROJECT) or COMPOSE_PROJECT_NAME).strip() or COMPOSE_PROJECT_NAME
+
+
+def site_compose_project_name(site_id: object) -> str:
+    """Return the Docker Compose project name for one runtime website."""
+    return f"main-computer-website-{safe_image_slug(site_id)}"
 
 
 def generated_compose_path(repo_root: Path) -> Path:
@@ -615,15 +621,21 @@ def _docker_port_owners(port: int) -> list[str]:
 
 
 def _compose_service_from_container_name(container_name: str) -> str:
-    project_prefix = f"{compose_project_name()}-"
     suffix = "-1"
-    if not container_name.startswith(project_prefix) or not container_name.endswith(suffix):
+    if not container_name.endswith(suffix):
         return ""
-    service_name = container_name[len(project_prefix) : -len(suffix)]
-    try:
-        return validate_compose_service_name(service_name)
-    except LocalPlatformComposeError:
-        return ""
+
+    project_names = [compose_project_name(), *LEGACY_COMPOSE_PROJECT_NAMES]
+    for project_name in dict.fromkeys(project_names):
+        project_prefix = f"{project_name}-"
+        if not container_name.startswith(project_prefix):
+            continue
+        service_name = container_name[len(project_prefix) : -len(suffix)]
+        try:
+            return validate_compose_service_name(service_name)
+        except LocalPlatformComposeError:
+            return ""
+    return ""
 
 
 def _existing_directus_service_for_port(port: int) -> str:
@@ -872,6 +884,7 @@ def render_generated_websites_compose(
     site_ids: object = None,
     compose_path: Path | None = None,
     file_header: str = GENERATED_FILE_HEADER,
+    project_name: object | None = None,
 ) -> str:
     registry = registry or load_local_platform_registry(repo_root)
     services = generated_compose_services(
@@ -886,9 +899,10 @@ def render_generated_websites_compose(
         directus_site_ids=directus_site_ids,
         site_ids=site_ids,
     )
+    clean_project_name = str(project_name).strip() if project_name is not None else compose_project_name()
     lines: list[str] = [
         file_header.rstrip(),
-        f'name: "{compose_project_name()}"',
+        f'name: "{clean_project_name}"',
         "",
         "services:",
     ]
@@ -917,6 +931,7 @@ def render_generated_site_compose(
         site_ids={site.id},
         compose_path=site_generated_compose_path(repo_root, site.id, registry),
         file_header=GENERATED_SITE_FILE_HEADER,
+        project_name=site_compose_project_name(site.id),
     )
 
 
