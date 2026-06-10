@@ -130,3 +130,63 @@ def test_offline_contract_fixtures_pass(monkeypatch):
     rc = smoke.main(["--offline-contract-only"])
 
     assert rc == 0
+
+
+def test_runtime_prompt_sections_keep_final_action_context_compact():
+    root = Path(__file__).resolve().parents[1]
+    specs = smoke.load_action_specs(root)
+
+    terminal_prompt = smoke.selected_action_specs_prompt(specs, ["terminal"])
+    repo_prompt = smoke.selected_action_specs_prompt(specs, ["repo_edit"])
+
+    assert "Selected text-console action spec: terminal" in terminal_prompt
+    assert '/act terminal run "<command>" --cwd repo-root' in terminal_prompt
+    assert len(terminal_prompt) < len(specs["terminal"].text)
+
+    assert "Selected text-console action spec: repo_edit" in repo_prompt
+    assert '"mode": "repo_root_edit_request"' in repo_prompt
+    assert len(repo_prompt) < len(specs["repo_edit"].text)
+
+
+def test_preflight_messages_do_not_include_full_workspace_context():
+    class Config:
+        current_directory = Path("repo").resolve()
+        context_root = Path("repo").resolve()
+        working_directory = Path("repo").resolve()
+
+    class ModelInput:
+        text_console_config = Config()
+        messages = []
+
+    root = Path(__file__).resolve().parents[1]
+    specs = smoke.load_action_specs(root)
+    messages = smoke.build_preflight_messages(
+        model_input=ModelInput(),
+        specs=specs,
+        request_text="Use Terminal to list files.",
+    )
+    joined = "\n".join(str(message.content) for message in messages)
+
+    assert "Available text-console action spec catalog" in joined
+    assert "Deterministic workspace context pack" not in joined
+    assert "Main computer file manifest" not in joined
+
+
+def test_preflight_booleans_are_diagnostic_selected_specs_are_authoritative():
+    payload = {
+        "needs_mount": False,
+        "needs_edit": False,
+        "needs_answer_only": True,
+        "selected_spec_ids": ["terminal"],
+        "reason": "selected the terminal spec but booleans drifted",
+    }
+
+    report = smoke.validate_preflight_payload(
+        payload,
+        available_spec_ids={"terminal", "repo_edit"},
+        expected_spec_ids=("terminal",),
+    )
+
+    assert report["ok"] is True
+    assert report["derived"]["needs_mount"] is True
+    assert report["boolean_notes"]

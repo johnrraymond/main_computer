@@ -58,6 +58,100 @@
       font-weight: 800;
       padding: 7px 10px;
     }
+
+    .worker-network-surface {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.85fr) minmax(320px, 1fr);
+      gap: 14px;
+      align-items: stretch;
+    }
+    .worker-network-tabs {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(120px, 1fr));
+      gap: 8px;
+      grid-column: 1 / -1;
+    }
+    .worker-network-tab {
+      display: grid;
+      gap: 4px;
+      border: 1px solid rgba(246, 199, 91, 0.34);
+      border-radius: 12px;
+      background:
+        linear-gradient(135deg, rgba(246, 199, 91, 0.11), rgba(115, 214, 255, 0.05)),
+        rgba(12, 12, 10, 0.96);
+      color: var(--ink);
+      padding: 11px 12px;
+      text-align: left;
+      cursor: pointer;
+    }
+    .worker-network-tab strong {
+      color: var(--gold);
+      font-size: 14px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .worker-network-tab span {
+      color: var(--muted);
+      font-weight: 800;
+      line-height: 1.25;
+    }
+    .worker-network-tab-none {
+      border-color: rgba(159, 166, 172, 0.34);
+      background: rgba(21, 22, 22, 0.92);
+    }
+    .worker-network-tab.is-selected {
+      border-color: rgba(167, 216, 109, 0.82);
+      box-shadow: 0 0 0 2px rgba(167, 216, 109, 0.16);
+    }
+    .worker-network-tab[aria-busy="true"] {
+      opacity: 0.74;
+      cursor: progress;
+    }
+    .worker-network-card,
+    .worker-fleet-card,
+    .worker-connect-order-card {
+      border-color: rgba(167, 216, 109, 0.28);
+      background:
+        linear-gradient(180deg, rgba(167, 216, 109, 0.055), transparent 150px),
+        rgba(17, 17, 14, 0.96);
+    }
+    .worker-network-status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+      gap: 9px;
+      margin: 0;
+    }
+    .worker-network-status-grid div {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+    }
+    .worker-network-status-grid dt {
+      color: var(--mint);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .worker-network-status-grid dd {
+      margin: 0;
+      color: var(--muted);
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+    .worker-connect-order-card label {
+      display: grid;
+      gap: 6px;
+      color: var(--ink);
+      font-weight: 800;
+    }
+    .worker-connect-order-card label span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
     .worker-workspace {
       grid-template-columns: minmax(230px, 0.8fr) minmax(360px, 1.35fr) minmax(280px, 1fr);
       gap: 14px;
@@ -370,7 +464,7 @@
     }
     .worker-shell {
       display: grid;
-      grid-template-rows: auto auto auto;
+      grid-template-rows: auto auto auto auto;
       gap: 14px;
       min-height: 0;
       height: auto;
@@ -670,6 +764,18 @@
       min-width: max-content;
     }
     @container (max-width: 1150px) {
+      .worker-network-surface {
+        grid-template-columns: 1fr;
+      }
+      .worker-network-tabs {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .worker-network-surface {
+        grid-template-columns: 1fr;
+      }
+      .worker-network-tabs {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
       .worker-workspace {
         grid-template-columns: 1fr;
         grid-template-areas:
@@ -709,6 +815,7 @@
     }
     @media (max-width: 760px) {
       .worker-hero,
+      .worker-network-tabs,
       .worker-market-tabs,
       .worker-buyer .worker-pane-head {
         grid-template-columns: 1fr;
@@ -720,6 +827,7 @@
       .worker-field-grid,
       .worker-radio-grid,
       .worker-check-grid,
+      .worker-network-status-grid,
       .worker-contract-summary dl div,
       .worker-registration-card dl div {
         grid-template-columns: 1fr;
