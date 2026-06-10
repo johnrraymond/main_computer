@@ -29,7 +29,7 @@ def _args(**overrides):
         "git_branch": "main",
         "git_commit_sha": "",
         "base_directory": "/",
-        "dockerfile_location": "/Dockerfile.hub",
+        "dockerfile_location": "",
         "health_path": "/api/hub/status",
         "github_app_uuid": "",
         "deploy_key_uuid": "",
@@ -69,7 +69,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(payload["git_repository"], "https://github.com/example/main_computer.git")
         self.assertEqual(payload["git_branch"], "main")
         self.assertEqual(payload["build_pack"], "dockerfile")
-        self.assertEqual(payload["dockerfile_location"], "/Dockerfile.hub")
+        self.assertEqual(payload["dockerfile_location"], "/Dockerfile.hub.mainnet")
         self.assertEqual(payload["ports_exposes"], "8790")
         self.assertEqual(payload["domains"], "https://mainnet.greatlibrary.io")
         self.assertNotIn("urls", payload)
@@ -79,6 +79,20 @@ class CoolifyHubServiceTests(unittest.TestCase):
         )
         self.assertTrue(payload["health_check_enabled"])
         self.assertEqual(payload["health_check_path"], "/api/hub/status")
+
+
+
+    def test_explicit_dockerfile_location_override_is_respected(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("testnet")
+        args = _args(dockerfile_location="/Dockerfile.hub")
+        payload = coolify_hub_service.application_payload(
+            profile,
+            args,
+            service_name="main-computer-testnet-hub",
+            runtime_dir="/data/main-computer/hub/testnet",
+        )
+
+        self.assertEqual(payload["dockerfile_location"], "/Dockerfile.hub")
 
     def test_update_payload_does_not_try_to_move_application_between_contexts(self) -> None:
         profile = coolify_hub_service.load_hub_network_registry().get("testnet")
@@ -129,6 +143,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(plan["volume_name"], "testnet_hub_state")
         self.assertEqual(plan["chain_id"], 42424241)
         self.assertEqual(plan["public_url"], "https://testnet.greatlibrary.io")
+        self.assertEqual(plan["application_payload"]["dockerfile_location"], "/Dockerfile.hub.testnet")
         self.assertNotIn("urls", plan["application_payload"])
 
     def test_resolve_server_infers_single_server_when_uuid_and_name_omitted(self) -> None:
@@ -190,6 +205,20 @@ class CoolifyHubServiceTests(unittest.TestCase):
 
         self.assertEqual(coolify_hub_service.rpc_check_mode(profile, args), "skip")
         self.assertEqual(coolify_hub_service.hub_health_check_mode(profile, args), "skip")
+
+
+    def test_network_dockerfiles_have_matching_safe_defaults_and_healthcheck_client(self) -> None:
+        testnet_dockerfile = (REPO_ROOT / "Dockerfile.hub.testnet").read_text(encoding="utf-8")
+        mainnet_dockerfile = (REPO_ROOT / "Dockerfile.hub.mainnet").read_text(encoding="utf-8")
+
+        self.assertIn("curl wget", testnet_dockerfile)
+        self.assertIn("--network\", \"testnet", testnet_dockerfile)
+        self.assertIn("--port\", \"8785", testnet_dockerfile)
+        self.assertIn("/data/main-computer/hub/testnet", testnet_dockerfile)
+        self.assertIn("curl wget", mainnet_dockerfile)
+        self.assertIn("--network\", \"mainnet", mainnet_dockerfile)
+        self.assertIn("--port\", \"8790", mainnet_dockerfile)
+        self.assertIn("/data/main-computer/hub/mainnet", mainnet_dockerfile)
 
 
 if __name__ == "__main__":
