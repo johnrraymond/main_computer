@@ -7,9 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from main_computer.local_platform_compose import (
+    LocalPlatformComposeError,
     compose_project_name,
     generated_compose_path,
     safe_image_slug,
+    site_compose_project_name,
+    site_generated_compose_path,
+    write_generated_site_compose,
     write_generated_websites_compose,
 )
 from main_computer.local_platform_registry import (
@@ -31,6 +35,18 @@ from main_computer.website_project_manifest import (
 
 
 DEFAULT_DOCKER_TIMEOUT_SECONDS = 90.0
+COMPOSE_SCOPE_AGGREGATE = "aggregate"
+COMPOSE_SCOPE_SITE = "site"
+COMPOSE_SCOPE_ALIASES = {
+    "": COMPOSE_SCOPE_AGGREGATE,
+    "aggregate": COMPOSE_SCOPE_AGGREGATE,
+    "all": COMPOSE_SCOPE_AGGREGATE,
+    "all-sites": COMPOSE_SCOPE_AGGREGATE,
+    "websites": COMPOSE_SCOPE_AGGREGATE,
+    "site": COMPOSE_SCOPE_SITE,
+    "per-site": COMPOSE_SCOPE_SITE,
+    "website": COMPOSE_SCOPE_SITE,
+}
 
 
 class WebsiteDockerLifecycleError(ValueError):
@@ -49,6 +65,7 @@ class WebsiteDockerPlan:
     status_url: str
     compose_path: Path
     compose_project: str
+    compose_scope: str
     command: list[str]
 
     def to_dict(self) -> dict[str, Any]:
@@ -63,18 +80,37 @@ class WebsiteDockerPlan:
             "status_url": self.status_url,
             "compose_path": str(self.compose_path),
             "compose_project": self.compose_project,
+            "compose_scope": self.compose_scope,
             "command": list(self.command),
         }
 
 
-def _docker_compose_base(repo_root: Path) -> list[str]:
+def normalize_compose_scope(value: object = COMPOSE_SCOPE_AGGREGATE) -> str:
+    scope = str(value or "").strip().lower()
+    normalized = COMPOSE_SCOPE_ALIASES.get(scope)
+    if normalized is None:
+        raise WebsiteDockerLifecycleError(
+            f"Unsupported website Docker compose scope: {value!r}. Use 'aggregate' or 'site'."
+        )
+    return normalized
+
+
+def _compose_path_and_project(repo_root: Path, site_id: str, compose_scope: str) -> tuple[Path, str]:
+    scope = normalize_compose_scope(compose_scope)
+    if scope == COMPOSE_SCOPE_SITE:
+        return site_generated_compose_path(repo_root, site_id), site_compose_project_name(site_id)
+    return generated_compose_path(repo_root), compose_project_name()
+
+
+def _docker_compose_base(repo_root: Path, site_id: str, compose_scope: str) -> list[str]:
+    compose_path, project_name = _compose_path_and_project(repo_root, site_id, compose_scope)
     return [
         "docker",
         "compose",
         "-p",
-        compose_project_name(),
+        project_name,
         "-f",
-        str(generated_compose_path(repo_root)),
+        str(compose_path),
     ]
 
 
@@ -83,9 +119,11 @@ def _docker_command_for_action(
     action: str,
     service: str,
     *,
+    site_id: str,
+    compose_scope: str = COMPOSE_SCOPE_AGGREGATE,
     tail: int = 200,
 ) -> list[str]:
-    base = _docker_compose_base(repo_root)
+    base = _docker_compose_base(repo_root, site_id, compose_scope)
     if action in {"start", "publish"}:
         return [*base, "up", "-d", "--build", service]
     if action == "stop":
@@ -101,6 +139,7 @@ def lifecycle_plan(
     *,
     lane: object = "prod",
     action: str = "publish",
+    compose_scope: object = COMPOSE_SCOPE_AGGREGATE,
     tail: int = 200,
 ) -> WebsiteDockerPlan:
     action_name = str(action or "").strip().lower()
@@ -109,14 +148,23 @@ def lifecycle_plan(
 
     registry = load_local_platform_registry(repo_root)
     clean_site_id = str(site_id or "").strip().lower()
+    clean_compose_scope = normalize_compose_scope(compose_scope)
     try:
         registry_lane = normalize_registry_lane(lane)
         lane_data = registry.resolve(clean_site_id, registry_lane)
-    except LocalPlatformRegistryError as exc:
+        compose_path, compose_project = _compose_path_and_project(repo_root, clean_site_id, clean_compose_scope)
+    except (LocalPlatformRegistryError, LocalPlatformComposeError) as exc:
         raise WebsiteDockerLifecycleError(str(exc)) from exc
 
     publish_lane = registry_lane_to_publish_lane(registry_lane)
-    command = _docker_command_for_action(repo_root, action_name, lane_data.service, tail=tail)
+    command = _docker_command_for_action(
+        repo_root,
+        action_name,
+        lane_data.service,
+        site_id=clean_site_id,
+        compose_scope=clean_compose_scope,
+        tail=tail,
+    )
     return WebsiteDockerPlan(
         action=action_name,
         site_id=clean_site_id,
@@ -126,8 +174,9 @@ def lifecycle_plan(
         port=lane_data.port,
         url=lane_data.url,
         status_url=lane_data.status_url,
-        compose_path=generated_compose_path(repo_root),
-        compose_project=compose_project_name(),
+        compose_path=compose_path,
+        compose_project=compose_project,
+        compose_scope=clean_compose_scope,
         command=command,
     )
 
@@ -163,7 +212,12 @@ def _site_registry_entry(repo_root: Path, registry: LocalPlatformRegistry, site_
     }
 
 
-def install_site(repo_root: Path, site_id: object) -> dict[str, Any]:
+def install_site(
+    repo_root: Path,
+    site_id: object,
+    *,
+    compose_scope: object = COMPOSE_SCOPE_AGGREGATE,
+) -> dict[str, Any]:
     """Ensure a website is registered for local Docker lanes and regenerate Compose."""
 
     ensure_default_website_projects(repo_root)
@@ -171,6 +225,7 @@ def install_site(repo_root: Path, site_id: object) -> dict[str, Any]:
     if not clean_site_id:
         raise WebsiteDockerLifecycleError("site_id is required.")
 
+    clean_compose_scope = normalize_compose_scope(compose_scope)
     registry = load_local_platform_registry(repo_root)
     registered = False
     if clean_site_id not in registry.sites:
@@ -179,7 +234,10 @@ def install_site(repo_root: Path, site_id: object) -> dict[str, Any]:
         registry = save_local_platform_registry(repo_root, data)
         registered = True
 
-    compose_result = write_generated_websites_compose(repo_root, registry)
+    if clean_compose_scope == COMPOSE_SCOPE_SITE:
+        compose_result = write_generated_site_compose(repo_root, clean_site_id, registry)
+    else:
+        compose_result = write_generated_websites_compose(repo_root, registry)
     site = registry.sites[clean_site_id]
     lanes = {lane_name: lane.to_dict() for lane_name, lane in sorted(site.lanes.items())}
     return {
@@ -189,11 +247,20 @@ def install_site(repo_root: Path, site_id: object) -> dict[str, Any]:
         "registered": registered,
         "site": site.to_dict(),
         "lanes": lanes,
+        "compose_scope": clean_compose_scope,
         "generated_compose": compose_result,
     }
 
 
-def _ensure_generated_compose(repo_root: Path) -> dict[str, Any]:
+def _ensure_generated_compose(
+    repo_root: Path,
+    site_id: object,
+    *,
+    compose_scope: object = COMPOSE_SCOPE_AGGREGATE,
+) -> dict[str, Any]:
+    clean_compose_scope = normalize_compose_scope(compose_scope)
+    if clean_compose_scope == COMPOSE_SCOPE_SITE:
+        return write_generated_site_compose(repo_root, site_id)
     return write_generated_websites_compose(repo_root)
 
 
@@ -213,9 +280,10 @@ def verify_site(
     site_id: object,
     *,
     lane: object = "prod",
+    compose_scope: object = COMPOSE_SCOPE_AGGREGATE,
     timeout_s: float = 30.0,
 ) -> dict[str, Any]:
-    plan = lifecycle_plan(repo_root, site_id, lane=lane, action="verify")
+    plan = lifecycle_plan(repo_root, site_id, lane=lane, action="verify", compose_scope=compose_scope)
     verify_result = _wait_for_status_url(plan.status_url, max(1.0, timeout_s))
     return {
         "ok": bool(verify_result.get("ok")),
@@ -230,6 +298,26 @@ def verify_site(
     }
 
 
+def _planned_compose_path_for_install(
+    repo_root: Path,
+    clean_site_id: str,
+    registry: LocalPlatformRegistry,
+    compose_scope: str,
+) -> Path:
+    if compose_scope == COMPOSE_SCOPE_SITE:
+        if clean_site_id in registry.sites:
+            return site_generated_compose_path(repo_root, clean_site_id, registry)
+        project = load_website_project(repo_root, clean_site_id)
+        return project.path / ".main-computer" / "local-platform" / "docker-compose.yml"
+    return generated_compose_path(repo_root)
+
+
+def _planned_compose_project_for_install(clean_site_id: str, compose_scope: str) -> str:
+    if compose_scope == COMPOSE_SCOPE_SITE:
+        return site_compose_project_name(clean_site_id)
+    return compose_project_name()
+
+
 def website_docker_action(
     repo_root: Path,
     action: str,
@@ -238,10 +326,12 @@ def website_docker_action(
     lane: object = "prod",
     dry_run: bool = False,
     verify: bool = True,
+    compose_scope: object = COMPOSE_SCOPE_AGGREGATE,
     tail: int = 200,
     timeout_s: float = DEFAULT_DOCKER_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     action_name = str(action or "").strip().lower()
+    clean_compose_scope = normalize_compose_scope(compose_scope)
     if action_name == "install":
         if dry_run:
             ensure_default_website_projects(repo_root)
@@ -254,25 +344,40 @@ def website_docker_action(
                 "dry_run": True,
                 "site_id": clean_site_id,
                 "would_register": would_register,
-                "compose_path": str(generated_compose_path(repo_root)),
+                "compose_scope": clean_compose_scope,
+                "compose_path": str(_planned_compose_path_for_install(repo_root, clean_site_id, registry, clean_compose_scope)),
+                "compose_project": _planned_compose_project_for_install(clean_site_id, clean_compose_scope),
             }
-        result = install_site(repo_root, site_id)
+        result = install_site(repo_root, site_id, compose_scope=clean_compose_scope)
         result["dry_run"] = False
         return result
 
     if action_name == "verify":
         if dry_run:
-            plan = lifecycle_plan(repo_root, site_id, lane=lane, action="verify")
+            plan = lifecycle_plan(repo_root, site_id, lane=lane, action="verify", compose_scope=clean_compose_scope)
             return {"ok": True, "action": "verify", "dry_run": True, "plan": plan.to_dict(), "verified": False}
-        result = verify_site(repo_root, site_id, lane=lane, timeout_s=min(timeout_s, 30.0))
+        result = verify_site(
+            repo_root,
+            site_id,
+            lane=lane,
+            compose_scope=clean_compose_scope,
+            timeout_s=min(timeout_s, 30.0),
+        )
         result["dry_run"] = False
         return result
 
     if action_name not in {"start", "stop", "publish", "logs"}:
         raise WebsiteDockerLifecycleError(f"Unsupported website Docker action: {action!r}")
 
-    _ensure_generated_compose(repo_root)
-    plan = lifecycle_plan(repo_root, site_id, lane=lane, action=action_name, tail=tail)
+    _ensure_generated_compose(repo_root, site_id, compose_scope=clean_compose_scope)
+    plan = lifecycle_plan(
+        repo_root,
+        site_id,
+        lane=lane,
+        action=action_name,
+        compose_scope=clean_compose_scope,
+        tail=tail,
+    )
     if dry_run:
         return {
             "ok": True,
@@ -336,6 +441,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo-root", default=".", help="Repository root. Defaults to current directory.")
     parser.add_argument("--dry-run", action="store_true", help="Print the lifecycle plan without running Docker.")
     parser.add_argument("--no-verify", action="store_true", help="Do not probe the status URL after publish.")
+    parser.add_argument(
+        "--compose-scope",
+        default=COMPOSE_SCOPE_AGGREGATE,
+        choices=[COMPOSE_SCOPE_AGGREGATE, COMPOSE_SCOPE_SITE],
+        help="Compose file scope to use. Defaults to the legacy aggregate all-websites file.",
+    )
     parser.add_argument("--tail", type=int, default=200, help="Number of log lines for logs action.")
     parser.add_argument("--timeout", type=float, default=DEFAULT_DOCKER_TIMEOUT_SECONDS, help="Docker command timeout in seconds.")
     args = parser.parse_args(argv)
@@ -349,10 +460,11 @@ def main(argv: list[str] | None = None) -> int:
             lane=args.lane,
             dry_run=args.dry_run,
             verify=not args.no_verify,
+            compose_scope=args.compose_scope,
             tail=args.tail,
             timeout_s=args.timeout,
         )
-    except (WebsiteDockerLifecycleError, WebsiteProjectError, LocalPlatformRegistryError) as exc:
+    except (WebsiteDockerLifecycleError, WebsiteProjectError, LocalPlatformRegistryError, LocalPlatformComposeError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
         return 2
     print(json.dumps(result, indent=2, sort_keys=True))

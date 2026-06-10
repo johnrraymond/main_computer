@@ -310,6 +310,14 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "workerBuildConnectOrderMessage" in js
     assert "workerSelectedWalletChainIdHex" in js
     assert "workerSelectedWalletRpcUrl" in js
+    assert "workerNetworkWalletConnectedToSelected" in js
+    assert "workerSelectNetworkAndConnectWallet" in js
+    assert "workerDisconnectSelectedNetworkAndWallet" in js
+    assert "Wallet required" in js
+    assert "Connect your wallet to ${workerNetworkDisplayName(selected)} before accepting jobs." in js
+    assert "workerNetworkConnectWallet.textContent = walletConnectedToSelected" in js
+    assert "workerNetworkSignOrder.disabled = !workerNetworkCanSign()" in js
+    assert "workerNetworkWalletConnectedToSelected()" in js
 
     assert '"/api/applications/worker/network-session"' in dispatch
     assert "self._handle_worker_network_session_load()" in dispatch
@@ -324,6 +332,14 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert '"mainnet", "testnet", "test", "dev"' in energy_routes
     assert '"selectedNetwork": selected_network' in energy_routes
     assert '"workerRequestedRing": requested_ring' in energy_routes
+
+    # Cloudflare rejects bare Python urllib requests to the public Hub with 403/1010.
+    # Worker Hub probes must send an explicit worker User-Agent and JSON Accept header.
+    assert "def _hub_json_request_headers" in energy_routes
+    assert '"User-Agent": "MainComputerWorker/0.1"' in energy_routes
+    assert '"Accept": "application/json"' in energy_routes
+    assert 'headers=self._hub_json_request_headers()' in energy_routes
+    assert 'urlopen(self._clean_hub_url(hub_url) + "/api/hub/status"' not in energy_routes
 
 
 def test_worker_wallet_connect_and_disconnect_use_always_disconnect_cycle() -> None:

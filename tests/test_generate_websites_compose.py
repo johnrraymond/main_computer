@@ -16,6 +16,7 @@ from main_computer.local_platform_compose import (
     image_name_for_site_lane,
     render_generated_site_compose,
     render_generated_websites_compose,
+    site_compose_project_name,
     site_generated_compose_path,
     site_generated_compose_relative_path,
     write_generated_site_compose,
@@ -133,6 +134,8 @@ def test_generated_site_compose_scopes_to_one_site_and_uses_site_relative_paths(
 
     text = render_generated_site_compose(tmp_path, "portfolio")
 
+    assert 'name: "main-computer-website-portfolio"' in text
+    assert site_compose_project_name("Portfolio!!") == "main-computer-website-portfolio"
     assert "portfolio-prod:" in text
     assert "portfolio-dev:" in text
     assert "greatlibrary-prod:" not in text
@@ -163,6 +166,7 @@ def test_write_generated_site_compose_writes_selected_site_only(tmp_path: Path) 
     assert result["repo_relative_path"] == "runtime/websites/portfolio/.main-computer/local-platform/docker-compose.yml"
     assert result["service_count"] == 2
     assert result["services"] == ["portfolio-prod", "portfolio-dev"]
+    assert 'name: "main-computer-website-portfolio"' in text
     assert "portfolio-prod:" in text
     assert "portfolio-dev:" in text
     assert "hub-local:" not in text
