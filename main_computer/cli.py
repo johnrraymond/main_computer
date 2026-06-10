@@ -21,6 +21,7 @@ from main_computer.hub_networks import (
     env_hub_host_override,
     env_hub_network_name,
     env_hub_port_override,
+    env_hub_public_url_override,
     env_hub_runtime_dir_override,
     load_hub_network_registry,
     resolve_profile_runtime_defaults,
@@ -141,15 +142,17 @@ def _config_from_args(args: argparse.Namespace) -> MainComputerConfig:
         env_chain_id = base.energy_chain_id
 
     profile = profile.with_overrides(
-        hub_host=env_hub_host_override(),
-        hub_port=env_hub_port_override(),
+        hub_bind_host=env_hub_host_override(),
+        hub_bind_port=env_hub_port_override(),
+        hub_public_url=env_hub_public_url_override(),
         hub_runtime_dir=env_runtime_dir,
         chain_rpc_url=env_chain_rpc_url,
         chain_id=env_chain_id if env_chain_id is not None else profile.chain_id,
     )
     profile = profile.with_overrides(
-        hub_host=getattr(args, "host", None),
-        hub_port=getattr(args, "port", None),
+        hub_bind_host=getattr(args, "host", None),
+        hub_bind_port=getattr(args, "port", None),
+        hub_public_url=getattr(args, "hub_url", None),
         hub_runtime_dir=getattr(args, "hub_runtime_dir", None) or getattr(args, "hub_root", None),
         chain_rpc_url=getattr(args, "chain_rpc_url", None),
         chain_id=getattr(args, "chain_id", None) if getattr(args, "chain_id", None) is not None else profile.chain_id,
@@ -164,10 +167,10 @@ def _config_from_args(args: argparse.Namespace) -> MainComputerConfig:
         hub_network_display_name=profile.display_name,
         hub_network_kind=profile.kind,
         hub_network_config_path=registry.source_path,
-        hub_bind_host=profile.hub_host,
-        hub_bind_port=profile.hub_port,
+        hub_bind_host=profile.hub_bind_host,
+        hub_bind_port=profile.hub_bind_port,
         hub_root=profile.hub_runtime_dir,
-        hub_url=getattr(args, "hub_url", None) or f"http://{profile.hub_host}:{profile.hub_port}",
+        hub_url=profile.hub_url,
         energy_chain_rpc_url=profile.chain_rpc_url,
         energy_chain_id=profile.chain_id,
         energy_chain_rpc_url_source=source,

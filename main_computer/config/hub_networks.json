@@ -1,70 +1,50 @@
 {
-  "version": 1,
-  "default_network": "dev",
+  "version": 2,
+  "default_network": "mainnet",
   "networks": {
     "dev": {
-      "network_key": "dev",
-      "display_name": "Main Computer Local Devnet",
+      "display_name": "Main Computer Local Dev",
       "kind": "dev",
       "chain_id": 42424242,
       "chain_rpc_url": "http://127.0.0.1:18545",
-      "hub_host": "127.0.0.1",
-      "hub_port": 8770,
+      "hub_bind_host": "127.0.0.1",
+      "hub_bind_port": 8770,
+      "hub_public_url": "http://127.0.0.1:8770",
       "hub_runtime_dir": "runtime/hub/dev",
-      "native_currency": {
-        "name": "Main Computer Dev Coin",
-        "symbol": "MCD",
-        "decimals": 18
-      },
-      "contracts": {}
+      "deployment_manifest_path": "runtime/deployments/dev/latest.json"
     },
     "test": {
-      "network_key": "test",
-      "display_name": "Main Computer Local QBFT Testnet",
-      "kind": "testnet",
+      "display_name": "Main Computer Local QBFT Test",
+      "kind": "test",
       "chain_id": 42424241,
       "chain_rpc_url": "http://127.0.0.1:30010",
-      "hub_host": "127.0.0.1",
-      "hub_port": 8780,
+      "hub_bind_host": "127.0.0.1",
+      "hub_bind_port": 8780,
+      "hub_public_url": "http://127.0.0.1:8780",
       "hub_runtime_dir": "runtime/hub/test",
-      "native_currency": {
-        "name": "Main Computer Test Coin",
-        "symbol": "MCT",
-        "decimals": 18
-      },
-      "contracts": {}
+      "deployment_manifest_path": "runtime/deployments/test/latest.json"
     },
     "testnet": {
-      "network_key": "testnet",
-      "display_name": "Main Computer Coolify Testnet",
+      "display_name": "Main Computer Testnet",
       "kind": "testnet",
       "chain_id": 42424241,
-      "chain_rpc_url": null,
-      "hub_host": "127.0.0.1",
-      "hub_port": 8785,
+      "chain_rpc_url": "http://testnet-rpc.greatlibrary.io:30010",
+      "hub_bind_host": "0.0.0.0",
+      "hub_bind_port": 8785,
+      "hub_public_url": "https://testnet.greatlibrary.io",
       "hub_runtime_dir": "runtime/hub/testnet",
-      "native_currency": {
-        "name": "Main Computer Test Coin",
-        "symbol": "MCT",
-        "decimals": 18
-      },
-      "contracts": {}
+      "deployment_manifest_path": "runtime/deployments/testnet/latest.json"
     },
     "mainnet": {
-      "network_key": "mainnet",
       "display_name": "Main Computer Mainnet",
       "kind": "mainnet",
-      "chain_id": null,
-      "chain_rpc_url": null,
-      "hub_host": "127.0.0.1",
-      "hub_port": 8790,
+      "chain_id": 42424240,
+      "chain_rpc_url": "http://mainnet-rpc.greatlibrary.io:31010",
+      "hub_bind_host": "0.0.0.0",
+      "hub_bind_port": 8790,
+      "hub_public_url": "https://mainnet.greatlibrary.io",
       "hub_runtime_dir": "runtime/hub/mainnet",
-      "native_currency": {
-        "name": "Main Computer",
-        "symbol": "MC",
-        "decimals": 18
-      },
-      "contracts": {}
+      "deployment_manifest_path": "runtime/deployments/mainnet/latest.json"
     }
   }
 }
