@@ -9,14 +9,19 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_start_and_stop_bats_use_source_tree_runtime_session() -> None:
     start_script = (ROOT / "start.bat").read_text(encoding="utf-8")
     stop_script = (ROOT / "stop.bat").read_text(encoding="utf-8")
+    start_v2_script = (ROOT / "start_v2.bat").read_text(encoding="utf-8")
+    stop_v2_script = (ROOT / "stop_v2.bat").read_text(encoding="utf-8")
 
-    assert "scripts\\main-computer-start-stop.ps1" in start_script
-    assert "-Action start -Root" in start_script
+    assert 'call "%~dp0start_v2.bat" %*' in start_script
+    assert "scripts\\main-computer-start-stop.ps1" in start_v2_script
+    assert "-Action start -Root" in start_v2_script
     assert "run-main-computer.ps1" not in start_script
+    assert "run-main-computer.ps1" not in start_v2_script
 
-    assert "runtime\\start_stop\\start-session.json" in stop_script
-    assert "-Action stop -Root" in stop_script
+    assert 'call "%~dp0stop_v2.bat" %*' in stop_script
+    assert "-Action stop -Root" in stop_v2_script
     assert "run-main-computer.ps1" not in stop_script
+    assert "run-main-computer.ps1" not in stop_v2_script
 
 
 def test_start_stop_helper_stops_children_before_supervisor_and_verifies_taskkill_result() -> None:
@@ -153,4 +158,7 @@ def test_v2_local_platform_publish_failure_warns_and_allows_supervisor_start() -
     assert 'state = "exception"' in helper
     assert 'if (-not $localPlatformStart.ok) {\n    Write-MainComputerLocalPlatformWarning $localPlatformStart\n  }' in helper
     assert 'throw ("Local platform startup failed: {0}" -f $localPlatformStart.state)' not in helper
-    assert '$process = Start-Process `' in helper
+    assert '$process = Start-HiddenMainComputerSupervisorProcess `' in helper
+    assert "CreateNoWindow = $true" in helper
+    assert "main_computer_hidden_launcher.py" in helper
+    assert "main_computer-service-supervisor-" in helper

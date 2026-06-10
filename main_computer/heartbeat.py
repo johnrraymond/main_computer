@@ -143,7 +143,7 @@ def _launch_detached(command: list[str], *, cwd: Path, stdout_path: Path | None 
     else:
         kwargs["stderr"] = subprocess.DEVNULL
     if sys.platform == "win32":
-        flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         kwargs["creationflags"] = flags
     else:
         kwargs["start_new_session"] = True
