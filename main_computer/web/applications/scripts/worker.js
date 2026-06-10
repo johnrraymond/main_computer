@@ -2757,9 +2757,25 @@
       return WORKER_RING_LABELS[String(ring || "2")] || WORKER_RING_LABELS["2"];
     }
 
+    function workerNetworkWalletConnectedToSelected() {
+      const selected = workerNetworkKey(workerNetworkSession.selected_network);
+      if (selected === WORKER_NETWORK_NONE) return false;
+      loadWorkerBridgeState();
+      const wallet = workerBridgeState.wallet || {};
+      const walletAddress = String(wallet.address || "");
+      const walletChainId = workerNormalizeChainIdHex(wallet.chainId || "");
+      return (
+        Boolean(wallet.connected)
+        && workerWalletValidAddress(walletAddress)
+        && walletChainId === workerSelectedWalletChainIdHex()
+      );
+    }
+
     function workerNetworkStatusLabel(status = workerNetworkSession.connection_status) {
       const normalized = String(status || "disconnected");
-      if (normalized === "connected") return "Connected";
+      if (normalized === "connected") {
+        return workerNetworkWalletConnectedToSelected() ? "Wallet connected" : "Wallet required";
+      }
       if (normalized === "connecting") return "Connecting";
       if (normalized === "failed") return "Connection failed";
       if (normalized === "stale") return "Reconnect required";
@@ -2783,6 +2799,7 @@
         selected !== WORKER_NETWORK_NONE
         && workerNetworkSession.connection_status === "connected"
         && workerWalletValidAddress(walletAddress)
+        && workerNetworkWalletConnectedToSelected()
         && !workerNetworkSignatureInFlight
       );
     }
@@ -2841,11 +2858,13 @@
       const profile = workerNetworkSession.profile || workerNetworkProfile(selected);
       const signed = workerNetworkSignedConnection();
       const walletAddress = workerNetworkWalletAddress();
-      const connected = workerNetworkSession.connection_status === "connected";
+      const hubConnected = workerNetworkSession.connection_status === "connected";
+      const walletConnectedToSelected = workerNetworkWalletConnectedToSelected();
       const signedForSelected = (
         signed.network === selected
         && String(signed.requested_ring || "") === String(workerNetworkSession.requested_ring || "")
         && workerWalletValidAddress(signed.wallet_address || "")
+        && walletConnectedToSelected
       );
 
       workerNetworkTabs.forEach((tab) => {
@@ -2872,13 +2891,17 @@
       workerNetworkSetText(workerNetworkRequestedRing, workerRingLabel(workerNetworkSession.requested_ring));
       workerNetworkSetText(workerNetworkAssignedRing, signedForSelected ? workerRingLabel(signed.requested_ring) : "—");
       workerNetworkSetText(workerNetworkSignatureStatus, signedForSelected ? "Signed locally; Hub registration can use this order." : "Not signed");
-      workerNetworkSetText(workerNetworkRuntime, signedForSelected && connected ? "Ready for activation" : "Inactive");
+      workerNetworkSetText(workerNetworkRuntime, signedForSelected && hubConnected && walletConnectedToSelected ? "Ready for activation" : "Inactive");
 
       if (workerNetworkHelp) {
         if (selected === WORKER_NETWORK_NONE) {
           workerNetworkHelp.textContent = "No active worker network selected. Select Mainnet, Testnet, Test, or Dev to connect.";
-        } else if (connected) {
-          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} is connected. Choose a ring and sign the connect order before accepting jobs.`;
+        } else if (hubConnected && !walletConnectedToSelected) {
+          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} Hub is reachable. Connect your wallet to ${workerNetworkDisplayName(selected)} before accepting jobs.`;
+        } else if (hubConnected && walletConnectedToSelected && !signedForSelected) {
+          workerNetworkHelp.textContent = `Wallet is connected to ${workerNetworkDisplayName(selected)}. Choose a ring and sign the connect order before accepting jobs.`;
+        } else if (hubConnected && signedForSelected) {
+          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} wallet and connect order are ready. Activate the worker before accepting jobs.`;
         } else if (workerNetworkSession.connection_status === "failed") {
           workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} is selected, but the Hub is unreachable: ${workerNetworkSession.connection_error || "connection failed"}`;
         } else {
@@ -2894,11 +2917,13 @@
       };
       WORKER_NETWORK_ORDER.forEach((key) => {
         const state = selected === key
-          ? signedForSelected && connected
+          ? signedForSelected && hubConnected && walletConnectedToSelected
             ? "Ready / selected"
-            : connected
+            : hubConnected && walletConnectedToSelected
               ? "Selected / needs signature"
-              : "Selected / not connected"
+              : hubConnected
+                ? "Selected / wallet required"
+                : "Selected / not connected"
           : "Standby";
         workerNetworkSetText(fleet[key], state);
       });
@@ -2912,8 +2937,12 @@
         workerNetworkDisconnect.disabled = workerNetworkSessionInFlight && selected === WORKER_NETWORK_NONE;
       }
       if (workerNetworkConnectWallet) {
-        workerNetworkConnectWallet.disabled = workerWalletHookState !== "idle" || Boolean(walletAddress) || selected === WORKER_NETWORK_NONE;
-        workerNetworkConnectWallet.textContent = walletAddress ? "Wallet Connected" : "Connect Wallet";
+        workerNetworkConnectWallet.disabled = workerWalletHookState !== "idle" || selected === WORKER_NETWORK_NONE;
+        workerNetworkConnectWallet.textContent = walletConnectedToSelected
+          ? "Wallet Connected"
+          : walletAddress
+            ? "Switch Wallet Network"
+            : "Connect Wallet";
       }
       if (workerNetworkSignOrder) {
         workerNetworkSignOrder.disabled = !workerNetworkCanSign();
@@ -2957,7 +2986,9 @@
         if (workerSaveStatus) {
           workerSaveStatus.textContent = selected === WORKER_NETWORK_NONE
             ? "Worker network fully disconnected."
-            : `${workerNetworkDisplayName(selected)} ${workerNetworkSession.connection_status === "connected" ? "connected" : "selected but not reachable"}.`;
+            : workerNetworkSession.connection_status === "connected"
+              ? `${workerNetworkDisplayName(selected)} Hub is reachable. Connect your wallet to finish the worker connection.`
+              : `${workerNetworkDisplayName(selected)} selected but not reachable.`;
         }
       } catch (error) {
         workerNetworkSession = {
@@ -2973,6 +3004,36 @@
         workerNetworkSessionInFlight = false;
         renderWorkerNetworkSurface();
       }
+    }
+
+    async function workerSelectNetworkAndConnectWallet(event, network, {requestedRing = null} = {}) {
+      const selected = workerNetworkKey(network);
+      await workerSelectNetwork(selected, {requestedRing});
+      if (selected === WORKER_NETWORK_NONE) {
+        await workerDisconnectSelectedNetworkAndWallet(event);
+        return;
+      }
+      if (workerNetworkSession.connection_status !== "connected") {
+        return;
+      }
+      if (workerNetworkWalletConnectedToSelected()) {
+        renderWorkerNetworkSurface();
+        return;
+      }
+      await connectWorkerPrimaryWallet(event);
+    }
+
+    async function workerDisconnectSelectedNetworkAndWallet(event) {
+      await workerSelectNetwork(WORKER_NETWORK_NONE);
+      loadWorkerBridgeState();
+      if (
+        workerBridgeState.wallet?.connected
+        || workerWalletBrowserProvider
+        || workerWalletSelectedProvider
+      ) {
+        await disconnectWorkerPrimaryWallet(event);
+      }
+      renderWorkerNetworkSurface();
     }
 
     function workerBuildConnectOrderMessage() {
@@ -3532,20 +3593,30 @@
       workerNetworkTabs.forEach((tab) => {
         if (tab.dataset.workerBound) return;
         tab.dataset.workerBound = "true";
-        tab.addEventListener("click", () => {
-          workerSelectNetwork(tab.getAttribute("data-worker-network") || WORKER_NETWORK_NONE);
+        tab.addEventListener("click", (event) => {
+          const network = tab.getAttribute("data-worker-network") || WORKER_NETWORK_NONE;
+          if (workerNetworkKey(network) === WORKER_NETWORK_NONE) {
+            workerDisconnectSelectedNetworkAndWallet(event);
+          } else {
+            workerSelectNetworkAndConnectWallet(event, network);
+          }
         });
       });
       if (workerNetworkRetry && !workerNetworkRetry.dataset.workerBound) {
         workerNetworkRetry.dataset.workerBound = "true";
-        workerNetworkRetry.addEventListener("click", () => {
-          workerSelectNetwork(workerNetworkSession.selected_network || WORKER_NETWORK_NONE);
+        workerNetworkRetry.addEventListener("click", (event) => {
+          const selected = workerNetworkSession.selected_network || WORKER_NETWORK_NONE;
+          if (workerNetworkKey(selected) === WORKER_NETWORK_NONE) {
+            workerDisconnectSelectedNetworkAndWallet(event);
+          } else {
+            workerSelectNetworkAndConnectWallet(event, selected);
+          }
         });
       }
       if (workerNetworkDisconnect && !workerNetworkDisconnect.dataset.workerBound) {
         workerNetworkDisconnect.dataset.workerBound = "true";
-        workerNetworkDisconnect.addEventListener("click", () => {
-          workerSelectNetwork(WORKER_NETWORK_NONE);
+        workerNetworkDisconnect.addEventListener("click", (event) => {
+          workerDisconnectSelectedNetworkAndWallet(event);
         });
       }
       if (workerNetworkRing && !workerNetworkRing.dataset.workerBound) {

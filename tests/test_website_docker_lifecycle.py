@@ -25,13 +25,13 @@ def test_lifecycle_plan_uses_generated_compose_and_registry_aliases(tmp_path: Pa
     assert plan.registry_lane == "prod"
     assert plan.service == "hub-local"
     assert plan.port == 18080
-    assert plan.url == "http://0.0.0.0:18080/"
+    assert plan.url == "http://localhost:18080/"
     assert plan.compose_path == tmp_path / "deploy" / "local-platform" / "generated" / "docker-compose.websites.yml"
     assert plan.command == [
         "docker",
         "compose",
         "-p",
-        "main-computer-local-platform",
+        "main-computer-local-platform-unleashed",
         "-f",
         str(plan.compose_path),
         "up",
@@ -70,7 +70,56 @@ def test_start_dry_run_returns_docker_command_without_running_docker(tmp_path: P
     assert result["ok"] is True
     assert result["dry_run"] is True
     assert result["plan"]["service"] == "hub-dev"
+    assert result["plan"]["compose_scope"] == "aggregate"
     assert result["plan"]["command"][-4:] == ["up", "-d", "--build", "hub-dev"]
+
+
+def test_lifecycle_plan_can_opt_into_site_scoped_compose(tmp_path: Path) -> None:
+    list_website_projects(tmp_path)
+
+    plan = lifecycle_plan(tmp_path, "hub-site", lane="dev", action="start", compose_scope="site")
+
+    assert plan.compose_scope == "site"
+    assert plan.compose_project == "main-computer-website-hub-site"
+    assert plan.compose_path == (
+        tmp_path / "runtime" / "websites" / "hub-site" / ".main-computer" / "local-platform" / "docker-compose.yml"
+    )
+    assert plan.command == [
+        "docker",
+        "compose",
+        "-p",
+        "main-computer-website-hub-site",
+        "-f",
+        str(plan.compose_path),
+        "up",
+        "-d",
+        "--build",
+        "hub-dev",
+    ]
+
+
+def test_site_scoped_start_dry_run_writes_only_selected_site_compose(tmp_path: Path) -> None:
+    list_website_projects(tmp_path)
+
+    result = website_docker_action(tmp_path, "start", "hub-site", lane="dev", dry_run=True, compose_scope="site")
+
+    site_compose_path = tmp_path / "runtime" / "websites" / "hub-site" / ".main-computer" / "local-platform" / "docker-compose.yml"
+    aggregate_compose_path = tmp_path / "deploy" / "local-platform" / "generated" / "docker-compose.websites.yml"
+    site_text = site_compose_path.read_text(encoding="utf-8")
+
+    assert result["ok"] is True
+    assert result["dry_run"] is True
+    assert result["plan"]["compose_scope"] == "site"
+    assert result["plan"]["compose_project"] == "main-computer-website-hub-site"
+    assert result["plan"]["compose_path"] == str(site_compose_path)
+    assert result["plan"]["command"][3] == "main-computer-website-hub-site"
+    assert result["plan"]["command"][5] == str(site_compose_path)
+    assert 'name: "main-computer-website-hub-site"' in site_text
+    assert "hub-local:" in site_text
+    assert "hub-dev:" in site_text
+    assert "blog-local:" not in site_text
+    assert "blog-dev:" not in site_text
+    assert not aggregate_compose_path.exists()
 
 
 def test_publish_runs_generated_compose_verifies_and_marks_manifest(tmp_path: Path, monkeypatch) -> None:
@@ -105,7 +154,7 @@ def test_publish_runs_generated_compose_verifies_and_marks_manifest(tmp_path: Pa
     manifest = json.loads((tmp_path / "runtime" / "websites" / "hub-site" / "site.json").read_text(encoding="utf-8"))
     assert manifest["local_platform"]["lanes"]["dev"]["last_publish_verified"] is True
     assert manifest["local_platform"]["lanes"]["dev"]["last_published_service"] == "hub-dev"
-    assert manifest["local_platform"]["lanes"]["dev"]["last_published_url"] == "http://0.0.0.0:18082/"
+    assert manifest["local_platform"]["lanes"]["dev"]["last_published_url"] == "http://localhost:18082/"
 
 
 def test_stop_and_logs_dry_runs_target_only_selected_service(tmp_path: Path) -> None:
@@ -124,7 +173,7 @@ def test_verify_uses_status_url_without_docker(tmp_path: Path, monkeypatch) -> N
     list_website_projects(tmp_path)
 
     def fake_wait(url: str, timeout_s: float):
-        assert url == "http://0.0.0.0:18082/api/site/status"
+        assert url == "http://localhost:18082/api/site/status"
         return {
             "ok": True,
             "status": 200,
@@ -169,3 +218,40 @@ def test_website_docker_cli_dry_run_outputs_json(tmp_path: Path) -> None:
     assert payload["ok"] is True
     assert payload["plan"]["service"] == "hub-dev"
     assert payload["plan"]["command"][-1] == "hub-dev"
+
+
+def test_website_docker_cli_site_scope_dry_run_outputs_site_compose_plan(tmp_path: Path) -> None:
+    list_website_projects(tmp_path)
+    script = Path("tools") / "local-platform" / "website-docker.py"
+    site_compose_path = (
+        tmp_path / "runtime" / "websites" / "hub-site" / ".main-computer" / "local-platform" / "docker-compose.yml"
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "start",
+            "hub-site",
+            "--lane",
+            "dev",
+            "--repo-root",
+            str(tmp_path),
+            "--dry-run",
+            "--compose-scope",
+            "site",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr + completed.stdout
+    payload = json.loads(completed.stdout)
+    assert payload["ok"] is True
+    assert payload["plan"]["compose_scope"] == "site"
+    assert payload["plan"]["compose_project"] == "main-computer-website-hub-site"
+    assert payload["plan"]["compose_path"] == str(site_compose_path)
+    assert payload["plan"]["command"][3] == "main-computer-website-hub-site"
+    assert payload["plan"]["command"][5] == str(site_compose_path)
