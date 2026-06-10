@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlsplit
 from main_computer.viewport_state import *  # noqa: F401,F403
 from main_computer.dev_faucet import DevFaucetError, xlag_dev_faucet, xlag_dev_faucet_status
 from main_computer.executor_service import load_executor_service_state
+from main_computer.hub_networks import HubNetworkConfigError, load_hub_network_registry
 from main_computer.service_control import control_status, enqueue_supervisor_action
 from main_computer.service_supervisor import load_service_supervisor_state
 
@@ -556,6 +557,214 @@ def _handle_control_panel_level1_telemetry(self) -> None:
         self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_GATEWAY)
 
 
+
+_CONTROL_PANEL_NETWORK_ORDER = ("mainnet", "testnet", "test", "dev")
+
+
+def _control_panel_endpoint_parts(raw_url: str | None) -> tuple[str, int | None]:
+    try:
+        parsed = urlsplit(str(raw_url or ""))
+    except (TypeError, ValueError):
+        return "", None
+    host = parsed.hostname or ""
+    if not host:
+        return "", None
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if port is None:
+        if parsed.scheme == "https":
+            port = 443
+        elif parsed.scheme == "http":
+            port = 80
+    return host, port
+
+
+def _control_panel_network_label(network_key: str) -> str:
+    if network_key == "mainnet":
+        return "Energy Credits mainnet"
+    if network_key == "testnet":
+        return "Energy Credits testnet"
+    if network_key == "test":
+        return "Energy Credits local test"
+    if network_key == "dev":
+        return "Energy Credits local dev"
+    return f"Energy Credits {network_key}"
+
+
+def _control_panel_network_down_summary(network_key: str, hub_endpoint: str) -> str:
+    if network_key == "dev":
+        return "Blockchain / Anvil is down"
+    if network_key == "test":
+        return "Local BESU+QBFT is down"
+    if network_key == "testnet":
+        return f"remote Energy Credits testnet hub unreachable at {hub_endpoint}"
+    if network_key == "mainnet":
+        return f"remote Energy Credits mainnet hub unreachable at {hub_endpoint}"
+    return f"Energy Credits network hub unreachable at {hub_endpoint}"
+
+
+def _control_panel_network_state(network_key: str, hub_reachable: bool) -> tuple[str, str, str]:
+    if hub_reachable:
+        return "healthy", "green", "reachable"
+    if network_key == "mainnet":
+        return "down", "red", "unreachable"
+    if network_key == "testnet":
+        return "degraded", "yellow", "unreachable"
+    if network_key in {"test", "dev"}:
+        return "disabled", "gray", "not running"
+    return "unknown", "gray", "unknown"
+
+
+def _control_panel_rpc_probe(raw_url: str | None) -> dict[str, object] | None:
+    host, port = _control_panel_endpoint_parts(raw_url)
+    if not host or port is None:
+        return None
+    return _control_panel_connect(host, port, timeout_s=0.18)
+
+
+def _control_panel_network_status_cards() -> dict[str, object]:
+    try:
+        registry = load_hub_network_registry()
+    except HubNetworkConfigError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "default_network": "",
+            "network_order": list(_CONTROL_PANEL_NETWORK_ORDER),
+            "networks": [],
+        }
+
+    ordered_keys = [key for key in _CONTROL_PANEL_NETWORK_ORDER if key in registry.networks]
+    ordered_keys.extend(key for key in registry.networks if key not in ordered_keys)
+
+    cards: list[dict[str, object]] = []
+    for key in ordered_keys:
+        profile = registry.networks[key]
+        hub_url = f"http://{profile.hub_host}:{profile.hub_port}"
+        hub_endpoint = f"{profile.hub_host}:{profile.hub_port}"
+        hub_tcp_probe = _control_panel_connect(profile.hub_host, profile.hub_port, timeout_s=0.18)
+        hub_status_probe: dict[str, object] = {
+            "ok": False,
+            "status": None,
+            "content_type": "",
+            "data": None,
+            "error": "hub TCP endpoint is closed",
+        }
+        hub_health_probe: dict[str, object] = {
+            "ok": False,
+            "status": None,
+            "content_type": "",
+            "data": None,
+            "error": "hub TCP endpoint is closed",
+        }
+        if hub_tcp_probe.get("ok"):
+            hub_status_probe = _control_panel_http_json(f"{hub_url}/api/hub/v1/status", timeout_s=0.6)
+            if not hub_status_probe.get("ok"):
+                hub_health_probe = _control_panel_http_json(f"{hub_url}/api/hub/v1/health", timeout_s=0.6)
+
+        status_data = hub_status_probe.get("data") if isinstance(hub_status_probe, dict) else None
+        hub_network = status_data.get("network") if isinstance(status_data, dict) and isinstance(status_data.get("network"), dict) else {}
+        hub_reachable = bool(hub_status_probe.get("ok") or hub_health_probe.get("ok"))
+        state, severity, status_text = _control_panel_network_state(key, hub_reachable)
+        rpc_probe = _control_panel_rpc_probe(profile.chain_rpc_url)
+        rpc_reachable = rpc_probe.get("ok") if isinstance(rpc_probe, dict) else None
+        contracts_known = bool(profile.contracts)
+        if key in {"test", "dev"} and rpc_reachable is False:
+            state = "disabled"
+            severity = "gray"
+            status_text = "not running"
+            summary = _control_panel_network_down_summary(key, hub_endpoint)
+        elif hub_reachable:
+            if hub_network:
+                reported_key = hub_network.get("network_key") or "unknown"
+                reported_chain = hub_network.get("chain_id", profile.chain_id)
+                summary = f"hub reachable; reports {reported_key} chain {reported_chain if reported_chain is not None else 'unknown'}"
+            else:
+                summary = "hub reachable; network identity endpoint responded"
+        else:
+            summary = _control_panel_network_down_summary(key, hub_endpoint)
+
+        card = profile.as_status_payload()
+        card.update(
+            {
+                "name": key.upper(),
+                "label": _control_panel_network_label(key),
+                "is_default": key == registry.default_network,
+                "hub_url": hub_url,
+                "hub_endpoint": hub_endpoint,
+                "hub_reachable": hub_reachable,
+                "hub_probe": hub_tcp_probe,
+                "hub_status_probe": hub_status_probe,
+                "hub_health_probe": hub_health_probe,
+                "reported_network": hub_network,
+                "rpc_probe": rpc_probe,
+                "rpc_reachable": rpc_reachable,
+                "contracts_status": "known" if contracts_known else "unknown",
+                "state": state,
+                "severity": severity,
+                "status_text": status_text,
+                "summary": summary,
+            }
+        )
+        cards.append(card)
+
+    return {
+        "ok": True,
+        "default_network": registry.default_network,
+        "network_order": ordered_keys,
+        "networks": cards,
+        "source_path": str(registry.source_path),
+    }
+
+
+def _control_panel_energy_credits_service(network_topology: dict[str, object]) -> dict[str, object]:
+    networks = network_topology.get("networks") if isinstance(network_topology, dict) else []
+    if not isinstance(networks, list):
+        networks = []
+    ordered = [network for network in networks if isinstance(network, dict)]
+    green_networks = [network for network in ordered if network.get("severity") == "green"]
+    mainnet = next((network for network in ordered if network.get("network_key") == "mainnet"), {})
+    if green_networks:
+        state = "healthy"
+        summary = "Energy Credits reachable on " + ", ".join(str(network.get("network_key")) for network in green_networks)
+    elif mainnet and mainnet.get("severity") == "red":
+        state = "down"
+        summary = "Energy Credits mainnet is unreachable"
+    elif any(network.get("severity") == "yellow" for network in ordered):
+        state = "degraded"
+        summary = "Energy Credits remote testnet is unavailable"
+    elif ordered:
+        state = "disabled"
+        summary = "Energy Credits local networks are not running"
+    else:
+        state = "unknown"
+        summary = str(network_topology.get("error") or "Energy Credits network config unavailable")
+
+    badges = [
+        {
+            "key": str(network.get("network_key") or ""),
+            "label": str(network.get("network_key") or "").upper(),
+            "state": str(network.get("state") or "unknown"),
+            "severity": str(network.get("severity") or "gray"),
+            "status_text": str(network.get("status_text") or "unknown"),
+        }
+        for network in ordered
+    ]
+    detail = " · ".join(f"{badge['key']} {badge['status_text']}" for badge in badges) or "no Energy Credits networks loaded"
+    return {
+        "id": "blockchain",
+        "label": "Energy Credits",
+        "state": state,
+        "required": True,
+        "summary": summary,
+        "detail": detail,
+        "port": None,
+        "network_badges": badges,
+    }
+
+
 def _control_panel_status(self) -> dict[str, object]:
     """Aggregate live machine/service status for the graphical control panel."""
 
@@ -571,18 +780,7 @@ def _control_panel_status(self) -> dict[str, object]:
     app_port = int(getattr(server, "server_port", 8765))
     configured_ports = _control_panel_known_ports(self)
     port_probes = {name: _control_panel_connect("127.0.0.1", port) for name, port in configured_ports.items()}
-
-    hub_payload: dict[str, object]
-    try:
-        hub_payload = self._hub_config_payload()
-    except Exception as exc:
-        hub_payload = {"ok": False, "error": str(exc), "hub_url": config.hub_url}
-
-    chain_payload: dict[str, object]
-    try:
-        chain_payload = server.energy_chain.status()
-    except Exception as exc:
-        chain_payload = {"ok": False, "error": str(exc), "rpc_url": config.energy_chain_rpc_url, "expected_chain_id": config.energy_chain_id}
+    network_topology = _control_panel_network_status_cards()
 
     git_payload: dict[str, object]
     try:
@@ -625,11 +823,9 @@ def _control_panel_status(self) -> dict[str, object]:
 
     app_running = bool(server_status.get("running") or port_probes["app"].get("ok"))
     heartbeat_running = bool(server_status.get("heartbeat_running") or server_status.get("heartbeat_ready"))
-    hub_reachable = bool(port_probes["hub"].get("ok") or (isinstance(hub_payload.get("local_hub_status"), dict) and hub_payload["local_hub_status"].get("ok")))  # type: ignore[index]
     worker_reachable = bool(port_probes["worker"].get("ok"))
     ollama_reachable = bool(port_probes["ollama"].get("ok") or ollama_tags.get("ok"))
     gitea_reachable = bool(port_probes["gitea"].get("ok") or git_payload.get("running"))
-    chain_reachable = bool(port_probes["blockchain"].get("ok") or chain_payload.get("ok"))
 
     services = [
         {
@@ -676,17 +872,6 @@ def _control_panel_status(self) -> dict[str, object]:
             "models": ollama_models[:12],
         },
         {
-            "id": "hub",
-            "label": "Hub",
-            "state": _control_panel_state(hub_reachable, unknown=not config.hub_url),
-            "required": config.provider == "hub",
-            "summary": f"broker {config.hub_url}",
-            "detail": f"client {config.hub_client_node_id} | high security {bool(config.hub_high_security)}",
-            "port": configured_ports["hub"],
-            "probe": port_probes["hub"],
-            "payload": hub_payload,
-        },
-        {
             "id": "worker",
             "label": "Hub Worker",
             "state": _control_panel_state(worker_reachable, unknown=not config.hub_worker_endpoint),
@@ -707,17 +892,7 @@ def _control_panel_status(self) -> dict[str, object]:
             "probe": port_probes["gitea"],
             "payload": git_payload,
         },
-        {
-            "id": "blockchain",
-            "label": "Blockchain / Anvil",
-            "state": _control_panel_state(chain_reachable, unknown=not config.energy_chain_rpc_url),
-            "required": True,
-            "summary": f"RPC {config.energy_chain_rpc_url}",
-            "detail": f"expected chain id {config.energy_chain_id} | source {config.energy_chain_id_source}",
-            "port": configured_ports["blockchain"],
-            "probe": port_probes["blockchain"],
-            "payload": chain_payload,
-        },
+        _control_panel_energy_credits_service(network_topology),
         {
             "id": "executor",
             "label": "Executor Service",
@@ -805,7 +980,10 @@ def _control_panel_status(self) -> dict[str, object]:
         "ports": port_probes,
         "dependencies": dependencies,
         "services": services,
-        "service_order": ["runtime", "supervisor", "app", "hub", "worker", "ollama", "gitea", "blockchain", "executor"],
+        "service_order": ["runtime", "supervisor", "app", "worker", "ollama", "gitea", "blockchain", "executor"],
+        "network_topology": network_topology,
+        "network_order": network_topology.get("network_order", list(_CONTROL_PANEL_NETWORK_ORDER)),
+        "networks": network_topology.get("networks", []),
         "task": {
             "overview": overview,
             "server": server_status,
