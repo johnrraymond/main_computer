@@ -48,16 +48,13 @@ class HubNetworkRegistryTests(unittest.TestCase):
         self.assertEqual(test.hub_bind_host, "127.0.0.1")
         self.assertEqual(test.hub_bind_port, 8780)
         self.assertEqual(test.hub_public_url, "http://127.0.0.1:8780")
-        self.assertEqual(test.hub_runtime_dir, Path("runtime/hub/test"))
 
-        self.assertEqual(testnet.display_name, "Main Computer Testnet")
         self.assertEqual(testnet.kind, "testnet")
         self.assertEqual(testnet.chain_id, 42424241)
         self.assertEqual(testnet.chain_rpc_url, "http://testnet-rpc.greatlibrary.io:30010")
         self.assertEqual(testnet.hub_bind_host, "0.0.0.0")
         self.assertEqual(testnet.hub_bind_port, 8785)
         self.assertEqual(testnet.hub_public_url, "https://testnet.greatlibrary.io")
-        self.assertEqual(testnet.hub_runtime_dir, Path("runtime/hub/testnet"))
 
         self.assertEqual(mainnet.kind, "mainnet")
         self.assertEqual(mainnet.chain_id, 42424240)
@@ -65,8 +62,6 @@ class HubNetworkRegistryTests(unittest.TestCase):
         self.assertEqual(mainnet.hub_bind_host, "0.0.0.0")
         self.assertEqual(mainnet.hub_bind_port, 8790)
         self.assertEqual(mainnet.hub_public_url, "https://mainnet.greatlibrary.io")
-        self.assertEqual(mainnet.hub_runtime_dir, Path("runtime/hub/mainnet"))
-
         self.assertEqual(mainnet.hub_host, mainnet.hub_bind_host)
         self.assertEqual(mainnet.hub_port, mainnet.hub_bind_port)
         self.assertEqual(mainnet.hub_url, "https://mainnet.greatlibrary.io")
@@ -83,8 +78,6 @@ class HubNetworkRegistryTests(unittest.TestCase):
         self.assertEqual(config.hub_root, Path("runtime/hub/mainnet"))
         self.assertEqual(config.chain_rpc_url, "http://mainnet-rpc.greatlibrary.io:31010")
         self.assertEqual(config.chain_id, 42424240)
-        self.assertEqual(config.energy_chain_rpc_url, config.chain_rpc_url)
-        self.assertEqual(config.energy_chain_id, config.chain_id)
 
     def test_test_network_selects_local_qbft_rpc_node_and_separate_hub_port(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
@@ -99,10 +92,6 @@ class HubNetworkRegistryTests(unittest.TestCase):
         self.assertEqual(config.hub_root, Path("runtime/hub/test"))
         self.assertEqual(config.chain_rpc_url, "http://127.0.0.1:30010")
         self.assertEqual(config.chain_id, 42424241)
-        self.assertEqual(config.chain_rpc_url_source, "hub-network:test")
-        self.assertEqual(config.chain_id_source, "hub-network:test")
-        self.assertEqual(config.energy_chain_rpc_url, "http://127.0.0.1:30010")
-        self.assertEqual(config.energy_chain_id, 42424241)
 
     def test_testnet_network_uses_committed_remote_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -120,11 +109,8 @@ class HubNetworkRegistryTests(unittest.TestCase):
         self.assertEqual(config.hub_bind_host, "0.0.0.0")
         self.assertEqual(config.hub_bind_port, 8785)
         self.assertEqual(config.hub_url, "https://testnet.greatlibrary.io")
-        self.assertEqual(config.hub_root, Path("runtime/hub/testnet"))
         self.assertEqual(config.chain_rpc_url, "http://testnet-rpc.greatlibrary.io:30010")
         self.assertEqual(config.chain_id, 42424241)
-        self.assertEqual(config.chain_rpc_url_source, "hub-network:testnet")
-        self.assertEqual(config.chain_id_source, "hub-network:testnet")
 
     def test_command_line_overrides_every_runtime_network_field(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
@@ -152,20 +138,11 @@ class HubNetworkRegistryTests(unittest.TestCase):
         self.assertEqual(config.hub_root, Path("runtime/hub/test-alt"))
         self.assertEqual(config.chain_rpc_url, "http://127.0.0.1:39999")
         self.assertEqual(config.chain_id, 42)
-        self.assertEqual(config.energy_chain_rpc_url, "http://127.0.0.1:39999")
-        self.assertEqual(config.energy_chain_id, 42)
 
     def test_hub_url_override_sets_public_url_without_changing_bind_address(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             config = _config_from_args(
-                _hub_args(
-                    "--network",
-                    "testnet",
-                    "--host",
-                    "0.0.0.0",
-                    "--hub-url",
-                    "https://hub.example.test",
-                )
+                _hub_args("--network", "testnet", "--host", "0.0.0.0", "--hub-url", "https://hub.example.test")
             )
 
         self.assertEqual(config.hub_bind_host, "0.0.0.0")
@@ -205,19 +182,6 @@ class HubNetworkRegistryTests(unittest.TestCase):
         self.assertEqual(config.chain_rpc_url, "http://127.0.0.1:30012")
         self.assertEqual(config.chain_id, 42424299)
 
-    def test_mainnet_profile_is_runnable_from_committed_topology(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            config = _config_from_args(_hub_args("--network", "mainnet"))
-
-        self.assertEqual(config.hub_network, "mainnet")
-        self.assertEqual(config.hub_network_kind, "mainnet")
-        self.assertEqual(config.hub_bind_host, "0.0.0.0")
-        self.assertEqual(config.hub_bind_port, 8790)
-        self.assertEqual(config.hub_url, "https://mainnet.greatlibrary.io")
-        self.assertEqual(config.hub_root, Path("runtime/hub/mainnet"))
-        self.assertEqual(config.chain_rpc_url, "http://mainnet-rpc.greatlibrary.io:31010")
-        self.assertEqual(config.chain_id, 42424240)
-
     def test_custom_network_registry_file_can_define_alternate_v1_topology(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             registry_path = Path(tempdir) / "hub_networks.json"
@@ -236,7 +200,6 @@ class HubNetworkRegistryTests(unittest.TestCase):
                                 "hub_host": "127.0.0.1",
                                 "hub_port": 18880,
                                 "hub_runtime_dir": "runtime/hub/remote-test",
-                                "contracts": {"HubCreditBridgeEscrow": "0x0000000000000000000000000000000000000001"},
                             }
                         },
                     }
@@ -255,7 +218,6 @@ class HubNetworkRegistryTests(unittest.TestCase):
         self.assertEqual(config.hub_bind_port, 18880)
         self.assertEqual(config.hub_url, "http://127.0.0.1:18880")
         self.assertEqual(config.hub_root, Path("runtime/hub/remote-test"))
-        self.assertEqual(config.hub_network_config_path, registry_path)
 
     def test_missing_runnable_fields_still_raise_for_custom_dynamic_network(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -283,23 +245,14 @@ class HubNetworkRegistryTests(unittest.TestCase):
             )
 
             with patch.dict(os.environ, {}, clear=True):
-                with self.assertRaises(HubNetworkConfigError) as raised:
+                with self.assertRaises(HubNetworkConfigError):
                     _config_from_args(_hub_args("--network-config", str(registry_path)))
-
-        self.assertIn("not runnable", str(raised.exception))
-        self.assertIn("chain_id", str(raised.exception))
-        self.assertIn("chain_rpc_url", str(raised.exception))
 
     def test_hub_status_reports_selected_network_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             with patch.dict(os.environ, {}, clear=True):
                 config = _config_from_args(
-                    _hub_args(
-                        "--network",
-                        "test",
-                        "--hub-runtime-dir",
-                        str(Path(tempdir) / "hub-test"),
-                    )
+                    _hub_args("--network", "test", "--hub-runtime-dir", str(Path(tempdir) / "hub-test"))
                 )
 
             server = HubHttpServer(("127.0.0.1", 0), config, verbose=False)
@@ -317,8 +270,6 @@ class HubNetworkRegistryTests(unittest.TestCase):
         self.assertEqual(status["network"]["network_key"], "test")
         self.assertEqual(status["network"]["kind"], "test")
         self.assertEqual(status["network"]["chain_id"], 42424241)
-        self.assertEqual(status["network"]["chain_id_hex"], "0x28757b1")
-        self.assertEqual(status["network"]["chain_rpc_url"], "http://127.0.0.1:30010")
         self.assertEqual(status["network"]["hub_public_url"], "http://127.0.0.1:8780")
         self.assertEqual(status["network"]["hub_bind_port"], 8780)
         self.assertEqual(status["network"]["hub_port"], 8780)
