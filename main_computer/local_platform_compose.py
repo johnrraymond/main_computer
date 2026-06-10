@@ -15,10 +15,12 @@ from main_computer.local_platform_registry import (
     LocalPlatformLane,
     LocalPlatformRegistry,
     LocalPlatformRegistryError,
+    allocate_site_ports,
     default_registry_data,
     load_local_platform_registry,
     normalize_registry_lane,
     parse_local_platform_registry,
+    save_local_platform_registry,
 )
 
 
@@ -115,19 +117,165 @@ def _uses_default_generated_compose_path(repo_root: Path) -> bool:
     return generated_compose_path(repo_root).resolve() == (repo_root / GENERATED_COMPOSE_RELATIVE_PATH).resolve()
 
 
+def _site_id_for_generated_compose(site_id: object) -> str:
+    clean_site_id = str(site_id or "").strip().lower()
+    if not clean_site_id:
+        raise LocalPlatformComposeError("Missing website id for per-site Compose generation.")
+    if "/" in clean_site_id or "\\" in clean_site_id or clean_site_id in {".", ".."} or ".." in clean_site_id:
+        raise LocalPlatformComposeError(f"Website id is not safe for per-site Compose generation: {site_id!r}")
+    return clean_site_id
+
+
+def _extract_port_from_url(value: object) -> int | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if port and 1 <= int(port) <= 65535:
+        return int(port)
+    return None
+
+
+def _manifest_lane_port(lane_data: object) -> int | None:
+    if not isinstance(lane_data, dict):
+        return None
+    raw_port = lane_data.get("port")
+    try:
+        port = int(raw_port)
+    except (TypeError, ValueError):
+        port = _extract_port_from_url(lane_data.get("url")) or _extract_port_from_url(lane_data.get("status_url"))
+    if port and 1 <= int(port) <= 65535:
+        return int(port)
+    return None
+
+
+def _manifest_lane_url(lane_data: dict[str, Any], port: int, path: str = "/") -> str:
+    raw = str(lane_data.get("url") if path == "/" else lane_data.get("status_url") or "").strip()
+    if raw:
+        return raw
+    clean_path = path if path.startswith("/") else f"/{path}"
+    return f"http://localhost:{int(port)}{clean_path}"
+
+
+def _registry_lanes_from_runtime_manifest(site_id: str, manifest: dict[str, Any]) -> dict[str, Any]:
+    local_platform = manifest.get("local_platform")
+    if not isinstance(local_platform, dict):
+        return {}
+    manifest_lanes = local_platform.get("lanes")
+    if not isinstance(manifest_lanes, dict):
+        return {}
+
+    lanes: dict[str, Any] = {}
+    for registry_lane, manifest_lane_name, default_suffix in (
+        ("prod", "local", "prod"),
+        ("dev", "dev", "dev"),
+    ):
+        lane_data = manifest_lanes.get(manifest_lane_name)
+        if not isinstance(lane_data, dict):
+            lane_data = manifest_lanes.get(registry_lane)
+        if not isinstance(lane_data, dict):
+            continue
+        port = _manifest_lane_port(lane_data)
+        if port is None:
+            continue
+        service = str(lane_data.get("service") or f"{site_id}-{default_suffix}").strip()
+        lanes[registry_lane] = {
+            "service": validate_compose_service_name(service),
+            "port": int(port),
+            "url": _manifest_lane_url(lane_data, port),
+            "status_url": _manifest_lane_url(lane_data, port, "/api/site/status"),
+        }
+    return lanes
+
+
+def _runtime_manifest_for_missing_registry_site(repo_root: Path, site_id: str) -> dict[str, Any]:
+    manifest_path = repo_root / "runtime" / "websites" / site_id / "site.json"
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise LocalPlatformComposeError(
+            f"Website is not registered with the local platform and no runtime website project exists: {site_id}"
+        ) from exc
+    except (json.JSONDecodeError, OSError) as exc:
+        raise LocalPlatformComposeError(f"Runtime website manifest could not be read for Compose generation: {site_id}") from exc
+    if not isinstance(payload, dict):
+        raise LocalPlatformComposeError(f"Runtime website manifest must be a JSON object: {site_id}")
+    embedded_id = str(payload.get("id") or site_id).strip().lower()
+    if embedded_id and embedded_id != site_id:
+        raise LocalPlatformComposeError(f"Runtime website manifest id mismatch for Compose generation: {site_id}")
+    return payload
+
+
+def _register_runtime_site_for_generated_compose(
+    repo_root: Path,
+    site_id: str,
+    registry: LocalPlatformRegistry,
+) -> LocalPlatformRegistry:
+    manifest = _runtime_manifest_for_missing_registry_site(repo_root, site_id)
+    lanes = _registry_lanes_from_runtime_manifest(site_id, manifest)
+    if set(lanes) != {"prod", "dev"}:
+        ports = allocate_site_ports(registry)
+        lanes = {
+            "prod": {
+                "service": f"{site_id}-prod",
+                "port": ports["prod"],
+                "url": f"http://localhost:{ports['prod']}/",
+                "status_url": f"http://localhost:{ports['prod']}/api/site/status",
+            },
+            "dev": {
+                "service": f"{site_id}-dev",
+                "port": ports["dev"],
+                "url": f"http://localhost:{ports['dev']}/",
+                "status_url": f"http://localhost:{ports['dev']}/api/site/status",
+            },
+        }
+
+    data = registry.to_dict()
+    sites = data.setdefault("sites", {})
+    if not isinstance(sites, dict):
+        sites = {}
+        data["sites"] = sites
+    sites[site_id] = {
+        "id": site_id,
+        "name": str(manifest.get("name") or site_id.replace("-", " ").title()),
+        "kind": str(manifest.get("kind") or "static-site"),
+        "repo_relative_path": f"runtime/websites/{site_id}",
+        "lanes": lanes,
+    }
+    return save_local_platform_registry(repo_root, data)
+
+
+def _registry_and_site_for_generated_compose(
+    repo_root: Path,
+    site_id: object,
+    registry: LocalPlatformRegistry | None = None,
+    *,
+    register_missing: bool = False,
+):
+    registry = registry or load_local_platform_registry(repo_root)
+    clean_site_id = _site_id_for_generated_compose(site_id)
+    site = registry.sites.get(clean_site_id)
+    if site is None and register_missing:
+        registry = _register_runtime_site_for_generated_compose(repo_root, clean_site_id, registry)
+        site = registry.sites.get(clean_site_id)
+    if site is None:
+        raise LocalPlatformComposeError(f"Website is not registered with the local platform: {clean_site_id}")
+    return registry, site
+
+
 def _site_for_generated_compose(
     repo_root: Path,
     site_id: object,
     registry: LocalPlatformRegistry | None = None,
 ):
-    registry = registry or load_local_platform_registry(repo_root)
-    clean_site_id = str(site_id or "").strip().lower()
-    if not clean_site_id:
-        raise LocalPlatformComposeError("Missing website id for per-site Compose generation.")
-    site = registry.sites.get(clean_site_id)
-    if site is None:
-        raise LocalPlatformComposeError(f"Website is not registered with the local platform: {clean_site_id}")
-    return site
+    return _registry_and_site_for_generated_compose(repo_root, site_id, registry)[1]
 
 
 def site_generated_compose_relative_path(
@@ -922,9 +1070,15 @@ def render_generated_site_compose(
     repo_root: Path,
     site_id: object,
     registry: LocalPlatformRegistry | None = None,
+    *,
+    register_missing: bool = False,
 ) -> str:
-    registry = registry or load_local_platform_registry(repo_root)
-    site = _site_for_generated_compose(repo_root, site_id, registry)
+    registry, site = _registry_and_site_for_generated_compose(
+        repo_root,
+        site_id,
+        registry,
+        register_missing=register_missing,
+    )
     return render_generated_websites_compose(
         repo_root,
         registry,
@@ -969,9 +1123,17 @@ def write_generated_site_compose(
     repo_root: Path,
     site_id: object,
     registry: LocalPlatformRegistry | None = None,
+    *,
+    register_missing: bool = False,
 ) -> dict[str, Any]:
-    registry = registry or load_local_platform_registry(repo_root)
-    site = _site_for_generated_compose(repo_root, site_id, registry)
+    initial_registry = registry or load_local_platform_registry(repo_root)
+    was_registered = _site_id_for_generated_compose(site_id) in initial_registry.sites
+    registry, site = _registry_and_site_for_generated_compose(
+        repo_root,
+        site_id,
+        initial_registry,
+        register_missing=register_missing,
+    )
     path = site_generated_compose_path(repo_root, site.id, registry)
     text = render_generated_site_compose(repo_root, site.id, registry)
     _write_generated_compose_file(path, text)
@@ -982,9 +1144,103 @@ def write_generated_site_compose(
         "path": str(path),
         "repo_relative_path": site_generated_compose_relative_path(repo_root, site.id, registry).as_posix(),
         "site_id": site.id,
+        "registered": not was_registered,
         "service_count": len(services) + len(directus_services),
         "services": [service.service for service in directus_services] + [service.service for service in services],
         "cms_services": [service.service for service in directus_services],
+    }
+
+
+def _normalize_requested_site_ids(site_ids: object, *, purpose: str) -> list[str]:
+    if isinstance(site_ids, str):
+        raw_site_ids: list[object] = [site_ids]
+    else:
+        raw_site_ids = list(site_ids or [])
+    requested_site_ids = [str(site_id or "").strip().lower() for site_id in raw_site_ids]
+    requested_site_ids = [site_id for site_id in requested_site_ids if site_id]
+    if not requested_site_ids:
+        raise LocalPlatformComposeError(f"At least one website id is required for site-scoped Compose {purpose}.")
+    return requested_site_ids
+
+
+def check_generated_site_compose(
+    repo_root: Path,
+    site_id: object,
+    registry: LocalPlatformRegistry | None = None,
+) -> dict[str, Any]:
+    """Return whether one site's generated Docker Compose file is current."""
+    registry, site = _registry_and_site_for_generated_compose(repo_root, site_id, registry)
+    path = site_generated_compose_path(repo_root, site.id, registry)
+    rendered = render_generated_site_compose(repo_root, site.id, registry)
+    current = path.read_text(encoding="utf-8") if path.exists() else ""
+    stale = current != rendered
+    return {
+        "ok": not stale,
+        "stale": stale,
+        "path": str(path),
+        "repo_relative_path": site_generated_compose_relative_path(repo_root, site.id, registry).as_posix(),
+        "site_id": site.id,
+    }
+
+
+def write_generated_site_composes(
+    repo_root: Path,
+    site_ids: object,
+    registry: LocalPlatformRegistry | None = None,
+    *,
+    register_missing: bool = False,
+) -> dict[str, Any]:
+    """Write generated Docker Compose files for a selected set of runtime websites."""
+    requested_site_ids = _normalize_requested_site_ids(site_ids, purpose="generation")
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for site_id in requested_site_ids:
+        try:
+            result = write_generated_site_compose(
+                repo_root,
+                site_id,
+                registry if not results else None,
+                register_missing=register_missing,
+            )
+        except LocalPlatformComposeError as exc:
+            errors.append({"ok": False, "site_id": site_id, "error": str(exc)})
+            continue
+        results.append(result)
+    return {
+        "ok": not errors,
+        "scope": "site",
+        "site_count": len(results),
+        "error_count": len(errors),
+        "sites": results,
+        "errors": errors,
+    }
+
+
+def check_generated_site_composes(
+    repo_root: Path,
+    site_ids: object,
+    registry: LocalPlatformRegistry | None = None,
+) -> dict[str, Any]:
+    """Check generated Docker Compose files for a selected set of runtime websites."""
+    requested_site_ids = _normalize_requested_site_ids(site_ids, purpose="checking")
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for site_id in requested_site_ids:
+        try:
+            result = check_generated_site_compose(repo_root, site_id, registry)
+        except LocalPlatformComposeError as exc:
+            errors.append({"ok": False, "site_id": site_id, "error": str(exc)})
+            continue
+        results.append(result)
+    stale = [result for result in results if result["stale"]]
+    return {
+        "ok": not stale and not errors,
+        "scope": "site",
+        "stale": bool(stale),
+        "site_count": len(results),
+        "error_count": len(errors),
+        "sites": results,
+        "errors": errors,
     }
 
 
@@ -1107,9 +1363,44 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Exit non-zero if the generated file is missing or stale, without writing it.",
     )
+    parser.add_argument(
+        "--site",
+        action="append",
+        default=[],
+        dest="sites",
+        metavar="SITE_ID",
+        help=(
+            "Generate or check one site-scoped compose file at "
+            "runtime/websites/<site-id>/.main-computer/local-platform/docker-compose.yml. "
+            "May be repeated."
+        ),
+    )
+    parser.add_argument(
+        "--no-register-missing",
+        action="store_true",
+        help=(
+            "When using --site generation, fail instead of materializing a missing local-platform "
+            "registration from runtime/websites/<site-id>/site.json."
+        ),
+    )
     args = parser.parse_args(argv)
 
     repo_root = Path(args.repo_root).resolve()
+    site_ids = [str(site_id or "").strip() for site_id in args.sites if str(site_id or "").strip()]
+
+    if site_ids:
+        result = (
+            check_generated_site_composes(repo_root, site_ids)
+            if args.check
+            else write_generated_site_composes(
+                repo_root,
+                site_ids,
+                register_missing=not args.no_register_missing,
+            )
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result.get("ok") else 1
+
     rendered = render_generated_websites_compose(repo_root)
     path = generated_compose_path(repo_root)
     if args.check:
@@ -1144,7 +1435,6 @@ def main(argv: list[str] | None = None) -> int:
     result = write_generated_websites_compose(repo_root)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

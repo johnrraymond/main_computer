@@ -43,7 +43,7 @@ from main_computer.viewport_state import *  # noqa: F401,F403
 from main_computer.email_client import EmailClientConfigError, check_email_account
 from main_computer.chat_ai_subprocess import append_text_log, config_to_payload
 from main_computer.models import ChatResponse
-from main_computer.text_console import TextConsoleConfig, run_text_console_operator_chat
+from main_computer.text_console import TextConsoleConfig, parse_text_console_response_artifacts, run_text_console_operator_chat
 from main_computer.website_builder_rag_pipeline import (
     build_evidence as build_website_builder_rag_evidence,
     build_proposal_evidence as build_website_builder_rag_proposal_evidence,
@@ -2153,6 +2153,10 @@ class ViewportApplicationRoutesMixin:
             )
             if inline_test_provider:
                 response = self.server.computer.chat(prompt)
+                response.metadata.setdefault(
+                    "text_console_artifacts",
+                    parse_text_console_response_artifacts(response.content),
+                )
                 self.server.signal(
                     "api-chat-complete",
                     provider=response.provider,
