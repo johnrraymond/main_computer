@@ -624,6 +624,131 @@ def _control_panel_rpc_probe(raw_url: str | None) -> dict[str, object] | None:
     return _control_panel_connect(host, port, timeout_s=0.18)
 
 
+def _control_panel_repo_root_from_profile(profile: object) -> Path:
+    source_path = Path(getattr(profile, "source_path", "") or "")
+    if source_path.name == "hub_networks.json" and len(source_path.parents) >= 3:
+        return source_path.parents[2]
+    return Path.cwd()
+
+
+def _control_panel_deployment_manifest_path(profile: object) -> Path:
+    raw_path = getattr(profile, "deployment_manifest_path", None)
+    if raw_path is None:
+        raw_path = Path("runtime") / "deployments" / str(getattr(profile, "network_key", "")) / "latest.json"
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path
+
+    cwd_candidate = Path.cwd() / path
+    if cwd_candidate.exists():
+        return cwd_candidate
+
+    source_candidate = _control_panel_repo_root_from_profile(profile) / path
+    if source_candidate.exists():
+        return source_candidate
+    return source_candidate
+
+
+def _control_panel_manifest_contract_entries(payload: object) -> dict[str, dict[str, object]]:
+    if not isinstance(payload, dict):
+        return {}
+
+    merged: dict[str, dict[str, object]] = {}
+    for section_name in ("deployments", "contracts"):
+        section = payload.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        for name, entry in section.items():
+            clean_name = str(name).strip()
+            if not clean_name or not isinstance(entry, dict):
+                continue
+            address = str(entry.get("address") or "").strip()
+            if not address:
+                continue
+            merged[clean_name] = dict(entry)
+    return merged
+
+
+def _control_panel_manifest_contract_address_map(entries: dict[str, dict[str, object]]) -> dict[str, str]:
+    addresses: dict[str, str] = {}
+    for name, entry in entries.items():
+        address = str(entry.get("address") or "").strip()
+        if address:
+            addresses[name] = address
+    return addresses
+
+
+def _control_panel_deployment_contracts(profile: object) -> dict[str, object]:
+    manifest_path = _control_panel_deployment_manifest_path(profile)
+    result: dict[str, object] = {
+        "ok": False,
+        "path": str(manifest_path),
+        "source": "deployment-manifest",
+        "contracts": {},
+        "contract_addresses": {},
+        "count": 0,
+        "error": "",
+    }
+
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        result["error"] = "deployment manifest not found"
+        return result
+    except json.JSONDecodeError as exc:
+        result["error"] = f"deployment manifest is not valid JSON: {exc}"
+        return result
+    except OSError as exc:
+        result["error"] = f"deployment manifest could not be read: {exc}"
+        return result
+
+    if not isinstance(payload, dict):
+        result["error"] = "deployment manifest root is not an object"
+        return result
+
+    manifest_environment = str(payload.get("environment") or "").strip()
+    network_key = str(getattr(profile, "network_key", "") or "").strip()
+    if manifest_environment and network_key and manifest_environment != network_key:
+        result["error"] = (
+            f"deployment manifest environment {manifest_environment!r} does not match network {network_key!r}"
+        )
+        return result
+
+    chain = payload.get("chain")
+    manifest_chain_id = chain.get("chain_id") if isinstance(chain, dict) else None
+    profile_chain_id = getattr(profile, "chain_id", None)
+    if manifest_chain_id is not None and profile_chain_id is not None:
+        try:
+            manifest_chain_id_int = int(str(manifest_chain_id), 0)
+            profile_chain_id_int = int(str(profile_chain_id), 0)
+        except (TypeError, ValueError):
+            result["error"] = (
+                f"deployment manifest chain_id {manifest_chain_id!r} or network chain_id {profile_chain_id!r} is invalid"
+            )
+            return result
+        if manifest_chain_id_int != profile_chain_id_int:
+            result["error"] = (
+                f"deployment manifest chain_id {manifest_chain_id!r} does not match network chain_id {profile_chain_id!r}"
+            )
+            return result
+
+    entries = _control_panel_manifest_contract_entries(payload)
+    addresses = _control_panel_manifest_contract_address_map(entries)
+    result.update(
+        {
+            "ok": bool(addresses),
+            "environment": manifest_environment,
+            "chain_id": manifest_chain_id,
+            "created_at": payload.get("created_at"),
+            "contracts": entries,
+            "contract_addresses": addresses,
+            "count": len(addresses),
+            "error": "" if addresses else "deployment manifest contains no contract addresses",
+        }
+    )
+    return result
+
+
 def _control_panel_network_status_cards() -> dict[str, object]:
     try:
         registry = load_hub_network_registry()
@@ -674,7 +799,8 @@ def _control_panel_network_status_cards() -> dict[str, object]:
         state, severity, status_text = _control_panel_network_state(key, hub_reachable)
         rpc_probe = _control_panel_rpc_probe(profile.chain_rpc_url)
         rpc_reachable = rpc_probe.get("ok") if isinstance(rpc_probe, dict) else None
-        contracts_known = bool(profile.contracts)
+        deployment_contracts = _control_panel_deployment_contracts(profile)
+        contracts_known = bool(deployment_contracts.get("ok"))
         if key in {"test", "dev"} and rpc_reachable is False:
             state = "disabled"
             severity = "gray"
@@ -705,7 +831,12 @@ def _control_panel_network_status_cards() -> dict[str, object]:
                 "reported_network": hub_network,
                 "rpc_probe": rpc_probe,
                 "rpc_reachable": rpc_reachable,
+                "contracts": deployment_contracts.get("contract_addresses") or {},
                 "contracts_status": "known" if contracts_known else "unknown",
+                "contracts_count": deployment_contracts.get("count", 0),
+                "contracts_source": deployment_contracts.get("source"),
+                "contracts_manifest_path": deployment_contracts.get("path"),
+                "contracts_manifest": deployment_contracts,
                 "state": state,
                 "severity": severity,
                 "status_text": status_text,

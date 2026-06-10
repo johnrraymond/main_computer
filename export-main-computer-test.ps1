@@ -83,7 +83,12 @@ function Test-RepoPathAllowed {
   }
 
   $allowedGeneratedExactPaths = @(
-    "runtime/main-computer-runtime.json"
+    "runtime/main-computer-runtime.json",
+    "runtime/deployments/current.json",
+    "runtime/deployments/dev/latest.json",
+    "runtime/deployments/test/latest.json",
+    "runtime/deployments/testnet/latest.json",
+    "runtime/deployments/mainnet/latest.json"
   )
 
   $allowedGeneratedPrefixes = @(
@@ -353,7 +358,12 @@ function Assert-CleanExportStage {
   )
 
   $allowedGeneratedExactPaths = @(
-    "runtime/main-computer-runtime.json"
+    "runtime/main-computer-runtime.json",
+    "runtime/deployments/current.json",
+    "runtime/deployments/dev/latest.json",
+    "runtime/deployments/test/latest.json",
+    "runtime/deployments/testnet/latest.json",
+    "runtime/deployments/mainnet/latest.json"
   )
 
   $allowedGeneratedPrefixes = @(
@@ -362,7 +372,12 @@ function Assert-CleanExportStage {
 
   $allowedGeneratedParentDirs = @(
     "runtime",
-    "runtime/websites"
+    "runtime/websites",
+    "runtime/deployments",
+    "runtime/deployments/dev",
+    "runtime/deployments/test",
+    "runtime/deployments/testnet",
+    "runtime/deployments/mainnet"
   )
 
   $bad = New-Object System.Collections.Generic.List[string]
@@ -512,6 +527,11 @@ $exportItems = @(
   "tools",
   "scripts",
   "runtime/main-computer-runtime.json",
+  "runtime/deployments/current.json",
+  "runtime/deployments/dev/latest.json",
+  "runtime/deployments/test/latest.json",
+  "runtime/deployments/testnet/latest.json",
+  "runtime/deployments/mainnet/latest.json",
   "runtime/websites/johnrraymond",
   "diagnosis-docker-windows-host-paths-v5.ps1",
   "start.bat",
