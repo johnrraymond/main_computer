@@ -653,6 +653,43 @@
       gap: 10px;
     }
 
+    .network-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .network-card {
+      min-height: 196px;
+    }
+
+    .network-summary,
+    .network-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .network-token {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      border: 1px solid rgba(20,20,17,.92);
+      background: rgba(0,0,0,.24);
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+
+    .network-token.green { color: #d8f2aa; }
+    .network-token.yellow { color: #fff1bd; }
+    .network-token.red { color: #ffc8b8; }
+    .network-token.gray { color: #ece5d3; }
+
     .ports {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -670,6 +707,7 @@
     .dependency-list li,
     .map-node,
     .service-card,
+    .network-card,
     .port-pill {
       --shell-face: var(--mc-gold-face);
       --shell-edge-hi: var(--mc-gold-edge-hi);
@@ -745,6 +783,7 @@
     .dependency-list li::after,
     .map-node::after,
     .service-card::after,
+    .network-card::after,
     .port-pill::after {
       content: "";
       position: absolute;
@@ -764,6 +803,7 @@
     .dependency-list li::before,
     .map-node::before,
     .service-card::before,
+    .network-card::before,
     .port-pill::before,
     .overall-card::before,
     .panel::before,
@@ -789,6 +829,10 @@
     #service-grid .service-card:has(.badge.broken),
     #service-grid .service-card:has(.badge.down),
     #service-grid .service-card:has(.badge.failed),
+    #network-grid .service-card.shell-coral,
+    #network-grid .service-card:has(.badge.broken),
+    #network-grid .service-card:has(.badge.down),
+    #network-grid .service-card:has(.badge.failed),
     #service-map .map-node.shell-coral,
     #service-map .map-node.broken,
     #service-map .map-node.down,
@@ -823,6 +867,10 @@
     #service-grid .service-card:has(.badge.broken) > *,
     #service-grid .service-card:has(.badge.down) > *,
     #service-grid .service-card:has(.badge.failed) > *,
+    #network-grid .service-card.shell-coral > *,
+    #network-grid .service-card:has(.badge.broken) > *,
+    #network-grid .service-card:has(.badge.down) > *,
+    #network-grid .service-card:has(.badge.failed) > *,
     #service-map .map-node.shell-coral > *,
     #service-map .map-node.broken > *,
     #service-map .map-node.down > *,
@@ -835,6 +883,10 @@
     #service-grid .service-card:has(.badge.broken)::before,
     #service-grid .service-card:has(.badge.down)::before,
     #service-grid .service-card:has(.badge.failed)::before,
+    #network-grid .service-card.shell-coral::before,
+    #network-grid .service-card:has(.badge.broken)::before,
+    #network-grid .service-card:has(.badge.down)::before,
+    #network-grid .service-card:has(.badge.failed)::before,
     #service-map .map-node.shell-coral::before,
     #service-map .map-node.broken::before,
     #service-map .map-node.down::before,
@@ -859,6 +911,10 @@
     #service-grid .service-card:has(.badge.broken)::after,
     #service-grid .service-card:has(.badge.down)::after,
     #service-grid .service-card:has(.badge.failed)::after,
+    #network-grid .service-card.shell-coral::after,
+    #network-grid .service-card:has(.badge.broken)::after,
+    #network-grid .service-card:has(.badge.down)::after,
+    #network-grid .service-card:has(.badge.failed)::after,
     #service-map .map-node.shell-coral::after,
     #service-map .map-node.broken::after,
     #service-map .map-node.down::after,
@@ -888,6 +944,8 @@
     */
     #service-grid .service-card.shell-green,
     #service-grid .service-card:has(.badge.healthy),
+    #network-grid .service-card.shell-green,
+    #network-grid .service-card:has(.badge.healthy),
     #service-map .map-node.shell-green,
     #service-map .map-node.healthy {
       --shell-face: var(--mc-green-face);
@@ -918,6 +976,8 @@
 
     #service-grid .service-card.shell-green > *,
     #service-grid .service-card:has(.badge.healthy) > *,
+    #network-grid .service-card.shell-green > *,
+    #network-grid .service-card:has(.badge.healthy) > *,
     #service-map .map-node.shell-green > *,
     #service-map .map-node.healthy > * {
       position: relative;
@@ -926,6 +986,8 @@
 
     #service-grid .service-card.shell-green::before,
     #service-grid .service-card:has(.badge.healthy)::before,
+    #network-grid .service-card.shell-green::before,
+    #network-grid .service-card:has(.badge.healthy)::before,
     #service-map .map-node.shell-green::before,
     #service-map .map-node.healthy::before {
       inset: 0;
@@ -946,6 +1008,8 @@
 
     #service-grid .service-card.shell-green::after,
     #service-grid .service-card:has(.badge.healthy)::after,
+    #network-grid .service-card.shell-green::after,
+    #network-grid .service-card:has(.badge.healthy)::after,
     #service-map .map-node.shell-green::after,
     #service-map .map-node.healthy::after {
       inset: -65%;
@@ -988,6 +1052,10 @@
     .map-node span,
     .service-card h3,
     .service-card p,
+    .network-card h3,
+    .network-card p,
+    .network-card .service-meta,
+    .network-card .network-summary,
     .service-meta,
     .port-pill strong,
     .port-pill span,
@@ -1036,6 +1104,10 @@
     .map-node span::before,
     .service-card h3::before,
     .service-card p::before,
+    .network-card h3::before,
+    .network-card p::before,
+    .network-card .service-meta::before,
+    .network-card .network-summary::before,
     .service-meta::before,
     .port-pill strong::before,
     .port-pill span::before,
@@ -1072,6 +1144,10 @@
     .map-node span::after,
     .service-card h3::after,
     .service-card p::after,
+    .network-card h3::after,
+    .network-card p::after,
+    .network-card .service-meta::after,
+    .network-card .network-summary::after,
     .service-meta::after,
     .port-pill strong::after,
     .port-pill span::after,
@@ -1107,6 +1183,9 @@
     .port-list span,
     .map-node span,
     .service-card p,
+    .network-card p,
+    .network-card .service-meta,
+    .network-card .network-summary,
     .service-meta,
     .port-pill span,
     .overall-card span {
@@ -1123,6 +1202,7 @@
     .port-list strong,
     .map-node strong,
     .service-card h3,
+    .network-card h3,
     .port-pill strong {
       color: #fff1bd;
       font-size: 13px;
@@ -1140,7 +1220,8 @@
     }
 
     .map-node strong,
-    .service-card h3 {
+    .service-card h3,
+    .network-card h3 {
       font-size: 16px;
     }
 
@@ -1226,6 +1307,10 @@
       #service-grid .service-card:has(.badge.broken)::after,
       #service-grid .service-card:has(.badge.down)::after,
       #service-grid .service-card:has(.badge.failed)::after,
+      #network-grid .service-card.shell-coral::after,
+      #network-grid .service-card:has(.badge.broken)::after,
+      #network-grid .service-card:has(.badge.down)::after,
+      #network-grid .service-card:has(.badge.failed)::after,
       #service-map .map-node.shell-coral::after,
       #service-map .map-node.broken::after,
       #service-map .map-node.down::after,
@@ -1237,6 +1322,8 @@
 
       #service-grid .service-card.shell-green::after,
       #service-grid .service-card:has(.badge.healthy)::after,
+      #network-grid .service-card.shell-green::after,
+      #network-grid .service-card:has(.badge.healthy)::after,
       #service-map .map-node.shell-green::after,
       #service-map .map-node.healthy::after {
         animation: none;
@@ -1261,6 +1348,7 @@
     @media (max-width: 700px) {
       .map-row,
       .service-grid,
+      .network-grid,
       .metric-grid,
       .ports {
         grid-template-columns: 1fr;
@@ -1280,7 +1368,7 @@
         <div id="overall-dot" class="status-dot unknown" aria-hidden="true"></div>
         <div>
           <strong id="overall-state">Loading</strong>
-          <span id="overall-message">Checking this user session, machine ports, runtime, model backend, Git server, hub, worker, and blockchain.</span>
+          <span id="overall-message">Checking this user session, machine ports, runtime, model backend, Git server, worker, and Energy Credits networks.</span>
         </div>
       </section>
       <nav class="top-actions" aria-label="Related views">
@@ -1335,31 +1423,36 @@
       </section>
 
       <section class="column" aria-label="Service map">
-        <section class="panel panel-map">
+        <section class="panel panel-services">
           <div class="panel-header">
             <h2>Service Map</h2>
-            <span>top-level product pieces</span>
+            <span>detailed runtime and product-service cards</span>
           </div>
           <div class="panel-body">
-            <div id="service-map" class="service-map">
-              <div class="footer-note">Loading service map...</div>
+            <div id="service-grid" class="service-grid">
+              <article class="service-card shell-gray"><h3>User Runtime</h3><span class="badge unknown">loading</span><p>Runtime path and per-user state.</p></article>
+              <article class="service-card shell-gray"><h3>Supervisor / Heartbeat</h3><span class="badge unknown">loading</span><p>Control heartbeat and restart tracking.</p></article>
+              <article class="service-card shell-gray"><h3>Main Computer App</h3><span class="badge unknown">loading</span><p>Viewport and local API status.</p></article>
+              <article class="service-card shell-gray"><h3>Hub Worker</h3><span class="badge unknown">loading</span><p>Worker and model route status.</p></article>
+              <article class="service-card shell-gray"><h3>Ollama</h3><span class="badge unknown">loading</span><p>Local model backend status.</p></article>
+              <article class="service-card shell-gray"><h3>Git Server / Gitea</h3><span class="badge unknown">loading</span><p>Local project mirror status.</p></article>
+              <article class="service-card shell-gray"><h3>Energy Credits</h3><span class="badge unknown">loading</span><p>Network-scoped Energy Credits status.</p></article>
+              <article class="service-card shell-gray"><h3>Executor Service</h3><span class="badge unknown">loading</span><p>Command execution backend status.</p></article>
             </div>
           </div>
         </section>
 
-        <section class="panel panel-services">
+        <section class="panel panel-networks">
           <div class="panel-header">
-            <h2>Services</h2>
-            <span>app, hub, worker, Ollama, Gitea, blockchain</span>
+            <h2>Energy Credits Network Topology</h2>
+            <span>mainnet, testnet, test, dev</span>
           </div>
           <div class="panel-body">
-            <div id="service-grid" class="service-grid">
-              <article class="service-card shell-gray"><h3>Main Computer App</h3><span class="badge unknown">loading</span><p>Viewport and local API status.</p></article>
-              <article class="service-card shell-gray"><h3>Hub</h3><span class="badge unknown">loading</span><p>Broker status.</p></article>
-              <article class="service-card shell-gray"><h3>Hub Worker</h3><span class="badge unknown">loading</span><p>Worker and model route status.</p></article>
-              <article class="service-card shell-gray"><h3>Ollama</h3><span class="badge unknown">loading</span><p>Local model backend status.</p></article>
-              <article class="service-card shell-gray"><h3>Git Server / Gitea</h3><span class="badge unknown">loading</span><p>Local project mirror status.</p></article>
-              <article class="service-card shell-gray"><h3>Blockchain / Anvil</h3><span class="badge unknown">loading</span><p>Local chain RPC status.</p></article>
+            <div id="network-grid" class="service-grid network-grid">
+              <article class="service-card network-card shell-gray"><h3>MAINNET</h3><span class="badge unknown">loading</span><p>Energy Credits mainnet</p></article>
+              <article class="service-card network-card shell-gray"><h3>TESTNET</h3><span class="badge unknown">loading</span><p>Energy Credits testnet</p></article>
+              <article class="service-card network-card shell-gray"><h3>TEST</h3><span class="badge unknown">loading</span><p>Energy Credits local test</p></article>
+              <article class="service-card network-card shell-gray"><h3>DEV</h3><span class="badge unknown">loading</span><p>Energy Credits local dev</p></article>
             </div>
           </div>
         </section>
@@ -1509,6 +1602,16 @@
       return String(value);
     }
 
+    function htmlText(value, fallback = "—") {
+      return text(value, fallback).replace(/[&<>"']/g, (character) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        "\"": "&quot;",
+        "'": "&#39;"
+      }[character]));
+    }
+
     function percent(value) {
       if (value === null || value === undefined || value === "") return "--";
       const number = Number(value);
@@ -1580,57 +1683,105 @@
       return "shell-gray";
     }
 
+    function shellClassForSeverity(severity) {
+      const normalized = String(severity || "").toLowerCase();
+      if (normalized === "green") return "shell-green";
+      if (normalized === "yellow") return "shell-gold";
+      if (normalized === "red") return "shell-coral";
+      return "shell-gray";
+    }
+
+    function badgeStateForSeverity(severity) {
+      const normalized = String(severity || "").toLowerCase();
+      if (normalized === "green") return "healthy";
+      if (normalized === "yellow") return "degraded";
+      if (normalized === "red") return "down";
+      return "disabled";
+    }
+
     function shellClassForService(service) {
-      return shellClassForState(service?.state);
+      return service?.severity ? shellClassForSeverity(service.severity) : shellClassForState(service?.state);
     }
 
-    function nodeFor(service) {
-      const div = document.createElement("div");
-      div.className = `map-node ${service?.state || "unknown"} ${shellClassForService(service)}`;
-      div.innerHTML = `<small>${service?.state || "unknown"}</small><strong>${service?.label || "Missing"}</strong><span>${service?.port ? `port ${service.port}` : ""}</span>`;
-      return div;
-    }
-
-    function renderServiceMap(payload) {
-      const services = Object.fromEntries((payload.services || []).map((service) => [service.id, service]));
-      const rows = [
-        ["runtime", "supervisor", "app"],
-        ["hub", "worker", "ollama"],
-        ["gitea", "blockchain", "executor"]
-      ];
-      const target = byId("service-map");
-      target.textContent = "";
-      rows.forEach((row, index) => {
-        if (index > 0) {
-          const arrow = document.createElement("div");
-          arrow.className = "map-arrow";
-          arrow.textContent = "↓";
-          target.append(arrow);
-        }
-        const rowElement = document.createElement("div");
-        rowElement.className = "map-row";
-        row.forEach((id) => rowElement.append(nodeFor(services[id])));
-        target.append(rowElement);
-      });
+    function networkTokenMarkup(networks) {
+      if (!Array.isArray(networks) || !networks.length) return "";
+      return networks.map((network) => {
+        const severity = String(network.severity || "gray").toLowerCase();
+        const safeSeverity = ["green", "yellow", "red", "gray"].includes(severity) ? severity : "gray";
+        return `<em class="network-token ${safeSeverity}" title="${htmlText(network.status_text || network.state)}">${htmlText(network.key || network.label)}</em>`;
+      }).join("");
     }
 
     function renderServices(payload) {
       const target = byId("service-grid");
       target.textContent = "";
-      (payload.services || []).forEach((service) => {
+      const servicesById = Object.fromEntries((payload.services || []).map((service) => [service.id, service]));
+      const order = Array.isArray(payload.service_order)
+        ? payload.service_order
+        : (payload.services || []).map((service) => service.id);
+      order.forEach((id) => {
+        const service = servicesById[id];
+        if (!service) return;
         const card = document.createElement("article");
         card.className = `service-card ${shellClassForService(service)}`;
         const required = service.required ? "required" : "optional";
-        const port = service.port ? `port ${service.port}` : "no fixed port";
+        const port = service.port ? `port ${htmlText(service.port)}` : "no fixed port";
+        const networkStrip = service.id === "blockchain" ? networkTokenMarkup(service.network_badges) : "";
+        const networkStatus = networkStrip
+          ? `<div class="network-strip">${networkStrip}</div>`
+          : "";
         card.innerHTML = `
-          <h3>${service.label}</h3>
-          <span class="badge ${service.state}">${service.state} · ${required}</span>
-          <p>${text(service.summary)}</p>
-          <div class="service-meta">${text(service.detail)}<br>${port}</div>
+          <h3>${htmlText(service.label)}</h3>
+          <span class="badge ${htmlText(service.state)}">${htmlText(service.state)} · ${required}</span>
+          <p>${htmlText(service.summary)}</p>
+          <div class="service-meta">${htmlText(service.detail)}<br>${port}</div>
+          ${networkStatus}
         `;
         target.append(card);
       });
     }
+
+    function renderNetworks(payload) {
+      const target = byId("network-grid");
+      target.textContent = "";
+      const topology = payload.network_topology || {};
+      const rawNetworks = Array.isArray(payload.networks) ? payload.networks : (topology.networks || []);
+      const order = Array.isArray(payload.network_order) ? payload.network_order : (topology.network_order || ["mainnet", "testnet", "test", "dev"]);
+      const networks = [...rawNetworks].sort((left, right) => {
+        const leftIndex = order.indexOf(left.network_key);
+        const rightIndex = order.indexOf(right.network_key);
+        return (leftIndex < 0 ? 999 : leftIndex) - (rightIndex < 0 ? 999 : rightIndex);
+      });
+      if (!networks.length) {
+        const note = document.createElement("div");
+        note.className = "footer-note";
+        note.textContent = topology.error || "No Energy Credits network topology is available.";
+        target.append(note);
+        return;
+      }
+      networks.forEach((network) => {
+        const card = document.createElement("article");
+        const severity = network.severity || "gray";
+        const badgeState = badgeStateForSeverity(severity);
+        card.className = `service-card network-card ${shellClassForSeverity(severity)}`;
+        const key = String(network.network_key || "").toLowerCase();
+        const remote = key === "mainnet" || key === "testnet";
+        const hubLabel = remote ? "remote hub" : "hub";
+        const rpcLabel = remote ? "remote rpc" : "rpc";
+        const chainId = network.chain_id === null || network.chain_id === undefined ? "unknown" : network.chain_id;
+        const rpc = network.chain_rpc_url || "not configured";
+        const defaultMarker = network.is_default ? " · default" : "";
+        card.innerHTML = `
+          <h3>${htmlText(network.name || key.toUpperCase())}</h3>
+          <span class="badge ${badgeState}">${htmlText(network.status_text || network.state)}${defaultMarker}</span>
+          <p>${htmlText(network.label || `Energy Credits ${key}`)}</p>
+          <div class="service-meta">${hubLabel}: ${htmlText(network.hub_endpoint || network.hub_url)}<br>${rpcLabel}: ${htmlText(rpc)}<br>chain id: ${htmlText(chainId)}<br>contracts: ${htmlText(network.contracts_status || "unknown")}</div>
+          <div class="network-summary">${htmlText(network.summary || "status unknown")}</div>
+        `;
+        target.append(card);
+      });
+    }
+
 
     function renderPorts(payload) {
       const target = byId("ports");
@@ -1689,8 +1840,8 @@
       setOverall(payload);
       renderMachine(payload);
       renderDependencies(payload);
-      renderServiceMap(payload);
       renderServices(payload);
+      renderNetworks(payload);
       renderPorts(payload);
       renderConfig(payload);
       renderActivity(payload);

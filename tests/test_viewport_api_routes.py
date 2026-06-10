@@ -91,6 +91,20 @@ class ViewportApiRouteTests(unittest.TestCase):
             self.assertIn("gitea", control_panel["ports"])
             self.assertEqual(control_panel["ports"]["gitea"]["port"], 3000)
             self.assertTrue(any(service["id"] == "blockchain" for service in control_panel["services"]))
+            self.assertFalse(any(service["id"] == "hub" for service in control_panel["services"]))
+            energy_service = next(service for service in control_panel["services"] if service["id"] == "blockchain")
+            self.assertEqual(energy_service["label"], "Energy Credits")
+            self.assertEqual([badge["key"] for badge in energy_service["network_badges"][:4]], ["mainnet", "testnet", "test", "dev"])
+            self.assertEqual(control_panel["network_order"][:4], ["mainnet", "testnet", "test", "dev"])
+            self.assertEqual([network["network_key"] for network in control_panel["networks"][:4]], ["mainnet", "testnet", "test", "dev"])
+            self.assertEqual(control_panel["networks"][0]["label"], "Energy Credits mainnet")
+            self.assertIn("hub_endpoint", control_panel["networks"][0])
+            local_test = next(network for network in control_panel["networks"] if network["network_key"] == "test")
+            local_dev = next(network for network in control_panel["networks"] if network["network_key"] == "dev")
+            if local_test["severity"] == "gray":
+                self.assertEqual(local_test["summary"], "Local BESU+QBFT is down")
+            if local_dev["severity"] == "gray":
+                self.assertEqual(local_dev["summary"], "Blockchain / Anvil is down")
             self.assertIn("memory", control_panel["machine"])
             self.assertIn("dependencies", control_panel)
 
