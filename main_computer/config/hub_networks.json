@@ -28,10 +28,10 @@
       "display_name": "Main Computer Testnet",
       "kind": "testnet",
       "chain_id": 42424241,
-      "chain_rpc_url": "http://testnet-rpc.greatlibrary.io:30010",
+      "chain_rpc_url": "http://testnet-rpc.greatlibrary.io",
       "hub_bind_host": "0.0.0.0",
       "hub_bind_port": 8785,
-      "hub_public_url": "https://testnet.greatlibrary.io",
+      "hub_public_url": "https://testnet-hub.greatlibrary.io",
       "hub_runtime_dir": "runtime/hub/testnet",
       "deployment_manifest_path": "runtime/deployments/testnet/latest.json"
     },
@@ -39,10 +39,10 @@
       "display_name": "Main Computer Mainnet",
       "kind": "mainnet",
       "chain_id": 42424240,
-      "chain_rpc_url": "http://mainnet-rpc.greatlibrary.io:31010",
+      "chain_rpc_url": "http://mainnet-rpc.greatlibrary.io",
       "hub_bind_host": "0.0.0.0",
       "hub_bind_port": 8790,
-      "hub_public_url": "https://mainnet.greatlibrary.io",
+      "hub_public_url": "https://mainnet-hub.greatlibrary.io",
       "hub_runtime_dir": "runtime/hub/mainnet",
       "deployment_manifest_path": "runtime/deployments/mainnet/latest.json"
     }
