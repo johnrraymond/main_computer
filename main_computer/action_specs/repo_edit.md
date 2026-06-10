@@ -15,6 +15,38 @@ A repo-root edit handoff is not an applied edit. It is a bounded request for a
 future editor pipeline. The target root is the text-console repository root by
 default.
 
+## Runtime prompt
+
+Use repo_edit when the user asks to prepare, request, or plan a repository file
+change from the current text-console repo root.
+
+A repo-edit handoff is not an applied edit. It is a bounded request for a future
+editor pipeline.
+
+Canonical form: include one fenced block tagged exactly `repo-edit` containing
+one JSON object:
+
+```repo-edit
+{
+  "mode": "repo_root_edit_request",
+  "target_root": "repo-root",
+  "request_for_editor": "<natural-language edit request bounded to the current repository>",
+  "requires_confirmation": true,
+  "blocked_reasons": []
+}
+```
+
+Rules:
+- Use `target_root: "repo-root"`.
+- Keep `request_for_editor` repository-relative and natural-language.
+- Do not include absolute Windows paths.
+- Do not claim files changed, tests ran, commits happened, or patches applied.
+- If a terminal action is also requested, include both a `computer` block and a `repo-edit` block.
+
+Examples:
+- update README.md -> request_for_editor mentions README.md and the requested doc change.
+- make smoke summary concise -> request_for_editor mentions the smoke summary and concise output.
+
 ## Canonical output form
 
 When a repo edit is requested, include one fenced block tagged exactly

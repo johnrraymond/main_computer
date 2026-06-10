@@ -270,6 +270,62 @@ def test_worker_phase_one_bridge_readiness_reuses_existing_faucet_and_keeps_keys
     assert "Hub-spendable" not in js
 
 
+def test_worker_network_tabs_drive_selected_network_session() -> None:
+    html = WORKER_HTML.read_text(encoding="utf-8")
+    css = WORKER_CSS.read_text(encoding="utf-8")
+    js = WORKER_JS.read_text(encoding="utf-8")
+    bindings = WORKER_BINDINGS_JS.read_text(encoding="utf-8")
+    dispatch = VIEWPORT_ROUTES.read_text(encoding="utf-8")
+    energy_routes = VIEWPORT_ENERGY_ROUTES.read_text(encoding="utf-8")
+
+    assert 'class="worker-network-tabs"' in html
+    assert 'data-worker-network="mainnet"' in html
+    assert 'data-worker-network="testnet"' in html
+    assert 'data-worker-network="test"' in html
+    assert 'data-worker-network="dev"' in html
+    assert 'data-worker-network="none"' in html
+    assert html.index('data-worker-network="mainnet"') < html.index('data-worker-network="testnet"') < html.index('data-worker-network="test"') < html.index('data-worker-network="dev"') < html.index('data-worker-network="none"')
+    assert 'id="worker-network-ring"' in html
+    assert 'id="worker-network-sign-order"' in html
+    assert 'id="worker-network-disconnect"' in html
+    assert "None / Full Disconnect" in html
+    assert "All four worker targets are visible by default" in html
+
+    assert "workerNetworkTabs" in bindings
+    assert "workerNetworkRing" in bindings
+    assert "workerNetworkSignOrder" in bindings
+    assert "workerFleetMainnet" in bindings
+
+    assert ".worker-network-surface" in css
+    assert ".worker-network-tab.is-selected" in css
+    assert ".worker-network-tab-none" in css
+
+    assert "WORKER_NETWORK_ORDER = [\"mainnet\", \"testnet\", \"test\", \"dev\"]" in js
+    assert 'WORKER_NETWORK_NONE = "none"' in js
+    assert '"/api/applications/worker/network-session"' in js
+    assert '"/api/applications/worker/network-connect-order"' in js
+    assert "workerLoadNetworkSessionFromBackend" in js
+    assert "workerSelectNetwork" in js
+    assert "signWorkerNetworkConnectOrder" in js
+    assert "workerBuildConnectOrderMessage" in js
+    assert "workerSelectedWalletChainIdHex" in js
+    assert "workerSelectedWalletRpcUrl" in js
+
+    assert '"/api/applications/worker/network-session"' in dispatch
+    assert "self._handle_worker_network_session_load()" in dispatch
+    assert "self._handle_worker_network_session_select()" in dispatch
+    assert '"/api/applications/worker/network-connect-order"' in dispatch
+    assert "self._handle_worker_network_connect_order_sign()" in dispatch
+
+    assert "load_hub_network_registry" in energy_routes
+    assert "def _handle_worker_network_session_load" in energy_routes
+    assert "def _handle_worker_network_session_select" in energy_routes
+    assert "def _handle_worker_network_connect_order_sign" in energy_routes
+    assert '"mainnet", "testnet", "test", "dev"' in energy_routes
+    assert '"selectedNetwork": selected_network' in energy_routes
+    assert '"workerRequestedRing": requested_ring' in energy_routes
+
+
 def test_worker_wallet_connect_and_disconnect_use_always_disconnect_cycle() -> None:
     html = WORKER_HTML.read_text(encoding="utf-8")
     js = WORKER_JS.read_text(encoding="utf-8")
@@ -333,7 +389,8 @@ def test_worker_wallet_connect_and_disconnect_use_always_disconnect_cycle() -> N
     assert "provider.chainChanged.refresh" in js
     assert "Force Disconnect / Reset" in js
     assert "Local state cleared. If a wallet popup is still pending, close it manually." in js
-    assert "Wallet accepted. Verifying signer and dev chain with ethers." in js
+    assert "Wallet accepted. Verifying signer and selected worker network with ethers." in js
+    assert "Select Mainnet, Testnet, Test, or Dev before connecting the worker wallet." in js
 
     required_provider_calls = [
         "ethers.BrowserProvider",

@@ -6,11 +6,89 @@
         <span>Configure this computer's marketplace role: how others pay this machine for work, and how this machine pays remote workers when local AI is busy.</span>
       </div>
       <div class="worker-status-strip" aria-label="Worker status summary">
-        <span>Worker: local config</span>
-        <span id="worker-hub-count">2 hubs configured</span>
+        <span id="worker-selected-network-pill">Network: None</span>
+        <span id="worker-network-connection-pill">Disconnected</span>
         <span id="worker-registration-status-pill">Offer: local only</span>
       </div>
     </header>
+
+    <section class="worker-network-surface" aria-label="Worker network selection">
+      <nav class="worker-network-tabs" aria-label="Worker networks">
+        <button type="button" class="worker-network-tab" data-worker-network="mainnet">
+          <strong>Mainnet</strong>
+          <span>Default worker market</span>
+        </button>
+        <button type="button" class="worker-network-tab" data-worker-network="testnet">
+          <strong>Testnet</strong>
+          <span>Remote staging market</span>
+        </button>
+        <button type="button" class="worker-network-tab" data-worker-network="test">
+          <strong>Test</strong>
+          <span>Local QBFT market</span>
+        </button>
+        <button type="button" class="worker-network-tab" data-worker-network="dev">
+          <strong>Dev</strong>
+          <span>Local Anvil market</span>
+        </button>
+        <button type="button" class="worker-network-tab worker-network-tab-none" data-worker-network="none">
+          <strong>None</strong>
+          <span>Full disconnect</span>
+        </button>
+      </nav>
+
+      <div class="worker-card worker-network-card" aria-label="Active worker network">
+        <h4>Active Network</h4>
+        <p class="worker-card-note" id="worker-network-help">No active worker network selected. Select Mainnet, Testnet, Test, or Dev to connect.</p>
+        <dl class="worker-network-status-grid">
+          <div><dt>Selected</dt><dd id="worker-network-selected">None</dd></div>
+          <div><dt>Status</dt><dd id="worker-network-status">Disconnected</dd></div>
+          <div><dt>Hub</dt><dd id="worker-network-hub">—</dd></div>
+          <div><dt>RPC</dt><dd id="worker-network-rpc">—</dd></div>
+          <div><dt>Chain ID</dt><dd id="worker-network-chain-id">—</dd></div>
+          <div><dt>Manifest</dt><dd id="worker-network-manifest">—</dd></div>
+        </dl>
+        <div class="worker-inline-actions">
+          <button type="button" id="worker-network-retry" disabled>Retry Connection</button>
+          <button type="button" id="worker-network-disconnect">None / Full Disconnect</button>
+        </div>
+      </div>
+
+      <div class="worker-card worker-fleet-card" aria-label="Worker fleet status">
+        <h4>Worker Fleet</h4>
+        <dl class="worker-network-status-grid">
+          <div><dt>Mainnet Worker</dt><dd id="worker-fleet-mainnet">Standby</dd></div>
+          <div><dt>Testnet Worker</dt><dd id="worker-fleet-testnet">Standby</dd></div>
+          <div><dt>Test Worker</dt><dd id="worker-fleet-test">Standby</dd></div>
+          <div><dt>Dev Worker</dt><dd id="worker-fleet-dev">Standby</dd></div>
+        </dl>
+        <small>All four worker targets are visible by default. Only the selected network accepts jobs after wallet signing.</small>
+      </div>
+
+      <div class="worker-card worker-connect-order-card" aria-label="Signed worker connection">
+        <h4>Signed Worker Connection</h4>
+        <p class="worker-card-note">Choose a ring, connect a wallet, then sign a connection/account-balance order so the selected Hub knows which wallet to credit for completed work.</p>
+        <label>
+          <span>Requested ring</span>
+          <select id="worker-network-ring" autocomplete="off">
+            <option value="0">Ring 0 - Operator / direct whitelist</option>
+            <option value="1">Ring 1 - Protected trusted worker</option>
+            <option value="2" selected>Ring 2 - Public/default worker</option>
+          </select>
+        </label>
+        <dl class="worker-network-status-grid">
+          <div><dt>Wallet</dt><dd id="worker-network-wallet">Not connected</dd></div>
+          <div><dt>Credit wallet</dt><dd id="worker-network-credit-wallet">—</dd></div>
+          <div><dt>Requested ring</dt><dd id="worker-network-requested-ring">Ring 2</dd></div>
+          <div><dt>Assigned ring</dt><dd id="worker-network-assigned-ring">—</dd></div>
+          <div><dt>Signed order</dt><dd id="worker-network-signature-status">Not signed</dd></div>
+          <div><dt>Worker runtime</dt><dd id="worker-network-runtime">Inactive</dd></div>
+        </dl>
+        <div class="worker-inline-actions">
+          <button type="button" id="worker-network-connect-wallet">Connect Wallet</button>
+          <button type="button" id="worker-network-sign-order" disabled>Sign Connect Order</button>
+        </div>
+      </div>
+    </section>
 
     <div class="worker-workspace mc-app-workspace">
       <nav class="worker-market-tabs" aria-label="Worker marketplace configuration tabs">

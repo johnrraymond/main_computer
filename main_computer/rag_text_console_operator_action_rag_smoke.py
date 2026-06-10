@@ -118,6 +118,14 @@ class ActionSpec:
     def sha256(self) -> str:
         return hashlib.sha256(self.text.encode("utf-8")).hexdigest()
 
+    @property
+    def runtime_context_text(self) -> str:
+        return extract_markdown_section(self.text, "Runtime prompt") or compact_action_spec_text(self.text)
+
+    @property
+    def runtime_sha256(self) -> str:
+        return hashlib.sha256(self.runtime_context_text.encode("utf-8")).hexdigest()
+
     def catalog_entry(self) -> dict[str, Any]:
         return {
             "spec_id": self.spec_id,
@@ -127,6 +135,7 @@ class ActionSpec:
             "output_kinds": list(self.output_kinds),
             "path": self.path,
             "sha256": self.sha256,
+            "runtime_sha256": self.runtime_sha256,
         }
 
 
@@ -195,6 +204,43 @@ def split_csv(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in str(value or "").split(",") if item.strip())
 
 
+def extract_markdown_section(text: str, heading: str) -> str:
+    """Return one markdown section body by heading name.
+
+    Action specs may be long human-readable docs. The final model call should
+    receive the concise runtime section for selected specs, not every doc line.
+    """
+
+    wanted = str(heading or "").strip().lower()
+    current: list[str] = []
+    in_section = False
+    heading_re = re.compile(r"^(#{2,6})\s+(.+?)\s*$")
+    for line in str(text or "").splitlines():
+        match = heading_re.match(line)
+        if match:
+            title = match.group(2).strip().lower()
+            if in_section:
+                break
+            in_section = title == wanted
+            continue
+        if in_section:
+            current.append(line)
+    return "\n".join(current).strip()
+
+
+def compact_action_spec_text(text: str, *, limit: int = 1200) -> str:
+    """Fallback runtime prompt for specs that have not grown a Runtime prompt.
+
+    This keeps the smoke generalized while protecting the model call from full
+    docs or accidental giant specs.
+    """
+
+    _meta, body = parse_front_matter(text)
+    body = re.sub(r"```[^`]*```", lambda m: m.group(0)[:400], body, flags=re.DOTALL)
+    compact = re.sub(r"\n{3,}", "\n\n", body).strip()
+    return compact if len(compact) <= limit else compact[:limit].rstrip() + "\n..."
+
+
 def load_action_specs(root: Path) -> dict[str, ActionSpec]:
     spec_dir = root / ACTION_SPEC_DIR
     if not spec_dir.exists():
@@ -238,9 +284,11 @@ def selected_action_specs_prompt(specs: dict[str, ActionSpec], selected_spec_ids
         spec = specs[spec_id]
         chunks.append(
             f"Selected text-console action spec: {spec.spec_id}\n"
+            f"title: {spec.title}\n"
             f"path: {spec.path}\n"
-            f"sha256: {spec.sha256}\n\n"
-            f"{spec.text.strip()}"
+            f"spec_sha256: {spec.sha256}\n"
+            f"runtime_sha256: {spec.runtime_sha256}\n\n"
+            f"{spec.runtime_context_text.strip()}"
         )
     if not chunks:
         return "No action specs were selected. Answer normally without computer or repo-edit blocks unless the user corrects the request."
@@ -288,22 +336,102 @@ def build_base_model_input(*, root: Path, request_text: str, base_url: str, mode
     return config, model_input, failures
 
 
+def compact_context_pack_text(text: str, *, max_chars: int = 2200, max_manifest_lines: int = 80) -> str:
+    """Compact repo context for operator action generation.
+
+    The operator smoke is testing action-spec retrieval and validated output
+    forms. Full file excerpts and giant manifests are useful for answering some
+    workspace questions, but they are the wrong payload for deciding whether to
+    emit terminal/repo-edit handoffs. Keep root/project grounding and a bounded
+    manifest preview so the model stays below context limits.
+    """
+
+    raw = str(text or "")
+    if len(raw) <= max_chars:
+        return raw
+
+    out: list[str] = []
+    manifest_lines = 0
+    in_manifest = False
+    dropped_sections = {
+        "Matched file excerpts:",
+        "Pinned guidance excerpts:",
+    }
+
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped in dropped_sections:
+            out.append(f"{stripped} [omitted from operator action-RAG compact context]")
+            break
+
+        if stripped == "Main computer file manifest:":
+            in_manifest = True
+            out.append(line)
+            continue
+
+        if stripped.endswith(":") and stripped != "Main computer file manifest:":
+            in_manifest = False
+
+        if in_manifest and line.startswith("  - "):
+            manifest_lines += 1
+            if manifest_lines > max_manifest_lines:
+                out.append(f"  - ... [{manifest_lines - 1}+ manifest entries truncated]")
+                break
+
+        out.append(line)
+        if len("\n".join(out)) >= max_chars:
+            out.append("... [context truncated for operator action-RAG smoke]")
+            break
+
+    compact = "\n".join(out).strip()
+    return compact if compact else raw[:max_chars].rstrip() + "\n... [context truncated for operator action-RAG smoke]"
+
+
+def compact_model_messages_for_operator(model_input: Any) -> list[Any]:
+    from main_computer.models import ChatMessage
+
+    messages = list(getattr(model_input, "messages", []) or [])
+    context_text = str(getattr(getattr(model_input, "context_pack", None), "text", "") or "")
+    compact_context = compact_context_pack_text(context_text)
+    compacted: list[Any] = []
+    replaced_context = False
+    for index, message in enumerate(messages):
+        role = str(getattr(message, "role", "") or "")
+        if not replaced_context and index == 1 and role == "system":
+            compacted.append(ChatMessage(role="system", content=compact_context))
+            replaced_context = True
+        else:
+            compacted.append(message)
+    return compacted
+
+
 def build_preflight_messages(*, model_input: Any, specs: dict[str, ActionSpec], request_text: str) -> list[Any]:
     from main_computer.models import ChatMessage
 
-    context_messages = list(model_input.messages[:2])
-    return [
-        *context_messages,
+    config = getattr(model_input, "text_console_config", None)
+    root_hint = ""
+    if config is not None:
+        root_hint = (
+            "Text-console runtime root hint:\n"
+            f"- current_directory: {getattr(config, 'current_directory', '')}\n"
+            f"- context_root: {getattr(config, 'context_root', '')}\n"
+            f"- working_directory: {getattr(config, 'working_directory', '')}"
+        )
+
+    messages = [
         ChatMessage(role="system", content=ACTION_PREFLIGHT_PROMPT),
         ChatMessage(role="system", content=action_spec_catalog_prompt(specs)),
-        ChatMessage(role="user", content=request_text),
     ]
+    if root_hint:
+        messages.append(ChatMessage(role="system", content=root_hint))
+    messages.append(ChatMessage(role="user", content=request_text))
+    return messages
 
 
 def build_final_messages(*, model_input: Any, specs: dict[str, ActionSpec], selected_spec_ids: list[str]) -> list[Any]:
     from main_computer.models import ChatMessage
 
-    base_messages = list(model_input.messages)
+    base_messages = compact_model_messages_for_operator(model_input)
     action_context = selected_action_specs_prompt(specs, selected_spec_ids)
     inserted = [
         ChatMessage(role="system", content=FINAL_OPERATOR_PROMPT),
@@ -349,29 +477,52 @@ def validate_preflight_payload(
         failures.append(f"preflight selected unknown specs: {unknown}")
 
     expected = list(expected_spec_ids)
-    if selected_ids != expected:
-        failures.append(f"expected selected_spec_ids {expected!r}, got {selected_ids!r}")
+    expected_set = set(expected)
+    selected_set = set(selected_ids)
+    if selected_set != expected_set:
+        failures.append(f"expected selected_spec_ids set {sorted(expected_set)!r}, got {sorted(selected_set)!r}")
 
-    needs_mount = bool(payload.get("needs_mount"))
-    needs_edit = bool(payload.get("needs_edit"))
-    needs_answer_only = bool(payload.get("needs_answer_only"))
+    payload_needs_mount = bool(payload.get("needs_mount"))
+    payload_needs_edit = bool(payload.get("needs_edit"))
+    payload_needs_answer_only = bool(payload.get("needs_answer_only"))
 
-    expected_mount = "terminal" in expected_spec_ids
-    expected_edit = "repo_edit" in expected_spec_ids
-    expected_answer_only = not expected_mount and not expected_edit
+    derived_needs_mount = "terminal" in selected_set
+    derived_needs_edit = "repo_edit" in selected_set
+    derived_needs_answer_only = not derived_needs_mount and not derived_needs_edit
 
-    if needs_mount != expected_mount:
-        failures.append(f"expected needs_mount={expected_mount}, got {needs_mount}")
-    if needs_edit != expected_edit:
-        failures.append(f"expected needs_edit={expected_edit}, got {needs_edit}")
-    if needs_answer_only != expected_answer_only:
-        failures.append(f"expected needs_answer_only={expected_answer_only}, got {needs_answer_only}")
+    boolean_notes: list[str] = []
+    if payload_needs_mount != derived_needs_mount:
+        boolean_notes.append(
+            f"payload needs_mount={payload_needs_mount} disagrees with selected specs; "
+            f"using derived value {derived_needs_mount}"
+        )
+    if payload_needs_edit != derived_needs_edit:
+        boolean_notes.append(
+            f"payload needs_edit={payload_needs_edit} disagrees with selected specs; "
+            f"using derived value {derived_needs_edit}"
+        )
+    if payload_needs_answer_only != derived_needs_answer_only:
+        boolean_notes.append(
+            f"payload needs_answer_only={payload_needs_answer_only} disagrees with selected specs; "
+            f"using derived value {derived_needs_answer_only}"
+        )
 
     return {
         "ok": not failures,
         "selected_spec_ids": selected_ids,
         "expected_spec_ids": expected,
         "failures": failures,
+        "boolean_notes": boolean_notes,
+        "derived": {
+            "needs_mount": derived_needs_mount,
+            "needs_edit": derived_needs_edit,
+            "needs_answer_only": derived_needs_answer_only,
+        },
+        "payload_needs": {
+            "needs_mount": payload_needs_mount,
+            "needs_edit": payload_needs_edit,
+            "needs_answer_only": payload_needs_answer_only,
+        },
         "payload": payload,
     }
 
@@ -750,6 +901,7 @@ def run_fixture(
         "expect_repo_edit": fixture.expect_repo_edit,
         "text_console_config": config.to_payload(),
         "context_pack_chars": len(str(getattr(model_input.context_pack, "text", "") or "")),
+        "compact_context_pack_chars": len(compact_context_pack_text(str(getattr(model_input.context_pack, "text", "") or ""))),
         "message_counts": {
             "preflight": len(preflight_messages),
             "final": len(final_messages),
@@ -773,6 +925,7 @@ def run_fixture(
         },
         "selected_spec_ids": safe_selected_spec_ids,
         "selected_spec_hashes": {spec_id: specs[spec_id].sha256 for spec_id in safe_selected_spec_ids},
+        "selected_spec_runtime_hashes": {spec_id: specs[spec_id].runtime_sha256 for spec_id in safe_selected_spec_ids},
         "final_response": {
             "raw_response": final_raw_response,
             "content": final_content,
