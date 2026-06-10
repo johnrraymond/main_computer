@@ -1770,12 +1770,13 @@
         const rpcLabel = remote ? "remote rpc" : "rpc";
         const chainId = network.chain_id === null || network.chain_id === undefined ? "unknown" : network.chain_id;
         const rpc = network.chain_rpc_url || "not configured";
+        const hub = network.hub_public_url || network.hub_url || network.hub_endpoint || "not configured";
         const defaultMarker = network.is_default ? " · default" : "";
         card.innerHTML = `
           <h3>${htmlText(network.name || key.toUpperCase())}</h3>
           <span class="badge ${badgeState}">${htmlText(network.status_text || network.state)}${defaultMarker}</span>
           <p>${htmlText(network.label || `Energy Credits ${key}`)}</p>
-          <div class="service-meta">${hubLabel}: ${htmlText(network.hub_endpoint || network.hub_url)}<br>${rpcLabel}: ${htmlText(rpc)}<br>chain id: ${htmlText(chainId)}<br>contracts: ${htmlText(network.contracts_status || "unknown")}</div>
+          <div class="service-meta">${hubLabel}: ${htmlText(hub)}<br>${rpcLabel}: ${htmlText(rpc)}<br>chain id: ${htmlText(chainId)}<br>contracts: ${htmlText(network.contracts_status || "unknown")}</div>
           <div class="network-summary">${htmlText(network.summary || "status unknown")}</div>
         `;
         target.append(card);

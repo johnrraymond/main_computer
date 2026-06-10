@@ -51,20 +51,20 @@ class HubNetworkRegistryTests(unittest.TestCase):
 
         self.assertEqual(testnet.kind, "testnet")
         self.assertEqual(testnet.chain_id, 42424241)
-        self.assertEqual(testnet.chain_rpc_url, "http://testnet-rpc.greatlibrary.io:30010")
+        self.assertEqual(testnet.chain_rpc_url, "https://testnet-rpc.greatlibrary.io")
         self.assertEqual(testnet.hub_bind_host, "0.0.0.0")
         self.assertEqual(testnet.hub_bind_port, 8785)
-        self.assertEqual(testnet.hub_public_url, "https://testnet.greatlibrary.io")
+        self.assertEqual(testnet.hub_public_url, "https://testnet-hub.greatlibrary.io")
 
         self.assertEqual(mainnet.kind, "mainnet")
         self.assertEqual(mainnet.chain_id, 42424240)
-        self.assertEqual(mainnet.chain_rpc_url, "http://mainnet-rpc.greatlibrary.io:31010")
+        self.assertEqual(mainnet.chain_rpc_url, "https://mainnet-rpc.greatlibrary.io")
         self.assertEqual(mainnet.hub_bind_host, "0.0.0.0")
         self.assertEqual(mainnet.hub_bind_port, 8790)
-        self.assertEqual(mainnet.hub_public_url, "https://mainnet.greatlibrary.io")
+        self.assertEqual(mainnet.hub_public_url, "https://mainnet-hub.greatlibrary.io")
         self.assertEqual(mainnet.hub_host, mainnet.hub_bind_host)
         self.assertEqual(mainnet.hub_port, mainnet.hub_bind_port)
-        self.assertEqual(mainnet.hub_url, "https://mainnet.greatlibrary.io")
+        self.assertEqual(mainnet.hub_url, "https://mainnet-hub.greatlibrary.io")
 
     def test_hub_without_network_argument_uses_registry_default_mainnet_network(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
@@ -74,9 +74,9 @@ class HubNetworkRegistryTests(unittest.TestCase):
         self.assertEqual(config.hub_network_kind, "mainnet")
         self.assertEqual(config.hub_bind_host, "0.0.0.0")
         self.assertEqual(config.hub_bind_port, 8790)
-        self.assertEqual(config.hub_url, "https://mainnet.greatlibrary.io")
+        self.assertEqual(config.hub_url, "https://mainnet-hub.greatlibrary.io")
         self.assertEqual(config.hub_root, Path("runtime/hub/mainnet"))
-        self.assertEqual(config.chain_rpc_url, "http://mainnet-rpc.greatlibrary.io:31010")
+        self.assertEqual(config.chain_rpc_url, "https://mainnet-rpc.greatlibrary.io")
         self.assertEqual(config.chain_id, 42424240)
 
     def test_test_network_selects_local_qbft_rpc_node_and_separate_hub_port(self) -> None:
@@ -108,8 +108,8 @@ class HubNetworkRegistryTests(unittest.TestCase):
         self.assertEqual(config.hub_network_kind, "testnet")
         self.assertEqual(config.hub_bind_host, "0.0.0.0")
         self.assertEqual(config.hub_bind_port, 8785)
-        self.assertEqual(config.hub_url, "https://testnet.greatlibrary.io")
-        self.assertEqual(config.chain_rpc_url, "http://testnet-rpc.greatlibrary.io:30010")
+        self.assertEqual(config.hub_url, "https://testnet-hub.greatlibrary.io")
+        self.assertEqual(config.chain_rpc_url, "https://testnet-rpc.greatlibrary.io")
         self.assertEqual(config.chain_id, 42424241)
 
     def test_command_line_overrides_every_runtime_network_field(self) -> None:
