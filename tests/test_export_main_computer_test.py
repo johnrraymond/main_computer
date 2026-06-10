@@ -45,6 +45,22 @@ class ExportMainComputerTestTests(unittest.TestCase):
         self.assertIn('$isAllowedGeneratedPrefixPath', script)
         self.assertIn('-and -not $isAllowedGeneratedPrefixPath', script)
 
+
+    def test_export_script_includes_network_deployment_latest_manifests_without_unblocking_all_runtime(self) -> None:
+        script = (ROOT / "export-main-computer-test.ps1").read_text(encoding="utf-8")
+
+        self.assertIn('"runtime/deployments/current.json"', script)
+        self.assertIn('"runtime/deployments/dev/latest.json"', script)
+        self.assertIn('"runtime/deployments/test/latest.json"', script)
+        self.assertIn('"runtime/deployments/testnet/latest.json"', script)
+        self.assertIn('"runtime/deployments/mainnet/latest.json"', script)
+        self.assertIn('"runtime/deployments"', script)
+        self.assertIn('"runtime/deployments/mainnet"', script)
+        self.assertIn('"runtime/"', script)
+        self.assertIn('$allowedGeneratedExactPaths', script)
+        self.assertIn('$allowedGeneratedParentDirs', script)
+        self.assertIn('-and -not $isAllowedGeneratedPrefixPath', script)
+
     def test_export_script_prunes_generated_documentation_work_history(self) -> None:
         script = (ROOT / "export-main-computer-test.ps1").read_text(encoding="utf-8")
 
