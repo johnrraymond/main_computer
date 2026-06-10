@@ -57,6 +57,103 @@ function Join-CommandLine([string[]]$Arguments) {
   return ($quoted -join " ")
 }
 
+function Append-TextFileIfPresent([string]$Path, [string]$Value) {
+  if ([string]::IsNullOrEmpty($Value)) {
+    return
+  }
+  $parent = Split-Path -Parent $Path
+  if ($parent) {
+    Ensure-Directory $parent
+  }
+  [System.IO.File]::AppendAllText($Path, $Value, [System.Text.Encoding]::UTF8)
+}
+
+function Start-HiddenMainComputerSupervisorProcess(
+  [string]$FilePath,
+  [string[]]$Arguments,
+  [string]$WorkingDirectory,
+  [string]$StdoutPath,
+  [string]$StderrPath,
+  [string]$LauncherPath,
+  [string]$PidJsonPath,
+  [string]$LauncherStdoutPath,
+  [string]$LauncherStderrPath
+) {
+  if (-not (Test-Path -LiteralPath $LauncherPath -PathType Leaf)) {
+    throw "Missing hidden Python launcher: $LauncherPath"
+  }
+
+  $launcherArgs = @(
+    $LauncherPath,
+    "--cwd",
+    $WorkingDirectory,
+    "--stdout",
+    $StdoutPath,
+    "--stderr",
+    $StderrPath,
+    "--pid-json",
+    $PidJsonPath,
+    "--"
+  ) + @($FilePath) + $Arguments
+
+  $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = $FilePath
+  $startInfo.Arguments = Join-CommandLine $launcherArgs
+  $startInfo.WorkingDirectory = $WorkingDirectory
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+
+  $launcherProcess = [System.Diagnostics.Process]::new()
+  $launcherProcess.StartInfo = $startInfo
+  if (-not $launcherProcess.Start()) {
+    throw "Failed to start hidden Main Computer launcher process."
+  }
+
+  $stdoutTask = $launcherProcess.StandardOutput.ReadToEndAsync()
+  $stderrTask = $launcherProcess.StandardError.ReadToEndAsync()
+  if (-not $launcherProcess.WaitForExit(30000)) {
+    try {
+      $launcherProcess.Kill()
+    } catch {}
+    throw "Timed out while starting hidden Main Computer supervisor process."
+  }
+  $launcherProcess.WaitForExit()
+
+  $launcherStdout = $stdoutTask.Result
+  $launcherStderr = $stderrTask.Result
+  Append-TextFileIfPresent $LauncherStdoutPath $launcherStdout
+  Append-TextFileIfPresent $LauncherStderrPath $launcherStderr
+
+  if ($launcherProcess.ExitCode -ne 0) {
+    $message = $launcherStderr.Trim()
+    if ([string]::IsNullOrWhiteSpace($message)) {
+      $message = $launcherStdout.Trim()
+    }
+    if ([string]::IsNullOrWhiteSpace($message)) {
+      $message = "hidden Python launcher exited with code $($launcherProcess.ExitCode)"
+    }
+    throw "Failed to start hidden Main Computer supervisor process: $message"
+  }
+
+  $payload = Read-JsonFile $PidJsonPath
+  $pidValue = Get-ObjectPropertyValue $payload "pid" $null
+  if ($null -eq $pidValue) {
+    throw "Hidden Python launcher did not write a supervisor PID to $PidJsonPath"
+  }
+
+  return [pscustomobject]@{
+    Id = [int]$pidValue
+    launcher_pid = $launcherProcess.Id
+    launcher_exit_code = $launcherProcess.ExitCode
+    launcher = $LauncherPath
+    pid_json = $PidJsonPath
+  }
+}
+
+
 function Get-EnvFirstValue([string[]]$Names, [string]$Default) {
   foreach ($name in $Names) {
     $value = [Environment]::GetEnvironmentVariable($name)
@@ -993,14 +1090,20 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName) {
     Write-MainComputerLocalPlatformWarning $localPlatformStart
   }
 
-  $process = Start-Process `
+  $launcherScript = Join-Path (Split-Path -Parent $PSCommandPath) "main_computer_hidden_launcher.py"
+  $pidJson = Join-Path (Get-StartStopRuntime $RootPath) ("main_computer-service-supervisor-" + $stamp + ".pid.json")
+  $launcherStdout = Join-Path (Get-StartStopRuntime $RootPath) ("main_computer-hidden-launcher-" + $stamp + ".stdout.log")
+  $launcherStderr = Join-Path (Get-StartStopRuntime $RootPath) ("main_computer-hidden-launcher-" + $stamp + ".stderr.log")
+  $process = Start-HiddenMainComputerSupervisorProcess `
     -FilePath $pythonCommand `
-    -ArgumentList $argString `
+    -Arguments $launcherArgs `
     -WorkingDirectory $RootPath `
-    -WindowStyle Hidden `
-    -RedirectStandardOutput $stdout `
-    -RedirectStandardError $stderr `
-    -PassThru
+    -StdoutPath $stdout `
+    -StderrPath $stderr `
+    -LauncherPath $launcherScript `
+    -PidJsonPath $pidJson `
+    -LauncherStdoutPath $launcherStdout `
+    -LauncherStderrPath $launcherStderr
 
   $session = New-StartSession $RootPath $launchContext $process.Id $stdout $stderr $launcherArgs $StartedByName $giteaStart $localPlatformStart
   $sessionPath = Get-StartSessionPath $RootPath
@@ -1015,6 +1118,8 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName) {
     Write-Host ("Launcher config:  " + [string]$launchContext.context_file)
   }
   Write-Host ("Start session:    " + $sessionPath)
+  Write-Host ("Hidden launcher:  " + $launcherScript)
+  Write-Host ("Launcher PID:     " + $pidJson)
   Write-Host ("Control root:     " + $controlRoot)
   Write-Host ("Supervisor state: " + (Join-Path $serviceRuntime "state.json"))
   Write-Host ("Supervisor PID:   " + (Join-Path $RootPath ".main_computer_service_supervisor.pid"))
