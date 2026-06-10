@@ -317,6 +317,16 @@ def shell_word(value: str) -> str:
     return text
 
 
+def default_dockerfile_location(profile: HubNetworkProfile) -> str:
+    if profile.network_key in {"testnet", "mainnet"}:
+        return f"/Dockerfile.hub.{profile.network_key}"
+    return DEFAULT_DOCKERFILE_LOCATION
+
+
+def effective_dockerfile_location(profile: HubNetworkProfile, args: argparse.Namespace) -> str:
+    return str(getattr(args, "dockerfile_location", "") or default_dockerfile_location(profile))
+
+
 def application_payload(
     profile: HubNetworkProfile,
     args: argparse.Namespace,
@@ -334,7 +344,7 @@ def application_payload(
         "git_branch": args.git_branch,
         "build_pack": "dockerfile",
         "base_directory": args.base_directory,
-        "dockerfile_location": args.dockerfile_location,
+        "dockerfile_location": effective_dockerfile_location(profile, args),
         "ports_exposes": str(profile.hub_bind_port),
         "domains": profile.hub_public_url,
         "start_command": hub_start_command(profile, runtime_dir),
@@ -782,7 +792,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--github-app-uuid", default="", help="Use private GitHub App create endpoint.")
     parser.add_argument("--deploy-key-uuid", default="", help="Use private deploy-key create endpoint.")
     parser.add_argument("--base-directory", default=DEFAULT_BASE_DIRECTORY)
-    parser.add_argument("--dockerfile-location", default=DEFAULT_DOCKERFILE_LOCATION)
+    parser.add_argument("--dockerfile-location", default="", help="Dockerfile path. Defaults to /Dockerfile.hub.<network> for mainnet/testnet.")
     parser.add_argument("--health-path", default=DEFAULT_HEALTH_PATH)
 
     parser.add_argument("--rpc-timeout-s", type=float, default=8.0)
