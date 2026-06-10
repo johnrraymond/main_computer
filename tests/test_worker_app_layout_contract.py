@@ -287,6 +287,8 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert html.index('data-worker-network="mainnet"') < html.index('data-worker-network="testnet"') < html.index('data-worker-network="test"') < html.index('data-worker-network="dev"') < html.index('data-worker-network="none"')
     assert 'id="worker-network-ring"' in html
     assert 'id="worker-network-sign-order"' in html
+    assert 'id="worker-network-connect-wallet"' not in html
+    assert "Network selection handles wallet connection" in html
     assert 'id="worker-network-disconnect"' in html
     assert "None / Full Disconnect" in html
     assert "All four worker targets are visible by default" in html
@@ -294,6 +296,7 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "workerNetworkTabs" in bindings
     assert "workerNetworkRing" in bindings
     assert "workerNetworkSignOrder" in bindings
+    assert "workerNetworkConnectWallet" not in bindings
     assert "workerFleetMainnet" in bindings
 
     assert ".worker-network-surface" in css
@@ -315,9 +318,19 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "workerDisconnectSelectedNetworkAndWallet" in js
     assert "Wallet required" in js
     assert "Connect your wallet to ${workerNetworkDisplayName(selected)} before accepting jobs." in js
-    assert "workerNetworkConnectWallet.textContent = walletConnectedToSelected" in js
+    assert "workerNetworkConnectWallet" not in js
     assert "workerNetworkSignOrder.disabled = !workerNetworkCanSign()" in js
     assert "workerNetworkWalletConnectedToSelected()" in js
+
+    assert "WORKER_STATUS_MESSAGE_MAX_LENGTH = 260" in js
+    assert "function workerSetSaveStatus" in js
+    assert "function workerUserFacingWalletErrorMessage" in js
+    assert "Wallet signature request was rejected." in js
+    assert "Worker connect order signing failed: ${error.message || error}" not in js
+    assert "#worker-save-status" in css
+    assert "Keep wallet/provider errors from widening the worker surface." in css
+    assert "overflow-wrap: anywhere" in css
+    assert "word-break: break-word" in css
 
     assert '"/api/applications/worker/network-session"' in dispatch
     assert "self._handle_worker_network_session_load()" in dispatch

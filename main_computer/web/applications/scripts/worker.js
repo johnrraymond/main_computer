@@ -6,6 +6,7 @@
     ];
     const WORKER_NETWORK_SESSION_ENDPOINT = "/api/applications/worker/network-session";
     const WORKER_NETWORK_CONNECT_ORDER_ENDPOINT = "/api/applications/worker/network-connect-order";
+    const WORKER_STATUS_MESSAGE_MAX_LENGTH = 260;
     const WORKER_NETWORK_ORDER = ["mainnet", "testnet", "test", "dev"];
     const WORKER_NETWORK_NONE = "none";
     const WORKER_RING_LABELS = {
@@ -348,7 +349,7 @@
     function workerSetWalletOperationState(nextState, message = "") {
       workerWalletHookState = String(nextState || "idle");
       if (message) workerWalletLastAction = String(message);
-      if (workerSaveStatus && message) workerSaveStatus.textContent = message;
+      if (message) workerSetSaveStatus(message);
       renderWorkerBridgeReadiness();
     }
 
@@ -1235,6 +1236,60 @@
         }
       }
       return String(error);
+    }
+
+    function workerErrorCode(error) {
+      const seen = new Set();
+      const stack = [error];
+      while (stack.length) {
+        const current = stack.shift();
+        if (!current || typeof current !== "object" || seen.has(current)) continue;
+        seen.add(current);
+        if (current.code !== undefined && current.code !== null && current.code !== "") {
+          return String(current.code);
+        }
+        for (const key of ["error", "info", "data", "cause"]) {
+          if (current[key] && typeof current[key] === "object") stack.push(current[key]);
+        }
+      }
+      return "";
+    }
+
+    function workerCompactStatusMessage(value, fallback = "Worker action failed.") {
+      const raw = String(value || fallback)
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!raw) return fallback;
+      if (raw.length <= WORKER_STATUS_MESSAGE_MAX_LENGTH) return raw;
+      return `${raw.slice(0, WORKER_STATUS_MESSAGE_MAX_LENGTH - 1).trimEnd()}…`;
+    }
+
+    function workerUserFacingWalletErrorMessage(error, fallback = "Wallet action failed.") {
+      const code = workerErrorCode(error);
+      const raw = workerWalletErrorMessage(error);
+      const normalized = String(raw || "").toLowerCase();
+
+      if (code === "4001" || normalized.includes("user rejected") || normalized.includes("user denied")) {
+        return "Wallet signature request was rejected.";
+      }
+      if (code === "-32002" || normalized.includes("request already pending")) {
+        return "Wallet already has a pending request. Open the wallet and finish or cancel it.";
+      }
+      if (normalized.includes("no ethereum provider") || normalized.includes("no wallet provider")) {
+        return "No wallet provider is available.";
+      }
+      if (normalized.includes("unsupported network") || normalized.includes("wrong chain")) {
+        return "Wallet is not connected to the selected network.";
+      }
+      return workerCompactStatusMessage(raw, fallback);
+    }
+
+    function workerSetSaveStatus(message, {walletError = null, prefix = ""} = {}) {
+      if (!workerSaveStatus) return;
+      const text = walletError
+        ? `${prefix}${workerUserFacingWalletErrorMessage(walletError)}`
+        : workerCompactStatusMessage(message);
+      workerSaveStatus.textContent = text;
     }
 
     function workerSelectedWalletProfile() {
@@ -2936,14 +2991,6 @@
       if (workerNetworkDisconnect) {
         workerNetworkDisconnect.disabled = workerNetworkSessionInFlight && selected === WORKER_NETWORK_NONE;
       }
-      if (workerNetworkConnectWallet) {
-        workerNetworkConnectWallet.disabled = workerWalletHookState !== "idle" || selected === WORKER_NETWORK_NONE;
-        workerNetworkConnectWallet.textContent = walletConnectedToSelected
-          ? "Wallet Connected"
-          : walletAddress
-            ? "Switch Wallet Network"
-            : "Connect Wallet";
-      }
       if (workerNetworkSignOrder) {
         workerNetworkSignOrder.disabled = !workerNetworkCanSign();
         workerNetworkSignOrder.textContent = workerNetworkSignatureInFlight ? "Signing…" : "Sign Connect Order";
@@ -3074,9 +3121,9 @@
           signature
         });
         workerApplyNetworkPayload(data);
-        if (workerSaveStatus) workerSaveStatus.textContent = `Signed ${workerRingLabel(workerNetworkSession.requested_ring)} worker connect order for ${workerNetworkDisplayName(workerNetworkSession.selected_network)}.`;
+        workerSetSaveStatus(`Signed ${workerRingLabel(workerNetworkSession.requested_ring)} worker connect order for ${workerNetworkDisplayName(workerNetworkSession.selected_network)}.`);
       } catch (error) {
-        if (workerSaveStatus) workerSaveStatus.textContent = `Worker connect order signing failed: ${error.message || error}`;
+        workerSetSaveStatus("", {walletError: error, prefix: "Worker connect order signing failed: "});
       } finally {
         workerNetworkSignatureInFlight = false;
         renderWorkerNetworkSurface();
@@ -3633,10 +3680,6 @@
             workerSelectNetwork(selected, {requestedRing: workerNetworkRing.value});
           }
         });
-      }
-      if (workerNetworkConnectWallet && !workerNetworkConnectWallet.dataset.workerBound) {
-        workerNetworkConnectWallet.dataset.workerBound = "true";
-        workerNetworkConnectWallet.addEventListener("click", connectWorkerPrimaryWallet, true);
       }
       if (workerNetworkSignOrder && !workerNetworkSignOrder.dataset.workerBound) {
         workerNetworkSignOrder.dataset.workerBound = "true";

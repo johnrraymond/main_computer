@@ -410,9 +410,15 @@
       padding: 12px 14px;
     }
     .worker-actions output {
+      flex: 1 1 320px;
+      min-width: 0;
+      max-width: 100%;
       color: var(--muted);
       font-weight: 700;
       line-height: 1.35;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      white-space: normal;
     }
     .worker-actions div {
       display: flex;
@@ -752,6 +758,8 @@
       justify-content: space-between;
       gap: 12px;
       flex-wrap: wrap;
+      min-width: 0;
+      max-width: 100%;
       margin-top: 0;
     }
     .worker-actions div {
@@ -839,4 +847,16 @@
       .worker-inline-form button {
         width: 100%;
       }
+    }
+
+
+    /* Keep wallet/provider errors from widening the worker surface. */
+    .worker-actions output,
+    #worker-save-status {
+      flex: 1 1 320px;
+      min-width: 0;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      white-space: normal;
     }

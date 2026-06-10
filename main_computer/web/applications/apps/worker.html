@@ -66,7 +66,7 @@
 
       <div class="worker-card worker-connect-order-card" aria-label="Signed worker connection">
         <h4>Signed Worker Connection</h4>
-        <p class="worker-card-note">Choose a ring, connect a wallet, then sign a connection/account-balance order so the selected Hub knows which wallet to credit for completed work.</p>
+        <p class="worker-card-note">Choose a ring, then sign a connection/account-balance order. Network selection handles wallet connection so the selected Hub knows which wallet to credit for completed work.</p>
         <label>
           <span>Requested ring</span>
           <select id="worker-network-ring" autocomplete="off">
@@ -84,7 +84,6 @@
           <div><dt>Worker runtime</dt><dd id="worker-network-runtime">Inactive</dd></div>
         </dl>
         <div class="worker-inline-actions">
-          <button type="button" id="worker-network-connect-wallet">Connect Wallet</button>
           <button type="button" id="worker-network-sign-order" disabled>Sign Connect Order</button>
         </div>
       </div>
