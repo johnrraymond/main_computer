@@ -672,23 +672,56 @@
     }
 
     .network-token {
+      --token-face: var(--mc-gray-face);
+      --token-edge-hi: var(--mc-gray-edge-hi);
+      --token-edge-mid: var(--mc-gray-edge-mid);
+      --token-edge-lo: var(--mc-gray-edge-lo);
+
       display: inline-flex;
       align-items: center;
       gap: 4px;
       padding: 2px 6px;
       border-radius: 999px;
-      border: 1px solid rgba(20,20,17,.92);
-      background: rgba(0,0,0,.24);
+      border: 1px solid var(--token-edge-mid);
+      background: var(--token-face);
+      color: rgba(18,15,8,.94);
+      box-shadow:
+        inset 1px 1px 0 var(--token-edge-hi),
+        inset -1px -1px 0 var(--token-edge-lo);
       font-size: 11px;
       font-weight: 900;
       letter-spacing: .04em;
       text-transform: uppercase;
+      text-shadow: 0 1px 0 rgba(255,255,255,.22);
     }
 
-    .network-token.green { color: #d8f2aa; }
-    .network-token.yellow { color: #fff1bd; }
-    .network-token.red { color: #ffc8b8; }
-    .network-token.gray { color: #ece5d3; }
+    .network-token.green {
+      --token-face: var(--mc-green-face);
+      --token-edge-hi: var(--mc-green-edge-hi);
+      --token-edge-mid: var(--mc-green-edge-mid);
+      --token-edge-lo: var(--mc-green-edge-lo);
+    }
+
+    .network-token.yellow {
+      --token-face: var(--mc-gold-face);
+      --token-edge-hi: var(--mc-gold-edge-hi);
+      --token-edge-mid: var(--mc-gold-edge-mid);
+      --token-edge-lo: var(--mc-gold-edge-lo);
+    }
+
+    .network-token.red {
+      --token-face: var(--mc-coral-face);
+      --token-edge-hi: var(--mc-coral-edge-hi);
+      --token-edge-mid: var(--mc-coral-edge-mid);
+      --token-edge-lo: var(--mc-coral-edge-lo);
+    }
+
+    .network-token.gray {
+      --token-face: var(--mc-gray-face);
+      --token-edge-hi: var(--mc-gray-edge-hi);
+      --token-edge-mid: var(--mc-gray-edge-mid);
+      --token-edge-lo: var(--mc-gray-edge-lo);
+    }
 
     .ports {
       display: grid;

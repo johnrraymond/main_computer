@@ -4,7 +4,68 @@ import unittest
 from unittest.mock import patch
 
 from main_computer.hub_networks import load_hub_network_registry
-from main_computer.viewport_route_dispatch import _control_panel_network_status_cards
+from main_computer.viewport_route_dispatch import _control_panel_energy_credits_service, _control_panel_network_status_cards
+
+
+class ControlPanelEnergyCreditsServiceTests(unittest.TestCase):
+    def _service_for(self, *networks: dict[str, object]) -> dict[str, object]:
+        return _control_panel_energy_credits_service({"ok": True, "networks": list(networks)})
+
+    def _network(self, key: str, reachable: bool, *, severity: str | None = None) -> dict[str, object]:
+        if severity is None:
+            severity = "green" if reachable else "red"
+        return {
+            "network_key": key,
+            "hub_reachable": reachable,
+            "state": "healthy" if reachable else "down",
+            "severity": severity,
+            "status_text": "reachable" if reachable else "unreachable",
+        }
+
+    def test_energy_credits_main_card_is_green_only_when_mainnet_reachable(self) -> None:
+        service = self._service_for(
+            self._network("mainnet", True),
+            self._network("testnet", True),
+        )
+
+        self.assertEqual(service["state"], "healthy")
+        self.assertEqual(service["severity"], "green")
+        self.assertIn("mainnet is reachable", service["summary"])
+
+    def test_energy_credits_main_card_is_yellow_when_only_testnet_reachable(self) -> None:
+        service = self._service_for(
+            self._network("mainnet", False),
+            self._network("testnet", True),
+        )
+
+        self.assertEqual(service["state"], "degraded")
+        self.assertEqual(service["severity"], "yellow")
+        self.assertIn("mainnet is unreachable", service["summary"])
+        self.assertIn("testnet", service["summary"])
+
+    def test_energy_credits_main_card_is_yellow_when_only_local_network_reachable(self) -> None:
+        service = self._service_for(
+            self._network("mainnet", False),
+            self._network("testnet", False, severity="gray"),
+            self._network("test", True),
+            self._network("dev", False, severity="gray"),
+        )
+
+        self.assertEqual(service["state"], "degraded")
+        self.assertEqual(service["severity"], "yellow")
+        self.assertIn("test", service["summary"])
+
+    def test_energy_credits_main_card_is_red_when_nothing_reachable(self) -> None:
+        service = self._service_for(
+            self._network("mainnet", False),
+            self._network("testnet", False, severity="yellow"),
+            self._network("test", False, severity="gray"),
+            self._network("dev", False, severity="gray"),
+        )
+
+        self.assertEqual(service["state"], "down")
+        self.assertEqual(service["severity"], "red")
+        self.assertEqual(service["summary"], "No Energy Credits networks are reachable")
 
 
 class ControlPanelNetworkUrlTests(unittest.TestCase):
