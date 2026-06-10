@@ -95,6 +95,38 @@ class ControlPanelNetworkUrlTests(unittest.TestCase):
         self.assertIn(("testnet-hub.greatlibrary.io", 443), connect_calls)
         self.assertIn(("mainnet-hub.greatlibrary.io", 443), connect_calls)
 
+    def test_remote_contract_status_uses_deployment_manifests_as_ground_truth(self) -> None:
+        registry = load_hub_network_registry()
+
+        with patch("main_computer.viewport_route_dispatch.load_hub_network_registry", return_value=registry), patch(
+            "main_computer.viewport_route_dispatch._control_panel_connect", return_value={"ok": False}
+        ), patch("main_computer.viewport_route_dispatch._control_panel_rpc_probe", return_value={"ok": True}):
+            payload = _control_panel_network_status_cards()
+
+        mainnet = next(network for network in payload["networks"] if network["network_key"] == "mainnet")
+        testnet = next(network for network in payload["networks"] if network["network_key"] == "testnet")
+
+        self.assertEqual(mainnet["contracts_status"], "known")
+        self.assertEqual(mainnet["contracts_count"], 3)
+        self.assertEqual(mainnet["contracts_source"], "deployment-manifest")
+        self.assertTrue(str(mainnet["contracts_manifest_path"]).endswith("runtime/deployments/mainnet/latest.json"))
+        self.assertEqual(
+            mainnet["contracts"]["hub_credit_bridge_escrow"],
+            "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
+        )
+        self.assertEqual(mainnet["contracts_manifest"]["environment"], "mainnet")
+
+        self.assertEqual(testnet["contracts_status"], "known")
+        self.assertEqual(testnet["contracts_count"], 3)
+        self.assertEqual(testnet["contracts_source"], "deployment-manifest")
+        self.assertTrue(str(testnet["contracts_manifest_path"]).endswith("runtime/deployments/testnet/latest.json"))
+        self.assertEqual(
+            testnet["contracts"]["hub_credit_bridge_escrow"],
+            "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
+        )
+        self.assertEqual(testnet["contracts_manifest"]["environment"], "testnet")
+
+
 
 if __name__ == "__main__":
     unittest.main()
