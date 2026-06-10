@@ -3,6 +3,24 @@
 name: "main-computer-local-platform-unleashed"
 
 services:
+  hub-site-directus:
+    image: "directus/directus:11.5.1"
+    restart: unless-stopped
+    environment:
+      SECRET: "${HUB_SITE_DIRECTUS_SECRET:-main-computer-local-hub-site-directus-secret}"
+      ADMIN_EMAIL: "${HUB_SITE_DIRECTUS_ADMIN_EMAIL:-admin@example.com}"
+      ADMIN_PASSWORD: "${HUB_SITE_DIRECTUS_ADMIN_PASSWORD:-Admin-password-1!}"
+      DB_CLIENT: "sqlite3"
+      DB_FILENAME: "/directus/database/data.db"
+      STORAGE_LOCATIONS: "local"
+      STORAGE_LOCAL_ROOT: "/directus/uploads"
+      PUBLIC_URL: "http://127.0.0.1:28200"
+    volumes:
+      - "hub-site_directus_database_20260519170018:/directus/database"
+      - "hub-site_directus_uploads_20260519170018:/directus/uploads"
+    ports:
+      - "127.0.0.1:28200:8055"
+
   blog-local:
     build:
       context: "../site-server"
@@ -80,6 +98,8 @@ services:
       context: "../site-server"
     image: "main-computer-site-hub-site-prod:latest"
     restart: unless-stopped
+    depends_on:
+      - "hub-site-directus"
     environment:
       SITE_ID: "hub-site"
       SITE_NAME: "Hub Site"
@@ -88,6 +108,9 @@ services:
       MC_SITE_ID: "hub-site"
       MC_RUNTIME_LANE: "local"
       CONTENT_ROOT: "/app/runtime/websites"
+      MC_DIRECTUS_SERVICE: "hub-site-directus"
+      DIRECTUS_URL: "http://hub-site-directus:8055"
+      DIRECTUS_PUBLIC_URL: "http://127.0.0.1:28200"
     volumes:
       - "../../../runtime/websites:/app/runtime/websites:ro"
     ports:
@@ -98,6 +121,8 @@ services:
       context: "../site-server"
     image: "main-computer-site-hub-site-dev:latest"
     restart: unless-stopped
+    depends_on:
+      - "hub-site-directus"
     environment:
       SITE_ID: "hub-site"
       SITE_NAME: "Hub Site"
@@ -106,7 +131,52 @@ services:
       MC_SITE_ID: "hub-site"
       MC_RUNTIME_LANE: "dev"
       CONTENT_ROOT: "/app/runtime/websites"
+      MC_DIRECTUS_SERVICE: "hub-site-directus"
+      DIRECTUS_URL: "http://hub-site-directus:8055"
+      DIRECTUS_PUBLIC_URL: "http://127.0.0.1:28200"
     volumes:
       - "../../../runtime/websites:/app/runtime/websites:ro"
     ports:
       - "0.0.0.0:18082:8080"
+
+  test-site-prod:
+    build:
+      context: "../site-server"
+    image: "main-computer-site-test-site-prod:latest"
+    restart: unless-stopped
+    environment:
+      SITE_ID: "test-site"
+      SITE_NAME: "test site"
+      SITE_KIND: "static-site"
+      SITE_LANE: "local"
+      MC_SITE_ID: "test-site"
+      MC_RUNTIME_LANE: "local"
+      CONTENT_ROOT: "/app/runtime/websites"
+    volumes:
+      - "../../../runtime/websites:/app/runtime/websites:ro"
+    ports:
+      - "0.0.0.0:18102:8080"
+
+  test-site-dev:
+    build:
+      context: "../site-server"
+    image: "main-computer-site-test-site-dev:latest"
+    restart: unless-stopped
+    environment:
+      SITE_ID: "test-site"
+      SITE_NAME: "test site"
+      SITE_KIND: "static-site"
+      SITE_LANE: "dev"
+      MC_SITE_ID: "test-site"
+      MC_RUNTIME_LANE: "dev"
+      CONTENT_ROOT: "/app/runtime/websites"
+    volumes:
+      - "../../../runtime/websites:/app/runtime/websites:ro"
+    ports:
+      - "0.0.0.0:18103:8080"
+
+volumes:
+  hub-site_directus_database_20260519170018:
+    name: "hub-site_directus_database_20260519170018"
+  hub-site_directus_uploads_20260519170018:
+    name: "hub-site_directus_uploads_20260519170018"

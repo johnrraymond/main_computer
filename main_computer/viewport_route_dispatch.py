@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import ipaddress
 import platform
 import re
@@ -631,22 +632,62 @@ def _control_panel_repo_root_from_profile(profile: object) -> Path:
     return Path.cwd()
 
 
-def _control_panel_deployment_manifest_path(profile: object) -> Path:
+def _control_panel_unique_paths(paths: list[Path]) -> list[Path]:
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        try:
+            marker = str(path.resolve(strict=False))
+        except OSError:
+            marker = str(path)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        unique.append(path)
+    return unique
+
+
+def _control_panel_deployment_manifest_candidates(profile: object, runtime_root: Path | None = None) -> list[Path]:
+    network_key = str(getattr(profile, "network_key", "") or "").strip()
     raw_path = getattr(profile, "deployment_manifest_path", None)
-    if raw_path is None:
-        raw_path = Path("runtime") / "deployments" / str(getattr(profile, "network_key", "")) / "latest.json"
-    path = Path(raw_path)
-    if path.is_absolute():
-        return path
+    explicit_path = Path(raw_path) if raw_path is not None else Path("runtime") / "deployments" / network_key / "latest.json"
+    repo_root = _control_panel_repo_root_from_profile(profile)
+    cwd = Path.cwd()
+    code_repo_root = Path(__file__).resolve().parents[1]
 
-    cwd_candidate = Path.cwd() / path
-    if cwd_candidate.exists():
-        return cwd_candidate
+    roots: list[Path] = []
+    direct_candidates: list[Path] = []
+    if runtime_root is not None:
+        runtime_root = Path(runtime_root)
+        roots.append(runtime_root)
+        if runtime_root.name == "runtime":
+            roots.append(runtime_root.parent)
+            if network_key:
+                direct_candidates.append(runtime_root / "deployments" / network_key / "latest.json")
+        elif network_key:
+            direct_candidates.append(runtime_root / "runtime" / "deployments" / network_key / "latest.json")
+    roots.extend([repo_root, cwd, code_repo_root])
 
-    source_candidate = _control_panel_repo_root_from_profile(profile) / path
-    if source_candidate.exists():
-        return source_candidate
-    return source_candidate
+    candidates: list[Path] = list(direct_candidates)
+    if explicit_path.is_absolute():
+        candidates.append(explicit_path)
+    else:
+        for root in roots:
+            candidates.append(root / explicit_path)
+        if network_key:
+            for root in roots:
+                candidates.append(root / "runtime" / "deployments" / network_key / "latest.json")
+                candidates.append(root / "deployments" / network_key / "latest.json")
+    return _control_panel_unique_paths(candidates)
+
+
+def _control_panel_deployment_manifest_path(profile: object, runtime_root: Path | None = None) -> tuple[Path, list[Path]]:
+    candidates = _control_panel_deployment_manifest_candidates(profile, runtime_root)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate, candidates
+    fallback = candidates[0] if candidates else Path("runtime") / "deployments" / str(getattr(profile, "network_key", "")) / "latest.json"
+    return fallback, candidates
 
 
 def _control_panel_manifest_contract_entries(payload: object) -> dict[str, dict[str, object]]:
@@ -678,8 +719,8 @@ def _control_panel_manifest_contract_address_map(entries: dict[str, dict[str, ob
     return addresses
 
 
-def _control_panel_deployment_contracts(profile: object) -> dict[str, object]:
-    manifest_path = _control_panel_deployment_manifest_path(profile)
+def _control_panel_deployment_contracts(profile: object, runtime_root: Path | None = None) -> dict[str, object]:
+    manifest_path, candidates = _control_panel_deployment_manifest_path(profile, runtime_root)
     result: dict[str, object] = {
         "ok": False,
         "path": str(manifest_path),
@@ -688,6 +729,7 @@ def _control_panel_deployment_contracts(profile: object) -> dict[str, object]:
         "contract_addresses": {},
         "count": 0,
         "error": "",
+        "candidates": [str(path) for path in candidates],
     }
 
     try:
@@ -749,7 +791,7 @@ def _control_panel_deployment_contracts(profile: object) -> dict[str, object]:
     return result
 
 
-def _control_panel_network_status_cards() -> dict[str, object]:
+def _control_panel_network_status_cards(runtime_root: Path | None = None) -> dict[str, object]:
     try:
         registry = load_hub_network_registry()
     except HubNetworkConfigError as exc:
@@ -799,7 +841,7 @@ def _control_panel_network_status_cards() -> dict[str, object]:
         state, severity, status_text = _control_panel_network_state(key, hub_reachable)
         rpc_probe = _control_panel_rpc_probe(profile.chain_rpc_url)
         rpc_reachable = rpc_probe.get("ok") if isinstance(rpc_probe, dict) else None
-        deployment_contracts = _control_panel_deployment_contracts(profile)
+        deployment_contracts = _control_panel_deployment_contracts(profile, runtime_root)
         contracts_known = bool(deployment_contracts.get("ok"))
         if key in {"test", "dev"} and rpc_reachable is False:
             state = "disabled"
@@ -836,6 +878,8 @@ def _control_panel_network_status_cards() -> dict[str, object]:
                 "contracts_count": deployment_contracts.get("count", 0),
                 "contracts_source": deployment_contracts.get("source"),
                 "contracts_manifest_path": deployment_contracts.get("path"),
+                "contracts_manifest_error": deployment_contracts.get("error"),
+                "contracts_manifest_candidates": deployment_contracts.get("candidates") or [],
                 "contracts_manifest": deployment_contracts,
                 "state": state,
                 "severity": severity,
@@ -933,7 +977,7 @@ def _control_panel_status(self) -> dict[str, object]:
     app_port = int(getattr(server, "server_port", 8765))
     configured_ports = _control_panel_known_ports(self)
     port_probes = {name: _control_panel_connect("127.0.0.1", port) for name, port in configured_ports.items()}
-    network_topology = _control_panel_network_status_cards()
+    network_topology = _control_panel_network_status_cards(runtime_root)
 
     git_payload: dict[str, object]
     try:

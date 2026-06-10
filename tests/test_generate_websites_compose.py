@@ -14,7 +14,11 @@ from main_computer.local_platform_compose import (
     cms_dependency_service_names_for_site,
     generated_compose_path,
     image_name_for_site_lane,
+    render_generated_site_compose,
     render_generated_websites_compose,
+    site_generated_compose_path,
+    site_generated_compose_relative_path,
+    write_generated_site_compose,
     write_generated_websites_compose,
 )
 from main_computer.local_platform_registry import default_registry_data, save_local_platform_registry
@@ -117,6 +121,107 @@ def test_write_generated_compose_is_deterministic(tmp_path: Path) -> None:
     assert first["repo_relative_path"] == GENERATED_COMPOSE_RELATIVE_PATH.as_posix()
     assert first["service_count"] == 4
     assert first_text == second_text
+
+
+def test_generated_site_compose_scopes_to_one_site_and_uses_site_relative_paths(tmp_path: Path) -> None:
+    data = default_registry_data()
+    _add_registry_site(data, "portfolio", 18100, 18101)
+    _add_registry_site(data, "greatlibrary", 18102, 18103)
+    save_local_platform_registry(tmp_path, data)
+    _write_site_manifest(tmp_path, "portfolio", name="My Portfolio", kind="portfolio-site")
+    _write_site_manifest(tmp_path, "greatlibrary", name="The Great Library", kind="static-site")
+
+    text = render_generated_site_compose(tmp_path, "portfolio")
+
+    assert "portfolio-prod:" in text
+    assert "portfolio-dev:" in text
+    assert "greatlibrary-prod:" not in text
+    assert "hub-local:" not in text
+    assert "blog-local:" not in text
+    assert 'SITE_ID: "portfolio"' in text
+    assert 'SITE_NAME: "My Portfolio"' in text
+    assert '"../../../../../deploy/local-platform/site-server"' in text
+    assert '"../../..:/app/runtime/websites:ro"' in text
+    assert site_generated_compose_relative_path(tmp_path, "portfolio").as_posix() == (
+        "runtime/websites/portfolio/.main-computer/local-platform/docker-compose.yml"
+    )
+
+
+def test_write_generated_site_compose_writes_selected_site_only(tmp_path: Path) -> None:
+    data = default_registry_data()
+    _add_registry_site(data, "portfolio", 18100, 18101)
+    save_local_platform_registry(tmp_path, data)
+    _write_site_manifest(tmp_path, "portfolio", name="My Portfolio", kind="portfolio-site")
+
+    result = write_generated_site_compose(tmp_path, "portfolio")
+    path = site_generated_compose_path(tmp_path, "portfolio")
+    text = path.read_text(encoding="utf-8")
+
+    assert result["ok"] is True
+    assert result["site_id"] == "portfolio"
+    assert result["path"] == str(path)
+    assert result["repo_relative_path"] == "runtime/websites/portfolio/.main-computer/local-platform/docker-compose.yml"
+    assert result["service_count"] == 2
+    assert result["services"] == ["portfolio-prod", "portfolio-dev"]
+    assert "portfolio-prod:" in text
+    assert "portfolio-dev:" in text
+    assert "hub-local:" not in text
+    assert "blog-local:" not in text
+
+
+def test_generated_site_compose_materializes_only_selected_directus_dependency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = default_registry_data()
+    _add_registry_site(data, "alpha", 18104, 18105)
+    _add_registry_site(data, "bravo", 18106, 18107)
+    save_local_platform_registry(tmp_path, data)
+    for site_id in ("alpha", "bravo"):
+        site_dir = tmp_path / "runtime" / "websites" / site_id
+        site_dir.mkdir(parents=True, exist_ok=True)
+        (site_dir / "site.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "id": site_id,
+                    "name": site_id.title(),
+                    "kind": "static-site",
+                    "backend": {
+                        "cms": {
+                            "provider": "directus",
+                            "required": True,
+                            "runtime": "deployed",
+                            "service": {
+                                "kind": "directus",
+                                "image": "directus/directus:11.5.1",
+                                "internal_url": f"http://{site_id}-directus:8055",
+                                "public_url": "",
+                            },
+                            "storage": {
+                                "database_volume": f"{site_id}_directus_database",
+                                "uploads_volume": f"{site_id}_directus_uploads",
+                            },
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setenv("MAIN_COMPUTER_LOCAL_PLATFORM_DIRECTUS_PORT_START", "28200")
+    monkeypatch.setenv("MAIN_COMPUTER_LOCAL_PLATFORM_DIRECTUS_PORT_END", "28210")
+
+    result = write_generated_site_compose(tmp_path, "alpha")
+    text = site_generated_compose_path(tmp_path, "alpha").read_text(encoding="utf-8")
+
+    assert result["services"] == ["alpha-directus", "alpha-prod", "alpha-dev"]
+    assert result["cms_services"] == ["alpha-directus"]
+    assert "alpha-directus:" in text
+    assert "alpha-prod:" in text
+    assert "alpha-dev:" in text
+    assert "bravo-directus:" not in text
+    assert "bravo-prod:" not in text
 
 
 
