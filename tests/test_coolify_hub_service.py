@@ -71,7 +71,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(payload["build_pack"], "dockerfile")
         self.assertEqual(payload["dockerfile_location"], "/Dockerfile.hub.mainnet")
         self.assertEqual(payload["ports_exposes"], "8790")
-        self.assertEqual(payload["domains"], "https://mainnet.greatlibrary.io")
+        self.assertEqual(payload["domains"], "https://mainnet-hub.greatlibrary.io:8790")
         self.assertNotIn("urls", payload)
         self.assertEqual(
             payload["start_command"],
@@ -111,7 +111,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertNotIn("git_repository", payload)
         self.assertNotIn("urls", payload)
         self.assertEqual(payload["ports_exposes"], "8785")
-        self.assertEqual(payload["domains"], "https://testnet.greatlibrary.io")
+        self.assertEqual(payload["domains"], "https://testnet-hub.greatlibrary.io:8785")
 
     def test_storage_payload_is_persistent_and_network_scoped(self) -> None:
         profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
@@ -142,7 +142,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(plan["runtime_dir"], "/data/main-computer/hub/testnet")
         self.assertEqual(plan["volume_name"], "testnet_hub_state")
         self.assertEqual(plan["chain_id"], 42424241)
-        self.assertEqual(plan["public_url"], "https://testnet.greatlibrary.io")
+        self.assertEqual(plan["public_url"], "https://testnet-hub.greatlibrary.io")
         self.assertEqual(plan["application_payload"]["dockerfile_location"], "/Dockerfile.hub.testnet")
         self.assertNotIn("urls", plan["application_payload"])
 
