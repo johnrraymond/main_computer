@@ -1,9 +1,35 @@
     const workerDefaultHubs = [
-      {name: "Local Hub", url: "http://127.0.0.1:8770", role: "use-provide"},
-      {name: "Friend Hub", url: "https://friend-hub.local", role: "use-only"}
+      {name: "Mainnet Hub", url: "https://mainnet-hub.greatlibrary.io", role: "use-provide", network: "mainnet"},
+      {name: "Testnet Hub", url: "https://testnet-hub.greatlibrary.io", role: "use-provide", network: "testnet"},
+      {name: "Local QBFT Test Hub", url: "http://127.0.0.1:8780", role: "use-provide", network: "test"},
+      {name: "Local Dev Hub", url: "http://127.0.0.1:8770", role: "use-provide", network: "dev"}
     ];
+    const WORKER_NETWORK_SESSION_ENDPOINT = "/api/applications/worker/network-session";
+    const WORKER_NETWORK_CONNECT_ORDER_ENDPOINT = "/api/applications/worker/network-connect-order";
+    const WORKER_NETWORK_ORDER = ["mainnet", "testnet", "test", "dev"];
+    const WORKER_NETWORK_NONE = "none";
+    const WORKER_RING_LABELS = {
+      "0": "Ring 0 - Operator",
+      "1": "Ring 1 - Protected",
+      "2": "Ring 2 - Public"
+    };
     let workerSettingsLoaded = false;
     let workerHubs = [...workerDefaultHubs];
+    let workerNetworkProfiles = {};
+    let workerNetworkSession = {
+      selected_network: WORKER_NETWORK_NONE,
+      connection_status: "disconnected",
+      requested_ring: "2",
+      assigned_ring: "",
+      profile: null,
+      signed_connection: {},
+      hub_status: null,
+      connected_hub_url: "",
+      connection_error: "",
+      connected_at: ""
+    };
+    let workerNetworkSessionInFlight = false;
+    let workerNetworkSignatureInFlight = false;
 
     const workerBridgeReadinessStorageKey = "main-computer-worker-bridge-readiness-v1";
     const WORKER_SETTINGS_POLL_INTERVAL_MS = 2500;
@@ -1052,6 +1078,7 @@
       workerRenderWalletControls();
       workerRenderTokenList(workerRecoveryEmailList, workerBridgeState.recoveryEmails, "No recovery emails added.", "data-worker-remove-recovery-email");
       workerRenderTokenList(workerRecoveryWalletList, workerBridgeState.recoveryWallets, "No recovery wallets added.", "data-worker-remove-recovery-wallet");
+      renderWorkerNetworkSurface();
     }
 
     function workerActiveRecoveryEmails() {
@@ -1165,7 +1192,7 @@
         } else if (entry.type === "provider.hydrate.no-account") {
           workerSaveStatus.textContent = "Connect a Worker wallet to request funds and multi-session keys.";
         } else if (entry.type === "provider.hydrate.wrong-chain") {
-          workerSaveStatus.textContent = `Wallet is on ${detail.chainId || "unknown chain"}; connect to ${WORKER_DEV_CHAIN_ID_HEX} before requesting keys.`;
+          workerSaveStatus.textContent = `Wallet is on ${detail.chainId || "unknown chain"}; connect to ${workerSelectedWalletChainIdHex()} before requesting keys.`;
         } else if (entry.type === "provider.hydrate.failed") {
           workerSaveStatus.textContent = `Wallet hydration failed: ${detail.message || "unknown error"}`;
         } else if (entry.type === "connect.ethers.requestAccounts.start") {
@@ -1173,13 +1200,13 @@
         } else if (entry.type === "connect.ethers.requestAccounts.resolved") {
           workerSaveStatus.textContent = "Wallet account request accepted; verifying signer and chain with ethers.";
         } else if (entry.type === "connect.wallet.addChain.start") {
-          workerSaveStatus.textContent = `Requesting MetaMask network update to ${WORKER_DEV_CHAIN_RPC_URL}.`;
+          workerSaveStatus.textContent = `Requesting MetaMask network update to ${workerSelectedWalletRpcUrl()}.`;
         } else if (entry.type === "connect.wallet.addChain.done") {
-          workerSaveStatus.textContent = "MetaMask network update accepted; switching to the Main Computer dev chain.";
+          workerSaveStatus.textContent = `MetaMask network update accepted; switching to ${workerSelectedWalletChainName()}.`;
         } else if (entry.type === "connect.wallet.rpcProof.done") {
-          workerSaveStatus.textContent = `MetaMask RPC ready on ${detail.chainId || WORKER_DEV_CHAIN_ID_HEX}.`;
+          workerSaveStatus.textContent = `MetaMask RPC ready on ${detail.chainId || workerSelectedWalletChainIdHex()}.`;
         } else if (entry.type === "connect.ethers.switchChain.start") {
-          workerSaveStatus.textContent = `Switching wallet to ${WORKER_DEV_CHAIN_ID_HEX}.`;
+          workerSaveStatus.textContent = `Switching wallet to ${workerSelectedWalletChainIdHex()}.`;
         } else if (entry.type === "connect.finalized.connected") {
           workerSaveStatus.textContent = `Connected wallet ${workerShortAddress(detail.address)} on ${detail.chainId || "unknown chain"}.`;
         } else if (entry.type === "disconnect.done") {
@@ -1208,6 +1235,41 @@
         }
       }
       return String(error);
+    }
+
+    function workerSelectedWalletProfile() {
+      const selected = workerNetworkKey(workerNetworkSession.selected_network);
+      return selected === WORKER_NETWORK_NONE ? null : (workerNetworkSession.profile || workerNetworkProfile(selected));
+    }
+
+    function workerSelectedWalletChainIdHex() {
+      const profile = workerSelectedWalletProfile();
+      const chainId = Number.parseInt(String(profile?.chain_id || ""), 10);
+      return Number.isFinite(chainId) && chainId > 0 ? `0x${chainId.toString(16)}` : WORKER_DEV_CHAIN_ID_HEX;
+    }
+
+    function workerSelectedWalletRpcUrl() {
+      return String(workerSelectedWalletProfile()?.chain_rpc_url || WORKER_DEV_CHAIN_RPC_URL);
+    }
+
+    function workerSelectedWalletChainName() {
+      return String(workerSelectedWalletProfile()?.display_name || WORKER_DEV_CHAIN_NAME);
+    }
+
+    function workerSelectedWalletChainParams(options = {}) {
+      const currencyName = String(options.currencyName || WORKER_DEV_CHAIN_CURRENCY_NAME);
+      const currencySymbol = String(options.currencySymbol || WORKER_DEV_CHAIN_CURRENCY_SYMBOL);
+      return {
+        chainId: workerSelectedWalletChainIdHex(),
+        chainName: workerSelectedWalletChainName(),
+        nativeCurrency: {
+          name: currencyName,
+          symbol: currencySymbol,
+          decimals: 18
+        },
+        rpcUrls: [workerSelectedWalletRpcUrl()],
+        blockExplorerUrls: []
+      };
     }
 
     function workerDevWalletChainParams(options = {}) {
@@ -1250,16 +1312,19 @@
 
     function workerWalletRpcBackoffMessage(reason = "") {
       const detail = String(reason || "").trim();
+      const chainName = workerSelectedWalletChainName();
       return detail
-        ? `MetaMask accepted the Main Computer dev-chain RPC update, but its internal RPC backoff is still clearing. Waiting before retrying provider access. ${detail}`
-        : "MetaMask accepted the Main Computer dev-chain RPC update, but its internal RPC backoff is still clearing. Waiting before retrying provider access.";
+        ? `MetaMask accepted the ${chainName} RPC update, but its internal RPC backoff is still clearing. Waiting before retrying provider access. ${detail}`
+        : `MetaMask accepted the ${chainName} RPC update, but its internal RPC backoff is still clearing. Waiting before retrying provider access.`;
     }
 
     function workerWalletRpcRepairMessage(reason = "") {
       const detail = String(reason || "").trim();
+      const chainName = workerSelectedWalletChainName();
+      const rpcUrl = workerSelectedWalletRpcUrl();
       return detail
-        ? `MetaMask is selected on the Main Computer dev chain, but its RPC connection is stale/loading. Requesting MetaMask to update this network to ${WORKER_DEV_CHAIN_RPC_URL}. ${detail}`
-        : `MetaMask is selected on the Main Computer dev chain, but its RPC connection is stale/loading. Requesting MetaMask to update this network to ${WORKER_DEV_CHAIN_RPC_URL}.`;
+        ? `MetaMask is selected on ${chainName}, but its RPC connection is stale/loading. Requesting MetaMask to update this network to ${rpcUrl}. ${detail}`
+        : `MetaMask is selected on ${chainName}, but its RPC connection is stale/loading. Requesting MetaMask to update this network to ${rpcUrl}.`;
     }
 
     function workerSleep(ms) {
@@ -1333,13 +1398,15 @@
     }
 
     function workerWalletMetadataNeedsRpcRepair(metadata) {
-      if (!metadata || metadata.chainId !== WORKER_DEV_CHAIN_ID_HEX) return false;
+      if (!metadata || metadata.chainId !== workerSelectedWalletChainIdHex()) return false;
       if (metadata.providerConnected === false) return true;
       if (metadata.networkVersion === "loading") return true;
       return false;
     }
 
     async function workerProveInjectedProviderRpc(browserProvider) {
+      const expectedChainId = workerSelectedWalletChainIdHex();
+      const chainName = workerSelectedWalletChainName();
       let chainId = "";
       try {
         chainId = workerNormalizeChainIdHex(
@@ -1354,12 +1421,12 @@
         };
       }
 
-      if (chainId !== WORKER_DEV_CHAIN_ID_HEX) {
+      if (chainId !== expectedChainId) {
         return {
           ok: false,
           chainId,
           wrongChain: true,
-          reason: `Wallet is on ${chainId || "unknown chain"}; expected ${WORKER_DEV_CHAIN_ID_HEX}.`
+          reason: `Wallet is on ${chainId || "unknown chain"}; expected ${expectedChainId} for ${chainName}.`
         };
       }
 
@@ -1375,7 +1442,7 @@
           ok: false,
           chainId,
           rpcUnavailable: true,
-          reason: `MetaMask cannot read the Main Computer dev chain through its current RPC: ${workerWalletErrorMessage(error)}`,
+          reason: `MetaMask cannot read ${chainName} through its current RPC: ${workerWalletErrorMessage(error)}`,
           error
         };
       }
@@ -1445,56 +1512,65 @@
         throw new Error("No ethers browser wallet provider is available.");
       }
 
-      const requestDevChainUpdate = async (params, repairMode) => {
+      const expectedChainId = workerSelectedWalletChainIdHex();
+      const expectedRpcUrl = workerSelectedWalletRpcUrl();
+
+      const requestSelectedChainUpdate = async (params, repairMode) => {
         workerWalletRecordEvent("connect.wallet.addChain.start", {
           reason,
           repairMode,
-          chainId: WORKER_DEV_CHAIN_ID_HEX,
-          rpcUrl: WORKER_DEV_CHAIN_RPC_URL,
+          chainId: expectedChainId,
+          rpcUrl: expectedRpcUrl,
           currencySymbol: params?.nativeCurrency?.symbol || ""
         });
         await workerBrowserProviderSend(
           browserProvider,
           "wallet_addEthereumChain",
           [params],
-          "wallet dev-chain update",
+          "wallet selected-network update",
           120000
         );
         workerWalletRecordEvent("connect.wallet.addChain.done", {
           reason,
           repairMode,
-          chainId: WORKER_DEV_CHAIN_ID_HEX,
-          rpcUrl: WORKER_DEV_CHAIN_RPC_URL,
+          chainId: expectedChainId,
+          rpcUrl: expectedRpcUrl,
           currencySymbol: params?.nativeCurrency?.symbol || ""
         });
       };
 
       try {
-        await requestDevChainUpdate(workerDevWalletChainParams(), "canonical-mcxlag");
+        await requestSelectedChainUpdate(workerSelectedWalletChainParams(), "canonical-mcxlag");
       } catch (error) {
         if (!workerWalletIsNativeCurrencySymbolMismatch(error)) {
           throw error;
         }
         workerWalletRecordEvent("connect.wallet.addChain.symbolMismatchFallback", {
           reason,
-          chainId: WORKER_DEV_CHAIN_ID_HEX,
+          chainId: expectedChainId,
           canonicalSymbol: WORKER_DEV_CHAIN_CURRENCY_SYMBOL,
           repairOnlySymbol: WORKER_DEV_CHAIN_LEGACY_REPAIR_CURRENCY_SYMBOL,
           message: workerWalletErrorMessage(error)
         });
-        await requestDevChainUpdate(workerDevWalletLegacyRpcRepairChainParams(), "legacy-symbol-rpc-repair");
+        await requestSelectedChainUpdate(
+          workerSelectedWalletChainParams({
+            currencyName: WORKER_DEV_CHAIN_LEGACY_REPAIR_CURRENCY_NAME,
+            currencySymbol: WORKER_DEV_CHAIN_LEGACY_REPAIR_CURRENCY_SYMBOL
+          }),
+          "legacy-symbol-rpc-repair"
+        );
       }
 
       workerWalletRecordEvent("connect.ethers.switchChain.start", {
         from: "wallet-provider",
-        to: WORKER_DEV_CHAIN_ID_HEX,
+        to: expectedChainId,
         reason
       });
       await workerBrowserProviderSend(
         browserProvider,
         "wallet_switchEthereumChain",
-        [{chainId: WORKER_DEV_CHAIN_ID_HEX}],
-        "wallet dev-chain switch",
+        [{chainId: expectedChainId}],
+        "wallet selected-network switch",
         60000
       );
     }
@@ -1694,7 +1770,12 @@
 
     async function workerEnsureDevWalletChain(browserProvider, injectedProvider = workerWalletSelectedProvider, options = {}) {
       const opts = options && typeof options === "object" ? options : {};
-      const reason = String(opts.reason || "ensure-dev-chain");
+      const reason = String(opts.reason || "ensure-selected-worker-network");
+      const selected = workerNetworkKey(workerNetworkSession.selected_network);
+      if (selected === WORKER_NETWORK_NONE) {
+        throw new Error("Select Mainnet, Testnet, Test, or Dev before connecting the worker wallet.");
+      }
+      const expectedChainId = workerSelectedWalletChainIdHex();
       const ethers = await workerGetEthers();
       let activeBrowserProvider = browserProvider || workerWalletBrowserProvider;
 
@@ -1709,10 +1790,10 @@
       let needsUpdate = Boolean(opts.forceUpdate);
       let updateReason = needsUpdate ? String(opts.forceReason || reason) : "";
 
-      if (metadata.chainId !== WORKER_DEV_CHAIN_ID_HEX) {
+      if (metadata.chainId !== expectedChainId) {
         needsUpdate = true;
         updateReason = metadata.chainId
-          ? `wallet is on ${metadata.chainId}; expected ${WORKER_DEV_CHAIN_ID_HEX}`
+          ? `wallet is on ${metadata.chainId}; expected ${expectedChainId}`
           : metadata.errors.chainId || "wallet chain is unknown";
       } else if (workerWalletMetadataNeedsRpcRepair(metadata)) {
         needsUpdate = true;
@@ -1734,8 +1815,8 @@
       }
 
       const chainId = workerNormalizeChainIdHex(metadata.chainId);
-      if (chainId !== WORKER_DEV_CHAIN_ID_HEX) {
-        throw new Error(`Wrong chain after wallet network reconciliation. Expected ${WORKER_DEV_CHAIN_ID_HEX}, got ${chainId || "unknown"}.`);
+      if (chainId !== expectedChainId) {
+        throw new Error(`Wrong chain after wallet network reconciliation. Expected ${expectedChainId}, got ${chainId || "unknown"}.`);
       }
 
       if (opts.probeRpc) {
@@ -1785,9 +1866,9 @@
         if (!address) {
           workerSetPrimaryWalletState({connected: false});
           workerWalletLastAction = "Wallet account disconnected.";
-        } else if (chainId !== WORKER_DEV_CHAIN_ID_HEX) {
+        } else if (chainId !== workerSelectedWalletChainIdHex()) {
           workerSetPrimaryWalletState({connected: false});
-          workerWalletLastAction = `Wallet is on ${chainId || "unknown chain"}; expected ${WORKER_DEV_CHAIN_ID_HEX}.`;
+          workerWalletLastAction = `Wallet is on ${chainId || "unknown chain"}; expected ${workerSelectedWalletChainIdHex()} for ${workerNetworkDisplayName(workerNetworkSession.selected_network)}.`;
         } else {
           const metadata = await workerReadInjectedProviderMetadata(workerWalletBrowserProvider, workerWalletSelectedProvider);
           if (workerWalletMetadataNeedsRpcRepair(metadata)) {
@@ -1823,6 +1904,13 @@
 
     async function workerHydrateConnectedWalletFromProvider(reason = "page-load") {
       loadWorkerBridgeState();
+
+      if (workerNetworkKey(workerNetworkSession.selected_network) === WORKER_NETWORK_NONE) {
+        workerSetPrimaryWalletState({connected: false});
+        workerWalletLastAction = "Select a worker network before connecting a wallet.";
+        renderWorkerBridgeReadiness();
+        return null;
+      }
 
       if (reason === "page-load") {
         if (workerWalletPageLoadHydrationAttempted) return workerWalletHydrationPromise || null;
@@ -1862,10 +1950,10 @@
             return snapshot;
           }
 
-          if (chainId !== WORKER_DEV_CHAIN_ID_HEX) {
+          if (chainId !== workerSelectedWalletChainIdHex()) {
             workerSetPrimaryWalletState({connected: false});
             workerWalletHookState = "idle";
-            workerWalletLastAction = `Wallet is on ${chainId || "unknown chain"}; expected ${WORKER_DEV_CHAIN_ID_HEX}.`;
+            workerWalletLastAction = `Wallet is on ${chainId || "unknown chain"}; expected ${workerSelectedWalletChainIdHex()} for ${workerNetworkDisplayName(workerNetworkSession.selected_network)}.`;
             workerWalletRecordEvent("provider.hydrate.wrong-chain", {reason, address, chainId});
             renderWorkerBridgeReadiness();
             return snapshot;
@@ -1955,7 +2043,7 @@
 
         workerWalletRecordEvent("connect.ethers.requestAccounts.resolved");
 
-        workerSetWalletOperationState("stabilizing", "Wallet accepted. Verifying signer and dev chain with ethers. Checking MetaMask RPC before enabling funding.");
+        workerSetWalletOperationState("stabilizing", "Wallet accepted. Verifying signer and selected worker network with ethers. Checking MetaMask RPC before enabling funding.");
 
         const postAccountNetwork = await workerEnsureDevWalletChain(
           context.browserProvider,
@@ -1976,8 +2064,8 @@
         if (!workerWalletValidAddress(address)) {
           throw new Error("Wallet did not provide a valid 0x address.");
         }
-        if (chainId !== WORKER_DEV_CHAIN_ID_HEX) {
-          throw new Error(`Wrong chain after connect. Expected ${WORKER_DEV_CHAIN_ID_HEX}, got ${chainId || "unknown"}.`);
+        if (chainId !== workerSelectedWalletChainIdHex()) {
+          throw new Error(`Wrong chain after connect. Expected ${workerSelectedWalletChainIdHex()}, got ${chainId || "unknown"}.`);
         }
 
         workerSetPrimaryWalletState({
@@ -2650,6 +2738,290 @@
             : "Buy + sell";
     }
 
+    function workerNetworkKey(value) {
+      const key = String(value || WORKER_NETWORK_NONE).trim().toLowerCase();
+      return [...WORKER_NETWORK_ORDER, WORKER_NETWORK_NONE].includes(key) ? key : WORKER_NETWORK_NONE;
+    }
+
+    function workerNetworkProfile(key = workerNetworkSession.selected_network) {
+      return workerNetworkProfiles[workerNetworkKey(key)] || null;
+    }
+
+    function workerNetworkDisplayName(key = workerNetworkSession.selected_network) {
+      const normalized = workerNetworkKey(key);
+      if (normalized === WORKER_NETWORK_NONE) return "None";
+      return workerNetworkProfile(normalized)?.display_name || normalized.charAt(0).toUpperCase() + normalized.slice(1);
+    }
+
+    function workerRingLabel(ring = workerNetworkSession.requested_ring) {
+      return WORKER_RING_LABELS[String(ring || "2")] || WORKER_RING_LABELS["2"];
+    }
+
+    function workerNetworkStatusLabel(status = workerNetworkSession.connection_status) {
+      const normalized = String(status || "disconnected");
+      if (normalized === "connected") return "Connected";
+      if (normalized === "connecting") return "Connecting";
+      if (normalized === "failed") return "Connection failed";
+      if (normalized === "stale") return "Reconnect required";
+      return "Disconnected";
+    }
+
+    function workerNetworkSignedConnection() {
+      const signed = workerNetworkSession.signed_connection;
+      return signed && typeof signed === "object" ? signed : {};
+    }
+
+    function workerNetworkWalletAddress() {
+      loadWorkerBridgeState();
+      return workerBridgeState.wallet?.address || "";
+    }
+
+    function workerNetworkCanSign() {
+      const selected = workerNetworkKey(workerNetworkSession.selected_network);
+      const walletAddress = workerNetworkWalletAddress();
+      return (
+        selected !== WORKER_NETWORK_NONE
+        && workerNetworkSession.connection_status === "connected"
+        && workerWalletValidAddress(walletAddress)
+        && !workerNetworkSignatureInFlight
+      );
+    }
+
+    function workerNetworkSetText(element, value) {
+      if (element) element.textContent = value || "—";
+    }
+
+    function workerApplyNetworkPayload(data) {
+      if (!data || typeof data !== "object") return;
+      workerNetworkProfiles = {};
+      const networks = Array.isArray(data.networks) ? data.networks : [];
+      networks.forEach((profile) => {
+        const key = workerNetworkKey(profile?.network || profile?.network_key);
+        if (key !== WORKER_NETWORK_NONE) {
+          workerNetworkProfiles[key] = profile;
+        }
+      });
+
+      const networkHubs = WORKER_NETWORK_ORDER
+        .map((key) => workerNetworkProfiles[key])
+        .filter(Boolean)
+        .map((profile) => ({
+          name: `${profile.display_name || workerNetworkDisplayName(profile.network)} Hub`,
+          url: profile.hub_url || profile.hub_public_url || "",
+          role: "use-provide",
+          network: profile.network || profile.network_key
+        }))
+        .filter((hub) => hub.url);
+      if (networkHubs.length) {
+        const manualHubs = workerHubs.filter((hub) => !hub.network);
+        workerHubs = [...networkHubs, ...manualHubs];
+        renderWorkerHubs();
+      }
+
+      const session = data.session && typeof data.session === "object" ? data.session : {};
+      workerNetworkSession = {
+        ...workerNetworkSession,
+        selected_network: workerNetworkKey(session.selected_network),
+        connection_status: String(session.connection_status || "disconnected"),
+        requested_ring: String(session.requested_ring || "2"),
+        assigned_ring: String(session.assigned_ring || ""),
+        profile: session.profile || workerNetworkProfile(session.selected_network),
+        signed_connection: session.signed_connection && typeof session.signed_connection === "object" ? session.signed_connection : {},
+        hub_status: session.hub_status || null,
+        connected_hub_url: String(session.connected_hub_url || ""),
+        connection_error: String(session.connection_error || ""),
+        connected_at: String(session.connected_at || "")
+      };
+      if (workerNetworkRing) workerNetworkRing.value = workerNetworkSession.requested_ring;
+      renderWorkerNetworkSurface();
+    }
+
+    function renderWorkerNetworkSurface() {
+      const selected = workerNetworkKey(workerNetworkSession.selected_network);
+      const profile = workerNetworkSession.profile || workerNetworkProfile(selected);
+      const signed = workerNetworkSignedConnection();
+      const walletAddress = workerNetworkWalletAddress();
+      const connected = workerNetworkSession.connection_status === "connected";
+      const signedForSelected = (
+        signed.network === selected
+        && String(signed.requested_ring || "") === String(workerNetworkSession.requested_ring || "")
+        && workerWalletValidAddress(signed.wallet_address || "")
+      );
+
+      workerNetworkTabs.forEach((tab) => {
+        const key = workerNetworkKey(tab.getAttribute("data-worker-network"));
+        tab.classList.toggle("is-selected", key === selected);
+        tab.setAttribute("aria-pressed", key === selected ? "true" : "false");
+        if (workerNetworkSessionInFlight && key === selected) {
+          tab.setAttribute("aria-busy", "true");
+        } else {
+          tab.removeAttribute("aria-busy");
+        }
+      });
+
+      workerNetworkSetText(workerSelectedNetworkPill, `Network: ${workerNetworkDisplayName(selected)}`);
+      workerNetworkSetText(workerNetworkConnectionPill, workerNetworkStatusLabel());
+      workerNetworkSetText(workerNetworkSelected, workerNetworkDisplayName(selected));
+      workerNetworkSetText(workerNetworkStatus, workerNetworkStatusLabel());
+      workerNetworkSetText(workerNetworkHub, selected === WORKER_NETWORK_NONE ? "—" : (profile?.hub_url || workerNetworkSession.connected_hub_url || "—"));
+      workerNetworkSetText(workerNetworkRpc, selected === WORKER_NETWORK_NONE ? "—" : (profile?.chain_rpc_url || "—"));
+      workerNetworkSetText(workerNetworkChainId, selected === WORKER_NETWORK_NONE ? "—" : (profile?.chain_id ? String(profile.chain_id) : "—"));
+      workerNetworkSetText(workerNetworkManifest, selected === WORKER_NETWORK_NONE ? "—" : (profile?.deployment_manifest_path || "runtime/deployments/" + selected + "/latest.json"));
+      workerNetworkSetText(workerNetworkWallet, walletAddress ? workerShortAddress(walletAddress) : "Not connected");
+      workerNetworkSetText(workerNetworkCreditWallet, signed.credit_wallet ? workerShortAddress(signed.credit_wallet) : walletAddress ? workerShortAddress(walletAddress) : "—");
+      workerNetworkSetText(workerNetworkRequestedRing, workerRingLabel(workerNetworkSession.requested_ring));
+      workerNetworkSetText(workerNetworkAssignedRing, signedForSelected ? workerRingLabel(signed.requested_ring) : "—");
+      workerNetworkSetText(workerNetworkSignatureStatus, signedForSelected ? "Signed locally; Hub registration can use this order." : "Not signed");
+      workerNetworkSetText(workerNetworkRuntime, signedForSelected && connected ? "Ready for activation" : "Inactive");
+
+      if (workerNetworkHelp) {
+        if (selected === WORKER_NETWORK_NONE) {
+          workerNetworkHelp.textContent = "No active worker network selected. Select Mainnet, Testnet, Test, or Dev to connect.";
+        } else if (connected) {
+          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} is connected. Choose a ring and sign the connect order before accepting jobs.`;
+        } else if (workerNetworkSession.connection_status === "failed") {
+          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} is selected, but the Hub is unreachable: ${workerNetworkSession.connection_error || "connection failed"}`;
+        } else {
+          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} is selected. Retry the connection when the Hub is available.`;
+        }
+      }
+
+      const fleet = {
+        mainnet: workerFleetMainnet,
+        testnet: workerFleetTestnet,
+        test: workerFleetTest,
+        dev: workerFleetDev
+      };
+      WORKER_NETWORK_ORDER.forEach((key) => {
+        const state = selected === key
+          ? signedForSelected && connected
+            ? "Ready / selected"
+            : connected
+              ? "Selected / needs signature"
+              : "Selected / not connected"
+          : "Standby";
+        workerNetworkSetText(fleet[key], state);
+      });
+
+      const canSelectRealNetwork = selected !== WORKER_NETWORK_NONE;
+      if (workerNetworkRetry) {
+        workerNetworkRetry.disabled = workerNetworkSessionInFlight || !canSelectRealNetwork;
+        workerNetworkRetry.textContent = workerNetworkSessionInFlight ? "Connecting…" : "Retry Connection";
+      }
+      if (workerNetworkDisconnect) {
+        workerNetworkDisconnect.disabled = workerNetworkSessionInFlight && selected === WORKER_NETWORK_NONE;
+      }
+      if (workerNetworkConnectWallet) {
+        workerNetworkConnectWallet.disabled = workerWalletHookState !== "idle" || Boolean(walletAddress) || selected === WORKER_NETWORK_NONE;
+        workerNetworkConnectWallet.textContent = walletAddress ? "Wallet Connected" : "Connect Wallet";
+      }
+      if (workerNetworkSignOrder) {
+        workerNetworkSignOrder.disabled = !workerNetworkCanSign();
+        workerNetworkSignOrder.textContent = workerNetworkSignatureInFlight ? "Signing…" : "Sign Connect Order";
+      }
+      if (workerNetworkRing && workerNetworkRing.value !== workerNetworkSession.requested_ring) {
+        workerNetworkRing.value = workerNetworkSession.requested_ring;
+      }
+    }
+
+    async function workerLoadNetworkSessionFromBackend() {
+      try {
+        const data = await workerGetJson(WORKER_NETWORK_SESSION_ENDPOINT);
+        workerApplyNetworkPayload(data);
+      } catch (error) {
+        workerNetworkSession = {
+          ...workerNetworkSession,
+          selected_network: WORKER_NETWORK_NONE,
+          connection_status: "failed",
+          connection_error: error.message || String(error)
+        };
+        renderWorkerNetworkSurface();
+      }
+    }
+
+    async function workerSelectNetwork(network, {requestedRing = null} = {}) {
+      const selected = workerNetworkKey(network);
+      const ring = String(requestedRing || workerNetworkRing?.value || workerNetworkSession.requested_ring || "2");
+      workerNetworkSessionInFlight = true;
+      workerNetworkSession = {
+        ...workerNetworkSession,
+        selected_network: selected,
+        requested_ring: ring,
+        connection_status: selected === WORKER_NETWORK_NONE ? "disconnected" : "connecting",
+        signed_connection: {}
+      };
+      renderWorkerNetworkSurface();
+      try {
+        const data = await workerPostJson(WORKER_NETWORK_SESSION_ENDPOINT, {network: selected, requested_ring: ring});
+        workerApplyNetworkPayload(data);
+        if (workerSaveStatus) {
+          workerSaveStatus.textContent = selected === WORKER_NETWORK_NONE
+            ? "Worker network fully disconnected."
+            : `${workerNetworkDisplayName(selected)} ${workerNetworkSession.connection_status === "connected" ? "connected" : "selected but not reachable"}.`;
+        }
+      } catch (error) {
+        workerNetworkSession = {
+          ...workerNetworkSession,
+          selected_network: selected,
+          requested_ring: ring,
+          connection_status: "failed",
+          connection_error: error.message || String(error)
+        };
+        renderWorkerNetworkSurface();
+        if (workerSaveStatus) workerSaveStatus.textContent = `Worker network connection failed: ${error.message || error}`;
+      } finally {
+        workerNetworkSessionInFlight = false;
+        renderWorkerNetworkSurface();
+      }
+    }
+
+    function workerBuildConnectOrderMessage() {
+      const selected = workerNetworkKey(workerNetworkSession.selected_network);
+      const profile = workerNetworkSession.profile || workerNetworkProfile(selected);
+      const walletAddress = workerNetworkWalletAddress();
+      return [
+        "Main Computer Worker Connect Order",
+        `network=${selected}`,
+        `hub=${profile?.hub_url || workerNetworkSession.connected_hub_url || ""}`,
+        `chain_id=${profile?.chain_id || ""}`,
+        `requested_ring=${workerNetworkSession.requested_ring || "2"}`,
+        `credit_wallet=${walletAddress}`,
+        `issued_at=${workerNowIso()}`
+      ].join("\\n");
+    }
+
+    async function signWorkerNetworkConnectOrder(event) {
+      event?.preventDefault?.();
+      if (!workerNetworkCanSign()) {
+        if (workerSaveStatus) workerSaveStatus.textContent = "Select a connected network and connect a wallet before signing the worker connection order.";
+        renderWorkerNetworkSurface();
+        return;
+      }
+      workerNetworkSignatureInFlight = true;
+      renderWorkerNetworkSurface();
+      try {
+        const context = await workerGetWalletProviderContext();
+        const signer = await context.browserProvider.getSigner();
+        const walletAddress = await signer.getAddress();
+        const message = workerBuildConnectOrderMessage();
+        const signature = await signer.signMessage(message);
+        const data = await workerPostJson(WORKER_NETWORK_CONNECT_ORDER_ENDPOINT, {
+          network: workerNetworkSession.selected_network,
+          requested_ring: workerNetworkSession.requested_ring,
+          wallet_address: walletAddress,
+          message,
+          signature
+        });
+        workerApplyNetworkPayload(data);
+        if (workerSaveStatus) workerSaveStatus.textContent = `Signed ${workerRingLabel(workerNetworkSession.requested_ring)} worker connect order for ${workerNetworkDisplayName(workerNetworkSession.selected_network)}.`;
+      } catch (error) {
+        if (workerSaveStatus) workerSaveStatus.textContent = `Worker connect order signing failed: ${error.message || error}`;
+      } finally {
+        workerNetworkSignatureInFlight = false;
+        renderWorkerNetworkSurface();
+      }
+    }
+
     function workerHubCanSell(hub) {
       const role = String(hub?.role || "use-provide");
       return role === "use-provide" || role === "provide-only";
@@ -2808,6 +3180,12 @@
     function readWorkerFormSettings() {
       const models = workerOfferModelsArray();
       return {
+        selectedNetwork: workerNetworkKey(workerNetworkSession.selected_network),
+        workerRequestedRing: String(workerNetworkRing?.value || workerNetworkSession.requested_ring || "2"),
+        workerConnectionStatus: String(workerNetworkSession.connection_status || "disconnected"),
+        workerConnectedHubUrl: String(workerNetworkSession.connected_hub_url || ""),
+        workerConnectionError: String(workerNetworkSession.connection_error || ""),
+        signedWorkerConnection: workerNetworkSignedConnection(),
         remoteEnabled: workerSavedBoolean(workerRemoteEnabled?.checked, false),
         remoteMode: workerElementValue(workerRemoteMode, "ask-when-busy"),
         remoteCreditsPerToken: workerPositiveDecimalString(workerElementValue(workerRemoteCreditsPerToken, "0.001"), "0.001"),
@@ -2876,6 +3254,18 @@
             role: String(hub.role || "use-provide")
           }))
           .filter((hub) => hub.name || hub.url);
+      }
+      if (Object.prototype.hasOwnProperty.call(parsed, "selectedNetwork")) {
+        workerNetworkSession = {
+          ...workerNetworkSession,
+          selected_network: workerNetworkKey(parsed.selectedNetwork),
+          requested_ring: String(parsed.workerRequestedRing || workerNetworkSession.requested_ring || "2"),
+          connection_status: String(parsed.workerConnectionStatus || workerNetworkSession.connection_status || "disconnected"),
+          connected_hub_url: String(parsed.workerConnectedHubUrl || workerNetworkSession.connected_hub_url || ""),
+          connection_error: String(parsed.workerConnectionError || ""),
+          signed_connection: parsed.signedWorkerConnection && typeof parsed.signedWorkerConnection === "object" ? parsed.signedWorkerConnection : workerNetworkSignedConnection()
+        };
+        renderWorkerNetworkSurface();
       }
       if (Object.prototype.hasOwnProperty.call(parsed, "remoteEnabled")) {
         workerApplyRemoteEnabledFromBackend(parsed.remoteEnabled, {requestStartedAt});
@@ -3136,8 +3526,51 @@
       renderWorkerHubs();
       loadWorkerBridgeState();
       renderWorkerBridgeReadiness();
+      const workerNetworkSessionLoadPromise = workerLoadNetworkSessionFromBackend();
       workerRefreshHubCreditBridgeConfig();
       workerRefreshFaucetRuntimeStatus();
+      workerNetworkTabs.forEach((tab) => {
+        if (tab.dataset.workerBound) return;
+        tab.dataset.workerBound = "true";
+        tab.addEventListener("click", () => {
+          workerSelectNetwork(tab.getAttribute("data-worker-network") || WORKER_NETWORK_NONE);
+        });
+      });
+      if (workerNetworkRetry && !workerNetworkRetry.dataset.workerBound) {
+        workerNetworkRetry.dataset.workerBound = "true";
+        workerNetworkRetry.addEventListener("click", () => {
+          workerSelectNetwork(workerNetworkSession.selected_network || WORKER_NETWORK_NONE);
+        });
+      }
+      if (workerNetworkDisconnect && !workerNetworkDisconnect.dataset.workerBound) {
+        workerNetworkDisconnect.dataset.workerBound = "true";
+        workerNetworkDisconnect.addEventListener("click", () => {
+          workerSelectNetwork(WORKER_NETWORK_NONE);
+        });
+      }
+      if (workerNetworkRing && !workerNetworkRing.dataset.workerBound) {
+        workerNetworkRing.dataset.workerBound = "true";
+        workerNetworkRing.addEventListener("change", () => {
+          const selected = workerNetworkKey(workerNetworkSession.selected_network);
+          workerNetworkSession = {
+            ...workerNetworkSession,
+            requested_ring: String(workerNetworkRing.value || "2"),
+            signed_connection: {}
+          };
+          renderWorkerNetworkSurface();
+          if (selected !== WORKER_NETWORK_NONE) {
+            workerSelectNetwork(selected, {requestedRing: workerNetworkRing.value});
+          }
+        });
+      }
+      if (workerNetworkConnectWallet && !workerNetworkConnectWallet.dataset.workerBound) {
+        workerNetworkConnectWallet.dataset.workerBound = "true";
+        workerNetworkConnectWallet.addEventListener("click", connectWorkerPrimaryWallet, true);
+      }
+      if (workerNetworkSignOrder && !workerNetworkSignOrder.dataset.workerBound) {
+        workerNetworkSignOrder.dataset.workerBound = "true";
+        workerNetworkSignOrder.addEventListener("click", signWorkerNetworkConnectOrder);
+      }
       if (workerAddHubForm && !workerAddHubForm.dataset.workerBound) {
         workerAddHubForm.dataset.workerBound = "true";
         workerAddHubForm.addEventListener("submit", (event) => {
@@ -3214,7 +3647,7 @@
         workerDisconnectWallet.addEventListener("click", disconnectWorkerPrimaryWallet, true);
       }
       workerBindWalletProviderEvents();
-      workerHydrateConnectedWalletFromProvider("page-load");
+      Promise.resolve(workerNetworkSessionLoadPromise).finally(() => workerHydrateConnectedWalletFromProvider("page-load"));
       if (workerRefreshBridgeReadiness && !workerRefreshBridgeReadiness.dataset.workerBound) {
         workerRefreshBridgeReadiness.dataset.workerBound = "true";
         workerRefreshBridgeReadiness.addEventListener("click", async () => {

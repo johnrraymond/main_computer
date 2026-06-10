@@ -15,6 +15,42 @@ active Terminal.
 A Terminal preview mount is not execution. It is a request for the UI/backend to
 show a Terminal action preview.
 
+## Runtime prompt
+
+Use Terminal when the user asks for shell commands, Git, tests, file listings,
+directory listings, active-terminal reuse, or terminal interruption.
+
+Canonical forms inside a fenced block tagged exactly `computer`:
+
+```computer
+/act terminal run "<command>" --cwd repo-root
+```
+
+```computer
+/act terminal run-in active "<command>" --cwd repo-root
+```
+
+```computer
+/act terminal interrupt active
+```
+
+Rules:
+- Use `terminal run` for a new command.
+- Use `terminal run-in active` only when the user explicitly asks to reuse the active/current terminal.
+- Use `terminal interrupt active` only for interruption.
+- Use `repo-root` for repository-relative work.
+- Put terminal commands inside double quotes.
+- Do not invent `/act` verbs such as `/act list` or `/act terminal ls`.
+- Do not use absolute Windows paths in `/act` lines.
+- Do not claim execution happened.
+
+Examples:
+- list files in main_computer -> `/act terminal run "dir main_computer" --cwd repo-root`
+- run git status -> `/act terminal run "git status" --cwd repo-root`
+- run Python tests -> `/act terminal run "python -m pytest" --cwd repo-root`
+- reuse active terminal for git status -> `/act terminal run-in active "git status" --cwd repo-root`
+- interrupt active terminal -> `/act terminal interrupt active`
+
 ## Canonical output forms
 
 Inside a fenced block tagged exactly `computer`, use only these `/act` forms.

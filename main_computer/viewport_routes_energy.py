@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from main_computer.viewport_state import *  # noqa: F401,F403
+from main_computer.hub_networks import HubNetworkConfigError, load_hub_network_registry
 
 class ViewportEnergyRoutesMixin:
     def _handle_energy_register_node(self) -> None:
@@ -162,7 +163,38 @@ class ViewportEnergyRoutesMixin:
         def text(raw: Any, default: str = "") -> str:
             return str(raw if raw is not None else default).strip()
 
+        selected_network = text(settings.get("selectedNetwork", settings.get("selected_network")), "none").lower()
+        if selected_network not in {"mainnet", "testnet", "test", "dev", "none"}:
+            selected_network = "none"
+        requested_ring = text(settings.get("workerRequestedRing", settings.get("worker_requested_ring")), "2")
+        if requested_ring not in {"0", "1", "2"}:
+            requested_ring = "2"
+        connection_status = text(settings.get("workerConnectionStatus", settings.get("worker_connection_status")), "disconnected")
+        if connection_status not in {"disconnected", "connecting", "connected", "failed", "stale"}:
+            connection_status = "disconnected"
+        signed_connection = settings.get("signedWorkerConnection", settings.get("signed_worker_connection"))
+        if isinstance(signed_connection, dict):
+            signed_connection = {
+                "network": text(signed_connection.get("network"), selected_network),
+                "requested_ring": text(signed_connection.get("requested_ring"), requested_ring),
+                "wallet_address": text(signed_connection.get("wallet_address"), ""),
+                "credit_wallet": text(signed_connection.get("credit_wallet"), ""),
+                "message": text(signed_connection.get("message"), ""),
+                "signature": text(signed_connection.get("signature"), ""),
+                "signed_at": text(signed_connection.get("signed_at"), ""),
+                "status": text(signed_connection.get("status"), "signed"),
+            }
+        else:
+            signed_connection = {}
+
         cleaned: dict[str, Any] = {
+            "selectedNetwork": selected_network,
+            "workerRequestedRing": requested_ring,
+            "workerConnectionStatus": connection_status,
+            "workerConnectedAt": text(settings.get("workerConnectedAt", settings.get("worker_connected_at")), ""),
+            "workerConnectionError": text(settings.get("workerConnectionError", settings.get("worker_connection_error")), ""),
+            "workerConnectedHubUrl": self._clean_hub_url(text(settings.get("workerConnectedHubUrl", settings.get("worker_connected_hub_url")), ""), allow_empty=True),
+            "signedWorkerConnection": signed_connection,
             "remoteEnabled": boolish(settings.get("remoteEnabled", settings.get("remote_enabled")), False),
             "remoteMode": text(settings.get("remoteMode", settings.get("remote_mode")), "ask-when-busy"),
             "remoteCreditsPerToken": text(settings.get("remoteCreditsPerToken", settings.get("remote_credits_per_token")), "0.001"),
@@ -263,6 +295,208 @@ class ViewportEnergyRoutesMixin:
             self._send_json({"ok": True, "hub_url": hub_url, "status": status, "reachable": bool(status.get("reachable"))})
         except Exception as exc:
             self.server.signal("api-worker-hub-health-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+    def _worker_network_order(self) -> list[str]:
+        return ["mainnet", "testnet", "test", "dev"]
+
+    def _worker_ring_order(self) -> list[dict[str, str]]:
+        return [
+            {"ring": "0", "label": "Ring 0 - Operator", "description": "operator / direct whitelist"},
+            {"ring": "1", "label": "Ring 1 - Protected", "description": "protected trusted workers"},
+            {"ring": "2", "label": "Ring 2 - Public", "description": "public/default workers"},
+        ]
+
+    def _worker_network_profile_payload(self, profile: Any) -> dict[str, Any]:
+        return {
+            "network": profile.network_key,
+            "network_key": profile.network_key,
+            "display_name": profile.display_name,
+            "kind": profile.kind,
+            "chain_id": profile.chain_id,
+            "chain_rpc_url": profile.chain_rpc_url or "",
+            "hub_url": profile.hub_url,
+            "hub_public_url": profile.hub_public_url or profile.hub_url,
+            "hub_bind_host": profile.hub_bind_host,
+            "hub_bind_port": profile.hub_bind_port,
+            "deployment_manifest_path": str(profile.deployment_manifest_path or ""),
+        }
+
+    def _worker_network_profiles_payload(self) -> list[dict[str, Any]]:
+        registry = load_hub_network_registry()
+        profiles: list[dict[str, Any]] = []
+        for key in self._worker_network_order():
+            if key not in registry.networks:
+                continue
+            profiles.append(self._worker_network_profile_payload(registry.get(key)))
+        return profiles
+
+    def _normalize_worker_network_key(self, value: Any, *, allow_none: bool = True) -> str:
+        key = str(value or "none").strip().lower()
+        allowed = set(self._worker_network_order())
+        if allow_none:
+            allowed.add("none")
+        if key not in allowed:
+            available = ", ".join([*self._worker_network_order(), "none"] if allow_none else self._worker_network_order())
+            raise ValueError(f"Unknown worker network {key!r}. Available networks: {available}.")
+        return key
+
+    def _normalize_worker_ring(self, value: Any) -> str:
+        ring = str(value if value is not None else "2").strip()
+        if ring not in {"0", "1", "2"}:
+            raise ValueError("Worker ring must be one of 0, 1, or 2.")
+        return ring
+
+    def _worker_network_session_payload(self, settings: dict[str, Any], *, check_hub: bool = False) -> dict[str, Any]:
+        profiles = self._worker_network_profiles_payload()
+        profiles_by_key = {str(profile["network"]): profile for profile in profiles}
+        selected = self._normalize_worker_network_key(settings.get("selectedNetwork", "none"))
+        requested_ring = self._normalize_worker_ring(settings.get("workerRequestedRing", "2"))
+        signed_connection = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
+
+        session: dict[str, Any] = {
+            "selected_network": selected,
+            "connection_status": "disconnected" if selected == "none" else str(settings.get("workerConnectionStatus") or "stale"),
+            "requested_ring": requested_ring,
+            "assigned_ring": str(signed_connection.get("requested_ring") or ""),
+            "connected_at": str(settings.get("workerConnectedAt") or ""),
+            "connection_error": str(settings.get("workerConnectionError") or ""),
+            "connected_hub_url": str(settings.get("workerConnectedHubUrl") or ""),
+            "signed_connection": signed_connection,
+            "profile": None,
+            "hub_status": None,
+        }
+
+        if selected != "none":
+            profile = profiles_by_key.get(selected)
+            if not profile:
+                session["connection_status"] = "failed"
+                session["connection_error"] = f"Selected worker network {selected!r} is not present in the Hub network registry."
+            else:
+                session["profile"] = profile
+                hub_url = str(profile.get("hub_url") or "")
+                if check_hub:
+                    status = self._fetch_hub_status(hub_url)
+                    session["hub_status"] = status
+                    session["connected_hub_url"] = hub_url
+                    if status.get("reachable"):
+                        session["connection_status"] = "connected"
+                        session["connection_error"] = ""
+                    else:
+                        session["connection_status"] = "failed"
+                        session["connection_error"] = str(status.get("error") or "Hub is unreachable.")
+                elif not session["connected_hub_url"]:
+                    session["connected_hub_url"] = hub_url
+
+        return {
+            "ok": True,
+            "networks": profiles,
+            "network_order": self._worker_network_order(),
+            "rings": self._worker_ring_order(),
+            "session": session,
+        }
+
+    def _handle_worker_network_session_load(self) -> None:
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Worker network sessions are only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                return
+            settings = self._load_worker_settings()
+            payload = self._worker_network_session_payload(settings, check_hub=bool(settings.get("selectedNetwork") not in {None, "", "none"}))
+            session = payload["session"]
+            if session["selected_network"] != "none":
+                settings["workerConnectionStatus"] = session["connection_status"]
+                settings["workerConnectedHubUrl"] = session.get("connected_hub_url", "")
+                settings["workerConnectionError"] = session.get("connection_error", "")
+                if session["connection_status"] == "connected":
+                    settings["workerConnectedAt"] = worker_now = datetime.now(timezone.utc).isoformat()
+                    session["connected_at"] = worker_now
+                self._save_worker_settings(settings)
+            self.server.signal("api-worker-network-session-load", selected=session["selected_network"], status=session["connection_status"])
+            self._send_json(payload)
+        except Exception as exc:
+            self.server.signal("api-worker-network-session-load-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+    def _handle_worker_network_session_select(self) -> None:
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Worker network sessions are only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                return
+            body = self._read_json()
+            selected = self._normalize_worker_network_key(body.get("network"))
+            requested_ring = self._normalize_worker_ring(body.get("requested_ring", "2"))
+            settings = self._load_worker_settings()
+            settings["selectedNetwork"] = selected
+            settings["workerRequestedRing"] = requested_ring
+            settings["signedWorkerConnection"] = {}
+            if selected == "none":
+                settings.update(
+                    {
+                        "workerConnectionStatus": "disconnected",
+                        "workerConnectedAt": "",
+                        "workerConnectionError": "",
+                        "workerConnectedHubUrl": "",
+                    }
+                )
+                saved = self._save_worker_settings(settings)
+                payload = self._worker_network_session_payload(saved, check_hub=False)
+                self.server.signal("api-worker-network-disconnect")
+                self._send_json(payload)
+                return
+
+            payload = self._worker_network_session_payload(settings, check_hub=True)
+            session = payload["session"]
+            settings["workerConnectionStatus"] = session["connection_status"]
+            settings["workerConnectedHubUrl"] = session.get("connected_hub_url", "")
+            settings["workerConnectionError"] = session.get("connection_error", "")
+            settings["workerConnectedAt"] = datetime.now(timezone.utc).isoformat() if session["connection_status"] == "connected" else ""
+            saved = self._save_worker_settings(settings)
+            payload = self._worker_network_session_payload(saved, check_hub=False)
+            payload["session"]["hub_status"] = session.get("hub_status")
+            self.server.signal("api-worker-network-select", selected=selected, status=payload["session"]["connection_status"])
+            self._send_json(payload)
+        except Exception as exc:
+            self.server.signal("api-worker-network-select-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+    def _handle_worker_network_connect_order_sign(self) -> None:
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Worker network connection orders are only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                return
+            body = self._read_json()
+            selected = self._normalize_worker_network_key(body.get("network"), allow_none=False)
+            requested_ring = self._normalize_worker_ring(body.get("requested_ring", "2"))
+            wallet_address = self._normalize_worker_wallet_address(body.get("wallet_address"))
+            signature = str(body.get("signature") or "").strip()
+            message = str(body.get("message") or "").strip()
+            if not signature:
+                raise ValueError("signature is required.")
+            if not message:
+                raise ValueError("message is required.")
+            settings = self._load_worker_settings()
+            current = self._normalize_worker_network_key(settings.get("selectedNetwork", "none"))
+            if current != selected:
+                raise ValueError(f"Cannot sign for {selected!r}; current worker network is {current!r}.")
+            signed_connection = {
+                "network": selected,
+                "requested_ring": requested_ring,
+                "wallet_address": wallet_address,
+                "credit_wallet": wallet_address,
+                "message": message,
+                "signature": signature,
+                "signed_at": datetime.now(timezone.utc).isoformat(),
+                "status": "signed-local",
+            }
+            settings["workerRequestedRing"] = requested_ring
+            settings["signedWorkerConnection"] = signed_connection
+            saved = self._save_worker_settings(settings)
+            payload = self._worker_network_session_payload(saved, check_hub=False)
+            self.server.signal("api-worker-network-connect-order-sign", selected=selected, ring=requested_ring, wallet=wallet_address)
+            self._send_json(payload)
+        except Exception as exc:
+            self.server.signal("api-worker-network-connect-order-sign-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
     def _worker_multisession_key_cache_path(self) -> Path:
