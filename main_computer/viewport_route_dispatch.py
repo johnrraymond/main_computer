@@ -728,22 +728,39 @@ def _control_panel_energy_credits_service(network_topology: dict[str, object]) -
     if not isinstance(networks, list):
         networks = []
     ordered = [network for network in networks if isinstance(network, dict)]
-    green_networks = [network for network in ordered if network.get("severity") == "green"]
-    mainnet = next((network for network in ordered if network.get("network_key") == "mainnet"), {})
-    if green_networks:
+
+    def network_key(network: dict[str, object]) -> str:
+        return str(network.get("network_key") or "").lower()
+
+    def network_reachable(network: dict[str, object]) -> bool:
+        return bool(network.get("hub_reachable"))
+
+    mainnet = next((network for network in ordered if network_key(network) == "mainnet"), {})
+    mainnet_reachable = bool(mainnet and network_reachable(mainnet))
+    supporting_networks = [
+        network
+        for network in ordered
+        if network_key(network) != "mainnet" and network_reachable(network)
+    ]
+
+    if mainnet_reachable:
         state = "healthy"
-        summary = "Energy Credits reachable on " + ", ".join(str(network.get("network_key")) for network in green_networks)
-    elif mainnet and mainnet.get("severity") == "red":
-        state = "down"
-        summary = "Energy Credits mainnet is unreachable"
-    elif any(network.get("severity") == "yellow" for network in ordered):
+        severity = "green"
+        summary = "Energy Credits mainnet is reachable"
+    elif supporting_networks:
         state = "degraded"
-        summary = "Energy Credits remote testnet is unavailable"
+        severity = "yellow"
+        summary = (
+            "Energy Credits mainnet is unreachable; non-mainnet activity is reachable on "
+            + ", ".join(network_key(network) or "unknown" for network in supporting_networks)
+        )
     elif ordered:
-        state = "disabled"
-        summary = "Energy Credits local networks are not running"
+        state = "down"
+        severity = "red"
+        summary = "No Energy Credits networks are reachable"
     else:
         state = "unknown"
+        severity = "gray"
         summary = str(network_topology.get("error") or "Energy Credits network config unavailable")
 
     badges = [
@@ -761,6 +778,7 @@ def _control_panel_energy_credits_service(network_topology: dict[str, object]) -
         "id": "blockchain",
         "label": "Energy Credits",
         "state": state,
+        "severity": severity,
         "required": True,
         "summary": summary,
         "detail": detail,
