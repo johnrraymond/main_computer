@@ -1,0 +1,58 @@
+{
+  "cohorts": {
+    "cheap-fast": 30,
+    "cheap-traffic": 10,
+    "expensive-fast": 15,
+    "flaky": 5,
+    "normal": 35,
+    "normal-traffic": 7,
+    "premium-traffic": 3,
+    "slow-distant": 15
+  },
+  "duration_observed_seconds": 300.022,
+  "events": {
+    "lab.finished": 1,
+    "lab.started": 1,
+    "requester.burst_interval": 3,
+    "requester.request.submitted": 661,
+    "worker.heartbeat": 2469,
+    "worker.heartbeat.dropped_by_lab": 25,
+    "worker.poll": 2502,
+    "worker.register": 100
+  },
+  "events_path": "/lab-output/scheduler-lab-events.jsonl",
+  "generated_at": "2026-06-11T19:59:58.200607+00:00",
+  "latency": {
+    "requester.request.submitted": {
+      "count": 661,
+      "max_ms": 10003.184,
+      "mean_ms": 2214.535,
+      "p95_ms": 5480.729
+    },
+    "worker.heartbeat": {
+      "count": 2469,
+      "max_ms": 10005.375,
+      "mean_ms": 223.815,
+      "p95_ms": 443.535
+    },
+    "worker.poll": {
+      "count": 2502,
+      "max_ms": 10007.46,
+      "mean_ms": 911.811,
+      "p95_ms": 2166.22
+    },
+    "worker.register": {
+      "count": 100,
+      "max_ms": 439.43,
+      "mean_ms": 250.127,
+      "p95_ms": 392.105
+    }
+  },
+  "node_count": 120,
+  "node_kinds": {
+    "requester": 20,
+    "worker": 100
+  },
+  "problematic_nodes": 12,
+  "schema": "main-computer-hub-lab-run-summary/v1"
+}
