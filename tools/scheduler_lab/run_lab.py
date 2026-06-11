@@ -10,6 +10,7 @@ import signal
 import sys
 import time
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
@@ -30,6 +31,13 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+@dataclass
+class NodeRuntimeState:
+    local_busy_until: float = 0.0
+    request_blocked_until: float = 0.0
+    worker_force_until: float = 0.0
+
+
 def as_int(value: Any, default: int = 0) -> int:
     try:
         if value == "":
@@ -46,6 +54,11 @@ def as_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return default
+
+
+def env_flag(name: str, default: bool) -> bool:
+    fallback = "1" if default else "0"
+    return str(os.environ.get(name, fallback)).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def parse_json(value: Any, default: Any) -> Any:
@@ -70,12 +83,19 @@ def sample_exponential_ms(rng: random.Random, mean_ms: float, *, clamp_min: floa
     return max(clamp_min, min(clamp_max, value))
 
 
+def hazard_probability_per_tick(per_minute: float, tick_seconds: float) -> float:
+    clean_per_minute = max(0.0, float(per_minute))
+    clean_tick = max(0.0, float(tick_seconds))
+    return max(0.0, min(1.0, 1.0 - math.exp(-(clean_per_minute / 60.0) * clean_tick)))
+
+
 def event_payload(kind: str, node: dict[str, Any], **fields: Any) -> dict[str, Any]:
     return {
         "ts": utc_now(),
         "event": kind,
         "node_id": node.get("node_id", ""),
         "node_kind": node.get("kind", ""),
+        "behavior_mode": node.get("behavior_mode", ""),
         "cohort": node.get("cohort", ""),
         **fields,
     }
@@ -109,7 +129,10 @@ class EventSink:
     def summary(self, *, nodes: list[dict[str, Any]], started_at: float) -> dict[str, Any]:
         kinds = Counter(str(node.get("kind", "")) for node in nodes)
         cohorts = Counter(str(node.get("cohort", "")) for node in nodes)
+        behavior_modes = Counter(str(node.get("behavior_mode", "")) for node in nodes if str(node.get("behavior_mode", "")))
+        funding_remediation = Counter(str(node.get("funding_remediation", "")) for node in nodes if str(node.get("funding_remediation", "")))
         problematic = sum(1 for node in nodes if "problematic" in str(node.get("tags", "")).split(","))
+        initial_credits = sum(as_int(node.get("initial_credits"), 0) for node in nodes)
         latency_summary: dict[str, dict[str, float]] = {}
         for event_name, values in self.latency_ms.items():
             if not values:
@@ -123,13 +146,16 @@ class EventSink:
                 "max_ms": round(ordered[-1], 3),
             }
         return {
-            "schema": "main-computer-hub-lab-run-summary/v1",
+            "schema": "main-computer-hub-lab-run-summary/v2",
             "generated_at": utc_now(),
             "duration_observed_seconds": round(time.monotonic() - started_at, 3),
             "node_count": len(nodes),
             "node_kinds": dict(kinds),
             "cohorts": dict(cohorts),
+            "behavior_modes": dict(behavior_modes),
+            "funding_remediation": dict(funding_remediation),
             "problematic_nodes": problematic,
+            "configured_initial_credits": initial_credits,
             "events": dict(self.counts),
             "latency": latency_summary,
             "events_path": str(self.events_path),
@@ -156,9 +182,25 @@ async def http_call(sink: EventSink, node: dict[str, Any], event_name: str, func
 
 def _short_payload(payload: dict[str, Any]) -> dict[str, Any]:
     clean: dict[str, Any] = {}
-    for key in ("ok", "error", "request_count", "idempotent"):
+    for key in ("ok", "error", "reason_code", "request_count", "idempotent"):
         if key in payload:
             clean[key] = payload[key]
+    if isinstance(payload.get("account"), dict):
+        account = payload["account"]
+        clean["account"] = {
+            "account_id": account.get("account_id"),
+            "available_credits": account.get("available_credits", account.get("available_credits_display")),
+            "held_credits": account.get("held_credits", account.get("held_credits_display")),
+            "spent_credits": account.get("spent_credits", account.get("spent_credits_display")),
+        }
+    if isinstance(payload.get("transaction"), dict):
+        tx = payload["transaction"]
+        clean["transaction"] = {
+            "transaction_id": tx.get("transaction_id"),
+            "account_id": tx.get("account_id"),
+            "credits": tx.get("credits"),
+            "transaction_type": tx.get("transaction_type"),
+        }
     if isinstance(payload.get("request"), dict):
         request = payload["request"]
         clean["request"] = {
@@ -179,12 +221,152 @@ def _short_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return clean
 
 
-async def run_worker(node: dict[str, Any], *, args: argparse.Namespace, sink: EventSink, stop_at: float) -> None:
-    rng = random.Random(as_int(node.get("sim_seed"), DEFAULT_SEED))
-    client = HubClient(str(args.hub_base_url or node.get("hub_base_url") or DEFAULT_HUB_BASE_URL), timeout_seconds=args.http_timeout_seconds, retries=args.http_retries)
-    startup_delay = as_float(node.get("startup_delay_ms"), 0.0) / 1000.0
-    if startup_delay:
-        await asyncio.sleep(min(startup_delay, max(0.0, stop_at - time.monotonic())))
+def node_account_id(node: dict[str, Any], args: argparse.Namespace) -> str:
+    return str(node.get("account_id") or f"{args.account_id_prefix}-{node.get('node_id')}")
+
+
+def request_probability(node: dict[str, Any]) -> float:
+    return max(0.0, min(1.0, as_float(node.get("request_probability"), 1.0 if node.get("kind") == "requester" else 0.0)))
+
+
+def worker_offer_probability(node: dict[str, Any]) -> float:
+    return max(0.0, min(1.0, as_float(node.get("worker_offer_probability"), 1.0 if node.get("kind") == "worker" else 0.0)))
+
+
+def node_can_request(node: dict[str, Any]) -> bool:
+    return request_probability(node) > 0.0 and str(node.get("offered_credits", "")).strip() != ""
+
+
+def node_can_work(node: dict[str, Any]) -> bool:
+    if worker_offer_probability(node) <= 0.0:
+        return False
+    if as_int(node.get("max_concurrency"), 0) <= 0:
+        return False
+    models = parse_json(node.get("models_json"), [])
+    return bool(models or str(node.get("model", "")).strip())
+
+
+def account_available_credits(payload: dict[str, Any]) -> int:
+    account = payload.get("account") if isinstance(payload, dict) else None
+    if not isinstance(account, dict):
+        return 0
+    for key in ("available_credits", "available_credits_display"):
+        value = account.get(key)
+        try:
+            return int(float(str(value or "0").split()[0]))
+        except Exception:
+            continue
+    return 0
+
+
+def is_insufficient_credit_response(response: HubHttpResponse) -> bool:
+    if response.status not in {400, 402}:
+        return False
+    error = str(response.payload.get("error", "") if isinstance(response.payload, dict) else "")
+    reason = str(response.payload.get("reason_code", "") if isinstance(response.payload, dict) else "")
+    text = f"{reason} {error}".lower()
+    return "insufficient" in text and "credit" in text
+
+
+async def top_up_account_to(
+    *,
+    sink: EventSink,
+    node: dict[str, Any],
+    client: HubClient,
+    account_id: str,
+    desired_credits: int,
+    reason: str,
+) -> None:
+    desired = max(0, int(desired_credits))
+    if desired <= 0:
+        await sink.emit(event_payload("node.funding.skipped_zero_target", node, account_id=account_id, reason=reason))
+        return
+
+    balance = await http_call(sink, node, "node.funding.balance_checked", client.get_credit_balance, account_id)
+    available = account_available_credits(balance.payload)
+    if balance.ok and available >= desired:
+        await sink.emit(event_payload("node.funding.not_needed", node, account_id=account_id, available_credits=available, desired_credits=desired, reason=reason))
+        return
+
+    delta = desired if not balance.ok else max(0, desired - available)
+    if delta <= 0:
+        await sink.emit(event_payload("node.funding.not_needed", node, account_id=account_id, available_credits=available, desired_credits=desired, reason=reason))
+        return
+
+    await http_call(
+        sink,
+        node,
+        "node.funding.issued",
+        client.issue_credits,
+        account_id=account_id,
+        credits=delta,
+        memo=f"scheduler lab {reason} for {node.get('node_id')}",
+        metadata={
+            "scheduler_lab": True,
+            "node_id": node.get("node_id"),
+            "behavior_mode": node.get("behavior_mode", ""),
+            "reason": reason,
+            "desired_credits": desired,
+            "observed_available_credits": available,
+        },
+    )
+
+
+async def bootstrap_node_funding(node: dict[str, Any], *, args: argparse.Namespace, sink: EventSink, client: HubClient) -> None:
+    if not args.bootstrap_funding:
+        return
+    desired = as_int(node.get("initial_credits"), 0)
+    if desired <= 0:
+        await sink.emit(event_payload("node.funding.bootstrap.skipped_unfunded_start", node, account_id=node_account_id(node, args)))
+        return
+    await top_up_account_to(
+        sink=sink,
+        node=node,
+        client=client,
+        account_id=node_account_id(node, args),
+        desired_credits=desired,
+        reason="bootstrap",
+    )
+
+
+async def maybe_start_local_work(
+    node: dict[str, Any],
+    *,
+    state: NodeRuntimeState,
+    sink: EventSink,
+    rng: random.Random,
+    tick_seconds: float,
+) -> bool:
+    now = time.monotonic()
+    if now < state.local_busy_until:
+        return True
+    hazard = as_float(node.get("local_busy_probability_per_minute"), 0.0)
+    if hazard <= 0:
+        return False
+    if rng.random() >= hazard_probability_per_tick(hazard, tick_seconds):
+        return False
+    duration_ms = sample_lognormal_ms(
+        rng,
+        as_float(node.get("local_busy_median_ms"), 0.0),
+        0.55,
+        clamp_min=250.0,
+        clamp_max=max(250.0, as_float(node.get("local_busy_max_ms"), 60_000.0)),
+    )
+    state.local_busy_until = now + duration_ms / 1000.0
+    await sink.emit(event_payload("node.local_work.started", node, duration_ms=round(duration_ms, 3), busy_until_monotonic=round(state.local_busy_until, 3)))
+    return True
+
+
+async def run_worker_loop(
+    node: dict[str, Any],
+    *,
+    args: argparse.Namespace,
+    sink: EventSink,
+    stop_at: float,
+    state: NodeRuntimeState,
+    client: HubClient,
+    rng: random.Random,
+) -> None:
     await http_call(sink, node, "worker.register", client.register_worker, node)
 
     heartbeat_interval = max(0.1, as_float(node.get("heartbeat_interval_ms"), 2000.0) / 1000.0)
@@ -195,13 +377,30 @@ async def run_worker(node: dict[str, Any], *, args: argparse.Namespace, sink: Ev
 
     while time.monotonic() < stop_at:
         now = time.monotonic()
+        busy_with_local_work = False
+        if args.enable_local_busy:
+            busy_with_local_work = await maybe_start_local_work(node, state=state, sink=sink, rng=rng, tick_seconds=poll_interval)
+
         if now >= next_heartbeat:
             if rng.random() >= heartbeat_drop:
-                await http_call(sink, node, "worker.heartbeat", client.heartbeat_worker, node, active_requests=active_requests)
+                status = "busy" if busy_with_local_work else "available"
+                await http_call(sink, node, "worker.heartbeat", client.heartbeat_worker, node, active_requests=active_requests, status=status)
             else:
                 await sink.emit(event_payload("worker.heartbeat.dropped_by_lab", node))
             jitter = as_float(node.get("heartbeat_jitter_ms"), 0.0) / 1000.0
             next_heartbeat = now + heartbeat_interval + rng.uniform(0.0, max(0.0, jitter))
+
+        if busy_with_local_work:
+            await sink.emit(event_payload("worker.poll.skipped_local_work", node, remaining_ms=round(max(0.0, state.local_busy_until - time.monotonic()) * 1000.0, 3)))
+            await asyncio.sleep(min(poll_interval, max(0.0, stop_at - time.monotonic())))
+            continue
+
+        offer_probability = worker_offer_probability(node)
+        if time.monotonic() < state.worker_force_until:
+            offer_probability = max(offer_probability, 0.95)
+        if rng.random() > offer_probability:
+            await asyncio.sleep(min(poll_interval, max(0.0, stop_at - time.monotonic())))
+            continue
 
         response = await http_call(sink, node, "worker.poll", client.poll_worker, node, lease_seconds=args.lease_seconds)
         lease = response.payload.get("lease") if isinstance(response.payload, dict) else None
@@ -277,13 +476,75 @@ async def execute_lease(
         await http_call(sink, node, "worker.result.duplicate_submitted", client.submit_worker_result, node, lease, result)
 
 
-async def run_requester(node: dict[str, Any], *, args: argparse.Namespace, sink: EventSink, stop_at: float) -> None:
-    rng = random.Random(as_int(node.get("sim_seed"), DEFAULT_SEED))
-    client = HubClient(str(args.hub_base_url or node.get("hub_base_url") or DEFAULT_HUB_BASE_URL), timeout_seconds=args.http_timeout_seconds, retries=args.http_retries)
-    startup_delay = as_float(node.get("startup_delay_ms"), 0.0) / 1000.0
-    if startup_delay:
-        await asyncio.sleep(min(startup_delay, max(0.0, stop_at - time.monotonic())))
+async def handle_low_credit_remediation(
+    node: dict[str, Any],
+    *,
+    args: argparse.Namespace,
+    sink: EventSink,
+    client: HubClient,
+    rng: random.Random,
+    state: NodeRuntimeState,
+    response: HubHttpResponse,
+) -> None:
+    account_id = node_account_id(node, args)
+    configured = str(node.get("funding_remediation") or "work_to_earn").strip().lower()
+    remediation = configured
+    if configured == "mixed":
+        remediation = "work_to_earn" if node_can_work(node) and rng.random() < 0.70 else "faucet"
 
+    backoff_s = max(0.1, as_float(node.get("insufficient_credit_backoff_ms"), 3000.0) / 1000.0)
+    work_seconds = max(backoff_s, as_float(node.get("low_credit_work_seconds"), 30.0))
+
+    await sink.emit(
+        event_payload(
+            "requester.request.rejected.insufficient_credits",
+            node,
+            account_id=account_id,
+            remediation=configured,
+            chosen_remediation=remediation,
+            status=response.status,
+            error=str(response.payload.get("error", "")) if isinstance(response.payload, dict) else "",
+        )
+    )
+
+    if remediation == "faucet":
+        desired = max(
+            as_int(node.get("faucet_top_up_credits"), 0),
+            as_int(node.get("low_credit_threshold"), 0) + max(1, as_int(node.get("offered_credits"), 1)),
+        )
+        await sink.emit(event_payload("node.low_credit.remediation_faucet", node, account_id=account_id, desired_credits=desired))
+        await top_up_account_to(sink=sink, node=node, client=client, account_id=account_id, desired_credits=desired, reason="low_credit_faucet")
+        state.request_blocked_until = time.monotonic() + backoff_s
+        return
+
+    if remediation == "work_to_earn" and node_can_work(node):
+        state.worker_force_until = time.monotonic() + work_seconds
+        state.request_blocked_until = state.worker_force_until
+        await sink.emit(event_payload("node.low_credit.remediation_work_to_earn", node, account_id=account_id, work_seconds=round(work_seconds, 3)))
+        return
+
+    state.request_blocked_until = time.monotonic() + max(work_seconds, backoff_s)
+    await sink.emit(
+        event_payload(
+            "node.low_credit.remediation_dormant",
+            node,
+            account_id=account_id,
+            dormant_seconds=round(max(work_seconds, backoff_s), 3),
+            requested_remediation=configured,
+        )
+    )
+
+
+async def run_requester_loop(
+    node: dict[str, Any],
+    *,
+    args: argparse.Namespace,
+    sink: EventSink,
+    stop_at: float,
+    state: NodeRuntimeState,
+    client: HubClient,
+    rng: random.Random,
+) -> None:
     if args.request_mode == "registration_only":
         await sink.emit(event_payload("requester.skipped_registration_only", node))
         return
@@ -294,15 +555,29 @@ async def run_requester(node: dict[str, Any], *, args: argparse.Namespace, sink:
     burst_multiplier = max(1.0, as_float(node.get("burst_multiplier_median"), 1.0))
 
     while time.monotonic() < stop_at:
-        request_index += 1
         interval_ms = sample_exponential_ms(rng, mean_interval, clamp_min=100, clamp_max=args.max_request_interval_ms)
         # Bursts lower the next interval, but remain deterministic under the node seed.
         if rng.random() < min(1.0, burst_probability_per_minute / 60.0):
             interval_ms = max(25.0, interval_ms / burst_multiplier)
             await sink.emit(event_payload("requester.burst_interval", node, interval_ms=round(interval_ms, 3)))
 
+        if args.enable_local_busy and await maybe_start_local_work(node, state=state, sink=sink, rng=rng, tick_seconds=interval_ms / 1000.0):
+            await sink.emit(event_payload("requester.request.skipped_local_work", node, remaining_ms=round(max(0.0, state.local_busy_until - time.monotonic()) * 1000.0, 3)))
+            await asyncio.sleep(min(interval_ms / 1000.0, max(0.0, stop_at - time.monotonic())))
+            continue
+
+        if time.monotonic() < state.request_blocked_until:
+            await sink.emit(event_payload("requester.request.skipped_low_credit_mode", node, remaining_ms=round(max(0.0, state.request_blocked_until - time.monotonic()) * 1000.0, 3)))
+            await asyncio.sleep(min(interval_ms / 1000.0, max(0.0, stop_at - time.monotonic())))
+            continue
+
+        if rng.random() > request_probability(node):
+            await asyncio.sleep(min(interval_ms / 1000.0, max(0.0, stop_at - time.monotonic())))
+            continue
+
+        request_index += 1
         prompt = f"scheduler lab request {request_index} from {node.get('node_id')}"
-        await http_call(
+        response = await http_call(
             sink,
             node,
             "requester.request.submitted",
@@ -313,16 +588,73 @@ async def run_requester(node: dict[str, Any], *, args: argparse.Namespace, sink:
             account_id_prefix=args.account_id_prefix,
             prompt=prompt,
         )
+        if is_insufficient_credit_response(response):
+            await handle_low_credit_remediation(node, args=args, sink=sink, client=client, rng=rng, state=state, response=response)
         await asyncio.sleep(min(interval_ms / 1000.0, max(0.0, stop_at - time.monotonic())))
+
+
+async def run_node(
+    node: dict[str, Any],
+    *,
+    args: argparse.Namespace,
+    sink: EventSink,
+    stop_at: float,
+    worker_enabled: bool,
+    requester_enabled: bool,
+) -> None:
+    seed = as_int(node.get("sim_seed"), DEFAULT_SEED)
+    rng = random.Random(seed)
+    client = HubClient(str(args.hub_base_url or node.get("hub_base_url") or DEFAULT_HUB_BASE_URL), timeout_seconds=args.http_timeout_seconds, retries=args.http_retries)
+    startup_delay = as_float(node.get("startup_delay_ms"), 0.0) / 1000.0
+    if startup_delay:
+        await asyncio.sleep(min(startup_delay, max(0.0, stop_at - time.monotonic())))
+
+    state = NodeRuntimeState()
+    await bootstrap_node_funding(node, args=args, sink=sink, client=client)
+
+    tasks: list[asyncio.Task[None]] = []
+    if worker_enabled:
+        tasks.append(
+            asyncio.create_task(
+                run_worker_loop(
+                    node,
+                    args=args,
+                    sink=sink,
+                    stop_at=stop_at,
+                    state=state,
+                    client=client,
+                    rng=random.Random(seed ^ 0xA51C0DE),
+                )
+            )
+        )
+    if requester_enabled:
+        tasks.append(
+            asyncio.create_task(
+                run_requester_loop(
+                    node,
+                    args=args,
+                    sink=sink,
+                    stop_at=stop_at,
+                    state=state,
+                    client=client,
+                    rng=random.Random(seed ^ 0xC0FFEE),
+                )
+            )
+        )
+
+    if not tasks:
+        await sink.emit(event_payload("node.skipped_no_enabled_behavior", node, worker_enabled=worker_enabled, requester_enabled=requester_enabled))
+        return
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def select_nodes(nodes: list[dict[str, Any]], role: str) -> list[dict[str, Any]]:
     if role == "all":
         return nodes
     if role == "workers":
-        return [node for node in nodes if node.get("kind") == "worker"]
+        return [node for node in nodes if node_can_work(node)]
     if role == "requesters":
-        return [node for node in nodes if node.get("kind") == "requester"]
+        return [node for node in nodes if node_can_request(node)]
     raise ValueError(f"unsupported role: {role}")
 
 
@@ -373,10 +705,9 @@ async def run(args: argparse.Namespace) -> int:
         await sink.emit({"ts": utc_now(), "event": "lab.started", "role": args.role, "node_count": len(selected_nodes), "hub_base_url": args.hub_base_url, "node_list": str(node_list_path)})
         tasks = []
         for node in selected_nodes:
-            if node.get("kind") == "worker":
-                tasks.append(asyncio.create_task(run_worker(node, args=args, sink=sink, stop_at=stop_at)))
-            elif node.get("kind") == "requester":
-                tasks.append(asyncio.create_task(run_requester(node, args=args, sink=sink, stop_at=stop_at)))
+            worker_enabled = args.role != "requesters" and node_can_work(node)
+            requester_enabled = args.role != "workers" and node_can_request(node)
+            tasks.append(asyncio.create_task(run_node(node, args=args, sink=sink, stop_at=stop_at, worker_enabled=worker_enabled, requester_enabled=requester_enabled)))
 
         while time.monotonic() < stop_at and not stop_event.is_set():
             await asyncio.sleep(0.25)
@@ -395,7 +726,7 @@ async def run(args: argparse.Namespace) -> int:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run simulated Hub scheduler-lab workers/requesters in a container.")
+    parser = argparse.ArgumentParser(description="Run simulated Hub scheduler-lab nodes with adaptive worker/requester behavior.")
     parser.add_argument("--role", choices=["all", "workers", "requesters"], default=os.environ.get("LAB_ROLE", "all"))
     parser.add_argument("--hub-base-url", default=os.environ.get("HUB_BASE_URL", DEFAULT_HUB_BASE_URL))
     parser.add_argument("--node-list", default=os.environ.get("LAB_NODE_LIST", "/lab-output/120-First-Post.jsonl"))
@@ -415,6 +746,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--disable-problematic", action="store_true")
     parser.add_argument("--request-mode", choices=["worker_pull_v0", "legacy", "registration_only"], default=os.environ.get("REQUEST_MODE", "worker_pull_v0"))
     parser.add_argument("--account-id-prefix", default=os.environ.get("LAB_ACCOUNT_ID_PREFIX", "lab-account"))
+    parser.add_argument("--bootstrap-funding", dest="bootstrap_funding", action="store_true", default=env_flag("LAB_BOOTSTRAP_FUNDING", True))
+    parser.add_argument("--no-bootstrap-funding", dest="bootstrap_funding", action="store_false")
+    parser.add_argument("--enable-local-busy", dest="enable_local_busy", action="store_true", default=env_flag("LAB_ENABLE_LOCAL_BUSY", True))
+    parser.add_argument("--disable-local-busy", dest="enable_local_busy", action="store_false")
     parser.add_argument("--worker-poll-interval-ms", type=float, default=float(os.environ.get("WORKER_POLL_INTERVAL_MS", "500")))
     parser.add_argument("--lease-seconds", type=float, default=float(os.environ.get("LEASE_SECONDS", "45")))
     parser.add_argument("--max-runtime-ms", type=float, default=float(os.environ.get("MAX_RUNTIME_MS", "30000")))
