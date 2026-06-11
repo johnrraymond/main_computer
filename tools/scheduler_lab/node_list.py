@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 
-SCHEMA = "main-computer-hub-lab-node-grid/v1"
+SCHEMA = "main-computer-hub-lab-node-grid/v2"
 
 DEFAULT_TOTAL_NODES = 120
 DEFAULT_WORKER_RATIO = 5.0 / 6.0
@@ -98,9 +98,123 @@ REQUESTER_COHORTS: list[dict[str, Any]] = [
     },
 ]
 
+NODE_BEHAVIOR_MODES: dict[str, dict[str, Any]] = {
+    "worker_centric": {
+        "request_probability": 0.04,
+        "worker_offer_probability": 0.96,
+        "initial_credits": {"distribution": "discrete", "values": [{"value": 0, "weight": 25}, {"value": 2, "weight": 50}, {"value": 8, "weight": 25}]},
+        "funding_remediation": "work_to_earn",
+        "low_credit_threshold": 2,
+        "low_credit_work_seconds": 35,
+        "faucet_top_up_credits": 0,
+        "insufficient_credit_backoff_ms": 2500,
+        "local_busy_probability_per_minute": 0.20,
+        "local_busy_median_ms": 6500,
+        "local_busy_max_ms": 45000,
+        "request_interval_mean_ms": 9000,
+    },
+    "requester_centric": {
+        "request_probability": 0.96,
+        "worker_offer_probability": 0.08,
+        "initial_credits": {"distribution": "discrete", "values": [{"value": 0, "weight": 10}, {"value": 6, "weight": 45}, {"value": 24, "weight": 35}, {"value": 80, "weight": 10}]},
+        "funding_remediation": "faucet",
+        "low_credit_threshold": 4,
+        "low_credit_work_seconds": 20,
+        "faucet_top_up_credits": 20,
+        "insufficient_credit_backoff_ms": 4000,
+        "local_busy_probability_per_minute": 0.15,
+        "local_busy_median_ms": 5000,
+        "local_busy_max_ms": 30000,
+        "request_interval_mean_ms": 1700,
+    },
+    "mixed_market": {
+        "request_probability": 0.35,
+        "worker_offer_probability": 0.62,
+        "initial_credits": {"distribution": "discrete", "values": [{"value": 0, "weight": 12}, {"value": 3, "weight": 28}, {"value": 12, "weight": 42}, {"value": 40, "weight": 18}]},
+        "funding_remediation": "mixed",
+        "low_credit_threshold": 3,
+        "low_credit_work_seconds": 30,
+        "faucet_top_up_credits": 12,
+        "insufficient_credit_backoff_ms": 3000,
+        "local_busy_probability_per_minute": 0.35,
+        "local_busy_median_ms": 8500,
+        "local_busy_max_ms": 60000,
+        "request_interval_mean_ms": 4200,
+    },
+    "bursty_local": {
+        "request_probability": 0.24,
+        "worker_offer_probability": 0.58,
+        "initial_credits": {"distribution": "discrete", "values": [{"value": 0, "weight": 18}, {"value": 2, "weight": 30}, {"value": 10, "weight": 37}, {"value": 30, "weight": 15}]},
+        "funding_remediation": "work_to_earn",
+        "low_credit_threshold": 2,
+        "low_credit_work_seconds": 45,
+        "faucet_top_up_credits": 0,
+        "insufficient_credit_backoff_ms": 5000,
+        "local_busy_probability_per_minute": 0.95,
+        "local_busy_median_ms": 18000,
+        "local_busy_max_ms": 120000,
+        "request_interval_mean_ms": 5200,
+    },
+    "low_funded_bootstrap": {
+        "request_probability": 0.42,
+        "worker_offer_probability": 0.80,
+        "initial_credits": {"distribution": "discrete", "values": [{"value": 0, "weight": 55}, {"value": 1, "weight": 30}, {"value": 2, "weight": 15}]},
+        "funding_remediation": "work_to_earn",
+        "low_credit_threshold": 1,
+        "low_credit_work_seconds": 60,
+        "faucet_top_up_credits": 0,
+        "insufficient_credit_backoff_ms": 7000,
+        "local_busy_probability_per_minute": 0.25,
+        "local_busy_median_ms": 7000,
+        "local_busy_max_ms": 45000,
+        "request_interval_mean_ms": 3600,
+    },
+    "dormant_when_broke": {
+        "request_probability": 0.18,
+        "worker_offer_probability": 0.18,
+        "initial_credits": {"distribution": "discrete", "values": [{"value": 0, "weight": 35}, {"value": 4, "weight": 45}, {"value": 16, "weight": 20}]},
+        "funding_remediation": "dormant",
+        "low_credit_threshold": 2,
+        "low_credit_work_seconds": 90,
+        "faucet_top_up_credits": 0,
+        "insufficient_credit_backoff_ms": 15000,
+        "local_busy_probability_per_minute": 0.20,
+        "local_busy_median_ms": 12000,
+        "local_busy_max_ms": 90000,
+        "request_interval_mean_ms": 7000,
+    },
+}
+
+WORKER_BEHAVIOR_MODE_WEIGHTS = {
+    "distribution": "discrete",
+    "values": [
+        {"value": "worker_centric", "weight": 54},
+        {"value": "mixed_market", "weight": 22},
+        {"value": "bursty_local", "weight": 14},
+        {"value": "low_funded_bootstrap", "weight": 7},
+        {"value": "dormant_when_broke", "weight": 3},
+    ],
+}
+
+REQUESTER_BEHAVIOR_MODE_WEIGHTS = {
+    "distribution": "discrete",
+    "values": [
+        {"value": "requester_centric", "weight": 42},
+        {"value": "mixed_market", "weight": 30},
+        {"value": "bursty_local", "weight": 14},
+        {"value": "low_funded_bootstrap", "weight": 10},
+        {"value": "dormant_when_broke", "weight": 4},
+    ],
+}
+
+
 GRID_COLUMNS = [
-    "node_id", "kind", "cohort", "tags", "hub_base_url", "network", "ring", "chain_id", "sim_seed",
+    "node_id", "kind", "behavior_mode", "cohort", "tags", "account_id", "hub_base_url", "network", "ring", "chain_id", "sim_seed",
     "model", "models_json", "min_accepted_credits", "offered_credits", "max_concurrency",
+    "initial_credits", "low_credit_threshold", "funding_remediation", "faucet_top_up_credits",
+    "low_credit_work_seconds", "insufficient_credit_backoff_ms",
+    "request_probability", "worker_offer_probability",
+    "local_busy_probability_per_minute", "local_busy_median_ms", "local_busy_max_ms",
     "startup_delay_ms", "heartbeat_interval_ms", "heartbeat_jitter_ms", "heartbeat_drop_probability",
     "disconnect_hazard_per_minute", "stale_hazard_per_minute", "recovery_median_seconds",
     "probe_delivery_drop_probability", "probe_delivery_delay_median_ms", "ready_temperature",
@@ -193,6 +307,57 @@ def as_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def behavior_profile(mode: str) -> dict[str, Any]:
+    return dict(NODE_BEHAVIOR_MODES.get(str(mode), NODE_BEHAVIOR_MODES["mixed_market"]))
+
+
+def choose_behavior_mode(kind: str, rng: random.Random) -> str:
+    weights = WORKER_BEHAVIOR_MODE_WEIGHTS if kind == "worker" else REQUESTER_BEHAVIOR_MODE_WEIGHTS
+    return str(sample_distribution(weights, rng))
+
+
+def model_distribution_from_models(models: Sequence[str]) -> dict[str, Any]:
+    clean = [str(model) for model in models if str(model)]
+    if not clean:
+        clean = ["mock-ai-model-phase9"]
+    weight = max(1, int(100 / len(clean)))
+    return {"distribution": "discrete", "values": [{"value": model, "weight": weight} for model in clean]}
+
+
+def unique_weighted_values(items: Sequence[dict[str, Any]]) -> list[str]:
+    values: list[str] = []
+    for item in items:
+        value = str(item.get("value", "")).strip() if isinstance(item, dict) else ""
+        if value and value not in values:
+            values.append(value)
+    return values or ["mock-ai-model-phase9"]
+
+
+def worker_request_offer_distribution(models: Sequence[str]) -> dict[str, Any]:
+    if any("premium" in str(model).lower() for model in models):
+        return {"distribution": "discrete", "values": [{"value": 2, "weight": 55}, {"value": 5, "weight": 35}, {"value": 8, "weight": 10}]}
+    return {"distribution": "discrete", "values": [{"value": 1, "weight": 60}, {"value": 2, "weight": 35}, {"value": 5, "weight": 5}]}
+
+
+def common_behavior_fields(node_id: str, behavior_mode: str, rng: random.Random) -> dict[str, Any]:
+    profile = behavior_profile(behavior_mode)
+    return {
+        "behavior_mode": behavior_mode,
+        "account_id": f"lab-account-{node_id}",
+        "initial_credits": int(sample_distribution(profile["initial_credits"], rng)),
+        "low_credit_threshold": int(profile["low_credit_threshold"]),
+        "funding_remediation": str(profile["funding_remediation"]),
+        "faucet_top_up_credits": int(profile["faucet_top_up_credits"]),
+        "low_credit_work_seconds": int(profile["low_credit_work_seconds"]),
+        "insufficient_credit_backoff_ms": int(profile["insufficient_credit_backoff_ms"]),
+        "request_probability": float(profile["request_probability"]),
+        "worker_offer_probability": float(profile["worker_offer_probability"]),
+        "local_busy_probability_per_minute": float(profile["local_busy_probability_per_minute"]),
+        "local_busy_median_ms": int(profile["local_busy_median_ms"]),
+        "local_busy_max_ms": int(profile["local_busy_max_ms"]),
+    }
+
+
 def make_worker_node(
     *,
     rng: random.Random,
@@ -210,7 +375,10 @@ def make_worker_node(
 ) -> dict[str, Any]:
     node_seed = rng.randrange(1, 2**31)
     node_rng = random.Random(node_seed)
+    node_id = f"worker-{global_index:04d}"
     cohort_name = str(cohort["name"])
+    behavior_mode = choose_behavior_mode("worker", node_rng)
+    common_fields = common_behavior_fields(node_id, behavior_mode, node_rng)
     latency_multiplier = float(sample_distribution(cohort["latency_multiplier"], node_rng))
     failure_multiplier = float(sample_distribution(cohort["failure_multiplier"], node_rng))
     problematic = bool(cohort.get("always_problematic", False))
@@ -226,12 +394,16 @@ def make_worker_node(
     models = list(cohort.get("models", ["mock-ai-model-phase9"]))
     min_credits = int(sample_distribution(cohort["min_accepted_credits"], node_rng))
     max_concurrency = int(sample_distribution(cohort["max_concurrency"], node_rng))
+    request_offer_distribution = worker_request_offer_distribution(models)
+    offered_credits = sample_distribution(request_offer_distribution, node_rng)
+    model_distribution = model_distribution_from_models(models)
     ready_offsets = dict(cohort.get("ready_offsets", {}))
     heartbeat_interval = int(round(2000 * clamp(node_rng.lognormvariate(math.log(1.0), 0.07), 0.80, 1.25)))
     startup_delay = int(round(sample_distribution({"distribution": "lognormal", "median": 1200, "sigma": 0.75, "clamp_min": 25, "clamp_max": 18000}, node_rng)))
     return {
-        "node_id": f"worker-{global_index:04d}",
+        "node_id": node_id,
         "kind": "worker",
+        **common_fields,
         "cohort": cohort_name,
         "tags": ",".join(tags),
         "hub_base_url": hub_base_url,
@@ -242,7 +414,7 @@ def make_worker_node(
         "model": models[0],
         "models_json": as_json(models),
         "min_accepted_credits": min_credits,
-        "offered_credits": "",
+        "offered_credits": offered_credits,
         "max_concurrency": max_concurrency,
         "startup_delay_ms": startup_delay,
         "heartbeat_interval_ms": heartbeat_interval,
@@ -269,11 +441,11 @@ def make_worker_node(
         "result_submit_delay_median_ms": int(round(80 * latency_multiplier)),
         "result_submit_drop_probability": round(min(0.50, 0.0025 * failure_multiplier), 6),
         "result_submit_duplicate_probability": round(min(0.50, 0.0008 * failure_multiplier), 6),
-        "request_interval_mean_ms": "",
-        "burst_probability_per_minute": "",
-        "burst_multiplier_median": "",
-        "offered_credits_distribution_json": "",
-        "model_distribution_json": "",
+        "request_interval_mean_ms": int(behavior_profile(behavior_mode)["request_interval_mean_ms"]),
+        "burst_probability_per_minute": 0.04,
+        "burst_multiplier_median": 2.0,
+        "offered_credits_distribution_json": as_json(request_offer_distribution),
+        "model_distribution_json": as_json(model_distribution),
     }
 
 
@@ -294,19 +466,28 @@ def make_requester_node(
 ) -> dict[str, Any]:
     node_seed = rng.randrange(1, 2**31)
     node_rng = random.Random(node_seed)
+    node_id = f"requester-{global_index:04d}"
     cohort_name = str(cohort["name"])
+    behavior_mode = choose_behavior_mode("requester", node_rng)
+    common_fields = common_behavior_fields(node_id, behavior_mode, node_rng)
     problematic = False if disable_problematic else node_rng.random() < problematic_requester_rate
     tags = [cohort_name]
     if problematic:
         tags.append("problematic")
     failure_multiplier = problematic_failure_multiplier if problematic else 1.0
     interval_spec = dict(cohort["request_interval_ms"])
-    mean_interval = int(interval_spec.get("mean", 1400))
+    profile_interval = int(behavior_profile(behavior_mode)["request_interval_mean_ms"])
+    mean_interval = int(round((int(interval_spec.get("mean", 1400)) + profile_interval) / 2))
     first_offer = sample_distribution(cohort["offered_credits"], node_rng)
     first_model = sample_distribution({"distribution": "discrete", "values": cohort["model_weights"]}, node_rng)
+    worker_models = unique_weighted_values(cohort["model_weights"])
+    min_credits = int(sample_distribution({"distribution": "discrete", "values": [{"value": 1, "weight": 70}, {"value": 2, "weight": 25}, {"value": 5, "weight": 5}]}, node_rng))
+    max_concurrency = int(sample_distribution({"distribution": "discrete", "values": [{"value": 1, "weight": 88}, {"value": 2, "weight": 12}]}, node_rng))
+    worker_latency_multiplier = float(sample_distribution({"distribution": "lognormal", "median": 1.2, "sigma": 0.30, "clamp_min": 0.55, "clamp_max": 3.20}, node_rng))
     return {
-        "node_id": f"requester-{global_index:04d}",
+        "node_id": node_id,
         "kind": "requester",
+        **common_fields,
         "cohort": cohort_name,
         "tags": ",".join(tags),
         "hub_base_url": hub_base_url,
@@ -315,33 +496,33 @@ def make_requester_node(
         "chain_id": chain_id,
         "sim_seed": node_seed,
         "model": first_model,
-        "models_json": "",
-        "min_accepted_credits": "",
+        "models_json": as_json(worker_models),
+        "min_accepted_credits": min_credits,
         "offered_credits": first_offer,
-        "max_concurrency": "",
+        "max_concurrency": max_concurrency,
         "startup_delay_ms": int(round(sample_distribution({"distribution": "lognormal", "median": 700, "sigma": 0.70, "clamp_min": 25, "clamp_max": 12000}, node_rng))),
-        "heartbeat_interval_ms": "",
-        "heartbeat_jitter_ms": "",
-        "heartbeat_drop_probability": "",
+        "heartbeat_interval_ms": int(round(2600 * clamp(worker_latency_multiplier, 0.75, 2.50))),
+        "heartbeat_jitter_ms": int(round(140 * worker_latency_multiplier)),
+        "heartbeat_drop_probability": round(min(0.50, 0.004 * failure_multiplier), 6),
         "disconnect_hazard_per_minute": round(min(1.0, 0.0015 * failure_multiplier), 6),
-        "stale_hazard_per_minute": "",
-        "recovery_median_seconds": "",
-        "probe_delivery_drop_probability": "",
-        "probe_delivery_delay_median_ms": "",
-        "ready_temperature": "",
-        "ready_fast_median_ms": "",
-        "ready_normal_median_ms": "",
-        "ready_slow_median_ms": "",
-        "decline_energy": "",
-        "no_response_energy": "",
-        "post_ready_disconnect_probability": "",
-        "post_ready_capacity_race_probability": "",
-        "model_load_failure_probability": "",
-        "runtime_normal_median_ms": "",
-        "runtime_slow_median_ms": "",
-        "execution_disconnect_hazard_per_minute": "",
-        "execution_crash_probability": "",
-        "result_submit_delay_median_ms": "",
+        "stale_hazard_per_minute": round(min(1.0, 0.002 * failure_multiplier), 6),
+        "recovery_median_seconds": round(35 * clamp(failure_multiplier, 0.5, 5.0), 3),
+        "probe_delivery_drop_probability": round(min(0.50, 0.002 * failure_multiplier), 6),
+        "probe_delivery_delay_median_ms": int(round(45 * worker_latency_multiplier)),
+        "ready_temperature": 0.8,
+        "ready_fast_median_ms": int(round(160 * worker_latency_multiplier)),
+        "ready_normal_median_ms": int(round(600 * worker_latency_multiplier)),
+        "ready_slow_median_ms": int(round(2200 * worker_latency_multiplier)),
+        "decline_energy": 2.4,
+        "no_response_energy": 3.3,
+        "post_ready_disconnect_probability": round(min(0.75, 0.003 * failure_multiplier), 6),
+        "post_ready_capacity_race_probability": round(min(0.50, 0.001 * failure_multiplier), 6),
+        "model_load_failure_probability": round(min(0.50, 0.002 * failure_multiplier), 6),
+        "runtime_normal_median_ms": int(round(1900 * worker_latency_multiplier)),
+        "runtime_slow_median_ms": int(round(6500 * worker_latency_multiplier)),
+        "execution_disconnect_hazard_per_minute": round(min(1.0, 0.010 * failure_multiplier), 6),
+        "execution_crash_probability": round(min(0.75, 0.003 * failure_multiplier), 6),
+        "result_submit_delay_median_ms": int(round(100 * worker_latency_multiplier)),
         "result_submit_drop_probability": round(min(0.50, 0.001 * failure_multiplier), 6),
         "result_submit_duplicate_probability": "",
         "request_interval_mean_ms": mean_interval,
@@ -419,8 +600,16 @@ def build_nodes(
 
 def build_document(nodes: list[dict[str, Any]], *, seed: int, hub_base_url: str, network: str, ring: int, chain_id: int) -> dict[str, Any]:
     summary: dict[str, int] = {}
+    behavior_modes: dict[str, int] = {}
+    funding_remediation: dict[str, int] = {}
     for node in nodes:
         summary[node["kind"]] = summary.get(node["kind"], 0) + 1
+        mode = str(node.get("behavior_mode", ""))
+        if mode:
+            behavior_modes[mode] = behavior_modes.get(mode, 0) + 1
+        remediation = str(node.get("funding_remediation", ""))
+        if remediation:
+            funding_remediation[remediation] = funding_remediation.get(remediation, 0) + 1
     return {
         "schema": SCHEMA,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -432,7 +621,12 @@ def build_document(nodes: list[dict[str, Any]], *, seed: int, hub_base_url: str,
             "ring": ring,
             "chain_id": chain_id,
         },
-        "summary": {**summary, "total_nodes": len(nodes)},
+        "summary": {
+            **summary,
+            "total_nodes": len(nodes),
+            "behavior_modes": behavior_modes,
+            "funding_remediation": funding_remediation,
+        },
         "columns": GRID_COLUMNS,
         "nodes": nodes,
     }

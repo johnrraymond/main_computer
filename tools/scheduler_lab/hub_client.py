@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin
+from urllib.parse import urlencode, urljoin
 from urllib.request import Request, urlopen
 
 
@@ -111,11 +111,11 @@ class HubClient:
         }
         return self.post_json("/api/hub/v1/workers/register", payload)
 
-    def heartbeat_worker(self, node: dict[str, Any], *, active_requests: int = 0) -> HubHttpResponse:
+    def heartbeat_worker(self, node: dict[str, Any], *, active_requests: int = 0, status: str = "available") -> HubHttpResponse:
         models = _json_list(node.get("models_json")) or [str(node.get("model") or "mock-ai-model-phase9")]
         payload = {
             "worker_node_id": str(node.get("node_id")),
-            "status": "available",
+            "status": str(status or "available"),
             "model": str(node.get("model") or (models[0] if models else "mock-ai-model-phase9")),
             "models": models,
             "queue_depth": 0,
@@ -163,6 +163,7 @@ class HubClient:
         offered = _choose_from_distribution(node.get("offered_credits_distribution_json"), node.get("offered_credits"), request_index)
         model = _choose_from_distribution(node.get("model_distribution_json"), node.get("model"), request_index)
         node_id = str(node.get("node_id"))
+        account_id = str(node.get("account_id") or f"{account_id_prefix}-{node_id}")
         metadata = {
             "scheduler_lab": True,
             "worker_pull_v0": request_mode == "worker_pull_v0",
@@ -183,11 +184,34 @@ class HubClient:
         }
         if request_mode == "worker_pull_v0":
             payload["execution_mode"] = "worker_pull_v0"
-            payload["account_id"] = f"{account_id_prefix}-{node_id}"
+            payload["account_id"] = account_id
             payload["max_credits"] = int(offered)
             payload["metadata"]["account_id"] = payload["account_id"]
             payload["metadata"]["max_credits"] = int(offered)
         return self.post_json("/api/hub/v1/requests", payload)
+
+    def get_credit_balance(self, account_id: str) -> HubHttpResponse:
+        query = urlencode({"account_id": str(account_id)})
+        return self.get_json(f"/api/hub/v1/credits/balance?{query}")
+
+    def issue_credits(
+        self,
+        *,
+        account_id: str,
+        credits: int,
+        memo: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> HubHttpResponse:
+        return self.post_json(
+            "/api/hub/v1/credits/admin/issue",
+            {
+                "account_id": str(account_id),
+                "credits": max(0, int(credits)),
+                "memo": str(memo),
+                "metadata": dict(metadata or {}),
+            },
+        )
+
 
 
 def _as_int(value: Any, default: int = 0) -> int:
