@@ -53,6 +53,7 @@ yarn-error.log*
 *.patch
 
 # Local databases / state blobs
+.foundationdb/
 *.sqlite
 *.sqlite3
 *.db

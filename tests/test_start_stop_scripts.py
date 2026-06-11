@@ -8,17 +8,20 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_start_and_stop_bats_use_source_tree_runtime_session() -> None:
     start_script = (ROOT / "start.bat").read_text(encoding="utf-8")
-    stop_script = (ROOT / "stop.bat").read_text(encoding="utf-8")
     start_v2_script = (ROOT / "start_v2.bat").read_text(encoding="utf-8")
+    stop_script = (ROOT / "stop.bat").read_text(encoding="utf-8")
     stop_v2_script = (ROOT / "stop_v2.bat").read_text(encoding="utf-8")
 
-    assert 'call "%~dp0start_v2.bat" %*' in start_script
+    assert "start_v2.bat" in start_script
     assert "scripts\\main-computer-start-stop.ps1" in start_v2_script
     assert "-Action start -Root" in start_v2_script
     assert "run-main-computer.ps1" not in start_script
     assert "run-main-computer.ps1" not in start_v2_script
 
-    assert 'call "%~dp0stop_v2.bat" %*' in stop_script
+    assert "stop_v2.bat" in stop_script
+    helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
+    assert 'return Join-Path $RootPath "runtime\\start_stop"' in helper
+    assert 'return Join-Path (Get-StartStopRuntime $RootPath) "start-session.json"' in helper
     assert "-Action stop -Root" in stop_v2_script
     assert "run-main-computer.ps1" not in stop_script
     assert "run-main-computer.ps1" not in stop_v2_script
@@ -97,6 +100,8 @@ def test_v2_batch_files_are_location_aware_and_do_not_require_env_files() -> Non
     assert 'treeKind -eq "installed"' in helper
     assert 'MAIN_COMPUTER_ETHEREUM_RPC_PORT' not in helper
     assert 'MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL = "http://127.0.0.1:18545"' in helper
+    assert 'MAIN_COMPUTER_HUB_NETWORK = "dev"' in helper
+    assert 'MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"' in helper
     assert 'MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL = "http://127.0.0.1:8545"' not in helper
 
 
@@ -158,7 +163,73 @@ def test_v2_local_platform_publish_failure_warns_and_allows_supervisor_start() -
     assert 'state = "exception"' in helper
     assert 'if (-not $localPlatformStart.ok) {\n    Write-MainComputerLocalPlatformWarning $localPlatformStart\n  }' in helper
     assert 'throw ("Local platform startup failed: {0}" -f $localPlatformStart.state)' not in helper
-    assert '$process = Start-HiddenMainComputerSupervisorProcess `' in helper
-    assert "CreateNoWindow = $true" in helper
-    assert "main_computer_hidden_launcher.py" in helper
-    assert "main_computer-service-supervisor-" in helper
+    assert '$process = Start-Process `' in helper
+
+def test_start_path_ensures_dev_chain_without_deploying_contracts() -> None:
+    helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
+
+    assert "function Test-MainComputerDevChainRpc" in helper
+    assert 'method = "eth_chainId"' in helper
+    assert "function Start-MainComputerDevChainIfNeeded" in helper
+    assert "Start-MainComputerDevChainIfNeeded $RootPath $launchContext $pythonCommand" in helper
+    assert "if ($probe.ok)" in helper
+    assert "start path will not reset it" in helper
+    assert 'state = "already-running"' in helper
+
+    assert "function Invoke-MainComputerDevChainResetNoDeploy" in helper
+    assert '"tools\\dev-chain-reset.py"' in helper
+    assert '"--no-deploy"' in helper
+    assert '"--port-strategy", $portStrategy' in helper
+    assert '"--wait-timeout-s", $waitTimeout' in helper
+    assert 'state = "reset-failed"' in helper
+    assert 'state = "unhealthy-after-reset"' in helper
+    assert 'throw ("Dev chain startup failed: {0}" -f $message)' in helper
+
+
+def test_start_session_records_dev_chain_and_dev_hub_startup_status() -> None:
+    helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
+
+    assert "[object]$DevChainStart" in helper
+    assert "[object]$DevHubStart" in helper
+    assert "dev_chain = $DevChainStart" in helper
+    assert "dev_hub = $DevHubStart" in helper
+    assert "$StartedByName $giteaStart $localPlatformStart $devChainStart $devHubStart" in helper
+
+
+def test_start_path_resets_and_starts_dev_hub_by_default() -> None:
+    helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
+
+    assert "function Resolve-MainComputerDevHubEndpoint" in helper
+    assert "function Test-MainComputerDevHubStatus" in helper
+    assert "function Wait-MainComputerDevHubStatus" in helper
+    assert "function Stop-MainComputerDevHubForRestart" in helper
+    assert "function Start-MainComputerDevHubFresh" in helper
+
+
+    assert "$hubBindHost" in helper
+    assert "$hubBindPort" in helper
+    assert "$hubPortText" in helper
+    assert "$host =" not in helper.lower()
+    assert 'MAIN_COMPUTER_DEV_HUB_AUTO_START' in helper
+    assert '"MAIN_COMPUTER_HUB_NETWORK" "dev"' in helper
+    assert '"MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK", "1", "Process"' in helper
+    assert '"/api/hub/status"' in helper
+    assert '"-m", "main_computer.cli"' in helper
+    assert '"hub",' in helper
+    assert '"--network", [string]$endpoint.network' in helper
+    assert '"--chain-rpc-url", [string]$endpoint.chain_rpc_url' in helper
+    assert '"--chain-id", [string]$endpoint.chain_id' in helper
+    assert '"-noverbose"' in helper
+    assert 'Set-Content -LiteralPath $pidPath -Value ([string]$process.Id) -Encoding ASCII' in helper
+
+    assert "Resetting dev Hub on start path" in helper
+    assert "Stop-MainComputerDevHubForRestart $RootPath $LaunchContext" in helper
+    assert "Start-MainComputerDevHubFresh $RootPath $launchContext $pythonCommand" in helper
+    assert 'throw ("Dev Hub startup failed: {0}" -f $message)' in helper
+    assert 'Get-DevHubPidPath $RootPath' in helper
+    assert '".main_computer_dev_hub.pid"' in helper
+    assert '"MAIN_COMPUTER_HUB_PORT" "8770"' in helper
+    assert 'listener on dev Hub port' in helper
+    assert 'Dev Hub PID:' in helper
+    assert 'dev-hub' in helper
+

@@ -613,7 +613,12 @@
       const reports = Array.isArray(artifact?.command_reports) ? artifact.command_reports : [];
       return reports
         .filter((report) => report && report.action === "terminal_run" && report.supported && report.command)
-        .map((report) => String(report.command));
+        .map((report) => ({
+          command: String(report.command),
+          cwd: String(report.terminal_cwd || (report.cwd === "repo-root" ? "." : (report.cwd || "."))),
+          displayCwd: String(report.cwd || "repo-root"),
+          policy: report.execution_policy || {mode: "preview", requires_user_confirmation: true}
+        }));
     }
 
     function renderComputerMount(artifact, options = {}) {
@@ -660,7 +665,7 @@
       runButton.textContent = historical ? "Run again" : (commands.length > 1 ? "Run plan" : "Run command");
       runButton.disabled = !canExecute;
       runButton.title = canExecute
-        ? "Run through the controlled Terminal endpoint from repo root."
+        ? "Run through the controlled Terminal endpoint using the normalized cwd policy."
         : "This mount is not executable by this text head. Check validation or unsupported active-terminal action.";
       runButton.addEventListener("click", () => executeComputerMount(card, artifact));
       actions.append(runButton);
@@ -887,11 +892,13 @@
       if (badge) badge.textContent = state;
     }
 
-    async function runTerminalCommandFromMount(command) {
+    async function runTerminalCommandFromMount(action) {
+      const command = String(action?.command || "");
+      const cwd = String(action?.cwd || ".");
       const response = await fetch("/api/applications/terminal/run", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({command, cwd: ".", timeout_s: 15})
+        body: JSON.stringify({command, cwd, timeout_s: 15})
       });
       const data = await response.json().catch(async () => ({error: await response.text()}));
       if (!response.ok) {
@@ -903,10 +910,13 @@
     }
 
     async function executeComputerMount(card, artifact) {
-      const commands = mountRunnableCommands(artifact);
-      if (!commands.length) return;
+      const actions = mountRunnableCommands(artifact);
+      if (!actions.length) return;
+      const planText = actions
+        .map((action) => `$ ${action.command}\ncwd: ${action.displayCwd || action.cwd || "."}`)
+        .join("\n\n");
       const confirmed = window.confirm(
-        `Run ${commands.length} Terminal command${commands.length === 1 ? "" : "s"} from repo root?\n\n${commands.join("\n")}`
+        `Run ${actions.length} Terminal command${actions.length === 1 ? "" : "s"} through the controlled Terminal endpoint?\n\n${planText}`
       );
       if (!confirmed) return;
 
@@ -921,8 +931,8 @@
 
       const results = [];
       try {
-        for (const command of commands) {
-          const result = await runTerminalCommandFromMount(command);
+        for (const action of actions) {
+          const result = await runTerminalCommandFromMount(action);
           results.push(result);
           if (Number(result.exit_code) !== 0) break;
         }
@@ -931,7 +941,12 @@
         setMountCardState(card, state);
         persistMountExecutionResult(artifact, results, state);
       } catch (error) {
-        const result = error.result || {command: commands[results.length] || "", error: String(error.message || error)};
+        const failedAction = actions[results.length] || {};
+        const result = error.result || {
+          command: failedAction.command || "",
+          cwd: failedAction.displayCwd || failedAction.cwd || ".",
+          error: String(error.message || error)
+        };
         results.push(result);
         resultBox.textContent = results.map(terminalResultText).join("\n\n---\n\n");
         setMountCardState(card, "failed");

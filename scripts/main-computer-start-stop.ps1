@@ -57,103 +57,6 @@ function Join-CommandLine([string[]]$Arguments) {
   return ($quoted -join " ")
 }
 
-function Append-TextFileIfPresent([string]$Path, [string]$Value) {
-  if ([string]::IsNullOrEmpty($Value)) {
-    return
-  }
-  $parent = Split-Path -Parent $Path
-  if ($parent) {
-    Ensure-Directory $parent
-  }
-  [System.IO.File]::AppendAllText($Path, $Value, [System.Text.Encoding]::UTF8)
-}
-
-function Start-HiddenMainComputerSupervisorProcess(
-  [string]$FilePath,
-  [string[]]$Arguments,
-  [string]$WorkingDirectory,
-  [string]$StdoutPath,
-  [string]$StderrPath,
-  [string]$LauncherPath,
-  [string]$PidJsonPath,
-  [string]$LauncherStdoutPath,
-  [string]$LauncherStderrPath
-) {
-  if (-not (Test-Path -LiteralPath $LauncherPath -PathType Leaf)) {
-    throw "Missing hidden Python launcher: $LauncherPath"
-  }
-
-  $launcherArgs = @(
-    $LauncherPath,
-    "--cwd",
-    $WorkingDirectory,
-    "--stdout",
-    $StdoutPath,
-    "--stderr",
-    $StderrPath,
-    "--pid-json",
-    $PidJsonPath,
-    "--"
-  ) + @($FilePath) + $Arguments
-
-  $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-  $startInfo.FileName = $FilePath
-  $startInfo.Arguments = Join-CommandLine $launcherArgs
-  $startInfo.WorkingDirectory = $WorkingDirectory
-  $startInfo.UseShellExecute = $false
-  $startInfo.CreateNoWindow = $true
-  $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-  $startInfo.RedirectStandardOutput = $true
-  $startInfo.RedirectStandardError = $true
-
-  $launcherProcess = [System.Diagnostics.Process]::new()
-  $launcherProcess.StartInfo = $startInfo
-  if (-not $launcherProcess.Start()) {
-    throw "Failed to start hidden Main Computer launcher process."
-  }
-
-  $stdoutTask = $launcherProcess.StandardOutput.ReadToEndAsync()
-  $stderrTask = $launcherProcess.StandardError.ReadToEndAsync()
-  if (-not $launcherProcess.WaitForExit(30000)) {
-    try {
-      $launcherProcess.Kill()
-    } catch {}
-    throw "Timed out while starting hidden Main Computer supervisor process."
-  }
-  $launcherProcess.WaitForExit()
-
-  $launcherStdout = $stdoutTask.Result
-  $launcherStderr = $stderrTask.Result
-  Append-TextFileIfPresent $LauncherStdoutPath $launcherStdout
-  Append-TextFileIfPresent $LauncherStderrPath $launcherStderr
-
-  if ($launcherProcess.ExitCode -ne 0) {
-    $message = $launcherStderr.Trim()
-    if ([string]::IsNullOrWhiteSpace($message)) {
-      $message = $launcherStdout.Trim()
-    }
-    if ([string]::IsNullOrWhiteSpace($message)) {
-      $message = "hidden Python launcher exited with code $($launcherProcess.ExitCode)"
-    }
-    throw "Failed to start hidden Main Computer supervisor process: $message"
-  }
-
-  $payload = Read-JsonFile $PidJsonPath
-  $pidValue = Get-ObjectPropertyValue $payload "pid" $null
-  if ($null -eq $pidValue) {
-    throw "Hidden Python launcher did not write a supervisor PID to $PidJsonPath"
-  }
-
-  return [pscustomobject]@{
-    Id = [int]$pidValue
-    launcher_pid = $launcherProcess.Id
-    launcher_exit_code = $launcherProcess.ExitCode
-    launcher = $LauncherPath
-    pid_json = $PidJsonPath
-  }
-}
-
-
 function Get-EnvFirstValue([string[]]$Names, [string]$Default) {
   foreach ($name in $Names) {
     $value = [Environment]::GetEnvironmentVariable($name)
@@ -184,6 +87,10 @@ function Get-StartStopRuntime([string]$RootPath) {
 
 function Get-StartSessionPath([string]$RootPath) {
   return Join-Path (Get-StartStopRuntime $RootPath) "start-session.json"
+}
+
+function Get-DevHubPidPath([string]$RootPath) {
+  return Join-Path $RootPath ".main_computer_dev_hub.pid"
 }
 
 function Get-LauncherConfigPath([string]$RootPath) {
@@ -314,6 +221,8 @@ function Get-ModeDefaultEnvironment([string]$RootPath, [string]$Mode) {
     MAIN_COMPUTER_HUB_PORT = "8770"
     MAIN_COMPUTER_HUB_WORKER_PORT = "8771"
     MAIN_COMPUTER_HUB_URL = "http://127.0.0.1:8770"
+    MAIN_COMPUTER_HUB_NETWORK = "dev"
+    MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"
     OLLAMA_BASE_URL = "http://127.0.0.1:11434"
     MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL = "http://127.0.0.1:18545"
     MAIN_COMPUTER_ENERGY_CHAIN_ID = "42424242"
@@ -801,6 +710,434 @@ function Start-MainComputerLocalPlatform([string]$RootPath, [string]$PythonComma
     results = $results
   }
 }
+
+function ConvertTo-MainComputerChainIdHex([string]$ChainId) {
+  $text = ConvertTo-StringValue $ChainId ""
+  if ([string]::IsNullOrWhiteSpace($text)) {
+    return ""
+  }
+
+  $trimmed = $text.Trim()
+  if ($trimmed.StartsWith("0x", [System.StringComparison]::OrdinalIgnoreCase)) {
+    return $trimmed.ToLowerInvariant()
+  }
+
+  try {
+    return ("0x" + [Convert]::ToString([int64]$trimmed, 16)).ToLowerInvariant()
+  } catch {
+    return $trimmed.ToLowerInvariant()
+  }
+}
+
+function Test-MainComputerDevChainRpc([string]$RpcUrl, [string]$ExpectedChainId) {
+  $expectedHex = ConvertTo-MainComputerChainIdHex $ExpectedChainId
+  if ([string]::IsNullOrWhiteSpace($RpcUrl)) {
+    return [ordered]@{
+      ok = $false
+      state = "missing-rpc-url"
+      rpc_url = $RpcUrl
+      expected_chain_id = $ExpectedChainId
+      expected_chain_id_hex = $expectedHex
+    }
+  }
+
+  $body = @{
+    jsonrpc = "2.0"
+    id = 1
+    method = "eth_chainId"
+    params = @()
+  } | ConvertTo-Json -Compress
+
+  try {
+    $response = Invoke-RestMethod `
+      -Method Post `
+      -Uri $RpcUrl `
+      -ContentType "application/json" `
+      -Body $body `
+      -TimeoutSec 5
+  } catch {
+    return [ordered]@{
+      ok = $false
+      state = "unreachable"
+      rpc_url = $RpcUrl
+      expected_chain_id = $ExpectedChainId
+      expected_chain_id_hex = $expectedHex
+      message = $_.Exception.Message
+    }
+  }
+
+  $actualHex = ConvertTo-StringValue (Get-ObjectPropertyValue $response "result" "") ""
+  $actualHex = $actualHex.Trim().ToLowerInvariant()
+
+  if ([string]::IsNullOrWhiteSpace($actualHex)) {
+    return [ordered]@{
+      ok = $false
+      state = "missing-chain-id"
+      rpc_url = $RpcUrl
+      expected_chain_id = $ExpectedChainId
+      expected_chain_id_hex = $expectedHex
+      actual_chain_id_hex = $actualHex
+    }
+  }
+
+  return [ordered]@{
+    ok = ($actualHex -eq $expectedHex)
+    state = $(if ($actualHex -eq $expectedHex) { "healthy" } else { "wrong-chain-id" })
+    rpc_url = $RpcUrl
+    expected_chain_id = $ExpectedChainId
+    expected_chain_id_hex = $expectedHex
+    actual_chain_id_hex = $actualHex
+  }
+}
+
+function Test-MainComputerDisabledFlag([string]$Value) {
+  $text = ConvertTo-StringValue $Value ""
+  if ([string]::IsNullOrWhiteSpace($text)) {
+    return $false
+  }
+
+  return @("0", "false", "no", "off", "disabled") -contains $text.Trim().ToLowerInvariant()
+}
+
+function Invoke-MainComputerDevChainResetNoDeploy([string]$RootPath, [object]$LaunchContext, [string]$PythonCommand) {
+  $tool = Join-Path $RootPath "tools\dev-chain-reset.py"
+  if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) {
+    return [ordered]@{
+      ok = $false
+      state = "missing-tool"
+      tool = $tool
+      command = @($PythonCommand, $tool)
+    }
+  }
+
+  $runId = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DEV_CHAIN_RUN_ID" "test-machine-dev"
+  $environment = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DEV_CHAIN_ENVIRONMENT" "dev"
+  $portStrategy = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DEV_CHAIN_PORT_STRATEGY" "replace-project"
+  $waitTimeout = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DEV_CHAIN_WAIT_TIMEOUT_S" "30"
+
+  $arguments = @(
+    $tool,
+    "--yes",
+    "--run-id", $runId,
+    "--environment", $environment,
+    "--no-deploy",
+    "--port-strategy", $portStrategy,
+    "--wait-timeout-s", $waitTimeout
+  )
+
+  return Invoke-MainComputerPythonTool `
+    -PythonCommand $PythonCommand `
+    -RootPath $RootPath `
+    -Arguments $arguments `
+    -TimeoutSeconds 180
+}
+
+function Start-MainComputerDevChainIfNeeded([string]$RootPath, [object]$LaunchContext, [string]$PythonCommand) {
+  $treeKind = ConvertTo-StringValue (Get-ObjectPropertyValue $LaunchContext "tree_kind" "source") "source"
+  if ($treeKind -ne "source") {
+    return [ordered]@{
+      ok = $true
+      state = "skipped-non-source-tree"
+      tree_kind = $treeKind
+    }
+  }
+
+  $autoStart = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DEV_CHAIN_AUTO_START" "1"
+  if (Test-MainComputerDisabledFlag $autoStart) {
+    return [ordered]@{
+      ok = $true
+      state = "disabled"
+      setting = "MAIN_COMPUTER_DEV_CHAIN_AUTO_START"
+      value = $autoStart
+    }
+  }
+
+  $rpcUrl = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL" "http://127.0.0.1:18545"
+  $expectedChainId = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ENERGY_CHAIN_ID" "42424242"
+
+  $probe = Test-MainComputerDevChainRpc $rpcUrl $expectedChainId
+  if ($probe.ok) {
+    Write-Host ("Dev chain RPC is already healthy at {0} chainId={1}; start path will not reset it." -f $rpcUrl, $probe.actual_chain_id_hex)
+    return [ordered]@{
+      ok = $true
+      state = "already-running"
+      rpc_url = $rpcUrl
+      expected_chain_id = $expectedChainId
+      health_check = $probe
+    }
+  }
+
+  Write-Host ("Dev chain RPC health check failed ({0}); starting local dev chain without deploying contracts." -f $probe.state)
+  $reset = Invoke-MainComputerDevChainResetNoDeploy $RootPath $LaunchContext $PythonCommand
+  if (-not $reset.ok) {
+    return [ordered]@{
+      ok = $false
+      state = "reset-failed"
+      rpc_url = $rpcUrl
+      expected_chain_id = $expectedChainId
+      health_check = $probe
+      reset = $reset
+    }
+  }
+
+  $after = Test-MainComputerDevChainRpc $rpcUrl $expectedChainId
+  if (-not $after.ok) {
+    return [ordered]@{
+      ok = $false
+      state = "unhealthy-after-reset"
+      rpc_url = $rpcUrl
+      expected_chain_id = $expectedChainId
+      health_check = $probe
+      reset = $reset
+      post_reset_health_check = $after
+    }
+  }
+
+  Write-Host ("Dev chain RPC is healthy at {0} chainId={1}." -f $rpcUrl, $after.actual_chain_id_hex)
+  return [ordered]@{
+    ok = $true
+    state = "started"
+    rpc_url = $rpcUrl
+    expected_chain_id = $expectedChainId
+    health_check = $probe
+    reset = $reset
+    post_reset_health_check = $after
+  }
+}
+
+function Resolve-MainComputerDevHubEndpoint([object]$LaunchContext) {
+  $hubUrl = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_URL" "http://127.0.0.1:8770"
+  $hubBindHost = "127.0.0.1"
+  $hubBindPort = 8770
+
+  try {
+    $uri = [uri]$hubUrl
+    if (-not [string]::IsNullOrWhiteSpace($uri.Host)) {
+      $hubBindHost = $uri.Host
+    }
+    if ($uri.Port -gt 0) {
+      $hubBindPort = [int]$uri.Port
+    }
+  } catch {}
+
+  $hubBindHost = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_BIND_HOST" (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_HOST" $hubBindHost)
+  $hubPortText = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_BIND_PORT" (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_PORT" ([string]$hubBindPort))
+  try {
+    $hubBindPort = [int]$hubPortText
+  } catch {
+    $hubBindPort = 8770
+  }
+
+  $network = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_NETWORK" "dev"
+  $chainRpcUrl = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL" "http://127.0.0.1:18545"
+  $chainId = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_ENERGY_CHAIN_ID" "42424242"
+  $hubUrl = ("http://{0}:{1}" -f $hubBindHost, $hubBindPort)
+
+  return [ordered]@{
+    hub_url = $hubUrl
+    status_url = ($hubUrl.TrimEnd([char[]]"/") + "/api/hub/status")
+    host = $hubBindHost
+    port = $hubBindPort
+    network = $network
+    chain_rpc_url = $chainRpcUrl
+    chain_id = $chainId
+  }
+}
+
+function Test-MainComputerDevHubStatus([string]$StatusUrl) {
+  if ([string]::IsNullOrWhiteSpace($StatusUrl)) {
+    return [ordered]@{
+      ok = $false
+      state = "missing-status-url"
+      status_url = $StatusUrl
+    }
+  }
+
+  try {
+    $response = Invoke-RestMethod `
+      -Method Get `
+      -Uri $StatusUrl `
+      -TimeoutSec 5
+  } catch {
+    return [ordered]@{
+      ok = $false
+      state = "unreachable"
+      status_url = $StatusUrl
+      message = $_.Exception.Message
+    }
+  }
+
+  $ok = $false
+  try {
+    $ok = [bool](Get-ObjectPropertyValue $response "ok" $false)
+  } catch {
+    $ok = $false
+  }
+
+  return [ordered]@{
+    ok = $ok
+    state = $(if ($ok) { "healthy" } else { "not-ok" })
+    status_url = $StatusUrl
+    response = $response
+  }
+}
+
+function Wait-MainComputerDevHubStatus([string]$StatusUrl, [int]$TimeoutSeconds = 30) {
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  $last = $null
+
+  do {
+    $last = Test-MainComputerDevHubStatus $StatusUrl
+    if ($last.ok) {
+      return $last
+    }
+    Start-Sleep -Milliseconds 500
+  } while ((Get-Date) -lt $deadline)
+
+  return [ordered]@{
+    ok = $false
+    state = "timeout"
+    status_url = $StatusUrl
+    last_health_check = $last
+  }
+}
+
+function Stop-MainComputerDevHubForRestart([string]$RootPath, [object]$LaunchContext) {
+  $endpoint = Resolve-MainComputerDevHubEndpoint $LaunchContext
+  $pidPath = Get-DevHubPidPath $RootPath
+  $candidates = @{}
+
+  Add-PidCandidate $candidates (Get-PidFromFile $pidPath) "dev-hub" $pidPath 15 $true
+
+  foreach ($row in @(Get-NetstatListenRows -Ports @([int]$endpoint.port))) {
+    $processId = [int]$row.OwningProcess
+    if ($processId -le 0 -or $processId -eq $PID) {
+      continue
+    }
+
+    $commandLine = Get-ProcessCommandLine $processId
+    $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
+    $processName = ""
+    if ($null -ne $process) {
+      $processName = [string]$process.ProcessName
+    }
+
+    if ((Test-MainComputerServiceCommandLine $commandLine $RootPath) -or ([string]::IsNullOrWhiteSpace($commandLine) -and $processName -like "python*")) {
+      Add-PidCandidate $candidates $processId "dev-hub-port-listener" ("listener on dev Hub port " + [string]$endpoint.port) 15 $true
+    }
+  }
+
+  $results = @()
+  foreach ($candidate in ($candidates.Values | Sort-Object -Property @{ Expression = { [int]$_['order'] } }, @{ Expression = { [int]$_['pid'] } })) {
+    $results += Stop-OnePid $candidate $RootPath
+  }
+
+  try {
+    if (Test-Path -LiteralPath $pidPath -PathType Leaf) {
+      Remove-Item -LiteralPath $pidPath -Force
+    }
+  } catch {
+    Write-Warning "Could not remove dev Hub PID file ${pidPath}: $($_.Exception.Message)"
+  }
+
+  return [ordered]@{
+    endpoint = $endpoint
+    pid_file = $pidPath
+    process_results = $results
+  }
+}
+
+function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext, [string]$PythonCommand) {
+  $treeKind = ConvertTo-StringValue (Get-ObjectPropertyValue $LaunchContext "tree_kind" "source") "source"
+  if ($treeKind -ne "source") {
+    return [ordered]@{
+      ok = $true
+      state = "skipped-non-source-tree"
+      tree_kind = $treeKind
+    }
+  }
+
+  $autoStart = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DEV_HUB_AUTO_START" "1"
+  if (Test-MainComputerDisabledFlag $autoStart) {
+    return [ordered]@{
+      ok = $true
+      state = "disabled"
+      setting = "MAIN_COMPUTER_DEV_HUB_AUTO_START"
+      value = $autoStart
+    }
+  }
+
+  $endpoint = Resolve-MainComputerDevHubEndpoint $LaunchContext
+  $pidPath = Get-DevHubPidPath $RootPath
+  Write-Host ("Resetting dev Hub on start path at {0}; any previous dev Hub process on port {1} will be stopped first." -f $endpoint.hub_url, $endpoint.port)
+  $stopResult = Stop-MainComputerDevHubForRestart $RootPath $LaunchContext
+
+  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK", "1", "Process")
+  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_NETWORK", [string]$endpoint.network, "Process")
+  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_URL", [string]$endpoint.hub_url, "Process")
+  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL", [string]$endpoint.chain_rpc_url, "Process")
+  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_ENERGY_CHAIN_ID", [string]$endpoint.chain_id, "Process")
+
+  $hubRuntime = Join-Path $RootPath ("runtime\hub\" + [string]$endpoint.network)
+  Ensure-Directory $hubRuntime
+  $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+  $stdout = Join-Path $hubRuntime ("dev-hub-" + $stamp + ".stdout.log")
+  $stderr = Join-Path $hubRuntime ("dev-hub-" + $stamp + ".stderr.log")
+
+  $arguments = @(
+    "-m", "main_computer.cli",
+    "hub",
+    "--host", [string]$endpoint.host,
+    "--port", [string]$endpoint.port,
+    "--network", [string]$endpoint.network,
+    "--chain-rpc-url", [string]$endpoint.chain_rpc_url,
+    "--chain-id", [string]$endpoint.chain_id,
+    "-noverbose"
+  )
+  $argString = Join-CommandLine $arguments
+
+  $process = Start-Process `
+    -FilePath $PythonCommand `
+    -ArgumentList $argString `
+    -WorkingDirectory $RootPath `
+    -WindowStyle Hidden `
+    -RedirectStandardOutput $stdout `
+    -RedirectStandardError $stderr `
+    -PassThru
+
+  Set-Content -LiteralPath $pidPath -Value ([string]$process.Id) -Encoding ASCII
+
+  $health = Wait-MainComputerDevHubStatus ([string]$endpoint.status_url) 30
+  if (-not $health.ok) {
+    return [ordered]@{
+      ok = $false
+      state = "unhealthy-after-start"
+      endpoint = $endpoint
+      pid = $process.Id
+      pid_file = $pidPath
+      stdout = $stdout
+      stderr = $stderr
+      command = @($PythonCommand) + $arguments
+      stop_before_start = $stopResult
+      health_check = $health
+    }
+  }
+
+  Write-Host ("Dev Hub is running at {0} as PID {1}." -f $endpoint.hub_url, $process.Id)
+  return [ordered]@{
+    ok = $true
+    state = "started"
+    endpoint = $endpoint
+    pid = $process.Id
+    pid_file = $pidPath
+    stdout = $stdout
+    stderr = $stderr
+    command = @($PythonCommand) + $arguments
+    stop_before_start = $stopResult
+    health_check = $health
+  }
+}
+
 function New-StartSession(
   [string]$RootPath,
   [object]$LaunchContext,
@@ -810,7 +1147,9 @@ function New-StartSession(
   [string[]]$LauncherArgs,
   [string]$StartedByName,
   [object]$GiteaStart,
-  [object]$LocalPlatformStart
+  [object]$LocalPlatformStart,
+  [object]$DevChainStart,
+  [object]$DevHubStart
 ) {
   $applicationsProject = Get-SafeDockerName `
     (Get-EnvFirstValue @("MAIN_COMPUTER_APPLICATIONS_COMPOSE_PROJECT") "main-computer-applications") `
@@ -850,8 +1189,11 @@ function New-StartSession(
     environment = $LaunchContext.environment
     gitea = $GiteaStart
     local_platform = $LocalPlatformStart
+    dev_chain = $DevChainStart
+    dev_hub = $DevHubStart
     managed_pid_files = @(
       (Join-Path $RootPath ".main_computer_service_supervisor.pid"),
+      (Get-DevHubPidPath $RootPath),
       (Join-Path $controlRoot ".main_computer_viewport.pid"),
       (Join-Path $controlRoot ".main_computer_heartbeat.pid"),
       (Join-Path $RootPath ".main_computer_executor_service.pid"),
@@ -891,6 +1233,12 @@ function New-StartSession(
         module = "main_computer.applications_service boot --watch"
         pid_file = Join-Path $RootPath ".main_computer_applications_service.pid"
         state_file = Join-Path $RootPath "runtime\applications_service\state.json"
+      },
+      [ordered]@{
+        name = "dev-hub"
+        module = "main_computer.cli hub --network dev"
+        pid_file = Get-DevHubPidPath $RootPath
+        state_file = Join-Path $RootPath "runtime\hub\dev"
       },
       [ordered]@{
         name = "blockchain"
@@ -1022,6 +1370,25 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName) {
   $launchContext = Resolve-MainComputerLaunchContext $RootPath
   Set-MainComputerLaunchEnvironment $launchContext
   $controlRoot = Get-ControlRoot $RootPath $launchContext
+  $pythonCommand = [string]$launchContext.python
+
+  $devChainStart = Start-MainComputerDevChainIfNeeded $RootPath $launchContext $pythonCommand
+  if ($null -eq $devChainStart) {
+    throw "Dev chain startup returned no status."
+  }
+  if (-not $devChainStart.ok) {
+    $message = ConvertTo-StringValue (Get-ObjectPropertyValue $devChainStart "state" "unknown") "unknown"
+    throw ("Dev chain startup failed: {0}" -f $message)
+  }
+
+  $devHubStart = Start-MainComputerDevHubFresh $RootPath $launchContext $pythonCommand
+  if ($null -eq $devHubStart) {
+    throw "Dev Hub startup returned no status."
+  }
+  if (-not $devHubStart.ok) {
+    $message = ConvertTo-StringValue (Get-ObjectPropertyValue $devHubStart "state" "unknown") "unknown"
+    throw ("Dev Hub startup failed: {0}" -f $message)
+  }
 
   $serviceRuntime = Join-Path $RootPath "runtime\service_supervisor"
   Ensure-Directory $serviceRuntime
@@ -1030,7 +1397,6 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName) {
   $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
   $stdout = Join-Path $serviceRuntime ("service_supervisor-" + $stamp + ".stdout.log")
   $stderr = Join-Path $serviceRuntime ("service_supervisor-" + $stamp + ".stderr.log")
-  $pythonCommand = [string]$launchContext.python
   $launcherArgs = @("-m", "main_computer.app_control", "--root", $RootPath)
   $controlPort = Get-LaunchEnvironmentValue $launchContext "MAIN_COMPUTER_CONTROL_PORT" ""
   if (-not [string]::IsNullOrWhiteSpace($controlPort)) {
@@ -1090,22 +1456,16 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName) {
     Write-MainComputerLocalPlatformWarning $localPlatformStart
   }
 
-  $launcherScript = Join-Path (Split-Path -Parent $PSCommandPath) "main_computer_hidden_launcher.py"
-  $pidJson = Join-Path (Get-StartStopRuntime $RootPath) ("main_computer-service-supervisor-" + $stamp + ".pid.json")
-  $launcherStdout = Join-Path (Get-StartStopRuntime $RootPath) ("main_computer-hidden-launcher-" + $stamp + ".stdout.log")
-  $launcherStderr = Join-Path (Get-StartStopRuntime $RootPath) ("main_computer-hidden-launcher-" + $stamp + ".stderr.log")
-  $process = Start-HiddenMainComputerSupervisorProcess `
+  $process = Start-Process `
     -FilePath $pythonCommand `
-    -Arguments $launcherArgs `
+    -ArgumentList $argString `
     -WorkingDirectory $RootPath `
-    -StdoutPath $stdout `
-    -StderrPath $stderr `
-    -LauncherPath $launcherScript `
-    -PidJsonPath $pidJson `
-    -LauncherStdoutPath $launcherStdout `
-    -LauncherStderrPath $launcherStderr
+    -WindowStyle Hidden `
+    -RedirectStandardOutput $stdout `
+    -RedirectStandardError $stderr `
+    -PassThru
 
-  $session = New-StartSession $RootPath $launchContext $process.Id $stdout $stderr $launcherArgs $StartedByName $giteaStart $localPlatformStart
+  $session = New-StartSession $RootPath $launchContext $process.Id $stdout $stderr $launcherArgs $StartedByName $giteaStart $localPlatformStart $devChainStart $devHubStart
   $sessionPath = Get-StartSessionPath $RootPath
   Write-JsonFile $sessionPath $session
 
@@ -1118,8 +1478,6 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName) {
     Write-Host ("Launcher config:  " + [string]$launchContext.context_file)
   }
   Write-Host ("Start session:    " + $sessionPath)
-  Write-Host ("Hidden launcher:  " + $launcherScript)
-  Write-Host ("Launcher PID:     " + $pidJson)
   Write-Host ("Control root:     " + $controlRoot)
   Write-Host ("Supervisor state: " + (Join-Path $serviceRuntime "state.json"))
   Write-Host ("Supervisor PID:   " + (Join-Path $RootPath ".main_computer_service_supervisor.pid"))
@@ -1127,6 +1485,8 @@ function Start-MainComputer([string]$RootPath, [string]$StartedByName) {
   Write-Host ("Heartbeat PID:    " + (Join-Path $controlRoot ".main_computer_heartbeat.pid"))
   Write-Host ("Executor state:   " + (Join-Path $RootPath "runtime\executor_service\state.json"))
   Write-Host ("Applications:     " + (Join-Path $RootPath "runtime\applications_service\state.json"))
+  Write-Host ("Dev Hub PID:      " + (Get-DevHubPidPath $RootPath))
+  Write-Host ("Dev Hub runtime:  " + (Join-Path $RootPath "runtime\hub\dev"))
   Write-Host ("Blockchain:       " + (Join-Path $RootPath "runtime\blockchain_service\state.json"))
   Write-Host ("stdout:           " + $stdout)
   Write-Host ("stderr:           " + $stderr)
@@ -1243,6 +1603,9 @@ function Get-PidFileCandidateMetadata([string]$PidFile) {
     ".main_computer_heartbeat.pid" {
       return [pscustomobject]@{ role = "heartbeat"; order = 20 }
     }
+    ".main_computer_dev_hub.pid" {
+      return [pscustomobject]@{ role = "dev-hub"; order = 20 }
+    }
     default {
       return [pscustomobject]@{ role = "pid-file"; order = 30 }
     }
@@ -1336,7 +1699,8 @@ function Get-MainComputerManagedPorts([object]$LaunchContext) {
   foreach ($value in @(
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_CONTROL_PORT" "8765"),
       (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HEARTBEAT_PORT" "8766"),
-      (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DOCKER_VIEWPORT_PORT" "")
+      (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_DOCKER_VIEWPORT_PORT" ""),
+      (Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_PORT" "8770")
     )) {
     try {
       $port = [int]$value
@@ -1646,7 +2010,8 @@ function Remove-ManagedRuntimeFiles([string]$RootPath, [object]$Session, [string
       ".main_computer_viewport.pid",
       ".main_computer_heartbeat.pid",
       ".main_computer_executor_service.pid",
-      ".main_computer_applications_service.pid"
+      ".main_computer_applications_service.pid",
+      ".main_computer_dev_hub.pid"
     )) {
     $paths.Add((Join-Path $RootPath $relative))
   }
@@ -1910,7 +2275,8 @@ function Stop-MainComputer([string]$RootPath, [bool]$SkipDocker = $false) {
       ".main_computer_viewport.pid",
       ".main_computer_heartbeat.pid",
       ".main_computer_executor_service.pid",
-      ".main_computer_applications_service.pid"
+      ".main_computer_applications_service.pid",
+      ".main_computer_dev_hub.pid"
     )) {
     $path = Join-Path $RootPath $relative
     $metadata = Get-PidFileCandidateMetadata $path

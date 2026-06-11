@@ -52,7 +52,50 @@ Now the edit handoff.
     assert handoff["validation"]["ok"] is True
 
 
-def test_text_console_mount_validation_rejects_noncanonical_or_absolute_paths():
+def test_text_console_mount_parser_accepts_relative_cwd_and_normalizes_policy():
+    message = """
+```computer
+/act terminal run "dir" --cwd main_computer
+```
+"""
+
+    envelope = prod.parse_text_console_response_artifacts(message)
+    mount = artifact_by_kind(envelope, "computer_mount")
+    report = mount["command_reports"][0]
+
+    assert mount["state"] == "ready"
+    assert mount["can_execute"] is True
+    assert mount["validation"]["ok"] is True
+    assert mount["canonical_commands"] == ['/act terminal run "dir" --cwd main_computer']
+    assert report["action"] == "terminal_run"
+    assert report["command"] == "dir"
+    assert report["cwd"] == "main_computer"
+    assert report["terminal_cwd"] == "main_computer"
+    assert report["execution_policy"]["mode"] == "preview"
+    assert report["execution_policy"]["requires_user_confirmation"] is True
+
+
+def test_text_console_mount_parser_defaults_missing_cwd_to_repo_root_note():
+    message = """
+```computer
+/act terminal run dir
+```
+"""
+
+    envelope = prod.parse_text_console_response_artifacts(message)
+    mount = artifact_by_kind(envelope, "computer_mount")
+    report = mount["command_reports"][0]
+
+    assert mount["state"] == "ready"
+    assert mount["can_execute"] is True
+    assert mount["validation"]["ok"] is True
+    assert report["command"] == "dir"
+    assert report["cwd"] == "repo-root"
+    assert report["terminal_cwd"] == "."
+    assert any("defaulting preview policy to repo-root" in note for note in report["notes"])
+
+
+def test_text_console_mount_validation_rejects_unsupported_or_absolute_paths():
     message = """
 ```computer
 /act terminal ls main_computer
@@ -66,7 +109,7 @@ not an act line
 
     assert mount["can_execute"] is False
     assert mount["validation"]["ok"] is False
-    assert any("canonical" in failure for failure in mount["validation"]["failures"])
+    assert any("unsupported terminal /act form" in failure for failure in mount["validation"]["failures"])
     assert any("absolute Windows path" in failure for failure in mount["validation"]["failures"])
     assert any("non-/act line" in failure for failure in mount["validation"]["failures"])
 
@@ -151,4 +194,6 @@ def test_text_console_mount_execution_does_not_duplicate_terminal_transcript():
     assert "persistMountExecutionResult(artifact, results, state)" in page
     assert "artifact.execution_results = results.map(serializeTerminalResult)" in page
     assert "appendMountExecutionResult(card, artifact)" in page
+    assert "report.terminal_cwd" in page
+    assert "body: JSON.stringify({command, cwd, timeout_s: 15})" in page
 
