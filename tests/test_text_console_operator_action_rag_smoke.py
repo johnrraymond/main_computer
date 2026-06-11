@@ -17,6 +17,19 @@ def test_action_specs_load_terminal_and_repo_edit():
     assert '"mode": "repo_root_edit_request"' in specs["repo_edit"].text
 
 
+
+def test_smoke_final_prompt_includes_runtime_terminal_target_profile():
+    root = Path(__file__).resolve().parents[1]
+    smoke.add_repo_to_path(root)
+    specs = smoke.load_action_specs(root)
+    prompt = smoke.selected_action_specs_prompt(specs, ["terminal"])
+
+    assert "Selected text-console action target profiles" in prompt
+    assert '"id": "repo-root-powershell-terminal"' in prompt
+    assert '"shell": "powershell"' in prompt
+    assert "Selected text-console action spec: terminal" in prompt
+
+
 def test_preflight_validation_requires_expected_specs():
     payload = {
         "needs_mount": True,

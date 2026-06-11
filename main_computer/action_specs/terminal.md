@@ -21,11 +21,11 @@ Use Terminal when the user asks for shell commands, Git, tests, file listings,
 directory listings, active-terminal reuse, or terminal interruption.
 
 Terminal target profile:
-- The text-console Terminal target runs local Windows PowerShell, not `cmd.exe`.
-- Write commands in PowerShell syntax.
-- For a plain directory listing, prefer `Get-ChildItem main_computer`.
-- For a recursive directory listing, use `Get-ChildItem main_computer -Recurse`.
-- Do not use `cmd.exe`-only recursive syntax such as `dir /s main_computer`.
+- The final operator prompt includes a machine-readable selected target profile for the Terminal target.
+- Follow that target profile for the shell, command language, cwd policy, examples, and forbidden examples.
+- For the current text-console target, commands run in local Windows PowerShell, not `cmd.exe`.
+- Write commands in PowerShell syntax and prefer the target profile examples when they fit.
+- Do not use syntax from a different shell merely because it is a plausible Windows command.
 
 Canonical forms inside a fenced block tagged exactly `computer`:
 

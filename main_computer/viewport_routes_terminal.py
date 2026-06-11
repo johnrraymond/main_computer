@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from main_computer.viewport_state import *  # noqa: F401,F403
+from main_computer.text_console import default_terminal_target_profile
+
 
 class ViewportTerminalRoutesMixin:
     def _handle_terminal_run(self) -> None:
@@ -16,9 +18,29 @@ class ViewportTerminalRoutesMixin:
                 self._send_json({"error": "Command is limited to 4000 characters."}, status=HTTPStatus.BAD_REQUEST)
                 return
             timeout_s = max(1.0, min(60.0, float(body.get("timeout_s", 15) or 15)))
+            target_profile = default_terminal_target_profile()
+            target_id = str(body.get("target_id") or target_profile.target_id).strip()
+            if target_id != target_profile.target_id:
+                self.server.signal("api-terminal-rejected", reason="unknown-target", target_id=target_id)
+                self._send_json(
+                    {
+                        "error": "Unknown Terminal target profile.",
+                        "target_id": target_id,
+                        "expected_target_id": target_profile.target_id,
+                    },
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
             cwd = self._terminal_cwd(str(body.get("cwd", ".") or "."))
             started = time.monotonic()
-            self.server.signal("api-terminal-start", cwd=cwd, timeout_s=timeout_s, command_chars=len(command))
+            self.server.signal(
+                "api-terminal-start",
+                cwd=cwd,
+                timeout_s=timeout_s,
+                command_chars=len(command),
+                target_id=target_profile.target_id,
+                target_shell=target_profile.shell,
+            )
             wrapped_command = self._terminal_wrapped_command(command)
             try:
                 completed = subprocess.run(
@@ -48,6 +70,10 @@ class ViewportTerminalRoutesMixin:
                     {
                         "command": command,
                         "cwd": str(final_cwd),
+                        "target_id": target_profile.target_id,
+                        "target_display_name": target_profile.display_name,
+                        "target_os": target_profile.os,
+                        "target_shell": target_profile.shell,
                         "exit_code": completed.returncode,
                         "stdout": stdout,
                         "stderr": completed.stderr,
@@ -65,6 +91,10 @@ class ViewportTerminalRoutesMixin:
                         "command": command,
                         "cwd": str(cwd),
                         "final_cwd": str(cwd),
+                        "target_id": target_profile.target_id,
+                        "target_display_name": target_profile.display_name,
+                        "target_os": target_profile.os,
+                        "target_shell": target_profile.shell,
                         "exit_code": None,
                         "stdout": stdout,
                         "stderr": stderr,

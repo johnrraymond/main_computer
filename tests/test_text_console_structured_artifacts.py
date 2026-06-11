@@ -75,6 +75,40 @@ def test_text_console_mount_parser_accepts_relative_cwd_and_normalizes_policy():
     assert report["execution_policy"]["requires_user_confirmation"] is True
 
 
+
+def test_text_console_mount_artifact_carries_terminal_target_profile():
+    message = """
+```computer
+/act terminal run "Get-ChildItem main_computer" --cwd repo-root
+```
+"""
+
+    envelope = prod.parse_text_console_response_artifacts(message)
+    mount = artifact_by_kind(envelope, "computer_mount")
+    report = mount["command_reports"][0]
+    profile = mount["target_profile"]
+
+    assert mount["target_id"] == "repo-root-powershell-terminal"
+    assert profile["kind"] == "terminal"
+    assert profile["shell"] == "powershell"
+    assert profile["cwd_default"] == "repo-root"
+    assert profile["examples"]["list_directory_recursive"] == "Get-ChildItem main_computer -Recurse"
+    assert report["target_id"] == profile["id"]
+    assert report["target_profile"]["shell"] == "powershell"
+    assert report["execution_policy"]["target_shell"] == "powershell"
+
+
+def test_selected_terminal_action_context_includes_machine_readable_target_profile():
+    root = Path(__file__).resolve().parents[1]
+    specs = prod.load_action_specs(root)
+    prompt = prod.selected_action_specs_prompt(specs, ["terminal"])
+
+    assert "Selected text-console action target profiles" in prompt
+    assert '"id": "repo-root-powershell-terminal"' in prompt
+    assert '"shell": "powershell"' in prompt
+    assert "Selected text-console action spec: terminal" in prompt
+
+
 def test_text_console_mount_parser_defaults_missing_cwd_to_repo_root_note():
     message = """
 ```computer
@@ -293,7 +327,7 @@ def test_text_console_mount_execution_does_not_duplicate_terminal_transcript():
     assert "artifact.execution_results = results.map(serializeTerminalResult)" in page
     assert "appendMountExecutionResult(card, artifact)" in page
     assert "report.terminal_cwd" in page
-    assert "body: JSON.stringify({command, cwd, timeout_s: 15})" in page
+    assert "body: JSON.stringify({command, cwd, timeout_s: 15, target_id: action?.targetId || \"\"})" in page
     assert "buildThreadMessagesFromSession()" in page
     assert "thread_messages: threadMessages" in page
     assert "THREAD_RESULT_PREFIX" in page
