@@ -43,7 +43,7 @@ from main_computer.hub_credit_models import (
     stable_id,
     normalize_worker_payout_precision_places,
 )
-from main_computer.multisession_key_signing import normalize_address, verify_personal_sign_blob
+from main_computer.multisession_key_signing import normalize_address, parse_iso_datetime, recover_personal_sign_address, verify_personal_sign_blob
 from main_computer.hub_plex_models import HubAIRequest, HubWorkerSummary
 from main_computer.hub_plex_service import AIRequestPlexService
 from main_computer.models import ChatAttachment, ChatMessage, ChatResponse
@@ -1131,6 +1131,229 @@ class HubServerHandler(_JsonHandler):
             "funding_model": "hub_credit_bridge_escrow_wallet_v1",
         }
 
+    def _worker_ring_from_payload(self, worker: dict[str, Any]) -> str:
+        capabilities = worker.get("capabilities") if isinstance(worker.get("capabilities"), dict) else {}
+        ring = str(worker.get("assigned_ring") or capabilities.get("assigned_ring") or capabilities.get("requested_ring") or "").strip()
+        return ring
+
+    def _worker_is_available_for_pool(self, worker: dict[str, Any]) -> bool:
+        try:
+            active_requests = int(worker.get("active_requests", 0) or 0)
+            max_concurrency = int(worker.get("max_concurrency", 1) or 1)
+        except (TypeError, ValueError):
+            active_requests = 0
+            max_concurrency = 1
+        return (
+            str(worker.get("status", "available")).lower() in {"available", "configured"}
+            and not bool(worker.get("stale", False))
+            and active_requests < max(1, max_concurrency)
+        )
+
+    def _worker_pool_summary(self, *, assigned_ring: str) -> dict[str, Any]:
+        status = self.server.registry.status()
+        workers = [worker for worker in status.get("workers", []) if isinstance(worker, dict)]
+        ring_workers = [worker for worker in workers if self._worker_ring_from_payload(worker) == str(assigned_ring)]
+        return {
+            "worker_count": int(status.get("worker_count", len(workers)) or 0),
+            "available_worker_count": int(status.get("available_worker_count", 0) or 0),
+            "stale_worker_count": int(status.get("stale_worker_count", 0) or 0),
+            "ring": str(assigned_ring),
+            "ring_worker_count": len(ring_workers),
+            "ring_available_worker_count": len([worker for worker in ring_workers if self._worker_is_available_for_pool(worker)]),
+        }
+
+    def _verify_worker_connect_order(self, *, signed_connection: dict[str, Any], worker_payload: dict[str, Any]) -> dict[str, Any]:
+        message_text = str(signed_connection.get("message") or "").strip()
+        signature = str(signed_connection.get("signature") or "").strip()
+        if not message_text:
+            raise ValueError("signed_connection.message is required.")
+        if not signature.startswith("0x"):
+            raise ValueError("signed_connection.signature is required.")
+
+        wallet_address = normalize_address(signed_connection.get("wallet_address"))
+        recovered = recover_personal_sign_address(message_text, signature)
+        if recovered != wallet_address:
+            raise ValueError(f"worker connect signature recovered {recovered}, expected {wallet_address}")
+
+        try:
+            message = json.loads(message_text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"worker connect message is not JSON: {exc}") from exc
+        if not isinstance(message, dict):
+            raise ValueError("worker connect message JSON must be an object.")
+
+        if message.get("kind") != "main_computer_worker_connect_order":
+            raise ValueError(f"bad worker connect kind: {message.get('kind')!r}")
+        if message.get("purpose") != "connect_worker_to_hub":
+            raise ValueError(f"bad worker connect purpose: {message.get('purpose')!r}")
+
+        message_wallet = normalize_address(message.get("wallet_address"))
+        if message_wallet != wallet_address:
+            raise ValueError(f"worker connect wallet mismatch: {message_wallet} != {wallet_address}")
+
+        credit_wallet = normalize_address(message.get("credit_wallet") or wallet_address)
+        signed_credit_wallet = signed_connection.get("credit_wallet")
+        if signed_credit_wallet and normalize_address(signed_credit_wallet) != credit_wallet:
+            raise ValueError("signed_connection.credit_wallet does not match the signed message.")
+
+        network = str(message.get("network") or "").strip().lower()
+        if network not in {"mainnet", "testnet", "test", "dev"}:
+            raise ValueError(f"bad worker connect network: {network!r}")
+
+        requested_ring = str(message.get("requested_ring") or "").strip()
+        if requested_ring not in {"0", "1", "2"}:
+            raise ValueError("worker connect requested_ring must be 0, 1, or 2.")
+        if requested_ring != str(signed_connection.get("requested_ring") or ""):
+            raise ValueError("signed_connection.requested_ring does not match the signed message.")
+
+        expected_network = str(signed_connection.get("network") or "").strip().lower()
+        if expected_network and expected_network != network:
+            raise ValueError("signed_connection.network does not match the signed message.")
+
+        hub_url = str(message.get("hub_url") or "").strip().rstrip("/")
+        signed_hub_url = str(signed_connection.get("hub_url") or "").strip().rstrip("/")
+        if signed_hub_url and hub_url != signed_hub_url:
+            raise ValueError("signed_connection.hub_url does not match the signed message.")
+        if not hub_url:
+            raise ValueError("worker connect message must include hub_url.")
+
+        chain_id = str(message.get("chain_id") or "").strip()
+        signed_chain_id = str(signed_connection.get("chain_id") or "").strip()
+        if signed_chain_id and chain_id != signed_chain_id:
+            raise ValueError("signed_connection.chain_id does not match the signed message.")
+        if not chain_id:
+            raise ValueError("worker connect message must include chain_id.")
+
+        worker_node_id = _clean_node_id(str(worker_payload.get("node_id") or ""), default="")
+        message_worker_node_id = _clean_node_id(str(message.get("worker_node_id") or ""), default="")
+        if not worker_node_id:
+            raise ValueError("worker.node_id is required.")
+        if message_worker_node_id != worker_node_id:
+            raise ValueError("worker connect worker_node_id does not match the worker payload.")
+
+        issued_at = message.get("issued_at")
+        if issued_at:
+            issued = parse_iso_datetime(issued_at)
+            now = datetime.now(timezone.utc)
+            if (issued - now).total_seconds() > 300:
+                raise ValueError(f"worker connect issued_at is too far in the future: {issued_at}")
+        expires_at = message.get("expires_at")
+        if expires_at:
+            expires = parse_iso_datetime(expires_at)
+            if expires < datetime.now(timezone.utc):
+                raise ValueError(f"worker connect order is expired: {expires_at}")
+        else:
+            raise ValueError("worker connect message must include expires_at.")
+
+        return {
+            "ok": True,
+            "wallet_address": wallet_address,
+            "credit_wallet": credit_wallet,
+            "recovered_address": recovered,
+            "network": network,
+            "requested_ring": requested_ring,
+            "hub_url": hub_url,
+            "chain_id": chain_id,
+            "worker_node_id": worker_node_id,
+            "issued_at": issued_at,
+            "expires_at": expires_at,
+            "message": message,
+            "signature": signature,
+        }
+
+    def _handle_worker_connect_order(self, body: dict[str, Any]) -> dict[str, Any]:
+        signed_connection = body.get("signed_connection")
+        if not isinstance(signed_connection, dict):
+            raise ValueError("signed_connection object is required.")
+        worker_payload = body.get("worker")
+        if not isinstance(worker_payload, dict):
+            raise ValueError("worker object is required.")
+
+        verification = self._verify_worker_connect_order(
+            signed_connection=signed_connection,
+            worker_payload=worker_payload,
+        )
+        assigned_ring = str(verification["requested_ring"])
+        ring_policy = {"0": "operator", "1": "protected", "2": "public"}[assigned_ring]
+        pricing_policy = f"{ring_policy}-{verification['network']}"
+
+        capabilities = dict(worker_payload.get("capabilities", {})) if isinstance(worker_payload.get("capabilities"), dict) else {}
+        pricing = dict(worker_payload.get("pricing", {})) if isinstance(worker_payload.get("pricing"), dict) else {}
+        execution = dict(worker_payload.get("execution", {})) if isinstance(worker_payload.get("execution"), dict) else {}
+        if pricing:
+            capabilities["pricing"] = pricing
+        if execution:
+            capabilities["execution"] = execution
+        capabilities.update(
+            {
+                "worker_connect_order_verified": True,
+                "worker_connect_order": {
+                    "network": verification["network"],
+                    "requested_ring": verification["requested_ring"],
+                    "assigned_ring": assigned_ring,
+                    "wallet_address": verification["wallet_address"],
+                    "credit_wallet": verification["credit_wallet"],
+                    "hub_url": verification["hub_url"],
+                    "chain_id": verification["chain_id"],
+                    "worker_node_id": verification["worker_node_id"],
+                    "issued_at": verification.get("issued_at"),
+                    "expires_at": verification.get("expires_at"),
+                },
+                "requested_ring": verification["requested_ring"],
+                "assigned_ring": assigned_ring,
+                "wallet_address": verification["wallet_address"],
+                "credit_wallet": verification["credit_wallet"],
+                "pricing_policy": pricing_policy,
+            }
+        )
+
+        raw_price = worker_payload.get("credits_per_request")
+        if raw_price is None and pricing:
+            raw_price = pricing.get("credits_per_request")
+        worker = self.server.registry.register_worker(
+            node_id=str(worker_payload.get("node_id", "")),
+            endpoint=str(worker_payload.get("endpoint", "")),
+            model=str(worker_payload.get("model", "")),
+            models=[str(item) for item in worker_payload.get("models", [])] if isinstance(worker_payload.get("models"), list) else None,
+            capabilities=capabilities,
+            credits_per_request=int(raw_price if raw_price is not None else self.server.config.hub_credits_per_request),
+            settlement_precision_places=worker_payload.get("settlement_precision_places"),
+            queue_depth=int(worker_payload.get("queue_depth", 0) or 0),
+            active_requests=int(worker_payload.get("active_requests", 0) or 0),
+            max_concurrency=int(worker_payload.get("max_concurrency", 1) or 1),
+        )
+        self.server.energy_ledger.register_node(worker.node_id, "gpu-worker", worker.endpoint)
+        worker_data = worker.as_dict()
+        worker_data.update(
+            {
+                "worker_id": worker.node_id,
+                "wallet_address": verification["wallet_address"],
+                "credit_wallet": verification["credit_wallet"],
+                "network": verification["network"],
+                "requested_ring": verification["requested_ring"],
+                "assigned_ring": assigned_ring,
+                "pricing_policy": pricing_policy,
+                "status": worker_data.get("status", "available"),
+                "lease_expires_at": worker_data.get("lease_expires_at", ""),
+            }
+        )
+        pool = self._worker_pool_summary(assigned_ring=assigned_ring)
+        return {
+            "ok": True,
+            "worker": worker_data,
+            "worker_id": worker.node_id,
+            "wallet_address": verification["wallet_address"],
+            "credit_wallet": verification["credit_wallet"],
+            "network": verification["network"],
+            "requested_ring": verification["requested_ring"],
+            "assigned_ring": assigned_ring,
+            "pricing_policy": pricing_policy,
+            "status": "registered",
+            "verification": verification,
+            "pool": pool,
+            "hub": self.server.registry.status(),
+        }
+
     def _handle_multisession_key_request(self, body: dict[str, Any]) -> dict[str, Any]:
         signed_request = body.get("signed_request")
         if not isinstance(signed_request, dict):
@@ -2160,6 +2383,12 @@ class HubServerHandler(_JsonHandler):
             if path == "/api/hub/v1/credits/multisession-keys/validate":
                 try:
                     self._send_json(self._handle_multisession_key_validate(self._read_json()))
+                except Exception as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            if path in {"/api/hub/workers/connect", "/api/hub/v1/workers/connect"}:
+                try:
+                    self._send_json(self._handle_worker_connect_order(self._read_json()))
                 except Exception as exc:
                     self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return

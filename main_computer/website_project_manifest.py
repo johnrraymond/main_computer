@@ -24,6 +24,9 @@ from main_computer.local_platform_compose import (
     compose_project_name,
     directus_dependency_services_for_site,
     generated_compose_path,
+    site_compose_project_name,
+    site_generated_compose_path,
+    write_generated_site_compose,
     write_generated_websites_compose,
 )
 from main_computer.local_platform_registry import (
@@ -5009,10 +5012,10 @@ def configure_website_directus_runtime(
 
     if directus_connection is not None:
         save_website_directus_connection(repo_root, site_id, directus_connection)
-    compose_result = write_generated_websites_compose(repo_root, directus_site_ids={str(site_id)})
     project = load_website_project(repo_root, site_id)
-    project_name = compose_project_name()
-    compose_path = generated_compose_path(repo_root)
+    compose_result = write_generated_site_compose(repo_root, project.id, register_missing=True)
+    project_name = site_compose_project_name(project.id)
+    compose_path = site_generated_compose_path(repo_root, project.id)
     dependency_services = directus_dependency_services_for_site(repo_root, project.id)
     service_names = [service.service for service in dependency_services if service.service and getattr(service, "managed", True)]
     all_service_names = [service.service for service in dependency_services if service.service]
@@ -5204,8 +5207,8 @@ def website_publish_plan(repo_root: Path, site_id: object, lane: object = "local
         project, _registry_result = ensure_website_project_local_platform(repo_root, project)
     execution_lane, accepted_target = resolve_publish_execution_lane(repo_root, project, lane)
     lane_data = lane_config(repo_root, project, execution_lane)
-    compose_path = generated_compose_path(repo_root)
-    project_name = compose_project_name()
+    compose_path = site_generated_compose_path(repo_root, project.id)
+    project_name = site_compose_project_name(project.id)
     cms_dependency_services = cms_dependency_service_names_for_site(repo_root, project.id)
     recreate_plan = _site_container_recreate_plan(
         project,
@@ -5683,7 +5686,7 @@ def publish_website(
             "error": str(blog_deploy_setup.get("message") or "Blog Deploy setup requires user action."),
         }
 
-    compose_result = write_generated_websites_compose(repo_root, directus_site_ids={str(site_id)})
+    compose_result = write_generated_site_compose(repo_root, site_id, register_missing=True)
     plan = website_publish_plan(repo_root, site_id, lane)
     if not plan["supported"]:
         raise WebsiteProjectError(

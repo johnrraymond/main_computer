@@ -35,15 +35,37 @@ class ExportMainComputerTestTests(unittest.TestCase):
 
 
 
-    def test_export_script_includes_johnrraymond_runtime_website_without_unblocking_all_runtime(self) -> None:
+    def test_export_script_includes_versioned_runtime_websites_without_unblocking_all_runtime(self) -> None:
         script = (ROOT / "export-main-computer-test.ps1").read_text(encoding="utf-8")
 
+        self.assertIn('"runtime/websites/hub-site"', script)
+        self.assertIn('"runtime/websites/hub-site/"', script)
         self.assertIn('"runtime/websites/johnrraymond"', script)
         self.assertIn('"runtime/websites/johnrraymond/"', script)
         self.assertIn('"runtime/"', script)
         self.assertIn('$allowedGeneratedPrefixes', script)
         self.assertIn('$isAllowedGeneratedPrefixPath', script)
         self.assertIn('-and -not $isAllowedGeneratedPrefixPath', script)
+
+
+    def test_export_script_blocks_generated_local_platform_compose_outputs(self) -> None:
+        script = (ROOT / "export-main-computer-test.ps1").read_text(encoding="utf-8")
+
+        self.assertIn('"deploy/local-platform/generated/docker-compose.websites.yml"', script)
+        self.assertIn('"deploy/local-platform/generated/"', script)
+        self.assertIn('"/.main-computer/local-platform/docker-compose.yml"', script)
+        self.assertIn('$blockedGeneratedExactPaths', script)
+        self.assertIn('$blockedGeneratedPrefixes', script)
+        self.assertIn('$blockedGeneratedSuffixes', script)
+
+
+    def test_gitignore_preserves_versioned_runtime_websites_but_ignores_generated_compose_outputs(self) -> None:
+        gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+
+        self.assertIn("!runtime/websites/hub-site/**", gitignore)
+        self.assertIn("!runtime/websites/johnrraymond/**", gitignore)
+        self.assertIn("deploy/local-platform/generated/", gitignore)
+        self.assertIn("runtime/websites/*/.main-computer/local-platform/docker-compose.yml", gitignore)
 
 
     def test_export_script_includes_network_deployment_latest_manifests_without_unblocking_all_runtime(self) -> None:
