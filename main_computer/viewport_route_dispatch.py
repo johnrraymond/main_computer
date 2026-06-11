@@ -558,6 +558,270 @@ def _handle_control_panel_level1_telemetry(self) -> None:
         self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_GATEWAY)
 
 
+def _control_panel_level4_add(
+    checks: list[dict[str, object]],
+    status: str,
+    area: str,
+    message: str,
+    evidence: dict[str, object] | None = None,
+) -> None:
+    checks.append(
+        {
+            "status": status,
+            "area": area,
+            "message": message,
+            "evidence": evidence or {},
+        }
+    )
+
+
+def _control_panel_level4_lock_overreads(roots: list[Path]) -> tuple[list[dict[str, object]], int]:
+    observations: list[dict[str, object]] = []
+    warning_count = 0
+    seen: set[str] = set()
+    for root in roots:
+        lock_dir = (root / ".main_computer_ollama.lock").resolve()
+        lock_key = str(lock_dir)
+        if lock_key in seen:
+            continue
+        seen.add(lock_key)
+        observation: dict[str, object] = {
+            "lock": lock_key,
+            "present": lock_dir.exists(),
+            "owner_read": False,
+            "mutated": False,
+        }
+        if lock_dir.exists():
+            try:
+                stat = lock_dir.stat()
+                observation["age_s"] = round(max(0.0, time.time() - stat.st_mtime), 3)
+            except OSError as exc:
+                observation["stat_error"] = str(exc)
+                warning_count += 1
+            owner_path = lock_dir / "owner.json"
+            if owner_path.exists():
+                try:
+                    owner = json.loads(owner_path.read_text(encoding="utf-8"))
+                    observation["owner_read"] = True
+                    observation["owner"] = owner if isinstance(owner, dict) else {"raw": owner}
+                except Exception as exc:
+                    observation["owner_error"] = str(exc)
+                    warning_count += 1
+        observations.append(observation)
+    return observations, warning_count
+
+
+def _control_panel_level4_diagnostic(self) -> dict[str, object]:
+    """Return a focused Level 4 report for the system directly under /graphical.
+
+    This intentionally does not inspect the Applications app catalog or frontend app
+    contracts. It checks the repo root, current Python/viewport process, local
+    service ports, provider configuration, process visibility, and lock state by
+    overreading lock metadata only.
+    """
+
+    checks: list[dict[str, object]] = []
+    repo_root = self.server.debug_root.resolve()
+    config = self.server.config
+    started = time.perf_counter()
+
+    repo_ok = repo_root.exists() and repo_root.is_dir() and (repo_root / "main_computer").is_dir()
+    _control_panel_level4_add(
+        checks,
+        "PASS" if repo_ok else "FAIL",
+        "repo",
+        "Repository root is readable and contains main_computer.",
+        {
+            "repo_root": str(repo_root),
+            "main_computer_dir": str(repo_root / "main_computer"),
+            "new_patch": (repo_root / "new_patch.py").is_file(),
+            "pyproject": (repo_root / "pyproject.toml").is_file(),
+        },
+    )
+
+    python_ok = bool(sys.executable) and sys.version_info >= (3, 10)
+    _control_panel_level4_add(
+        checks,
+        "PASS" if python_ok else "FAIL",
+        "python",
+        "Current Python runtime is available to the viewport process.",
+        {
+            "executable": sys.executable,
+            "version": sys.version.split()[0],
+            "minimum": "3.10",
+        },
+    )
+
+    server_port = int(getattr(self.server, "server_port", 0) or 0)
+    _control_panel_level4_add(
+        checks,
+        "PASS" if server_port > 0 else "FAIL",
+        "viewport",
+        "The /graphical backend is running in this process and can answer its own diagnostic endpoint.",
+        {
+            "server_port": server_port,
+            "pid": os.getpid(),
+            "debug_root": str(repo_root),
+        },
+    )
+
+    known_ports = _control_panel_known_ports(self)
+    port_probes = {name: _control_panel_connect("127.0.0.1", port, timeout_s=0.3) for name, port in known_ports.items()}
+    for name, probe in port_probes.items():
+        required = name in {"app", "heartbeat"}
+        ok = bool(probe.get("ok"))
+        _control_panel_level4_add(
+            checks,
+            "PASS" if ok else ("FAIL" if name == "app" else "WARN"),
+            "ports",
+            f"{name} port {'is reachable' if ok else 'is not reachable'} on 127.0.0.1.",
+            {
+                "service": name,
+                "required": required,
+                "port": probe.get("port"),
+                "elapsed_ms": probe.get("elapsed_ms"),
+                "error": probe.get("error"),
+            },
+        )
+
+    provider_configured = bool(getattr(config, "provider", "") and getattr(config, "model", ""))
+    _control_panel_level4_add(
+        checks,
+        "PASS" if provider_configured else "WARN",
+        "provider",
+        "Provider and model are configured for the underlying chat system.",
+        {
+            "provider": getattr(config, "provider", ""),
+            "model": getattr(config, "model", ""),
+            "ollama_base_url": getattr(config, "ollama_base_url", ""),
+        },
+    )
+
+    try:
+        task_snapshot = self.server.task_manager.snapshot(limit=12, include_connections=True)
+        overview = task_snapshot.get("overview") if isinstance(task_snapshot.get("overview"), dict) else {}
+        process_count = int(overview.get("main_computer_process_count") or overview.get("process_count") or 0)
+        _control_panel_level4_add(
+            checks,
+            "PASS" if process_count > 0 else "WARN",
+            "processes",
+            "Viewport task manager can observe the current process family.",
+            {
+                "main_computer_process_count": overview.get("main_computer_process_count"),
+                "process_count": overview.get("process_count"),
+                "connection_count": overview.get("connection_count"),
+            },
+        )
+    except Exception as exc:
+        _control_panel_level4_add(
+            checks,
+            "WARN",
+            "processes",
+            "Viewport task manager snapshot was not readable.",
+            {"error": str(exc)},
+        )
+
+    roots = [repo_root]
+    workspace = getattr(config, "workspace", None)
+    if isinstance(workspace, Path):
+        roots.append(workspace.resolve())
+    lock_observations, lock_warning_count = _control_panel_level4_lock_overreads(roots)
+    present_locks = [lock for lock in lock_observations if lock.get("present")]
+    if present_locks:
+        _control_panel_level4_add(
+            checks,
+            "WARN" if lock_warning_count else "INFO",
+            "locks",
+            "Ollama diagnostic locks were overread without acquiring, refreshing, or deleting them.",
+            {
+                "observed": present_locks,
+                "warning_count": lock_warning_count,
+            },
+        )
+    else:
+        _control_panel_level4_add(
+            checks,
+            "PASS",
+            "locks",
+            "No Ollama diagnostic lock is currently present; overread completed without mutation.",
+            {"observed": lock_observations},
+        )
+
+    summary = {status: 0 for status in ("PASS", "INFO", "WARN", "FAIL")}
+    for check in checks:
+        status = str(check.get("status") or "INFO").upper()
+        summary[status] = summary.get(status, 0) + 1
+
+    scored = [check for check in checks if str(check.get("status") or "").upper() != "INFO"]
+    if scored:
+        points = 0.0
+        for check in scored:
+            status = str(check.get("status") or "").upper()
+            if status == "PASS":
+                points += 1.0
+            elif status == "WARN":
+                points += 0.5
+        operational_percent = round((points / len(scored)) * 100)
+    else:
+        operational_percent = 100
+
+    if summary.get("FAIL", 0):
+        overall_status = "FAIL"
+        headline = "Underlying system has blocking failures"
+    elif summary.get("WARN", 0):
+        overall_status = "WARN"
+        headline = "Underlying system is operational with warnings"
+    else:
+        overall_status = "PASS"
+        headline = "Underlying system is operational"
+
+    return {
+        "ok": True,
+        "level": 4,
+        "scope": "graphical-underlying-system",
+        "headline": headline,
+        "overall_status": overall_status,
+        "operational_percent": operational_percent,
+        "summary": summary,
+        "finding_count": len(checks),
+        "checks": checks,
+        "lock_count": len(present_locks),
+        "lock_warning_count": lock_warning_count,
+        "locks": lock_observations,
+        "ports": port_probes,
+        "repo_root": str(repo_root),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "elapsed_s": round(time.perf_counter() - started, 3),
+        "config": {
+            "provider": getattr(config, "provider", ""),
+            "model": getattr(config, "model", ""),
+            "workspace": str(getattr(config, "workspace", "")),
+            "runtime_root": str(repo_root),
+        },
+    }
+
+
+def _handle_control_panel_level4_diagnostic(self) -> None:
+    if not _hard_halt_client_is_local(self):
+        self.server.signal(
+            "api-control-panel-level4-diagnostic-rejected",
+            reason="non-local-client",
+            client=self.client_address[0] if self.client_address else "",
+        )
+        self._send_json(
+            {"ok": False, "error": "Level 4 system check is only available to local viewport clients."},
+            HTTPStatus.FORBIDDEN,
+        )
+        return
+
+    try:
+        self.server.signal("api-control-panel-level4-diagnostic")
+        self._send_json(_control_panel_level4_diagnostic(self))
+    except Exception as exc:
+        self.server.signal("api-control-panel-level4-diagnostic-error", error=exc)
+        self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+
+
 
 _CONTROL_PANEL_NETWORK_ORDER = ("mainnet", "testnet", "test", "dev")
 
@@ -1379,6 +1643,9 @@ def dispatch_get(self) -> None:
         return
     if route_path == "/api/control-panel/system-sanity/stream":
         _handle_control_panel_system_sanity_stream(self)
+        return
+    if route_path == "/api/control-panel/level-4-diagnostic":
+        _handle_control_panel_level4_diagnostic(self)
         return
     if route_path == "/api/control-panel/level-1-telemetry":
         _handle_control_panel_level1_telemetry(self)
