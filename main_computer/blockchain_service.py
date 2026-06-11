@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 from typing import Any, Callable
 from main_computer.main_log_hooks import install_main_log_hooks_from_env
@@ -22,10 +23,15 @@ RpcProbeFunc = Callable[[str, int], dict[str, Any]]
 ContractCodeProbeFunc = Callable[[str, str], dict[str, Any]]
 
 
-DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
+DEFAULT_HEARTBEAT_INTERVAL_S = 15.0
 DEFAULT_LIGHT_CHECK_INTERVAL_S = 60.0
 DEFAULT_CHAIN_ID = 42424242
 DEFAULT_RPC_URL = "http://127.0.0.1:18545"
+DEFAULT_DEV_CHAIN_RUN_ID = "test-machine-dev"
+DEFAULT_DEV_CHAIN_ENVIRONMENT = "dev"
+DEFAULT_DEV_CHAIN_PORT_STRATEGY = "replace-project"
+DEFAULT_DEV_CHAIN_WAIT_TIMEOUT_S = "30"
+DEFAULT_DEV_CHAIN_RESET_PROCESS_TIMEOUT_S = 900.0
 DEPLOYMENT_CURRENT_RELATIVE_PATH = Path("runtime") / "deployments" / "current.json"
 SERVICE_NAME = "main-computer-blockchain-service"
 DEPLOYMENT_RUNTIME_SOURCE = "runtime-deployments-current"
@@ -97,6 +103,22 @@ def _coerce_int(value: Any, default: int = DEFAULT_CHAIN_ID) -> int:
         return int(str(value).strip(), 0)
     except (TypeError, ValueError):
         return default
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _disabled_flag(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return text in {"0", "false", "no", "off", "disabled"}
+
+
+def _compact_command(command: list[str]) -> str:
+    return " ".join(str(part) for part in command)
 
 
 def _valid_address(value: Any) -> str | None:
@@ -264,16 +286,17 @@ def load_blockchain_service_state(root: Path | str) -> dict[str, Any]:
 
 
 class BlockchainService:
-    """Boot and keep alive the blockchain substrate.
+    """Boot and keep alive the blockchain/dev-chain substrate.
 
     Production may provide ``~/.env.blockchain``. Local development without an
-    external env must use the deployment-owned golden path:
+    external env uses the deployment-owned golden path:
 
         python tools/dev-chain-reset.py --yes --run-id test-machine-dev --environment dev --port-strategy replace-project
 
-    The service only verifies the configured chain and deployed contract code.
-    It does not start a fallback Compose chain and must not write deployment
-    manifests such as runtime/deployments/current.json.
+    The resident service owns local dev-chain repair. It does not talk to Docker
+    directly for readiness; it waits for the executor service to publish Docker
+    readiness, then runs the reset tool and keeps retrying on the heartbeat
+    cadence until RPC and required contract code are healthy.
     """
 
     def __init__(
@@ -296,6 +319,12 @@ class BlockchainService:
         self.runtime_dir = self.root / "runtime" / "blockchain_service"
         self.state_path = self.runtime_dir / "state.json"
         self.docker_command = (docker_command or "docker").strip() or "docker"
+        self.python_command = (
+            os.environ.get("MAIN_COMPUTER_PYTHON_COMMAND")
+            or os.environ.get("PYTHON")
+            or sys.executable
+            or "python"
+        )
         # Kept as an accepted constructor/CLI option for compatibility. The
         # blockchain service no longer starts a Compose-managed dev chain.
         self.compose_file = Path(compose_file) if compose_file else self.root / "docker-compose.dev.yml"
@@ -313,11 +342,15 @@ class BlockchainService:
         self.light_check_interval_s = max(self.heartbeat_interval_s, float(light_check_interval_s))
         self._last_state: dict[str, Any] = {}
         self._next_light_check = 0.0
+        self._boot_proven_once = False
 
     def boot(self, *, watch: bool = False, max_watch_loops: int | None = None) -> dict[str, Any]:
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self._emit("blockchain service boot starting", root=str(self.root), env=str(self.blockchain_env_path))
         state = self._full_boot_reconcile()
+        if state.get("ok"):
+            self._boot_proven_once = True
+            state["boot_proven"] = True
         state["service"]["watching"] = bool(watch)
         self._write_state(state)
         self._emit_boot_result(state, prefix="initial boot")
@@ -333,7 +366,8 @@ class BlockchainService:
         while max_watch_loops is None or loops < max_watch_loops:
             loops += 1
             state = dict(self._last_state or state)
-            boot_proven = bool(state.get("boot_proven") and state.get("ok"))
+            boot_proven = bool(self._boot_proven_once or (state.get("boot_proven") and state.get("ok")))
+            state["boot_proven"] = boot_proven
             state["updated_at"] = _now_iso()
             state.setdefault("service", {})["watching"] = True
             state["service"]["state"] = "watching" if boot_proven else "booting"
@@ -347,6 +381,8 @@ class BlockchainService:
                 self._write_state(state)
                 self._emit_boot_result(state, prefix="boot retry")
                 if state.get("ok"):
+                    self._boot_proven_once = True
+                    state["boot_proven"] = True
                     self._next_light_check = self.time() + self.light_check_interval_s
             elif self.time() >= self._next_light_check:
                 state = self._light_keepalive(dict(self._last_state or state))
@@ -354,6 +390,8 @@ class BlockchainService:
                 self._write_state(state)
                 self._emit_boot_result(state, prefix="light keepalive")
                 if state.get("ok"):
+                    self._boot_proven_once = True
+                    state["boot_proven"] = True
                     self._next_light_check = self.time() + self.light_check_interval_s
 
             if max_watch_loops is not None and loops >= max_watch_loops:
@@ -422,6 +460,140 @@ class BlockchainService:
             }
 
         return self._deployment_current_config()
+
+    def _local_dev_chain_auto_start_enabled(self) -> bool:
+        return not _disabled_flag(os.environ.get("MAIN_COMPUTER_DEV_CHAIN_AUTO_START", "1"))
+
+    def _dev_chain_reset_command(self, config: dict[str, Any]) -> list[str]:
+        tool = self.root / "tools" / "dev-chain-reset.py"
+        rpc_url = (
+            os.environ.get("MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL")
+            or str(config.get("rpc_url") or DEFAULT_RPC_URL)
+        )
+        chain_id = _coerce_int(os.environ.get("MAIN_COMPUTER_ENERGY_CHAIN_ID") or config.get("chain_id"), DEFAULT_CHAIN_ID)
+        run_id = os.environ.get("MAIN_COMPUTER_DEV_CHAIN_RUN_ID") or DEFAULT_DEV_CHAIN_RUN_ID
+        environment = os.environ.get("MAIN_COMPUTER_DEV_CHAIN_ENVIRONMENT") or DEFAULT_DEV_CHAIN_ENVIRONMENT
+        port_strategy = os.environ.get("MAIN_COMPUTER_DEV_CHAIN_PORT_STRATEGY") or DEFAULT_DEV_CHAIN_PORT_STRATEGY
+        wait_timeout = os.environ.get("MAIN_COMPUTER_DEV_CHAIN_WAIT_TIMEOUT_S") or DEFAULT_DEV_CHAIN_WAIT_TIMEOUT_S
+
+        return [
+            self.python_command,
+            str(tool),
+            "--yes",
+            "--run-id",
+            str(run_id),
+            "--environment",
+            str(environment),
+            "--port-strategy",
+            str(port_strategy),
+            "--host-rpc-url",
+            str(rpc_url),
+            "--chain-id",
+            str(chain_id),
+            "--wait-timeout-s",
+            str(wait_timeout),
+        ]
+
+    def _reset_process_timeout_s(self) -> float:
+        return max(
+            1.0,
+            _coerce_float(
+                os.environ.get("MAIN_COMPUTER_DEV_CHAIN_RESET_PROCESS_TIMEOUT_S"),
+                DEFAULT_DEV_CHAIN_RESET_PROCESS_TIMEOUT_S,
+            ),
+        )
+
+    def _run_dev_chain_reset(self, config: dict[str, Any], *, trigger: str) -> dict[str, Any]:
+        if not self._local_dev_chain_auto_start_enabled():
+            return self._component(
+                ok=False,
+                state="disabled",
+                message="local dev-chain auto-start is disabled; blockchain service will only observe RPC",
+                setting="MAIN_COMPUTER_DEV_CHAIN_AUTO_START",
+                trigger=trigger,
+            )
+
+        tool = self.root / "tools" / "dev-chain-reset.py"
+        if not tool.exists():
+            return self._component(
+                ok=False,
+                state="missing-reset-tool",
+                message="tools/dev-chain-reset.py is missing; local dev-chain cannot be repaired",
+                tool=str(tool),
+                trigger=trigger,
+            )
+
+        command = self._dev_chain_reset_command(config)
+        timeout_s = self._reset_process_timeout_s()
+        result = self._run(command, timeout=timeout_s)
+        output = (result.stderr or "") + ("\n" if result.stderr and result.stdout else "") + (result.stdout or "")
+        if result.returncode != 0:
+            return self._component(
+                ok=False,
+                state="reset-retry-pending",
+                message="dev-chain reset did not complete yet; blockchain service will retry on the next boot heartbeat",
+                trigger=trigger,
+                command=command,
+                command_display=_compact_command(command),
+                returncode=result.returncode,
+                error=_truncate(output),
+            )
+
+        return self._component(
+            ok=True,
+            state="reset-succeeded",
+            message="dev-chain reset completed; blockchain service will re-check runtime, RPC, and contract code",
+            trigger=trigger,
+            command=command,
+            command_display=_compact_command(command),
+            returncode=result.returncode,
+            stdout=_truncate(result.stdout or "", 2000),
+            stderr=_truncate(result.stderr or "", 2000),
+        )
+
+    def _trigger_for_pre_config(self, config: dict[str, Any]) -> str | None:
+        if config.get("mode") != "deployment-current":
+            return None
+        if config.get("ok"):
+            return None
+        config_state = str(config.get("state") or "")
+        if config_state in {
+            "missing-deployment-current",
+            "invalid-deployment-current",
+            "incomplete-deployment-current",
+        }:
+            return config_state
+        return None
+
+    def _trigger_for_runtime_status(
+        self,
+        *,
+        config: dict[str, Any],
+        rpc: dict[str, Any],
+        contracts: dict[str, Any],
+    ) -> str | None:
+        if config.get("mode") != "deployment-current" or not config.get("ok"):
+            return None
+        if not rpc.get("ok"):
+            return "rpc-" + str(rpc.get("state") or "down")
+        if not contracts.get("ok"):
+            contracts_state = str(contracts.get("state") or "not-ready")
+            if contracts_state in {"missing-contract-code", "blocked"}:
+                return "contracts-" + contracts_state
+        return None
+
+    def _docker_delegation_status(self, config: dict[str, Any]) -> dict[str, Any]:
+        if config.get("mode") != "deployment-current":
+            return self._component(
+                ok=True,
+                state="not-required",
+                message="external blockchain mode does not require local Docker lifecycle",
+            )
+        return self._component(
+            ok=True,
+            state="self-managed-retry",
+            message="local dev-chain boot is owned by blockchain_service; reset attempts retry until Docker and RPC are ready",
+        )
 
     def _deployment_current_path(self) -> Path:
         return self.root / DEPLOYMENT_CURRENT_RELATIVE_PATH
@@ -611,37 +783,86 @@ class BlockchainService:
             checked_contracts=checked,
         )
 
-    def _full_boot_reconcile(self) -> dict[str, Any]:
-        state = self._base_state("booting")
+    def _reconcile_blockchain_once(
+        self,
+        phase: str,
+        *,
+        previous_state: dict[str, Any] | None = None,
+        allow_reset: bool = True,
+    ) -> dict[str, Any]:
+        state = previous_state if previous_state is not None else self._base_state(phase)
         config = self._chain_config()
-        runtime = self._runtime_config_status(config)
-        docker = self._component(
+        dev_chain = self._component(
             ok=True,
             state="not-required",
-            message="blockchain service does not start Docker; use tools/dev-chain-reset.py for local dev-chain lifecycle",
+            message="external blockchain mode or healthy local runtime does not need a dev-chain reset",
         )
+
+        trigger = self._trigger_for_pre_config(config) if allow_reset else None
+        if trigger is not None:
+            dev_chain = self._run_dev_chain_reset(config, trigger=trigger)
+            if dev_chain.get("ok"):
+                config = self._chain_config()
+
+        runtime = self._runtime_config_status(config)
+        docker = self._docker_delegation_status(config)
         compose = self._component(
             ok=True,
             state="removed",
             message="legacy Compose dev-chain fallback has been removed; runtime/deployments/current.json is the local golden path",
         )
+
         if config.get("ok"):
             rpc = self.rpc_probe(str(config.get("rpc_url") or DEFAULT_RPC_URL), int(config.get("chain_id") or DEFAULT_CHAIN_ID))
         else:
             rpc = self._component(ok=False, state="blocked", message="blockchain config is not ready")
         contracts = self._contract_code_status(config, rpc)
-        ok = bool(config.get("ok") and runtime.get("ok") and docker.get("ok") and compose.get("ok") and rpc.get("ok") and contracts.get("ok"))
+
+        post_trigger = self._trigger_for_runtime_status(config=config, rpc=rpc, contracts=contracts) if allow_reset else None
+        if trigger is None and post_trigger is not None:
+            dev_chain = self._run_dev_chain_reset(config, trigger=post_trigger)
+            if dev_chain.get("ok"):
+                config = self._chain_config()
+                runtime = self._runtime_config_status(config)
+                docker = self._docker_delegation_status(config)
+                if config.get("ok"):
+                    rpc = self.rpc_probe(str(config.get("rpc_url") or DEFAULT_RPC_URL), int(config.get("chain_id") or DEFAULT_CHAIN_ID))
+                else:
+                    rpc = self._component(ok=False, state="blocked", message="blockchain config is not ready")
+                contracts = self._contract_code_status(config, rpc)
+
+        ok = bool(
+            config.get("ok")
+            and runtime.get("ok")
+            and docker.get("ok")
+            and compose.get("ok")
+            and dev_chain.get("ok")
+            and rpc.get("ok")
+            and contracts.get("ok")
+        )
+        boot_proven = bool(ok or self._boot_proven_once)
+        service_state = "ready" if ok else ("booted-degraded" if boot_proven else "booting")
         state.update(
             {
                 "ok": ok,
-                "state": "ready" if ok else "down",
-                "boot_proven": ok,
+                "state": service_state,
+                "boot_proven": boot_proven,
+                "updated_at": _now_iso(),
                 "mode": config.get("mode"),
-                "message": "blockchain service is ready" if ok else "blockchain service needs attention",
+                "message": (
+                    "blockchain service is ready"
+                    if ok
+                    else (
+                        "blockchain service booted earlier in this process and is observing degraded runtime health"
+                        if boot_proven
+                        else "blockchain service is booting and will retry local dev-chain reset"
+                    )
+                ),
                 "config": config,
                 "runtime": runtime,
                 "docker": docker,
                 "compose": compose,
+                "dev_chain": dev_chain,
                 "rpc": rpc,
                 "contracts": contracts,
                 "components": {
@@ -649,6 +870,7 @@ class BlockchainService:
                     "runtime": runtime,
                     "docker": docker,
                     "compose": compose,
+                    "dev_chain": dev_chain,
                     "rpc": rpc,
                     "contracts": contracts,
                 },
@@ -657,50 +879,14 @@ class BlockchainService:
         state["service"]["state"] = state["state"]
         return state
 
+    def _full_boot_reconcile(self) -> dict[str, Any]:
+        return self._reconcile_blockchain_once("booting")
+
     def _light_keepalive(self, state: dict[str, Any]) -> dict[str, Any]:
-        config = self._chain_config()
-        runtime = self._runtime_config_status(config)
-        docker = self._component(
-            ok=True,
-            state="not-required",
-            message="blockchain service does not start Docker; use tools/dev-chain-reset.py for local dev-chain lifecycle",
-        )
-        compose = self._component(
-            ok=True,
-            state="removed",
-            message="legacy Compose dev-chain fallback has been removed; runtime/deployments/current.json is the local golden path",
-        )
-        if config.get("ok"):
-            rpc = self.rpc_probe(str(config.get("rpc_url") or DEFAULT_RPC_URL), int(config.get("chain_id") or DEFAULT_CHAIN_ID))
-        else:
-            rpc = self._component(ok=False, state="blocked", message="blockchain config is not ready")
-        contracts = self._contract_code_status(config, rpc)
-        ok = bool(config.get("ok") and runtime.get("ok") and compose.get("ok") and rpc.get("ok") and contracts.get("ok"))
-        state.update(
-            {
-                "ok": ok,
-                "state": "ready" if ok else "down",
-                "boot_proven": ok,
-                "updated_at": _now_iso(),
-                "mode": config.get("mode"),
-                "message": "blockchain service is ready" if ok else "blockchain service needs attention",
-                "config": config,
-                "runtime": runtime,
-                "docker": docker,
-                "compose": compose,
-                "rpc": rpc,
-                "contracts": contracts,
-                "components": {
-                    "config": config,
-                    "runtime": runtime,
-                    "docker": docker,
-                    "compose": compose,
-                    "rpc": rpc,
-                    "contracts": contracts,
-                },
-            }
-        )
-        return state
+        # After this service process proves boot once, light keepalive is
+        # observational only. It must not run dev-chain reset repair again until
+        # the service is restarted.
+        return self._reconcile_blockchain_once("watching", previous_state=state, allow_reset=not self._boot_proven_once)
 
     def _emit_completed_process_to_main_log(self, result: subprocess.CompletedProcess[str]) -> None:
         command = result.args if isinstance(result.args, list) else []

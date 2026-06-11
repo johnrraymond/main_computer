@@ -28,7 +28,32 @@ def make_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "docker-compose.dev.yml").write_text("services:\n  main-computer:\n    image: main-computer-dev:latest\n", encoding="utf-8")
+    (repo / "tools").mkdir()
+    (repo / "tools" / "dev-chain-reset.py").write_text("# fake reset tool\n", encoding="utf-8")
     return repo
+
+
+def write_executor_docker_ready(repo: Path) -> Path:
+    state_path = repo / "runtime" / "executor_service" / "state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "state": "ready",
+                "components": {
+                    "docker": {
+                        "ok": True,
+                        "state": "ready",
+                        "message": "fake Docker ready",
+                    }
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return state_path
 
 
 def write_deployment_current(
@@ -137,10 +162,13 @@ def test_boot_requires_deployment_current_json_when_env_is_missing(tmp_path: Pat
     assert state["mode"] == "deployment-current"
     assert state["config"]["state"] == "missing-deployment-current"
     assert "tools\\dev-chain-reset.py" in state["config"]["reset_command"]
-    assert state["docker"]["state"] == "not-required"
+    assert state["docker"]["state"] == "self-managed-retry"
     assert state["compose"]["state"] == "removed"
+    assert state["state"] == "booting"
+    assert state["dev_chain"]["state"] == "reset-retry-pending"
+    assert state["dev_chain"]["trigger"] == "missing-deployment-current"
     assert state["rpc"]["state"] == "blocked"
-    assert runner.calls == []
+    assert len(runner.calls) == 1
     assert load_blockchain_service_state(repo)["ok"] is False
 
 
@@ -172,8 +200,9 @@ def test_boot_uses_deployment_current_json_and_does_not_edit_it(tmp_path: Path) 
     assert "private_key" not in state["runtime"]["offices"][0]
     assert state["contracts"]["state"] == "ready"
     assert state["contracts"]["checked_contracts"]["hub_credit_bridge_escrow"]["address"] == BRIDGE_ADDRESS
-    assert state["docker"]["state"] == "not-required"
+    assert state["docker"]["state"] == "self-managed-retry"
     assert state["compose"]["state"] == "removed"
+    assert state["dev_chain"]["state"] == "not-required"
     assert runner.calls == []
     assert current_path.read_text(encoding="utf-8") == original_text
     assert load_blockchain_service_state(repo)["ok"] is True
@@ -195,7 +224,7 @@ def test_boot_fails_loudly_when_deployment_contract_code_is_missing(tmp_path: Pa
     state = service.boot()
 
     assert state["ok"] is False
-    assert state["state"] == "down"
+    assert state["state"] == "booting"
     assert state["contracts"]["state"] == "missing-contract-code"
     assert "configured deployment does not match the connected chain" in state["contracts"]["message"]
     assert state["contracts"]["checked_contracts"]["hub_credit_bridge_escrow"]["state"] == "missing-code"
@@ -308,6 +337,112 @@ def test_watch_retries_deployment_current_rpc_until_ready(tmp_path: Path) -> Non
     assert [value for value in sleep_calls if value == 30] == [30, 30]
 
 
+def test_deployment_current_rpc_down_retries_reset_without_executor_state(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    write_deployment_current(repo)
+    runner = FakeBlockchainRunner()
+    service = BlockchainService(
+        root=repo,
+        blockchain_env_path=tmp_path / "missing.env",
+        runner=runner,
+        rpc_probe_func=down_rpc_probe,
+        contract_code_probe_func=code_present_probe,
+        sleep_func=lambda _: None,
+        output_func=None,
+    )
+
+    state = service.boot()
+
+    assert state["ok"] is False
+    assert state["state"] == "booting"
+    assert state["dev_chain"]["state"] == "reset-retry-pending"
+    assert state["dev_chain"]["trigger"] == "rpc-down"
+    assert "retry on the next boot heartbeat" in state["dev_chain"]["message"]
+    assert len(runner.calls) == 1
+
+
+def test_deployment_current_rpc_down_resets_after_executor_docker_ready(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    write_deployment_current(repo)
+    attempts = {"count": 0}
+
+    def rpc_down_then_ready(rpc_url: str, expected_chain_id: int) -> dict[str, object]:
+        attempts["count"] += 1
+        if attempts["count"] >= 2:
+            return ok_rpc_probe(rpc_url, expected_chain_id)
+        return down_rpc_probe(rpc_url, expected_chain_id)
+
+    class ResetRunner(FakeBlockchainRunner):
+        def __call__(self, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            self.calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="reset ok\n", stderr="")
+
+    runner = ResetRunner()
+    service = BlockchainService(
+        root=repo,
+        blockchain_env_path=tmp_path / "missing.env",
+        runner=runner,
+        rpc_probe_func=rpc_down_then_ready,
+        contract_code_probe_func=code_present_probe,
+        sleep_func=lambda _: None,
+        output_func=None,
+    )
+
+    state = service.boot()
+
+    assert state["ok"] is True
+    assert state["dev_chain"]["state"] == "reset-succeeded"
+    assert state["dev_chain"]["trigger"] == "rpc-down"
+    assert len(runner.calls) == 1
+    command = runner.calls[0]
+    assert command[1].endswith("tools/dev-chain-reset.py")
+    assert "--host-rpc-url" in command
+    assert DEFAULT_RPC_URL in command
+    assert "--chain-id" in command
+    assert str(DEFAULT_CHAIN_ID) in command
+    assert attempts["count"] == 2
+
+
+def test_watch_does_not_reset_again_after_boot_is_proven(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    write_deployment_current(repo)
+    calls = {"rpc": 0}
+    now = {"value": 0.0}
+
+    def rpc_ready_then_down(rpc_url: str, expected_chain_id: int) -> dict[str, object]:
+        calls["rpc"] += 1
+        if calls["rpc"] == 1:
+            return ok_rpc_probe(rpc_url, expected_chain_id)
+        return down_rpc_probe(rpc_url, expected_chain_id)
+
+    def advance_time(seconds: float) -> None:
+        now["value"] += seconds
+
+    runner = FakeBlockchainRunner()
+    service = BlockchainService(
+        root=repo,
+        blockchain_env_path=tmp_path / "missing.env",
+        runner=runner,
+        rpc_probe_func=rpc_ready_then_down,
+        contract_code_probe_func=code_present_probe,
+        sleep_func=advance_time,
+        time_func=lambda: now["value"],
+        output_func=None,
+        heartbeat_interval_s=1,
+        light_check_interval_s=1,
+    )
+
+    state = service.boot(watch=True, max_watch_loops=2)
+
+    assert calls["rpc"] == 2
+    assert state["ok"] is False
+    assert state["boot_proven"] is True
+    assert state["state"] == "booted-degraded"
+    assert state["rpc"]["state"] == "down"
+    assert state["dev_chain"]["state"] == "not-required"
+    assert runner.calls == []
+
+
 def test_legacy_compose_environment_does_not_start_a_fallback_chain(monkeypatch, tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
     monkeypatch.setenv("MAIN_COMPUTER_DEV_COMPOSE_PROJECT", "main-computer-dev-main-computer-test-debug")
@@ -329,4 +464,4 @@ def test_legacy_compose_environment_does_not_start_a_fallback_chain(monkeypatch,
     assert state["ok"] is False
     assert state["mode"] == "deployment-current"
     assert state["config"]["state"] == "missing-deployment-current"
-    assert runner.calls == []
+    assert len(runner.calls) == 1

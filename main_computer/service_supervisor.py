@@ -1446,7 +1446,8 @@ def render_service_supervisor_summary(root: Path | str) -> str:
         f"runtime={_component_state(blockchain, 'runtime')} "
         f"docker={_component_state(blockchain, 'docker')} "
         f"compose={_component_state(blockchain, 'compose')} "
-        f"rpc={_component_state(blockchain, 'rpc')}"
+        f"rpc={_component_state(blockchain, 'rpc')} "
+        f"dev_chain={_component_state(blockchain, 'dev_chain')}"
     )
 
     lines.extend(

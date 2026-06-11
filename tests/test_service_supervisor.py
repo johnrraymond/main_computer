@@ -380,6 +380,7 @@ def test_service_supervisor_summary_includes_child_and_boot_component_states(tmp
                     "docker": {"state": "ready"},
                     "compose": {"state": "ready"},
                     "rpc": {"state": "ready"},
+                    "dev_chain": {"state": "not-required"},
                 },
             }
         ),
@@ -397,7 +398,7 @@ def test_service_supervisor_summary_includes_child_and_boot_component_states(tmp
     assert "Applications service: state=ready ok=True boot_proven=True" in summary
     assert "applications components: env=ready docker=ready compose=ready applications=ready" in summary
     assert "Blockchain service: state=ready ok=True boot_proven=True" in summary
-    assert "blockchain components: config=configured runtime=ready docker=ready compose=ready rpc=ready" in summary
+    assert "blockchain components: config=configured runtime=ready docker=ready compose=ready rpc=ready dev_chain=not-required" in summary
 
 def test_supervisor_control_queue_can_restart_executor_child(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
