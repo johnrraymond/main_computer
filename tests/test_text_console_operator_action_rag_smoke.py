@@ -277,6 +277,131 @@ def test_production_text_console_operator_chat_uses_action_specs(monkeypatch):
     assert '/act terminal run "<command>" --cwd repo-root' in final_joined
 
 
+
+def test_threaded_followup_smoke_uses_chat_messages_not_prompt_history(monkeypatch):
+    import main_computer.text_console as prod
+    from main_computer.models import ChatResponse
+    from types import SimpleNamespace
+
+    root = Path(__file__).resolve().parents[1]
+    specs = smoke.load_action_specs(root)
+    fixture = smoke.default_threaded_fixtures()[0]
+    calls = []
+
+    class ThreadAwareProvider:
+        name = "fake"
+        model = "fake-model"
+
+        def chat(self, messages):
+            calls.append(messages)
+            joined = "\n".join(str(message.content) for message in messages)
+            if smoke.ACTION_PREFLIGHT_PROMPT in joined:
+                return ChatResponse(
+                    content=json.dumps(
+                        {
+                            "needs_mount": True,
+                            "needs_edit": False,
+                            "needs_answer_only": False,
+                            "selected_spec_ids": ["terminal"],
+                            "reason": "The follow-up refers to the prior Terminal listing in this thread.",
+                        }
+                    ),
+                    provider="fake",
+                    model="fake-model",
+                )
+
+            last_user = [message.content for message in messages if message.role == "user"][-1]
+            prior_joined = "\n".join(str(message.content) for message in messages[:-1])
+            if (
+                last_user == fixture.followup_prompt
+                and fixture.prior_assistant_content in prior_joined
+                and "Terminal result from an explicitly executed text-console mount" in prior_joined
+            ):
+                return ChatResponse(
+                    content='```computer\n/act terminal run "dir /s main_computer" --cwd repo-root\n```',
+                    provider="fake",
+                    model="fake-model",
+                )
+
+            return ChatResponse(
+                content="I do not know what should be recursive.",
+                provider="fake",
+                model="fake-model",
+            )
+
+    class FakeComputer:
+        provider = ThreadAwareProvider()
+
+        def context_pack(self, prompt):
+            return SimpleNamespace(
+                text=(
+                    "Deterministic workspace context pack:\n"
+                    f"Workspace root: {root}\n"
+                    "Main computer file manifest:\n"
+                    "- main_computer:\n"
+                    "  - text_console.py\n"
+                ),
+                evidence=[],
+                manifest_chars=64,
+            )
+
+        def _web_search_context(self, prompt):
+            return {"attempted": False, "results": []}, ""
+
+    monkeypatch.setattr(prod.MainComputer, "build", classmethod(lambda cls, config=None: FakeComputer()))
+
+    report = smoke.run_threaded_fixture(
+        root=root,
+        fixture=fixture,
+        specs=specs,
+        base_url="http://127.0.0.1:11434",
+        model="fake-model",
+        timeout=120.0,
+        think=False,
+        offline_contract_only=False,
+    )
+
+    assert report["ok"] is True
+    assert report["threaded_chat_shape"]["ok"] is True
+    assert len(calls) == 2
+
+    final_messages = calls[1]
+    assert final_messages[-1].role == "user"
+    assert final_messages[-1].content == "now make it recursive."
+    assert "Previous conversation:" not in final_messages[-1].content
+    assert fixture.prior_assistant_content not in final_messages[-1].content
+    assert fixture.prior_terminal_result.strip() not in final_messages[-1].content
+
+    prior_joined = "\n".join(message.content for message in final_messages[:-1])
+    assert fixture.prior_user_prompt in prior_joined
+    assert fixture.prior_assistant_content in prior_joined
+    assert "Terminal result from an explicitly executed text-console mount" in prior_joined
+    assert '```computer\n/act terminal run "dir /s main_computer" --cwd repo-root\n```' == report["final_response"]["content"]
+
+
+def test_threaded_message_shape_validation_rejects_history_stuffed_user_prompt():
+    from main_computer.models import ChatMessage
+
+    fixture = smoke.default_threaded_fixtures()[0]
+    messages = [
+        ChatMessage(role="system", content="system"),
+        ChatMessage(
+            role="user",
+            content=(
+                "Previous conversation:\n"
+                + fixture.prior_assistant_content
+                + "\n\n"
+                + fixture.followup_prompt
+            ),
+        ),
+    ]
+
+    report = smoke.validate_threaded_chat_message_shape(messages, fixture=fixture)
+
+    assert report["ok"] is False
+    assert any("latest user message must be the raw follow-up prompt" in failure for failure in report["failures"])
+    assert any("prompt-history hack marker" in failure for failure in report["failures"])
+
 def test_production_action_specs_have_compact_runtime_sections():
     import main_computer.text_console as prod
 

@@ -13,10 +13,20 @@ Prove the generalized text-console operator pathway before another UI patch:
     -> assistant may emit normal prose, ```computer mounts, and/or ```repo-edit handoffs
     -> validators check every emitted artifact without executing or applying anything
 
+It also includes a ChatGPT-like threaded follow-up fixture:
+
+    user asks for a Terminal mount
+    -> assistant emits a computer block
+    -> user executes the mount and the Terminal result is persisted as thread context
+    -> user follows up with "now make it recursive."
+    -> the final Ollama /api/chat message array contains the prior turns as separate
+       messages and keeps the latest user message exactly as the short follow-up
+
 This smoke intentionally does not special-case a single prompt.  It runs a small
-fixture matrix covering answer-only, mount-only, edit-only, and combined
-mount+edit requests.  The action knowledge comes from files in
-main_computer/action_specs/*.md, not from one hard-coded final prompt.
+fixture matrix covering answer-only, mount-only, edit-only, combined
+mount+edit requests, and the threaded follow-up shape.  The action knowledge
+comes from files in main_computer/action_specs/*.md, not from one hard-coded
+final prompt.
 
 Run from the repository root:
 
@@ -70,8 +80,9 @@ Return JSON only, with this exact shape:
 Rules:
 - Select only spec ids that appear in the available action spec catalog.
 - Select terminal when the user asks for Terminal, shell commands, Git, tests,
-  file listings, directory listings, command execution, interruption, or active
-  terminal reuse.
+  file listings, directory listings, command execution, interruption, active
+  terminal reuse, or a follow-up to a prior Terminal listing such as making the
+  previous listing recursive.
 - Select repo_edit when the user asks to edit, modify, update, create, delete,
   refactor, patch, or otherwise change repository files.
 - Select both terminal and repo_edit when the user asks to inspect/run/test and
@@ -147,6 +158,50 @@ class OperatorFixture:
     expected_mount_commands: tuple[str, ...] = ()
     expect_repo_edit: bool = False
     required_editor_terms: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ThreadedOperatorFixture:
+    label: str
+    prior_user_prompt: str
+    prior_assistant_content: str
+    prior_terminal_result: str
+    followup_prompt: str
+    expected_spec_ids: tuple[str, ...]
+    expected_mount_commands: tuple[str, ...]
+
+
+THREADED_LIST_FIRST_PROMPT = (
+    "Use Terminal to list the files in main_computer. Use the Windows equivalent of ls."
+)
+THREADED_LIST_FIRST_ASSISTANT_CONTENT = (
+    "I will request a preview-only terminal action for that directory.\n\n"
+    "```computer\n"
+    "/act terminal run \"dir main_computer\" --cwd repo-root\n"
+    "```"
+)
+THREADED_LIST_FIRST_TERMINAL_RESULT = (
+    "$ dir main_computer\n"
+    "cwd: C:\\Users\\Front\\Desktop\\matt\\main_computer\n"
+    "exit: 0\n\n"
+    "stdout:\n"
+    "    Directory: C:\\Users\\Front\\Desktop\\matt\\main_computer\\main_computer\n\n"
+    "Mode                 LastWriteTime         Length Name\n"
+    "----                 -------------         ------ ----\n"
+    "d-----         6/10/2026   1:05 PM                action_specs\n"
+    "d-----          6/9/2026   5:41 PM                web\n"
+    "-a----         6/10/2026   5:14 PM          46891 text_console.py\n"
+)
+THREADED_RECURSIVE_FOLLOWUP_PROMPT = "now make it recursive."
+THREADED_RECURSIVE_EXPECTED_COMMAND = '/act terminal run "dir /s main_computer" --cwd repo-root'
+
+THREAD_TERMINAL_RESULT_CONTEXT_PROMPT = """\
+The following messages are persisted text-console thread context from earlier turns.
+They are provided as separate chat messages, not pasted into the current user
+prompt. Treat Terminal result context as evidence of what the user executed, but
+do not re-execute historic mounts. Continue the conversation from the final user
+message.
+"""
 
 
 def add_repo_to_path(root: Path) -> None:
@@ -405,7 +460,13 @@ def compact_model_messages_for_operator(model_input: Any) -> list[Any]:
     return compacted
 
 
-def build_preflight_messages(*, model_input: Any, specs: dict[str, ActionSpec], request_text: str) -> list[Any]:
+def build_preflight_messages(
+    *,
+    model_input: Any,
+    specs: dict[str, ActionSpec],
+    request_text: str,
+    conversation_messages: list[Any] | None = None,
+) -> list[Any]:
     from main_computer.models import ChatMessage
 
     config = getattr(model_input, "text_console_config", None)
@@ -424,22 +485,33 @@ def build_preflight_messages(*, model_input: Any, specs: dict[str, ActionSpec], 
     ]
     if root_hint:
         messages.append(ChatMessage(role="system", content=root_hint))
+    threaded_context = list(conversation_messages or [])
+    if threaded_context:
+        messages.append(ChatMessage(role="system", content=THREAD_TERMINAL_RESULT_CONTEXT_PROMPT))
+        messages.extend(threaded_context)
     messages.append(ChatMessage(role="user", content=request_text))
     return messages
 
 
-def build_final_messages(*, model_input: Any, specs: dict[str, ActionSpec], selected_spec_ids: list[str]) -> list[Any]:
+def build_final_messages(
+    *,
+    model_input: Any,
+    specs: dict[str, ActionSpec],
+    selected_spec_ids: list[str],
+    conversation_messages: list[Any] | None = None,
+) -> list[Any]:
     from main_computer.models import ChatMessage
 
     base_messages = compact_model_messages_for_operator(model_input)
+    threaded_context = list(conversation_messages or [])
     action_context = selected_action_specs_prompt(specs, selected_spec_ids)
     inserted = [
         ChatMessage(role="system", content=FINAL_OPERATOR_PROMPT),
         ChatMessage(role="system", content=action_context),
     ]
     if base_messages and str(getattr(base_messages[-1], "role", "")) == "user":
-        return [*base_messages[:-1], *inserted, base_messages[-1]]
-    return [*base_messages, *inserted]
+        return [*base_messages[:-1], *threaded_context, *inserted, base_messages[-1]]
+    return [*base_messages, *threaded_context, *inserted]
 
 
 def call_provider_chat(model_input: Any, messages: list[Any]) -> dict[str, Any]:
@@ -692,6 +764,269 @@ def parse_and_validate_mounts(
             "expected_commands": [],
             "failures": [],
         },
+    }
+
+
+
+def terminal_result_thread_message(*, command: str, cwd: str, result_text: str) -> Any:
+    from main_computer.models import ChatMessage
+
+    content = (
+        "Terminal result from an explicitly executed text-console mount.\n"
+        "This is historical thread context. Do not re-run it automatically.\n\n"
+        f"command: {command}\n"
+        f"cwd: {cwd}\n\n"
+        f"{str(result_text or '').strip()}"
+    )
+    return ChatMessage(role="system", content=content)
+
+
+def threaded_conversation_messages(fixture: ThreadedOperatorFixture) -> list[Any]:
+    from main_computer.models import ChatMessage
+
+    return [
+        ChatMessage(role="user", content=fixture.prior_user_prompt),
+        ChatMessage(role="assistant", content=fixture.prior_assistant_content),
+        terminal_result_thread_message(
+            command='dir main_computer',
+            cwd='repo-root',
+            result_text=fixture.prior_terminal_result,
+        ),
+    ]
+
+
+def default_threaded_fixtures() -> list[ThreadedOperatorFixture]:
+    return [
+        ThreadedOperatorFixture(
+            label="threaded terminal recursive follow-up",
+            prior_user_prompt=THREADED_LIST_FIRST_PROMPT,
+            prior_assistant_content=THREADED_LIST_FIRST_ASSISTANT_CONTENT,
+            prior_terminal_result=THREADED_LIST_FIRST_TERMINAL_RESULT,
+            followup_prompt=THREADED_RECURSIVE_FOLLOWUP_PROMPT,
+            expected_spec_ids=("terminal",),
+            expected_mount_commands=(THREADED_RECURSIVE_EXPECTED_COMMAND,),
+        )
+    ]
+
+
+def validate_threaded_chat_message_shape(
+    messages: list[Any],
+    *,
+    fixture: ThreadedOperatorFixture,
+) -> dict[str, Any]:
+    failures: list[str] = []
+    roles = [str(getattr(message, "role", "") or "") for message in messages]
+    contents = [str(getattr(message, "content", "") or "") for message in messages]
+    last_role = roles[-1] if roles else ""
+    last_content = contents[-1] if contents else ""
+
+    if last_role != "user":
+        failures.append(f"latest threaded chat message must be a user message, got {last_role!r}")
+    if last_content != fixture.followup_prompt:
+        failures.append(
+            "latest user message must be the raw follow-up prompt; "
+            f"expected {fixture.followup_prompt!r}, got {one_line(last_content)!r}"
+        )
+
+    hack_markers = (
+        "previous conversation:",
+        "recent conversation context",
+        "bounded recent conversation",
+        "conversation history:",
+    )
+    lowered_last = last_content.lower()
+    for marker in hack_markers:
+        if marker in lowered_last:
+            failures.append(f"latest user message contains prompt-history hack marker {marker!r}")
+
+    prior_contents = contents[:-1]
+    prior_joined = "\n".join(prior_contents)
+    if fixture.prior_user_prompt not in prior_joined:
+        failures.append("threaded chat messages do not include the prior user request as a separate message")
+    if fixture.prior_assistant_content not in prior_joined:
+        failures.append("threaded chat messages do not include the prior assistant mount as a separate message")
+    if "Terminal result from an explicitly executed text-console mount" not in prior_joined:
+        failures.append("threaded chat messages do not include the executed mount result as separate context")
+    if fixture.prior_terminal_result.strip() not in prior_joined:
+        failures.append("threaded chat messages do not include the actual terminal result text")
+    if fixture.expected_mount_commands[0] in last_content:
+        failures.append("latest user message already contains the expected recursive command")
+    if fixture.prior_assistant_content in last_content or fixture.prior_terminal_result.strip() in last_content:
+        failures.append("prior thread content was pasted into the latest user prompt instead of separate messages")
+
+    return {
+        "ok": not failures,
+        "failures": failures,
+        "message_count": len(messages),
+        "roles": roles,
+        "last_user_content": last_content,
+        "prior_message_count": max(0, len(messages) - 1),
+        "prior_contains_assistant_mount": fixture.prior_assistant_content in prior_joined,
+        "prior_contains_terminal_result": fixture.prior_terminal_result.strip() in prior_joined,
+    }
+
+
+def deterministic_preflight_for_threaded_fixture(fixture: ThreadedOperatorFixture) -> dict[str, Any]:
+    selected = list(fixture.expected_spec_ids)
+    return {
+        "needs_mount": "terminal" in selected,
+        "needs_edit": "repo_edit" in selected,
+        "needs_answer_only": not selected,
+        "selected_spec_ids": selected,
+        "reason": "offline-contract threaded fixture payload",
+    }
+
+
+def deterministic_response_for_threaded_fixture(fixture: ThreadedOperatorFixture) -> str:
+    return (
+        "I will request a recursive listing using the prior directory from this thread.\n\n"
+        "```computer\n"
+        + "\n".join(fixture.expected_mount_commands)
+        + "\n```"
+    )
+
+
+def run_threaded_fixture(
+    *,
+    root: Path,
+    fixture: ThreadedOperatorFixture,
+    specs: dict[str, ActionSpec],
+    base_url: str,
+    model: str,
+    timeout: float,
+    think: bool | str | None,
+    offline_contract_only: bool,
+) -> dict[str, Any]:
+    config, model_input, config_failures = build_base_model_input(
+        root=root,
+        request_text=fixture.followup_prompt,
+        base_url=base_url,
+        model=model,
+        timeout=timeout,
+        think=think,
+    )
+    conversation_messages = threaded_conversation_messages(fixture)
+
+    preflight_messages = build_preflight_messages(
+        model_input=model_input,
+        specs=specs,
+        request_text=fixture.followup_prompt,
+        conversation_messages=conversation_messages,
+    )
+
+    if offline_contract_only:
+        preflight_payload = deterministic_preflight_for_threaded_fixture(fixture)
+        preflight_raw_response = {
+            "content": json.dumps(preflight_payload, ensure_ascii=False),
+            "provider": "offline-contract",
+            "model": model,
+            "metadata": {},
+            "duration_ms": 0,
+        }
+    else:
+        preflight_raw_response = call_provider_chat(model_input, preflight_messages)
+        preflight_payload = parse_jsonish(preflight_raw_response["content"])
+
+    preflight_validation = validate_preflight_payload(
+        preflight_payload,
+        available_spec_ids=set(specs),
+        expected_spec_ids=fixture.expected_spec_ids,
+    )
+
+    selected_spec_ids = list(preflight_validation.get("selected_spec_ids") or [])
+    safe_selected_spec_ids = [spec_id for spec_id in selected_spec_ids if spec_id in specs]
+    final_messages = build_final_messages(
+        model_input=model_input,
+        specs=specs,
+        selected_spec_ids=safe_selected_spec_ids,
+        conversation_messages=conversation_messages,
+    )
+    message_shape_validation = validate_threaded_chat_message_shape(final_messages, fixture=fixture)
+
+    if offline_contract_only:
+        final_raw_response = {
+            "content": deterministic_response_for_threaded_fixture(fixture),
+            "provider": "offline-contract",
+            "model": model,
+            "metadata": {},
+            "duration_ms": 0,
+        }
+    else:
+        final_raw_response = call_provider_chat(model_input, final_messages)
+
+    final_content = final_raw_response["content"]
+    mount_validation = parse_and_validate_mounts(
+        final_content,
+        expected_mount_commands=fixture.expected_mount_commands,
+    )
+
+    failures = [
+        *config_failures,
+        *list(preflight_validation.get("failures") or []),
+        *list(message_shape_validation.get("failures") or []),
+    ]
+    if not mount_validation.get("ok"):
+        failures.extend(list((mount_validation.get("validation") or {}).get("failures") or []))
+
+    from main_computer.text_console import text_console_request_bytes, text_console_request_sha256
+
+    final_request_sha = text_console_request_sha256(
+        final_messages,
+        model=config.model,
+        think=config.ollama_think,
+    )
+    preflight_request_sha = text_console_request_sha256(
+        preflight_messages,
+        model=config.model,
+        think=config.ollama_think,
+    )
+
+    return {
+        "label": fixture.label,
+        "kind": "threaded_followup",
+        "prompt": fixture.followup_prompt,
+        "prior_user_prompt": fixture.prior_user_prompt,
+        "ok": not failures,
+        "failures": failures,
+        "expected_spec_ids": list(fixture.expected_spec_ids),
+        "expected_mount_commands": list(fixture.expected_mount_commands),
+        "expect_repo_edit": False,
+        "text_console_config": config.to_payload(),
+        "context_pack_chars": len(str(getattr(model_input.context_pack, "text", "") or "")),
+        "compact_context_pack_chars": len(compact_context_pack_text(str(getattr(model_input.context_pack, "text", "") or ""))),
+        "message_counts": {
+            "preflight": len(preflight_messages),
+            "final": len(final_messages),
+        },
+        "input_chars": {
+            "preflight": sum(len(str(getattr(message, "content", "") or "")) for message in preflight_messages),
+            "final": sum(len(str(getattr(message, "content", "") or "")) for message in final_messages),
+        },
+        "request_bytes": {
+            "preflight": text_console_request_bytes(preflight_messages, model=config.model, think=config.ollama_think),
+            "final": text_console_request_bytes(final_messages, model=config.model, think=config.ollama_think),
+        },
+        "request_sha256": {
+            "preflight": preflight_request_sha,
+            "final": final_request_sha,
+        },
+        "threaded_chat_shape": message_shape_validation,
+        "preflight": {
+            "raw_response": preflight_raw_response,
+            "payload": preflight_payload,
+            "validation": preflight_validation,
+        },
+        "selected_spec_ids": safe_selected_spec_ids,
+        "selected_spec_hashes": {spec_id: specs[spec_id].sha256 for spec_id in safe_selected_spec_ids},
+        "selected_spec_runtime_hashes": {spec_id: specs[spec_id].runtime_sha256 for spec_id in safe_selected_spec_ids},
+        "final_response": {
+            "raw_response": final_raw_response,
+            "content": final_content,
+            "preview": one_line(final_content, limit=360),
+        },
+        "mount_validation": mount_validation,
+        "repo_edit_blocks": [],
+        "repo_edit_validation": {"ok": True, "count": 0, "failures": [], "reports": []},
     }
 
 
@@ -986,6 +1321,13 @@ def print_summary(report: dict[str, Any]) -> None:
             f"  request_sha256: preflight={((item.get('request_sha256') or {}).get('preflight') or '')[:16]} "
             f"final={((item.get('request_sha256') or {}).get('final') or '')[:16]}"
         )
+        threaded_shape = item.get("threaded_chat_shape") or {}
+        if threaded_shape:
+            print(
+                f"  threaded_chat_shape: {'PASS' if threaded_shape.get('ok') else 'FAIL'} "
+                f"messages={threaded_shape.get('message_count')} "
+                f"last_user={threaded_shape.get('last_user_content')!r}"
+            )
 
         mount_validation = item.get("mount_validation") or {}
         mount_report = mount_validation.get("validation") or {}
@@ -1059,10 +1401,14 @@ def main(argv: list[str] | None = None) -> int:
         failures.append(f"missing required action specs: {missing}")
 
     fixtures = default_fixtures()
+    threaded_fixtures = default_threaded_fixtures()
     if args.fixture:
         needles = [needle.lower() for needle in args.fixture]
         fixtures = [fixture for fixture in fixtures if any(needle in fixture.label.lower() for needle in needles)]
-        if not fixtures:
+        threaded_fixtures = [
+            fixture for fixture in threaded_fixtures if any(needle in fixture.label.lower() for needle in needles)
+        ]
+        if not fixtures and not threaded_fixtures:
             failures.append(f"--fixture matched no fixtures: {args.fixture!r}")
 
     fixture_reports: list[dict[str, Any]] = []
@@ -1087,6 +1433,34 @@ def main(argv: list[str] | None = None) -> int:
                 "expected_spec_ids": list(fixture.expected_spec_ids),
                 "expected_mount_commands": list(fixture.expected_mount_commands),
                 "expect_repo_edit": fixture.expect_repo_edit,
+            }
+        if not fixture_report.get("ok"):
+            for failure in list(fixture_report.get("failures") or []):
+                failures.append(f"{fixture.label}: {failure}")
+        fixture_reports.append(fixture_report)
+
+    for fixture in threaded_fixtures:
+        try:
+            fixture_report = run_threaded_fixture(
+                root=root,
+                fixture=fixture,
+                specs=specs,
+                base_url=args.base_url,
+                model=args.model,
+                timeout=args.timeout,
+                think=think,
+                offline_contract_only=args.offline_contract_only,
+            )
+        except Exception as exc:
+            fixture_report = {
+                "label": fixture.label,
+                "kind": "threaded_followup",
+                "prompt": fixture.followup_prompt,
+                "ok": False,
+                "failures": [repr(exc)],
+                "expected_spec_ids": list(fixture.expected_spec_ids),
+                "expected_mount_commands": list(fixture.expected_mount_commands),
+                "expect_repo_edit": False,
             }
         if not fixture_report.get("ok"):
             for failure in list(fixture_report.get("failures") or []):
