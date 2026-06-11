@@ -1407,6 +1407,7 @@
       <nav class="top-actions" aria-label="Related views">
         <button id="refresh-button" type="button">Refresh</button>
         <button id="level-1-telemetry-button" type="button">Level 1 Telemetry</button>
+        <button id="level-4-diagnostic-button" type="button">Level 4 System Check</button>
         <button id="level-5-diagnostics-button" type="button">Level 5 Diagnostics</button>
         <button id="hard-halt-server-button" class="danger-button" type="button">Shutdown System</button>
         <a href="/text">Text Console</a>
@@ -1590,7 +1591,7 @@
         <div class="diagnostics-head">
           <div>
             <h2 id="diagnostics-title">Level 5 Diagnostics</h2>
-            <span>Deep system sanity stream for Docker, WSL, Coolify, website ports, ONLYOFFICE, and machine roots.</span>
+            <span id="diagnostics-detail">Deep system sanity stream for Docker, WSL, Coolify, website ports, ONLYOFFICE, and machine roots.</span>
           </div>
           <span id="diagnostics-clock">idle</span>
         </div>
@@ -1624,6 +1625,8 @@
       sanityStream: null,
       sanityDone: false,
       sanityStartedAt: null,
+      diagnosticsMode: "level5",
+      level4Running: false,
       telemetryRunning: false
     };
 
@@ -2070,9 +2073,10 @@
     }
 
     function resetDiagnosticsModal() {
+      const level4 = state.diagnosticsMode === "level4";
       state.sanityDone = false;
       state.sanityStartedAt = Date.now();
-      byId("diagnostics-status").textContent = "Starting system sanity check…";
+      byId("diagnostics-status").textContent = level4 ? "Starting Level 4 underlying system check…" : "Starting system sanity check…";
       byId("diagnostics-clock").textContent = "running";
       byId("diagnostics-stream").textContent = "";
       byId("diagnostics-findings").textContent = "";
@@ -2102,7 +2106,15 @@
     function renderDiagnosticsSummary(data) {
       const summary = data.summary || {};
       const target = byId("diagnostics-summary");
-      const cards = [
+      const isLevel4 = Number(data.level || 0) === 4 || state.diagnosticsMode === "level4";
+      const cards = isLevel4 ? [
+        ["overall", data.overall_status || "UNKNOWN", shellClassForState(data.overall_status === "PASS" ? "healthy" : (data.overall_status === "FAIL" ? "broken" : "degraded"))],
+        ["operational", `${data.operational_percent ?? 0}%`, (data.operational_percent ?? 0) >= 90 ? "shell-green" : ((data.operational_percent ?? 0) >= 60 ? "shell-gold" : "shell-coral")],
+        ["checks", data.finding_count ?? 0, "shell-cyan"],
+        ["locks overread", data.lock_count ?? 0, (data.lock_warning_count || 0) ? "shell-gold" : "shell-green"],
+        ["pass / info", `${summary.PASS || 0} / ${summary.INFO || 0}`, "shell-green"],
+        ["warn / fail", `${summary.WARN || 0} / ${summary.FAIL || 0}`, (summary.FAIL || 0) ? "shell-coral" : ((summary.WARN || 0) ? "shell-gold" : "shell-green")]
+      ] : [
         ["overall", data.overall_status || "UNKNOWN", shellClassForState(data.overall_status === "PASS" ? "healthy" : (data.overall_status === "FAIL" ? "broken" : "degraded"))],
         ["findings", data.finding_count ?? 0, "shell-cyan"],
         ["pass / info", `${summary.PASS || 0} / ${summary.INFO || 0}`, "shell-green"],
@@ -2123,7 +2135,9 @@
         card.append(strong, span);
         target.append(card);
       });
-      const status = `${data.overall_status || "UNKNOWN"} · ${data.finding_count ?? 0} findings · report ${data.report_path || ""}`;
+      const status = isLevel4
+        ? `${data.headline || data.overall_status || "UNKNOWN"} · ${data.operational_percent ?? 0}% operational`
+        : `${data.overall_status || "UNKNOWN"} · ${data.finding_count ?? 0} findings · report ${data.report_path || ""}`;
       setDiagnosticsStatus(status);
     }
 
@@ -2147,19 +2161,66 @@
       target.scrollTop = target.scrollHeight;
     }
 
-    function openDiagnosticsDialog({autoRun = true} = {}) {
+    function configureDiagnosticsDialog(mode) {
+      const level4 = mode === "level4";
+      state.diagnosticsMode = level4 ? "level4" : "level5";
+      byId("diagnostics-title").textContent = level4 ? "Level 4 System Check" : "Level 5 Diagnostics";
+      byId("diagnostics-detail").textContent = level4
+        ? "Self-contained check of the system directly under /graphical: repo root, Python, viewport, ports, provider config, and lock overreads."
+        : "Deep system sanity stream for Docker, WSL, Coolify, website ports, ONLYOFFICE, and machine roots.";
+      byId("diagnostics-run-button").textContent = level4 ? "Run Level 4 Check" : "Run System Sanity";
+    }
+
+    function openDiagnosticsDialog({autoRun = true, mode = "level5"} = {}) {
+      configureDiagnosticsDialog(mode);
       byId("diagnostics-overlay").classList.add("open");
       byId("diagnostics-run-button").focus();
-      if (autoRun) runSystemSanity();
+      if (autoRun) runDiagnosticsForMode();
     }
 
     function closeDiagnosticsDialog() {
       closeSanityStream();
       byId("diagnostics-overlay").classList.remove("open");
       byId("diagnostics-run-button").disabled = false;
+      state.level4Running = false;
+    }
+
+    function runDiagnosticsForMode() {
+      if (state.diagnosticsMode === "level4") {
+        runLevel4Diagnostic();
+      } else {
+        runSystemSanity();
+      }
+    }
+
+    async function runLevel4Diagnostic() {
+      if (state.level4Running) return;
+      closeSanityStream();
+      resetDiagnosticsModal();
+      state.level4Running = true;
+      const runButton = byId("diagnostics-run-button");
+      runButton.disabled = true;
+      try {
+        const response = await fetch("/api/control-panel/level-4-diagnostic", {cache: "no-store"});
+        const payload = await response.json();
+        if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+        renderDiagnosticsSummary(payload);
+        byId("diagnostics-findings").textContent = "";
+        (payload.checks || []).forEach((check) => renderDiagnosticsFinding(check));
+        byId("diagnostics-stream").textContent = JSON.stringify(payload, null, 2);
+        byId("diagnostics-clock").textContent = "complete";
+      } catch (error) {
+        byId("diagnostics-clock").textContent = "error";
+        setDiagnosticsStatus(`Level 4 diagnostic failed: ${error.message || error}`);
+        appendDiagnosticsLine(`ERROR: ${error.message || error}`);
+      } finally {
+        state.level4Running = false;
+        runButton.disabled = false;
+      }
     }
 
     function runSystemSanity() {
+      state.diagnosticsMode = "level5";
       closeSanityStream();
       resetDiagnosticsModal();
       const runButton = byId("diagnostics-run-button");
@@ -2269,13 +2330,14 @@
     }
 
     byId("level-1-telemetry-button").addEventListener("click", () => openTelemetryDialog({autoRun: true}));
-    byId("level-5-diagnostics-button").addEventListener("click", () => openDiagnosticsDialog({autoRun: true}));
+    byId("level-4-diagnostic-button").addEventListener("click", () => openDiagnosticsDialog({autoRun: true, mode: "level4"}));
+    byId("level-5-diagnostics-button").addEventListener("click", () => openDiagnosticsDialog({autoRun: true, mode: "level5"}));
     byId("telemetry-run-button").addEventListener("click", runLevel1Telemetry);
     byId("telemetry-close-button").addEventListener("click", closeTelemetryDialog);
     byId("telemetry-overlay").addEventListener("click", (event) => {
       if (event.target === byId("telemetry-overlay")) closeTelemetryDialog();
     });
-    byId("diagnostics-run-button").addEventListener("click", runSystemSanity);
+    byId("diagnostics-run-button").addEventListener("click", runDiagnosticsForMode);
     byId("diagnostics-close-button").addEventListener("click", closeDiagnosticsDialog);
     byId("diagnostics-overlay").addEventListener("click", (event) => {
       if (event.target === byId("diagnostics-overlay")) closeDiagnosticsDialog();
