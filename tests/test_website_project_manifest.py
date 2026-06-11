@@ -536,9 +536,10 @@ def test_website_publish_plan_is_manifest_driven_and_dry_run_safe(monkeypatch, t
     plan = website_publish_plan(tmp_path, "hub-site", "local")
     assert plan["service"] == "hub-local"
     assert plan["url"] == "http://localhost:18080/"
-    assert plan["compose_project"] == "main-computer-local-platform-unleashed"
+    assert plan["compose_project"] == "main-computer-website-hub-site"
+    assert plan["compose_path"].endswith("runtime/websites/hub-site/.main-computer/local-platform/docker-compose.yml")
     assert "-p" in plan["command"]
-    assert "main-computer-local-platform-unleashed" in plan["command"]
+    assert "main-computer-website-hub-site" in plan["command"]
     assert "--force-recreate" not in plan["command"]
     assert plan["recreate_required"] is False
     assert plan["command"][-1] == "hub-local"
@@ -1085,8 +1086,8 @@ def test_website_publish_plan_marks_expected_site_port_owner_reconcilable(
             "owners": [
                 {
                     "id": "abc123",
-                    "name": "main-computer-local-platform-unleashed-hub-local-1",
-                    "project": "main-computer-local-platform-unleashed",
+                    "name": "main-computer-website-hub-site-hub-local-1",
+                    "project": "main-computer-website-hub-site",
                     "service": "hub-local",
                     "status": "running",
                     "image": "main-computer-site-hub-site-prod:latest",
@@ -1434,14 +1435,21 @@ def test_publish_website_regenerates_compose_before_building_plan(
     list_website_projects(tmp_path)
     calls: list[str] = []
 
-    def fake_write_generated_websites_compose(repo_root: Path, **_kwargs: object) -> dict[str, object]:
+    def fake_write_generated_site_compose(
+        repo_root: Path,
+        site_id: object,
+        **_kwargs: object,
+    ) -> dict[str, object]:
         assert repo_root == tmp_path
+        assert site_id == "hub-site"
+        assert _kwargs.get("register_missing") is True
         calls.append("compose")
         return {
             "ok": True,
-            "path": str(tmp_path / "deploy" / "local-platform" / "generated" / "docker-compose.websites.yml"),
-            "repo_relative_path": "deploy/local-platform/generated/docker-compose.websites.yml",
-            "service_count": 4,
+            "path": str(tmp_path / "runtime" / "websites" / "hub-site" / ".main-computer" / "local-platform" / "docker-compose.yml"),
+            "repo_relative_path": "runtime/websites/hub-site/.main-computer/local-platform/docker-compose.yml",
+            "site_id": "hub-site",
+            "service_count": 1,
             "services": ["hub-local"],
             "cms_services": [],
         }
@@ -1461,16 +1469,16 @@ def test_publish_website_regenerates_compose_before_building_plan(
             "status_url": "http://localhost:18080/api/site/status",
             "port": 18080,
             "cms_dependency_services": [],
-            "compose_path": str(tmp_path / "deploy" / "local-platform" / "generated" / "docker-compose.websites.yml"),
-            "compose_project": "main-computer-local-platform",
+            "compose_path": str(tmp_path / "runtime" / "websites" / "hub-site" / ".main-computer" / "local-platform" / "docker-compose.yml"),
+            "compose_project": "main-computer-website-hub-site",
             "command": ["docker", "compose", "up", "-d", "--build", "--force-recreate", "hub-local"],
             "supported": True,
         }
 
     monkeypatch.setattr(
         website_project_manifest,
-        "write_generated_websites_compose",
-        fake_write_generated_websites_compose,
+        "write_generated_site_compose",
+        fake_write_generated_site_compose,
     )
     monkeypatch.setattr(website_project_manifest, "website_publish_plan", fake_website_publish_plan)
 

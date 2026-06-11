@@ -163,6 +163,13 @@ class ViewportEnergyRoutesMixin:
         def text(raw: Any, default: str = "") -> str:
             return str(raw if raw is not None else default).strip()
 
+        def jsonable(raw: Any, default: Any) -> Any:
+            try:
+                value = json.loads(json.dumps(raw, ensure_ascii=False))
+            except (TypeError, ValueError):
+                return default
+            return value if isinstance(value, type(default)) else default
+
         selected_network = text(settings.get("selectedNetwork", settings.get("selected_network")), "none").lower()
         if selected_network not in {"mainnet", "testnet", "test", "dev", "none"}:
             selected_network = "none"
@@ -174,22 +181,42 @@ class ViewportEnergyRoutesMixin:
             connection_status = "disconnected"
         signed_connection = settings.get("signedWorkerConnection", settings.get("signed_worker_connection"))
         if isinstance(signed_connection, dict):
+            signed_assigned_ring = text(signed_connection.get("assigned_ring"), "")
+            if signed_assigned_ring not in {"0", "1", "2"}:
+                signed_assigned_ring = ""
             signed_connection = {
                 "network": text(signed_connection.get("network"), selected_network),
                 "requested_ring": text(signed_connection.get("requested_ring"), requested_ring),
                 "wallet_address": text(signed_connection.get("wallet_address"), ""),
                 "credit_wallet": text(signed_connection.get("credit_wallet"), ""),
+                "hub_url": self._clean_hub_url(text(signed_connection.get("hub_url"), ""), allow_empty=True),
+                "chain_id": text(signed_connection.get("chain_id"), ""),
                 "message": text(signed_connection.get("message"), ""),
                 "signature": text(signed_connection.get("signature"), ""),
                 "signed_at": text(signed_connection.get("signed_at"), ""),
                 "status": text(signed_connection.get("status"), "signed"),
+                "hub_registered": boolish(signed_connection.get("hub_registered"), False),
+                "assigned_ring": signed_assigned_ring,
+                "worker_id": text(signed_connection.get("worker_id"), ""),
+                "pricing_policy": text(signed_connection.get("pricing_policy"), ""),
+                "hub_registration": jsonable(signed_connection.get("hub_registration"), {}),
+                "worker": jsonable(signed_connection.get("worker"), {}),
+                "pool": jsonable(signed_connection.get("pool"), {}),
             }
         else:
             signed_connection = {}
 
+        assigned_ring = text(settings.get("workerAssignedRing", settings.get("worker_assigned_ring")), "")
+        if assigned_ring not in {"0", "1", "2"}:
+            assigned_ring = ""
         cleaned: dict[str, Any] = {
             "selectedNetwork": selected_network,
             "workerRequestedRing": requested_ring,
+            "workerAssignedRing": assigned_ring,
+            "workerRegisteredId": text(settings.get("workerRegisteredId", settings.get("worker_registered_id")), ""),
+            "workerPricingPolicy": text(settings.get("workerPricingPolicy", settings.get("worker_pricing_policy")), ""),
+            "workerHubRegistration": jsonable(settings.get("workerHubRegistration", settings.get("worker_hub_registration")), {}),
+            "workerPool": jsonable(settings.get("workerPool", settings.get("worker_pool")), {}),
             "workerConnectionStatus": connection_status,
             "workerConnectedAt": text(settings.get("workerConnectedAt", settings.get("worker_connected_at")), ""),
             "workerConnectionError": text(settings.get("workerConnectionError", settings.get("worker_connection_error")), ""),
@@ -353,16 +380,42 @@ class ViewportEnergyRoutesMixin:
         selected = self._normalize_worker_network_key(settings.get("selectedNetwork", "none"))
         requested_ring = self._normalize_worker_ring(settings.get("workerRequestedRing", "2"))
         signed_connection = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
+        hub_registration = settings.get("workerHubRegistration") if isinstance(settings.get("workerHubRegistration"), dict) else {}
+        worker_pool = settings.get("workerPool") if isinstance(settings.get("workerPool"), dict) else {}
+        signed_worker = signed_connection.get("worker") if isinstance(signed_connection.get("worker"), dict) else {}
+        assigned_ring = str(
+            settings.get("workerAssignedRing")
+            or signed_connection.get("assigned_ring")
+            or signed_worker.get("assigned_ring")
+            or ""
+        )
+        worker_id = str(
+            settings.get("workerRegisteredId")
+            or signed_connection.get("worker_id")
+            or signed_worker.get("worker_id")
+            or signed_worker.get("node_id")
+            or ""
+        )
+        pricing_policy = str(
+            settings.get("workerPricingPolicy")
+            or signed_connection.get("pricing_policy")
+            or signed_worker.get("pricing_policy")
+            or ""
+        )
 
         session: dict[str, Any] = {
             "selected_network": selected,
             "connection_status": "disconnected" if selected == "none" else str(settings.get("workerConnectionStatus") or "stale"),
             "requested_ring": requested_ring,
-            "assigned_ring": str(signed_connection.get("requested_ring") or ""),
+            "assigned_ring": assigned_ring,
+            "worker_id": worker_id,
+            "pricing_policy": pricing_policy,
             "connected_at": str(settings.get("workerConnectedAt") or ""),
             "connection_error": str(settings.get("workerConnectionError") or ""),
             "connected_hub_url": str(settings.get("workerConnectedHubUrl") or ""),
             "signed_connection": signed_connection,
+            "hub_registration": hub_registration or None,
+            "worker_pool": worker_pool or None,
             "profile": None,
             "hub_status": None,
         }
@@ -429,6 +482,11 @@ class ViewportEnergyRoutesMixin:
             settings = self._load_worker_settings()
             settings["selectedNetwork"] = selected
             settings["workerRequestedRing"] = requested_ring
+            settings["workerAssignedRing"] = ""
+            settings["workerRegisteredId"] = ""
+            settings["workerPricingPolicy"] = ""
+            settings["workerHubRegistration"] = {}
+            settings["workerPool"] = {}
             settings["signedWorkerConnection"] = {}
             if selected == "none":
                 settings.update(
@@ -437,6 +495,11 @@ class ViewportEnergyRoutesMixin:
                         "workerConnectedAt": "",
                         "workerConnectionError": "",
                         "workerConnectedHubUrl": "",
+                        "workerAssignedRing": "",
+                        "workerRegisteredId": "",
+                        "workerPricingPolicy": "",
+                        "workerHubRegistration": {},
+                        "workerPool": {},
                     }
                 )
                 saved = self._save_worker_settings(settings)
@@ -475,25 +538,83 @@ class ViewportEnergyRoutesMixin:
                 raise ValueError("signature is required.")
             if not message:
                 raise ValueError("message is required.")
+
+            worker_payload = body.get("worker")
+            if not isinstance(worker_payload, dict):
+                raise ValueError("worker registration payload is required.")
+            registration_payload = self._worker_registration_payload_from_ui(worker_payload)
+
             settings = self._load_worker_settings()
             current = self._normalize_worker_network_key(settings.get("selectedNetwork", "none"))
             if current != selected:
                 raise ValueError(f"Cannot sign for {selected!r}; current worker network is {current!r}.")
+
+            session_payload = self._worker_network_session_payload(settings, check_hub=False)
+            profile = session_payload["session"].get("profile") if isinstance(session_payload.get("session"), dict) else None
+            profile = profile if isinstance(profile, dict) else {}
+            hub_url = self._clean_hub_url(str(body.get("hub_url") or profile.get("hub_url") or self.server.config.hub_url))
+            profile_hub_url = str(profile.get("hub_url") or "").strip()
+            if profile_hub_url and hub_url != self._clean_hub_url(profile_hub_url):
+                raise ValueError(f"Signed worker connect order hub {hub_url!r} does not match selected network hub {profile_hub_url!r}.")
+            chain_id = str(profile.get("chain_id") or body.get("chain_id") or "")
+
             signed_connection = {
                 "network": selected,
                 "requested_ring": requested_ring,
                 "wallet_address": wallet_address,
                 "credit_wallet": wallet_address,
+                "hub_url": hub_url,
+                "chain_id": chain_id,
                 "message": message,
                 "signature": signature,
                 "signed_at": datetime.now(timezone.utc).isoformat(),
-                "status": "signed-local",
+                "status": "registering-with-hub",
             }
+            registration = self._post_worker_connect_order_to_hub(
+                hub_url=hub_url,
+                payload={
+                    "signed_connection": signed_connection,
+                    "worker": registration_payload,
+                },
+            )
+            worker = registration.get("worker") if isinstance(registration.get("worker"), dict) else {}
+            pool = registration.get("pool") if isinstance(registration.get("pool"), dict) else {}
+            assigned_ring = str(registration.get("assigned_ring") or worker.get("assigned_ring") or requested_ring)
+            worker_id = str(registration.get("worker_id") or worker.get("worker_id") or worker.get("node_id") or registration_payload["node_id"])
+            pricing_policy = str(registration.get("pricing_policy") or worker.get("pricing_policy") or worker.get("capabilities", {}).get("pricing_policy", ""))
+            signed_connection.update(
+                {
+                    "status": "hub-registered",
+                    "hub_registered": True,
+                    "assigned_ring": assigned_ring,
+                    "worker_id": worker_id,
+                    "pricing_policy": pricing_policy,
+                    "hub_registration": registration,
+                    "worker": worker,
+                    "pool": pool,
+                }
+            )
             settings["workerRequestedRing"] = requested_ring
+            settings["workerAssignedRing"] = assigned_ring
+            settings["workerRegisteredId"] = worker_id
+            settings["workerPricingPolicy"] = pricing_policy
+            settings["workerConnectedHubUrl"] = hub_url
+            settings["workerConnectionStatus"] = "connected"
+            settings["workerConnectionError"] = ""
+            settings["workerConnectedAt"] = datetime.now(timezone.utc).isoformat()
+            settings["workerHubRegistration"] = registration
+            settings["workerPool"] = pool
             settings["signedWorkerConnection"] = signed_connection
             saved = self._save_worker_settings(settings)
             payload = self._worker_network_session_payload(saved, check_hub=False)
-            self.server.signal("api-worker-network-connect-order-sign", selected=selected, ring=requested_ring, wallet=wallet_address)
+            self.server.signal(
+                "api-worker-network-connect-order-hub-register",
+                selected=selected,
+                ring=requested_ring,
+                assigned_ring=assigned_ring,
+                wallet=wallet_address,
+                worker_id=worker_id,
+            )
             self._send_json(payload)
         except Exception as exc:
             self.server.signal("api-worker-network-connect-order-sign-error", error=exc)
@@ -919,6 +1040,55 @@ class ViewportEnergyRoutesMixin:
             self.server.signal("api-worker-multisession-key-request-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
+    def _worker_registration_payload_from_ui(self, worker_payload: dict[str, Any]) -> dict[str, Any]:
+        models = [str(item).strip() for item in worker_payload.get("models", []) if str(item).strip()] if isinstance(worker_payload.get("models"), list) else []
+        model = str(worker_payload.get("model") or (models[0] if models else "")).strip()
+        if model and model not in models:
+            models.insert(0, model)
+        if not models:
+            raise ValueError("At least one worker model is required.")
+
+        pricing = dict(worker_payload.get("pricing", {})) if isinstance(worker_payload.get("pricing"), dict) else {}
+        try:
+            credits_per_request = int(pricing.get("credits_per_request", worker_payload.get("credits_per_request", 0)) or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("credits_per_request must be a positive integer.") from exc
+        if credits_per_request <= 0:
+            raise ValueError("credits_per_request must be a positive integer.")
+
+        execution = dict(worker_payload.get("execution", {})) if isinstance(worker_payload.get("execution"), dict) else {}
+        execution_mode = str(execution.get("mode") or worker_payload.get("execution_mode") or "worker_pull_v0").strip() or "worker_pull_v0"
+        max_concurrency = max(1, int(execution.get("max_concurrency", worker_payload.get("max_concurrency", 1)) or 1))
+        capabilities = dict(worker_payload.get("capabilities", {})) if isinstance(worker_payload.get("capabilities"), dict) else {}
+        capabilities.setdefault("capabilities", ["chat.completions"])
+        capabilities["pricing"] = {
+            "pricing_type": str(pricing.get("pricing_type") or "fixed_per_call_v0"),
+            "credits_per_request": credits_per_request,
+            "unit": str(pricing.get("unit") or "compute_credit"),
+        }
+        capabilities["execution"] = {
+            "mode": execution_mode,
+            "max_concurrency": max_concurrency,
+        }
+        capabilities["phase12_worker_seller_offer_ui"] = True
+
+        payload = {
+            "node_id": str(worker_payload.get("node_id") or "").strip(),
+            "endpoint": self._clean_hub_url(str(worker_payload.get("endpoint") or "")),
+            "model": model,
+            "models": models,
+            "credits_per_request": credits_per_request,
+            "max_concurrency": max_concurrency,
+            "queue_depth": max(0, int(worker_payload.get("queue_depth", 0) or 0)),
+            "active_requests": max(0, int(worker_payload.get("active_requests", 0) or 0)),
+            "pricing": capabilities["pricing"],
+            "execution": capabilities["execution"],
+            "capabilities": capabilities,
+        }
+        if not payload["node_id"]:
+            raise ValueError("worker node_id is required.")
+        return payload
+
     def _handle_worker_offer_register(self) -> None:
         try:
             if not self._worker_ui_client_is_local():
@@ -930,53 +1100,7 @@ class ViewportEnergyRoutesMixin:
             if not isinstance(worker_payload, dict):
                 raise ValueError("worker registration payload is required.")
 
-            models = [str(item).strip() for item in worker_payload.get("models", []) if str(item).strip()] if isinstance(worker_payload.get("models"), list) else []
-            model = str(worker_payload.get("model") or (models[0] if models else "")).strip()
-            if model and model not in models:
-                models.insert(0, model)
-            if not models:
-                raise ValueError("At least one worker model is required.")
-
-            pricing = dict(worker_payload.get("pricing", {})) if isinstance(worker_payload.get("pricing"), dict) else {}
-            try:
-                credits_per_request = int(pricing.get("credits_per_request", worker_payload.get("credits_per_request", 0)) or 0)
-            except (TypeError, ValueError) as exc:
-                raise ValueError("credits_per_request must be a positive integer.") from exc
-            if credits_per_request <= 0:
-                raise ValueError("credits_per_request must be a positive integer.")
-
-            execution = dict(worker_payload.get("execution", {})) if isinstance(worker_payload.get("execution"), dict) else {}
-            execution_mode = str(execution.get("mode") or worker_payload.get("execution_mode") or "worker_pull_v0").strip() or "worker_pull_v0"
-            max_concurrency = max(1, int(execution.get("max_concurrency", worker_payload.get("max_concurrency", 1)) or 1))
-            capabilities = dict(worker_payload.get("capabilities", {})) if isinstance(worker_payload.get("capabilities"), dict) else {}
-            capabilities.setdefault("capabilities", ["chat.completions"])
-            capabilities["pricing"] = {
-                "pricing_type": str(pricing.get("pricing_type") or "fixed_per_call_v0"),
-                "credits_per_request": credits_per_request,
-                "unit": str(pricing.get("unit") or "compute_credit"),
-            }
-            capabilities["execution"] = {
-                "mode": execution_mode,
-                "max_concurrency": max_concurrency,
-            }
-            capabilities["phase12_worker_seller_offer_ui"] = True
-
-            payload = {
-                "node_id": str(worker_payload.get("node_id") or "").strip(),
-                "endpoint": self._clean_hub_url(str(worker_payload.get("endpoint") or "")),
-                "model": model,
-                "models": models,
-                "credits_per_request": credits_per_request,
-                "max_concurrency": max_concurrency,
-                "queue_depth": max(0, int(worker_payload.get("queue_depth", 0) or 0)),
-                "active_requests": max(0, int(worker_payload.get("active_requests", 0) or 0)),
-                "pricing": capabilities["pricing"],
-                "execution": capabilities["execution"],
-                "capabilities": capabilities,
-            }
-            if not payload["node_id"]:
-                raise ValueError("worker node_id is required.")
-
+            payload = self._worker_registration_payload_from_ui(worker_payload)
             registration = self._post_worker_registration_to_hub(hub_url=hub_url, payload=payload)
             worker = registration.get("worker") if isinstance(registration.get("worker"), dict) else {}
             offer = worker.get("offer") if isinstance(worker.get("offer"), dict) else {}
@@ -1269,6 +1393,27 @@ class ViewportEnergyRoutesMixin:
             return data
 
         raise RuntimeError("Hub wallet funding import failed: " + " ; ".join(route_errors))
+
+    def _post_worker_connect_order_to_hub(self, *, hub_url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        request = Request(
+            self._clean_hub_url(hub_url) + "/api/hub/v1/workers/connect",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers=self._hub_json_request_headers({"Content-Type": "application/json"}),
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=5.0) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Hub returned HTTP {exc.code}: {body}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"Hub is unreachable: {exc}") from exc
+        if not isinstance(data, dict):
+            raise RuntimeError("Hub returned a non-object worker connect response.")
+        if data.get("error"):
+            raise RuntimeError(str(data["error"]))
+        return data
 
     def _post_worker_registration_to_hub(self, *, hub_url: str, payload: dict[str, Any]) -> dict[str, Any]:
         request = Request(

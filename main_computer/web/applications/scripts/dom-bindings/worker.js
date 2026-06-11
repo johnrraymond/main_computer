@@ -17,6 +17,10 @@
     const workerNetworkRequestedRing = document.querySelector("#worker-network-requested-ring");
     const workerNetworkAssignedRing = document.querySelector("#worker-network-assigned-ring");
     const workerNetworkSignatureStatus = document.querySelector("#worker-network-signature-status");
+    const workerNetworkHubRegistration = document.querySelector("#worker-network-hub-registration");
+    const workerNetworkWorkerId = document.querySelector("#worker-network-worker-id");
+    const workerNetworkPricingPolicy = document.querySelector("#worker-network-pricing-policy");
+    const workerNetworkPool = document.querySelector("#worker-network-pool");
     const workerNetworkRuntime = document.querySelector("#worker-network-runtime");
     const workerNetworkSignOrder = document.querySelector("#worker-network-sign-order");
     const workerFleetMainnet = document.querySelector("#worker-fleet-mainnet");

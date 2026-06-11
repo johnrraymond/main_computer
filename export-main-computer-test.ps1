@@ -92,7 +92,20 @@ function Test-RepoPathAllowed {
   )
 
   $allowedGeneratedPrefixes = @(
+    "runtime/websites/hub-site/",
     "runtime/websites/johnrraymond/"
+  )
+
+  $blockedGeneratedExactPaths = @(
+    "deploy/local-platform/generated/docker-compose.websites.yml"
+  )
+
+  $blockedGeneratedPrefixes = @(
+    "deploy/local-platform/generated/"
+  )
+
+  $blockedGeneratedSuffixes = @(
+    "/.main-computer/local-platform/docker-compose.yml"
   )
 
   if ($allowedGeneratedExactPaths -contains $repoPath) {
@@ -106,6 +119,24 @@ function Test-RepoPathAllowed {
     if ($repoPath -eq $prefixRoot -or $repoPath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
       $isAllowedGeneratedPrefixPath = $true
       break
+    }
+  }
+
+  if ($blockedGeneratedExactPaths -contains $repoPath) {
+    return $false
+  }
+
+  foreach ($prefix in $blockedGeneratedPrefixes) {
+    $prefixRoot = $prefix.TrimEnd("/")
+
+    if ($repoPath -eq $prefixRoot -or $repoPath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+      return $false
+    }
+  }
+
+  foreach ($suffix in $blockedGeneratedSuffixes) {
+    if ($repoPath.EndsWith($suffix, [System.StringComparison]::OrdinalIgnoreCase)) {
+      return $false
     }
   }
 
@@ -367,7 +398,20 @@ function Assert-CleanExportStage {
   )
 
   $allowedGeneratedPrefixes = @(
+    "runtime/websites/hub-site/",
     "runtime/websites/johnrraymond/"
+  )
+
+  $blockedGeneratedExactPaths = @(
+    "deploy/local-platform/generated/docker-compose.websites.yml"
+  )
+
+  $blockedGeneratedPrefixes = @(
+    "deploy/local-platform/generated/"
+  )
+
+  $blockedGeneratedSuffixes = @(
+    "/.main-computer/local-platform/docker-compose.yml"
   )
 
   $allowedGeneratedParentDirs = @(
@@ -402,6 +446,32 @@ function Assert-CleanExportStage {
         $isAllowedGeneratedPrefixPath = $true
         break
       }
+    }
+
+    $isBlockedGeneratedPath = $false
+    if ($blockedGeneratedExactPaths -contains $repoPath) {
+      $isBlockedGeneratedPath = $true
+    }
+
+    foreach ($prefix in $blockedGeneratedPrefixes) {
+      $prefixRoot = $prefix.TrimEnd("/")
+
+      if ($repoPath -eq $prefixRoot -or $repoPath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $isBlockedGeneratedPath = $true
+        break
+      }
+    }
+
+    foreach ($suffix in $blockedGeneratedSuffixes) {
+      if ($repoPath.EndsWith($suffix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $isBlockedGeneratedPath = $true
+        break
+      }
+    }
+
+    if ($isBlockedGeneratedPath) {
+      $bad.Add($repoPath)
+      return
     }
 
     $parts = $repoPath -split "/+"
@@ -532,6 +602,7 @@ $exportItems = @(
   "runtime/deployments/test/latest.json",
   "runtime/deployments/testnet/latest.json",
   "runtime/deployments/mainnet/latest.json",
+  "runtime/websites/hub-site",
   "runtime/websites/johnrraymond",
   "diagnosis-docker-windows-host-paths-v5.ps1",
   "start.bat",
