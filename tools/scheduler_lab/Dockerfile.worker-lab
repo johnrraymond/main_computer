@@ -1,0 +1,13 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /workspace
+
+COPY __init__.py /workspace/tools/__init__.py
+COPY scheduler_lab /workspace/tools/scheduler_lab
+
+RUN mkdir -p /lab-output && chmod 777 /lab-output
+
+ENTRYPOINT ["python", "-m", "tools.scheduler_lab.run_lab"]

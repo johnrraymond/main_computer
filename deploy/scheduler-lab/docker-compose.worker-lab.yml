@@ -1,28 +1,33 @@
-name: main-computer-scheduler-lab
-
 services:
   worker-lab:
-    profiles: ["worker-lab"]
+    profiles:
+      - worker-lab
     build:
-      context: ../..
-      dockerfile: deploy/scheduler-lab/Dockerfile.simulator
+      context: ../../tools
+      dockerfile: scheduler_lab/Dockerfile.worker-lab
     environment:
       HUB_BASE_URL: ${HUB_BASE_URL:-http://host.docker.internal:8870}
-      LAB_DURATION_SECONDS: ${LAB_DURATION_SECONDS:-300}
-      LAB_SEED: ${LAB_SEED:-424242}
-      LAB_NODE_LIST: ${LAB_NODE_LIST:-/lab-output/120-First-Post.jsonl}
+      HUB_BASE_URLS: ${HUB_BASE_URLS:-}
       LAB_OUTPUT_DIR: ${LAB_OUTPUT_DIR:-/lab-output}
+      LAB_NODE_LIST: ${LAB_NODE_LIST:-/lab-output/120-First-Post.jsonl}
+      LAB_OUTPUT_DIR_HOST: ${LAB_OUTPUT_DIR_HOST:-./runtime/scheduler-lab/worker-lab}
+      GENERATE_NODE_LIST: ${GENERATE_NODE_LIST:-1}
+      LAB_ROLE: ${LAB_ROLE:-all}
+      LAB_TOTAL: ${LAB_TOTAL:-120}
+      LAB_NODES: ${LAB_NODES:-}
+      LAB_WORKERS: ${LAB_WORKERS:-}
+      LAB_REQUESTERS: ${LAB_REQUESTERS:-}
+      LAB_DURATION_SECONDS: ${LAB_DURATION_SECONDS:-300}
+      LAB_WORKTIME: ${LAB_WORKTIME:-}
+      LAB_FUNDED: ${LAB_FUNDED:-0}
+      LAB_REQUEST_STARTUP_MODE: ${LAB_REQUEST_STARTUP_MODE:-auto}
+      LAB_REQUEST_STARTUP_SPREAD_SECONDS: ${LAB_REQUEST_STARTUP_SPREAD_SECONDS:-3}
+      LEASE_SECONDS: ${LEASE_SECONDS:-180}
+      LAB_SEED: ${LAB_SEED:-424242}
       REQUEST_MODE: ${REQUEST_MODE:-worker_pull_v0}
-      PROBLEMATIC_WORKER_RATE: ${PROBLEMATIC_WORKER_RATE:-0.08}
-      PROBLEMATIC_REQUESTER_RATE: ${PROBLEMATIC_REQUESTER_RATE:-0.05}
-      PROBLEMATIC_FAILURE_MULTIPLIER: ${PROBLEMATIC_FAILURE_MULTIPLIER:-4.0}
-      HTTP_TIMEOUT_SECONDS: ${HTTP_TIMEOUT_SECONDS:-10}
       HTTP_RETRIES: ${HTTP_RETRIES:-1}
+      HTTP_TIMEOUT_SECONDS: ${HTTP_TIMEOUT_SECONDS:-10}
+    volumes:
+      - ${LAB_OUTPUT_DIR_HOST:-./runtime/scheduler-lab/worker-lab}:/lab-output
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    volumes:
-      - ./output:/lab-output
-    command:
-      - "--role"
-      - "${LAB_ROLE:-all}"
-      - "--generate-node-list"

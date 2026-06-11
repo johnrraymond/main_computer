@@ -1,18 +1,31 @@
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
+import sys
+import threading
+import time
 from dataclasses import replace
 from pathlib import Path
+from typing import Sequence
 
 from main_computer.config import MainComputerConfig
-from main_computer.energy import EnergyCreditLedger
 from main_computer.exp_fdb_credit_ledger import ExperimentalFoundationDbConfig, ExperimentalFoundationDbCreditLedger
+from main_computer.exp_fdb_hub_state import (
+    ExperimentalFoundationDbEnergyCreditLedger,
+    ExperimentalFoundationDbHubState,
+    ExperimentalFoundationDbMultiSessionKeyStore,
+    ExperimentalFoundationDbQuoteStateStore,
+    ExperimentalFoundationDbRegistry,
+    ExperimentalFoundationDbRequestStateStore,
+    ExperimentalFoundationDbSecureSessionStore,
+)
 from main_computer.hub import (
     DEFAULT_HUB_PORT,
     HUB_SECURITY_PROFILE,
     HubDispatcher,
     HubHttpServer,
-    HubRegistry,
 )
 from main_computer.hub_credit_bridge_completion import HubCreditBridgeCompletionService
 from main_computer.hub_credit_indexer import HubCreditIndexer
@@ -22,10 +35,14 @@ DEFAULT_EXP_FDB_HUB_PORT = DEFAULT_HUB_PORT + 100
 DEFAULT_EXP_FDB_NAMESPACE = "main-computer-exp-fdb"
 DEFAULT_EXP_FDB_CLUSTER_FILE = Path(".foundationdb") / "docker.cluster"
 DEFAULT_EXP_FDB_HUB_ROOT = Path("runtime") / "exp-fdb-hub"
+DEFAULT_EXP_FDB_DOCKER_OUTPUT_DIR = Path("runtime") / "scheduler-lab" / "exp-fdb"
+DEFAULT_EXP_FDB_DOCKER_COMPOSE_FILE = Path("deploy") / "scheduler-lab" / "docker-compose.worker-lab.yml"
+DEFAULT_EXP_FDB_DOCKER_HUB_HOST = "host.docker.internal"
+DEFAULT_EXP_FDB_DOCKER_CONTAINER_OUTPUT_DIR = "/lab-output"
 
 
 class ExperimentalFoundationDbHubHttpServer(HubHttpServer):
-    """Manual-only Hub clone that swaps the credit ledger to FoundationDB."""
+    """Manual-only Hub clone that keeps shared hub state in FoundationDB."""
 
     def __init__(
         self,
@@ -36,9 +53,23 @@ class ExperimentalFoundationDbHubHttpServer(HubHttpServer):
         verbose: bool = True,
     ) -> None:
         super().__init__(server_address, config, verbose=verbose)
+        self.fdb_state = ExperimentalFoundationDbHubState(fdb_config)
+        self.registry = ExperimentalFoundationDbRegistry(
+            self.fdb_state,
+            root=self.hub_root,
+            allow_insecure_dev_network=config.hub_allow_insecure_dev_network,
+        )
+        self.energy_ledger = ExperimentalFoundationDbEnergyCreditLedger(
+            self.fdb_state,
+            root=self.hub_root / "energy_credits",
+        )
         self.credit_ledger = ExperimentalFoundationDbCreditLedger(fdb_config)
         self.credit_indexer = HubCreditIndexer(self.credit_ledger)
         self.credit_bridge_completion = HubCreditBridgeCompletionService(self.credit_ledger, config)
+        self.request_store = ExperimentalFoundationDbRequestStateStore(self.fdb_state)
+        self.quote_store = ExperimentalFoundationDbQuoteStateStore(self.fdb_state)
+        self.secure_session_store = ExperimentalFoundationDbSecureSessionStore(self.fdb_state)
+        self.multisession_key_store = ExperimentalFoundationDbMultiSessionKeyStore(self.fdb_state)
         self.dispatcher = HubDispatcher(
             self.registry,
             self.energy_ledger,
@@ -46,22 +77,25 @@ class ExperimentalFoundationDbHubHttpServer(HubHttpServer):
             allow_insecure_dev_network=config.hub_allow_insecure_dev_network,
             credit_ledger=self.credit_ledger,
             default_credits_per_request=config.hub_credits_per_request,
+            request_store=self.request_store,
+            quote_store=self.quote_store,
+            secure_session_store=self.secure_session_store,
         )
 
 
-def build_experimental_config(args: argparse.Namespace) -> tuple[MainComputerConfig, ExperimentalFoundationDbConfig]:
+def build_experimental_config(args: argparse.Namespace, *, port: int) -> tuple[MainComputerConfig, ExperimentalFoundationDbConfig]:
     base = MainComputerConfig.from_env()
     repo_root = Path(args.repo_root).resolve() if args.repo_root else Path.cwd().resolve()
     hub_root = Path(args.hub_root) if args.hub_root else DEFAULT_EXP_FDB_HUB_ROOT
     if not hub_root.is_absolute():
         hub_root = repo_root / hub_root
 
-    hub_url = args.hub_url or f"http://{args.host}:{args.port}"
+    hub_url = args.hub_url or f"http://{args.host}:{port}"
     config = replace(
         base,
         hub_root=hub_root,
         hub_bind_host=args.host,
-        hub_bind_port=args.port,
+        hub_bind_port=port,
         hub_url=hub_url,
         hub_network="exp-fdb",
         hub_network_display_name="Experimental FDB Hub",
@@ -83,8 +117,42 @@ def build_experimental_config(args: argparse.Namespace) -> tuple[MainComputerCon
     return config, fdb_config
 
 
-def serve_exp_fdb_hub(args: argparse.Namespace) -> None:
-    config, fdb_config = build_experimental_config(args)
+def parse_ports(value: str | int | Sequence[int] | None, *, default: int = DEFAULT_EXP_FDB_HUB_PORT) -> list[int]:
+    if value is None or value == "":
+        return [int(default)]
+    if isinstance(value, int):
+        raw_parts = [str(value)]
+    elif isinstance(value, str):
+        raw_parts = [part.strip() for part in value.split(",")]
+    else:
+        raw_parts = [str(part).strip() for part in value]
+    ports: list[int] = []
+    for raw in raw_parts:
+        if not raw:
+            continue
+        try:
+            port = int(raw)
+        except Exception as exc:
+            raise SystemExit(f"invalid port value {raw!r}") from exc
+        if port <= 0 or port > 65535:
+            raise SystemExit(f"invalid port value {port}; expected 1..65535")
+        if port not in ports:
+            ports.append(port)
+    if not ports:
+        ports.append(int(default))
+    return ports
+
+
+def docker_hub_base_urls(args: argparse.Namespace, live_ports: Sequence[int]) -> list[str]:
+    ports = parse_ports(args.docker_ports, default=live_ports[0]) if args.docker_ports else list(live_ports)
+    host = str(args.docker_hub_host or DEFAULT_EXP_FDB_DOCKER_HUB_HOST).strip()
+    if not host:
+        host = DEFAULT_EXP_FDB_DOCKER_HUB_HOST
+    return [f"http://{host}:{port}" for port in ports]
+
+
+def create_exp_fdb_hub_server(args: argparse.Namespace, *, port: int) -> ExperimentalFoundationDbHubHttpServer:
+    config, fdb_config = build_experimental_config(args, port=port)
     if not fdb_config.cluster_file.exists():
         raise SystemExit(
             f"FoundationDB cluster file not found: {fdb_config.cluster_file}\n"
@@ -93,12 +161,13 @@ def serve_exp_fdb_hub(args: argparse.Namespace) -> None:
         )
 
     server = ExperimentalFoundationDbHubHttpServer(
-        (args.host, args.port),
+        (args.host, port),
         config,
         fdb_config=fdb_config,
         verbose=not args.noverbose,
     )
     fdb_health = server.credit_ledger.health_check()
+    state_health = server.fdb_state.health_check()
 
     print(f"Experimental FDB hub server: http://{args.host}:{server.server_port}")
     print("Manual-only: this entry point is not part of normal Main Computer startup.")
@@ -107,31 +176,184 @@ def serve_exp_fdb_hub(args: argparse.Namespace) -> None:
     print(f"Hub security: high-security={config.hub_high_security} profile={HUB_SECURITY_PROFILE}; local experimental mode allows insecure dev network")
     print(f"FDB cluster file: {fdb_config.cluster_file}")
     print(f"FDB namespace: {fdb_config.namespace}")
-    print(f"FDB health: {fdb_health}")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nExperimental FDB hub stopped.")
-    finally:
-        server.server_close()
+    print(f"FDB credit ledger health: {fdb_health}")
+    print(f"FDB hub state health: {state_health}")
+    return server
 
+
+def launch_scheduler_lab_docker(args: argparse.Namespace, *, hub_base_urls: Sequence[str]) -> subprocess.Popen[bytes]:
+    repo_root = Path(args.repo_root).resolve() if args.repo_root else Path.cwd().resolve()
+    compose_file = Path(args.docker_compose_file or DEFAULT_EXP_FDB_DOCKER_COMPOSE_FILE)
+    if not compose_file.is_absolute():
+        compose_file = repo_root / compose_file
+    compose_file = compose_file.resolve()
+    if not compose_file.exists():
+        raise SystemExit(f"scheduler-lab docker compose file not found: {compose_file}")
+
+    output_dir = Path(args.docker_output_dir or DEFAULT_EXP_FDB_DOCKER_OUTPUT_DIR)
+    if not output_dir.is_absolute():
+        output_dir = repo_root / output_dir
+    output_dir = output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    hub_urls_arg = ",".join(str(url).rstrip("/") for url in hub_base_urls)
+    container_output = DEFAULT_EXP_FDB_DOCKER_CONTAINER_OUTPUT_DIR
+    total_nodes = int(args.nodes if args.nodes is not None else args.docker_total)
+    env = os.environ.copy()
+    env.update(
+        {
+            "HUB_BASE_URLS": hub_urls_arg,
+            "HUB_BASE_URL": str(hub_base_urls[0]).rstrip("/"),
+            "LAB_OUTPUT_DIR": container_output,
+            "LAB_NODE_LIST": f"{container_output}/{total_nodes}-exp-fdb-nodes.jsonl",
+            "LAB_OUTPUT_DIR_HOST": str(output_dir),
+            "GENERATE_NODE_LIST": "1",
+            "LAB_ROLE": str(args.docker_role),
+            "LAB_TOTAL": str(total_nodes),
+            "LAB_NODES": str(total_nodes),
+            "LAB_DURATION_SECONDS": str(float(args.docker_duration_seconds)),
+            "LAB_WORKTIME": str(args.worktime or ""),
+            "LAB_FUNDED": str(args.funded),
+            "LAB_REQUEST_STARTUP_MODE": str(args.request_startup_mode),
+            "LAB_REQUEST_STARTUP_SPREAD_SECONDS": str(float(args.request_startup_spread_seconds)),
+            "LEASE_SECONDS": str(float(args.lease_seconds)),
+        }
+    )
+    if args.docker_workers is not None:
+        env["LAB_WORKERS"] = str(args.docker_workers)
+    else:
+        env.pop("LAB_WORKERS", None)
+    if args.docker_requesters is not None:
+        env["LAB_REQUESTERS"] = str(args.docker_requesters)
+    else:
+        env.pop("LAB_REQUESTERS", None)
+
+    command = [
+        "docker",
+        "compose",
+        "-f",
+        str(compose_file),
+        "--profile",
+        "worker-lab",
+        "up",
+        "--abort-on-container-exit",
+        "--exit-code-from",
+        "worker-lab",
+    ]
+    if not args.no_docker_build:
+        command.append("--build")
+    command.append("worker-lab")
+
+    print("Starting scheduler lab Docker side with the dedicated lightweight worker-lab compose stack.")
+    print(f"Compose file: {compose_file}")
+    print(f"Host output dir: {output_dir}")
+    print("Non-sticky hub URLs advertised to Docker:")
+    for url in hub_base_urls:
+        print(f"  {url}")
+    print(f"Scheduler lab nodes: {total_nodes}")
+    print(f"Scheduler lab assumed already-funded accounts: {args.funded:g}%")
+    print(f"Scheduler lab request startup: {args.request_startup_mode} over {float(args.request_startup_spread_seconds):g}s")
+    if args.worktime:
+        print(f"Scheduler lab worker result runtime: {args.worktime} (seconds; sigma is standard deviation)")
+    print(f"Scheduler lab lease seconds: {float(args.lease_seconds):g}")
+    print("Docker command:")
+    print("  " + " ".join(command))
+    return subprocess.Popen(command, cwd=str(repo_root), env=env)
+
+
+def serve_exp_fdb_hubs(args: argparse.Namespace) -> int:
+    live_ports = parse_ports(args.ports if args.ports else args.port, default=DEFAULT_EXP_FDB_HUB_PORT)
+    servers = [create_exp_fdb_hub_server(args, port=port) for port in live_ports]
+    threads: list[threading.Thread] = []
+    docker_process: subprocess.Popen[bytes] | None = None
+    try:
+        for server in servers:
+            thread = threading.Thread(target=server.serve_forever, name=f"exp-fdb-hub-{server.server_port}", daemon=True)
+            thread.start()
+            threads.append(thread)
+        print(f"Experimental FDB hub ports listening: {', '.join(str(port) for port in live_ports)}")
+        if args.docker:
+            hub_urls = docker_hub_base_urls(args, live_ports)
+            docker_process = launch_scheduler_lab_docker(args, hub_base_urls=hub_urls)
+            return_code = docker_process.wait()
+            return int(return_code)
+        try:
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            print("\nExperimental FDB hub stopped.")
+            return 0
+    finally:
+        if docker_process is not None and docker_process.poll() is None:
+            docker_process.terminate()
+            try:
+                docker_process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                docker_process.kill()
+        for server in servers:
+            server.shutdown()
+        for thread in threads:
+            thread.join(timeout=5)
+        for server in servers:
+            server.server_close()
+
+
+def serve_exp_fdb_hub(args: argparse.Namespace) -> None:
+    raise SystemExit(serve_exp_fdb_hubs(args))
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="exp-fdb-hub.py",
         description=(
             "Start a manual-only clone of the Main Computer hub that uses the local "
-            "FoundationDB Docker cluster for the compute-credit ledger."
+            "FoundationDB Docker cluster for the compute-credit ledger, worker registry, request queue, quote store, sessions, and payout state."
         ),
     )
     parser.add_argument("--host", default="127.0.0.1", help="Host/interface to bind.")
-    parser.add_argument("--port", type=int, default=DEFAULT_EXP_FDB_HUB_PORT, help="Port to bind. Defaults to 8870.")
-    parser.add_argument("--hub-url", help="Public URL advertised for this experimental hub.")
+    parser.add_argument("-ports", "--ports", default=None, help="Comma-separated experimental hub ports to bind, for example 8870,8871,8872. Defaults to 8870.")
+    parser.add_argument("--port", type=int, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--hub-url", help="Public URL advertised for this experimental hub. Defaults per port when omitted.")
     parser.add_argument("--hub-root", type=Path, default=DEFAULT_EXP_FDB_HUB_ROOT, help="Separate runtime root for the experimental hub.")
     parser.add_argument("--cluster-file", type=Path, default=DEFAULT_EXP_FDB_CLUSTER_FILE, help="FoundationDB cluster file written by the FDB smoke.")
     parser.add_argument("--namespace", default=DEFAULT_EXP_FDB_NAMESPACE, help="FDB tuple namespace for this experiment.")
     parser.add_argument("--api-version", type=int, default=740, help="FoundationDB API version to request.")
     parser.add_argument("--repo-root", type=Path, help="Repository root. Defaults to the current working directory.")
+    parser.add_argument("-docker", "--docker", action="store_true", help="After starting the requested exp hub ports, run the lightweight scheduler-lab Docker stack with the same advertised hub-port list.")
+    parser.add_argument("--docker-compose-file", type=Path, default=DEFAULT_EXP_FDB_DOCKER_COMPOSE_FILE, help="Scheduler-lab Docker Compose file to run when --docker is set.")
+    parser.add_argument("--docker-ports", default="", help="Comma-separated ports advertised to Docker workers. May include intentionally dead ports not present in --ports.")
+    parser.add_argument("--docker-hub-host", default=DEFAULT_EXP_FDB_DOCKER_HUB_HOST, help="Host name Docker containers use to reach the host exp hubs.")
+    parser.add_argument("--docker-role", choices=["all", "workers", "requesters"], default="all", help="Scheduler lab role to run in Docker.")
+    parser.add_argument("--docker-total", type=int, default=120, help="Total generated scheduler lab nodes. Kept for compatibility; --nodes is preferred.")
+    parser.add_argument("--nodes", type=int, default=None, help="Total generated scheduler lab nodes for Docker experiments, for example --nodes 1000.")
+    parser.add_argument("--docker-workers", type=int, default=None, help="Optional worker-capable generated node count.")
+    parser.add_argument("--docker-requesters", type=int, default=None, help="Optional requester-capable generated node count.")
+    parser.add_argument("--docker-duration-seconds", type=float, default=300.0, help="How long the scheduler lab Docker side should run.")
+    parser.add_argument(
+        "--worktime",
+        default="",
+        help="Optional Docker worker result-runtime distribution in seconds, e.g. --worktime 100mu,30sigma where sigma is standard deviation.",
+    )
+    parser.add_argument(
+        "--funded",
+        type=float,
+        default=0.0,
+        help="Percent of generated Docker lab node accounts to assume are already funded in FDB; accepts 90 or 0.9.",
+    )
+    parser.add_argument(
+        "--request-startup-mode",
+        choices=["auto", "natural", "surge"],
+        default="auto",
+        help="How Docker lab request-capable nodes begin traffic. auto surges when --funded is nonzero.",
+    )
+    parser.add_argument(
+        "--request-startup-spread-seconds",
+        type=float,
+        default=3.0,
+        help="Spread startup surge requests across this many seconds; use 0 for an immediate wall of requests.",
+    )
+    parser.add_argument("--lease-seconds", type=float, default=180.0, help="Lease duration advertised by Docker workers when polling. Increase this above expected --worktime.")
+    parser.add_argument("--docker-output-dir", type=Path, default=DEFAULT_EXP_FDB_DOCKER_OUTPUT_DIR, help="Repository-relative output directory for scheduler lab events.")
+    parser.add_argument("--no-docker-build", action="store_true", help="Do not pass --build to docker compose up.")
     parser.add_argument(
         "--no-activate-cached-native-client",
         action="store_true",
@@ -148,8 +370,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    serve_exp_fdb_hub(args)
-    return 0
+    if args.funded < 0:
+        raise SystemExit("--funded must be >= 0")
+    if args.funded <= 1:
+        args.funded *= 100.0
+    if args.funded > 100:
+        raise SystemExit("--funded must be <= 100")
+    if args.request_startup_spread_seconds < 0:
+        raise SystemExit("--request-startup-spread-seconds must be >= 0")
+    if args.request_startup_mode == "auto":
+        args.request_startup_mode = "surge" if args.funded > 0 else "natural"
+    return serve_exp_fdb_hubs(args)
 
 
 if __name__ == "__main__":

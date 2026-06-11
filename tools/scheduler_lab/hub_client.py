@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import random
+import threading
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin
 from urllib.request import Request, urlopen
@@ -15,6 +17,7 @@ class HubHttpResponse:
     status: int
     payload: dict[str, Any]
     elapsed_ms: float
+    base_url: str = ""
 
 
 class HubClient:
@@ -24,16 +27,46 @@ class HubClient:
     should not mutate Hub memory or FoundationDB directly.
     """
 
-    def __init__(self, base_url: str, *, timeout_seconds: float = 10.0, retries: int = 0) -> None:
-        self.base_url = base_url.rstrip("/") + "/"
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        base_urls: Sequence[str] | None = None,
+        timeout_seconds: float = 10.0,
+        retries: int = 0,
+        rng: random.Random | None = None,
+    ) -> None:
+        clean_urls = [str(url).strip().rstrip("/") + "/" for url in (base_urls or []) if str(url).strip()]
+        if not clean_urls:
+            clean_urls = [str(base_url).strip().rstrip("/") + "/"]
+        self.base_url = clean_urls[0]
+        self.base_urls = clean_urls
         self.timeout_seconds = max(0.1, float(timeout_seconds))
         self.retries = max(0, int(retries))
+        self._rng = rng or random.Random()
+        self._rng_lock = threading.Lock()
+
+    def _choose_base_url(self) -> str:
+        """Choose the hub endpoint for one HTTP attempt.
+
+        The scheduler lab deliberately does not pin a node to one hub service.
+        Choosing per attempt simulates a non-sticky edge/load-balancer path and
+        lets retry logic route around a dead experimental hub port.
+        """
+
+        if len(self.base_urls) <= 1:
+            return self.base_url
+        with self._rng_lock:
+            return self._rng.choice(self.base_urls)
 
     def request_json(self, method: str, path: str, payload: dict[str, Any] | None = None) -> HubHttpResponse:
         body = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
-        url = urljoin(self.base_url, path.lstrip("/"))
         last_error: Exception | None = None
+        last_base_url = self.base_url
         for attempt in range(self.retries + 1):
+            base_url = self._choose_base_url()
+            last_base_url = base_url
+            url = urljoin(base_url, path.lstrip("/"))
             started = time.perf_counter()
             request = Request(
                 url,
@@ -48,7 +81,7 @@ class HubClient:
                     parsed = json.loads(raw.decode("utf-8")) if raw else {}
                     if not isinstance(parsed, dict):
                         parsed = {"value": parsed}
-                    return HubHttpResponse(ok=200 <= response.status < 300, status=response.status, payload=parsed, elapsed_ms=elapsed_ms)
+                    return HubHttpResponse(ok=200 <= response.status < 300, status=response.status, payload=parsed, elapsed_ms=elapsed_ms, base_url=base_url.rstrip("/"))
             except HTTPError as exc:
                 raw = exc.read()
                 elapsed_ms = (time.perf_counter() - started) * 1000.0
@@ -58,16 +91,16 @@ class HubClient:
                     parsed = {"error": raw.decode("utf-8", errors="replace")}
                 if not isinstance(parsed, dict):
                     parsed = {"value": parsed}
-                return HubHttpResponse(ok=False, status=exc.code, payload=parsed, elapsed_ms=elapsed_ms)
+                return HubHttpResponse(ok=False, status=exc.code, payload=parsed, elapsed_ms=elapsed_ms, base_url=base_url.rstrip("/"))
             except (URLError, TimeoutError, OSError) as exc:
                 last_error = exc
                 if attempt < self.retries:
                     time.sleep(min(2.0, 0.15 * (2 ** attempt)))
                     continue
                 elapsed_ms = (time.perf_counter() - started) * 1000.0
-                return HubHttpResponse(ok=False, status=0, payload={"error": str(last_error)}, elapsed_ms=elapsed_ms)
+                return HubHttpResponse(ok=False, status=0, payload={"error": str(last_error)}, elapsed_ms=elapsed_ms, base_url=base_url.rstrip("/"))
         elapsed_ms = 0.0
-        return HubHttpResponse(ok=False, status=0, payload={"error": str(last_error or "request failed")}, elapsed_ms=elapsed_ms)
+        return HubHttpResponse(ok=False, status=0, payload={"error": str(last_error or "request failed")}, elapsed_ms=elapsed_ms, base_url=last_base_url.rstrip("/"))
 
     def get_json(self, path: str) -> HubHttpResponse:
         return self.request_json("GET", path, None)

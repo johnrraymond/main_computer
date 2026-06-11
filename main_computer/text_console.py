@@ -39,6 +39,14 @@ preview mount with a computer fence.
 """
 
 
+THREAD_TERMINAL_RESULT_CONTEXT_PROMPT = """The following messages are persisted text-console thread context from earlier turns.
+They are provided as separate chat messages, not pasted into the current user
+prompt. Treat Terminal result context as evidence of what the user executed, but
+do not re-execute historic mounts. Continue the conversation from the final user
+message.
+"""
+
+
 @dataclass(frozen=True)
 class TextConsoleConfig:
     """Runtime context owner for the text console.
@@ -256,6 +264,96 @@ def text_console_request_bytes(
 ) -> int:
     payload = text_console_request_payload(messages, model=model, think=think)
     return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+
+def _trim_thread_messages(
+    messages: list[ChatMessage],
+    *,
+    max_messages: int,
+    max_chars: int,
+) -> list[ChatMessage]:
+    """Keep the most recent separate thread messages within safe UI/API bounds."""
+
+    kept_reversed: list[ChatMessage] = []
+    total_chars = 0
+    for message in reversed(messages):
+        content = str(message.content or "")
+        next_total = total_chars + len(content)
+        if kept_reversed and (len(kept_reversed) >= max_messages or next_total > max_chars):
+            break
+        kept_reversed.append(message)
+        total_chars = next_total
+        if len(kept_reversed) >= max_messages or total_chars >= max_chars:
+            break
+    return list(reversed(kept_reversed))
+
+
+def coerce_text_console_thread_messages(
+    raw_messages: Any,
+    *,
+    current_prompt: str = "",
+    max_messages: int = 18,
+    max_chars: int = 14000,
+) -> tuple[list[ChatMessage], list[str]]:
+    """Normalize UI-supplied text-console thread state into chat messages.
+
+    The UI sends prior turns as separate ChatMessage-shaped objects so the final
+    Ollama /api/chat call behaves like a threaded conversation. This function is
+    intentionally not a prompt-history packer: the latest user prompt is supplied
+    separately and remains the final user message in the actual chat payload.
+    """
+
+    notes: list[str] = []
+    if raw_messages is None:
+        return [], notes
+    if not isinstance(raw_messages, list):
+        return [], ["thread_messages ignored because it is not a list"]
+
+    out: list[ChatMessage] = []
+    allowed_roles = {"system", "user", "assistant"}
+    prompt_text = str(current_prompt or "")
+    dropped_current_prompt = False
+
+    for index, item in enumerate(raw_messages):
+        if isinstance(item, ChatMessage):
+            role = str(item.role or "")
+            content = str(item.content or "")
+        elif isinstance(item, dict):
+            role = str(item.get("role") or "")
+            content = str(item.get("content") or "")
+        else:
+            notes.append(f"thread message {index} ignored because it is not an object")
+            continue
+
+        if role == "terminal":
+            role = "system"
+            if "Terminal result from an explicitly executed text-console mount" not in content:
+                content = "Terminal result from an explicitly executed text-console mount.\n" + content
+
+        if role not in allowed_roles:
+            notes.append(f"thread message {index} ignored because role {role!r} is unsupported")
+            continue
+
+        content = content.replace("\r\n", "\n").strip()
+        if not content:
+            continue
+
+        if role == "user" and prompt_text and content == prompt_text:
+            dropped_current_prompt = True
+            continue
+
+        out.append(ChatMessage(role=role, content=content))
+
+    if dropped_current_prompt:
+        notes.append("thread_messages contained the current prompt; dropped it so the final user message stays raw")
+
+    trimmed = _trim_thread_messages(out, max_messages=max_messages, max_chars=max_chars)
+    if len(trimmed) < len(out):
+        notes.append(
+            f"thread_messages trimmed from {len(out)} to {len(trimmed)} messages "
+            f"within max_messages={max_messages} max_chars={max_chars}"
+        )
+    return trimmed, notes
 
 
 
@@ -745,6 +843,7 @@ class ActionSpec:
 class TextConsoleOperatorRun:
     base_model_input: TextConsoleModelInput
     action_specs: dict[str, ActionSpec]
+    conversation_messages: list[ChatMessage]
     preflight_messages: list[ChatMessage]
     preflight_content: str
     preflight_metadata: dict[str, Any]
@@ -960,6 +1059,7 @@ def build_action_preflight_messages(
     model_input: TextConsoleModelInput,
     specs: dict[str, ActionSpec],
     request_text: str,
+    conversation_messages: list[ChatMessage] | None = None,
 ) -> list[ChatMessage]:
     config = model_input.text_console_config
     root_hint = (
@@ -968,12 +1068,17 @@ def build_action_preflight_messages(
         f"- context_root: {config.context_root}\n"
         f"- working_directory: {config.working_directory}"
     )
-    return [
+    messages = [
         ChatMessage(role="system", content=ACTION_PREFLIGHT_PROMPT),
         ChatMessage(role="system", content=action_spec_catalog_prompt(specs)),
         ChatMessage(role="system", content=root_hint),
-        ChatMessage(role="user", content=str(request_text or "")),
     ]
+    threaded_context = list(conversation_messages or [])
+    if threaded_context:
+        messages.append(ChatMessage(role="system", content=THREAD_TERMINAL_RESULT_CONTEXT_PROMPT))
+        messages.extend(threaded_context)
+    messages.append(ChatMessage(role="user", content=str(request_text or "")))
+    return messages
 
 
 def normalize_selected_spec_ids(
@@ -1005,15 +1110,17 @@ def build_operator_final_messages(
     model_input: TextConsoleModelInput,
     specs: dict[str, ActionSpec],
     selected_spec_ids: list[str],
+    conversation_messages: list[ChatMessage] | None = None,
 ) -> list[ChatMessage]:
     base_messages = compact_model_messages_for_operator(model_input)
+    threaded_context = list(conversation_messages or [])
     inserted = [
         ChatMessage(role="system", content=FINAL_OPERATOR_PROMPT),
         ChatMessage(role="system", content=selected_action_specs_prompt(specs, selected_spec_ids)),
     ]
     if base_messages and base_messages[-1].role == "user":
-        return [*base_messages[:-1], *inserted, base_messages[-1]]
-    return [*base_messages, *inserted]
+        return [*base_messages[:-1], *threaded_context, *inserted, base_messages[-1]]
+    return [*base_messages, *threaded_context, *inserted]
 
 
 def run_text_console_operator(
@@ -1021,7 +1128,9 @@ def run_text_console_operator(
     text_console_config: TextConsoleConfig,
     prompt: str,
     base_config: MainComputerConfig | None = None,
+    conversation_messages: list[ChatMessage] | None = None,
 ) -> TextConsoleOperatorRun:
+    threaded_context = list(conversation_messages or [])
     base_model_input = build_text_console_model_input(
         text_console_config=text_console_config,
         source=prompt,
@@ -1032,6 +1141,7 @@ def run_text_console_operator(
         model_input=base_model_input,
         specs=specs,
         request_text=prompt,
+        conversation_messages=threaded_context,
     )
     preflight_response = base_model_input.computer.provider.chat(preflight_messages)
     preflight_content = str(getattr(preflight_response, "content", "") or "")
@@ -1060,12 +1170,14 @@ def run_text_console_operator(
         model_input=base_model_input,
         specs=specs,
         selected_spec_ids=selected_spec_ids,
+        conversation_messages=threaded_context,
     )
     final_response = base_model_input.computer.provider.chat(final_messages)
 
     return TextConsoleOperatorRun(
         base_model_input=base_model_input,
         action_specs=specs,
+        conversation_messages=threaded_context,
         preflight_messages=preflight_messages,
         preflight_content=preflight_content,
         preflight_metadata=preflight_metadata,
@@ -1115,6 +1227,11 @@ def chat_response_from_text_console_operator_run(run: TextConsoleOperatorRun) ->
                 "action_specs": [spec.catalog_entry() for spec in run.action_specs.values()],
                 "selected_spec_ids": run.selected_spec_ids,
                 "selected_spec_notes": run.selected_spec_notes,
+                "thread": {
+                    "message_count": len(run.conversation_messages),
+                    "roles": [item.role for item in run.conversation_messages],
+                    "message_chars": [len(str(item.content or "")) for item in run.conversation_messages],
+                },
                 "preflight": {
                     "content": run.preflight_content,
                     "payload": run.preflight_payload,
@@ -1138,11 +1255,13 @@ def run_text_console_operator_chat(
     text_console_config: TextConsoleConfig,
     prompt: str,
     base_config: MainComputerConfig | None = None,
+    conversation_messages: list[ChatMessage] | None = None,
 ) -> ChatResponse:
     run = run_text_console_operator(
         text_console_config=text_console_config,
         prompt=prompt,
         base_config=base_config,
+        conversation_messages=conversation_messages,
     )
     return chat_response_from_text_console_operator_run(run)
 
