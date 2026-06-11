@@ -118,6 +118,11 @@ class ViewportStaticPageTests(unittest.TestCase):
         self.assertIn("Level 1 Telemetry", GRAPHICAL_INDEX_HTML)
         self.assertIn("/api/control-panel/level-1-telemetry", GRAPHICAL_INDEX_HTML)
         self.assertIn("runLevel1Telemetry", GRAPHICAL_INDEX_HTML)
+        self.assertIn('id="level-4-diagnostic-button"', GRAPHICAL_INDEX_HTML)
+        self.assertIn("Level 4 System Check", GRAPHICAL_INDEX_HTML)
+        self.assertIn("/api/control-panel/level-4-diagnostic", GRAPHICAL_INDEX_HTML)
+        self.assertIn("runLevel4Diagnostic", GRAPHICAL_INDEX_HTML)
+        self.assertIn("locks overread", GRAPHICAL_INDEX_HTML)
         self.assertIn('id="telemetry-services"', GRAPHICAL_INDEX_HTML)
         self.assertIn("renderTelemetryServices", GRAPHICAL_INDEX_HTML)
         self.assertIn('id="telemetry-groups"', GRAPHICAL_INDEX_HTML)
@@ -371,6 +376,42 @@ class ViewportStaticPageTests(unittest.TestCase):
         finally:
             server.shutdown()
             thread.join(timeout=5)
+
+
+    def test_graphical_level4_diagnostic_endpoint_reports_underlying_system(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "main_computer").mkdir()
+            (root / "new_patch.py").write_text("# local patch harness marker\n", encoding="utf-8")
+            (root / "pyproject.toml").write_text("[project]\nname = \"main-computer-test\"\n", encoding="utf-8")
+
+            config = MainComputerConfig(workspace=root)
+            server = ViewportServer(("127.0.0.1", 0), config, verbose=False)
+            server.debug_root = root
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base = f"http://127.0.0.1:{server.server_port}"
+                with urlopen(f"{base}/api/control-panel/level-4-diagnostic", timeout=5) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(response.status, 200)
+                self.assertTrue(payload["ok"])
+                self.assertEqual(4, payload["level"])
+                self.assertEqual("graphical-underlying-system", payload["scope"])
+                self.assertIn(payload["overall_status"], {"PASS", "WARN", "FAIL"})
+                self.assertGreaterEqual(payload["finding_count"], 6)
+                self.assertIn("operational_percent", payload)
+                self.assertIn("locks", payload)
+                self.assertTrue(
+                    any(check["area"] == "locks" and "overread" in check["message"] for check in payload["checks"])
+                )
+                self.assertTrue(
+                    any(check["area"] == "ports" and check["evidence"].get("service") == "app" for check in payload["checks"])
+                )
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
 
 
     def test_hard_halt_endpoint_requires_post_and_invokes_shutdown_once(self) -> None:
