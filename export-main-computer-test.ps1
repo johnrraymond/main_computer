@@ -201,9 +201,15 @@ function Test-RepoPathAllowed {
   $blockedFileNames = @(
     ".DS_Store",
     "Thumbs.db",
+    ".env",
     "aider.log",
     "small_aider.log",
-    "solidity-files-cache.json"
+    "solidity-files-cache.json",
+    "ssh_password.local"
+  )
+
+  $blockedFileNamePrefixes = @(
+    ".env."
   )
 
   $blockedExtensions = @(
@@ -211,7 +217,8 @@ function Test-RepoPathAllowed {
     ".pyo",
     ".tmp",
     ".bak",
-    ".pid"
+    ".pid",
+    ".local"
   )
 
   if (($blockedExactPaths -contains $repoPath) -and -not $isAllowedGeneratedPrefixPath) {
@@ -246,6 +253,12 @@ function Test-RepoPathAllowed {
   if (-not $IsDirectory) {
     if ($blockedFileNames -contains $name) {
       return $false
+    }
+
+    foreach ($prefix in $blockedFileNamePrefixes) {
+      if ($name.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+      }
     }
 
     $extension = [System.IO.Path]::GetExtension($name)
@@ -380,12 +393,22 @@ function Assert-CleanExportStage {
     "tools/patching/"
   )
 
+  $badFileNames = @(
+    ".env",
+    "ssh_password.local"
+  )
+
+  $badFileNamePrefixes = @(
+    ".env."
+  )
+
   $badExtensions = @(
     ".pyc",
     ".pyo",
     ".tmp",
     ".bak",
-    ".pid"
+    ".pid",
+    ".local"
   )
 
   $allowedGeneratedExactPaths = @(
@@ -497,7 +520,20 @@ function Assert-CleanExportStage {
     }
 
     if (-not $_.PSIsContainer) {
-      $extension = [System.IO.Path]::GetExtension($_.Name)
+      $name = $_.Name
+      if ($badFileNames -contains $name) {
+        $bad.Add($repoPath)
+        return
+      }
+
+      foreach ($prefix in $badFileNamePrefixes) {
+        if ($name.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+          $bad.Add($repoPath)
+          return
+        }
+      }
+
+      $extension = [System.IO.Path]::GetExtension($name)
       if ($badExtensions -contains $extension) {
         $bad.Add($repoPath)
         return
