@@ -916,6 +916,9 @@ class HubDispatcher:
         allow_insecure_dev_network: bool = False,
         credit_ledger: HubCreditLedger | None = None,
         default_credits_per_request: int = 1,
+        request_store: Any | None = None,
+        quote_store: Any | None = None,
+        secure_session_store: Any | None = None,
     ) -> None:
         self.registry = registry
         self.ledger = ledger
@@ -929,6 +932,9 @@ class HubDispatcher:
             allow_insecure_dev_network=self.allow_insecure_dev_network,
             credit_ledger=credit_ledger,
             default_credits_per_request=default_credits_per_request,
+            request_store=request_store,
+            quote_store=quote_store,
+            secure_session_store=secure_session_store,
         )
 
     def quote(self, request: HubAIRequest) -> dict[str, Any]:
@@ -1067,6 +1073,7 @@ class HubHttpServer(ThreadingHTTPServer):
         self.credit_indexer = HubCreditIndexer(self.credit_ledger)
         self.credit_bridge_completion = HubCreditBridgeCompletionService(self.credit_ledger, config)
         self.multisession_key_store_path = hub_root / "compute_credits" / "multisession_keys.json"
+        self.multisession_key_store = None
         self.multisession_key_store_lock = threading.Lock()
         self.dispatcher = HubDispatcher(
             self.registry,
@@ -1082,11 +1089,15 @@ class HubServerHandler(_JsonHandler):
     server: HubHttpServer
 
     def _load_multisession_key_store_unlocked(self) -> dict[str, Any]:
-        path = self.server.multisession_key_store_path
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            data = {}
+        store = getattr(self.server, "multisession_key_store", None)
+        if store is not None and hasattr(store, "load"):
+            data = store.load()
+        else:
+            path = self.server.multisession_key_store_path
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                data = {}
         if not isinstance(data, dict):
             data = {}
         keys = data.get("keys")
@@ -1097,6 +1108,10 @@ class HubServerHandler(_JsonHandler):
         return data
 
     def _save_multisession_key_store_unlocked(self, data: dict[str, Any]) -> None:
+        store = getattr(self.server, "multisession_key_store", None)
+        if store is not None and hasattr(store, "save"):
+            store.save(data)
+            return
         path = self.server.multisession_key_store_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")

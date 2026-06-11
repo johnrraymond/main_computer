@@ -19,6 +19,7 @@ DEFAULT_TOTAL_NODES = 120
 DEFAULT_WORKER_RATIO = 5.0 / 6.0
 DEFAULT_SEED = 424242
 DEFAULT_HUB_BASE_URL = "http://host.docker.internal:8870"
+DEFAULT_HUB_BASE_URLS = [DEFAULT_HUB_BASE_URL]
 
 WORKER_COHORTS: list[dict[str, Any]] = [
     {
@@ -209,7 +210,7 @@ REQUESTER_BEHAVIOR_MODE_WEIGHTS = {
 
 
 GRID_COLUMNS = [
-    "node_id", "kind", "behavior_mode", "cohort", "tags", "account_id", "hub_base_url", "network", "ring", "chain_id", "sim_seed",
+    "node_id", "kind", "behavior_mode", "cohort", "tags", "account_id", "hub_base_url", "hub_base_urls_json", "network", "ring", "chain_id", "sim_seed",
     "model", "models_json", "min_accepted_credits", "offered_credits", "max_concurrency",
     "initial_credits", "low_credit_threshold", "funding_remediation", "faucet_top_up_credits",
     "low_credit_work_seconds", "insufficient_credit_backoff_ms",
@@ -307,6 +308,30 @@ def as_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def normalize_hub_base_urls(value: str | Sequence[str] | None, fallback: str = DEFAULT_HUB_BASE_URL) -> list[str]:
+    if isinstance(value, str):
+        raw = value.strip()
+        if raw.startswith("["):
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                values = [str(item).strip() for item in parsed]
+            else:
+                values = [part.strip() for part in raw.split(",")]
+        else:
+            values = [part.strip() for part in raw.split(",")]
+    elif value is None:
+        values = []
+    else:
+        values = [str(item).strip() for item in value]
+    clean = [url.rstrip("/") for url in values if url]
+    if not clean:
+        clean = [str(fallback).strip().rstrip("/")]
+    return clean
+
+
 def behavior_profile(mode: str) -> dict[str, Any]:
     return dict(NODE_BEHAVIOR_MODES.get(str(mode), NODE_BEHAVIOR_MODES["mixed_market"]))
 
@@ -366,6 +391,7 @@ def make_worker_node(
     cohort_index: int,
     cohort: dict[str, Any],
     hub_base_url: str,
+    hub_base_urls: Sequence[str] | None,
     network: str,
     ring: int,
     chain_id: int,
@@ -407,6 +433,7 @@ def make_worker_node(
         "cohort": cohort_name,
         "tags": ",".join(tags),
         "hub_base_url": hub_base_url,
+        "hub_base_urls_json": as_json(normalize_hub_base_urls(hub_base_urls, hub_base_url)),
         "network": network,
         "ring": ring,
         "chain_id": chain_id,
@@ -457,6 +484,7 @@ def make_requester_node(
     cohort_index: int,
     cohort: dict[str, Any],
     hub_base_url: str,
+    hub_base_urls: Sequence[str] | None,
     network: str,
     ring: int,
     chain_id: int,
@@ -491,6 +519,7 @@ def make_requester_node(
         "cohort": cohort_name,
         "tags": ",".join(tags),
         "hub_base_url": hub_base_url,
+        "hub_base_urls_json": as_json(normalize_hub_base_urls(hub_base_urls, hub_base_url)),
         "network": network,
         "ring": ring,
         "chain_id": chain_id,
@@ -540,6 +569,7 @@ def build_nodes(
     requesters: int | None = None,
     seed: int = DEFAULT_SEED,
     hub_base_url: str = DEFAULT_HUB_BASE_URL,
+    hub_base_urls: Sequence[str] | None = None,
     network: str = "dev",
     ring: int = 2,
     chain_id: int = 42424242,
@@ -550,6 +580,8 @@ def build_nodes(
 ) -> list[dict[str, Any]]:
     worker_count, requester_count = infer_counts(total, workers, requesters)
     rng = random.Random(seed)
+    hub_base_urls = normalize_hub_base_urls(hub_base_urls, hub_base_url)
+    hub_base_url = hub_base_urls[0]
     nodes: list[dict[str, Any]] = []
     worker_counts = allocate_counts(worker_count, WORKER_COHORTS)
     requester_counts = allocate_counts(requester_count, REQUESTER_COHORTS)
@@ -566,6 +598,7 @@ def build_nodes(
                     cohort_index=cohort_index,
                     cohort=cohort,
                     hub_base_url=hub_base_url,
+                    hub_base_urls=hub_base_urls,
                     network=network,
                     ring=ring,
                     chain_id=chain_id,
@@ -587,6 +620,7 @@ def build_nodes(
                     cohort_index=cohort_index,
                     cohort=cohort,
                     hub_base_url=hub_base_url,
+                    hub_base_urls=hub_base_urls,
                     network=network,
                     ring=ring,
                     chain_id=chain_id,
@@ -598,7 +632,16 @@ def build_nodes(
     return nodes
 
 
-def build_document(nodes: list[dict[str, Any]], *, seed: int, hub_base_url: str, network: str, ring: int, chain_id: int) -> dict[str, Any]:
+def build_document(
+    nodes: list[dict[str, Any]],
+    *,
+    seed: int,
+    hub_base_url: str,
+    hub_base_urls: Sequence[str] | None = None,
+    network: str,
+    ring: int,
+    chain_id: int,
+) -> dict[str, Any]:
     summary: dict[str, int] = {}
     behavior_modes: dict[str, int] = {}
     funding_remediation: dict[str, int] = {}
@@ -610,6 +653,8 @@ def build_document(nodes: list[dict[str, Any]], *, seed: int, hub_base_url: str,
         remediation = str(node.get("funding_remediation", ""))
         if remediation:
             funding_remediation[remediation] = funding_remediation.get(remediation, 0) + 1
+    clean_hub_base_urls = normalize_hub_base_urls(hub_base_urls, hub_base_url)
+    hub_base_url = clean_hub_base_urls[0]
     return {
         "schema": SCHEMA,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -617,6 +662,7 @@ def build_document(nodes: list[dict[str, Any]], *, seed: int, hub_base_url: str,
             "name": "hub-lab-instance",
             "seed": seed,
             "hub_base_url": hub_base_url,
+            "hub_base_urls": clean_hub_base_urls,
             "network": network,
             "ring": ring,
             "chain_id": chain_id,
@@ -740,6 +786,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--requesters", type=int, help="Requester row count. Defaults to total - workers, so 120 => 20.")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--hub-base-url", default=DEFAULT_HUB_BASE_URL)
+    parser.add_argument("--hub-base-urls", default="")
     parser.add_argument("--network", default="dev")
     parser.add_argument("--ring", type=int, default=2)
     parser.add_argument("--chain-id", type=int, default=42424242)
@@ -762,6 +809,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         requesters=args.requesters,
         seed=args.seed,
         hub_base_url=args.hub_base_url,
+        hub_base_urls=normalize_hub_base_urls(args.hub_base_urls, args.hub_base_url) if args.hub_base_urls else None,
         network=args.network,
         ring=args.ring,
         chain_id=args.chain_id,
@@ -770,7 +818,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         problematic_failure_multiplier=args.problematic_failure_multiplier,
         disable_problematic=args.disable_problematic,
     )
-    document = build_document(nodes, seed=args.seed, hub_base_url=args.hub_base_url, network=args.network, ring=args.ring, chain_id=args.chain_id)
+    document = build_document(
+        nodes,
+        seed=args.seed,
+        hub_base_url=args.hub_base_url,
+        hub_base_urls=normalize_hub_base_urls(args.hub_base_urls, args.hub_base_url) if args.hub_base_urls else None,
+        network=args.network,
+        ring=args.ring,
+        chain_id=args.chain_id,
+    )
     write_nodes(output, document)
     if output.suffix.lower() == ".jsonl":
         sys.stderr.write(f"wrote {len(nodes)} JSONL rows to {output}\n")

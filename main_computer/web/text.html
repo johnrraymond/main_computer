@@ -538,6 +538,7 @@
     const projectSearch = document.querySelector("#project-search");
     const diagnosticButtons = document.querySelectorAll("[data-diagnostic-level]");
     const SESSION_KEY = "main-computer-viewport-session-v1";
+    const THREAD_RESULT_PREFIX = "Terminal result from an explicitly executed text-console mount.";
     const HARD_HALT_COMMANDS = new Set(["/server hard-halt", "/hard-halt-server"]);
     const consoleLoadedAtMs = Date.now();
     let projectData = [];
@@ -546,11 +547,18 @@
     let workingCountdownTimer = null;
 
     function loadSession() {
+      let loaded;
       try {
-        return JSON.parse(localStorage.getItem(SESSION_KEY)) || {entries: [], draft: ""};
+        loaded = JSON.parse(localStorage.getItem(SESSION_KEY)) || {};
       } catch (error) {
-        return {entries: [], draft: ""};
+        loaded = {};
       }
+      if (!Array.isArray(loaded.entries)) loaded.entries = [];
+      if (typeof loaded.draft !== "string") loaded.draft = "";
+      if (typeof loaded.thread_id !== "string" || !loaded.thread_id) {
+        loaded.thread_id = `text-console-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      }
+      return loaded;
     }
 
     function saveSession() {
@@ -877,6 +885,56 @@
       };
     }
 
+    function artifactTerminalThreadText(artifact) {
+      const text = mountExecutionResultText(artifact);
+      if (!text) return "";
+      const state = artifactStateValue(artifact);
+      const artifactId = String(artifact?.artifact_id || "");
+      const lines = [THREAD_RESULT_PREFIX];
+      if (state) lines.push(`state: ${state}`);
+      if (artifactId) lines.push(`artifact_id: ${artifactId}`);
+      lines.push("");
+      lines.push(text);
+      return lines.join("\n");
+    }
+
+    function trimThreadMessages(messages, maxMessages = 18, maxChars = 14000) {
+      const kept = [];
+      let totalChars = 0;
+      for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index];
+        const content = String(message?.content || "");
+        if (kept.length > 0 && (kept.length >= maxMessages || totalChars + content.length > maxChars)) break;
+        kept.unshift(message);
+        totalChars += content.length;
+        if (kept.length >= maxMessages || totalChars >= maxChars) break;
+      }
+      return kept;
+    }
+
+    function buildThreadMessagesFromSession() {
+      const messages = [];
+      const entries = Array.isArray(session.entries) ? session.entries : [];
+      entries.forEach((entry) => {
+        const content = String(entry?.content || "").trim();
+        if (entry?.role === "you" && content) {
+          messages.push({role: "user", content});
+          return;
+        }
+        if (entry?.role === "main computer" && content) {
+          messages.push({role: "assistant", content});
+          const artifacts = Array.isArray(entry?.artifacts?.artifacts) ? entry.artifacts.artifacts : [];
+          artifacts
+            .filter((artifact) => artifact && artifact.kind === "computer_mount")
+            .forEach((artifact) => {
+              const resultText = artifactTerminalThreadText(artifact);
+              if (resultText) messages.push({role: "system", content: resultText});
+            });
+        }
+      });
+      return trimThreadMessages(messages);
+    }
+
     function persistMountExecutionResult(artifact, results, state) {
       if (!artifact) return;
       artifact.state = state;
@@ -1052,6 +1110,7 @@
     }
 
     async function sendPrompt(prompt) {
+      const threadMessages = buildThreadMessagesFromSession();
       addEntry("you", prompt, "user", {renderMode: "plain"});
       setWorking(true);
       startWorkingCountdown();
@@ -1059,7 +1118,7 @@
         const response = await fetch("/api/chat", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({prompt})
+          body: JSON.stringify({prompt, thread_id: session.thread_id, thread_messages: threadMessages})
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);

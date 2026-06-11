@@ -20,6 +20,13 @@ show a Terminal action preview.
 Use Terminal when the user asks for shell commands, Git, tests, file listings,
 directory listings, active-terminal reuse, or terminal interruption.
 
+Terminal target profile:
+- The text-console Terminal target runs local Windows PowerShell, not `cmd.exe`.
+- Write commands in PowerShell syntax.
+- For a plain directory listing, prefer `Get-ChildItem main_computer`.
+- For a recursive directory listing, use `Get-ChildItem main_computer -Recurse`.
+- Do not use `cmd.exe`-only recursive syntax such as `dir /s main_computer`.
+
 Canonical forms inside a fenced block tagged exactly `computer`:
 
 ```computer
@@ -45,7 +52,8 @@ Rules:
 - Do not claim execution happened.
 
 Examples:
-- list files in main_computer -> `/act terminal run "dir main_computer" --cwd repo-root`
+- list files in main_computer -> `/act terminal run "Get-ChildItem main_computer" --cwd repo-root`
+- recursively list files in main_computer -> `/act terminal run "Get-ChildItem main_computer -Recurse" --cwd repo-root`
 - run git status -> `/act terminal run "git status" --cwd repo-root`
 - run Python tests -> `/act terminal run "python -m pytest" --cwd repo-root`
 - reuse active terminal for git status -> `/act terminal run-in active "git status" --cwd repo-root`
@@ -90,7 +98,13 @@ Interrupt the active terminal:
 User intent: list the files in `main_computer`.
 
 ```computer
-/act terminal run "dir main_computer" --cwd repo-root
+/act terminal run "Get-ChildItem main_computer" --cwd repo-root
+```
+
+User intent: recursively list the files in `main_computer`.
+
+```computer
+/act terminal run "Get-ChildItem main_computer -Recurse" --cwd repo-root
 ```
 
 User intent: run Git status.

@@ -162,11 +162,13 @@ class ExperimentalFoundationDbCreditLedger:
         try:
             fdb.api_version(int(config.api_version))
         except Exception as exc:
-            raise RuntimeError(
-                f"Could not activate FoundationDB API version {config.api_version}. "
-                "Run scripts/smoke_foundationdb_credit_ledger_primitives.py once so it can "
-                "bootstrap the native FDB client, or install a matching FoundationDB client library."
-            ) from exc
+            message = str(exc).lower()
+            if "api version" not in message or "already" not in message:
+                raise RuntimeError(
+                    f"Could not activate FoundationDB API version {config.api_version}. "
+                    "Run scripts/smoke_foundationdb_credit_ledger_primitives.py once so it can "
+                    "bootstrap the native FDB client, or install a matching FoundationDB client library."
+                ) from exc
 
         import fdb.tuple  # type: ignore  # noqa: F401
 

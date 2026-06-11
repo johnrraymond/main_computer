@@ -18,29 +18,30 @@
     "slow-distant": 15
   },
   "configured_initial_credits": 907,
-  "duration_observed_seconds": 300.067,
+  "duration_observed_seconds": 300.073,
   "events": {
     "lab.finished": 1,
     "lab.started": 1,
-    "node.funding.balance_checked": 124,
+    "node.funding.balance_checked": 107,
     "node.funding.bootstrap.skipped_unfunded_start": 17,
-    "node.funding.issued": 124,
-    "node.local_work.started": 112,
-    "node.low_credit.remediation_dormant": 6,
-    "node.low_credit.remediation_faucet": 21,
-    "node.low_credit.remediation_work_to_earn": 127,
-    "requester.burst_interval": 5,
-    "requester.request.rejected.insufficient_credits": 154,
-    "requester.request.skipped_local_work": 288,
-    "requester.request.skipped_low_credit_mode": 1038,
-    "requester.request.submitted": 601,
-    "worker.execution.started": 8,
-    "worker.heartbeat": 1698,
-    "worker.heartbeat.dropped_by_lab": 17,
-    "worker.poll": 1465,
-    "worker.poll.skipped_local_work": 150,
+    "node.funding.issued": 98,
+    "node.funding.not_needed": 9,
+    "node.local_work.started": 191,
+    "node.low_credit.remediation_dormant": 2,
+    "node.low_credit.remediation_faucet": 4,
+    "node.low_credit.remediation_work_to_earn": 26,
+    "requester.burst_interval": 10,
+    "requester.request.rejected.insufficient_credits": 32,
+    "requester.request.skipped_local_work": 514,
+    "requester.request.skipped_low_credit_mode": 356,
+    "requester.request.submitted": 1773,
+    "worker.execution.started": 13,
+    "worker.heartbeat": 9135,
+    "worker.heartbeat.dropped_by_lab": 103,
+    "worker.poll": 13287,
+    "worker.poll.skipped_local_work": 2539,
     "worker.register": 120,
-    "worker.result.submitted": 5
+    "worker.result.submitted": 13
   },
   "events_path": "/lab-output/scheduler-lab-events.jsonl",
   "funding_remediation": {
@@ -49,49 +50,49 @@
     "mixed": 34,
     "work_to_earn": 73
   },
-  "generated_at": "2026-06-11T20:32:29.075658+00:00",
+  "generated_at": "2026-06-11T21:02:21.036568+00:00",
   "latency": {
     "node.funding.balance_checked": {
-      "count": 124,
-      "max_ms": 325.228,
-      "mean_ms": 35.175,
-      "p95_ms": 265.019
+      "count": 107,
+      "max_ms": 241.612,
+      "mean_ms": 153.39,
+      "p95_ms": 216.187
     },
     "node.funding.issued": {
-      "count": 124,
-      "max_ms": 417.769,
-      "mean_ms": 45.408,
-      "p95_ms": 320.695
+      "count": 98,
+      "max_ms": 224.28,
+      "mean_ms": 168.411,
+      "p95_ms": 216.876
     },
     "requester.request.submitted": {
-      "count": 601,
-      "max_ms": 10010.777,
-      "mean_ms": 2526.535,
-      "p95_ms": 7947.689
+      "count": 1773,
+      "max_ms": 10003.342,
+      "mean_ms": 83.634,
+      "p95_ms": 563.195
     },
     "worker.heartbeat": {
-      "count": 1698,
-      "max_ms": 7473.711,
-      "mean_ms": 302.872,
-      "p95_ms": 1614.505
+      "count": 9135,
+      "max_ms": 10012.336,
+      "mean_ms": 32.059,
+      "p95_ms": 143.268
     },
     "worker.poll": {
-      "count": 1465,
-      "max_ms": 16517.513,
-      "mean_ms": 1517.581,
-      "p95_ms": 4142.303
+      "count": 13287,
+      "max_ms": 10012.211,
+      "mean_ms": 47.913,
+      "p95_ms": 226.56
     },
     "worker.register": {
       "count": 120,
-      "max_ms": 5.774,
-      "mean_ms": 2.32,
-      "p95_ms": 4.139
+      "max_ms": 398.846,
+      "mean_ms": 176.762,
+      "p95_ms": 235.129
     },
     "worker.result.submitted": {
-      "count": 5,
-      "max_ms": 9179.93,
-      "mean_ms": 7136.593,
-      "p95_ms": 9179.93
+      "count": 13,
+      "max_ms": 513.887,
+      "mean_ms": 319.434,
+      "p95_ms": 513.887
     }
   },
   "node_count": 120,
