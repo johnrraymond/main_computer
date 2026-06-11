@@ -229,6 +229,112 @@ class TextConsoleModelInput:
         )
 
 
+
+@dataclass(frozen=True)
+class TextConsoleTargetProfile:
+    """Machine-readable contract for a text-console action target.
+
+    The action spec can describe *when* to use a capability, but the target
+    profile describes *what the selected runtime actually is*.  Keeping this
+    machine-readable lets the prompt, parser, UI, and executor agree on the same
+    target semantics instead of treating words like "Terminal" as loose prose.
+    """
+
+    target_id: str
+    kind: str
+    display_name: str
+    os: str
+    shell: str
+    command_language: str
+    cwd_default: str
+    cwd_policy: str
+    execution_policy: str
+    endpoint_runner: str
+    supports: tuple[str, ...]
+    examples: tuple[tuple[str, str], ...]
+    forbidden_examples: tuple[tuple[str, str], ...]
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "id": self.target_id,
+            "kind": self.kind,
+            "display_name": self.display_name,
+            "os": self.os,
+            "shell": self.shell,
+            "command_language": self.command_language,
+            "cwd_default": self.cwd_default,
+            "cwd_policy": self.cwd_policy,
+            "execution_policy": self.execution_policy,
+            "endpoint_runner": self.endpoint_runner,
+            "supports": list(self.supports),
+            "examples": {key: value for key, value in self.examples},
+            "forbidden_examples": {key: value for key, value in self.forbidden_examples},
+        }
+
+    def prompt_text(self) -> str:
+        return json.dumps(self.to_payload(), indent=2, ensure_ascii=False, sort_keys=True)
+
+
+def default_terminal_target_profile() -> TextConsoleTargetProfile:
+    return TextConsoleTargetProfile(
+        target_id="repo-root-powershell-terminal",
+        kind="terminal",
+        display_name="Repo Terminal",
+        os="windows",
+        shell="powershell",
+        command_language="PowerShell command line",
+        cwd_default="repo-root",
+        cwd_policy="repo-root-relative; repo-root maps to the local repository root",
+        execution_policy="preview_requires_explicit_user_confirmation",
+        endpoint_runner="applications_terminal_run",
+        supports=("run", "run-in-active", "interrupt-active"),
+        examples=(
+            ("list_directory", "Get-ChildItem main_computer"),
+            ("list_directory_recursive", "Get-ChildItem main_computer -Recurse"),
+            ("run_tests", "python -m pytest"),
+            ("git_status", "git status"),
+            ("find_text_console_files", "Get-ChildItem main_computer -Recurse -Filter *text_console*"),
+        ),
+        forbidden_examples=(
+            ("cmd_recursive_dir", "dir /s main_computer"),
+            ("bash_recursive_ls", "ls -R main_computer"),
+            ("absolute_windows_path", "Get-ChildItem C:\\Users\\Front\\Desktop\\matt\\main_computer"),
+        ),
+    )
+
+
+def text_console_target_profiles() -> dict[str, TextConsoleTargetProfile]:
+    terminal = default_terminal_target_profile()
+    return {terminal.target_id: terminal}
+
+
+def text_console_target_profile_catalog_prompt() -> str:
+    return (
+        "Available text-console action target profiles:\n\n"
+        + json.dumps(
+            [profile.to_payload() for profile in text_console_target_profiles().values()],
+            indent=2,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+
+
+def selected_target_profiles_prompt(selected_spec_ids: list[str]) -> str:
+    selected = set(selected_spec_ids)
+    profiles: list[TextConsoleTargetProfile] = []
+    if "terminal" in selected:
+        profiles.append(default_terminal_target_profile())
+    if not profiles:
+        return "No action target profiles were selected."
+    return (
+        "Selected text-console action target profiles. Use these machine-readable target contracts "
+        "when forming structured action artifacts:\n\n"
+        + json.dumps([profile.to_payload() for profile in profiles], indent=2, ensure_ascii=False, sort_keys=True)
+    )
+
+
+
 def text_console_request_payload(
     messages: list[ChatMessage],
     *,
@@ -479,21 +585,39 @@ def _format_act_cwd(cwd: str) -> str:
     return value
 
 
-def _terminal_execution_policy(*, supported: bool) -> dict[str, Any]:
+def _terminal_execution_policy(
+    *,
+    supported: bool,
+    target_profile: TextConsoleTargetProfile | None = None,
+) -> dict[str, Any]:
+    profile = target_profile or default_terminal_target_profile()
     if supported:
         return {
             "mode": "preview",
             "requires_user_confirmation": True,
-            "runner": "applications_terminal_run",
+            "runner": profile.endpoint_runner,
+            "target_id": profile.target_id,
+            "target_kind": profile.kind,
+            "target_shell": profile.shell,
+            "target_os": profile.os,
         }
     return {
         "mode": "preview_only",
         "requires_user_confirmation": False,
         "runner": "",
+        "target_id": profile.target_id,
+        "target_kind": profile.kind,
+        "target_shell": profile.shell,
+        "target_os": profile.os,
     }
 
 
-def _terminal_command_validation(raw_command: str) -> dict[str, Any]:
+def _terminal_command_validation(
+    raw_command: str,
+    *,
+    target_profile: TextConsoleTargetProfile | None = None,
+) -> dict[str, Any]:
+    profile = target_profile or default_terminal_target_profile()
     command = str(raw_command or "").strip()
     report: dict[str, Any] = {
         "raw": command,
@@ -504,8 +628,11 @@ def _terminal_command_validation(raw_command: str) -> dict[str, Any]:
         "terminal_cwd": "",
         "supported": False,
         "canonical": command,
+        "target_id": profile.target_id,
+        "target_kind": profile.kind,
+        "target_profile": profile.to_payload(),
         "failures": [],
-        "execution_policy": _terminal_execution_policy(supported=False),
+        "execution_policy": _terminal_execution_policy(supported=False, target_profile=profile),
     }
     if not command.startswith("/act"):
         report["failures"].append("line is not an /act request")
@@ -531,7 +658,7 @@ def _terminal_command_validation(raw_command: str) -> dict[str, Any]:
                 "canonical": f'/act terminal run {json.dumps(inner, ensure_ascii=False)} --cwd {_format_act_cwd(cwd)}',
                 "failures": [*report["failures"], *blocking_failures],
                 "notes": [failure for failure in parse_failures if failure.startswith("terminal run omitted --cwd")],
-                "execution_policy": _terminal_execution_policy(supported=True),
+                "execution_policy": _terminal_execution_policy(supported=True, target_profile=profile),
             }
         )
         if not inner:
@@ -556,7 +683,7 @@ def _terminal_command_validation(raw_command: str) -> dict[str, Any]:
                 "failures": [*report["failures"], *blocking_failures],
                 "notes": [failure for failure in parse_failures if failure.startswith("terminal run omitted --cwd")],
                 "note": "Active-terminal reuse is previewed here; this text head only executes new terminal runs.",
-                "execution_policy": _terminal_execution_policy(supported=False),
+                "execution_policy": _terminal_execution_policy(supported=False, target_profile=profile),
             }
         )
         return report
@@ -572,7 +699,7 @@ def _terminal_command_validation(raw_command: str) -> dict[str, Any]:
                 "supported": False,
                 "canonical": "/act terminal interrupt active",
                 "note": "Active-terminal interruption is previewed here; this text head does not interrupt terminal sessions.",
-                "execution_policy": _terminal_execution_policy(supported=False),
+                "execution_policy": _terminal_execution_policy(supported=False, target_profile=profile),
             }
         )
         return report
@@ -593,7 +720,12 @@ def _computer_mount_artifact(index: int, body: str, start: int, end: int) -> dic
         else:
             invalid_lines.append(stripped)
 
-    command_reports = [_terminal_command_validation(command) for command in commands]
+    terminal_target_profile = default_terminal_target_profile()
+    command_reports = [
+        _terminal_command_validation(command, target_profile=terminal_target_profile)
+        for command in commands
+    ]
+    target_profiles = {terminal_target_profile.target_id: terminal_target_profile.to_payload()}
     canonical_commands = [
         str(report.get("canonical") or command)
         for report, command in zip(command_reports, commands, strict=False)
@@ -625,6 +757,10 @@ def _computer_mount_artifact(index: int, body: str, start: int, end: int) -> dic
         "request_kind": "command_plan" if len(commands) > 1 else ("command" if commands else "empty"),
         "canonical_commands": canonical_commands,
         "invalid_lines": invalid_lines,
+        "target_id": terminal_target_profile.target_id,
+        "target_kind": terminal_target_profile.kind,
+        "target_profile": terminal_target_profile.to_payload(),
+        "target_profiles": list(target_profiles.values()),
         "command_reports": command_reports,
         "can_execute": can_execute,
         "validation": {
@@ -959,6 +1095,7 @@ def action_spec_catalog_prompt(specs: dict[str, ActionSpec]) -> str:
 
 def selected_action_specs_prompt(specs: dict[str, ActionSpec], selected_spec_ids: list[str]) -> str:
     chunks: list[str] = []
+    target_profile_text = selected_target_profiles_prompt(selected_spec_ids)
     for spec_id in selected_spec_ids:
         spec = specs[spec_id]
         chunks.append(
@@ -971,7 +1108,7 @@ def selected_action_specs_prompt(specs: dict[str, ActionSpec], selected_spec_ids
         )
     if not chunks:
         return "No action specs were selected. Answer normally without computer or repo-edit blocks unless the user corrects the request."
-    return "\n\n---\n\n".join(chunks)
+    return "\n\n---\n\n".join([target_profile_text, *chunks])
 
 
 def strip_json_code_fence(text: str) -> str:
@@ -1071,6 +1208,7 @@ def build_action_preflight_messages(
     messages = [
         ChatMessage(role="system", content=ACTION_PREFLIGHT_PROMPT),
         ChatMessage(role="system", content=action_spec_catalog_prompt(specs)),
+        ChatMessage(role="system", content=text_console_target_profile_catalog_prompt()),
         ChatMessage(role="system", content=root_hint),
     ]
     threaded_context = list(conversation_messages or [])
@@ -1209,6 +1347,9 @@ def chat_response_from_text_console_operator_run(run: TextConsoleOperatorRun) ->
             "text_console_artifacts": text_console_artifacts,
             "web_search": model_input.web_search_context,
             "text_console_config": model_input.text_console_config.to_payload(),
+            "text_console_targets": {
+                "profiles": [profile.to_payload() for profile in text_console_target_profiles().values()],
+            },
             "legacy_main_computer_config_adapter": {
                 "workspace": str(getattr(model_input.legacy_config, "workspace", "")),
                 "provider": str(getattr(model_input.legacy_config, "provider", "")),
@@ -1222,6 +1363,9 @@ def chat_response_from_text_console_operator_run(run: TextConsoleOperatorRun) ->
                 "message_chars": [len(str(item.content or "")) for item in model_input.messages],
                 "input_chars": model_input.input_chars,
                 "request_sha256": model_input.request_sha256,
+            },
+            "text_console_targets": {
+                "profiles": [profile.to_payload() for profile in text_console_target_profiles().values()],
             },
             "text_console_operator": {
                 "action_specs": [spec.catalog_entry() for spec in run.action_specs.values()],
@@ -1314,6 +1458,9 @@ def chat_response_from_text_console_model_input(model_input: TextConsoleModelInp
             "text_console_artifacts": text_console_artifacts,
             "web_search": model_input.web_search_context,
             "text_console_config": model_input.text_console_config.to_payload(),
+            "text_console_targets": {
+                "profiles": [profile.to_payload() for profile in text_console_target_profiles().values()],
+            },
             "legacy_main_computer_config_adapter": {
                 "workspace": str(getattr(model_input.legacy_config, "workspace", "")),
                 "provider": str(getattr(model_input.legacy_config, "provider", "")),

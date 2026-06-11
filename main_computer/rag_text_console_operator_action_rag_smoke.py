@@ -342,8 +342,27 @@ def action_spec_catalog_prompt(specs: dict[str, ActionSpec]) -> str:
     )
 
 
+def runtime_target_profile_catalog_prompt() -> str:
+    from main_computer.text_console import text_console_target_profile_catalog_prompt
+
+    return text_console_target_profile_catalog_prompt()
+
+
+def runtime_selected_target_profiles_prompt(selected_spec_ids: list[str]) -> str:
+    from main_computer.text_console import selected_target_profiles_prompt
+
+    return selected_target_profiles_prompt(selected_spec_ids)
+
+
+def runtime_target_profiles_payload() -> list[dict[str, Any]]:
+    from main_computer.text_console import text_console_target_profiles
+
+    return [profile.to_payload() for profile in text_console_target_profiles().values()]
+
+
 def selected_action_specs_prompt(specs: dict[str, ActionSpec], selected_spec_ids: list[str]) -> str:
     chunks: list[str] = []
+    target_profile_text = runtime_selected_target_profiles_prompt(selected_spec_ids)
     for spec_id in selected_spec_ids:
         spec = specs[spec_id]
         chunks.append(
@@ -356,7 +375,7 @@ def selected_action_specs_prompt(specs: dict[str, ActionSpec], selected_spec_ids
         )
     if not chunks:
         return "No action specs were selected. Answer normally without computer or repo-edit blocks unless the user corrects the request."
-    return "\n\n---\n\n".join(chunks)
+    return "\n\n---\n\n".join([target_profile_text, *chunks])
 
 
 def strip_json_code_fence(text: str) -> str:
@@ -491,6 +510,7 @@ def build_preflight_messages(
     messages = [
         ChatMessage(role="system", content=ACTION_PREFLIGHT_PROMPT),
         ChatMessage(role="system", content=action_spec_catalog_prompt(specs)),
+        ChatMessage(role="system", content=runtime_target_profile_catalog_prompt()),
     ]
     if root_hint:
         messages.append(ChatMessage(role="system", content=root_hint))
@@ -1072,6 +1092,7 @@ def run_threaded_fixture(
             "validation": preflight_validation,
         },
         "selected_spec_ids": safe_selected_spec_ids,
+        "target_profiles": runtime_target_profiles_payload(),
         "selected_spec_hashes": {spec_id: specs[spec_id].sha256 for spec_id in safe_selected_spec_ids},
         "selected_spec_runtime_hashes": {spec_id: specs[spec_id].runtime_sha256 for spec_id in safe_selected_spec_ids},
         "final_response": {
@@ -1356,6 +1377,7 @@ def run_fixture(
             "validation": preflight_validation,
         },
         "selected_spec_ids": safe_selected_spec_ids,
+        "target_profiles": runtime_target_profiles_payload(),
         "selected_spec_hashes": {spec_id: specs[spec_id].sha256 for spec_id in safe_selected_spec_ids},
         "selected_spec_runtime_hashes": {spec_id: specs[spec_id].runtime_sha256 for spec_id in safe_selected_spec_ids},
         "final_response": {
@@ -1402,6 +1424,16 @@ def print_summary(report: dict[str, Any]) -> None:
         )
     print()
 
+    target_profiles = report.get("target_profiles") or []
+    if target_profiles:
+        print("Target profiles:")
+        for profile in target_profiles:
+            print(
+                f"- {profile.get('id')}: {profile.get('display_name')} "
+                f"os={profile.get('os')} shell={profile.get('shell')} cwd_default={profile.get('cwd_default')}"
+            )
+        print()
+
     print("Fixtures:")
     for item in report.get("fixtures", []):
         print(f"- {item.get('label')}: {'PASS' if item.get('ok') else 'FAIL'}")
@@ -1414,6 +1446,18 @@ def print_summary(report: dict[str, Any]) -> None:
             f"  selected_specs: expected={item.get('expected_spec_ids')} "
             f"actual={item.get('selected_spec_ids')}"
         )
+        selected_targets = item.get("target_profiles") or []
+        if selected_targets and item.get("selected_spec_ids"):
+            terminal_targets = [
+                profile for profile in selected_targets
+                if profile.get("kind") == "terminal" and "terminal" in set(item.get("selected_spec_ids") or [])
+            ]
+            if terminal_targets:
+                profile = terminal_targets[0]
+                print(
+                    f"  target_profile: {profile.get('id')} "
+                    f"os={profile.get('os')} shell={profile.get('shell')} cwd={profile.get('cwd_default')}"
+                )
         print(
             f"  request_sha256: preflight={((item.get('request_sha256') or {}).get('preflight') or '')[:16]} "
             f"final={((item.get('request_sha256') or {}).get('final') or '')[:16]}"
@@ -1585,6 +1629,7 @@ def main(argv: list[str] | None = None) -> int:
         "warnings": warnings,
         "failures": failures,
         "action_specs": [spec.catalog_entry() for spec in specs.values()],
+        "target_profiles": runtime_target_profiles_payload(),
         "fixtures": fixture_reports,
     }
 
