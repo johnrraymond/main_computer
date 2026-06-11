@@ -17,7 +17,7 @@
     "cms": {
       "database_connection": "content",
       "permissions": {
-        "last_verified_at": "2026-05-29T17:55:53+00:00",
+        "last_verified_at": "2026-06-11T01:06:57+00:00",
         "public_read_files": true,
         "public_read_published_posts": true,
         "status": "ready"
@@ -39,7 +39,7 @@
         "image": "directus/directus:11.5.1",
         "internal_url": "http://johnrraymond-directus:8055",
         "kind": "directus",
-        "last_verified_at": "2026-05-29T17:55:51+00:00",
+        "last_verified_at": "2026-06-11T01:06:56+00:00",
         "ping_status": "ready",
         "public_url": "http://127.0.0.1:28202",
         "status": "service_reachable"
@@ -123,7 +123,7 @@
           ]
         }
       ],
-      "updated_at": "2026-05-29T17:55:53+00:00"
+      "updated_at": "2026-06-11T01:06:57+00:00"
     },
     "feature": "blog",
     "install_order": [
@@ -136,13 +136,13 @@
       "ok": true,
       "published_read_ok": true,
       "route_ok": true,
-      "updated_at": "2026-05-29T17:55:55+00:00"
+      "updated_at": "2026-06-11T01:07:00+00:00"
     },
     "layers": {
       "blog": {
         "action": "pending_deploy",
         "status": "ready",
-        "updated_at": "2026-05-29T17:55:55+00:00",
+        "updated_at": "2026-06-11T01:07:00+00:00",
         "verification": {
           "draft_protected": true,
           "published_read_ok": true,
@@ -152,7 +152,7 @@
       "cms": {
         "action": "configured",
         "status": "ready",
-        "updated_at": "2026-05-29T17:55:55+00:00"
+        "updated_at": "2026-06-11T01:07:00+00:00"
       },
       "database": {
         "action": "reused",
@@ -160,7 +160,7 @@
         "updated_at": "2026-05-29T17:55:22+00:00"
       }
     },
-    "runtime_config_written_at": "2026-05-29T17:55:55+00:00",
+    "runtime_config_written_at": "2026-06-11T01:07:00+00:00",
     "runtime_dependency_policy": "deploy_reuses_existing_dependencies_when_safe",
     "runtime_preparation": {
       "directus_service": {
@@ -172,7 +172,7 @@
         "schema_status": "ready",
         "service": "johnrraymond-directus",
         "status": "ready",
-        "updated_at": "2026-05-29T17:55:53+00:00",
+        "updated_at": "2026-06-11T01:06:57+00:00",
         "verified": true
       },
       "sqlite_database": {
@@ -195,7 +195,7 @@
     "post_route_prefix": "/blog/",
     "route": "/blog",
     "status": "ready",
-    "updated_at": "2026-05-29T17:55:35+00:00"
+    "updated_at": "2026-06-11T01:06:49+00:00"
   },
   "builder": {
     "engine": "grapesjs",
@@ -239,14 +239,14 @@
       "content_runtime": "directus",
       "database": "sqlite",
       "enabled": true,
-      "hydrated_at": "2026-05-29T17:55:55+00:00",
+      "hydrated_at": "2026-06-11T01:07:00+00:00",
       "install_order": [
         "database",
         "cms",
         "blog"
       ],
       "install_status": "ready",
-      "last_verified_at": "2026-05-29T17:55:55+00:00",
+      "last_verified_at": "2026-06-11T01:07:00+00:00",
       "page": {
         "managed": true,
         "mode": "list_and_detail",
@@ -254,7 +254,7 @@
         "post_route_prefix": "/blog/",
         "route": "/blog",
         "status": "ready",
-        "updated_at": "2026-05-29T17:55:35+00:00"
+        "updated_at": "2026-06-11T01:06:49+00:00"
       },
       "routes": {
         "index": "/blog",
@@ -278,7 +278,7 @@
     "lanes": {
       "dev": {
         "last_publish_verified": true,
-        "last_published_at": "2026-05-29T17:55:55+00:00",
+        "last_published_at": "2026-06-11T01:07:00+00:00",
         "last_published_service": "johnrraymond-dev",
         "last_published_url": "http://localhost:18119/",
         "port": 18119,
@@ -346,5 +346,5 @@
     "kind": "host_runtime_site",
     "path": "runtime/websites/johnrraymond"
   },
-  "updated_at": "2026-06-09T21:39:20+00:00"
+  "updated_at": "2026-06-11T01:07:10+00:00"
 }

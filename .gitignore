@@ -213,8 +213,9 @@ contracts/out/
 contracts/broadcast/
 
 # Selected runtime websites are intentionally source-controlled.
-# Keep this section last so these exceptions override broad generated-file rules
-# such as runtime/*, *.sqlite, media globs, and manifest.json.
+# Keep the website exceptions near the end so they override broad generated-file
+# rules such as runtime/*, *.sqlite, media globs, and manifest.json. Narrow
+# local-only ignores may follow these exceptions.
 !runtime/
 runtime/*
 !runtime/websites/
@@ -231,3 +232,8 @@ runtime/websites/*/__*probe*/**
 
 # Per-site SSH publish passwords must stay local, even for versioned runtime sites.
 runtime/websites/*/ssh_password.local
+
+# Generated local-platform Docker Compose outputs are local runtime artifacts.
+# Website source/config stays tracked; only generated Docker files are ignored.
+deploy/local-platform/generated/
+runtime/websites/*/.main-computer/local-platform/docker-compose.yml

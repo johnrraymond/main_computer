@@ -97,6 +97,48 @@ class ControlPanelNetworkUrlTests(unittest.TestCase):
         self.assertIn(("mainnet-hub.greatlibrary.io", 443), connect_calls)
 
 
+    def test_reachable_non_mainnet_cards_are_capped_at_yellow(self) -> None:
+        registry = load_hub_network_registry()
+
+        def fake_status(url: str, *, timeout_s: float = 1.0) -> dict[str, object]:
+            network_key = "unknown"
+            if "testnet-hub" in url:
+                network_key = "testnet"
+            elif "127.0.0.1:8780" in url:
+                network_key = "test"
+            elif "127.0.0.1:8770" in url:
+                network_key = "dev"
+            elif "mainnet-hub" in url:
+                network_key = "mainnet"
+            profile = registry.networks.get(network_key)
+            chain_id = profile.chain_id if profile is not None else None
+            return {"ok": True, "data": {"network": {"network_key": network_key, "chain_id": chain_id}}}
+
+        with patch("main_computer.viewport_route_dispatch.load_hub_network_registry", return_value=registry), patch(
+            "main_computer.viewport_route_dispatch._control_panel_connect", return_value={"ok": True}
+        ), patch("main_computer.viewport_route_dispatch._control_panel_http_json", side_effect=fake_status), patch(
+            "main_computer.viewport_route_dispatch._control_panel_rpc_probe", return_value={"ok": True}
+        ), patch(
+            "main_computer.viewport_route_dispatch._control_panel_deployment_contracts",
+            return_value={"ok": False, "contract_addresses": {}, "count": 0, "source": "deployment-manifest", "path": "", "error": "", "candidates": []},
+        ):
+            payload = _control_panel_network_status_cards(Path.cwd())
+
+        cards = {network["network_key"]: network for network in payload["networks"]}
+        self.assertEqual(cards["mainnet"]["state"], "healthy")
+        self.assertEqual(cards["mainnet"]["severity"], "green")
+        for key in ("testnet", "test", "dev"):
+            self.assertEqual(cards[key]["state"], "degraded")
+            self.assertEqual(cards[key]["severity"], "yellow")
+            self.assertEqual(cards[key]["status_text"], "reachable")
+
+        service = _control_panel_energy_credits_service(payload)
+        badges = {badge["key"]: badge for badge in service["network_badges"]}
+        self.assertEqual(badges["mainnet"]["severity"], "green")
+        for key in ("testnet", "test", "dev"):
+            self.assertEqual(badges[key]["severity"], "yellow")
+
+
     def test_remote_cards_use_deployment_manifests_for_contract_truth(self) -> None:
         registry = load_hub_network_registry()
 

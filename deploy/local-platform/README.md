@@ -90,8 +90,12 @@ Generated site files are written to:
 runtime/websites/<site-id>/.main-computer/local-platform/docker-compose.yml
 ```
 
+These site-local Compose files are generated local runtime artifacts. They are
+recreated by the lifecycle/generation commands and should not be committed in
+place of the website source/config.
+
 Generate the legacy aggregate all-websites Compose file only when explicitly
-needed:
+needed for migration or debugging:
 
 ```powershell
 python .\tools\local-platform\generate-websites-compose.py --repo-root .
@@ -102,6 +106,9 @@ The aggregate generated file is written to:
 ```text
 deploy/local-platform/generated/docker-compose.websites.yml
 ```
+
+The aggregate file is also generated local runtime output. Normal website
+lifecycle commands no longer need it because they default to site-scoped Compose.
 
 The site server reads files from `runtime/websites/<site-id>/`, so edits saved
 by the Website Builder are visible to the local Docker service after publish.

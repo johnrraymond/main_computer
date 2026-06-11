@@ -608,7 +608,9 @@ def _control_panel_network_down_summary(network_key: str, hub_endpoint: str) -> 
 
 def _control_panel_network_state(network_key: str, hub_reachable: bool) -> tuple[str, str, str]:
     if hub_reachable:
-        return "healthy", "green", "reachable"
+        if network_key == "mainnet":
+            return "healthy", "green", "reachable"
+        return "degraded", "yellow", "reachable"
     if network_key == "mainnet":
         return "down", "red", "unreachable"
     if network_key == "testnet":
