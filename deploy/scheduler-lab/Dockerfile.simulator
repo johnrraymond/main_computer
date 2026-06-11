@@ -1,0 +1,21 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV LAB_OUTPUT_DIR=/lab-output
+ENV LAB_NODE_LIST=/lab-output/120-First-Post.jsonl
+ENV HUB_BASE_URL=http://host.docker.internal:8870
+
+COPY . /app
+
+# The simulator itself uses the Python standard library. Editable install keeps
+# main_computer import behavior consistent if the lab later imports project code.
+RUN python -m pip install --upgrade pip \
+    && python -m pip install --no-cache-dir -e .
+
+RUN mkdir -p /lab-output
+
+ENTRYPOINT ["python", "-m", "tools.scheduler_lab.run_lab"]
+CMD ["--role", "all", "--generate-node-list"]

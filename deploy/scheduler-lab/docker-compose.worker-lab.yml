@@ -1,0 +1,28 @@
+name: main-computer-scheduler-lab
+
+services:
+  worker-lab:
+    profiles: ["worker-lab"]
+    build:
+      context: ../..
+      dockerfile: deploy/scheduler-lab/Dockerfile.simulator
+    environment:
+      HUB_BASE_URL: ${HUB_BASE_URL:-http://host.docker.internal:8870}
+      LAB_DURATION_SECONDS: ${LAB_DURATION_SECONDS:-300}
+      LAB_SEED: ${LAB_SEED:-424242}
+      LAB_NODE_LIST: ${LAB_NODE_LIST:-/lab-output/120-First-Post.jsonl}
+      LAB_OUTPUT_DIR: ${LAB_OUTPUT_DIR:-/lab-output}
+      REQUEST_MODE: ${REQUEST_MODE:-worker_pull_v0}
+      PROBLEMATIC_WORKER_RATE: ${PROBLEMATIC_WORKER_RATE:-0.08}
+      PROBLEMATIC_REQUESTER_RATE: ${PROBLEMATIC_REQUESTER_RATE:-0.05}
+      PROBLEMATIC_FAILURE_MULTIPLIER: ${PROBLEMATIC_FAILURE_MULTIPLIER:-4.0}
+      HTTP_TIMEOUT_SECONDS: ${HTTP_TIMEOUT_SECONDS:-10}
+      HTTP_RETRIES: ${HTTP_RETRIES:-1}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./output:/lab-output
+    command:
+      - "--role"
+      - "${LAB_ROLE:-all}"
+      - "--generate-node-list"
