@@ -11,6 +11,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from typing import Any, Callable
 from main_computer.main_log_hooks import install_main_log_hooks_from_env
@@ -408,6 +409,9 @@ class ExecutorService:
         self._last_state: dict[str, Any] = {}
         self._last_executor_fingerprint: str | None = None
         self._next_light_check = 0.0
+        self._state_lock = threading.RLock()
+        self._heartbeat_stop: threading.Event | None = None
+        self._heartbeat_thread: threading.Thread | None = None
 
     @property
     def repo_executor_path(self) -> Path:
@@ -433,17 +437,24 @@ class ExecutorService:
 
         if watch:
             self._write_starting_state(pid_claim=pid_claim)
+            self._start_heartbeat_pump()
 
-        state = self._full_boot_reconcile()
-        state["service"]["watching"] = bool(watch)
-        state["service"]["pid_file"] = str(self.pid_path)
-        state["service"]["pid_claim"] = pid_claim
-        self._write_state(state)
-        self._emit_boot_result(state, prefix="initial boot")
+        try:
+            state = self._full_boot_reconcile()
+            state["service"]["watching"] = bool(watch)
+            state["service"]["pid_file"] = str(self.pid_path)
+            state["service"]["pid_claim"] = pid_claim
+            self._write_state(state)
+            self._emit_boot_result(state, prefix="initial boot")
 
-        if watch:
-            return self.watch(max_watch_loops=max_watch_loops)
-        return state
+            if watch:
+                return self.watch(max_watch_loops=max_watch_loops)
+            return state
+        except Exception:
+            if watch:
+                self._stop_heartbeat_pump()
+                self._release_pid_file()
+            raise
 
     def watch(self, *, max_watch_loops: int | None = None) -> dict[str, Any]:
         """Stay resident and finish boot before switching to keepalive.
@@ -524,8 +535,70 @@ class ExecutorService:
             self._write_state(state)
             self._emit("executor service stopping", reason="keyboard-interrupt")
         finally:
+            self._stop_heartbeat_pump()
             self._release_pid_file()
         return self._last_state or state
+
+    def _start_heartbeat_pump(self) -> None:
+        """Keep the resident heartbeat fresh while blocking boot checks run."""
+
+        if self._heartbeat_thread is not None and self._heartbeat_thread.is_alive():
+            return
+
+        stop_event = threading.Event()
+        self._heartbeat_stop = stop_event
+        thread = threading.Thread(
+            target=self._heartbeat_pump,
+            name="main-computer-executor-service-heartbeat",
+            daemon=True,
+        )
+        self._heartbeat_thread = thread
+        thread.start()
+
+    def _stop_heartbeat_pump(self) -> None:
+        stop_event = self._heartbeat_stop
+        thread = self._heartbeat_thread
+        self._heartbeat_stop = None
+        self._heartbeat_thread = None
+        if stop_event is not None:
+            stop_event.set()
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+
+    def _heartbeat_pump(self) -> None:
+        stop_event = self._heartbeat_stop
+        if stop_event is None:
+            return
+
+        while not stop_event.wait(self.heartbeat_interval_s):
+            self._refresh_heartbeat_state()
+
+    def _refresh_heartbeat_state(self) -> None:
+        """Update only service liveness fields without changing boot progress.
+
+        The executor can spend minutes inside WSL/Docker repair commands. The
+        heartbeat is meant to prove that this Python service process is still
+        alive, not that boot reconciliation has completed. Keep it moving while
+        preserving the current component/progress payload.
+        """
+
+        with self._state_lock:
+            state = dict(self._last_state or self._base_state("starting"))
+            state["updated_at"] = _now_iso()
+            service = dict(state.get("service") or {})
+            service.update(
+                {
+                    "name": SERVICE_NAME,
+                    "pid": os.getpid(),
+                    "pid_file": str(self.pid_path),
+                    "watching": True,
+                    "heartbeat_at": _now_iso(),
+                }
+            )
+            if not service.get("state"):
+                service["state"] = str(state.get("state") or "booting")
+            state["service"] = service
+            self._write_state_unlocked(state)
 
     def _write_starting_state(self, *, pid_claim: dict[str, Any]) -> dict[str, Any]:
         """Publish a current resident-service heartbeat before slow boot checks run.
@@ -1539,6 +1612,10 @@ class ExecutorService:
         return payload
 
     def _write_state(self, state: dict[str, Any]) -> None:
+        with self._state_lock:
+            self._write_state_unlocked(state)
+
+    def _write_state_unlocked(self, state: dict[str, Any]) -> None:
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         state = dict(state)
         state.setdefault("updated_at", _now_iso())

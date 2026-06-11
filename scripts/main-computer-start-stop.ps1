@@ -867,41 +867,15 @@ function Start-MainComputerDevChainIfNeeded([string]$RootPath, [object]$LaunchCo
     }
   }
 
-  Write-Host ("Dev chain RPC health check failed ({0}); starting local dev chain without deploying contracts." -f $probe.state)
-  $reset = Invoke-MainComputerDevChainResetNoDeploy $RootPath $LaunchContext $PythonCommand
-  if (-not $reset.ok) {
-    return [ordered]@{
-      ok = $false
-      state = "reset-failed"
-      rpc_url = $rpcUrl
-      expected_chain_id = $expectedChainId
-      health_check = $probe
-      reset = $reset
-    }
-  }
-
-  $after = Test-MainComputerDevChainRpc $rpcUrl $expectedChainId
-  if (-not $after.ok) {
-    return [ordered]@{
-      ok = $false
-      state = "unhealthy-after-reset"
-      rpc_url = $rpcUrl
-      expected_chain_id = $expectedChainId
-      health_check = $probe
-      reset = $reset
-      post_reset_health_check = $after
-    }
-  }
-
-  Write-Host ("Dev chain RPC is healthy at {0} chainId={1}." -f $rpcUrl, $after.actual_chain_id_hex)
+  Write-Host ("Dev chain RPC health check failed ({0}); startup will continue and blockchain service will retry dev-chain reset after executor Docker readiness." -f $probe.state)
   return [ordered]@{
     ok = $true
-    state = "started"
+    state = "deferred-to-blockchain-service"
     rpc_url = $rpcUrl
     expected_chain_id = $expectedChainId
     health_check = $probe
-    reset = $reset
-    post_reset_health_check = $after
+    retry_owner = "main_computer.blockchain_service"
+    message = "Dev-chain reset is handled by the resident blockchain service so transient Docker startup does not break Main Computer startup."
   }
 }
 

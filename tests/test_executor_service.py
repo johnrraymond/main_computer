@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from pathlib import Path
 
 from main_computer.executor_service import (
@@ -473,6 +474,43 @@ def test_watch_boot_writes_starting_heartbeat_before_full_reconcile(tmp_path: Pa
     starting = json.loads(service.state_path.read_text(encoding="utf-8"))
     assert starting["state"] == "starting"
     assert starting["service"]["pid_claim"]["state"] == "new"
+
+
+def test_watch_heartbeat_keeps_refreshing_while_full_reconcile_is_blocked(tmp_path: Path) -> None:
+    repo, fake_wsl, fake_docker = make_repo(tmp_path)
+    service = ExecutorService(
+        root=repo,
+        wsl_command=str(fake_wsl),
+        docker_command=str(fake_docker),
+        runner=FakeRunner(),
+        sleep_func=lambda _: None,
+        output_func=None,
+        heartbeat_interval_s=30,
+        light_check_interval_s=300,
+    )
+    service.heartbeat_interval_s = 0.05
+
+    def blocked_reconcile() -> dict[str, object]:
+        starting = json.loads(service.state_path.read_text(encoding="utf-8"))
+        first_heartbeat = starting["service"]["heartbeat_at"]
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            time.sleep(0.02)
+            current = json.loads(service.state_path.read_text(encoding="utf-8"))
+            if current["service"]["heartbeat_at"] != first_heartbeat:
+                assert current["state"] == "starting"
+                assert current["service"]["pid"] == starting["service"]["pid"]
+                raise RuntimeError("heartbeat refreshed while reconcile was blocked")
+        raise AssertionError("background heartbeat did not refresh while reconcile was blocked")
+
+    service._full_boot_reconcile = blocked_reconcile  # type: ignore[method-assign]
+
+    try:
+        service.boot(watch=True, max_watch_loops=1)
+    except RuntimeError as exc:
+        assert str(exc) == "heartbeat refreshed while reconcile was blocked"
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("boot should have stopped inside the fake reconcile")
 
 
 def test_pid_claim_terminates_prior_service_only_when_live_command_matches_pid_file_and_root(tmp_path: Path) -> None:

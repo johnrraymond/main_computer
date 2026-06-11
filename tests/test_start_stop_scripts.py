@@ -165,7 +165,7 @@ def test_v2_local_platform_publish_failure_warns_and_allows_supervisor_start() -
     assert 'throw ("Local platform startup failed: {0}" -f $localPlatformStart.state)' not in helper
     assert '$process = Start-Process `' in helper
 
-def test_start_path_ensures_dev_chain_without_deploying_contracts() -> None:
+def test_start_path_defers_dev_chain_reset_to_blockchain_service() -> None:
     helper = (ROOT / "scripts" / "main-computer-start-stop.ps1").read_text(encoding="utf-8")
 
     assert "function Test-MainComputerDevChainRpc" in helper
@@ -176,14 +176,14 @@ def test_start_path_ensures_dev_chain_without_deploying_contracts() -> None:
     assert "start path will not reset it" in helper
     assert 'state = "already-running"' in helper
 
-    assert "function Invoke-MainComputerDevChainResetNoDeploy" in helper
-    assert '"tools\\dev-chain-reset.py"' in helper
-    assert '"--no-deploy"' in helper
-    assert '"--port-strategy", $portStrategy' in helper
-    assert '"--wait-timeout-s", $waitTimeout' in helper
-    assert 'state = "reset-failed"' in helper
-    assert 'state = "unhealthy-after-reset"' in helper
-    assert 'throw ("Dev chain startup failed: {0}" -f $message)' in helper
+    assert "blockchain service will retry dev-chain reset after executor Docker readiness" in helper
+    assert 'state = "deferred-to-blockchain-service"' in helper
+    assert 'retry_owner = "main_computer.blockchain_service"' in helper
+    dev_chain_helper = helper[
+        helper.index("function Start-MainComputerDevChainIfNeeded"):
+        helper.index("function Resolve-MainComputerDevHubEndpoint")
+    ]
+    assert 'state = "reset-failed"' not in dev_chain_helper
 
 
 def test_start_session_records_dev_chain_and_dev_hub_startup_status() -> None:
