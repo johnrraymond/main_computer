@@ -617,16 +617,43 @@
       target.append(failureBox);
     }
 
+    function mountTargetProfile(artifact) {
+      if (artifact?.target_profile && typeof artifact.target_profile === "object") return artifact.target_profile;
+      const profiles = Array.isArray(artifact?.target_profiles) ? artifact.target_profiles : [];
+      if (profiles.length && profiles[0] && typeof profiles[0] === "object") return profiles[0];
+      const reports = Array.isArray(artifact?.command_reports) ? artifact.command_reports : [];
+      const reportProfile = reports.find((report) => report?.target_profile)?.target_profile;
+      return reportProfile && typeof reportProfile === "object" ? reportProfile : {};
+    }
+
+    function mountTargetSummary(artifact) {
+      const profile = mountTargetProfile(artifact);
+      const name = profile.display_name || profile.id || artifact?.target_id || "Terminal";
+      const os = profile.os || "";
+      const shell = profile.shell || "";
+      const cwd = profile.cwd_default || "repo-root";
+      const policy = profile.cwd_policy || "repo-root-relative";
+      return `target: ${name}${os || shell ? ` · ${[os, shell].filter(Boolean).join(" ")}` : ""} · cwd: ${cwd} · ${policy}`;
+    }
+
     function mountRunnableCommands(artifact) {
       const reports = Array.isArray(artifact?.command_reports) ? artifact.command_reports : [];
+      const artifactProfile = mountTargetProfile(artifact);
       return reports
         .filter((report) => report && report.action === "terminal_run" && report.supported && report.command)
-        .map((report) => ({
-          command: String(report.command),
-          cwd: String(report.terminal_cwd || (report.cwd === "repo-root" ? "." : (report.cwd || "."))),
-          displayCwd: String(report.cwd || "repo-root"),
-          policy: report.execution_policy || {mode: "preview", requires_user_confirmation: true}
-        }));
+        .map((report) => {
+          const profile = report.target_profile || artifactProfile || {};
+          return {
+            command: String(report.command),
+            cwd: String(report.terminal_cwd || (report.cwd === "repo-root" ? "." : (report.cwd || "."))),
+            displayCwd: String(report.cwd || "repo-root"),
+            policy: report.execution_policy || {mode: "preview", requires_user_confirmation: true},
+            targetId: String(report.target_id || profile.id || artifact?.target_id || ""),
+            targetName: String(profile.display_name || profile.id || artifact?.target_id || "Terminal"),
+            targetShell: String(profile.shell || report.execution_policy?.target_shell || ""),
+            targetOs: String(profile.os || report.execution_policy?.target_os || "")
+          };
+        });
     }
 
     function renderComputerMount(artifact, options = {}) {
@@ -656,6 +683,11 @@
         ? "Historical mount artifact restored for display only. It was not re-run on reload."
         : (artifact?.note || "Preview only until explicitly run.");
       card.append(note);
+
+      const targetMeta = document.createElement("div");
+      targetMeta.className = "structured-meta";
+      targetMeta.textContent = mountTargetSummary(artifact);
+      card.append(targetMeta);
 
       const commands = Array.isArray(artifact?.canonical_commands) ? artifact.canonical_commands : [];
       const code = document.createElement("div");
@@ -849,6 +881,10 @@
     function terminalResultText(result) {
       const lines = [];
       lines.push(`$ ${result.command || ""}`);
+      const targetBits = [result.target_display_name || result.target_id || "", result.target_os || "", result.target_shell || ""]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean);
+      if (targetBits.length) lines.push(`target: ${targetBits.join(" · ")}`);
       lines.push(`cwd: ${result.cwd || "."}`);
       lines.push(`exit: ${result.exit_code === null || result.exit_code === undefined ? "timeout" : result.exit_code}`);
       const stdout = String(result.stdout || "").trimEnd();
@@ -881,7 +917,11 @@
         exit_code: result?.exit_code === undefined ? null : result.exit_code,
         stdout: String(result?.stdout || ""),
         stderr: String(result?.stderr || ""),
-        error: result?.error ? String(result.error) : ""
+        error: result?.error ? String(result.error) : "",
+        target_id: String(result?.target_id || ""),
+        target_display_name: String(result?.target_display_name || ""),
+        target_os: String(result?.target_os || ""),
+        target_shell: String(result?.target_shell || "")
       };
     }
 
@@ -890,9 +930,13 @@
       if (!text) return "";
       const state = artifactStateValue(artifact);
       const artifactId = String(artifact?.artifact_id || "");
+      const profile = mountTargetProfile(artifact);
       const lines = [THREAD_RESULT_PREFIX];
       if (state) lines.push(`state: ${state}`);
       if (artifactId) lines.push(`artifact_id: ${artifactId}`);
+      if (profile?.id) lines.push(`target_id: ${profile.id}`);
+      if (profile?.os || profile?.shell) lines.push(`target_runtime: ${[profile.os, profile.shell].filter(Boolean).join(" ")}`);
+      if (profile?.cwd_policy) lines.push(`target_cwd_policy: ${profile.cwd_policy}`);
       lines.push("");
       lines.push(text);
       return lines.join("\n");
@@ -956,22 +1000,33 @@
       const response = await fetch("/api/applications/terminal/run", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({command, cwd, timeout_s: 15})
+        body: JSON.stringify({command, cwd, timeout_s: 15, target_id: action?.targetId || ""})
       });
       const data = await response.json().catch(async () => ({error: await response.text()}));
+      const enriched = {
+        ...data,
+        command: data.command || command,
+        target_id: action?.targetId || "",
+        target_display_name: action?.targetName || "",
+        target_os: action?.targetOs || "",
+        target_shell: action?.targetShell || ""
+      };
       if (!response.ok) {
         const error = new Error(data.error || `HTTP ${response.status}`);
-        error.result = data;
+        error.result = enriched;
         throw error;
       }
-      return data;
+      return enriched;
     }
 
     async function executeComputerMount(card, artifact) {
       const actions = mountRunnableCommands(artifact);
       if (!actions.length) return;
       const planText = actions
-        .map((action) => `$ ${action.command}\ncwd: ${action.displayCwd || action.cwd || "."}`)
+        .map((action) => {
+          const target = [action.targetName, action.targetOs, action.targetShell].filter(Boolean).join(" · ");
+          return `$ ${action.command}\n${target ? `target: ${target}\n` : ""}cwd: ${action.displayCwd || action.cwd || "."}`;
+        })
         .join("\n\n");
       const confirmed = window.confirm(
         `Run ${actions.length} Terminal command${actions.length === 1 ? "" : "s"} through the controlled Terminal endpoint?\n\n${planText}`
