@@ -273,12 +273,19 @@ STRUCTURED_FENCE_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-TERMINAL_RUN_ACT_RE = re.compile(r'^/act terminal run "(?P<command>[^"\r\n]+)" --cwd repo-root$')
+TERMINAL_RUN_ACT_RE = re.compile(r"^/act\s+terminal\s+run\s+(?P<rest>.+?)\s*$", re.IGNORECASE)
 TERMINAL_RUN_IN_ACTIVE_ACT_RE = re.compile(
-    r'^/act terminal run-in active "(?P<command>[^"\r\n]+)" --cwd repo-root$'
+    r"^/act\s+terminal\s+run-in\s+active\s+(?P<rest>.+?)\s*$",
+    re.IGNORECASE,
 )
-TERMINAL_INTERRUPT_ACTIVE_ACT_RE = re.compile(r"^/act terminal interrupt active$")
+TERMINAL_INTERRUPT_ACTIVE_ACT_RE = re.compile(r"^/act\s+terminal\s+interrupt\s+active\s*$", re.IGNORECASE)
+TERMINAL_CWD_SUFFIX_RE = re.compile(
+    r"\s+--cwd\s+(?P<cwd>\"[^\"\r\n]*\"|'[^'\r\n]*'|\S+)\s*$",
+    re.IGNORECASE,
+)
 ABSOLUTE_WINDOWS_PATH_RE = re.compile(r"[A-Za-z]:\\|\\Users\\", re.IGNORECASE)
+ABSOLUTE_POSIX_PATH_RE = re.compile(r"(^|\s)/(?!/)")
+PARENT_DIRECTORY_PATH_RE = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
 
 
 def _artifact_hash(*parts: Any) -> str:
@@ -294,6 +301,100 @@ def _structured_text_block(content: str, start: int, end: int) -> dict[str, Any]
     }
 
 
+def _unquote_act_token(token: str) -> tuple[str, list[str]]:
+    raw = str(token or "").strip()
+    if not raw:
+        return "", []
+    quote = raw[0]
+    if quote in {"\"", "'"}:
+        if len(raw) < 2 or raw[-1] != quote:
+            return raw, ["quoted /act value is missing its closing quote"]
+        return raw[1:-1], []
+    return raw, []
+
+
+def _split_terminal_run_rest(rest: str) -> tuple[str, str, list[str]]:
+    raw = str(rest or "").strip()
+    failures: list[str] = []
+    if not raw:
+        return "", "repo-root", ["terminal run command is required"]
+
+    cwd = "repo-root"
+    cwd_match = TERMINAL_CWD_SUFFIX_RE.search(raw)
+    if cwd_match:
+        command_part = raw[: cwd_match.start()].strip()
+        cwd, cwd_failures = _unquote_act_token(cwd_match.group("cwd"))
+        failures.extend(cwd_failures)
+    else:
+        command_part = raw
+        failures.append("terminal run omitted --cwd; defaulting preview policy to repo-root")
+
+    command, command_failures = _unquote_act_token(command_part)
+    failures.extend(command_failures)
+    if not command.strip():
+        failures.append("terminal run command is required")
+    return command.strip(), cwd.strip() or "repo-root", failures
+
+
+def _normalize_terminal_cwd(raw_cwd: str) -> tuple[str, str, list[str]]:
+    """Return display cwd, Terminal endpoint cwd, and validation failures.
+
+    The text console parser is intentionally tolerant of repo-relative cwd
+    variants. Scope and existence are still enforced by the controlled Terminal
+    endpoint before anything runs.
+    """
+
+    cwd = str(raw_cwd or "").strip()
+    failures: list[str] = []
+    if not cwd:
+        cwd = "repo-root"
+
+    normalized = cwd.replace("\\", "/").strip()
+    lowered = normalized.lower()
+    if lowered in {"repo-root", "repo_root", "root", ".", "./"}:
+        return "repo-root", ".", failures
+
+    if (
+        ABSOLUTE_WINDOWS_PATH_RE.search(cwd)
+        or ABSOLUTE_POSIX_PATH_RE.search(cwd)
+        or normalized.startswith("/")
+        or normalized.startswith("~")
+    ):
+        failures.append("cwd must be repo-root or a relative path inside the repository")
+    if PARENT_DIRECTORY_PATH_RE.search(cwd):
+        failures.append("cwd must not contain parent-directory traversal")
+    if "\x00" in cwd:
+        failures.append("cwd must not contain NUL bytes")
+
+    normalized = normalized.strip("/")
+    if not normalized:
+        return "repo-root", ".", failures
+    return normalized, normalized, failures
+
+
+def _format_act_cwd(cwd: str) -> str:
+    value = str(cwd or "repo-root")
+    if value == "repo-root":
+        return value
+    if re.search(r"\s", value):
+        return json.dumps(value, ensure_ascii=False)
+    return value
+
+
+def _terminal_execution_policy(*, supported: bool) -> dict[str, Any]:
+    if supported:
+        return {
+            "mode": "preview",
+            "requires_user_confirmation": True,
+            "runner": "applications_terminal_run",
+        }
+    return {
+        "mode": "preview_only",
+        "requires_user_confirmation": False,
+        "runner": "",
+    }
+
+
 def _terminal_command_validation(raw_command: str) -> dict[str, Any]:
     command = str(raw_command or "").strip()
     report: dict[str, Any] = {
@@ -302,58 +403,83 @@ def _terminal_command_validation(raw_command: str) -> dict[str, Any]:
         "action": "",
         "command": "",
         "cwd": "",
+        "terminal_cwd": "",
         "supported": False,
+        "canonical": command,
         "failures": [],
+        "execution_policy": _terminal_execution_policy(supported=False),
     }
-    if not command.startswith("/act "):
+    if not command.startswith("/act"):
         report["failures"].append("line is not an /act request")
         return report
 
+    if ABSOLUTE_WINDOWS_PATH_RE.search(command):
+        report["failures"].append("command contains an absolute Windows path; use repo-root or repo-relative paths")
+
     run_match = TERMINAL_RUN_ACT_RE.match(command)
     if run_match:
-        inner = run_match.group("command")
+        inner, cwd_token, parse_failures = _split_terminal_run_rest(run_match.group("rest"))
+        cwd, terminal_cwd, cwd_failures = _normalize_terminal_cwd(cwd_token)
+        blocking_failures = [failure for failure in parse_failures if not failure.startswith("terminal run omitted --cwd")]
+        blocking_failures.extend(cwd_failures)
         report.update(
             {
-                "ok": True,
+                "ok": not report["failures"] and not blocking_failures,
                 "action": "terminal_run",
                 "command": inner,
-                "cwd": "repo-root",
+                "cwd": cwd,
+                "terminal_cwd": terminal_cwd,
                 "supported": True,
+                "canonical": f'/act terminal run {json.dumps(inner, ensure_ascii=False)} --cwd {_format_act_cwd(cwd)}',
+                "failures": [*report["failures"], *blocking_failures],
+                "notes": [failure for failure in parse_failures if failure.startswith("terminal run omitted --cwd")],
+                "execution_policy": _terminal_execution_policy(supported=True),
             }
         )
-    else:
-        run_in_match = TERMINAL_RUN_IN_ACTIVE_ACT_RE.match(command)
-        if run_in_match:
-            inner = run_in_match.group("command")
-            report.update(
-                {
-                    "ok": True,
-                    "action": "terminal_run_in_active",
-                    "command": inner,
-                    "cwd": "repo-root",
-                    "supported": False,
-                    "note": "Active-terminal reuse is previewed here; this text head only executes new repo-root terminal runs.",
-                }
-            )
-        elif TERMINAL_INTERRUPT_ACTIVE_ACT_RE.match(command):
-            report.update(
-                {
-                    "ok": True,
-                    "action": "terminal_interrupt_active",
-                    "command": "",
-                    "cwd": "",
-                    "supported": False,
-                    "note": "Active-terminal interruption is previewed here; this text head does not interrupt terminal sessions.",
-                }
-            )
-        else:
-            report["failures"].append("command is not one of the canonical text-console terminal /act forms")
-            return report
+        if not inner:
+            report["ok"] = False
+        return report
 
-    if ABSOLUTE_WINDOWS_PATH_RE.search(command):
-        report["ok"] = False
-        report["failures"].append("command contains an absolute Windows path; use repo-root and relative paths")
+    run_in_match = TERMINAL_RUN_IN_ACTIVE_ACT_RE.match(command)
+    if run_in_match:
+        inner, cwd_token, parse_failures = _split_terminal_run_rest(run_in_match.group("rest"))
+        cwd, terminal_cwd, cwd_failures = _normalize_terminal_cwd(cwd_token)
+        blocking_failures = [failure for failure in parse_failures if not failure.startswith("terminal run omitted --cwd")]
+        blocking_failures.extend(cwd_failures)
+        report.update(
+            {
+                "ok": not report["failures"] and not blocking_failures and bool(inner),
+                "action": "terminal_run_in_active",
+                "command": inner,
+                "cwd": cwd,
+                "terminal_cwd": terminal_cwd,
+                "supported": False,
+                "canonical": f'/act terminal run-in active {json.dumps(inner, ensure_ascii=False)} --cwd {_format_act_cwd(cwd)}',
+                "failures": [*report["failures"], *blocking_failures],
+                "notes": [failure for failure in parse_failures if failure.startswith("terminal run omitted --cwd")],
+                "note": "Active-terminal reuse is previewed here; this text head only executes new terminal runs.",
+                "execution_policy": _terminal_execution_policy(supported=False),
+            }
+        )
+        return report
 
+    if TERMINAL_INTERRUPT_ACTIVE_ACT_RE.match(command):
+        report.update(
+            {
+                "ok": not report["failures"],
+                "action": "terminal_interrupt_active",
+                "command": "",
+                "cwd": "",
+                "terminal_cwd": "",
+                "supported": False,
+                "canonical": "/act terminal interrupt active",
+                "note": "Active-terminal interruption is previewed here; this text head does not interrupt terminal sessions.",
+                "execution_policy": _terminal_execution_policy(supported=False),
+            }
+        )
+        return report
+
+    report["failures"].append("unsupported terminal /act form; expected terminal run, run-in active, or interrupt active")
     return report
 
 
@@ -370,6 +496,10 @@ def _computer_mount_artifact(index: int, body: str, start: int, end: int) -> dic
             invalid_lines.append(stripped)
 
     command_reports = [_terminal_command_validation(command) for command in commands]
+    canonical_commands = [
+        str(report.get("canonical") or command)
+        for report, command in zip(command_reports, commands, strict=False)
+    ]
     failures: list[str] = []
     failures.extend(f"non-/act line inside computer fence: {line!r}" for line in invalid_lines)
     for report in command_reports:
@@ -395,7 +525,7 @@ def _computer_mount_artifact(index: int, body: str, start: int, end: int) -> dic
         "state": state,
         "historical": False,
         "request_kind": "command_plan" if len(commands) > 1 else ("command" if commands else "empty"),
-        "canonical_commands": commands,
+        "canonical_commands": canonical_commands,
         "invalid_lines": invalid_lines,
         "command_reports": command_reports,
         "can_execute": can_execute,
