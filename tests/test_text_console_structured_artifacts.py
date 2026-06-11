@@ -5,7 +5,7 @@ from pathlib import Path
 
 from main_computer import text_console as prod
 from main_computer.config import MainComputerConfig
-from main_computer.models import ChatResponse
+from main_computer.models import ChatMessage, ChatResponse
 
 
 def artifact_by_kind(envelope: dict, kind: str) -> dict:
@@ -187,6 +187,104 @@ def test_operator_chat_response_includes_text_console_artifact_metadata(monkeypa
     assert envelope["artifacts"][0]["kind"] == "computer_mount"
     assert envelope["artifacts"][0]["can_execute"] is True
 
+
+def test_operator_chat_uses_thread_messages_as_separate_chat_turns(monkeypatch):
+    root = Path(__file__).resolve().parents[1]
+    captured = {"preflight": [], "final": []}
+
+    prior_messages = [
+        ChatMessage(
+            role="user",
+            content="Use Terminal to list the files in main_computer. Use the Windows equivalent of ls.",
+        ),
+        ChatMessage(
+            role="assistant",
+            content='```computer\n/act terminal run "dir main_computer" --cwd repo-root\n```',
+        ),
+        ChatMessage(
+            role="system",
+            content=prod.THREAD_TERMINAL_RESULT_CONTEXT_PROMPT
+            + '\nTerminal result from an explicitly executed text-console mount.\n$ dir main_computer\ncwd: repo-root\nexit: 0',
+        ),
+    ]
+
+    class FakeProvider:
+        name = "fake"
+        model = "fake-model"
+
+        def chat(self, messages):
+            joined = "\n".join(str(message.content) for message in messages)
+            if prod.ACTION_PREFLIGHT_PROMPT in joined:
+                captured["preflight"] = list(messages)
+                return ChatResponse(
+                    content='{"needs_mount": true, "needs_edit": false, "needs_answer_only": false, '
+                    '"selected_spec_ids": ["terminal"], "reason": "threaded follow-up terminal request"}',
+                    provider="fake",
+                    model="fake-model",
+                )
+            captured["final"] = list(messages)
+            return ChatResponse(
+                content='```computer\n/act terminal run "dir /s main_computer" --cwd repo-root\n```',
+                provider="fake",
+                model="fake-model",
+            )
+
+    class FakeComputer:
+        provider = FakeProvider()
+
+        def context_pack(self, prompt):
+            return SimpleNamespace(text="Deterministic workspace context pack", evidence=[], manifest_chars=0)
+
+        def _web_search_context(self, prompt):
+            return {"attempted": False, "results": []}, ""
+
+    monkeypatch.setattr(prod.MainComputer, "build", classmethod(lambda cls, config=None: FakeComputer()))
+
+    config = prod.TextConsoleConfig.from_current_directory(
+        root,
+        provider="ollama",
+        model="fake-model",
+        base_url="http://127.0.0.1:11434",
+        timeout=120.0,
+        think=False,
+    )
+    response = prod.run_text_console_operator_chat(
+        text_console_config=config,
+        prompt="now make it recursive.",
+        base_config=MainComputerConfig(workspace=root),
+        conversation_messages=prior_messages,
+    )
+
+    final_messages = captured["final"]
+    assert final_messages[-1].role == "user"
+    assert final_messages[-1].content == "now make it recursive."
+    assert "Previous conversation:" not in final_messages[-1].content
+    prior_joined = "\n".join(message.content for message in final_messages[:-1])
+    assert "Use Terminal to list the files in main_computer" in prior_joined
+    assert '/act terminal run "dir main_computer" --cwd repo-root' in prior_joined
+    assert "Terminal result from an explicitly executed text-console mount" in prior_joined
+    assert response.metadata["text_console_operator"]["thread"]["message_count"] == 3
+    assert response.metadata["text_console_artifacts"]["artifacts"][0]["canonical_commands"] == [
+        '/act terminal run "dir /s main_computer" --cwd repo-root'
+    ]
+
+
+def test_thread_message_coercion_drops_current_prompt_and_maps_terminal_role():
+    messages, notes = prod.coerce_text_console_thread_messages(
+        [
+            {"role": "user", "content": "prior request"},
+            {"role": "assistant", "content": "prior answer"},
+            {"role": "terminal", "content": "$ dir main_computer\nexit: 0"},
+            {"role": "user", "content": "now make it recursive."},
+        ],
+        current_prompt="now make it recursive.",
+    )
+
+    assert [message.role for message in messages] == ["user", "assistant", "system"]
+    assert messages[-1].content.startswith("Terminal result from an explicitly executed text-console mount.")
+    assert any("dropped it so the final user message stays raw" in note for note in notes)
+
+
 def test_text_console_mount_execution_does_not_duplicate_terminal_transcript():
     page = (Path(__file__).resolve().parents[1] / "main_computer" / "web" / "text.html").read_text(encoding="utf-8")
 
@@ -196,4 +294,8 @@ def test_text_console_mount_execution_does_not_duplicate_terminal_transcript():
     assert "appendMountExecutionResult(card, artifact)" in page
     assert "report.terminal_cwd" in page
     assert "body: JSON.stringify({command, cwd, timeout_s: 15})" in page
+    assert "buildThreadMessagesFromSession()" in page
+    assert "thread_messages: threadMessages" in page
+    assert "THREAD_RESULT_PREFIX" in page
+    assert "Terminal result from an explicitly executed text-console mount." in page
 

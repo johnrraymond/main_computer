@@ -117,10 +117,35 @@ I will request the preview.
     report = smoke.parse_and_validate_mounts(
         message,
         expected_mount_commands=('/act terminal run "dir main_computer" --cwd repo-root',),
+        expect_mount=True,
+        strict_mount_commands=True,
     )
 
     assert report["ok"] is True
     assert report["validation"]["commands"] == ['/act terminal run "dir main_computer" --cwd repo-root']
+
+
+
+def test_mount_validation_can_report_reference_commands_without_exact_matching():
+    message = """
+I will request the preview.
+
+```computer
+/act terminal run "Get-ChildItem main_computer" --cwd repo-root
+```
+"""
+    report = smoke.parse_and_validate_mounts(
+        message,
+        expected_mount_commands=('/act terminal run "dir main_computer" --cwd repo-root',),
+        expect_mount=True,
+        strict_mount_commands=False,
+    )
+
+    assert report["ok"] is True
+    assert report["validation"]["commands"] == ['/act terminal run "Get-ChildItem main_computer" --cwd repo-root']
+    assert report["validation"]["reference_commands"] == ['/act terminal run "dir main_computer" --cwd repo-root']
+    assert report["validation"]["expected_commands"] == []
+
 
 
 def test_offline_contract_fixtures_pass(monkeypatch):
@@ -223,7 +248,7 @@ def test_production_text_console_operator_chat_uses_action_specs(monkeypatch):
                     model="fake-model",
                 )
             return ChatResponse(
-                content='```computer\n/act terminal run "dir main_computer" --cwd repo-root\n```',
+                content='```computer\n/act terminal run "Get-ChildItem main_computer" --cwd repo-root\n```',
                 provider="fake",
                 model="fake-model",
             )
@@ -264,7 +289,7 @@ def test_production_text_console_operator_chat_uses_action_specs(monkeypatch):
         base_config=MainComputerConfig(workspace=root),
     )
 
-    assert response.content == '```computer\n/act terminal run "dir main_computer" --cwd repo-root\n```'
+    assert response.content == '```computer\n/act terminal run "Get-ChildItem main_computer" --cwd repo-root\n```'
     operator = response.metadata["text_console_operator"]
     assert operator["selected_spec_ids"] == ["terminal"]
     assert len(calls) == 2
@@ -318,7 +343,7 @@ def test_threaded_followup_smoke_uses_chat_messages_not_prompt_history(monkeypat
                 and "Terminal result from an explicitly executed text-console mount" in prior_joined
             ):
                 return ChatResponse(
-                    content='```computer\n/act terminal run "dir /s main_computer" --cwd repo-root\n```',
+                    content="```computer\n" + "\n".join(fixture.expected_mount_commands) + "\n```",
                     provider="fake",
                     model="fake-model",
                 )
@@ -376,7 +401,7 @@ def test_threaded_followup_smoke_uses_chat_messages_not_prompt_history(monkeypat
     assert fixture.prior_user_prompt in prior_joined
     assert fixture.prior_assistant_content in prior_joined
     assert "Terminal result from an explicitly executed text-console mount" in prior_joined
-    assert '```computer\n/act terminal run "dir /s main_computer" --cwd repo-root\n```' == report["final_response"]["content"]
+    assert "```computer\n" + "\n".join(fixture.expected_mount_commands) + "\n```" == report["final_response"]["content"]
 
 
 def test_threaded_message_shape_validation_rejects_history_stuffed_user_prompt():

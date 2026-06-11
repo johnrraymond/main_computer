@@ -24,9 +24,12 @@ It also includes a ChatGPT-like threaded follow-up fixture:
 
 This smoke intentionally does not special-case a single prompt.  It runs a small
 fixture matrix covering answer-only, mount-only, edit-only, combined
-mount+edit requests, and the threaded follow-up shape.  The action knowledge
-comes from files in main_computer/action_specs/*.md, not from one hard-coded
-final prompt.
+mount+edit requests, active-terminal reuse, a more complex inspect+edit request,
+and the threaded follow-up shape.  Terminal command strings are broker-grammar
+checked and printed for review; fixture reference commands are not exact-match
+failures unless a fixture explicitly opts into strict command matching.  The
+action knowledge comes from files in main_computer/action_specs/*.md, not from
+one hard-coded final prompt.
 
 Run from the repository root:
 
@@ -156,6 +159,9 @@ class OperatorFixture:
     prompt: str
     expected_spec_ids: tuple[str, ...]
     expected_mount_commands: tuple[str, ...] = ()
+    expect_mount: bool | None = None
+    strict_mount_commands: bool = False
+    mount_review_note: str = ""
     expect_repo_edit: bool = False
     required_editor_terms: tuple[str, ...] = ()
 
@@ -169,6 +175,9 @@ class ThreadedOperatorFixture:
     followup_prompt: str
     expected_spec_ids: tuple[str, ...]
     expected_mount_commands: tuple[str, ...]
+    expect_mount: bool | None = None
+    strict_mount_commands: bool = False
+    mount_review_note: str = ""
 
 
 THREADED_LIST_FIRST_PROMPT = (
@@ -177,11 +186,11 @@ THREADED_LIST_FIRST_PROMPT = (
 THREADED_LIST_FIRST_ASSISTANT_CONTENT = (
     "I will request a preview-only terminal action for that directory.\n\n"
     "```computer\n"
-    "/act terminal run \"dir main_computer\" --cwd repo-root\n"
+    "/act terminal run \"Get-ChildItem main_computer\" --cwd repo-root\n"
     "```"
 )
 THREADED_LIST_FIRST_TERMINAL_RESULT = (
-    "$ dir main_computer\n"
+    "$ Get-ChildItem main_computer\n"
     "cwd: C:\\Users\\Front\\Desktop\\matt\\main_computer\n"
     "exit: 0\n\n"
     "stdout:\n"
@@ -193,7 +202,7 @@ THREADED_LIST_FIRST_TERMINAL_RESULT = (
     "-a----         6/10/2026   5:14 PM          46891 text_console.py\n"
 )
 THREADED_RECURSIVE_FOLLOWUP_PROMPT = "now make it recursive."
-THREADED_RECURSIVE_EXPECTED_COMMAND = '/act terminal run "dir /s main_computer" --cwd repo-root'
+THREADED_RECURSIVE_EXPECTED_COMMAND = '/act terminal run "Get-ChildItem main_computer -Recurse" --cwd repo-root'
 
 THREAD_TERMINAL_RESULT_CONTEXT_PROMPT = """\
 The following messages are persisted text-console thread context from earlier turns.
@@ -702,11 +711,33 @@ def validate_repo_edit_blocks(
     }
 
 
+
+def fixture_expects_mount(
+    *,
+    expected_spec_ids: tuple[str, ...],
+    expected_mount_commands: tuple[str, ...],
+    expect_mount: bool | None,
+) -> bool:
+    if expect_mount is not None:
+        return bool(expect_mount)
+    return "terminal" in set(expected_spec_ids) or bool(expected_mount_commands)
+
+
 def parse_and_validate_mounts(
     message: str,
     *,
-    expected_mount_commands: tuple[str, ...],
+    expected_mount_commands: tuple[str, ...] = (),
+    expect_mount: bool = False,
+    strict_mount_commands: bool = False,
 ) -> dict[str, Any]:
+    """Parse and validate mount grammar without over-policing command wording.
+
+    The smoke is meant to prove that harder user prompts still flow through the
+    threaded text-console action pathway and produce broker-parseable mount
+    artifacts. Command strings are reported for human review. Exact command
+    matching is opt-in for narrow contract fixtures only.
+    """
+
     from main_computer.rag_text_console_control_surface_smoke import (
         parse_assistant_control_message,
         validate_text_console_mount_commands,
@@ -719,27 +750,37 @@ def parse_and_validate_mounts(
     except Exception as exc:
         parse_error = str(exc)
 
-    if expected_mount_commands:
+    reference_commands = list(expected_mount_commands)
+    exact_expected = reference_commands if strict_mount_commands else []
+
+    if expect_mount:
         if parsed_payload is None:
             return {
                 "ok": False,
                 "parse_error": parse_error,
+                "parsed_payload": None,
                 "validation": {
                     "ok": False,
                     "commands": [],
-                    "expected_commands": list(expected_mount_commands),
+                    "expected_commands": exact_expected,
+                    "reference_commands": reference_commands,
+                    "strict_mount_commands": bool(strict_mount_commands),
                     "failures": [parse_error or "expected a computer mount but none parsed"],
                 },
             }
         validation = validate_text_console_mount_commands(
             parsed_payload,
-            expected_commands=list(expected_mount_commands),
+            expected_commands=exact_expected,
         )
         return {
             "ok": bool(validation.get("ok")),
             "parse_error": parse_error,
             "parsed_payload": parsed_payload,
-            "validation": validation,
+            "validation": {
+                **validation,
+                "reference_commands": reference_commands,
+                "strict_mount_commands": bool(strict_mount_commands),
+            },
         }
 
     if parsed_payload is not None:
@@ -751,6 +792,8 @@ def parse_and_validate_mounts(
             "validation": {
                 **validation,
                 "ok": False,
+                "reference_commands": reference_commands,
+                "strict_mount_commands": bool(strict_mount_commands),
                 "failures": [*list(validation.get("failures") or []), "did not expect a computer mount"],
             },
         }
@@ -758,14 +801,16 @@ def parse_and_validate_mounts(
     return {
         "ok": True,
         "parse_error": parse_error,
+        "parsed_payload": None,
         "validation": {
             "ok": True,
             "commands": [],
-            "expected_commands": [],
+            "expected_commands": exact_expected,
+            "reference_commands": reference_commands,
+            "strict_mount_commands": bool(strict_mount_commands),
             "failures": [],
         },
     }
-
 
 
 def terminal_result_thread_message(*, command: str, cwd: str, result_text: str) -> Any:
@@ -788,7 +833,7 @@ def threaded_conversation_messages(fixture: ThreadedOperatorFixture) -> list[Any
         ChatMessage(role="user", content=fixture.prior_user_prompt),
         ChatMessage(role="assistant", content=fixture.prior_assistant_content),
         terminal_result_thread_message(
-            command='dir main_computer',
+            command='Get-ChildItem main_computer',
             cwd='repo-root',
             result_text=fixture.prior_terminal_result,
         ),
@@ -955,9 +1000,16 @@ def run_threaded_fixture(
         final_raw_response = call_provider_chat(model_input, final_messages)
 
     final_content = final_raw_response["content"]
+    expect_mount = fixture_expects_mount(
+        expected_spec_ids=fixture.expected_spec_ids,
+        expected_mount_commands=fixture.expected_mount_commands,
+        expect_mount=fixture.expect_mount,
+    )
     mount_validation = parse_and_validate_mounts(
         final_content,
         expected_mount_commands=fixture.expected_mount_commands,
+        expect_mount=expect_mount,
+        strict_mount_commands=fixture.strict_mount_commands,
     )
 
     failures = [
@@ -990,6 +1042,9 @@ def run_threaded_fixture(
         "failures": failures,
         "expected_spec_ids": list(fixture.expected_spec_ids),
         "expected_mount_commands": list(fixture.expected_mount_commands),
+        "expect_mount": expect_mount,
+        "strict_mount_commands": bool(fixture.strict_mount_commands),
+        "mount_review_note": fixture.mount_review_note,
         "expect_repo_edit": False,
         "text_console_config": config.to_payload(),
         "context_pack_chars": len(str(getattr(model_input.context_pack, "text", "") or "")),
@@ -1046,7 +1101,7 @@ def default_fixtures() -> list[OperatorFixture]:
             label="terminal list files",
             prompt="Use Terminal to list the files in main_computer.",
             expected_spec_ids=("terminal",),
-            expected_mount_commands=('/act terminal run "dir main_computer" --cwd repo-root',),
+            expected_mount_commands=('/act terminal run "Get-ChildItem main_computer" --cwd repo-root',),
         ),
         OperatorFixture(
             label="repo edit only",
@@ -1062,7 +1117,7 @@ def default_fixtures() -> list[OperatorFixture]:
                 "with a note about text-console action RAG."
             ),
             expected_spec_ids=("terminal", "repo_edit"),
-            expected_mount_commands=('/act terminal run "dir main_computer" --cwd repo-root',),
+            expected_mount_commands=('/act terminal run "Get-ChildItem main_computer" --cwd repo-root',),
             expect_repo_edit=True,
             required_editor_terms=("README", "action RAG"),
         ),
@@ -1074,8 +1129,40 @@ def default_fixtures() -> list[OperatorFixture]:
             ),
             expected_spec_ids=("terminal", "repo_edit"),
             expected_mount_commands=('/act terminal run "python -m pytest" --cwd repo-root',),
+            mount_review_note="Review that the command is a repo-root test run and remains a preview mount.",
             expect_repo_edit=True,
             required_editor_terms=("smoke", "summary"),
+        ),
+        OperatorFixture(
+            label="complex inspect mounts plus target edit",
+            prompt=(
+                "Use Terminal to inspect where text-console mount artifacts are implemented, then prepare "
+                "a repo edit request to make the Terminal target profile explicit for future mount requests."
+            ),
+            expected_spec_ids=("terminal", "repo_edit"),
+            expected_mount_commands=(
+                '/act terminal run "Get-ChildItem main_computer -Recurse -Filter *text_console*" --cwd repo-root',
+            ),
+            mount_review_note=(
+                "Human review: the exact command may vary, but it should be a PowerShell-compatible "
+                "repo-root preview mount that inspects text-console/mount implementation files."
+            ),
+            expect_repo_edit=True,
+        ),
+        OperatorFixture(
+            label="active terminal offline smoke",
+            prompt=(
+                "Reuse the active terminal to run the text-console operator action-RAG smoke in "
+                "offline contract mode."
+            ),
+            expected_spec_ids=("terminal",),
+            expected_mount_commands=(
+                '/act terminal run-in active "python -S main_computer/rag_text_console_operator_action_rag_smoke.py --offline-contract-only" --cwd repo-root',
+            ),
+            mount_review_note=(
+                "Human review: this should target the active terminal and run the offline contract smoke, "
+                "but the smoke will not fail solely because the model chooses a different equivalent command form."
+            ),
         ),
     ]
 
@@ -1191,9 +1278,16 @@ def run_fixture(
         final_raw_response = call_provider_chat(model_input, final_messages)
 
     final_content = final_raw_response["content"]
+    expect_mount = fixture_expects_mount(
+        expected_spec_ids=fixture.expected_spec_ids,
+        expected_mount_commands=fixture.expected_mount_commands,
+        expect_mount=fixture.expect_mount,
+    )
     mount_validation = parse_and_validate_mounts(
         final_content,
         expected_mount_commands=fixture.expected_mount_commands,
+        expect_mount=expect_mount,
+        strict_mount_commands=fixture.strict_mount_commands,
     )
     repo_edit_blocks = extract_repo_edit_blocks(final_content)
     repo_edit_validation = validate_repo_edit_blocks(
@@ -1233,6 +1327,9 @@ def run_fixture(
         "failures": failures,
         "expected_spec_ids": list(fixture.expected_spec_ids),
         "expected_mount_commands": list(fixture.expected_mount_commands),
+        "expect_mount": expect_mount,
+        "strict_mount_commands": bool(fixture.strict_mount_commands),
+        "mount_review_note": fixture.mount_review_note,
         "expect_repo_edit": fixture.expect_repo_edit,
         "text_console_config": config.to_payload(),
         "context_pack_chars": len(str(getattr(model_input.context_pack, "text", "") or "")),
@@ -1331,11 +1428,17 @@ def print_summary(report: dict[str, Any]) -> None:
 
         mount_validation = item.get("mount_validation") or {}
         mount_report = mount_validation.get("validation") or {}
-        if item.get("expected_mount_commands") or mount_report.get("commands"):
+        if item.get("expect_mount") or item.get("expected_mount_commands") or mount_report.get("commands"):
+            if item.get("strict_mount_commands"):
+                expected_label = f"expected={mount_report.get('expected_commands')}"
+            else:
+                expected_label = f"reference={mount_report.get('reference_commands') or item.get('expected_mount_commands')}"
             print(
                 f"  mount_validation: {'PASS' if mount_validation.get('ok') else 'FAIL'} "
-                f"expected={mount_report.get('expected_commands')} actual={mount_report.get('commands')}"
+                f"{expected_label} actual={mount_report.get('commands')}"
             )
+            if item.get("mount_review_note"):
+                print(f"  mount_review_note: {item.get('mount_review_note')}")
 
         if item.get("expect_repo_edit") or item.get("repo_edit_blocks"):
             repo_validation = item.get("repo_edit_validation") or {}

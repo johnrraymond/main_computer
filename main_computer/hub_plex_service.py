@@ -477,6 +477,9 @@ class AIRequestPlexService:
         allow_insecure_dev_network: bool = False,
         credit_ledger: Any | None = None,
         default_credits_per_request: int = 1,
+        request_store: Any | None = None,
+        quote_store: Any | None = None,
+        secure_session_store: Any | None = None,
     ) -> None:
         self.registry = registry
         self.ledger = ledger
@@ -484,10 +487,40 @@ class AIRequestPlexService:
         self.allow_insecure_dev_network = bool(allow_insecure_dev_network)
         self.credit_ledger = credit_ledger
         self.default_credits_per_request = max(1, int(default_credits_per_request or 1))
-        self.request_store = RequestStateStore(root)
-        self.quote_store = QuoteStateStore(root)
+        self.request_store = request_store if request_store is not None else RequestStateStore(root)
+        self.quote_store = quote_store if quote_store is not None else QuoteStateStore(root)
+        self.secure_session_store = secure_session_store
         self._secure_sessions: dict[str, dict[str, Any]] = {}
         self._session_lock = threading.Lock()
+
+    def _store_secure_session(self, session_id: str, payload: dict[str, Any]) -> None:
+        clean = str(session_id or "").strip()
+        if not clean:
+            raise ValueError("session_id is required.")
+        data = dict(payload)
+        data["session_id"] = clean
+        store = self.secure_session_store
+        if store is not None and hasattr(store, "set"):
+            store.set(clean, data)
+            return
+        with self._session_lock:
+            self._secure_sessions[clean] = data
+
+    def _load_secure_session(self, session_id: str) -> dict[str, Any]:
+        clean = str(session_id or "").strip()
+        store = self.secure_session_store
+        if store is not None and hasattr(store, "get"):
+            session = store.get(clean)
+            if isinstance(session, dict):
+                data = dict(session)
+                data["session_id"] = clean
+                return data
+            return {}
+        with self._session_lock:
+            session = dict(self._secure_sessions.get(clean, {}))
+        if session:
+            session["session_id"] = clean
+        return session
 
     def quote_request(self, request: HubAIRequest) -> dict[str, Any]:
         """Return a paid request quote.
@@ -654,17 +687,34 @@ class AIRequestPlexService:
                 worker_node_id=worker_node_id,
                 worker_model=str(_item_value(leased_worker, "model", "") or record.model),
             )
-            self.request_store.update(
-                record.request_id,
-                state="leased",
-                selected_worker_node_id=worker_node_id,
-                lease_id=lease_id,
-                lease_expires_at=expires_at,
-                credits_queued=worker_credits,
-                attempt_history=attempt_history,
-                event_type="worker_pull.lease.granted",
-                event={"worker_node_id": worker_node_id, "lease_id": lease_id, "expires_at": expires_at},
-            )
+            if hasattr(self.request_store, "claim_worker_pull_lease"):
+                claimed_record = self.request_store.claim_worker_pull_lease(
+                    record.request_id,
+                    worker_node_id=worker_node_id,
+                    lease_id=lease_id,
+                    expires_at=expires_at,
+                    credits_queued=worker_credits,
+                    attempt_history=attempt_history,
+                )
+                if claimed_record is None:
+                    self._release_record_worker(
+                        HubRequestRecord.from_dict({**record.as_dict(), "selected_worker_node_id": worker_node_id}),
+                        success=True,
+                    )
+                    continue
+                record = claimed_record
+            else:
+                record = self.request_store.update(
+                    record.request_id,
+                    state="leased",
+                    selected_worker_node_id=worker_node_id,
+                    lease_id=lease_id,
+                    lease_expires_at=expires_at,
+                    credits_queued=worker_credits,
+                    attempt_history=attempt_history,
+                    event_type="worker_pull.lease.granted",
+                    event={"worker_node_id": worker_node_id, "lease_id": lease_id, "expires_at": expires_at},
+                )
             lease = {
                 "lease_id": lease_id,
                 "request_id": record.request_id,
@@ -1805,15 +1855,17 @@ class AIRequestPlexService:
             worker_public_key = str(worker_session.get("worker_public_key") or "")
             if not worker_public_key:
                 raise RuntimeError("Hub worker did not return a temporary public key.")
-            with self._session_lock:
-                self._secure_sessions[session_id] = {
+            self._store_secure_session(
+                session_id,
+                {
                     "kind": "worker",
                     "session_id": session_id,
                     "request_id": record.request_id,
                     "worker": _public_payload(worker),
                     "credits": worker_credits,
                     "created_at": utc_now(),
-                }
+                },
+            )
             self.request_store.update(
                 record.request_id,
                 state="running",
@@ -1965,8 +2017,9 @@ class AIRequestPlexService:
         upstream_request_id = str(upstream_session.get("request_id", ""))
         if not upstream_session_id or not upstream_request_id:
             raise RuntimeError("Upstream hub did not return a complete high-security session.")
-        with self._session_lock:
-            self._secure_sessions[upstream_session_id] = {
+        self._store_secure_session(
+            upstream_session_id,
+            {
                 "kind": "upstream",
                 "session_id": upstream_session_id,
                 "request_id": upstream_request_id,
@@ -1976,7 +2029,8 @@ class AIRequestPlexService:
                 "upstream_request_id": upstream_request_id,
                 "credits": upstream_credits,
                 "created_at": utc_now(),
-            }
+            },
+        )
         self.registry.mark_upstream_hub(upstream_node_id, status="available")
         self.request_store.update(
             record.request_id,
@@ -2170,8 +2224,7 @@ class AIRequestPlexService:
 
     def _session(self, session_id: str) -> dict[str, Any]:
         clean = str(session_id or "").strip()
-        with self._session_lock:
-            session = dict(self._secure_sessions.get(clean, {}))
+        session = self._load_secure_session(clean)
         if not session:
             raise ValueError("Unknown or expired hub session.")
         session["session_id"] = clean
