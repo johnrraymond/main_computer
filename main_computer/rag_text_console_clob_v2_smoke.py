@@ -1267,6 +1267,46 @@ def build_file_content_grounding_retry_context(
     return "\n".join(trimmed_lines).strip()[:max_chars].rstrip()
 
 
+
+def build_file_content_rag_proof_contexts(
+    lookup_result: dict[str, Any],
+    *,
+    selected_path: str,
+    evidence_profile: str = "general",
+    max_tree_context_chars: int = 500,
+    max_content_context_chars: int = 1100,
+    evidence_limit: int = 6,
+) -> list[str]:
+    """Return the minimal runtime evidence needed for file-content RAG proof.
+
+    The first version of this smoke sent the larger file-content lookup JSON as
+    the initial proof prompt and used the minimal evidence form only on retry.
+    On small local Ollama contexts, that can consume the entire context window
+    before the model emits useful output.  This helper uses the same runtime
+    lookup result, but makes the bounded evidence-only shape the primary prompt.
+    """
+
+    tree_lines = [
+        "Minimal runtime tree lookup evidence.",
+        "The selected path came from the saved recursive-tree clob lookup.",
+        f"selected_path: {selected_path}",
+        "grounding_paths:",
+        f"- evidence_id=selected-path path={selected_path}",
+    ]
+    tree_context = "\n".join(tree_lines).strip()
+    if len(tree_context) > max_tree_context_chars:
+        tree_context = tree_context[:max_tree_context_chars].rstrip()
+
+    content_context = build_file_content_grounding_retry_context(
+        lookup_result,
+        selected_path=selected_path,
+        evidence_profile=evidence_profile,
+        max_chars=max_content_context_chars,
+        evidence_limit=evidence_limit,
+    )
+    return [tree_context, content_context]
+
+
 def file_content_lookup_context_report(
     file_clob: dict[str, Any],
     lookup_result: dict[str, Any],
@@ -1659,7 +1699,14 @@ def run_file_content_rag_case(
     if int(content_lookup.get("match_count") or 0) > 0 and not acceptable_evidence:
         failures.append(f"{case_name} lookup slice did not expose acceptable {evidence_profile!r} evidence")
 
-    tree_lookup_context = build_clob_lookup_context(tree_lookup_result, max_chars=1000)
+    proof_contexts = build_file_content_rag_proof_contexts(
+        content_lookup,
+        selected_path=selected_path,
+        evidence_profile=evidence_profile,
+        max_tree_context_chars=500,
+        max_content_context_chars=1100,
+        evidence_limit=6,
+    )
     grounded_prompt = (
         f"{prompt}\n\n"
         "Use grounding_evidence from the file-content lookup slice and the selected path from the tree lookup. "
@@ -1668,13 +1715,14 @@ def run_file_content_rag_case(
     )
     file_text = str(((file_clob.get("payload") or {}).get("text")) or "")
     messages = build_rag_proof_messages(
-        contexts=[tree_lookup_context, content_context],
+        contexts=proof_contexts,
         prompt=grounded_prompt,
     )
     request = _request_report(messages, model=model, think=think, last_user_message=grounded_prompt)
     if file_text and len(file_text) > DEFAULT_FILE_CONTENT_LOOKUP_CONTEXT_CHARS and file_text in str(request.get("request_text") or ""):
         failures.append(f"{case_name} full file text appeared in model request")
 
+    provider_failure: str | None = None
     if offline_contract_only:
         raw_response = {
             "content": deterministic_content_rag_response(prompt, content_lookup, evidence_profile=evidence_profile),
@@ -1688,7 +1736,7 @@ def run_file_content_rag_case(
             raw_response = call_provider_chat(root=root, messages=messages, base_url=base_url, model=model, timeout=timeout, think=think)
         except Exception as exc:
             raw_response = {"content": "", "provider": "error", "model": model, "metadata": {}, "duration_ms": 0, "error": repr(exc)}
-            failures.append(f"{case_name} provider chat failed: {exc!r}")
+            provider_failure = f"{case_name} provider chat failed: {exc!r}"
 
     response_content = str(raw_response.get("content") or "")
     evidence_usage = response_mentions_content_evidence(
@@ -1761,6 +1809,8 @@ def run_file_content_rag_case(
             evidence_usage = retry_evidence_usage
             path_usage = retry_path_usage
 
+    if provider_failure and not (evidence_usage.get("ok") and path_usage.get("ok")):
+        failures.append(provider_failure)
     if int(content_lookup.get("match_count") or 0) > 0 and not evidence_usage.get("ok"):
         failures.append(f"{case_name} response did not cite a runtime content evidence_id or exact evidence from the file-content lookup slice")
     if not path_usage.get("ok"):
@@ -1790,6 +1840,8 @@ def run_file_content_rag_case(
         "evidence_usage": evidence_usage,
         "path_usage": path_usage,
         "content_context_chars": len(content_context),
+        "proof_context_chars": [len(context) for context in proof_contexts],
+        "initial_provider_failure": provider_failure,
         "request": redacted_request,
         "response": {"raw_response": raw_response, "content": response_content, "preview": one_line(response_content, limit=600)},
         "retry_used": retry_used,

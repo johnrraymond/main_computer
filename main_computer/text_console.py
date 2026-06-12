@@ -47,6 +47,23 @@ message.
 """
 
 
+CLOB_GROUNDED_ANSWER_PROMPT = """You are the Main Computer text-console clob-grounded answerer.
+
+Answer the current user from the side-loaded clob lookup evidence supplied in
+this request. The evidence was retrieved at runtime from large Terminal output
+or another saved text-console clob; the full clob payload is intentionally not
+available in the prompt.
+
+Rules:
+- Use only the supplied grounding_evidence lines as runtime evidence.
+- Cite at least one evidence_id exactly, or quote exact retrieved text.
+- Keep the answer concise.
+- Do not request Terminal actions, repo edits, or computer mounts in this path.
+- If the evidence is insufficient, say that the clob lookup evidence is
+  insufficient and mention the closest evidence_id values.
+"""
+
+
 @dataclass(frozen=True)
 class TextConsoleConfig:
     """Runtime context owner for the text console.
@@ -1393,6 +1410,142 @@ def chat_response_from_text_console_operator_run(run: TextConsoleOperatorRun) ->
         },
     )
 
+
+
+_LOCAL_ACTION_VERB_RE = re.compile(
+    r"\b("
+    r"act|apply|build|change|check|create|delete|edit|execute|fix|install|launch|modify|move|open|patch|"
+    r"refactor|remove|rename|rerun|restart|run|save|start|stop|test|update|write"
+    r")\b",
+    re.IGNORECASE,
+)
+_LOCAL_ACTION_SURFACE_RE = re.compile(
+    r"\b(/act|bash|cmd|command|computer|mount|powershell|shell|terminal)\b",
+    re.IGNORECASE,
+)
+
+
+def text_console_prompt_requests_local_action(source: str) -> bool:
+    """Return whether a prompt should keep the normal action/operator path.
+
+    Clob lookup follow-ups like "which file mentioned X?" should be answered
+    from a tiny evidence-only prompt.  Requests that ask to run commands or edit
+    files still need the operator/action-spec scaffolding.
+    """
+
+    text = re.sub(r"\s+", " ", str(source or "").strip())
+    if not text:
+        return False
+    lowered = text.lower()
+    if "repo-edit" in lowered or "/act" in lowered:
+        return True
+    if _LOCAL_ACTION_SURFACE_RE.search(text) and _LOCAL_ACTION_VERB_RE.search(text):
+        return True
+    if re.search(
+        r"\b("
+        r"apply|change|create|delete|edit|fix|modify|move|patch|refactor|remove|rename|replace|save|update|write"
+        r")\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if re.search(
+        r"\b(run|execute|rerun|start|stop|restart|launch|install)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    return False
+
+
+def build_text_console_clob_grounded_answer_messages(
+    *,
+    text_console_config: TextConsoleConfig,
+    prompt: str,
+    clob_lookup_text: str,
+) -> list[ChatMessage]:
+    """Build a minimal clob-RAG answer prompt without operator/preflight bulk."""
+
+    root_hint = (
+        "Text-console root hint:\n"
+        f"- context_root: {text_console_config.context_root}\n"
+        f"- working_directory: {text_console_config.working_directory}"
+    )
+    return [
+        ChatMessage(role="system", content=CLOB_GROUNDED_ANSWER_PROMPT),
+        ChatMessage(role="system", content=root_hint),
+        ChatMessage(role="system", content=str(clob_lookup_text or "").strip()),
+        ChatMessage(role="user", content=str(prompt or "")),
+    ]
+
+
+def run_text_console_clob_grounded_answer(
+    *,
+    text_console_config: TextConsoleConfig,
+    prompt: str,
+    clob_lookup_text: str,
+    base_config: MainComputerConfig | None = None,
+) -> ChatResponse:
+    """Answer a clob lookup follow-up through an evidence-only model call.
+
+    This intentionally bypasses the regular operator preflight, action spec
+    catalog, workspace context pack, and historic thread messages.  Those are
+    useful for action routing, but they can consume the whole context window on
+    small local models before the retrieved clob evidence can be used.
+    """
+
+    legacy_config = text_console_config.to_legacy_main_computer_config(
+        MainComputerConfig,
+        base_config=base_config,
+    )
+    computer = MainComputer.build(legacy_config)
+    messages = build_text_console_clob_grounded_answer_messages(
+        text_console_config=text_console_config,
+        prompt=prompt,
+        clob_lookup_text=clob_lookup_text,
+    )
+    provider_response = computer.provider.chat(messages)
+    content = str(getattr(provider_response, "content", "") or "")
+    metadata = dict(getattr(provider_response, "metadata", {}) or {})
+    request_bytes = text_console_request_bytes(
+        messages,
+        model=text_console_config.model,
+        think=text_console_config.ollama_think,
+    )
+    metadata.update(
+        {
+            "text_console_artifacts": parse_text_console_response_artifacts(content),
+            "text_console_config": text_console_config.to_payload(),
+            "legacy_main_computer_config_adapter": {
+                "workspace": str(getattr(legacy_config, "workspace", "")),
+                "provider": str(getattr(legacy_config, "provider", "")),
+                "model": str(getattr(legacy_config, "model", "")),
+                "ollama_base_url": str(getattr(legacy_config, "ollama_base_url", "")),
+                "ollama_timeout_s": getattr(legacy_config, "ollama_timeout_s", None),
+                "ollama_think": getattr(legacy_config, "ollama_think", None),
+            },
+            "text_console_clob_grounded_answer": {
+                "message_count": len(messages),
+                "message_chars": [len(str(message.content or "")) for message in messages],
+                "input_chars": sum(len(str(message.content or "")) for message in messages),
+                "request_bytes": request_bytes,
+                "request_sha256": text_console_request_sha256(
+                    messages,
+                    model=text_console_config.model,
+                    think=text_console_config.ollama_think,
+                ),
+                "bypassed_operator_preflight": True,
+                "bypassed_action_specs": True,
+                "bypassed_thread_messages": True,
+            },
+        }
+    )
+    return ChatResponse(
+        content=content,
+        provider=str(getattr(provider_response, "provider", "") or getattr(computer.provider, "name", "")),
+        model=str(getattr(provider_response, "model", "") or text_console_config.model),
+        metadata=metadata,
+    )
 
 def run_text_console_operator_chat(
     *,
