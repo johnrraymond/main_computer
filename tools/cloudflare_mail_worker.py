@@ -499,6 +499,153 @@ def write_prepare_outputs(
 
 
 
+def load_mail_worker_contract(contract_path: str | Path) -> tuple[dict[str, Any], Path]:
+    path = Path(contract_path)
+    if not str(path).strip():
+        raise WorkerPlanError("Missing --contract.")
+    if not path.exists():
+        raise WorkerPlanError(f"Contract file does not exist: {path}")
+    if not path.is_file():
+        raise WorkerPlanError(f"Contract path is not a file: {path}")
+    try:
+        contract = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise WorkerPlanError(f"Contract is not valid JSON: {path}") from exc
+    if not isinstance(contract, dict):
+        raise WorkerPlanError("Contract JSON must be an object.")
+    schema = str(contract.get("schema") or "")
+    if schema != "main-computer.cloudflare-mail-worker-contract.v1":
+        raise WorkerPlanError(f"Unsupported contract schema: {schema!r}")
+    return contract, path.parent
+
+
+def _contract_int(value: Any, default: int, *, field: str) -> int:
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise WorkerPlanError(f"Contract field {field} must be an integer.") from exc
+
+
+def _contract_str(mapping: dict[str, Any], key: str, default: str = "") -> str:
+    value = mapping.get(key, default)
+    return str(value if value is not None else default)
+
+
+def plan_from_contract(contract: dict[str, Any], args: argparse.Namespace | None = None) -> CloudflareMailWorkerPlan:
+    coolify = contract.get("coolify") if isinstance(contract.get("coolify"), dict) else {}
+    worker = contract.get("worker") if isinstance(contract.get("worker"), dict) else {}
+    worker_env = worker.get("env") if isinstance(worker.get("env"), dict) else {}
+    routing = contract.get("routing") if isinstance(contract.get("routing"), dict) else {}
+
+    coolify_url = _contract_str(coolify, "coolify_url")
+    service_name = _contract_str(coolify, "service_name")
+    compose_project = _contract_str(coolify, "compose_project")
+    if args is not None:
+        coolify_url = str(getattr(args, "coolify_url", "") or coolify_url)
+        service_name = str(getattr(args, "coolify_service_name", "") or service_name)
+        compose_project = str(getattr(args, "compose_project", "") or compose_project)
+
+    return build_plan(
+        domain=_contract_str(contract, "domain"),
+        ingest_host=_contract_str(contract, "ingest_host"),
+        ingest_path=_contract_str(contract, "ingest_path", DEFAULT_INGEST_PATH),
+        worker_name=_contract_str(contract, "worker_name") or _contract_str(worker, "name"),
+        secret_binding=_contract_str(contract, "secret_binding", DEFAULT_SECRET_NAME),
+        secret_header=_contract_str(contract, "secret_header", "X-Main-Computer-Mail-Secret"),
+        service_name=service_name,
+        compose_project=compose_project,
+        listen_port=_contract_int(coolify.get("listen_port"), DEFAULT_LISTEN_PORT, field="coolify.listen_port"),
+        mailbox_root=_contract_str(coolify, "mailbox_root", "/var/mail"),
+        maildir_domain=_contract_str(coolify, "maildir_domain") or _contract_str(contract, "domain"),
+        max_message_bytes=_contract_int(worker_env.get("MAX_MESSAGE_BYTES"), DEFAULT_MAX_MESSAGE_BYTES, field="worker.env.MAX_MESSAGE_BYTES"),
+        coolify_url=coolify_url,
+        catch_all=bool(routing.get("catch_all_to_worker", True)),
+        local_parts=routing.get("worker_local_parts", ()),
+        failure_policy=_contract_str(worker_env, "INGEST_FAILURE_POLICY", "throw"),
+    )
+
+
+def _safe_relative_contract_path(value: str) -> Path:
+    raw = str(value or "").strip().replace("\\", "/")
+    if not raw:
+        raise WorkerPlanError("Contract is missing secret_file.")
+    posix = Path(raw)
+    if posix.is_absolute() or any(part in {"", ".", ".."} for part in raw.split("/")):
+        raise WorkerPlanError(f"Unsafe contract-relative path: {value!r}")
+    return posix
+
+
+def resolve_contract_secret(
+    contract: dict[str, Any],
+    contract_dir: Path,
+    args: argparse.Namespace | None = None,
+) -> tuple[str, str, Path | None]:
+    if args is not None:
+        explicit = str(getattr(args, "mail_ingest_secret", "") or "").strip()
+        if explicit:
+            return explicit, "--mail-ingest-secret", None
+
+        env_name = str(getattr(args, "mail_ingest_secret_env", "") or "").strip()
+        if env_name:
+            value = os.environ.get(env_name, "").strip()
+            if value:
+                return value, f"env:{env_name}", None
+
+        supplied_file = str(getattr(args, "mail_ingest_secret_file", "") or "").strip()
+        if supplied_file:
+            path = Path(supplied_file)
+            value = path.read_text(encoding="utf-8").strip()
+            if not value:
+                raise WorkerPlanError(f"Secret file is empty: {path}")
+            return value, f"file:{path}", path
+
+    relative = _safe_relative_contract_path(str(contract.get("secret_file") or "secrets/mail_ingest_secret"))
+    path = contract_dir / relative
+    if not path.exists():
+        raise WorkerPlanError(f"Contract secret file does not exist: {path}")
+    value = path.read_text(encoding="utf-8").strip()
+    if not value:
+        raise WorkerPlanError(f"Contract secret file is empty: {path}")
+    return value, f"contract:{relative.as_posix()}", path
+
+
+def args_with_contract_defaults(args: argparse.Namespace, contract: dict[str, Any]) -> argparse.Namespace:
+    clone = copy.copy(args)
+    coolify = contract.get("coolify") if isinstance(contract.get("coolify"), dict) else {}
+    if not str(getattr(clone, "coolify_url", "") or "").strip():
+        clone.coolify_url = _contract_str(coolify, "coolify_url")
+    if not str(getattr(clone, "coolify_service_name", "") or "").strip():
+        clone.coolify_service_name = _contract_str(coolify, "service_name")
+    clone.coolify_url = normalize_coolify_url(str(getattr(clone, "coolify_url", "") or ""))
+    return clone
+
+
+def redact_text_secret(value: str, secret: str) -> str:
+    clean_secret = str(secret or "")
+    if not clean_secret:
+        return value
+    return str(value).replace(clean_secret, f"<redacted:{DEFAULT_SECRET_NAME}>")
+
+
+def redact_nested_secret(value: Any, secret: str) -> Any:
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            if str(key) in {"docker_compose_raw", "docker_compose"}:
+                result[key] = "<redacted:compose>"
+            else:
+                result[key] = redact_nested_secret(item, secret)
+        return result
+    if isinstance(value, list):
+        return [redact_nested_secret(item, secret) for item in value]
+    if isinstance(value, str):
+        return redact_text_secret(value, secret)
+    return value
+
+
+
 def build_plan(
     *,
     domain: str,
@@ -869,9 +1016,21 @@ def yaml_quote(value: object) -> str:
     return json.dumps(str(value))
 
 
-def render_compose(plan: CloudflareMailWorkerPlan) -> str:
+def traefik_label_id(value: str) -> str:
+    clean = re.sub(r"[^a-z0-9-]+", "-", str(value or "").lower())
+    clean = re.sub(r"-+", "-", clean).strip("-")
+    return clean or "mail-ingest"
+
+
+def render_compose(plan: CloudflareMailWorkerPlan, *, mail_ingest_secret: str = "") -> str:
     app = render_ingest_app(plan).rstrip("\n")
     script_lines = "\n".join("        " + line for line in app.splitlines())
+    secret_value = str(mail_ingest_secret or "").strip()
+    if secret_value:
+        secret_line = f"      MAIL_INGEST_SECRET: {yaml_quote(secret_value)}"
+    else:
+        secret_line = '      MAIL_INGEST_SECRET: "${MAIL_INGEST_SECRET:?set MAIL_INGEST_SECRET in Coolify secrets}"'
+    router_id = traefik_label_id(plan.service_name)
     lines = [
         f"name: {plan.compose_project}",
         "services:",
@@ -880,7 +1039,7 @@ def render_compose(plan: CloudflareMailWorkerPlan) -> str:
         f"    container_name: {plan.service_name}",
         "    restart: unless-stopped",
         "    environment:",
-        '      MAIL_INGEST_SECRET: "${MAIL_INGEST_SECRET:?set MAIL_INGEST_SECRET in Coolify secrets}"',
+        secret_line,
         f"      MAIL_INGEST_SECRET_HEADER: {yaml_quote(plan.secret_header)}",
         f"      MAIL_DOMAIN: {yaml_quote(plan.maildir_domain)}",
         f"      MAILBOX_ROOT: {yaml_quote(plan.mailbox_root)}",
@@ -890,6 +1049,13 @@ def render_compose(plan: CloudflareMailWorkerPlan) -> str:
         f"      LISTEN_PORT: {yaml_quote(plan.listen_port)}",
         "    expose:",
         f'      - "{plan.listen_port}"',
+        "    labels:",
+        '      - "traefik.enable=true"',
+        f'      - "traefik.http.routers.{router_id}.rule=Host(`{plan.ingest_host}`) && PathPrefix(`/`)"',
+        f'      - "traefik.http.routers.{router_id}.entryPoints=https"',
+        f'      - "traefik.http.routers.{router_id}.tls=true"',
+        f'      - "traefik.http.routers.{router_id}.tls.certresolver=letsencrypt"',
+        f'      - "traefik.http.services.{router_id}.loadbalancer.server.port={plan.listen_port}"',
         "    volumes:",
         f"      - mail-ingest-mailboxes:{plan.mailbox_root}",
         "    command:",
@@ -981,9 +1147,17 @@ def render_commands(plan: CloudflareMailWorkerPlan) -> str:
           --catch-all-to-worker \\
           --out runtime/cloudflare-mail-worker/{sh(plan.domain)}
 
-        # Stage two will consume this contract for the scripted Coolify apply:
-        #   {contract_path}
-        #
+        # Stage two: scripted Coolify deploy from the contract.
+        python tools/cloudflare_mail_worker.py coolify-apply \
+          --contract {sh(contract_path)} \
+          --coolify-url {sh(coolify)} \
+          --coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN \
+          --coolify-environment mail \
+          --coolify-service-name {sh(plan.service_name)} \
+          --dry-run
+
+        # Then remove --dry-run to create/update/deploy the Coolify service.
+
         # Cloudflare-side manual files generated by stage one:
         #   runtime/cloudflare-mail-worker/{plan.domain}/cloudflare/worker-dashboard-paste.md
         #   runtime/cloudflare-mail-worker/{plan.domain}/cloudflare/manual-routing-plan.md
@@ -996,16 +1170,6 @@ def render_commands(plan: CloudflareMailWorkerPlan) -> str:
           --coolify-url {sh(coolify)} \\
           --coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN
 
-        # Until the contract-based Coolify stage lands, the existing apply path
-        # can still deploy the generated ingest service using the same values.
-        python tools/cloudflare_mail_worker.py apply \\
-          --domain {sh(plan.domain)} \\
-          --ingest-host {sh(plan.ingest_host)} \\
-          --coolify-url {sh(coolify)} \\
-          --coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN \\
-          --coolify-service-name {sh(plan.service_name)} \\
-          --coolify-environment mail \\
-          --dry-run
         """
     )
 
@@ -1196,9 +1360,15 @@ def coolify_discover(args: argparse.Namespace) -> dict[str, Any]:
     return result
 
 
-def coolify_sync(plan: CloudflareMailWorkerPlan, args: argparse.Namespace, *, deploy: bool = False) -> dict[str, Any]:
+def coolify_sync(
+    plan: CloudflareMailWorkerPlan,
+    args: argparse.Namespace,
+    *,
+    deploy: bool = False,
+    mail_ingest_secret: str = "",
+) -> dict[str, Any]:
     worker_args = _args_with_normalized_coolify_url(args)
-    compose = render_compose(plan)
+    compose = render_compose(plan, mail_ingest_secret=mail_ingest_secret)
     compose_b64 = base64_compose(compose)
     service_name = str(getattr(worker_args, "coolify_service_name", "") or plan.service_name)
     service_uuid = str(getattr(worker_args, "coolify_service_uuid", "") or "").strip()
@@ -1212,12 +1382,14 @@ def coolify_sync(plan: CloudflareMailWorkerPlan, args: argparse.Namespace, *, de
             "service_uuid": service_uuid,
             "coolify_url": str(getattr(worker_args, "coolify_url", "") or ""),
             "coolify_environment": str(getattr(worker_args, "coolify_environment", "") or "mail"),
-            "compose": compose,
+            "compose": redact_text_secret(compose, mail_ingest_secret),
             "compose_base64_bytes": len(compose_b64),
+            "secret_injected": bool(mail_ingest_secret),
+            "secret": redact_secret(mail_ingest_secret) if mail_ingest_secret else "compose-placeholder",
             "next_steps": [
-                f"Set the Coolify service domain to https://{plan.ingest_host}.",
-                "Set MAIL_INGEST_SECRET in the Coolify service environment/secrets.",
-                "Deploy the Cloudflare Worker and configure Email Routing to send messages to it.",
+                f"Confirm https://{plan.ingest_host}/healthz through the Coolify HTTP proxy after deploy.",
+                "Deploy the Cloudflare Worker with the matching secret from the contract.",
+                "Configure Cloudflare Email Routing to send messages to the Worker.",
             ],
         }
 
@@ -1379,14 +1551,86 @@ def coolify_sync(plan: CloudflareMailWorkerPlan, args: argparse.Namespace, *, de
         "deployed": bool(deploy_result),
         "deploy_requested": bool(deploy_result),
         "deploy_result": deploy_result,
+        "secret_injected": bool(mail_ingest_secret),
+        "secret": redact_secret(mail_ingest_secret) if mail_ingest_secret else "compose-placeholder",
         "context": result_context,
         "tried": tried,
         "next_steps": [
-            f"Set the Coolify service domain to https://{plan.ingest_host} if it is not already routed.",
-            "Set MAIL_INGEST_SECRET in Coolify and the matching Worker secret.",
+            f"Confirm https://{plan.ingest_host}/healthz through the Coolify HTTP proxy after deploy.",
+            "Deploy the Cloudflare Worker with the matching secret from the contract.",
             "Configure Cloudflare Email Routing to send mail to the Worker.",
         ],
     }
+
+
+def coolify_apply_from_contract(args: argparse.Namespace) -> dict[str, Any]:
+    contract, contract_dir = load_mail_worker_contract(getattr(args, "contract", ""))
+    worker_args = args_with_contract_defaults(args, contract)
+    plan = plan_from_contract(contract, worker_args)
+    validate_plan(plan)
+    secret, secret_source, secret_path = resolve_contract_secret(contract, contract_dir, worker_args)
+
+    phases: list[dict[str, Any]] = []
+    if bool(getattr(worker_args, "dry_run", False)):
+        phases.append(
+            {
+                "phase": "coolify-check",
+                "result": {
+                    "ok": True,
+                    "dry_run": True,
+                    "url": normalize_coolify_url(str(getattr(worker_args, "coolify_url", "") or "")),
+                },
+            }
+        )
+    else:
+        check_result = coolify_check(worker_args)
+        phases.append({"phase": "coolify-check", "result": check_result})
+        if not check_result.get("ok"):
+            return {
+                "ok": False,
+                "domain": plan.domain,
+                "contract": str(getattr(args, "contract", "")),
+                "secret_source": secret_source,
+                "phases": phases,
+            }
+
+    sync_result = coolify_sync(
+        plan,
+        worker_args,
+        deploy=not bool(getattr(worker_args, "no_deploy", False)),
+        mail_ingest_secret=secret,
+    )
+    sync_result = redact_nested_secret(sync_result, secret)
+    phases.append({"phase": "coolify-sync", "result": sync_result})
+    if not sync_result.get("ok"):
+        return {
+            "ok": False,
+            "domain": plan.domain,
+            "contract": str(getattr(args, "contract", "")),
+            "secret_source": secret_source,
+            "phases": phases,
+        }
+
+    return {
+        "ok": True,
+        "domain": plan.domain,
+        "contract": str(getattr(args, "contract", "")),
+        "contract_dir": str(contract_dir),
+        "secret_source": secret_source,
+        "secret_file": str(secret_path) if secret_path else "",
+        "secret": redact_secret(secret),
+        "ingest_url": plan.ingest_url,
+        "worker_name": plan.worker_name,
+        "coolify_service_name": str(getattr(worker_args, "coolify_service_name", "") or plan.service_name),
+        "coolify_environment": str(getattr(worker_args, "coolify_environment", "") or "mail"),
+        "phases": phases,
+        "next_steps": [
+            "Use cloudflare/worker-dashboard-paste.md or cloudflare/wrangler-commands.md for the Cloudflare Worker side.",
+            "Use cloudflare/manual-routing-plan.md for exact forward/drop/catch-all routing.",
+            f"After Cloudflare is configured, send a test message to a Worker-routed address at {plan.domain}.",
+        ],
+    }
+
 
 
 def apply_mail_worker(plan: CloudflareMailWorkerPlan, args: argparse.Namespace) -> dict[str, Any]:
@@ -1503,8 +1747,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "action",
         nargs="?",
         default="docs",
-        choices=["docs", "help", "plan", "worker", "wrangler", "compose", "ingest", "routing", "commands", "write", "prepare", "validate", "coolify-check", "coolify-discover", "coolify-sync", "apply"],
+        choices=["docs", "help", "plan", "worker", "wrangler", "compose", "ingest", "routing", "commands", "write", "prepare", "validate", "coolify-check", "coolify-discover", "coolify-sync", "coolify-apply", "apply"],
     )
+    parser.add_argument("--contract", default="", help="Stage-one mail-worker-contract.json for contract-based Coolify apply.")
     parser.add_argument("--domain", default="", help="Mail domain, e.g. greatlibrary.io.")
     parser.add_argument("--ingest-host", default="", help="HTTPS ingest hostname. Defaults to mail-ingest.<domain>.")
     parser.add_argument("--ingest-path", default=DEFAULT_INGEST_PATH)
@@ -1583,6 +1828,9 @@ def main(argv: list[str] | None = None) -> int:
         print(render_docs())
         return 0
     try:
+        if args.action == "coolify-apply":
+            print_json(coolify_apply_from_contract(args))
+            return 0
         plan = plan_from_args(args)
         if args.action == "validate":
             validate_plan(plan)
