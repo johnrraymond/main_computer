@@ -9,8 +9,11 @@ from tools.scheduler_lab.hub_client import HubClient, HubHttpResponse
 from tools.scheduler_lab.node_list import SCHEMA, build_document, build_nodes, normalize_hub_base_urls
 from tools.scheduler_lab.run_lab import (
     build_arg_parser,
+    build_process_launch_progress_rollup,
     build_process_rollup,
+    collect_process_phase_counts,
     effective_request_startup_mode,
+    format_process_launch_progress,
     format_process_phase_counts,
     format_process_rollup,
     is_insufficient_credit_response,
@@ -21,6 +24,8 @@ from tools.scheduler_lab.run_lab import (
     parse_warm_spec,
     parse_worktime_spec,
     new_process_rollup_stats,
+    process_child_event_path,
+    process_parent_runtime_due_flags,
     process_phase_count_summary,
     record_process_phase_event,
     record_process_rollup_event,
@@ -387,6 +392,11 @@ def test_process_parent_rollup_files_are_written_for_experiment_timeline(tmp_pat
             "status": 0,
             "hub_base_url": "http://host.docker.internal:8874",
         },
+        {
+            "event": "node.transport_failure",
+            "node_id": "node-1",
+            "hub_base_url": "http://host.docker.internal:8874",
+        },
         {"event": "node.self_terminated.b2bfailures", "node_id": "node-2"},
     ]
 
@@ -424,12 +434,184 @@ def test_process_parent_rollup_files_are_written_for_experiment_timeline(tmp_pat
     assert loaded["self_terminated_b2bfailures"] == 1
     assert loaded["http_status_counts"]["0"] == 1
     assert loaded["http_status_counts"]["200"] == 1
-    assert loaded["hub_counts"]["8874"] == 1
+    assert loaded["hub_counts"]["8874"] == 2
     assert loaded["endpoint_counts"]["workers_poll"] == 1
-    assert "alive=1" in format_process_rollup(loaded)
-    assert "http0=1" in format_process_rollup(loaded)
-    assert "event_counts_json" in rollups_csv.read_text(encoding="utf-8")
+    assert loaded["endpoint_counts"]["transport_failures"] == 1
+    assert loaded["transport_failures"] == 1
+    assert loaded["market_http_responses"] == 1
+    assert loaded["transport_failure_ratio"] == 0.5
+    formatted = format_process_rollup(loaded)
+    assert "alive=1" in formatted
+    assert "http0=1" in formatted
+    assert "transport=1" in formatted
+    assert "market_http=1" in formatted
+    csv_header = rollups_csv.read_text(encoding="utf-8").splitlines()[0].split(",")
+    assert "event_counts_json" in csv_header
+    assert len(csv_header) == len(set(csv_header))
 
+
+
+def test_process_launch_progress_rollup_is_parent_only() -> None:
+    class DummyProcess:
+        def __init__(self, code):
+            self.code = code
+
+        def poll(self):
+            return self.code
+
+    rollup = build_process_launch_progress_rollup(
+        run_id="20260612-010203",
+        started_at=time.monotonic() - 10.0,
+        node_count=3,
+        assumed_prefunded_count=2,
+        children=[
+            ({"node_id": "node-1"}, DummyProcess(None)),
+            ({"node_id": "node-2"}, DummyProcess(75)),
+        ],
+    )
+
+    assert rollup["children_launched"] == 2
+    assert rollup["children_remaining"] == 1
+    assert rollup["nodes_started"] == 2
+    assert rollup["phase_counts"]["nodes_started"] == 2
+    assert rollup["nodes_alive"] == 1
+    assert rollup["nodes_exited"] == 1
+    assert rollup["event_counts"] == {}
+    assert rollup["http_status_counts"] == {}
+    assert rollup["phase_counts"]["warm_finished"] == 0
+    assert "launched=2/3" in format_process_launch_progress(rollup)
+
+
+def test_process_event_path_matches_child_sink_naming_without_touching_files(tmp_path) -> None:
+    node = {"node_id": "worker/with space"}
+    path = process_child_event_path(tmp_path, node, 7)
+
+    assert path == tmp_path / "node-process-00007-worker_with_space.events.jsonl"
+    assert not path.exists()
+
+
+def test_process_rollup_scanner_uses_known_paths_and_offsets(tmp_path) -> None:
+    selected = tmp_path / "node-process-00000-node-1.events.jsonl"
+    ignored = tmp_path / "node-process-00001-node-2.events.jsonl"
+    selected.write_text(
+        json.dumps({"event": "node.process.warm_finished", "node_id": "node-1"}) + "\n"
+        + json.dumps({"event": "worker.poll", "node_id": "node-1", "status": 200, "hub_base_url": "http://host.docker.internal:8872"}) + "\n",
+        encoding="utf-8",
+    )
+    ignored.write_text(
+        json.dumps({"event": "node.self_terminated.b2bfailures", "node_id": "node-2"}) + "\n",
+        encoding="utf-8",
+    )
+    offsets: dict = {}
+    phase_nodes: dict[str, set[str]] = {}
+    stats = new_process_rollup_stats()
+    scan_state: dict = {}
+
+    counts = collect_process_phase_counts(
+        tmp_path,
+        offsets,
+        phase_nodes,
+        stats,
+        event_paths=[selected],
+        max_scan_seconds=2.0,
+        scan_state=scan_state,
+    )
+
+    assert counts["warm_finished"] == 1
+    assert counts["self_terminated_b2bfailures"] == 0
+    assert stats["endpoint_counts"]["workers_poll"] == 1
+    assert stats["hub_counts"]["8872"] == 1
+    assert scan_state["rollup_events_scanned"] == 2
+
+    with selected.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps({"event": "node.process.runtime_entered", "node_id": "node-1"}) + "\n")
+
+    counts = collect_process_phase_counts(tmp_path, offsets, phase_nodes, stats, event_paths=[selected], scan_state=scan_state)
+
+    assert counts["entered_runtime_loop"] == 1
+    assert stats["event_counts"]["node.process.warm_finished"] == 1
+    assert scan_state["rollup_events_scanned"] == 1
+
+
+def test_process_rollup_scanner_samples_across_noisy_files(tmp_path) -> None:
+    noisy = tmp_path / "node-process-00000-noisy.events.jsonl"
+    quiet_runtime = tmp_path / "node-process-00001-runtime.events.jsonl"
+    quiet_exit = tmp_path / "node-process-00002-exit.events.jsonl"
+    noisy.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "event": "worker.heartbeat",
+                    "node_id": "noisy",
+                    "status": 0,
+                    "hub_base_url": "http://host.docker.internal:8874",
+                }
+            )
+            + "\n"
+            for _ in range(25)
+        ),
+        encoding="utf-8",
+    )
+    quiet_runtime.write_text(
+        json.dumps({"event": "node.process.runtime_entered", "node_id": "runtime"}) + "\n",
+        encoding="utf-8",
+    )
+    quiet_exit.write_text(
+        json.dumps({"event": "node.self_terminated.b2bfailures", "node_id": "exit"}) + "\n",
+        encoding="utf-8",
+    )
+    offsets: dict = {}
+    phase_nodes: dict[str, set[str]] = {}
+    stats = new_process_rollup_stats()
+    scan_state: dict = {}
+    cursor: dict = {}
+
+    counts = collect_process_phase_counts(
+        tmp_path,
+        offsets,
+        phase_nodes,
+        stats,
+        event_paths=[noisy, quiet_runtime, quiet_exit],
+        max_events_per_file=5,
+        scan_cursor_state=cursor,
+        scan_state=scan_state,
+    )
+
+    assert stats["event_counts"]["worker.heartbeat"] == 5
+    assert counts["entered_runtime_loop"] == 1
+    assert counts["self_terminated_b2bfailures"] == 1
+    assert scan_state["rollup_files_total"] == 3
+    assert scan_state["rollup_files_scanned"] == 3
+    assert scan_state["rollup_files_limited"] == 1
+    assert scan_state["rollup_partial"] is True
+    assert "per_file_event_budget" in scan_state["rollup_partial_reason"]
+    assert cursor["next_index"] == 0
+
+
+def test_parent_status_interval_does_not_drive_rollup_scans() -> None:
+    flags = process_parent_runtime_due_flags(
+        now=20.0,
+        parent_status_interval=2.0,
+        next_parent_status_at=20.0,
+        parent_rollup_interval=60.0,
+        next_parent_rollup_at=60.0,
+    )
+
+    assert flags["status_due"] is True
+    assert flags["rollup_due"] is False
+    assert flags["scan_due"] is False
+
+    flags = process_parent_runtime_due_flags(
+        now=60.0,
+        parent_status_interval=2.0,
+        next_parent_status_at=60.0,
+        parent_rollup_interval=60.0,
+        next_parent_rollup_at=60.0,
+    )
+
+    assert flags["status_due"] is True
+    assert flags["rollup_due"] is True
+    assert flags["scan_due"] is True
 
 
 def test_node_process_sends_startup_surge_before_bootstrap() -> None:
