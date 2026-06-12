@@ -40,6 +40,12 @@ DEFAULT_EXP_FDB_DOCKER_OUTPUT_DIR = Path("runtime") / "scheduler-lab" / "exp-fdb
 DEFAULT_EXP_FDB_DOCKER_COMPOSE_FILE = Path("deploy") / "scheduler-lab" / "docker-compose.worker-lab.yml"
 DEFAULT_EXP_FDB_DOCKER_HUB_HOST = "host.docker.internal"
 DEFAULT_EXP_FDB_DOCKER_CONTAINER_OUTPUT_DIR = "/lab-output"
+DEFAULT_EXP_FDB_SMOKE_SCRIPT = Path("scripts") / "smoke_foundationdb_credit_ledger_primitives.py"
+DEFAULT_EXP_FDB_SMOKE_CONTAINER_NAME = "main-computer-foundationdb-smoke"
+DEFAULT_EXP_FDB_SMOKE_DOCKER_IMAGE = "foundationdb/foundationdb:7.4.6"
+DEFAULT_EXP_FDB_SMOKE_PORT = 4550
+DEFAULT_EXP_FDB_SMOKE_NAMESPACE = "main-computer-exp-fdb-autostart-smoke"
+DEFAULT_EXP_FDB_SMOKE_START_TIMEOUT_SECONDS = 45.0
 
 
 class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
@@ -106,7 +112,7 @@ class ExperimentalFoundationDbHubHttpServer(HubHttpServer):
 
 def build_experimental_config(args: argparse.Namespace, *, port: int) -> tuple[MainComputerConfig, ExperimentalFoundationDbConfig]:
     base = MainComputerConfig.from_env()
-    repo_root = Path(args.repo_root).resolve() if args.repo_root else Path.cwd().resolve()
+    repo_root = _repo_root_from_args(args)
     hub_root = Path(args.hub_root) if args.hub_root else DEFAULT_EXP_FDB_HUB_ROOT
     if not hub_root.is_absolute():
         hub_root = repo_root / hub_root
@@ -124,9 +130,7 @@ def build_experimental_config(args: argparse.Namespace, *, port: int) -> tuple[M
         hub_allow_insecure_dev_network=True,
     )
 
-    cluster_file = Path(args.cluster_file)
-    if not cluster_file.is_absolute():
-        cluster_file = repo_root / cluster_file
+    cluster_file = _cluster_file_from_args(args, repo_root=repo_root)
 
     fdb_config = ExperimentalFoundationDbConfig(
         cluster_file=cluster_file,
@@ -172,6 +176,108 @@ def docker_hub_base_urls(args: argparse.Namespace, live_ports: Sequence[int]) ->
     return [f"http://{host}:{port}" for port in ports]
 
 
+
+def _repo_root_from_args(args: argparse.Namespace) -> Path:
+    return Path(args.repo_root).resolve() if args.repo_root else Path.cwd().resolve()
+
+
+def _cluster_file_from_args(args: argparse.Namespace, *, repo_root: Path) -> Path:
+    cluster_file = Path(args.cluster_file)
+    if not cluster_file.is_absolute():
+        cluster_file = repo_root / cluster_file
+    return cluster_file.resolve()
+
+
+def _docker_container_running(docker_command: str, container_name: str) -> bool | None:
+    try:
+        result = subprocess.run(
+            [docker_command, "inspect", "--format={{.State.Running}}", container_name],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except FileNotFoundError:
+        return None
+    except subprocess.TimeoutExpired:
+        return None
+
+    if result.returncode != 0:
+        return False
+    return result.stdout.strip().lower() == "true"
+
+
+def _should_autostart_foundationdb_smoke(args: argparse.Namespace, *, repo_root: Path, cluster_file: Path) -> bool:
+    if args.no_fdb_autostart:
+        return False
+    if not cluster_file.exists():
+        return True
+
+    default_cluster_file = (repo_root / DEFAULT_EXP_FDB_CLUSTER_FILE).resolve()
+    if cluster_file != default_cluster_file:
+        return False
+
+    running = _docker_container_running(args.fdb_docker_command, args.fdb_container_name)
+    return running is False
+
+
+def ensure_foundationdb_smoke_loaded(args: argparse.Namespace) -> None:
+    """Start/reuse the local smoke FoundationDB Docker cluster before hub startup.
+
+    This keeps the manual exp-FDB command self-contained for the default local
+    Docker cluster path.  The smoke uses its own namespace and clears that
+    namespace afterwards; it does not clear the experiment namespace.
+    """
+
+    repo_root = _repo_root_from_args(args)
+    cluster_file = _cluster_file_from_args(args, repo_root=repo_root)
+    if not _should_autostart_foundationdb_smoke(args, repo_root=repo_root, cluster_file=cluster_file):
+        return
+
+    smoke_script = repo_root / DEFAULT_EXP_FDB_SMOKE_SCRIPT
+    if not smoke_script.exists():
+        raise SystemExit(f"FoundationDB smoke script not found: {smoke_script}")
+
+    command = [
+        sys.executable,
+        str(smoke_script),
+        "--cluster-file",
+        str(cluster_file),
+        "--api-version",
+        str(args.api_version),
+        "--namespace",
+        DEFAULT_EXP_FDB_SMOKE_NAMESPACE,
+        "--concurrent-holds",
+        "11",
+        "--workers",
+        "2",
+        "--fdb-container-name",
+        str(args.fdb_container_name),
+        "--fdb-port",
+        str(int(args.fdb_port)),
+        "--fdb-docker-image",
+        str(args.fdb_docker_image),
+        "--docker-command",
+        str(args.fdb_docker_command),
+        "--docker-start-timeout",
+        str(float(args.fdb_docker_start_timeout)),
+        "--keep-container",
+        "--reuse-container",
+    ]
+    if args.fdb_docker_platform:
+        command.extend(["--docker-platform", str(args.fdb_docker_platform)])
+
+    print("FoundationDB Docker cluster is not loaded; starting/reusing the local smoke container.")
+    print(f"FDB smoke container: {args.fdb_container_name}")
+    print(f"FDB cluster file: {cluster_file}")
+    print("FDB bootstrap command:")
+    print("  " + " ".join(command))
+    result = subprocess.run(command, cwd=str(repo_root))
+    if result.returncode != 0:
+        raise SystemExit(result.returncode)
+
+
+
 def create_exp_fdb_hub_server(args: argparse.Namespace, *, port: int) -> ExperimentalFoundationDbHubHttpServer:
     config, fdb_config = build_experimental_config(args, port=port)
     if not fdb_config.cluster_file.exists():
@@ -203,7 +309,7 @@ def create_exp_fdb_hub_server(args: argparse.Namespace, *, port: int) -> Experim
 
 
 def launch_scheduler_lab_docker(args: argparse.Namespace, *, hub_base_urls: Sequence[str]) -> subprocess.Popen[bytes]:
-    repo_root = Path(args.repo_root).resolve() if args.repo_root else Path.cwd().resolve()
+    repo_root = _repo_root_from_args(args)
     compose_file = Path(args.docker_compose_file or DEFAULT_EXP_FDB_DOCKER_COMPOSE_FILE)
     if not compose_file.is_absolute():
         compose_file = repo_root / compose_file
@@ -294,6 +400,7 @@ def launch_scheduler_lab_docker(args: argparse.Namespace, *, hub_base_urls: Sequ
 
 def serve_exp_fdb_hubs(args: argparse.Namespace) -> int:
     live_ports = parse_ports(args.ports if args.ports else args.port, default=DEFAULT_EXP_FDB_HUB_PORT)
+    ensure_foundationdb_smoke_loaded(args)
     servers = [create_exp_fdb_hub_server(args, port=port) for port in live_ports]
     threads: list[threading.Thread] = []
     docker_process: subprocess.Popen[bytes] | None = None
@@ -391,6 +498,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--docker-output-dir", type=Path, default=DEFAULT_EXP_FDB_DOCKER_OUTPUT_DIR, help="Repository-relative output directory for scheduler lab events.")
     parser.add_argument("--no-docker-build", action="store_true", help="Do not pass --build to docker compose up.")
     parser.add_argument(
+        "--no-fdb-autostart",
+        action="store_true",
+        help=(
+            "Do not automatically start/reuse the local FoundationDB smoke Docker container "
+            "when the default .foundationdb/docker.cluster path is missing or not loaded."
+        ),
+    )
+    parser.add_argument("--fdb-container-name", default=DEFAULT_EXP_FDB_SMOKE_CONTAINER_NAME, help="Local FoundationDB smoke container name to start/reuse before hub startup.")
+    parser.add_argument("--fdb-port", type=int, default=DEFAULT_EXP_FDB_SMOKE_PORT, help="Host/container TCP port for the local FoundationDB smoke database.")
+    parser.add_argument("--fdb-docker-image", default=DEFAULT_EXP_FDB_SMOKE_DOCKER_IMAGE, help="FoundationDB Docker image used when auto-starting the local smoke database.")
+    parser.add_argument("--fdb-docker-command", default="docker", help="Docker CLI executable used when auto-starting the local FoundationDB smoke database.")
+    parser.add_argument("--fdb-docker-platform", default=None, help="Optional Docker platform for the auto-started FoundationDB smoke container, for example linux/amd64.")
+    parser.add_argument("--fdb-docker-start-timeout", type=float, default=DEFAULT_EXP_FDB_SMOKE_START_TIMEOUT_SECONDS, help="Seconds to wait for the auto-started FoundationDB smoke database to become configurable.")
+    parser.add_argument(
         "--no-activate-cached-native-client",
         action="store_true",
         help="Do not add .foundationdb/native-client to PATH/DLL search path before importing FDB.",
@@ -420,6 +541,10 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--forced-alive must be >= 0")
     if args.http_timeout_seconds <= 0:
         raise SystemExit("--http-timeout-seconds must be > 0")
+    if args.fdb_port <= 0 or args.fdb_port > 65535:
+        raise SystemExit("--fdb-port must be 1..65535")
+    if args.fdb_docker_start_timeout <= 0:
+        raise SystemExit("--fdb-docker-start-timeout must be > 0")
     if args.request_startup_mode == "auto":
         args.request_startup_mode = "surge" if args.funded > 0 else "natural"
     return serve_exp_fdb_hubs(args)
