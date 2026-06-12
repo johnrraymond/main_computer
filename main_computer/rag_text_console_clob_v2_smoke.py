@@ -62,6 +62,15 @@ DEFAULT_EXCERPT_TAIL_LINES = 25
 DEFAULT_LOOKUP_MAX_RESULTS = 25
 DEFAULT_LOOKUP_TERMS = ("text_console", "clob")
 
+# RAG-proof defaults are intentionally smaller than the first-turn compact
+# reference budget. The goal is to prove retrieval, not to let aggregate prompt
+# size creep back toward full-clob behavior.
+DEFAULT_RAG_PROOF_MAX_CONTEXT_CHARS = 3600
+DEFAULT_BLIND_CLOB_CONTEXT_CHARS = 1800
+DEFAULT_FILE_CONTENT_LOOKUP_CONTEXT_CHARS = 2200
+DEFAULT_FILE_CONTENT_MAX_CHUNKS = 5
+CLOB_TYPE_FILE_CONTENT = "file_content"
+
 EXCLUDED_DIR_NAMES = {
     ".git",
     ".hg",
@@ -313,7 +322,7 @@ def generate_recursive_repo_tree_clob(root: Path, *, clob_dir: Path) -> dict[str
     }
 
 
-def load_clob(path: Path) -> dict[str, Any]:
+def load_clob(path: Path, *, expected_type: str | None = None) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("clob file did not contain a JSON object")
@@ -322,8 +331,12 @@ def load_clob(path: Path) -> dict[str, Any]:
     clob = payload.get("clob")
     if not isinstance(clob, dict) or not clob.get("id"):
         raise ValueError("clob file is missing clob metadata/id")
-    if clob.get("type") != CLOB_TYPE_RECURSIVE_REPO_TREE:
-        raise ValueError(f"unexpected clob type: {clob.get('type')!r}")
+    clob_type = clob.get("type")
+    allowed_types = {CLOB_TYPE_RECURSIVE_REPO_TREE, CLOB_TYPE_FILE_CONTENT}
+    if expected_type is not None and clob_type != expected_type:
+        raise ValueError(f"unexpected clob type: {clob_type!r}; expected {expected_type!r}")
+    if expected_type is None and clob_type not in allowed_types:
+        raise ValueError(f"unexpected clob type: {clob_type!r}")
     if not isinstance(payload.get("payload"), dict):
         raise ValueError("clob file is missing payload object")
     return payload
@@ -838,6 +851,751 @@ def response_mentions_lookup_path(response_text: str, lookup_result: dict[str, A
     }
 
 
+def paths_present_in_text(paths: list[str], text: str) -> list[str]:
+    haystack = str(text or "").replace("\\", "/").lower()
+    present: list[str] = []
+    for path in paths:
+        normalized = str(path or "").replace("\\", "/")
+        if normalized and normalized.lower() in haystack:
+            present.append(normalized)
+    return present
+
+
+def build_blind_clob_reference_context(
+    clob: dict[str, Any],
+    *,
+    max_chars: int = DEFAULT_BLIND_CLOB_CONTEXT_CHARS,
+) -> str:
+    """Build a compact clob reference that intentionally omits exact path samples.
+
+    RAG proof cases use this blind context so an exact path in the answer is
+    meaningful evidence that a lookup slice was used, not that the answer was
+    pre-baked into compact metadata.
+    """
+
+    meta = dict(clob.get("clob") or {})
+    summary = dict(clob.get("summary") or {})
+    storage = dict(clob.get("storage") or {})
+    reference = {
+        "clob_id": meta.get("id"),
+        "clob_type": meta.get("type"),
+        "cache_path": storage.get("path"),
+        "entry_count": meta.get("entry_count"),
+        "line_count": meta.get("line_count"),
+        "tree_text_chars": meta.get("tree_text_chars"),
+        "payload_bytes": meta.get("payload_bytes"),
+        "payload_sha256": meta.get("payload_sha256"),
+        "full_payload_available_as_side_loaded_clob": True,
+        "full_payload_pasted_into_model_context": False,
+        "rag_proof_mode": {
+            "exact_path_samples_intentionally_omitted": True,
+            "reason": "Exact answers must come from generic clob lookup evidence, not compact metadata.",
+        },
+        "summary": {
+            "root_name": summary.get("root_name"),
+            "file_count": summary.get("file_count"),
+            "dir_count": summary.get("dir_count"),
+            "entry_count": summary.get("entry_count"),
+            "top_extensions": _bounded_list(summary.get("top_extensions"), 5),
+        },
+    }
+    context = _assemble_clob_context(
+        reference=reference,
+        excerpt="",
+        max_chars=max_chars,
+        include_retrieval_hint=True,
+    )
+    return context[:max_chars].rstrip()
+
+
+def _safe_clob_cache_stem(repo_relative_path: str) -> str:
+    normalized = str(repo_relative_path).replace("\\", "/").strip("/")
+    digest = sha256_text(normalized)[:16]
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", normalized)
+    slug = slug.strip("._-") or "file"
+    if len(slug) > 80:
+        slug = slug[:80].rstrip("._-")
+    return f"{slug}-{digest}"
+
+
+def file_content_clob_cache_path(clob_dir: Path, repo_relative_path: str) -> Path:
+    return clob_dir / "file_content" / f"{_safe_clob_cache_stem(repo_relative_path)}.clob.json"
+
+
+def _is_text_like_path(path: str) -> bool:
+    suffix = Path(path).suffix.lower()
+    if suffix in {
+        ".py",
+        ".pyw",
+        ".js",
+        ".ts",
+        ".tsx",
+        ".jsx",
+        ".html",
+        ".css",
+        ".md",
+        ".txt",
+        ".json",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".ps1",
+        ".sh",
+        ".bat",
+        ".cmd",
+    }:
+        return True
+    return suffix == ""
+
+
+def load_or_create_file_content_clob(
+    *,
+    root: Path,
+    clob_dir: Path,
+    repo_relative_path: str,
+    refresh: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Create/reuse a file-content clob for a repo-relative text file.
+
+    The cache is keyed by path but invalidated by payload hash, so repeated
+    smoke runs avoid re-generating unchanged file clobs while still noticing
+    source edits.
+    """
+
+    normalized_path = str(repo_relative_path or "").replace("\\", "/").strip("/")
+    if not normalized_path or normalized_path.startswith("../") or "/../" in normalized_path or normalized_path == "..":
+        raise ValueError(f"Unsafe repo-relative file path for file-content clob: {repo_relative_path!r}")
+    source_path = (root / normalized_path).resolve()
+    if not _is_relative_to(source_path, root):
+        raise ValueError(f"File-content clob path escapes repo root: {repo_relative_path!r}")
+    if not source_path.exists() or not source_path.is_file():
+        raise FileNotFoundError(f"File-content clob source file does not exist: {normalized_path}")
+    if not _is_text_like_path(normalized_path):
+        raise ValueError(f"File-content clob source is not text-like: {normalized_path}")
+
+    raw = source_path.read_bytes()
+    text = raw.decode("utf-8", errors="replace")
+    payload = {
+        "path": normalized_path,
+        "text": text,
+        "lines": text.splitlines(),
+    }
+    payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    payload_sha = sha256_bytes(payload_json)
+    text_sha = sha256_text(text)
+    cache_path = root / file_content_clob_cache_path(clob_dir, normalized_path)
+    notes: list[str] = []
+
+    if cache_path.exists() and not refresh:
+        try:
+            existing = load_clob(cache_path, expected_type=CLOB_TYPE_FILE_CONTENT)
+            existing_meta = existing.get("clob") or {}
+            if existing_meta.get("payload_sha256") == payload_sha:
+                existing.setdefault("storage", {})
+                existing["storage"].update(
+                    {
+                        "path": file_content_clob_cache_path(clob_dir, normalized_path).as_posix(),
+                        "reused": True,
+                        "notes": ["reused saved file-content clob"],
+                    }
+                )
+                return existing, {
+                    "path": file_content_clob_cache_path(clob_dir, normalized_path).as_posix(),
+                    "reused": True,
+                    "notes": ["reused saved file-content clob"],
+                }
+            notes.append("cached file-content clob was stale; regenerated")
+        except Exception as exc:
+            notes.append(f"cached file-content clob could not be read; regenerated: {exc}")
+    elif refresh:
+        notes.append("refresh requested; rebuilt file-content clob")
+    else:
+        notes.append("saved file-content clob was missing; generated it")
+
+    line_count = len(payload["lines"])
+    clob_id = f"clob-file_content-{payload_sha[:16]}"
+    file_clob = {
+        "schema_version": CLOB_SCHEMA_VERSION,
+        "clob": {
+            "id": clob_id,
+            "type": CLOB_TYPE_FILE_CONTENT,
+            "created_at": utc_now_iso(),
+            "repo_relative_path": normalized_path,
+            "line_count": line_count,
+            "text_chars": len(text),
+            "payload_bytes": len(payload_json),
+            "payload_sha256": payload_sha,
+            "text_sha256": text_sha,
+            "cache_policy": "reuse until file payload sha changes or --refresh-clob is supplied",
+        },
+        "summary": {
+            "path": normalized_path,
+            "line_count": line_count,
+            "text_chars": len(text),
+            "extension": Path(normalized_path).suffix.lower(),
+        },
+        "payload": payload,
+        "storage": {
+            "path": file_content_clob_cache_path(clob_dir, normalized_path).as_posix(),
+            "reused": False,
+            "notes": notes,
+        },
+    }
+    save_clob(cache_path, file_clob)
+    return file_clob, {
+        "path": file_content_clob_cache_path(clob_dir, normalized_path).as_posix(),
+        "reused": False,
+        "notes": notes,
+    }
+
+
+def _line_match_score(line: str, terms: list[str]) -> int:
+    lowered = line.lower()
+    score = 0
+    for term in terms:
+        needle = str(term).lower()
+        if needle and needle in lowered:
+            score += 1
+    return score
+
+
+def query_file_content_clob(
+    clob: dict[str, Any],
+    *,
+    terms: list[str] | tuple[str, ...] | str | None,
+    max_chunks: int = DEFAULT_FILE_CONTENT_MAX_CHUNKS,
+    context_radius: int = 3,
+    max_chunk_chars: int = 900,
+) -> dict[str, Any]:
+    meta = dict(clob.get("clob") or {})
+    payload = dict(clob.get("payload") or {})
+    lines = [str(line) for line in (payload.get("lines") or [])]
+    lookup_terms = normalize_lookup_terms(terms)
+    normalized_terms = [term.lower() for term in lookup_terms]
+    matches: list[tuple[int, int]] = []
+    for index, line in enumerate(lines):
+        score = _line_match_score(line, normalized_terms)
+        if score > 0:
+            matches.append((score, index))
+
+    # Prefer dense matches but keep line-order stable for equal scores.
+    matches.sort(key=lambda item: (-item[0], item[1]))
+    selected_ranges: list[tuple[int, int]] = []
+    for _score, index in matches:
+        start = max(0, index - max(0, int(context_radius)))
+        end = min(len(lines), index + max(0, int(context_radius)) + 1)
+        if any(not (end <= old_start or start >= old_end) for old_start, old_end in selected_ranges):
+            continue
+        selected_ranges.append((start, end))
+        if len(selected_ranges) >= max(0, int(max_chunks)):
+            break
+
+    if not selected_ranges and lines and max_chunks > 0:
+        selected_ranges.append((0, min(len(lines), max(1, int(context_radius) * 2 + 1))))
+
+    selected_ranges.sort()
+    chunks: list[dict[str, Any]] = []
+    for start, end in selected_ranges:
+        chunk_lines = lines[start:end]
+        rendered = "\n".join(f"{line_number + 1}: {line}" for line_number, line in enumerate(chunk_lines, start=start))
+        if len(rendered) > max_chunk_chars:
+            marker = "\n... [file-content chunk cut to fit context budget] ..."
+            rendered = rendered[: max(0, max_chunk_chars - len(marker))].rstrip() + marker
+        chunks.append(
+            {
+                "path": payload.get("path"),
+                "start_line": start + 1,
+                "end_line": end,
+                "text": rendered,
+            }
+        )
+
+    return {
+        "operation": "file_content_lookup",
+        "clob_id": meta.get("id"),
+        "clob_type": meta.get("type"),
+        "payload_sha256": meta.get("payload_sha256"),
+        "path": payload.get("path"),
+        "query": {
+            "terms": lookup_terms,
+            "max_chunks": max(0, int(max_chunks)),
+            "context_radius": max(0, int(context_radius)),
+            "max_chunk_chars": int(max_chunk_chars),
+        },
+        "match_count": len(matches),
+        "returned_count": len(chunks),
+        "omitted_count": max(0, len(matches) - len(chunks)),
+        "chunks": chunks,
+        "full_payload_available_as_side_loaded_clob": True,
+        "full_payload_pasted_into_model_context": False,
+    }
+
+
+def build_file_content_lookup_context(
+    lookup_result: dict[str, Any],
+    *,
+    max_chars: int = DEFAULT_FILE_CONTENT_LOOKUP_CONTEXT_CHARS,
+) -> str:
+    def _payload_with_limit(chunk_limit: int) -> dict[str, Any]:
+        chunks = list(lookup_result.get("chunks") or [])[: max(0, int(chunk_limit))]
+        return {
+            "operation": lookup_result.get("operation"),
+            "clob_id": lookup_result.get("clob_id"),
+            "clob_type": lookup_result.get("clob_type"),
+            "payload_sha256": lookup_result.get("payload_sha256"),
+            "path": lookup_result.get("path"),
+            "query": lookup_result.get("query"),
+            "match_count": lookup_result.get("match_count"),
+            "returned_count": len(chunks),
+            "omitted_count": max(0, int(lookup_result.get("match_count") or 0) - len(chunks)),
+            "chunks": chunks,
+            "full_payload_available_as_side_loaded_clob": True,
+            "full_payload_pasted_into_model_context": False,
+        }
+
+    header = (
+        "Targeted side-loaded file-content clob lookup result.\n"
+        "This is a retrieved content slice from a saved file clob, not the full file.\n"
+        "Use exact symbols, function names, assertion strings, or paths from this evidence.\n"
+    )
+    for chunk_limit in [int(lookup_result.get("returned_count") or 0), 5, 3, 2, 1, 0]:
+        payload_text = json.dumps(_payload_with_limit(chunk_limit), indent=2, ensure_ascii=False, sort_keys=True)
+        context = (header + payload_text).strip()
+        if len(context) <= max_chars:
+            return context
+
+    fallback = (
+        "Targeted side-loaded file-content clob lookup result.\n"
+        f"clob_id: {lookup_result.get('clob_id')}\n"
+        f"path: {lookup_result.get('path')}\n"
+        f"operation: {lookup_result.get('operation')}\n"
+        f"query: {lookup_result.get('query')}\n"
+        f"match_count: {lookup_result.get('match_count')}\n"
+        "full_payload_available_as_side_loaded_clob: true\n"
+        "full_payload_pasted_into_model_context: false\n"
+    )
+    return fallback[:max_chars].rstrip()
+
+
+def file_content_lookup_context_report(
+    file_clob: dict[str, Any],
+    lookup_result: dict[str, Any],
+    context: str,
+    *,
+    max_context_chars: int,
+) -> dict[str, Any]:
+    full_text = str(((file_clob.get("payload") or {}).get("text")) or "")
+    failures: list[str] = []
+    if int(lookup_result.get("match_count") or 0) <= 0:
+        failures.append("file-content clob lookup returned no term matches")
+    if not context:
+        failures.append("file-content lookup context is empty")
+    if len(context) > max_context_chars:
+        failures.append(f"file-content lookup context exceeds max_context_chars={max_context_chars}: {len(context)}")
+    if full_text and len(full_text) > max_context_chars and full_text in context:
+        failures.append("full file-content clob text appears inside lookup context")
+    if str(lookup_result.get("clob_id") or "") and str(lookup_result.get("clob_id")) not in context:
+        failures.append("file-content lookup context does not include the clob id")
+    if "retrieved content slice from a saved file clob" not in context.lower():
+        failures.append("file-content lookup context does not describe itself as a side-loaded content slice")
+    return {
+        "ok": not failures,
+        "failures": failures,
+        "context_chars": len(context),
+        "full_text_chars": len(full_text),
+        "context_sha256": sha256_text(context),
+        "full_text_sha256": sha256_text(full_text),
+        "full_text_injected": bool(full_text and full_text in context),
+        "max_context_chars": max_context_chars,
+        "match_count": lookup_result.get("match_count"),
+        "returned_count": lookup_result.get("returned_count"),
+    }
+
+
+def content_evidence_terms(lookup_result: dict[str, Any]) -> list[str]:
+    terms: list[str] = []
+    for chunk in lookup_result.get("chunks") or []:
+        text = str(chunk.get("text") or "")
+        for match in re.finditer(r"\b(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)\b", text):
+            terms.append(match.group(1))
+            terms.append(match.group(0))
+        for match in re.finditer(r"^\s*([A-Z][A-Z0-9_]{3,})\s*=", text, flags=re.M):
+            terms.append(match.group(1))
+        for line in text.splitlines():
+            stripped = re.sub(r"^\d+:\s*", "", line).strip()
+            if (
+                len(stripped) >= 18
+                and not stripped.startswith("#")
+                and any(token in stripped.lower() for token in ("assert", "lookup", "clob", "context", "full_"))
+            ):
+                terms.append(stripped[:120])
+    # Keep order while de-duplicating and avoid tiny/common words.
+    seen: set[str] = set()
+    unique: list[str] = []
+    for term in terms:
+        cleaned = str(term).strip()
+        key = cleaned.lower()
+        if len(cleaned) < 4 or key in seen:
+            continue
+        seen.add(key)
+        unique.append(cleaned)
+    return unique
+
+
+def response_mentions_content_evidence(response_text: str, lookup_result: dict[str, Any]) -> dict[str, Any]:
+    response = str(response_text or "")
+    response_lower = response.lower()
+    matched: list[str] = []
+    for term in content_evidence_terms(lookup_result):
+        if term.lower() in response_lower:
+            matched.append(term)
+    return {
+        "ok": bool(matched),
+        "matched_evidence": matched,
+        "checked_evidence": content_evidence_terms(lookup_result),
+    }
+
+
+def choose_file_candidate_from_tree_lookup(
+    lookup_result: dict[str, Any],
+    *,
+    root: Path,
+    preferred_prefix: str | None = None,
+) -> str | None:
+    normalized_prefix = str(preferred_prefix or "").replace("\\", "/").strip("/")
+    for result in lookup_result.get("results") or []:
+        if str(result.get("kind") or "").lower() != "file":
+            continue
+        path = str(result.get("path") or "").replace("\\", "/").strip("/")
+        if not path:
+            continue
+        if normalized_prefix and not (path == normalized_prefix or path.startswith(normalized_prefix.rstrip("/") + "/")):
+            continue
+        if not _is_text_like_path(path):
+            continue
+        candidate = (root / path).resolve()
+        if _is_relative_to(candidate, root) and candidate.exists() and candidate.is_file():
+            return path
+    return None
+
+
+def build_rag_proof_messages(*, contexts: list[str], prompt: str) -> list[Any]:
+    from main_computer.models import ChatMessage
+
+    messages: list[Any] = [
+        ChatMessage(
+            role="system",
+            content=(
+                "You are the Main Computer text-console clob RAG proof assistant. "
+                "Use only the provided side-loaded clob references and lookup slices as evidence. "
+                "Do not ask to regenerate clobs. When asked for evidence, copy at least one exact "
+                "path, symbol, function name, class name, or assertion string from the lookup slice."
+            ),
+        )
+    ]
+    for context in contexts:
+        messages.append(ChatMessage(role="system", content=context))
+    messages.append(ChatMessage(role="user", content=prompt))
+    return messages
+
+
+def deterministic_content_rag_response(prompt: str, lookup_result: dict[str, Any]) -> str:
+    path = str(lookup_result.get("path") or "")
+    evidence = content_evidence_terms(lookup_result)
+    evidence_text = evidence[0] if evidence else "no exact content evidence was returned"
+    return (
+        f"Using the side-loaded file-content lookup slice for `{path}`, I would inspect `{evidence_text}` next. "
+        "That exact item came from the retrieved content slice, not from a full-file prompt paste."
+    )
+
+
+def run_blind_tree_path_rag_case(
+    *,
+    root: Path,
+    clob: dict[str, Any],
+    base_url: str,
+    model: str,
+    timeout: float,
+    think: bool | str | None,
+    offline_contract_only: bool,
+    max_context_chars: int,
+) -> dict[str, Any]:
+    name = "blind tree path-RAG"
+    failures: list[str] = []
+    tree_text = str(((clob.get("payload") or {}).get("tree_text")) or "")
+    blind_context = build_blind_clob_reference_context(clob, max_chars=DEFAULT_BLIND_CLOB_CONTEXT_CHARS)
+    lookup_result = query_recursive_tree_clob(
+        clob,
+        terms=["text_console", "clob", "smoke"],
+        kind="file",
+        max_results=DEFAULT_LOOKUP_MAX_RESULTS,
+    )
+    lookup_context = build_clob_lookup_context(lookup_result, max_chars=2200)
+    lookup_validation = clob_lookup_context_report(clob, lookup_result, lookup_context, max_context_chars=2200)
+    failures.extend(lookup_validation.get("failures") or [])
+    returned_paths = [str(item.get("path") or "") for item in lookup_result.get("results") or [] if item.get("path")]
+    paths_in_blind_context = paths_present_in_text(returned_paths, blind_context)
+    if paths_in_blind_context:
+        failures.append("blind compact clob reference leaked exact lookup paths: " + ", ".join(paths_in_blind_context[:3]))
+
+    prompt = (
+        "Using the side-loaded repo-tree clob lookup evidence, find files related to text-console clob smoke behavior. "
+        "Name at least one exact path from the lookup slice and do not ask to regenerate the tree."
+    )
+    messages = build_rag_proof_messages(contexts=[blind_context, lookup_context], prompt=prompt)
+    request = _request_report(messages, model=model, think=think, last_user_message=prompt)
+    if tree_text and len(tree_text) > max_context_chars and tree_text in str(request.get("request_text") or ""):
+        failures.append("full recursive tree appeared in blind path-RAG request")
+
+    if offline_contract_only:
+        raw_response = {
+            "content": deterministic_lookup_response(prompt, lookup_result),
+            "provider": "offline-contract",
+            "model": model,
+            "metadata": {},
+            "duration_ms": 0,
+        }
+    else:
+        try:
+            raw_response = call_provider_chat(root=root, messages=messages, base_url=base_url, model=model, timeout=timeout, think=think)
+        except Exception as exc:
+            raw_response = {"content": "", "provider": "error", "model": model, "metadata": {}, "duration_ms": 0, "error": repr(exc)}
+            failures.append(f"{name} provider chat failed: {exc!r}")
+
+    response_content = str(raw_response.get("content") or "")
+    usage = response_mentions_lookup_path(response_content, lookup_result)
+    if int(lookup_result.get("result_count") or 0) > 0 and not usage.get("ok"):
+        failures.append(f"{name} response did not name any exact path from the tree lookup slice")
+
+    redacted_request = dict(request)
+    redacted_request.pop("request_text", None)
+    return {
+        "name": name,
+        "ok": not failures,
+        "failures": failures,
+        "query": lookup_result.get("query"),
+        "lookup_result_count": lookup_result.get("result_count"),
+        "lookup_returned_count": lookup_result.get("returned_count"),
+        "lookup_validation": lookup_validation,
+        "blind_context_chars": len(blind_context),
+        "lookup_context_chars": len(lookup_context),
+        "paths_in_blind_context": paths_in_blind_context,
+        "response_usage": usage,
+        "request": redacted_request,
+        "response": {"raw_response": raw_response, "content": response_content, "preview": one_line(response_content, limit=600)},
+        "lookup_result": lookup_result,
+    }
+
+
+def run_file_content_rag_case(
+    *,
+    root: Path,
+    clob_dir: Path,
+    tree_clob: dict[str, Any],
+    tree_lookup_result: dict[str, Any],
+    case_name: str,
+    prompt: str,
+    content_terms: list[str],
+    base_url: str,
+    model: str,
+    timeout: float,
+    think: bool | str | None,
+    offline_contract_only: bool,
+    refresh_file_clob: bool,
+    preferred_prefix: str | None = None,
+) -> dict[str, Any]:
+    failures: list[str] = []
+    selected_path = choose_file_candidate_from_tree_lookup(tree_lookup_result, root=root, preferred_prefix=preferred_prefix)
+    if not selected_path:
+        failures.append(f"{case_name} could not select a text file from tree lookup evidence")
+        return {
+            "name": case_name,
+            "ok": False,
+            "failures": failures,
+            "tree_query": tree_lookup_result.get("query"),
+            "selected_path": None,
+        }
+
+    file_clob, file_cache = load_or_create_file_content_clob(
+        root=root,
+        clob_dir=clob_dir,
+        repo_relative_path=selected_path,
+        refresh=refresh_file_clob,
+    )
+    content_lookup = query_file_content_clob(
+        file_clob,
+        terms=content_terms,
+        max_chunks=DEFAULT_FILE_CONTENT_MAX_CHUNKS,
+        context_radius=4,
+        max_chunk_chars=700,
+    )
+    content_context = build_file_content_lookup_context(
+        content_lookup,
+        max_chars=DEFAULT_FILE_CONTENT_LOOKUP_CONTEXT_CHARS,
+    )
+    content_validation = file_content_lookup_context_report(
+        file_clob,
+        content_lookup,
+        content_context,
+        max_context_chars=DEFAULT_FILE_CONTENT_LOOKUP_CONTEXT_CHARS,
+    )
+    failures.extend(content_validation.get("failures") or [])
+
+    tree_lookup_context = build_clob_lookup_context(tree_lookup_result, max_chars=1000)
+    file_text = str(((file_clob.get("payload") or {}).get("text")) or "")
+    messages = build_rag_proof_messages(
+        contexts=[tree_lookup_context, content_context],
+        prompt=prompt,
+    )
+    request = _request_report(messages, model=model, think=think, last_user_message=prompt)
+    if file_text and len(file_text) > DEFAULT_FILE_CONTENT_LOOKUP_CONTEXT_CHARS and file_text in str(request.get("request_text") or ""):
+        failures.append(f"{case_name} full file text appeared in model request")
+
+    if offline_contract_only:
+        raw_response = {
+            "content": deterministic_content_rag_response(prompt, content_lookup),
+            "provider": "offline-contract",
+            "model": model,
+            "metadata": {},
+            "duration_ms": 0,
+        }
+    else:
+        try:
+            raw_response = call_provider_chat(root=root, messages=messages, base_url=base_url, model=model, timeout=timeout, think=think)
+        except Exception as exc:
+            raw_response = {"content": "", "provider": "error", "model": model, "metadata": {}, "duration_ms": 0, "error": repr(exc)}
+            failures.append(f"{case_name} provider chat failed: {exc!r}")
+
+    response_content = str(raw_response.get("content") or "")
+    evidence_usage = response_mentions_content_evidence(response_content, content_lookup)
+    path_usage = response_mentions_lookup_path(response_content, {"results": [{"path": selected_path}]})
+    if int(content_lookup.get("match_count") or 0) > 0 and not evidence_usage.get("ok"):
+        failures.append(f"{case_name} response did not name exact content evidence from the file-content lookup slice")
+    if not path_usage.get("ok"):
+        failures.append(f"{case_name} response did not name the selected path from tree lookup evidence")
+
+    redacted_request = dict(request)
+    redacted_request.pop("request_text", None)
+    return {
+        "name": case_name,
+        "ok": not failures,
+        "failures": failures,
+        "tree_query": tree_lookup_result.get("query"),
+        "selected_path": selected_path,
+        "file_clob": {
+            "metadata": file_clob.get("clob"),
+            "summary": file_clob.get("summary"),
+            "storage": file_clob.get("storage"),
+            "cache": file_cache,
+        },
+        "content_query": content_lookup.get("query"),
+        "content_match_count": content_lookup.get("match_count"),
+        "content_returned_count": content_lookup.get("returned_count"),
+        "content_validation": content_validation,
+        "evidence_usage": evidence_usage,
+        "path_usage": path_usage,
+        "content_context_chars": len(content_context),
+        "request": redacted_request,
+        "response": {"raw_response": raw_response, "content": response_content, "preview": one_line(response_content, limit=600)},
+        "content_lookup": content_lookup,
+    }
+
+
+def run_rag_proof_cases(
+    *,
+    root: Path,
+    clob_dir: Path,
+    tree_clob: dict[str, Any],
+    refresh_file_clobs: bool,
+    base_url: str,
+    model: str,
+    timeout: float,
+    think: bool | str | None,
+    offline_contract_only: bool,
+) -> dict[str, Any]:
+    cases: list[dict[str, Any]] = []
+
+    path_case = run_blind_tree_path_rag_case(
+        root=root,
+        clob=tree_clob,
+        base_url=base_url,
+        model=model,
+        timeout=timeout,
+        think=think,
+        offline_contract_only=offline_contract_only,
+        max_context_chars=DEFAULT_RAG_PROOF_MAX_CONTEXT_CHARS,
+    )
+    cases.append(path_case)
+
+    path_lookup_result = path_case.get("lookup_result") or query_recursive_tree_clob(
+        tree_clob,
+        terms=["text_console", "clob", "smoke"],
+        kind="file",
+        max_results=DEFAULT_LOOKUP_MAX_RESULTS,
+    )
+    cases.append(
+        run_file_content_rag_case(
+            root=root,
+            clob_dir=clob_dir,
+            tree_clob=tree_clob,
+            tree_lookup_result=path_lookup_result,
+            case_name="tree clob to file-content RAG",
+            prompt=(
+                "Using the tree lookup evidence and the file-content clob lookup slice, identify one helper, "
+                "function, class, or exact string that appears responsible for clob lookup/context handling. "
+                "Name the selected path and copy the exact evidence item."
+            ),
+            content_terms=["clob", "lookup", "context"],
+            base_url=base_url,
+            model=model,
+            timeout=timeout,
+            think=think,
+            offline_contract_only=offline_contract_only,
+            refresh_file_clob=refresh_file_clobs,
+        )
+    )
+
+    test_tree_lookup = query_recursive_tree_clob(
+        tree_clob,
+        terms=["clob"],
+        prefix="tests/",
+        kind="file",
+        max_results=DEFAULT_LOOKUP_MAX_RESULTS,
+    )
+    cases.append(
+        run_file_content_rag_case(
+            root=root,
+            clob_dir=clob_dir,
+            tree_clob=tree_clob,
+            tree_lookup_result=test_tree_lookup,
+            case_name="test-file assertion RAG",
+            prompt=(
+                "Using side-loaded clob evidence, find a test related to clob lookup behavior and explain what it verifies. "
+                "Name the exact test path and copy one exact function, assertion, or assertion-related string from the content slice."
+            ),
+            content_terms=["assert", "lookup", "context", "full_tree_injected"],
+            base_url=base_url,
+            model=model,
+            timeout=timeout,
+            think=think,
+            offline_contract_only=offline_contract_only,
+            refresh_file_clob=refresh_file_clobs,
+            preferred_prefix="tests/",
+        )
+    )
+
+    failures: list[str] = []
+    for case in cases:
+        if not case.get("ok"):
+            for failure in case.get("failures") or []:
+                failures.append(f"{case.get('name')}: {failure}")
+    return {
+        "ok": not failures,
+        "failures": failures,
+        "cases": cases,
+    }
+
+
 def build_model_messages(*, prompt: str, clob_context: str) -> list[Any]:
     from main_computer.models import ChatMessage
 
@@ -997,6 +1755,8 @@ def run_clob_v2_smoke(
     lookup_max_results: int = DEFAULT_LOOKUP_MAX_RESULTS,
     max_lookup_context_chars: int = DEFAULT_MAX_LOOKUP_CONTEXT_CHARS,
     lookup_prompt: str | None = None,
+    run_rag_proof: bool = True,
+    refresh_file_clobs: bool | None = None,
 ) -> dict[str, Any]:
     add_repo_to_path(root)
     failures: list[str] = []
@@ -1151,6 +1911,27 @@ def run_clob_v2_smoke(
     if int(lookup_result.get("result_count") or 0) > 0 and not lookup_usage.get("ok"):
         failures.append("lookup model response did not name any exact path returned by the clob lookup slice")
 
+    rag_proof_report = {
+        "ok": True,
+        "failures": [],
+        "cases": [],
+        "skipped": True,
+        "skip_reason": "run_rag_proof was false",
+    }
+    if run_rag_proof:
+        rag_proof_report = run_rag_proof_cases(
+            root=root,
+            clob_dir=clob_dir,
+            tree_clob=clob,
+            refresh_file_clobs=bool(refresh_file_clobs) if refresh_file_clobs is not None else bool(refresh_clob),
+            base_url=base_url,
+            model=model,
+            timeout=timeout,
+            think=think,
+            offline_contract_only=offline_contract_only,
+        )
+        failures.extend(rag_proof_report.get("failures") or [])
+
     def _without_request_text(report: dict[str, Any]) -> dict[str, Any]:
         clone = dict(report)
         clone.pop("request_text", None)
@@ -1192,6 +1973,7 @@ def run_clob_v2_smoke(
             "clob_reminder_context": lookup_clob_context,
             "response_path_usage": lookup_usage,
         },
+        "rag_proof": rag_proof_report,
         "model_request": _without_request_text(model_request),
         "initial_response": {
             "raw_response": raw_initial_response,
@@ -1287,6 +2069,44 @@ def print_summary(report: dict[str, Any]) -> None:
             print(f"  - {item.get('path')}")
     print()
 
+    rag = report.get("rag_proof") or {}
+    print("RAG proof cases:")
+    if rag.get("skipped"):
+        print(f"- skipped: {rag.get('skip_reason')}")
+    else:
+        print(f"- validation={'PASS' if rag.get('ok') else 'FAIL'} cases={len(rag.get('cases') or [])}")
+        for case in rag.get("cases") or []:
+            print(f"  - {case.get('name')}: {'PASS' if case.get('ok') else 'FAIL'}")
+            if case.get("query"):
+                print(f"    query={case.get('query')}")
+            if case.get("tree_query"):
+                print(f"    tree_query={case.get('tree_query')}")
+            if case.get("selected_path"):
+                print(f"    selected_path={case.get('selected_path')}")
+            if case.get("content_query"):
+                print(f"    content_query={case.get('content_query')}")
+            if case.get("lookup_result_count") is not None:
+                print(
+                    f"    lookup_results={case.get('lookup_result_count')} "
+                    f"returned={case.get('lookup_returned_count')}"
+                )
+            if case.get("content_match_count") is not None:
+                print(
+                    f"    content_matches={case.get('content_match_count')} "
+                    f"returned={case.get('content_returned_count')} "
+                    f"context_chars={case.get('content_context_chars')}"
+                )
+            usage = case.get("response_usage") or {}
+            if usage:
+                print(f"    response_used_path={bool(usage.get('ok'))} matched_paths={(usage.get('matched_paths') or [])[:3]}")
+            evidence_usage = case.get("evidence_usage") or {}
+            if evidence_usage:
+                print(f"    response_used_content_evidence={bool(evidence_usage.get('ok'))} matched={(evidence_usage.get('matched_evidence') or [])[:3]}")
+            case_failures = case.get("failures") or []
+            for failure in case_failures[:3]:
+                print(f"    failure: {failure}")
+    print()
+
     model_request = report.get("model_request") or {}
     print("Initial model request:")
     print(
@@ -1367,6 +2187,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lookup-kind", default="file", help="Optional kind filter for the clob lookup: file, dir, or empty.")
     parser.add_argument("--lookup-max-results", type=int, default=DEFAULT_LOOKUP_MAX_RESULTS)
     parser.add_argument(
+        "--skip-rag-proof",
+        action="store_true",
+        help="Run only the original clob/cache/lookup contract and skip the v2.2 RAG proof cases.",
+    )
+    parser.add_argument(
+        "--refresh-file-clobs",
+        action="store_true",
+        help="Rebuild file-content clobs used by RAG proof cases. --refresh-clob also refreshes them.",
+    )
+    parser.add_argument(
         "--prompt",
         default=(
             "Use the side-loaded recursive repository-tree clob to orient yourself. "
@@ -1411,6 +2241,8 @@ def main(argv: list[str] | None = None) -> int:
         lookup_max_results=int(args.lookup_max_results),
         max_lookup_context_chars=int(args.max_lookup_context_chars),
         lookup_prompt=args.lookup_prompt,
+        run_rag_proof=not bool(args.skip_rag_proof),
+        refresh_file_clobs=bool(args.refresh_file_clobs or args.refresh_clob),
     )
     report["full_report_path"] = str(args.full_report)
     full_report_path = root / args.full_report
