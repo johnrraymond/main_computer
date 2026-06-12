@@ -1136,19 +1136,103 @@ def record_process_phase_event(event: dict[str, Any], phase_nodes: dict[str, set
         _mark_process_phase(phase_nodes, event, "self_terminated_b2bfailures")
 
 
+def process_child_event_path(output_dir: Path, node: dict[str, Any], node_index: int) -> Path:
+    """Return the child event path without touching the filesystem.
+
+    This intentionally mirrors ``SyncEventSink`` in node_process.py so the
+    parent can keep a fixed list of event files to sample after spawn. It must
+    stay parent-memory-only and must not glob or open child event files during
+    launch.
+    """
+
+    safe_node_id = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(node.get("node_id") or "node"))
+    return output_dir / f"node-process-{node_index:05d}-{safe_node_id}.events.jsonl"
+
+
 def collect_process_phase_counts(
     output_dir: Path,
     offsets: dict[Path, int],
     phase_nodes: dict[str, set[str]],
     rollup_stats: dict[str, Counter[str]] | None = None,
+    *,
+    event_paths: Sequence[Path] | None = None,
+    max_scan_seconds: float = 0.0,
+    max_events_per_file: int = 256,
+    scan_cursor_state: dict[str, Any] | None = None,
+    scan_state: dict[str, Any] | None = None,
 ) -> dict[str, int]:
-    """Incrementally scan child event files and return current process phase counts."""
+    """Incrementally scan child event files and return current process phase counts.
 
-    for events_path in sorted(output_dir.glob("node-process-*.events.jsonl")):
+    When ``event_paths`` is supplied, only those parent-known files are sampled;
+    this avoids repeated directory globbing in large process-mode runs.
+
+    The scanner is deliberately fair rather than catch-up greedy: each sample
+    starts from a rotating cursor and reads at most ``max_events_per_file`` from
+    any one child file before moving on. A few retry-storming nodes therefore
+    cannot permanently starve the rest of the fleet from rollup visibility.
+    """
+
+    paths = sorted(output_dir.glob("node-process-*.events.jsonl")) if event_paths is None else list(event_paths)
+    total_paths = len(paths)
+    started = time.monotonic()
+    deadline = started + max(0.0, float(max_scan_seconds)) if max_scan_seconds and max_scan_seconds > 0 else None
+    per_file_limit = max(1, int(max_events_per_file or 0))
+    start_index = 0
+    if total_paths and scan_cursor_state is not None:
+        try:
+            start_index = int(scan_cursor_state.get("next_index", 0)) % total_paths
+        except Exception:
+            start_index = 0
+
+    files_scanned = 0
+    events_scanned = 0
+    files_limited = 0
+    truncated = False
+    reasons: set[str] = set()
+    next_index = start_index
+
+    if not paths:
+        if scan_state is not None:
+            scan_state.clear()
+            scan_state.update(
+                {
+                    "rollup_scan_truncated": False,
+                    "rollup_scan_reason": "",
+                    "rollup_partial": False,
+                    "rollup_partial_reason": "",
+                    "rollup_files_total": 0,
+                    "rollup_files_scanned": 0,
+                    "rollup_files_limited": 0,
+                    "rollup_events_scanned": 0,
+                    "rollup_scan_start_index": 0,
+                    "rollup_scan_next_index": 0,
+                    "rollup_events_per_file_limit": per_file_limit,
+                    "rollup_scan_elapsed_seconds": round(time.monotonic() - started, 3),
+                }
+            )
+        if scan_cursor_state is not None:
+            scan_cursor_state["next_index"] = 0
+        return process_phase_count_summary(phase_nodes)
+
+    for ordinal in range(total_paths):
+        path_index = (start_index + ordinal) % total_paths
+        events_path = paths[path_index]
+        next_index = (path_index + 1) % total_paths
+        if deadline is not None and time.monotonic() >= deadline:
+            truncated = True
+            reasons.add("time_budget")
+            next_index = path_index
+            break
         try:
             with events_path.open("rb") as handle:
                 handle.seek(offsets.get(events_path, 0))
+                events_this_file = 0
                 while True:
+                    if events_this_file >= per_file_limit:
+                        files_limited += 1
+                        truncated = True
+                        reasons.add("per_file_event_budget")
+                        break
                     line_start = handle.tell()
                     raw_line = handle.readline()
                     if not raw_line:
@@ -1161,17 +1245,72 @@ def collect_process_phase_counts(
                     except Exception:
                         continue
                     if isinstance(event, dict):
+                        events_scanned += 1
+                        events_this_file += 1
                         record_process_phase_event(event, phase_nodes)
                         if rollup_stats is not None:
                             record_process_rollup_event(event, rollup_stats)
+                    if deadline is not None and events_scanned % 128 == 0 and time.monotonic() >= deadline:
+                        truncated = True
+                        reasons.add("time_budget")
+                        break
                 offsets[events_path] = handle.tell()
+                files_scanned += 1
+                if "time_budget" in reasons:
+                    break
         except OSError:
             continue
+
+    if scan_cursor_state is not None:
+        scan_cursor_state["next_index"] = next_index
+
+    reason = ",".join(sorted(reasons))
+    if scan_state is not None:
+        scan_state.clear()
+        scan_state.update(
+            {
+                "rollup_scan_truncated": bool(truncated),
+                "rollup_scan_reason": reason,
+                "rollup_partial": bool(truncated),
+                "rollup_partial_reason": reason,
+                "rollup_files_total": int(total_paths),
+                "rollup_files_scanned": int(files_scanned),
+                "rollup_files_limited": int(files_limited),
+                "rollup_events_scanned": int(events_scanned),
+                "rollup_scan_start_index": int(start_index),
+                "rollup_scan_next_index": int(next_index),
+                "rollup_events_per_file_limit": int(per_file_limit),
+                "rollup_scan_elapsed_seconds": round(time.monotonic() - started, 3),
+            }
+        )
     return process_phase_count_summary(phase_nodes)
 
 
 def process_phase_count_summary(phase_nodes: dict[str, set[str]]) -> dict[str, int]:
     return {counter: len(phase_nodes.get(counter, set())) for counter in PROCESS_PHASE_COUNTERS}
+
+
+def process_parent_runtime_due_flags(
+    *,
+    now: float,
+    parent_status_interval: float,
+    next_parent_status_at: float,
+    parent_rollup_interval: float,
+    next_parent_rollup_at: float,
+) -> dict[str, bool]:
+    """Return runtime-loop due flags without letting status imply scans.
+
+    Parent status is a cheap console/parent-event heartbeat. It must not drive
+    child event-file scans; only minute rollups should do that expensive work.
+    """
+
+    status_due = parent_status_interval > 0.0 and now >= next_parent_status_at
+    rollup_due = parent_rollup_interval > 0.0 and now >= next_parent_rollup_at
+    return {
+        "status_due": status_due,
+        "rollup_due": rollup_due,
+        "scan_due": rollup_due,
+    }
 
 
 def format_process_phase_counts(counts: dict[str, int]) -> str:
@@ -1192,6 +1331,8 @@ def format_process_phase_counts(counts: dict[str, int]) -> str:
     return "[worker-lab] " + " ".join(f"{label}={int(counts.get(counter, 0))}" for counter, label in labels)
 
 
+PROCESS_ROLLUP_CSV_PHASE_COLUMNS = tuple(counter for counter in PROCESS_PHASE_COUNTERS if counter != "nodes_started")
+
 PROCESS_ROLLUP_CSV_COLUMNS = (
     "run_id",
     "generated_at",
@@ -1201,8 +1342,24 @@ PROCESS_ROLLUP_CSV_COLUMNS = (
     "nodes_started",
     "nodes_alive",
     "nodes_exited",
-    *PROCESS_PHASE_COUNTERS,
-    "self_terminated_b2bfailures",
+    "children_launched",
+    "children_remaining",
+    "rollup_scan_truncated",
+    "rollup_scan_reason",
+    "rollup_partial",
+    "rollup_partial_reason",
+    "rollup_files_total",
+    "rollup_files_scanned",
+    "rollup_files_limited",
+    "rollup_events_scanned",
+    "rollup_scan_start_index",
+    "rollup_scan_next_index",
+    "rollup_events_per_file_limit",
+    "rollup_scan_elapsed_seconds",
+    "transport_failures",
+    "market_http_responses",
+    "transport_failure_ratio",
+    *PROCESS_ROLLUP_CSV_PHASE_COLUMNS,
     "event_counts_json",
     "http_status_counts_json",
     "endpoint_counts_json",
@@ -1289,6 +1446,14 @@ def build_process_rollup(
     phase_counts = process_phase_count_summary(phase_nodes)
     exit_codes = Counter(str(int(process.poll())) for _node, process in children if process.poll() is not None)
     nodes_alive = sum(1 for _node, process in children if process.poll() is None)
+    event_counts = dict(sorted(rollup_stats.get("event_counts", Counter()).items()))
+    http_status_counts = dict(sorted(rollup_stats.get("http_status_counts", Counter()).items()))
+    endpoint_counts = dict(sorted(rollup_stats.get("endpoint_counts", Counter()).items()))
+    hub_counts = dict(sorted(rollup_stats.get("hub_counts", Counter()).items()))
+    transport_failures = int(endpoint_counts.get("transport_failures", 0))
+    market_http_responses = sum(int(count) for status, count in http_status_counts.items() if str(status) != "0")
+    total_observed_attempts = transport_failures + market_http_responses
+    transport_failure_ratio = round(transport_failures / total_observed_attempts, 6) if total_observed_attempts else 0.0
     rollup: dict[str, Any] = {
         "event": event_name,
         "run_id": run_id,
@@ -1301,14 +1466,91 @@ def build_process_rollup(
         "nodes_exited": max(0, len(children) - nodes_alive),
         "assumed_prefunded_nodes": int(assumed_prefunded_count),
         "phase_counts": phase_counts,
-        "event_counts": dict(sorted(rollup_stats.get("event_counts", Counter()).items())),
-        "http_status_counts": dict(sorted(rollup_stats.get("http_status_counts", Counter()).items())),
-        "endpoint_counts": dict(sorted(rollup_stats.get("endpoint_counts", Counter()).items())),
-        "hub_counts": dict(sorted(rollup_stats.get("hub_counts", Counter()).items())),
+        "event_counts": event_counts,
+        "http_status_counts": http_status_counts,
+        "endpoint_counts": endpoint_counts,
+        "hub_counts": hub_counts,
         "exit_codes": dict(sorted(exit_codes.items())),
         "self_terminated_b2bfailures": int(exit_codes.get("75", 0)),
+        "children_launched": len(children),
+        "children_remaining": max(0, int(node_count) - len(children)),
+        "rollup_scan_truncated": False,
+        "rollup_scan_reason": "",
+        "rollup_partial": False,
+        "rollup_partial_reason": "",
+        "rollup_files_total": 0,
+        "rollup_files_scanned": 0,
+        "rollup_files_limited": 0,
+        "rollup_events_scanned": 0,
+        "rollup_scan_start_index": 0,
+        "rollup_scan_next_index": 0,
+        "rollup_events_per_file_limit": 0,
+        "rollup_scan_elapsed_seconds": 0.0,
+        "transport_failures": transport_failures,
+        "market_http_responses": int(market_http_responses),
+        "transport_failure_ratio": transport_failure_ratio,
     }
     rollup.update(phase_counts)
+    return rollup
+
+
+def build_process_launch_progress_rollup(
+    *,
+    run_id: str,
+    started_at: float,
+    node_count: int,
+    assumed_prefunded_count: int,
+    children: list[tuple[dict[str, Any], subprocess.Popen[bytes]]],
+    event_name: str = "lab.process_parent.launch_progress",
+) -> dict[str, Any]:
+    """Build a parent-only launch progress rollup.
+
+    This function must remain cheap: it does not glob, open, or parse child
+    event files. It is safe to call while the parent is launching many child
+    processes.
+    """
+
+    exit_codes = Counter(str(int(process.poll())) for _node, process in children if process.poll() is not None)
+    nodes_alive = sum(1 for _node, process in children if process.poll() is None)
+    empty_phase_counts = {counter: 0 for counter in PROCESS_PHASE_COUNTERS}
+    empty_phase_counts["nodes_started"] = len(children)
+    rollup: dict[str, Any] = {
+        "event": event_name,
+        "run_id": run_id,
+        "generated_at": utc_now(),
+        "elapsed_seconds": round(time.monotonic() - started_at, 3),
+        "execution_mode": "process",
+        "node_count": int(node_count),
+        "nodes_started": len(children),
+        "children_launched": len(children),
+        "children_remaining": max(0, int(node_count) - len(children)),
+        "nodes_alive": nodes_alive,
+        "nodes_exited": max(0, len(children) - nodes_alive),
+        "assumed_prefunded_nodes": int(assumed_prefunded_count),
+        "phase_counts": empty_phase_counts,
+        "event_counts": {},
+        "http_status_counts": {},
+        "endpoint_counts": {},
+        "hub_counts": {},
+        "exit_codes": dict(sorted(exit_codes.items())),
+        "self_terminated_b2bfailures": int(exit_codes.get("75", 0)),
+        "rollup_scan_truncated": False,
+        "rollup_scan_reason": "",
+        "rollup_partial": False,
+        "rollup_partial_reason": "",
+        "rollup_files_total": 0,
+        "rollup_files_scanned": 0,
+        "rollup_files_limited": 0,
+        "rollup_events_scanned": 0,
+        "rollup_scan_start_index": 0,
+        "rollup_scan_next_index": 0,
+        "rollup_events_per_file_limit": 0,
+        "rollup_scan_elapsed_seconds": 0.0,
+        "transport_failures": 0,
+        "market_http_responses": 0,
+        "transport_failure_ratio": 0.0,
+    }
+    rollup.update(empty_phase_counts)
     return rollup
 
 
@@ -1350,6 +1592,9 @@ def write_process_rollup_files(
 def format_process_rollup(rollup: dict[str, Any]) -> str:
     endpoints = rollup.get("endpoint_counts", {}) if isinstance(rollup.get("endpoint_counts"), dict) else {}
     statuses = rollup.get("http_status_counts", {}) if isinstance(rollup.get("http_status_counts"), dict) else {}
+    files_scanned = int(rollup.get("rollup_files_scanned", 0) or 0)
+    files_total = int(rollup.get("rollup_files_total", 0) or 0)
+    partial_marker = "!" if rollup.get("rollup_partial") or rollup.get("rollup_scan_truncated") else ""
     return (
         f"[worker-lab:{int(float(rollup.get('elapsed_seconds', 0)))}s run={rollup.get('run_id', '')}] "
         f"alive={int(rollup.get('nodes_alive', 0))} "
@@ -1364,7 +1609,20 @@ def format_process_rollup(rollup: dict[str, Any]) -> str:
         f"poll={int(endpoints.get('workers_poll', 0))} "
         f"hb={int(endpoints.get('workers_heartbeat', 0))} "
         f"http0={int(statuses.get('0', 0))} "
+        f"transport={int(rollup.get('transport_failures', endpoints.get('transport_failures', 0)) or 0)} "
+        f"market_http={int(rollup.get('market_http_responses', 0) or 0)} "
+        f"scan={files_scanned}/{files_total}{partial_marker} "
         f"b2b={int(rollup.get('self_terminated_b2bfailures', 0))}"
+    )
+
+
+def format_process_launch_progress(rollup: dict[str, Any]) -> str:
+    return (
+        f"[worker-lab:launch {int(float(rollup.get('elapsed_seconds', 0)))}s run={rollup.get('run_id', '')}] "
+        f"launched={int(rollup.get('children_launched', rollup.get('nodes_started', 0)))}/{int(rollup.get('node_count', 0))} "
+        f"remaining={int(rollup.get('children_remaining', 0))} "
+        f"alive={int(rollup.get('nodes_alive', 0))} "
+        f"exited={int(rollup.get('nodes_exited', 0))}"
     )
 
 
@@ -1482,14 +1740,24 @@ def run_process_mode(args: argparse.Namespace) -> int:
         flush=True,
     )
     event_offsets: dict[Path, int] = {}
+    child_event_paths: list[Path] = []
     phase_nodes: dict[str, set[str]] = {counter: set() for counter in PROCESS_PHASE_COUNTERS}
     rollup_stats = new_process_rollup_stats()
     parent_status_interval = max(0.0, float(getattr(args, "parent_status_interval", 2.0) or 0.0))
     parent_rollup_interval = max(0.0, float(getattr(args, "parent_rollup_interval", 60.0) or 0.0))
+    parent_launch_progress_interval = max(0.0, float(getattr(args, "parent_launch_progress_interval", 10.0) or 0.0))
+    parent_rollup_scan_seconds = max(0.0, float(getattr(args, "parent_rollup_scan_seconds", 2.0) or 0.0))
+    parent_rollup_scan_events_per_file = max(1, int(getattr(args, "parent_rollup_scan_events_per_file", 256) or 256))
+    scan_cursor_state: dict[str, Any] = {}
     next_parent_status_at = time.monotonic() + parent_status_interval
     next_parent_rollup_at = time.monotonic() + parent_rollup_interval
+    next_launch_progress_at = time.monotonic() + parent_launch_progress_interval
 
-    def emit_rollup(event_name: str = "lab.process_parent.rollup") -> dict[str, Any]:
+    def emit_rollup(
+        event_name: str = "lab.process_parent.rollup",
+        *,
+        scan_state: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         rollup = build_process_rollup(
             run_id=run_id,
             started_at=started_at,
@@ -1498,6 +1766,26 @@ def run_process_mode(args: argparse.Namespace) -> int:
             children=children,
             phase_nodes=phase_nodes,
             rollup_stats=rollup_stats,
+            event_name=event_name,
+        )
+        if scan_state:
+            rollup.update(scan_state)
+        write_process_rollup_files(
+            rollup,
+            rollups_jsonl=rollups_jsonl,
+            latest_rollup_json=latest_rollup_json,
+            rollups_csv=rollups_csv,
+        )
+        emit_parent(rollup)
+        return rollup
+
+    def emit_launch_progress(event_name: str = "lab.process_parent.launch_progress") -> dict[str, Any]:
+        rollup = build_process_launch_progress_rollup(
+            run_id=run_id,
+            started_at=started_at,
+            node_count=len(selected_nodes),
+            assumed_prefunded_count=assumed_prefunded_count,
+            children=children,
             event_name=event_name,
         )
         write_process_rollup_files(
@@ -1510,6 +1798,12 @@ def run_process_mode(args: argparse.Namespace) -> int:
         return rollup
 
     try:
+        # Launch progress is deliberately parent-only. It must not inspect child
+        # event files while the parent is starting many OS processes.
+        if parent_launch_progress_interval > 0.0 or parent_rollup_interval > 0.0:
+            launch_rollup = emit_launch_progress("lab.process_parent.launch_progress.initial")
+            print(format_process_launch_progress(launch_rollup), flush=True)
+
         for index, node in enumerate(selected_nodes):
             log_path = output_dir / f"node-process-{index:05d}-{node.get('node_id', 'node')}.log"
             command = build_node_process_command(args, runtime_node_list=runtime_node_list, node_index=index)
@@ -1519,23 +1813,79 @@ def run_process_mode(args: argparse.Namespace) -> int:
             finally:
                 log_handle.close()
             children.append((node, process))
+            child_event_paths.append(process_child_event_path(output_dir, node, index))
             phase_nodes.setdefault("nodes_started", set()).add(str(node.get("node_id") or f"node-index:{index}"))
 
-        # Emit an initial rollup so a long or wedged run has an immediately
-        # discoverable result file on disk before the first minute boundary.
+            now = time.monotonic()
+            if parent_launch_progress_interval > 0.0 and now >= next_launch_progress_at:
+                launch_rollup = emit_launch_progress()
+                print(format_process_launch_progress(launch_rollup), flush=True)
+                next_launch_progress_at = now + parent_launch_progress_interval
+
+        if parent_launch_progress_interval > 0.0 or parent_rollup_interval > 0.0:
+            launch_rollup = emit_launch_progress("lab.process_parent.launch_progress.post_spawn")
+            print(format_process_launch_progress(launch_rollup), flush=True)
+
+        # After spawn, a bounded scan can begin sampling child event files. The
+        # scan uses fixed parent-known paths and offsets rather than globbing or
+        # rereading full logs.
+        scan_state: dict[str, Any] = {}
+        phase_counts = collect_process_phase_counts(
+            output_dir,
+            event_offsets,
+            phase_nodes,
+            rollup_stats,
+            event_paths=child_event_paths,
+            max_scan_seconds=parent_rollup_scan_seconds,
+            max_events_per_file=parent_rollup_scan_events_per_file,
+            scan_cursor_state=scan_cursor_state,
+            scan_state=scan_state,
+        )
         if parent_rollup_interval > 0.0:
-            initial_rollup = emit_rollup("lab.process_parent.rollup.initial")
+            initial_rollup = emit_rollup("lab.process_parent.rollup.post_spawn", scan_state=scan_state)
             print(format_process_rollup(initial_rollup), flush=True)
+            next_parent_rollup_at = time.monotonic() + parent_rollup_interval
+        next_parent_status_at = time.monotonic() + parent_status_interval
 
         while time.monotonic() < stop_at:
-            phase_counts = collect_process_phase_counts(output_dir, event_offsets, phase_nodes, rollup_stats)
             now = time.monotonic()
-            if parent_status_interval > 0.0 and now >= next_parent_status_at:
-                emit_parent({"event": "lab.process_parent.phase_counts", "run_id": run_id, **phase_counts})
+            due_flags = process_parent_runtime_due_flags(
+                now=now,
+                parent_status_interval=parent_status_interval,
+                next_parent_status_at=next_parent_status_at,
+                parent_rollup_interval=parent_rollup_interval,
+                next_parent_rollup_at=next_parent_rollup_at,
+            )
+            rollup_due = due_flags["rollup_due"]
+            status_due = due_flags["status_due"]
+            phase_counts = process_phase_count_summary(phase_nodes)
+            scan_state: dict[str, Any] = {}
+            if rollup_due:
+                phase_counts = collect_process_phase_counts(
+                    output_dir,
+                    event_offsets,
+                    phase_nodes,
+                    rollup_stats,
+                    event_paths=child_event_paths,
+                    max_scan_seconds=parent_rollup_scan_seconds,
+                    max_events_per_file=parent_rollup_scan_events_per_file,
+                    scan_cursor_state=scan_cursor_state,
+                    scan_state=scan_state,
+                )
+            if status_due:
+                emit_parent(
+                    {
+                        "event": "lab.process_parent.phase_counts",
+                        "run_id": run_id,
+                        "phase_count_source": "memory",
+                        "rollup_scan_skipped": not rollup_due,
+                        **phase_counts,
+                    }
+                )
                 print(format_process_phase_counts(phase_counts), flush=True)
                 next_parent_status_at = now + parent_status_interval
-            if parent_rollup_interval > 0.0 and now >= next_parent_rollup_at:
-                rollup = emit_rollup()
+            if rollup_due:
+                rollup = emit_rollup(scan_state=scan_state)
                 print(format_process_rollup(rollup), flush=True)
                 next_parent_rollup_at = now + parent_rollup_interval
             if all(process.poll() is not None for _node, process in children):
@@ -1555,11 +1905,22 @@ def run_process_mode(args: argparse.Namespace) -> int:
                     process.wait(timeout=timeout)
                 except subprocess.TimeoutExpired:
                     process.kill()
-        phase_counts = collect_process_phase_counts(output_dir, event_offsets, phase_nodes, rollup_stats)
+        final_scan_state: dict[str, Any] = {}
+        phase_counts = collect_process_phase_counts(
+            output_dir,
+            event_offsets,
+            phase_nodes,
+            rollup_stats,
+            event_paths=child_event_paths,
+            max_scan_seconds=parent_rollup_scan_seconds,
+            max_events_per_file=parent_rollup_scan_events_per_file,
+            scan_cursor_state=scan_cursor_state,
+            scan_state=final_scan_state,
+        )
         if parent_status_interval > 0.0:
-            emit_parent({"event": "lab.process_parent.phase_counts.final", "run_id": run_id, **phase_counts})
+            emit_parent({"event": "lab.process_parent.phase_counts.final", "run_id": run_id, **phase_counts, **final_scan_state})
             print(format_process_phase_counts(phase_counts), flush=True)
-        final_rollup = emit_rollup("lab.process_parent.rollup.final")
+        final_rollup = emit_rollup("lab.process_parent.rollup.final", scan_state=final_scan_state)
         print(format_process_rollup(final_rollup), flush=True)
         exit_codes = [int(process.poll() if process.poll() is not None else -999) for _node, process in children]
         counts = Counter(str(code) for code in exit_codes)
@@ -1722,6 +2083,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=float(os.environ.get("LAB_PARENT_ROLLUP_INTERVAL", "60")),
         help="Seconds between process-mode experiment rollups written to JSONL/CSV; 0 disables periodic rollups but still writes final rollup.",
+    )
+    parser.add_argument(
+        "--parent-launch-progress-interval",
+        type=float,
+        default=float(os.environ.get("LAB_PARENT_LAUNCH_PROGRESS_INTERVAL", "10")),
+        help="Seconds between cheap parent-only launch progress rollups while process-mode children are spawning; 0 disables launch progress.",
+    )
+    parser.add_argument(
+        "--parent-rollup-scan-seconds",
+        type=float,
+        default=float(os.environ.get("LAB_PARENT_ROLLUP_SCAN_SECONDS", "2")),
+        help="Maximum seconds a process-mode rollup may spend scanning child event files per sample; 0 disables the scan time budget.",
+    )
+    parser.add_argument(
+        "--parent-rollup-scan-events-per-file",
+        type=int,
+        default=int(os.environ.get("LAB_PARENT_ROLLUP_SCAN_EVENTS_PER_FILE", "256")),
+        help="Maximum new child events to read from one node event file per rollup sample before rotating to the next file.",
     )
     return parser
 
