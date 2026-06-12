@@ -47,14 +47,20 @@ class SyncEventSink:
     and keeping the hot path free of a shared Python scheduler/thread pool.
     """
 
-    def __init__(self, output_dir: Path, node: dict[str, Any], node_index: int) -> None:
+    def __init__(self, output_dir: Path, node: dict[str, Any], node_index: int, run_id: str = "") -> None:
         self.output_dir = output_dir
+        self.run_id = str(run_id or "")
         self.output_dir.mkdir(parents=True, exist_ok=True)
         safe_node_id = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(node.get("node_id") or "node"))
-        self.events_path = self.output_dir / f"node-process-{node_index:05d}-{safe_node_id}.events.jsonl"
+        if self.run_id:
+            self.events_path = self.output_dir / f"node-process-{self.run_id}-{node_index:05d}-{safe_node_id}.events.jsonl"
+        else:
+            self.events_path = self.output_dir / f"node-process-{node_index:05d}-{safe_node_id}.events.jsonl"
         self._handle = self.events_path.open("a", encoding="utf-8", newline="\n")
 
     def emit(self, event: dict[str, Any]) -> None:
+        if self.run_id:
+            event.setdefault("run_id", self.run_id)
         self._handle.write(json.dumps(event, sort_keys=True) + "\n")
         self._handle.flush()
 
@@ -87,7 +93,9 @@ class NodeHttpRunner:
     def b2b_detection_enabled(self) -> bool:
         return self.alive_seconds() >= self.forced_alive_seconds
 
-    def _emit_response_event(self, event_name: str, response: HubHttpResponse) -> None:
+    def _emit_response_event(self, event_name: str, response: HubHttpResponse, event_fields: dict[str, Any] | None = None) -> None:
+        response_identity = _response_identity_fields(response.payload)
+        response_identity.update(dict(event_fields or {}))
         self.sink.emit(
             event_payload(
                 event_name,
@@ -98,6 +106,7 @@ class NodeHttpRunner:
                 hub_base_url=response.base_url,
                 response_summary=_short_payload(response.payload),
                 consecutive_transport_failures=self.consecutive_transport_failures,
+                **response_identity,
             )
         )
 
@@ -138,8 +147,9 @@ class NodeHttpRunner:
     def call_once(self, event_name: str, func, *args: Any, **kwargs: Any) -> HubHttpResponse:
         """Make one HTTP attempt and return even on transport failure."""
 
+        event_fields = dict(kwargs.pop("_event_fields", {}) or {})
         response: HubHttpResponse = func(*args, **kwargs)
-        self._emit_response_event(event_name, response)
+        self._emit_response_event(event_name, response, event_fields=event_fields)
         if response.status != 0:
             self._reset_transport_failures_on_response(response)
             return response
@@ -201,6 +211,27 @@ def _short_payload(payload: dict[str, Any]) -> dict[str, Any]:
     elif payload.get("lease") is None:
         clean["lease"] = None
     return clean
+
+
+def _response_identity_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    if not isinstance(payload, dict):
+        return fields
+    request = payload.get("request")
+    if isinstance(request, dict):
+        if request.get("request_id") is not None:
+            fields["request_id"] = request.get("request_id")
+        if request.get("state") is not None:
+            fields["request_state"] = request.get("state")
+    lease = payload.get("lease")
+    if isinstance(lease, dict):
+        if lease.get("request_id") is not None:
+            fields["request_id"] = lease.get("request_id")
+        if lease.get("lease_id") is not None:
+            fields["lease_id"] = lease.get("lease_id")
+        if lease.get("worker_id") is not None:
+            fields["worker_id"] = lease.get("worker_id")
+    return fields
 
 
 def top_up_account_to(
@@ -359,6 +390,16 @@ def submit_request_once_sync(
     retry_transport: bool = True,
 ) -> HubHttpResponse:
     prompt = f"scheduler lab request {request_index} from {node.get('node_id')}"
+    request_created_ts = utc_now()
+    lab_request_key = f"{node.get('node_id') or 'node'}-{int(request_index)}"
+    request_fields = {
+        "lab_request_key": lab_request_key,
+        "request_index": int(request_index),
+        "requester_node_id": node.get("node_id"),
+        "request_created_ts": request_created_ts,
+        "account_id": node_account_id(node, args),
+    }
+    sink.emit(event_payload("requester.request.attempted", node, attempted_event_name=event_name, **request_fields))
     call = runner.call if retry_transport else runner.call_once
     response = call(
         event_name,
@@ -368,6 +409,7 @@ def submit_request_once_sync(
         request_mode=args.request_mode,
         account_id_prefix=args.account_id_prefix,
         prompt=prompt,
+        _event_fields=request_fields,
     )
     if response.status == 0:
         return response
@@ -436,12 +478,15 @@ def execute_lease_sync(
     if worktime is not None:
         runtime_seconds = sample_worktime_seconds(rng, worktime)
         runtime_ms = runtime_seconds * 1000.0
+        execution_started_ts = utc_now()
         sink.emit(
             event_payload(
                 "worker.execution.started",
                 node,
                 lease_id=lease.get("lease_id"),
                 request_id=lease.get("request_id"),
+                worker_node_id=node.get("node_id"),
+                execution_started_ts=execution_started_ts,
                 runtime_ms=round(runtime_ms, 3),
                 worktime_source=worktime.source,
                 worktime_mu_seconds=worktime.mean_seconds,
@@ -452,8 +497,11 @@ def execute_lease_sync(
         normal_ms = as_float(node.get("runtime_normal_median_ms"), 1600.0)
         slow_ms = as_float(node.get("runtime_slow_median_ms"), 5500.0)
         runtime_ms = sample_lognormal_ms(rng, slow_ms if rng.random() < 0.15 else normal_ms, 0.45, clamp_min=10, clamp_max=args.max_runtime_ms)
-        sink.emit(event_payload("worker.execution.started", node, lease_id=lease.get("lease_id"), request_id=lease.get("request_id"), runtime_ms=round(runtime_ms, 3)))
+        execution_started_ts = utc_now()
+        sink.emit(event_payload("worker.execution.started", node, lease_id=lease.get("lease_id"), request_id=lease.get("request_id"), worker_node_id=node.get("node_id"), execution_started_ts=execution_started_ts, runtime_ms=round(runtime_ms, 3)))
     time.sleep(runtime_ms / 1000.0)
+    execution_finished_ts = utc_now()
+    sink.emit(event_payload("worker.execution.finished", node, lease_id=lease.get("lease_id"), request_id=lease.get("request_id"), worker_node_id=node.get("node_id"), execution_started_ts=locals().get("execution_started_ts"), execution_finished_ts=execution_finished_ts, runtime_ms=round(runtime_ms, 3)))
 
     if rng.random() < max(0.0, min(1.0, as_float(node.get("execution_crash_probability"), 0.0))):
         sink.emit(event_payload("worker.execution.crashed", node, lease_id=lease.get("lease_id"), request_id=lease.get("request_id")))
@@ -478,9 +526,18 @@ def execute_lease_sync(
             "lease_id": lease.get("lease_id"),
         },
     }
-    runner.call("worker.result.submitted", client.submit_worker_result, node, lease, result)
+    result_fields = {
+        "lease_id": lease.get("lease_id"),
+        "request_id": lease.get("request_id"),
+        "worker_node_id": node.get("node_id"),
+        "execution_finished_ts": locals().get("execution_finished_ts"),
+        "result_submitted_ts": utc_now(),
+    }
+    runner.call("worker.result.submitted", client.submit_worker_result, node, lease, result, _event_fields=result_fields)
     if rng.random() < max(0.0, min(1.0, as_float(node.get("result_submit_duplicate_probability"), 0.0))):
-        runner.call("worker.result.duplicate_submitted", client.submit_worker_result, node, lease, result)
+        duplicate_fields = dict(result_fields)
+        duplicate_fields["result_submitted_ts"] = utc_now()
+        runner.call("worker.result.duplicate_submitted", client.submit_worker_result, node, lease, result, _event_fields=duplicate_fields)
 
 
 def run_node_process(args: argparse.Namespace) -> int:
@@ -502,7 +559,7 @@ def run_node_process(args: argparse.Namespace) -> int:
         retries=0,
         rng=random.Random(seed ^ 0x10ADBEEF),
     )
-    sink = SyncEventSink(Path(args.output_dir), node, args.node_index)
+    sink = SyncEventSink(Path(args.output_dir), node, args.node_index, run_id=str(getattr(args, "run_id", "") or ""))
     process_started_at = time.monotonic()
     runner = NodeHttpRunner(
         node=node,
@@ -648,7 +705,7 @@ def run_node_process(args: argparse.Namespace) -> int:
                 if time.monotonic() < state.worker_force_until:
                     offer_probability = max(offer_probability, 0.95)
                 if not busy_with_local_work and rng.random() <= offer_probability:
-                    response = runner.call("worker.poll", client.poll_worker, node, lease_seconds=args.lease_seconds)
+                    response = runner.call("worker.poll", client.poll_worker, node, lease_seconds=args.lease_seconds, _event_fields={"worker_node_id": node.get("node_id")})
                     lease = response.payload.get("lease") if isinstance(response.payload, dict) else None
                     if isinstance(lease, dict):
                         active_requests += 1
@@ -682,6 +739,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hub-base-url", default=os.environ.get("HUB_BASE_URL", DEFAULT_HUB_BASE_URL))
     parser.add_argument("--hub-base-urls", default=os.environ.get("HUB_BASE_URLS", ""))
     parser.add_argument("--output-dir", default=os.environ.get("LAB_OUTPUT_DIR", "/lab-output"))
+    parser.add_argument("--run-id", default=os.environ.get("LAB_RUN_ID", ""))
     parser.add_argument("--duration-seconds", type=float, default=float(os.environ.get("LAB_DURATION_SECONDS", "300")))
     parser.add_argument("--request-mode", choices=["worker_pull_v0", "legacy", "registration_only"], default=os.environ.get("REQUEST_MODE", "worker_pull_v0"))
     parser.add_argument("--account-id-prefix", default=os.environ.get("LAB_ACCOUNT_ID_PREFIX", "lab-account"))

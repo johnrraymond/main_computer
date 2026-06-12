@@ -1216,6 +1216,57 @@ def build_file_content_lookup_context(
     )
     return fallback[:max_chars].rstrip()
 
+def build_file_content_grounding_retry_context(
+    lookup_result: dict[str, Any],
+    *,
+    selected_path: str,
+    max_chars: int = 1400,
+    evidence_profile: str = "general",
+    evidence_limit: int = 8,
+) -> str:
+    """Build a short, low-flake grounding context from runtime content evidence.
+
+    This is still evidence from the side-loaded file-content clob lookup slice,
+    but strips away surrounding chunks so retry turns are not forced to choose
+    from a large JSON blob. The listed evidence IDs and text are generated at
+    runtime from the retrieved slice, not hard-coded fixture answers.
+    """
+
+    evidence = content_evidence_items(
+        lookup_result,
+        evidence_profile=evidence_profile,
+        limit=max(0, int(evidence_limit)),
+    )
+    lines = [
+        "Minimal runtime file-content grounding evidence.",
+        "This evidence was extracted from the file-content clob lookup slice; the full file is not included.",
+        f"selected_path: {selected_path}",
+        f"clob_id: {lookup_result.get('clob_id')}",
+        f"evidence_profile: {evidence_profile}",
+        "full_payload_available_as_side_loaded_clob: true",
+        "full_payload_pasted_into_model_context: false",
+        "grounding_evidence:",
+    ]
+    if evidence:
+        for item in evidence:
+            evidence_id = str(item.get("evidence_id") or "")
+            evidence_text = one_line(str(item.get("text") or ""), limit=220)
+            lines.append(f"- evidence_id={evidence_id} text={evidence_text}")
+    else:
+        lines.append("- none")
+
+    context = "\n".join(lines).strip()
+    if len(context) <= max_chars:
+        return context
+
+    trimmed_lines = lines[:8]
+    for item in evidence[: max(0, min(len(evidence), 4))]:
+        evidence_id = str(item.get("evidence_id") or "")
+        evidence_text = one_line(str(item.get("text") or ""), limit=120)
+        trimmed_lines.append(f"- evidence_id={evidence_id} text={evidence_text}")
+    return "\n".join(trimmed_lines).strip()[:max_chars].rstrip()
+
+
 def file_content_lookup_context_report(
     file_clob: dict[str, Any],
     lookup_result: dict[str, Any],
@@ -1659,8 +1710,20 @@ def run_file_content_rag_case(
             "Use grounding_evidence from the file-content slice. Reply exactly with one line: "
             "GROUNDING: path=<selected path> evidence_id=<copied evidence_id> evidence=<copied exact text>"
         )
+        retry_tree_context = (
+            "Runtime tree lookup selected this repo-relative path for file-content RAG.\n"
+            f"selected_path: {selected_path}\n"
+            "The selected path came from the saved recursive-tree clob lookup, not from a hard-coded expected answer."
+        )
+        retry_content_context = build_file_content_grounding_retry_context(
+            content_lookup,
+            selected_path=selected_path,
+            evidence_profile=evidence_profile,
+            max_chars=1400,
+            evidence_limit=8,
+        )
         retry_messages = build_rag_proof_messages(
-            contexts=[tree_lookup_context, content_context],
+            contexts=[retry_tree_context, retry_content_context],
             prompt=retry_prompt,
         )
         retry_request = _request_report(retry_messages, model=model, think=think, last_user_message=retry_prompt)
@@ -1689,6 +1752,8 @@ def run_file_content_rag_case(
             "response": {"raw_response": retry_response, "content": retry_content, "preview": one_line(retry_content, limit=600)},
             "evidence_usage": retry_evidence_usage,
             "path_usage": retry_path_usage,
+            "retry_tree_context_chars": len(retry_tree_context),
+            "retry_content_context_chars": len(retry_content_context),
         }
         if retry_evidence_usage.get("ok") and retry_path_usage.get("ok"):
             raw_response = retry_response
@@ -2397,7 +2462,11 @@ def print_summary(report: dict[str, Any]) -> None:
                 print(f"    response_used_path={bool(usage.get('ok'))} matched_paths={(usage.get('matched_paths') or [])[:3]}")
             evidence_usage = case.get("evidence_usage") or {}
             if evidence_usage:
-                print(f"    response_used_content_evidence={bool(evidence_usage.get('ok'))} matched={(evidence_usage.get('matched_evidence') or [])[:3]}")
+                print(
+                    f"    response_used_content_evidence={bool(evidence_usage.get('ok'))} "
+                    f"matched={(evidence_usage.get('matched_evidence') or [])[:3]} "
+                    f"matched_ids={(evidence_usage.get('matched_evidence_ids') or [])[:3]}"
+                )
             case_failures = case.get("failures") or []
             for failure in case_failures[:3]:
                 print(f"    failure: {failure}")
