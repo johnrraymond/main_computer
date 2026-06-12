@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import random
+import time
 
 from tools.scheduler_lab.hub_client import HubClient, HubHttpResponse
 from tools.scheduler_lab.node_list import SCHEMA, build_document, build_nodes, normalize_hub_base_urls
-from tools.scheduler_lab.run_lab import build_arg_parser, effective_request_startup_mode, is_insufficient_credit_response, mark_assumed_prefunded_nodes, node_can_request, node_can_work, parse_funded_percent, parse_worktime_spec, select_nodes, should_send_startup_request
+from tools.scheduler_lab.run_lab import build_arg_parser, effective_request_startup_mode, is_insufficient_credit_response, mark_assumed_prefunded_nodes, node_can_request, node_can_work, parse_funded_percent, parse_warm_spec, parse_worktime_spec, select_nodes, should_send_startup_request
 
 
 def test_generated_nodes_have_common_adaptive_behavior_fields() -> None:
@@ -148,3 +149,116 @@ def test_natural_startup_mode_disables_request_surge(monkeypatch) -> None:
 
     assert effective_request_startup_mode(args) == "natural"
     assert not should_send_startup_request(node, args)
+
+
+def test_scheduler_lab_process_mode_and_warm_controls_are_exposed(monkeypatch) -> None:
+    monkeypatch.setenv("LAB_EXECUTION_MODE", "process")
+    monkeypatch.setenv("LAB_WARM", "2mu,1sigma")
+    monkeypatch.setenv("B2B_FAILURES", "10")
+    monkeypatch.setenv("FORCED_ALIVE_SECONDS", "100")
+    monkeypatch.setenv("HTTP_TIMEOUT_SECONDS", "1")
+
+    args = build_arg_parser().parse_args([])
+    warm = parse_warm_spec(args.warm)
+
+    assert args.execution_mode == "process"
+    assert args.b2bfailures == 10
+    assert args.forced_alive == 100
+    assert args.http_timeout_seconds == 1
+    assert warm is not None
+    assert warm.mean_seconds == 2
+    assert warm.sigma_seconds == 1
+
+
+def test_warm_parser_allows_zero_for_immediate_wall() -> None:
+    warm = parse_warm_spec("0mu,0sigma")
+
+    assert warm is not None
+    assert warm.mean_seconds == 0
+    assert warm.sigma_seconds == 0
+
+
+def test_node_process_module_documents_b2b_immediate_retry() -> None:
+    from tools.scheduler_lab import node_process
+
+    source = node_process.NodeHttpRunner.call.__doc__ or ""
+    module_text = node_process.__file__
+
+    assert node_process.SELF_TERMINATED_B2B_FAILURES_EXIT_CODE == 75
+    assert "node_process.py" in module_text
+
+def test_node_process_forced_alive_delays_b2b_failure_detection(tmp_path) -> None:
+    from tools.scheduler_lab.node_process import NodeHttpRunner
+
+    class DummySink:
+        def __init__(self) -> None:
+            self.events = []
+            self.closed = False
+
+        def emit(self, event):
+            self.events.append(event)
+
+        def close(self) -> None:
+            self.closed = True
+
+    attempts = {"count": 0}
+
+    def fail_then_success():
+        attempts["count"] += 1
+        if attempts["count"] <= 5:
+            return HubHttpResponse(ok=False, status=0, payload={"error": "connection refused"}, elapsed_ms=0.1, base_url="http://hub-dead")
+        return HubHttpResponse(ok=True, status=200, payload={"ok": True}, elapsed_ms=0.1, base_url="http://hub-live")
+
+    sink = DummySink()
+    runner = NodeHttpRunner(
+        node={"node_id": "node-1"},
+        sink=sink,
+        b2bfailures=2,
+        forced_alive_seconds=100,
+        started_at=time.monotonic(),
+    )
+
+    response = runner.call("test.call", fail_then_success)
+
+    assert response.status == 200
+    assert attempts["count"] == 6
+    assert runner.consecutive_transport_failures == 0
+    assert any(event.get("b2b_detection_enabled") is False for event in sink.events)
+
+
+def test_node_process_counts_b2b_failures_after_forced_alive(tmp_path) -> None:
+    from tools.scheduler_lab.node_process import NodeHttpRunner, SELF_TERMINATED_B2B_FAILURES_EXIT_CODE
+
+    class DummySink:
+        def __init__(self) -> None:
+            self.events = []
+            self.closed = False
+
+        def emit(self, event):
+            self.events.append(event)
+
+        def close(self) -> None:
+            self.closed = True
+
+    def transport_failure():
+        return HubHttpResponse(ok=False, status=0, payload={"error": "connection refused"}, elapsed_ms=0.1, base_url="http://hub-dead")
+
+    sink = DummySink()
+    runner = NodeHttpRunner(
+        node={"node_id": "node-1"},
+        sink=sink,
+        b2bfailures=2,
+        forced_alive_seconds=10,
+        started_at=0.0,
+    )
+
+    try:
+        runner.call("test.call", transport_failure)
+    except SystemExit as exc:
+        assert exc.code == SELF_TERMINATED_B2B_FAILURES_EXIT_CODE
+    else:
+        raise AssertionError("expected b2b self-termination after forced-alive grace elapsed")
+
+    assert sink.closed
+    assert any(event.get("event") == "node.self_terminated.b2bfailures" for event in sink.events)
+
