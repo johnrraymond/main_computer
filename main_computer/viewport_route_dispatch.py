@@ -429,9 +429,13 @@ def _control_panel_executor_warning(service_payload: dict[str, object]) -> str:
     if explicit:
         return explicit
 
+    transient_states = {"pending", "checking", "starting", "booting"}
     for name in ("compose", "docker", "wsl"):
         component = service_payload.get(name)
         if not isinstance(component, dict) or component.get("ok"):
+            continue
+        component_state = str(component.get("state") or "").strip().lower()
+        if component_state in transient_states:
             continue
         detail = (
             component.get("warning")
@@ -465,9 +469,10 @@ def _control_panel_executor_graphical_status(
     service_ok = bool(service_payload.get("ok"))
     service_available = bool(service_payload.get("service_available", service_state != "missing"))
 
+    transient_service_states = {"starting", "booting", "repairing"}
     if service_ok and service_state in {"ready", "watching", "healthy"}:
         state = "healthy"
-    elif service_state in {"booting", "repairing"}:
+    elif service_state in transient_service_states:
         state = "degraded"
     elif service_state in {"missing", "invalid", "error", "stale"}:
         if executor_payload.get("available") or executor_payload.get("ok"):
@@ -490,12 +495,18 @@ def _control_panel_executor_graphical_status(
         f"compose {compose.get('state', 'unknown') if isinstance(compose, dict) else 'unknown'}",
     ]
     summary = " | ".join(parts)
+    message = _control_panel_compact_warning(service_payload.get("message"))
     if warning and not service_ok:
         detail = f"warning: {warning} | backend {executor_backend}"
+    elif service_state in transient_service_states and message:
+        if heartbeat_age is not None:
+            detail = f"{message} | heartbeat {heartbeat_age}s ago | backend {executor_backend}"
+        else:
+            detail = f"{message} | backend {executor_backend}"
     elif heartbeat_age is not None:
         detail = f"heartbeat {heartbeat_age}s ago | backend {executor_backend}"
     else:
-        detail = f"{service_payload.get('message') or 'executor service state unavailable'} | backend {executor_backend}"
+        detail = f"{message or 'executor service state unavailable'} | backend {executor_backend}"
 
     return {
         "state": state,

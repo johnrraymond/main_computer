@@ -54,6 +54,8 @@ MAIN_LOG_STREAM_EMIT_TIMEOUT_S = 0.05
 STREAM_DRAIN_JOIN_TIMEOUT_S = 2.0
 EXECUTOR_CHILD_NAME = "executor"
 EXECUTOR_HEARTBEAT_STARTUP_GRACE_S = 90.0
+EXECUTOR_HEARTBEAT_WATCHDOG_STALE_S = 120.0
+DEFAULT_EXECUTOR_HEARTBEAT_INTERVAL_S = 30.0
 
 
 def resolve_python_command(python_command: str | None = None) -> str:
@@ -369,6 +371,10 @@ class ServiceSupervisor:
         self.executor_heartbeat_startup_grace_s = max(
             self.poll_interval_s,
             _coerce_float_env("MAIN_COMPUTER_EXECUTOR_HEARTBEAT_STARTUP_GRACE_S", EXECUTOR_HEARTBEAT_STARTUP_GRACE_S),
+        )
+        self.executor_heartbeat_watchdog_stale_s = max(
+            self.poll_interval_s * 2.0,
+            _coerce_float_env("MAIN_COMPUTER_EXECUTOR_HEARTBEAT_WATCHDOG_STALE_S", EXECUTOR_HEARTBEAT_WATCHDOG_STALE_S),
         )
         self.main_log_host = _main_log_host_from_environment()
         self.main_log_port = _main_log_port_from_environment()
@@ -861,6 +867,19 @@ class ServiceSupervisor:
             stderr_handle.close()
         self._emit("replacement supervisor started", pid=process.pid, stdout=str(stdout_path), stderr=str(stderr_path))
 
+    def _executor_heartbeat_watchdog_stale_s(self, state: dict[str, Any]) -> float:
+        policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+        try:
+            heartbeat_interval_s = float(policy.get("heartbeat_interval_s") or DEFAULT_EXECUTOR_HEARTBEAT_INTERVAL_S)
+        except (TypeError, ValueError):
+            heartbeat_interval_s = DEFAULT_EXECUTOR_HEARTBEAT_INTERVAL_S
+        heartbeat_interval_s = max(1.0, heartbeat_interval_s)
+        return max(
+            self.executor_heartbeat_watchdog_stale_s,
+            heartbeat_interval_s * 3.0,
+            self.poll_interval_s * 3.0,
+        )
+
     def _executor_heartbeat_restart_reason(self, child: ChildRuntime) -> str | None:
         """Return a restart reason when the executor child is alive but telemetry is stale.
 
@@ -892,6 +911,9 @@ class ServiceSupervisor:
             if pid_root != str(self.root):
                 return f"executor PID file root mismatch: {pid_root}"
         claimed_pid = _pid_from_entry(pid_entry)
+        child_pid = int(child.process.pid)
+        if claimed_pid is not None and claimed_pid != child_pid:
+            return f"executor PID file claims pid {claimed_pid}, but supervisor child pid is {child_pid}"
 
         state_path = self.root / "runtime" / "executor_service" / "state.json"
         state, state_error = self._read_json_or_pid_file(state_path)
@@ -908,6 +930,8 @@ class ServiceSupervisor:
 
         service = state.get("service") if isinstance(state.get("service"), dict) else {}
         state_pid = _pid_from_entry(service)
+        if state_pid is not None and state_pid != child_pid:
+            return f"executor heartbeat belongs to pid {state_pid}, but supervisor child pid is {child_pid}"
         if claimed_pid is not None and state_pid is not None and state_pid != claimed_pid:
             return f"executor heartbeat belongs to pid {state_pid}, but PID file claims pid {claimed_pid}"
 
@@ -919,14 +943,9 @@ class ServiceSupervisor:
         if age_s is None:
             return "executor heartbeat_at is invalid"
 
-        policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
-        try:
-            stale_after_s = float(policy.get("stale_after_s") or 600.0)
-        except (TypeError, ValueError):
-            stale_after_s = 600.0
-
-        if age_s > stale_after_s:
-            return f"executor heartbeat is stale ({int(age_s)}s old)"
+        watchdog_stale_s = self._executor_heartbeat_watchdog_stale_s(state)
+        if age_s > watchdog_stale_s:
+            return f"executor heartbeat is stale for watchdog ({int(age_s)}s old > {int(watchdog_stale_s)}s)"
 
         return None
 
