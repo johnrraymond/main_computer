@@ -7,6 +7,7 @@ import math
 import os
 import random
 import signal
+import subprocess
 import sys
 import time
 from collections import Counter
@@ -122,6 +123,78 @@ def parse_worktime_spec(value: Any) -> WorktimeDistribution | None:
     if mean <= 0:
         raise ValueError("worktime mean must be > 0 seconds")
     return WorktimeDistribution(mean_seconds=mean, sigma_seconds=sigma, source=text)
+
+
+
+def parse_warm_spec(value: Any) -> WorktimeDistribution | None:
+    """Parse a node warm-up delay distribution in seconds.
+
+    The compact form matches --worktime: ``2mu,1sigma`` means a normal
+    distribution with mean 2 seconds and standard deviation 1 second. Unlike
+    --worktime, a zero mean is allowed so tests can request an immediate wall.
+    """
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+
+    mean: float | None = None
+    sigma: float | None = None
+    positional: list[float] = []
+    for part in text.split(","):
+        token = part.strip().lower().replace(" ", "")
+        if not token:
+            continue
+        if token.startswith("mu="):
+            mean = _parse_seconds_number(token[3:], label="warm mu")
+            continue
+        if token.startswith("mean="):
+            mean = _parse_seconds_number(token[5:], label="warm mean")
+            continue
+        if token.endswith("mu"):
+            mean = _parse_seconds_number(token[:-2], label="warm mu")
+            continue
+        if token.startswith("sigma="):
+            sigma = _parse_seconds_number(token[6:], label="warm sigma")
+            continue
+        if token.startswith("sd="):
+            sigma = _parse_seconds_number(token[3:], label="warm sigma")
+            continue
+        if token.endswith("sigma"):
+            sigma = _parse_seconds_number(token[:-5], label="warm sigma")
+            continue
+        if token.endswith("sd"):
+            sigma = _parse_seconds_number(token[:-2], label="warm sigma")
+            continue
+        positional.append(_parse_seconds_number(token, label="warm"))
+    if positional:
+        if mean is None:
+            mean = positional[0]
+        if len(positional) > 1 and sigma is None:
+            sigma = positional[1]
+        if len(positional) > 2:
+            raise ValueError(f"too many positional warm values in {text!r}")
+    if mean is None:
+        raise ValueError(f"warm must include a mean, for example 2mu,1sigma; got {text!r}")
+    if sigma is None:
+        sigma = 0.0
+    return WorktimeDistribution(mean_seconds=mean, sigma_seconds=sigma, source=text)
+
+
+def sample_warm_seconds(rng: random.Random, spec: WorktimeDistribution | None) -> float:
+    if spec is None:
+        return 0.0
+    if spec.sigma_seconds <= 0:
+        return max(0.0, spec.mean_seconds)
+    value = rng.normalvariate(spec.mean_seconds, spec.sigma_seconds)
+    for _ in range(8):
+        if value >= 0:
+            break
+        value = rng.normalvariate(spec.mean_seconds, spec.sigma_seconds)
+    cap = max(0.0, spec.mean_seconds * 3.0, spec.mean_seconds + 6.0 * spec.sigma_seconds)
+    return min(max(0.0, value), cap)
 
 
 def sample_worktime_seconds(rng: random.Random, spec: WorktimeDistribution) -> float:
@@ -940,7 +1013,8 @@ def select_nodes(nodes: list[dict[str, Any]], role: str) -> list[dict[str, Any]]
     raise ValueError(f"unsupported role: {role}")
 
 
-async def run(args: argparse.Namespace) -> int:
+
+def prepare_selected_nodes(args: argparse.Namespace) -> tuple[list[dict[str, Any]], Path, int]:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     node_list_path = Path(args.node_list)
@@ -976,6 +1050,168 @@ async def run(args: argparse.Namespace) -> int:
 
     selected_nodes = select_nodes(nodes, args.role)
     assumed_prefunded_count = mark_assumed_prefunded_nodes(selected_nodes, funded_percent=float(getattr(args, "funded", 0.0) or 0.0), seed=args.seed)
+    return selected_nodes, node_list_path, assumed_prefunded_count
+
+
+def write_runtime_node_list(path: Path, nodes: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        for node in nodes:
+            handle.write(json.dumps(node, sort_keys=True) + "\n")
+
+
+def _process_bool_flag(enabled: bool, *, positive: str, negative: str) -> str:
+    return positive if enabled else negative
+
+
+def build_node_process_command(args: argparse.Namespace, *, runtime_node_list: Path, node_index: int) -> list[str]:
+    command = [
+        sys.executable,
+        "-m",
+        "tools.scheduler_lab.node_process",
+        "--node-list",
+        str(runtime_node_list),
+        "--node-index",
+        str(node_index),
+        "--role",
+        str(args.role),
+        "--hub-base-url",
+        str(args.hub_base_url),
+        "--output-dir",
+        str(args.output_dir),
+        "--duration-seconds",
+        str(float(args.duration_seconds)),
+        "--request-mode",
+        str(args.request_mode),
+        "--account-id-prefix",
+        str(args.account_id_prefix),
+        "--lease-seconds",
+        str(float(args.lease_seconds)),
+        "--worker-poll-interval-ms",
+        str(float(args.worker_poll_interval_ms)),
+        "--max-request-interval-ms",
+        str(float(args.max_request_interval_ms)),
+        "--http-timeout-seconds",
+        str(float(args.http_timeout_seconds)),
+        "--http-retries",
+        "0",
+        "--funded",
+        str(float(getattr(args, "funded", 0.0) or 0.0)),
+        "--request-startup-mode",
+        effective_request_startup_mode(args),
+        "--request-startup-spread-seconds",
+        str(float(getattr(args, "request_startup_spread_seconds", 0.0) or 0.0)),
+        "--warm",
+        str(getattr(args, "warm", "") or ""),
+        "--b2bfailures",
+        str(int(getattr(args, "b2bfailures", 0) or 0)),
+        "--forced-alive",
+        str(float(getattr(args, "forced_alive", 0.0) or 0.0)),
+    ]
+    if args.hub_base_urls:
+        command.extend(["--hub-base-urls", str(args.hub_base_urls)])
+    if args.worktime:
+        command.extend(["--worktime", str(args.worktime)])
+    command.append(_process_bool_flag(bool(args.enable_local_busy), positive="--enable-local-busy", negative="--disable-local-busy"))
+    command.append(_process_bool_flag(bool(args.bootstrap_funding), positive="--bootstrap-funding", negative="--no-bootstrap-funding"))
+    return command
+
+
+def run_process_mode(args: argparse.Namespace) -> int:
+    """Run one OS child process per simulated node.
+
+    This is the Docker worker-lab default because it avoids the single-process
+    asyncio/thread-pool bottleneck and lets the container/host scheduler handle
+    each node as an independent process.
+    """
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    selected_nodes, node_list_path, assumed_prefunded_count = prepare_selected_nodes(args)
+    runtime_node_list = output_dir / "scheduler-lab-runtime-nodes.jsonl"
+    write_runtime_node_list(runtime_node_list, selected_nodes)
+
+    started_at = time.monotonic()
+    stop_at = started_at + max(0.1, float(args.duration_seconds))
+    parent_events = output_dir / "scheduler-lab-process-parent-events.jsonl"
+    parent_summary = output_dir / "scheduler-lab-process-parent-summary.json"
+    children: list[tuple[dict[str, Any], subprocess.Popen[bytes]]] = []
+
+    def emit_parent(event: dict[str, Any]) -> None:
+        event = {"ts": utc_now(), **event}
+        with parent_events.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(event, sort_keys=True) + "\n")
+
+    emit_parent(
+        {
+            "event": "lab.process_parent.started",
+            "node_count": len(selected_nodes),
+            "node_list": str(node_list_path),
+            "runtime_node_list": str(runtime_node_list),
+            "hub_base_url": args.hub_base_url,
+            "hub_base_urls": normalize_hub_base_urls(args.hub_base_urls, args.hub_base_url) if args.hub_base_urls else [args.hub_base_url],
+            "worktime": str(args.worktime or ""),
+            "warm": str(getattr(args, "warm", "") or ""),
+            "b2bfailures": int(getattr(args, "b2bfailures", 0) or 0),
+            "forced_alive_seconds": float(getattr(args, "forced_alive", 0.0) or 0.0),
+            "funded_percent": float(getattr(args, "funded", 0.0) or 0.0),
+            "assumed_prefunded_nodes": assumed_prefunded_count,
+            "execution_mode": "process",
+        }
+    )
+
+    try:
+        for index, node in enumerate(selected_nodes):
+            log_path = output_dir / f"node-process-{index:05d}-{node.get('node_id', 'node')}.log"
+            command = build_node_process_command(args, runtime_node_list=runtime_node_list, node_index=index)
+            log_handle = log_path.open("ab")
+            try:
+                process = subprocess.Popen(command, stdout=log_handle, stderr=subprocess.STDOUT)
+            finally:
+                log_handle.close()
+            children.append((node, process))
+
+        while time.monotonic() < stop_at:
+            if all(process.poll() is not None for _node, process in children):
+                break
+            time.sleep(0.25)
+    except KeyboardInterrupt:
+        emit_parent({"event": "lab.process_parent.interrupted"})
+    finally:
+        for _node, process in children:
+            if process.poll() is None:
+                process.terminate()
+        deadline = time.monotonic() + 10.0
+        for _node, process in children:
+            if process.poll() is None:
+                timeout = max(0.0, deadline - time.monotonic())
+                try:
+                    process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+        exit_codes = [int(process.poll() if process.poll() is not None else -999) for _node, process in children]
+        counts = Counter(str(code) for code in exit_codes)
+        summary = {
+            "schema": "main-computer-hub-lab-process-summary/v1",
+            "generated_at": utc_now(),
+            "execution_mode": "process",
+            "node_count": len(selected_nodes),
+            "nodes_started": len(children),
+            "assumed_prefunded_nodes": assumed_prefunded_count,
+            "exit_codes": dict(counts),
+            "self_terminated_b2bfailures": counts.get("75", 0),
+            "duration_seconds": round(time.monotonic() - started_at, 3),
+            "runtime_node_list": str(runtime_node_list),
+            "parent_events": str(parent_events),
+        }
+        parent_summary.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+        emit_parent({"event": "lab.process_parent.finished", **summary})
+        print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0
+
+async def run(args: argparse.Namespace) -> int:
+    output_dir = Path(args.output_dir)
+    selected_nodes, node_list_path, assumed_prefunded_count = prepare_selected_nodes(args)
     sink = EventSink(output_dir)
     started_at = time.monotonic()
     stop_at = started_at + max(0.1, float(args.duration_seconds))
@@ -1084,7 +1320,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-runtime-ms", type=float, default=float(os.environ.get("MAX_RUNTIME_MS", "30000")))
     parser.add_argument("--max-request-interval-ms", type=float, default=float(os.environ.get("MAX_REQUEST_INTERVAL_MS", "15000")))
-    parser.add_argument("--http-timeout-seconds", type=float, default=float(os.environ.get("HTTP_TIMEOUT_SECONDS", "10")))
+    parser.add_argument("--execution-mode", choices=["process", "async"], default=os.environ.get("LAB_EXECUTION_MODE", "process"), help="process starts one OS child process per node; async keeps the older single-process simulator.")
+    parser.add_argument(
+        "--warm",
+        default=os.environ.get("LAB_WARM", ""),
+        help="Optional node warm-up delay distribution in seconds before first hub contact, e.g. 2mu,1sigma.",
+    )
+    parser.add_argument("--b2bfailures", type=int, default=int(os.environ.get("B2B_FAILURES", "10")), help="Consecutive transport failures before a node self-terminates after --forced-alive has elapsed. 0 disables.")
+    parser.add_argument("--forced-alive", type=float, default=float(os.environ.get("FORCED_ALIVE_SECONDS", "0")), help="Seconds a node must stay alive before b2b transport failures can self-terminate it.")
+    parser.add_argument("--http-timeout-seconds", type=float, default=float(os.environ.get("HTTP_TIMEOUT_SECONDS", "1")))
     parser.add_argument("--http-retries", type=int, default=int(os.environ.get("HTTP_RETRIES", "1")))
     return parser
 
@@ -1095,11 +1339,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         normalized_urls = normalize_hub_base_urls(args.hub_base_urls, args.hub_base_url)
         args.hub_base_urls = ",".join(normalized_urls)
         args.hub_base_url = normalized_urls[0]
+    if args.b2bfailures < 0:
+        raise SystemExit("--b2bfailures must be >= 0")
+    if args.forced_alive < 0:
+        raise SystemExit("--forced-alive must be >= 0")
     try:
         args.worktime_distribution = parse_worktime_spec(args.worktime)
+        args.warm_distribution = parse_warm_spec(args.warm)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     try:
+        if args.execution_mode == "process":
+            return run_process_mode(args)
         return asyncio.run(run(args))
     except KeyboardInterrupt:
         return 130
