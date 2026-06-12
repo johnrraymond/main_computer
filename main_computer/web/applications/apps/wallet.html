@@ -39,6 +39,47 @@
         </dl>
       </article>
 
+      <article class="wallet-card wallet-agent-credit-card mc-app-pane" data-mc-component-id="wallet.agent-credit-card" data-mc-component-kind="panel" data-mc-component-label="Agent Helper Credits Card" data-mc-component-owner="wallet.grid">
+        <div class="wallet-card-head">
+          <div>
+            <h3>Agent Helper Credits</h3>
+            <p>Give a helper user a small Compute Credit balance so their worker node can help the agent run parallel verification jobs.</p>
+          </div>
+        </div>
+        <form class="wallet-agent-credit-form" id="wallet-agent-credit-form" data-mc-component-id="wallet.agent-credit-form" data-mc-component-kind="form" data-mc-component-label="Agent Helper Credit Grant Form" data-mc-component-owner="wallet.agent-credit-card">
+          <label>
+            <span>Hub URL</span>
+            <input id="wallet-agent-credit-hub-url" type="url" inputmode="url" autocomplete="off" placeholder="http://127.0.0.1:8770" value="http://127.0.0.1:8770">
+          </label>
+          <label>
+            <span>Recipient wallet</span>
+            <input id="wallet-agent-credit-recipient" type="text" inputmode="text" autocomplete="off" placeholder="0x helper wallet address">
+          </label>
+          <label>
+            <span>Credits</span>
+            <input id="wallet-agent-credit-amount" type="number" min="1" max="100" step="1" value="1">
+          </label>
+          <label class="wallet-agent-credit-memo">
+            <span>Memo</span>
+            <textarea id="wallet-agent-credit-memo" rows="3">Agent helper credits for parallel verification workers.</textarea>
+          </label>
+          <button type="submit" id="wallet-agent-credit-grant-button">Grant Helper Credits</button>
+        </form>
+        <dl class="wallet-state-list wallet-agent-credit-status-list" data-mc-component-id="wallet.agent-credit-status-list" data-mc-component-kind="status" data-mc-component-label="Agent Helper Credit Status" data-mc-component-owner="wallet.agent-credit-card">
+          <div>
+            <dt>Status</dt>
+            <dd id="wallet-agent-credit-status">Connect wallet, enter a helper wallet, then grant credits.</dd>
+          </div>
+          <div>
+            <dt>Last Grant</dt>
+            <dd id="wallet-agent-credit-last-grant">none</dd>
+          </div>
+        </dl>
+        <ul class="wallet-agent-credit-list" id="wallet-agent-credit-list" aria-live="polite" data-mc-component-id="wallet.agent-credit-list" data-mc-component-kind="log" data-mc-component-label="Agent Helper Credit Grants" data-mc-component-owner="wallet.agent-credit-card">
+          <li>No helper credit grants yet.</li>
+        </ul>
+      </article>
+
       <article class="wallet-card mc-app-pane" data-mc-component-id="wallet.log-card" data-mc-component-kind="panel" data-mc-component-label="Wallet Log Card" data-mc-component-owner="wallet.grid">
         <div class="wallet-card-head">
           <div>

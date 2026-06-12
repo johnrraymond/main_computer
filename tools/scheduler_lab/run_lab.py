@@ -1823,7 +1823,13 @@ class BehaviorLedger:
         except Exception:
             status_int = None
 
-        if name == "node.transport_failure" or status_int == 0:
+        if name == "node.transport_failure":
+            # This is a synthetic companion event emitted after a concrete HTTP
+            # operation has already logged status=0 with the endpoint and hub.
+            # Keep it for phase/event counters, but do not feed it into the
+            # behavior ledger or hub/node scores a second time.
+            return tats
+        if status_int == 0:
             tats.append("transport.no_http_response")
         elif status_int is not None:
             if is_insufficient_credit_response(

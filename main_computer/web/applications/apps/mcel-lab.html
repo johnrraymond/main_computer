@@ -118,10 +118,10 @@
       <p class="eyebrow">Canonical App Test</p>
       <h4>Mount a real application, enrich its legacy DOM, and prove MCEL layout laws.</h4>
       <p>
-        The first specimen is Task Manager. MCEL Lab loads it in a same-origin iframe,
+        The first specimens are Task Manager and Git Tools. MCEL Lab loads a real app in a same-origin iframe,
         reads the legacy DOM into a MCEL enrichment model, applies semantic layout roles,
         and audits risky action surfaces without executing server control, PID termination,
-        or schedule actions.
+        remote, mirror, push, or manual command actions.
       </p>
     </div>
     <div class="mcel-canonical-specimen-controls" role="group" aria-label="Canonical app specimen controls">
@@ -133,9 +133,14 @@
             data-route="/applications/task-manager/server-processes?mcel_lab_specimen=task-manager"
             data-root="#task-manager-app"
           >Task Manager</option>
+          <option
+            value="git-tools"
+            data-route="/applications/git-tools?mcel_lab_specimen=git-tools"
+            data-root="#git-tools-app"
+          >Git Tools</option>
         </select>
       </label>
-      <button type="button" id="mcel-canonical-app-mount">Mount Task Manager</button>
+      <button type="button" id="mcel-canonical-app-mount">Mount Selected Specimen</button>
       <button type="button" id="mcel-canonical-app-refresh">Refresh Specimen</button>
       <button type="button" id="mcel-canonical-app-inspect">Inspect Specimen</button>
       <button type="button" id="mcel-canonical-app-enrich">Enrich MCEL Model</button>

@@ -7,3 +7,12 @@
     const walletProviderState = document.querySelector("#wallet-provider-state");
     const walletLastAction = document.querySelector("#wallet-last-action");
     const walletEventLog = document.querySelector("#wallet-event-log");
+    const walletAgentCreditForm = document.querySelector("#wallet-agent-credit-form");
+    const walletAgentCreditHubUrl = document.querySelector("#wallet-agent-credit-hub-url");
+    const walletAgentCreditRecipient = document.querySelector("#wallet-agent-credit-recipient");
+    const walletAgentCreditAmount = document.querySelector("#wallet-agent-credit-amount");
+    const walletAgentCreditMemo = document.querySelector("#wallet-agent-credit-memo");
+    const walletAgentCreditGrantButton = document.querySelector("#wallet-agent-credit-grant-button");
+    const walletAgentCreditStatus = document.querySelector("#wallet-agent-credit-status");
+    const walletAgentCreditLastGrant = document.querySelector("#wallet-agent-credit-last-grant");
+    const walletAgentCreditList = document.querySelector("#wallet-agent-credit-list");
