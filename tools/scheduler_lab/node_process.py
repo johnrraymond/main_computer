@@ -87,55 +87,72 @@ class NodeHttpRunner:
     def b2b_detection_enabled(self) -> bool:
         return self.alive_seconds() >= self.forced_alive_seconds
 
+    def _emit_response_event(self, event_name: str, response: HubHttpResponse) -> None:
+        self.sink.emit(
+            event_payload(
+                event_name,
+                self.node,
+                ok=response.ok,
+                status=response.status,
+                elapsed_ms=round(response.elapsed_ms, 3),
+                hub_base_url=response.base_url,
+                response_summary=_short_payload(response.payload),
+                consecutive_transport_failures=self.consecutive_transport_failures,
+            )
+        )
+
+    def _record_transport_failure(self, response: HubHttpResponse) -> None:
+        alive_seconds = self.alive_seconds()
+        detection_enabled = self.b2b_detection_enabled()
+        if detection_enabled:
+            self.consecutive_transport_failures += 1
+        else:
+            self.consecutive_transport_failures = 0
+        self.sink.emit(
+            event_payload(
+                "node.transport_failure",
+                self.node,
+                consecutive_transport_failures=self.consecutive_transport_failures,
+                b2bfailures=self.b2bfailures,
+                forced_alive_seconds=self.forced_alive_seconds,
+                alive_seconds=round(alive_seconds, 3),
+                b2b_detection_enabled=detection_enabled,
+                hub_base_url=response.base_url,
+                error=str(response.payload.get("error", "")) if isinstance(response.payload, dict) else "",
+            )
+        )
+
+    def _reset_transport_failures_on_response(self, response: HubHttpResponse) -> None:
+        if self.consecutive_transport_failures:
+            self.sink.emit(
+                event_payload(
+                    "node.transport_failures.reset",
+                    self.node,
+                    previous_consecutive_transport_failures=self.consecutive_transport_failures,
+                    status=response.status,
+                    hub_base_url=response.base_url,
+                )
+            )
+        self.consecutive_transport_failures = 0
+
+    def call_once(self, event_name: str, func, *args: Any, **kwargs: Any) -> HubHttpResponse:
+        """Make one HTTP attempt and return even on transport failure."""
+
+        response: HubHttpResponse = func(*args, **kwargs)
+        self._emit_response_event(event_name, response)
+        if response.status != 0:
+            self._reset_transport_failures_on_response(response)
+            return response
+        self._record_transport_failure(response)
+        return response
+
     def call(self, event_name: str, func, *args: Any, **kwargs: Any) -> HubHttpResponse:
         while True:
-            response: HubHttpResponse = func(*args, **kwargs)
-            self.sink.emit(
-                event_payload(
-                    event_name,
-                    self.node,
-                    ok=response.ok,
-                    status=response.status,
-                    elapsed_ms=round(response.elapsed_ms, 3),
-                    hub_base_url=response.base_url,
-                    response_summary=_short_payload(response.payload),
-                    consecutive_transport_failures=self.consecutive_transport_failures,
-                )
-            )
+            response = self.call_once(event_name, func, *args, **kwargs)
             if response.status != 0:
-                if self.consecutive_transport_failures:
-                    self.sink.emit(
-                        event_payload(
-                            "node.transport_failures.reset",
-                            self.node,
-                            previous_consecutive_transport_failures=self.consecutive_transport_failures,
-                            status=response.status,
-                            hub_base_url=response.base_url,
-                        )
-                    )
-                self.consecutive_transport_failures = 0
                 return response
 
-            alive_seconds = self.alive_seconds()
-            detection_enabled = self.b2b_detection_enabled()
-            if detection_enabled:
-                self.consecutive_transport_failures += 1
-            else:
-                self.consecutive_transport_failures = 0
-            self.sink.emit(
-                event_payload(
-                    "node.transport_failure",
-                    self.node,
-                    consecutive_transport_failures=self.consecutive_transport_failures,
-                    b2bfailures=self.b2bfailures,
-                    forced_alive_seconds=self.forced_alive_seconds,
-                    alive_seconds=round(alive_seconds, 3),
-                    b2b_detection_enabled=detection_enabled,
-                    hub_base_url=response.base_url,
-                    error=str(response.payload.get("error", "")) if isinstance(response.payload, dict) else "",
-                )
-            )
-            if detection_enabled and self.b2bfailures and self.consecutive_transport_failures >= self.b2bfailures:
+            if self.b2b_detection_enabled() and self.b2bfailures and self.consecutive_transport_failures >= self.b2bfailures:
                 self.sink.emit(
                     event_payload(
                         "node.self_terminated.b2bfailures",
@@ -229,15 +246,29 @@ def top_up_account_to(
 
 
 def bootstrap_node_funding_sync(node: dict[str, Any], *, args: argparse.Namespace, sink: SyncEventSink, client: HubClient, runner: NodeHttpRunner) -> None:
+    account_id = node_account_id(node, args)
+    sink.emit(
+        event_payload(
+            "node.funding.bootstrap.attempted",
+            node,
+            account_id=account_id,
+            bootstrap_funding_enabled=bool(args.bootstrap_funding),
+        )
+    )
     if not args.bootstrap_funding:
         sink.emit(event_payload("node.funding.bootstrap.disabled", node))
         return
     desired = as_int(node.get("initial_credits"), 0)
-    account_id = node_account_id(node, args)
     if desired <= 0:
         sink.emit(event_payload("node.funding.bootstrap.skipped_unfunded_start", node, account_id=account_id))
         return
     if bool(node.get("_assumed_prefunded")):
+        # The account is expected to exist already, so do not issue bootstrap
+        # credits. Still make one non-blocking balance probe so the recovery lab
+        # proves that prefunded nodes can reach the shared FDB-backed credit
+        # state without letting a dead advertised port trap the node before
+        # worker registration/runtime traffic.
+        balance = runner.call_once("node.funding.balance_checked", client.get_credit_balance, account_id)
         sink.emit(
             event_payload(
                 "node.funding.bootstrap.assumed_prefunded",
@@ -245,6 +276,9 @@ def bootstrap_node_funding_sync(node: dict[str, Any], *, args: argparse.Namespac
                 account_id=account_id,
                 desired_credits=desired,
                 funded_percent=float(getattr(args, "funded", 0.0) or 0.0),
+                balance_ok=balance.ok,
+                balance_status=balance.status,
+                balance_hub_base_url=balance.base_url,
             )
         )
         return
@@ -322,9 +356,11 @@ def submit_request_once_sync(
     state: NodeRuntimeState,
     request_index: int,
     event_name: str,
+    retry_transport: bool = True,
 ) -> HubHttpResponse:
     prompt = f"scheduler lab request {request_index} from {node.get('node_id')}"
-    response = runner.call(
+    call = runner.call if retry_transport else runner.call_once
+    response = call(
         event_name,
         client.submit_request,
         node,
@@ -333,6 +369,8 @@ def submit_request_once_sync(
         account_id_prefix=args.account_id_prefix,
         prompt=prompt,
     )
+    if response.status == 0:
+        return response
     if is_insufficient_credit_response(response):
         handle_low_credit_remediation_sync(node, args=args, sink=sink, client=client, runner=runner, rng=rng, state=state, response=response)
     return response
@@ -496,13 +534,50 @@ def run_node_process(args: argparse.Namespace) -> int:
         )
         if warm_seconds:
             time.sleep(min(warm_seconds, max(0.0, stop_at - time.monotonic())))
+        sink.emit(event_payload("node.process.warm_finished", node, node_index=args.node_index))
+
+        startup_request_sent = False
+        if requester_enabled and should_send_startup_request(node, args):
+            sink.emit(
+                event_payload(
+                    "requester.request.startup_surge.attempted",
+                    node,
+                    node_index=args.node_index,
+                    pre_bootstrap=True,
+                    assumed_prefunded=bool(node.get("_assumed_prefunded")),
+                )
+            )
+            request_index += 1
+            startup_response = submit_request_once_sync(
+                node,
+                args=args,
+                sink=sink,
+                client=client,
+                runner=runner,
+                rng=rng,
+                state=state,
+                request_index=request_index,
+                event_name="requester.request.startup_surge.pre_bootstrap",
+                retry_transport=False,
+            )
+            startup_request_sent = startup_response.status != 0
 
         bootstrap_node_funding_sync(node, args=args, sink=sink, client=client, runner=runner)
 
         if worker_enabled:
+            sink.emit(event_payload("worker.register.attempted", node, node_index=args.node_index))
             runner.call("worker.register", client.register_worker, node)
 
-        if requester_enabled and should_send_startup_request(node, args):
+        if requester_enabled and should_send_startup_request(node, args) and not startup_request_sent:
+            sink.emit(
+                event_payload(
+                    "requester.request.startup_surge.attempted",
+                    node,
+                    node_index=args.node_index,
+                    pre_bootstrap=False,
+                    assumed_prefunded=bool(node.get("_assumed_prefunded")),
+                )
+            )
             request_index += 1
             submit_request_once_sync(
                 node,
@@ -515,6 +590,9 @@ def run_node_process(args: argparse.Namespace) -> int:
                 request_index=request_index,
                 event_name="requester.request.startup_surge",
             )
+            startup_request_sent = True
+
+        sink.emit(event_payload("node.process.runtime_entered", node, node_index=args.node_index))
 
         heartbeat_interval = max(0.1, as_float(node.get("heartbeat_interval_ms"), 2000.0) / 1000.0)
         heartbeat_drop = max(0.0, min(1.0, as_float(node.get("heartbeat_drop_probability"), 0.0)))

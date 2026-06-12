@@ -3,10 +3,31 @@ from __future__ import annotations
 import json
 import random
 import time
+from argparse import Namespace
 
 from tools.scheduler_lab.hub_client import HubClient, HubHttpResponse
 from tools.scheduler_lab.node_list import SCHEMA, build_document, build_nodes, normalize_hub_base_urls
-from tools.scheduler_lab.run_lab import build_arg_parser, effective_request_startup_mode, is_insufficient_credit_response, mark_assumed_prefunded_nodes, node_can_request, node_can_work, parse_funded_percent, parse_warm_spec, parse_worktime_spec, select_nodes, should_send_startup_request
+from tools.scheduler_lab.run_lab import (
+    build_arg_parser,
+    build_process_rollup,
+    effective_request_startup_mode,
+    format_process_phase_counts,
+    format_process_rollup,
+    is_insufficient_credit_response,
+    mark_assumed_prefunded_nodes,
+    node_can_request,
+    node_can_work,
+    parse_funded_percent,
+    parse_warm_spec,
+    parse_worktime_spec,
+    new_process_rollup_stats,
+    process_phase_count_summary,
+    record_process_phase_event,
+    record_process_rollup_event,
+    select_nodes,
+    should_send_startup_request,
+    write_process_rollup_files,
+)
 
 
 def test_generated_nodes_have_common_adaptive_behavior_fields() -> None:
@@ -157,6 +178,7 @@ def test_scheduler_lab_process_mode_and_warm_controls_are_exposed(monkeypatch) -
     monkeypatch.setenv("B2B_FAILURES", "10")
     monkeypatch.setenv("FORCED_ALIVE_SECONDS", "100")
     monkeypatch.setenv("HTTP_TIMEOUT_SECONDS", "1")
+    monkeypatch.setenv("LAB_PARENT_STATUS_INTERVAL", "2")
 
     args = build_arg_parser().parse_args([])
     warm = parse_warm_spec(args.warm)
@@ -165,6 +187,7 @@ def test_scheduler_lab_process_mode_and_warm_controls_are_exposed(monkeypatch) -
     assert args.b2bfailures == 10
     assert args.forced_alive == 100
     assert args.http_timeout_seconds == 1
+    assert args.parent_status_interval == 2
     assert warm is not None
     assert warm.mean_seconds == 2
     assert warm.sigma_seconds == 1
@@ -262,3 +285,226 @@ def test_node_process_counts_b2b_failures_after_forced_alive(tmp_path) -> None:
     assert sink.closed
     assert any(event.get("event") == "node.self_terminated.b2bfailures" for event in sink.events)
 
+
+
+def test_node_process_call_once_does_not_trap_on_transport_failure() -> None:
+    from tools.scheduler_lab.node_process import NodeHttpRunner
+
+    class DummySink:
+        def __init__(self) -> None:
+            self.events = []
+
+        def emit(self, event):
+            self.events.append(event)
+
+        def close(self) -> None:
+            pass
+
+    attempts = {"count": 0}
+
+    def transport_failure():
+        attempts["count"] += 1
+        return HubHttpResponse(ok=False, status=0, payload={"error": "connection refused"}, elapsed_ms=0.1, base_url="http://hub-dead")
+
+    sink = DummySink()
+    runner = NodeHttpRunner(
+        node={"node_id": "node-1"},
+        sink=sink,
+        b2bfailures=0,
+        forced_alive_seconds=0,
+        started_at=0.0,
+    )
+
+    response = runner.call_once("test.call_once", transport_failure)
+
+    assert response.status == 0
+    assert attempts["count"] == 1
+    assert any(event.get("event") == "test.call_once" and event.get("status") == 0 for event in sink.events)
+    assert any(event.get("event") == "node.transport_failure" for event in sink.events)
+
+
+def test_process_parent_phase_counters_are_node_oriented() -> None:
+    phase_nodes: dict[str, set[str]] = {}
+    events = [
+        {"event": "node.process.started", "node_id": "node-1"},
+        {"event": "node.process.warm_finished", "node_id": "node-1"},
+        {"event": "requester.request.startup_surge.attempted", "node_id": "node-1"},
+        {"event": "requester.request.startup_surge.pre_bootstrap", "node_id": "node-1", "status": 0},
+        {"event": "requester.request.startup_surge.pre_bootstrap", "node_id": "node-1", "status": 0},
+        {"event": "requester.request.startup_surge.pre_bootstrap", "node_id": "node-1", "status": 200},
+        {"event": "node.funding.bootstrap.attempted", "node_id": "node-1"},
+        {"event": "node.funding.bootstrap.assumed_prefunded", "node_id": "node-1"},
+        {"event": "node.funding.balance_checked", "node_id": "node-1", "status": 200},
+        {"event": "worker.register.attempted", "node_id": "node-1"},
+        {"event": "worker.register", "node_id": "node-1", "status": 200},
+        {"event": "node.process.runtime_entered", "node_id": "node-1"},
+        {"event": "node.self_terminated.b2bfailures", "node_id": "node-1"},
+    ]
+
+    for event in events:
+        record_process_phase_event(event, phase_nodes)
+
+    counts = process_phase_count_summary(phase_nodes)
+
+    assert counts["nodes_started"] == 1
+    assert counts["warm_finished"] == 1
+    assert counts["startup_request_attempted"] == 1
+    assert counts["startup_request_transport_failures"] == 1
+    assert counts["startup_request_http_response"] == 1
+    assert counts["bootstrap_attempted"] == 1
+    assert counts["bootstrap_assumed_prefunded"] == 1
+    assert counts["bootstrap_balance_checked"] == 1
+    assert counts["worker_register_attempted"] == 1
+    assert counts["worker_register_http_response"] == 1
+    assert counts["entered_runtime_loop"] == 1
+    assert counts["self_terminated_b2bfailures"] == 1
+    assert "startup_req_transport_failures=1" in format_process_phase_counts(counts)
+
+
+
+def test_process_parent_rollup_files_are_written_for_experiment_timeline(tmp_path) -> None:
+    class DummyProcess:
+        def __init__(self, code):
+            self.code = code
+
+        def poll(self):
+            return self.code
+
+    phase_nodes: dict[str, set[str]] = {}
+    rollup_stats = new_process_rollup_stats()
+    events = [
+        {"event": "node.process.started", "node_id": "node-1"},
+        {"event": "node.process.warm_finished", "node_id": "node-1"},
+        {
+            "event": "requester.request.startup_surge.pre_bootstrap",
+            "node_id": "node-1",
+            "status": 200,
+            "hub_base_url": "http://host.docker.internal:8870",
+        },
+        {
+            "event": "worker.poll",
+            "node_id": "node-1",
+            "status": 0,
+            "hub_base_url": "http://host.docker.internal:8874",
+        },
+        {"event": "node.self_terminated.b2bfailures", "node_id": "node-2"},
+    ]
+
+    for event in events:
+        record_process_phase_event(event, phase_nodes)
+        record_process_rollup_event(event, rollup_stats)
+
+    rollup = build_process_rollup(
+        run_id="20260612-010203",
+        started_at=time.monotonic() - 61.0,
+        node_count=2,
+        assumed_prefunded_count=1,
+        children=[({"node_id": "node-1"}, DummyProcess(None)), ({"node_id": "node-2"}, DummyProcess(75))],
+        phase_nodes=phase_nodes,
+        rollup_stats=rollup_stats,
+    )
+
+    rollups_jsonl = tmp_path / "scheduler-lab-process-rollups.jsonl"
+    latest_json = tmp_path / "scheduler-lab-process-rollup-latest.json"
+    rollups_csv = tmp_path / "scheduler-lab-process-rollups.csv"
+    write_process_rollup_files(
+        rollup,
+        rollups_jsonl=rollups_jsonl,
+        latest_rollup_json=latest_json,
+        rollups_csv=rollups_csv,
+    )
+
+    assert rollups_jsonl.exists()
+    assert latest_json.exists()
+    assert rollups_csv.exists()
+    loaded = json.loads(latest_json.read_text(encoding="utf-8"))
+    assert loaded["run_id"] == "20260612-010203"
+    assert loaded["nodes_alive"] == 1
+    assert loaded["nodes_exited"] == 1
+    assert loaded["self_terminated_b2bfailures"] == 1
+    assert loaded["http_status_counts"]["0"] == 1
+    assert loaded["http_status_counts"]["200"] == 1
+    assert loaded["hub_counts"]["8874"] == 1
+    assert loaded["endpoint_counts"]["workers_poll"] == 1
+    assert "alive=1" in format_process_rollup(loaded)
+    assert "http0=1" in format_process_rollup(loaded)
+    assert "event_counts_json" in rollups_csv.read_text(encoding="utf-8")
+
+
+
+def test_node_process_sends_startup_surge_before_bootstrap() -> None:
+    import inspect
+
+    from tools.scheduler_lab import node_process
+
+    source = inspect.getsource(node_process.run_node_process)
+
+    assert "startup_request_sent = False" in source
+    assert source.index('"requester.request.startup_surge.pre_bootstrap"') < source.index("bootstrap_node_funding_sync")
+    assert "retry_transport=False" in source
+    assert "startup_request_sent = startup_response.status != 0" in source
+    assert "and not startup_request_sent" in source
+
+
+def test_assumed_prefunded_process_bootstrap_probes_balance_without_issuing() -> None:
+    from tools.scheduler_lab.node_process import bootstrap_node_funding_sync
+
+    class DummySink:
+        def __init__(self) -> None:
+            self.events: list[dict] = []
+
+        def emit(self, event):
+            self.events.append(event)
+
+    class DummyClient:
+        def __init__(self) -> None:
+            self.balance_account_ids: list[str] = []
+            self.issued = False
+
+        def get_credit_balance(self, account_id: str) -> HubHttpResponse:
+            self.balance_account_ids.append(account_id)
+            return HubHttpResponse(
+                ok=True,
+                status=200,
+                payload={"account": {"account_id": account_id, "available_credits": 8}},
+                elapsed_ms=1.0,
+                base_url="http://hub-live",
+            )
+
+        def issue_credits(self, **_kwargs):
+            self.issued = True
+            raise AssertionError("assumed-prefunded bootstrap must not issue credits")
+
+    class DummyRunner:
+        def __init__(self) -> None:
+            self.call_once_events: list[str] = []
+            self.call_events: list[str] = []
+
+        def call_once(self, event_name: str, func, *args, **kwargs) -> HubHttpResponse:
+            self.call_once_events.append(event_name)
+            return func(*args, **kwargs)
+
+        def call(self, event_name: str, func, *args, **kwargs) -> HubHttpResponse:
+            self.call_events.append(event_name)
+            return func(*args, **kwargs)
+
+    node = {
+        "node_id": "worker-0001",
+        "account_id": "lab-account-worker-0001",
+        "initial_credits": 8,
+        "_assumed_prefunded": True,
+    }
+    args = Namespace(bootstrap_funding=True, funded=90.0, account_id_prefix="lab-account")
+    sink = DummySink()
+    client = DummyClient()
+    runner = DummyRunner()
+
+    bootstrap_node_funding_sync(node, args=args, sink=sink, client=client, runner=runner)
+
+    assert client.balance_account_ids == ["lab-account-worker-0001"]
+    assert client.issued is False
+    assert runner.call_once_events == ["node.funding.balance_checked"]
+    assert runner.call_events == []
+    assumed_events = [event for event in sink.events if event.get("event") == "node.funding.bootstrap.assumed_prefunded"]
+    assert assumed_events
+    assert assumed_events[0]["balance_status"] == 200
