@@ -22,6 +22,13 @@ def test_exp_fdb_hub_entrypoint_is_manual_and_declares_fdb_options() -> None:
     assert "--request-startup-mode" in module
     assert "--request-startup-spread-seconds" in module
     assert "--lease-seconds" in module
+    assert "--warm" in module
+    assert "--b2bfailures" in module
+    assert "--forced-alive" in module
+    assert "--lab-execution" in module
+    assert "--http-timeout-seconds" in module
+    assert "ExperimentalFoundationDbHubServerHandler" in module
+    assert "flush=True" in module
     assert "FoundationDB Docker cluster" in module
 
 
@@ -47,6 +54,11 @@ def test_exp_fdb_hub_launcher_coordinates_ports_with_docker_lab() -> None:
     assert "LAB_REQUEST_STARTUP_MODE" in module
     assert "LAB_REQUEST_STARTUP_SPREAD_SECONDS" in module
     assert "LEASE_SECONDS" in module
+    assert "LAB_EXECUTION_MODE" in module
+    assert "LAB_WARM" in module
+    assert "B2B_FAILURES" in module
+    assert "FORCED_ALIVE_SECONDS" in module
+    assert "HTTP_TIMEOUT_SECONDS" in module
     assert "docker-compose.worker-lab.yml" in module
     assert "docker-compose.dev.yml" not in module
     assert "\"main-computer\"" not in module
@@ -68,6 +80,11 @@ def test_exp_fdb_hub_uses_lightweight_scheduler_lab_docker_stack() -> None:
     assert "LAB_REQUEST_STARTUP_MODE" in compose
     assert "LAB_REQUEST_STARTUP_SPREAD_SECONDS" in compose
     assert "LEASE_SECONDS" in compose
+    assert "LAB_EXECUTION_MODE" in compose
+    assert "LAB_WARM" in compose
+    assert "B2B_FAILURES" in compose
+    assert "FORCED_ALIVE_SECONDS" in compose
+    assert "HTTP_TIMEOUT_SECONDS" in compose
     assert "docker-compose.dev.yml" not in compose
     assert "playwright" not in dockerfile.lower()
     assert "chromium" not in dockerfile.lower()
