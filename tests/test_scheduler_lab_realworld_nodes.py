@@ -541,7 +541,7 @@ def test_behavior_ledger_transport_storm_probes_hub_without_banning_actor() -> N
     for index in range(20):
         ledger.record(
             {
-                "event": "node.transport_failure",
+                "event": "worker.register",
                 "node_id": "node-1",
                 "account_id": "lab-account-node-1",
                 "status": 0,
@@ -560,6 +560,29 @@ def test_behavior_ledger_transport_storm_probes_hub_without_banning_actor() -> N
         not (item["subject_kind"] == "node" and item["behavior_state"] == "temporary_ban")
         for item in snapshot["top_behavior"]
     )
+
+
+def test_behavior_ledger_does_not_double_count_synthetic_transport_failure_event() -> None:
+    ledger = BehaviorLedger()
+
+    concrete_failure = {
+        "event": "worker.register",
+        "node_id": "node-1",
+        "account_id": "lab-account-node-1",
+        "status": 0,
+        "ok": False,
+        "hub_base_url": "http://host.docker.internal:8874",
+        "ts": "2026-06-12T19:00:00+00:00",
+    }
+    synthetic_companion = dict(concrete_failure)
+    synthetic_companion["event"] = "node.transport_failure"
+
+    ledger.record(concrete_failure)
+    ledger.record(synthetic_companion)
+
+    snapshot = ledger.snapshot()
+
+    assert snapshot["tat_counts"] == {"transport.no_http_response": 1}
 
 
 def test_behavior_ledger_does_not_count_status_zero_request_as_scheduler_rejection() -> None:

@@ -9,7 +9,14 @@
         chainId: "",
         updatedAt: ""
       },
-      events: []
+      events: [],
+      agentCredits: {
+        hubUrl: "http://127.0.0.1:8770",
+        status: "idle",
+        statusMessage: "Connect wallet, enter a helper wallet, then grant credits.",
+        grants: [],
+        lastGrant: null
+      }
     });
 
     let walletOperationSerial = 0;
@@ -21,6 +28,10 @@
     const WALLET_DEV_CHAIN_NAME = "Main Computer Dev Chain";
     const WALLET_DEV_CHAIN_CURRENCY_NAME = "Main Computer XLAG Credit";
     const WALLET_DEV_CHAIN_CURRENCY_SYMBOL = "MCXLAG";
+    const WALLET_AGENT_CREDIT_GRANT_ENDPOINT = "/api/applications/wallet/agent-credit-grants";
+    const WALLET_AGENT_CREDIT_DEFAULT_HUB_URL = "http://127.0.0.1:8770";
+    const WALLET_AGENT_CREDIT_DEFAULT_MEMO = "Agent helper credits for parallel verification workers.";
+    const WALLET_AGENT_CREDIT_MAX_GRANT = 100;
 
     function walletNowIso() {
       return new Date().toISOString();
@@ -37,6 +48,21 @@
 
     function walletValidAddress(value) {
       return /^0x[0-9a-fA-F]{40}$/.test(String(value || ""));
+    }
+
+    function walletNormalizeAccountAddress(value) {
+      const text = String(value || "").trim();
+      return walletValidAddress(text) ? `0x${text.slice(2).toLowerCase()}` : "";
+    }
+
+    function walletNormalizeGrantCredits(value) {
+      const parsed = Number.parseInt(String(value || "").trim(), 10);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function walletNormalizeHubUrl(value) {
+      const text = String(value || "").trim().replace(/\/+$/, "");
+      return text || WALLET_AGENT_CREDIT_DEFAULT_HUB_URL;
     }
 
     function walletNormalizeChainIdHex(value) {
@@ -171,6 +197,20 @@
       if (!Array.isArray(walletAppState.events)) {
         walletAppState.events = [];
       }
+      if (!walletAppState.agentCredits || typeof walletAppState.agentCredits !== "object") {
+        walletAppState.agentCredits = {};
+      }
+      walletAppState.agentCredits.hubUrl = walletNormalizeHubUrl(walletAppState.agentCredits.hubUrl);
+      walletAppState.agentCredits.status = String(walletAppState.agentCredits.status || "idle");
+      walletAppState.agentCredits.statusMessage = String(
+        walletAppState.agentCredits.statusMessage || "Connect wallet, enter a helper wallet, then grant credits."
+      );
+      walletAppState.agentCredits.grants = Array.isArray(walletAppState.agentCredits.grants)
+        ? walletAppState.agentCredits.grants.slice(0, 20)
+        : [];
+      walletAppState.agentCredits.lastGrant = walletAppState.agentCredits.lastGrant && typeof walletAppState.agentCredits.lastGrant === "object"
+        ? walletAppState.agentCredits.lastGrant
+        : null;
       walletAppState.hookState = String(walletAppState.hookState || "idle");
       walletAppState.providerState = String(walletAppState.providerState || "not-installed");
       walletAppState.lastAction = String(walletAppState.lastAction || "none");
@@ -294,6 +334,54 @@
           walletDisconnectButton.setAttribute("aria-busy", "true");
         } else {
           walletDisconnectButton.removeAttribute("aria-busy");
+        }
+      }
+
+      const grantState = walletAppState.agentCredits;
+      const grantBusy = grantState.status === "submitting";
+
+      if (walletAgentCreditHubUrl && !walletAgentCreditHubUrl.value) {
+        walletAgentCreditHubUrl.value = grantState.hubUrl || WALLET_AGENT_CREDIT_DEFAULT_HUB_URL;
+      }
+      if (walletAgentCreditMemo && !walletAgentCreditMemo.value) {
+        walletAgentCreditMemo.value = WALLET_AGENT_CREDIT_DEFAULT_MEMO;
+      }
+      if (walletAgentCreditStatus) {
+        walletAgentCreditStatus.textContent = grantState.statusMessage;
+      }
+      if (walletAgentCreditLastGrant) {
+        const last = grantState.lastGrant;
+        walletAgentCreditLastGrant.textContent = last
+          ? `${last.credits} credits to ${walletShortAddress(last.recipient_wallet || last.account_id || "")}`
+          : "none";
+      }
+      if (walletAgentCreditGrantButton) {
+        walletAgentCreditGrantButton.disabled = grantBusy || !connected;
+        walletAgentCreditGrantButton.textContent = grantBusy
+          ? "Granting…"
+          : connected
+            ? "Grant Helper Credits"
+            : "Connect Wallet First";
+        if (grantBusy) {
+          walletAgentCreditGrantButton.setAttribute("aria-busy", "true");
+        } else {
+          walletAgentCreditGrantButton.removeAttribute("aria-busy");
+        }
+      }
+      if (walletAgentCreditList) {
+        walletAgentCreditList.innerHTML = "";
+        const grants = Array.isArray(grantState.grants) ? grantState.grants.slice(0, 6) : [];
+        if (!grants.length) {
+          const item = document.createElement("li");
+          item.textContent = "No helper credit grants yet.";
+          walletAgentCreditList.appendChild(item);
+        } else {
+          grants.forEach((grant) => {
+            const item = document.createElement("li");
+            const created = String(grant.created_at || grant.createdAt || "").replace("T", " ").slice(0, 19);
+            item.textContent = `${created || "recent"} · ${grant.credits} credits · ${walletShortAddress(grant.recipient_wallet || grant.account_id || "")}`;
+            walletAgentCreditList.appendChild(item);
+          });
         }
       }
 
@@ -517,6 +605,114 @@
       }
     }
 
+    async function hydrateWalletAgentCreditGrants() {
+      walletEnsureStateShape();
+
+      try {
+        const response = await fetch(WALLET_AGENT_CREDIT_GRANT_ENDPOINT, {
+          headers: {"Accept": "application/json"}
+        });
+        const payload = await response.json();
+        if (!response.ok || payload?.ok === false) {
+          throw new Error(payload?.error || `HTTP ${response.status}`);
+        }
+        walletAppState.agentCredits.hubUrl = walletNormalizeHubUrl(payload.hub_url || walletAppState.agentCredits.hubUrl);
+        walletAppState.agentCredits.grants = Array.isArray(payload.grants) ? payload.grants.slice(0, 20) : [];
+        walletAppState.agentCredits.lastGrant = walletAppState.agentCredits.grants[0] || walletAppState.agentCredits.lastGrant;
+        if (walletAgentCreditHubUrl && !walletAgentCreditHubUrl.dataset.walletUserEdited) {
+          walletAgentCreditHubUrl.value = walletAppState.agentCredits.hubUrl;
+        }
+        renderWalletApp();
+      } catch (error) {
+        walletAppState.agentCredits.status = "idle";
+        walletAppState.agentCredits.statusMessage = `Grant history unavailable: ${walletErrorMessage(error)}`;
+        renderWalletApp();
+      }
+    }
+
+    async function requestWalletAgentCreditGrant(event) {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+
+      walletEnsureStateShape();
+
+      const issuerWallet = walletNormalizeAccountAddress(walletAppState.wallet.address);
+      const recipientWallet = walletNormalizeAccountAddress(walletAgentCreditRecipient?.value);
+      const credits = walletNormalizeGrantCredits(walletAgentCreditAmount?.value);
+      const hubUrl = walletNormalizeHubUrl(walletAgentCreditHubUrl?.value);
+      const memo = String(walletAgentCreditMemo?.value || WALLET_AGENT_CREDIT_DEFAULT_MEMO).trim() || WALLET_AGENT_CREDIT_DEFAULT_MEMO;
+
+      if (!issuerWallet) {
+        walletAppState.agentCredits.status = "blocked";
+        walletAppState.agentCredits.statusMessage = "Connect the primary wallet before granting helper credits.";
+        walletRecordEvent("agent-credit-grant.blocked.not-connected");
+        return;
+      }
+      if (!recipientWallet) {
+        walletAppState.agentCredits.status = "blocked";
+        walletAppState.agentCredits.statusMessage = "Enter a valid 0x recipient wallet for the helper user.";
+        walletRecordEvent("agent-credit-grant.blocked.invalid-recipient");
+        return;
+      }
+      if (credits < 1 || credits > WALLET_AGENT_CREDIT_MAX_GRANT) {
+        walletAppState.agentCredits.status = "blocked";
+        walletAppState.agentCredits.statusMessage = `Credits must be between 1 and ${WALLET_AGENT_CREDIT_MAX_GRANT}.`;
+        walletRecordEvent("agent-credit-grant.blocked.invalid-credits", {credits});
+        return;
+      }
+
+      walletAppState.agentCredits.status = "submitting";
+      walletAppState.agentCredits.statusMessage = `Granting ${credits} helper credits to ${walletShortAddress(recipientWallet)}…`;
+      renderWalletApp();
+
+      try {
+        const response = await fetch(WALLET_AGENT_CREDIT_GRANT_ENDPOINT, {
+          method: "POST",
+          headers: {
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            hub_url: hubUrl,
+            issuer_wallet: issuerWallet,
+            recipient_wallet: recipientWallet,
+            credits,
+            memo
+          })
+        });
+        const payload = await response.json();
+        if (!response.ok || payload?.ok === false) {
+          throw new Error(payload?.error || `HTTP ${response.status}`);
+        }
+
+        const grant = payload.grant || {
+          created_at: walletNowIso(),
+          issuer_wallet: issuerWallet,
+          recipient_wallet: recipientWallet,
+          credits,
+          memo
+        };
+        walletAppState.agentCredits.hubUrl = walletNormalizeHubUrl(payload.hub_url || hubUrl);
+        walletAppState.agentCredits.status = "issued";
+        walletAppState.agentCredits.statusMessage = `Granted ${credits} helper credits to ${walletShortAddress(recipientWallet)}.`;
+        walletAppState.agentCredits.lastGrant = grant;
+        walletAppState.agentCredits.grants = [grant, ...walletAppState.agentCredits.grants].slice(0, 20);
+        walletRecordEvent("agent-credit-grant.issued", {
+          recipient: walletShortAddress(recipientWallet),
+          credits,
+          hubUrl: walletAppState.agentCredits.hubUrl
+        });
+      } catch (error) {
+        walletAppState.agentCredits.status = "failed";
+        walletAppState.agentCredits.statusMessage = `Grant failed: ${walletErrorMessage(error)}`;
+        walletRecordEvent("agent-credit-grant.failed", {
+          message: walletErrorMessage(error)
+        });
+      } finally {
+        renderWalletApp();
+      }
+    }
+
     async function requestWalletDisconnectHook(event) {
       event?.preventDefault?.();
       event?.stopPropagation?.();
@@ -664,11 +860,10 @@
 
     async function requestMultiSessionKeySignature({requestContext = {}, origin = ""} = {}) {
       const provider = walletBrowserProvider();
-      await provider.send("eth_requestAccounts", []);
-      await walletEnsureExpectedChain();
-
       const signer = await provider.getSigner();
       const walletAddress = await signer.getAddress();
+      await walletEnsureExpectedChain();
+
       const chainId = await walletNetworkChainId(provider);
       const normalizedChainId = walletNormalizeChainIdHex(chainId);
       const expectedWallet = String(requestContext.wallet_address || requestContext.walletAddress || "").trim();
@@ -740,7 +935,18 @@
         walletResetLogButton.dataset.walletBound = "true";
         walletResetLogButton.addEventListener("click", resetWalletHookLog, true);
       }
+      if (walletAgentCreditForm && !walletAgentCreditForm.dataset.walletBound) {
+        walletAgentCreditForm.dataset.walletBound = "true";
+        walletAgentCreditForm.addEventListener("submit", requestWalletAgentCreditGrant, true);
+      }
+      if (walletAgentCreditHubUrl && !walletAgentCreditHubUrl.dataset.walletBound) {
+        walletAgentCreditHubUrl.dataset.walletBound = "true";
+        walletAgentCreditHubUrl.addEventListener("input", () => {
+          walletAgentCreditHubUrl.dataset.walletUserEdited = "true";
+        });
+      }
 
+      hydrateWalletAgentCreditGrants();
       walletBindProviderEvents();
       renderWalletApp();
 
@@ -755,6 +961,8 @@
         ensureExpectedChain: walletEnsureExpectedChain,
         refreshProviderState: walletRefreshProviderStateAfterEvent,
         waitForStableProvider: walletWaitForStableProvider,
+        hydrateAgentCreditGrants: hydrateWalletAgentCreditGrants,
+        requestAgentCreditGrant: requestWalletAgentCreditGrant,
         requestMultiSessionKeySignature,
         buildMultiSessionKeyMessage: walletBuildMultiSessionKeyMessage
       };
