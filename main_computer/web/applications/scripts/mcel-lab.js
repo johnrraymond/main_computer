@@ -26,6 +26,7 @@
         window.McelLabSupervisor &&
         window.McelLabKernel &&
         window.TaskManagerMcel &&
+        window.McelSupercut &&
         window.GitToolsMcel &&
         window.MCEL
       );
@@ -3748,10 +3749,13 @@
         const proofSummary = proof ? `proof ${proof.failed ? "warning" : "ready"}` : "proof pending";
         const enrichment = mcelLabState.lastCanonicalSpecimenEnrichment;
         const enrichmentSummary = enrichment ? `enriched: ${enrichment.enrichedElementCount} element(s), ${enrichment.layoutLawStatus}` : "enrichment pending";
+        const supercutSummary = enrichment?.supercutActive
+          ? `supercut: ${enrichment.supercutComponentCount || 0} executable component(s), ${enrichment.supercutOriginalPointCount || 0} original point(s)`
+          : "supercut pending";
         const lens = mcelLabState.lastCanonicalSpecimenLens;
         const lensSummary = lens ? `lens active: ${lens.classifiedPanelCount} panel(s), ${lens.riskControlCount} risk surface(s)` : "lens pending";
         mcelCanonicalAppFrameSummary.textContent = mounted
-          ? `${label} specimen ${state.status}; ${rootSummary}; ${proofSummary}; ${enrichmentSummary}; ${lensSummary}.`
+          ? `${label} specimen ${state.status}; ${rootSummary}; ${proofSummary}; ${enrichmentSummary}; ${supercutSummary}; ${lensSummary}.`
           : `${label} has not been mounted yet.`;
       }
       if (mcelCanonicalAppReport && !mcelLabState.lastCanonicalSpecimenReport) {
@@ -4029,6 +4033,8 @@
         ["Root", report.rootPresent ? "present" : "missing"],
         ["Regions", `${report.regionCount || 0}/${regionEnrichment.length}`],
         ["Components", `${report.componentCount || 0} enriched`],
+        ["Supercut", report.supercutActive ? `${report.supercutComponentCount || 0} executable` : "not run"],
+        ["Rounds", report.supercutActive ? `${report.supercutRoundCount || 0} rectified` : "0"],
         ["Fields", `${report.fieldCount || 0} enriched`],
         ["Actions", `${report.actionControlCount || 0} classified`],
         ["Fit laws", `${report.fitLawCount || 0} declared`],
@@ -4075,6 +4081,20 @@
         report.regions.filter((region) => region.present).forEach((region) => {
           const chip = document.createElement("span");
           chip.textContent = `${region.role}: ${region.fitContext || region.layout || "semantic"}`;
+          details.appendChild(chip);
+        });
+        mcelCanonicalAppLensMap.appendChild(details);
+      }
+
+      if (report?.supercutOriginalPoints?.length) {
+        const details = document.createElement("div");
+        details.className = "mcel-canonical-app-lens-sidecar-list";
+        const label = document.createElement("strong");
+        label.textContent = "MCEL Supercut original points:";
+        details.appendChild(label);
+        report.supercutOriginalPoints.slice(0, 10).forEach((point) => {
+          const chip = document.createElement("span");
+          chip.textContent = point;
           details.appendChild(chip);
         });
         mcelCanonicalAppLensMap.appendChild(details);
