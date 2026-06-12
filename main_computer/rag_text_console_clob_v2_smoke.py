@@ -1212,24 +1212,11 @@ def file_content_lookup_context_report(
     }
 
 
-def content_evidence_terms(lookup_result: dict[str, Any]) -> list[str]:
-    terms: list[str] = []
-    for chunk in lookup_result.get("chunks") or []:
-        text = str(chunk.get("text") or "")
-        for match in re.finditer(r"\b(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)\b", text):
-            terms.append(match.group(1))
-            terms.append(match.group(0))
-        for match in re.finditer(r"^\s*([A-Z][A-Z0-9_]{3,})\s*=", text, flags=re.M):
-            terms.append(match.group(1))
-        for line in text.splitlines():
-            stripped = re.sub(r"^\d+:\s*", "", line).strip()
-            if (
-                len(stripped) >= 18
-                and not stripped.startswith("#")
-                and any(token in stripped.lower() for token in ("assert", "lookup", "clob", "context", "full_"))
-            ):
-                terms.append(stripped[:120])
-    # Keep order while de-duplicating and avoid tiny/common words.
+def _strip_rendered_line_number(line: str) -> str:
+    return re.sub(r"^\s*\d+:\s*", "", str(line or "")).strip()
+
+
+def _dedupe_evidence_terms(terms: list[str]) -> list[str]:
     seen: set[str] = set()
     unique: list[str] = []
     for term in terms:
@@ -1242,18 +1229,74 @@ def content_evidence_terms(lookup_result: dict[str, Any]) -> list[str]:
     return unique
 
 
-def response_mentions_content_evidence(response_text: str, lookup_result: dict[str, Any]) -> dict[str, Any]:
+def content_evidence_terms(lookup_result: dict[str, Any], *, evidence_profile: str = "general") -> list[str]:
+    """Return exact evidence strings that a model response may cite.
+
+    Evidence profiles keep the RAG proof from accepting coincidental or fixture
+    strings. For example, a test-file RAG case should cite a real test function
+    or assertion line, not an implementation symbol that happens to appear in a
+    quoted fake-repo fixture inside the test file.
+    """
+
+    profile = str(evidence_profile or "general").strip().lower()
+    terms: list[str] = []
+    for chunk in lookup_result.get("chunks") or []:
+        text = str(chunk.get("text") or "")
+
+        if profile == "test_assertion":
+            for line in text.splitlines():
+                stripped = _strip_rendered_line_number(line)
+                # Avoid accepting quoted fixture source such as
+                # "def test_x():", which is not real test-file evidence.
+                function_match = re.match(r"def\s+(test_[A-Za-z_][A-Za-z0-9_]*)\s*\(", stripped)
+                if function_match:
+                    terms.append(function_match.group(1))
+                    terms.append(stripped[:160])
+                    continue
+                if re.match(r"assert\b", stripped):
+                    terms.append(stripped[:180])
+                    for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]{5,}", stripped):
+                        if token.startswith("test_") or token in {"full_tree_injected", "context_chars", "response_used_content_evidence"}:
+                            terms.append(token)
+            continue
+
+        for match in re.finditer(r"\b(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)\b", text):
+            terms.append(match.group(1))
+            terms.append(match.group(0))
+        for match in re.finditer(r"^\s*([A-Z][A-Z0-9_]{3,})\s*=", text, flags=re.M):
+            terms.append(match.group(1))
+        for line in text.splitlines():
+            stripped = _strip_rendered_line_number(line)
+            if (
+                len(stripped) >= 18
+                and not stripped.startswith("#")
+                and any(token in stripped.lower() for token in ("assert", "lookup", "clob", "context", "full_"))
+            ):
+                terms.append(stripped[:120])
+
+    return _dedupe_evidence_terms(terms)
+
+
+def response_mentions_content_evidence(
+    response_text: str,
+    lookup_result: dict[str, Any],
+    *,
+    evidence_profile: str = "general",
+) -> dict[str, Any]:
     response = str(response_text or "")
     response_lower = response.lower()
+    evidence = content_evidence_terms(lookup_result, evidence_profile=evidence_profile)
     matched: list[str] = []
-    for term in content_evidence_terms(lookup_result):
+    for term in evidence:
         if term.lower() in response_lower:
             matched.append(term)
     return {
         "ok": bool(matched),
         "matched_evidence": matched,
-        "checked_evidence": content_evidence_terms(lookup_result),
+        "checked_evidence": evidence,
+        "evidence_profile": str(evidence_profile or "general"),
     }
+
 
 
 def choose_file_candidate_from_tree_lookup(
@@ -1299,14 +1342,20 @@ def build_rag_proof_messages(*, contexts: list[str], prompt: str) -> list[Any]:
     return messages
 
 
-def deterministic_content_rag_response(prompt: str, lookup_result: dict[str, Any]) -> str:
+def deterministic_content_rag_response(
+    prompt: str,
+    lookup_result: dict[str, Any],
+    *,
+    evidence_profile: str = "general",
+) -> str:
     path = str(lookup_result.get("path") or "")
-    evidence = content_evidence_terms(lookup_result)
+    evidence = content_evidence_terms(lookup_result, evidence_profile=evidence_profile)
     evidence_text = evidence[0] if evidence else "no exact content evidence was returned"
     return (
         f"Using the side-loaded file-content lookup slice for `{path}`, I would inspect `{evidence_text}` next. "
         "That exact item came from the retrieved content slice, not from a full-file prompt paste."
     )
+
 
 
 def run_blind_tree_path_rag_case(
@@ -1403,6 +1452,7 @@ def run_file_content_rag_case(
     offline_contract_only: bool,
     refresh_file_clob: bool,
     preferred_prefix: str | None = None,
+    evidence_profile: str = "general",
 ) -> dict[str, Any]:
     failures: list[str] = []
     selected_path = choose_file_candidate_from_tree_lookup(tree_lookup_result, root=root, preferred_prefix=preferred_prefix)
@@ -1441,6 +1491,10 @@ def run_file_content_rag_case(
     )
     failures.extend(content_validation.get("failures") or [])
 
+    acceptable_evidence = content_evidence_terms(content_lookup, evidence_profile=evidence_profile)
+    if int(content_lookup.get("match_count") or 0) > 0 and not acceptable_evidence:
+        failures.append(f"{case_name} lookup slice did not expose acceptable {evidence_profile!r} evidence")
+
     tree_lookup_context = build_clob_lookup_context(tree_lookup_result, max_chars=1000)
     file_text = str(((file_clob.get("payload") or {}).get("text")) or "")
     messages = build_rag_proof_messages(
@@ -1453,7 +1507,7 @@ def run_file_content_rag_case(
 
     if offline_contract_only:
         raw_response = {
-            "content": deterministic_content_rag_response(prompt, content_lookup),
+            "content": deterministic_content_rag_response(prompt, content_lookup, evidence_profile=evidence_profile),
             "provider": "offline-contract",
             "model": model,
             "metadata": {},
@@ -1467,7 +1521,11 @@ def run_file_content_rag_case(
             failures.append(f"{case_name} provider chat failed: {exc!r}")
 
     response_content = str(raw_response.get("content") or "")
-    evidence_usage = response_mentions_content_evidence(response_content, content_lookup)
+    evidence_usage = response_mentions_content_evidence(
+        response_content,
+        content_lookup,
+        evidence_profile=evidence_profile,
+    )
     path_usage = response_mentions_lookup_path(response_content, {"results": [{"path": selected_path}]})
     if int(content_lookup.get("match_count") or 0) > 0 and not evidence_usage.get("ok"):
         failures.append(f"{case_name} response did not name exact content evidence from the file-content lookup slice")
@@ -1489,6 +1547,9 @@ def run_file_content_rag_case(
             "cache": file_cache,
         },
         "content_query": content_lookup.get("query"),
+        "evidence_profile": evidence_profile,
+        "acceptable_evidence_count": len(acceptable_evidence),
+        "acceptable_evidence_sample": acceptable_evidence[:8],
         "content_match_count": content_lookup.get("match_count"),
         "content_returned_count": content_lookup.get("returned_count"),
         "content_validation": content_validation,
@@ -1571,9 +1632,9 @@ def run_rag_proof_cases(
             case_name="test-file assertion RAG",
             prompt=(
                 "Using side-loaded clob evidence, find a test related to clob lookup behavior and explain what it verifies. "
-                "Name the exact test path and copy one exact function, assertion, or assertion-related string from the content slice."
+                "Name the exact test path and copy one exact test function name or assertion line from the content slice."
             ),
-            content_terms=["assert", "lookup", "context", "full_tree_injected"],
+            content_terms=["def test_", "assert", "full_tree_injected", "context_chars"],
             base_url=base_url,
             model=model,
             timeout=timeout,
@@ -1581,6 +1642,7 @@ def run_rag_proof_cases(
             offline_contract_only=offline_contract_only,
             refresh_file_clob=refresh_file_clobs,
             preferred_prefix="tests/",
+            evidence_profile="test_assertion",
         )
     )
 
@@ -2085,6 +2147,11 @@ def print_summary(report: dict[str, Any]) -> None:
                 print(f"    selected_path={case.get('selected_path')}")
             if case.get("content_query"):
                 print(f"    content_query={case.get('content_query')}")
+            if case.get("evidence_profile"):
+                print(
+                    f"    evidence_profile={case.get('evidence_profile')} "
+                    f"acceptable_evidence={case.get('acceptable_evidence_count')}"
+                )
             if case.get("lookup_result_count") is not None:
                 print(
                     f"    lookup_results={case.get('lookup_result_count')} "
