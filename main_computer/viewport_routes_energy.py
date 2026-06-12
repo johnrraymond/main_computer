@@ -1002,6 +1002,126 @@ class ViewportEnergyRoutesMixin:
             self.server.signal("api-worker-wallet-funding-import-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
+    def _wallet_agent_credit_grants_path(self) -> Path:
+        return self.server.debug_root / "wallet_agent_credit_grants.json"
+
+    def _load_wallet_agent_credit_grants_history(self) -> list[dict[str, Any]]:
+        path = self._wallet_agent_credit_grants_path()
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return []
+        except json.JSONDecodeError:
+            return []
+        grants = payload.get("grants") if isinstance(payload, dict) else payload
+        if not isinstance(grants, list):
+            return []
+        return [dict(item) for item in grants if isinstance(item, dict)][:100]
+
+    def _save_wallet_agent_credit_grants_history(self, grants: list[dict[str, Any]]) -> None:
+        path = self._wallet_agent_credit_grants_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"grants": [dict(item) for item in grants[:100]]}
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    def _normalize_wallet_agent_credit_grant_amount(self, value: Any) -> int:
+        try:
+            credits = int(str(value or "").strip())
+        except (TypeError, ValueError):
+            raise ValueError("credits must be a whole number.") from None
+        if credits < 1 or credits > 100:
+            raise ValueError("credits must be between 1 and 100 for wallet helper grants.")
+        return credits
+
+    def _handle_wallet_agent_credit_grants_load(self) -> None:
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Wallet agent credit grants are only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                return
+            grants = self._load_wallet_agent_credit_grants_history()
+            hub_url = self._clean_hub_url(str(getattr(self.server.config, "hub_url", "") or "http://127.0.0.1:8770"))
+            self.server.signal("api-wallet-agent-credit-grants-load", count=len(grants), hub_url=hub_url)
+            self._send_json({"ok": True, "hub_url": hub_url, "grants": grants[:20]})
+        except Exception as exc:
+            self.server.signal("api-wallet-agent-credit-grants-load-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+    def _handle_wallet_agent_credit_grant_create(self) -> None:
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Wallet agent credit grants are only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                return
+            body = self._read_json()
+            issuer_wallet = self._normalize_worker_wallet_address(body.get("issuer_wallet"))
+            recipient_wallet = self._normalize_worker_wallet_address(body.get("recipient_wallet", body.get("account_id", "")))
+            credits = self._normalize_wallet_agent_credit_grant_amount(body.get("credits"))
+            hub_url = self._clean_hub_url(str(body.get("hub_url") or self.server.config.hub_url or "http://127.0.0.1:8770"))
+            memo = str(body.get("memo") or "Agent helper credits for parallel verification workers.").strip()
+            if not memo:
+                memo = "Agent helper credits for parallel verification workers."
+
+            forwarded = {
+                "account_id": recipient_wallet,
+                "owner_address": recipient_wallet,
+                "credits": credits,
+                "memo": memo,
+                "metadata": {
+                    "source": "wallet_agent_credit_grant",
+                    "agent_credit_grant": True,
+                    "issuer_wallet": issuer_wallet,
+                    "recipient_wallet": recipient_wallet,
+                },
+            }
+            result = self._post_wallet_agent_credit_grant_to_hub(hub_url=hub_url, payload=forwarded)
+            transaction = result.get("transaction") if isinstance(result.get("transaction"), dict) else {}
+            grant = {
+                "id": transaction.get("transaction_id") or f"agent_grant_{uuid.uuid4().hex[:16]}",
+                "created_at": datetime.now(tz=timezone.utc).isoformat(),
+                "hub_url": hub_url,
+                "issuer_wallet": issuer_wallet,
+                "recipient_wallet": recipient_wallet,
+                "account_id": recipient_wallet,
+                "credits": credits,
+                "memo": memo,
+                "transaction_id": str(transaction.get("transaction_id", "")),
+            }
+            grants = [grant, *self._load_wallet_agent_credit_grants_history()]
+            self._save_wallet_agent_credit_grants_history(grants)
+            self.server.signal(
+                "api-wallet-agent-credit-grant-create",
+                hub_url=hub_url,
+                issuer_wallet=issuer_wallet,
+                recipient_wallet=recipient_wallet,
+                credits=credits,
+                transaction_id=grant["transaction_id"],
+            )
+            self._send_json({"ok": True, "hub_url": hub_url, "grant": grant, "hub_result": result})
+        except Exception as exc:
+            self.server.signal("api-wallet-agent-credit-grant-create-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+    def _post_wallet_agent_credit_grant_to_hub(self, *, hub_url: str, payload: dict[str, Any]) -> dict[str, Any]:
+        request = Request(
+            self._clean_hub_url(hub_url) + "/api/hub/v1/credits/admin/issue",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers=self._hub_json_request_headers({"Content-Type": "application/json"}),
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=5.0) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Hub returned HTTP {exc.code}: {body}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"Hub is unreachable: {exc}") from exc
+        if not isinstance(data, dict):
+            raise RuntimeError("Hub returned a non-object agent credit grant response.")
+        if data.get("error"):
+            raise RuntimeError(str(data["error"]))
+        return data
+
+
     def _handle_worker_multisession_key_request(self) -> None:
         try:
             if not self._worker_ui_client_is_local():

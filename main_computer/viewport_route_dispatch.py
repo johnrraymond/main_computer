@@ -1858,6 +1858,9 @@ def dispatch_get(self) -> None:
     if route_path == "/api/applications/worker/wallet-funding/config":
         self._handle_worker_wallet_funding_config()
         return
+    if route_path == "/api/applications/wallet/agent-credit-grants":
+        self._handle_wallet_agent_credit_grants_load()
+        return
     if route_path == "/api/applications/worker/network-session":
         self._handle_worker_network_session_load()
         return
@@ -2017,6 +2020,9 @@ def dispatch_post(self) -> None:
         return
     if self.path == "/api/applications/worker/settings":
         self._handle_worker_settings_save()
+        return
+    if route_path == "/api/applications/wallet/agent-credit-grants":
+        self._handle_wallet_agent_credit_grant_create()
         return
     if self.path == "/api/applications/worker/network-session":
         self._handle_worker_network_session_select()

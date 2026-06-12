@@ -37,6 +37,7 @@ def test_mcel_lab_is_registered_as_separate_application() -> None:
     assert "<!-- @include applications/scripts/mcel-kernel.js -->" in html
     assert "<!-- @include applications/scripts/mcel-core.js -->" in html
     assert "<!-- @include applications/scripts/task-manager-mcel.js -->" in html
+    assert "<!-- @include applications/scripts/git-tools-mcel.js -->" in html
     assert "<!-- @include applications/scripts/mcel-lab.js -->" in html
     assert (
         html.index("mcel-contract.js")
@@ -58,6 +59,7 @@ def test_mcel_lab_is_registered_as_separate_application() -> None:
         < html.index("mcel-kernel.js")
         < html.index("mcel-core.js")
         < html.index("task-manager-mcel.js")
+        < html.index("git-tools-mcel.js")
         < html.index("mcel-lab.js")
     )
     assert "<!-- @include applications/scripts/dom-bindings/mcel-lab.js -->" in dom_bindings
@@ -135,6 +137,38 @@ def test_mcel_lab_mounts_task_manager_as_canonical_specimen() -> None:
     assert "MCEL_CANONICAL_SPECIMEN_RIBBON_ID" in lab
     assert "fixed in-frame ribbon" in lab
     assert "clearMcelCanonicalTaskManagerLens" in lab
+
+
+def test_mcel_lab_mounts_git_tools_as_busy_canonical_specimen() -> None:
+    html = (ROOT / "main_computer" / "web" / "applications.html").read_text(encoding="utf-8")
+    app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
+    lab = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    adapter = (WEB_APP / "scripts" / "git-tools-mcel.js").read_text(encoding="utf-8")
+
+    assert "<!-- @include applications/scripts/git-tools-mcel.js -->" in html
+    assert html.index("git-tools.js") < html.index("git-tools-mcel.js") < html.index("mcel-lab.js")
+    assert 'value="git-tools"' in app
+    assert 'data-route="/applications/git-tools?mcel_lab_specimen=git-tools"' in app
+    assert 'data-root="#git-tools-app"' in app
+    assert "remote, mirror, push, or manual command actions" in app
+
+    assert "window.GitToolsMcel" in lab
+    assert "MCEL_CANONICAL_GIT_TOOLS_REQUIRED_IDS" in lab
+    assert "MCEL_CANONICAL_GIT_TOOLS_DANGEROUS_CONTROL_SELECTORS" in lab
+    assert "mcelCanonicalAppAdapter" in lab
+    assert "applyGitToolsMcelSemantics" in lab
+    assert "data-mcel-git-enrichment" in lab
+    assert "MCEL adapter unavailable" in lab
+    assert "root.querySelectorAll(\".app-widget, .git-tools-card, .gitea-workflow-card" in lab
+
+    assert "global.GitToolsMcel" in adapter
+    assert "BODY_ENRICHMENT_ATTRIBUTE = \"data-mcel-git-enrichment\"" in adapter
+    assert "#git-tools-app" in adapter
+    assert "#git-server-remote-run" in adapter
+    assert "command-execution" in adapter
+    assert "credential-network-mutation" in adapter
+    assert "applyGitToolsMcelSemantics" in adapter
+    assert "push, or manual command buttons" in adapter
 
 
 def test_mcel_lab_task_manager_specimen_route_is_valid_and_observational() -> None:
