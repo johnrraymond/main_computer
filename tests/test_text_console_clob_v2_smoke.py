@@ -399,6 +399,23 @@ def test_file_content_clob_lookup_is_generic_bounded_and_reused(tmp_path: Path):
     assert any(term.startswith("assert ") for term in profile_terms)
     assert not any(term == "build_clob_lookup_context" for term in profile_terms)
 
+    retry_context = smoke.build_file_content_grounding_retry_context(
+        test_lookup,
+        selected_path="tests/test_text_console_clob_v2_smoke.py",
+        evidence_profile="test_assertion",
+        max_chars=900,
+    )
+    retry_usage = smoke.response_mentions_content_evidence(
+        "GROUNDING: path=tests/test_text_console_clob_v2_smoke.py evidence_id=content-001",
+        test_lookup,
+        evidence_profile="test_assertion",
+    )
+    assert len(retry_context) <= 900
+    assert "grounding_evidence:" in retry_context
+    assert "content-001" in retry_context
+    assert "full_payload_pasted_into_model_context: false" in retry_context
+    assert retry_usage["ok"] is True
+
 
 def test_offline_rag_proof_cases_use_runtime_evidence_without_expected_paths(tmp_path: Path):
     repo = tmp_path / "repo"
