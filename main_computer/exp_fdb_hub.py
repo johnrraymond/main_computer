@@ -26,6 +26,7 @@ from main_computer.hub import (
     HUB_SECURITY_PROFILE,
     HubDispatcher,
     HubHttpServer,
+    HubServerHandler,
 )
 from main_computer.hub_credit_bridge_completion import HubCreditBridgeCompletionService
 from main_computer.hub_credit_indexer import HubCreditIndexer
@@ -41,6 +42,25 @@ DEFAULT_EXP_FDB_DOCKER_HUB_HOST = "host.docker.internal"
 DEFAULT_EXP_FDB_DOCKER_CONTAINER_OUTPUT_DIR = "/lab-output"
 
 
+class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
+    """Hub request handler that keeps exp multi-hub access logs visible while Docker is attached."""
+
+    def log_message(self, format: str, *args: object) -> None:
+        if not getattr(self.server, "verbose", False):
+            return
+        try:
+            message = format % args
+        except Exception:
+            message = f"{format} {args!r}"
+        port = getattr(self.server, "server_port", "?")
+        client = self.client_address[0] if self.client_address else "-"
+        print(
+            f"[exp-fdb-hub:{port}] {client} - - [{self.log_date_time_string()}] {message}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 class ExperimentalFoundationDbHubHttpServer(HubHttpServer):
     """Manual-only Hub clone that keeps shared hub state in FoundationDB."""
 
@@ -53,6 +73,7 @@ class ExperimentalFoundationDbHubHttpServer(HubHttpServer):
         verbose: bool = True,
     ) -> None:
         super().__init__(server_address, config, verbose=verbose)
+        self.RequestHandlerClass = ExperimentalFoundationDbHubServerHandler
         self.fdb_state = ExperimentalFoundationDbHubState(fdb_config)
         self.registry = ExperimentalFoundationDbRegistry(
             self.fdb_state,
@@ -216,6 +237,11 @@ def launch_scheduler_lab_docker(args: argparse.Namespace, *, hub_base_urls: Sequ
             "LAB_FUNDED": str(args.funded),
             "LAB_REQUEST_STARTUP_MODE": str(args.request_startup_mode),
             "LAB_REQUEST_STARTUP_SPREAD_SECONDS": str(float(args.request_startup_spread_seconds)),
+            "LAB_EXECUTION_MODE": str(args.lab_execution),
+            "LAB_WARM": str(args.warm or ""),
+            "B2B_FAILURES": str(int(args.b2bfailures)),
+            "FORCED_ALIVE_SECONDS": str(float(args.forced_alive)),
+            "HTTP_TIMEOUT_SECONDS": str(float(args.http_timeout_seconds)),
             "LEASE_SECONDS": str(float(args.lease_seconds)),
         }
     )
@@ -252,7 +278,12 @@ def launch_scheduler_lab_docker(args: argparse.Namespace, *, hub_base_urls: Sequ
         print(f"  {url}")
     print(f"Scheduler lab nodes: {total_nodes}")
     print(f"Scheduler lab assumed already-funded accounts: {args.funded:g}%")
+    print(f"Scheduler lab execution mode: {args.lab_execution}")
     print(f"Scheduler lab request startup: {args.request_startup_mode} over {float(args.request_startup_spread_seconds):g}s")
+    print(f"Scheduler lab warm-up delay: {args.warm or 'none'}")
+    print(f"Scheduler lab b2b transport failure limit: {int(args.b2bfailures)}")
+    print(f"Scheduler lab forced-alive grace seconds: {float(args.forced_alive):g}")
+    print(f"Scheduler lab HTTP timeout seconds: {float(args.http_timeout_seconds):g}")
     if args.worktime:
         print(f"Scheduler lab worker result runtime: {args.worktime} (seconds; sigma is standard deviation)")
     print(f"Scheduler lab lease seconds: {float(args.lease_seconds):g}")
@@ -348,9 +379,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--request-startup-spread-seconds",
         type=float,
-        default=3.0,
-        help="Spread startup surge requests across this many seconds; use 0 for an immediate wall of requests.",
+        default=0.0,
+        help="Legacy async-lab request-surge spread. Process mode uses --warm for node readiness; use 0 for an immediate wall.",
     )
+    parser.add_argument("--lab-execution", choices=["process", "async"], default="process", help="Docker lab execution model. process starts one OS child process per node.")
+    parser.add_argument("--warm", default="", help="Docker node warm-up delay distribution in seconds before first hub contact, e.g. --warm 2mu,1sigma.")
+    parser.add_argument("--b2bfailures", type=int, default=10, help="Consecutive transport failures before each node process self-terminates after --forced-alive has elapsed. 0 disables.")
+    parser.add_argument("--forced-alive", type=float, default=0.0, help="Seconds each Docker node must stay alive before --b2bfailures can self-terminate it, for example --forced-alive 100.")
+    parser.add_argument("--http-timeout-seconds", type=float, default=1.0, help="Short per-attempt hub HTTP timeout used by Docker node processes.")
     parser.add_argument("--lease-seconds", type=float, default=180.0, help="Lease duration advertised by Docker workers when polling. Increase this above expected --worktime.")
     parser.add_argument("--docker-output-dir", type=Path, default=DEFAULT_EXP_FDB_DOCKER_OUTPUT_DIR, help="Repository-relative output directory for scheduler lab events.")
     parser.add_argument("--no-docker-build", action="store_true", help="Do not pass --build to docker compose up.")
@@ -378,6 +414,12 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--funded must be <= 100")
     if args.request_startup_spread_seconds < 0:
         raise SystemExit("--request-startup-spread-seconds must be >= 0")
+    if args.b2bfailures < 0:
+        raise SystemExit("--b2bfailures must be >= 0")
+    if args.forced_alive < 0:
+        raise SystemExit("--forced-alive must be >= 0")
+    if args.http_timeout_seconds <= 0:
+        raise SystemExit("--http-timeout-seconds must be > 0")
     if args.request_startup_mode == "auto":
         args.request_startup_mode = "surge" if args.funded > 0 else "natural"
     return serve_exp_fdb_hubs(args)
