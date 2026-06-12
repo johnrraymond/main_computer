@@ -383,6 +383,23 @@ def test_file_content_clob_lookup_is_generic_bounded_and_reused(tmp_path: Path):
     assert usage["ok"] is True
 
 
+    test_lookup = smoke.query_file_content_clob(
+        smoke.load_or_create_file_content_clob(
+            root=repo,
+            clob_dir=clob_dir,
+            repo_relative_path="tests/test_text_console_clob_v2_smoke.py",
+            refresh=False,
+        )[0],
+        terms=["def test_", "assert", "full_tree_injected", "context_chars"],
+        max_chunks=5,
+        context_radius=4,
+    )
+    profile_terms = smoke.content_evidence_terms(test_lookup, evidence_profile="test_assertion")
+    assert any(term.startswith("test_") for term in profile_terms)
+    assert any(term.startswith("assert ") for term in profile_terms)
+    assert not any(term == "build_clob_lookup_context" for term in profile_terms)
+
+
 def test_offline_rag_proof_cases_use_runtime_evidence_without_expected_paths(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -420,4 +437,9 @@ def test_offline_rag_proof_cases_use_runtime_evidence_without_expected_paths(tmp
     assert content_case["path_usage"]["ok"] is True
     test_case = case_by_name["test-file assertion RAG"]
     assert str(test_case["selected_path"]).startswith("tests/")
+    assert test_case["evidence_profile"] == "test_assertion"
+    assert test_case["acceptable_evidence_count"] >= 1
     assert test_case["evidence_usage"]["ok"] is True
+    matched = test_case["evidence_usage"]["matched_evidence"]
+    assert any(str(item).startswith("test_") or str(item).startswith("assert ") for item in matched)
+    assert "build_clob_lookup_context" not in matched

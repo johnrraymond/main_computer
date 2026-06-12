@@ -441,9 +441,14 @@ class ExecutorService:
 
         try:
             state = self._full_boot_reconcile()
+            if watch:
+                self._preserve_service_runtime_fields(state)
             state["service"]["watching"] = bool(watch)
             state["service"]["pid_file"] = str(self.pid_path)
             state["service"]["pid_claim"] = pid_claim
+            if watch:
+                state["service"]["state"] = "watching" if state.get("ok") else "booting"
+                state["service"]["heartbeat_at"] = _now_iso()
             self._write_state(state)
             self._emit_boot_result(state, prefix="initial boot")
 
@@ -570,8 +575,17 @@ class ExecutorService:
         if stop_event is None:
             return
 
-        while not stop_event.wait(self.heartbeat_interval_s):
-            self._refresh_heartbeat_state()
+        # The first heartbeat must not wait for the first interval. Startup
+        # reconciliation is exactly where WSL/Docker/Compose can block, so make
+        # the liveness signal independent from the boot path immediately and
+        # keep retrying even if one state-file write fails.
+        while not stop_event.is_set():
+            try:
+                self._refresh_heartbeat_state()
+            except Exception as exc:  # pragma: no cover - defensive resident loop
+                self._emit("executor heartbeat refresh failed; will retry", error=exc)
+            if stop_event.wait(self.heartbeat_interval_s):
+                break
 
     def _refresh_heartbeat_state(self) -> None:
         """Update only service liveness fields without changing boot progress.
@@ -624,6 +638,9 @@ class ExecutorService:
                 "heartbeat_at": _now_iso(),
             }
         )
+        pending_components = self._pending_boot_components()
+        state.update(pending_components)
+        state["components"] = pending_components
         self._write_state(state)
         return state
 
@@ -669,6 +686,28 @@ class ExecutorService:
         payload.update(extra)
         return payload
 
+    def _pending_boot_components(self) -> dict[str, dict[str, Any]]:
+        return {
+            "wsl": self._component(
+                ok=False,
+                state="pending",
+                message="WSL executor check pending",
+                distribution=self.wsl_distribution,
+            ),
+            "docker": self._component(
+                ok=False,
+                state="pending",
+                message="Docker engine check pending",
+                docker_command=self.docker_command,
+            ),
+            "compose": self._component(
+                ok=False,
+                state="pending",
+                message="executor Compose/image check pending",
+                compose_file=str(self.compose_file),
+            ),
+        }
+
     def _emit(self, message: str, **fields: Any) -> None:
         if self.output is None:
             return
@@ -688,6 +727,67 @@ class ExecutorService:
             "docker": str((components.get("docker") or state.get("docker") or {}).get("state") or "unknown"),
             "compose": str((components.get("compose") or state.get("compose") or {}).get("state") or "unknown"),
         }
+
+    def _boot_progress_component(self, *, name: str, state: str, message: str, **extra: Any) -> dict[str, Any]:
+        return self._component(ok=False, state=state, message=message, boot_step=name, **extra)
+
+    def _publish_boot_progress(
+        self,
+        *,
+        message: str,
+        wsl: dict[str, Any] | None = None,
+        docker: dict[str, Any] | None = None,
+        compose: dict[str, Any] | None = None,
+    ) -> None:
+        """Publish boot progress without claiming that dependencies are ready.
+
+        This is intentionally separate from the final reconcile result. During
+        reboot recovery a Docker/WSL command can run for a long time; the UI and
+        supervisor need to see that the executor process is still alive and which
+        milestone it is currently supervising.
+        """
+
+        current = dict(self._last_state or self._base_state("booting"))
+        components = dict(current.get("components") or {})
+        if not components:
+            components.update(self._pending_boot_components())
+        if wsl is not None:
+            components["wsl"] = wsl
+        if docker is not None:
+            components["docker"] = docker
+        if compose is not None:
+            components["compose"] = compose
+
+        current.update(
+            {
+                "ok": False,
+                "state": "booting",
+                "boot_proven": False,
+                "updated_at": _now_iso(),
+                "message": message,
+                "wsl": components.get("wsl"),
+                "docker": components.get("docker"),
+                "compose": components.get("compose"),
+                "components": {
+                    "wsl": components.get("wsl"),
+                    "docker": components.get("docker"),
+                    "compose": components.get("compose"),
+                },
+            }
+        )
+        service = dict(current.get("service") or {})
+        service.update(
+            {
+                "name": SERVICE_NAME,
+                "pid": os.getpid(),
+                "pid_file": str(self.pid_path),
+                "watching": bool(service.get("watching") or self._heartbeat_stop is not None),
+                "state": "booting",
+                "heartbeat_at": _now_iso(),
+            }
+        )
+        current["service"] = service
+        self._write_state(current)
 
     def _emit_boot_result(self, state: dict[str, Any], *, prefix: str) -> None:
         fields = self._component_state_fields(state)
@@ -728,7 +828,11 @@ class ExecutorService:
         for key in ("pid_file", "pid_claim"):
             if key in previous_service and key not in service:
                 service[key] = previous_service[key]
+        service["pid"] = os.getpid()
         service.setdefault("pid_file", str(self.pid_path))
+        if previous_service.get("watching") or service.get("watching"):
+            service["watching"] = True
+            service["heartbeat_at"] = _now_iso()
         state["service"] = service
 
     def _read_pid_file(self) -> dict[str, Any]:
@@ -953,15 +1057,54 @@ class ExecutorService:
     def _full_boot_reconcile(self) -> dict[str, Any]:
         state = self._base_state("booting")
         events: list[dict[str, Any]] = []
+        pending = self._pending_boot_components()
 
-        wsl = self._reconcile_wsl_executor()
-        docker = self._reconcile_docker_engine()
-        compose = self._reconcile_compose_stack() if docker.get("ok") else self._component(
-            ok=False,
-            state="blocked",
-            message="docker is not ready; compose stack was not started",
-            compose_file=str(self.compose_file),
+        self._publish_boot_progress(
+            message="checking WSL executor dependency",
+            wsl=self._boot_progress_component(
+                name="wsl",
+                state="checking",
+                message="checking WSL executor dependency",
+                distribution=self.wsl_distribution,
+            ),
+            docker=pending["docker"],
+            compose=pending["compose"],
         )
+        wsl = self._reconcile_wsl_executor()
+
+        self._publish_boot_progress(
+            message="checking Docker engine dependency",
+            wsl=wsl,
+            docker=self._boot_progress_component(
+                name="docker",
+                state="checking",
+                message="checking Docker engine dependency",
+                docker_command=self.docker_command,
+            ),
+            compose=pending["compose"],
+        )
+        docker = self._reconcile_docker_engine()
+
+        if docker.get("ok"):
+            self._publish_boot_progress(
+                message="checking executor Compose/image dependency",
+                wsl=wsl,
+                docker=docker,
+                compose=self._boot_progress_component(
+                    name="compose",
+                    state="checking",
+                    message="checking executor Compose/image dependency",
+                    compose_file=str(self.compose_file),
+                ),
+            )
+            compose = self._reconcile_compose_stack()
+        else:
+            compose = self._component(
+                ok=False,
+                state="blocked",
+                message="docker is not ready; compose stack was not started",
+                compose_file=str(self.compose_file),
+            )
 
         ok = bool(wsl.get("ok") and docker.get("ok") and compose.get("ok"))
         state.update(
