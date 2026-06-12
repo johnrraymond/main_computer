@@ -384,6 +384,44 @@ def lookup_text_console_clob_lines(
     return results[:max_results]
 
 
+def response_uses_text_console_clob_evidence(
+    response_text: str,
+    lookup_metadata: dict[str, Any] | None,
+    *,
+    min_exact_text_chars: int = 12,
+) -> dict[str, Any]:
+    """Report whether a model response cites retrieved clob lookup evidence.
+
+    This is intentionally a narrow grounding check: a response passes by naming
+    a runtime evidence_id or by copying an exact retrieved evidence line.  It
+    does not prove semantic correctness; it flags whether the answer was tied to
+    the bounded side-loaded clob slice instead of unsupported memory.
+    """
+
+    metadata = lookup_metadata if isinstance(lookup_metadata, dict) else {}
+    response = str(response_text or "")
+    evidence_items = [item for item in list(metadata.get("evidence", []) or []) if isinstance(item, dict)]
+    matched_ids: list[str] = []
+    matched_texts: list[str] = []
+    for item in evidence_items:
+        evidence_id = str(item.get("evidence_id") or "").strip()
+        if evidence_id and evidence_id in response and evidence_id not in matched_ids:
+            matched_ids.append(evidence_id)
+        text = str(item.get("text") or "").strip()
+        if len(text) >= min_exact_text_chars and text in response and text not in matched_texts:
+            matched_texts.append(text)
+
+    result_count = int(metadata.get("result_count") or len(evidence_items) or 0)
+    return {
+        "ok": bool(matched_ids or matched_texts),
+        "result_count": result_count,
+        "matched_ids": matched_ids,
+        "matched_texts": matched_texts,
+        "evidence_ids": [str(item.get("evidence_id") or "") for item in evidence_items if item.get("evidence_id")],
+        "requires_grounding": result_count > 0,
+    }
+
+
 def build_text_console_clob_lookup_context(
     repo_root: str | Path,
     *,
@@ -413,9 +451,10 @@ def build_text_console_clob_lookup_context(
                 "Side-loaded text-console clob lookup evidence.",
                 "This evidence was retrieved from saved clob payloads referenced by earlier thread messages.",
                 "Use only these bounded lookup lines as evidence; the full clob payload is not pasted into the model context.",
+                "Grounding requirement: when answering from this lookup, cite one or more evidence_id values exactly or quote exact retrieved text.",
                 f"query_terms: {', '.join(terms) if terms else '[none]'}",
                 "",
-                "evidence:",
+                "grounding_evidence:",
             ]
         )
         for item in all_results:
@@ -437,5 +476,8 @@ def build_text_console_clob_lookup_context(
         "context_chars": len(context),
         "max_chars": max_chars,
         "full_clob_injected": False,
+        "grounding_required": bool(all_results),
+        "evidence_ids": [str(item.get("evidence_id") or "") for item in all_results if item.get("evidence_id")],
+        "evidence": all_results,
     }
     return context, metadata

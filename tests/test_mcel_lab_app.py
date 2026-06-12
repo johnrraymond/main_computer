@@ -37,6 +37,7 @@ def test_mcel_lab_is_registered_as_separate_application() -> None:
     assert "<!-- @include applications/scripts/mcel-kernel.js -->" in html
     assert "<!-- @include applications/scripts/mcel-core.js -->" in html
     assert "<!-- @include applications/scripts/task-manager-mcel.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-supercut.js -->" in html
     assert "<!-- @include applications/scripts/git-tools-mcel.js -->" in html
     assert "<!-- @include applications/scripts/mcel-lab.js -->" in html
     assert (
@@ -59,6 +60,7 @@ def test_mcel_lab_is_registered_as_separate_application() -> None:
         < html.index("mcel-kernel.js")
         < html.index("mcel-core.js")
         < html.index("task-manager-mcel.js")
+        < html.index("mcel-supercut.js")
         < html.index("git-tools-mcel.js")
         < html.index("mcel-lab.js")
     )
@@ -145,14 +147,16 @@ def test_mcel_lab_mounts_git_tools_as_busy_canonical_specimen() -> None:
     lab = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
     adapter = (WEB_APP / "scripts" / "git-tools-mcel.js").read_text(encoding="utf-8")
 
+    assert "<!-- @include applications/scripts/mcel-supercut.js -->" in html
     assert "<!-- @include applications/scripts/git-tools-mcel.js -->" in html
-    assert html.index("git-tools.js") < html.index("git-tools-mcel.js") < html.index("mcel-lab.js")
+    assert html.index("git-tools.js") < html.index("mcel-supercut.js") < html.index("git-tools-mcel.js") < html.index("mcel-lab.js")
     assert 'value="git-tools"' in app
     assert 'data-route="/applications/git-tools?mcel_lab_specimen=git-tools"' in app
     assert 'data-root="#git-tools-app"' in app
     assert "remote, mirror, push, or manual command actions" in app
 
     assert "window.GitToolsMcel" in lab
+    assert "window.McelSupercut" in lab
     assert "MCEL_CANONICAL_GIT_TOOLS_REQUIRED_IDS" in lab
     assert "MCEL_CANONICAL_GIT_TOOLS_DANGEROUS_CONTROL_SELECTORS" in lab
     assert "mcelCanonicalAppAdapter" in lab
@@ -168,8 +172,48 @@ def test_mcel_lab_mounts_git_tools_as_busy_canonical_specimen() -> None:
     assert "command-execution" in adapter
     assert "credential-network-mutation" in adapter
     assert "applyGitToolsMcelSemantics" in adapter
+    assert "runGitToolsSupercutTranslation" in adapter
+    assert "supercutOriginalPoints" in adapter
+    assert "htmlTranslationTool" in adapter
     assert "push, or manual command buttons" in adapter
 
+
+
+def test_mcel_lab_adds_supercut_html_translation_module_for_git_tools() -> None:
+    html = (ROOT / "main_computer" / "web" / "applications.html").read_text(encoding="utf-8")
+    app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
+    lab = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    adapter = (WEB_APP / "scripts" / "git-tools-mcel.js").read_text(encoding="utf-8")
+    supercut = (WEB_APP / "scripts" / "mcel-supercut.js").read_text(encoding="utf-8")
+
+    assert "<!-- @include applications/scripts/mcel-supercut.js -->" in html
+    assert html.index("task-manager-mcel.js") < html.index("mcel-supercut.js") < html.index("git-tools-mcel.js")
+    assert "MCEL Supercut" in app
+    assert "mcel-supercut component contracts" in app
+
+    assert "window.McelSupercut" in lab
+    assert "supercut: ${enrichment.supercutComponentCount" in lab
+    assert "MCEL Supercut original points" in lab
+
+    assert "global.McelSupercut.translateRuntime" in adapter
+    assert "clearGitToolsSupercutTranslation" in adapter
+    assert "supercutRuntimeChanges" in adapter
+    assert "supercutCssObjectCount" in adapter
+    assert "MCEL Supercut derives original points from slimy HTML structure" in adapter
+
+    assert "global.McelSupercut" in supercut
+    assert "inspectHtmlRuntime" in supercut
+    assert "translateRuntime" in supercut
+    assert "clearRuntime" in supercut
+    assert "executeComponent" in supercut
+    assert "data-mcel-supercut" in supercut
+    assert "data-mcel-supercut-purpose" in supercut
+    assert "data-mcel-supercut-executable" in supercut
+    assert "htmlTranslationTool" in supercut
+    assert "rectificationRounds" in supercut
+    assert "cssObjectCatalog" in supercut
+    assert "runtimeChanges" in supercut
+    assert "originalPoint" in supercut
 
 def test_mcel_lab_task_manager_specimen_route_is_valid_and_observational() -> None:
     assert (

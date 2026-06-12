@@ -47,9 +47,14 @@ from main_computer.text_console import (
     TextConsoleConfig,
     coerce_text_console_thread_messages,
     parse_text_console_response_artifacts,
+    run_text_console_clob_grounded_answer,
     run_text_console_operator_chat,
+    text_console_prompt_requests_local_action,
 )
-from main_computer.text_console_clobs import build_text_console_clob_lookup_context
+from main_computer.text_console_clobs import (
+    build_text_console_clob_lookup_context,
+    response_uses_text_console_clob_evidence,
+)
 from main_computer.website_builder_rag_pipeline import (
     build_evidence as build_website_builder_rag_evidence,
     build_proposal_evidence as build_website_builder_rag_proposal_evidence,
@@ -2205,11 +2210,60 @@ class ViewportApplicationRoutesMixin:
                     context_chars=clob_lookup_metadata.get("context_chars", 0),
                 )
 
+            if clob_lookup_text and not text_console_prompt_requests_local_action(prompt):
+                response = run_text_console_clob_grounded_answer(
+                    text_console_config=text_console_config,
+                    prompt=prompt,
+                    clob_lookup_text=clob_lookup_text,
+                    base_config=self.server.config,
+                )
+                clob_lookup_grounding = response_uses_text_console_clob_evidence(
+                    response.content,
+                    clob_lookup_metadata,
+                )
+                response.metadata.setdefault("text_console_thread", {})
+                response.metadata["text_console_thread"].update(
+                    {
+                        "thread_id": thread_id,
+                        "message_count": len(thread_messages),
+                        "message_roles": [message.role for message in thread_messages],
+                        "message_chars": [len(str(message.content or "")) for message in thread_messages],
+                        "notes": thread_notes,
+                        "clob_lookup": clob_lookup_metadata,
+                        "clob_lookup_grounding": clob_lookup_grounding,
+                        "model_message_count": len(
+                            list(response.metadata.get("text_console_clob_grounded_answer", {}).get("message_chars", []) or [])
+                        ),
+                        "clob_grounded_answer_direct": True,
+                    }
+                )
+                self.server.signal(
+                    "api-chat-clob-grounded-answer",
+                    result_count=clob_lookup_metadata.get("result_count", 0),
+                    context_chars=clob_lookup_metadata.get("context_chars", 0),
+                    grounded=clob_lookup_grounding.get("ok", False),
+                    input_chars=response.metadata.get("text_console_clob_grounded_answer", {}).get("input_chars", 0),
+                    request_bytes=response.metadata.get("text_console_clob_grounded_answer", {}).get("request_bytes", 0),
+                )
+                self.server.signal(
+                    "api-chat-complete",
+                    provider=response.provider,
+                    model=response.model,
+                    response_chars=len(response.content),
+                    context_root=str(text_console_config.context_root),
+                )
+                self._send_json(asdict(response))
+                return
+
             response = run_text_console_operator_chat(
                 text_console_config=text_console_config,
                 prompt=prompt,
                 base_config=self.server.config,
                 conversation_messages=conversation_messages,
+            )
+            clob_lookup_grounding = response_uses_text_console_clob_evidence(
+                response.content,
+                clob_lookup_metadata,
             )
             response.metadata.setdefault("text_console_thread", {})
             response.metadata["text_console_thread"].update(
@@ -2220,6 +2274,7 @@ class ViewportApplicationRoutesMixin:
                     "message_chars": [len(str(message.content or "")) for message in thread_messages],
                     "notes": thread_notes,
                     "clob_lookup": clob_lookup_metadata,
+                    "clob_lookup_grounding": clob_lookup_grounding,
                     "model_message_count": len(conversation_messages),
                 }
             )

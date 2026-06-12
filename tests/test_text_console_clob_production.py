@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 import json
+import shutil
 
 from main_computer.models import ChatMessage
 from main_computer.text_console_clobs import (
     build_text_console_clob_lookup_context,
     enrich_terminal_result_with_clobs,
+    response_uses_text_console_clob_evidence,
     save_text_console_clob,
 )
 
@@ -92,6 +95,274 @@ def test_clob_lookup_context_uses_retrieved_lines_not_full_payload(tmp_path: Pat
     assert len(context) <= 1200
     assert "docs/notes.md" not in context
 
+
+def test_clob_lookup_context_makes_runtime_evidence_grounding_explicit(tmp_path: Path):
+    full_text = "\n".join(
+        [
+            "build output line",
+            "ERROR critical assertion failed in tests/test_runtime_clob_grounding.py",
+            "cleanup finished",
+        ]
+    )
+    clob = save_text_console_clob(
+        tmp_path,
+        clob_type="terminal_output",
+        text=full_text,
+        source={"kind": "terminal_result", "stream": "stdout"},
+    )
+    thread_messages = [
+        ChatMessage(
+            role="system",
+            content=(
+                "Terminal result from an explicitly executed text-console mount.\n"
+                f"clob_id: {clob['clob_id']}\n"
+            ),
+        )
+    ]
+
+    context, metadata = build_text_console_clob_lookup_context(
+        tmp_path,
+        prompt="Which runtime clob assertion failed?",
+        thread_messages=thread_messages,
+        max_chars=1200,
+    )
+
+    assert "Grounding requirement" in context
+    assert "grounding_evidence:" in context
+    assert "evidence_id=clob-evidence-001" in context
+    assert metadata["grounding_required"] is True
+    assert metadata["evidence_ids"] == ["clob-evidence-001"]
+    assert metadata["evidence"][0]["text"] == "ERROR critical assertion failed in tests/test_runtime_clob_grounding.py"
+
+    cited = response_uses_text_console_clob_evidence("The failing line is clob-evidence-001.", metadata)
+    quoted = response_uses_text_console_clob_evidence(
+        "The failing line is ERROR critical assertion failed in tests/test_runtime_clob_grounding.py.",
+        metadata,
+    )
+    plausible_but_ungrounded = response_uses_text_console_clob_evidence(
+        "The failure was a runtime clob assertion.",
+        metadata,
+    )
+
+    assert cited["ok"] is True
+    assert cited["matched_ids"] == ["clob-evidence-001"]
+    assert quoted["ok"] is True
+    assert quoted["matched_texts"] == ["ERROR critical assertion failed in tests/test_runtime_clob_grounding.py"]
+    assert plausible_but_ungrounded["ok"] is False
+
+
+def _copy_action_specs_for_test_repo(repo: Path) -> None:
+    source = Path(__file__).resolve().parents[1] / "main_computer" / "action_specs"
+    target = repo / "main_computer" / "action_specs"
+    target.mkdir(parents=True, exist_ok=True)
+    for path in source.glob("*.md"):
+        shutil.copy2(path, target / path.name)
+
+
+def test_terminal_output_clob_followup_reaches_operator_as_bounded_grounding_slice(
+    tmp_path: Path,
+    monkeypatch,
+):
+    import main_computer.text_console as prod
+    from main_computer.config import MainComputerConfig
+    from main_computer.models import ChatResponse
+
+    _copy_action_specs_for_test_repo(tmp_path)
+    large_stdout = "\n".join(f"irrelevant/path/{index:04d}.py" for index in range(160))
+    large_stdout += "\ncritical/runtime/path.txt contains the answer token"
+
+    terminal_result = enrich_terminal_result_with_clobs(
+        tmp_path,
+        {
+            "command": "Get-ChildItem . -Recurse",
+            "cwd": str(tmp_path),
+            "target_id": "repo-root-powershell-terminal",
+            "target_display_name": "Repo Terminal",
+            "target_os": "windows",
+            "target_shell": "powershell",
+            "exit_code": 0,
+            "stdout": large_stdout,
+            "stderr": "",
+            "duration_ms": 123,
+            "timed_out": False,
+        },
+        threshold_chars=200,
+        inline_excerpt_chars=180,
+    )
+    thread_message = ChatMessage(role="system", content=terminal_result["model_context"]["thread_text"])
+    lookup_context, lookup_metadata = build_text_console_clob_lookup_context(
+        tmp_path,
+        prompt="Which runtime path contains the answer token?",
+        thread_messages=[thread_message],
+        max_chars=1400,
+    )
+    conversation_messages = [thread_message, ChatMessage(role="system", content=lookup_context)]
+    calls: list[list[ChatMessage]] = []
+
+    class GroundedProvider:
+        name = "fake"
+        model = "fake-model"
+
+        def chat(self, messages):
+            calls.append(messages)
+            joined = "\n".join(str(message.content) for message in messages)
+            if prod.ACTION_PREFLIGHT_PROMPT in joined:
+                return ChatResponse(
+                    content=json.dumps(
+                        {
+                            "needs_mount": False,
+                            "needs_edit": False,
+                            "needs_answer_only": True,
+                            "selected_spec_ids": [],
+                            "reason": "The follow-up can be answered from clob lookup evidence.",
+                        }
+                    ),
+                    provider="fake",
+                    model="fake-model",
+                )
+            assert "Grounding requirement" in joined
+            assert "evidence_id=clob-evidence-001" in joined
+            assert "critical/runtime/path.txt contains the answer token" in joined
+            assert "irrelevant/path/0080.py" not in joined
+            return ChatResponse(
+                content="The answer is in clob-evidence-001: critical/runtime/path.txt contains the answer token.",
+                provider="fake",
+                model="fake-model",
+            )
+
+    class FakeComputer:
+        provider = GroundedProvider()
+
+        def context_pack(self, prompt):
+            return SimpleNamespace(
+                text=(
+                    "Deterministic workspace context pack:\n"
+                    f"Workspace root: {tmp_path}\n"
+                    "Main computer file manifest:\n"
+                    "  - main_computer/action_specs/terminal.md\n"
+                ),
+                evidence=[],
+                manifest_chars=64,
+            )
+
+        def _web_search_context(self, prompt):
+            return {"attempted": False, "results": []}, ""
+
+    monkeypatch.setattr(prod.MainComputer, "build", classmethod(lambda cls, config=None: FakeComputer()))
+
+    response = prod.run_text_console_operator_chat(
+        text_console_config=prod.TextConsoleConfig.from_current_directory(
+            tmp_path,
+            provider="ollama",
+            model="fake-model",
+            base_url="http://127.0.0.1:11434",
+            timeout=120.0,
+            think=False,
+        ),
+        prompt="Which runtime path contains the answer token?",
+        base_config=MainComputerConfig(workspace=tmp_path),
+        conversation_messages=conversation_messages,
+    )
+    grounding = response_uses_text_console_clob_evidence(response.content, lookup_metadata)
+
+    assert len(calls) == 2
+    assert response.content.startswith("The answer is in clob-evidence-001")
+    assert grounding["ok"] is True
+    assert grounding["matched_ids"] == ["clob-evidence-001"]
+
+
+
+def test_clob_grounded_answer_path_bypasses_operator_scaffold_and_thread_bulk(
+    tmp_path: Path,
+    monkeypatch,
+):
+    import main_computer.text_console as prod
+    from main_computer.config import MainComputerConfig
+    from main_computer.models import ChatResponse
+
+    full_text = "\n".join(f"irrelevant/history/{index:04d}.txt" for index in range(250))
+    full_text += "\ncritical/runtime/path.txt contains the answer token"
+    clob = save_text_console_clob(
+        tmp_path,
+        clob_type="terminal_output",
+        text=full_text,
+        source={"kind": "terminal_result", "stream": "stdout"},
+    )
+    thread_message = ChatMessage(
+        role="system",
+        content=(
+            "Terminal result from an explicitly executed text-console mount.\n"
+            f"clob_id: {clob['clob_id']}\n"
+            "HISTORIC_BULK_SHOULD_NOT_REACH_CLOB_ANSWER " * 500
+        ),
+    )
+    lookup_context, lookup_metadata = build_text_console_clob_lookup_context(
+        tmp_path,
+        prompt="Which runtime path contains the answer token?",
+        thread_messages=[thread_message],
+        max_chars=1400,
+    )
+    calls: list[list[ChatMessage]] = []
+
+    class GroundedProvider:
+        name = "fake"
+        model = "fake-model"
+
+        def chat(self, messages):
+            calls.append(messages)
+            joined = "\n".join(str(message.content) for message in messages)
+            assert prod.ACTION_PREFLIGHT_PROMPT not in joined
+            assert prod.FINAL_OPERATOR_PROMPT not in joined
+            assert "Selected text-console action spec" not in joined
+            assert "Main computer file manifest" not in joined
+            assert "THREAD_TERMINAL_RESULT_CONTEXT_PROMPT" not in joined
+            assert "HISTORIC_BULK_SHOULD_NOT_REACH_CLOB_ANSWER" not in joined
+            assert "evidence_id=clob-evidence-001" in joined
+            assert "critical/runtime/path.txt contains the answer token" in joined
+            assert "irrelevant/history/0120.txt" not in joined
+            return ChatResponse(
+                content="The answer is in clob-evidence-001: critical/runtime/path.txt contains the answer token.",
+                provider="fake",
+                model="fake-model",
+            )
+
+    class FakeComputer:
+        provider = GroundedProvider()
+
+    monkeypatch.setattr(prod.MainComputer, "build", classmethod(lambda cls, config=None: FakeComputer()))
+
+    response = prod.run_text_console_clob_grounded_answer(
+        text_console_config=prod.TextConsoleConfig.from_current_directory(
+            tmp_path,
+            provider="ollama",
+            model="fake-model",
+            base_url="http://127.0.0.1:11434",
+            timeout=120.0,
+            think=False,
+        ),
+        prompt="Which runtime path contains the answer token?",
+        clob_lookup_text=lookup_context,
+        base_config=MainComputerConfig(workspace=tmp_path),
+    )
+    grounding = response_uses_text_console_clob_evidence(response.content, lookup_metadata)
+
+    assert len(calls) == 1
+    assert len(calls[0]) == 4
+    assert response.metadata["text_console_clob_grounded_answer"]["bypassed_operator_preflight"] is True
+    assert response.metadata["text_console_clob_grounded_answer"]["bypassed_action_specs"] is True
+    assert response.metadata["text_console_clob_grounded_answer"]["bypassed_thread_messages"] is True
+    assert response.metadata["text_console_clob_grounded_answer"]["input_chars"] < 3000
+    assert grounding["ok"] is True
+    assert grounding["matched_ids"] == ["clob-evidence-001"]
+
+
+def test_clob_lookup_followup_action_heuristic_keeps_actions_on_operator_path():
+    import main_computer.text_console as prod
+
+    assert prod.text_console_prompt_requests_local_action("Which runtime path contains the answer token?") is False
+    assert prod.text_console_prompt_requests_local_action("What assertion failed in that output?") is False
+    assert prod.text_console_prompt_requests_local_action("Run pytest for that failing test file") is True
+    assert prod.text_console_prompt_requests_local_action("Patch the file that failed") is True
 
 def test_text_console_frontend_preserves_terminal_clob_context_for_thread_messages():
     page = (Path(__file__).resolve().parents[1] / "main_computer" / "web" / "text.html").read_text(encoding="utf-8")

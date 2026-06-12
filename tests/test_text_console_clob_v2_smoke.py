@@ -410,11 +410,34 @@ def test_file_content_clob_lookup_is_generic_bounded_and_reused(tmp_path: Path):
         test_lookup,
         evidence_profile="test_assertion",
     )
+    proof_contexts = smoke.build_file_content_rag_proof_contexts(
+        test_lookup,
+        selected_path="tests/test_text_console_clob_v2_smoke.py",
+        evidence_profile="test_assertion",
+        max_tree_context_chars=500,
+        max_content_context_chars=900,
+    )
+    proof_messages = smoke.build_rag_proof_messages(
+        contexts=proof_contexts,
+        prompt="Name the exact test path and copy one exact test function name or assertion line.",
+    )
+    proof_request = smoke._request_report(
+        proof_messages,
+        model="fake",
+        think=False,
+        last_user_message="Name the exact test path and copy one exact test function name or assertion line.",
+    )
+
     assert len(retry_context) <= 900
     assert "grounding_evidence:" in retry_context
     assert "content-001" in retry_context
     assert "full_payload_pasted_into_model_context: false" in retry_context
     assert retry_usage["ok"] is True
+    assert len(proof_contexts) == 2
+    assert proof_request["input_chars"] < 2200
+    assert "grounding_evidence:" in proof_request["request_text"]
+    assert "chunks" not in proof_request["request_text"]
+    assert "selected-path" in proof_request["request_text"]
 
 
 def test_offline_rag_proof_cases_use_runtime_evidence_without_expected_paths(tmp_path: Path):
@@ -456,6 +479,10 @@ def test_offline_rag_proof_cases_use_runtime_evidence_without_expected_paths(tmp
     assert str(test_case["selected_path"]).startswith("tests/")
     assert test_case["evidence_profile"] == "test_assertion"
     assert test_case["acceptable_evidence_count"] >= 1
+    assert test_case["request"]["input_chars"] < 2200
+    assert test_case["proof_context_chars"][0] <= 500
+    assert test_case["proof_context_chars"][1] <= 1100
+    assert test_case["initial_provider_failure"] is None
     assert test_case["evidence_usage"]["ok"] is True
     matched = test_case["evidence_usage"]["matched_evidence"]
     assert any(str(item).startswith("test_") or str(item).startswith("assert ") for item in matched)
