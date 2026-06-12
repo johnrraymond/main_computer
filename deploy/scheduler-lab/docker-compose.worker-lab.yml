@@ -2,33 +2,36 @@ services:
   worker-lab:
     profiles:
       - worker-lab
-    image: scheduler-lab-worker-lab
     build:
       context: ../../tools
       dockerfile: scheduler_lab/Dockerfile.worker-lab
+    image: main-computer-scheduler-lab-worker:local
     environment:
-      HUB_BASE_URL: ${HUB_BASE_URL:-http://host.docker.internal:8870}
-      HUB_BASE_URLS: ${HUB_BASE_URLS:-}
+      HUB_BASE_URL: ${HUB_BASE_URL:-http://host.docker.internal:8100}
+      HUB_BASE_URLS: ${HUB_BASE_URLS:-http://host.docker.internal:8100}
       LAB_OUTPUT_DIR: ${LAB_OUTPUT_DIR:-/lab-output}
       LAB_NODE_LIST: ${LAB_NODE_LIST:-/lab-output/120-exp-fdb-nodes.jsonl}
+      LAB_OUTPUT_DIR_HOST: ${LAB_OUTPUT_DIR_HOST:-../../runtime/scheduler-lab/exp-fdb}
       GENERATE_NODE_LIST: ${GENERATE_NODE_LIST:-1}
       LAB_ROLE: ${LAB_ROLE:-all}
       LAB_TOTAL: ${LAB_TOTAL:-120}
-      LAB_NODES: ${LAB_NODES:-}
+      LAB_NODES: ${LAB_NODES:-120}
       LAB_WORKERS: ${LAB_WORKERS:-}
       LAB_REQUESTERS: ${LAB_REQUESTERS:-}
       LAB_DURATION_SECONDS: ${LAB_DURATION_SECONDS:-300}
       LAB_WORKTIME: ${LAB_WORKTIME:-}
       LAB_FUNDED: ${LAB_FUNDED:-0}
       LAB_REQUEST_STARTUP_MODE: ${LAB_REQUEST_STARTUP_MODE:-auto}
-      LAB_REQUEST_STARTUP_SPREAD_SECONDS: ${LAB_REQUEST_STARTUP_SPREAD_SECONDS:-0}
+      LAB_REQUEST_STARTUP_SPREAD_SECONDS: ${LAB_REQUEST_STARTUP_SPREAD_SECONDS:-3}
+      LEASE_SECONDS: ${LEASE_SECONDS:-45}
       LAB_EXECUTION_MODE: ${LAB_EXECUTION_MODE:-process}
       LAB_WARM: ${LAB_WARM:-}
       B2B_FAILURES: ${B2B_FAILURES:-10}
       FORCED_ALIVE_SECONDS: ${FORCED_ALIVE_SECONDS:-0}
       HTTP_TIMEOUT_SECONDS: ${HTTP_TIMEOUT_SECONDS:-1}
-      LEASE_SECONDS: ${LEASE_SECONDS:-45}
     volumes:
-      - ${LAB_OUTPUT_DIR_HOST:-../../runtime/scheduler-lab/exp-fdb}:/lab-output
+      - type: bind
+        source: ${LAB_OUTPUT_DIR_HOST:-../../runtime/scheduler-lab/exp-fdb}
+        target: /lab-output
     extra_hosts:
       - "host.docker.internal:host-gateway"

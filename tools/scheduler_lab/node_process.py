@@ -156,25 +156,28 @@ class NodeHttpRunner:
         self._record_transport_failure(response)
         return response
 
+    def maybe_self_terminate_on_b2bfailures(self) -> None:
+        if self.b2b_detection_enabled() and self.b2bfailures and self.consecutive_transport_failures >= self.b2bfailures:
+            self.sink.emit(
+                event_payload(
+                    "node.self_terminated.b2bfailures",
+                    self.node,
+                    consecutive_transport_failures=self.consecutive_transport_failures,
+                    b2bfailures=self.b2bfailures,
+                    forced_alive_seconds=self.forced_alive_seconds,
+                    alive_seconds=round(self.alive_seconds(), 3),
+                )
+            )
+            self.sink.close()
+            raise SystemExit(SELF_TERMINATED_B2B_FAILURES_EXIT_CODE)
+
     def call(self, event_name: str, func, *args: Any, **kwargs: Any) -> HubHttpResponse:
         while True:
             response = self.call_once(event_name, func, *args, **kwargs)
             if response.status != 0:
                 return response
 
-            if self.b2b_detection_enabled() and self.b2bfailures and self.consecutive_transport_failures >= self.b2bfailures:
-                self.sink.emit(
-                    event_payload(
-                        "node.self_terminated.b2bfailures",
-                        self.node,
-                        consecutive_transport_failures=self.consecutive_transport_failures,
-                        b2bfailures=self.b2bfailures,
-                        forced_alive_seconds=self.forced_alive_seconds,
-                        alive_seconds=round(self.alive_seconds(), 3),
-                    )
-                )
-                self.sink.close()
-                raise SystemExit(SELF_TERMINATED_B2B_FAILURES_EXIT_CODE)
+            self.maybe_self_terminate_on_b2bfailures()
             # Intentionally no backoff here. A dead advertised hub should cause
             # an immediate random retry against the hub list; all-dead hub fleets
             # drain via --b2bfailures.
@@ -249,7 +252,20 @@ def top_up_account_to(
         sink.emit(event_payload("node.funding.skipped_zero_target", node, account_id=account_id, reason=reason))
         return
 
-    balance = runner.call("node.funding.balance_checked", client.get_credit_balance, account_id)
+    balance = runner.call_once("node.funding.balance_checked", client.get_credit_balance, account_id)
+    if balance.status == 0:
+        sink.emit(
+            event_payload(
+                "node.funding.top_up_deferred.transport_failure",
+                node,
+                account_id=account_id,
+                desired_credits=desired,
+                reason=reason,
+                balance_hub_base_url=balance.base_url,
+            )
+        )
+        return
+
     available = account_available_credits(balance.payload)
     if balance.ok and available >= desired:
         sink.emit(event_payload("node.funding.not_needed", node, account_id=account_id, available_credits=available, desired_credits=desired, reason=reason))
@@ -260,7 +276,7 @@ def top_up_account_to(
         sink.emit(event_payload("node.funding.not_needed", node, account_id=account_id, available_credits=available, desired_credits=desired, reason=reason))
         return
 
-    runner.call(
+    issue = runner.call_once(
         "node.funding.issued",
         client.issue_credits,
         account_id=account_id,
@@ -274,6 +290,18 @@ def top_up_account_to(
             "reason": reason,
         },
     )
+    if issue.status == 0:
+        sink.emit(
+            event_payload(
+                "node.funding.top_up_deferred.transport_failure",
+                node,
+                account_id=account_id,
+                desired_credits=desired,
+                delta_credits=delta,
+                reason=reason,
+                issue_hub_base_url=issue.base_url,
+            )
+        )
 
 
 def bootstrap_node_funding_sync(node: dict[str, Any], *, args: argparse.Namespace, sink: SyncEventSink, client: HubClient, runner: NodeHttpRunner) -> None:
@@ -621,9 +649,15 @@ def run_node_process(args: argparse.Namespace) -> int:
 
         bootstrap_node_funding_sync(node, args=args, sink=sink, client=client, runner=runner)
 
+        worker_registered = False
+        register_retry_interval = max(0.05, float(args.worker_register_retry_interval_ms) / 1000.0)
+        next_register = time.monotonic()
         if worker_enabled:
-            sink.emit(event_payload("worker.register.attempted", node, node_index=args.node_index))
-            runner.call("worker.register", client.register_worker, node)
+            sink.emit(event_payload("worker.register.attempted", node, node_index=args.node_index, retry=False))
+            register_response = runner.call_once("worker.register", client.register_worker, node)
+            worker_registered = register_response.status != 0 and register_response.ok
+            next_register = time.monotonic() + register_retry_interval
+            runner.maybe_self_terminate_on_b2bfailures()
 
         if requester_enabled and should_send_startup_request(node, args) and not startup_request_sent:
             sink.emit(
@@ -670,7 +704,14 @@ def run_node_process(args: argparse.Namespace) -> int:
             if args.enable_local_busy:
                 busy_with_local_work = maybe_start_local_work_sync(node, state=state, sink=sink, rng=rng, tick_seconds=0.1)
 
-            if worker_enabled and now >= next_heartbeat:
+            if worker_enabled and not worker_registered and now >= next_register:
+                sink.emit(event_payload("worker.register.attempted", node, node_index=args.node_index, retry=True))
+                register_response = runner.call_once("worker.register", client.register_worker, node)
+                worker_registered = register_response.status != 0 and register_response.ok
+                next_register = time.monotonic() + register_retry_interval
+                runner.maybe_self_terminate_on_b2bfailures()
+
+            if worker_enabled and worker_registered and now >= next_heartbeat:
                 if rng.random() >= heartbeat_drop:
                     runner.call("worker.heartbeat", client.heartbeat_worker, node, active_requests=active_requests, status="busy" if busy_with_local_work else "available")
                 else:
@@ -699,7 +740,7 @@ def run_node_process(args: argparse.Namespace) -> int:
                         event_name="requester.request.submitted",
                     )
 
-            if worker_enabled and now >= next_poll:
+            if worker_enabled and worker_registered and now >= next_poll:
                 next_poll = now + poll_interval
                 offer_probability = worker_offer_probability(node)
                 if time.monotonic() < state.worker_force_until:
@@ -716,7 +757,10 @@ def run_node_process(args: argparse.Namespace) -> int:
 
             next_times = []
             if worker_enabled:
-                next_times.extend([next_heartbeat, next_poll])
+                if worker_registered:
+                    next_times.extend([next_heartbeat, next_poll])
+                else:
+                    next_times.append(next_register)
             if requester_enabled:
                 next_times.append(next_request)
             sleep_for = 0.02
@@ -751,11 +795,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--enable-local-busy", dest="enable_local_busy", action="store_true", default=str(os.environ.get("LAB_ENABLE_LOCAL_BUSY", "1")).lower() in {"1", "true", "yes", "on"})
     parser.add_argument("--disable-local-busy", dest="enable_local_busy", action="store_false")
     parser.add_argument("--worker-poll-interval-ms", type=float, default=float(os.environ.get("WORKER_POLL_INTERVAL_MS", "500")))
+    parser.add_argument("--worker-register-retry-interval-ms", type=float, default=float(os.environ.get("WORKER_REGISTER_RETRY_INTERVAL_MS", "1000")))
     parser.add_argument("--lease-seconds", type=float, default=float(os.environ.get("LEASE_SECONDS", "45")))
     parser.add_argument("--worktime", default=os.environ.get("LAB_WORKTIME", ""))
     parser.add_argument("--warm", default=os.environ.get("LAB_WARM", ""))
     parser.add_argument("--b2bfailures", type=int, default=int(os.environ.get("B2B_FAILURES", "10")))
-    parser.add_argument("--forced-alive", type=float, default=float(os.environ.get("FORCED_ALIVE_SECONDS", "0")))
+    parser.add_argument("--forced-alive", type=float, default=float(os.environ.get("FORCED_ALIVE_SECONDS", "30")))
     parser.add_argument("--max-runtime-ms", type=float, default=float(os.environ.get("MAX_RUNTIME_MS", "30000")))
     parser.add_argument("--max-request-interval-ms", type=float, default=float(os.environ.get("MAX_REQUEST_INTERVAL_MS", "15000")))
     parser.add_argument("--http-timeout-seconds", type=float, default=float(os.environ.get("HTTP_TIMEOUT_SECONDS", "1")))
