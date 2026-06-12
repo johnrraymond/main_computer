@@ -18,7 +18,9 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import re
+import secrets
 import sys
 import textwrap
 import urllib.parse
@@ -29,6 +31,7 @@ from typing import Any
 
 SAFE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,62}$")
 DOMAIN_RE = re.compile(r"^(?=.{1,253}\.?$)(?!-)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\.?$", re.IGNORECASE)
+EMAIL_RE = re.compile(r"^[A-Z0-9._%+-]{1,64}@[A-Z0-9.-]{1,253}\.[A-Z]{2,63}$", re.IGNORECASE)
 DEFAULT_SECRET_NAME = "MAIL_INGEST_SECRET"
 DEFAULT_INGEST_PATH = "/inbound/cloudflare-email"
 DEFAULT_LISTEN_PORT = 8080
@@ -165,6 +168,335 @@ def parse_local_parts(values: list[str] | tuple[str, ...] | str) -> tuple[str, .
         if item not in parts:
             parts.append(item)
     return tuple(parts)
+
+
+
+def normalize_email_address(value: str, *, field: str = "email address") -> str:
+    clean = str(value or "").strip().lower()
+    if not clean:
+        raise WorkerPlanError(f"Missing {field}.")
+    if clean == "example@example.com" or clean.endswith("@example.com"):
+        raise WorkerPlanError(f"Refusing placeholder {field}: {value!r}")
+    if not EMAIL_RE.match(clean):
+        raise WorkerPlanError(f"Invalid {field}: {value!r}")
+    return clean
+
+
+def parse_forward_routes(
+    *,
+    forward_pairs: list[str] | tuple[str, ...] = (),
+    forward_locals: list[str] | tuple[str, ...] = (),
+    forward_tos: list[str] | tuple[str, ...] = (),
+) -> tuple[tuple[str, str], ...]:
+    pairs: list[tuple[str, str]] = []
+
+    for raw in forward_pairs or ():
+        item = str(raw or "").strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise WorkerPlanError("--forward must use LOCAL=destination@example.com.")
+        local, destination = item.split("=", 1)
+        locals_parsed = parse_local_parts(local)
+        if len(locals_parsed) != 1:
+            raise WorkerPlanError(f"--forward local part is invalid: {local!r}")
+        pairs.append((locals_parsed[0], normalize_email_address(destination, field="forward destination")))
+
+    locals_flat = parse_local_parts(forward_locals or ())
+    destinations = [normalize_email_address(value, field="forward destination") for value in (forward_tos or ()) if str(value or "").strip()]
+    if locals_flat or destinations:
+        if len(locals_flat) != len(destinations):
+            raise WorkerPlanError("--forward-local and --forward-to must be supplied the same number of times.")
+        pairs.extend(zip(locals_flat, destinations))
+
+    result: dict[str, str] = {}
+    for local, destination in pairs:
+        existing = result.get(local)
+        if existing and existing != destination:
+            raise WorkerPlanError(f"Conflicting forward destinations for {local!r}: {existing!r} and {destination!r}.")
+        result[local] = destination
+    return tuple(sorted(result.items()))
+
+
+def build_routing_contract(
+    *,
+    domain: str,
+    worker_name: str,
+    forwards: tuple[tuple[str, str], ...] = (),
+    drops: tuple[str, ...] = (),
+    worker_local_parts: tuple[str, ...] = (),
+    catch_all_to_worker: bool = True,
+) -> dict[str, Any]:
+    domain = normalize_domain(domain)
+    drops = tuple(sorted(parse_local_parts(drops)))
+    worker_local_parts = tuple(sorted(parse_local_parts(worker_local_parts)))
+    forward_map = {local: destination for local, destination in forwards}
+
+    reserved: dict[str, str] = {}
+    for local in forward_map:
+        reserved[local] = "forward"
+    for local in drops:
+        if local in reserved:
+            raise WorkerPlanError(f"{local}@{domain} cannot be both forwarded and dropped.")
+        reserved[local] = "drop"
+    for local in worker_local_parts:
+        if local in reserved:
+            raise WorkerPlanError(f"{local}@{domain} has a more specific non-worker route.")
+        reserved[local] = "worker"
+
+    if not catch_all_to_worker and not worker_local_parts:
+        raise WorkerPlanError("Stage one needs --catch-all-to-worker or at least one --local-part for Worker routing.")
+
+    return {
+        "domain": domain,
+        "forwards": {local: forward_map[local] for local in sorted(forward_map)},
+        "drops": list(drops),
+        "worker_local_parts": list(worker_local_parts),
+        "catch_all_to_worker": bool(catch_all_to_worker),
+        "worker_name": worker_name,
+    }
+
+
+def generate_mail_ingest_secret() -> str:
+    return secrets.token_urlsafe(48)
+
+
+def resolve_prepare_secret(
+    *,
+    out_dir: Path,
+    explicit_secret: str = "",
+    secret_env: str = "",
+    secret_file: str = "",
+    rotate_secret: bool = False,
+) -> tuple[str, str]:
+    explicit = str(explicit_secret or "").strip()
+    if explicit:
+        return explicit, "--mail-ingest-secret"
+
+    env_name = str(secret_env or "").strip()
+    if env_name:
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            return value, f"env:{env_name}"
+
+    supplied_file = str(secret_file or "").strip()
+    if supplied_file:
+        value = Path(supplied_file).read_text(encoding="utf-8").strip()
+        if not value:
+            raise WorkerPlanError(f"Secret file is empty: {supplied_file}")
+        return value, f"file:{supplied_file}"
+
+    existing = out_dir / "secrets" / "mail_ingest_secret"
+    if existing.exists() and not rotate_secret:
+        value = existing.read_text(encoding="utf-8").strip()
+        if value:
+            return value, f"existing:{existing.as_posix()}"
+
+    return generate_mail_ingest_secret(), "generated"
+
+
+def contract_dict(plan: CloudflareMailWorkerPlan, routing: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema": "main-computer.cloudflare-mail-worker-contract.v1",
+        "domain": plan.domain,
+        "worker_name": plan.worker_name,
+        "ingest_host": plan.ingest_host,
+        "ingest_path": plan.ingest_path,
+        "ingest_url": plan.ingest_url,
+        "secret_binding": plan.secret_binding,
+        "secret_header": plan.secret_header,
+        "secret_file": "secrets/mail_ingest_secret",
+        "coolify": {
+            "service_name": plan.service_name,
+            "compose_project": plan.compose_project,
+            "maildir_domain": plan.maildir_domain,
+            "mailbox_root": plan.mailbox_root,
+            "listen_port": plan.listen_port,
+            "coolify_url": plan.coolify_url,
+        },
+        "worker": {
+            "name": plan.worker_name,
+            "script": "worker/src/index.ts",
+            "wrangler_toml": "worker/wrangler.toml",
+            "env": {
+                "MAIL_INGEST_URL": plan.ingest_url,
+                "MAX_MESSAGE_BYTES": str(plan.max_message_bytes),
+                "INGEST_FAILURE_POLICY": plan.failure_policy,
+            },
+            "secret_bindings": [plan.secret_binding],
+        },
+        "routing": routing,
+        "artifacts": {
+            "coolify_compose": "coolify/compose.yaml",
+            "coolify_ingest_app": "coolify/mail_ingest.py",
+            "manual_routing_plan": "cloudflare/manual-routing-plan.md",
+            "worker_dashboard_paste": "cloudflare/worker-dashboard-paste.md",
+            "wrangler_commands": "cloudflare/wrangler-commands.md",
+        },
+    }
+
+
+def render_manual_routing_plan(plan: CloudflareMailWorkerPlan, routing: dict[str, Any]) -> str:
+    forward_lines = []
+    for local, destination in routing["forwards"].items():
+        forward_lines.append(f"- `{local}@{plan.domain}` -> Send to an email -> `{destination}`")
+    if not forward_lines:
+        forward_lines.append("- No explicit email forwards were configured.")
+
+    drop_lines = [f"- `{local}@{plan.domain}` -> Drop" for local in routing["drops"]]
+    if not drop_lines:
+        drop_lines.append("- No explicit drops were configured.")
+
+    worker_lines = []
+    for local in routing["worker_local_parts"]:
+        worker_lines.append(f"- `{local}@{plan.domain}` -> Send to a Worker -> `{plan.worker_name}`")
+    if routing["catch_all_to_worker"]:
+        worker_lines.append(f"- Catch-all address for `*@{plan.domain}` -> Send to a Worker -> `{plan.worker_name}`")
+    if not worker_lines:
+        worker_lines.append("- No Worker routes were configured.")
+
+    return textwrap.dedent(
+        f"""\
+        # Cloudflare manual routing plan for {plan.domain}
+
+        This file is generated by `tools/cloudflare_mail_worker.py prepare`.
+        It is the Cloudflare-side half of the stage-one contract. Coolify uses
+        `mail-worker-contract.json` and the shared secret in `secrets/mail_ingest_secret`.
+
+        ## Worker
+
+        - Worker name: `{plan.worker_name}`
+        - Worker source: `worker/src/index.ts`
+        - Secret binding: `{plan.secret_binding}`
+        - Secret value file: `secrets/mail_ingest_secret`
+        - Variable `MAIL_INGEST_URL`: `{plan.ingest_url}`
+        - Variable `MAX_MESSAGE_BYTES`: `{plan.max_message_bytes}`
+        - Variable `INGEST_FAILURE_POLICY`: `{plan.failure_policy}`
+
+        ## Routing rules
+
+        Create these specific rules first:
+
+        {chr(10).join(forward_lines)}
+
+        {chr(10).join(drop_lines)}
+
+        Then configure Worker routes:
+
+        {chr(10).join(worker_lines)}
+
+        ## Safe ordering
+
+        1. Deploy/update the Coolify ingest service from this contract.
+        2. Create/update the Cloudflare Worker using `worker/src/index.ts`.
+        3. Add the Worker secret from `secrets/mail_ingest_secret`.
+        4. Add explicit forward/drop rules.
+        5. Enable the catch-all Worker route last.
+
+        Cloudflare destination emails such as Gmail must be verified before routes
+        that forward to them are active.
+        """
+    )
+
+
+def render_worker_dashboard_paste(plan: CloudflareMailWorkerPlan) -> str:
+    return textwrap.dedent(
+        f"""\
+        # Dashboard Worker creation values
+
+        Use this when creating the Email Worker manually in Cloudflare.
+
+        ## Worker name
+
+        ```text
+        {plan.worker_name}
+        ```
+
+        ## Starter
+
+        Choose **Create my own**.
+
+        ## Worker code
+
+        Paste the contents of:
+
+        ```text
+        worker/src/index.ts
+        ```
+
+        ## Variables and secrets
+
+        Add these Worker variables:
+
+        ```text
+        MAIL_INGEST_URL={plan.ingest_url}
+        MAX_MESSAGE_BYTES={plan.max_message_bytes}
+        INGEST_FAILURE_POLICY={plan.failure_policy}
+        ```
+
+        Add this Worker secret:
+
+        ```text
+        {plan.secret_binding}=<contents of secrets/mail_ingest_secret>
+        ```
+
+        Keep the secret value out of tickets, screenshots, and git.
+        """
+    )
+
+
+def render_wrangler_commands(plan: CloudflareMailWorkerPlan) -> str:
+    return textwrap.dedent(
+        f"""\
+        # Optional Wrangler commands
+
+        These commands are generated for repeatability. They are Cloudflare-side
+        only; the Coolify ingest service should be deployed by the Python deployer
+        from `mail-worker-contract.json`.
+
+        ```bash
+        cd worker
+        npm install
+        cat ../secrets/mail_ingest_secret | npx wrangler secret put {plan.secret_binding}
+        npx wrangler deploy
+        ```
+        """
+    )
+
+
+def write_prepare_outputs(
+    plan: CloudflareMailWorkerPlan,
+    out_dir: Path,
+    *,
+    routing: dict[str, Any],
+    secret: str,
+) -> dict[str, Any]:
+    write_outputs(plan, out_dir)
+
+    secret_path = out_dir / "secrets" / "mail_ingest_secret"
+    secret_path.parent.mkdir(parents=True, exist_ok=True)
+    secret_path.write_text(secret.strip() + "\n", encoding="utf-8")
+
+    cloudflare_dir = out_dir / "cloudflare"
+    cloudflare_dir.mkdir(parents=True, exist_ok=True)
+    (cloudflare_dir / "manual-routing-plan.md").write_text(render_manual_routing_plan(plan, routing), encoding="utf-8")
+    (cloudflare_dir / "worker-dashboard-paste.md").write_text(render_worker_dashboard_paste(plan), encoding="utf-8")
+    (cloudflare_dir / "wrangler-commands.md").write_text(render_wrangler_commands(plan), encoding="utf-8")
+
+    contract = contract_dict(plan, routing)
+    (out_dir / "mail-worker-contract.json").write_text(json.dumps(contract, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    return {
+        "ok": True,
+        "out": str(out_dir),
+        "contract": str(out_dir / "mail-worker-contract.json"),
+        "secret_file": str(secret_path),
+        "domain": plan.domain,
+        "worker_name": plan.worker_name,
+        "ingest_url": plan.ingest_url,
+        "routing": routing,
+    }
+
 
 
 def build_plan(
@@ -632,32 +964,40 @@ def sh(value: str) -> str:
 
 def render_commands(plan: CloudflareMailWorkerPlan) -> str:
     coolify = plan.coolify_url or "http://144.126.212.9:8000"
-    locals_text = "catch-all" if plan.catch_all else ", ".join(f"{part}@{plan.domain}" for part in plan.local_parts)
+    contract_path = f"runtime/cloudflare-mail-worker/{plan.domain}/mail-worker-contract.json"
     return textwrap.dedent(
-        f'''\
+        f"""\
         # Cloudflare mail worker operator commands
 
-        # 1) Render artifacts
-        python tools/cloudflare_mail_worker.py write \\
+        # Stage one: prepare a reusable deployment contract.
+        python tools/cloudflare_mail_worker.py prepare \\
           --domain {sh(plan.domain)} \\
           --ingest-host {sh(plan.ingest_host)} \\
+          --worker-name {sh(plan.worker_name)} \\
           --coolify-url {sh(coolify)} \\
           --coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN \\
           --coolify-environment mail \\
           --coolify-service-name {sh(plan.service_name)} \\
+          --catch-all-to-worker \\
           --out runtime/cloudflare-mail-worker/{sh(plan.domain)}
 
-        # 2) Set one shared random secret in Coolify and Cloudflare.
-        #    Example generator:
-        python -c "import secrets; print(secrets.token_urlsafe(48))"
+        # Stage two will consume this contract for the scripted Coolify apply:
+        #   {contract_path}
+        #
+        # Cloudflare-side manual files generated by stage one:
+        #   runtime/cloudflare-mail-worker/{plan.domain}/cloudflare/worker-dashboard-paste.md
+        #   runtime/cloudflare-mail-worker/{plan.domain}/cloudflare/manual-routing-plan.md
+        #   runtime/cloudflare-mail-worker/{plan.domain}/cloudflare/wrangler-commands.md
 
-        # 3) Discover Coolify context, then dry-run the ingest service push.
+        # Coolify discovery remains scripted and repeatable.
         python tools/cloudflare_mail_worker.py coolify-discover \\
           --domain {sh(plan.domain)} \\
           --ingest-host {sh(plan.ingest_host)} \\
           --coolify-url {sh(coolify)} \\
           --coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN
 
+        # Until the contract-based Coolify stage lands, the existing apply path
+        # can still deploy the generated ingest service using the same values.
         python tools/cloudflare_mail_worker.py apply \\
           --domain {sh(plan.domain)} \\
           --ingest-host {sh(plan.ingest_host)} \\
@@ -666,44 +1006,12 @@ def render_commands(plan: CloudflareMailWorkerPlan) -> str:
           --coolify-service-name {sh(plan.service_name)} \\
           --coolify-environment mail \\
           --dry-run
-
-        # 4) Deploy the Coolify ingest service.
-        #    If discovery reports multiple projects/servers/environments, add:
-        #      --coolify-project-uuid <uuid>
-        #      --coolify-server-uuid <uuid>
-        #      --coolify-destination-uuid <uuid>
-        #      --coolify-environment-uuid <uuid>
-        #
-        #    Set Coolify service domain to https://{plan.ingest_host}
-        #    Set Coolify secret/environment MAIL_INGEST_SECRET to the generated value.
-        python tools/cloudflare_mail_worker.py apply \\
-          --domain {sh(plan.domain)} \\
-          --ingest-host {sh(plan.ingest_host)} \\
-          --coolify-url {sh(coolify)} \\
-          --coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN \\
-          --coolify-service-name {sh(plan.service_name)} \\
-          --coolify-environment mail
-
-        # 5) Deploy Worker with Wrangler.
-        cd runtime/cloudflare-mail-worker/{plan.domain}/worker
-        npm install
-        npx wrangler secret put {plan.secret_binding}
-        npx wrangler deploy
-
-        # 6) Configure Email Routing in Cloudflare.
-        #    Domain: {plan.domain}
-        #    Routing target: {locals_text}
-        #    Action: Send to a Worker
-        #    Worker: {plan.worker_name}
-
-        # 7) Verify ingest health.
-        curl -fsS https://{plan.ingest_host}/healthz
-        '''
+        """
     )
 
 def render_readme(plan: CloudflareMailWorkerPlan) -> str:
     return textwrap.dedent(
-        f'''\
+        f"""\
         # Cloudflare hidden mail worker
 
         Generated for `{plan.domain}`.
@@ -716,14 +1024,18 @@ def render_readme(plan: CloudflareMailWorkerPlan) -> str:
 
         ## Files
 
+        - `mail-worker-contract.json` — stage-one handoff for scripted Coolify deployment and Cloudflare setup.
+        - `secrets/mail_ingest_secret` — shared Worker/Coolify ingest secret; do not commit or paste publicly.
         - `worker/src/index.ts` — Cloudflare Email Worker.
         - `worker/wrangler.toml` — Wrangler project config.
         - `worker/package.json` and `worker/tsconfig.json` — local deploy/typecheck helpers.
         - `coolify/compose.yaml` — self-contained Coolify raw Compose service.
         - `coolify/mail_ingest.py` — the same ingest app embedded in the Compose command.
-        - `cloudflare-routing.md` — dashboard routing steps.
-        - `operator-commands.txt` — copy/paste runbook.
-        - `plan.json` — machine-readable plan.
+        - `cloudflare/manual-routing-plan.md` — exact forwards, drops, and Worker catch-all setup.
+        - `cloudflare/worker-dashboard-paste.md` — dashboard Worker creation values.
+        - `cloudflare/wrangler-commands.md` — optional Cloudflare-side Wrangler commands.
+        - `operator-commands.txt` — generated runbook.
+        - `plan.json` — machine-readable render plan.
 
         ## Important limitation
 
@@ -736,9 +1048,8 @@ def render_readme(plan: CloudflareMailWorkerPlan) -> str:
 
         `{plan.ingest_url}`
 
-        '''
+        """
     )
-
 
 def write_outputs(plan: CloudflareMailWorkerPlan, out_dir: Path) -> None:
     files = {
@@ -768,8 +1079,6 @@ def validate_plan(plan: CloudflareMailWorkerPlan) -> None:
         raise WorkerPlanError("Either enable catch-all or pass at least one --local-part.")
     if plan.ingest_host == plan.domain:
         raise WorkerPlanError("Use a subdomain such as mail-ingest.<domain> for ingest.")
-    if plan.worker_name == plan.service_name:
-        raise WorkerPlanError("Worker name and service name should be distinct.")
 
 
 def _args_with_normalized_coolify_url(args: argparse.Namespace) -> argparse.Namespace:
@@ -1117,16 +1426,26 @@ def render_docs() -> str:
 
             sender -> Cloudflare Email Routing -> Email Worker -> HTTPS ingest -> Maildir
 
-        Example for greatlibrary.io:
+        Stage-one contract for greatlibrary.io:
 
-            python tools/cloudflare_mail_worker.py write \\
+            python tools/cloudflare_mail_worker.py prepare \\
               --domain greatlibrary.io \\
               --ingest-host mail-ingest.greatlibrary.io \\
+              --worker-name greatlibrary-mail-ingest \\
               --coolify-url http://144.126.212.9:8000/projects \\
               --coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN \\
               --coolify-environment mail \\
               --coolify-service-name greatlibrary-mail-ingest \\
+              --forward-local johnrraymond \\
+              --forward-to your-gmail-address@gmail.com \\
+              --drop-local info \\
+              --catch-all-to-worker \\
               --out runtime/cloudflare-mail-worker/greatlibrary.io
+
+        The prepare action writes one reusable contract, one generated shared
+        secret, Worker code/config, Coolify Compose, and Cloudflare manual
+        routing instructions. It reuses an existing generated secret unless
+        --rotate-secret is supplied.
 
         Discover Coolify context:
 
@@ -1161,14 +1480,13 @@ def render_docs() -> str:
 
         The Coolify URL is normalized, so a UI URL ending in /projects is accepted.
 
-        After the ingest service is deployed:
+        After stage one:
 
-          1. Set the Coolify service domain to https://mail-ingest.greatlibrary.io.
-          2. Set MAIL_INGEST_SECRET in Coolify.
-          3. Deploy worker/ with Wrangler.
-          4. Set the same MAIL_INGEST_SECRET as a Cloudflare Worker secret.
-          5. Enable Cloudflare Email Routing for the domain.
-          6. Create a routing rule or catch-all rule with Action = Send to a Worker.
+          1. Use mail-worker-contract.json as the handoff to the scripted Coolify stage.
+          2. Use cloudflare/worker-dashboard-paste.md or cloudflare/wrangler-commands.md
+             for the Cloudflare Worker side.
+          3. Use cloudflare/manual-routing-plan.md for exact forwards, drops, and catch-all.
+          4. Keep secrets/mail_ingest_secret out of screenshots, tickets, and git.
 
         This does not expose SMTP/25 on the origin and does not require the origin
         IP to appear in MX records.
@@ -1185,7 +1503,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "action",
         nargs="?",
         default="docs",
-        choices=["docs", "help", "plan", "worker", "wrangler", "compose", "ingest", "routing", "commands", "write", "validate", "coolify-check", "coolify-discover", "coolify-sync", "apply"],
+        choices=["docs", "help", "plan", "worker", "wrangler", "compose", "ingest", "routing", "commands", "write", "prepare", "validate", "coolify-check", "coolify-discover", "coolify-sync", "apply"],
     )
     parser.add_argument("--domain", default="", help="Mail domain, e.g. greatlibrary.io.")
     parser.add_argument("--ingest-host", default="", help="HTTPS ingest hostname. Defaults to mail-ingest.<domain>.")
@@ -1223,9 +1541,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--quiet", action="store_true", help="Suppress operator progress logs; final JSON is still printed.")
 
     parser.add_argument("--no-catch-all", action="store_true")
-    parser.add_argument("--local-part", action="append", default=[], help="Mailbox local part to document for explicit routing; repeat or comma-separate.")
+    parser.add_argument("--catch-all-to-worker", action="store_true", help="Explicitly document catch-all Email Routing to the Worker. This is the default unless --no-catch-all is used.")
+    parser.add_argument("--local-part", action="append", default=[], help="Mailbox local part to document for explicit Worker routing; repeat or comma-separate.")
+    parser.add_argument("--forward", action="append", default=[], help="Stage-one routing shortcut: LOCAL=destination@example.com. Repeatable.")
+    parser.add_argument("--forward-local", action="append", default=[], help="Local part to forward to --forward-to. Repeatable.")
+    parser.add_argument("--forward-to", action="append", default=[], help="Verified destination email for the matching --forward-local. Repeatable.")
+    parser.add_argument("--drop-local", action="append", default=[], help="Local part to explicitly drop before catch-all Worker routing; repeat or comma-separate.")
+    parser.add_argument("--mail-ingest-secret", default="", help="Explicit shared ingest secret for prepare. Prefer generated, env, or file-backed secrets.")
+    parser.add_argument("--mail-ingest-secret-env", default="", help="Environment variable containing the shared ingest secret for prepare.")
+    parser.add_argument("--mail-ingest-secret-file", default="", help="File containing the shared ingest secret for prepare.")
+    parser.add_argument("--rotate-secret", action="store_true", help="Generate a new secret instead of reusing an existing prepare output secret.")
     parser.add_argument("--failure-policy", choices=["throw", "reject"], default="throw")
-    parser.add_argument("--out", default="", help="Output directory for write action.")
+    parser.add_argument("--out", default="", help="Output directory for write/prepare actions.")
     return parser.parse_args(argv)
 
 
@@ -1286,6 +1613,36 @@ def main(argv: list[str] | None = None) -> int:
             out = Path(args.out or Path("runtime") / "cloudflare-mail-worker" / plan.domain)
             write_outputs(plan, out)
             print_json({"ok": True, "out": str(out), "domain": plan.domain, "worker_name": plan.worker_name, "ingest_url": plan.ingest_url})
+            return 0
+        if args.action == "prepare":
+            out = Path(args.out or Path("runtime") / "cloudflare-mail-worker" / plan.domain)
+            if args.no_catch_all and args.catch_all_to_worker:
+                raise WorkerPlanError("--no-catch-all and --catch-all-to-worker conflict.")
+            validate_plan(plan)
+            forwards = parse_forward_routes(
+                forward_pairs=args.forward,
+                forward_locals=args.forward_local,
+                forward_tos=args.forward_to,
+            )
+            drops = parse_local_parts(args.drop_local)
+            routing = build_routing_contract(
+                domain=plan.domain,
+                worker_name=plan.worker_name,
+                forwards=forwards,
+                drops=drops,
+                worker_local_parts=plan.local_parts,
+                catch_all_to_worker=plan.catch_all,
+            )
+            secret, secret_source = resolve_prepare_secret(
+                out_dir=out,
+                explicit_secret=args.mail_ingest_secret,
+                secret_env=args.mail_ingest_secret_env,
+                secret_file=args.mail_ingest_secret_file,
+                rotate_secret=bool(args.rotate_secret),
+            )
+            result = write_prepare_outputs(plan, out, routing=routing, secret=secret)
+            result["secret_source"] = secret_source
+            print_json(result)
             return 0
         if args.action == "coolify-check":
             print_json(coolify_check(args))
