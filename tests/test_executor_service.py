@@ -388,6 +388,34 @@ def test_graphical_executor_tile_marks_missing_service_down_when_executor_enable
 
     assert graphical["state"] == "down"
 
+
+def test_graphical_executor_tile_treats_fresh_starting_service_as_degraded() -> None:
+    graphical = _control_panel_executor_graphical_status(
+        executor_payload={"ok": False},
+        service_payload={
+            "ok": False,
+            "state": "starting",
+            "service_available": True,
+            "heartbeat_age_s": 1.1,
+            "message": "executor service starting; boot reconcile pending",
+            "wsl": {"ok": False, "state": "pending", "message": "WSL executor check pending"},
+            "docker": {"ok": False, "state": "pending", "message": "Docker engine check pending"},
+            "compose": {"ok": False, "state": "pending", "message": "executor Compose/image check pending"},
+        },
+        executor_enabled=True,
+        executor_backend="docker",
+    )
+
+    assert graphical["state"] == "degraded"
+    assert "service starting" in graphical["summary"]
+    assert "wsl pending" in graphical["summary"]
+    assert "docker pending" in graphical["summary"]
+    assert "compose pending" in graphical["summary"]
+    assert graphical["detail"].startswith("executor service starting; boot reconcile pending")
+    assert "heartbeat 1.1s ago" in graphical["detail"]
+    assert "warning:" not in graphical["detail"]
+
+
 def test_graphical_executor_tile_surfaces_compose_warning_over_heartbeat() -> None:
     graphical = _control_panel_executor_graphical_status(
         executor_payload={"ok": False},
@@ -458,6 +486,14 @@ def test_watch_boot_writes_starting_heartbeat_before_full_reconcile(tmp_path: Pa
         assert starting["service"]["state"] == "starting"
         assert starting["service"]["watching"] is True
         assert starting["service"]["heartbeat_at"]
+        assert starting["components"]["wsl"]["state"] == "pending"
+        assert starting["components"]["docker"]["state"] == "pending"
+        assert starting["components"]["compose"]["state"] == "pending"
+        assert "unknown" not in {
+            starting["components"]["wsl"]["state"],
+            starting["components"]["docker"]["state"],
+            starting["components"]["compose"]["state"],
+        }
         assert starting["service"]["pid_claim"]["written"] is True
         assert starting["service"]["pid"] == pid_entry["pid"]
         raise RuntimeError("full reconcile was intentionally blocked")
