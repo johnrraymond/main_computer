@@ -152,3 +152,85 @@ def test_coolify_dry_run_sync_uses_normalized_url_and_service_name() -> None:
     assert "docker_compose_raw" not in result
     assert "MAIL_INGEST_SECRET" in result["compose"]
 
+
+def test_prepare_creates_contract_secret_and_manual_cloudflare_artifacts(tmp_path: Path) -> None:
+    module = _load_module()
+
+    rc = module.main([
+        "prepare",
+        "--domain", "greatlibrary.io",
+        "--ingest-host", "mail-ingest.greatlibrary.io",
+        "--worker-name", "greatlibrary-mail-ingest",
+        "--coolify-url", "http://144.126.212.9:8000/projects",
+        "--forward-local", "johnrraymond",
+        "--forward-to", "johnrraymond@gmail.com",
+        "--drop-local", "info",
+        "--catch-all-to-worker",
+        "--out", str(tmp_path),
+    ])
+
+    assert rc == 0
+    contract_path = tmp_path / "mail-worker-contract.json"
+    secret_path = tmp_path / "secrets" / "mail_ingest_secret"
+
+    assert contract_path.exists()
+    assert secret_path.exists()
+    assert (tmp_path / "cloudflare" / "manual-routing-plan.md").exists()
+    assert (tmp_path / "cloudflare" / "worker-dashboard-paste.md").exists()
+    assert (tmp_path / "cloudflare" / "wrangler-commands.md").exists()
+
+    secret = secret_path.read_text(encoding="utf-8").strip()
+    assert len(secret) >= 40
+
+    contract_text = contract_path.read_text(encoding="utf-8")
+    assert secret not in contract_text
+    contract = json.loads(contract_text)
+    assert contract["schema"] == "main-computer.cloudflare-mail-worker-contract.v1"
+    assert contract["ingest_url"] == "https://mail-ingest.greatlibrary.io/inbound/cloudflare-email"
+    assert contract["secret_file"] == "secrets/mail_ingest_secret"
+    assert contract["routing"]["forwards"] == {"johnrraymond": "johnrraymond@gmail.com"}
+    assert contract["routing"]["drops"] == ["info"]
+    assert contract["routing"]["catch_all_to_worker"] is True
+
+    routing_doc = (tmp_path / "cloudflare" / "manual-routing-plan.md").read_text(encoding="utf-8")
+    assert "johnrraymond@greatlibrary.io" in routing_doc
+    assert "info@greatlibrary.io" in routing_doc
+    assert "Catch-all address" in routing_doc
+
+
+def test_prepare_reuses_existing_secret_unless_rotated(tmp_path: Path) -> None:
+    module = _load_module()
+
+    args = [
+        "prepare",
+        "--domain", "greatlibrary.io",
+        "--ingest-host", "mail-ingest.greatlibrary.io",
+        "--worker-name", "greatlibrary-mail-ingest",
+        "--out", str(tmp_path),
+    ]
+
+    assert module.main(args) == 0
+    first = (tmp_path / "secrets" / "mail_ingest_secret").read_text(encoding="utf-8").strip()
+
+    assert module.main(args) == 0
+    second = (tmp_path / "secrets" / "mail_ingest_secret").read_text(encoding="utf-8").strip()
+
+    assert module.main(args + ["--rotate-secret"]) == 0
+    third = (tmp_path / "secrets" / "mail_ingest_secret").read_text(encoding="utf-8").strip()
+
+    assert first == second
+    assert third != first
+
+
+def test_prepare_rejects_overlapping_forward_and_drop_routes(tmp_path: Path) -> None:
+    module = _load_module()
+
+    rc = module.main([
+        "prepare",
+        "--domain", "greatlibrary.io",
+        "--forward", "info=owner@gmail.com",
+        "--drop-local", "info",
+        "--out", str(tmp_path),
+    ])
+
+    assert rc == 2

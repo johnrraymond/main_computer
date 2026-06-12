@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
 import json
 import math
 import os
@@ -1064,6 +1065,309 @@ def _process_bool_flag(enabled: bool, *, positive: str, negative: str) -> str:
     return positive if enabled else negative
 
 
+
+PROCESS_PHASE_COUNTERS = (
+    "nodes_started",
+    "warm_finished",
+    "startup_request_attempted",
+    "startup_request_http_response",
+    "startup_request_transport_failures",
+    "bootstrap_attempted",
+    "bootstrap_assumed_prefunded",
+    "bootstrap_balance_checked",
+    "worker_register_attempted",
+    "worker_register_http_response",
+    "entered_runtime_loop",
+    "self_terminated_b2bfailures",
+)
+
+
+def _process_event_node_key(event: dict[str, Any]) -> str:
+    node_id = str(event.get("node_id") or "").strip()
+    if node_id:
+        return node_id
+    node_index = event.get("node_index")
+    if node_index is not None:
+        return f"node-index:{node_index}"
+    return ""
+
+
+def _mark_process_phase(phase_nodes: dict[str, set[str]], event: dict[str, Any], counter: str) -> None:
+    node_key = _process_event_node_key(event)
+    if node_key:
+        phase_nodes.setdefault(counter, set()).add(node_key)
+
+
+def record_process_phase_event(event: dict[str, Any], phase_nodes: dict[str, set[str]]) -> None:
+    """Record one child-process event into parent-visible phase counters.
+
+    Counters are node-oriented rather than raw event counts so a node stuck in an
+    immediate retry loop does not drown out the number of nodes that reached a
+    phase.
+    """
+
+    name = str(event.get("event") or "")
+    status = event.get("status")
+
+    if name == "node.process.started":
+        _mark_process_phase(phase_nodes, event, "nodes_started")
+    elif name == "node.process.warm_finished":
+        _mark_process_phase(phase_nodes, event, "warm_finished")
+    elif name == "requester.request.startup_surge.attempted":
+        _mark_process_phase(phase_nodes, event, "startup_request_attempted")
+    elif name.startswith("requester.request.startup_surge"):
+        if status == 0:
+            _mark_process_phase(phase_nodes, event, "startup_request_transport_failures")
+        elif status is not None:
+            _mark_process_phase(phase_nodes, event, "startup_request_http_response")
+    elif name == "node.funding.bootstrap.attempted":
+        _mark_process_phase(phase_nodes, event, "bootstrap_attempted")
+    elif name == "node.funding.bootstrap.assumed_prefunded":
+        _mark_process_phase(phase_nodes, event, "bootstrap_assumed_prefunded")
+    elif name == "node.funding.balance_checked":
+        _mark_process_phase(phase_nodes, event, "bootstrap_balance_checked")
+    elif name == "worker.register.attempted":
+        _mark_process_phase(phase_nodes, event, "worker_register_attempted")
+    elif name == "worker.register" and status is not None and status != 0:
+        _mark_process_phase(phase_nodes, event, "worker_register_http_response")
+    elif name == "node.process.runtime_entered":
+        _mark_process_phase(phase_nodes, event, "entered_runtime_loop")
+    elif name == "node.self_terminated.b2bfailures":
+        _mark_process_phase(phase_nodes, event, "self_terminated_b2bfailures")
+
+
+def collect_process_phase_counts(
+    output_dir: Path,
+    offsets: dict[Path, int],
+    phase_nodes: dict[str, set[str]],
+    rollup_stats: dict[str, Counter[str]] | None = None,
+) -> dict[str, int]:
+    """Incrementally scan child event files and return current process phase counts."""
+
+    for events_path in sorted(output_dir.glob("node-process-*.events.jsonl")):
+        try:
+            with events_path.open("rb") as handle:
+                handle.seek(offsets.get(events_path, 0))
+                while True:
+                    line_start = handle.tell()
+                    raw_line = handle.readline()
+                    if not raw_line:
+                        break
+                    if not raw_line.endswith(b"\n"):
+                        handle.seek(line_start)
+                        break
+                    try:
+                        event = json.loads(raw_line.decode("utf-8"))
+                    except Exception:
+                        continue
+                    if isinstance(event, dict):
+                        record_process_phase_event(event, phase_nodes)
+                        if rollup_stats is not None:
+                            record_process_rollup_event(event, rollup_stats)
+                offsets[events_path] = handle.tell()
+        except OSError:
+            continue
+    return process_phase_count_summary(phase_nodes)
+
+
+def process_phase_count_summary(phase_nodes: dict[str, set[str]]) -> dict[str, int]:
+    return {counter: len(phase_nodes.get(counter, set())) for counter in PROCESS_PHASE_COUNTERS}
+
+
+def format_process_phase_counts(counts: dict[str, int]) -> str:
+    labels = (
+        ("nodes_started", "started"),
+        ("warm_finished", "warm_done"),
+        ("startup_request_attempted", "startup_req_attempted"),
+        ("startup_request_http_response", "startup_req_http"),
+        ("startup_request_transport_failures", "startup_req_transport_failures"),
+        ("bootstrap_attempted", "bootstrap"),
+        ("bootstrap_assumed_prefunded", "bootstrap_prefunded"),
+        ("bootstrap_balance_checked", "balance_checked"),
+        ("worker_register_attempted", "register"),
+        ("worker_register_http_response", "register_http"),
+        ("entered_runtime_loop", "runtime"),
+        ("self_terminated_b2bfailures", "b2b_exit"),
+    )
+    return "[worker-lab] " + " ".join(f"{label}={int(counts.get(counter, 0))}" for counter, label in labels)
+
+
+PROCESS_ROLLUP_CSV_COLUMNS = (
+    "run_id",
+    "generated_at",
+    "event",
+    "elapsed_seconds",
+    "node_count",
+    "nodes_started",
+    "nodes_alive",
+    "nodes_exited",
+    *PROCESS_PHASE_COUNTERS,
+    "self_terminated_b2bfailures",
+    "event_counts_json",
+    "http_status_counts_json",
+    "endpoint_counts_json",
+    "hub_counts_json",
+    "exit_codes_json",
+)
+
+
+def new_process_rollup_stats() -> dict[str, Counter[str]]:
+    return {
+        "event_counts": Counter(),
+        "http_status_counts": Counter(),
+        "endpoint_counts": Counter(),
+        "hub_counts": Counter(),
+    }
+
+
+def _process_rollup_status_key(status: Any) -> str:
+    try:
+        return str(int(status))
+    except Exception:
+        return str(status)
+
+
+def _process_rollup_hub_key(event: dict[str, Any]) -> str:
+    base_url = str(event.get("hub_base_url") or "").strip().rstrip("/")
+    if not base_url:
+        return ""
+    suffix = base_url.rsplit(":", 1)[-1]
+    if suffix.isdigit():
+        return suffix
+    return base_url
+
+
+def _process_rollup_endpoint_key(event_name: str) -> str:
+    if event_name.startswith("requester.request"):
+        return "requests"
+    if event_name == "node.funding.balance_checked":
+        return "credits_balance"
+    if event_name == "node.funding.issued":
+        return "credits_issue"
+    if event_name == "worker.register":
+        return "workers_register"
+    if event_name == "worker.heartbeat":
+        return "workers_heartbeat"
+    if event_name == "worker.poll":
+        return "workers_poll"
+    if event_name.startswith("worker.result"):
+        return "worker_results"
+    if event_name == "node.transport_failure":
+        return "transport_failures"
+    return ""
+
+
+def record_process_rollup_event(event: dict[str, Any], rollup_stats: dict[str, Counter[str]]) -> None:
+    """Record one child event into cumulative process-mode rollup counters."""
+
+    name = str(event.get("event") or "unknown")
+    rollup_stats.setdefault("event_counts", Counter())[name] += 1
+
+    if "status" in event:
+        rollup_stats.setdefault("http_status_counts", Counter())[_process_rollup_status_key(event.get("status"))] += 1
+
+    hub_key = _process_rollup_hub_key(event)
+    if hub_key:
+        rollup_stats.setdefault("hub_counts", Counter())[hub_key] += 1
+
+    endpoint_key = _process_rollup_endpoint_key(name)
+    if endpoint_key:
+        rollup_stats.setdefault("endpoint_counts", Counter())[endpoint_key] += 1
+
+
+def build_process_rollup(
+    *,
+    run_id: str,
+    started_at: float,
+    node_count: int,
+    assumed_prefunded_count: int,
+    children: list[tuple[dict[str, Any], subprocess.Popen[bytes]]],
+    phase_nodes: dict[str, set[str]],
+    rollup_stats: dict[str, Counter[str]],
+    event_name: str = "lab.process_parent.rollup",
+) -> dict[str, Any]:
+    phase_counts = process_phase_count_summary(phase_nodes)
+    exit_codes = Counter(str(int(process.poll())) for _node, process in children if process.poll() is not None)
+    nodes_alive = sum(1 for _node, process in children if process.poll() is None)
+    rollup: dict[str, Any] = {
+        "event": event_name,
+        "run_id": run_id,
+        "generated_at": utc_now(),
+        "elapsed_seconds": round(time.monotonic() - started_at, 3),
+        "execution_mode": "process",
+        "node_count": int(node_count),
+        "nodes_started": len(children),
+        "nodes_alive": nodes_alive,
+        "nodes_exited": max(0, len(children) - nodes_alive),
+        "assumed_prefunded_nodes": int(assumed_prefunded_count),
+        "phase_counts": phase_counts,
+        "event_counts": dict(sorted(rollup_stats.get("event_counts", Counter()).items())),
+        "http_status_counts": dict(sorted(rollup_stats.get("http_status_counts", Counter()).items())),
+        "endpoint_counts": dict(sorted(rollup_stats.get("endpoint_counts", Counter()).items())),
+        "hub_counts": dict(sorted(rollup_stats.get("hub_counts", Counter()).items())),
+        "exit_codes": dict(sorted(exit_codes.items())),
+        "self_terminated_b2bfailures": int(exit_codes.get("75", 0)),
+    }
+    rollup.update(phase_counts)
+    return rollup
+
+
+def _process_rollup_csv_row(rollup: dict[str, Any]) -> dict[str, Any]:
+    row: dict[str, Any] = {column: "" for column in PROCESS_ROLLUP_CSV_COLUMNS}
+    for column in PROCESS_ROLLUP_CSV_COLUMNS:
+        if column in {"event_counts_json", "http_status_counts_json", "endpoint_counts_json", "hub_counts_json", "exit_codes_json"}:
+            continue
+        value = rollup.get(column, "")
+        row[column] = value
+    row["event_counts_json"] = json.dumps(rollup.get("event_counts", {}), sort_keys=True)
+    row["http_status_counts_json"] = json.dumps(rollup.get("http_status_counts", {}), sort_keys=True)
+    row["endpoint_counts_json"] = json.dumps(rollup.get("endpoint_counts", {}), sort_keys=True)
+    row["hub_counts_json"] = json.dumps(rollup.get("hub_counts", {}), sort_keys=True)
+    row["exit_codes_json"] = json.dumps(rollup.get("exit_codes", {}), sort_keys=True)
+    return row
+
+
+def write_process_rollup_files(
+    rollup: dict[str, Any],
+    *,
+    rollups_jsonl: Path,
+    latest_rollup_json: Path,
+    rollups_csv: Path,
+) -> None:
+    rollups_jsonl.parent.mkdir(parents=True, exist_ok=True)
+    with rollups_jsonl.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(rollup, sort_keys=True) + "\n")
+    latest_rollup_json.write_text(json.dumps(rollup, indent=2, sort_keys=True), encoding="utf-8")
+
+    csv_exists = rollups_csv.exists() and rollups_csv.stat().st_size > 0
+    with rollups_csv.open("a", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(PROCESS_ROLLUP_CSV_COLUMNS))
+        if not csv_exists:
+            writer.writeheader()
+        writer.writerow(_process_rollup_csv_row(rollup))
+
+
+def format_process_rollup(rollup: dict[str, Any]) -> str:
+    endpoints = rollup.get("endpoint_counts", {}) if isinstance(rollup.get("endpoint_counts"), dict) else {}
+    statuses = rollup.get("http_status_counts", {}) if isinstance(rollup.get("http_status_counts"), dict) else {}
+    return (
+        f"[worker-lab:{int(float(rollup.get('elapsed_seconds', 0)))}s run={rollup.get('run_id', '')}] "
+        f"alive={int(rollup.get('nodes_alive', 0))} "
+        f"exited={int(rollup.get('nodes_exited', 0))} "
+        f"warm={int(rollup.get('warm_finished', 0))} "
+        f"startup={int(rollup.get('startup_request_http_response', 0))}/{int(rollup.get('startup_request_attempted', 0))} "
+        f"bootstrap={int(rollup.get('bootstrap_attempted', 0))} "
+        f"balance={int(rollup.get('bootstrap_balance_checked', 0))} "
+        f"register={int(rollup.get('worker_register_http_response', 0))}/{int(rollup.get('worker_register_attempted', 0))} "
+        f"runtime={int(rollup.get('entered_runtime_loop', 0))} "
+        f"req={int(endpoints.get('requests', 0))} "
+        f"poll={int(endpoints.get('workers_poll', 0))} "
+        f"hb={int(endpoints.get('workers_heartbeat', 0))} "
+        f"http0={int(statuses.get('0', 0))} "
+        f"b2b={int(rollup.get('self_terminated_b2bfailures', 0))}"
+    )
+
+
 def build_node_process_command(args: argparse.Namespace, *, runtime_node_list: Path, node_index: int) -> list[str]:
     command = [
         sys.executable,
@@ -1132,9 +1436,13 @@ def run_process_mode(args: argparse.Namespace) -> int:
     write_runtime_node_list(runtime_node_list, selected_nodes)
 
     started_at = time.monotonic()
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     stop_at = started_at + max(0.1, float(args.duration_seconds))
     parent_events = output_dir / "scheduler-lab-process-parent-events.jsonl"
     parent_summary = output_dir / "scheduler-lab-process-parent-summary.json"
+    rollups_jsonl = output_dir / "scheduler-lab-process-rollups.jsonl"
+    latest_rollup_json = output_dir / "scheduler-lab-process-rollup-latest.json"
+    rollups_csv = output_dir / "scheduler-lab-process-rollups.csv"
     children: list[tuple[dict[str, Any], subprocess.Popen[bytes]]] = []
 
     def emit_parent(event: dict[str, Any]) -> None:
@@ -1145,6 +1453,7 @@ def run_process_mode(args: argparse.Namespace) -> int:
     emit_parent(
         {
             "event": "lab.process_parent.started",
+            "run_id": run_id,
             "node_count": len(selected_nodes),
             "node_list": str(node_list_path),
             "runtime_node_list": str(runtime_node_list),
@@ -1157,8 +1466,48 @@ def run_process_mode(args: argparse.Namespace) -> int:
             "funded_percent": float(getattr(args, "funded", 0.0) or 0.0),
             "assumed_prefunded_nodes": assumed_prefunded_count,
             "execution_mode": "process",
+            "rollups_jsonl": str(rollups_jsonl),
+            "latest_rollup_json": str(latest_rollup_json),
+            "rollups_csv": str(rollups_csv),
         }
     )
+    print(
+        "[worker-lab] process mode started "
+        f"run={run_id} "
+        f"nodes={len(selected_nodes)} assumed_prefunded={assumed_prefunded_count} "
+        f"warm={str(getattr(args, 'warm', '') or 'none')} "
+        f"b2bfailures={int(getattr(args, 'b2bfailures', 0) or 0)} "
+        f"forced_alive={float(getattr(args, 'forced_alive', 0.0) or 0.0):g} "
+        f"rollups={rollups_jsonl}",
+        flush=True,
+    )
+    event_offsets: dict[Path, int] = {}
+    phase_nodes: dict[str, set[str]] = {counter: set() for counter in PROCESS_PHASE_COUNTERS}
+    rollup_stats = new_process_rollup_stats()
+    parent_status_interval = max(0.0, float(getattr(args, "parent_status_interval", 2.0) or 0.0))
+    parent_rollup_interval = max(0.0, float(getattr(args, "parent_rollup_interval", 60.0) or 0.0))
+    next_parent_status_at = time.monotonic() + parent_status_interval
+    next_parent_rollup_at = time.monotonic() + parent_rollup_interval
+
+    def emit_rollup(event_name: str = "lab.process_parent.rollup") -> dict[str, Any]:
+        rollup = build_process_rollup(
+            run_id=run_id,
+            started_at=started_at,
+            node_count=len(selected_nodes),
+            assumed_prefunded_count=assumed_prefunded_count,
+            children=children,
+            phase_nodes=phase_nodes,
+            rollup_stats=rollup_stats,
+            event_name=event_name,
+        )
+        write_process_rollup_files(
+            rollup,
+            rollups_jsonl=rollups_jsonl,
+            latest_rollup_json=latest_rollup_json,
+            rollups_csv=rollups_csv,
+        )
+        emit_parent(rollup)
+        return rollup
 
     try:
         for index, node in enumerate(selected_nodes):
@@ -1170,13 +1519,30 @@ def run_process_mode(args: argparse.Namespace) -> int:
             finally:
                 log_handle.close()
             children.append((node, process))
+            phase_nodes.setdefault("nodes_started", set()).add(str(node.get("node_id") or f"node-index:{index}"))
+
+        # Emit an initial rollup so a long or wedged run has an immediately
+        # discoverable result file on disk before the first minute boundary.
+        if parent_rollup_interval > 0.0:
+            initial_rollup = emit_rollup("lab.process_parent.rollup.initial")
+            print(format_process_rollup(initial_rollup), flush=True)
 
         while time.monotonic() < stop_at:
+            phase_counts = collect_process_phase_counts(output_dir, event_offsets, phase_nodes, rollup_stats)
+            now = time.monotonic()
+            if parent_status_interval > 0.0 and now >= next_parent_status_at:
+                emit_parent({"event": "lab.process_parent.phase_counts", "run_id": run_id, **phase_counts})
+                print(format_process_phase_counts(phase_counts), flush=True)
+                next_parent_status_at = now + parent_status_interval
+            if parent_rollup_interval > 0.0 and now >= next_parent_rollup_at:
+                rollup = emit_rollup()
+                print(format_process_rollup(rollup), flush=True)
+                next_parent_rollup_at = now + parent_rollup_interval
             if all(process.poll() is not None for _node, process in children):
                 break
             time.sleep(0.25)
     except KeyboardInterrupt:
-        emit_parent({"event": "lab.process_parent.interrupted"})
+        emit_parent({"event": "lab.process_parent.interrupted", "run_id": run_id})
     finally:
         for _node, process in children:
             if process.poll() is None:
@@ -1189,20 +1555,35 @@ def run_process_mode(args: argparse.Namespace) -> int:
                     process.wait(timeout=timeout)
                 except subprocess.TimeoutExpired:
                     process.kill()
+        phase_counts = collect_process_phase_counts(output_dir, event_offsets, phase_nodes, rollup_stats)
+        if parent_status_interval > 0.0:
+            emit_parent({"event": "lab.process_parent.phase_counts.final", "run_id": run_id, **phase_counts})
+            print(format_process_phase_counts(phase_counts), flush=True)
+        final_rollup = emit_rollup("lab.process_parent.rollup.final")
+        print(format_process_rollup(final_rollup), flush=True)
         exit_codes = [int(process.poll() if process.poll() is not None else -999) for _node, process in children]
         counts = Counter(str(code) for code in exit_codes)
         summary = {
             "schema": "main-computer-hub-lab-process-summary/v1",
             "generated_at": utc_now(),
+            "run_id": run_id,
             "execution_mode": "process",
             "node_count": len(selected_nodes),
             "nodes_started": len(children),
             "assumed_prefunded_nodes": assumed_prefunded_count,
+            "phase_counts": phase_counts,
+            "event_counts": final_rollup.get("event_counts", {}),
+            "http_status_counts": final_rollup.get("http_status_counts", {}),
+            "endpoint_counts": final_rollup.get("endpoint_counts", {}),
+            "hub_counts": final_rollup.get("hub_counts", {}),
             "exit_codes": dict(counts),
             "self_terminated_b2bfailures": counts.get("75", 0),
             "duration_seconds": round(time.monotonic() - started_at, 3),
             "runtime_node_list": str(runtime_node_list),
             "parent_events": str(parent_events),
+            "rollups_jsonl": str(rollups_jsonl),
+            "latest_rollup_json": str(latest_rollup_json),
+            "rollups_csv": str(rollups_csv),
         }
         parent_summary.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
         emit_parent({"event": "lab.process_parent.finished", **summary})
@@ -1330,6 +1711,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--forced-alive", type=float, default=float(os.environ.get("FORCED_ALIVE_SECONDS", "0")), help="Seconds a node must stay alive before b2b transport failures can self-terminate it.")
     parser.add_argument("--http-timeout-seconds", type=float, default=float(os.environ.get("HTTP_TIMEOUT_SECONDS", "1")))
     parser.add_argument("--http-retries", type=int, default=int(os.environ.get("HTTP_RETRIES", "1")))
+    parser.add_argument(
+        "--parent-status-interval",
+        type=float,
+        default=float(os.environ.get("LAB_PARENT_STATUS_INTERVAL", "2")),
+        help="Seconds between parent process-mode phase summaries; 0 disables periodic summaries.",
+    )
+    parser.add_argument(
+        "--parent-rollup-interval",
+        type=float,
+        default=float(os.environ.get("LAB_PARENT_ROLLUP_INTERVAL", "60")),
+        help="Seconds between process-mode experiment rollups written to JSONL/CSV; 0 disables periodic rollups but still writes final rollup.",
+    )
     return parser
 
 
