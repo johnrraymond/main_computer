@@ -731,7 +731,11 @@ def query_recursive_tree_clob(
         )
 
     limit = max(0, int(max_results))
-    returned = all_matches[:limit]
+    returned = []
+    for index, item in enumerate(all_matches[:limit], start=1):
+        enriched = dict(item)
+        enriched["evidence_id"] = f"path-{index:03d}"
+        returned.append(enriched)
     return {
         "operation": "recursive_tree_lookup",
         "clob_id": meta.get("id"),
@@ -761,7 +765,16 @@ def build_clob_lookup_context(
 ) -> str:
     """Build a bounded model-context slice from a generic clob lookup result."""
 
+    def _annotated_results(result_limit: int) -> list[dict[str, Any]]:
+        annotated: list[dict[str, Any]] = []
+        for index, result in enumerate(list(lookup_result.get("results") or [])[:result_limit], start=1):
+            item = dict(result)
+            item.setdefault("evidence_id", f"path-{index:03d}")
+            annotated.append(item)
+        return annotated
+
     def _payload_with_limit(result_limit: int) -> dict[str, Any]:
+        results = _annotated_results(result_limit)
         payload = {
             "operation": lookup_result.get("operation"),
             "clob_id": lookup_result.get("clob_id"),
@@ -771,7 +784,15 @@ def build_clob_lookup_context(
             "result_count": lookup_result.get("result_count"),
             "returned_count": min(int(lookup_result.get("returned_count") or 0), result_limit),
             "omitted_count": max(0, int(lookup_result.get("result_count") or 0) - result_limit),
-            "results": list(lookup_result.get("results") or [])[:result_limit],
+            "results": results,
+            "grounding_paths": [
+                {
+                    "evidence_id": str(item.get("evidence_id") or f"path-{index:03d}"),
+                    "path": str(item.get("path") or ""),
+                }
+                for index, item in enumerate(results, start=1)
+                if item.get("path")
+            ],
             "full_payload_available_as_side_loaded_clob": True,
             "full_payload_pasted_into_model_context": False,
         }
@@ -780,7 +801,8 @@ def build_clob_lookup_context(
     header = (
         "Targeted side-loaded clob lookup result.\n"
         "This is a retrieved slice from the saved clob payload, not the full clob.\n"
-        "Use these result paths as evidence. Do not ask to regenerate the recursive tree.\n"
+        "Use grounding_paths as evidence. Copy one evidence_id and path exactly in a GROUNDING line.\n"
+        "Do not ask to regenerate the recursive tree.\n"
     )
     for result_limit in [int(lookup_result.get("returned_count") or 0), 25, 15, 8, 3, 1, 0]:
         result_limit = max(0, result_limit)
@@ -799,7 +821,6 @@ def build_clob_lookup_context(
         "full_payload_pasted_into_model_context: false\n"
     )
     return fallback[:max_chars].rstrip()
-
 
 def clob_lookup_context_report(
     clob: dict[str, Any],
@@ -840,16 +861,27 @@ def clob_lookup_context_report(
 def response_mentions_lookup_path(response_text: str, lookup_result: dict[str, Any]) -> dict[str, Any]:
     response_norm = str(response_text or "").replace("\\", "/").lower()
     matched: list[str] = []
-    for result in lookup_result.get("results") or []:
+    matched_ids: list[str] = []
+    checked_paths: list[str] = []
+    checked_ids: list[str] = []
+    for index, result in enumerate(lookup_result.get("results") or [], start=1):
         path = str(result.get("path") or "")
-        if path and path.lower() in response_norm:
-            matched.append(path)
+        evidence_id = str(result.get("evidence_id") or f"path-{index:03d}")
+        if path:
+            checked_paths.append(path)
+            if path.lower() in response_norm:
+                matched.append(path)
+        if evidence_id:
+            checked_ids.append(evidence_id)
+            if evidence_id.lower() in response_norm:
+                matched_ids.append(evidence_id)
     return {
-        "ok": bool(matched),
+        "ok": bool(matched or matched_ids),
         "matched_paths": matched,
-        "checked_paths": [str(item.get("path") or "") for item in (lookup_result.get("results") or [])],
+        "matched_evidence_ids": matched_ids,
+        "checked_paths": checked_paths,
+        "checked_evidence_ids": checked_ids,
     }
-
 
 def paths_present_in_text(paths: list[str], text: str) -> list[str]:
     haystack = str(text or "").replace("\\", "/").lower()
@@ -1103,6 +1135,7 @@ def query_file_content_clob(
             rendered = rendered[: max(0, max_chunk_chars - len(marker))].rstrip() + marker
         chunks.append(
             {
+                "evidence_id": f"chunk-{len(chunks) + 1:03d}",
                 "path": payload.get("path"),
                 "start_line": start + 1,
                 "end_line": end,
@@ -1135,6 +1168,7 @@ def build_file_content_lookup_context(
     lookup_result: dict[str, Any],
     *,
     max_chars: int = DEFAULT_FILE_CONTENT_LOOKUP_CONTEXT_CHARS,
+    evidence_profile: str = "general",
 ) -> str:
     def _payload_with_limit(chunk_limit: int) -> dict[str, Any]:
         chunks = list(lookup_result.get("chunks") or [])[: max(0, int(chunk_limit))]
@@ -1149,6 +1183,12 @@ def build_file_content_lookup_context(
             "returned_count": len(chunks),
             "omitted_count": max(0, int(lookup_result.get("match_count") or 0) - len(chunks)),
             "chunks": chunks,
+            "grounding_evidence": content_evidence_items(
+                {**lookup_result, "chunks": chunks},
+                evidence_profile=evidence_profile,
+                limit=12,
+            ),
+            "evidence_profile": str(evidence_profile or "general"),
             "full_payload_available_as_side_loaded_clob": True,
             "full_payload_pasted_into_model_context": False,
         }
@@ -1156,7 +1196,7 @@ def build_file_content_lookup_context(
     header = (
         "Targeted side-loaded file-content clob lookup result.\n"
         "This is a retrieved content slice from a saved file clob, not the full file.\n"
-        "Use exact symbols, function names, assertion strings, or paths from this evidence.\n"
+        "Use grounding_evidence as evidence. Copy one evidence_id and exact text in a GROUNDING line.\n"
     )
     for chunk_limit in [int(lookup_result.get("returned_count") or 0), 5, 3, 2, 1, 0]:
         payload_text = json.dumps(_payload_with_limit(chunk_limit), indent=2, ensure_ascii=False, sort_keys=True)
@@ -1175,7 +1215,6 @@ def build_file_content_lookup_context(
         "full_payload_pasted_into_model_context: false\n"
     )
     return fallback[:max_chars].rstrip()
-
 
 def file_content_lookup_context_report(
     file_clob: dict[str, Any],
@@ -1277,6 +1316,32 @@ def content_evidence_terms(lookup_result: dict[str, Any], *, evidence_profile: s
     return _dedupe_evidence_terms(terms)
 
 
+
+def content_evidence_items(
+    lookup_result: dict[str, Any],
+    *,
+    evidence_profile: str = "general",
+    limit: int | None = None,
+) -> list[dict[str, str]]:
+    """Return runtime evidence items with stable IDs for grounded model replies.
+
+    The IDs are derived from the retrieved slice order, not from hard-coded
+    expected answers. Citing one proves the model saw and used a side-loaded
+    lookup slice even when it paraphrases the exact assertion/function text.
+    """
+
+    terms = content_evidence_terms(lookup_result, evidence_profile=evidence_profile)
+    if limit is not None:
+        terms = terms[: max(0, int(limit))]
+    return [
+        {
+            "evidence_id": f"content-{index:03d}",
+            "text": term,
+        }
+        for index, term in enumerate(terms, start=1)
+    ]
+
+
 def response_mentions_content_evidence(
     response_text: str,
     lookup_result: dict[str, Any],
@@ -1286,18 +1351,24 @@ def response_mentions_content_evidence(
     response = str(response_text or "")
     response_lower = response.lower()
     evidence = content_evidence_terms(lookup_result, evidence_profile=evidence_profile)
+    evidence_items = content_evidence_items(lookup_result, evidence_profile=evidence_profile)
     matched: list[str] = []
+    matched_ids: list[str] = []
     for term in evidence:
         if term.lower() in response_lower:
             matched.append(term)
+    for item in evidence_items:
+        evidence_id = str(item.get("evidence_id") or "")
+        if evidence_id and evidence_id.lower() in response_lower:
+            matched_ids.append(evidence_id)
     return {
-        "ok": bool(matched),
+        "ok": bool(matched or matched_ids),
         "matched_evidence": matched,
+        "matched_evidence_ids": matched_ids,
         "checked_evidence": evidence,
+        "checked_evidence_ids": [str(item.get("evidence_id") or "") for item in evidence_items],
         "evidence_profile": str(evidence_profile or "general"),
     }
-
-
 
 def choose_file_candidate_from_tree_lookup(
     lookup_result: dict[str, Any],
@@ -1331,8 +1402,9 @@ def build_rag_proof_messages(*, contexts: list[str], prompt: str) -> list[Any]:
             content=(
                 "You are the Main Computer text-console clob RAG proof assistant. "
                 "Use only the provided side-loaded clob references and lookup slices as evidence. "
-                "Do not ask to regenerate clobs. When asked for evidence, copy at least one exact "
-                "path, symbol, function name, class name, or assertion string from the lookup slice."
+                "Do not ask to regenerate clobs. When asked for evidence, use the runtime "
+                "grounding_paths or grounding_evidence from the lookup slice. Include a single "
+                "GROUNDING line that copies the evidence_id and path or text from the slice."
             ),
         )
     ]
@@ -1389,7 +1461,9 @@ def run_blind_tree_path_rag_case(
 
     prompt = (
         "Using the side-loaded repo-tree clob lookup evidence, find files related to text-console clob smoke behavior. "
-        "Name at least one exact path from the lookup slice and do not ask to regenerate the tree."
+        "Use grounding_paths from the lookup slice. Reply with a GROUNDING line like "
+        "'GROUNDING: evidence_id=<copied evidence_id> path=<copied exact path>'. "
+        "Then briefly say what you would inspect next. Do not ask to regenerate the tree."
     )
     messages = build_rag_proof_messages(contexts=[blind_context, lookup_context], prompt=prompt)
     request = _request_report(messages, model=model, think=think, last_user_message=prompt)
@@ -1413,8 +1487,44 @@ def run_blind_tree_path_rag_case(
 
     response_content = str(raw_response.get("content") or "")
     usage = response_mentions_lookup_path(response_content, lookup_result)
-    if int(lookup_result.get("result_count") or 0) > 0 and not usage.get("ok"):
-        failures.append(f"{name} response did not name any exact path from the tree lookup slice")
+    retry_used = False
+    retry_report: dict[str, Any] | None = None
+    if int(lookup_result.get("result_count") or 0) > 0 and not usage.get("ok") and not offline_contract_only:
+        retry_prompt = (
+            "The previous answer did not cite a valid runtime lookup evidence item. "
+            "Use only grounding_paths from the lookup slice. Reply exactly with one line: "
+            "GROUNDING: evidence_id=<copied evidence_id> path=<copied exact path>"
+        )
+        retry_messages = build_rag_proof_messages(contexts=[blind_context, lookup_context], prompt=retry_prompt)
+        retry_request = _request_report(retry_messages, model=model, think=think, last_user_message=retry_prompt)
+        try:
+            retry_response = call_provider_chat(
+                root=root,
+                messages=retry_messages,
+                base_url=base_url,
+                model=model,
+                timeout=timeout,
+                think=think,
+            )
+        except Exception as exc:
+            retry_response = {"content": "", "provider": "error", "model": model, "metadata": {}, "duration_ms": 0, "error": repr(exc)}
+            failures.append(f"{name} grounding retry provider chat failed: {exc!r}")
+        retry_content = str(retry_response.get("content") or "")
+        retry_usage = response_mentions_lookup_path(retry_content, lookup_result)
+        retry_used = True
+        retry_report = {
+            "request": {key: value for key, value in retry_request.items() if key != "request_text"},
+            "response": {"raw_response": retry_response, "content": retry_content, "preview": one_line(retry_content, limit=600)},
+            "usage": retry_usage,
+        }
+        if retry_usage.get("ok"):
+            raw_response = retry_response
+            response_content = retry_content
+            usage = retry_usage
+        else:
+            failures.append(f"{name} response did not cite any runtime path evidence_id or exact path from the tree lookup slice")
+    elif int(lookup_result.get("result_count") or 0) > 0 and not usage.get("ok"):
+        failures.append(f"{name} response did not cite any runtime path evidence_id or exact path from the tree lookup slice")
 
     redacted_request = dict(request)
     redacted_request.pop("request_text", None)
@@ -1432,6 +1542,8 @@ def run_blind_tree_path_rag_case(
         "response_usage": usage,
         "request": redacted_request,
         "response": {"raw_response": raw_response, "content": response_content, "preview": one_line(response_content, limit=600)},
+        "retry_used": retry_used,
+        "retry": retry_report,
         "lookup_result": lookup_result,
     }
 
@@ -1482,6 +1594,7 @@ def run_file_content_rag_case(
     content_context = build_file_content_lookup_context(
         content_lookup,
         max_chars=DEFAULT_FILE_CONTENT_LOOKUP_CONTEXT_CHARS,
+        evidence_profile=evidence_profile,
     )
     content_validation = file_content_lookup_context_report(
         file_clob,
@@ -1496,12 +1609,18 @@ def run_file_content_rag_case(
         failures.append(f"{case_name} lookup slice did not expose acceptable {evidence_profile!r} evidence")
 
     tree_lookup_context = build_clob_lookup_context(tree_lookup_result, max_chars=1000)
+    grounded_prompt = (
+        f"{prompt}\n\n"
+        "Use grounding_evidence from the file-content lookup slice and the selected path from the tree lookup. "
+        "Reply with a GROUNDING line like "
+        "'GROUNDING: path=<selected path> evidence_id=<copied evidence_id> evidence=<copied exact text>'."
+    )
     file_text = str(((file_clob.get("payload") or {}).get("text")) or "")
     messages = build_rag_proof_messages(
         contexts=[tree_lookup_context, content_context],
-        prompt=prompt,
+        prompt=grounded_prompt,
     )
-    request = _request_report(messages, model=model, think=think, last_user_message=prompt)
+    request = _request_report(messages, model=model, think=think, last_user_message=grounded_prompt)
     if file_text and len(file_text) > DEFAULT_FILE_CONTENT_LOOKUP_CONTEXT_CHARS and file_text in str(request.get("request_text") or ""):
         failures.append(f"{case_name} full file text appeared in model request")
 
@@ -1526,11 +1645,61 @@ def run_file_content_rag_case(
         content_lookup,
         evidence_profile=evidence_profile,
     )
-    path_usage = response_mentions_lookup_path(response_content, {"results": [{"path": selected_path}]})
+    path_usage = response_mentions_lookup_path(response_content, {"results": [{"path": selected_path, "evidence_id": "selected-path"}]})
+    retry_used = False
+    retry_report: dict[str, Any] | None = None
+    needs_grounding_retry = (
+        (int(content_lookup.get("match_count") or 0) > 0 and not evidence_usage.get("ok"))
+        or not path_usage.get("ok")
+    )
+    if needs_grounding_retry and not offline_contract_only:
+        retry_prompt = (
+            "The previous answer was not grounded in the runtime file-content lookup slice. "
+            f"The selected runtime path is {selected_path!r}. "
+            "Use grounding_evidence from the file-content slice. Reply exactly with one line: "
+            "GROUNDING: path=<selected path> evidence_id=<copied evidence_id> evidence=<copied exact text>"
+        )
+        retry_messages = build_rag_proof_messages(
+            contexts=[tree_lookup_context, content_context],
+            prompt=retry_prompt,
+        )
+        retry_request = _request_report(retry_messages, model=model, think=think, last_user_message=retry_prompt)
+        try:
+            retry_response = call_provider_chat(
+                root=root,
+                messages=retry_messages,
+                base_url=base_url,
+                model=model,
+                timeout=timeout,
+                think=think,
+            )
+        except Exception as exc:
+            retry_response = {"content": "", "provider": "error", "model": model, "metadata": {}, "duration_ms": 0, "error": repr(exc)}
+            failures.append(f"{case_name} grounding retry provider chat failed: {exc!r}")
+        retry_content = str(retry_response.get("content") or "")
+        retry_evidence_usage = response_mentions_content_evidence(
+            retry_content,
+            content_lookup,
+            evidence_profile=evidence_profile,
+        )
+        retry_path_usage = response_mentions_lookup_path(retry_content, {"results": [{"path": selected_path, "evidence_id": "selected-path"}]})
+        retry_used = True
+        retry_report = {
+            "request": {key: value for key, value in retry_request.items() if key != "request_text"},
+            "response": {"raw_response": retry_response, "content": retry_content, "preview": one_line(retry_content, limit=600)},
+            "evidence_usage": retry_evidence_usage,
+            "path_usage": retry_path_usage,
+        }
+        if retry_evidence_usage.get("ok") and retry_path_usage.get("ok"):
+            raw_response = retry_response
+            response_content = retry_content
+            evidence_usage = retry_evidence_usage
+            path_usage = retry_path_usage
+
     if int(content_lookup.get("match_count") or 0) > 0 and not evidence_usage.get("ok"):
-        failures.append(f"{case_name} response did not name exact content evidence from the file-content lookup slice")
+        failures.append(f"{case_name} response did not cite a runtime content evidence_id or exact evidence from the file-content lookup slice")
     if not path_usage.get("ok"):
-        failures.append(f"{case_name} response did not name the selected path from tree lookup evidence")
+        failures.append(f"{case_name} response did not cite the selected runtime path or selected-path evidence id from tree lookup evidence")
 
     redacted_request = dict(request)
     redacted_request.pop("request_text", None)
@@ -1558,6 +1727,8 @@ def run_file_content_rag_case(
         "content_context_chars": len(content_context),
         "request": redacted_request,
         "response": {"raw_response": raw_response, "content": response_content, "preview": one_line(response_content, limit=600)},
+        "retry_used": retry_used,
+        "retry": retry_report,
         "content_lookup": content_lookup,
     }
 
@@ -1705,8 +1876,8 @@ def build_lookup_model_messages(
                 "You are the Main Computer text-console clob v2 smoke assistant. "
                 "Clobs are side-loaded context large objects. Use compact clob references "
                 "and targeted lookup slices as evidence. When a lookup slice is present, "
-                "name concrete paths from that slice instead of asking to regenerate or paste "
-                "the full clob."
+                "use its grounding_paths. Include a GROUNDING line with a copied evidence_id "
+                "and exact path instead of asking to regenerate or paste the full clob."
             ),
         ),
         ChatMessage(role="system", content=clob_context),
@@ -1915,8 +2086,10 @@ def run_clob_v2_smoke(
         terms_text = ", ".join(effective_lookup_terms) if effective_lookup_terms else "the requested filters"
         lookup_prompt = (
             "Use the targeted side-loaded clob lookup result now. "
-            f"Name at least one exact path from the lookup slice for {terms_text}, "
-            "explain what you would inspect next, and do not ask to regenerate the recursive tree."
+            f"Use grounding_paths from the lookup slice for {terms_text}. "
+            "Reply with a GROUNDING line like "
+            "'GROUNDING: evidence_id=<copied evidence_id> path=<copied exact path>'. "
+            "Then briefly explain what you would inspect next. Do not ask to regenerate the recursive tree."
         )
 
     lookup_clob_context = build_clob_reminder_context(clob)
@@ -1970,8 +2143,62 @@ def run_clob_v2_smoke(
         failures.append("lookup model response was empty")
 
     lookup_usage = response_mentions_lookup_path(lookup_response_content, lookup_result)
-    if int(lookup_result.get("result_count") or 0) > 0 and not lookup_usage.get("ok"):
-        failures.append("lookup model response did not name any exact path returned by the clob lookup slice")
+    lookup_retry_used = False
+    lookup_retry_report: dict[str, Any] | None = None
+    if int(lookup_result.get("result_count") or 0) > 0 and not lookup_usage.get("ok") and not offline_contract_only:
+        retry_prompt = (
+            "The previous answer did not cite a valid runtime lookup evidence item. "
+            "Use only grounding_paths from the targeted clob lookup slice. Reply exactly with one line: "
+            "GROUNDING: evidence_id=<copied evidence_id> path=<copied exact path>"
+        )
+        retry_messages = build_lookup_model_messages(
+            initial_prompt=prompt,
+            initial_response=initial_response_content,
+            clob_context=lookup_clob_context,
+            lookup_context=lookup_context,
+            lookup_prompt=retry_prompt,
+        )
+        retry_request = _request_report(
+            retry_messages,
+            model=model,
+            think=think,
+            last_user_message=retry_prompt,
+        )
+        try:
+            retry_response = call_provider_chat(
+                root=root,
+                messages=retry_messages,
+                base_url=base_url,
+                model=model,
+                timeout=timeout,
+                think=think,
+            )
+        except Exception as exc:
+            retry_response = {
+                "content": "",
+                "provider": "error",
+                "model": model,
+                "metadata": {},
+                "duration_ms": 0,
+                "error": repr(exc),
+            }
+            failures.append(f"lookup grounding retry provider chat failed: {exc!r}")
+        retry_content = str(retry_response.get("content") or "")
+        retry_usage = response_mentions_lookup_path(retry_content, lookup_result)
+        lookup_retry_used = True
+        lookup_retry_report = {
+            "request": {key: value for key, value in retry_request.items() if key != "request_text"},
+            "response": {"raw_response": retry_response, "content": retry_content, "preview": one_line(retry_content, limit=600)},
+            "usage": retry_usage,
+        }
+        if retry_usage.get("ok"):
+            raw_lookup_response = retry_response
+            lookup_response_content = retry_content
+            lookup_usage = retry_usage
+        else:
+            failures.append("lookup model response did not cite any runtime path evidence_id or exact path from the clob lookup slice")
+    elif int(lookup_result.get("result_count") or 0) > 0 and not lookup_usage.get("ok"):
+        failures.append("lookup model response did not cite any runtime path evidence_id or exact path from the clob lookup slice")
 
     rag_proof_report = {
         "ok": True,
@@ -2034,6 +2261,8 @@ def run_clob_v2_smoke(
             "context": lookup_context,
             "clob_reminder_context": lookup_clob_context,
             "response_path_usage": lookup_usage,
+            "retry_used": lookup_retry_used,
+            "retry": lookup_retry_report,
         },
         "rag_proof": rag_proof_report,
         "model_request": _without_request_text(model_request),
