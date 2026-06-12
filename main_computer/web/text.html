@@ -921,12 +921,24 @@
         target_id: String(result?.target_id || ""),
         target_display_name: String(result?.target_display_name || ""),
         target_os: String(result?.target_os || ""),
-        target_shell: String(result?.target_shell || "")
+        target_shell: String(result?.target_shell || ""),
+        text_console_clobs: Array.isArray(result?.text_console_clobs) ? result.text_console_clobs : [],
+        model_context: result?.model_context && typeof result.model_context === "object" ? result.model_context : null
       };
     }
 
+    function terminalResultThreadText(result) {
+      const compact = String(result?.model_context?.thread_text || "").trim();
+      return compact || terminalResultText(result);
+    }
+
+    function mountThreadExecutionResultText(artifact) {
+      const results = Array.isArray(artifact?.execution_results) ? artifact.execution_results : [];
+      return results.length ? results.map(terminalResultThreadText).join("\n\n---\n\n") : "";
+    }
+
     function artifactTerminalThreadText(artifact) {
-      const text = mountExecutionResultText(artifact);
+      const text = mountThreadExecutionResultText(artifact);
       if (!text) return "";
       const state = artifactStateValue(artifact);
       const artifactId = String(artifact?.artifact_id || "");

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from main_computer.viewport_state import *  # noqa: F401,F403
 from main_computer.text_console import default_terminal_target_profile
+from main_computer.text_console_clobs import enrich_terminal_result_with_clobs
 
 
 class ViewportTerminalRoutesMixin:
@@ -66,7 +67,8 @@ class ViewportTerminalRoutesMixin:
                     exit_code=completed.returncode,
                     duration_ms=duration_ms,
                 )
-                self._send_json(
+                result = enrich_terminal_result_with_clobs(
+                    self.server.debug_root,
                     {
                         "command": command,
                         "cwd": str(final_cwd),
@@ -79,14 +81,22 @@ class ViewportTerminalRoutesMixin:
                         "stderr": completed.stderr,
                         "duration_ms": duration_ms,
                         "timed_out": False,
-                    }
+                    },
                 )
+                if result.get("text_console_clobs"):
+                    self.server.signal(
+                        "api-terminal-clob-stored",
+                        clob_count=len(result.get("text_console_clobs", []) or []),
+                        command_chars=len(command),
+                    )
+                self._send_json(result)
             except subprocess.TimeoutExpired as exc:
                 duration_ms = int((time.monotonic() - started) * 1000)
                 stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode("utf-8", errors="replace")
                 stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b"").decode("utf-8", errors="replace")
                 self.server.signal("api-terminal-timeout", cwd=cwd, duration_ms=duration_ms)
-                self._send_json(
+                result = enrich_terminal_result_with_clobs(
+                    self.server.debug_root,
                     {
                         "command": command,
                         "cwd": str(cwd),
@@ -102,8 +112,15 @@ class ViewportTerminalRoutesMixin:
                         "timed_out": True,
                         "error": f"Command timed out after {timeout_s:g} seconds.",
                     },
-                    status=HTTPStatus.REQUEST_TIMEOUT,
                 )
+                if result.get("text_console_clobs"):
+                    self.server.signal(
+                        "api-terminal-clob-stored",
+                        clob_count=len(result.get("text_console_clobs", []) or []),
+                        command_chars=len(command),
+                        timed_out=True,
+                    )
+                self._send_json(result, status=HTTPStatus.REQUEST_TIMEOUT)
         except Exception as exc:
             self.server.signal("api-terminal-error", error=exc)
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)

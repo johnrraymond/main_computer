@@ -42,13 +42,14 @@ from main_computer.website_project_manifest import (
 from main_computer.viewport_state import *  # noqa: F401,F403
 from main_computer.email_client import EmailClientConfigError, check_email_account
 from main_computer.chat_ai_subprocess import append_text_log, config_to_payload
-from main_computer.models import ChatResponse
+from main_computer.models import ChatMessage, ChatResponse
 from main_computer.text_console import (
     TextConsoleConfig,
     coerce_text_console_thread_messages,
     parse_text_console_response_artifacts,
     run_text_console_operator_chat,
 )
+from main_computer.text_console_clobs import build_text_console_clob_lookup_context
 from main_computer.website_builder_rag_pipeline import (
     build_evidence as build_website_builder_rag_evidence,
     build_proposal_evidence as build_website_builder_rag_proposal_evidence,
@@ -2189,11 +2190,26 @@ class ViewportApplicationRoutesMixin:
                 thread_message_count=len(thread_messages),
             )
 
+            clob_lookup_text, clob_lookup_metadata = build_text_console_clob_lookup_context(
+                text_console_config.context_root,
+                prompt=prompt,
+                thread_messages=thread_messages,
+            )
+            conversation_messages = list(thread_messages)
+            if clob_lookup_text:
+                conversation_messages.append(ChatMessage(role="system", content=clob_lookup_text))
+                self.server.signal(
+                    "api-chat-clob-lookup",
+                    clob_ids_loaded="|".join(clob_lookup_metadata.get("clob_ids_loaded", []) or []),
+                    result_count=clob_lookup_metadata.get("result_count", 0),
+                    context_chars=clob_lookup_metadata.get("context_chars", 0),
+                )
+
             response = run_text_console_operator_chat(
                 text_console_config=text_console_config,
                 prompt=prompt,
                 base_config=self.server.config,
-                conversation_messages=thread_messages,
+                conversation_messages=conversation_messages,
             )
             response.metadata.setdefault("text_console_thread", {})
             response.metadata["text_console_thread"].update(
@@ -2203,6 +2219,8 @@ class ViewportApplicationRoutesMixin:
                     "message_roles": [message.role for message in thread_messages],
                     "message_chars": [len(str(message.content or "")) for message in thread_messages],
                     "notes": thread_notes,
+                    "clob_lookup": clob_lookup_metadata,
+                    "model_message_count": len(conversation_messages),
                 }
             )
             workspace_context = dict(response.metadata.get("workspace_context", {}) or {})
