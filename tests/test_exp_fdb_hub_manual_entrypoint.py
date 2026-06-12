@@ -12,6 +12,11 @@ def test_exp_fdb_hub_entrypoint_is_manual_and_declares_fdb_options() -> None:
     assert "Manual-only" in module
     assert "--cluster-file" in module
     assert "--namespace" in module
+    assert "--no-fdb-autostart" in module
+    assert "main-computer-foundationdb-smoke" in module
+    assert "smoke_foundationdb_credit_ledger_primitives.py" in module
+    assert "--keep-container" in module
+    assert "--reuse-container" in module
     assert "-ports" in module
     assert "--docker" in module
     assert "--docker-compose-file" in module

@@ -8,6 +8,7 @@ from argparse import Namespace
 from tools.scheduler_lab.hub_client import HubClient, HubHttpResponse
 from tools.scheduler_lab.node_list import SCHEMA, build_document, build_nodes, normalize_hub_base_urls
 from tools.scheduler_lab.run_lab import (
+    BehaviorLedger,
     build_arg_parser,
     build_process_launch_progress_rollup,
     build_process_rollup,
@@ -533,6 +534,96 @@ def test_process_rollup_scanner_uses_known_paths_and_offsets(tmp_path) -> None:
     assert scan_state["rollup_events_scanned"] == 1
 
 
+
+def test_behavior_ledger_transport_storm_probes_hub_without_banning_actor() -> None:
+    ledger = BehaviorLedger()
+
+    for index in range(20):
+        ledger.record(
+            {
+                "event": "node.transport_failure",
+                "node_id": "node-1",
+                "account_id": "lab-account-node-1",
+                "status": 0,
+                "ok": False,
+                "hub_base_url": "http://host.docker.internal:8874",
+                "ts": f"2026-06-12T19:00:{index:02d}+00:00",
+            }
+        )
+
+    snapshot = ledger.snapshot()
+
+    assert snapshot["tat_counts"]["transport.no_http_response"] == 20
+    assert snapshot["behavior_hubs_probe"] == 1
+    assert snapshot["behavior_nodes_temporary_ban"] == 0
+    assert all(
+        not (item["subject_kind"] == "node" and item["behavior_state"] == "temporary_ban")
+        for item in snapshot["top_behavior"]
+    )
+
+
+def test_behavior_ledger_does_not_count_status_zero_request_as_scheduler_rejection() -> None:
+    ledger = BehaviorLedger()
+
+    ledger.record(
+        {
+            "event": "requester.request.startup_surge.pre_bootstrap",
+            "node_id": "requester-1",
+            "account_id": "lab-account-requester-1",
+            "status": 0,
+            "ok": False,
+            "hub_base_url": "http://host.docker.internal:8872",
+            "ts": "2026-06-12T19:00:00+00:00",
+        }
+    )
+
+    snapshot = ledger.snapshot()
+
+    assert snapshot["tat_counts"] == {"transport.no_http_response": 1}
+
+
+def test_process_rollup_scanner_unlimited_final_pass_reads_all_events(tmp_path) -> None:
+    noisy = tmp_path / "node-process-00000-noisy.events.jsonl"
+    noisy.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "event": "worker.heartbeat",
+                    "node_id": "noisy",
+                    "status": 0,
+                    "hub_base_url": "http://host.docker.internal:8874",
+                }
+            )
+            + "\n"
+            for _ in range(25)
+        ),
+        encoding="utf-8",
+    )
+    offsets: dict = {}
+    phase_nodes: dict[str, set[str]] = {}
+    stats = new_process_rollup_stats()
+    scan_state: dict = {}
+    cursor: dict = {}
+
+    counts = collect_process_phase_counts(
+        tmp_path,
+        offsets,
+        phase_nodes,
+        stats,
+        event_paths=[noisy],
+        max_events_per_file=0,
+        scan_cursor_state=cursor,
+        scan_state=scan_state,
+    )
+
+    assert counts["nodes_started"] == 0
+    assert stats["event_counts"]["worker.heartbeat"] == 25
+    assert scan_state["rollup_events_scanned"] == 25
+    assert scan_state["rollup_files_limited"] == 0
+    assert scan_state["rollup_partial"] is False
+    assert scan_state["rollup_events_per_file_limit"] == 0
+
+
 def test_process_rollup_scanner_samples_across_noisy_files(tmp_path) -> None:
     noisy = tmp_path / "node-process-00000-noisy.events.jsonl"
     quiet_runtime = tmp_path / "node-process-00001-runtime.events.jsonl"
@@ -690,3 +781,159 @@ def test_assumed_prefunded_process_bootstrap_probes_balance_without_issuing() ->
     assumed_events = [event for event in sink.events if event.get("event") == "node.funding.bootstrap.assumed_prefunded"]
     assert assumed_events
     assert assumed_events[0]["balance_status"] == 200
+
+
+def test_session_scoped_process_child_event_path_without_touching_files(tmp_path) -> None:
+    node = {"node_id": "worker/with space"}
+    path = process_child_event_path(tmp_path, node, 7, run_id="20260612T010203Z-99-abcdef12")
+
+    assert path == tmp_path / "node-process-20260612T010203Z-99-abcdef12-00007-worker_with_space.events.jsonl"
+    assert not path.exists()
+
+
+def test_process_rollup_reconstructs_request_lifecycle_and_latency() -> None:
+    class DummyProcess:
+        def __init__(self, code):
+            self.code = code
+
+        def poll(self):
+            return self.code
+
+    stats = new_process_rollup_stats()
+    phase_nodes: dict[str, set[str]] = {}
+    events = [
+        {
+            "ts": "2026-06-11T00:00:00+00:00",
+            "event": "requester.request.attempted",
+            "node_id": "requester-1",
+            "actor_node_id": "requester-1",
+            "actor_account_id": "account-requester-1",
+            "lab_request_key": "requester-1-1",
+            "request_index": 1,
+            "requester_node_id": "requester-1",
+        },
+        {
+            "ts": "2026-06-11T00:00:01+00:00",
+            "event": "requester.request.submitted",
+            "node_id": "requester-1",
+            "actor_node_id": "requester-1",
+            "actor_account_id": "account-requester-1",
+            "lab_request_key": "requester-1-1",
+            "request_id": "hub-request-1",
+            "ok": True,
+            "status": 200,
+            "hub_base_url": "http://hub.example:8872",
+            "response_summary": {"request": {"request_id": "hub-request-1"}},
+        },
+        {
+            "ts": "2026-06-11T00:00:10+00:00",
+            "event": "worker.poll",
+            "node_id": "worker-1",
+            "actor_node_id": "worker-1",
+            "actor_account_id": "account-worker-1",
+            "worker_node_id": "worker-1",
+            "request_id": "hub-request-1",
+            "lease_id": "lease-1",
+            "ok": True,
+            "status": 200,
+            "hub_base_url": "http://hub.example:8872",
+            "response_summary": {"lease": {"request_id": "hub-request-1", "lease_id": "lease-1"}},
+        },
+        {
+            "ts": "2026-06-11T00:00:11+00:00",
+            "event": "worker.execution.started",
+            "node_id": "worker-1",
+            "actor_node_id": "worker-1",
+            "worker_node_id": "worker-1",
+            "request_id": "hub-request-1",
+            "lease_id": "lease-1",
+        },
+        {
+            "ts": "2026-06-11T00:00:21+00:00",
+            "event": "worker.execution.finished",
+            "node_id": "worker-1",
+            "actor_node_id": "worker-1",
+            "worker_node_id": "worker-1",
+            "request_id": "hub-request-1",
+            "lease_id": "lease-1",
+        },
+        {
+            "ts": "2026-06-11T00:00:22+00:00",
+            "event": "worker.result.submitted",
+            "node_id": "worker-1",
+            "actor_node_id": "worker-1",
+            "worker_node_id": "worker-1",
+            "request_id": "hub-request-1",
+            "lease_id": "lease-1",
+            "ok": True,
+            "status": 200,
+            "hub_base_url": "http://hub.example:8872",
+        },
+    ]
+
+    for event in events:
+        record_process_rollup_event(event, stats)
+
+    rollup = build_process_rollup(
+        run_id="20260612T010203Z-99-abcdef12",
+        started_at=time.monotonic() - 30.0,
+        node_count=2,
+        assumed_prefunded_count=0,
+        children=[({"node_id": "requester-1"}, DummyProcess(None)), ({"node_id": "worker-1"}, DummyProcess(None))],
+        phase_nodes=phase_nodes,
+        rollup_stats=stats,
+    )
+
+    assert rollup["schema_version"] == 3
+    assert rollup["rollup_source"] == "child_event_scan"
+    assert rollup["requests_attempted_total"] == 1
+    assert rollup["requests_accepted_total"] == 1
+    assert rollup["requests_leased_total"] == 1
+    assert rollup["requests_settled_total"] == 1
+    assert rollup["open_requests_total"] == 0
+    assert rollup["queue_wait_seconds_p50"] == 9.0
+    assert rollup["work_seconds_p50"] == 10.0
+    assert rollup["settle_seconds_p50"] == 21.0
+    assert rollup["settlement_metrics_representative"] is True
+    assert rollup["lab_interpretation"] == "settlement_healthy"
+    assert rollup["behavior"]["behavior_state_counts"]
+
+
+def test_process_rollup_behavior_classifier_distinguishes_transport_dominated() -> None:
+    class DummyProcess:
+        def __init__(self, code):
+            self.code = code
+
+        def poll(self):
+            return self.code
+
+    stats = new_process_rollup_stats()
+    phase_nodes: dict[str, set[str]] = {}
+    for index in range(12):
+        event = {
+            "ts": f"2026-06-11T00:00:{index:02d}+00:00",
+            "event": "worker.poll",
+            "node_id": f"node-{index}",
+            "actor_node_id": f"node-{index}",
+            "actor_account_id": f"account-{index}",
+            "status": 0,
+            "ok": False,
+            "hub_base_url": "http://dead-hub.example:8874",
+        }
+        record_process_rollup_event(event, stats)
+
+    rollup = build_process_rollup(
+        run_id="20260612T010203Z-99-abcdef12",
+        started_at=time.monotonic() - 30.0,
+        node_count=12,
+        assumed_prefunded_count=0,
+        children=[({"node_id": "node-0"}, DummyProcess(None))],
+        phase_nodes=phase_nodes,
+        rollup_stats=stats,
+    )
+
+    assert rollup["transport_dominated"] is True
+    assert rollup["settlement_metrics_representative"] is False
+    assert rollup["lab_interpretation"] == "transport_dominated"
+    assert rollup["behavior_hubs_probe"] == 1
+    assert rollup["top_behavior"]
