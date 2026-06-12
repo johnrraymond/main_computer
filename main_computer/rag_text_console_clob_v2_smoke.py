@@ -56,7 +56,7 @@ DEFAULT_CLOB_FILENAME = "recursive_repo_tree.clob.json"
 CLOB_SCHEMA_VERSION = "text-console-clob-v2/1"
 CLOB_TYPE_RECURSIVE_REPO_TREE = "recursive_repo_tree"
 DEFAULT_MAX_CLOB_CONTEXT_CHARS = 6000
-DEFAULT_MAX_LOOKUP_CONTEXT_CHARS = 6000
+DEFAULT_MAX_LOOKUP_CONTEXT_CHARS = 3200
 DEFAULT_EXCERPT_HEAD_LINES = 40
 DEFAULT_EXCERPT_TAIL_LINES = 25
 DEFAULT_LOOKUP_MAX_RESULTS = 25
@@ -83,6 +83,7 @@ EXCLUDED_DIR_NAMES = {
 EXCLUDED_REPO_REL_DIRS = {
     "diagnostics_output",
     "runtime",
+    "tools/patching/reports",
 }
 
 
@@ -145,8 +146,10 @@ def should_skip_dir(path: Path, *, root: Path, clob_dir: Path) -> bool:
     except ValueError:
         return False
 
-    if rel in EXCLUDED_REPO_REL_DIRS:
-        return True
+    for excluded_rel in EXCLUDED_REPO_REL_DIRS:
+        excluded = excluded_rel.strip("/").replace("\\", "/")
+        if rel == excluded or rel.startswith(excluded + "/"):
+            return True
 
     # Avoid including the clob cache itself if callers place it under a
     # non-default diagnostics path.
@@ -569,6 +572,51 @@ def build_clob_reference_context(
     )
     return fallback[:max_chars].rstrip()
 
+def build_clob_reminder_context(
+    clob: dict[str, Any],
+    *,
+    max_chars: int = 1200,
+) -> str:
+    """Build a tiny reminder for follow-up turns that already have lookup slices.
+
+    The full compact reference is useful for the first orientation turn, but
+    carrying it plus lookup results plus prior prose can exhaust small local
+    model contexts. Follow-up lookup turns only need enough clob identity and
+    payload-shape metadata to connect the lookup slice back to the side-loaded
+    object.
+    """
+
+    meta = dict(clob.get("clob") or {})
+    summary = dict(clob.get("summary") or {})
+    payload = {
+        "clob_id": meta.get("id"),
+        "clob_type": meta.get("type"),
+        "repo_root_name": meta.get("repo_root_name"),
+        "payload_sha256": meta.get("payload_sha256"),
+        "entry_count": meta.get("entry_count"),
+        "file_count": summary.get("file_count"),
+        "dir_count": summary.get("dir_count"),
+        "full_payload_available_as_side_loaded_clob": True,
+        "full_payload_pasted_into_model_context": False,
+        "note": "Follow-up turn reminder only; use the targeted lookup slice for concrete paths.",
+    }
+    header = (
+        "Compact side-loaded clob reminder for a follow-up lookup turn.\n"
+        "This is not the full clob and not the full first-turn reference.\n"
+    )
+    text = header + json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True)
+    if len(text) <= max_chars:
+        return text
+    minimal = {
+        "clob_id": meta.get("id"),
+        "clob_type": meta.get("type"),
+        "full_payload_available_as_side_loaded_clob": True,
+        "full_payload_pasted_into_model_context": False,
+    }
+    text = header + json.dumps(minimal, indent=2, ensure_ascii=False, sort_keys=True)
+    return text[:max_chars].rstrip()
+
+
 def clob_context_report(clob: dict[str, Any], context_text: str, *, max_context_chars: int) -> dict[str, Any]:
     meta = dict(clob.get("clob") or {})
     tree_text = str(((clob.get("payload") or {}).get("tree_text")) or "")
@@ -822,8 +870,13 @@ def build_lookup_model_messages(
     clob_context: str,
     lookup_context: str,
     lookup_prompt: str,
+    max_initial_response_chars: int = 500,
 ) -> list[Any]:
     from main_computer.models import ChatMessage
+
+    compact_initial_response = one_line(initial_response, limit=max_initial_response_chars)
+    if not compact_initial_response:
+        compact_initial_response = "Initial orientation turn produced no usable prose."
 
     return [
         ChatMessage(
@@ -838,7 +891,13 @@ def build_lookup_model_messages(
         ),
         ChatMessage(role="system", content=clob_context),
         ChatMessage(role="user", content=initial_prompt),
-        ChatMessage(role="assistant", content=initial_response),
+        ChatMessage(
+            role="assistant",
+            content=(
+                "Prior orientation response, compacted for request budget:\n"
+                f"{compact_initial_response}"
+            ),
+        ),
         ChatMessage(role="system", content=lookup_context),
         ChatMessage(role="user", content=lookup_prompt),
     ]
@@ -1038,10 +1097,11 @@ def run_clob_v2_smoke(
             "explain what you would inspect next, and do not ask to regenerate the recursive tree."
         )
 
+    lookup_clob_context = build_clob_reminder_context(clob)
     lookup_messages = build_lookup_model_messages(
         initial_prompt=prompt,
         initial_response=initial_response_content,
-        clob_context=clob_context,
+        clob_context=lookup_clob_context,
         lookup_context=lookup_context,
         lookup_prompt=lookup_prompt,
     )
@@ -1129,6 +1189,7 @@ def run_clob_v2_smoke(
             "validation": lookup_validation,
             "context_preview": one_line(lookup_context, limit=500),
             "context": lookup_context,
+            "clob_reminder_context": lookup_clob_context,
             "response_path_usage": lookup_usage,
         },
         "model_request": _without_request_text(model_request),

@@ -25,6 +25,16 @@ def _write_fake_repo(root: Path, *, file_count: int = 80) -> None:
     (root / ".git" / "ignored").write_text("ignored\n", encoding="utf-8")
     (root / "runtime").mkdir()
     (root / "runtime" / "ignored.log").write_text("ignored\n", encoding="utf-8")
+    (root / "tools" / "patching" / "reports" / "new_patch_runs" / "example").mkdir(parents=True)
+    (
+        root
+        / "tools"
+        / "patching"
+        / "reports"
+        / "new_patch_runs"
+        / "example"
+        / "rag_text_console_clob_v2_smoke.py"
+    ).write_text("# patch report noise\n", encoding="utf-8")
 
 
 def test_recursive_repo_tree_clob_is_generated_and_reused(tmp_path: Path):
@@ -59,6 +69,7 @@ def test_recursive_repo_tree_clob_is_generated_and_reused(tmp_path: Path):
     assert "main_computer/web/text.html" in paths
     assert "runtime/ignored.log" not in paths
     assert ".git/ignored" not in paths
+    assert not any(path.startswith("tools/patching/reports/") for path in paths)
 
 
 def test_clob_reference_context_is_bounded_side_loaded_summary(tmp_path: Path):
@@ -173,6 +184,47 @@ def test_clob_lookup_context_is_bounded_side_loaded_slice(tmp_path: Path):
     assert clob["payload"]["tree_text"] not in context
     assert "retrieved slice from the saved clob payload" in context.lower()
     assert lookup["clob_id"] in context
+
+
+def test_lookup_turn_uses_compact_reminder_instead_of_full_first_context(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_fake_repo(repo, file_count=350)
+
+    clob = smoke.generate_recursive_repo_tree_clob(
+        repo,
+        clob_dir=repo / "diagnostics_output" / "text_console_clobs",
+    )
+    full_reference = smoke.build_clob_reference_context(
+        clob,
+        max_chars=6000,
+        head_lines=40,
+        tail_lines=25,
+    )
+    reminder = smoke.build_clob_reminder_context(clob)
+    lookup = smoke.query_recursive_tree_clob(
+        clob,
+        terms=["text_console", "clob"],
+        kind="file",
+        max_results=25,
+    )
+    lookup_context = smoke.build_clob_lookup_context(lookup)
+
+    assert len(reminder) < len(full_reference)
+    assert clob["payload"]["tree_text"] not in reminder
+    messages = smoke.build_lookup_model_messages(
+        initial_prompt="Use the clob to orient yourself.",
+        initial_response="This is a deliberately long first response. " * 200,
+        clob_context=reminder,
+        lookup_context=lookup_context,
+        lookup_prompt="Use the lookup slice and name one exact path.",
+    )
+    request = smoke._request_report(messages, model="fake", think=False, last_user_message="Use the lookup slice and name one exact path.")
+
+    assert request["input_chars"] < 6000
+    assert "deliberately long first response" in request["request_text"]
+    assert request["request_text"].count("deliberately long first response") < 15
+    assert clob["payload"]["tree_text"] not in request["request_text"]
 
 
 def test_offline_clob_v2_smoke_report_uses_saved_clob(tmp_path: Path):

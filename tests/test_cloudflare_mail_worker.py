@@ -62,6 +62,8 @@ def test_compose_is_self_contained_and_does_not_publish_raw_mail_ports() -> None
     assert "ports:" not in compose
     assert ":25:25" not in compose
     assert "mail-ingest-mailboxes:/var/mail" in compose
+    assert "Host(`mail-ingest.greatlibrary.io`)" in compose
+    assert "traefik.http.services.greatlibrary-io-mail-ingest.loadbalancer.server.port=8080" in compose
 
 
 def test_ingest_app_compiles_and_contains_maildir_delivery(tmp_path: Path) -> None:
@@ -234,3 +236,98 @@ def test_prepare_rejects_overlapping_forward_and_drop_routes(tmp_path: Path) -> 
     ])
 
     assert rc == 2
+
+
+def test_contract_round_trip_reconstructs_plan_and_secret(tmp_path: Path) -> None:
+    module = _load_module()
+    plan = module.build_plan(
+        domain="greatlibrary.io",
+        ingest_host="mail-ingest.greatlibrary.io",
+        worker_name="greatlibrary-mail-ingest",
+        service_name="greatlibrary-mail-ingest",
+        coolify_url="http://144.126.212.9:8000/projects",
+    )
+    routing = module.build_routing_contract(
+        domain=plan.domain,
+        worker_name=plan.worker_name,
+        forwards=(("johnrraymond", "johnrraymondesq@gmail.com"),),
+        drops=("info",),
+        catch_all_to_worker=True,
+    )
+
+    module.write_prepare_outputs(plan, tmp_path, routing=routing, secret="stage-two-test-secret-value")
+
+    contract, contract_dir = module.load_mail_worker_contract(tmp_path / "mail-worker-contract.json")
+    reconstructed = module.plan_from_contract(contract)
+    secret, source, secret_path = module.resolve_contract_secret(contract, contract_dir)
+
+    assert reconstructed.domain == "greatlibrary.io"
+    assert reconstructed.ingest_host == "mail-ingest.greatlibrary.io"
+    assert reconstructed.worker_name == "greatlibrary-mail-ingest"
+    assert reconstructed.service_name == "greatlibrary-mail-ingest"
+    assert reconstructed.coolify_url == "http://144.126.212.9:8000"
+    assert secret == "stage-two-test-secret-value"
+    assert source == "contract:secrets/mail_ingest_secret"
+    assert secret_path == tmp_path / "secrets" / "mail_ingest_secret"
+
+
+def test_coolify_apply_from_contract_dry_run_injects_and_redacts_secret(tmp_path: Path) -> None:
+    module = _load_module()
+    plan = module.build_plan(
+        domain="greatlibrary.io",
+        ingest_host="mail-ingest.greatlibrary.io",
+        worker_name="greatlibrary-mail-ingest",
+        service_name="greatlibrary-mail-ingest",
+        coolify_url="http://144.126.212.9:8000/projects",
+    )
+    routing = module.build_routing_contract(
+        domain=plan.domain,
+        worker_name=plan.worker_name,
+        forwards=(("johnrraymond", "johnrraymondesq@gmail.com"),),
+        drops=("info",),
+        catch_all_to_worker=True,
+    )
+    secret = "stage-two-super-secret-value-that-must-not-print"
+    module.write_prepare_outputs(plan, tmp_path, routing=routing, secret=secret)
+
+    args = module.parse_args([
+        "coolify-apply",
+        "--contract", str(tmp_path / "mail-worker-contract.json"),
+        "--coolify-token-env", "MAIN_COMPUTER_COOLIFY_TOKEN",
+        "--coolify-environment", "mail",
+        "--dry-run",
+    ])
+    result = module.coolify_apply_from_contract(args)
+
+    assert result["ok"] is True
+    assert result["domain"] == "greatlibrary.io"
+    assert result["secret_source"] == "contract:secrets/mail_ingest_secret"
+    assert result["coolify_service_name"] == "greatlibrary-mail-ingest"
+    sync_result = result["phases"][1]["result"]
+    assert sync_result["dry_run"] is True
+    assert sync_result["secret_injected"] is True
+    assert secret not in json.dumps(result)
+    assert "<redacted:MAIL_INGEST_SECRET>" in sync_result["compose"]
+    assert "MAIL_INGEST_SECRET:" in sync_result["compose"]
+    assert "Host(`mail-ingest.greatlibrary.io`)" in sync_result["compose"]
+    assert sync_result["coolify_url"] == "http://144.126.212.9:8000"
+
+
+def test_coolify_apply_action_can_parse_without_domain(tmp_path: Path) -> None:
+    module = _load_module()
+
+    args = module.parse_args([
+        "coolify-apply",
+        "--contract", str(tmp_path / "mail-worker-contract.json"),
+        "--coolify-token-env", "MAIN_COMPUTER_COOLIFY_TOKEN",
+        "--coolify-project-name", "mail",
+        "--coolify-environment", "production",
+        "--coolify-service-name", "greatlibrary-mail-ingest",
+        "--dry-run",
+    ])
+
+    assert args.action == "coolify-apply"
+    assert args.contract.endswith("mail-worker-contract.json")
+    assert args.domain == ""
+    assert args.coolify_project_name == "mail"
+    assert args.coolify_environment == "production"
