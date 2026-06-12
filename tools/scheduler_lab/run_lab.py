@@ -105,6 +105,27 @@ class WorktimeDistribution:
     source: str
 
 
+DEFAULT_LAB_MIN_DURATION_SECONDS = 900.0
+
+
+@dataclass(frozen=True)
+class LabDurationPlan:
+    """Resolved scheduler-lab observation duration.
+
+    Explicit CLI and environment duration values are honored exactly.  When no
+    duration is configured, the lab derives a conservative observation window
+    from --worktime and still enforces a 15 minute minimum so long mock results
+    can be observed instead of silently using the old short smoke-test default.
+    """
+
+    requested_seconds: float
+    source: str
+    worktime_mu_seconds: float | None = None
+    worktime_sigma_seconds: float | None = None
+    worktime_derived_seconds: float | None = None
+    default_min_seconds: float = DEFAULT_LAB_MIN_DURATION_SECONDS
+
+
 def _parse_seconds_number(raw: str, *, label: str) -> float:
     text = str(raw).strip().lower().replace("_", "")
     for suffix in ("seconds", "second", "secs", "sec", "s"):
@@ -179,6 +200,95 @@ def parse_worktime_spec(value: Any) -> WorktimeDistribution | None:
     if mean <= 0:
         raise ValueError("worktime mean must be > 0 seconds")
     return WorktimeDistribution(mean_seconds=mean, sigma_seconds=sigma, source=text)
+
+
+def _argv_has_option(argv: Sequence[str], option: str) -> bool:
+    prefix = option + "="
+    return any(token == option or token.startswith(prefix) for token in argv)
+
+
+def resolve_lab_duration(args: argparse.Namespace, *, raw_argv: Sequence[str]) -> LabDurationPlan:
+    """Resolve the authoritative lab observation duration.
+
+    Precedence:
+    1. explicit --duration-seconds
+    2. LAB_DURATION_SECONDS
+    3. max(15 minutes, 3 * worktime_mu + worktime_sigma)
+    4. 15 minute minimum
+    """
+
+    if _argv_has_option(raw_argv, "--duration-seconds"):
+        requested = float(args.duration_seconds)
+        source = "explicit_cli"
+        worktime_distribution = getattr(args, "worktime_distribution", None)
+    else:
+        env_value = os.environ.get("LAB_DURATION_SECONDS")
+        worktime_distribution = getattr(args, "worktime_distribution", None)
+        if env_value is not None and str(env_value).strip() != "":
+            requested = _parse_seconds_number(str(env_value), label="LAB_DURATION_SECONDS")
+            source = "env"
+        elif worktime_distribution is not None:
+            derived = (3.0 * float(worktime_distribution.mean_seconds)) + float(worktime_distribution.sigma_seconds)
+            requested = max(DEFAULT_LAB_MIN_DURATION_SECONDS, derived)
+            return LabDurationPlan(
+                requested_seconds=round(requested, 3),
+                source="worktime_derived",
+                worktime_mu_seconds=round(float(worktime_distribution.mean_seconds), 3),
+                worktime_sigma_seconds=round(float(worktime_distribution.sigma_seconds), 3),
+                worktime_derived_seconds=round(derived, 3),
+            )
+        else:
+            requested = DEFAULT_LAB_MIN_DURATION_SECONDS
+            source = "default_minimum"
+
+    if requested <= 0:
+        raise SystemExit("--duration-seconds/LAB_DURATION_SECONDS must be > 0")
+    mu_seconds = None
+    sigma_seconds = None
+    derived_seconds = None
+    if worktime_distribution is not None:
+        mu_seconds = round(float(worktime_distribution.mean_seconds), 3)
+        sigma_seconds = round(float(worktime_distribution.sigma_seconds), 3)
+        derived_seconds = round((3.0 * float(worktime_distribution.mean_seconds)) + float(worktime_distribution.sigma_seconds), 3)
+    return LabDurationPlan(
+        requested_seconds=round(float(requested), 3),
+        source=source,
+        worktime_mu_seconds=mu_seconds,
+        worktime_sigma_seconds=sigma_seconds,
+        worktime_derived_seconds=derived_seconds,
+    )
+
+
+def apply_lab_duration_plan(args: argparse.Namespace, plan: LabDurationPlan, *, raw_argv: Sequence[str]) -> None:
+    """Attach duration metadata and keep b2b self-termination behind the run window by default."""
+
+    args.duration_seconds = float(plan.requested_seconds)
+    args.duration_seconds_requested = float(plan.requested_seconds)
+    args.duration_seconds_source = plan.source
+    args.worktime_mu_seconds = plan.worktime_mu_seconds
+    args.worktime_sigma_seconds = plan.worktime_sigma_seconds
+    args.worktime_derived_seconds = plan.worktime_derived_seconds
+    args.duration_seconds_default_minimum = float(plan.default_min_seconds)
+
+    forced_alive_explicit = _argv_has_option(raw_argv, "--forced-alive")
+    forced_alive_env = os.environ.get("FORCED_ALIVE_SECONDS")
+    if not forced_alive_explicit and (forced_alive_env is None or str(forced_alive_env).strip() == ""):
+        args.forced_alive = float(plan.requested_seconds)
+        args.forced_alive_source = "duration_window_default"
+    else:
+        args.forced_alive_source = "explicit_cli" if forced_alive_explicit else "env"
+
+
+def lab_duration_metadata(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "duration_seconds_requested": round(float(getattr(args, "duration_seconds_requested", getattr(args, "duration_seconds", 0.0)) or 0.0), 3),
+        "duration_seconds_source": str(getattr(args, "duration_seconds_source", "unknown") or "unknown"),
+        "duration_seconds_default_minimum": round(float(getattr(args, "duration_seconds_default_minimum", DEFAULT_LAB_MIN_DURATION_SECONDS) or 0.0), 3),
+        "worktime_mu_seconds": getattr(args, "worktime_mu_seconds", None),
+        "worktime_sigma_seconds": getattr(args, "worktime_sigma_seconds", None),
+        "worktime_derived_seconds": getattr(args, "worktime_derived_seconds", None),
+        "forced_alive_source": str(getattr(args, "forced_alive_source", "unknown") or "unknown"),
+    }
 
 
 
@@ -626,6 +736,66 @@ def _response_identity_fields(payload: dict[str, Any]) -> dict[str, Any]:
         if lease.get("worker_id") is not None:
             fields["worker_id"] = lease.get("worker_id")
     return fields
+
+
+def _request_response_state(event: dict[str, Any]) -> str:
+    state = event.get("request_state")
+    if state is None:
+        response_summary = event.get("response_summary")
+        if isinstance(response_summary, dict):
+            request = response_summary.get("request")
+            if isinstance(request, dict):
+                state = request.get("state")
+    return str(state or "").strip().lower()
+
+
+def _request_response_error(event: dict[str, Any]) -> str:
+    response_summary = event.get("response_summary")
+    if isinstance(response_summary, dict):
+        request = response_summary.get("request")
+        if isinstance(request, dict) and request.get("error") is not None:
+            return str(request.get("error") or "")
+        if response_summary.get("error") is not None:
+            return str(response_summary.get("error") or "")
+    return ""
+
+
+def _request_response_is_accepted(event: dict[str, Any]) -> bool:
+    """Return true only when the hub accepted the request as live scheduler work.
+
+    Some hub responses use HTTP 200 for a request object whose state is "failed"
+    (for example insufficient-credit submissions).  Those are useful HTTP
+    responses, but they are not accepted/open scheduler requests.
+    """
+
+    state = _request_response_state(event)
+    if state:
+        return state in {"accepted", "submitted", "queued", "pending", "open"}
+    return bool(event.get("ok"))
+
+
+def _request_response_is_failed(event: dict[str, Any]) -> bool:
+    state = _request_response_state(event)
+    if state:
+        return state in {"failed", "rejected", "cancelled", "canceled", "error"}
+    return False
+
+
+def _request_response_is_insufficient_credit(event: dict[str, Any]) -> bool:
+    error = _request_response_error(event).lower()
+    if "insufficient" in error and "credit" in error:
+        return True
+    response_summary = event.get("response_summary")
+    if isinstance(response_summary, dict):
+        try:
+            status = int(event.get("status"))
+        except Exception:
+            status = 0
+        return is_insufficient_credit_response(
+            HubHttpResponse(ok=False, status=status, payload=response_summary, elapsed_ms=0.0)
+        )
+    return False
+
 
 
 def node_account_id(node: dict[str, Any], args: argparse.Namespace) -> str:
@@ -1406,6 +1576,144 @@ def collect_process_phase_counts(
     return process_phase_count_summary(phase_nodes)
 
 
+def _process_event_files_unread_bytes(event_paths: Sequence[Path], offsets: dict[Path, int]) -> int:
+    unread = 0
+    for events_path in event_paths:
+        try:
+            size = events_path.stat().st_size
+        except OSError:
+            continue
+        unread += max(0, int(size) - int(offsets.get(events_path, 0) or 0))
+    return unread
+
+
+def _wait_for_process_event_files_quiet(
+    event_paths: Sequence[Path],
+    *,
+    quiet_seconds: float,
+    max_seconds: float,
+) -> dict[str, Any]:
+    """Wait until child event files stop changing for a short quiet window."""
+
+    quiet_seconds = max(0.0, float(quiet_seconds or 0.0))
+    max_seconds = max(quiet_seconds, float(max_seconds or quiet_seconds or 0.0))
+    started = time.monotonic()
+    deadline = started + max_seconds
+    last_signature: tuple[tuple[str, int, int], ...] | None = None
+    stable_since = started
+    checks = 0
+
+    while True:
+        checks += 1
+        signature: list[tuple[str, int, int]] = []
+        for events_path in event_paths:
+            try:
+                stat = events_path.stat()
+                signature.append((str(events_path), int(stat.st_size), int(stat.st_mtime_ns)))
+            except OSError:
+                signature.append((str(events_path), -1, -1))
+        current = tuple(signature)
+        now = time.monotonic()
+        if current != last_signature:
+            last_signature = current
+            stable_since = now
+        if quiet_seconds <= 0.0 or now - stable_since >= quiet_seconds or now >= deadline:
+            return {
+                "final_drain_quiet_seconds": round(quiet_seconds, 3),
+                "final_drain_max_seconds": round(max_seconds, 3),
+                "final_drain_elapsed_seconds": round(now - started, 3),
+                "final_drain_checks": checks,
+                "final_drain_timed_out": bool(quiet_seconds > 0.0 and now >= deadline and now - stable_since < quiet_seconds),
+            }
+        time.sleep(min(0.05, max(0.0, deadline - now)))
+
+
+def collect_final_process_phase_counts(
+    output_dir: Path,
+    offsets: dict[Path, int],
+    phase_nodes: dict[str, set[str]],
+    rollup_stats: dict[str, Any],
+    *,
+    event_paths: Sequence[Path],
+    scan_cursor_state: dict[str, Any],
+    scan_state: dict[str, Any],
+    drain_seconds: float = 0.5,
+    drain_max_seconds: float = 2.0,
+    max_passes: int = 3,
+) -> dict[str, int]:
+    """Drain child event files and do an authoritative unlimited final scan.
+
+    The normal runtime scanner is incremental and may run while child processes
+    are still flushing JSONL. The final rollup must be stricter: after every
+    child exits, wait for a quiet filesystem window, scan without time/per-file
+    limits, and repeat if that scan reveals bytes that appeared late.
+    """
+
+    max_passes = max(1, int(max_passes or 1))
+    aggregate_events = 0
+    aggregate_elapsed = 0.0
+    aggregate_limited = 0
+    aggregate_scanned = 0
+    drain_state: dict[str, Any] = {}
+    latest_state: dict[str, Any] = {}
+    phase_counts = process_phase_count_summary(phase_nodes)
+
+    for pass_index in range(max_passes):
+        drain_state = _wait_for_process_event_files_quiet(
+            event_paths,
+            quiet_seconds=drain_seconds,
+            max_seconds=drain_max_seconds,
+        )
+        latest_state = {}
+        phase_counts = collect_process_phase_counts(
+            output_dir,
+            offsets,
+            phase_nodes,
+            rollup_stats,
+            event_paths=event_paths,
+            max_scan_seconds=0.0,
+            max_events_per_file=0,
+            scan_cursor_state=scan_cursor_state,
+            scan_state=latest_state,
+        )
+        aggregate_events += int(latest_state.get("rollup_events_scanned", 0) or 0)
+        aggregate_elapsed += float(latest_state.get("rollup_scan_elapsed_seconds", 0.0) or 0.0)
+        aggregate_limited += int(latest_state.get("rollup_files_limited", 0) or 0)
+        aggregate_scanned = max(aggregate_scanned, int(latest_state.get("rollup_files_scanned", 0) or 0))
+        unread_bytes = _process_event_files_unread_bytes(event_paths, offsets)
+        if unread_bytes <= 0:
+            break
+
+    unread_bytes = _process_event_files_unread_bytes(event_paths, offsets)
+    scan_state.clear()
+    scan_state.update(latest_state)
+    scan_state.update(drain_state)
+    scan_state.update(
+        {
+            "rollup_events_scanned": int(aggregate_events),
+            "rollup_files_scanned": int(aggregate_scanned),
+            "rollup_files_limited": int(aggregate_limited),
+            "rollup_scan_elapsed_seconds": round(aggregate_elapsed, 3),
+            "final_drain_passes": int(pass_index + 1),
+            "final_drain_events_scanned": int(aggregate_events),
+            "final_unread_event_bytes": int(unread_bytes),
+        }
+    )
+    if unread_bytes > 0:
+        reason = "unread_child_event_bytes_after_drain"
+        existing_reason = str(scan_state.get("rollup_scan_reason") or "")
+        combined_reason = ",".join(part for part in (existing_reason, reason) if part)
+        scan_state.update(
+            {
+                "rollup_scan_truncated": True,
+                "rollup_scan_reason": combined_reason,
+                "rollup_partial": True,
+                "rollup_partial_reason": combined_reason,
+            }
+        )
+    return phase_counts
+
+
 def process_phase_count_summary(phase_nodes: dict[str, set[str]]) -> dict[str, int]:
     return {counter: len(phase_nodes.get(counter, set())) for counter in PROCESS_PHASE_COUNTERS}
 
@@ -1547,9 +1855,21 @@ class ProcessLifecycleLedger:
             if event.get("request_id") is not None:
                 state["request_id"] = event.get("request_id")
                 self.request_id_to_key[str(event.get("request_id"))] = key
-            if ok:
+            try:
+                status_int = int(status)
+            except Exception:
+                status_int = None
+            if status_int == 0:
+                state.setdefault("transport_failed_at", event_ts)
+                state["status"] = "transport_failed"
+            elif _request_response_is_accepted(event):
                 state.setdefault("accepted_at", event_ts)
                 state["status"] = "accepted"
+            elif _request_response_is_failed(event):
+                state.setdefault("failed_at", event_ts)
+                state["request_failure_state"] = _request_response_state(event)
+                state["request_failure_error"] = _request_response_error(event)
+                state["status"] = "failed"
             else:
                 state.setdefault("rejected_at", event_ts)
                 state["status"] = "rejected"
@@ -1640,6 +1960,8 @@ class ProcessLifecycleLedger:
             "requests_attempted_total": 0,
             "requests_accepted_total": 0,
             "requests_rejected_total": 0,
+            "requests_failed_total": 0,
+            "requests_transport_failed_total": 0,
             "requests_leased_total": 0,
             "requests_execution_started_total": 0,
             "requests_execution_finished_total": 0,
@@ -1655,6 +1977,10 @@ class ProcessLifecycleLedger:
                 totals["requests_accepted_total"] += 1
             if state.get("rejected_at") is not None:
                 totals["requests_rejected_total"] += 1
+            if state.get("failed_at") is not None:
+                totals["requests_failed_total"] += 1
+            if state.get("transport_failed_at") is not None:
+                totals["requests_transport_failed_total"] += 1
             if state.get("leased_at") is not None or state.get("lease_acquired_at") is not None:
                 totals["requests_leased_total"] += 1
             if state.get("execution_started_at") is not None:
@@ -1674,7 +2000,7 @@ class ProcessLifecycleLedger:
             if isinstance(leased, (int, float)) and settled is None:
                 oldest_leased_age = max(oldest_leased_age, now - float(leased))
 
-        open_requests = max(0, totals["requests_accepted_total"] - totals["requests_settled_total"] - totals["requests_rejected_total"])
+        open_requests = max(0, totals["requests_accepted_total"] - totals["requests_settled_total"])
         leased_open = max(0, totals["requests_leased_total"] - totals["requests_settled_total"])
         executing_open = max(0, totals["requests_execution_started_total"] - totals["requests_execution_finished_total"])
         deltas: dict[str, int] = {}
@@ -1844,7 +2170,12 @@ class BehaviorLedger:
                 tats.append("positive.http_response")
 
         if name.startswith("requester.request.") and status_int is not None and status_int != 0:
-            tats.append("positive.request_accepted" if ok else "scheduler.request_rejected")
+            if _request_response_is_accepted(event):
+                tats.append("positive.request_accepted")
+            elif _request_response_is_insufficient_credit(event):
+                tats.append("economic.insufficient_credit")
+            elif _request_response_is_failed(event) or not ok:
+                tats.append("scheduler.request_rejected")
         if name == "worker.poll" and ProcessLifecycleLedger._has_response_lease(event):
             tats.append("positive.lease_acquired")
         if name == "worker.result.submitted" and status_int is not None and status_int != 0:
@@ -2043,6 +2374,13 @@ PROCESS_ROLLUP_CSV_COLUMNS = (
     "rollup_scope",
     "rollup_source",
     "elapsed_seconds",
+    "duration_seconds_requested",
+    "duration_seconds_source",
+    "duration_seconds_default_minimum",
+    "worktime_mu_seconds",
+    "worktime_sigma_seconds",
+    "worktime_derived_seconds",
+    "forced_alive_source",
     "node_count",
     "nodes_started",
     "nodes_alive",
@@ -2061,6 +2399,14 @@ PROCESS_ROLLUP_CSV_COLUMNS = (
     "rollup_scan_next_index",
     "rollup_events_per_file_limit",
     "rollup_scan_elapsed_seconds",
+    "final_drain_quiet_seconds",
+    "final_drain_max_seconds",
+    "final_drain_elapsed_seconds",
+    "final_drain_checks",
+    "final_drain_timed_out",
+    "final_drain_passes",
+    "final_drain_events_scanned",
+    "final_unread_event_bytes",
     "transport_failures",
     "market_http_responses",
     "transport_failure_ratio",
@@ -2072,6 +2418,8 @@ PROCESS_ROLLUP_CSV_COLUMNS = (
     "requests_attempted_total",
     "requests_accepted_total",
     "requests_rejected_total",
+    "requests_failed_total",
+    "requests_transport_failed_total",
     "requests_leased_total",
     "requests_execution_started_total",
     "requests_execution_finished_total",
@@ -2081,6 +2429,8 @@ PROCESS_ROLLUP_CSV_COLUMNS = (
     "leased_open_total",
     "executing_open_total",
     "requests_accepted_delta",
+    "requests_failed_delta",
+    "requests_transport_failed_delta",
     "requests_leased_delta",
     "requests_settled_delta",
     "open_requests_delta",
@@ -2458,6 +2808,8 @@ def build_node_process_command(args: argparse.Namespace, *, runtime_node_list: P
         str(float(args.lease_seconds)),
         "--worker-poll-interval-ms",
         str(float(args.worker_poll_interval_ms)),
+        "--worker-register-retry-interval-ms",
+        str(float(args.worker_register_retry_interval_ms)),
         "--max-request-interval-ms",
         str(float(args.max_request_interval_ms)),
         "--http-timeout-seconds",
@@ -2529,6 +2881,7 @@ def run_process_mode(args: argparse.Namespace) -> int:
             "warm": str(getattr(args, "warm", "") or ""),
             "b2bfailures": int(getattr(args, "b2bfailures", 0) or 0),
             "forced_alive_seconds": float(getattr(args, "forced_alive", 0.0) or 0.0),
+            **lab_duration_metadata(args),
             "funded_percent": float(getattr(args, "funded", 0.0) or 0.0),
             "assumed_prefunded_nodes": assumed_prefunded_count,
             "execution_mode": "process",
@@ -2544,6 +2897,8 @@ def run_process_mode(args: argparse.Namespace) -> int:
         f"warm={str(getattr(args, 'warm', '') or 'none')} "
         f"b2bfailures={int(getattr(args, 'b2bfailures', 0) or 0)} "
         f"forced_alive={float(getattr(args, 'forced_alive', 0.0) or 0.0):g} "
+        f"duration={float(getattr(args, 'duration_seconds', 0.0) or 0.0):g}s "
+        f"duration_source={str(getattr(args, 'duration_seconds_source', 'unknown') or 'unknown')} "
         f"rollups={rollups_jsonl}",
         flush=True,
     )
@@ -2576,6 +2931,7 @@ def run_process_mode(args: argparse.Namespace) -> int:
             rollup_stats=rollup_stats,
             event_name=event_name,
         )
+        rollup.update(lab_duration_metadata(args))
         if scan_state:
             rollup.update(scan_state)
         if rollup.get("rollup_partial") or rollup.get("rollup_scan_truncated"):
@@ -2601,6 +2957,7 @@ def run_process_mode(args: argparse.Namespace) -> int:
             children=children,
             event_name=event_name,
         )
+        rollup.update(lab_duration_metadata(args))
         write_process_rollup_files(
             rollup,
             rollups_jsonl=rollups_jsonl,
@@ -2701,8 +3058,9 @@ def run_process_mode(args: argparse.Namespace) -> int:
                 rollup = emit_rollup(scan_state=scan_state)
                 print(format_process_rollup(rollup), flush=True)
                 next_parent_rollup_at = now + parent_rollup_interval
-            if all(process.poll() is not None for _node, process in children):
-                break
+            # The lab duration is the authority.  Child self-termination is a
+            # signal, not a parent-level stop condition; keep the parent alive
+            # until the requested observation window expires or it is interrupted.
             time.sleep(0.25)
     except KeyboardInterrupt:
         emit_parent({"event": "lab.process_parent.interrupted", "run_id": run_id})
@@ -2719,16 +3077,17 @@ def run_process_mode(args: argparse.Namespace) -> int:
                 except subprocess.TimeoutExpired:
                     process.kill()
         final_scan_state: dict[str, Any] = {}
-        phase_counts = collect_process_phase_counts(
+        phase_counts = collect_final_process_phase_counts(
             output_dir,
             event_offsets,
             phase_nodes,
             rollup_stats,
             event_paths=child_event_paths,
-            max_scan_seconds=0.0,
-            max_events_per_file=0,
             scan_cursor_state=scan_cursor_state,
             scan_state=final_scan_state,
+            drain_seconds=float(getattr(args, "parent_final_drain_seconds", 0.5) or 0.0),
+            drain_max_seconds=float(getattr(args, "parent_final_drain_max_seconds", 2.0) or 0.0),
+            max_passes=int(getattr(args, "parent_final_drain_passes", 3) or 1),
         )
         if parent_status_interval > 0.0:
             emit_parent({"event": "lab.process_parent.phase_counts.final", "run_id": run_id, **phase_counts, **final_scan_state})
@@ -2755,6 +3114,7 @@ def run_process_mode(args: argparse.Namespace) -> int:
             "exit_code_75_total": counts.get("75", 0),
             "self_terminated_b2bfailures": int(phase_counts.get("self_terminated_b2bfailures", 0) or 0),
             "duration_seconds": round(time.monotonic() - started_at, 3),
+            **lab_duration_metadata(args),
             "runtime_node_list": str(runtime_node_list),
             "parent_events": str(parent_events),
             "rollups_jsonl": str(rollups_jsonl),
@@ -2798,6 +3158,7 @@ async def run(args: argparse.Namespace) -> int:
             "hub_base_urls": normalize_hub_base_urls(args.hub_base_urls, args.hub_base_url) if args.hub_base_urls else [args.hub_base_url],
             "node_list": str(node_list_path),
             "worktime": str(args.worktime or ""),
+            **lab_duration_metadata(args),
             "funded_percent": float(getattr(args, "funded", 0.0) or 0.0),
             "assumed_prefunded_nodes": assumed_prefunded_count,
             "request_startup_mode": effective_request_startup_mode(args),
@@ -2834,7 +3195,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--generate-node-list", action="store_true", default=os.environ.get("GENERATE_NODE_LIST", "1").lower() in {"1", "true", "yes", "on"})
     parser.add_argument("--output-dir", default=os.environ.get("LAB_OUTPUT_DIR", "/lab-output"))
     parser.add_argument("--run-id", default=os.environ.get("LAB_RUN_ID", ""), help=argparse.SUPPRESS)
-    parser.add_argument("--duration-seconds", type=float, default=float(os.environ.get("LAB_DURATION_SECONDS", "300")))
+    parser.add_argument(
+        "--duration-seconds",
+        type=float,
+        default=None,
+        help="Authoritative lab observation window in seconds. If omitted, LAB_DURATION_SECONDS wins; otherwise the lab derives max(900, 3*worktime_mu + worktime_sigma).",
+    )
     parser.add_argument("--total", type=int, default=env_optional_int("LAB_TOTAL"))
     parser.add_argument("--nodes", type=int, default=env_optional_int("LAB_NODES"), help="Total generated lab nodes. Overrides --total when set.")
     parser.add_argument("--workers", type=int, default=env_optional_int("LAB_WORKERS"))
@@ -2872,6 +3238,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--enable-local-busy", dest="enable_local_busy", action="store_true", default=env_flag("LAB_ENABLE_LOCAL_BUSY", True))
     parser.add_argument("--disable-local-busy", dest="enable_local_busy", action="store_false")
     parser.add_argument("--worker-poll-interval-ms", type=float, default=float(os.environ.get("WORKER_POLL_INTERVAL_MS", "500")))
+    parser.add_argument("--worker-register-retry-interval-ms", type=float, default=float(os.environ.get("WORKER_REGISTER_RETRY_INTERVAL_MS", "1000")), help="Milliseconds between non-blocking worker registration retry attempts after the first failed registration response.")
     parser.add_argument("--lease-seconds", type=float, default=float(os.environ.get("LEASE_SECONDS", "45")))
     parser.add_argument(
         "--worktime",
@@ -2887,7 +3254,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Optional node warm-up delay distribution in seconds before first hub contact, e.g. 2mu,1sigma.",
     )
     parser.add_argument("--b2bfailures", type=int, default=int(os.environ.get("B2B_FAILURES", "10")), help="Consecutive transport failures before a node self-terminates after --forced-alive has elapsed. 0 disables.")
-    parser.add_argument("--forced-alive", type=float, default=float(os.environ.get("FORCED_ALIVE_SECONDS", "0")), help="Seconds a node must stay alive before b2b transport failures can self-terminate it.")
+    parser.add_argument("--forced-alive", type=float, default=float(os.environ.get("FORCED_ALIVE_SECONDS", "30")), help="Seconds a node must stay alive before b2b transport failures can self-terminate it. Defaults to 30s so transport storms do not end observation before nodes enter runtime.")
     parser.add_argument("--http-timeout-seconds", type=float, default=float(os.environ.get("HTTP_TIMEOUT_SECONDS", "1")))
     parser.add_argument("--http-retries", type=int, default=int(os.environ.get("HTTP_RETRIES", "1")))
     parser.add_argument(
@@ -2920,11 +3287,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=int(os.environ.get("LAB_PARENT_ROLLUP_SCAN_EVENTS_PER_FILE", "256")),
         help="Maximum new child events to read from one node event file per rollup sample before rotating to the next file.",
     )
+    parser.add_argument(
+        "--parent-final-drain-seconds",
+        type=float,
+        default=float(os.environ.get("LAB_PARENT_FINAL_DRAIN_SECONDS", "0.5")),
+        help="Quiet filesystem window after all process-mode children exit before the authoritative final rollup scan.",
+    )
+    parser.add_argument(
+        "--parent-final-drain-max-seconds",
+        type=float,
+        default=float(os.environ.get("LAB_PARENT_FINAL_DRAIN_MAX_SECONDS", "2.0")),
+        help="Maximum seconds to spend waiting for event files to become quiet before the final rollup scan.",
+    )
+    parser.add_argument(
+        "--parent-final-drain-passes",
+        type=int,
+        default=int(os.environ.get("LAB_PARENT_FINAL_DRAIN_PASSES", "3")),
+        help="Maximum full unlimited final scan passes if child event files still have unread bytes.",
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_arg_parser().parse_args(list(argv) if argv is not None else None)
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
+    args = build_arg_parser().parse_args(raw_argv)
     if args.hub_base_urls:
         normalized_urls = normalize_hub_base_urls(args.hub_base_urls, args.hub_base_url)
         args.hub_base_urls = ",".join(normalized_urls)
@@ -2933,11 +3319,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("--b2bfailures must be >= 0")
     if args.forced_alive < 0:
         raise SystemExit("--forced-alive must be >= 0")
+    if args.parent_final_drain_seconds < 0:
+        raise SystemExit("--parent-final-drain-seconds must be >= 0")
+    if args.parent_final_drain_max_seconds < 0:
+        raise SystemExit("--parent-final-drain-max-seconds must be >= 0")
+    if args.parent_final_drain_passes <= 0:
+        raise SystemExit("--parent-final-drain-passes must be > 0")
     try:
         args.worktime_distribution = parse_worktime_spec(args.worktime)
         args.warm_distribution = parse_warm_spec(args.warm)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    duration_plan = resolve_lab_duration(args, raw_argv=raw_argv)
+    apply_lab_duration_plan(args, duration_plan, raw_argv=raw_argv)
     try:
         if args.execution_mode == "process":
             return run_process_mode(args)

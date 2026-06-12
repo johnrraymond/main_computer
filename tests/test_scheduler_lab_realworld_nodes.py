@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import csv
 import json
 import random
+import threading
 import time
 from argparse import Namespace
 
@@ -9,9 +11,11 @@ from tools.scheduler_lab.hub_client import HubClient, HubHttpResponse
 from tools.scheduler_lab.node_list import SCHEMA, build_document, build_nodes, normalize_hub_base_urls
 from tools.scheduler_lab.run_lab import (
     BehaviorLedger,
+    ProcessLifecycleLedger,
     build_arg_parser,
     build_process_launch_progress_rollup,
     build_process_rollup,
+    collect_final_process_phase_counts,
     collect_process_phase_counts,
     effective_request_startup_mode,
     format_process_launch_progress,
@@ -24,6 +28,8 @@ from tools.scheduler_lab.run_lab import (
     parse_funded_percent,
     parse_warm_spec,
     parse_worktime_spec,
+    resolve_lab_duration,
+    apply_lab_duration_plan,
     new_process_rollup_stats,
     process_child_event_path,
     process_parent_runtime_due_flags,
@@ -205,6 +211,91 @@ def test_warm_parser_allows_zero_for_immediate_wall() -> None:
     assert warm is not None
     assert warm.mean_seconds == 0
     assert warm.sigma_seconds == 0
+
+
+def test_lab_duration_explicit_cli_wins_over_worktime(monkeypatch) -> None:
+    monkeypatch.delenv("LAB_DURATION_SECONDS", raising=False)
+    monkeypatch.delenv("FORCED_ALIVE_SECONDS", raising=False)
+
+    raw_argv = ["--duration-seconds", "42", "--worktime", "500mu,120sigma"]
+    args = build_arg_parser().parse_args(raw_argv)
+    args.worktime_distribution = parse_worktime_spec(args.worktime)
+
+    plan = resolve_lab_duration(args, raw_argv=raw_argv)
+    apply_lab_duration_plan(args, plan, raw_argv=raw_argv)
+
+    assert plan.source == "explicit_cli"
+    assert args.duration_seconds == 42.0
+    assert args.worktime_derived_seconds == 1620.0
+    assert args.forced_alive == 42.0
+    assert args.forced_alive_source == "duration_window_default"
+
+
+def test_lab_duration_env_wins_when_cli_duration_omitted(monkeypatch) -> None:
+    monkeypatch.setenv("LAB_DURATION_SECONDS", "77")
+    monkeypatch.delenv("FORCED_ALIVE_SECONDS", raising=False)
+
+    raw_argv = ["--worktime", "500mu,120sigma"]
+    args = build_arg_parser().parse_args(raw_argv)
+    args.worktime_distribution = parse_worktime_spec(args.worktime)
+
+    plan = resolve_lab_duration(args, raw_argv=raw_argv)
+    apply_lab_duration_plan(args, plan, raw_argv=raw_argv)
+
+    assert plan.source == "env"
+    assert args.duration_seconds == 77.0
+    assert args.worktime_derived_seconds == 1620.0
+    assert args.forced_alive == 77.0
+
+
+def test_lab_duration_derives_from_worktime_with_15_minute_floor(monkeypatch) -> None:
+    monkeypatch.delenv("LAB_DURATION_SECONDS", raising=False)
+    monkeypatch.delenv("FORCED_ALIVE_SECONDS", raising=False)
+
+    raw_argv = ["--worktime", "100mu,30sigma"]
+    args = build_arg_parser().parse_args(raw_argv)
+    args.worktime_distribution = parse_worktime_spec(args.worktime)
+
+    plan = resolve_lab_duration(args, raw_argv=raw_argv)
+    apply_lab_duration_plan(args, plan, raw_argv=raw_argv)
+
+    assert plan.source == "worktime_derived"
+    assert plan.worktime_derived_seconds == 330.0
+    assert args.duration_seconds == 900.0
+    assert args.forced_alive == 900.0
+
+
+def test_lab_duration_derives_long_window_from_slow_worktime(monkeypatch) -> None:
+    monkeypatch.delenv("LAB_DURATION_SECONDS", raising=False)
+    monkeypatch.delenv("FORCED_ALIVE_SECONDS", raising=False)
+
+    raw_argv = ["--worktime", "500mu,120sigma"]
+    args = build_arg_parser().parse_args(raw_argv)
+    args.worktime_distribution = parse_worktime_spec(args.worktime)
+
+    plan = resolve_lab_duration(args, raw_argv=raw_argv)
+    apply_lab_duration_plan(args, plan, raw_argv=raw_argv)
+
+    assert plan.source == "worktime_derived"
+    assert plan.worktime_derived_seconds == 1620.0
+    assert args.duration_seconds == 1620.0
+    assert args.forced_alive == 1620.0
+
+
+def test_lab_duration_defaults_to_15_minutes_without_worktime(monkeypatch) -> None:
+    monkeypatch.delenv("LAB_DURATION_SECONDS", raising=False)
+    monkeypatch.delenv("FORCED_ALIVE_SECONDS", raising=False)
+
+    raw_argv: list[str] = []
+    args = build_arg_parser().parse_args(raw_argv)
+    args.worktime_distribution = parse_worktime_spec(args.worktime)
+
+    plan = resolve_lab_duration(args, raw_argv=raw_argv)
+    apply_lab_duration_plan(args, plan, raw_argv=raw_argv)
+
+    assert plan.source == "default_minimum"
+    assert args.duration_seconds == 900.0
+    assert args.forced_alive == 900.0
 
 
 def test_node_process_module_documents_b2b_immediate_retry() -> None:
@@ -414,6 +505,18 @@ def test_process_parent_rollup_files_are_written_for_experiment_timeline(tmp_pat
         phase_nodes=phase_nodes,
         rollup_stats=rollup_stats,
     )
+    rollup.update(
+        {
+            "final_drain_quiet_seconds": 0.5,
+            "final_drain_max_seconds": 2.0,
+            "final_drain_elapsed_seconds": 0.587,
+            "final_drain_checks": 8,
+            "final_drain_timed_out": False,
+            "final_drain_passes": 1,
+            "final_drain_events_scanned": 1464,
+            "final_unread_event_bytes": 0,
+        }
+    )
 
     rollups_jsonl = tmp_path / "scheduler-lab-process-rollups.jsonl"
     latest_json = tmp_path / "scheduler-lab-process-rollup-latest.json"
@@ -446,9 +549,20 @@ def test_process_parent_rollup_files_are_written_for_experiment_timeline(tmp_pat
     assert "http0=1" in formatted
     assert "transport=1" in formatted
     assert "market_http=1" in formatted
-    csv_header = rollups_csv.read_text(encoding="utf-8").splitlines()[0].split(",")
+    with rollups_csv.open(encoding="utf-8", newline="") as csv_handle:
+        rows = list(csv.DictReader(csv_handle))
+    assert rows
+    csv_header = list(rows[0].keys())
     assert "event_counts_json" in csv_header
     assert len(csv_header) == len(set(csv_header))
+    assert rows[0]["final_drain_quiet_seconds"] == "0.5"
+    assert rows[0]["final_drain_max_seconds"] == "2.0"
+    assert rows[0]["final_drain_elapsed_seconds"] == "0.587"
+    assert rows[0]["final_drain_checks"] == "8"
+    assert rows[0]["final_drain_timed_out"] == "False"
+    assert rows[0]["final_drain_passes"] == "1"
+    assert rows[0]["final_drain_events_scanned"] == "1464"
+    assert rows[0]["final_unread_event_bytes"] == "0"
 
 
 
@@ -605,6 +719,192 @@ def test_behavior_ledger_does_not_count_status_zero_request_as_scheduler_rejecti
     assert snapshot["tat_counts"] == {"transport.no_http_response": 1}
 
 
+
+def test_lifecycle_distinguishes_request_transport_failure_from_scheduler_rejection() -> None:
+    ledger = ProcessLifecycleLedger()
+
+    ledger.record(
+        {
+            "ts": "2026-06-12T19:00:00+00:00",
+            "event": "requester.request.attempted",
+            "node_id": "requester-1",
+            "requester_node_id": "requester-1",
+            "request_index": 1,
+            "lab_request_key": "requester-1-1",
+        }
+    )
+    ledger.record(
+        {
+            "ts": "2026-06-12T19:00:01+00:00",
+            "event": "requester.request.startup_surge.pre_bootstrap",
+            "node_id": "requester-1",
+            "requester_node_id": "requester-1",
+            "request_index": 1,
+            "lab_request_key": "requester-1-1",
+            "status": 0,
+            "ok": False,
+            "hub_base_url": "http://host.docker.internal:8872",
+        }
+    )
+    ledger.record(
+        {
+            "ts": "2026-06-12T19:00:02+00:00",
+            "event": "requester.request.attempted",
+            "node_id": "requester-2",
+            "requester_node_id": "requester-2",
+            "request_index": 1,
+            "lab_request_key": "requester-2-1",
+        }
+    )
+    ledger.record(
+        {
+            "ts": "2026-06-12T19:00:03+00:00",
+            "event": "requester.request.startup_surge.pre_bootstrap",
+            "node_id": "requester-2",
+            "requester_node_id": "requester-2",
+            "request_index": 1,
+            "lab_request_key": "requester-2-1",
+            "request_id": "hub-request-2",
+            "status": 200,
+            "ok": True,
+            "hub_base_url": "http://host.docker.internal:8872",
+        }
+    )
+
+    snapshot = ledger.snapshot()
+
+    assert snapshot["requests_attempted_total"] == 2
+    assert snapshot["requests_accepted_total"] == 1
+    assert snapshot["requests_rejected_total"] == 0
+    assert snapshot["requests_transport_failed_total"] == 1
+    assert snapshot["open_requests_total"] == 1
+    assert snapshot["requests_transport_failed_delta"] == 1
+
+
+def test_lifecycle_does_not_open_failed_200_request() -> None:
+    ledger = ProcessLifecycleLedger()
+    ledger.record(
+        {
+            "ts": "2026-06-12T20:33:02+00:00",
+            "event": "requester.request.attempted",
+            "node_id": "worker-0025",
+            "requester_node_id": "worker-0025",
+            "request_index": 1,
+            "lab_request_key": "worker-0025-1",
+        }
+    )
+    ledger.record(
+        {
+            "ts": "2026-06-12T20:33:03+00:00",
+            "event": "requester.request.startup_surge.pre_bootstrap",
+            "node_id": "worker-0025",
+            "requester_node_id": "worker-0025",
+            "request_index": 1,
+            "lab_request_key": "worker-0025-1",
+            "request_id": "hub-failed-request",
+            "request_state": "failed",
+            "status": 200,
+            "ok": True,
+            "hub_base_url": "http://host.docker.internal:8872",
+            "response_summary": {
+                "ok": True,
+                "request": {
+                    "request_id": "hub-failed-request",
+                    "state": "failed",
+                    "error": "Insufficient Compute Credits for account lab-account-worker-0025: 0 credits available, 1 credits required.",
+                },
+                "lease": None,
+            },
+        }
+    )
+
+    snapshot = ledger.snapshot()
+
+    assert snapshot["requests_attempted_total"] == 1
+    assert snapshot["requests_accepted_total"] == 0
+    assert snapshot["requests_failed_total"] == 1
+    assert snapshot["requests_rejected_total"] == 0
+    assert snapshot["requests_transport_failed_total"] == 0
+    assert snapshot["open_requests_total"] == 0
+    assert snapshot["requests_failed_delta"] == 1
+
+
+def test_behavior_ledger_does_not_call_failed_200_request_accepted() -> None:
+    ledger = BehaviorLedger()
+    ledger.record(
+        {
+            "ts": "2026-06-12T20:33:03+00:00",
+            "event": "requester.request.startup_surge.pre_bootstrap",
+            "node_id": "worker-0025",
+            "actor_node_id": "worker-0025",
+            "actor_account_id": "lab-account-worker-0025",
+            "requester_node_id": "worker-0025",
+            "request_index": 1,
+            "lab_request_key": "worker-0025-1",
+            "request_id": "hub-failed-request",
+            "request_state": "failed",
+            "status": 200,
+            "ok": True,
+            "hub_base_url": "http://host.docker.internal:8872",
+            "response_summary": {
+                "ok": True,
+                "request": {
+                    "request_id": "hub-failed-request",
+                    "state": "failed",
+                    "error": "Insufficient Compute Credits for account lab-account-worker-0025: 0 credits available, 1 credits required.",
+                },
+                "lease": None,
+            },
+        }
+    )
+
+    snapshot = ledger.snapshot()
+    assert snapshot["tat_counts"].get("positive.http_response") == 1
+    assert snapshot["tat_counts"].get("economic.insufficient_credit") == 1
+    assert "positive.request_accepted" not in snapshot["tat_counts"]
+    assert "scheduler.request_rejected" not in snapshot["tat_counts"]
+
+
+def test_final_process_rollup_waits_for_late_child_event_file_write(tmp_path) -> None:
+    events_path = tmp_path / "node-process-00000-late.events.jsonl"
+    offsets: dict = {}
+    phase_nodes: dict[str, set[str]] = {}
+    stats = new_process_rollup_stats()
+    scan_state: dict = {}
+    cursor: dict = {}
+
+    def write_late_event() -> None:
+        time.sleep(0.05)
+        events_path.write_text(
+            json.dumps({"event": "node.self_terminated.b2bfailures", "node_id": "late-node"}) + "\n",
+            encoding="utf-8",
+        )
+
+    writer = threading.Thread(target=write_late_event)
+    writer.start()
+    try:
+        counts = collect_final_process_phase_counts(
+            tmp_path,
+            offsets,
+            phase_nodes,
+            stats,
+            event_paths=[events_path],
+            scan_cursor_state=cursor,
+            scan_state=scan_state,
+            drain_seconds=0.1,
+            drain_max_seconds=1.0,
+            max_passes=2,
+        )
+    finally:
+        writer.join(timeout=1.0)
+
+    assert counts["self_terminated_b2bfailures"] == 1
+    assert stats["event_counts"]["node.self_terminated.b2bfailures"] == 1
+    assert scan_state["final_drain_events_scanned"] == 1
+    assert scan_state["final_unread_event_bytes"] == 0
+    assert scan_state["rollup_partial"] is False
+
+
 def test_process_rollup_scanner_unlimited_final_pass_reads_all_events(tmp_path) -> None:
     noisy = tmp_path / "node-process-00000-noisy.events.jsonl"
     noisy.write_text(
@@ -726,6 +1026,54 @@ def test_parent_status_interval_does_not_drive_rollup_scans() -> None:
     assert flags["status_due"] is True
     assert flags["rollup_due"] is True
     assert flags["scan_due"] is True
+
+
+def test_node_process_bootstrap_top_up_does_not_block_runtime_entry() -> None:
+    import inspect
+
+    from tools.scheduler_lab import node_process
+
+    source = inspect.getsource(node_process.top_up_account_to)
+
+    assert 'runner.call_once("node.funding.balance_checked"' in source
+    assert 'issue = runner.call_once(' in source
+    assert '"node.funding.issued"' in source
+    assert "node.funding.top_up_deferred.transport_failure" in source
+    assert "runner.call(" not in source
+
+
+def test_node_process_registration_retry_does_not_block_runtime_entry() -> None:
+    import inspect
+
+    from tools.scheduler_lab import node_process
+
+    source = inspect.getsource(node_process.run_node_process)
+
+    assert 'register_response = runner.call_once("worker.register"' in source
+    assert "worker_registered = register_response.status != 0 and register_response.ok" in source
+    assert source.index('register_response = runner.call_once("worker.register"') < source.index('"node.process.runtime_entered"')
+    assert "if worker_enabled and not worker_registered and now >= next_register:" in source
+    assert "if worker_enabled and worker_registered and now >= next_heartbeat:" in source
+    assert "if worker_enabled and worker_registered and now >= next_poll:" in source
+
+
+def test_process_defaults_keep_observation_window_before_b2b_exit(monkeypatch) -> None:
+    from tools.scheduler_lab import node_process
+
+    monkeypatch.delenv("FORCED_ALIVE_SECONDS", raising=False)
+    monkeypatch.delenv("WORKER_REGISTER_RETRY_INTERVAL_MS", raising=False)
+
+    parent_args = build_arg_parser().parse_args([])
+    child_args = node_process.build_arg_parser().parse_args(["--node-list", "nodes.jsonl", "--node-index", "0"])
+
+    assert parent_args.forced_alive == 30.0
+    parent_args.worktime_distribution = parse_worktime_spec(parent_args.worktime)
+    duration_plan = resolve_lab_duration(parent_args, raw_argv=[])
+    apply_lab_duration_plan(parent_args, duration_plan, raw_argv=[])
+    assert parent_args.forced_alive == 900.0
+    assert child_args.forced_alive == 30.0
+    assert parent_args.worker_register_retry_interval_ms == 1000.0
+    assert child_args.worker_register_retry_interval_ms == 1000.0
 
 
 def test_node_process_sends_startup_surge_before_bootstrap() -> None:

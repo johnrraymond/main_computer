@@ -4,6 +4,8 @@
       const ENRICHMENT_STYLE_ID = "mcel-lab-canonical-git-tools-enrichment-style";
       const ENRICHMENT_CLASS = "mcel-canonical-git-tools-enriched";
       const BODY_ENRICHMENT_ATTRIBUTE = "data-mcel-git-enrichment";
+      const SUPERCUT_TRANSLATOR = "htmlTranslationTool";
+      const SUPERCUT_MAX_COMPONENTS = 260;
 
       const REGION_ENRICHMENT = [
         {selector: "#git-tools-app", role: "git-operator-console", kind: "app", layout: "stacked-workflow", fitContext: "root"},
@@ -156,6 +158,41 @@
         return true;
       }
 
+      function runGitToolsSupercutTranslation(doc, root, options = {}) {
+        if (!doc?.body || !root || !global.McelSupercut?.translateRuntime) {
+          return {
+            active: false,
+            translator: SUPERCUT_TRANSLATOR,
+            taggedElementCount: 0,
+            componentCount: 0,
+            executableComponentCount: 0,
+            originalPointCount: 0,
+            originalPoints: [],
+            rectificationRounds: [],
+            cssObjectCatalog: [],
+            runtimeChanges: [],
+            message: "MCEL Supercut translator unavailable or Git Tools root missing"
+          };
+        }
+        return global.McelSupercut.translateRuntime({
+          document: doc,
+          root,
+          rootSelector: options.rootSelector || "#git-tools-app",
+          app: "git-tools",
+          reason: options.reason || "git-tools-supercut-translation",
+          generatedBy: options.generatedBy || "git-tools-mcel-supercut-adapter",
+          translator: SUPERCUT_TRANSLATOR,
+          maxComponents: SUPERCUT_MAX_COMPONENTS
+        });
+      }
+
+      function clearGitToolsSupercutTranslation(doc, rootSelector = "#git-tools-app") {
+        return Boolean(global.McelSupercut?.clearRuntime?.({
+          document: doc,
+          rootSelector
+        }));
+      }
+
       function nearestControlLabel(control) {
         if (!control) return null;
         return control.closest?.("label") || control.parentElement;
@@ -237,8 +274,10 @@
             "remote and mirror fields are classified before layout fit is judged",
             "push, mirror, server lifecycle, and manual command actions are risk-classified but never clicked",
             "large status and output surfaces use intentional scroll/wrap policies",
-            "MCEL lens reads the live Git Tools DOM without changing selected project state"
-          ]
+            "MCEL lens reads the live Git Tools DOM without changing selected project state",
+            "MCEL Supercut derives original points from slimy HTML structure and attaches executable component contracts at mount time"
+          ],
+          supercut: options.supercut || null
         };
       }
 
@@ -392,7 +431,11 @@
           });
         });
 
-        const model = buildEnrichmentModel(doc, root, {reason, rootSelector, generatedBy});
+        const supercut = runGitToolsSupercutTranslation(doc, root, {reason, rootSelector, generatedBy});
+        if (supercut.active) {
+          enrichedElementCount += supercut.taggedElementCount || 0;
+        }
+        const model = buildEnrichmentModel(doc, root, {reason, rootSelector, generatedBy, supercut});
         const violations = collectEnrichmentViolations(doc, root);
         return {
           ...model,
@@ -404,7 +447,18 @@
           fieldCount: model.fields.filter((item) => item.present).length,
           actionControlCount: model.actions.reduce((total, item) => total + item.count, 0),
           riskControlCount: model.actions.filter((item) => item.present && !["safe", "network-read"].includes(item.risk)).reduce((total, item) => total + item.count, 0),
-          fitLawCount: model.components.filter((item) => item.fit).length,
+          supercutActive: Boolean(supercut.active),
+          supercutTranslator: supercut.translator || SUPERCUT_TRANSLATOR,
+          supercutTaggedElementCount: supercut.taggedElementCount || 0,
+          supercutComponentCount: supercut.componentCount || 0,
+          supercutExecutableCount: supercut.executableComponentCount || 0,
+          supercutOriginalPointCount: supercut.originalPointCount || 0,
+          supercutOriginalPoints: supercut.originalPoints || [],
+          supercutRoundCount: supercut.rectificationRounds?.length || 0,
+          supercutRectificationRounds: supercut.rectificationRounds || [],
+          supercutCssObjectCount: supercut.cssObjectCatalog?.length || 0,
+          supercutRuntimeChanges: supercut.runtimeChanges || [],
+          fitLawCount: model.components.filter((item) => item.fit).length + (supercut.cssObjectCatalog?.length || 0),
           layoutLawStatus: violations.length ? "warning" : "ready",
           violations,
           enrichmentStyleId: ENRICHMENT_STYLE_ID,
@@ -424,7 +478,8 @@
         if (options.removeStyle !== false) {
           doc.getElementById(ENRICHMENT_STYLE_ID)?.remove?.();
         }
-        Array.from(doc.querySelectorAll?.("[data-mcel-enriched], [data-mcel-enrichment-source], [data-mcel-enrichment-selector], [data-mcel-role], [data-mcel-kind], [data-mcel-fit], [data-mcel-fit-context], [data-mcel-layout], [data-mcel-layout-policy], [data-mcel-layout-region], [data-mcel-region], [data-mcel-region-kind], [data-mcel-width-policy], [data-mcel-control-role], [data-mcel-control-priority], [data-mcel-action-role], [data-mcel-action-risk], [data-mcel-action-label], [data-mcel-mutates]") || []).forEach((element) => {
+        clearGitToolsSupercutTranslation(doc, rootSelector);
+        Array.from(doc.querySelectorAll?.("[data-mcel-enriched], [data-mcel-enrichment-source], [data-mcel-enrichment-selector], [data-mcel-role], [data-mcel-kind], [data-mcel-fit], [data-mcel-fit-context], [data-mcel-layout], [data-mcel-layout-policy], [data-mcel-layout-region], [data-mcel-region], [data-mcel-region-kind], [data-mcel-width-policy], [data-mcel-control-role], [data-mcel-control-priority], [data-mcel-action-role], [data-mcel-action-risk], [data-mcel-action-label], [data-mcel-mutates], [data-mcel-supercut], [data-mcel-supercut-id], [data-mcel-supercut-role], [data-mcel-supercut-purpose], [data-mcel-supercut-source], [data-mcel-supercut-fit], [data-mcel-supercut-executable], [data-mcel-supercut-round], [data-mcel-supercut-translator], [data-mcel-supercut-risk]") || []).forEach((element) => {
           [
             "data-mcel-enriched",
             "data-mcel-enrichment-source",
@@ -444,7 +499,17 @@
             "data-mcel-action-role",
             "data-mcel-action-risk",
             "data-mcel-action-label",
-            "data-mcel-mutates"
+            "data-mcel-mutates",
+            "data-mcel-supercut",
+            "data-mcel-supercut-id",
+            "data-mcel-supercut-role",
+            "data-mcel-supercut-purpose",
+            "data-mcel-supercut-source",
+            "data-mcel-supercut-fit",
+            "data-mcel-supercut-executable",
+            "data-mcel-supercut-round",
+            "data-mcel-supercut-translator",
+            "data-mcel-supercut-risk"
           ].forEach((attribute) => element.removeAttribute(attribute));
         });
         const root = doc.querySelector?.(rootSelector) || null;
@@ -468,6 +533,10 @@
         FIELD_ENRICHMENT,
         PANEL_LENS,
         ACTION_LENS,
+        SUPERCUT_TRANSLATOR,
+        SUPERCUT_MAX_COMPONENTS,
+        runGitToolsSupercutTranslation,
+        clearGitToolsSupercutTranslation,
         ensureEnrichmentStyle,
         applyElementEnrichment,
         nearestControlLabel,
