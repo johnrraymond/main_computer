@@ -49,6 +49,7 @@ from main_computer.text_console import (
     parse_text_console_response_artifacts,
     run_text_console_clob_grounded_answer,
     run_text_console_operator_chat,
+    sanitize_text_console_clob_public_answer,
     text_console_prompt_requests_local_action,
 )
 from main_computer.text_console_clobs import (
@@ -2231,6 +2232,9 @@ class ViewportApplicationRoutesMixin:
                         "notes": thread_notes,
                         "clob_lookup": clob_lookup_metadata,
                         "clob_lookup_grounding": clob_lookup_grounding,
+                        "clob_public_answer_sanitized": bool(
+                            dict(response.metadata.get("text_console_clob_grounded_answer", {}) or {}).get("public_answer_sanitized", False)
+                        ),
                         "model_message_count": len(
                             list(response.metadata.get("text_console_clob_grounded_answer", {}).get("message_chars", []) or [])
                         ),
@@ -2261,6 +2265,17 @@ class ViewportApplicationRoutesMixin:
                 base_config=self.server.config,
                 conversation_messages=conversation_messages,
             )
+            clob_public_answer_sanitized = False
+            if clob_lookup_text:
+                public_content = sanitize_text_console_clob_public_answer(response.content)
+                clob_public_answer_sanitized = public_content != response.content
+                if clob_public_answer_sanitized:
+                    response = ChatResponse(
+                        content=public_content,
+                        provider=response.provider,
+                        model=response.model,
+                        metadata=response.metadata,
+                    )
             clob_lookup_grounding = response_uses_text_console_clob_evidence(
                 response.content,
                 clob_lookup_metadata,
@@ -2275,6 +2290,7 @@ class ViewportApplicationRoutesMixin:
                     "notes": thread_notes,
                     "clob_lookup": clob_lookup_metadata,
                     "clob_lookup_grounding": clob_lookup_grounding,
+                    "clob_public_answer_sanitized": clob_public_answer_sanitized,
                     "model_message_count": len(conversation_messages),
                 }
             )
