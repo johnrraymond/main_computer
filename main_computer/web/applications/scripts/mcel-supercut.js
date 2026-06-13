@@ -498,6 +498,64 @@
         });
         const rounds = runRectificationRounds(doc, root, inspection, options);
         const registry = buildRegistry(root, inspection, rounds, options);
+        let architecture = null;
+        if (global.McelSupercutCore?.run) {
+          try {
+            architecture = global.McelSupercutCore.run({
+              specimenId: options.specimenId || options.app || "legacy-html",
+              rootDocument: doc,
+              rootElement: root,
+              rootSelector,
+              mode: options.mode || "tag-and-audit",
+              rounds: options.rounds || 3,
+              packs: options.packs || ["core-html", "core-action-risk", "git-tools-domain"],
+              maxComponents: options.maxComponents
+            });
+          } catch (error) {
+            architecture = {
+              status: "error",
+              specimenId: options.specimenId || options.app || "legacy-html",
+              message: error?.message || "MCEL Supercut v0.2 architecture failed"
+            };
+          }
+        }
+        if (architecture?.status === "ready") {
+          registry.architectureVersion = architecture.version || "0.2.0";
+          registry.architectureStatus = architecture.status;
+          registry.architecture = architecture;
+          registry.blackboard = architecture.blackboard || null;
+          registry.packsLoaded = architecture.packsLoaded || [];
+          registry.rulesFired = architecture.metrics?.rulesFired || 0;
+          registry.blackboardRecordCount = architecture.blackboard?.records?.length || architecture.metrics?.nodesScanned || 0;
+          registry.rewritePreview = architecture.rewritePreview || [];
+          registry.rewritePreviewCount = registry.rewritePreview.length;
+          registry.rewritePreviewSummary = architecture.rewritePreviewSummary || {};
+          registry.explanations = architecture.explanations || [];
+          registry.explanationsReady = architecture.metrics?.explanationsReady || registry.explanations.length;
+          registry.unsafeActionsBlocked = architecture.metrics?.unsafeActionsBlocked || 0;
+          registry.sourceMutations = architecture.sourceMutations || architecture.metrics?.sourceMutations || 0;
+          registry.runtimeSourceMutations = architecture.runtimeSourceMutations || architecture.metrics?.runtimeSourceMutations || 0;
+          registry.safetyPolicy = architecture.safetyPolicy || {};
+          registry.ruleTrace = architecture.ruleTrace || [];
+          registry.metrics = architecture.metrics || {};
+          registry.runtimeChanges = [
+            ...registry.runtimeChanges,
+            "Supercut v0.2 registry loaded core-html, core-action-risk, and Git Tools domain knowledge packs",
+            "blackboard records collected facts from multiple rules without source rewriting",
+            "rewrite-preview graph emitted for MCEL Lab inspection only"
+          ];
+          try {
+            Object.defineProperty(root, "__mcelSupercutRegistry", {
+              value: registry,
+              configurable: true
+            });
+          } catch (_error) {
+            root.__mcelSupercutRegistry = registry;
+          }
+        } else if (architecture) {
+          registry.architectureStatus = architecture.status || "error";
+          registry.architectureMessage = architecture.message || "MCEL Supercut v0.2 architecture unavailable";
+        }
         return {
           ...registry,
           taggedElementCount: registry.componentCount,

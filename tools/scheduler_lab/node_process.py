@@ -130,6 +130,11 @@ class NodeHttpRunner:
                 b2b_detection_enabled=detection_enabled,
                 hub_base_url=response.base_url,
                 error=str(response.payload.get("error", "")) if isinstance(response.payload, dict) else "",
+                error_type=str(response.payload.get("error_type", "")) if isinstance(response.payload, dict) else "",
+                error_kind=str(response.payload.get("error_kind", "")) if isinstance(response.payload, dict) else "",
+                exception_class=str(response.payload.get("exception_class", "")) if isinstance(response.payload, dict) else "",
+                http_method=str(response.payload.get("method", "")) if isinstance(response.payload, dict) else "",
+                http_path=str(response.payload.get("path", "")) if isinstance(response.payload, dict) else "",
             )
         )
 
@@ -191,7 +196,7 @@ class NodeHttpRunner:
 
 def _short_payload(payload: dict[str, Any]) -> dict[str, Any]:
     clean: dict[str, Any] = {}
-    for key in ("ok", "error", "reason_code", "request_count", "idempotent"):
+    for key in ("ok", "error", "reason", "message", "reason_code", "request_count", "idempotent", "error_type", "error_kind", "exception_class", "method", "path", "http_status", "worker_id", "worker_node_id"):
         if key in payload:
             clean[key] = payload[key]
     if isinstance(payload.get("account"), dict):
@@ -408,6 +413,88 @@ def handle_low_credit_remediation_sync(
             requested_remediation=configured,
         )
     )
+
+
+def _http_diagnostic_fields(response: HubHttpResponse) -> dict[str, Any]:
+    payload = response.payload if isinstance(response.payload, dict) else {}
+    fields: dict[str, Any] = {
+        "ok": bool(response.ok),
+        "status": int(response.status),
+        "elapsed_ms": round(float(response.elapsed_ms), 3),
+        "hub_base_url": response.base_url,
+        "response_summary": _short_payload(payload),
+    }
+    for key in ("error_type", "error_kind", "exception_class", "method", "path", "http_status"):
+        if payload.get(key) not in {"", None}:
+            fields[f"http_{key}" if key in {"method", "path"} else key] = payload.get(key)
+    return fields
+
+
+def _worker_register_outcome(response: HubHttpResponse) -> str:
+    if response.status == 0:
+        return "transport_failed"
+    if response.ok:
+        return "observed_success"
+    return "http_error"
+
+
+def _emit_worker_register_diagnostic(
+    sink: SyncEventSink,
+    node: dict[str, Any],
+    response: HubHttpResponse,
+    *,
+    retry: bool,
+    worker_registered: bool,
+) -> None:
+    outcome = _worker_register_outcome(response)
+    sink.emit(
+        event_payload(
+            f"worker.register.{outcome}",
+            node,
+            retry=bool(retry),
+            worker_registered=bool(worker_registered),
+            **_http_diagnostic_fields(response),
+        )
+    )
+
+
+def _emit_worker_poll_diagnostic(
+    sink: SyncEventSink,
+    node: dict[str, Any],
+    response: HubHttpResponse,
+    *,
+    lease: dict[str, Any] | None,
+    offer_probability: float,
+) -> None:
+    if response.status == 0:
+        outcome = "transport_failed"
+        empty_reason = ""
+    elif not response.ok:
+        outcome = "http_error"
+        empty_reason = ""
+    elif isinstance(lease, dict):
+        outcome = "leased"
+        empty_reason = ""
+    else:
+        outcome = "empty"
+        payload = response.payload if isinstance(response.payload, dict) else {}
+        empty_reason = str(payload.get("reason") or payload.get("message") or payload.get("error") or "no_lease_in_response")
+    fields = _http_diagnostic_fields(response)
+    fields.update(
+        {
+            "worker_node_id": node.get("node_id"),
+            "poll_outcome": outcome,
+            "offer_probability": round(float(offer_probability), 6),
+            "lease_present": isinstance(lease, dict),
+        }
+    )
+    if empty_reason:
+        fields["poll_empty_reason"] = empty_reason
+    if isinstance(lease, dict):
+        fields["lease_id"] = lease.get("lease_id")
+        fields["request_id"] = lease.get("request_id")
+        fields["lease_model"] = lease.get("model")
+    sink.emit(event_payload(f"worker.poll.{outcome}", node, **fields))
 
 
 def submit_request_once_sync(
@@ -664,6 +751,13 @@ def run_node_process(args: argparse.Namespace) -> int:
             register_response = runner.call_once("worker.register", client.register_worker, node)
             worker_registration_attempted = True
             worker_registered = register_response.status != 0 and register_response.ok
+            _emit_worker_register_diagnostic(
+                sink,
+                node,
+                register_response,
+                retry=False,
+                worker_registered=worker_registered,
+            )
             next_register = time.monotonic() + register_retry_interval
             runner.maybe_self_terminate_on_b2bfailures()
 
@@ -717,6 +811,13 @@ def run_node_process(args: argparse.Namespace) -> int:
                 register_response = runner.call_once("worker.register", client.register_worker, node)
                 worker_registration_attempted = True
                 worker_registered = register_response.status != 0 and register_response.ok
+                _emit_worker_register_diagnostic(
+                    sink,
+                    node,
+                    register_response,
+                    retry=True,
+                    worker_registered=worker_registered,
+                )
                 next_register = time.monotonic() + register_retry_interval
                 runner.maybe_self_terminate_on_b2bfailures()
 
@@ -757,6 +858,13 @@ def run_node_process(args: argparse.Namespace) -> int:
                 if not busy_with_local_work and rng.random() <= offer_probability:
                     response = runner.call("worker.poll", client.poll_worker, node, lease_seconds=args.lease_seconds, _event_fields={"worker_node_id": node.get("node_id")})
                     lease = response.payload.get("lease") if isinstance(response.payload, dict) else None
+                    _emit_worker_poll_diagnostic(
+                        sink,
+                        node,
+                        response,
+                        lease=lease if isinstance(lease, dict) else None,
+                        offer_probability=offer_probability,
+                    )
                     if isinstance(lease, dict):
                         active_requests += 1
                         try:

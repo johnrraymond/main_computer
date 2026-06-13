@@ -331,3 +331,67 @@ def test_coolify_apply_action_can_parse_without_domain(tmp_path: Path) -> None:
     assert args.domain == ""
     assert args.coolify_project_name == "mail"
     assert args.coolify_environment == "production"
+
+def test_cloudflare_guide_from_contract_redacts_secret_by_default(tmp_path: Path) -> None:
+    module = _load_module()
+    plan = module.build_plan(
+        domain="greatlibrary.io",
+        ingest_host="mail-ingest.greatlibrary.io",
+        worker_name="greatlibrary-mail-ingest",
+        service_name="greatlibrary-mail-ingest",
+        coolify_url="http://144.126.212.9:8000/projects",
+    )
+    routing = module.build_routing_contract(
+        domain=plan.domain,
+        worker_name=plan.worker_name,
+        forwards=(("johnrraymond", "johnrraymond@gmail.com"),),
+        drops=("info",),
+        catch_all_to_worker=True,
+    )
+    secret = "cloudflare-guide-secret-value-that-must-not-print"
+    module.write_prepare_outputs(plan, tmp_path, routing=routing, secret=secret)
+
+    args = module.parse_args([
+        "cloudflare-guide",
+        "--contract", str(tmp_path / "mail-worker-contract.json"),
+    ])
+    guide = module.cloudflare_guide_from_contract(args)
+
+    assert "Cloudflare setup for greatlibrary.io" in guide
+    assert "Worker" in guide
+    assert "Name: greatlibrary-mail-ingest" in guide
+    assert "Source:" in guide
+    assert "MAIL_INGEST_URL=https://mail-ingest.greatlibrary.io/inbound/cloudflare-email" in guide
+    assert "MAIL_INGEST_SECRET=<redacted;" in guide
+    assert secret not in guide
+    assert "johnrraymond@greatlibrary.io -> forward to johnrraymond@gmail.com" in guide
+    assert "info@greatlibrary.io -> drop" in guide
+    assert "*@greatlibrary.io -> worker greatlibrary-mail-ingest" in guide
+    assert 'Do not create a custom address named "*".' in guide
+    assert "Source files" not in guide
+    assert "Safe ordering" not in guide
+
+
+def test_cloudflare_guide_can_print_secret_when_explicitly_requested(tmp_path: Path) -> None:
+    module = _load_module()
+    plan = module.build_plan(domain="greatlibrary.io", ingest_host="mail-ingest.greatlibrary.io")
+    routing = module.build_routing_contract(
+        domain=plan.domain,
+        worker_name=plan.worker_name,
+        forwards=(),
+        drops=(),
+        catch_all_to_worker=True,
+    )
+    secret = "cloudflare-guide-secret-value-for-dashboard-entry"
+    module.write_prepare_outputs(plan, tmp_path, routing=routing, secret=secret)
+
+    args = module.parse_args([
+        "cloudflare-guide",
+        "--contract", str(tmp_path / "mail-worker-contract.json"),
+        "--show-secret",
+    ])
+    guide = module.cloudflare_guide_from_contract(args)
+
+    assert f"MAIL_INGEST_SECRET={secret}" in guide
+    assert "--show-secret was used" not in guide
+
