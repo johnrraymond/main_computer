@@ -20,6 +20,54 @@ class HubHttpResponse:
     base_url: str = ""
 
 
+def _transport_error_kind(exc: BaseException | None) -> str:
+    text = str(exc or "").lower()
+    class_name = type(exc).__name__.lower() if exc is not None else ""
+    if "timed out" in text or "timeout" in text or "timeout" in class_name:
+        return "timeout"
+    if "connection refused" in text or "winerror 10061" in text or "errno 111" in text:
+        return "connection_refused"
+    if "temporary failure in name resolution" in text or "name or service not known" in text or "nodename nor servname" in text:
+        return "dns_error"
+    if "connection reset" in text or "forcibly closed" in text:
+        return "connection_reset"
+    if "network is unreachable" in text or "no route to host" in text:
+        return "network_unreachable"
+    return "transport_error"
+
+
+def _diagnostic_payload(
+    *,
+    error: str,
+    error_type: str,
+    method: str,
+    path: str,
+    url: str,
+    base_url: str,
+    error_kind: str = "",
+    exception_class: str = "",
+    status: int | None = None,
+    response_text: str = "",
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "error": str(error),
+        "error_type": str(error_type),
+        "method": str(method).upper(),
+        "path": str(path),
+        "url": str(url),
+        "base_url": str(base_url).rstrip("/"),
+    }
+    if error_kind:
+        payload["error_kind"] = str(error_kind)
+    if exception_class:
+        payload["exception_class"] = str(exception_class)
+    if status is not None:
+        payload["http_status"] = int(status)
+    if response_text:
+        payload["response_text"] = str(response_text)[:500]
+    return payload
+
+
 class HubClient:
     """Small stdlib HTTP client for Hub lab processes.
 
@@ -78,19 +126,57 @@ class HubClient:
                 with urlopen(request, timeout=self.timeout_seconds) as response:
                     raw = response.read()
                     elapsed_ms = (time.perf_counter() - started) * 1000.0
-                    parsed = json.loads(raw.decode("utf-8")) if raw else {}
+                    try:
+                        parsed = json.loads(raw.decode("utf-8")) if raw else {}
+                    except Exception as exc:
+                        return HubHttpResponse(
+                            ok=False,
+                            status=response.status,
+                            payload=_diagnostic_payload(
+                                error=f"JSON parse failed: {exc}",
+                                error_type="parse_error",
+                                error_kind="json_parse_error",
+                                exception_class=type(exc).__name__,
+                                method=method,
+                                path=path,
+                                url=url,
+                                base_url=base_url,
+                                status=response.status,
+                                response_text=raw.decode("utf-8", errors="replace") if raw else "",
+                            ),
+                            elapsed_ms=elapsed_ms,
+                            base_url=base_url.rstrip("/"),
+                        )
                     if not isinstance(parsed, dict):
                         parsed = {"value": parsed}
+                    parsed.setdefault("method", method.upper())
+                    parsed.setdefault("path", path)
                     return HubHttpResponse(ok=200 <= response.status < 300, status=response.status, payload=parsed, elapsed_ms=elapsed_ms, base_url=base_url.rstrip("/"))
             except HTTPError as exc:
                 raw = exc.read()
                 elapsed_ms = (time.perf_counter() - started) * 1000.0
                 try:
                     parsed = json.loads(raw.decode("utf-8")) if raw else {}
-                except Exception:
-                    parsed = {"error": raw.decode("utf-8", errors="replace")}
+                except Exception as parse_exc:
+                    parsed = _diagnostic_payload(
+                        error=f"HTTP {exc.code}; JSON parse failed: {parse_exc}",
+                        error_type="http_error",
+                        error_kind="http_error_parse_failure",
+                        exception_class=type(parse_exc).__name__,
+                        method=method,
+                        path=path,
+                        url=url,
+                        base_url=base_url,
+                        status=exc.code,
+                        response_text=raw.decode("utf-8", errors="replace") if raw else "",
+                    )
                 if not isinstance(parsed, dict):
                     parsed = {"value": parsed}
+                parsed.setdefault("error_type", "http_error")
+                parsed.setdefault("error_kind", f"http_{exc.code}")
+                parsed.setdefault("method", method.upper())
+                parsed.setdefault("path", path)
+                parsed.setdefault("http_status", exc.code)
                 return HubHttpResponse(ok=False, status=exc.code, payload=parsed, elapsed_ms=elapsed_ms, base_url=base_url.rstrip("/"))
             except (URLError, TimeoutError, OSError) as exc:
                 last_error = exc
@@ -98,9 +184,39 @@ class HubClient:
                     time.sleep(min(2.0, 0.15 * (2 ** attempt)))
                     continue
                 elapsed_ms = (time.perf_counter() - started) * 1000.0
-                return HubHttpResponse(ok=False, status=0, payload={"error": str(last_error)}, elapsed_ms=elapsed_ms, base_url=base_url.rstrip("/"))
+                return HubHttpResponse(
+                    ok=False,
+                    status=0,
+                    payload=_diagnostic_payload(
+                        error=str(last_error),
+                        error_type="transport",
+                        error_kind=_transport_error_kind(last_error),
+                        exception_class=type(last_error).__name__ if last_error is not None else "",
+                        method=method,
+                        path=path,
+                        url=url,
+                        base_url=base_url,
+                    ),
+                    elapsed_ms=elapsed_ms,
+                    base_url=base_url.rstrip("/"),
+                )
         elapsed_ms = 0.0
-        return HubHttpResponse(ok=False, status=0, payload={"error": str(last_error or "request failed")}, elapsed_ms=elapsed_ms, base_url=last_base_url.rstrip("/"))
+        return HubHttpResponse(
+            ok=False,
+            status=0,
+            payload=_diagnostic_payload(
+                error=str(last_error or "request failed"),
+                error_type="transport",
+                error_kind=_transport_error_kind(last_error),
+                exception_class=type(last_error).__name__ if last_error is not None else "",
+                method=method,
+                path=path,
+                url=urljoin(last_base_url, path.lstrip("/")),
+                base_url=last_base_url,
+            ),
+            elapsed_ms=elapsed_ms,
+            base_url=last_base_url.rstrip("/"),
+        )
 
     def get_json(self, path: str) -> HubHttpResponse:
         return self.request_json("GET", path, None)

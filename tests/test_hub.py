@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import tempfile
 import threading
@@ -31,6 +32,51 @@ class HubServerTests(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         return thread
+
+    def test_worker_route_diagnostics_log_register_stages(self) -> None:
+        with tempfile.TemporaryDirectory() as hub_tmp:
+            hub_config = MainComputerConfig(
+                workspace=Path(hub_tmp),
+                model="fake-model",
+                hub_root=Path(hub_tmp) / "hub-runtime",
+                hub_credits_per_request=2,
+            )
+            hub = HubHttpServer(("127.0.0.1", 0), hub_config, verbose=False)
+            hub.worker_route_diagnostics = True
+            hub_thread = self._start_server(hub)
+            stderr = io.StringIO()
+            try:
+                hub_base = f"http://127.0.0.1:{hub.server_port}"
+                register_request = Request(
+                    f"{hub_base}/api/hub/v1/workers/register",
+                    data=json.dumps(
+                        {
+                            "node_id": "Diagnostic Worker",
+                            "endpoint": "http://127.0.0.1:1/diagnostic-worker",
+                            "model": "fake-model",
+                            "credits_per_request": 2,
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+
+                with patch("sys.stderr", stderr):
+                    with urlopen(register_request, timeout=5) as response:
+                        payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertTrue(payload["ok"])
+                diagnostic_log = stderr.getvalue()
+                self.assertIn("hub.worker_route.diagnostic", diagnostic_log)
+                self.assertIn('"route": "worker.register"', diagnostic_log)
+                self.assertIn('"stage": "read_json.start"', diagnostic_log)
+                self.assertIn('"stage": "registry.register_worker.start"', diagnostic_log)
+                self.assertIn('"stage": "registry.status.start"', diagnostic_log)
+                self.assertIn('"stage": "send_json.done"', diagnostic_log)
+            finally:
+                hub.shutdown()
+                hub.server_close()
+                hub_thread.join(timeout=2)
 
     def test_hub_transport_allows_docker_dev_service_names_only_with_explicit_opt_in(self) -> None:
         self.assertFalse(hub_transport_is_encrypted_or_loopback("http://hub:8770"))
