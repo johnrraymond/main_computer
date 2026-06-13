@@ -32,6 +32,8 @@ from tools.scheduler_lab.run_lab import (
     apply_lab_duration_plan,
     new_process_rollup_stats,
     process_child_event_path,
+    process_child_log_path,
+    summarize_child_processes,
     process_parent_runtime_due_flags,
     process_phase_count_summary,
     record_process_phase_event,
@@ -246,6 +248,24 @@ def test_lab_duration_env_wins_when_cli_duration_omitted(monkeypatch) -> None:
     assert args.duration_seconds == 77.0
     assert args.worktime_derived_seconds == 1620.0
     assert args.forced_alive == 77.0
+
+
+def test_lab_duration_derive_sentinels_bypass_compose_defaults(monkeypatch) -> None:
+    monkeypatch.setenv("LAB_DURATION_SECONDS", "auto")
+    monkeypatch.setenv("FORCED_ALIVE_SECONDS", "duration")
+
+    raw_argv = ["--worktime", "50mu,25sigma"]
+    args = build_arg_parser().parse_args(raw_argv)
+    args.worktime_distribution = parse_worktime_spec(args.worktime)
+
+    plan = resolve_lab_duration(args, raw_argv=raw_argv)
+    apply_lab_duration_plan(args, plan, raw_argv=raw_argv)
+
+    assert plan.source == "worktime_derived"
+    assert plan.worktime_derived_seconds == 175.0
+    assert args.duration_seconds == 900.0
+    assert args.forced_alive == 900.0
+    assert args.forced_alive_source == "duration_window_default"
 
 
 def test_lab_duration_derives_from_worktime_with_15_minute_floor(monkeypatch) -> None:
@@ -603,6 +623,37 @@ def test_process_event_path_matches_child_sink_naming_without_touching_files(tmp
 
     assert path == tmp_path / "node-process-00007-worker_with_space.events.jsonl"
     assert not path.exists()
+
+
+def test_process_child_log_path_matches_event_path_stem_without_touching_files(tmp_path) -> None:
+    node = {"node_id": "worker/with space"}
+    path = process_child_log_path(tmp_path, node, 7, run_id="run/with space")
+
+    assert path == tmp_path / "node-process-run_with_space-00007-worker_with_space.log"
+    assert not path.exists()
+
+
+def test_summarize_child_processes_surfaces_startup_crash_log_tail(tmp_path) -> None:
+    class DummyProcess:
+        def __init__(self, code):
+            self.code = code
+
+        def poll(self):
+            return self.code
+
+    log_path = tmp_path / "node-process-run-00000-worker-1.log"
+    log_path.write_text("before\nTraceback: boom\n", encoding="utf-8")
+    summary = summarize_child_processes(
+        [({"node_id": "worker-1"}, DummyProcess(1))],
+        event_paths=[tmp_path / "node-process-run-00000-worker-1.events.jsonl"],
+        log_paths=[log_path],
+    )
+
+    assert summary["child_startup_failure"] is True
+    assert summary["child_startup_failure_count"] == 1
+    assert summary["child_process_exit_codes"] == {"1": 1}
+    assert summary["child_processes_without_event_file"] == 1
+    assert "Traceback: boom" in summary["child_log_tail_samples"][0]["log_tail"]
 
 
 def test_process_rollup_scanner_uses_known_paths_and_offsets(tmp_path) -> None:
@@ -1066,14 +1117,51 @@ def test_process_defaults_keep_observation_window_before_b2b_exit(monkeypatch) -
     parent_args = build_arg_parser().parse_args([])
     child_args = node_process.build_arg_parser().parse_args(["--node-list", "nodes.jsonl", "--node-index", "0"])
 
-    assert parent_args.forced_alive == 30.0
+    assert parent_args.forced_alive is None
     parent_args.worktime_distribution = parse_worktime_spec(parent_args.worktime)
     duration_plan = resolve_lab_duration(parent_args, raw_argv=[])
     apply_lab_duration_plan(parent_args, duration_plan, raw_argv=[])
     assert parent_args.forced_alive == 900.0
-    assert child_args.forced_alive == 30.0
+    assert child_args.forced_alive == 900.0
     assert parent_args.worker_register_retry_interval_ms == 1000.0
     assert child_args.worker_register_retry_interval_ms == 1000.0
+
+
+def test_node_process_accepts_compose_duration_sentinels(monkeypatch) -> None:
+    from tools.scheduler_lab import node_process
+
+    monkeypatch.setenv("LAB_DURATION_SECONDS", "auto")
+    monkeypatch.setenv("FORCED_ALIVE_SECONDS", "duration")
+    monkeypatch.setenv("LAB_WORKTIME", "50mu,25sigma")
+
+    args = node_process.build_arg_parser().parse_args(["--node-list", "nodes.jsonl", "--node-index", "0"])
+
+    assert args.duration_seconds == 900.0
+    assert args.forced_alive == 900.0
+
+
+def test_node_process_cli_duration_overrides_compose_auto_env(monkeypatch) -> None:
+    from tools.scheduler_lab import node_process
+
+    monkeypatch.setenv("LAB_DURATION_SECONDS", "auto")
+    monkeypatch.setenv("FORCED_ALIVE_SECONDS", "duration")
+    monkeypatch.setenv("LAB_WORKTIME", "50mu,25sigma")
+
+    args = node_process.build_arg_parser().parse_args(
+        [
+            "--node-list",
+            "nodes.jsonl",
+            "--node-index",
+            "0",
+            "--duration-seconds",
+            "123",
+            "--forced-alive",
+            "123",
+        ]
+    )
+
+    assert args.duration_seconds == 123.0
+    assert args.forced_alive == 123.0
 
 
 def test_node_process_sends_startup_surge_before_bootstrap() -> None:

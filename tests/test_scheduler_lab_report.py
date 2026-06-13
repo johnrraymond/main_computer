@@ -65,6 +65,8 @@ def test_report_suppresses_node_scoring_during_shared_transport_outage(tmp_path:
     assert report["run_health"]["top_transport_endpoint"] == "http://host.docker.internal:8874"
     assert report["run_health"]["endpoint_breakdown"][0]["transport_failure_ratio"] == 1.0
     assert report["run_health"]["endpoint_breakdown"][0]["affected_nodes"] == 2
+    assert report["pipeline_adequacy"]["worker_pipeline_usable"] is False
+    assert report["pipeline_adequacy"]["stages"][4]["stage"] == "leases"
     assert report["average_reliability_percent"] is None
     assert report["median_reliability_percent"] is None
     assert report["category_counts"] == {"unscored_transport_outage": 2}
@@ -79,6 +81,8 @@ def test_report_suppresses_node_scoring_during_shared_transport_outage(tmp_path:
     assert "transport_failure_ratio | 100%" in markdown
     assert "failure_scope | single_endpoint_or_shared_network" in markdown
     assert "top_transport_endpoint | http://host.docker.internal:8874" in markdown
+    assert "## Pipeline Adequacy" in markdown
+    assert "| worker_polls | 0 | 20 | no |" in markdown
     assert "## Hub endpoint health" in markdown
     assert "synthetic_transport_failure_events | 20" in markdown
     assert "unscored_transport_outage" in markdown
@@ -91,43 +95,53 @@ def test_report_scores_nodes_when_market_activity_is_observed(tmp_path: Path) ->
         {"node_id": "requester-0001", "kind": "requester", "cohort": "normal", "behavior_mode": "requester_centric"},
     ]
     _write_jsonl(tmp_path / f"scheduler-lab-runtime-nodes-{run_id}.jsonl", nodes)
-    _write_jsonl(
-        tmp_path / f"node-process-{run_id}-00000-worker-0001.events.jsonl",
-        [
-            {"event": "node.process.started", "node_id": "worker-0001", "worker_enabled": True, "requester_enabled": False},
-            {"event": "worker.register", "node_id": "worker-0001", "status": 200, "ok": True},
-            {"event": "worker.heartbeat", "node_id": "worker-0001", "status": 200, "ok": True},
-            {
-                "event": "worker.poll",
-                "node_id": "worker-0001",
-                "status": 200,
-                "ok": True,
-                "response_summary": {"lease": {"lease_id": "lease-1", "request_id": "req-1"}},
-            },
-            {"event": "worker.execution.started", "node_id": "worker-0001", "lease_id": "lease-1", "request_id": "req-1"},
-            {"event": "worker.execution.finished", "node_id": "worker-0001", "lease_id": "lease-1", "request_id": "req-1"},
-            {"event": "worker.result.submitted", "node_id": "worker-0001", "status": 200, "ok": True, "lease_id": "lease-1", "request_id": "req-1"},
-        ],
-    )
-    _write_jsonl(
-        tmp_path / f"node-process-{run_id}-00001-requester-0001.events.jsonl",
-        [
-            {"event": "node.process.started", "node_id": "requester-0001", "worker_enabled": False, "requester_enabled": True},
-            {
-                "event": "requester.request.attempted",
-                "node_id": "requester-0001",
-                "lab_request_key": "requester-0001-1",
-            },
-            {
-                "event": "requester.request.submitted",
-                "node_id": "requester-0001",
-                "status": 200,
-                "ok": True,
-                "request_id": "req-1",
-                "response_summary": {"request": {"request_id": "req-1", "state": "queued"}},
-            },
-        ],
-    )
+    worker_events = [
+        {"event": "node.process.started", "node_id": "worker-0001", "worker_enabled": True, "requester_enabled": False},
+        {"event": "worker.register", "node_id": "worker-0001", "status": 200, "ok": True},
+    ]
+    for index in range(20):
+        worker_events.append({"event": "worker.heartbeat", "node_id": "worker-0001", "status": 200, "ok": True})
+        poll_event = {
+            "event": "worker.poll",
+            "node_id": "worker-0001",
+            "status": 200,
+            "ok": True,
+        }
+        if index < 10:
+            poll_event["response_summary"] = {"lease": {"lease_id": f"lease-{index}", "request_id": f"req-{index}"}}
+        worker_events.append(poll_event)
+        if index < 10:
+            worker_events.extend(
+                [
+                    {"event": "worker.execution.started", "node_id": "worker-0001", "lease_id": f"lease-{index}", "request_id": f"req-{index}"},
+                    {"event": "worker.execution.finished", "node_id": "worker-0001", "lease_id": f"lease-{index}", "request_id": f"req-{index}"},
+                    {"event": "worker.result.submitted", "node_id": "worker-0001", "status": 200, "ok": True, "lease_id": f"lease-{index}", "request_id": f"req-{index}"},
+                ]
+            )
+    _write_jsonl(tmp_path / f"node-process-{run_id}-00000-worker-0001.events.jsonl", worker_events)
+
+    requester_events = [
+        {"event": "node.process.started", "node_id": "requester-0001", "worker_enabled": False, "requester_enabled": True},
+    ]
+    for index in range(20):
+        requester_events.extend(
+            [
+                {
+                    "event": "requester.request.attempted",
+                    "node_id": "requester-0001",
+                    "lab_request_key": f"requester-0001-{index}",
+                },
+                {
+                    "event": "requester.request.submitted",
+                    "node_id": "requester-0001",
+                    "status": 200,
+                    "ok": True,
+                    "request_id": f"req-{index}",
+                    "response_summary": {"request": {"request_id": f"req-{index}", "state": "queued"}},
+                },
+            ]
+        )
+    _write_jsonl(tmp_path / f"node-process-{run_id}-00001-requester-0001.events.jsonl", requester_events)
 
     report = build_report(tmp_path, run_id=run_id)
 
@@ -137,6 +151,54 @@ def test_report_scores_nodes_when_market_activity_is_observed(tmp_path: Path) ->
     assert categories["worker-0001"] in {"excellent", "reliable"}
     assert categories["requester-0001"] in {"excellent", "reliable"}
     assert "unscored_transport_outage" not in report["category_counts"]
+    assert report["pipeline_adequacy"]["usable_for_worker_reliability_scoring"] is True
+
+
+def test_report_marks_requester_only_samples_as_worker_pipeline_inadequate(tmp_path: Path) -> None:
+    run_id = "20260612T222832Z-1-requester-only"
+    _write_jsonl(
+        tmp_path / f"scheduler-lab-runtime-nodes-{run_id}.jsonl",
+        [
+            {"node_id": "requester-0001", "kind": "requester", "cohort": "normal", "behavior_mode": "requester_centric"},
+            {"node_id": "worker-0001", "kind": "worker", "cohort": "normal", "behavior_mode": "worker_centric"},
+        ],
+    )
+    requester_events = [
+        {"event": "node.process.started", "node_id": "requester-0001", "requester_enabled": True, "worker_enabled": False},
+    ]
+    for index in range(20):
+        requester_events.extend(
+            [
+                {"event": "requester.request.attempted", "node_id": "requester-0001", "lab_request_key": f"requester-0001-{index}"},
+                {
+                    "event": "requester.request.submitted",
+                    "node_id": "requester-0001",
+                    "status": 200,
+                    "ok": True,
+                    "request_id": f"req-{index}",
+                    "response_summary": {"request": {"request_id": f"req-{index}", "state": "queued"}},
+                },
+            ]
+        )
+    _write_jsonl(tmp_path / f"node-process-{run_id}-00000-requester-0001.events.jsonl", requester_events)
+    _write_jsonl(
+        tmp_path / f"node-process-{run_id}-00001-worker-0001.events.jsonl",
+        [
+            {"event": "node.process.started", "node_id": "worker-0001", "worker_enabled": True, "requester_enabled": False},
+            {"event": "worker.register", "node_id": "worker-0001", "status": 200, "ok": True},
+        ],
+    )
+
+    report = build_report(tmp_path, run_id=run_id)
+
+    assert report["run_health"]["category"] == "sample_inadequate"
+    assert report["run_health"]["score_nodes"] is False
+    assert report["pipeline_adequacy"]["requester_samples_usable"] is True
+    assert report["pipeline_adequacy"]["worker_pipeline_usable"] is False
+    assert report["category_counts"] == {"unscored_sample_inadequate": 2}
+    markdown = render_markdown(report)
+    assert "Run is not usable for worker reliability scoring" in markdown
+    assert "| worker_polls | 0 | 20 | no |" in markdown
 
 
 def test_report_identifies_endpoint_specific_transport_outage(tmp_path: Path) -> None:

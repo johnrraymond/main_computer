@@ -95,3 +95,53 @@ def test_exp_fdb_hub_uses_lightweight_scheduler_lab_docker_stack() -> None:
     assert "chromium" not in dockerfile.lower()
     assert "pip install" not in dockerfile.lower()
     assert "!scheduler_lab/**" in dockerignore
+
+
+def test_exp_fdb_hub_launcher_allows_worker_lab_to_derive_duration_and_forced_alive(tmp_path, monkeypatch, capsys) -> None:
+    from main_computer.exp_fdb_hub import build_parser, launch_scheduler_lab_docker
+
+    compose = tmp_path / "compose.yml"
+    compose.write_text("services:\n  worker-lab:\n    image: scratch\n", encoding="utf-8")
+
+    captured: dict[str, object] = {}
+
+    class DummyProcess:
+        pass
+
+    def fake_popen(command, *, cwd=None, env=None):
+        captured["command"] = command
+        captured["cwd"] = cwd
+        captured["env"] = dict(env or {})
+        return DummyProcess()
+
+    monkeypatch.setattr("main_computer.exp_fdb_hub.subprocess.Popen", fake_popen)
+
+    args = build_parser().parse_args(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--docker-compose-file",
+            str(compose),
+            "--docker-output-dir",
+            str(tmp_path / "out"),
+            "--nodes",
+            "50",
+            "--worktime",
+            "50mu,25sigma",
+        ]
+    )
+
+    process = launch_scheduler_lab_docker(
+        args,
+        hub_base_urls=["http://host.docker.internal:8870", "http://host.docker.internal:8871"],
+    )
+
+    assert isinstance(process, DummyProcess)
+    env = captured["env"]
+    assert env["LAB_WORKTIME"] == "50mu,25sigma"
+    assert env["LAB_DURATION_SECONDS"] == "auto"
+    assert env["FORCED_ALIVE_SECONDS"] == "duration"
+
+    out = capsys.readouterr().out
+    assert "Scheduler lab duration seconds: derived by worker-lab from worktime/default minimum" in out
+    assert "Scheduler lab forced-alive grace seconds: derived from resolved worker-lab observation duration" in out

@@ -297,3 +297,15 @@ docker compose -f docker-compose.gitea.yml up -d gitea
 docker compose -f docker-compose.dev.yml --profile smoke run --rm executor-smoke
 ```
 
+## Operator runbooks
+
+The Cloudflare hidden-origin mail worker plan is documented in:
+
+```text
+pretty_docs/cloudflare-mail-worker-hidden-ingest-runbook.md
+```
+
+That runbook explains the staged contract flow for `tools/cloudflare_mail_worker.py`,
+including `prepare`, contract-based `coolify-apply`, generated Cloudflare Worker
+artifacts, Email Routing rules, and the current implementation checkpoint.
+

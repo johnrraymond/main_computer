@@ -12,11 +12,13 @@ from typing import Any, Sequence
 from tools.scheduler_lab.hub_client import HubClient, HubHttpResponse
 from tools.scheduler_lab.node_list import DEFAULT_HUB_BASE_URL, DEFAULT_SEED, load_nodes, normalize_hub_base_urls
 from tools.scheduler_lab.run_lab import (
+    DEFAULT_LAB_MIN_DURATION_SECONDS,
     NodeRuntimeState,
     WorktimeDistribution,
     account_available_credits,
     as_float,
     as_int,
+    env_duration_seconds_or_none,
     event_payload,
     hazard_probability_per_tick,
     is_insufficient_credit_response,
@@ -775,6 +777,39 @@ def run_node_process(args: argparse.Namespace) -> int:
         sink.close()
 
 
+def _default_node_duration_seconds() -> float:
+    """Resolve child-process duration defaults without crashing on Compose sentinels.
+
+    The parent process always passes an explicit numeric --duration-seconds to
+    children in process mode, but argparse evaluates defaults while constructing
+    the child parser.  Docker Compose may still provide LAB_DURATION_SECONDS=auto
+    in the inherited environment, so this default resolver must tolerate that
+    sentinel even when the command line later overrides the value.
+    """
+
+    env_requested = env_duration_seconds_or_none("LAB_DURATION_SECONDS")
+    if env_requested is not None:
+        return float(env_requested)
+
+    try:
+        worktime = parse_worktime_spec(os.environ.get("LAB_WORKTIME", ""))
+    except ValueError:
+        worktime = None
+    if worktime is not None:
+        derived = (3.0 * float(worktime.mean_seconds)) + float(worktime.sigma_seconds)
+        return float(max(DEFAULT_LAB_MIN_DURATION_SECONDS, derived))
+    return float(DEFAULT_LAB_MIN_DURATION_SECONDS)
+
+
+def _default_node_forced_alive_seconds(duration_seconds: float) -> float:
+    """Resolve child forced-alive default without crashing on duration sentinels."""
+
+    env_requested = env_duration_seconds_or_none("FORCED_ALIVE_SECONDS")
+    if env_requested is not None:
+        return float(env_requested)
+    return float(duration_seconds)
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run one scheduler-lab node as one OS process.")
     parser.add_argument("--node-list", required=True)
@@ -784,7 +819,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hub-base-urls", default=os.environ.get("HUB_BASE_URLS", ""))
     parser.add_argument("--output-dir", default=os.environ.get("LAB_OUTPUT_DIR", "/lab-output"))
     parser.add_argument("--run-id", default=os.environ.get("LAB_RUN_ID", ""))
-    parser.add_argument("--duration-seconds", type=float, default=float(os.environ.get("LAB_DURATION_SECONDS", "300")))
+    default_duration_seconds = _default_node_duration_seconds()
+    parser.add_argument("--duration-seconds", type=float, default=default_duration_seconds)
     parser.add_argument("--request-mode", choices=["worker_pull_v0", "legacy", "registration_only"], default=os.environ.get("REQUEST_MODE", "worker_pull_v0"))
     parser.add_argument("--account-id-prefix", default=os.environ.get("LAB_ACCOUNT_ID_PREFIX", "lab-account"))
     parser.add_argument("--funded", type=parse_funded_percent, default=parse_funded_percent(os.environ.get("LAB_FUNDED", "0")))
@@ -800,7 +836,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--worktime", default=os.environ.get("LAB_WORKTIME", ""))
     parser.add_argument("--warm", default=os.environ.get("LAB_WARM", ""))
     parser.add_argument("--b2bfailures", type=int, default=int(os.environ.get("B2B_FAILURES", "10")))
-    parser.add_argument("--forced-alive", type=float, default=float(os.environ.get("FORCED_ALIVE_SECONDS", "30")))
+    parser.add_argument("--forced-alive", type=float, default=_default_node_forced_alive_seconds(default_duration_seconds))
     parser.add_argument("--max-runtime-ms", type=float, default=float(os.environ.get("MAX_RUNTIME_MS", "30000")))
     parser.add_argument("--max-request-interval-ms", type=float, default=float(os.environ.get("MAX_REQUEST_INTERVAL_MS", "15000")))
     parser.add_argument("--http-timeout-seconds", type=float, default=float(os.environ.get("HTTP_TIMEOUT_SECONDS", "1")))
