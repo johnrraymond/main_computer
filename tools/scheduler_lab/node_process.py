@@ -174,15 +174,19 @@ class NodeHttpRunner:
             raise SystemExit(SELF_TERMINATED_B2B_FAILURES_EXIT_CODE)
 
     def call(self, event_name: str, func, *args: Any, **kwargs: Any) -> HubHttpResponse:
-        while True:
-            response = self.call_once(event_name, func, *args, **kwargs)
-            if response.status != 0:
-                return response
+        """Make one logical HTTP attempt without trapping the node in a retry loop.
 
+        Process-mode nodes use this for steady-state heartbeats, polls, and result
+        submission.  The lab's observation window is now the authority, so a dead
+        or slow hub endpoint must produce one observable transport-failure sample
+        and then return control to the node loop.  Otherwise a heartbeat failure can
+        spin forever and starve the later worker-poll/lease/execution stages.
+        """
+
+        response = self.call_once(event_name, func, *args, **kwargs)
+        if response.status == 0:
             self.maybe_self_terminate_on_b2bfailures()
-            # Intentionally no backoff here. A dead advertised hub should cause
-            # an immediate random retry against the hub list; all-dead hub fleets
-            # drain via --b2bfailures.
+        return response
 
 
 def _short_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -652,11 +656,13 @@ def run_node_process(args: argparse.Namespace) -> int:
         bootstrap_node_funding_sync(node, args=args, sink=sink, client=client, runner=runner)
 
         worker_registered = False
+        worker_registration_attempted = False
         register_retry_interval = max(0.05, float(args.worker_register_retry_interval_ms) / 1000.0)
         next_register = time.monotonic()
         if worker_enabled:
             sink.emit(event_payload("worker.register.attempted", node, node_index=args.node_index, retry=False))
             register_response = runner.call_once("worker.register", client.register_worker, node)
+            worker_registration_attempted = True
             worker_registered = register_response.status != 0 and register_response.ok
             next_register = time.monotonic() + register_retry_interval
             runner.maybe_self_terminate_on_b2bfailures()
@@ -709,11 +715,12 @@ def run_node_process(args: argparse.Namespace) -> int:
             if worker_enabled and not worker_registered and now >= next_register:
                 sink.emit(event_payload("worker.register.attempted", node, node_index=args.node_index, retry=True))
                 register_response = runner.call_once("worker.register", client.register_worker, node)
+                worker_registration_attempted = True
                 worker_registered = register_response.status != 0 and register_response.ok
                 next_register = time.monotonic() + register_retry_interval
                 runner.maybe_self_terminate_on_b2bfailures()
 
-            if worker_enabled and worker_registered and now >= next_heartbeat:
+            if worker_enabled and worker_registration_attempted and now >= next_heartbeat:
                 if rng.random() >= heartbeat_drop:
                     runner.call("worker.heartbeat", client.heartbeat_worker, node, active_requests=active_requests, status="busy" if busy_with_local_work else "available")
                 else:
@@ -742,7 +749,7 @@ def run_node_process(args: argparse.Namespace) -> int:
                         event_name="requester.request.submitted",
                     )
 
-            if worker_enabled and worker_registered and now >= next_poll:
+            if worker_enabled and worker_registration_attempted and now >= next_poll:
                 next_poll = now + poll_interval
                 offer_probability = worker_offer_probability(node)
                 if time.monotonic() < state.worker_force_until:
@@ -759,10 +766,10 @@ def run_node_process(args: argparse.Namespace) -> int:
 
             next_times = []
             if worker_enabled:
-                if worker_registered:
-                    next_times.extend([next_heartbeat, next_poll])
-                else:
+                if not worker_registered:
                     next_times.append(next_register)
+                if worker_registration_attempted:
+                    next_times.extend([next_heartbeat, next_poll])
             if requester_enabled:
                 next_times.append(next_request)
             sleep_for = 0.02

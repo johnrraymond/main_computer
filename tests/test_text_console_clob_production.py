@@ -387,8 +387,17 @@ def test_clob_lookup_followup_action_heuristic_keeps_actions_on_operator_path():
 
     assert prod.text_console_prompt_requests_local_action("Which runtime path contains the answer token?") is False
     assert prod.text_console_prompt_requests_local_action("What assertion failed in that output?") is False
+    assert prod.text_console_prompt_requests_local_action("Which files from that terminal output mention thinking?") is False
+    assert prod.text_console_prompt_requests_local_action("List files from that terminal output that mention thinking") is False
     assert prod.text_console_prompt_requests_local_action("Run pytest for that failing test file") is True
     assert prod.text_console_prompt_requests_local_action("Patch the file that failed") is True
+    assert prod.text_console_prompt_requests_local_action(
+        "i want you to give me a list of all the files in the main computer - do it recursively."
+    ) is True
+    assert prod.text_console_prompt_requests_local_action(
+        "i want you to give me a list of all the files in the main computer - do it recursively in a terminal."
+    ) is True
+    assert prod.text_console_prompt_requests_local_action("List files in main_computer using PowerShell") is True
 
 def test_text_console_frontend_preserves_terminal_clob_context_for_thread_messages():
     page = (Path(__file__).resolve().parents[1] / "main_computer" / "web" / "text.html").read_text(encoding="utf-8")
