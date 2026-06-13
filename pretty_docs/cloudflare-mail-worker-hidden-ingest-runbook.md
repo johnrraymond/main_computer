@@ -57,6 +57,7 @@ tools/cloudflare_mail_worker.py coolify-apply
 tools/cloudflare_mail_worker.py coolify-check
 tools/cloudflare_mail_worker.py coolify-discover
 tools/cloudflare_mail_worker.py coolify-sync
+tools/cloudflare_mail_worker.py cloudflare-guide
 ```
 
 The important completed stages are:
@@ -248,6 +249,40 @@ need extra remote files.
 
 The dry-run output redacts the secret. The real apply injects the secret from the
 contract directory.
+
+## Stage 2b: generate Cloudflare dashboard values
+
+After `prepare` and `coolify-apply`, use the contract to print the exact values
+needed for manual Cloudflare configuration. This action does not call Cloudflare
+and does not mutate anything:
+
+```powershell
+python tools/cloudflare_mail_worker.py cloudflare-guide `
+  --contract runtime/cloudflare-mail-worker/greatlibrary.io/mail-worker-contract.json
+```
+
+By default, the shared secret is redacted. When you are ready to paste the Worker
+secret into Cloudflare, run the same command with:
+
+```powershell
+python tools/cloudflare_mail_worker.py cloudflare-guide `
+  --contract runtime/cloudflare-mail-worker/greatlibrary.io/mail-worker-contract.json `
+  --show-secret
+```
+
+Use `--show-secret` only at the terminal where you are configuring Cloudflare.
+Do not copy the secret into tickets, screenshots, logs, or git.
+
+It prints a short checklist only:
+
+```text
+Worker name/source/secret/vars
+Exact forwards
+Exact drops
+Worker catch-all route
+Health URL
+Setup order
+```
 
 ## Stage 3: Cloudflare Worker configuration
 

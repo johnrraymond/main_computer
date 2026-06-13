@@ -2574,6 +2574,9 @@ PROCESS_ROLLUP_CSV_COLUMNS = (
     "lifecycle_json",
     "behavior_json",
     "top_behavior_json",
+    "worker_pipeline_counts_json",
+    "worker_endpoint_status_counts_json",
+    "worker_transport_error_counts_json",
 )
 
 
@@ -2584,6 +2587,9 @@ def new_process_rollup_stats() -> dict[str, Any]:
         "http_status_counts": Counter(),
         "endpoint_counts": Counter(),
         "hub_counts": Counter(),
+        "worker_pipeline_counts": Counter(),
+        "worker_endpoint_status_counts": Counter(),
+        "worker_transport_error_counts": Counter(),
         "lifecycle_ledger": ProcessLifecycleLedger(),
         "behavior_ledger": BehaviorLedger(),
     }
@@ -2626,6 +2632,32 @@ def _process_rollup_endpoint_key(event_name: str) -> str:
     return ""
 
 
+def _process_rollup_worker_stage(event_name: str) -> str:
+    if event_name.startswith("worker.register"):
+        return "register"
+    if event_name.startswith("worker.heartbeat"):
+        return "heartbeat"
+    if event_name.startswith("worker.poll"):
+        return "poll"
+    if event_name.startswith("worker.result"):
+        return "result"
+    return ""
+
+
+def _process_rollup_pipeline_outcome(event_name: str) -> str:
+    prefixes = {
+        "worker.register.": "register_",
+        "worker.poll.": "poll_",
+        "worker.heartbeat.": "heartbeat_",
+        "worker.result.": "result_",
+    }
+    for prefix, label in prefixes.items():
+        if event_name.startswith(prefix):
+            return label + event_name[len(prefix):]
+    return ""
+
+
+
 def record_process_rollup_event(event: dict[str, Any], rollup_stats: dict[str, Any]) -> None:
     """Record one child event into cumulative process-mode rollup counters."""
 
@@ -2642,6 +2674,23 @@ def record_process_rollup_event(event: dict[str, Any], rollup_stats: dict[str, A
     endpoint_key = _process_rollup_endpoint_key(name)
     if endpoint_key:
         rollup_stats.setdefault("endpoint_counts", Counter())[endpoint_key] += 1
+
+    pipeline_outcome = _process_rollup_pipeline_outcome(name)
+    if pipeline_outcome:
+        rollup_stats.setdefault("worker_pipeline_counts", Counter())[pipeline_outcome] += 1
+
+    worker_stage = _process_rollup_worker_stage(name)
+    if worker_stage and "status" in event:
+        hub_key_for_worker = _process_rollup_hub_key(event) or "unknown"
+        status_key_for_worker = _process_rollup_status_key(event.get("status"))
+        rollup_stats.setdefault("worker_endpoint_status_counts", Counter())[
+            f"{worker_stage}|{hub_key_for_worker}|{status_key_for_worker}"
+        ] += 1
+        if status_key_for_worker == "0":
+            error_kind = str(event.get("error_kind") or event.get("http_error_kind") or "unknown")
+            rollup_stats.setdefault("worker_transport_error_counts", Counter())[
+                f"{worker_stage}|{hub_key_for_worker}|{error_kind}"
+            ] += 1
 
     _ledger_from_stats(rollup_stats, "lifecycle_ledger", ProcessLifecycleLedger).record(event)
     _ledger_from_stats(rollup_stats, "behavior_ledger", BehaviorLedger).record(event)
@@ -2665,6 +2714,9 @@ def build_process_rollup(
     http_status_counts = dict(sorted(rollup_stats.get("http_status_counts", Counter()).items()))
     endpoint_counts = dict(sorted(rollup_stats.get("endpoint_counts", Counter()).items()))
     hub_counts = dict(sorted(rollup_stats.get("hub_counts", Counter()).items()))
+    worker_pipeline_counts = dict(sorted(rollup_stats.get("worker_pipeline_counts", Counter()).items()))
+    worker_endpoint_status_counts = dict(sorted(rollup_stats.get("worker_endpoint_status_counts", Counter()).items()))
+    worker_transport_error_counts = dict(sorted(rollup_stats.get("worker_transport_error_counts", Counter()).items()))
     transport_failures = max(int(endpoint_counts.get("transport_failures", 0)), int(http_status_counts.get("0", 0)))
     market_http_responses = sum(int(count) for status, count in http_status_counts.items() if str(status) != "0")
     total_observed_attempts = transport_failures + market_http_responses
@@ -2691,6 +2743,9 @@ def build_process_rollup(
         "http_status_counts": http_status_counts,
         "endpoint_counts": endpoint_counts,
         "hub_counts": hub_counts,
+        "worker_pipeline_counts": worker_pipeline_counts,
+        "worker_endpoint_status_counts": worker_endpoint_status_counts,
+        "worker_transport_error_counts": worker_transport_error_counts,
         "exit_codes": dict(sorted(exit_codes.items())),
         "self_terminated_b2bfailures": int(exit_codes.get("75", 0)),
         "children_launched": len(children),
@@ -2765,6 +2820,9 @@ def build_process_launch_progress_rollup(
         "http_status_counts": {},
         "endpoint_counts": {},
         "hub_counts": {},
+        "worker_pipeline_counts": {},
+        "worker_endpoint_status_counts": {},
+        "worker_transport_error_counts": {},
         "exit_codes": dict(sorted(exit_codes.items())),
         "self_terminated_b2bfailures": int(exit_codes.get("75", 0)),
         "rollup_scan_truncated": False,
@@ -2806,6 +2864,9 @@ def _process_rollup_csv_row(rollup: dict[str, Any]) -> dict[str, Any]:
         "lifecycle_json",
         "behavior_json",
         "top_behavior_json",
+        "worker_pipeline_counts_json",
+        "worker_endpoint_status_counts_json",
+        "worker_transport_error_counts_json",
     }
     row: dict[str, Any] = {column: "" for column in PROCESS_ROLLUP_CSV_COLUMNS}
     for column in PROCESS_ROLLUP_CSV_COLUMNS:
@@ -2817,6 +2878,9 @@ def _process_rollup_csv_row(rollup: dict[str, Any]) -> dict[str, Any]:
     row["http_status_counts_json"] = json.dumps(rollup.get("http_status_counts", {}), sort_keys=True)
     row["endpoint_counts_json"] = json.dumps(rollup.get("endpoint_counts", {}), sort_keys=True)
     row["hub_counts_json"] = json.dumps(rollup.get("hub_counts", {}), sort_keys=True)
+    row["worker_pipeline_counts_json"] = json.dumps(rollup.get("worker_pipeline_counts", {}), sort_keys=True)
+    row["worker_endpoint_status_counts_json"] = json.dumps(rollup.get("worker_endpoint_status_counts", {}), sort_keys=True)
+    row["worker_transport_error_counts_json"] = json.dumps(rollup.get("worker_transport_error_counts", {}), sort_keys=True)
     row["exit_codes_json"] = json.dumps(rollup.get("exit_codes", {}), sort_keys=True)
     row["lifecycle_json"] = json.dumps(rollup.get("lifecycle", {}), sort_keys=True)
     row["behavior_json"] = json.dumps(rollup.get("behavior", {}), sort_keys=True)

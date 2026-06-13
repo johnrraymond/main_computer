@@ -182,7 +182,10 @@
           reason: options.reason || "git-tools-supercut-translation",
           generatedBy: options.generatedBy || "git-tools-mcel-supercut-adapter",
           translator: SUPERCUT_TRANSLATOR,
-          maxComponents: SUPERCUT_MAX_COMPONENTS
+          maxComponents: SUPERCUT_MAX_COMPONENTS,
+          packs: options.packs || ["core-html", "core-action-risk", "git-tools-domain"],
+          mode: "tag-and-audit",
+          rounds: 3
         });
       }
 
@@ -196,6 +199,44 @@
       function nearestControlLabel(control) {
         if (!control) return null;
         return control.closest?.("label") || control.parentElement;
+      }
+
+      function summarizeSupercutRewritePreview(supercut = {}) {
+        const summary = supercut.rewritePreviewSummary || {};
+        const rewritePreview = supercut.rewritePreview || [];
+        if (summary && Object.keys(summary).length) return summary;
+        return rewritePreview.reduce((memo, node) => {
+          if (node.contract === "component.root") memo.root += 1;
+          else if (node.contract === "component.region") memo.regions += 1;
+          else if (node.contract === "component.panel") memo.panels += 1;
+          else if (node.contract === "component.toolbar") memo.toolbars += 1;
+          else if (node.contract === "component.field") memo.fields += 1;
+          else if (["component.action", "component.operational-action", "component.destructive-action", "component.remote-mutation-action"].includes(node.contract)) memo.actions += 1;
+          else if (node.contract === "component.status-feed") memo.statusFeeds += 1;
+          else if (node.contract === "component.console") memo.consoles += 1;
+          else if (node.contract === "component.workflow") memo.workflows += 1;
+          else memo.unknown += 1;
+          return memo;
+        }, {
+          root: 0,
+          regions: 0,
+          panels: 0,
+          toolbars: 0,
+          fields: 0,
+          actions: 0,
+          statusFeeds: 0,
+          consoles: 0,
+          workflows: 0,
+          unknown: 0
+        });
+      }
+
+      function countSupercutProofPolicies(supercut = {}) {
+        return (supercut.rewritePreview || []).reduce((memo, node) => {
+          const key = node.proofPolicy || "inspect-only";
+          memo[key] = (memo[key] || 0) + 1;
+          return memo;
+        }, {});
       }
 
       function buildEnrichmentModel(doc, root, options = {}) {
@@ -458,6 +499,20 @@
           supercutRectificationRounds: supercut.rectificationRounds || [],
           supercutCssObjectCount: supercut.cssObjectCatalog?.length || 0,
           supercutRuntimeChanges: supercut.runtimeChanges || [],
+          supercutArchitectureStatus: supercut.architectureStatus || "legacy",
+          supercutPacksLoaded: supercut.packsLoaded || [],
+          supercutPacksLoadedCount: supercut.packsLoaded?.length || 0,
+          supercutRulesFired: supercut.rulesFired || 0,
+          supercutBlackboardRecordCount: supercut.blackboardRecordCount || supercut.blackboard?.records?.length || 0,
+          supercutRewritePreview: supercut.rewritePreview || [],
+          supercutRewritePreviewCount: supercut.rewritePreview?.length || 0,
+          supercutRewritePreviewSummary: summarizeSupercutRewritePreview(supercut),
+          supercutExplanationsReady: supercut.explanationsReady || supercut.explanations?.length || 0,
+          supercutUnsafeActionsBlocked: supercut.unsafeActionsBlocked || 0,
+          supercutProofPolicyCounts: countSupercutProofPolicies(supercut),
+          supercutRuleTrace: supercut.ruleTrace || [],
+          supercutSourceMutations: supercut.sourceMutations || 0,
+          supercutRuntimeSourceMutations: supercut.runtimeSourceMutations || 0,
           fitLawCount: model.components.filter((item) => item.fit).length + (supercut.cssObjectCatalog?.length || 0),
           layoutLawStatus: violations.length ? "warning" : "ready",
           violations,

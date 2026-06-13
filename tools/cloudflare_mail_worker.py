@@ -645,6 +645,119 @@ def redact_nested_secret(value: Any, secret: str) -> Any:
     return value
 
 
+def _contract_relative_path(contract_dir: Path, relative: str) -> Path:
+    clean = str(relative or "").replace("\\", "/").strip()
+    if not clean:
+        return contract_dir
+    pure = Path(clean)
+    if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
+        raise WorkerPlanError(f"Unsafe contract-relative path: {relative!r}")
+    return contract_dir / pure
+
+
+def _markdown_bullet_lines(values: list[str], *, empty: str) -> str:
+    if not values:
+        return f"- {empty}"
+    return "\n".join(f"- {value}" for value in values)
+
+
+def render_cloudflare_guide(
+    plan: CloudflareMailWorkerPlan,
+    contract: dict[str, Any],
+    *,
+    contract_path: Path,
+    contract_dir: Path,
+    secret: str,
+    secret_path: Path | None,
+    show_secret: bool = False,
+) -> str:
+    routing = contract.get("routing") if isinstance(contract.get("routing"), dict) else {}
+    worker = contract.get("worker") if isinstance(contract.get("worker"), dict) else {}
+    artifacts = contract.get("artifacts") if isinstance(contract.get("artifacts"), dict) else {}
+
+    worker_script_rel = str(worker.get("script") or artifacts.get("worker_script") or "worker/src/index.ts")
+    worker_script_path = _contract_relative_path(contract_dir, worker_script_rel)
+
+    worker_env = worker.get("env") if isinstance(worker.get("env"), dict) else {}
+    mail_ingest_url = str(worker_env.get("MAIL_INGEST_URL") or plan.ingest_url)
+    max_message_bytes = str(worker_env.get("MAX_MESSAGE_BYTES") or plan.max_message_bytes)
+    failure_policy = str(worker_env.get("INGEST_FAILURE_POLICY") or plan.failure_policy)
+
+    forwards_raw = routing.get("forwards") if isinstance(routing.get("forwards"), dict) else {}
+    forward_lines = [
+        f"{safe_id(local, kind='forward local part')}@{plan.domain} -> forward to {normalize_email_address(destination)}"
+        for local, destination in sorted(forwards_raw.items())
+    ]
+
+    drops_raw = routing.get("drops") if isinstance(routing.get("drops"), list) else []
+    drop_lines = [
+        f"{safe_id(str(local), kind='drop local part')}@{plan.domain} -> drop"
+        for local in sorted(str(item) for item in drops_raw)
+    ]
+
+    worker_locals_raw = routing.get("worker_local_parts") if isinstance(routing.get("worker_local_parts"), list) else []
+    worker_route_lines = [
+        f"{safe_id(str(local), kind='worker local part')}@{plan.domain} -> worker {plan.worker_name}"
+        for local in sorted(str(item) for item in worker_locals_raw)
+    ]
+    if bool(routing.get("catch_all_to_worker")):
+        worker_route_lines.append(f"*@{plan.domain} -> worker {plan.worker_name}")
+
+    if not forward_lines:
+        forward_lines = ["none"]
+    if not drop_lines:
+        drop_lines = ["none"]
+    if not worker_route_lines:
+        worker_route_lines = ["none"]
+
+    secret_display = secret if show_secret else f"<redacted; rerun with --show-secret>"
+
+    return textwrap.dedent(
+        f"""\
+        Cloudflare setup for {plan.domain}
+
+        Worker
+        - Name: {plan.worker_name}
+        - Source: {worker_script_path}
+        - Secret: {plan.secret_binding}={secret_display}
+        - Vars:
+          MAIL_INGEST_URL={mail_ingest_url}
+          MAX_MESSAGE_BYTES={max_message_bytes}
+          INGEST_FAILURE_POLICY={failure_policy}
+
+        Email Routing
+        - Exact forwards:
+        {textwrap.indent(chr(10).join("- " + line for line in forward_lines), "  ")}
+        - Exact drops:
+        {textwrap.indent(chr(10).join("- " + line for line in drop_lines), "  ")}
+        - Worker routes:
+        {textwrap.indent(chr(10).join("- " + line for line in worker_route_lines), "  ")}
+
+        Checks
+        - Health: https://{plan.ingest_host}/healthz
+        - Order: create Worker, add exact routes, enable catch-all last.
+        - Do not create a custom address named "*".
+        """
+    ).strip() + "\n"
+
+
+def cloudflare_guide_from_contract(args: argparse.Namespace) -> str:
+    contract, contract_dir = load_mail_worker_contract(getattr(args, "contract", ""))
+    worker_args = args_with_contract_defaults(args, contract)
+    plan = plan_from_contract(contract, worker_args)
+    validate_plan(plan)
+    secret, _secret_source, secret_path = resolve_contract_secret(contract, contract_dir, worker_args)
+    return render_cloudflare_guide(
+        plan,
+        contract,
+        contract_path=Path(getattr(args, "contract", "")),
+        contract_dir=contract_dir,
+        secret=secret,
+        secret_path=secret_path,
+        show_secret=bool(getattr(args, "show_secret", False)),
+    )
+
+
 
 def build_plan(
     *,
@@ -1727,8 +1840,12 @@ def render_docs() -> str:
         After stage one:
 
           1. Use mail-worker-contract.json as the handoff to the scripted Coolify stage.
-          2. Use cloudflare/worker-dashboard-paste.md or cloudflare/wrangler-commands.md
-             for the Cloudflare Worker side.
+          2. Use cloudflare-guide to print the exact dashboard values from the contract:
+
+             python tools/cloudflare_mail_worker.py cloudflare-guide \
+               --contract runtime/cloudflare-mail-worker/greatlibrary.io/mail-worker-contract.json
+
+             Add --show-secret only when you are ready to paste the Worker secret.
           3. Use cloudflare/manual-routing-plan.md for exact forwards, drops, and catch-all.
           4. Keep secrets/mail_ingest_secret out of screenshots, tickets, and git.
 
@@ -1747,7 +1864,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "action",
         nargs="?",
         default="docs",
-        choices=["docs", "help", "plan", "worker", "wrangler", "compose", "ingest", "routing", "commands", "write", "prepare", "validate", "coolify-check", "coolify-discover", "coolify-sync", "coolify-apply", "apply"],
+        choices=["docs", "help", "plan", "worker", "wrangler", "compose", "ingest", "routing", "commands", "write", "prepare", "cloudflare-guide", "validate", "coolify-check", "coolify-discover", "coolify-sync", "coolify-apply", "apply"],
     )
     parser.add_argument("--contract", default="", help="Stage-one mail-worker-contract.json for contract-based Coolify apply.")
     parser.add_argument("--domain", default="", help="Mail domain, e.g. greatlibrary.io.")
@@ -1784,6 +1901,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="Render/show intended Coolify changes without mutating Coolify.")
     parser.add_argument("--no-deploy", action="store_true", help="For coolify-sync/apply, update the service but do not trigger a deployment.")
     parser.add_argument("--quiet", action="store_true", help="Suppress operator progress logs; final JSON is still printed.")
+    parser.add_argument("--show-secret", action="store_true", help="For cloudflare-guide, print the shared ingest secret for dashboard entry instead of redacting it.")
 
     parser.add_argument("--no-catch-all", action="store_true")
     parser.add_argument("--catch-all-to-worker", action="store_true", help="Explicitly document catch-all Email Routing to the Worker. This is the default unless --no-catch-all is used.")
@@ -1828,6 +1946,9 @@ def main(argv: list[str] | None = None) -> int:
         print(render_docs())
         return 0
     try:
+        if args.action == "cloudflare-guide":
+            print(cloudflare_guide_from_contract(args), end="")
+            return 0
         if args.action == "coolify-apply":
             print_json(coolify_apply_from_contract(args))
             return 0
