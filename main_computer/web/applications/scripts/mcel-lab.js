@@ -3750,7 +3750,7 @@
         const enrichment = mcelLabState.lastCanonicalSpecimenEnrichment;
         const enrichmentSummary = enrichment ? `enriched: ${enrichment.enrichedElementCount} element(s), ${enrichment.layoutLawStatus}` : "enrichment pending";
         const supercutSummary = enrichment?.supercutActive
-          ? `supercut: ${enrichment.supercutComponentCount || 0} executable component(s), ${enrichment.supercutOriginalPointCount || 0} original point(s)`
+          ? `supercut: ${enrichment.supercutComponentCount || 0} executable component(s), ${enrichment.supercutOriginalPointCount || 0} original point(s), rewrite preview ${enrichment.supercutRewritePreviewCount || 0} node(s), unsafe blocked ${enrichment.supercutUnsafeActionsBlocked || 0}`
           : "supercut pending";
         const lens = mcelLabState.lastCanonicalSpecimenLens;
         const lensSummary = lens ? `lens active: ${lens.classifiedPanelCount} panel(s), ${lens.riskControlCount} risk surface(s)` : "lens pending";
@@ -4035,6 +4035,9 @@
         ["Components", `${report.componentCount || 0} enriched`],
         ["Supercut", report.supercutActive ? `${report.supercutComponentCount || 0} executable` : "not run"],
         ["Rounds", report.supercutActive ? `${report.supercutRoundCount || 0} rectified` : "0"],
+        ["Supercut Architecture", report.supercutArchitectureStatus === "ready" ? `${report.supercutPacksLoadedCount || 0} packs · ${report.supercutRulesFired || 0} rules` : (report.supercutArchitectureStatus || "legacy")],
+        ["Rewrite preview", report.supercutRewritePreviewCount ? `${report.supercutRewritePreviewCount} nodes` : "not emitted"],
+        ["Unsafe blocked", `${report.supercutUnsafeActionsBlocked || 0}`],
         ["Fields", `${report.fieldCount || 0} enriched`],
         ["Actions", `${report.actionControlCount || 0} classified`],
         ["Fit laws", `${report.fitLawCount || 0} declared`],
@@ -4095,6 +4098,61 @@
         report.supercutOriginalPoints.slice(0, 10).forEach((point) => {
           const chip = document.createElement("span");
           chip.textContent = point;
+          details.appendChild(chip);
+        });
+        mcelCanonicalAppLensMap.appendChild(details);
+      }
+
+      if (report?.supercutPacksLoaded?.length || report?.supercutRewritePreviewCount) {
+        const details = document.createElement("div");
+        details.className = "mcel-canonical-app-lens-sidecar-list";
+        const label = document.createElement("strong");
+        label.textContent = "Supercut Architecture:";
+        details.appendChild(label);
+        [
+          `packs loaded: ${report.supercutPacksLoadedCount || report.supercutPacksLoaded?.length || 0}`,
+          `rules fired: ${report.supercutRulesFired || 0}`,
+          `blackboard records: ${report.supercutBlackboardRecordCount || 0}`,
+          `rewrite-preview nodes: ${report.supercutRewritePreviewCount || 0}`,
+          `explanations ready: ${report.supercutExplanationsReady || 0}`,
+          `unsafe actions blocked: ${report.supercutUnsafeActionsBlocked || 0}`
+        ].forEach((item) => {
+          const chip = document.createElement("span");
+          chip.textContent = item;
+          details.appendChild(chip);
+        });
+        (report.supercutPacksLoaded || []).slice(0, 4).forEach((pack) => {
+          const chip = document.createElement("span");
+          chip.textContent = `${pack.id || pack}: ${pack.ruleCount || 0} rules`;
+          details.appendChild(chip);
+        });
+        mcelCanonicalAppLensMap.appendChild(details);
+      }
+
+      if (report?.supercutRewritePreviewCount) {
+        const details = document.createElement("div");
+        details.className = "mcel-canonical-app-lens-sidecar-list";
+        const label = document.createElement("strong");
+        label.textContent = "Rewrite preview:";
+        details.appendChild(label);
+        const summary = report.supercutRewritePreviewSummary || {};
+        [
+          `${report.supercutRewritePreviewCount || 0} nodes`,
+          `root: ${summary.root || 0}`,
+          `panels: ${summary.panels || 0}`,
+          `toolbars: ${summary.toolbars || 0}`,
+          `fields: ${summary.fields || 0}`,
+          `actions: ${summary.actions || 0}`,
+          `status feeds: ${summary.statusFeeds || 0}`,
+          `unknown: ${summary.unknown || 0}`
+        ].forEach((item) => {
+          const chip = document.createElement("span");
+          chip.textContent = item;
+          details.appendChild(chip);
+        });
+        (report.supercutRewritePreview || []).slice(0, 6).forEach((node) => {
+          const chip = document.createElement("span");
+          chip.textContent = `${node.proposedTag || "mcel-node"} ${node.sourceSelector || node.id} → ${node.contract || "component.unknown"}${node.risk ? ` ${node.risk}` : ""}${node.proofPolicy ? ` ${node.proofPolicy}` : ""}`;
           details.appendChild(chip);
         });
         mcelCanonicalAppLensMap.appendChild(details);
@@ -4174,7 +4232,7 @@
         Array.from(doc.querySelectorAll?.(selector) || []).forEach((node) => node.remove());
       });
 
-      Array.from(doc.querySelectorAll?.("[data-mcel-lens-role], [data-mcel-action-risk], [data-mcel-risk], [data-mcel-lens-label], [data-mcel-lens-kind], [data-mcel-mutates], [data-mcel-action-label], [data-mcel-enriched], [data-mcel-enrichment-source], [data-mcel-enrichment-selector], [data-mcel-role], [data-mcel-kind], [data-mcel-fit], [data-mcel-fit-context], [data-mcel-layout], [data-mcel-layout-policy], [data-mcel-layout-region], [data-mcel-region], [data-mcel-region-kind], [data-mcel-width-policy], [data-mcel-control-role], [data-mcel-control-priority], [data-mcel-action-role]") || []).forEach((element) => {
+      Array.from(doc.querySelectorAll?.("[data-mcel-lens-role], [data-mcel-action-risk], [data-mcel-risk], [data-mcel-lens-label], [data-mcel-lens-kind], [data-mcel-mutates], [data-mcel-action-label], [data-mcel-enriched], [data-mcel-enrichment-source], [data-mcel-enrichment-selector], [data-mcel-role], [data-mcel-kind], [data-mcel-fit], [data-mcel-fit-context], [data-mcel-layout], [data-mcel-layout-policy], [data-mcel-layout-region], [data-mcel-region], [data-mcel-region-kind], [data-mcel-width-policy], [data-mcel-control-role], [data-mcel-control-priority], [data-mcel-action-role], [data-mcel-supercut-contract], [data-mcel-supercut-proof-policy], [data-mcel-supercut-rewrite-tag]") || []).forEach((element) => {
         element.removeAttribute("data-mcel-lens-role");
         element.removeAttribute("data-mcel-action-risk");
         element.removeAttribute("data-mcel-risk");
@@ -4198,6 +4256,9 @@
         element.removeAttribute("data-mcel-control-role");
         element.removeAttribute("data-mcel-control-priority");
         element.removeAttribute("data-mcel-action-role");
+        element.removeAttribute("data-mcel-supercut-contract");
+        element.removeAttribute("data-mcel-supercut-proof-policy");
+        element.removeAttribute("data-mcel-supercut-rewrite-tag");
       });
 
       const root = doc.querySelector?.(specimen.rootSelector) || null;

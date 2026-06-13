@@ -1414,3 +1414,164 @@ def test_process_rollup_behavior_classifier_distinguishes_transport_dominated() 
     assert rollup["lab_interpretation"] == "transport_dominated"
     assert rollup["behavior_hubs_probe"] == 1
     assert rollup["top_behavior"]
+
+
+def test_worker_register_diagnostic_event_classifies_transport_failure() -> None:
+    from tools.scheduler_lab import node_process
+
+    class DummySink:
+        def __init__(self) -> None:
+            self.events: list[dict] = []
+
+        def emit(self, event):
+            self.events.append(event)
+
+    sink = DummySink()
+    response = HubHttpResponse(
+        ok=False,
+        status=0,
+        payload={
+            "error": "timed out",
+            "error_type": "transport",
+            "error_kind": "timeout",
+            "exception_class": "TimeoutError",
+            "method": "POST",
+            "path": "/api/hub/v1/workers/register",
+        },
+        elapsed_ms=1000.0,
+        base_url="http://host.docker.internal:8870",
+    )
+
+    node_process._emit_worker_register_diagnostic(
+        sink,
+        {"node_id": "worker-1", "account_id": "lab-account-worker-1"},
+        response,
+        retry=True,
+        worker_registered=False,
+    )
+
+    assert sink.events[0]["event"] == "worker.register.transport_failed"
+    assert sink.events[0]["error_kind"] == "timeout"
+    assert sink.events[0]["http_path"] == "/api/hub/v1/workers/register"
+    assert sink.events[0]["worker_registered"] is False
+
+
+def test_worker_poll_diagnostic_events_classify_transport_empty_and_leased() -> None:
+    from tools.scheduler_lab import node_process
+
+    class DummySink:
+        def __init__(self) -> None:
+            self.events: list[dict] = []
+
+        def emit(self, event):
+            self.events.append(event)
+
+    node = {"node_id": "worker-1", "account_id": "lab-account-worker-1"}
+
+    sink = DummySink()
+    node_process._emit_worker_poll_diagnostic(
+        sink,
+        node,
+        HubHttpResponse(
+            ok=False,
+            status=0,
+            payload={
+                "error": "connection refused",
+                "error_type": "transport",
+                "error_kind": "connection_refused",
+                "method": "POST",
+                "path": "/api/hub/v1/workers/poll",
+            },
+            elapsed_ms=2.0,
+            base_url="http://host.docker.internal:8874",
+        ),
+        lease=None,
+        offer_probability=0.25,
+    )
+    node_process._emit_worker_poll_diagnostic(
+        sink,
+        node,
+        HubHttpResponse(
+            ok=True,
+            status=200,
+            payload={"ok": True, "lease": None, "reason": "no_available_work"},
+            elapsed_ms=4.0,
+            base_url="http://host.docker.internal:8870",
+        ),
+        lease=None,
+        offer_probability=0.5,
+    )
+    node_process._emit_worker_poll_diagnostic(
+        sink,
+        node,
+        HubHttpResponse(
+            ok=True,
+            status=200,
+            payload={"ok": True, "lease": {"lease_id": "lease-1", "request_id": "request-1"}},
+            elapsed_ms=5.0,
+            base_url="http://host.docker.internal:8871",
+        ),
+        lease={"lease_id": "lease-1", "request_id": "request-1"},
+        offer_probability=0.75,
+    )
+
+    assert [event["event"] for event in sink.events] == [
+        "worker.poll.transport_failed",
+        "worker.poll.empty",
+        "worker.poll.leased",
+    ]
+    assert sink.events[0]["error_kind"] == "connection_refused"
+    assert sink.events[1]["poll_empty_reason"] == "no_available_work"
+    assert sink.events[2]["lease_id"] == "lease-1"
+
+
+def test_process_rollup_exposes_worker_pipeline_diagnostics() -> None:
+    stats = new_process_rollup_stats()
+    phase_nodes: dict[str, set[str]] = {}
+
+    record_process_rollup_event(
+        {
+            "event": "worker.poll.transport_failed",
+            "node_id": "worker-1",
+            "status": 0,
+            "hub_base_url": "http://host.docker.internal:8874",
+            "error_kind": "timeout",
+        },
+        stats,
+    )
+    record_process_rollup_event(
+        {
+            "event": "worker.poll.empty",
+            "node_id": "worker-1",
+            "status": 200,
+            "hub_base_url": "http://host.docker.internal:8870",
+            "poll_empty_reason": "no_available_work",
+        },
+        stats,
+    )
+    record_process_rollup_event(
+        {
+            "event": "worker.register.observed_success",
+            "node_id": "worker-1",
+            "status": 200,
+            "hub_base_url": "http://host.docker.internal:8871",
+        },
+        stats,
+    )
+
+    rollup = build_process_rollup(
+        run_id="diag-test",
+        started_at=time.monotonic(),
+        node_count=1,
+        assumed_prefunded_count=0,
+        children=[],
+        phase_nodes=phase_nodes,
+        rollup_stats=stats,
+    )
+
+    assert rollup["worker_pipeline_counts"]["poll_transport_failed"] == 1
+    assert rollup["worker_pipeline_counts"]["poll_empty"] == 1
+    assert rollup["worker_pipeline_counts"]["register_observed_success"] == 1
+    assert rollup["worker_endpoint_status_counts"]["poll|8874|0"] == 1
+    assert rollup["worker_endpoint_status_counts"]["poll|8870|200"] == 1
+    assert rollup["worker_transport_error_counts"]["poll|8874|timeout"] == 1

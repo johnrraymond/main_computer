@@ -593,6 +593,7 @@ $exportItems = @(
   "dev-chain-ledger-bridge.py",
   "dev-chain-wallet-smoke-guide.py",
   "exp-fdb-hub.py",
+  "exp-fdb-agent.py",
   "docker-compose.executor.yml",
   "Dockerfile.full_executor",
   "Dockerfile.executor",

@@ -1290,3 +1290,93 @@ def test_mcel_lab_adds_smart_css_primitive_replacement_lab() -> None:
     assert "z-index: 30;" in css
     assert "pointer-events: auto;" in css
     assert "pointer-events: none;" in css
+
+
+def test_mcel_lab_supercut_v02_architecture_modules_are_wired() -> None:
+    html = (ROOT / "main_computer" / "web" / "applications.html").read_text(encoding="utf-8")
+    contracts = (WEB_APP / "scripts" / "mcel-supercut-contracts.js").read_text(encoding="utf-8")
+    blackboard = (WEB_APP / "scripts" / "mcel-supercut-blackboard.js").read_text(encoding="utf-8")
+    registry = (WEB_APP / "scripts" / "mcel-supercut-registry.js").read_text(encoding="utf-8")
+    core_pack = (WEB_APP / "scripts" / "mcel-supercut-packs-core.js").read_text(encoding="utf-8")
+    git_pack = (WEB_APP / "scripts" / "mcel-supercut-packs-git-tools.js").read_text(encoding="utf-8")
+    core = (WEB_APP / "scripts" / "mcel-supercut-core.js").read_text(encoding="utf-8")
+    supercut = (WEB_APP / "scripts" / "mcel-supercut.js").read_text(encoding="utf-8")
+
+    assert "<!-- @include applications/scripts/mcel-supercut-contracts.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-supercut-blackboard.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-supercut-registry.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-supercut-packs-core.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-supercut-packs-git-tools.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-supercut-core.js -->" in html
+    assert (
+        html.index("task-manager-mcel.js")
+        < html.index("mcel-supercut-contracts.js")
+        < html.index("mcel-supercut-blackboard.js")
+        < html.index("mcel-supercut-registry.js")
+        < html.index("mcel-supercut-packs-core.js")
+        < html.index("mcel-supercut-packs-git-tools.js")
+        < html.index("mcel-supercut-core.js")
+        < html.index("mcel-supercut.js")
+        < html.index("git-tools-mcel.js")
+    )
+
+    assert "global.McelSupercutContracts" in contracts
+    assert "component.operational-action" in contracts
+    assert "component.remote-mutation-action" in contracts
+    assert "no-command-execution" in contracts
+
+    assert "global.McelSupercutBlackboard" in blackboard
+    assert "records: []" not in blackboard
+    assert "rewritePreview" in blackboard
+    assert "unsafeActionsBlocked" in blackboard
+
+    assert "global.McelSupercutRegistry" in registry
+    assert "PHASE_ORDER" in registry
+    assert "duplicate rule id rejected" in registry
+    assert "priority" in registry
+
+    assert 'id: "core-html"' in core_pack
+    assert 'id: "core-action-risk"' in core_pack
+    assert "core.detect.regions-disciplined" in core_pack
+    assert "core.audit.region-discipline" in core_pack
+
+    assert 'id: "git-tools-domain"' in git_pack
+    assert "git-tools.risk.start-server" in git_pack
+    assert "git-tools.risk.kill-pid" in git_pack
+    assert "git-tools.risk.manual-command" in git_pack
+    assert "no-submit" in git_pack
+
+    assert "global.McelSupercutCore" in core
+    assert "summarizeRewritePreview" in core
+    assert "sourceRewrite: \"disabled\"" in core
+    assert "remoteMirrorPushManualCommand: \"blocked\"" in core
+
+    assert "global.McelSupercutCore.run" in supercut
+    assert "rewritePreviewCount" in supercut
+    assert "blackboardRecordCount" in supercut
+    assert "runtimeSourceMutations" in supercut
+
+
+def test_mcel_lab_supercut_v02_is_visible_in_git_tools_lens() -> None:
+    lab = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    adapter = (WEB_APP / "scripts" / "git-tools-mcel.js").read_text(encoding="utf-8")
+
+    assert 'packs: options.packs || ["core-html", "core-action-risk", "git-tools-domain"]' in adapter
+    assert "summarizeSupercutRewritePreview" in adapter
+    assert "supercutPacksLoaded" in adapter
+    assert "supercutRulesFired" in adapter
+    assert "supercutBlackboardRecordCount" in adapter
+    assert "supercutRewritePreviewCount" in adapter
+    assert "supercutUnsafeActionsBlocked" in adapter
+    assert "supercutRuntimeSourceMutations" in adapter
+
+    assert "Supercut Architecture" in lab
+    assert "Rewrite preview:" in lab
+    assert "packs loaded:" in lab
+    assert "rules fired:" in lab
+    assert "blackboard records:" in lab
+    assert "rewrite-preview nodes:" in lab
+    assert "explanations ready:" in lab
+    assert "unsafe actions blocked:" in lab
+    assert "status feeds:" in lab
+    assert "rewrite preview ${enrichment.supercutRewritePreviewCount" in lab
