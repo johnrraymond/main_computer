@@ -1476,6 +1476,25 @@ _LOCAL_ACTION_SURFACE_RE = re.compile(
     r"\b(/act|bash|cmd|command|computer|mount|powershell|shell|terminal)\b",
     re.IGNORECASE,
 )
+_LOCAL_TERMINAL_INTENT_RE = re.compile(
+    r"\b(?:in|using|use|through|via|with)\s+(?:a\s+|the\s+)?(?:terminal|shell|powershell|bash|cmd)\b",
+    re.IGNORECASE,
+)
+_LOCAL_FILE_LISTING_REQUEST_RE = re.compile(
+    r"\b(?:list|show|print|display|enumerate|give\s+me)\b"
+    r"(?:(?!\b(?:from|in)\s+(?:that|the)\s+(?:output|terminal\s+output|listing)\b).){0,120}"
+    r"\b(?:all\s+)?(?:files?|directories|folders?|repo\s+tree|directory\s+tree|tree)\b"
+    r"|\b(?:files?|directories|folders?|repo\s+tree|directory\s+tree|tree)\b"
+    r".{0,80}\b(?:recursive|recursively|-recurse|recurse)\b",
+    re.IGNORECASE,
+)
+_LOCAL_EXISTING_OUTPUT_LOOKUP_RE = re.compile(
+    r"\b(?:from|in)\s+(?:that|the|previous|available|retrieved)\s+"
+    r"(?:terminal\s+)?(?:output|listing|directory\s+listing|clob\s+evidence|evidence)\b"
+    r"|\b(?:that|the|previous|available|retrieved)\s+"
+    r"(?:terminal\s+)?(?:output|listing|directory\s+listing|clob\s+evidence|evidence)\b",
+    re.IGNORECASE,
+)
 
 
 def text_console_prompt_requests_local_action(source: str) -> bool:
@@ -1491,6 +1510,12 @@ def text_console_prompt_requests_local_action(source: str) -> bool:
         return False
     lowered = text.lower()
     if "repo-edit" in lowered or "/act" in lowered:
+        return True
+    terminal_intent = bool(_LOCAL_TERMINAL_INTENT_RE.search(text))
+    existing_output_lookup = bool(_LOCAL_EXISTING_OUTPUT_LOOKUP_RE.search(text))
+    if terminal_intent:
+        return True
+    if _LOCAL_FILE_LISTING_REQUEST_RE.search(text) and not existing_output_lookup:
         return True
     if _LOCAL_ACTION_SURFACE_RE.search(text) and _LOCAL_ACTION_VERB_RE.search(text):
         return True
