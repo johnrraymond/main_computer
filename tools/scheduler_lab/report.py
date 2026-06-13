@@ -24,6 +24,16 @@ TRANSPORT_OUTAGE_RATIO = 0.90
 TRANSPORT_DEGRADED_RATIO = 0.50
 SELF_TERMINATED_OUTAGE_RATIO = 0.50
 
+PIPELINE_ADEQUACY_REQUIREMENTS = {
+    "requests_attempted": 20,
+    "requests_accepted": 10,
+    "worker_heartbeats": 20,
+    "worker_polls": 20,
+    "leases": 10,
+    "executions_started": 10,
+    "results_success": 10,
+}
+
 
 def _safe_text(value: Any, default: str = "") -> str:
     text = str(value if value is not None else default).strip()
@@ -215,6 +225,81 @@ class EndpointMetrics:
             "leases": self.leases,
             "result_success": self.result_success,
         }
+
+
+@dataclass(frozen=True)
+class PipelineStageAdequacy:
+    stage: str
+    observed: int
+    required: int
+
+    @property
+    def usable(self) -> str:
+        if self.observed >= self.required:
+            return "yes"
+        if self.observed > 0:
+            return "partial"
+        return "no"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "stage": self.stage,
+            "observed": self.observed,
+            "required": self.required,
+            "usable": self.usable,
+        }
+
+
+def _pipeline_stage(stage: str, observed: int) -> PipelineStageAdequacy:
+    return PipelineStageAdequacy(stage=stage, observed=int(observed), required=int(PIPELINE_ADEQUACY_REQUIREMENTS[stage]))
+
+
+def assess_pipeline_adequacy(nodes: list["NodeMetrics"]) -> dict[str, Any]:
+    observed = [node for node in nodes if node.event_counts]
+    totals = {
+        "requests_attempted": sum(node.request_attempts for node in observed),
+        "requests_accepted": sum(node.request_accepted for node in observed),
+        "worker_heartbeats": sum(node.heartbeats for node in observed),
+        "worker_polls": sum(node.polls for node in observed),
+        "leases": sum(node.leases for node in observed),
+        "executions_started": sum(node.execution_started for node in observed),
+        "results_success": sum(node.result_success for node in observed),
+    }
+    stages = [_pipeline_stage(stage, totals[stage]) for stage in PIPELINE_ADEQUACY_REQUIREMENTS]
+    requester_samples_usable = (
+        totals["requests_attempted"] >= PIPELINE_ADEQUACY_REQUIREMENTS["requests_attempted"]
+        and totals["requests_accepted"] >= PIPELINE_ADEQUACY_REQUIREMENTS["requests_accepted"]
+    )
+    worker_pipeline_usable = (
+        totals["worker_polls"] >= PIPELINE_ADEQUACY_REQUIREMENTS["worker_polls"]
+        and (
+            totals["leases"] >= PIPELINE_ADEQUACY_REQUIREMENTS["leases"]
+            or totals["executions_started"] >= PIPELINE_ADEQUACY_REQUIREMENTS["executions_started"]
+            or totals["results_success"] >= PIPELINE_ADEQUACY_REQUIREMENTS["results_success"]
+        )
+    )
+    if requester_samples_usable and worker_pipeline_usable:
+        recommendation = "Run has enough requester and worker-pipeline samples for reliability scoring."
+    elif requester_samples_usable:
+        recommendation = (
+            "Run is not usable for worker reliability scoring: requester samples exist, "
+            "but worker heartbeat/poll/lease/execution/result samples are inadequate."
+        )
+    elif worker_pipeline_usable:
+        recommendation = (
+            "Run has worker-pipeline samples, but requester samples are inadequate for requester reliability scoring."
+        )
+    else:
+        recommendation = (
+            "Run is not usable for reliability scoring: requester and worker-pipeline sample minimums were not met."
+        )
+    return {
+        "stages": [stage.to_dict() for stage in stages],
+        "requester_samples_usable": requester_samples_usable,
+        "worker_pipeline_usable": worker_pipeline_usable,
+        "usable_for_worker_reliability_scoring": requester_samples_usable and worker_pipeline_usable,
+        "recommendation": recommendation,
+    }
 
 
 def aggregate_endpoint_metrics(nodes: list["NodeMetrics"]) -> list[EndpointMetrics]:
@@ -523,6 +608,7 @@ class RunHealth:
     failure_scope: str = "unknown_endpoint_scope"
     top_transport_endpoint: str | None = None
     endpoint_breakdown: list[dict[str, Any]] = field(default_factory=list)
+    pipeline_adequacy: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -543,6 +629,7 @@ class RunHealth:
             "failure_scope": self.failure_scope,
             "top_transport_endpoint": self.top_transport_endpoint,
             "endpoint_breakdown": self.endpoint_breakdown,
+            "pipeline_adequacy": self.pipeline_adequacy,
         }
 
 
@@ -559,6 +646,7 @@ CATEGORY_EXPLANATIONS = {
     "not_observed": "The node was listed but no behavior events were found.",
     "unscored_transport_outage": "The run had a shared transport outage, so the report preserves raw evidence but does not blame the node.",
     "unscored_no_valid_market_activity": "The run had no accepted requests, leases, or successful results, so individual scoring would be misleading.",
+    "unscored_sample_inadequate": "The run had some market activity, but not enough requester and worker-pipeline samples to score reliability.",
 }
 
 
@@ -569,6 +657,8 @@ def categorize_node(metrics: NodeMetrics, health: RunHealth) -> str:
     if not health.score_nodes:
         if health.category in {"transport_outage", "transport_degraded"}:
             return "unscored_transport_outage"
+        if health.category == "sample_inadequate":
+            return "unscored_sample_inadequate"
         return "unscored_no_valid_market_activity"
 
     transport = metrics.transport_success_percent
@@ -607,6 +697,7 @@ def categorize_node(metrics: NodeMetrics, health: RunHealth) -> str:
 def assess_run_health(nodes: list[NodeMetrics]) -> RunHealth:
     observed = [node for node in nodes if node.event_counts]
     endpoint_breakdown = [endpoint.to_dict() for endpoint in aggregate_endpoint_metrics(observed)]
+    pipeline_adequacy = assess_pipeline_adequacy(nodes)
     failure_scope, top_transport_endpoint = classify_failure_scope(endpoint_breakdown, 0.0)
 
     def scoped(health: RunHealth) -> RunHealth:
@@ -614,6 +705,7 @@ def assess_run_health(nodes: list[NodeMetrics]) -> RunHealth:
         health.failure_scope = scope
         health.top_transport_endpoint = top_endpoint
         health.endpoint_breakdown = endpoint_breakdown
+        health.pipeline_adequacy = pipeline_adequacy
         return health
 
     total_http = sum(node.http_attempts for node in observed)
@@ -724,6 +816,24 @@ def assess_run_health(nodes: list[NodeMetrics]) -> RunHealth:
                 "The run had HTTP reachability but no accepted requests, worker leases, "
                 "or successful worker results. Raw metrics are shown, but node scoring is suppressed."
             ),
+            total_http_attempts=total_http,
+            transport_failures=transport_failures,
+            synthetic_transport_failure_events=synthetic_transport_failures,
+            transport_failure_ratio=transport_ratio,
+            node_count=len(nodes),
+            observed_node_count=len(observed),
+            self_terminated_b2b_nodes=self_terminated_nodes,
+            market_activity_count=market_activity,
+            request_accepted=request_accepted,
+            leases=leases,
+            result_success=result_success,
+        ))
+
+    if not pipeline_adequacy.get("usable_for_worker_reliability_scoring"):
+        return scoped(RunHealth(
+            category="sample_inadequate",
+            score_nodes=False,
+            reason=str(pipeline_adequacy.get("recommendation") or "The run did not meet sample minimums for reliability scoring."),
             total_http_attempts=total_http,
             transport_failures=transport_failures,
             synthetic_transport_failure_events=synthetic_transport_failures,
@@ -927,6 +1037,7 @@ def build_report(output_dir: Path, run_id: str | None = None) -> dict[str, Any]:
         "event_files": [str(path) for path in event_files],
         "events_read": events_read,
         "run_health": health.to_dict(),
+        "pipeline_adequacy": health.pipeline_adequacy,
         "node_count": len(nodes),
         "observed_node_count": sum(1 for node in nodes if node.event_counts),
         "average_reliability_percent": average,
@@ -982,6 +1093,27 @@ def render_markdown(report: dict[str, Any]) -> str:
                 "",
             ]
         )
+
+    pipeline_adequacy = report.get("pipeline_adequacy") or health.get("pipeline_adequacy") or {}
+    if pipeline_adequacy:
+        lines.extend(["## Pipeline Adequacy", ""])
+        lines.append(str(pipeline_adequacy.get("recommendation") or ""))
+        lines.append("")
+        lines.append(
+            _markdown_table(
+                ["stage", "observed", "required", "usable"],
+                [
+                    [
+                        stage.get("stage", ""),
+                        stage.get("observed", 0),
+                        stage.get("required", 0),
+                        stage.get("usable", "no"),
+                    ]
+                    for stage in pipeline_adequacy.get("stages", [])
+                ],
+            )
+        )
+        lines.append("")
 
     endpoint_breakdown = health.get("endpoint_breakdown") or []
     if endpoint_breakdown:

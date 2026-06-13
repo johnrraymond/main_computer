@@ -56,12 +56,65 @@ available in the prompt.
 
 Rules:
 - Use only the supplied grounding_evidence lines as runtime evidence.
-- Cite at least one evidence_id exactly, or quote exact retrieved text.
+- Treat evidence_id and clob_id values as internal proof labels only.
+- Do not print evidence_id values, clob_id values, or clob-evidence-* labels in
+  the user-facing answer.
+- Ground the answer by quoting exact retrieved text or by naming the relevant
+  file/path/line content in normal user-facing language.
 - Keep the answer concise.
 - Do not request Terminal actions, repo edits, or computer mounts in this path.
 - If the evidence is insufficient, say that the clob lookup evidence is
-  insufficient and mention the closest evidence_id values.
+  insufficient and quote the closest retrieved text, not internal IDs.
 """
+
+
+_PUBLIC_CLOB_EVIDENCE_PARENS_RE = re.compile(
+    r"\s*\(\s*(?:evidence[_\s-]*id|clob[_\s-]*id)\s*=\s*"
+    r"(?:clob-evidence-\d{3,}|clob-[A-Za-z0-9][A-Za-z0-9_.-]{8,})\s*\)",
+    re.IGNORECASE,
+)
+_PUBLIC_CLOB_EVIDENCE_ASSIGNMENT_RE = re.compile(
+    r"\b(?:evidence[_\s-]*id|evidence)\s*[:=]\s*clob-evidence-\d{3,}\b\s*[:;,.-]?\s*",
+    re.IGNORECASE,
+)
+_PUBLIC_CLOB_EVIDENCE_TOKEN_RE = re.compile(
+    r"\bclob-evidence-\d{3,}\b\s*[:;,.-]?\s*",
+    re.IGNORECASE,
+)
+_PUBLIC_CLOB_ID_ASSIGNMENT_RE = re.compile(
+    r"\bclob[_\s-]*id\s*[:=]\s*clob-[A-Za-z0-9][A-Za-z0-9_.-]{8,}\b\s*[:;,.-]?\s*",
+    re.IGNORECASE,
+)
+_PUBLIC_CLOB_ID_TOKEN_RE = re.compile(
+    r"\bclob-[A-Za-z0-9][A-Za-z0-9_.-]{8,}\b\s*[:;,.-]?\s*",
+    re.IGNORECASE,
+)
+
+
+def sanitize_text_console_clob_public_answer(content: str) -> str:
+    """Remove internal clob proof labels from user-facing answers.
+
+    The model is still allowed to see evidence_id values in the hidden prompt so
+    tests and server metadata can verify runtime grounding.  Those labels are
+    implementation details, though, and should not be displayed to users as
+    citations.
+    """
+
+    public = str(content or "")
+    if not public:
+        return public
+    public = _PUBLIC_CLOB_EVIDENCE_PARENS_RE.sub("", public)
+    public = _PUBLIC_CLOB_EVIDENCE_ASSIGNMENT_RE.sub("", public)
+    public = _PUBLIC_CLOB_EVIDENCE_TOKEN_RE.sub("", public)
+    public = _PUBLIC_CLOB_ID_ASSIGNMENT_RE.sub("", public)
+    public = _PUBLIC_CLOB_ID_TOKEN_RE.sub("", public)
+    public = re.sub(r"[ \t]+\n", "\n", public)
+    public = re.sub(r"\n{3,}", "\n\n", public)
+    public = re.sub(r"[ \t]{2,}", " ", public)
+    public = re.sub(r"\s+([,.;:])", r"\1", public)
+    public = re.sub(r"\b(in|from|via)\s*:\s*", r"\1 ", public, flags=re.IGNORECASE)
+    public = re.sub(r"\(\s*\)", "", public)
+    return public.strip()
 
 
 @dataclass(frozen=True)
@@ -1505,7 +1558,8 @@ def run_text_console_clob_grounded_answer(
         clob_lookup_text=clob_lookup_text,
     )
     provider_response = computer.provider.chat(messages)
-    content = str(getattr(provider_response, "content", "") or "")
+    raw_content = str(getattr(provider_response, "content", "") or "")
+    content = sanitize_text_console_clob_public_answer(raw_content)
     metadata = dict(getattr(provider_response, "metadata", {}) or {})
     request_bytes = text_console_request_bytes(
         messages,
@@ -1534,6 +1588,8 @@ def run_text_console_clob_grounded_answer(
                     model=text_console_config.model,
                     think=text_console_config.ollama_think,
                 ),
+                "public_answer_sanitized": raw_content != content,
+                "raw_content_sha256": hashlib.sha256(raw_content.encode("utf-8")).hexdigest(),
                 "bypassed_operator_preflight": True,
                 "bypassed_action_specs": True,
                 "bypassed_thread_messages": True,

@@ -338,7 +338,6 @@ def launch_scheduler_lab_docker(args: argparse.Namespace, *, hub_base_urls: Sequ
             "LAB_ROLE": str(args.docker_role),
             "LAB_TOTAL": str(total_nodes),
             "LAB_NODES": str(total_nodes),
-            "LAB_DURATION_SECONDS": str(float(args.docker_duration_seconds)),
             "LAB_WORKTIME": str(args.worktime or ""),
             "LAB_FUNDED": str(args.funded),
             "LAB_REQUEST_STARTUP_MODE": str(args.request_startup_mode),
@@ -346,11 +345,24 @@ def launch_scheduler_lab_docker(args: argparse.Namespace, *, hub_base_urls: Sequ
             "LAB_EXECUTION_MODE": str(args.lab_execution),
             "LAB_WARM": str(args.warm or ""),
             "B2B_FAILURES": str(int(args.b2bfailures)),
-            "FORCED_ALIVE_SECONDS": str(float(args.forced_alive)),
             "HTTP_TIMEOUT_SECONDS": str(float(args.http_timeout_seconds)),
             "LEASE_SECONDS": str(float(args.lease_seconds)),
         }
     )
+    if args.docker_duration_seconds is not None:
+        env["LAB_DURATION_SECONDS"] = str(float(args.docker_duration_seconds))
+    else:
+        # Compose files may use their own ${LAB_DURATION_SECONDS:-300} fallback.
+        # Pass an explicit nonnumeric sentinel so the worker-lab process can
+        # bypass compose defaults and derive from LAB_WORKTIME/default minimum.
+        env["LAB_DURATION_SECONDS"] = "auto"
+    if args.forced_alive is not None:
+        env["FORCED_ALIVE_SECONDS"] = str(float(args.forced_alive))
+    else:
+        # Same pattern for compose defaults: the worker-lab treats this as
+        # "derive from the resolved observation window".
+        env["FORCED_ALIVE_SECONDS"] = "duration"
+
     if args.docker_workers is not None:
         env["LAB_WORKERS"] = str(args.docker_workers)
     else:
@@ -388,7 +400,14 @@ def launch_scheduler_lab_docker(args: argparse.Namespace, *, hub_base_urls: Sequ
     print(f"Scheduler lab request startup: {args.request_startup_mode} over {float(args.request_startup_spread_seconds):g}s")
     print(f"Scheduler lab warm-up delay: {args.warm or 'none'}")
     print(f"Scheduler lab b2b transport failure limit: {int(args.b2bfailures)}")
-    print(f"Scheduler lab forced-alive grace seconds: {float(args.forced_alive):g}")
+    if args.docker_duration_seconds is None:
+        print("Scheduler lab duration seconds: derived by worker-lab from worktime/default minimum")
+    else:
+        print(f"Scheduler lab duration seconds: {float(args.docker_duration_seconds):g}")
+    if args.forced_alive is None:
+        print("Scheduler lab forced-alive grace seconds: derived from resolved worker-lab observation duration")
+    else:
+        print(f"Scheduler lab forced-alive grace seconds: {float(args.forced_alive):g}")
     print(f"Scheduler lab HTTP timeout seconds: {float(args.http_timeout_seconds):g}")
     if args.worktime:
         print(f"Scheduler lab worker result runtime: {args.worktime} (seconds; sigma is standard deviation)")
@@ -465,7 +484,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--nodes", type=int, default=None, help="Total generated scheduler lab nodes for Docker experiments, for example --nodes 1000.")
     parser.add_argument("--docker-workers", type=int, default=None, help="Optional worker-capable generated node count.")
     parser.add_argument("--docker-requesters", type=int, default=None, help="Optional requester-capable generated node count.")
-    parser.add_argument("--docker-duration-seconds", type=float, default=300.0, help="How long the scheduler lab Docker side should run.")
+    parser.add_argument(
+        "--docker-duration-seconds",
+        type=float,
+        default=None,
+        help="Explicit scheduler lab Docker observation duration. If omitted, the worker-lab derives max(900, 3*worktime_mu + worktime_sigma).",
+    )
     parser.add_argument(
         "--worktime",
         default="",
@@ -492,7 +516,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lab-execution", choices=["process", "async"], default="process", help="Docker lab execution model. process starts one OS child process per node.")
     parser.add_argument("--warm", default="", help="Docker node warm-up delay distribution in seconds before first hub contact, e.g. --warm 2mu,1sigma.")
     parser.add_argument("--b2bfailures", type=int, default=10, help="Consecutive transport failures before each node process self-terminates after --forced-alive has elapsed. 0 disables.")
-    parser.add_argument("--forced-alive", type=float, default=0.0, help="Seconds each Docker node must stay alive before --b2bfailures can self-terminate it, for example --forced-alive 100.")
+    parser.add_argument(
+        "--forced-alive",
+        type=float,
+        default=None,
+        help="Optional seconds each Docker node must stay alive before --b2bfailures can self-terminate it. If omitted, the worker-lab keeps nodes alive for the resolved observation duration.",
+    )
     parser.add_argument("--http-timeout-seconds", type=float, default=1.0, help="Short per-attempt hub HTTP timeout used by Docker node processes.")
     parser.add_argument("--lease-seconds", type=float, default=180.0, help="Lease duration advertised by Docker workers when polling. Increase this above expected --worktime.")
     parser.add_argument("--docker-output-dir", type=Path, default=DEFAULT_EXP_FDB_DOCKER_OUTPUT_DIR, help="Repository-relative output directory for scheduler lab events.")
@@ -537,7 +566,9 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--request-startup-spread-seconds must be >= 0")
     if args.b2bfailures < 0:
         raise SystemExit("--b2bfailures must be >= 0")
-    if args.forced_alive < 0:
+    if args.docker_duration_seconds is not None and args.docker_duration_seconds <= 0:
+        raise SystemExit("--docker-duration-seconds must be > 0")
+    if args.forced_alive is not None and args.forced_alive < 0:
         raise SystemExit("--forced-alive must be >= 0")
     if args.http_timeout_seconds <= 0:
         raise SystemExit("--http-timeout-seconds must be > 0")

@@ -12,6 +12,7 @@ from main_computer.text_console_clobs import (
     response_uses_text_console_clob_evidence,
     save_text_console_clob,
 )
+from main_computer.text_console import sanitize_text_console_clob_public_answer
 
 
 def test_large_terminal_stdout_is_saved_as_side_loaded_clob(tmp_path: Path):
@@ -151,6 +152,23 @@ def test_clob_lookup_context_makes_runtime_evidence_grounding_explicit(tmp_path:
     assert plausible_but_ungrounded["ok"] is False
 
 
+def test_clob_public_answer_sanitizer_removes_internal_evidence_tags_but_keeps_content():
+    response = (
+        "Specific examples include:\n"
+        "* rag_assisted_thinking.py (evidence_id=clob-evidence-001)\n"
+        "* recurrent_thinking.py (evidence_id=clob-evidence-010)\n"
+        "The answer is in clob-evidence-011: thinking_models.py"
+    )
+
+    public = sanitize_text_console_clob_public_answer(response)
+
+    assert "clob-evidence-" not in public
+    assert "evidence_id=" not in public
+    assert "rag_assisted_thinking.py" in public
+    assert "recurrent_thinking.py" in public
+    assert "thinking_models.py" in public
+
+
 def _copy_action_specs_for_test_repo(repo: Path) -> None:
     source = Path(__file__).resolve().parents[1] / "main_computer" / "action_specs"
     target = repo / "main_computer" / "action_specs"
@@ -225,7 +243,7 @@ def test_terminal_output_clob_followup_reaches_operator_as_bounded_grounding_sli
             assert "critical/runtime/path.txt contains the answer token" in joined
             assert "irrelevant/path/0080.py" not in joined
             return ChatResponse(
-                content="The answer is in clob-evidence-001: critical/runtime/path.txt contains the answer token.",
+                content="The answer is: critical/runtime/path.txt contains the answer token.",
                 provider="fake",
                 model="fake-model",
             )
@@ -266,9 +284,12 @@ def test_terminal_output_clob_followup_reaches_operator_as_bounded_grounding_sli
     grounding = response_uses_text_console_clob_evidence(response.content, lookup_metadata)
 
     assert len(calls) == 2
-    assert response.content.startswith("The answer is in clob-evidence-001")
+    assert "clob-evidence-" not in response.content
+    assert "evidence_id=" not in response.content
+    assert "critical/runtime/path.txt contains the answer token" in response.content
     assert grounding["ok"] is True
-    assert grounding["matched_ids"] == ["clob-evidence-001"]
+    assert grounding["matched_ids"] == []
+    assert grounding["matched_texts"] == ["critical/runtime/path.txt contains the answer token"]
 
 
 
@@ -352,8 +373,13 @@ def test_clob_grounded_answer_path_bypasses_operator_scaffold_and_thread_bulk(
     assert response.metadata["text_console_clob_grounded_answer"]["bypassed_action_specs"] is True
     assert response.metadata["text_console_clob_grounded_answer"]["bypassed_thread_messages"] is True
     assert response.metadata["text_console_clob_grounded_answer"]["input_chars"] < 3000
+    assert "clob-evidence-" not in response.content
+    assert "evidence_id=" not in response.content
+    assert "critical/runtime/path.txt contains the answer token" in response.content
+    assert response.metadata["text_console_clob_grounded_answer"]["public_answer_sanitized"] is True
     assert grounding["ok"] is True
-    assert grounding["matched_ids"] == ["clob-evidence-001"]
+    assert grounding["matched_ids"] == []
+    assert grounding["matched_texts"] == ["critical/runtime/path.txt contains the answer token"]
 
 
 def test_clob_lookup_followup_action_heuristic_keeps_actions_on_operator_path():
