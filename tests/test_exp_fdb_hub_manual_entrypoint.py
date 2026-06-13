@@ -33,6 +33,8 @@ def test_exp_fdb_hub_entrypoint_is_manual_and_declares_fdb_options() -> None:
     assert "--lab-execution" in module
     assert "--http-timeout-seconds" in module
     assert "ExperimentalFoundationDbHubServerHandler" in module
+    assert "Worker route diagnostics:" in module
+    assert "HUB_WORKER_ROUTE_DIAGNOSTICS" in module
     assert "flush=True" in module
     assert "FoundationDB Docker cluster" in module
 

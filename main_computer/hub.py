@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import sys
 import threading
 import time
 from decimal import Decimal, InvalidOperation, ROUND_CEILING
@@ -1021,6 +1023,61 @@ class _JsonHandler(BaseHTTPRequestHandler):
         if getattr(self.server, "verbose", False):
             super().log_message(format, *args)
 
+    def _worker_route_diagnostics_enabled(self) -> bool:
+        raw = str(os.environ.get("HUB_WORKER_ROUTE_DIAGNOSTICS", "")).strip().lower()
+        if raw in {"0", "false", "no", "off"}:
+            return False
+        if raw in {"1", "true", "yes", "on"}:
+            return True
+        return bool(getattr(self.server, "worker_route_diagnostics", False))
+
+    def _next_worker_route_diag_id(self) -> int:
+        lock = getattr(self.server, "worker_route_diag_lock", None)
+        if lock is None:
+            self.server.worker_route_diag_lock = threading.Lock()
+            self.server.worker_route_diag_sequence = 0
+            lock = self.server.worker_route_diag_lock
+        with lock:
+            value = int(getattr(self.server, "worker_route_diag_sequence", 0) or 0) + 1
+            self.server.worker_route_diag_sequence = value
+            return value
+
+    def _worker_route_diag_start(self, route: str, path: str) -> tuple[int, float]:
+        diag_id = self._next_worker_route_diag_id()
+        started_at = time.perf_counter()
+        self._worker_route_diag_step(diag_id, route, "start", started_at, path=path)
+        return diag_id, started_at
+
+    def _worker_route_diag_step(self, diag_id: int, route: str, stage: str, started_at: float, **fields: Any) -> None:
+        if not self._worker_route_diagnostics_enabled():
+            return
+        port = getattr(self.server, "server_port", "")
+        payload: dict[str, Any] = {
+            "event": "hub.worker_route.diagnostic",
+            "route": route,
+            "stage": stage,
+            "diag_id": int(diag_id),
+            "elapsed_ms": round((time.perf_counter() - started_at) * 1000.0, 3),
+            "port": port,
+            "client": self.client_address[0] if self.client_address else "",
+            "thread": threading.current_thread().name,
+        }
+        for key, value in fields.items():
+            if value is None:
+                continue
+            if isinstance(value, (str, int, float, bool)):
+                payload[key] = value
+            elif isinstance(value, (list, tuple, set)):
+                payload[key] = [str(item) for item in list(value)[:20]]
+            elif isinstance(value, dict):
+                payload[key] = {str(k): str(v) for k, v in list(value.items())[:20]}
+            else:
+                payload[key] = str(value)
+        try:
+            print(f"[hub-worker-route:{port}] {json.dumps(payload, sort_keys=True)}", file=sys.stderr, flush=True)
+        except Exception:
+            pass
+
     def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0") or "0")
         raw = self.rfile.read(length) if length else b"{}"
@@ -1058,6 +1115,9 @@ class _JsonHandler(BaseHTTPRequestHandler):
 class HubHttpServer(ThreadingHTTPServer):
     def __init__(self, server_address: tuple[str, int], config: MainComputerConfig, *, verbose: bool = True) -> None:
         super().__init__(server_address, HubServerHandler)
+        self.worker_route_diagnostics = str(os.environ.get("HUB_WORKER_ROUTE_DIAGNOSTICS", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        self.worker_route_diag_lock = threading.Lock()
+        self.worker_route_diag_sequence = 0
         hub_root = config.hub_root
         if not hub_root.is_absolute():
             hub_root = Path.cwd().resolve() / hub_root
@@ -2408,99 +2468,255 @@ class HubServerHandler(_JsonHandler):
                     self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
             if path in {"/api/hub/workers/register", "/api/hub/v1/workers/register"}:
-                body = self._read_json()
-                capabilities = dict(body.get("capabilities", {})) if isinstance(body.get("capabilities"), dict) else {}
-                pricing = dict(body.get("pricing", {})) if isinstance(body.get("pricing"), dict) else {}
-                execution = dict(body.get("execution", {})) if isinstance(body.get("execution"), dict) else {}
-                if pricing:
-                    capabilities["pricing"] = pricing
-                if execution:
-                    capabilities["execution"] = execution
-                if body.get("execution_mode") is not None:
-                    capabilities["execution_mode"] = str(body.get("execution_mode") or "")
-                raw_price = body.get("credits_per_request")
-                if raw_price is None and pricing:
-                    raw_price = pricing.get("credits_per_request")
-                pricing_type = str(pricing.get("pricing_type") or pricing.get("type") or "").strip().lower()
-                if pricing_type in {"none", "unpriced", "unpriced_v0"}:
-                    capabilities["phase9_unpriced"] = True
-                    raw_price = self.server.config.hub_credits_per_request
-                worker = self.server.registry.register_worker(
-                    node_id=str(body.get("node_id", "")),
-                    endpoint=str(body.get("endpoint", "")),
-                    model=str(body.get("model", "")),
-                    models=[str(item) for item in body.get("models", [])] if isinstance(body.get("models"), list) else None,
-                    capabilities=capabilities,
-                    credits_per_request=int(raw_price if raw_price is not None else self.server.config.hub_credits_per_request),
-                    settlement_precision_places=body.get("settlement_precision_places"),
-                    queue_depth=int(body.get("queue_depth", 0) or 0),
-                    active_requests=int(body.get("active_requests", 0) or 0),
-                    max_concurrency=int(body.get("max_concurrency", 1) or 1),
-                )
-                self.server.energy_ledger.register_node(worker.node_id, "gpu-worker", worker.endpoint)
-                self._send_json({"ok": True, "worker": worker.as_dict(), "hub": self.server.registry.status()})
-                return
-            if path in {"/api/hub/v1/workers/heartbeat", "/api/hub/workers/heartbeat"}:
-                body = self._read_json()
-                worker_id = str(body.get("worker_node_id") or body.get("node_id") or "").strip()
-                if not worker_id:
-                    raise ValueError("worker_node_id is required.")
-                worker = self.server.registry.heartbeat_worker(
-                    worker_id,
-                    status=str(body.get("status", "available")),
-                    model=str(body.get("model", "")),
-                    models=[str(item) for item in body.get("models", [])] if isinstance(body.get("models"), list) else None,
-                    capabilities=dict(body.get("capabilities", {})) if isinstance(body.get("capabilities"), dict) else None,
-                    queue_depth=int(body.get("queue_depth")) if body.get("queue_depth") is not None else None,
-                    active_requests=int(body.get("active_requests")) if body.get("active_requests") is not None else None,
-                    max_concurrency=int(body.get("max_concurrency")) if body.get("max_concurrency") is not None else None,
-                )
-                self._send_json({"ok": True, "worker": worker.as_dict(), "hub": self.server.registry.status()})
-                return
-            if path.startswith("/api/hub/v1/workers/") and path.endswith("/heartbeat"):
-                body = self._read_json()
-                worker_id = path.removeprefix("/api/hub/v1/workers/").removesuffix("/heartbeat").strip("/")
-                if not worker_id or "/" in worker_id:
-                    self.send_error(HTTPStatus.NOT_FOUND)
+                diag_id, diag_started_at = self._worker_route_diag_start("worker.register", path)
+                try:
+                    self._worker_route_diag_step(diag_id, "worker.register", "read_json.start", diag_started_at)
+                    body = self._read_json()
+                    self._worker_route_diag_step(
+                        diag_id,
+                        "worker.register",
+                        "read_json.done",
+                        diag_started_at,
+                        node_id=str(body.get("node_id", "")),
+                        body_keys=sorted(str(key) for key in body.keys()),
+                    )
+                    capabilities = dict(body.get("capabilities", {})) if isinstance(body.get("capabilities"), dict) else {}
+                    pricing = dict(body.get("pricing", {})) if isinstance(body.get("pricing"), dict) else {}
+                    execution = dict(body.get("execution", {})) if isinstance(body.get("execution"), dict) else {}
+                    if pricing:
+                        capabilities["pricing"] = pricing
+                    if execution:
+                        capabilities["execution"] = execution
+                    if body.get("execution_mode") is not None:
+                        capabilities["execution_mode"] = str(body.get("execution_mode") or "")
+                    raw_price = body.get("credits_per_request")
+                    if raw_price is None and pricing:
+                        raw_price = pricing.get("credits_per_request")
+                    pricing_type = str(pricing.get("pricing_type") or pricing.get("type") or "").strip().lower()
+                    if pricing_type in {"none", "unpriced", "unpriced_v0"}:
+                        capabilities["phase9_unpriced"] = True
+                        raw_price = self.server.config.hub_credits_per_request
+                    self._worker_route_diag_step(diag_id, "worker.register", "registry.register_worker.start", diag_started_at)
+                    worker = self.server.registry.register_worker(
+                        node_id=str(body.get("node_id", "")),
+                        endpoint=str(body.get("endpoint", "")),
+                        model=str(body.get("model", "")),
+                        models=[str(item) for item in body.get("models", [])] if isinstance(body.get("models"), list) else None,
+                        capabilities=capabilities,
+                        credits_per_request=int(raw_price if raw_price is not None else self.server.config.hub_credits_per_request),
+                        settlement_precision_places=body.get("settlement_precision_places"),
+                        queue_depth=int(body.get("queue_depth", 0) or 0),
+                        active_requests=int(body.get("active_requests", 0) or 0),
+                        max_concurrency=int(body.get("max_concurrency", 1) or 1),
+                    )
+                    self._worker_route_diag_step(
+                        diag_id,
+                        "worker.register",
+                        "registry.register_worker.done",
+                        diag_started_at,
+                        worker_node_id=worker.node_id,
+                    )
+                    self._worker_route_diag_step(diag_id, "worker.register", "energy_ledger.register_node.start", diag_started_at, worker_node_id=worker.node_id)
+                    self.server.energy_ledger.register_node(worker.node_id, "gpu-worker", worker.endpoint)
+                    self._worker_route_diag_step(diag_id, "worker.register", "energy_ledger.register_node.done", diag_started_at, worker_node_id=worker.node_id)
+                    self._worker_route_diag_step(diag_id, "worker.register", "registry.status.start", diag_started_at)
+                    registry_status = self.server.registry.status()
+                    self._worker_route_diag_step(diag_id, "worker.register", "registry.status.done", diag_started_at)
+                    self._worker_route_diag_step(diag_id, "worker.register", "send_json.start", diag_started_at, status=200)
+                    self._send_json({"ok": True, "worker": worker.as_dict(), "hub": registry_status})
+                    self._worker_route_diag_step(diag_id, "worker.register", "send_json.done", diag_started_at, status=200)
                     return
-                worker = self.server.registry.heartbeat_worker(
-                    worker_id,
-                    status=str(body.get("status", "available")),
-                    model=str(body.get("model", "")),
-                    models=[str(item) for item in body.get("models", [])] if isinstance(body.get("models"), list) else None,
-                    capabilities=dict(body.get("capabilities", {})) if isinstance(body.get("capabilities"), dict) else None,
-                    queue_depth=int(body.get("queue_depth")) if body.get("queue_depth") is not None else None,
-                    active_requests=int(body.get("active_requests")) if body.get("active_requests") is not None else None,
-                    max_concurrency=int(body.get("max_concurrency")) if body.get("max_concurrency") is not None else None,
-                )
-                self._send_json({"ok": True, "worker": worker.as_dict(), "hub": self.server.registry.status()})
-                return
+                except Exception as exc:
+                    self._worker_route_diag_step(
+                        diag_id,
+                        "worker.register",
+                        "exception",
+                        diag_started_at,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                    raise
+            if path in {"/api/hub/v1/workers/heartbeat", "/api/hub/workers/heartbeat"}:
+                diag_id, diag_started_at = self._worker_route_diag_start("worker.heartbeat", path)
+                try:
+                    self._worker_route_diag_step(diag_id, "worker.heartbeat", "read_json.start", diag_started_at)
+                    body = self._read_json()
+                    worker_id = str(body.get("worker_node_id") or body.get("node_id") or "").strip()
+                    self._worker_route_diag_step(
+                        diag_id,
+                        "worker.heartbeat",
+                        "read_json.done",
+                        diag_started_at,
+                        worker_node_id=worker_id,
+                        body_keys=sorted(str(key) for key in body.keys()),
+                    )
+                    if not worker_id:
+                        raise ValueError("worker_node_id is required.")
+                    self._worker_route_diag_step(diag_id, "worker.heartbeat", "registry.heartbeat_worker.start", diag_started_at, worker_node_id=worker_id)
+                    worker = self.server.registry.heartbeat_worker(
+                        worker_id,
+                        status=str(body.get("status", "available")),
+                        model=str(body.get("model", "")),
+                        models=[str(item) for item in body.get("models", [])] if isinstance(body.get("models"), list) else None,
+                        capabilities=dict(body.get("capabilities", {})) if isinstance(body.get("capabilities"), dict) else None,
+                        queue_depth=int(body.get("queue_depth")) if body.get("queue_depth") is not None else None,
+                        active_requests=int(body.get("active_requests")) if body.get("active_requests") is not None else None,
+                        max_concurrency=int(body.get("max_concurrency")) if body.get("max_concurrency") is not None else None,
+                    )
+                    self._worker_route_diag_step(diag_id, "worker.heartbeat", "registry.heartbeat_worker.done", diag_started_at, worker_node_id=worker.node_id)
+                    self._worker_route_diag_step(diag_id, "worker.heartbeat", "registry.status.start", diag_started_at)
+                    registry_status = self.server.registry.status()
+                    self._worker_route_diag_step(diag_id, "worker.heartbeat", "registry.status.done", diag_started_at)
+                    self._worker_route_diag_step(diag_id, "worker.heartbeat", "send_json.start", diag_started_at, status=200)
+                    self._send_json({"ok": True, "worker": worker.as_dict(), "hub": registry_status})
+                    self._worker_route_diag_step(diag_id, "worker.heartbeat", "send_json.done", diag_started_at, status=200)
+                    return
+                except Exception as exc:
+                    self._worker_route_diag_step(
+                        diag_id,
+                        "worker.heartbeat",
+                        "exception",
+                        diag_started_at,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                    raise
+            if path.startswith("/api/hub/v1/workers/") and path.endswith("/heartbeat"):
+                diag_id, diag_started_at = self._worker_route_diag_start("worker.heartbeat_by_id", path)
+                try:
+                    self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "read_json.start", diag_started_at)
+                    body = self._read_json()
+                    worker_id = path.removeprefix("/api/hub/v1/workers/").removesuffix("/heartbeat").strip("/")
+                    self._worker_route_diag_step(
+                        diag_id,
+                        "worker.heartbeat_by_id",
+                        "read_json.done",
+                        diag_started_at,
+                        worker_node_id=worker_id,
+                        body_keys=sorted(str(key) for key in body.keys()),
+                    )
+                    if not worker_id or "/" in worker_id:
+                        self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "send_error.start", diag_started_at, status=404)
+                        self.send_error(HTTPStatus.NOT_FOUND)
+                        self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "send_error.done", diag_started_at, status=404)
+                        return
+                    self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "registry.heartbeat_worker.start", diag_started_at, worker_node_id=worker_id)
+                    worker = self.server.registry.heartbeat_worker(
+                        worker_id,
+                        status=str(body.get("status", "available")),
+                        model=str(body.get("model", "")),
+                        models=[str(item) for item in body.get("models", [])] if isinstance(body.get("models"), list) else None,
+                        capabilities=dict(body.get("capabilities", {})) if isinstance(body.get("capabilities"), dict) else None,
+                        queue_depth=int(body.get("queue_depth")) if body.get("queue_depth") is not None else None,
+                        active_requests=int(body.get("active_requests")) if body.get("active_requests") is not None else None,
+                        max_concurrency=int(body.get("max_concurrency")) if body.get("max_concurrency") is not None else None,
+                    )
+                    self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "registry.heartbeat_worker.done", diag_started_at, worker_node_id=worker.node_id)
+                    self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "registry.status.start", diag_started_at)
+                    registry_status = self.server.registry.status()
+                    self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "registry.status.done", diag_started_at)
+                    self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "send_json.start", diag_started_at, status=200)
+                    self._send_json({"ok": True, "worker": worker.as_dict(), "hub": registry_status})
+                    self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "send_json.done", diag_started_at, status=200)
+                    return
+                except Exception as exc:
+                    self._worker_route_diag_step(
+                        diag_id,
+                        "worker.heartbeat_by_id",
+                        "exception",
+                        diag_started_at,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                    raise
             if path in {"/api/hub/v1/workers/poll", "/api/hub/workers/poll"}:
-                body = self._read_json()
-                worker_id = str(body.get("worker_node_id") or body.get("node_id") or "").strip()
-                if not worker_id:
-                    raise ValueError("worker_node_id is required.")
-                self._send_json(
-                    self.server.dispatcher.poll_worker(
+                diag_id, diag_started_at = self._worker_route_diag_start("worker.poll", path)
+                try:
+                    self._worker_route_diag_step(diag_id, "worker.poll", "read_json.start", diag_started_at)
+                    body = self._read_json()
+                    worker_id = str(body.get("worker_node_id") or body.get("node_id") or "").strip()
+                    self._worker_route_diag_step(
+                        diag_id,
+                        "worker.poll",
+                        "read_json.done",
+                        diag_started_at,
+                        worker_node_id=worker_id,
+                        body_keys=sorted(str(key) for key in body.keys()),
+                    )
+                    if not worker_id:
+                        raise ValueError("worker_node_id is required.")
+                    self._worker_route_diag_step(diag_id, "worker.poll", "dispatcher.poll_worker.start", diag_started_at, worker_node_id=worker_id)
+                    response_payload = self.server.dispatcher.poll_worker(
                         worker_node_id=worker_id,
                         lease_seconds=float(body.get("lease_seconds")) if body.get("lease_seconds") is not None else None,
                     )
-                )
-                return
+                    lease = response_payload.get("lease") if isinstance(response_payload, dict) else None
+                    self._worker_route_diag_step(
+                        diag_id,
+                        "worker.poll",
+                        "dispatcher.poll_worker.done",
+                        diag_started_at,
+                        worker_node_id=worker_id,
+                        lease_present=isinstance(lease, dict),
+                        request_id=lease.get("request_id") if isinstance(lease, dict) else "",
+                        lease_id=lease.get("lease_id") if isinstance(lease, dict) else "",
+                    )
+                    self._worker_route_diag_step(diag_id, "worker.poll", "send_json.start", diag_started_at, status=200)
+                    self._send_json(response_payload)
+                    self._worker_route_diag_step(diag_id, "worker.poll", "send_json.done", diag_started_at, status=200)
+                    return
+                except Exception as exc:
+                    self._worker_route_diag_step(
+                        diag_id,
+                        "worker.poll",
+                        "exception",
+                        diag_started_at,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                    raise
             if path in {"/api/hub/v1/workers/results", "/api/hub/workers/results"}:
-                body = self._read_json()
-                result = body.get("result") if isinstance(body.get("result"), dict) else body.get("response")
-                if not isinstance(result, dict):
-                    raise ValueError("result or response object is required.")
-                self._send_json(
-                    self.server.dispatcher.submit_worker_result(
-                        worker_node_id=str(body.get("worker_node_id") or body.get("node_id") or ""),
+                diag_id, diag_started_at = self._worker_route_diag_start("worker.results", path)
+                try:
+                    self._worker_route_diag_step(diag_id, "worker.results", "read_json.start", diag_started_at)
+                    body = self._read_json()
+                    worker_id = str(body.get("worker_node_id") or body.get("node_id") or "")
+                    result = body.get("result") if isinstance(body.get("result"), dict) else body.get("response")
+                    self._worker_route_diag_step(
+                        diag_id,
+                        "worker.results",
+                        "read_json.done",
+                        diag_started_at,
+                        worker_node_id=worker_id,
+                        request_id=str(body.get("request_id", "")),
+                        lease_id=str(body.get("lease_id", "")),
+                        result_present=isinstance(result, dict),
+                        body_keys=sorted(str(key) for key in body.keys()),
+                    )
+                    if not isinstance(result, dict):
+                        raise ValueError("result or response object is required.")
+                    self._worker_route_diag_step(diag_id, "worker.results", "dispatcher.submit_worker_result.start", diag_started_at, worker_node_id=worker_id)
+                    response_payload = self.server.dispatcher.submit_worker_result(
+                        worker_node_id=worker_id,
                         request_id=str(body.get("request_id", "")),
                         lease_id=str(body.get("lease_id", "")),
                         result=result,
                     )
-                )
-                return
+                    self._worker_route_diag_step(diag_id, "worker.results", "dispatcher.submit_worker_result.done", diag_started_at, worker_node_id=worker_id)
+                    self._worker_route_diag_step(diag_id, "worker.results", "send_json.start", diag_started_at, status=200)
+                    self._send_json(response_payload)
+                    self._worker_route_diag_step(diag_id, "worker.results", "send_json.done", diag_started_at, status=200)
+                    return
+                except Exception as exc:
+                    self._worker_route_diag_step(
+                        diag_id,
+                        "worker.results",
+                        "exception",
+                        diag_started_at,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                    raise
             if path in {"/api/hub/upstreams/register", "/api/hub/v1/upstreams/register"}:
                 body = self._read_json()
                 upstream = self.server.registry.register_upstream_hub(
