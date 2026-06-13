@@ -345,7 +345,7 @@ def test_node_process_forced_alive_delays_b2b_failure_detection(tmp_path) -> Non
 
     def fail_then_success():
         attempts["count"] += 1
-        if attempts["count"] <= 5:
+        if attempts["count"] == 1:
             return HubHttpResponse(ok=False, status=0, payload={"error": "connection refused"}, elapsed_ms=0.1, base_url="http://hub-dead")
         return HubHttpResponse(ok=True, status=200, payload={"ok": True}, elapsed_ms=0.1, base_url="http://hub-live")
 
@@ -358,10 +358,12 @@ def test_node_process_forced_alive_delays_b2b_failure_detection(tmp_path) -> Non
         started_at=time.monotonic(),
     )
 
-    response = runner.call("test.call", fail_then_success)
+    first_response = runner.call("test.call", fail_then_success)
+    second_response = runner.call("test.call", fail_then_success)
 
-    assert response.status == 200
-    assert attempts["count"] == 6
+    assert first_response.status == 0
+    assert second_response.status == 200
+    assert attempts["count"] == 2
     assert runner.consecutive_transport_failures == 0
     assert any(event.get("b2b_detection_enabled") is False for event in sink.events)
 
@@ -392,12 +394,16 @@ def test_node_process_counts_b2b_failures_after_forced_alive(tmp_path) -> None:
         started_at=0.0,
     )
 
+    first_response = runner.call("test.call", transport_failure)
+    assert first_response.status == 0
+    assert not sink.closed
+
     try:
         runner.call("test.call", transport_failure)
     except SystemExit as exc:
         assert exc.code == SELF_TERMINATED_B2B_FAILURES_EXIT_CODE
     else:
-        raise AssertionError("expected b2b self-termination after forced-alive grace elapsed")
+        raise AssertionError("expected b2b self-termination after enough post-grace failures")
 
     assert sink.closed
     assert any(event.get("event") == "node.self_terminated.b2bfailures" for event in sink.events)
@@ -1101,11 +1107,23 @@ def test_node_process_registration_retry_does_not_block_runtime_entry() -> None:
     source = inspect.getsource(node_process.run_node_process)
 
     assert 'register_response = runner.call_once("worker.register"' in source
+    assert "worker_registration_attempted = True" in source
     assert "worker_registered = register_response.status != 0 and register_response.ok" in source
     assert source.index('register_response = runner.call_once("worker.register"') < source.index('"node.process.runtime_entered"')
     assert "if worker_enabled and not worker_registered and now >= next_register:" in source
-    assert "if worker_enabled and worker_registered and now >= next_heartbeat:" in source
-    assert "if worker_enabled and worker_registered and now >= next_poll:" in source
+
+
+def test_node_process_worker_pipeline_is_not_gated_on_observed_register_success() -> None:
+    import inspect
+
+    from tools.scheduler_lab import node_process
+
+    source = inspect.getsource(node_process.run_node_process)
+
+    assert "if worker_enabled and worker_registration_attempted and now >= next_heartbeat:" in source
+    assert "if worker_enabled and worker_registration_attempted and now >= next_poll:" in source
+    assert "if worker_enabled and worker_registered and now >= next_heartbeat:" not in source
+    assert "if worker_enabled and worker_registered and now >= next_poll:" not in source
 
 
 def test_process_defaults_keep_observation_window_before_b2b_exit(monkeypatch) -> None:
