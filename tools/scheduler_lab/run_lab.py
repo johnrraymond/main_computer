@@ -126,6 +126,9 @@ class LabDurationPlan:
     default_min_seconds: float = DEFAULT_LAB_MIN_DURATION_SECONDS
 
 
+DURATION_DERIVE_SENTINELS = {"auto", "derive", "derived", "default", "worktime", "duration", "duration-window", "duration_window"}
+
+
 def _parse_seconds_number(raw: str, *, label: str) -> float:
     text = str(raw).strip().lower().replace("_", "")
     for suffix in ("seconds", "second", "secs", "sec", "s"):
@@ -138,6 +141,19 @@ def _parse_seconds_number(raw: str, *, label: str) -> float:
     if value < 0:
         raise ValueError(f"{label} must be >= 0")
     return value
+
+
+def env_duration_seconds_or_none(name: str) -> float | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    text = str(raw).strip().lower().replace("_", "-")
+    if not text or text in DURATION_DERIVE_SENTINELS:
+        return None
+    try:
+        return _parse_seconds_number(str(raw), label=name)
+    except Exception as exc:
+        raise SystemExit(f"{name} must be seconds or one of {sorted(DURATION_DERIVE_SENTINELS)}; got {raw!r}") from exc
 
 
 def parse_worktime_spec(value: Any) -> WorktimeDistribution | None:
@@ -222,10 +238,10 @@ def resolve_lab_duration(args: argparse.Namespace, *, raw_argv: Sequence[str]) -
         source = "explicit_cli"
         worktime_distribution = getattr(args, "worktime_distribution", None)
     else:
-        env_value = os.environ.get("LAB_DURATION_SECONDS")
+        env_requested = env_duration_seconds_or_none("LAB_DURATION_SECONDS")
         worktime_distribution = getattr(args, "worktime_distribution", None)
-        if env_value is not None and str(env_value).strip() != "":
-            requested = _parse_seconds_number(str(env_value), label="LAB_DURATION_SECONDS")
+        if env_requested is not None:
+            requested = float(env_requested)
             source = "env"
         elif worktime_distribution is not None:
             derived = (3.0 * float(worktime_distribution.mean_seconds)) + float(worktime_distribution.sigma_seconds)
@@ -271,8 +287,7 @@ def apply_lab_duration_plan(args: argparse.Namespace, plan: LabDurationPlan, *, 
     args.duration_seconds_default_minimum = float(plan.default_min_seconds)
 
     forced_alive_explicit = _argv_has_option(raw_argv, "--forced-alive")
-    forced_alive_env = os.environ.get("FORCED_ALIVE_SECONDS")
-    if not forced_alive_explicit and (forced_alive_env is None or str(forced_alive_env).strip() == ""):
+    if not forced_alive_explicit and getattr(args, "forced_alive", None) is None:
         args.forced_alive = float(plan.requested_seconds)
         args.forced_alive_source = "duration_window_default"
     else:
@@ -1436,6 +1451,103 @@ def process_child_event_path(output_dir: Path, node: dict[str, Any], node_index:
     if run_id:
         return output_dir / f"node-process-{safe_filename_token(run_id)}-{node_index:05d}-{safe_node_id}.events.jsonl"
     return output_dir / f"node-process-{node_index:05d}-{safe_node_id}.events.jsonl"
+
+
+def process_child_log_path(output_dir: Path, node: dict[str, Any], node_index: int, run_id: str | None = None) -> Path:
+    """Return the child stdout/stderr log path without touching the filesystem."""
+
+    safe_node_id = safe_filename_token(node.get("node_id") or "node")
+    if run_id:
+        return output_dir / f"node-process-{safe_filename_token(run_id)}-{node_index:05d}-{safe_node_id}.log"
+    return output_dir / f"node-process-{node_index:05d}-{safe_node_id}.log"
+
+
+def _read_text_tail(path: Path, *, max_bytes: int = 4096) -> str:
+    """Read a small UTF-8-ish tail from a diagnostic log file."""
+
+    try:
+        with path.open("rb") as handle:
+            try:
+                handle.seek(0, os.SEEK_END)
+                size = handle.tell()
+                handle.seek(max(0, size - max(0, int(max_bytes))))
+            except OSError:
+                pass
+            return handle.read(max(0, int(max_bytes))).decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def summarize_child_processes(
+    children: Sequence[tuple[dict[str, Any], subprocess.Popen[bytes]]],
+    *,
+    event_paths: Sequence[Path],
+    log_paths: Sequence[Path],
+    sample_limit: int = 5,
+) -> dict[str, Any]:
+    """Summarize child process exit state and surface logs for silent child crashes."""
+
+    exit_counts: Counter[str] = Counter()
+    alive_count = 0
+    exited_count = 0
+    without_event_file = 0
+    empty_event_file = 0
+    samples: list[dict[str, Any]] = []
+
+    for index, (node, process) in enumerate(children):
+        code = process.poll()
+        if code is None:
+            alive_count += 1
+            exit_key = "running"
+        else:
+            exited_count += 1
+            exit_key = str(int(code))
+        exit_counts[exit_key] += 1
+
+        event_path = event_paths[index] if index < len(event_paths) else Path("")
+        log_path = log_paths[index] if index < len(log_paths) else Path("")
+        try:
+            event_size = event_path.stat().st_size if event_path else 0
+        except OSError:
+            event_size = 0
+        event_exists = bool(event_path and event_path.exists())
+        if not event_exists:
+            without_event_file += 1
+        elif event_size <= 0:
+            empty_event_file += 1
+
+        needs_sample = code not in (None, 0) or not event_exists or event_size <= 0
+        if needs_sample and len(samples) < max(0, int(sample_limit)):
+            try:
+                log_size = log_path.stat().st_size if log_path else 0
+            except OSError:
+                log_size = 0
+            samples.append(
+                {
+                    "node_index": index,
+                    "node_id": str(node.get("node_id") or f"node-index:{index}"),
+                    "exit_code": None if code is None else int(code),
+                    "event_path": str(event_path),
+                    "event_file_exists": event_exists,
+                    "event_file_bytes": int(event_size),
+                    "log_path": str(log_path),
+                    "log_file_bytes": int(log_size),
+                    "log_tail": _read_text_tail(log_path),
+                }
+            )
+
+    child_count = len(children)
+    return {
+        "child_process_count": int(child_count),
+        "child_processes_alive": int(alive_count),
+        "child_processes_exited": int(exited_count),
+        "child_process_exit_codes": dict(sorted(exit_counts.items())),
+        "child_processes_without_event_file": int(without_event_file),
+        "child_processes_with_empty_event_file": int(empty_event_file),
+        "child_startup_failure": bool(child_count and exited_count == child_count and without_event_file + empty_event_file == child_count),
+        "child_startup_failure_count": int(without_event_file + empty_event_file if child_count and exited_count == child_count else 0),
+        "child_log_tail_samples": samples,
+    }
 
 
 def collect_process_phase_counts(
@@ -2862,6 +2974,8 @@ def run_process_mode(args: argparse.Namespace) -> int:
     latest_rollup_json = output_dir / f"scheduler-lab-process-rollup-latest-{run_id}.json"
     rollups_csv = output_dir / f"scheduler-lab-process-rollups-{run_id}.csv"
     children: list[tuple[dict[str, Any], subprocess.Popen[bytes]]] = []
+    child_log_paths: list[Path] = []
+    child_startup_failure_detected = False
 
     def emit_parent(event: dict[str, Any]) -> None:
         event = {"ts": utc_now(), "run_id": run_id, **event}
@@ -2975,7 +3089,7 @@ def run_process_mode(args: argparse.Namespace) -> int:
             print(format_process_launch_progress(launch_rollup), flush=True)
 
         for index, node in enumerate(selected_nodes):
-            log_path = output_dir / f"node-process-{run_id}-{index:05d}-{safe_filename_token(node.get('node_id', 'node'))}.log"
+            log_path = process_child_log_path(output_dir, node, index, run_id=run_id)
             command = build_node_process_command(args, runtime_node_list=runtime_node_list, node_index=index)
             log_handle = log_path.open("ab")
             try:
@@ -2983,6 +3097,7 @@ def run_process_mode(args: argparse.Namespace) -> int:
             finally:
                 log_handle.close()
             children.append((node, process))
+            child_log_paths.append(log_path)
             child_event_paths.append(process_child_event_path(output_dir, node, index, run_id=run_id))
             phase_nodes.setdefault("nodes_started", set()).add(str(node.get("node_id") or f"node-index:{index}"))
 
@@ -3058,6 +3173,36 @@ def run_process_mode(args: argparse.Namespace) -> int:
                 rollup = emit_rollup(scan_state=scan_state)
                 print(format_process_rollup(rollup), flush=True)
                 next_parent_rollup_at = now + parent_rollup_interval
+
+            child_diagnostics = summarize_child_processes(
+                children,
+                event_paths=child_event_paths,
+                log_paths=child_log_paths,
+            )
+            if child_diagnostics.get("child_startup_failure"):
+                child_startup_failure_detected = True
+                event = {
+                    "event": "lab.process_parent.child_startup_failed",
+                    "run_id": run_id,
+                    **child_diagnostics,
+                }
+                emit_parent(event)
+                print(
+                    "[worker-lab] child startup failure: all child processes exited before writing events; "
+                    f"exit_codes={child_diagnostics.get('child_process_exit_codes')} "
+                    f"missing_or_empty_event_files={child_diagnostics.get('child_startup_failure_count')}",
+                    flush=True,
+                )
+                for sample in child_diagnostics.get("child_log_tail_samples", []):
+                    log_tail = str(sample.get("log_tail") or "").strip()
+                    print(
+                        "[worker-lab] child log tail "
+                        f"node_index={sample.get('node_index')} node_id={sample.get('node_id')} "
+                        f"exit_code={sample.get('exit_code')} log={sample.get('log_path')}\n{log_tail}",
+                        flush=True,
+                    )
+                break
+
             # The lab duration is the authority.  Child self-termination is a
             # signal, not a parent-level stop condition; keep the parent alive
             # until the requested observation window expires or it is interrupted.
@@ -3096,6 +3241,11 @@ def run_process_mode(args: argparse.Namespace) -> int:
         print(format_process_rollup(final_rollup), flush=True)
         exit_codes = [int(process.poll() if process.poll() is not None else -999) for _node, process in children]
         counts = Counter(str(code) for code in exit_codes)
+        child_diagnostics = summarize_child_processes(
+            children,
+            event_paths=child_event_paths,
+            log_paths=child_log_paths,
+        )
         summary = {
             "schema": "main-computer-hub-lab-process-summary/v3",
             "schema_version": 3,
@@ -3120,11 +3270,12 @@ def run_process_mode(args: argparse.Namespace) -> int:
             "rollups_jsonl": str(rollups_jsonl),
             "latest_rollup_json": str(latest_rollup_json),
             "rollups_csv": str(rollups_csv),
+            **child_diagnostics,
         }
         parent_summary.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
         emit_parent({"event": "lab.process_parent.finished", **summary})
         print(json.dumps(summary, indent=2, sort_keys=True))
-    return 0
+    return 78 if child_startup_failure_detected else 0
 
 async def run(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir)
@@ -3254,7 +3405,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Optional node warm-up delay distribution in seconds before first hub contact, e.g. 2mu,1sigma.",
     )
     parser.add_argument("--b2bfailures", type=int, default=int(os.environ.get("B2B_FAILURES", "10")), help="Consecutive transport failures before a node self-terminates after --forced-alive has elapsed. 0 disables.")
-    parser.add_argument("--forced-alive", type=float, default=float(os.environ.get("FORCED_ALIVE_SECONDS", "30")), help="Seconds a node must stay alive before b2b transport failures can self-terminate it. Defaults to 30s so transport storms do not end observation before nodes enter runtime.")
+    parser.add_argument("--forced-alive", type=float, default=env_duration_seconds_or_none("FORCED_ALIVE_SECONDS"), help="Seconds a node must stay alive before b2b transport failures can self-terminate it. If omitted or set to 'duration', defaults to the resolved observation window.")
     parser.add_argument("--http-timeout-seconds", type=float, default=float(os.environ.get("HTTP_TIMEOUT_SECONDS", "1")))
     parser.add_argument("--http-retries", type=int, default=int(os.environ.get("HTTP_RETRIES", "1")))
     parser.add_argument(
@@ -3317,7 +3468,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.hub_base_url = normalized_urls[0]
     if args.b2bfailures < 0:
         raise SystemExit("--b2bfailures must be >= 0")
-    if args.forced_alive < 0:
+    if args.forced_alive is not None and args.forced_alive < 0:
         raise SystemExit("--forced-alive must be >= 0")
     if args.parent_final_drain_seconds < 0:
         raise SystemExit("--parent-final-drain-seconds must be >= 0")

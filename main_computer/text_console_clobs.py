@@ -451,7 +451,7 @@ def build_text_console_clob_lookup_context(
                 "Side-loaded text-console clob lookup evidence.",
                 "This evidence was retrieved from saved clob payloads referenced by earlier thread messages.",
                 "Use only these bounded lookup lines as evidence; the full clob payload is not pasted into the model context.",
-                "Grounding requirement: when answering from this lookup, cite one or more evidence_id values exactly or quote exact retrieved text.",
+                "Grounding requirement: use evidence_id values internally for verification, but do not print evidence_id, clob_id, or clob-evidence-* labels; quote exact retrieved text or name the relevant file/path/line normally.",
                 f"query_terms: {', '.join(terms) if terms else '[none]'}",
                 "",
                 "grounding_evidence:",

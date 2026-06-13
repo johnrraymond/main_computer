@@ -237,3 +237,6 @@ runtime/websites/*/ssh_password.local
 # Website source/config stays tracked; only generated Docker files are ignored.
 deploy/local-platform/generated/
 runtime/websites/*/.main-computer/local-platform/docker-compose.yml
+
+# Don't need these smoke outputs in git.
+supercut_smoke_output/
