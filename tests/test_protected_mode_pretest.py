@@ -88,6 +88,9 @@ def test_bare_protected_mode_pretest_uses_bridge_credit_ledger_and_preserves_inv
     assert invariants["withdrawal_reconciliation_conserved"] is True
     assert invariants["final_available_plus_spent_equals_deposit"] is True
     assert invariants["final_held_zero"] is True
+    assert invariants["syscall_pressure_completed"] is True
+    assert invariants["syscall_pressure_used_real_local_work"] is True
+    assert report["steps"]["syscall_pressure"]["enabled"] is False
 
     final_totals = report["steps"]["final_status"]["totals"]
     assert final_totals["available_credit_wei"] == "94000000000000000000"
@@ -111,6 +114,7 @@ def test_cli_bare_mode_writes_report_and_returns_success(tmp_path) -> None:
             str(report_path),
             "--ledger-root",
             str(ledger_root),
+            "--disable-syscall-pressure",
         ],
         cwd=REPO_ROOT,
         text=True,
@@ -149,3 +153,48 @@ def test_invalid_deployment_profile_fails_closed(tmp_path) -> None:
 
     with pytest.raises(ValueError):
         load_protected_network_profile(repo_root=REPO_ROOT, network="dev", deployment_path=bad_profile)
+
+
+def test_short_syscall_pressure_ramp_uses_real_local_work(tmp_path) -> None:
+    report = run_protected_mode_pretest(
+        ProtectedPretestConfig(
+            repo_root=REPO_ROOT,
+            network="dev",
+            ledger_root=tmp_path / "ledger",
+            report_path=tmp_path / "protected_report.json",
+            deposit_credits="100",
+            hold_credits="10",
+            charge_credits="6",
+            release_hold_credits="4",
+            syscall_pressure_duration_seconds=0.25,
+            syscall_pressure_tick_seconds=0.05,
+            syscall_pressure_max_open_connections=8,
+            syscall_pressure_batch_open_connections=2,
+            syscall_pressure_socket_probe_count=2,
+            syscall_pressure_file_probe_bytes=1024,
+            syscall_pressure_ledger_holds_per_tick=1,
+        )
+    )
+
+    pressure = report["steps"]["syscall_pressure"]
+    assert pressure["enabled"] is True
+    assert pressure["mode"] == "real-local-syscall-pressure-ramp-v1"
+    assert pressure["duration_observed_seconds"] >= 0.25
+    assert pressure["peak_open_connections"] > 0
+    assert pressure["pressure_holds_created"] > 0
+    assert pressure["pressure_holds_released"] == pressure["pressure_holds_created"]
+    assert len(pressure["samples"]) > 0
+    assert pressure["baseline"]["connect_ms"] >= 0
+    assert pressure["baseline"]["file_write_ms"] >= 0
+    assert pressure["baseline"]["ledger_read_ms"] >= 0
+    assert pressure["status_after_cleanup"]["totals"]["held_credit_wei"] == "0"
+    assert report["invariants"]["syscall_pressure_completed"] is True
+    assert report["invariants"]["syscall_pressure_used_real_local_work"] is True
+
+
+def test_smoke_cli_bare_mode_defaults_to_sixty_second_syscall_pressure() -> None:
+    source = (REPO_ROOT / "main_computer" / "protected_mode_pretest.py").read_text(encoding="utf-8")
+
+    assert "--syscall-pressure-duration-seconds" in source
+    assert "default=60.0" in source
+    assert "run_syscall_pressure_ramp" in source

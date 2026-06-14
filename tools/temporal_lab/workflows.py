@@ -8,6 +8,7 @@ from tools.temporal_lab.models import FakeTokenRequest
 
 try:  # pragma: no cover - exercised only when temporalio is installed.
     from temporalio import workflow
+    from temporalio.common import RetryPolicy
 except ImportError:  # pragma: no cover - this shim keeps contract tests dependency-light.
     class _WorkflowShim:
         def defn(self, cls: object | None = None, **kwargs: object) -> object:
@@ -32,6 +33,7 @@ except ImportError:  # pragma: no cover - this shim keeps contract tests depende
             raise RuntimeError("temporalio is required to execute the workflow")
 
     workflow = _WorkflowShim()  # type: ignore[assignment]
+    RetryPolicy = None  # type: ignore[assignment]
 
 
 def activity_start_to_close_timeout(request: FakeTokenRequest) -> timedelta:
@@ -47,6 +49,17 @@ def activity_heartbeat_timeout(request: FakeTokenRequest) -> timedelta:
     return timedelta(seconds=seconds)
 
 
+def activity_retry_policy(request: FakeTokenRequest) -> object | None:
+    # This lab workflow is used by protected-mode settlement smokes. Retrying an
+    # intentionally failing activity can hide the real protected transition being
+    # tested and may hold a protected credit reservation longer than needed. The
+    # requester/ledger layer should decide whether to resubmit work; this
+    # workflow should surface one activity outcome for the current request.
+    if RetryPolicy is None:
+        return None
+    return RetryPolicy(maximum_attempts=1)
+
+
 @workflow.defn  # type: ignore[misc]
 class FakeTokenWorkflow:
     @workflow.run  # type: ignore[misc]
@@ -57,4 +70,5 @@ class FakeTokenWorkflow:
             request.to_dict(),
             start_to_close_timeout=activity_start_to_close_timeout(request),
             heartbeat_timeout=activity_heartbeat_timeout(request),
+            retry_policy=activity_retry_policy(request),
         )

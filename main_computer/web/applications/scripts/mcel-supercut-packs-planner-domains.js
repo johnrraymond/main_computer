@@ -135,10 +135,10 @@
           rootId: "file-explorer-app",
           rootSelector: "#file-explorer-app",
           riskLevel: "medium",
-          expectedRegions: ["tree", "file-list", "preview", "path-toolbar", "operations"],
-          expectedFeeds: ["operation-status", "preview", "selection"],
+          expectedRegions: ["roots", "path-bar", "file-list", "directory-listing", "preview"],
+          expectedFeeds: ["operation-status", "preview", "selection", "directory-listing", "path"],
           expectedFields: ["path", "filename", "search"],
-          safeActions: ["open", "preview", "refresh", "select"],
+          safeActions: ["open", "preview", "refresh", "select", "search", "up", "root-select"],
           riskyActions: [
             {family: "file-explorer.delete", role: "delete-file", risk: "destructive", policy: "no-click", terms: ["delete", "remove", "trash"]},
             {family: "file-explorer.move-rename", role: "move-rename", risk: "remote-mutation", policy: "no-submit", terms: ["move", "rename", "copy", "write"]},
@@ -171,16 +171,16 @@
           rootId: "worker-app",
           rootSelector: "#worker-app",
           riskLevel: "high",
-          expectedRegions: ["queue", "job-detail", "worker-status", "runtime-controls", "logs"],
-          expectedFeeds: ["job-log", "status", "queue-report"],
-          expectedFields: ["job", "payload", "schedule", "worker"],
-          safeActions: ["inspect", "refresh", "copy-log"],
+          expectedRegions: ["seller-panel", "buyer-policy-panel", "network-hubs", "rental-status"],
+          expectedFeeds: ["registration-status", "network-status", "rental-status"],
+          expectedFields: ["network-rpc", "chain-id", "price", "policy", "hub", "worker"],
+          safeActions: ["inspect", "refresh", "select-network", "copy-status"],
           riskyActions: [
-            {family: "worker.start-stop", role: "worker-control", risk: "operational", policy: "no-click", terms: ["start", "stop", "restart", "pause", "resume"]},
-            {family: "worker.job-mutation", role: "job-mutation", risk: "remote-mutation", policy: "no-submit", terms: ["enqueue", "cancel", "retry", "delete", "schedule"]},
-            {family: "worker.execute-job", role: "execute-job", risk: "command-execution", policy: "no-command-execution", terms: ["run", "execute", "dispatch"]}
+            {family: "worker.network-registration", role: "register-worker", risk: "credential-network-mutation", policy: "no-submit", terms: ["register", "register worker", "seller", "publish worker", "announce worker"]},
+            {family: "worker.payment-rental", role: "rent-worker", risk: "remote-mutation", policy: "no-submit", terms: ["rent", "rental", "payment", "price", "lease", "hire worker"]},
+            {family: "worker.credential-network-mutation", role: "save-policy", risk: "credential-network-mutation", policy: "no-submit", terms: ["save policy", "policy", "rpc", "chain", "hub", "network", "credential"]}
           ],
-          decodeHints: ["worker", "job", "queue", "runtime", "schedule", "log"]
+          decodeHints: ["worker", "network", "hub", "rpc", "chain", "register", "rent", "seller", "buyer", "policy"]
         },
         {
           app: "wallet",
@@ -410,6 +410,42 @@
         return `${plan.app}.surface.${record.domId ? slug(record.domId) : "planned"}`;
       }
 
+      function fileExplorerSurface(record) {
+        const text = source(record);
+        if (!text || actionLike(record) || fieldLike(record)) return null;
+        if (/(delete|remove|trash|write|move|rename|upload|download|import|export)/.test(text)) return null;
+        if (/(file-explorer-preview|file preview|preview)/.test(text)) {
+          return {purpose: "file-explorer.surface.preview", role: "preview", contract: "component.status-feed", kind: "status-feed"};
+        }
+        if (/(file-explorer-path|\bpath\b|current folder)/.test(text)) {
+          return {purpose: "file-explorer.surface.path-bar", role: "path-bar", contract: "component.status-feed", kind: "status-feed"};
+        }
+        if (/(file-explorer-status|ready|loading file list|wunderbaum unavailable)/.test(text)) {
+          return {purpose: "file-explorer.surface.operation-status", role: "operation-status", contract: "component.status-feed", kind: "status-feed"};
+        }
+        if (/(file-explorer-roots-panel|file-explorer-roots|file-explorer-root|roots panel|root button)/.test(text)) {
+          return {purpose: "file-explorer.surface.roots", role: "roots", contract: "component.panel", kind: "panel"};
+        }
+        if (/(file-explorer-list|directory listing|file-explorer-wunderbaum|wunderbaum|wb-|file-explorer-entry|entry-title|entry-meta)/.test(text)) {
+          return {purpose: "file-explorer.surface.directory-listing", role: "directory-listing", contract: "component.status-feed", kind: "status-feed"};
+        }
+        if (/(\bfile\b|\bfolder\b|directory|main computer assets|read-only system browsing)/.test(text)) {
+          return {purpose: "file-explorer.surface.file-tree", role: "file-tree", contract: "component.status-feed", kind: "status-feed"};
+        }
+        return null;
+      }
+
+      function classifyFileExplorerSurface(plan, record, blackboard, ruleId) {
+        const surface = fileExplorerSurface(record);
+        if (!surface) return false;
+        addPurpose(record, blackboard, plan, surface.purpose, surface.role, surface.contract, ruleId, {
+          kind: surface.kind,
+          risk: "none",
+          proofPolicy: "inspect-only"
+        });
+        return true;
+      }
+
       function createPlannerDomainPack(plan) {
         return {
           id: plan.id,
@@ -462,6 +498,17 @@
                   proofPolicy: "inspect-only"
                 });
                 return true;
+              }
+            },
+            {
+              id: `${plan.app}.detect-file-explorer-surfaces`,
+              phase: "purpose-inference",
+              priority: 87,
+              when(record, blackboard) {
+                return plan.app === "file-explorer" && inPlan(record, blackboard, plan) && !isRoot(record, blackboard, plan) && !record.contract && Boolean(fileExplorerSurface(record));
+              },
+              apply(record, blackboard) {
+                return classifyFileExplorerSurface(plan, record, blackboard, `${plan.app}.detect-file-explorer-surfaces`);
               }
             },
             {
