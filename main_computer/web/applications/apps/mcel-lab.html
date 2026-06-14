@@ -120,9 +120,9 @@
       <p>
         The first specimens are Task Manager and Git Tools. MCEL Lab loads a real app in a same-origin iframe,
         reads the legacy DOM into a MCEL enrichment model, applies semantic layout roles,
-        and, for Git Tools, runs MCEL Supercut to tag slimy HTML with original-purpose
+        and runs MCEL Supercut domain packs to tag slimy operational HTML with original-purpose
         mcel-supercut component contracts before auditing risky action surfaces without executing server control,
-        PID termination, remote, mirror, push, or manual command actions.
+        PID termination, remote, mirror, push, or manual command actions; Task Manager schedule actions are observed but not executed.
       </p>
     </div>
     <div class="mcel-canonical-specimen-controls" role="group" aria-label="Canonical app specimen controls">
@@ -133,12 +133,121 @@
             value="task-manager"
             data-route="/applications/task-manager/server-processes?mcel_lab_specimen=task-manager"
             data-root="#task-manager-app"
+            data-planner-status="domain-proven"
+            data-point="Observe processes, server state, connections, schedules, and risky process/server controls without executing destructive actions."
           >Task Manager</option>
           <option
             value="git-tools"
             data-route="/applications/git-tools?mcel_lab_specimen=git-tools"
             data-root="#git-tools-app"
+            data-planner-status="domain-proven"
+            data-point="Observe repository, local Gitea, remote/mirror/push, and command surfaces without executing Git/Gitea mutations."
           >Git Tools</option>
+          <option
+            value="calculator"
+            data-route="/applications/calculator"
+            data-root="#calculator-app"
+            data-planner-status="planner-ready"
+            data-point="Compute local calculator expressions and graphing state without network, filesystem, or destructive side effects."
+          >Calculator</option>
+          <option
+            value="document"
+            data-route="/applications/document"
+            data-root="#document-app"
+            data-planner-status="planner-ready"
+            data-point="Edit, paginate, import/export, and optionally AI-assist local documents without losing author intent or executing hidden mutations."
+          >Document Editor</option>
+          <option
+            value="spreadsheet"
+            data-route="/applications/spreadsheet"
+            data-root="#spreadsheet-app"
+            data-planner-status="planner-ready"
+            data-point="Edit a workbook grid, formulas, charts, code-runtime cells, and imports/exports without unsafe file or code execution."
+          >Spreadsheet</option>
+          <option
+            value="onlyoffice"
+            data-route="/applications/onlyoffice"
+            data-root="#onlyoffice-app"
+            data-planner-status="planner-ready"
+            data-point="Select or create workbook files and embed an external editor surface with explicit iframe/file-operation boundaries."
+          >ONLYOFFICE</option>
+          <option
+            value="terminal"
+            data-route="/applications/terminal"
+            data-root="#terminal-app"
+            data-planner-status="high-risk-planner"
+            data-point="Display and prepare local command/AI terminal work without executing commands during MCEL proof."
+          >Terminal</option>
+          <option
+            value="chat-console"
+            data-route="/applications/chat-console"
+            data-root="#chat-console-app"
+            data-planner-status="planner-ready"
+            data-point="Manage chat/notebook threads, code/runtime cells, and archived state without unexpected execution or data loss."
+          >Chat Console</option>
+          <option
+            value="email"
+            data-route="/applications/email"
+            data-root="#email-app"
+            data-planner-status="high-risk-planner"
+            data-point="Read, search, compose, and manage email accounts while preventing accidental send, delete, sync, or credential exposure."
+          >Email</option>
+          <option
+            value="code-editor"
+            data-route="/applications/code-editor"
+            data-root="#code-editor-app"
+            data-planner-status="high-risk-planner"
+            data-point="Inspect and edit project files, Aider context/actions, and output streams without applying patches or running code unintentionally."
+          >Code Editor</option>
+          <option
+            value="file-explorer"
+            data-route="/applications/file-explorer"
+            data-root="#file-explorer-app"
+            data-planner-status="planner-ready"
+            data-point="Browse local files read-only, preview paths, and search without delete/write execution."
+          >File Explorer</option>
+          <option
+            value="website-builder"
+            data-route="/applications/website-builder"
+            data-root="#website-builder-app"
+            data-planner-status="high-risk-planner"
+            data-point="Manage site manifests and publish lanes while preventing accidental local/remote deployment."
+          >Website Builder</option>
+          <option
+            value="worker"
+            data-route="/applications/worker"
+            data-root="#worker-app"
+            data-planner-status="high-risk-planner"
+            data-point="Configure remote/local AI worker marketplace settings without registering, renting, or mutating network state during proof."
+          >Worker</option>
+          <option
+            value="wallet"
+            data-route="/applications/wallet"
+            data-root="#wallet-app"
+            data-planner-status="high-risk-planner"
+            data-point="Connect/disconnect wallet providers and inspect account state without signing, sending, or network mutation."
+          >Wallet</option>
+          <option
+            value="game-editor"
+            data-route="/applications/game-editor"
+            data-root="#game-editor-app"
+            data-planner-status="planner-ready"
+            data-point="Edit project-backed scene state, assets, and previews without destructive project writes during proof."
+          >Game Editor</option>
+          <option
+            value="webgl"
+            data-route="/applications/webgl"
+            data-root="#webgl-demo"
+            data-planner-status="planner-ready"
+            data-point="Render a visual/game surface and prove canvas ownership, resize, and animation boundaries."
+          >Game Surface</option>
+          <option
+            value="mcel-lab"
+            data-route="/applications/mcel-lab"
+            data-root="#mcel-lab-app"
+            data-planner-status="native-lab"
+            data-point="Self-host the MCEL compiler, runtime proof, canonical specimens, and planner without confusing lab chrome for specimen content."
+          >MCEL Lab</option>
         </select>
       </label>
       <button type="button" id="mcel-canonical-app-mount">Mount Selected Specimen</button>
@@ -149,6 +258,18 @@
       <button type="button" id="mcel-canonical-app-lens">Inspect MCEL Lens</button>
       <button type="button" id="mcel-canonical-app-clean">Clean Specimen</button>
       <output id="mcel-canonical-app-status" aria-live="polite">canonical app specimen not mounted</output>
+    </div>
+    <div id="mcel-canonical-app-plan" class="mcel-canonical-app-plan" aria-live="polite">
+      <div class="mcel-canonical-app-plan-heading">
+        <strong>Specimen planner</strong>
+        <span>purpose-aware mount hints pending</span>
+      </div>
+      <div id="mcel-canonical-app-plan-summary" class="mcel-canonical-app-plan-summary">
+        Select or mount a specimen to see the point-guided Supercut plan.
+      </div>
+      <ul id="mcel-canonical-app-plan-list" class="mcel-canonical-app-plan-list">
+        <li>Planner will show expected regions, risk families, and adapter/domain-pack needs.</li>
+      </ul>
     </div>
     <div id="mcel-canonical-app-lens-map" class="mcel-canonical-app-lens-map" aria-live="polite" data-mcel-lens-mode="sidecar">
       <div class="mcel-canonical-app-lens-map-heading"><strong>Task Manager enrichment map</strong><span>enrichment not applied yet</span></div>

@@ -3,6 +3,8 @@
 
       const ENRICHMENT_STYLE_ID = "mcel-lab-canonical-task-manager-enrichment-style";
       const ENRICHMENT_CLASS = "mcel-canonical-task-manager-enriched";
+      const SUPERCUT_TRANSLATOR = "mcel-supercut-task-manager-v0.2";
+      const SUPERCUT_MAX_COMPONENTS = 260;
 
       const REGION_ENRICHMENT = [
         {selector: "#task-manager-app", role: "operator-console", kind: "app", layout: "sidebar-workspace", fitContext: "root"},
@@ -221,6 +223,83 @@
         element.setAttribute("data-mcel-enriched", enrichedBy);
         element.setAttribute("data-mcel-enrichment-source", source);
         return true;
+      }
+
+      function runTaskManagerSupercutTranslation(doc, root, options = {}) {
+        if (!doc?.body || !root || !global.McelSupercut?.translateRuntime) {
+          return {
+            active: false,
+            translator: SUPERCUT_TRANSLATOR,
+            taggedElementCount: 0,
+            componentCount: 0,
+            executableComponentCount: 0,
+            originalPointCount: 0,
+            originalPoints: [],
+            rectificationRounds: [],
+            cssObjectCatalog: [],
+            runtimeChanges: [],
+            message: "MCEL Supercut translator unavailable or Task Manager root missing"
+          };
+        }
+        return global.McelSupercut.translateRuntime({
+          document: doc,
+          root,
+          rootSelector: options.rootSelector || "#task-manager-app",
+          app: "task-manager",
+          specimenId: "task-manager",
+          reason: options.reason || "task-manager-supercut-translation",
+          generatedBy: options.generatedBy || "task-manager-mcel-supercut-adapter",
+          translator: SUPERCUT_TRANSLATOR,
+          maxComponents: SUPERCUT_MAX_COMPONENTS,
+          packs: options.packs || ["core-html", "core-action-risk", "task-manager-domain"],
+          mode: "tag-and-audit",
+          rounds: 3
+        });
+      }
+
+      function clearTaskManagerSupercutTranslation(doc, rootSelector = "#task-manager-app") {
+        return Boolean(global.McelSupercut?.clearRuntime?.({
+          document: doc,
+          rootSelector
+        }));
+      }
+
+      function summarizeSupercutRewritePreview(supercut = {}) {
+        const summary = supercut.rewritePreviewSummary || {};
+        const rewritePreview = supercut.rewritePreview || [];
+        if (summary && Object.keys(summary).length) return summary;
+        return rewritePreview.reduce((memo, node) => {
+          if (node.contract === "component.root") memo.root += 1;
+          else if (node.contract === "component.region") memo.regions += 1;
+          else if (node.contract === "component.panel") memo.panels += 1;
+          else if (node.contract === "component.toolbar") memo.toolbars += 1;
+          else if (node.contract === "component.field") memo.fields += 1;
+          else if (["component.action", "component.operational-action", "component.destructive-action", "component.remote-mutation-action"].includes(node.contract)) memo.actions += 1;
+          else if (node.contract === "component.status-feed") memo.statusFeeds += 1;
+          else if (node.contract === "component.console") memo.consoles += 1;
+          else if (node.contract === "component.workflow") memo.workflows += 1;
+          else memo.unknown += 1;
+          return memo;
+        }, {
+          root: 0,
+          regions: 0,
+          panels: 0,
+          toolbars: 0,
+          fields: 0,
+          actions: 0,
+          statusFeeds: 0,
+          consoles: 0,
+          workflows: 0,
+          unknown: 0
+        });
+      }
+
+      function countSupercutProofPolicies(supercut = {}) {
+        return (supercut.rewritePreview || []).reduce((memo, node) => {
+          const key = node.proofPolicy || "inspect-only";
+          memo[key] = (memo[key] || 0) + 1;
+          return memo;
+        }, {});
       }
 
       function nearestControlLabel(control) {
@@ -470,7 +549,12 @@
           });
         });
 
-        const model = buildEnrichmentModel(doc, root, {reason, rootSelector, generatedBy});
+        const supercut = runTaskManagerSupercutTranslation(doc, root, {reason, rootSelector, generatedBy});
+        if (supercut.active) {
+          enrichedElementCount += supercut.taggedElementCount || 0;
+        }
+
+        const model = buildEnrichmentModel(doc, root, {reason, rootSelector, generatedBy, supercut});
         const violations = collectEnrichmentViolations(doc, root);
         return {
           ...model,
@@ -482,7 +566,32 @@
           fieldCount: model.fields.filter((item) => item.present).length,
           actionControlCount: model.actions.reduce((total, item) => total + item.count, 0),
           riskControlCount: model.actions.filter((item) => item.present && !["safe", "analysis"].includes(item.risk)).reduce((total, item) => total + item.count, 0),
-          fitLawCount: model.components.filter((item) => item.fit).length,
+          supercutActive: Boolean(supercut.active),
+          supercutTranslator: supercut.translator || SUPERCUT_TRANSLATOR,
+          supercutTaggedElementCount: supercut.taggedElementCount || 0,
+          supercutComponentCount: supercut.componentCount || 0,
+          supercutExecutableCount: supercut.executableComponentCount || 0,
+          supercutOriginalPointCount: supercut.originalPointCount || 0,
+          supercutOriginalPoints: supercut.originalPoints || [],
+          supercutRoundCount: supercut.rectificationRounds?.length || 0,
+          supercutRectificationRounds: supercut.rectificationRounds || [],
+          supercutCssObjectCount: supercut.cssObjectCatalog?.length || 0,
+          supercutRuntimeChanges: supercut.runtimeChanges || [],
+          supercutArchitectureStatus: supercut.architectureStatus || "legacy",
+          supercutPacksLoaded: supercut.packsLoaded || [],
+          supercutPacksLoadedCount: supercut.packsLoaded?.length || 0,
+          supercutRulesFired: supercut.rulesFired || 0,
+          supercutBlackboardRecordCount: supercut.blackboardRecordCount || supercut.blackboard?.records?.length || 0,
+          supercutRewritePreview: supercut.rewritePreview || [],
+          supercutRewritePreviewCount: supercut.rewritePreview?.length || 0,
+          supercutRewritePreviewSummary: summarizeSupercutRewritePreview(supercut),
+          supercutExplanationsReady: supercut.explanationsReady || supercut.explanations?.length || 0,
+          supercutUnsafeActionsBlocked: supercut.unsafeActionsBlocked || 0,
+          supercutProofPolicyCounts: countSupercutProofPolicies(supercut),
+          supercutRuleTrace: supercut.ruleTrace || [],
+          supercutSourceMutations: supercut.sourceMutations || 0,
+          supercutRuntimeSourceMutations: supercut.runtimeSourceMutations || 0,
+          fitLawCount: model.components.filter((item) => item.fit).length + (supercut.cssObjectCatalog?.length || 0),
           layoutLawStatus: violations.length ? "warning" : "ready",
           violations,
           enrichmentStyleId: ENRICHMENT_STYLE_ID,
@@ -503,7 +612,8 @@
         if (options.removeStyle !== false) {
           doc.getElementById(ENRICHMENT_STYLE_ID)?.remove?.();
         }
-        Array.from(doc.querySelectorAll?.("[data-mcel-enriched], [data-mcel-enrichment-source], [data-mcel-enrichment-selector], [data-mcel-role], [data-mcel-kind], [data-mcel-fit], [data-mcel-fit-context], [data-mcel-layout], [data-mcel-layout-policy], [data-mcel-layout-region], [data-mcel-region], [data-mcel-region-kind], [data-mcel-width-policy], [data-mcel-control-role], [data-mcel-control-priority], [data-mcel-action-role], [data-mcel-action-risk], [data-mcel-action-label], [data-mcel-mutates]") || []).forEach((element) => {
+        clearTaskManagerSupercutTranslation(doc, rootSelector);
+        Array.from(doc.querySelectorAll?.("[data-mcel-enriched], [data-mcel-enrichment-source], [data-mcel-enrichment-selector], [data-mcel-role], [data-mcel-kind], [data-mcel-fit], [data-mcel-fit-context], [data-mcel-layout], [data-mcel-layout-policy], [data-mcel-layout-region], [data-mcel-region], [data-mcel-region-kind], [data-mcel-width-policy], [data-mcel-control-role], [data-mcel-control-priority], [data-mcel-action-role], [data-mcel-action-risk], [data-mcel-action-label], [data-mcel-mutates], [data-mcel-supercut], [data-mcel-supercut-purpose], [data-mcel-supercut-contract], [data-mcel-supercut-proof-policy], [data-mcel-supercut-rewrite-tag]") || []).forEach((element) => {
           [
             "data-mcel-enriched",
             "data-mcel-enrichment-source",
@@ -523,7 +633,12 @@
             "data-mcel-action-role",
             "data-mcel-action-risk",
             "data-mcel-action-label",
-            "data-mcel-mutates"
+            "data-mcel-mutates",
+            "data-mcel-supercut",
+            "data-mcel-supercut-purpose",
+            "data-mcel-supercut-contract",
+            "data-mcel-supercut-proof-policy",
+            "data-mcel-supercut-rewrite-tag"
           ].forEach((attribute) => element.removeAttribute(attribute));
         });
         const root = doc.querySelector?.(rootSelector) || null;
@@ -552,6 +667,10 @@
         buildEnrichmentModel,
         collectEnrichmentViolations,
         createUnavailableReport,
+        runTaskManagerSupercutTranslation,
+        clearTaskManagerSupercutTranslation,
+        summarizeSupercutRewritePreview,
+        countSupercutProofPolicies,
         applyTaskManagerMcelSemantics,
         clearTaskManagerMcelSemantics
       };

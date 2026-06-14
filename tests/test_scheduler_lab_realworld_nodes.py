@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import csv
+import http.server
 import json
 import random
 import threading
 import time
 from argparse import Namespace
+from collections import Counter
 
 from tools.scheduler_lab.hub_client import HubClient, HubHttpResponse
 from tools.scheduler_lab.node_list import SCHEMA, build_document, build_nodes, normalize_hub_base_urls
@@ -21,6 +23,7 @@ from tools.scheduler_lab.run_lab import (
     format_process_launch_progress,
     format_process_phase_counts,
     format_process_rollup,
+    format_process_http_activity,
     is_insufficient_credit_response,
     mark_assumed_prefunded_nodes,
     node_can_request,
@@ -109,6 +112,304 @@ def test_hub_client_randomly_chooses_hub_url_per_attempt() -> None:
 
     assert choices.issubset(set(hub_urls))
     assert len(choices) > 1
+
+
+class _SchedulerLabTransportHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, format, *args):  # noqa: A002
+        pass
+
+    def _read_payload(self) -> dict:
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b""
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except Exception:
+            return {"_raw": raw.decode("utf-8", errors="replace")}
+        return parsed if isinstance(parsed, dict) else {"value": parsed}
+
+    def _write_json(self, status: int, payload: dict, *, close: bool = False) -> None:
+        body = json.dumps(payload, sort_keys=True).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close" if close else "keep-alive")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            pass
+        if close:
+            self.close_connection = True
+
+    def _write_raw(self, status: int, body: bytes, *, close: bool = False) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close" if close else "keep-alive")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            pass
+        if close:
+            self.close_connection = True
+
+    def do_GET(self) -> None:
+        self._handle()
+
+    def do_POST(self) -> None:
+        self._handle()
+
+    def _handle(self) -> None:
+        connection_token = f"{self.client_address[0]}:{self.client_address[1]}"
+        if self.path.startswith("/slow"):
+            time.sleep(0.25)
+            self._write_json(200, {"ok": True, "server_connection": connection_token})
+            return
+        if self.path.startswith("/close"):
+            self._write_json(200, {"ok": True, "server_connection": connection_token}, close=True)
+            return
+        if self.path.startswith("/bad-json"):
+            self._write_raw(200, b"{not json")
+            return
+        if self.path.startswith("/status-503"):
+            self._write_json(503, {"error": "hub busy", "server_connection": connection_token})
+            return
+        if self.path.startswith("/stream-bad"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            for line in (b'{"event":"start","request_id":"stream-1"}\n', b"{bad-json\n"):
+                self.wfile.write(line)
+                self.wfile.flush()
+                time.sleep(0.02)
+            self.close_connection = True
+            return
+        if self.path.startswith("/stream"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            for item in (
+                {"event": "start", "request_id": "stream-1"},
+                {"event": "token", "text": "hello"},
+                {"event": "done", "result": {"ok": True}},
+            ):
+                self.wfile.write(json.dumps(item, sort_keys=True).encode("utf-8") + b"\n")
+                self.wfile.flush()
+                time.sleep(0.02)
+            self.close_connection = True
+            return
+        self._write_json(
+            200,
+            {
+                "ok": True,
+                "method_seen": self.command,
+                "path_seen": self.path,
+                "payload_seen": self._read_payload(),
+                "server_connection": connection_token,
+            },
+        )
+
+
+class _SchedulerLabTransportServer:
+    def __init__(self) -> None:
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _SchedulerLabTransportHandler)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+
+    @property
+    def base_url(self) -> str:
+        host, port = self.httpd.server_address[:2]
+        return f"http://{host}:{port}"
+
+    def __enter__(self) -> "_SchedulerLabTransportServer":
+        self.thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=2.0)
+
+
+def test_hub_client_delegates_json_request_through_injected_transport() -> None:
+    class FakeTransport:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+            self.closed = False
+
+        def request_json(self, method, url, *, payload=None, timeout_seconds, headers=None):
+            self.calls.append(
+                {
+                    "method": method,
+                    "url": url,
+                    "payload": payload,
+                    "timeout_seconds": timeout_seconds,
+                    "headers": headers,
+                }
+            )
+            return HubHttpResponse(
+                ok=True,
+                status=200,
+                payload={"ok": True, "transport_mode": "fake"},
+                elapsed_ms=1.0,
+                base_url="http://fake",
+            )
+
+        def stream_jsonl(self, method, url, *, payload=None, timeout_seconds, headers=None):
+            return iter(())
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake = FakeTransport()
+    client = HubClient("http://hub.example", timeout_seconds=3.5, transport=fake)
+
+    response = client.post_json("/api/test", {"hello": "world"})
+    client.close()
+
+    assert response.status == 200
+    assert fake.calls == [
+        {
+            "method": "POST",
+            "url": "http://hub.example/api/test",
+            "payload": {"hello": "world"},
+            "timeout_seconds": 3.5,
+            "headers": None,
+        }
+    ]
+    assert fake.closed is True
+
+
+def test_keepalive_transport_reuses_connection_for_same_origin() -> None:
+    from tools.scheduler_lab.http_transport import KeepAliveHubTransport
+
+    with _SchedulerLabTransportServer() as server:
+        transport = KeepAliveHubTransport(max_connections_per_origin=1)
+        first = transport.request_json("GET", f"{server.base_url}/ok", timeout_seconds=1.0)
+        second = transport.request_json("GET", f"{server.base_url}/ok", timeout_seconds=1.0)
+        transport.close()
+
+    assert first.status == 200
+    assert second.status == 200
+    assert first.payload["transport_mode"] == "keepalive"
+    assert first.payload["connection_reused"] is False
+    assert second.payload["connection_reused"] is True
+    assert second.payload["connection_id"] == first.payload["connection_id"]
+    assert second.payload["server_connection"] == first.payload["server_connection"]
+
+
+def test_keepalive_transport_drops_connection_after_timeout() -> None:
+    from tools.scheduler_lab.http_transport import KeepAliveHubTransport
+
+    with _SchedulerLabTransportServer() as server:
+        transport = KeepAliveHubTransport(max_connections_per_origin=1)
+        timed_out = transport.request_json("GET", f"{server.base_url}/slow", timeout_seconds=0.05)
+        recovered = transport.request_json("GET", f"{server.base_url}/ok", timeout_seconds=1.0)
+        transport.close()
+
+    assert timed_out.status == 0
+    assert timed_out.payload["error_type"] == "transport"
+    assert timed_out.payload["connection_error"] == "timeout"
+    assert recovered.status == 200
+    assert recovered.payload["connection_reused"] is False
+    assert recovered.payload["connection_id"] != timed_out.payload["connection_id"]
+
+
+def test_connection_close_response_causes_connection_drop() -> None:
+    from tools.scheduler_lab.http_transport import KeepAliveHubTransport
+
+    with _SchedulerLabTransportServer() as server:
+        transport = KeepAliveHubTransport(max_connections_per_origin=1)
+        closed = transport.request_json("GET", f"{server.base_url}/close", timeout_seconds=1.0)
+        after_close = transport.request_json("GET", f"{server.base_url}/ok", timeout_seconds=1.0)
+        transport.close()
+
+    assert closed.status == 200
+    assert after_close.status == 200
+    assert after_close.payload["connection_reused"] is False
+    assert after_close.payload["connection_id"] != closed.payload["connection_id"]
+
+
+def test_keepalive_json_parse_errors_return_diagnostic_response() -> None:
+    from tools.scheduler_lab.http_transport import KeepAliveHubTransport
+
+    with _SchedulerLabTransportServer() as server:
+        transport = KeepAliveHubTransport(max_connections_per_origin=1)
+        response = transport.request_json("GET", f"{server.base_url}/bad-json", timeout_seconds=1.0)
+        transport.close()
+
+    assert isinstance(response, HubHttpResponse)
+    assert response.status == 200
+    assert response.ok is False
+    assert response.payload["error_type"] == "parse_error"
+    assert response.payload["error_kind"] == "json_parse_error"
+    assert response.payload["transport_mode"] == "keepalive"
+
+
+def test_keepalive_http_503_remains_http_response_not_transport_failure() -> None:
+    from tools.scheduler_lab.http_transport import KeepAliveHubTransport
+
+    with _SchedulerLabTransportServer() as server:
+        transport = KeepAliveHubTransport(max_connections_per_origin=1)
+        response = transport.request_json("GET", f"{server.base_url}/status-503", timeout_seconds=1.0)
+        transport.close()
+
+    assert response.status == 503
+    assert response.ok is False
+    assert response.payload["error_type"] == "http_error"
+    assert response.payload["error_kind"] == "http_503"
+    assert response.payload["transport_mode"] == "keepalive"
+
+
+def test_streaming_jsonl_yields_events_incrementally_through_client() -> None:
+    from tools.scheduler_lab.http_transport import KeepAliveHubTransport
+
+    with _SchedulerLabTransportServer() as server:
+        client = HubClient(server.base_url, transport=KeepAliveHubTransport(max_connections_per_origin=1))
+        iterator = client.stream_request("POST", "/stream", {"prompt": "hello"})
+        first = next(iterator)
+        assert first.event == "start"
+        rest = list(iterator)
+        client.close()
+
+    events = [first, *rest]
+    assert [event.event for event in events] == ["start", "token", "done"]
+    assert events[1].payload["text"] == "hello"
+    assert all(event.payload["transport_mode"] == "keepalive" for event in events)
+
+
+def test_streaming_malformed_jsonl_yields_protocol_error() -> None:
+    from tools.scheduler_lab.http_transport import KeepAliveHubTransport
+
+    with _SchedulerLabTransportServer() as server:
+        transport = KeepAliveHubTransport(max_connections_per_origin=1)
+        events = list(transport.stream_jsonl("GET", f"{server.base_url}/stream-bad", timeout_seconds=1.0))
+        transport.close()
+
+    assert [event.event for event in events] == ["start", "error"]
+    assert events[-1].payload["error_type"] == "stream_protocol_error"
+    assert events[-1].payload["error_kind"] == "jsonl_parse_error"
+
+
+def test_hub_client_close_closes_pooled_connections() -> None:
+    from tools.scheduler_lab.http_transport import KeepAliveHubTransport
+
+    with _SchedulerLabTransportServer() as server:
+        transport = KeepAliveHubTransport(max_connections_per_origin=1)
+        client = HubClient(server.base_url, transport=transport)
+        response = client.get_json("/ok")
+        assert response.status == 200
+        assert transport.pool._all_connections
+        client.close()
+        assert not transport.pool._all_connections
 
 
 def test_run_lab_docker_counts_can_be_supplied_by_environment(monkeypatch) -> None:
@@ -706,7 +1007,7 @@ def test_process_rollup_scanner_uses_known_paths_and_offsets(tmp_path) -> None:
 
 
 
-def test_behavior_ledger_transport_storm_probes_hub_without_banning_actor() -> None:
+def test_behavior_ledger_transport_storm_observes_without_banning_actor() -> None:
     ledger = BehaviorLedger()
 
     for index in range(20):
@@ -725,12 +1026,11 @@ def test_behavior_ledger_transport_storm_probes_hub_without_banning_actor() -> N
     snapshot = ledger.snapshot()
 
     assert snapshot["tat_counts"]["transport.no_http_response"] == 20
-    assert snapshot["behavior_hubs_probe"] == 1
+    assert snapshot["behavior_hubs_probe"] == 0
     assert snapshot["behavior_nodes_temporary_ban"] == 0
-    assert all(
-        not (item["subject_kind"] == "node" and item["behavior_state"] == "temporary_ban")
-        for item in snapshot["top_behavior"]
-    )
+    assert snapshot["behavior_nodes_quarantine"] == 0
+    assert snapshot["behavior_ips_temporary_ban"] == 0
+    assert {item["behavior_state"] for item in snapshot["top_behavior"]} == {"observe"}
 
 
 def test_behavior_ledger_does_not_double_count_synthetic_transport_failure_event() -> None:
@@ -774,6 +1074,32 @@ def test_behavior_ledger_does_not_count_status_zero_request_as_scheduler_rejecti
     snapshot = ledger.snapshot()
 
     assert snapshot["tat_counts"] == {"transport.no_http_response": 1}
+
+
+
+def test_behavior_ledger_http_5xx_observes_without_banning_actor() -> None:
+    ledger = BehaviorLedger()
+
+    for index in range(12):
+        ledger.record(
+            {
+                "event": "worker.poll",
+                "node_id": "node-503",
+                "account_id": "lab-account-node-503",
+                "status": 503,
+                "ok": False,
+                "hub_base_url": "http://host.docker.internal:8874",
+                "ts": f"2026-06-12T19:01:{index:02d}+00:00",
+            }
+        )
+
+    snapshot = ledger.snapshot()
+
+    assert snapshot["tat_counts"]["protocol.http_5xx"] == 12
+    assert snapshot["behavior_nodes_temporary_ban"] == 0
+    assert snapshot["behavior_nodes_quarantine"] == 0
+    assert snapshot["behavior_ips_temporary_ban"] == 0
+    assert {item["behavior_state"] for item in snapshot["top_behavior"]} == {"observe"}
 
 
 
@@ -1059,7 +1385,7 @@ def test_process_rollup_scanner_samples_across_noisy_files(tmp_path) -> None:
     assert cursor["next_index"] == 0
 
 
-def test_parent_status_interval_does_not_drive_rollup_scans() -> None:
+def test_parent_status_interval_drives_bounded_visibility_scans() -> None:
     flags = process_parent_runtime_due_flags(
         now=20.0,
         parent_status_interval=2.0,
@@ -1070,7 +1396,7 @@ def test_parent_status_interval_does_not_drive_rollup_scans() -> None:
 
     assert flags["status_due"] is True
     assert flags["rollup_due"] is False
-    assert flags["scan_due"] is False
+    assert flags["scan_due"] is True
 
     flags = process_parent_runtime_due_flags(
         now=60.0,
@@ -1083,6 +1409,64 @@ def test_parent_status_interval_does_not_drive_rollup_scans() -> None:
     assert flags["status_due"] is True
     assert flags["rollup_due"] is True
     assert flags["scan_due"] is True
+
+
+def test_process_rollup_tracks_successful_connects_and_successful_requests() -> None:
+    stats = new_process_rollup_stats()
+    record_process_rollup_event(
+        {
+            "event": "worker.register",
+            "ok": True,
+            "status": 200,
+            "hub_base_url": "http://host.docker.internal:8870",
+            "connection_reused": False,
+        },
+        stats,
+    )
+    record_process_rollup_event(
+        {
+            "event": "worker.poll",
+            "ok": False,
+            "status": 503,
+            "hub_base_url": "http://host.docker.internal:8870",
+            "connection_reused": True,
+        },
+        stats,
+    )
+    record_process_rollup_event(
+        {
+            "event": "worker.heartbeat",
+            "ok": False,
+            "status": 0,
+            "hub_base_url": "http://host.docker.internal:8870",
+        },
+        stats,
+    )
+
+    assert stats["http_response_endpoint_counts"] == {"workers_register": 1, "workers_poll": 1}
+    assert stats["http_success_endpoint_counts"] == {"workers_register": 1}
+    assert stats["http_failure_endpoint_counts"] == {"workers_poll": 1}
+    assert stats["http_response_hub_counts"] == {"8870": 2}
+    assert stats["http_success_hub_counts"] == {"8870": 1}
+
+    line = format_process_http_activity(
+        run_id="test-run",
+        elapsed_seconds=2.0,
+        rollup_stats=stats,
+        previous_http_responses=Counter(),
+        previous_http_successes=Counter(),
+        previous_http_failures=Counter(),
+        previous_transport_failures=0,
+        previous_connection_reused=Counter(),
+    )
+
+    assert line.startswith("[worker-lab:http 2s run=test-run]")
+    assert "connect+=2" in line
+    assert "ok+=1" in line
+    assert "http_fail+=1" in line
+    assert "transport+=1" in line
+    assert "ok_by_route={workers_register:1}" in line
+    assert "connect_by_route={workers_register:1,workers_poll:1}" in line
 
 
 def test_node_process_bootstrap_top_up_does_not_block_runtime_entry() -> None:
@@ -1412,8 +1796,9 @@ def test_process_rollup_behavior_classifier_distinguishes_transport_dominated() 
     assert rollup["transport_dominated"] is True
     assert rollup["settlement_metrics_representative"] is False
     assert rollup["lab_interpretation"] == "transport_dominated"
-    assert rollup["behavior_hubs_probe"] == 1
+    assert rollup["behavior_hubs_probe"] == 0
     assert rollup["top_behavior"]
+    assert {item["behavior_state"] for item in rollup["top_behavior"]} == {"observe"}
 
 
 def test_worker_register_diagnostic_event_classifies_transport_failure() -> None:
@@ -1558,6 +1943,39 @@ def test_process_rollup_exposes_worker_pipeline_diagnostics() -> None:
         },
         stats,
     )
+    record_process_rollup_event(
+        {
+            "event": "worker.heartbeat",
+            "node_id": "worker-1",
+            "status": 200,
+            "hub_base_url": "http://host.docker.internal:8870",
+            "transport_mode": "keepalive",
+            "connection_reused": True,
+            "origin": "host.docker.internal:8870",
+        },
+        stats,
+    )
+    record_process_rollup_event(
+        {
+            "event": "requester.stream.event",
+            "node_id": "requester-1",
+            "stream_event": "token",
+            "transport_mode": "keepalive",
+            "connection_reused": False,
+            "origin": "host.docker.internal:8870",
+        },
+        stats,
+    )
+    record_process_rollup_event(
+        {
+            "event": "requester.stream_error",
+            "node_id": "requester-1",
+            "stream_event": "error",
+            "stream_error": "jsonl_parse_error",
+            "connection_error": "jsonl_parse_error",
+        },
+        stats,
+    )
 
     rollup = build_process_rollup(
         run_id="diag-test",
@@ -1575,3 +1993,11 @@ def test_process_rollup_exposes_worker_pipeline_diagnostics() -> None:
     assert rollup["worker_endpoint_status_counts"]["poll|8874|0"] == 1
     assert rollup["worker_endpoint_status_counts"]["poll|8870|200"] == 1
     assert rollup["worker_transport_error_counts"]["poll|8874|timeout"] == 1
+    assert rollup["transport_mode_counts"]["keepalive"] == 2
+    assert rollup["connection_reused_counts"]["true"] == 1
+    assert rollup["connection_reused_counts"]["false"] == 1
+    assert rollup["connection_origin_counts"]["host.docker.internal:8870"] == 2
+    assert rollup["connection_error_counts"]["jsonl_parse_error"] == 1
+    assert rollup["stream_event_counts"]["token"] == 1
+    assert rollup["stream_event_counts"]["error"] == 1
+    assert rollup["stream_error_counts"]["jsonl_parse_error"] == 1

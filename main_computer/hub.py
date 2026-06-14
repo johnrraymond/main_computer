@@ -1018,6 +1018,7 @@ class HubDispatcher:
 
 class _JsonHandler(BaseHTTPRequestHandler):
     server_version = "MainComputerHub/0.2"
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, format: str, *args: Any) -> None:
         if getattr(self.server, "verbose", False):
@@ -1078,6 +1079,105 @@ class _JsonHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+    def _worker_route_enter_or_reject(self, diag_id: int, route: str, started_at: float) -> bool:
+        semaphore = getattr(self.server, "worker_route_semaphore", None)
+        max_in_flight = int(getattr(self.server, "worker_route_max_in_flight", 0) or 0)
+        if semaphore is None or max_in_flight <= 0:
+            self._worker_route_diag_step(diag_id, route, "route_gate.disabled", started_at)
+            return True
+
+        if semaphore.acquire(blocking=False):
+            in_flight = 0
+            lock = getattr(self.server, "worker_route_in_flight_lock", None)
+            if lock is not None:
+                with lock:
+                    self.server.worker_route_in_flight = int(getattr(self.server, "worker_route_in_flight", 0) or 0) + 1
+                    in_flight = int(self.server.worker_route_in_flight)
+            self._worker_route_diag_step(
+                diag_id,
+                route,
+                "route_gate.acquired",
+                started_at,
+                worker_route_in_flight=in_flight,
+                worker_route_max_in_flight=max_in_flight,
+            )
+            return True
+
+        retry_after = float(getattr(self.server, "worker_route_retry_after_seconds", 1.0) or 1.0)
+        self._worker_route_diag_step(
+            diag_id,
+            route,
+            "route_gate.rejected",
+            started_at,
+            status=503,
+            worker_route_max_in_flight=max_in_flight,
+            retry_after_seconds=retry_after,
+        )
+        self._worker_route_diag_step(diag_id, route, "request_body.discard.start", started_at)
+        self._discard_request_body()
+        self._worker_route_diag_step(
+            diag_id,
+            route,
+            "request_body.discard.done",
+            started_at,
+            close_connection=bool(getattr(self, "close_connection", False)),
+        )
+        self._worker_route_diag_step(diag_id, route, "route_gate.reject_sent", started_at, status=503)
+        self._send_json(
+            {
+                "ok": False,
+                "error": "Hub worker route overloaded; retry later.",
+                "error_type": "hub_worker_route_overloaded",
+                "retry_after_seconds": retry_after,
+                "worker_route_max_in_flight": max_in_flight,
+            },
+            status=HTTPStatus.SERVICE_UNAVAILABLE,
+        )
+        return False
+
+    def _worker_route_exit(self, diag_id: int, route: str, started_at: float) -> None:
+        semaphore = getattr(self.server, "worker_route_semaphore", None)
+        if semaphore is None:
+            return
+        in_flight = 0
+        lock = getattr(self.server, "worker_route_in_flight_lock", None)
+        if lock is not None:
+            with lock:
+                self.server.worker_route_in_flight = max(0, int(getattr(self.server, "worker_route_in_flight", 0) or 0) - 1)
+                in_flight = int(self.server.worker_route_in_flight)
+        try:
+            semaphore.release()
+        except ValueError:
+            pass
+        self._worker_route_diag_step(diag_id, route, "route_gate.released", started_at, worker_route_in_flight=in_flight)
+
+    def _worker_route_success_payload(self, worker: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "worker": worker.as_dict(),
+            "hub": {"status_omitted": True},
+            "hub_status_omitted": True,
+        }
+
+    def _discard_request_body(self) -> None:
+        transfer_encoding = str(self.headers.get("Transfer-Encoding", "") or "").lower()
+        if "chunked" in transfer_encoding:
+            self.close_connection = True
+            return
+
+        try:
+            remaining = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            self.close_connection = True
+            return
+
+        while remaining > 0:
+            chunk = self.rfile.read(min(remaining, 64 * 1024))
+            if not chunk:
+                self.close_connection = True
+                return
+            remaining -= len(chunk)
+
     def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0") or "0")
         raw = self.rfile.read(length) if length else b"{}"
@@ -1118,6 +1218,15 @@ class HubHttpServer(ThreadingHTTPServer):
         self.worker_route_diagnostics = str(os.environ.get("HUB_WORKER_ROUTE_DIAGNOSTICS", "0")).strip().lower() in {"1", "true", "yes", "on"}
         self.worker_route_diag_lock = threading.Lock()
         self.worker_route_diag_sequence = 0
+        self.worker_route_max_in_flight = max(0, int(os.environ.get("HUB_WORKER_ROUTE_MAX_IN_FLIGHT", "8")))
+        self.worker_route_retry_after_seconds = max(0.1, float(os.environ.get("HUB_WORKER_ROUTE_RETRY_AFTER_SECONDS", "1")))
+        self.worker_route_semaphore = (
+            threading.BoundedSemaphore(self.worker_route_max_in_flight)
+            if self.worker_route_max_in_flight > 0
+            else None
+        )
+        self.worker_route_in_flight_lock = threading.Lock()
+        self.worker_route_in_flight = 0
         hub_root = config.hub_root
         if not hub_root.is_absolute():
             hub_root = Path.cwd().resolve() / hub_root
@@ -2469,6 +2578,8 @@ class HubServerHandler(_JsonHandler):
                 return
             if path in {"/api/hub/workers/register", "/api/hub/v1/workers/register"}:
                 diag_id, diag_started_at = self._worker_route_diag_start("worker.register", path)
+                if not self._worker_route_enter_or_reject(diag_id, "worker.register", diag_started_at):
+                    return
                 try:
                     self._worker_route_diag_step(diag_id, "worker.register", "read_json.start", diag_started_at)
                     body = self._read_json()
@@ -2519,11 +2630,9 @@ class HubServerHandler(_JsonHandler):
                     self._worker_route_diag_step(diag_id, "worker.register", "energy_ledger.register_node.start", diag_started_at, worker_node_id=worker.node_id)
                     self.server.energy_ledger.register_node(worker.node_id, "gpu-worker", worker.endpoint)
                     self._worker_route_diag_step(diag_id, "worker.register", "energy_ledger.register_node.done", diag_started_at, worker_node_id=worker.node_id)
-                    self._worker_route_diag_step(diag_id, "worker.register", "registry.status.start", diag_started_at)
-                    registry_status = self.server.registry.status()
-                    self._worker_route_diag_step(diag_id, "worker.register", "registry.status.done", diag_started_at)
+                    self._worker_route_diag_step(diag_id, "worker.register", "hub_status.omitted", diag_started_at)
                     self._worker_route_diag_step(diag_id, "worker.register", "send_json.start", diag_started_at, status=200)
-                    self._send_json({"ok": True, "worker": worker.as_dict(), "hub": registry_status})
+                    self._send_json(self._worker_route_success_payload(worker))
                     self._worker_route_diag_step(diag_id, "worker.register", "send_json.done", diag_started_at, status=200)
                     return
                 except Exception as exc:
@@ -2536,8 +2645,12 @@ class HubServerHandler(_JsonHandler):
                         error=str(exc),
                     )
                     raise
+                finally:
+                    self._worker_route_exit(diag_id, "worker.register", diag_started_at)
             if path in {"/api/hub/v1/workers/heartbeat", "/api/hub/workers/heartbeat"}:
                 diag_id, diag_started_at = self._worker_route_diag_start("worker.heartbeat", path)
+                if not self._worker_route_enter_or_reject(diag_id, "worker.heartbeat", diag_started_at):
+                    return
                 try:
                     self._worker_route_diag_step(diag_id, "worker.heartbeat", "read_json.start", diag_started_at)
                     body = self._read_json()
@@ -2564,11 +2677,9 @@ class HubServerHandler(_JsonHandler):
                         max_concurrency=int(body.get("max_concurrency")) if body.get("max_concurrency") is not None else None,
                     )
                     self._worker_route_diag_step(diag_id, "worker.heartbeat", "registry.heartbeat_worker.done", diag_started_at, worker_node_id=worker.node_id)
-                    self._worker_route_diag_step(diag_id, "worker.heartbeat", "registry.status.start", diag_started_at)
-                    registry_status = self.server.registry.status()
-                    self._worker_route_diag_step(diag_id, "worker.heartbeat", "registry.status.done", diag_started_at)
+                    self._worker_route_diag_step(diag_id, "worker.heartbeat", "hub_status.omitted", diag_started_at)
                     self._worker_route_diag_step(diag_id, "worker.heartbeat", "send_json.start", diag_started_at, status=200)
-                    self._send_json({"ok": True, "worker": worker.as_dict(), "hub": registry_status})
+                    self._send_json(self._worker_route_success_payload(worker))
                     self._worker_route_diag_step(diag_id, "worker.heartbeat", "send_json.done", diag_started_at, status=200)
                     return
                 except Exception as exc:
@@ -2581,8 +2692,12 @@ class HubServerHandler(_JsonHandler):
                         error=str(exc),
                     )
                     raise
+                finally:
+                    self._worker_route_exit(diag_id, "worker.heartbeat", diag_started_at)
             if path.startswith("/api/hub/v1/workers/") and path.endswith("/heartbeat"):
                 diag_id, diag_started_at = self._worker_route_diag_start("worker.heartbeat_by_id", path)
+                if not self._worker_route_enter_or_reject(diag_id, "worker.heartbeat_by_id", diag_started_at):
+                    return
                 try:
                     self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "read_json.start", diag_started_at)
                     body = self._read_json()
@@ -2612,11 +2727,9 @@ class HubServerHandler(_JsonHandler):
                         max_concurrency=int(body.get("max_concurrency")) if body.get("max_concurrency") is not None else None,
                     )
                     self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "registry.heartbeat_worker.done", diag_started_at, worker_node_id=worker.node_id)
-                    self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "registry.status.start", diag_started_at)
-                    registry_status = self.server.registry.status()
-                    self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "registry.status.done", diag_started_at)
+                    self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "hub_status.omitted", diag_started_at)
                     self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "send_json.start", diag_started_at, status=200)
-                    self._send_json({"ok": True, "worker": worker.as_dict(), "hub": registry_status})
+                    self._send_json(self._worker_route_success_payload(worker))
                     self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "send_json.done", diag_started_at, status=200)
                     return
                 except Exception as exc:
@@ -2629,8 +2742,12 @@ class HubServerHandler(_JsonHandler):
                         error=str(exc),
                     )
                     raise
+                finally:
+                    self._worker_route_exit(diag_id, "worker.heartbeat_by_id", diag_started_at)
             if path in {"/api/hub/v1/workers/poll", "/api/hub/workers/poll"}:
                 diag_id, diag_started_at = self._worker_route_diag_start("worker.poll", path)
+                if not self._worker_route_enter_or_reject(diag_id, "worker.poll", diag_started_at):
+                    return
                 try:
                     self._worker_route_diag_step(diag_id, "worker.poll", "read_json.start", diag_started_at)
                     body = self._read_json()
@@ -2675,8 +2792,12 @@ class HubServerHandler(_JsonHandler):
                         error=str(exc),
                     )
                     raise
+                finally:
+                    self._worker_route_exit(diag_id, "worker.poll", diag_started_at)
             if path in {"/api/hub/v1/workers/results", "/api/hub/workers/results"}:
                 diag_id, diag_started_at = self._worker_route_diag_start("worker.results", path)
+                if not self._worker_route_enter_or_reject(diag_id, "worker.results", diag_started_at):
+                    return
                 try:
                     self._worker_route_diag_step(diag_id, "worker.results", "read_json.start", diag_started_at)
                     body = self._read_json()
@@ -2717,6 +2838,8 @@ class HubServerHandler(_JsonHandler):
                         error=str(exc),
                     )
                     raise
+                finally:
+                    self._worker_route_exit(diag_id, "worker.results", diag_started_at)
             if path in {"/api/hub/upstreams/register", "/api/hub/v1/upstreams/register"}:
                 body = self._read_json()
                 upstream = self.server.registry.register_upstream_hub(
