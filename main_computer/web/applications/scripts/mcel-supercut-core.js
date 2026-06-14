@@ -118,6 +118,30 @@
         return blackboard.rewritePreview;
       }
 
+      function plannedDomainUnsafeFamilyKey(record, item = {}, blackboard) {
+        const specimenId = String(blackboard?.specimenId || blackboard?.rootNode?.id || "").replace(/-app$/, "");
+        const purpose = String(item.purpose || "");
+        const role = String(item.role || "");
+        if (!specimenId || ["task-manager", "git-tools", "calculator"].includes(specimenId)) return "";
+        if (purpose.startsWith(`${specimenId}.`)) {
+          const parts = purpose.split(".").filter(Boolean);
+          if (parts.length >= 3 && ["risk", "action", "safe"].includes(parts[1])) return parts.slice(0, 3).join(".");
+          if (parts.length >= 2) return parts.slice(0, Math.min(3, parts.length)).join(".");
+        }
+        if (role) return `${specimenId}.${role}`;
+        const text = [
+          record?.domId || "",
+          record?.componentId || "",
+          record?.directText || "",
+          record?.element?.getAttribute?.("aria-label") || ""
+        ].join(" ").toLowerCase();
+        const family = [
+          "send", "delete", "export", "import", "upload", "download", "run", "execute", "command",
+          "save", "publish", "deploy", "sign", "approve", "transaction", "install", "start", "stop", "restart"
+        ].find((term) => text.includes(term));
+        return family ? `${specimenId}.${family}` : "";
+      }
+
       function taskManagerUnsafeFamilyKey(record, item = {}) {
         const element = record?.element || null;
         const domId = record?.domId || "";
@@ -153,6 +177,8 @@
         if (blackboard?.specimenId === "task-manager" || blackboard?.rootNode?.id === "task-manager-app") {
           return taskManagerUnsafeFamilyKey(record, item) || (record.id || item.recordId || item.selector || item.id || "");
         }
+        const plannedKey = plannedDomainUnsafeFamilyKey(record, item, blackboard);
+        if (plannedKey) return plannedKey;
         return record.id || item.recordId || item.selector || item.id || "";
       }
 
@@ -172,6 +198,12 @@
           }
         });
         (blackboard?.risks || []).forEach((risk) => {
+          const currentAction = (blackboard?.actions || []).find((action) => action.recordId === risk.recordId);
+          const currentComponent = (blackboard?.components || []).find((component) => component.recordId === risk.recordId);
+          const currentActionBlocked = currentAction && (currentAction.blocked || contracts?.riskPolicy?.(currentAction.risk)?.blocked);
+          const currentComponentBlocked = currentComponent && contracts?.riskPolicy?.(currentComponent.risk)?.blocked && shouldEnforceBlockingPolicy(currentComponent, blackboard);
+          if (currentAction && !currentActionBlocked) return;
+          if (!currentAction && currentComponent && !currentComponentBlocked) return;
           if (risk.blocked || contracts?.riskPolicy?.(risk.risk)?.blocked) {
             addIfExecutable(risk.recordId, risk);
           }
@@ -218,7 +250,14 @@
         global.McelSupercutRegistry.loadDefaultPacks?.();
         const packs = Array.isArray(options.packs) && options.packs.length
           ? options.packs
-          : ["core-html", "core-action-risk", "git-tools-domain", "task-manager-domain"];
+          : [
+            "core-html",
+            "core-action-risk",
+            "git-tools-domain",
+            "task-manager-domain",
+            "calculator-domain",
+            ...(global.McelSupercutPacksPlannerDomains?.plannerDomainPacks || []).map((pack) => pack.id)
+          ];
         const blackboard = global.McelSupercutBlackboard.createBlackboard({
           rootDocument,
           rootElement,
