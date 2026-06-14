@@ -57,6 +57,11 @@ class FakeTokenActivities:
         request = FakeTokenRequest.from_mapping(request_payload)
         events_written = 0
         force_failure = bool(request.payload.get("force_failure"))
+        force_business_failure = bool(
+            request.payload.get("force_business_failure")
+            or request.payload.get("force_failure_result")
+            or request.payload.get("force_decline")
+        )
 
         append_jsonl_event(
             self.event_log_path,
@@ -72,7 +77,8 @@ class FakeTokenActivities:
         )
         events_written += 1
 
-        if force_failure:
+        if force_failure or force_business_failure:
+            reason = "forced_fake_token_failure" if force_failure else "forced_smoke_business_failure"
             failure_event = {
                 "event": "failed",
                 "request_id": request.request_id,
@@ -81,10 +87,28 @@ class FakeTokenActivities:
                 "partition": request.partition,
                 "credits_offered": request.credits_offered,
                 "worker_id": self.worker_id,
-                "reason": "forced_fake_token_failure",
+                "reason": reason,
             }
             append_jsonl_event(self.event_log_path, failure_event)
-            raise RuntimeError("forced fake token failure")
+            events_written += 1
+            if force_failure:
+                raise RuntimeError("forced fake token failure")
+            return FakeTokenResult(
+                request_id=request.request_id,
+                account_id=request.account_id,
+                credits_offered=request.credits_offered,
+                ring=request.ring,
+                partition=request.partition,
+                worker_id=self.worker_id,
+                token_count=request.token_count,
+                events_written=events_written,
+                event_log_path=str(self.event_log_path),
+                result={
+                    "ok": False,
+                    "error_code": "forced_smoke_business_failure",
+                    "reason": reason,
+                },
+            ).to_dict()
 
         for seq in range(1, request.token_count + 1):
             if request.token_interval_seconds:
