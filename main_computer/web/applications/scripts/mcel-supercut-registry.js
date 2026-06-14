@@ -168,7 +168,9 @@
             global.McelSupercutPacksCore?.coreHtmlPack,
             global.McelSupercutPacksCore?.coreActionRiskPack,
             global.McelSupercutPacksGitTools?.gitToolsDomainPack,
-            global.McelSupercutPacksTaskManager?.taskManagerDomainPack
+            global.McelSupercutPacksTaskManager?.taskManagerDomainPack,
+            global.McelSupercutPacksCalculator?.calculatorDomainPack,
+            ...(global.McelSupercutPacksPlannerDomains?.plannerDomainPacks || [])
           ].filter(Boolean).forEach(registerPack);
           return listPacks();
         }
