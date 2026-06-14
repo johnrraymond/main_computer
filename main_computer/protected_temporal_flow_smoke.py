@@ -32,6 +32,7 @@ from tools.temporal_lab.models import FakeTokenRequest, RingDecision, decide_rin
 
 
 ExecutionMode = Literal["live-temporal", "direct-activity"]
+FailureMode = Literal["business-result", "activity-exception"]
 
 
 DEFAULT_PROTECTED_TEMPORAL_REPORT_PATH = Path("runtime") / "temporal_lab" / "protected_temporal_flow_report.json"
@@ -47,6 +48,8 @@ class ProtectedTemporalFlowConfig:
     report_path: Path | None = DEFAULT_PROTECTED_TEMPORAL_REPORT_PATH
     reset_ledger: bool = True
     execution_mode: ExecutionMode = "live-temporal"
+    failure_mode: FailureMode = "business-result"
+    isolate_task_queue: bool = True
     temporal_address: str = "localhost:7233"
     namespace: str = DEFAULT_NAMESPACE
     event_log_path: Path = DEFAULT_EVENT_LOG_PATH
@@ -107,14 +110,16 @@ def _make_request(
     credits_offered: int,
     token_count: int,
     token_interval_seconds: float,
-    force_failure: bool,
+    failure_mode: FailureMode | None,
 ) -> FakeTokenRequest:
     payload: dict[str, Any] = {
         "source": "protected_temporal_flow_smoke",
         "protected_mode": True,
     }
-    if force_failure:
+    if failure_mode == "activity-exception":
         payload["force_failure"] = True
+    elif failure_mode == "business-result":
+        payload["force_business_failure"] = True
     return FakeTokenRequest(
         request_id=request_id,
         account_id=account_id,
@@ -178,6 +183,7 @@ async def _execute_work(
     config: ProtectedTemporalFlowConfig,
     request: FakeTokenRequest,
     decision: RingDecision,
+    execution_task_queue: str,
 ) -> dict[str, Any]:
     if decision.task_queue is None:
         raise ProtectedModePretestError("accepted request must include a task queue")
@@ -193,7 +199,7 @@ async def _execute_work(
             temporal_address=config.temporal_address,
             namespace=config.namespace,
             request=request,
-            task_queue=decision.task_queue,
+            task_queue=execution_task_queue,
             event_log_path=config.resolved_event_log_path(),
             worker_id=config.worker_id,
         )
@@ -207,16 +213,40 @@ def _decision_required_wei(decision: RingDecision) -> int:
     return credit_count_to_wei(required_credits)
 
 
+def _workflow_result_is_failed(result: dict[str, Any] | None) -> bool:
+    if not isinstance(result, dict):
+        return False
+    outcome = result.get("result")
+    if not isinstance(outcome, dict):
+        return False
+    return outcome.get("ok") is False
+
+
+def _execution_task_queue(
+    *,
+    config: ProtectedTemporalFlowConfig,
+    decision: RingDecision,
+    smoke_run_id: str,
+) -> str:
+    if decision.task_queue is None:
+        raise ProtectedModePretestError("accepted request must include a task queue")
+    if config.execution_mode == "live-temporal" and config.isolate_task_queue:
+        return f"{decision.task_queue}-protected-smoke-{smoke_run_id}"
+    return decision.task_queue
+
+
 async def _run_request_flow(
     *,
     config: ProtectedTemporalFlowConfig,
     ledger: HubCreditLedger,
     request: FakeTokenRequest,
     expect_failure: bool,
+    smoke_run_id: str,
 ) -> dict[str, Any]:
     decision = decide_ring(request)
     required_wei = _decision_required_wei(decision)
     routed = request.with_ring(decision.ring)
+    execution_task_queue = _execution_task_queue(config=config, decision=decision, smoke_run_id=smoke_run_id)
 
     hold = ledger.create_hold_credit_wei(
         account_id=request.account_id,
@@ -227,6 +257,7 @@ async def _run_request_flow(
             "protected_temporal_flow": True,
             "ring": decision.ring,
             "task_queue": decision.task_queue,
+            "execution_task_queue": execution_task_queue,
             "required_credits": decision.required_credits,
             "credits_offered": request.credits_offered,
             "idempotency_key": request.idempotency_key,
@@ -246,7 +277,12 @@ async def _run_request_flow(
     release: dict[str, Any] | None = None
 
     try:
-        workflow_result = await _execute_work(config=config, request=routed, decision=decision)
+        workflow_result = await _execute_work(
+            config=config,
+            request=routed,
+            decision=decision,
+            execution_task_queue=execution_task_queue,
+        )
     except Exception as exc:
         workflow_error = f"{type(exc).__name__}: {exc}"
         if not expect_failure:
@@ -257,7 +293,9 @@ async def _run_request_flow(
             )
             raise ProtectedModePretestError(f"protected Temporal workflow failed unexpectedly: {workflow_error}") from exc
 
-    if workflow_error is None:
+    workflow_failed_result = _workflow_result_is_failed(workflow_result)
+
+    if workflow_error is None and not workflow_failed_result:
         if expect_failure:
             settlement = ledger.charge_hold_credit_wei(
                 hold_id=hold["hold"]["hold_id"],
@@ -277,6 +315,7 @@ async def _run_request_flow(
                 "protected_temporal_flow": True,
                 "workflow_result": workflow_result,
                 "task_queue": decision.task_queue,
+                "execution_task_queue": execution_task_queue,
             },
         )
         duplicate_settlement = ledger.charge_hold_credit_wei(
@@ -288,14 +327,17 @@ async def _run_request_flow(
             raise ProtectedModePretestError(f"duplicate protected settlement did not replay for {request.request_id}")
     else:
         if not expect_failure:
-            raise ProtectedModePretestError(f"unexpected workflow error for success request: {workflow_error}")
+            detail = workflow_error or f"failed workflow result: {workflow_result}"
+            raise ProtectedModePretestError(f"unexpected workflow error for success request: {detail}")
         release = ledger.release_hold(
             hold_id=hold["hold"]["hold_id"],
             reason="protected Temporal workflow failure release",
             metadata={
                 "protected_temporal_flow": True,
                 "workflow_error": workflow_error,
+                "workflow_result": workflow_result,
                 "task_queue": decision.task_queue,
+                "execution_task_queue": execution_task_queue,
             },
         )
         duplicate_release = ledger.release_hold(
@@ -312,8 +354,10 @@ async def _run_request_flow(
         "required_credits_display": credit_wei_to_decimal_text(required_wei),
         "hold": hold,
         "duplicate_hold": duplicate_hold,
+        "execution_task_queue": execution_task_queue,
         "workflow_result": workflow_result,
         "workflow_error": workflow_error,
+        "workflow_failed_result": workflow_failed_result,
         "settlement": settlement,
         "release": release,
         "final_hold": ledger.list_holds(request_id=request.request_id, limit=1)[0].as_dict(),
@@ -388,7 +432,7 @@ async def run_protected_temporal_flow_smoke(config: ProtectedTemporalFlowConfig)
             credits_offered=success_credits_offered,
             token_count=token_count,
             token_interval_seconds=config.token_interval_seconds,
-            force_failure=False,
+            failure_mode=None,
         )
         failure_request = _make_request(
             request_id=f"protected-temporal-failure-{suffix}",
@@ -396,7 +440,7 @@ async def run_protected_temporal_flow_smoke(config: ProtectedTemporalFlowConfig)
             credits_offered=failure_credits_offered,
             token_count=token_count,
             token_interval_seconds=config.token_interval_seconds,
-            force_failure=True,
+            failure_mode=config.failure_mode,
         )
 
         success_flow = await _run_request_flow(
@@ -404,12 +448,14 @@ async def run_protected_temporal_flow_smoke(config: ProtectedTemporalFlowConfig)
             ledger=ledger,
             request=success_request,
             expect_failure=False,
+            smoke_run_id=suffix,
         )
         failure_flow = await _run_request_flow(
             config=config,
             ledger=ledger,
             request=failure_request,
             expect_failure=True,
+            smoke_run_id=suffix,
         )
 
         final_status = ledger.status()
@@ -433,7 +479,11 @@ async def run_protected_temporal_flow_smoke(config: ProtectedTemporalFlowConfig)
                 else False
             ),
             "failure_decision_selected_ring": failure_flow["decision"]["ring"] is not None,
-            "failure_workflow_failed": bool(failure_flow["workflow_error"]),
+            "failure_outcome_failed": bool(failure_flow["workflow_error"]) or bool(failure_flow["workflow_failed_result"]),
+            "failure_workflow_failed": bool(failure_flow["workflow_error"]) or bool(failure_flow["workflow_failed_result"]),
+            "failure_default_path_has_no_traceback_error": (
+                config.failure_mode != "business-result" or failure_flow["workflow_error"] is None
+            ),
             "failure_hold_released": failure_flow["final_hold"]["status"] == "released",
             "failure_release_matches_required_wei": (
                 str(failure_flow["release"]["hold"]["credit_wei"]) == str(failure_required_wei)
@@ -451,6 +501,8 @@ async def run_protected_temporal_flow_smoke(config: ProtectedTemporalFlowConfig)
             "ok": ok,
             "mode": "protected-temporal-flow-smoke-v1",
             "execution_mode": config.execution_mode,
+            "failure_mode": config.failure_mode,
+            "isolate_task_queue": config.isolate_task_queue,
             "network_profile": profile.as_dict(),
             "ledger_root": str(ledger_root),
             "event_log_path": str(event_log_path),
@@ -491,6 +543,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--keep-ledger", action="store_true", help="Do not delete/recreate the protected Temporal flow ledger root.")
     parser.add_argument("--report", type=Path, default=DEFAULT_PROTECTED_TEMPORAL_REPORT_PATH)
     parser.add_argument("--execution-mode", choices=("live-temporal", "direct-activity"), default="live-temporal")
+    parser.add_argument(
+        "--exercise-temporal-exception-path",
+        action="store_true",
+        help=(
+            "Use a real activity exception for the failure leg. Bare smoke defaults "
+            "to a clean business-failure result so expected release-on-failure does not print tracebacks."
+        ),
+    )
+    parser.add_argument(
+        "--shared-ring-task-queue",
+        action="store_true",
+        help=(
+            "Use the ring-derived task queue directly. Bare live smoke isolates itself "
+            "on a unique task queue to avoid stale Temporal retries from older smoke runs."
+        ),
+    )
     parser.add_argument("--address", default="localhost:7233")
     parser.add_argument("--namespace", default=DEFAULT_NAMESPACE)
     parser.add_argument("--event-log", type=Path, default=DEFAULT_EVENT_LOG_PATH)
@@ -520,6 +588,8 @@ def main(argv: list[str] | None = None) -> int:
                     report_path=args.report,
                     reset_ledger=not args.keep_ledger,
                     execution_mode=args.execution_mode,
+                    failure_mode="activity-exception" if args.exercise_temporal_exception_path else "business-result",
+                    isolate_task_queue=not args.shared_ring_task_queue,
                     temporal_address=args.address,
                     namespace=args.namespace,
                     event_log_path=args.event_log,
@@ -549,6 +619,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"account_id: {report['account_id']}")
     print(f"success_ring: {report['steps']['success_flow']['decision']['ring']}")
     print(f"success_task_queue: {report['steps']['success_flow']['decision']['task_queue']}")
+    print(f"success_execution_task_queue: {report['steps']['success_flow']['execution_task_queue']}")
+    print(f"failure_execution_task_queue: {report['steps']['failure_flow']['execution_task_queue']}")
+    print(f"failure_mode: {report['failure_mode']}")
     print(f"success_hold_status: {report['steps']['success_flow']['final_hold']['status']}")
     print(f"failure_hold_status: {report['steps']['failure_flow']['final_hold']['status']}")
     print(f"final_available_credit_wei: {report['steps']['final_status']['totals']['available_credit_wei']}")

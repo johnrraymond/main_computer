@@ -159,9 +159,19 @@ The smoke performs two protected requests:
 - success path: requester offers credits, catalog selects a ring, protected
   bridge-credit hold is created, Temporal fake-token workflow completes, and
   the hold is charged.
-- failure path: requester offers credits, catalog selects a ring, protected
-  bridge-credit hold is created, Temporal workflow is intentionally failed, and
-  the hold is released.
+- clean failure path: requester offers credits, catalog selects a ring,
+  protected bridge-credit hold is created, the fake-token activity returns a
+  business failure result, and the hold is released without printing an
+  expected traceback.
+
+Bare live smoke uses a unique per-run task queue derived from the selected ring.
+That keeps stale retries from older shared-queue smoke runs out of the normal
+output while still using Temporal workflow and worker infrastructure. To force
+the old hard exception path, opt in explicitly:
+
+```bash
+python scripts/smoke_protected_temporal_flow.py --exercise-temporal-exception-path
+```
 
 For dependency-light local checks without a live Temporal server:
 
@@ -294,3 +304,53 @@ python -m tools.temporal_lab.local_temporal up \
 
 Use `--public-bind` only in an isolated local network. The default bind is
 localhost-only.
+
+## Protected Temporal + FDB node-market smoke
+
+After the clean protected Temporal flow is passing, the next golden-path smoke
+models a small scheduler market with worker-specific Temporal task queues:
+
+```powershell
+python .\scripts\smoke_temporal_fdb_node_market.py
+```
+
+Bare mode uses the experimental FoundationDB credit ledger/registry, live
+Temporal, and 50 simulated worker nodes. It now emits progress lines to stdout
+as each long-running phase starts and completes, including FDB bootstrap,
+worker registration, Temporal worker startup, workflow progress, settlement,
+and report writing. Each node registers a ring, advertised price, task queue,
+and keepalive. The hub-side smoke filters workers with:
+
+```text
+worker.ring <= requester.requested_ring
+worker.price_credits <= requester.max_price_credits
+```
+
+Then it leases the next eligible worker, creates a protected credit hold, starts
+the workflow on that worker's task queue, observes the fake token stream, and
+charges the hold on success.
+
+The default scenario intentionally demonstrates a ring-2 request being serviced
+by ring-1 workers when their advertised price fits the request offer.
+
+Use `--quiet` to suppress progress lines when you only want the final summary.
+
+If the smoke finds `.foundationdb/docker.cluster` but the FDB server behind it is stale, it now fails the blocking storage phase with a diagnostic instead of sitting silently. The default per-operation bound is 15 seconds:
+
+```powershell
+python .\scripts\smoke_temporal_fdb_node_market.py --storage-operation-timeout-seconds 15
+```
+
+Use `0` only when you deliberately want unbounded FDB client waits while debugging.
+
+For dependency-light local checks without FDB or Temporal:
+
+```powershell
+python .\scripts\smoke_temporal_fdb_node_market.py `
+  --execution-mode direct-activity `
+  --ledger-backend json `
+  --nodes 10 `
+  --requests 3 `
+  --token-interval-seconds 0
+```
+
