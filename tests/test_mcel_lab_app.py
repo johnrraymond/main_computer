@@ -1610,6 +1610,7 @@ def test_mcel_lab_remaining_planner_specimens_have_supercut_domain_packs() -> No
     html = (ROOT / "main_computer" / "web" / "applications.html").read_text(encoding="utf-8")
     registry = (WEB_APP / "scripts" / "mcel-supercut-registry.js").read_text(encoding="utf-8")
     core = (WEB_APP / "scripts" / "mcel-supercut-core.js").read_text(encoding="utf-8")
+    supercut = (WEB_APP / "scripts" / "mcel-supercut.js").read_text(encoding="utf-8")
     planner = (WEB_APP / "scripts" / "mcel-specimen-planner.js").read_text(encoding="utf-8")
     planner_domains_pack = (WEB_APP / "scripts" / "mcel-supercut-packs-planner-domains.js").read_text(encoding="utf-8")
 
@@ -1642,8 +1643,22 @@ def test_mcel_lab_remaining_planner_specimens_have_supercut_domain_packs() -> No
     assert "detect-risk-actions" in planner_domains_pack
     assert "detect-safe-actions" in planner_domains_pack
     assert "detect-feeds" in planner_domains_pack
+    assert "fileExplorerSurface" in planner_domains_pack
+    assert "detect-file-explorer-surfaces" in planner_domains_pack
+    assert 'expectedRegions: ["roots", "path-bar", "file-list", "directory-listing", "preview"]' in planner_domains_pack
+    assert 'safeActions: ["open", "preview", "refresh", "select", "search", "up", "root-select"]' in planner_domains_pack
+    assert "file-explorer.surface.directory-listing" in planner_domains_pack
     assert "plannerDomainPacks" in registry
     assert "McelSupercutPacksPlannerDomains?.plannerDomainPacks" in registry
     assert 'status: "domain-ready"' in planner
     assert 'status: "high-risk-domain-ready"' in planner
     assert 'adapter: "needs-adapter"' not in planner
+    assert "plannerPurposeRulesForApp" in supercut
+    assert "GENERIC_PURPOSE_RULES" in supercut
+    assert "return plannerPurposeRulesForApp(normalizedApp, root).concat(GENERIC_PURPOSE_RULES)" in supercut
+    assert "const PURPOSE_RULES = GIT_TOOLS_PURPOSE_RULES" not in supercut
+    assert 'expectedRegions: ["seller-panel", "buyer-policy-panel", "network-hubs", "rental-status"]' in planner_domains_pack
+    assert 'family: "worker.network-registration"' in planner_domains_pack
+    assert 'family: "worker.payment-rental"' in planner_domains_pack
+    assert 'family: "worker.credential-network-mutation"' in planner_domains_pack
+    assert 'expectedRegions: ["queue", "job-detail", "worker-status", "runtime-controls", "logs"]' not in planner_domains_pack
