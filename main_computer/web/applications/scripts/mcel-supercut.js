@@ -34,7 +34,7 @@
         "[data-mc-widget-id]"
       ].join(",");
 
-      const PURPOSE_RULES = [
+      const GIT_TOOLS_PURPOSE_RULES = [
         {token: "project", originalPoint: "git-tools.project-selection", roleHint: "project-selector"},
         {token: "wizard", originalPoint: "git-tools.guided-page-wizard", roleHint: "guided-workflow"},
         {token: "patch", originalPoint: "git-tools.patch-inventory", roleHint: "patch-workflow"},
@@ -52,6 +52,39 @@
         {token: "log", originalPoint: "git-tools.output-feed", roleHint: "output-feed"},
         {token: "action", originalPoint: "git-tools.action-surface", roleHint: "action-surface"}
       ];
+
+      const TASK_MANAGER_PURPOSE_RULES = [
+        {token: "task-manager-app", originalPoint: "task-manager.root", roleHint: "task-manager-root"},
+        {token: "task-controls-card", originalPoint: "task-manager.server-control", roleHint: "server-control"},
+        {token: "server", originalPoint: "task-manager.server-control", roleHint: "server-control"},
+        {token: "shutdown", originalPoint: "task-manager.server-control.shutdown", roleHint: "destructive-action"},
+        {token: "restart", originalPoint: "task-manager.server-control.restart", roleHint: "operational-action"},
+        {token: "start", originalPoint: "task-manager.server-control.start", roleHint: "operational-action"},
+        {token: "task-process-table", originalPoint: "task-manager.process-feed", roleHint: "process-feed"},
+        {token: "task-all-process-table", originalPoint: "task-manager.process-feed", roleHint: "process-feed"},
+        {token: "process", originalPoint: "task-manager.process-feed", roleHint: "process-feed"},
+        {token: "pid", originalPoint: "task-manager.process-control", roleHint: "pid-control"},
+        {token: "terminate", originalPoint: "task-manager.process-control.terminate-pid", roleHint: "destructive-action"},
+        {token: "kill", originalPoint: "task-manager.process-control.kill-pid", roleHint: "destructive-action"},
+        {token: "task-connection-table", originalPoint: "task-manager.connection-feed", roleHint: "connection-feed"},
+        {token: "connection", originalPoint: "task-manager.connection-feed", roleHint: "connection-feed"},
+        {token: "task-schedule", originalPoint: "task-manager.schedule-workflow", roleHint: "schedule-workflow"},
+        {token: "schedule", originalPoint: "task-manager.schedule-workflow", roleHint: "schedule-workflow"},
+        {token: "ai", originalPoint: "task-manager.ai-analysis", roleHint: "ai-analysis"},
+        {token: "status", originalPoint: "task-manager.status-feed", roleHint: "status-output"},
+        {token: "refresh", originalPoint: "task-manager.safe-refresh", roleHint: "safe-action"},
+        {token: "action", originalPoint: "task-manager.action-surface", roleHint: "action-surface"}
+      ];
+
+      const PURPOSE_RULES = GIT_TOOLS_PURPOSE_RULES;
+
+      function purposeRulesForApp(app, root) {
+        const normalizedApp = String(app || "").toLowerCase();
+        const rootId = root?.id || "";
+        if (normalizedApp === "task-manager" || rootId === "task-manager-app") return TASK_MANAGER_PURPOSE_RULES;
+        if (normalizedApp === "git-tools" || rootId === "git-tools-app") return GIT_TOOLS_PURPOSE_RULES;
+        return PURPOSE_RULES;
+      }
 
       const ACTION_RISK_RULES = [
         {pattern: /(delete|remove|terminate|kill|shutdown|stop)\b/i, risk: "destructive"},
@@ -152,13 +185,13 @@
         return rule?.risk || "safe";
       }
 
-      function inferOriginalPoint(element, root) {
+      function inferOriginalPoint(element, root, app) {
         const signature = elementSignature(element);
         const heading = nearestHeadingText(element);
         const text = elementTextSample(element, 120);
         const component = element.getAttribute?.("data-mc-component-id") || element.getAttribute?.("data-mc-widget-id") || "";
         const source = [signature, heading, text, component].join(" ").toLowerCase();
-        const rule = PURPOSE_RULES.find((candidate) => source.includes(candidate.token));
+        const rule = purposeRulesForApp(app, root).find((candidate) => source.includes(candidate.token));
         const originalPoint = rule?.originalPoint || (component ? `component.${slugify(component)}` : "legacy-html.unknown-purpose");
         const evidence = [];
         if (element.id) evidence.push(`id:${element.id}`);
@@ -246,7 +279,7 @@
           .filter((element, index, all) => shouldInspectElement(element, root) && all.indexOf(element) === index);
         const maxComponents = Math.max(1, Number(options.maxComponents || 260));
         const components = candidates.slice(0, maxComponents).map((element, index) => {
-          const purpose = inferOriginalPoint(element, root);
+          const purpose = inferOriginalPoint(element, root, app);
           const role = inferComponentRole(element, root, purpose);
           const risk = detectActionRisk(element, `${purpose.originalPoint} ${purpose.evidence.join(" ")}`);
           const fit = inferFitPolicy(element, role, risk);

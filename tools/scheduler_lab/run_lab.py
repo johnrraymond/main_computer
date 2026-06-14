@@ -1838,10 +1838,12 @@ def process_parent_runtime_due_flags(
     parent_rollup_interval: float,
     next_parent_rollup_at: float,
 ) -> dict[str, bool]:
-    """Return runtime-loop due flags without letting status imply scans.
+    """Return runtime-loop due flags for parent console visibility.
 
-    Parent status is a cheap console/parent-event heartbeat. It must not drive
-    child event-file scans; only minute rollups should do that expensive work.
+    Status ticks are allowed to run the bounded child-event scanner so the
+    attached Docker log shows successful connects and successful requests within
+    a few seconds instead of waiting for minute rollups. The scanner remains
+    capped by the existing time/event budgets.
     """
 
     status_due = parent_status_interval > 0.0 and now >= next_parent_status_at
@@ -1849,7 +1851,7 @@ def process_parent_runtime_due_flags(
     return {
         "status_due": status_due,
         "rollup_due": rollup_due,
-        "scan_due": rollup_due,
+        "scan_due": status_due or rollup_due,
     }
 
 
@@ -1869,6 +1871,75 @@ def format_process_phase_counts(counts: dict[str, int]) -> str:
         ("self_terminated_b2bfailures", "b2b_exit"),
     )
     return "[worker-lab] " + " ".join(f"{label}={int(counts.get(counter, 0))}" for counter, label in labels)
+
+
+def _counter_delta(current: Counter[str], previous: Counter[str]) -> Counter[str]:
+    delta: Counter[str] = Counter()
+    for key, value in current.items():
+        amount = int(value) - int(previous.get(key, 0))
+        if amount > 0:
+            delta[str(key)] = amount
+    return delta
+
+
+def _compact_counter(counter: Counter[str], *, limit: int = 5) -> str:
+    parts = []
+    for key, value in counter.most_common(max(1, int(limit))):
+        if int(value) > 0:
+            parts.append(f"{key}:{int(value)}")
+    return "{" + ",".join(parts) + "}" if parts else "{}"
+
+
+def format_process_http_activity(
+    *,
+    run_id: str,
+    elapsed_seconds: float,
+    rollup_stats: dict[str, Any],
+    previous_http_responses: Counter[str],
+    previous_http_successes: Counter[str],
+    previous_http_failures: Counter[str],
+    previous_transport_failures: int,
+    previous_connection_reused: Counter[str],
+) -> str:
+    """Return a concise stdout line for newly observed HTTP activity.
+
+    ``connect`` means a child got any HTTP response from the hub, including 4xx
+    or 5xx. ``ok`` means the operation returned a 2xx response with ok=true.
+    Transport failures remain separate because they did not establish an HTTP
+    response.
+    """
+
+    http_responses = Counter(rollup_stats.get("http_response_endpoint_counts", Counter()))
+    http_successes = Counter(rollup_stats.get("http_success_endpoint_counts", Counter()))
+    http_failures = Counter(rollup_stats.get("http_failure_endpoint_counts", Counter()))
+    connection_reused = Counter(rollup_stats.get("connection_reused_counts", Counter()))
+    status_counts = Counter(rollup_stats.get("http_status_counts", Counter()))
+
+    response_delta = _counter_delta(http_responses, previous_http_responses)
+    success_delta = _counter_delta(http_successes, previous_http_successes)
+    failure_delta = _counter_delta(http_failures, previous_http_failures)
+    reused_delta = _counter_delta(connection_reused, previous_connection_reused)
+
+    current_transport_failures = int(status_counts.get("0", 0))
+    transport_delta = max(0, current_transport_failures - int(previous_transport_failures))
+
+    connect_total = sum(int(value) for value in response_delta.values())
+    ok_total = sum(int(value) for value in success_delta.values())
+    failed_http_total = sum(int(value) for value in failure_delta.values())
+
+    if connect_total <= 0 and ok_total <= 0 and failed_http_total <= 0 and transport_delta <= 0:
+        return ""
+
+    return (
+        f"[worker-lab:http {int(float(elapsed_seconds))}s run={run_id}] "
+        f"connect+={connect_total} "
+        f"ok+={ok_total} "
+        f"http_fail+={failed_http_total} "
+        f"transport+={transport_delta} "
+        f"ok_by_route={_compact_counter(success_delta)} "
+        f"connect_by_route={_compact_counter(response_delta)} "
+        f"reuse+={_compact_counter(reused_delta, limit=3)}"
+    )
 
 
 
@@ -2330,32 +2401,20 @@ class BehaviorLedger:
 
     @staticmethod
     def _state_for(subject: dict[str, Any]) -> str:
+        """Return an observational behavior state without any ban semantics.
+
+        The scheduler lab used to turn repeated failures into states such as
+        temporary_ban, quarantine, deprioritize, and probe. In overload runs that
+        made hub-side backpressure look like actor badness, which hid the real
+        scheduler signal and made the diagnostics look like an enforcement plan.
+
+        Keep typed-tat counters and scores for visibility, but do not classify
+        any node, account, IP, hub, or edge into a punitive state here.
+        """
         score = float(subject.get("score") or 0.0)
-        kind = str(subject.get("subject_kind") or "")
-        family_scores = subject.get("family_scores") if isinstance(subject.get("family_scores"), dict) else {}
-        integrity = float(family_scores.get("integrity", 0.0))
-        protocol = float(family_scores.get("protocol", 0.0))
-        transport = float(family_scores.get("transport", 0.0))
-        non_transport = max(0.0, score - max(0.0, transport))
         if score < 1.0:
             return "allow"
-        if kind == "hub_endpoint" and transport >= 9.0:
-            return "probe"
-        if kind in {"node", "account", "ip", "edge"} and transport >= 5.0 and non_transport < 3.0:
-            # Pure no-response evidence says "monitor/deprioritize this path";
-            # it is not enough to ban an actor because the counterparty may be the
-            # thing on fire. Integrity/protocol/economic/performance evidence can
-            # still escalate below.
-            return "deprioritize" if score >= 18.0 else "monitor"
-        if kind == "ip" and (integrity + protocol) >= 15.0:
-            return "temporary_ban"
-        if score >= 18.0:
-            return "temporary_ban" if kind in {"node", "ip", "account"} else "quarantine"
-        if score >= 10.0:
-            return "quarantine"
-        if score >= 5.0:
-            return "deprioritize"
-        return "monitor"
+        return "observe"
 
     def snapshot(self) -> dict[str, Any]:
         now = time.time()
@@ -2577,6 +2636,12 @@ PROCESS_ROLLUP_CSV_COLUMNS = (
     "worker_pipeline_counts_json",
     "worker_endpoint_status_counts_json",
     "worker_transport_error_counts_json",
+    "transport_mode_counts_json",
+    "connection_reused_counts_json",
+    "connection_origin_counts_json",
+    "connection_error_counts_json",
+    "stream_event_counts_json",
+    "stream_error_counts_json",
 )
 
 
@@ -2590,6 +2655,17 @@ def new_process_rollup_stats() -> dict[str, Any]:
         "worker_pipeline_counts": Counter(),
         "worker_endpoint_status_counts": Counter(),
         "worker_transport_error_counts": Counter(),
+        "transport_mode_counts": Counter(),
+        "connection_reused_counts": Counter(),
+        "connection_origin_counts": Counter(),
+        "connection_error_counts": Counter(),
+        "http_response_endpoint_counts": Counter(),
+        "http_success_endpoint_counts": Counter(),
+        "http_failure_endpoint_counts": Counter(),
+        "http_response_hub_counts": Counter(),
+        "http_success_hub_counts": Counter(),
+        "stream_event_counts": Counter(),
+        "stream_error_counts": Counter(),
         "lifecycle_ledger": ProcessLifecycleLedger(),
         "behavior_ledger": BehaviorLedger(),
     }
@@ -2600,6 +2676,17 @@ def _process_rollup_status_key(status: Any) -> str:
         return str(int(status))
     except Exception:
         return str(status)
+
+
+def _process_rollup_bool_key(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return "true"
+    if text in {"0", "false", "no", "off"}:
+        return "false"
+    return text or "unknown"
 
 
 def _process_rollup_hub_key(event: dict[str, Any]) -> str:
@@ -2675,6 +2762,51 @@ def record_process_rollup_event(event: dict[str, Any], rollup_stats: dict[str, A
     if endpoint_key:
         rollup_stats.setdefault("endpoint_counts", Counter())[endpoint_key] += 1
 
+    status_int: int | None = None
+    if "status" in event:
+        try:
+            status_int = int(event.get("status"))
+        except Exception:
+            status_int = None
+    if endpoint_key and status_int is not None and status_int != 0:
+        rollup_stats.setdefault("http_response_endpoint_counts", Counter())[endpoint_key] += 1
+        if hub_key:
+            rollup_stats.setdefault("http_response_hub_counts", Counter())[hub_key] += 1
+        if bool(event.get("ok")) and 200 <= status_int < 300:
+            rollup_stats.setdefault("http_success_endpoint_counts", Counter())[endpoint_key] += 1
+            if hub_key:
+                rollup_stats.setdefault("http_success_hub_counts", Counter())[hub_key] += 1
+        elif status_int >= 400 or not bool(event.get("ok")):
+            rollup_stats.setdefault("http_failure_endpoint_counts", Counter())[endpoint_key] += 1
+
+    transport_mode = str(event.get("transport_mode") or "").strip()
+    if transport_mode:
+        rollup_stats.setdefault("transport_mode_counts", Counter())[transport_mode] += 1
+
+    if "connection_reused" in event:
+        rollup_stats.setdefault("connection_reused_counts", Counter())[_process_rollup_bool_key(event.get("connection_reused"))] += 1
+
+    connection_origin = str(event.get("origin") or "").strip()
+    if connection_origin:
+        rollup_stats.setdefault("connection_origin_counts", Counter())[connection_origin] += 1
+
+    connection_error = str(event.get("connection_error") or "").strip()
+    if connection_error:
+        rollup_stats.setdefault("connection_error_counts", Counter())[connection_error] += 1
+
+    stream_event = str(event.get("stream_event") or "").strip()
+    if stream_event:
+        rollup_stats.setdefault("stream_event_counts", Counter())[stream_event] += 1
+    elif name.startswith("stream."):
+        rollup_stats.setdefault("stream_event_counts", Counter())[name] += 1
+
+    stream_error = str(event.get("stream_error") or "").strip()
+    if stream_error:
+        rollup_stats.setdefault("stream_error_counts", Counter())[stream_error] += 1
+    elif stream_event == "error" or name.endswith(".stream_error") or name == "stream.error":
+        error_kind = str(event.get("error_kind") or event.get("connection_error") or "unknown")
+        rollup_stats.setdefault("stream_error_counts", Counter())[error_kind] += 1
+
     pipeline_outcome = _process_rollup_pipeline_outcome(name)
     if pipeline_outcome:
         rollup_stats.setdefault("worker_pipeline_counts", Counter())[pipeline_outcome] += 1
@@ -2717,6 +2849,17 @@ def build_process_rollup(
     worker_pipeline_counts = dict(sorted(rollup_stats.get("worker_pipeline_counts", Counter()).items()))
     worker_endpoint_status_counts = dict(sorted(rollup_stats.get("worker_endpoint_status_counts", Counter()).items()))
     worker_transport_error_counts = dict(sorted(rollup_stats.get("worker_transport_error_counts", Counter()).items()))
+    transport_mode_counts = dict(sorted(rollup_stats.get("transport_mode_counts", Counter()).items()))
+    connection_reused_counts = dict(sorted(rollup_stats.get("connection_reused_counts", Counter()).items()))
+    connection_origin_counts = dict(sorted(rollup_stats.get("connection_origin_counts", Counter()).items()))
+    connection_error_counts = dict(sorted(rollup_stats.get("connection_error_counts", Counter()).items()))
+    http_response_endpoint_counts = dict(sorted(rollup_stats.get("http_response_endpoint_counts", Counter()).items()))
+    http_success_endpoint_counts = dict(sorted(rollup_stats.get("http_success_endpoint_counts", Counter()).items()))
+    http_failure_endpoint_counts = dict(sorted(rollup_stats.get("http_failure_endpoint_counts", Counter()).items()))
+    http_response_hub_counts = dict(sorted(rollup_stats.get("http_response_hub_counts", Counter()).items()))
+    http_success_hub_counts = dict(sorted(rollup_stats.get("http_success_hub_counts", Counter()).items()))
+    stream_event_counts = dict(sorted(rollup_stats.get("stream_event_counts", Counter()).items()))
+    stream_error_counts = dict(sorted(rollup_stats.get("stream_error_counts", Counter()).items()))
     transport_failures = max(int(endpoint_counts.get("transport_failures", 0)), int(http_status_counts.get("0", 0)))
     market_http_responses = sum(int(count) for status, count in http_status_counts.items() if str(status) != "0")
     total_observed_attempts = transport_failures + market_http_responses
@@ -2746,6 +2889,17 @@ def build_process_rollup(
         "worker_pipeline_counts": worker_pipeline_counts,
         "worker_endpoint_status_counts": worker_endpoint_status_counts,
         "worker_transport_error_counts": worker_transport_error_counts,
+        "transport_mode_counts": transport_mode_counts,
+        "connection_reused_counts": connection_reused_counts,
+        "connection_origin_counts": connection_origin_counts,
+        "connection_error_counts": connection_error_counts,
+        "http_response_endpoint_counts": http_response_endpoint_counts,
+        "http_success_endpoint_counts": http_success_endpoint_counts,
+        "http_failure_endpoint_counts": http_failure_endpoint_counts,
+        "http_response_hub_counts": http_response_hub_counts,
+        "http_success_hub_counts": http_success_hub_counts,
+        "stream_event_counts": stream_event_counts,
+        "stream_error_counts": stream_error_counts,
         "exit_codes": dict(sorted(exit_codes.items())),
         "self_terminated_b2bfailures": int(exit_codes.get("75", 0)),
         "children_launched": len(children),
@@ -2823,6 +2977,12 @@ def build_process_launch_progress_rollup(
         "worker_pipeline_counts": {},
         "worker_endpoint_status_counts": {},
         "worker_transport_error_counts": {},
+        "transport_mode_counts": {},
+        "connection_reused_counts": {},
+        "connection_origin_counts": {},
+        "connection_error_counts": {},
+        "stream_event_counts": {},
+        "stream_error_counts": {},
         "exit_codes": dict(sorted(exit_codes.items())),
         "self_terminated_b2bfailures": int(exit_codes.get("75", 0)),
         "rollup_scan_truncated": False,
@@ -2867,6 +3027,12 @@ def _process_rollup_csv_row(rollup: dict[str, Any]) -> dict[str, Any]:
         "worker_pipeline_counts_json",
         "worker_endpoint_status_counts_json",
         "worker_transport_error_counts_json",
+        "transport_mode_counts_json",
+        "connection_reused_counts_json",
+        "connection_origin_counts_json",
+        "connection_error_counts_json",
+        "stream_event_counts_json",
+        "stream_error_counts_json",
     }
     row: dict[str, Any] = {column: "" for column in PROCESS_ROLLUP_CSV_COLUMNS}
     for column in PROCESS_ROLLUP_CSV_COLUMNS:
@@ -2881,6 +3047,12 @@ def _process_rollup_csv_row(rollup: dict[str, Any]) -> dict[str, Any]:
     row["worker_pipeline_counts_json"] = json.dumps(rollup.get("worker_pipeline_counts", {}), sort_keys=True)
     row["worker_endpoint_status_counts_json"] = json.dumps(rollup.get("worker_endpoint_status_counts", {}), sort_keys=True)
     row["worker_transport_error_counts_json"] = json.dumps(rollup.get("worker_transport_error_counts", {}), sort_keys=True)
+    row["transport_mode_counts_json"] = json.dumps(rollup.get("transport_mode_counts", {}), sort_keys=True)
+    row["connection_reused_counts_json"] = json.dumps(rollup.get("connection_reused_counts", {}), sort_keys=True)
+    row["connection_origin_counts_json"] = json.dumps(rollup.get("connection_origin_counts", {}), sort_keys=True)
+    row["connection_error_counts_json"] = json.dumps(rollup.get("connection_error_counts", {}), sort_keys=True)
+    row["stream_event_counts_json"] = json.dumps(rollup.get("stream_event_counts", {}), sort_keys=True)
+    row["stream_error_counts_json"] = json.dumps(rollup.get("stream_error_counts", {}), sort_keys=True)
     row["exit_codes_json"] = json.dumps(rollup.get("exit_codes", {}), sort_keys=True)
     row["lifecycle_json"] = json.dumps(rollup.get("lifecycle", {}), sort_keys=True)
     row["behavior_json"] = json.dumps(rollup.get("behavior", {}), sort_keys=True)
@@ -2926,6 +3098,8 @@ def format_process_rollup(rollup: dict[str, Any]) -> str:
     files_scanned = int(rollup.get("rollup_files_scanned", 0) or 0)
     files_total = int(rollup.get("rollup_files_total", 0) or 0)
     partial_marker = "!" if rollup.get("rollup_partial") or rollup.get("rollup_scan_truncated") else ""
+    http_responses = rollup.get("http_response_endpoint_counts", {}) if isinstance(rollup.get("http_response_endpoint_counts"), dict) else {}
+    http_successes = rollup.get("http_success_endpoint_counts", {}) if isinstance(rollup.get("http_success_endpoint_counts"), dict) else {}
     return (
         f"[worker-lab:{int(float(rollup.get('elapsed_seconds', 0)))}s run={rollup.get('run_id', '')}] "
         f"alive={int(rollup.get('nodes_alive', 0))} "
@@ -2939,6 +3113,8 @@ def format_process_rollup(rollup: dict[str, Any]) -> str:
         f"req={int(endpoints.get('requests', 0))} "
         f"poll={int(endpoints.get('workers_poll', 0))} "
         f"hb={int(endpoints.get('workers_heartbeat', 0))} "
+        f"connect={sum(int(value) for value in http_responses.values())} "
+        f"ok={sum(int(value) for value in http_successes.values())} "
         f"http0={int(statuses.get('0', 0))} "
         f"transport={int(rollup.get('transport_failures', endpoints.get('transport_failures', 0)) or 0)} "
         f"market_http={int(rollup.get('market_http_responses', 0) or 0)} "
@@ -3093,6 +3269,12 @@ def run_process_mode(args: argparse.Namespace) -> int:
     next_parent_status_at = time.monotonic() + parent_status_interval
     next_parent_rollup_at = time.monotonic() + parent_rollup_interval
     next_launch_progress_at = time.monotonic() + parent_launch_progress_interval
+    last_console_phase_counts: dict[str, int] | None = None
+    last_console_http_responses: Counter[str] = Counter()
+    last_console_http_successes: Counter[str] = Counter()
+    last_console_http_failures: Counter[str] = Counter()
+    last_console_connection_reused: Counter[str] = Counter()
+    last_console_transport_failures = 0
 
     def emit_rollup(
         event_name: str = "lab.process_parent.rollup",
@@ -3194,6 +3376,12 @@ def run_process_mode(args: argparse.Namespace) -> int:
             initial_rollup = emit_rollup("lab.process_parent.rollup.post_spawn", scan_state=scan_state)
             print(format_process_rollup(initial_rollup), flush=True)
             next_parent_rollup_at = time.monotonic() + parent_rollup_interval
+            last_console_phase_counts = dict(phase_counts)
+            last_console_http_responses = Counter(rollup_stats.get("http_response_endpoint_counts", Counter()))
+            last_console_http_successes = Counter(rollup_stats.get("http_success_endpoint_counts", Counter()))
+            last_console_http_failures = Counter(rollup_stats.get("http_failure_endpoint_counts", Counter()))
+            last_console_connection_reused = Counter(rollup_stats.get("connection_reused_counts", Counter()))
+            last_console_transport_failures = int(rollup_stats.get("http_status_counts", Counter()).get("0", 0))
         next_parent_status_at = time.monotonic() + parent_status_interval
 
         while time.monotonic() < stop_at:
@@ -3207,9 +3395,10 @@ def run_process_mode(args: argparse.Namespace) -> int:
             )
             rollup_due = due_flags["rollup_due"]
             status_due = due_flags["status_due"]
+            scan_due = due_flags["scan_due"]
             phase_counts = process_phase_count_summary(phase_nodes)
             scan_state: dict[str, Any] = {}
-            if rollup_due:
+            if scan_due:
                 phase_counts = collect_process_phase_counts(
                     output_dir,
                     event_offsets,
@@ -3226,12 +3415,31 @@ def run_process_mode(args: argparse.Namespace) -> int:
                     {
                         "event": "lab.process_parent.phase_counts",
                         "run_id": run_id,
-                        "phase_count_source": "memory",
-                        "rollup_scan_skipped": not rollup_due,
+                        "phase_count_source": "child_event_scan" if scan_due else "memory",
+                        "rollup_scan_skipped": not scan_due,
                         **phase_counts,
                     }
                 )
-                print(format_process_phase_counts(phase_counts), flush=True)
+                if last_console_phase_counts is None or dict(phase_counts) != last_console_phase_counts:
+                    print(format_process_phase_counts(phase_counts), flush=True)
+                    last_console_phase_counts = dict(phase_counts)
+                http_activity_line = format_process_http_activity(
+                    run_id=run_id,
+                    elapsed_seconds=now - started_at,
+                    rollup_stats=rollup_stats,
+                    previous_http_responses=last_console_http_responses,
+                    previous_http_successes=last_console_http_successes,
+                    previous_http_failures=last_console_http_failures,
+                    previous_transport_failures=last_console_transport_failures,
+                    previous_connection_reused=last_console_connection_reused,
+                )
+                if http_activity_line:
+                    print(http_activity_line, flush=True)
+                    last_console_http_responses = Counter(rollup_stats.get("http_response_endpoint_counts", Counter()))
+                    last_console_http_successes = Counter(rollup_stats.get("http_success_endpoint_counts", Counter()))
+                    last_console_http_failures = Counter(rollup_stats.get("http_failure_endpoint_counts", Counter()))
+                    last_console_connection_reused = Counter(rollup_stats.get("connection_reused_counts", Counter()))
+                    last_console_transport_failures = int(rollup_stats.get("http_status_counts", Counter()).get("0", 0))
                 next_parent_status_at = now + parent_status_interval
             if rollup_due:
                 rollup = emit_rollup(scan_state=scan_state)

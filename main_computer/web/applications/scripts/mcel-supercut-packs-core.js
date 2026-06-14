@@ -15,6 +15,27 @@
         ].join(" ").toLowerCase();
       }
 
+      function identitySource(record) {
+        return [
+          record?.tag || "",
+          record?.domId || "",
+          record?.classes?.join?.(" ") || "",
+          record?.role || "",
+          record?.componentId || ""
+        ].join(" ").toLowerCase();
+      }
+
+      function localSource(record) {
+        return [
+          record?.tag || "",
+          record?.domId || "",
+          record?.classes?.join?.(" ") || "",
+          record?.role || "",
+          record?.componentId || "",
+          record?.directText || ""
+        ].join(" ").toLowerCase();
+      }
+
       function isRoot(record, blackboard) {
         return record?.element === blackboard?.rootNode || record?.index === 0;
       }
@@ -28,34 +49,51 @@
       }
 
       function isStatusFeed(record) {
-        return ["pre", "output", "code"].includes(record?.tag) || /(status|output|log|console|activity|report|feed|result|summary)/.test(source(record));
+        const local = localSource(record);
+        return ["pre", "output", "code"].includes(record?.tag) || /(status|output|log|activity|report|feed|result|summary)/.test(local);
       }
 
       function isConsole(record) {
-        return /(console|command|terminal|manual command|run command|shell)/.test(source(record)) || ["pre", "code"].includes(record?.tag);
+        const local = localSource(record);
+        const tag = record?.tag || "";
+        const consoleIdentity = /(manual command|manual console|command console|run command|shell command|terminal)/.test(local);
+        const commandField = ["input", "textarea"].includes(tag) && /(command|shell|terminal)/.test(local);
+        const commandSnippet = ["pre", "code"].includes(tag) && /(manual command|shell command|run command|\$\s|git\s+(push|remote|mirror|fetch|status|log))/.test(record?.directText || "");
+        return Boolean(consoleIdentity || commandField || commandSnippet);
       }
 
       function isToolbar(record) {
-        return /(toolbar|actions|button-row|controls|control-row|primary actions)/.test(source(record)) && Number(record?.controlCount || 0) >= 2;
+        return /(toolbar|actions|button-row|controls|control-row|primary actions)/.test(localSource(record)) && Number(record?.controlCount || 0) >= 2;
       }
 
       function isWorkflow(record) {
-        return record?.tag === "details" || /(workflow|wizard|accordion|step|publish|mirror|remote|gitea)/.test(source(record));
+        const local = localSource(record);
+        return record?.tag === "details" || /(workflow|wizard|accordion|step|publish|mirror|remote|gitea|git-tools\.start|git-server)/.test(local);
       }
 
       function isPanel(record) {
-        return ["article", "form", "details"].includes(record?.tag) ||
-          /(card|panel|pane|shell|widget|form|workflow|section|group|configuration|setup)/.test(source(record)) ||
-          Number(record?.controlCount || 0) >= 3;
+        const tag = record?.tag || "";
+        if (["header", "footer", "nav", "ul", "ol", "li", "summary", "label", "button", "a", "input", "select", "textarea", "pre", "code", "output"].includes(tag)) {
+          return false;
+        }
+        const identity = identitySource(record);
+        const explicitPanelSignal = /(card|panel|pane|shell|widget|form|workflow|group|configuration|setup)/.test(identity);
+        const boundedSemanticContainer = ["article", "form", "details"].includes(tag) ||
+          (tag === "section" && (record.depth <= 5 || explicitPanelSignal)) ||
+          (tag === "div" && explicitPanelSignal);
+        const controlDenseContainer = Number(record?.controlCount || 0) >= 3 && Number(record?.childElementCount || 0) >= 2 && record.depth <= 7;
+        return Boolean(boundedSemanticContainer || controlDenseContainer);
       }
 
       function isRegion(record, blackboard) {
         if (isRoot(record, blackboard)) return false;
-        if (["main", "nav", "aside", "header", "footer"].includes(record?.tag)) return true;
+        const tag = record?.tag || "";
+        if (["main", "nav", "aside"].includes(tag)) return record.depth <= 3;
+        if (["header", "footer"].includes(tag)) return record.depth <= 2;
         const role = record?.role || "";
-        if (["main", "navigation", "banner", "contentinfo", "complementary", "region"].includes(role)) return true;
-        const text = source(record);
-        const isMajorSection = record?.tag === "section" && record.depth <= 3 && /(hero|workspace|workflow|intake|overview|operations|layout|region)/.test(text);
+        if (["main", "navigation", "banner", "contentinfo", "complementary", "region"].includes(role)) return record.depth <= 4;
+        const identity = identitySource(record);
+        const isMajorSection = tag === "section" && record.depth <= 3 && /(hero|workspace|workflow|intake|overview|operations|layout|region)/.test(identity);
         return Boolean(isMajorSection);
       }
 

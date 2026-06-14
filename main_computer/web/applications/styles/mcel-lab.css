@@ -1230,6 +1230,71 @@ body[data-mcel-lab-mode="stress"] .mcel-lab-panel[aria-label="Contract Tests"] {
   overflow-wrap: anywhere;
 }
 
+
+.mcel-canonical-app-plan {
+  grid-column: 1 / -1;
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(174, 224, 111, 0.22);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 0% 0%, rgba(174, 224, 111, 0.10), transparent 34%),
+    rgba(0, 0, 0, 0.22);
+}
+
+.mcel-canonical-app-plan-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.mcel-canonical-app-plan-heading strong {
+  color: var(--gold);
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.mcel-canonical-app-plan-summary {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.mcel-canonical-app-plan-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mcel-canonical-app-plan-list li {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid rgba(174, 224, 111, 0.18);
+  border-radius: 10px;
+  background: rgba(3, 6, 7, 0.68);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 980px) {
+  .mcel-canonical-app-plan-list {
+    grid-template-columns: 1fr;
+  }
+}
+
 .mcel-canonical-app-lens-map {
   grid-column: 1 / -1;
   min-width: 0;

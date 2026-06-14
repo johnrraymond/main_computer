@@ -1299,6 +1299,7 @@ def test_mcel_lab_supercut_v02_architecture_modules_are_wired() -> None:
     registry = (WEB_APP / "scripts" / "mcel-supercut-registry.js").read_text(encoding="utf-8")
     core_pack = (WEB_APP / "scripts" / "mcel-supercut-packs-core.js").read_text(encoding="utf-8")
     git_pack = (WEB_APP / "scripts" / "mcel-supercut-packs-git-tools.js").read_text(encoding="utf-8")
+    task_pack = (WEB_APP / "scripts" / "mcel-supercut-packs-task-manager.js").read_text(encoding="utf-8")
     core = (WEB_APP / "scripts" / "mcel-supercut-core.js").read_text(encoding="utf-8")
     supercut = (WEB_APP / "scripts" / "mcel-supercut.js").read_text(encoding="utf-8")
 
@@ -1307,6 +1308,7 @@ def test_mcel_lab_supercut_v02_architecture_modules_are_wired() -> None:
     assert "<!-- @include applications/scripts/mcel-supercut-registry.js -->" in html
     assert "<!-- @include applications/scripts/mcel-supercut-packs-core.js -->" in html
     assert "<!-- @include applications/scripts/mcel-supercut-packs-git-tools.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-supercut-packs-task-manager.js -->" in html
     assert "<!-- @include applications/scripts/mcel-supercut-core.js -->" in html
     assert (
         html.index("task-manager-mcel.js")
@@ -1315,6 +1317,7 @@ def test_mcel_lab_supercut_v02_architecture_modules_are_wired() -> None:
         < html.index("mcel-supercut-registry.js")
         < html.index("mcel-supercut-packs-core.js")
         < html.index("mcel-supercut-packs-git-tools.js")
+        < html.index("mcel-supercut-packs-task-manager.js")
         < html.index("mcel-supercut-core.js")
         < html.index("mcel-supercut.js")
         < html.index("git-tools-mcel.js")
@@ -1330,6 +1333,37 @@ def test_mcel_lab_supercut_v02_architecture_modules_are_wired() -> None:
     assert "rewritePreview" in blackboard
     assert "unsafeActionsBlocked" in blackboard
 
+    assert "contractPriority" in blackboard
+    assert "strongestRisk" in blackboard
+    assert "riskPolicy?.blocked" in blackboard
+    assert "candidatePriority" in blackboard
+    assert "prioritizeCandidateElements" in blackboard
+    assert "data-mc-component-kind" in blackboard
+    assert "directElementText" in blackboard
+    assert "directText: record.directText" in blackboard
+    assert "countUnsafeBlocked" in core
+    assert "normalizeComponentsBeforeRewrite" in core
+    assert "taskManagerUnsafeFamilyKey" in core
+    assert "unsafeActionInstancesBlocked" in core
+    assert 'countUnsafeBlocked(blackboard, "families")' in core
+    assert 'countUnsafeBlocked(blackboard, "instances")' in core
+    assert 'component.contract = "component.root"' in core
+    assert 'component.rewriteTag = "mcel-app"' in core
+    assert "isBlockedSurfaceContract" in core
+    assert "shouldEnforceBlockingPolicy" in core
+    assert "executableSurfaceRecord" in blackboard
+    assert "executableSurfaceRecord" in core
+    assert "addIfExecutable" in core
+    assert "commandSnippet" in core_pack
+    assert "component.workflow" in core
+    assert "contract?.proofPolicy" in core
+    assert "identitySource" in core_pack
+    assert "explicitPanelSignal" in core_pack
+    assert '["header", "footer"].includes(tag)) return record.depth <= 2' in core_pack
+    assert "isMajorSection = tag === \"section\"" in core_pack
+    assert "nonRootDomainSurface" in git_pack
+    assert "domainSource" in git_pack
+    assert "record?.directText" in git_pack
     assert "global.McelSupercutRegistry" in registry
     assert "PHASE_ORDER" in registry
     assert "duplicate rule id rejected" in registry
@@ -1346,15 +1380,46 @@ def test_mcel_lab_supercut_v02_architecture_modules_are_wired() -> None:
     assert "git-tools.risk.manual-command" in git_pack
     assert "no-submit" in git_pack
 
+    assert "git-tools.risk.known-dangerous-controls" in git_pack
+    assert "KNOWN_DANGEROUS_CONTROLS" in git_pack
+    assert "executableControl(record)" in git_pack
+    assert "git-server-remote-add" in git_pack
+    assert "git-server-remote-run" in git_pack
+
+    assert 'id: "task-manager-domain"' in task_pack
+    assert "task-manager.detect-root" in task_pack
+    assert "task-manager.risk.known-controls" in task_pack
+    assert "task-manager.risk.pid-control" in task_pack
+    assert "task-manager.risk.schedule-mutation" in task_pack
+    assert "KNOWN_RISKY_CONTROLS" in task_pack
+    assert "task-server-shutdown" in task_pack
+    assert "data-task-action" in task_pack
+
+    assert "git-tools.detect-root" in git_pack
+    assert "isAppRootRecord" in git_pack
+    assert "nonRootDomainSurface(record, blackboard)" in git_pack
+
     assert "global.McelSupercutCore" in core
     assert "summarizeRewritePreview" in core
     assert "sourceRewrite: \"disabled\"" in core
     assert "remoteMirrorPushManualCommand: \"blocked\"" in core
+    assert "task-manager-domain" in core
+
+    assert "shouldEnforceBlockingPolicy" in core
+    assert "executableSurfaceRecord" in blackboard
+    assert "executableSurfaceRecord" in core
+    assert "addIfExecutable" in core
+    assert "commandSnippet" in core_pack
+    assert "component.workflow" in core
 
     assert "global.McelSupercutCore.run" in supercut
     assert "rewritePreviewCount" in supercut
     assert "blackboardRecordCount" in supercut
     assert "runtimeSourceMutations" in supercut
+    assert "TASK_MANAGER_PURPOSE_RULES" in supercut
+    assert "purposeRulesForApp" in supercut
+    assert "task-manager.server-control" in supercut
+    assert "task-manager.process-feed" in supercut
 
 
 def test_mcel_lab_supercut_v02_is_visible_in_git_tools_lens() -> None:
@@ -1380,3 +1445,127 @@ def test_mcel_lab_supercut_v02_is_visible_in_git_tools_lens() -> None:
     assert "unsafe actions blocked:" in lab
     assert "status feeds:" in lab
     assert "rewrite preview ${enrichment.supercutRewritePreviewCount" in lab
+
+
+def test_mcel_lab_supercut_v02_is_visible_in_task_manager_lens() -> None:
+    html = (ROOT / "main_computer" / "web" / "applications.html").read_text(encoding="utf-8")
+    app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
+    adapter = (WEB_APP / "scripts" / "task-manager-mcel.js").read_text(encoding="utf-8")
+    task_pack = (WEB_APP / "scripts" / "mcel-supercut-packs-task-manager.js").read_text(encoding="utf-8")
+    registry = (WEB_APP / "scripts" / "mcel-supercut-registry.js").read_text(encoding="utf-8")
+    supercut = (WEB_APP / "scripts" / "mcel-supercut.js").read_text(encoding="utf-8")
+
+    assert "<!-- @include applications/scripts/mcel-supercut-packs-task-manager.js -->" in html
+    assert html.index("mcel-supercut-packs-git-tools.js") < html.index("mcel-supercut-packs-task-manager.js") < html.index("mcel-supercut-core.js")
+    assert "runs MCEL Supercut domain packs" in app
+    assert "Task Manager schedule actions are observed" in app
+
+    assert 'packs: options.packs || ["core-html", "core-action-risk", "task-manager-domain"]' in adapter
+    assert "runTaskManagerSupercutTranslation" in adapter
+    assert "supercutArchitectureStatus" in adapter
+    assert "supercutRewritePreviewCount" in adapter
+    assert "supercutUnsafeActionsBlocked" in adapter
+    assert "supercutRuntimeSourceMutations" in adapter
+    assert "clearTaskManagerSupercutTranslation" in adapter
+
+    assert 'id: "task-manager-domain"' in task_pack
+    assert "task-manager.server-control" in task_pack
+    assert "task-manager.process-control.kill-pid" in task_pack
+    assert "task-manager.process-control.terminate-pid" in task_pack
+    assert "task-manager.schedule.create" in task_pack
+    assert "no-click" in task_pack
+    assert "taskManagerDomainPack" in registry
+    assert "TASK_MANAGER_PURPOSE_RULES" in supercut
+    assert "purposeRulesForApp(app, root)" in supercut
+    assert "task-manager.schedule-workflow" in supercut
+    assert "git-tools.gitea-server-control" in supercut
+
+
+
+def test_mcel_lab_adds_purpose_aware_specimen_planner() -> None:
+    html = (ROOT / "main_computer" / "web" / "applications.html").read_text(encoding="utf-8")
+    app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
+    bindings = (WEB_APP / "scripts" / "dom-bindings" / "mcel-lab.js").read_text(encoding="utf-8")
+    lab = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    planner = (WEB_APP / "scripts" / "mcel-specimen-planner.js").read_text(encoding="utf-8")
+
+    assert "<!-- @include applications/scripts/mcel-specimen-planner.js -->" in html
+    assert html.index("mcel-specimen-planner.js") < html.index("mcel-lab.js")
+
+    assert 'id="mcel-canonical-app-plan"' in app
+    assert 'id="mcel-canonical-app-plan-summary"' in app
+    assert 'id="mcel-canonical-app-plan-list"' in app
+    assert "purpose-aware mount hints" in app
+
+    assert "lastCanonicalSpecimenPlan" in bindings
+    assert "mcelCanonicalAppPlanSummary" in bindings
+    assert "mcelCanonicalAppPlanList" in bindings
+
+    assert "global.McelSpecimenPlanner" in planner
+    assert "PLANNER_VERSION" in planner
+    assert "mountQueue" in planner
+    assert "plannerSnapshot" in planner
+    assert "inspectMountedDocument" in planner
+    assert "task-manager-domain" in planner
+    assert "git-tools-domain" in planner
+    assert "spreadsheet-domain" in planner
+    assert "terminal-domain" in planner
+    assert "email-domain" in planner
+    assert "wallet-domain" in planner
+    assert "code-editor-domain" in planner
+    assert "neverExecute" in planner
+    assert "decodeHints" in planner
+
+    assert "mcelCanonicalAppPlannerPlan" in lab
+    assert "renderMcelCanonicalAppPlanner" in lab
+    assert "McelSpecimenPlanner" in lab
+    assert "knownRiskFamilies" in lab
+    assert "Mounted evidence" in lab
+
+def test_mcel_lab_turns_on_planner_specimens_in_dropdown() -> None:
+    app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
+    lab = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    planner = (WEB_APP / "scripts" / "mcel-specimen-planner.js").read_text(encoding="utf-8")
+
+    expected = {
+        "task-manager": "#task-manager-app",
+        "git-tools": "#git-tools-app",
+        "calculator": "#calculator-app",
+        "document": "#document-app",
+        "spreadsheet": "#spreadsheet-app",
+        "onlyoffice": "#onlyoffice-app",
+        "terminal": "#terminal-app",
+        "chat-console": "#chat-console-app",
+        "email": "#email-app",
+        "code-editor": "#code-editor-app",
+        "file-explorer": "#file-explorer-app",
+        "website-builder": "#website-builder-app",
+        "worker": "#worker-app",
+        "wallet": "#wallet-app",
+        "game-editor": "#game-editor-app",
+        "webgl": "#webgl-demo",
+        "mcel-lab": "#mcel-lab-app",
+    }
+
+    select_block = app[
+        app.index('id="mcel-canonical-app-select"'):
+        app.index("</select>", app.index('id="mcel-canonical-app-select"'))
+    ]
+    for specimen, root in expected.items():
+        assert f'value="{specimen}"' in select_block
+        assert f'data-root="{root}"' in select_block
+        assert f'"{specimen}": Object.freeze' in planner
+
+    assert select_block.count("<option") == len(expected)
+    assert "data-planner-status=" in select_block
+    assert "data-point=" in select_block
+
+    assert "createGenericAdapter" in planner
+    assert "applyCanonicalMcelSemantics" in planner
+    assert "planner-read-only" in planner
+    assert "canonicalOptions" in planner
+    assert 'if (specimen?.app === "task-manager") return window.TaskManagerMcel || null;' in lab
+    assert "createGenericAdapter?.(plan)" in lab
+    assert "requiredIdsFor?.(plan)" in lab
+    assert "dangerousSelectorsFor?.(plan)" in lab
+

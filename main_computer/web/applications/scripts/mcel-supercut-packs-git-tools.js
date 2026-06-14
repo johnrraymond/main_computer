@@ -15,8 +15,200 @@
         ].join(" ").toLowerCase();
       }
 
+      function domainSource(record) {
+        return [
+          record?.tag || "",
+          record?.domId || "",
+          record?.classes?.join?.(" ") || "",
+          record?.role || "",
+          record?.componentId || "",
+          record?.directText || ""
+        ].join(" ").toLowerCase();
+      }
+
       function actionLike(record) {
         return ["button", "summary"].includes(record?.tag) || record?.role === "button" || record?.tag === "a";
+      }
+
+      function executableControl(record) {
+        return record?.tag === "button" || record?.role === "button" || record?.tag === "a";
+      }
+
+      const KNOWN_DANGEROUS_CONTROLS = Object.freeze({
+        "git-server-start": {
+          purpose: "git-tools.gitea-server-control.start",
+          role: "start-server",
+          risk: "operational",
+          proofPolicy: "no-click",
+          contract: "component.operational-action",
+          reason: "starting a local server is operational and not activated by proof"
+        },
+        "git-tools.git-server.start": {
+          purpose: "git-tools.gitea-server-control.start",
+          role: "start-server",
+          risk: "operational",
+          proofPolicy: "no-click",
+          contract: "component.operational-action",
+          reason: "starting a local server is operational and not activated by proof"
+        },
+        "git-server-restart": {
+          purpose: "git-tools.gitea-server-control.restart",
+          role: "restart-server",
+          risk: "operational",
+          proofPolicy: "no-click",
+          contract: "component.operational-action",
+          reason: "restarting a server is operational and not activated by proof"
+        },
+        "git-tools.git-server.restart": {
+          purpose: "git-tools.gitea-server-control.restart",
+          role: "restart-server",
+          risk: "operational",
+          proofPolicy: "no-click",
+          contract: "component.operational-action",
+          reason: "restarting a server is operational and not activated by proof"
+        },
+        "git-server-stop": {
+          purpose: "git-tools.gitea-server-control.stop",
+          role: "stop-server",
+          risk: "destructive",
+          proofPolicy: "no-click",
+          contract: "component.destructive-action",
+          reason: "stopping a server is destructive to running local state"
+        },
+        "git-tools.git-server.stop": {
+          purpose: "git-tools.gitea-server-control.stop",
+          role: "stop-server",
+          risk: "destructive",
+          proofPolicy: "no-click",
+          contract: "component.destructive-action",
+          reason: "stopping a server is destructive to running local state"
+        },
+        "git-server-remote-apply-local": {
+          purpose: "git-tools.remote-configuration.configure-local",
+          role: "configure-remote",
+          risk: "credential-network-mutation",
+          proofPolicy: "no-submit",
+          contract: "component.remote-mutation-action",
+          reason: "creating or verifying a Gitea repo and configuring a remote can mutate local and network state"
+        },
+        "git-tools.git-server.apply-local": {
+          purpose: "git-tools.remote-configuration.configure-local",
+          role: "configure-remote",
+          risk: "credential-network-mutation",
+          proofPolicy: "no-submit",
+          contract: "component.remote-mutation-action",
+          reason: "creating or verifying a Gitea repo and configuring a remote can mutate local and network state"
+        },
+        "git-server-push-local": {
+          purpose: "git-tools.remote-mutation.push-local",
+          role: "push",
+          risk: "remote-mutation",
+          proofPolicy: "no-submit",
+          contract: "component.remote-mutation-action",
+          reason: "pushing to Local Gitea mutates remote repository state"
+        },
+        "git-tools.git-server.push-local": {
+          purpose: "git-tools.remote-mutation.push-local",
+          role: "push",
+          risk: "remote-mutation",
+          proofPolicy: "no-submit",
+          contract: "component.remote-mutation-action",
+          reason: "pushing to Local Gitea mutates remote repository state"
+        },
+        "git-server-mirror-setup": {
+          purpose: "git-tools.remote-mutation.mirror-setup",
+          role: "mirror",
+          risk: "remote-mutation",
+          proofPolicy: "no-submit",
+          contract: "component.remote-mutation-action",
+          reason: "setting up mirroring mutates remote repository configuration"
+        },
+        "git-tools.git-server.mirror-setup": {
+          purpose: "git-tools.remote-mutation.mirror-setup",
+          role: "mirror",
+          risk: "remote-mutation",
+          proofPolicy: "no-submit",
+          contract: "component.remote-mutation-action",
+          reason: "setting up mirroring mutates remote repository configuration"
+        },
+        "git-server-remote-add": {
+          purpose: "git-tools.remote-configuration.add",
+          role: "configure-remote",
+          risk: "credential-network-mutation",
+          proofPolicy: "no-submit",
+          contract: "component.remote-mutation-action",
+          reason: "adding a Git remote mutates local repository configuration"
+        },
+        "git-tools.git-server.remote-add": {
+          purpose: "git-tools.remote-configuration.add",
+          role: "configure-remote",
+          risk: "credential-network-mutation",
+          proofPolicy: "no-submit",
+          contract: "component.remote-mutation-action",
+          reason: "adding a Git remote mutates local repository configuration"
+        },
+        "git-server-remote-set-url": {
+          purpose: "git-tools.remote-configuration.set-url",
+          role: "configure-remote",
+          risk: "credential-network-mutation",
+          proofPolicy: "no-submit",
+          contract: "component.remote-mutation-action",
+          reason: "setting a remote URL mutates local repository configuration"
+        },
+        "git-tools.git-server.remote-set-url": {
+          purpose: "git-tools.remote-configuration.set-url",
+          role: "configure-remote",
+          risk: "credential-network-mutation",
+          proofPolicy: "no-submit",
+          contract: "component.remote-mutation-action",
+          reason: "setting a remote URL mutates local repository configuration"
+        },
+        "git-server-remote-push": {
+          purpose: "git-tools.remote-mutation.push-head",
+          role: "push",
+          risk: "remote-mutation",
+          proofPolicy: "no-submit",
+          contract: "component.remote-mutation-action",
+          reason: "git push mutates remote repository state"
+        },
+        "git-tools.git-server.remote-push": {
+          purpose: "git-tools.remote-mutation.push-head",
+          role: "push",
+          risk: "remote-mutation",
+          proofPolicy: "no-submit",
+          contract: "component.remote-mutation-action",
+          reason: "git push mutates remote repository state"
+        },
+        "git-server-remote-run": {
+          purpose: "git-tools.manual-console.run-command",
+          role: "run-manual-command",
+          risk: "command-execution",
+          proofPolicy: "no-command-execution",
+          contract: "component.console",
+          reason: "manual commands are never executed by Supercut proof"
+        },
+        "git-tools.git-server.remote-run": {
+          purpose: "git-tools.manual-console.run-command",
+          role: "run-manual-command",
+          risk: "command-execution",
+          proofPolicy: "no-command-execution",
+          contract: "component.console",
+          reason: "manual commands are never executed by Supercut proof"
+        }
+      });
+
+      function knownDangerousControl(record) {
+        return KNOWN_DANGEROUS_CONTROLS[record?.componentId] ||
+          KNOWN_DANGEROUS_CONTROLS[record?.domId] ||
+          null;
+      }
+
+      function isAppRootRecord(record, blackboard) {
+        return record?.element === blackboard?.rootNode || record?.index === 0 || record?.domId === "git-tools-app";
+      }
+
+      function nonRootDomainSurface(record, blackboard) {
+        return !isAppRootRecord(record, blackboard);
       }
 
       function addPurpose(record, blackboard, purpose, role, contract, ruleId, extra = {}) {
@@ -78,8 +270,8 @@
             id: "git-tools.detect-project-selection",
             phase: "purpose-inference",
             priority: 92,
-            when(record) {
-              return /(project|repository|repo selector|git-project|working tree)/.test(source(record)) && !actionLike(record);
+            when(record, blackboard) {
+              return nonRootDomainSurface(record, blackboard) && /(project|repository|repo selector|git-project|working tree)/.test(domainSource(record)) && !actionLike(record);
             },
             apply(record, blackboard) {
               addPurpose(record, blackboard, "git-tools.project-selection", "project-selection", "component.panel", "git-tools.detect-project-selection", {
@@ -94,8 +286,8 @@
             id: "git-tools.detect-git-start",
             phase: "purpose-inference",
             priority: 90,
-            when(record) {
-              return /(git-tools-start|start git tools|open git tools|repository operations)/.test(source(record)) && !/(gitea|server)/.test(source(record));
+            when(record, blackboard) {
+              return nonRootDomainSurface(record, blackboard) && /(git-tools-start|start git tools|open git tools|repository operations)/.test(domainSource(record)) && !/(gitea|server)/.test(domainSource(record));
             },
             apply(record, blackboard) {
               addPurpose(record, blackboard, "git-tools.start", "git-tools-start", "component.workflow", "git-tools.detect-git-start", {
@@ -110,8 +302,8 @@
             id: "git-tools.detect-gitea-server-control",
             phase: "purpose-inference",
             priority: 88,
-            when(record) {
-              return /(gitea|server).*(start|stop|restart|status|control)|server-control|gitea-server/.test(source(record));
+            when(record, blackboard) {
+              return nonRootDomainSurface(record, blackboard) && (/((gitea|server).*(start|stop|restart|status|control)|server-control|gitea-server)/.test(domainSource(record)));
             },
             apply(record, blackboard) {
               addPurpose(record, blackboard, "git-tools.gitea-server-control", "gitea-server-control", "component.workflow", "git-tools.detect-gitea-server-control", {
@@ -126,8 +318,8 @@
             id: "git-tools.detect-status-report",
             phase: "purpose-inference",
             priority: 86,
-            when(record) {
-              return /(status|report|output|activity|log|diagnostic|result)/.test(source(record)) && !actionLike(record);
+            when(record, blackboard) {
+              return nonRootDomainSurface(record, blackboard) && /(status|report|output|activity|log|diagnostic|result)/.test(domainSource(record)) && !actionLike(record);
             },
             apply(record, blackboard) {
               addPurpose(record, blackboard, "git-tools.status-report", "status-report", "component.status-feed", "git-tools.detect-status-report", {
@@ -142,8 +334,8 @@
             id: "git-tools.detect-publish-workflow",
             phase: "purpose-inference",
             priority: 84,
-            when(record) {
-              return /(publish|push|mirror|remote|gitea workflow|deploy)/.test(source(record)) && !actionLike(record);
+            when(record, blackboard) {
+              return nonRootDomainSurface(record, blackboard) && /(publish|push|mirror|remote|gitea workflow|deploy)/.test(domainSource(record)) && !actionLike(record);
             },
             apply(record, blackboard) {
               addPurpose(record, blackboard, "git-tools.gitea-publish-workflow", "gitea-publish-workflow", "component.workflow", "git-tools.detect-publish-workflow", {
@@ -158,8 +350,8 @@
             id: "git-tools.detect-operation-activity",
             phase: "purpose-inference",
             priority: 82,
-            when(record) {
-              return /(operation|activity|progress|queue|job|history)/.test(source(record)) && !actionLike(record);
+            when(record, blackboard) {
+              return nonRootDomainSurface(record, blackboard) && /(operation|activity|progress|queue|job|history)/.test(domainSource(record)) && !actionLike(record);
             },
             apply(record, blackboard) {
               addPurpose(record, blackboard, "git-tools.operation-activity", "operation-activity", "component.status-feed", "git-tools.detect-operation-activity", {
@@ -174,8 +366,8 @@
             id: "git-tools.detect-remote-configuration",
             phase: "purpose-inference",
             priority: 80,
-            when(record) {
-              return /(remote|origin|mirror|credential|token|gitea host|repository url)/.test(source(record)) && !actionLike(record);
+            when(record, blackboard) {
+              return nonRootDomainSurface(record, blackboard) && /(remote|origin|mirror|credential|token|gitea host|repository url)/.test(domainSource(record)) && !actionLike(record);
             },
             apply(record, blackboard) {
               addPurpose(record, blackboard, "git-tools.remote-configuration", "remote-configuration", "component.panel", "git-tools.detect-remote-configuration", {
@@ -190,8 +382,8 @@
             id: "git-tools.detect-manual-console",
             phase: "purpose-inference",
             priority: 78,
-            when(record) {
-              return /(manual command|manual console|command console|run command|shell command|terminal)/.test(source(record));
+            when(record, blackboard) {
+              return nonRootDomainSurface(record, blackboard) && /(manual command|manual console|command console|run command|shell command|terminal)/.test(domainSource(record));
             },
             apply(record, blackboard) {
               addPurpose(record, blackboard, "git-tools.manual-console", "manual-console", "component.console", "git-tools.detect-manual-console", {
@@ -204,11 +396,22 @@
             }
           },
           {
+            id: "git-tools.risk.known-dangerous-controls",
+            phase: "risk-classification",
+            priority: 110,
+            when(record) {
+              return executableControl(record) && Boolean(knownDangerousControl(record));
+            },
+            apply(record, blackboard) {
+              return classifyAction(record, blackboard, knownDangerousControl(record), "git-tools.risk.known-dangerous-controls");
+            }
+          },
+          {
             id: "git-tools.risk.start-server",
             phase: "risk-classification",
             priority: 100,
             when(record) {
-              return actionLike(record) && /(start).*(server|gitea)|(server|gitea).*(start)/.test(source(record));
+              return executableControl(record) && /(start).*(server|gitea)|(server|gitea).*(start)/.test(source(record));
             },
             apply(record, blackboard) {
               return classifyAction(record, blackboard, {
@@ -226,7 +429,7 @@
             phase: "risk-classification",
             priority: 99,
             when(record) {
-              return actionLike(record) && /(stop|shutdown).*(server|gitea)|(server|gitea).*(stop|shutdown)/.test(source(record));
+              return executableControl(record) && /(stop|shutdown).*(server|gitea)|(server|gitea).*(stop|shutdown)/.test(source(record));
             },
             apply(record, blackboard) {
               return classifyAction(record, blackboard, {
@@ -244,7 +447,7 @@
             phase: "risk-classification",
             priority: 98,
             when(record) {
-              return actionLike(record) && /(restart|reload).*(server|gitea)|(server|gitea).*(restart|reload)/.test(source(record));
+              return executableControl(record) && /(restart|reload).*(server|gitea)|(server|gitea).*(restart|reload)/.test(source(record));
             },
             apply(record, blackboard) {
               return classifyAction(record, blackboard, {
@@ -262,7 +465,7 @@
             phase: "risk-classification",
             priority: 97,
             when(record) {
-              return actionLike(record) && /(kill|terminate).*(pid|process)|(pid|process).*(kill|terminate)/.test(source(record));
+              return executableControl(record) && /(kill|terminate).*(pid|process)|(pid|process).*(kill|terminate)/.test(source(record));
             },
             apply(record, blackboard) {
               return classifyAction(record, blackboard, {
@@ -280,7 +483,7 @@
             phase: "risk-classification",
             priority: 96,
             when(record) {
-              return actionLike(record) && /(publish|deploy)/.test(source(record));
+              return executableControl(record) && /(publish|deploy)/.test(source(record));
             },
             apply(record, blackboard) {
               return classifyAction(record, blackboard, {
@@ -298,7 +501,7 @@
             phase: "risk-classification",
             priority: 95,
             when(record) {
-              return actionLike(record) && /\bpush\b/.test(source(record));
+              return executableControl(record) && /\bpush\b/.test(source(record));
             },
             apply(record, blackboard) {
               return classifyAction(record, blackboard, {
@@ -316,7 +519,7 @@
             phase: "risk-classification",
             priority: 94,
             when(record) {
-              return actionLike(record) && /\bmirror\b/.test(source(record));
+              return executableControl(record) && /\bmirror\b/.test(source(record));
             },
             apply(record, blackboard) {
               return classifyAction(record, blackboard, {
@@ -334,7 +537,7 @@
             phase: "risk-classification",
             priority: 93,
             when(record) {
-              return actionLike(record) && /(remote|origin|credential|token|url|configure)/.test(source(record)) && /(save|set|apply|configure|create|update)/.test(source(record));
+              return executableControl(record) && /(remote|origin|credential|token|url|configure)/.test(source(record)) && /(save|set|apply|configure|create|update)/.test(source(record));
             },
             apply(record, blackboard) {
               return classifyAction(record, blackboard, {
@@ -352,7 +555,7 @@
             phase: "risk-classification",
             priority: 92,
             when(record) {
-              return actionLike(record) && /(manual command|run command|execute|terminal|shell)/.test(source(record));
+              return executableControl(record) && /(manual command|run command|execute|terminal|shell)/.test(source(record));
             },
             apply(record, blackboard) {
               return classifyAction(record, blackboard, {
