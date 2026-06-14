@@ -35,6 +35,7 @@
         lastCanonicalSpecimenProof: null,
         lastCanonicalSpecimenLens: null,
         lastCanonicalSpecimenEnrichment: null,
+        lastCanonicalSpecimenPlan: null,
         lastProjectSnapshot: null,
         activeModal: null,
         canonicalAppSpecimen: {
@@ -126,6 +127,9 @@
     const mcelCanonicalAppFrame = document.querySelector("#mcel-canonical-app-frame");
     const mcelCanonicalAppReport = document.querySelector("#mcel-canonical-app-report");
     const mcelCanonicalAppLensMap = document.querySelector("#mcel-canonical-app-lens-map");
+    const mcelCanonicalAppPlan = document.querySelector("#mcel-canonical-app-plan");
+    const mcelCanonicalAppPlanSummary = document.querySelector("#mcel-canonical-app-plan-summary");
+    const mcelCanonicalAppPlanList = document.querySelector("#mcel-canonical-app-plan-list");
     const mcelSelectionStatus = document.querySelector("#mcel-selection-status");
     const mcelGrapesHost = document.querySelector("#mcel-grapes-host");
     const mcelGrapesCanvas = document.querySelector("#mcel-grapes");

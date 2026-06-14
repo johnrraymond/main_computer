@@ -94,12 +94,14 @@
       mcelCanonicalAppClean?.addEventListener("click", () => clearMcelCanonicalTaskManagerLens("manual-clean"));
       mcelCanonicalAppSelect?.addEventListener("change", () => {
         syncMcelCanonicalSpecimenControls("specimen-select");
+        renderMcelCanonicalAppPlanner("specimen-select");
         renderMcelCanonicalAppLensMap(null, "specimen-select");
         renderMcelCanonicalAppSpecimenStatus("specimen-select");
       });
       bindMcelSiteFrameLifecycle("boot");
       renderMcelSiteFrameTwiddle("boot");
       bindMcelCanonicalAppSpecimenLifecycle("boot");
+      renderMcelCanonicalAppPlanner("boot");
       renderMcelCanonicalAppSpecimenStatus("boot");
       document.querySelectorAll("[data-mcel-close-modal]").forEach((button) => {
         button.addEventListener("click", () => closeMcelLabModal(button.dataset.mcelCloseModal || "all"));
@@ -3603,11 +3605,94 @@
     }
 
     function mcelCanonicalAppLabel(specimen = selectedMcelCanonicalAppSpecimen()) {
-      return specimen?.label || (specimen?.app === "git-tools" ? "Git Tools" : "Task Manager");
+      return specimen?.label || window.McelSpecimenPlanner?.planFor?.(specimen?.app)?.label || (specimen?.app === "git-tools" ? "Git Tools" : "Task Manager");
+    }
+
+    function mcelPlannerEscape(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function mcelCanonicalAppPlannerPlan(specimen = selectedMcelCanonicalAppSpecimen()) {
+      const planner = window.McelSpecimenPlanner || null;
+      const plan = planner?.planFor
+        ? planner.planFor(specimen.app, {
+            route: specimen.route,
+            rootSelector: specimen.rootSelector,
+            label: specimen.label
+          })
+        : {
+            app: specimen.app,
+            label: specimen.label,
+            route: specimen.route,
+            rootSelector: specimen.rootSelector,
+            status: "planner-unavailable",
+            point: "Purpose-aware specimen planner is unavailable.",
+            expectedRegions: [],
+            expectedFeeds: [],
+            expectedFields: [],
+            expectedActionFamilies: [],
+            knownRiskFamilies: [],
+            neverExecute: [],
+            mountNeeds: ["load mcel-specimen-planner.js before mcel-lab.js"]
+          };
+      const doc = mcelCanonicalAppFrameDocument();
+      if (planner?.inspectMountedDocument && doc?.body) {
+        plan.mountedEvidence = planner.inspectMountedDocument(doc, plan);
+      }
+      mcelLabState.lastCanonicalSpecimenPlan = plan;
+      return plan;
+    }
+
+    function renderMcelCanonicalAppPlanner(reason = "planner-render") {
+      if (!mcelCanonicalAppPlan && !mcelCanonicalAppPlanSummary && !mcelCanonicalAppPlanList) return null;
+      const specimen = selectedMcelCanonicalAppSpecimen();
+      const planner = window.McelSpecimenPlanner || null;
+      const plan = mcelCanonicalAppPlannerPlan(specimen);
+      const riskLevel = planner?.riskLevel?.(plan) || ((plan.knownRiskFamilies || []).length ? "medium" : "low");
+      const queue = planner?.mountQueue?.() || [];
+      const evidence = plan.mountedEvidence || {};
+      const summary = planner?.summaryFor?.(plan) || `${plan.label || plan.app}: ${plan.point || "purpose unknown"}`;
+      if (mcelCanonicalAppPlan) {
+        mcelCanonicalAppPlan.dataset.mcelPlannerApp = plan.app || specimen.app;
+        mcelCanonicalAppPlan.dataset.mcelPlannerStatus = plan.status || "unknown";
+        mcelCanonicalAppPlan.dataset.mcelPlannerRisk = riskLevel;
+      }
+      const heading = mcelCanonicalAppPlan?.querySelector?.(".mcel-canonical-app-plan-heading span");
+      if (heading) {
+        heading.textContent = `${plan.status || "unknown"} · ${riskLevel} risk · ${queue.length} queued app(s)`;
+      }
+      if (mcelCanonicalAppPlanSummary) {
+        mcelCanonicalAppPlanSummary.textContent = summary;
+      }
+      if (mcelCanonicalAppPlanList) {
+        const items = [
+          ["Point", plan.point || "unknown"],
+          ["Domain pack", `${plan.domainPack || "needs-domain-pack"} · adapter: ${plan.adapter || "needs-adapter"}`],
+          ["Expected regions", (plan.expectedRegions || []).join(", ") || "discover on mount"],
+          ["Actions", (plan.expectedActionFamilies || []).join(", ") || "discover on mount"],
+          ["Risk families", (plan.knownRiskFamilies || []).join(", ") || "none declared"],
+          ["Never execute", (plan.neverExecute || []).join(", ") || "unknown destructive actions"],
+          ["Decode hints", (plan.decodeHints || []).join(", ") || "app id and root selector"],
+          ["Mount needs", (plan.mountNeeds || []).join("; ") || "read-only discovery pass"],
+          ["Mounted evidence", evidence.rootPresent ? `${evidence.controlCount || 0} controls · ${evidence.feedCount || 0} feeds · ${evidence.editableCount || 0} editables` : "not mounted or root not inspected"]
+        ];
+        mcelCanonicalAppPlanList.innerHTML = items.map(([label, value]) =>
+          `<li><strong>${mcelPlannerEscape(label)}:</strong> ${mcelPlannerEscape(value)}</li>`
+        ).join("");
+      }
+      return plan;
     }
 
     function mcelCanonicalAppAdapter(specimen = selectedMcelCanonicalAppSpecimen()) {
-      return specimen?.app === "git-tools" ? window.GitToolsMcel || null : window.TaskManagerMcel || null;
+      if (specimen?.app === "git-tools") return window.GitToolsMcel || null;
+      if (specimen?.app === "task-manager") return window.TaskManagerMcel || null;
+      const planner = window.McelSpecimenPlanner || null;
+      const plan = mcelCanonicalAppPlannerPlan(specimen);
+      return planner?.createGenericAdapter?.(plan) || null;
     }
 
     function mcelTaskManagerMcelAdapter(specimen = selectedMcelCanonicalAppSpecimen()) {
@@ -3615,15 +3700,17 @@
     }
 
     function mcelCanonicalAppRequiredIds(specimen = selectedMcelCanonicalAppSpecimen()) {
-      return specimen?.app === "git-tools"
-        ? MCEL_CANONICAL_GIT_TOOLS_REQUIRED_IDS
-        : MCEL_CANONICAL_TASK_MANAGER_REQUIRED_IDS;
+      if (specimen?.app === "git-tools") return MCEL_CANONICAL_GIT_TOOLS_REQUIRED_IDS;
+      if (specimen?.app === "task-manager") return MCEL_CANONICAL_TASK_MANAGER_REQUIRED_IDS;
+      const plan = mcelCanonicalAppPlannerPlan(specimen);
+      return window.McelSpecimenPlanner?.requiredIdsFor?.(plan) || [String(specimen?.rootSelector || "").replace(/^#/, "")].filter(Boolean);
     }
 
     function mcelCanonicalAppDangerousControlSelectors(specimen = selectedMcelCanonicalAppSpecimen()) {
-      return specimen?.app === "git-tools"
-        ? MCEL_CANONICAL_GIT_TOOLS_DANGEROUS_CONTROL_SELECTORS
-        : MCEL_CANONICAL_TASK_MANAGER_DANGEROUS_CONTROL_SELECTORS;
+      if (specimen?.app === "git-tools") return MCEL_CANONICAL_GIT_TOOLS_DANGEROUS_CONTROL_SELECTORS;
+      if (specimen?.app === "task-manager") return MCEL_CANONICAL_TASK_MANAGER_DANGEROUS_CONTROL_SELECTORS;
+      const plan = mcelCanonicalAppPlannerPlan(specimen);
+      return window.McelSpecimenPlanner?.dangerousSelectorsFor?.(plan) || [];
     }
 
     function mcelCanonicalAppRegionEnrichment(specimen = selectedMcelCanonicalAppSpecimen()) {
@@ -3680,6 +3767,7 @@
       if (mcelCanonicalAppReport && !mcelLabState?.lastCanonicalSpecimenReport) {
         mcelCanonicalAppReport.textContent = `Mount ${label} to enrich it as a canonical MCEL specimen.`;
       }
+      renderMcelCanonicalAppPlanner(reason);
       return reason;
     }
 
@@ -3709,11 +3797,14 @@
     function selectedMcelCanonicalAppSpecimen() {
       const option = mcelCanonicalAppSelect?.selectedOptions?.[0] || mcelCanonicalAppSelect?.querySelector?.("option");
       const frame = mcelCanonicalAppFrame;
+      const app = option?.value || frame?.dataset?.mcelSpecimenApp || "task-manager";
       return {
-        app: option?.value || frame?.dataset?.mcelSpecimenApp || "task-manager",
+        app,
         route: option?.dataset?.route || frame?.dataset?.mcelSpecimenRoute || "/applications/task-manager/server-processes?mcel_lab_specimen=task-manager",
         rootSelector: option?.dataset?.root || frame?.dataset?.mcelSpecimenRoot || "#task-manager-app",
-        label: option?.textContent?.trim() || "Task Manager"
+        label: option?.textContent?.trim() || "Task Manager",
+        plannerStatus: option?.dataset?.plannerStatus || "",
+        point: option?.dataset?.point || ""
       };
     }
 
@@ -3931,6 +4022,7 @@
       state.enrichmentStatus = report.enrichmentActive ? report.layoutLawStatus : "warning";
       state.lastAt = report.appliedAt;
       mcelLabState.lastCanonicalSpecimenEnrichment = report;
+      renderMcelCanonicalAppPlanner(reason);
       renderMcelCanonicalAppLensMap(report, reason);
       if (mcelCanonicalAppReport) {
         mcelCanonicalAppReport.textContent = JSON.stringify({enrichment: report}, null, 2);

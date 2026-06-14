@@ -4,68 +4,15 @@ import json
 import random
 import threading
 import time
-from dataclasses import dataclass
-from typing import Any, Sequence
-from urllib.error import HTTPError, URLError
+from typing import Any, Iterator, Sequence
 from urllib.parse import urlencode, urljoin
-from urllib.request import Request, urlopen
 
-
-@dataclass
-class HubHttpResponse:
-    ok: bool
-    status: int
-    payload: dict[str, Any]
-    elapsed_ms: float
-    base_url: str = ""
-
-
-def _transport_error_kind(exc: BaseException | None) -> str:
-    text = str(exc or "").lower()
-    class_name = type(exc).__name__.lower() if exc is not None else ""
-    if "timed out" in text or "timeout" in text or "timeout" in class_name:
-        return "timeout"
-    if "connection refused" in text or "winerror 10061" in text or "errno 111" in text:
-        return "connection_refused"
-    if "temporary failure in name resolution" in text or "name or service not known" in text or "nodename nor servname" in text:
-        return "dns_error"
-    if "connection reset" in text or "forcibly closed" in text:
-        return "connection_reset"
-    if "network is unreachable" in text or "no route to host" in text:
-        return "network_unreachable"
-    return "transport_error"
-
-
-def _diagnostic_payload(
-    *,
-    error: str,
-    error_type: str,
-    method: str,
-    path: str,
-    url: str,
-    base_url: str,
-    error_kind: str = "",
-    exception_class: str = "",
-    status: int | None = None,
-    response_text: str = "",
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "error": str(error),
-        "error_type": str(error_type),
-        "method": str(method).upper(),
-        "path": str(path),
-        "url": str(url),
-        "base_url": str(base_url).rstrip("/"),
-    }
-    if error_kind:
-        payload["error_kind"] = str(error_kind)
-    if exception_class:
-        payload["exception_class"] = str(exception_class)
-    if status is not None:
-        payload["http_status"] = int(status)
-    if response_text:
-        payload["response_text"] = str(response_text)[:500]
-    return payload
+from tools.scheduler_lab.http_transport import (
+    HubHttpResponse,
+    HubStreamEvent,
+    HubTransport,
+    KeepAliveHubTransport,
+)
 
 
 class HubClient:
@@ -83,6 +30,7 @@ class HubClient:
         timeout_seconds: float = 10.0,
         retries: int = 0,
         rng: random.Random | None = None,
+        transport: HubTransport | None = None,
     ) -> None:
         clean_urls = [str(url).strip().rstrip("/") + "/" for url in (base_urls or []) if str(url).strip()]
         if not clean_urls:
@@ -91,6 +39,7 @@ class HubClient:
         self.base_urls = clean_urls
         self.timeout_seconds = max(0.1, float(timeout_seconds))
         self.retries = max(0, int(retries))
+        self.transport = transport or KeepAliveHubTransport()
         self._rng = rng or random.Random()
         self._rng_lock = threading.Lock()
 
@@ -108,115 +57,76 @@ class HubClient:
             return self._rng.choice(self.base_urls)
 
     def request_json(self, method: str, path: str, payload: dict[str, Any] | None = None) -> HubHttpResponse:
-        body = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
-        last_error: Exception | None = None
+        last_response: HubHttpResponse | None = None
         last_base_url = self.base_url
         for attempt in range(self.retries + 1):
             base_url = self._choose_base_url()
             last_base_url = base_url
             url = urljoin(base_url, path.lstrip("/"))
-            started = time.perf_counter()
-            request = Request(
+            response = self.transport.request_json(
+                method,
                 url,
-                data=body if method.upper() not in {"GET", "HEAD"} else None,
-                method=method.upper(),
-                headers={"Content-Type": "application/json; charset=utf-8", "Accept": "application/json"},
+                payload=payload,
+                timeout_seconds=self.timeout_seconds,
             )
-            try:
-                with urlopen(request, timeout=self.timeout_seconds) as response:
-                    raw = response.read()
-                    elapsed_ms = (time.perf_counter() - started) * 1000.0
-                    try:
-                        parsed = json.loads(raw.decode("utf-8")) if raw else {}
-                    except Exception as exc:
-                        return HubHttpResponse(
-                            ok=False,
-                            status=response.status,
-                            payload=_diagnostic_payload(
-                                error=f"JSON parse failed: {exc}",
-                                error_type="parse_error",
-                                error_kind="json_parse_error",
-                                exception_class=type(exc).__name__,
-                                method=method,
-                                path=path,
-                                url=url,
-                                base_url=base_url,
-                                status=response.status,
-                                response_text=raw.decode("utf-8", errors="replace") if raw else "",
-                            ),
-                            elapsed_ms=elapsed_ms,
-                            base_url=base_url.rstrip("/"),
-                        )
-                    if not isinstance(parsed, dict):
-                        parsed = {"value": parsed}
-                    parsed.setdefault("method", method.upper())
-                    parsed.setdefault("path", path)
-                    return HubHttpResponse(ok=200 <= response.status < 300, status=response.status, payload=parsed, elapsed_ms=elapsed_ms, base_url=base_url.rstrip("/"))
-            except HTTPError as exc:
-                raw = exc.read()
-                elapsed_ms = (time.perf_counter() - started) * 1000.0
-                try:
-                    parsed = json.loads(raw.decode("utf-8")) if raw else {}
-                except Exception as parse_exc:
-                    parsed = _diagnostic_payload(
-                        error=f"HTTP {exc.code}; JSON parse failed: {parse_exc}",
-                        error_type="http_error",
-                        error_kind="http_error_parse_failure",
-                        exception_class=type(parse_exc).__name__,
-                        method=method,
-                        path=path,
-                        url=url,
-                        base_url=base_url,
-                        status=exc.code,
-                        response_text=raw.decode("utf-8", errors="replace") if raw else "",
-                    )
-                if not isinstance(parsed, dict):
-                    parsed = {"value": parsed}
-                parsed.setdefault("error_type", "http_error")
-                parsed.setdefault("error_kind", f"http_{exc.code}")
-                parsed.setdefault("method", method.upper())
-                parsed.setdefault("path", path)
-                parsed.setdefault("http_status", exc.code)
-                return HubHttpResponse(ok=False, status=exc.code, payload=parsed, elapsed_ms=elapsed_ms, base_url=base_url.rstrip("/"))
-            except (URLError, TimeoutError, OSError) as exc:
-                last_error = exc
-                if attempt < self.retries:
-                    time.sleep(min(2.0, 0.15 * (2 ** attempt)))
-                    continue
-                elapsed_ms = (time.perf_counter() - started) * 1000.0
-                return HubHttpResponse(
-                    ok=False,
-                    status=0,
-                    payload=_diagnostic_payload(
-                        error=str(last_error),
-                        error_type="transport",
-                        error_kind=_transport_error_kind(last_error),
-                        exception_class=type(last_error).__name__ if last_error is not None else "",
-                        method=method,
-                        path=path,
-                        url=url,
-                        base_url=base_url,
-                    ),
-                    elapsed_ms=elapsed_ms,
-                    base_url=base_url.rstrip("/"),
-                )
-        elapsed_ms = 0.0
+            response.base_url = base_url.rstrip("/")
+            if isinstance(response.payload, dict):
+                response.payload.setdefault("method", method.upper())
+                response.payload.setdefault("path", path)
+            last_response = response
+            if response.status == 0 and attempt < self.retries:
+                time.sleep(min(2.0, 0.15 * (2 ** attempt)))
+                continue
+            return response
+
+        if last_response is not None:
+            return last_response
         return HubHttpResponse(
             ok=False,
             status=0,
-            payload=_diagnostic_payload(
-                error=str(last_error or "request failed"),
-                error_type="transport",
-                error_kind=_transport_error_kind(last_error),
-                exception_class=type(last_error).__name__ if last_error is not None else "",
-                method=method,
-                path=path,
-                url=urljoin(last_base_url, path.lstrip("/")),
-                base_url=last_base_url,
-            ),
-            elapsed_ms=elapsed_ms,
+            payload={
+                "error": "request failed",
+                "error_type": "transport",
+                "error_kind": "transport_error",
+                "method": method.upper(),
+                "path": path,
+                "url": urljoin(last_base_url, path.lstrip("/")),
+                "base_url": last_base_url.rstrip("/"),
+                "transport_mode": "keepalive",
+                "connection_reused": False,
+                "connection_id": 0,
+                "origin": "",
+                "connection_error": "transport_error",
+            },
+            elapsed_ms=0.0,
             base_url=last_base_url.rstrip("/"),
         )
+
+    def stream_request(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> Iterator[HubStreamEvent]:
+        base_url = self._choose_base_url()
+        url = urljoin(base_url, path.lstrip("/"))
+        for event in self.transport.stream_jsonl(
+            method,
+            url,
+            payload=payload,
+            timeout_seconds=self.timeout_seconds,
+            headers=headers,
+        ):
+            event.base_url = base_url.rstrip("/")
+            if isinstance(event.payload, dict):
+                event.payload.setdefault("method", method.upper())
+                event.payload.setdefault("path", path)
+            yield event
+
+    def close(self) -> None:
+        self.transport.close()
 
     def get_json(self, path: str) -> HubHttpResponse:
         return self.request_json("GET", path, None)
