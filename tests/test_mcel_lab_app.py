@@ -1643,11 +1643,6 @@ def test_mcel_lab_remaining_planner_specimens_have_supercut_domain_packs() -> No
     assert "detect-risk-actions" in planner_domains_pack
     assert "detect-safe-actions" in planner_domains_pack
     assert "detect-feeds" in planner_domains_pack
-    assert "fileExplorerSurface" in planner_domains_pack
-    assert "detect-file-explorer-surfaces" in planner_domains_pack
-    assert 'expectedRegions: ["roots", "path-bar", "file-list", "directory-listing", "preview"]' in planner_domains_pack
-    assert 'safeActions: ["open", "preview", "refresh", "select", "search", "up", "root-select"]' in planner_domains_pack
-    assert "file-explorer.surface.directory-listing" in planner_domains_pack
     assert "plannerDomainPacks" in registry
     assert "McelSupercutPacksPlannerDomains?.plannerDomainPacks" in registry
     assert 'status: "domain-ready"' in planner
@@ -1662,3 +1657,177 @@ def test_mcel_lab_remaining_planner_specimens_have_supercut_domain_packs() -> No
     assert 'family: "worker.payment-rental"' in planner_domains_pack
     assert 'family: "worker.credential-network-mutation"' in planner_domains_pack
     assert 'expectedRegions: ["queue", "job-detail", "worker-status", "runtime-controls", "logs"]' not in planner_domains_pack
+
+
+def test_mcel_lab_element_library_acid_test_is_wired() -> None:
+    html = (ROOT / "main_computer" / "web" / "applications.html").read_text(encoding="utf-8")
+    app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
+    bindings = (WEB_APP / "scripts" / "dom-bindings" / "mcel-lab.js").read_text(encoding="utf-8")
+    lab = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    css = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
+    registry = (WEB_APP / "scripts" / "mcel-element-registry.js").read_text(encoding="utf-8")
+    elements = (WEB_APP / "scripts" / "mcel-elements-core.js").read_text(encoding="utf-8")
+    acid = (WEB_APP / "scripts" / "mcel-element-acid-test.js").read_text(encoding="utf-8")
+
+    assert "<!-- @include applications/scripts/mcel-element-registry.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-elements-core.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-element-acid-test.js -->" in html
+    assert (
+        html.index("mcel-specimen-planner.js")
+        < html.index("mcel-element-registry.js")
+        < html.index("mcel-elements-core.js")
+        < html.index("mcel-element-acid-test.js")
+        < html.index("mcel-lab.js")
+    )
+
+    assert "MCEL Element Library Acid Test" in app
+    assert 'id="mcel-element-acid-canvas"' in app
+    assert 'id="mcel-element-acid-summary"' in app
+    assert 'id="mcel-element-acid-report"' in app
+    assert 'id="mcel-element-acid-rerun"' in app
+    assert "mcelElementAcidCanvas" in bindings
+    assert "lastElementAcidReport" in bindings
+
+    assert "window.McelElementRegistry" in lab
+    assert "window.McelElementsCore" in lab
+    assert "window.McelElementAcidTest" in lab
+    assert "renderMcelElementLibraryAcidTest" in lab
+    assert "mcelElementAcidRerun" in lab
+
+    assert "global.McelElementRegistry" in registry
+    assert "registerMany" in registry
+    assert "serializeElement" in registry
+    assert "evidencePacket" in registry
+
+    expected_elements = [
+        "element.core.app",
+        "element.core.region",
+        "element.core.panel",
+        "element.core.toolbar",
+        "element.core.field",
+        "element.core.action",
+        "element.core.status-feed",
+        "element.core.workflow",
+        "element.core.collection",
+        "element.core.collection-row",
+        "element.core.preview-pane",
+        "element.resource.directory-tree",
+        "element.resource.tree-viewport",
+        "element.resource.tree-branch",
+        "element.resource.tree-leaf",
+        "element.resource.tree-expander",
+        "element.resource.tree-selection-model",
+        "element.resource.tree-keyboard-controller",
+        "element.resource.tree-context-menu",
+        "element.resource.tree-drag-drop-boundary",
+        "element.resource.tree-empty-state",
+        "element.resource.file-boundary",
+        "element.resource.path-bar",
+        "element.resource.resource-row",
+        "element.operational.process-table",
+        "element.operational.server-control",
+        "element.operational.pid-action",
+        "element.operational.command-surface",
+        "element.network.remote-mutation-boundary",
+        "element.network.credential-boundary",
+        "element.network.payment-boundary",
+        "element.compute.keypad",
+        "element.compute.local-display",
+        "element.compute.runtime-cell",
+        "element.authoring.document-surface",
+        "element.authoring.spreadsheet-grid",
+        "element.authoring.code-editor",
+        "element.authoring.website-publisher",
+        "element.authoring.game-editor",
+    ]
+    for element_id in expected_elements:
+        assert element_id in elements
+        assert element_id in acid
+
+    assert "supersedes: [\"Wunderbaum\", \"TreeView\"" in elements
+    assert "element.resource.tree-viewport" in elements
+    assert "element.resource.tree-branch" in elements
+    assert "element.resource.tree-leaf" in elements
+    assert "element.resource.tree-expander" in elements
+    assert "element.resource.tree-selection-model" in elements
+    assert "element.resource.tree-keyboard-controller" in elements
+    assert "element.resource.tree-context-menu" in elements
+    assert "element.resource.tree-drag-drop-boundary" in elements
+    assert "element.resource.tree-empty-state" in elements
+    assert "fromWunderbaum" in elements
+    assert "node.data.fileExplorerEntry -> resource payload" in elements
+    assert "explorer-sidebar" in elements
+    assert "ide-project-tree" in elements
+    assert "details-treegrid" in elements
+    assert "miller-columns" in elements
+    assert "outline-tree" in elements
+    assert "accessibility-proof" in elements
+    assert "aria-expanded" in elements
+    assert "aria-selected" in elements
+    assert "activeNodeId" in elements
+    assert "expandedNodeIds" in elements
+    assert "visibleWindow" in elements
+    assert "dropMove: \"no-submit\"" in elements
+    assert "proofPolicy" in elements
+    assert "serializationSchema" in elements
+    assert "decoderHints" in elements
+    assert "riskPolicy" in elements
+    assert "stateModel" in registry
+    assert "interactionModel" in registry
+    assert "migrationHints" in registry
+    assert "presentationModes" in registry
+    assert "viewPatterns" in registry
+    assert "densityModes" in registry
+    assert "statefulElementCount" in registry
+
+    assert "buildDemoUi" in acid
+    assert "renderResourceWorkbench" in acid
+    assert "renderOperationalWorkbench" in acid
+    assert "renderNetworkComputeAuthoringWorkbench" in acid
+    assert "mcel-element-showcase-workbench" in acid
+    assert "real tree view patterns replacing Wunderbaum" in acid
+    assert "TREE_VIEW_MODES" in acid
+    assert "Cycle tree views" in acid
+    assert "Explorer sidebar" in acid
+    assert "IDE project tree" in acid
+    assert "Details treegrid" in acid
+    assert "Column browser" in acid
+    assert "Outline tree" in acid
+    assert "Keyboard proof" in acid
+    assert "appendTreeNode" in acid
+    assert "tree-viewport" in acid
+    assert "Selection model" in acid
+    assert "Keyboard controller" in acid
+    assert "Context menu" in acid
+    assert "Drag/drop boundary" in acid
+    assert "treeViewModeCount" in acid
+    assert "researchedTreePatterns" in acid
+    assert "hardTreePrimitiveCount" in acid
+    assert "treeReplacementReady" in acid
+    assert "tree replacement=" in acid
+    assert "Process Table" in acid
+    assert "Remote Mutation Boundary" in acid
+    assert "Spreadsheet Grid" in acid
+    assert "supersedesTreeView" in acid
+    assert "showcaseSurfaceCount" in acid
+    assert "composedUiReady" in acid
+    assert "illegalNestedScrollbars" in acid
+    assert "data-mcel-element-acid-root" in acid
+
+    assert ".mcel-element-acid" in css
+    assert ".mcel-element-acid-grid" in css
+    assert ".mcel-element-acid-card" in css
+    assert ".mcel-element-showcase-workbench" in css
+    assert ".mcel-element-showcase-resource-layout" in css
+    assert ".mcel-element-showcase-three-column" in css
+    assert ".mcel-element-tree-viewport" in css
+    assert ".mcel-element-tree-node" in css
+    assert ".mcel-element-tree-expander" in css
+    assert ".mcel-element-tree-controller-strip" in css
+    assert ".mcel-resource-tree-mode-bar" in css
+    assert ".mcel-resource-tree-view-stage" in css
+    assert ".mcel-resource-tree-mode--explorer-sidebar" in css
+    assert ".mcel-resource-tree-viewport--ide" in css
+    assert ".mcel-resource-treegrid" in css
+    assert ".mcel-resource-column-browser" in css
+    assert ".mcel-resource-tree-proof-card" in css

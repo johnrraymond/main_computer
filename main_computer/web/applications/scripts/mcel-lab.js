@@ -25,6 +25,9 @@
         window.McelLabAcidTests &&
         window.McelLabSupervisor &&
         window.McelLabKernel &&
+        window.McelElementRegistry &&
+        window.McelElementsCore &&
+        window.McelElementAcidTest &&
         window.TaskManagerMcel &&
         window.McelSupercut &&
         window.GitToolsMcel &&
@@ -52,7 +55,31 @@
       initMcelLabGrapes();
       selectMcelSourceIndex(0, "initial-selection");
       compileMcelLabSource("initial-load");
+      renderMcelElementLibraryAcidTest("boot");
       renderMcelAutopilotDeferred("boot");
+    }
+
+
+    function renderMcelElementLibraryAcidTest(reason = "manual") {
+      if (!window.McelElementAcidTest?.run) {
+        if (mcelElementAcidReport) {
+          mcelElementAcidReport.textContent = "MCEL Element Library Acid Test unavailable: registry or runner has not loaded.";
+          mcelElementAcidReport.dataset.status = "unavailable";
+        }
+        return null;
+      }
+      const report = window.McelElementAcidTest.run({
+        document,
+        canvas: mcelElementAcidCanvas,
+        summary: mcelElementAcidSummary,
+        report: mcelElementAcidReport,
+        reason
+      });
+      mcelLabState.lastElementAcidReport = report;
+      if (mcelElementAcidReport) {
+        mcelElementAcidReport.dataset.status = report?.status || "unknown";
+      }
+      return report;
     }
 
     function bindMcelLabControls() {
@@ -82,6 +109,7 @@
       mcelOpenSiteModal?.addEventListener("click", () => openMcelLabModal("site"));
       mcelOpenSmartCssModal?.addEventListener("click", () => openMcelLabModal("smart-css"));
       mcelSmartCssRerun?.addEventListener("click", () => renderMcelSmartCssPrimitiveLab("manual-rerun"));
+      mcelElementAcidRerun?.addEventListener("click", () => renderMcelElementLibraryAcidTest("manual-rerun"));
       mcelSiteFrameResync?.addEventListener("click", () => syncMcelRenderedSiteFrame("twiddle-resync"));
       mcelSiteFrameRebuild?.addEventListener("click", () => rebuildMcelSiteFrameShell("twiddle-rebuild", {syncAfter: true}));
       mcelSiteFrameClear?.addEventListener("click", () => clearMcelSiteFrameSrcdoc("twiddle-clear"));
