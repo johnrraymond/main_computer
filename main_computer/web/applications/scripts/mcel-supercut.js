@@ -76,14 +76,91 @@
         {token: "action", originalPoint: "task-manager.action-surface", roleHint: "action-surface"}
       ];
 
-      const PURPOSE_RULES = GIT_TOOLS_PURPOSE_RULES;
+      const GENERIC_PURPOSE_RULES = [
+        {token: "status", originalPoint: "legacy-html.status-feed", roleHint: "status-output"},
+        {token: "output", originalPoint: "legacy-html.output-feed", roleHint: "output-feed"},
+        {token: "log", originalPoint: "legacy-html.output-feed", roleHint: "output-feed"},
+        {token: "toolbar", originalPoint: "legacy-html.toolbar", roleHint: "toolbar-component"},
+        {token: "action", originalPoint: "legacy-html.action-surface", roleHint: "action-surface"},
+        {token: "form", originalPoint: "legacy-html.form-surface", roleHint: "form-component"},
+        {token: "panel", originalPoint: "legacy-html.panel-surface", roleHint: "panel-component"}
+      ];
+
+      function purposeRuleSlug(value) {
+        return String(value || "")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "")
+          .slice(0, 96) || "surface";
+      }
+
+      function plannerPurposeRulesForApp(app, root) {
+        const normalizedApp = String(app || "").toLowerCase();
+        const rootId = root?.id || "";
+        const plans = global.McelSupercutPacksPlannerDomains?.PLANNER_DOMAIN_PLANS || [];
+        const plan = plans.find((candidate) =>
+          candidate?.app === normalizedApp ||
+          candidate?.rootId === rootId ||
+          candidate?.rootSelector === `#${rootId}`
+        );
+        if (!plan) return [];
+        const rules = [
+          {token: plan.rootId || `${plan.app}-app`, originalPoint: `${plan.app}.root`, roleHint: `${plan.app}-root`},
+          {token: plan.app, originalPoint: `${plan.app}.root`, roleHint: `${plan.app}-root`}
+        ];
+        (plan.expectedRegions || []).forEach((region) => {
+          rules.push({
+            token: region,
+            originalPoint: `${plan.app}.region.${purposeRuleSlug(region)}`,
+            roleHint: `${purposeRuleSlug(region)}-region`
+          });
+        });
+        (plan.expectedFeeds || []).forEach((feed) => {
+          rules.push({
+            token: feed,
+            originalPoint: `${plan.app}.feed.${purposeRuleSlug(feed)}`,
+            roleHint: "status-output"
+          });
+        });
+        (plan.expectedFields || []).forEach((field) => {
+          rules.push({
+            token: field,
+            originalPoint: `${plan.app}.field.${purposeRuleSlug(field)}`,
+            roleHint: "field-control"
+          });
+        });
+        (plan.safeActions || []).forEach((action) => {
+          rules.push({
+            token: action,
+            originalPoint: `${plan.app}.safe.${purposeRuleSlug(action)}`,
+            roleHint: "safe-action"
+          });
+        });
+        (plan.riskyActions || []).forEach((risk) => {
+          (risk.terms || [risk.family, risk.role]).filter(Boolean).forEach((term) => {
+            rules.push({
+              token: term,
+              originalPoint: risk.family || `${plan.app}.risk.${purposeRuleSlug(risk.role || term)}`,
+              roleHint: risk.role || "risky-action"
+            });
+          });
+        });
+        (plan.decodeHints || []).forEach((hint) => {
+          rules.push({
+            token: hint,
+            originalPoint: `${plan.app}.surface.${purposeRuleSlug(hint)}`,
+            roleHint: "domain-surface"
+          });
+        });
+        return rules;
+      }
 
       function purposeRulesForApp(app, root) {
         const normalizedApp = String(app || "").toLowerCase();
         const rootId = root?.id || "";
         if (normalizedApp === "task-manager" || rootId === "task-manager-app") return TASK_MANAGER_PURPOSE_RULES;
         if (normalizedApp === "git-tools" || rootId === "git-tools-app") return GIT_TOOLS_PURPOSE_RULES;
-        return PURPOSE_RULES;
+        return plannerPurposeRulesForApp(normalizedApp, root).concat(GENERIC_PURPOSE_RULES);
       }
 
       const ACTION_RISK_RULES = [

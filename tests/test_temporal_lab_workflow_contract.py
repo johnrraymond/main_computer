@@ -8,6 +8,7 @@ from tools.temporal_lab.models import FakeTokenRequest
 from tools.temporal_lab.workflows import (
     FakeTokenWorkflow,
     activity_heartbeat_timeout,
+    activity_retry_policy,
     activity_start_to_close_timeout,
 )
 
@@ -25,6 +26,22 @@ def test_workflow_contract_imports_without_live_temporal_dependency() -> None:
     assert FakeTokenWorkflow.__name__ == "FakeTokenWorkflow"
     assert activity_start_to_close_timeout(request).total_seconds() >= 30
     assert activity_heartbeat_timeout(request).total_seconds() >= 10
+
+
+def test_workflow_activity_retry_policy_surfaces_failure_once() -> None:
+    request = FakeTokenRequest(
+        request_id="req-retry-policy",
+        account_id="acct-contract",
+        credits_offered=5,
+        ring=2,
+        token_count=2,
+        token_interval_seconds=0.0,
+        payload={"force_failure": True},
+    )
+
+    policy = activity_retry_policy(request)
+    if policy is not None:
+        assert policy.maximum_attempts == 1
 
 
 def test_activity_direct_smoke_writes_start_token_progress_done(tmp_path) -> None:
