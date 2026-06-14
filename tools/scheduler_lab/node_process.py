@@ -196,7 +196,28 @@ class NodeHttpRunner:
 
 def _short_payload(payload: dict[str, Any]) -> dict[str, Any]:
     clean: dict[str, Any] = {}
-    for key in ("ok", "error", "reason", "message", "reason_code", "request_count", "idempotent", "error_type", "error_kind", "exception_class", "method", "path", "http_status", "worker_id", "worker_node_id"):
+    for key in (
+        "ok",
+        "error",
+        "reason",
+        "message",
+        "reason_code",
+        "request_count",
+        "idempotent",
+        "error_type",
+        "error_kind",
+        "exception_class",
+        "method",
+        "path",
+        "http_status",
+        "worker_id",
+        "worker_node_id",
+        "transport_mode",
+        "connection_reused",
+        "connection_id",
+        "origin",
+        "connection_error",
+    ):
         if key in payload:
             clean[key] = payload[key]
     if isinstance(payload.get("account"), dict):
@@ -231,6 +252,9 @@ def _response_identity_fields(payload: dict[str, Any]) -> dict[str, Any]:
     fields: dict[str, Any] = {}
     if not isinstance(payload, dict):
         return fields
+    for key in ("transport_mode", "connection_reused", "connection_id", "origin", "connection_error"):
+        if key in payload:
+            fields[key] = payload[key]
     request = payload.get("request")
     if isinstance(request, dict):
         if request.get("request_id") is not None:
@@ -889,7 +913,10 @@ def run_node_process(args: argparse.Namespace) -> int:
         sink.emit(event_payload("node.process.finished", node, node_index=args.node_index))
         return 0
     finally:
-        sink.close()
+        try:
+            client.close()
+        finally:
+            sink.close()
 
 
 def _default_node_duration_seconds() -> float:

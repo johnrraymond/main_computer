@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 
 def test_exp_fdb_hub_entrypoint_is_manual_and_declares_fdb_options() -> None:
@@ -35,8 +36,32 @@ def test_exp_fdb_hub_entrypoint_is_manual_and_declares_fdb_options() -> None:
     assert "ExperimentalFoundationDbHubServerHandler" in module
     assert "Worker route diagnostics:" in module
     assert "HUB_WORKER_ROUTE_DIAGNOSTICS" in module
+    assert "EXP_FDB_HUB_ACCESS_LOGS" in module
+    assert 'os.environ.get("HUB_WORKER_ROUTE_DIAGNOSTICS", "0")' in module
+    assert 'os.environ.get("EXP_FDB_HUB_ACCESS_LOGS", "0")' in module
     assert "flush=True" in module
     assert "FoundationDB Docker cluster" in module
+
+
+
+def test_exp_fdb_hub_access_logs_are_opt_in_by_default(monkeypatch, capsys) -> None:
+    from main_computer.exp_fdb_hub import ExperimentalFoundationDbHubServerHandler
+
+    handler = object.__new__(ExperimentalFoundationDbHubServerHandler)
+    handler.server = SimpleNamespace(verbose=True, server_port=8870)
+    handler.client_address = ("127.0.0.1", 54321)
+    handler.log_date_time_string = lambda: "13/Jun/2026 14:30:21"
+
+    monkeypatch.delenv("EXP_FDB_HUB_ACCESS_LOGS", raising=False)
+    handler.log_message('"POST /api/hub/v1/workers/poll HTTP/1.1" 503 -')
+    assert capsys.readouterr().err == ""
+
+    monkeypatch.setenv("EXP_FDB_HUB_ACCESS_LOGS", "1")
+    handler.log_message('"POST /api/hub/v1/workers/poll HTTP/1.1" 503 -')
+    stderr = capsys.readouterr().err
+    assert "[exp-fdb-hub:8870]" in stderr
+    assert "/api/hub/v1/workers/poll" in stderr
+    assert "503" in stderr
 
 
 def test_standard_hub_module_does_not_import_experimental_fdb_hub() -> None:

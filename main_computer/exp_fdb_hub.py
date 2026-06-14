@@ -49,10 +49,22 @@ DEFAULT_EXP_FDB_SMOKE_START_TIMEOUT_SECONDS = 45.0
 
 
 class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
-    """Hub request handler that keeps exp multi-hub access logs visible while Docker is attached."""
+    """Hub request handler with opt-in exp multi-hub access logging.
+
+    Scheduler-lab Docker runs can generate thousands of expected 503 worker
+    route responses while probing overload behavior.  Keep those request access
+    logs off by default so stderr remains readable; set EXP_FDB_HUB_ACCESS_LOGS=1
+    when raw per-request HTTP logs are needed.
+    """
+
+    def _exp_fdb_access_log_enabled(self) -> bool:
+        raw = str(os.environ.get("EXP_FDB_HUB_ACCESS_LOGS", "0")).strip().lower()
+        return raw in {"1", "true", "yes", "on", "all"}
 
     def log_message(self, format: str, *args: object) -> None:
         if not getattr(self.server, "verbose", False):
+            return
+        if not self._exp_fdb_access_log_enabled():
             return
         try:
             message = format % args
@@ -79,8 +91,8 @@ class ExperimentalFoundationDbHubHttpServer(HubHttpServer):
         verbose: bool = True,
     ) -> None:
         super().__init__(server_address, config, verbose=verbose)
-        diagnostics_value = str(os.environ.get("HUB_WORKER_ROUTE_DIAGNOSTICS", "1")).strip().lower()
-        self.worker_route_diagnostics = verbose and diagnostics_value not in {"0", "false", "no", "off"}
+        diagnostics_value = str(os.environ.get("HUB_WORKER_ROUTE_DIAGNOSTICS", "0")).strip().lower()
+        self.worker_route_diagnostics = verbose and diagnostics_value in {"1", "true", "yes", "on"}
         self.RequestHandlerClass = ExperimentalFoundationDbHubServerHandler
         self.fdb_state = ExperimentalFoundationDbHubState(fdb_config)
         self.registry = ExperimentalFoundationDbRegistry(
@@ -303,7 +315,7 @@ def create_exp_fdb_hub_server(args: argparse.Namespace, *, port: int) -> Experim
     print(f"Hub runtime: {server.hub_root}")
     print(f"Hub admin/control site: http://{args.host}:{server.server_port}/admin")
     print(f"Hub security: high-security={config.hub_high_security} profile={HUB_SECURITY_PROFILE}; local experimental mode allows insecure dev network")
-    print(f"Worker route diagnostics: {'on' if server.worker_route_diagnostics else 'off'} (set HUB_WORKER_ROUTE_DIAGNOSTICS=0 to disable)")
+    print(f"Worker route diagnostics: {'on' if server.worker_route_diagnostics else 'off'} (set HUB_WORKER_ROUTE_DIAGNOSTICS=1 to enable per-stage logging)")
     print(f"FDB cluster file: {fdb_config.cluster_file}")
     print(f"FDB namespace: {fdb_config.namespace}")
     print(f"FDB credit ledger health: {fdb_health}")

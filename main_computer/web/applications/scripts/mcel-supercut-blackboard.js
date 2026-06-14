@@ -73,6 +73,15 @@
         return normalizeText(element?.textContent || element?.getAttribute?.("aria-label") || element?.getAttribute?.("title") || "", limit);
       }
 
+      function directElementText(element, limit = 180) {
+        if (!element) return "";
+        const directText = Array.from(element.childNodes || [])
+          .filter((node) => node.nodeType === 3)
+          .map((node) => node.textContent || "")
+          .join(" ");
+        return normalizeText(directText || element.getAttribute?.("aria-label") || element.getAttribute?.("title") || "", limit);
+      }
+
       function elementSignature(element) {
         if (!element) return "";
         const id = element.id ? `#${element.id}` : "";
@@ -87,7 +96,7 @@
           component,
           role,
           label,
-          elementText(element, 80)
+          directElementText(element, 80) || elementText(element, 80)
         ].join(" "), 240);
       }
 
@@ -138,6 +147,114 @@
         return Array.from(element?.querySelectorAll?.("button, a[href], input, select, textarea, summary, [role=\"button\"]") || []).length;
       }
 
+      function candidateIdentity(element) {
+        return [
+          element?.id || "",
+          element?.getAttribute?.("data-mc-component-id") || "",
+          element?.getAttribute?.("data-mc-widget-id") || "",
+          element?.getAttribute?.("data-mc-component-kind") || "",
+          element?.getAttribute?.("data-mc-component-label") || "",
+          element?.getAttribute?.("aria-label") || "",
+          element?.getAttribute?.("title") || "",
+          Array.from(element?.classList || []).join(" "),
+          directElementText(element, 120)
+        ].join(" ").toLowerCase();
+      }
+
+      function candidatePriority(element, root) {
+        if (!element) return 0;
+        if (element === root) return 1000;
+        const tag = element.tagName?.toLowerCase?.() || "";
+        const role = element.getAttribute?.("role") || "";
+        const componentKind = element.getAttribute?.("data-mc-component-kind") || "";
+        const identity = candidateIdentity(element);
+        const riskySurfaceText = /(server|gitea|remote|mirror|push|publish|deploy|command|shell|terminal|kill|terminate|stop|restart|start|credential|token|pid|process)/.test(identity);
+        if ((tag === "button" || role === "button" || componentKind === "action") && riskySurfaceText) return 960;
+        if (tag === "button" || role === "button" || tag === "a") return 920;
+        if (componentKind === "action") return 900;
+        if (["input", "select", "textarea", "label"].includes(tag)) return 780;
+        if (tag === "summary") return 640;
+        if (element.getAttribute?.("data-mc-component-id") || element.getAttribute?.("data-mc-widget-id")) return 620;
+        if (["main", "nav", "aside", "form", "details", "section", "article"].includes(tag)) return 420;
+        if (element.id || role) return 320;
+        if (element.classList?.length) return 180;
+        return 100;
+      }
+
+      function prioritizeCandidateElements(elements, root, limit) {
+        const maxRecords = Math.max(1, Number(limit || 260));
+        const indexed = (elements || []).map((element, index) => ({
+          element,
+          index,
+          priority: candidatePriority(element, root)
+        }));
+        if (indexed.length <= maxRecords) return indexed.map((item) => item.element);
+        const selected = indexed.slice(0, maxRecords);
+        const selectedElements = new Set(selected.map((item) => item.element));
+        indexed
+          .slice(maxRecords)
+          .filter((item) => item.priority >= 620)
+          .sort((left, right) => right.priority - left.priority || left.index - right.index)
+          .forEach((candidate) => {
+            if (selectedElements.has(candidate.element)) return;
+            let replaceIndex = -1;
+            for (let index = selected.length - 1; index > 0; index -= 1) {
+              if (selected[index].priority < candidate.priority && selected[index].priority < 620) {
+                replaceIndex = index;
+                break;
+              }
+            }
+            if (replaceIndex < 0) return;
+            selectedElements.delete(selected[replaceIndex].element);
+            selected[replaceIndex] = candidate;
+            selectedElements.add(candidate.element);
+          });
+        return selected
+          .sort((left, right) => left.index - right.index)
+          .map((item) => item.element);
+      }
+
+
+      function contractPriority(id) {
+        return {
+          "component.root": 100,
+          "component.destructive-action": 92,
+          "component.remote-mutation-action": 90,
+          "component.console": 88,
+          "component.operational-action": 86,
+          "component.action": 72,
+          "component.field": 70,
+          "component.status-feed": 64,
+          "component.workflow": 58,
+          "component.toolbar": 52,
+          "component.region": 46,
+          "component.panel": 34,
+          "component.unknown": 0
+        }[id] || 0;
+      }
+
+      function riskPriority(risk) {
+        return {
+          "command-execution": 100,
+          "process-destructive": 94,
+          destructive: 92,
+          "remote-mutation": 88,
+          "credential-network-mutation": 86,
+          "server-control": 84,
+          operational: 80,
+          unknown: 20,
+          analysis: 10,
+          safe: 0,
+          none: 0
+        }[risk] || 0;
+      }
+
+      function strongestRisk(...risks) {
+        return risks
+          .filter(Boolean)
+          .sort((left, right) => riskPriority(right) - riskPriority(left))[0] || "unknown";
+      }
+
       function childRecordIds(record, records) {
         return records.filter((candidate) => candidate.parentRecordId === record.id).map((candidate) => candidate.id);
       }
@@ -167,6 +284,7 @@
           classes: Array.from(element?.classList || []),
           componentId: element?.getAttribute?.("data-mc-component-id") || element?.getAttribute?.("data-mc-widget-id") || "",
           text: elementText(element, 180),
+          directText: directElementText(element, 180),
           signature,
           controlCount: controlCount(element),
           childElementCount: Array.from(element?.children || []).length,
@@ -192,7 +310,8 @@
           ? [rootNode, ...Array.from(rootNode.querySelectorAll?.(options.selector || COMPONENT_SELECTOR) || [])]
           : [];
         const unique = candidates.filter((element, index, all) => element && all.indexOf(element) === index);
-        const records = unique.slice(0, Math.max(1, Number(options.maxRecords || options.maxComponents || 260))).map((element, index) => {
+        const prioritized = prioritizeCandidateElements(unique, rootNode, options.maxRecords || options.maxComponents || 260);
+        const records = prioritized.map((element, index) => {
           const record = makeRecord(element, rootNode, index, recordsByElement, sessionId);
           recordsByElement.set(element, record);
           return record;
@@ -269,11 +388,23 @@
         function ensureComponent(record, patch = {}, ruleId = "") {
           if (!record) return null;
           const contracts = global.McelSupercutContracts;
-          const nextRisk = patch.risk || record.risk || "";
-          const contract = patch.contract
-            ? contracts?.getContract?.(patch.contract)
-            : contracts?.contractForKind?.(patch.kind || record.kind || "unknown", nextRisk);
           const existing = blackboard.components.find((component) => component.recordId === record.id);
+          const candidateRisk = strongestRisk(patch.risk, record.risk, existing?.risk);
+          const candidateContract = patch.contract
+            ? contracts?.getContract?.(patch.contract)
+            : contracts?.contractForKind?.(patch.kind || record.kind || existing?.kind || "unknown", candidateRisk);
+          const candidateContractId = candidateContract?.id || patch.contract || record.contract || "component.unknown";
+          const existingContractId = existing?.contract || record.contract || "";
+          const keepExistingContract = existingContractId &&
+            contractPriority(existingContractId) > contractPriority(candidateContractId);
+          const contract = keepExistingContract
+            ? contracts?.getContract?.(existingContractId)
+            : candidateContract;
+          const risk = strongestRisk(candidateRisk, contract?.riskDefault);
+          const riskPolicy = contracts?.riskPolicy?.(risk);
+          const proofPolicy = riskPolicy?.blocked
+            ? riskPolicy.proofPolicy
+            : (patch.proofPolicy || record.proofPolicy || contract?.proofPolicy || existing?.proofPolicy || "inspect-only");
           const component = existing || {
             id: `sc-node-${blackboard.components.length + 1}`,
             recordId: record.id,
@@ -291,14 +422,14 @@
             children: record.children || []
           };
           Object.assign(component, {
-            role: patch.role || record.role || component.role || "",
-            kind: patch.kind || record.kind || component.kind || "unknown",
-            originalPurpose: patch.purpose || patch.originalPurpose || record.purpose || component.originalPurpose || "legacy-html.unknown-purpose",
-            purpose: patch.purpose || patch.originalPurpose || record.purpose || component.purpose || "legacy-html.unknown-purpose",
-            contract: contract?.id || patch.contract || record.contract || component.contract || "component.unknown",
-            risk: patch.risk || record.risk || contract?.riskDefault || component.risk || "unknown",
-            proofPolicy: patch.proofPolicy || record.proofPolicy || contracts?.proofPolicyForRisk?.(patch.risk || record.risk || contract?.riskDefault) || contract?.proofPolicy || component.proofPolicy || "inspect-only",
-            rewriteTag: patch.rewriteTag || record.rewriteTag || contract?.rewriteTag || component.rewriteTag || "mcel-unknown",
+            role: keepExistingContract ? (component.role || record.role || patch.role || "") : (patch.role || record.role || component.role || ""),
+            kind: keepExistingContract ? (component.kind || record.kind || patch.kind || "unknown") : (patch.kind || record.kind || component.kind || "unknown"),
+            originalPurpose: keepExistingContract ? (component.originalPurpose || record.purpose || patch.purpose || patch.originalPurpose || "legacy-html.unknown-purpose") : (patch.purpose || patch.originalPurpose || record.purpose || component.originalPurpose || "legacy-html.unknown-purpose"),
+            purpose: keepExistingContract ? (component.purpose || record.purpose || patch.purpose || patch.originalPurpose || "legacy-html.unknown-purpose") : (patch.purpose || patch.originalPurpose || record.purpose || component.purpose || "legacy-html.unknown-purpose"),
+            contract: contract?.id || existingContractId || candidateContractId || "component.unknown",
+            risk,
+            proofPolicy,
+            rewriteTag: contract?.rewriteTag || component.rewriteTag || record.rewriteTag || patch.rewriteTag || "mcel-unknown",
             evidence: Array.from(new Set([...(component.evidence || []), ...(patch.evidence || record.evidenceIds || [])]))
           });
           record.kind = component.kind;
@@ -403,27 +534,55 @@
           return violation;
         }
 
+        function executableSurfaceRecord(record) {
+          return ["button", "summary"].includes(record?.tag) ||
+            record?.role === "button" ||
+            record?.tag === "a" ||
+            Boolean(record?.element?.matches?.("button, a[href], summary, [role=\"button\"]"));
+        }
+
+        function rewriteNodeEnforcesBlocking(component) {
+          if (![
+            "component.action",
+            "component.operational-action",
+            "component.destructive-action",
+            "component.remote-mutation-action",
+            "component.console"
+          ].includes(component?.contract)) return false;
+          const record = blackboard.recordById?.(component.recordId);
+          return record ? executableSurfaceRecord(record) : component?.contract !== "component.console";
+        }
+
         function addRewriteNode(component) {
           if (!component) return null;
+          const contracts = global.McelSupercutContracts;
+          const contract = contracts?.getContract?.(component.contract) || null;
+          const riskPolicy = contracts?.riskPolicy?.(component.risk || contract?.riskDefault) || null;
+          const proposedTag = contract?.rewriteTag || component.rewriteTag || "mcel-unknown";
+          const proofPolicy = riskPolicy?.blocked && rewriteNodeEnforcesBlocking(component)
+            ? riskPolicy.proofPolicy
+            : (contract?.proofPolicy || component.proofPolicy || "inspect-only");
+          component.rewriteTag = proposedTag;
+          component.proofPolicy = proofPolicy;
           const existing = blackboard.rewritePreview.find((node) => node.id === component.id);
           const node = existing || {
             id: component.id,
             sourceSelector: component.sourceSelector,
             originalTag: component.originalTag,
-            proposedTag: component.rewriteTag,
+            proposedTag,
             originalPurpose: component.purpose || component.originalPurpose,
             contract: component.contract,
             risk: component.risk,
-            proofPolicy: component.proofPolicy,
+            proofPolicy,
             evidence: component.evidence || [],
             children: component.children || []
           };
           Object.assign(node, {
-            proposedTag: component.rewriteTag,
+            proposedTag,
             originalPurpose: component.purpose || component.originalPurpose,
             contract: component.contract,
             risk: component.risk,
-            proofPolicy: component.proofPolicy,
+            proofPolicy,
             evidence: component.evidence || [],
             children: component.children || []
           });
@@ -437,6 +596,7 @@
           slugify,
           selectorFor,
           elementText,
+          directElementText,
           elementSignature,
           addEvidence,
           explain,
@@ -474,6 +634,7 @@
             classes: record.classes,
             componentId: record.componentId,
             text: record.text,
+            directText: record.directText,
             controlCount: record.controlCount,
             childElementCount: record.childElementCount,
             kind: record.kind,
@@ -505,6 +666,7 @@
         serializableBlackboard,
         normalizeText,
         slugify,
-        stableHash
+        stableHash,
+        directElementText
       };
     })(window);

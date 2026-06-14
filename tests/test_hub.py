@@ -4,6 +4,7 @@ import io
 import json
 import tempfile
 import threading
+import time
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
@@ -71,12 +72,123 @@ class HubServerTests(unittest.TestCase):
                 self.assertIn('"route": "worker.register"', diagnostic_log)
                 self.assertIn('"stage": "read_json.start"', diagnostic_log)
                 self.assertIn('"stage": "registry.register_worker.start"', diagnostic_log)
-                self.assertIn('"stage": "registry.status.start"', diagnostic_log)
+                self.assertIn('"stage": "hub_status.omitted"', diagnostic_log)
                 self.assertIn('"stage": "send_json.done"', diagnostic_log)
+                self.assertTrue(payload["hub_status_omitted"])
+                self.assertEqual(payload["hub"], {"status_omitted": True})
             finally:
                 hub.shutdown()
                 hub.server_close()
                 hub_thread.join(timeout=2)
+
+
+    def test_worker_route_overload_returns_fast_503_before_reading_body(self) -> None:
+        with tempfile.TemporaryDirectory() as hub_tmp:
+            hub_config = MainComputerConfig(
+                workspace=Path(hub_tmp),
+                model="fake-model",
+                hub_root=Path(hub_tmp) / "hub-runtime",
+                hub_credits_per_request=2,
+            )
+            hub = HubHttpServer(("127.0.0.1", 0), hub_config, verbose=False)
+            hub.worker_route_diagnostics = True
+            hub.worker_route_max_in_flight = 1
+            hub.worker_route_semaphore = threading.BoundedSemaphore(1)
+            self.assertTrue(hub.worker_route_semaphore.acquire(blocking=False))
+            hub_thread = self._start_server(hub)
+            stderr = io.StringIO()
+            try:
+                hub_base = f"http://127.0.0.1:{hub.server_port}"
+                register_request = Request(
+                    f"{hub_base}/api/hub/v1/workers/register",
+                    data=json.dumps(
+                        {
+                            "node_id": "Overload Worker",
+                            "endpoint": "http://127.0.0.1:1/overload-worker",
+                            "model": "fake-model",
+                            "credits_per_request": 2,
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+
+                with patch("sys.stderr", stderr):
+                    with self.assertRaises(HTTPError) as raised:
+                        urlopen(register_request, timeout=5)
+
+                self.assertEqual(raised.exception.code, 503)
+                payload = json.loads(raised.exception.read().decode("utf-8"))
+                self.assertFalse(payload["ok"])
+                self.assertEqual(payload["error_type"], "hub_worker_route_overloaded")
+                time.sleep(0.05)
+                diagnostic_log = stderr.getvalue()
+                self.assertIn('"stage": "route_gate.rejected"', diagnostic_log)
+                self.assertIn('"stage": "route_gate.reject_sent"', diagnostic_log)
+                self.assertNotIn('"stage": "read_json.start"', diagnostic_log)
+            finally:
+                try:
+                    hub.worker_route_semaphore.release()
+                except ValueError:
+                    pass
+                hub.shutdown()
+                hub.server_close()
+                hub_thread.join(timeout=2)
+
+
+    def test_worker_route_overload_503_keeps_http11_connection_reusable(self) -> None:
+        from tools.scheduler_lab.http_transport import KeepAliveHubTransport
+
+        with tempfile.TemporaryDirectory() as hub_tmp:
+            hub_config = MainComputerConfig(
+                workspace=Path(hub_tmp),
+                model="fake-model",
+                hub_root=Path(hub_tmp) / "hub-runtime",
+                hub_credits_per_request=2,
+            )
+            hub = HubHttpServer(("127.0.0.1", 0), hub_config, verbose=False)
+            hub.worker_route_max_in_flight = 1
+            hub.worker_route_semaphore = threading.BoundedSemaphore(1)
+            self.assertTrue(hub.worker_route_semaphore.acquire(blocking=False))
+            hub_thread = self._start_server(hub)
+            transport = KeepAliveHubTransport(max_connections_per_origin=1)
+            try:
+                hub_base = f"http://127.0.0.1:{hub.server_port}"
+                payload = {
+                    "node_id": "Reusable Overload Worker",
+                    "endpoint": "http://127.0.0.1:1/reusable-overload-worker",
+                    "model": "fake-model",
+                    "credits_per_request": 2,
+                }
+
+                first = transport.request_json(
+                    "POST",
+                    f"{hub_base}/api/hub/v1/workers/register",
+                    payload=payload,
+                    timeout_seconds=5,
+                )
+                second = transport.request_json(
+                    "POST",
+                    f"{hub_base}/api/hub/v1/workers/register",
+                    payload=payload,
+                    timeout_seconds=5,
+                )
+
+                self.assertEqual(first.status, 503)
+                self.assertEqual(second.status, 503)
+                self.assertFalse(first.payload["connection_reused"])
+                self.assertTrue(second.payload["connection_reused"])
+                self.assertEqual(second.payload["connection_id"], first.payload["connection_id"])
+            finally:
+                transport.close()
+                try:
+                    hub.worker_route_semaphore.release()
+                except ValueError:
+                    pass
+                hub.shutdown()
+                hub.server_close()
+                hub_thread.join(timeout=2)
+
 
     def test_hub_transport_allows_docker_dev_service_names_only_with_explicit_opt_in(self) -> None:
         self.assertFalse(hub_transport_is_encrypted_or_loopback("http://hub:8770"))
