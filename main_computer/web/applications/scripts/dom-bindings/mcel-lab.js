@@ -27,6 +27,7 @@
         lastWorkbenchPlan: null,
         lastBrowserProof: null,
         lastSiteSkeleton: null,
+        lastElementAcidReport: null,
         lastCommandPlan: null,
         lastChromeReport: null,
         lastChromeFitReport: null,
@@ -100,6 +101,10 @@
     const mcelOpenEditorModal = document.querySelector("#mcel-open-editor-modal");
     const mcelOpenSiteModal = document.querySelector("#mcel-open-site-modal");
     const mcelOpenSmartCssModal = document.querySelector("#mcel-open-smart-css-modal");
+    const mcelElementAcidSummary = document.querySelector("#mcel-element-acid-summary");
+    const mcelElementAcidCanvas = document.querySelector("#mcel-element-acid-canvas");
+    const mcelElementAcidReport = document.querySelector("#mcel-element-acid-report");
+    const mcelElementAcidRerun = document.querySelector("#mcel-element-acid-rerun");
     const mcelEditorModal = document.querySelector("#mcel-editor-modal");
     const mcelSiteModal = document.querySelector("#mcel-site-modal");
     const mcelSmartCssModal = document.querySelector("#mcel-smart-css-modal");
