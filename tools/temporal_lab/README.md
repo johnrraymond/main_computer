@@ -135,6 +135,47 @@ python -m tools.temporal_lab.run_lab \
   --credits-offered 3
 ```
 
+### Protected Temporal bridge-credit flow smoke
+
+After the protected bridge-credit pretest passes, run the end-to-end protected
+Temporal flow smoke. It connects the public request/ring decision to a real
+`HubCreditLedger` hold and then settles/releases that hold based on workflow
+outcome.
+
+Start Temporal first:
+
+```bash
+python -m tools.temporal_lab.local_temporal up --pull
+```
+
+Then run:
+
+```bash
+python scripts/smoke_protected_temporal_flow.py
+```
+
+The smoke performs two protected requests:
+
+- success path: requester offers credits, catalog selects a ring, protected
+  bridge-credit hold is created, Temporal fake-token workflow completes, and
+  the hold is charged.
+- failure path: requester offers credits, catalog selects a ring, protected
+  bridge-credit hold is created, Temporal workflow is intentionally failed, and
+  the hold is released.
+
+For dependency-light local checks without a live Temporal server:
+
+```bash
+python scripts/smoke_protected_temporal_flow.py --execution-mode direct-activity
+```
+
+The report is written to:
+
+```text
+runtime/temporal_lab/protected_temporal_flow_report.json
+```
+
+
 ### Fast non-Docker contract checks
 
 These tests do not require a live Temporal server or the Temporal SDK:

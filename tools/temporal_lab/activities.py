@@ -56,6 +56,7 @@ class FakeTokenActivities:
     async def emit_fake_tokens(self, request_payload: dict[str, Any]) -> dict[str, Any]:
         request = FakeTokenRequest.from_mapping(request_payload)
         events_written = 0
+        force_failure = bool(request.payload.get("force_failure"))
 
         append_jsonl_event(
             self.event_log_path,
@@ -70,6 +71,20 @@ class FakeTokenActivities:
             },
         )
         events_written += 1
+
+        if force_failure:
+            failure_event = {
+                "event": "failed",
+                "request_id": request.request_id,
+                "account_id": request.account_id,
+                "ring": request.ring,
+                "partition": request.partition,
+                "credits_offered": request.credits_offered,
+                "worker_id": self.worker_id,
+                "reason": "forced_fake_token_failure",
+            }
+            append_jsonl_event(self.event_log_path, failure_event)
+            raise RuntimeError("forced fake token failure")
 
         for seq in range(1, request.token_count + 1):
             if request.token_interval_seconds:
