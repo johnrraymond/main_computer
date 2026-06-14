@@ -1300,6 +1300,7 @@ def test_mcel_lab_supercut_v02_architecture_modules_are_wired() -> None:
     core_pack = (WEB_APP / "scripts" / "mcel-supercut-packs-core.js").read_text(encoding="utf-8")
     git_pack = (WEB_APP / "scripts" / "mcel-supercut-packs-git-tools.js").read_text(encoding="utf-8")
     task_pack = (WEB_APP / "scripts" / "mcel-supercut-packs-task-manager.js").read_text(encoding="utf-8")
+    planner_domains_pack = (WEB_APP / "scripts" / "mcel-supercut-packs-planner-domains.js").read_text(encoding="utf-8")
     core = (WEB_APP / "scripts" / "mcel-supercut-core.js").read_text(encoding="utf-8")
     supercut = (WEB_APP / "scripts" / "mcel-supercut.js").read_text(encoding="utf-8")
 
@@ -1309,6 +1310,7 @@ def test_mcel_lab_supercut_v02_architecture_modules_are_wired() -> None:
     assert "<!-- @include applications/scripts/mcel-supercut-packs-core.js -->" in html
     assert "<!-- @include applications/scripts/mcel-supercut-packs-git-tools.js -->" in html
     assert "<!-- @include applications/scripts/mcel-supercut-packs-task-manager.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-supercut-packs-planner-domains.js -->" in html
     assert "<!-- @include applications/scripts/mcel-supercut-core.js -->" in html
     assert (
         html.index("task-manager-mcel.js")
@@ -1318,6 +1320,7 @@ def test_mcel_lab_supercut_v02_architecture_modules_are_wired() -> None:
         < html.index("mcel-supercut-packs-core.js")
         < html.index("mcel-supercut-packs-git-tools.js")
         < html.index("mcel-supercut-packs-task-manager.js")
+        < html.index("mcel-supercut-packs-planner-domains.js")
         < html.index("mcel-supercut-core.js")
         < html.index("mcel-supercut.js")
         < html.index("git-tools-mcel.js")
@@ -1379,6 +1382,10 @@ def test_mcel_lab_supercut_v02_architecture_modules_are_wired() -> None:
     assert "git-tools.risk.kill-pid" in git_pack
     assert "git-tools.risk.manual-command" in git_pack
     assert "no-submit" in git_pack
+    assert "global.McelSupercutPacksPlannerDomains" in planner_domains_pack
+    assert "PLANNER_DOMAIN_PLANS" in planner_domains_pack
+    assert 'id: "terminal-domain"' in planner_domains_pack
+    assert 'id: "wallet-domain"' in planner_domains_pack
 
     assert "git-tools.risk.known-dangerous-controls" in git_pack
     assert "KNOWN_DANGEROUS_CONTROLS" in git_pack
@@ -1569,3 +1576,74 @@ def test_mcel_lab_turns_on_planner_specimens_in_dropdown() -> None:
     assert "requiredIdsFor?.(plan)" in lab
     assert "dangerousSelectorsFor?.(plan)" in lab
 
+
+
+def test_mcel_lab_calculator_supercut_domain_pack_is_wired() -> None:
+    html = (ROOT / "main_computer" / "web" / "applications.html").read_text(encoding="utf-8")
+    registry = (WEB_APP / "scripts" / "mcel-supercut-registry.js").read_text(encoding="utf-8")
+    core = (WEB_APP / "scripts" / "mcel-supercut-core.js").read_text(encoding="utf-8")
+    planner = (WEB_APP / "scripts" / "mcel-specimen-planner.js").read_text(encoding="utf-8")
+    calculator_pack = (WEB_APP / "scripts" / "mcel-supercut-packs-calculator.js").read_text(encoding="utf-8")
+
+    assert "<!-- @include applications/scripts/mcel-supercut-packs-calculator.js -->" in html
+    assert html.index("mcel-supercut-packs-task-manager.js") < html.index("mcel-supercut-packs-calculator.js") < html.index("mcel-supercut-core.js")
+
+    assert "global.McelSupercutPacksCalculator" in calculator_pack
+    assert 'id: "calculator-domain"' in calculator_pack
+    assert "calculator.detect-root" in calculator_pack
+    assert "calculator.detect-keypad" in calculator_pack
+    assert "calculator.detect-display" in calculator_pack
+    assert "calculator.rectify-local-actions" in calculator_pack
+    assert "calculator-local-action-policy" in calculator_pack
+    assert "calculator-domain resolved this as a local non-destructive calculator control" in calculator_pack
+
+    assert "calculatorDomainPack" in registry
+    assert '"calculator-domain"' in core
+    assert "currentAction && !currentActionBlocked" in core
+
+    assert 'status: "domain-ready"' in planner
+    assert 'domainPack: "calculator-domain"' in planner
+    assert 'adapter: "planner-generic-adapter"' in planner
+
+
+def test_mcel_lab_remaining_planner_specimens_have_supercut_domain_packs() -> None:
+    html = (ROOT / "main_computer" / "web" / "applications.html").read_text(encoding="utf-8")
+    registry = (WEB_APP / "scripts" / "mcel-supercut-registry.js").read_text(encoding="utf-8")
+    core = (WEB_APP / "scripts" / "mcel-supercut-core.js").read_text(encoding="utf-8")
+    planner = (WEB_APP / "scripts" / "mcel-specimen-planner.js").read_text(encoding="utf-8")
+    planner_domains_pack = (WEB_APP / "scripts" / "mcel-supercut-packs-planner-domains.js").read_text(encoding="utf-8")
+
+    assert "<!-- @include applications/scripts/mcel-supercut-packs-planner-domains.js -->" in html
+    assert html.index("mcel-supercut-packs-calculator.js") < html.index("mcel-supercut-packs-planner-domains.js") < html.index("mcel-supercut-core.js")
+
+    expected_domains = [
+        "document-domain",
+        "spreadsheet-domain",
+        "onlyoffice-domain",
+        "terminal-domain",
+        "chat-console-domain",
+        "email-domain",
+        "code-editor-domain",
+        "file-explorer-domain",
+        "website-builder-domain",
+        "worker-domain",
+        "wallet-domain",
+        "game-editor-domain",
+        "webgl-domain",
+        "mcel-lab-domain",
+    ]
+    for domain in expected_domains:
+        assert f'id: "{domain}"' in planner_domains_pack
+        assert f'domainPack: "{domain}"' in planner
+        assert domain in core or "plannerDomainPacks" in core
+
+    assert "global.McelSupercutPacksPlannerDomains" in planner_domains_pack
+    assert "createPlannerDomainPack" in planner_domains_pack
+    assert "detect-risk-actions" in planner_domains_pack
+    assert "detect-safe-actions" in planner_domains_pack
+    assert "detect-feeds" in planner_domains_pack
+    assert "plannerDomainPacks" in registry
+    assert "McelSupercutPacksPlannerDomains?.plannerDomainPacks" in registry
+    assert 'status: "domain-ready"' in planner
+    assert 'status: "high-risk-domain-ready"' in planner
+    assert 'adapter: "needs-adapter"' not in planner
