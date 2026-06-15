@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import random
 import threading
 import time
 from dataclasses import dataclass
@@ -10,7 +11,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
-from main_computer.dev_chain_bridge import DevChainBridgeAdapter, DevChainBridgeError
 from main_computer.dev_chain_smoke_support import bring_up_dev_chain_for_smoke, snapshot_balances_wei
 from main_computer.temporal_fdb_hub_multi_hub_smoke import (
     DEFAULT_MULTI_HUB_A_URL,
@@ -40,6 +40,7 @@ from main_computer.temporal_fdb_hub_node_market_smoke import (
     _post_json,
     _verify_backends,
     _verify_expected_audit_types,
+    _worker_wallet_address_for_config,
 )
 from main_computer.temporal_fdb_node_market_smoke import (
     NODE_MARKET_TASK_QUEUE_PREFIX,
@@ -223,6 +224,8 @@ class HubStressSmokeConfig:
     dev_chain_port_strategy: str = "auto"
     dev_chain_wait_timeout_seconds: float = 0.0
     dev_chain_deploy_timeout_seconds: float = 0.0
+    hub_bridge_backend: str = "mock-chain"
+    dev_chain_deployment_path: Path | None = None
     model: str = "temporal-fdb-hub-stress-model"
     task_queue_prefix: str = NODE_MARKET_TASK_QUEUE_PREFIX + "-stress"
     run_id: str | None = None
@@ -241,6 +244,9 @@ class HubStressSmokeConfig:
     chatter_interval_seconds: float = 0.02
     freeze_timeout_seconds: float = 30.0
     failover_hub_a: bool = True
+    random_bridge_funding_events: int = 3
+    random_bridge_payout_events: int = 3
+    random_bridge_failed_payout_events: int = 1
 
     def resolved_report_path(self) -> Path | None:
         if self.report_path is None:
@@ -289,6 +295,8 @@ class HubStressSmokeConfig:
             hub_namespace_prefix=self.hub_namespace_prefix,
             hub_root=self.resolved_hub_root() / hub_name,
             cluster_file=self.cluster_file,
+            hub_bridge_backend=self.hub_bridge_backend,
+            dev_chain_deployment_path=self.dev_chain_deployment_path,
         )
 
     def to_node_config(self) -> NodeMarketSmokeConfig:
@@ -398,6 +406,413 @@ async def _frontend_chatter_worker(
         await asyncio.sleep(max(0.0, float(config.chatter_interval_seconds)))
 
 
+def _dev_chain_movement_from_bridge_confirm(confirmed: dict[str, Any], *, payload_key: str) -> dict[str, Any]:
+    payload = confirmed.get(payload_key, {}) if isinstance(confirmed.get(payload_key), dict) else {}
+    metadata = payload.get("metadata", {}) if isinstance(payload.get("metadata"), dict) else {}
+    dev_chain = metadata.get("dev_chain", {}) if isinstance(metadata.get("dev_chain"), dict) else {}
+    movement = dev_chain.get("movement", {}) if isinstance(dev_chain.get("movement"), dict) else {}
+    return movement
+
+
+def _bridge_random_funding_event(
+    config: HubNodeMarketSmokeConfig,
+    *,
+    event_index: int,
+    credits: int,
+    hub_label: str,
+    progress: _StressProgress,
+) -> dict[str, Any]:
+    """Create and confirm one requester top-up through the Hub-owned bridge backend."""
+
+    wallet_address = str(config.requester_wallet_address or "").strip()
+    if not wallet_address:
+        raise NodeMarketSmokeError("Cannot run bridge funding event without requester wallet address.")
+    event_id = f"funding-{event_index:02d}"
+    metadata = {
+        "run_id": config.run_id,
+        "smoke": "temporal_fdb_hub_stress",
+        "bridge_random_event": True,
+        "bridge_random_event_kind": "requester_funding",
+        "bridge_random_event_id": event_id,
+        "hub_label": hub_label,
+    }
+
+    mint = _post_json(
+        config.hub_url,
+        "/api/hub/v1/bridge/mock-chain/mint",
+        {
+            "wallet_address": wallet_address,
+            "credits": credits,
+            "idempotency_key": f"{config.run_id}-{event_id}-mint",
+            "memo": "temporal fdb hub stress randomized requester funding",
+            "metadata": metadata,
+        },
+        timeout=config.http_timeout_seconds,
+        retry_attempts=config.http_retry_attempts,
+    )
+    deposit = _post_json(
+        config.hub_url,
+        "/api/hub/v1/bridge/deposits",
+        {
+            "wallet_address": wallet_address,
+            "account_id": config.account_id,
+            "credits": credits,
+            "idempotency_key": f"{config.run_id}-{event_id}-deposit",
+            "memo": "temporal fdb hub stress randomized requester bridge deposit",
+            "metadata": metadata,
+        },
+        timeout=config.http_timeout_seconds,
+        retry_attempts=config.http_retry_attempts,
+    )
+    deposit_payload = deposit.get("deposit", {}) if isinstance(deposit.get("deposit"), dict) else {}
+    deposit_id = str(deposit_payload.get("deposit_id") or "")
+    if not deposit_id:
+        raise NodeMarketSmokeError(f"Randomized bridge funding event did not return deposit_id: {deposit}")
+    confirmed = _post_json(
+        config.hub_url,
+        "/api/hub/v1/bridge/deposits/confirm",
+        {
+            "deposit_id": deposit_id,
+            "metadata": metadata,
+        },
+        timeout=config.http_timeout_seconds,
+        retry_attempts=config.http_retry_attempts,
+    )
+    movement = _dev_chain_movement_from_bridge_confirm(confirmed, payload_key="deposit")
+    progress.emit(
+        "stress_bridge_random_funding_confirmed",
+        event_id=event_id,
+        hub_label=hub_label,
+        account_id=config.account_id,
+        wallet_address=wallet_address,
+        credits=credits,
+        deposit_id=deposit_id,
+        dev_chain_tx_count=len(movement.get("transaction_hashes", [])) if movement else 0,
+    )
+    return {
+        "event_id": event_id,
+        "event_kind": "requester_funding",
+        "hub_label": hub_label,
+        "credits": credits,
+        "wallet_address": wallet_address,
+        "deposit_id": deposit_id,
+        "mint": mint,
+        "deposit": deposit_payload,
+        "confirmed": confirmed,
+        "movement": movement,
+    }
+
+
+def _exercise_random_bridge_funding_events(
+    configs: dict[str, HubNodeMarketSmokeConfig],
+    *,
+    event_count: int,
+    seed: str,
+    progress: _StressProgress,
+) -> dict[str, Any]:
+    """Run seeded requester top-up events while chatter is active."""
+
+    count = max(0, int(event_count or 0))
+    rng = random.Random(f"{seed}:funding")
+    labels = ["hub_a", "hub_b"]
+    events: list[dict[str, Any]] = []
+    for event_index in range(1, count + 1):
+        hub_label = labels[rng.randrange(len(labels))]
+        cfg = configs[hub_label]
+        credits = rng.randint(2, max(2, int(cfg.max_price_credits or 1) * 4))
+        events.append(
+            _bridge_random_funding_event(
+                cfg,
+                event_index=event_index,
+                credits=credits,
+                hub_label=hub_label,
+                progress=progress,
+            )
+        )
+    total_credits = sum(int(event.get("credits", 0) or 0) for event in events)
+    return {
+        "requested_count": count,
+        "confirmed_count": len(events),
+        "total_credits": total_credits,
+        "events": events,
+    }
+
+
+def _bridge_random_confirmed_payout_event(
+    request_config: HubNodeMarketSmokeConfig,
+    confirm_config: HubNodeMarketSmokeConfig,
+    *,
+    event_index: int,
+    worker: Any,
+    wallet_address: str,
+    credits: int,
+    request_hub_label: str,
+    confirm_hub_label: str,
+    progress: _StressProgress,
+) -> dict[str, Any]:
+    event_id = f"payout-{event_index:02d}"
+    metadata = {
+        "run_id": request_config.run_id,
+        "smoke": "temporal_fdb_hub_stress",
+        "bridge_random_event": True,
+        "bridge_random_event_kind": "worker_payout_confirmed",
+        "bridge_random_event_id": event_id,
+        "request_hub": request_hub_label,
+        "confirm_hub": confirm_hub_label,
+    }
+    payout = _post_json(
+        request_config.hub_url,
+        "/api/hub/v1/bridge/payouts",
+        {
+            "wallet_address": wallet_address,
+            "worker_node_id": worker.node_id,
+            "credits": credits,
+            "idempotency_key": f"{request_config.run_id}-{worker.node_id}-{event_id}",
+            "memo": "temporal fdb hub stress randomized worker payout",
+            "metadata": metadata,
+        },
+        timeout=request_config.http_timeout_seconds,
+        retry_attempts=request_config.http_retry_attempts,
+    )
+    payout_payload = payout.get("payout", {}) if isinstance(payout.get("payout"), dict) else {}
+    payout_id = str(payout_payload.get("payout_id") or "")
+    if not payout_id:
+        raise NodeMarketSmokeError(f"Randomized payout event did not return payout_id: {payout}")
+
+    lock_status = _get_json(
+        confirm_config.hub_url,
+        f"/api/hub/v1/bridge/wallet-locks?{urlencode({'wallet_address': wallet_address})}",
+        timeout=confirm_config.http_timeout_seconds,
+    )
+    if lock_status.get("locked") is not True:
+        raise NodeMarketSmokeError(f"Randomized payout did not lock wallet {wallet_address}: {lock_status}")
+
+    confirmed = _post_json(
+        confirm_config.hub_url,
+        "/api/hub/v1/bridge/payouts/confirm",
+        {
+            "payout_id": payout_id,
+            "metadata": metadata,
+        },
+        timeout=confirm_config.http_timeout_seconds,
+        retry_attempts=confirm_config.http_retry_attempts,
+    )
+    final_lock = _get_json(
+        request_config.hub_url,
+        f"/api/hub/v1/bridge/wallet-locks?{urlencode({'wallet_address': wallet_address})}",
+        timeout=request_config.http_timeout_seconds,
+    )
+    if final_lock.get("locked") is True:
+        raise NodeMarketSmokeError(f"Randomized payout confirmation did not unlock wallet {wallet_address}: {final_lock}")
+
+    movement = _dev_chain_movement_from_bridge_confirm(confirmed, payload_key="payout")
+    progress.emit(
+        "stress_bridge_random_payout_confirmed",
+        event_id=event_id,
+        worker_node_id=worker.node_id,
+        wallet_address=wallet_address,
+        credits=credits,
+        request_hub=request_hub_label,
+        confirm_hub=confirm_hub_label,
+        payout_id=payout_id,
+        dev_chain_tx_count=len(movement.get("transaction_hashes", [])) if movement else 0,
+    )
+    return {
+        "event_id": event_id,
+        "event_kind": "worker_payout_confirmed",
+        "worker_node_id": worker.node_id,
+        "wallet_address": wallet_address,
+        "credits": credits,
+        "request_hub": request_hub_label,
+        "confirm_hub": confirm_hub_label,
+        "payout_id": payout_id,
+        "payout": payout_payload,
+        "confirmed": confirmed,
+        "movement": movement,
+    }
+
+
+def _bridge_random_failed_payout_event(
+    request_config: HubNodeMarketSmokeConfig,
+    fail_config: HubNodeMarketSmokeConfig,
+    *,
+    event_index: int,
+    worker: Any,
+    wallet_address: str,
+    credits: int,
+    request_hub_label: str,
+    fail_hub_label: str,
+    progress: _StressProgress,
+) -> dict[str, Any]:
+    event_id = f"failed-payout-{event_index:02d}"
+    metadata = {
+        "run_id": request_config.run_id,
+        "smoke": "temporal_fdb_hub_stress",
+        "bridge_random_event": True,
+        "bridge_random_event_kind": "worker_payout_failed",
+        "bridge_random_event_id": event_id,
+        "request_hub": request_hub_label,
+        "fail_hub": fail_hub_label,
+    }
+    payout = _post_json(
+        request_config.hub_url,
+        "/api/hub/v1/bridge/payouts",
+        {
+            "wallet_address": wallet_address,
+            "worker_node_id": worker.node_id,
+            "credits": credits,
+            "idempotency_key": f"{request_config.run_id}-{worker.node_id}-{event_id}",
+            "memo": "temporal fdb hub stress randomized failed payout recovery",
+            "metadata": metadata,
+        },
+        timeout=request_config.http_timeout_seconds,
+        retry_attempts=request_config.http_retry_attempts,
+    )
+    payout_payload = payout.get("payout", {}) if isinstance(payout.get("payout"), dict) else {}
+    payout_id = str(payout_payload.get("payout_id") or "")
+    if not payout_id:
+        raise NodeMarketSmokeError(f"Randomized failed-payout event did not return payout_id: {payout}")
+
+    lock_status = _get_json(
+        fail_config.hub_url,
+        f"/api/hub/v1/bridge/wallet-locks?{urlencode({'wallet_address': wallet_address})}",
+        timeout=fail_config.http_timeout_seconds,
+    )
+    if lock_status.get("locked") is not True:
+        raise NodeMarketSmokeError(f"Randomized failed payout did not lock wallet {wallet_address}: {lock_status}")
+
+    failed = _post_json(
+        fail_config.hub_url,
+        "/api/hub/v1/bridge/payouts/fail",
+        {
+            "payout_id": payout_id,
+            "reason": "stress_randomized_failure_recovery",
+            "metadata": metadata,
+        },
+        timeout=fail_config.http_timeout_seconds,
+        retry_attempts=fail_config.http_retry_attempts,
+    )
+    final_lock = _get_json(
+        request_config.hub_url,
+        f"/api/hub/v1/bridge/wallet-locks?{urlencode({'wallet_address': wallet_address})}",
+        timeout=request_config.http_timeout_seconds,
+    )
+    if final_lock.get("locked") is True:
+        raise NodeMarketSmokeError(f"Randomized failed payout did not unlock wallet {wallet_address}: {final_lock}")
+
+    progress.emit(
+        "stress_bridge_random_payout_failed_recovered",
+        event_id=event_id,
+        worker_node_id=worker.node_id,
+        wallet_address=wallet_address,
+        credits=credits,
+        request_hub=request_hub_label,
+        fail_hub=fail_hub_label,
+        payout_id=payout_id,
+    )
+    return {
+        "event_id": event_id,
+        "event_kind": "worker_payout_failed",
+        "worker_node_id": worker.node_id,
+        "wallet_address": wallet_address,
+        "credits": credits,
+        "request_hub": request_hub_label,
+        "fail_hub": fail_hub_label,
+        "payout_id": payout_id,
+        "payout": payout_payload,
+        "failed": failed,
+        "movement": {},
+    }
+
+
+def _exercise_random_bridge_payout_events(
+    configs: dict[str, HubNodeMarketSmokeConfig],
+    *,
+    nodes_by_id: dict[str, Any],
+    selected_worker_ids: list[str],
+    excluded_worker_ids: set[str],
+    confirmed_count: int,
+    failed_count: int,
+    seed: str,
+    progress: _StressProgress,
+) -> dict[str, Any]:
+    """Run seeded post-settlement payout confirmations/failures through both Hubs."""
+
+    rng = random.Random(f"{seed}:payouts")
+    labels = ["hub_a", "hub_b"]
+    candidates = [worker_id for worker_id in selected_worker_ids if worker_id not in excluded_worker_ids]
+    rng.shuffle(candidates)
+    confirmed_target = max(0, int(confirmed_count or 0))
+    failed_target = max(0, int(failed_count or 0))
+    confirmed_events: list[dict[str, Any]] = []
+    failed_events: list[dict[str, Any]] = []
+
+    for event_index in range(1, confirmed_target + 1):
+        if not candidates:
+            break
+        worker_id = candidates.pop(0)
+        worker = nodes_by_id[worker_id]
+        request_hub_label = labels[(event_index + rng.randrange(2)) % 2]
+        confirm_hub_label = "hub_b" if request_hub_label == "hub_a" else "hub_a"
+        request_config = configs[request_hub_label]
+        confirm_config = configs[confirm_hub_label]
+        wallet_address = _worker_wallet_address_for_config(request_config, worker)
+        confirmed_events.append(
+            _bridge_random_confirmed_payout_event(
+                request_config,
+                confirm_config,
+                event_index=event_index,
+                worker=worker,
+                wallet_address=wallet_address,
+                # Request the worker's full currently-claimable earning set.
+                # The Hub ledger intentionally rejects partial worker-earning
+                # payouts when the requested amount cuts through an earning
+                # record boundary.  A zero-credit request means "all available"
+                # for that worker, which keeps the randomized payout path inside
+                # the currently supported bridge lifecycle.
+                credits=0,
+                request_hub_label=request_hub_label,
+                confirm_hub_label=confirm_hub_label,
+                progress=progress,
+            )
+        )
+
+    for event_index in range(1, failed_target + 1):
+        if not candidates:
+            break
+        worker_id = candidates.pop(0)
+        worker = nodes_by_id[worker_id]
+        request_hub_label = labels[(event_index + rng.randrange(2)) % 2]
+        fail_hub_label = "hub_b" if request_hub_label == "hub_a" else "hub_a"
+        request_config = configs[request_hub_label]
+        fail_config = configs[fail_hub_label]
+        wallet_address = _worker_wallet_address_for_config(request_config, worker)
+        failed_events.append(
+            _bridge_random_failed_payout_event(
+                request_config,
+                fail_config,
+                event_index=event_index,
+                worker=worker,
+                wallet_address=wallet_address,
+                # Request the worker's full currently-claimable earning set.
+                # Failed payouts exercise recovery, not partial-earning slicing.
+                credits=0,
+                request_hub_label=request_hub_label,
+                fail_hub_label=fail_hub_label,
+                progress=progress,
+            )
+        )
+
+    return {
+        "confirmed_requested_count": confirmed_target,
+        "confirmed_count": len(confirmed_events),
+        "failed_requested_count": failed_target,
+        "failed_count": len(failed_events),
+        "confirmed_events": confirmed_events,
+        "failed_events": failed_events,
+    }
+
+
 async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dict[str, Any]:
     run_id = config.run_id or f"{time.time_ns():x}"[-10:]
     object.__setattr__(config, "run_id", run_id)
@@ -410,8 +825,9 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
     progress = _StressProgress(delegate=base_progress, tracker=tracker)
 
     dev_chain_context = None
-    dev_chain_bridge: DevChainBridgeAdapter | None = None
     dev_chain_movements: dict[str, Any] = {}
+    random_bridge_funding: dict[str, Any] = {"requested_count": 0, "confirmed_count": 0, "total_credits": 0, "events": []}
+    random_bridge_payouts: dict[str, Any] = {"confirmed_requested_count": 0, "confirmed_count": 0, "failed_requested_count": 0, "failed_count": 0, "confirmed_events": [], "failed_events": []}
     bridge_backend = "mock-chain-lite" if config.mockchain else "dev-chain"
     if not config.mockchain:
         dev_chain_run_token = config.dev_chain_run_id or run_id
@@ -440,14 +856,8 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
         if dev_chain_context.requester_wallet_address:
             object.__setattr__(config, "requester_wallet_address", dev_chain_context.requester_wallet_address)
         object.__setattr__(config, "worker_wallet_addresses", dev_chain_context.node_wallet_addresses)
-        try:
-            dev_chain_bridge = DevChainBridgeAdapter.from_deployment(
-                repo_root=config.repo_root,
-                deployment_path=dev_chain_context.deployment_path,
-                status=_print_setup_status,
-            )
-        except DevChainBridgeError as exc:
-            raise NodeMarketSmokeError(f"Dev-chain bridge adapter setup failed before stress smoke: {exc}") from exc
+        object.__setattr__(config, "hub_bridge_backend", "dev-chain")
+        object.__setattr__(config, "dev_chain_deployment_path", dev_chain_context.deployment_path)
         progress.emit(
             "dev_chain_ready",
             bridge_backend=bridge_backend,
@@ -457,8 +867,12 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
             requester_wallet_address=dev_chain_context.requester_wallet_address,
             node_wallet_count=len(dev_chain_context.node_wallet_addresses),
             payout_admin_wallet_count=len(dev_chain_context.payout_admin_wallet_addresses),
-            escrow_address=dev_chain_bridge.escrow_address,
+            escrow_address=dev_chain_context.bridge_escrow_address,
+            hub_bridge_backend="dev-chain",
         )
+    else:
+        object.__setattr__(config, "hub_bridge_backend", "mock-chain")
+        object.__setattr__(config, "dev_chain_deployment_path", None)
 
     config_a = config.to_hub_config(config.hub_a_url, hub_name="hub-a")
     config_b = config.to_hub_config(config.hub_b_url, hub_name="hub-b")
@@ -500,27 +914,17 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
         started_b = _wait_for_hub_health(config_b, progress=progress, label="stress_hub_b")
         _verify_backends(config_a, progress=progress)
         _verify_backends(config_b, progress=progress)
-        def _record_dev_chain_deposit(deposit_info: dict[str, Any]) -> dict[str, Any] | None:
-            if dev_chain_bridge is None:
-                return None
-            deposit_id = str(deposit_info.get("deposit_id") or "")
-            wallet_address = str(deposit_info.get("wallet_address") or config.requester_wallet_address)
-            credits = int(deposit_info.get("credits") or config.deposit_credits)
-            movement = dev_chain_bridge.record_requester_deposit(
-                account_wallet_address=wallet_address,
-                amount_units=credits,
-                deposit_id=deposit_id,
-                memo=f"hub stress requester deposit {config.run_id}",
-            )
-            payload = movement.to_dict()
-            dev_chain_movements["requester_deposit"] = payload
-            return payload
-
         bridge_funding = _bridge_fund_requester(
             config_a,
             progress=progress,
-            before_confirm_callback=_record_dev_chain_deposit if dev_chain_bridge is not None else None,
         )
+        deposit_confirmed = bridge_funding.get("confirmed", {}) if isinstance(bridge_funding.get("confirmed"), dict) else {}
+        deposit_payload = deposit_confirmed.get("deposit", {}) if isinstance(deposit_confirmed.get("deposit"), dict) else {}
+        deposit_metadata = deposit_payload.get("metadata", {}) if isinstance(deposit_payload.get("metadata"), dict) else {}
+        deposit_dev_chain = deposit_metadata.get("dev_chain", {}) if isinstance(deposit_metadata.get("dev_chain"), dict) else {}
+        deposit_movement = deposit_dev_chain.get("movement", {}) if isinstance(deposit_dev_chain.get("movement"), dict) else {}
+        if deposit_movement:
+            dev_chain_movements["requester_deposit"] = deposit_movement
 
         nodes = build_worker_nodes(node_count=config.node_count, run_id=run_id, task_queue_prefix=config.task_queue_prefix)
         registration_counts = _register_workers_multi(configs, nodes, progress=progress)
@@ -547,6 +951,21 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
             )
         watchdog_task = asyncio.create_task(tracker.watch(watchdog_stop_event))
 
+        random_bridge_funding = await _await_or_freeze(
+            asyncio.to_thread(
+                _exercise_random_bridge_funding_events,
+                configs,
+                event_count=config.random_bridge_funding_events,
+                seed=run_id,
+                progress=progress,
+            ),
+            watchdog_task=watchdog_task,
+        )
+        for event in random_bridge_funding.get("events", []):
+            if isinstance(event, dict) and event.get("movement"):
+                dev_chain_movements[f"requester_random_funding_{event.get('event_id', len(dev_chain_movements))}"] = event["movement"]
+        tracker.touch("random_bridge_funding_complete")
+
         request_jobs, submitted, route_submit_counts = await _await_or_freeze(
             asyncio.to_thread(
                 _quote_and_submit_requests_multi,
@@ -572,24 +991,6 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
         tracker.touch("execution_settlement_complete")
 
         selected_worker_ids = sorted({str(record.get("selected_worker_node_id", "")) for record in completed})
-        def _record_dev_chain_payout(payout_info: dict[str, Any]) -> dict[str, Any] | None:
-            if dev_chain_bridge is None:
-                return None
-            source_wallet = str(dev_chain_context.requester_wallet_address if dev_chain_context is not None else config.requester_wallet_address)
-            payout_id = str(payout_info.get("payout_id") or "")
-            wallet_address = str(payout_info.get("wallet_address") or "")
-            credits = int(payout_info.get("credits") or max(1, int(config.max_price_credits or 1)))
-            movement = dev_chain_bridge.record_worker_payout(
-                source_account_wallet_address=source_wallet,
-                worker_wallet_address=wallet_address,
-                amount_units=credits,
-                payout_id=payout_id,
-                memo=f"hub stress worker payout {config.run_id}",
-            )
-            payload = movement.to_dict()
-            dev_chain_movements["worker_payout"] = payload
-            return payload
-
         payout = await _await_or_freeze(
             asyncio.to_thread(
                 _exercise_cross_hub_payout_lock,
@@ -597,11 +998,36 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
                 nodes_by_id=nodes_by_id,
                 selected_worker_ids=selected_worker_ids,
                 progress=progress,
-                before_confirm_callback=_record_dev_chain_payout if dev_chain_bridge is not None else None,
             ),
             watchdog_task=watchdog_task,
         )
+        payout_confirmed = payout.get("confirmed", {}) if isinstance(payout.get("confirmed"), dict) else {}
+        payout_payload = payout_confirmed.get("payout", {}) if isinstance(payout_confirmed.get("payout"), dict) else {}
+        payout_metadata = payout_payload.get("metadata", {}) if isinstance(payout_payload.get("metadata"), dict) else {}
+        payout_dev_chain = payout_metadata.get("dev_chain", {}) if isinstance(payout_metadata.get("dev_chain"), dict) else {}
+        payout_movement = payout_dev_chain.get("movement", {}) if isinstance(payout_dev_chain.get("movement"), dict) else {}
+        if payout_movement:
+            dev_chain_movements["worker_payout"] = payout_movement
         tracker.touch("payout_complete")
+
+        random_bridge_payouts = await _await_or_freeze(
+            asyncio.to_thread(
+                _exercise_random_bridge_payout_events,
+                configs,
+                nodes_by_id=nodes_by_id,
+                selected_worker_ids=selected_worker_ids,
+                excluded_worker_ids={str(payout.get("worker_node_id", ""))},
+                confirmed_count=config.random_bridge_payout_events,
+                failed_count=config.random_bridge_failed_payout_events,
+                seed=run_id,
+                progress=progress,
+            ),
+            watchdog_task=watchdog_task,
+        )
+        for event in random_bridge_payouts.get("confirmed_events", []):
+            if isinstance(event, dict) and event.get("movement"):
+                dev_chain_movements[f"worker_random_payout_{event.get('event_id', len(dev_chain_movements))}"] = event["movement"]
+        tracker.touch("random_bridge_payouts_complete")
 
         chatter_stop_event.set()
         await asyncio.gather(*chatter_tasks, return_exceptions=True)
@@ -711,13 +1137,10 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
                 + list(dev_chain_context.node_wallet_addresses)
                 + list(dev_chain_context.payout_admin_wallet_addresses)
             )
-            if dev_chain_bridge is not None:
-                rollup_addresses.extend(
-                    [
-                        dev_chain_bridge.escrow_address,
-                        dev_chain_bridge.bridge_controller_wallet.address,
-                    ]
-                )
+            if dev_chain_context.bridge_escrow_address:
+                rollup_addresses.append(dev_chain_context.bridge_escrow_address)
+            if dev_chain_context.hub_admin_wallet_address:
+                rollup_addresses.append(dev_chain_context.hub_admin_wallet_address)
             after_balances = snapshot_balances_wei(dev_chain_context.rpc_url, rollup_addresses)
             before_balances = dict(dev_chain_context.before_balances_wei)
             dev_chain_rollup = dev_chain_context.rollup()
@@ -731,21 +1154,33 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
                 address: delta for address, delta in balance_deltas.items() if int(delta) != 0
             }
             dev_chain_rollup["bridge_movements"] = dict(dev_chain_movements)
-            dev_chain_rollup["escrow_address"] = dev_chain_bridge.escrow_address if dev_chain_bridge is not None else None
-            dev_chain_rollup["bridge_controller_address"] = (
-                dev_chain_bridge.bridge_controller_wallet.address if dev_chain_bridge is not None else None
-            )
+            dev_chain_rollup["random_bridge_event_summary"] = {
+                "funding_requested_count": int(random_bridge_funding.get("requested_count", 0) or 0),
+                "funding_confirmed_count": int(random_bridge_funding.get("confirmed_count", 0) or 0),
+                "funding_total_credits": int(random_bridge_funding.get("total_credits", 0) or 0),
+                "payout_confirmed_requested_count": int(random_bridge_payouts.get("confirmed_requested_count", 0) or 0),
+                "payout_confirmed_count": int(random_bridge_payouts.get("confirmed_count", 0) or 0),
+                "payout_failed_requested_count": int(random_bridge_payouts.get("failed_requested_count", 0) or 0),
+                "payout_failed_count": int(random_bridge_payouts.get("failed_count", 0) or 0),
+            }
+            dev_chain_rollup["escrow_address"] = dev_chain_context.bridge_escrow_address
+            dev_chain_rollup["bridge_controller_address"] = dev_chain_context.hub_admin_wallet_address
             dev_chain_rollup["bridge_lifecycle_note"] = (
                 "This smoke brought up the dev chain, used fresh dev-chain requester/node identities, "
-                "recorded deterministic HubCreditBridgeEscrow deposit and payout-release transactions, "
-                "and then confirmed the existing Hub/FDB bridge lifecycle with those tx hashes in metadata. "
-                "The Hub API seam still uses the current mock-chain endpoints until the server-side backend swap lands."
+                "used Hub-owned dev-chain bridge backend execution for seeded funding top-ups, "
+                "payout failures, and payout-release transactions, and confirmed "
+                "the existing Hub/FDB bridge lifecycle with those tx hashes in metadata."
             )
 
             required_movements = {"requester_deposit", "worker_payout"}
             missing_movements = sorted(required_movements - set(dev_chain_movements))
             if missing_movements:
                 raise NodeMarketSmokeError(f"Dev-chain bridge movement did not run: missing={missing_movements}")
+            if int(random_bridge_funding.get("confirmed_count", 0) or 0) < min(config.random_bridge_funding_events, 1):
+                raise NodeMarketSmokeError(f"Random bridge funding did not run: {random_bridge_funding}")
+            expected_random_payout_min = min(config.random_bridge_payout_events, max(0, len(selected_worker_ids) - 1), 1)
+            if int(random_bridge_payouts.get("confirmed_count", 0) or 0) < expected_random_payout_min:
+                raise NodeMarketSmokeError(f"Random bridge payout confirmations did not run: {random_bridge_payouts}")
             if not dev_chain_rollup["balance_deltas_nonzero_wei"]:
                 raise NodeMarketSmokeError("Dev-chain bridge movement produced no non-zero balance deltas.")
 
@@ -769,8 +1204,13 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
             "dev_chain_payout_admin_wallet_count": (
                 len(dev_chain_context.payout_admin_wallet_addresses) if dev_chain_context is not None else 0
             ),
-            "dev_chain_escrow_address": dev_chain_bridge.escrow_address if dev_chain_bridge is not None else None,
+            "dev_chain_escrow_address": dev_chain_context.bridge_escrow_address if dev_chain_context is not None else None,
             "dev_chain_bridge_movements": dict(dev_chain_movements),
+            "bridge_random_funding_event_count": int(random_bridge_funding.get("confirmed_count", 0) or 0),
+            "bridge_random_funding_total_credits": int(random_bridge_funding.get("total_credits", 0) or 0),
+            "bridge_random_payout_confirmed_count": int(random_bridge_payouts.get("confirmed_count", 0) or 0),
+            "bridge_random_payout_failed_count": int(random_bridge_payouts.get("failed_count", 0) or 0),
+            "bridge_active_work_payout_rejection_count": 1 if bool(surprise_payout_rejection.get("rejected")) else 0,
             "dev_chain_balance_delta_nonzero_count": (
                 len(dev_chain_rollup.get("balance_deltas_nonzero_wei", {})) if dev_chain_rollup is not None else 0
             ),
@@ -912,6 +1352,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chatter-rounds", type=_positive_int, default=30)
     parser.add_argument("--chatter-interval-seconds", type=float, default=0.02)
     parser.add_argument("--freeze-timeout-seconds", type=_positive_float, default=30.0)
+    parser.add_argument("--random-bridge-funding-events", type=_positive_int, default=3)
+    parser.add_argument("--random-bridge-payout-events", type=_positive_int, default=3)
+    parser.add_argument("--random-bridge-failed-payout-events", type=_positive_int, default=1)
     parser.add_argument("--no-failover-hub-a", action="store_true", help="Do not stop Hub A before final readback.")
     return parser
 
@@ -960,7 +1403,42 @@ def _config_from_args(args: argparse.Namespace) -> HubStressSmokeConfig:
         chatter_interval_seconds=args.chatter_interval_seconds,
         freeze_timeout_seconds=args.freeze_timeout_seconds,
         failover_hub_a=not args.no_failover_hub_a,
+        random_bridge_funding_events=args.random_bridge_funding_events,
+        random_bridge_payout_events=args.random_bridge_payout_events,
+        random_bridge_failed_payout_events=args.random_bridge_failed_payout_events,
     )
+
+
+def _print_dev_chain_rollup(rollup: dict[str, Any]) -> None:
+    balance_deltas = rollup.get("balance_deltas_wei", {})
+    if not isinstance(balance_deltas, dict):
+        balance_deltas = {}
+    nonzero_deltas = {
+        str(address): delta
+        for address, delta in balance_deltas.items()
+        if int(delta or 0) != 0
+    }
+    print(f"dev_chain_balance_delta_wallet_count: {len(balance_deltas)}")
+    print(f"dev_chain_balance_delta_nonzero_count: {len(nonzero_deltas)}")
+    for address, delta in sorted(nonzero_deltas.items()):
+        print(f"dev_chain_balance_delta_wei[{address}]: {delta}")
+
+    movement_summary = {
+        name: {
+            "amount_units": movement.get("amount_units"),
+            "contract_id": movement.get("contract_id"),
+            "transaction_hashes": movement.get("transaction_hashes", []),
+        }
+        for name, movement in dict(rollup.get("bridge_movements", {})).items()
+        if isinstance(movement, dict)
+    }
+    if movement_summary:
+        print("dev_chain_bridge_movement_summary: " + json.dumps(movement_summary, sort_keys=True))
+    random_summary = rollup.get("random_bridge_event_summary", {})
+    if isinstance(random_summary, dict) and random_summary:
+        print("bridge_random_event_summary: " + json.dumps(random_summary, sort_keys=True))
+    if rollup.get("bridge_lifecycle_note"):
+        print("dev_chain_bridge_lifecycle_note: " + str(rollup.get("bridge_lifecycle_note", "")))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -971,7 +1449,7 @@ def main(argv: list[str] | None = None) -> int:
         report = asyncio.run(run_temporal_fdb_hub_stress_smoke(config))
     except NodeMarketSmokeError as exc:
         print(f"FAIL: Temporal FDB Hub stress smoke failed: {exc}")
-        print(_local_lab_startup_help(config.temporal_address, config.namespace, config.resolved_cluster_file()))
+        print(_local_lab_startup_help(config.to_hub_config(config.hub_a_url, hub_name="hub-a")))
         return 1
 
     print("PASS: Temporal FDB Hub stress smoke succeeded")
@@ -987,6 +1465,11 @@ def main(argv: list[str] | None = None) -> int:
         "dev_chain_payout_admin_wallet_count",
         "dev_chain_escrow_address",
         "dev_chain_balance_delta_nonzero_count",
+        "bridge_random_funding_event_count",
+        "bridge_random_funding_total_credits",
+        "bridge_random_payout_confirmed_count",
+        "bridge_random_payout_failed_count",
+        "bridge_active_work_payout_rejection_count",
         "nodes_registered",
         "requests_completed",
         "selected_worker_count",
@@ -1005,21 +1488,8 @@ def main(argv: list[str] | None = None) -> int:
         "bridge_reconciliation_ok",
     ):
         print(f"{key}: {report.get(key)}")
-    if report.get("dev_chain_rollup"):
-        rollup = report["dev_chain_rollup"]
-        nonzero_deltas = rollup.get("balance_deltas_nonzero_wei", {})
-        print("dev_chain_balance_deltas_nonzero_wei: " + json.dumps(nonzero_deltas, sort_keys=True))
-        movement_summary = {
-            name: {
-                "amount_units": movement.get("amount_units"),
-                "contract_id": movement.get("contract_id"),
-                "transaction_hashes": movement.get("transaction_hashes", []),
-            }
-            for name, movement in dict(rollup.get("bridge_movements", {})).items()
-            if isinstance(movement, dict)
-        }
-        print("dev_chain_bridge_movement_summary: " + json.dumps(movement_summary, sort_keys=True))
-        print("dev_chain_bridge_lifecycle_note: " + str(rollup.get("bridge_lifecycle_note", "")))
+    if isinstance(report.get("dev_chain_rollup"), dict):
+        _print_dev_chain_rollup(report["dev_chain_rollup"])
     return 0
 
 

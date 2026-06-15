@@ -38,6 +38,7 @@ from main_computer.hub_security import (
 )
 from main_computer.hub_admin_site import HUB_ADMIN_ROUTES, build_admin_bootstrap_payload, render_hub_admin_html
 from main_computer.hub_credit_bridge_completion import HubCreditBridgeCompletionService
+from main_computer.hub_bridge_backend import HubBridgeBackendError, build_hub_bridge_backend
 from main_computer.hub_credit_indexer import HubCreditIndexer, wallet_account_id
 from main_computer.hub_credit_ledger import HubCreditLedger
 from main_computer.hub_credit_models import (
@@ -1259,6 +1260,11 @@ class HubHttpServer(ThreadingHTTPServer):
         self.credit_ledger = HubCreditLedger(hub_root / "compute_credits")
         self.credit_indexer = HubCreditIndexer(self.credit_ledger)
         self.credit_bridge_completion = HubCreditBridgeCompletionService(self.credit_ledger, config)
+        self.bridge_backend = build_hub_bridge_backend(
+            backend_name=config.hub_bridge_backend,
+            repo_root=Path.cwd().resolve(),
+            dev_chain_deployment_path=config.hub_dev_chain_deployment_path,
+        )
         self.multisession_key_store_path = hub_root / "compute_credits" / "multisession_keys.json"
         self.multisession_key_store = None
         self.multisession_key_store_lock = threading.Lock()
@@ -1332,6 +1338,40 @@ class HubServerHandler(_JsonHandler):
             "unit": ledger_status["unit"],
             "funding_model": "hub_credit_bridge_escrow_wallet_v1",
         }
+
+    def _with_hub_bridge_backend_deposit_metadata(self, *, deposit_id: str, metadata: dict[str, Any]) -> dict[str, Any]:
+        backend = self.server.bridge_backend
+        if getattr(backend, "name", "mock-chain") != "dev-chain":
+            return metadata
+        if metadata.get("dev_chain"):
+            # Compatibility for older harness-side movement metadata. New runs
+            # should leave dev-chain movement ownership inside the Hub backend.
+            return metadata
+        if not hasattr(self.server.credit_ledger, "bridge_deposit_status"):
+            raise HubBridgeBackendError("credit ledger cannot expose pending bridge deposit payloads.")
+        payload = self.server.credit_ledger.bridge_deposit_status(deposit_id).get("deposit", {})
+        if not isinstance(payload, dict) or not payload:
+            raise HubBridgeBackendError(f"Unknown bridge deposit: {deposit_id}")
+        if str(payload.get("status", "")) == "confirmed":
+            return metadata
+        backend_metadata = backend.deposit_confirmation_metadata(payload)
+        return {**metadata, **backend_metadata}
+
+    def _with_hub_bridge_backend_payout_metadata(self, *, payout_id: str, metadata: dict[str, Any]) -> dict[str, Any]:
+        backend = self.server.bridge_backend
+        if getattr(backend, "name", "mock-chain") != "dev-chain":
+            return metadata
+        if metadata.get("dev_chain"):
+            return metadata
+        if not hasattr(self.server.credit_ledger, "bridge_payout_status"):
+            raise HubBridgeBackendError("credit ledger cannot expose pending bridge payout payloads.")
+        payload = self.server.credit_ledger.bridge_payout_status(payout_id).get("payout", {})
+        if not isinstance(payload, dict) or not payload:
+            raise HubBridgeBackendError(f"Unknown bridge payout: {payout_id}")
+        if str(payload.get("status", "")) == "confirmed":
+            return metadata
+        backend_metadata = backend.payout_confirmation_metadata(payload)
+        return {**metadata, **backend_metadata}
 
     def _worker_ring_from_payload(self, worker: dict[str, Any]) -> str:
         capabilities = worker.get("capabilities") if isinstance(worker.get("capabilities"), dict) else {}
@@ -2328,6 +2368,8 @@ class HubServerHandler(_JsonHandler):
                 if self.server.config.hub_network_config_path
                 else None,
             }
+            bridge_backend_status = getattr(self.server.bridge_backend, "status", lambda: {"backend": self.server.config.hub_bridge_backend})()
+            status["bridge_backend"] = bridge_backend_status
             status["security"] = {
                 "high_security_default": self.server.config.hub_high_security,
                 "hub_blind_envelopes": self.server.config.hub_high_security,
@@ -3081,10 +3123,13 @@ class HubServerHandler(_JsonHandler):
                     self._send_json({"ok": False, "error": "mock chain bridge is not available on this ledger."}, status=HTTPStatus.NOT_IMPLEMENTED)
                     return
                 body = self._read_json()
+                deposit_id = str(body.get("deposit_id", ""))
+                metadata = dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {}
+                metadata = self._with_hub_bridge_backend_deposit_metadata(deposit_id=deposit_id, metadata=metadata)
                 self._send_json(
                     self.server.credit_ledger.confirm_bridge_deposit(
-                        deposit_id=str(body.get("deposit_id", "")),
-                        metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
+                        deposit_id=deposit_id,
+                        metadata=metadata,
                     )
                 )
                 return
@@ -3139,10 +3184,13 @@ class HubServerHandler(_JsonHandler):
                     self._send_json({"ok": False, "error": "mock chain bridge is not available on this ledger."}, status=HTTPStatus.NOT_IMPLEMENTED)
                     return
                 body = self._read_json()
+                payout_id = str(body.get("payout_id", ""))
+                metadata = dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {}
+                metadata = self._with_hub_bridge_backend_payout_metadata(payout_id=payout_id, metadata=metadata)
                 self._send_json(
                     self.server.credit_ledger.confirm_bridge_payout(
-                        payout_id=str(body.get("payout_id", "")),
-                        metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
+                        payout_id=payout_id,
+                        metadata=metadata,
                     )
                 )
                 return
