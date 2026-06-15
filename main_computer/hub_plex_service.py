@@ -21,6 +21,7 @@ from main_computer.hub_plex_models import (
     sanitize_hub_response_payload,
 )
 from main_computer.hub_security import HUB_SECURITY_PROFILE, hub_transport_is_encrypted_or_loopback
+from main_computer.hub_credit_models import normalize_address
 from main_computer.models import ChatResponse
 
 
@@ -61,6 +62,54 @@ def normalize_execution_mode(value: Any) -> str:
     if text in {"worker_pull", "worker_pull_v0"}:
         return PHASE9_EXECUTION_MODE
     return text
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _worker_ring_from_payload(payload: dict[str, Any]) -> int | None:
+    worker = _public_payload(payload)
+    capabilities = dict(worker.get("capabilities", {})) if isinstance(worker.get("capabilities"), dict) else {}
+    existing_offer = dict(worker.get("offer", {})) if isinstance(worker.get("offer"), dict) else {}
+    network = dict(capabilities.get("network", {})) if isinstance(capabilities.get("network"), dict) else {}
+    for candidate in (
+        existing_offer.get("assigned_ring"),
+        existing_offer.get("ring"),
+        worker.get("assigned_ring"),
+        worker.get("ring"),
+        capabilities.get("assigned_ring"),
+        capabilities.get("ring"),
+        capabilities.get("requested_ring"),
+        network.get("assigned_ring"),
+        network.get("ring"),
+    ):
+        parsed = _optional_int(candidate)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _request_requested_ring(request: HubAIRequest) -> int | None:
+    metadata = dict(request.metadata) if isinstance(request.metadata, dict) else {}
+    for candidate in (
+        metadata.get("requested_ring"),
+        metadata.get("ring"),
+        metadata.get("max_ring"),
+        metadata.get("worker_ring"),
+    ):
+        parsed = _optional_int(candidate)
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def market_worker_offer_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -109,7 +158,8 @@ def market_worker_offer_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         or PHASE9_EXECUTION_MODE
     )
     worker_node_id = str(existing_offer.get("worker_node_id") or worker.get("node_id") or "")
-    return {
+    assigned_ring = _worker_ring_from_payload(worker)
+    offer = {
         "offer_id": str(existing_offer.get("offer_id") or phase9_offer_id(
             worker_node_id=worker_node_id,
             models=models,
@@ -135,6 +185,9 @@ def market_worker_offer_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "settlement_mode": "rounded_batch_v0",
         },
     }
+    if assigned_ring is not None:
+        offer["assigned_ring"] = assigned_ring
+    return offer
 
 
 def utc_now() -> str:
@@ -227,6 +280,21 @@ def _item_value(item: Any, key: str, default: Any = None) -> Any:
     if isinstance(item, dict):
         return item.get(key, default)
     return getattr(item, key, default)
+
+
+def _worker_wallet_address_from_payload(item: Any) -> str:
+    payload = _public_payload(item)
+    capabilities = dict(payload.get("capabilities", {})) if isinstance(payload.get("capabilities"), dict) else {}
+    wallet = (
+        payload.get("wallet_address")
+        or payload.get("worker_wallet_address")
+        or payload.get("payout_wallet_address")
+        or capabilities.get("wallet_address")
+        or capabilities.get("worker_wallet_address")
+        or capabilities.get("payout_wallet_address")
+        or ""
+    )
+    return normalize_address(str(wallet or ""))
 
 
 def _short_response_summary(response: ChatResponse) -> str:
@@ -741,6 +809,9 @@ class AIRequestPlexService:
                         "worker_node_id": str(selected_offer.get("worker_node_id", "")),
                         "credits_per_request": max(0, int(selected_offer.get("credits_per_request", 0) or 0)),
                     }
+                    assigned_ring = _optional_int(selected_offer.get("assigned_ring"))
+                    if assigned_ring is not None:
+                        lease["selected_offer"]["assigned_ring"] = assigned_ring
             return {
                 "ok": True,
                 "lease": lease,
@@ -1190,11 +1261,13 @@ class AIRequestPlexService:
             if existing is not None:
                 return existing, True
         execution_mode = normalize_execution_mode(metadata.get("execution_mode")) or PHASE9_EXECUTION_MODE
+        requested_ring = _request_requested_ring(request)
         selected = self._select_market_worker_offer(
             model=model,
             max_credits=max_credits,
             execution_mode=execution_mode,
             requested_worker_node_id=request.requested_worker_node_id,
+            requested_ring=requested_ring,
         )
         quoted_credits = max(0, int(selected.get("credits_per_request", 0) or 0))
         if quoted_credits <= 0:
@@ -1209,6 +1282,7 @@ class AIRequestPlexService:
             "model": model,
             "max_credits": max_credits,
             "execution_mode": execution_mode,
+            "requested_ring": requested_ring,
             "selected_offer_id": selected.get("offer_id", ""),
             "quoted_credits": quoted_credits,
         }
@@ -1227,6 +1301,7 @@ class AIRequestPlexService:
             "unit": "compute_credit",
             "pricing_mode": PHASE9_PRICING_MODE,
             "execution_mode": execution_mode,
+            "requested_ring": requested_ring,
             "selected_offer": dict(selected),
             "selected_offer_id": str(selected.get("offer_id", "")),
             "selected_worker_node_id": str(selected.get("worker_node_id", "")),
@@ -1244,6 +1319,7 @@ class AIRequestPlexService:
         max_credits: int,
         execution_mode: str,
         requested_worker_node_id: str = "",
+        requested_ring: int | None = None,
     ) -> dict[str, Any]:
         status = self.registry.status() if hasattr(self.registry, "status") else {}
         workers = status.get("workers", []) if isinstance(status, dict) else []
@@ -1258,6 +1334,10 @@ class AIRequestPlexService:
             state = str(worker.get("status", "available") or "available").lower()
             if state not in {"available", "configured"} or bool(worker.get("stale", False)):
                 continue
+            wallet_address = _worker_wallet_address_from_payload(worker)
+            if wallet_address and self.credit_ledger is not None and hasattr(self.credit_ledger, "is_wallet_locked"):
+                if self.credit_ledger.is_wallet_locked(wallet_address):
+                    continue
             offer = market_worker_offer_from_payload(worker)
             if not offer:
                 if self._worker_payload_supports_model(worker, model):
@@ -1267,15 +1347,29 @@ class AIRequestPlexService:
                 continue
             if model not in [str(item).strip() for item in offer.get("models", []) if str(item).strip()]:
                 continue
+            worker_ring = _worker_ring_from_payload(worker)
+            if requested_ring is not None:
+                if worker_ring is None or worker_ring > requested_ring:
+                    continue
+            if worker_ring is not None and "assigned_ring" not in offer:
+                offer = {**offer, "assigned_ring": worker_ring}
             compatible.append(offer)
         if not compatible:
+            if requested_ring is not None:
+                raise ValueError(
+                    "No compatible priced worker offer is available for this model, execution mode, "
+                    f"requested_ring <= {requested_ring}, and requester max_credits."
+                )
             if unpriced_match:
                 raise ValueError("Compatible worker exists but does not advertise a priced AI seller offer.")
             raise ValueError("No compatible priced worker offer is available for this model and execution mode.")
+        assignment_counts = {} if requested else self._market_worker_assignment_counts()
         selected = sorted(
             compatible,
             key=lambda offer: (
                 max(0, int(offer.get("credits_per_request", 0) or 0)),
+                assignment_counts.get(str(offer.get("worker_node_id", "")), 0),
+                max(0, int(offer.get("assigned_ring", 1_000_000) or 1_000_000)),
                 str(offer.get("worker_node_id", "")),
                 str(offer.get("offer_id", "")),
             ),
@@ -1285,6 +1379,32 @@ class AIRequestPlexService:
                 f"Selected worker offer price {selected.get('credits_per_request')} exceeds requester max_credits {max_credits}."
             )
         return dict(selected)
+
+    def _market_worker_assignment_counts(self) -> dict[str, int]:
+        """Count active market assignments by selected worker for quote-time load balancing."""
+
+        active_states = {"submitted", "held", "queued", "leasing_worker", "dispatching", "running", "retrying", "leased"}
+        try:
+            records = self.request_store.list(limit=500, states=active_states)
+        except Exception:
+            return {}
+
+        counts: dict[str, int] = {}
+        for record in records:
+            worker_node_id = ""
+            market_metadata = self._record_market_metadata(record)
+            if market_metadata:
+                selected_offer = self._record_selected_offer(record)
+                worker_node_id = str(
+                    selected_offer.get("worker_node_id")
+                    or market_metadata.get("selected_worker_node_id")
+                    or ""
+                ).strip()
+            if not worker_node_id:
+                worker_node_id = str(record.requested_worker_node_id or record.selected_worker_node_id or "").strip()
+            if worker_node_id:
+                counts[worker_node_id] = counts.get(worker_node_id, 0) + 1
+        return counts
 
     def _worker_payload_supports_model(self, worker: dict[str, Any], model: str) -> bool:
         desired = str(model or "").strip()
@@ -1327,6 +1447,14 @@ class AIRequestPlexService:
             or PHASE9_EXECUTION_MODE
         ):
             raise ValueError("quote execution_mode does not match request execution_mode.")
+        quote_requested_ring = _optional_int(quote.get("requested_ring"))
+        request_requested_ring = _request_requested_ring(request)
+        if (
+            quote_requested_ring is not None
+            and request_requested_ring is not None
+            and quote_requested_ring != request_requested_ring
+        ):
+            raise ValueError("quote requested_ring does not match request requested_ring.")
 
     def _record_market_acceptance(
         self,
@@ -1346,6 +1474,7 @@ class AIRequestPlexService:
                 "execution_mode": normalize_execution_mode(quote.get("execution_mode")),
                 "quote": dict(quote),
                 "selected_offer": selected_offer,
+                "requested_ring": _optional_int(quote.get("requested_ring")),
                 "quoted_credits": max(0, int(quote.get("quoted_credits", 0) or 0)),
                 "held_credits": max(0, int(held_credits or 0)),
                 "accepted_at": utc_now(),
@@ -1361,6 +1490,8 @@ class AIRequestPlexService:
                 "quote_id": str(quote.get("quote_id", "")),
                 "offer_id": str(selected_offer.get("offer_id", "")),
                 "worker_node_id": str(selected_offer.get("worker_node_id", "")),
+                "requested_ring": _optional_int(quote.get("requested_ring")),
+                "assigned_ring": _optional_int(selected_offer.get("assigned_ring")),
                 "quoted_credits": max(0, int(quote.get("quoted_credits", 0) or 0)),
                 "held_credits": max(0, int(held_credits or 0)),
             },
@@ -1475,6 +1606,10 @@ class AIRequestPlexService:
         selected_offer = self._record_selected_offer(record)
         quote = dict(market_metadata.get("quote", {})) if isinstance(market_metadata.get("quote"), dict) else {}
         charge_metadata = {"worker_node_id": worker_node_id}
+        worker_payload = self.registry.get_worker(worker_node_id) if hasattr(self.registry, "get_worker") else None
+        worker_wallet_address = _worker_wallet_address_from_payload(worker_payload) if worker_payload is not None else ""
+        if worker_wallet_address:
+            charge_metadata["worker_wallet_address"] = worker_wallet_address
         if market_metadata:
             charge_metadata.update(
                 {
@@ -1740,6 +1875,10 @@ class AIRequestPlexService:
     def _worker_can_run_record(self, worker: Any, record: HubRequestRecord) -> bool:
         desired = str(record.model or "").strip()
         payload = _public_payload(worker)
+        wallet_address = _worker_wallet_address_from_payload(payload)
+        if wallet_address and self.credit_ledger is not None and hasattr(self.credit_ledger, "is_wallet_locked"):
+            if self.credit_ledger.is_wallet_locked(wallet_address):
+                return False
         market_metadata = self._record_market_metadata(record)
         if market_metadata:
             selected_offer = self._record_selected_offer(record)
@@ -1747,6 +1886,10 @@ class AIRequestPlexService:
             if selected_worker and str(payload.get("node_id", "")) != selected_worker:
                 return False
             if not market_worker_offer_from_payload(payload):
+                return False
+            requested_ring = _optional_int(market_metadata.get("requested_ring"))
+            worker_ring = _worker_ring_from_payload(payload)
+            if requested_ring is not None and (worker_ring is None or worker_ring > requested_ring):
                 return False
         if not desired:
             return True

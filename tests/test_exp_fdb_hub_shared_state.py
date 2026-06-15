@@ -49,3 +49,36 @@ def test_multisession_and_secure_sessions_can_use_injected_stores() -> None:
     assert "secure_session_store: Any | None = None" in plex_module
     assert "def _store_secure_session" in plex_module
     assert "def _load_secure_session" in plex_module
+
+
+def test_bridge_payout_requires_quiet_wallet_before_ledger_mutation() -> None:
+    hub_module = (_repo() / "main_computer" / "hub.py").read_text(encoding="utf-8")
+    smoke_module = (_repo() / "main_computer" / "temporal_fdb_hub_node_market_smoke.py").read_text(encoding="utf-8")
+
+    assert '"error_type": "wallet_active_worker_leases"' in hub_module
+    assert "wallet has active worker leases; payout requires a quiet wallet" in hub_module
+    assert "if wallet_address:" in hub_module
+    assert "if worker_node_id:" not in hub_module[hub_module.find('if path == "/api/hub/v1/bridge/payouts"'):hub_module.find('if path == "/api/hub/v1/bridge/payouts/confirm"')]
+    assert "hub_bridge_payout_rejected_active_work" in smoke_module
+    assert "surprise_payout_rejected_active_work" in smoke_module
+
+
+def test_bridge_audit_records_wallet_lock_unlock_events() -> None:
+    ledger_module = (_repo() / "main_computer" / "exp_fdb_credit_ledger.py").read_text(encoding="utf-8")
+
+    assert 'event_type="bridge.wallet.locked"' in ledger_module
+    assert 'event_type="bridge.wallet.unlocked"' in ledger_module
+
+
+def test_bridge_audit_records_work_and_payout_failure_recovery_events() -> None:
+    ledger_module = (_repo() / "main_computer" / "exp_fdb_credit_ledger.py").read_text(encoding="utf-8")
+    smoke_module = (_repo() / "main_computer" / "temporal_fdb_hub_node_market_smoke.py").read_text(encoding="utf-8")
+
+    assert 'event_type="hub.hold.created"' in ledger_module
+    assert 'event_type="hub.hold.charged"' in ledger_module
+    assert 'event_type="hub.worker.earning.recorded"' in ledger_module
+    assert 'event_type="bridge.payout.failed"' in ledger_module
+    assert "hub_bridge_payout_failed_recovered" in smoke_module
+    assert "bridge_audit_readback_ok" in smoke_module
+    assert "payout_failure_recovered" in smoke_module
+

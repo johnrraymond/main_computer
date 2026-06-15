@@ -1861,6 +1861,9 @@ def dispatch_get(self) -> None:
     if route_path == "/api/applications/wallet/agent-credit-grants":
         self._handle_wallet_agent_credit_grants_load()
         return
+    if route_path == "/api/applications/wallet/dns-control":
+        self._handle_wallet_dns_control_profiles_load()
+        return
     if route_path == "/api/applications/worker/network-session":
         self._handle_worker_network_session_load()
         return
@@ -2023,6 +2026,9 @@ def dispatch_post(self) -> None:
         return
     if route_path == "/api/applications/wallet/agent-credit-grants":
         self._handle_wallet_agent_credit_grant_create()
+        return
+    if route_path == "/api/applications/wallet/dns-control":
+        self._handle_wallet_dns_control_profile_save()
         return
     if self.path == "/api/applications/worker/network-session":
         self._handle_worker_network_session_select()
