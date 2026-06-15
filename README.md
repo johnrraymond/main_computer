@@ -297,6 +297,31 @@ docker compose -f docker-compose.gitea.yml up -d gitea
 docker compose -f docker-compose.dev.yml --profile smoke run --rm executor-smoke
 ```
 
+## Temporal/FDB Hub lab after reboot
+
+For the current Hub-backed Temporal/FDB acceptance lab, start the local
+dependencies from the repository root in PowerShell after activating the
+virtualenv:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+
+python -m tools.temporal_lab.local_temporal up --pull
+python -m tools.temporal_lab.local_temporal status
+
+python .\scripts\smoke_foundationdb_credit_ledger_primitives.py --keep-container
+```
+
+Then run the single-Hub or multi-Hub smoke:
+
+```powershell
+python .\scripts\smoke_temporal_fdb_hub_node_market.py
+python .\scripts\smoke_temporal_fdb_hub_multi_hub.py
+```
+
+The smokes auto-start `exp-fdb-hub.py` by default and now print these bring-up
+commands when Temporal, FoundationDB, or the expected Hub ports are not ready.
+
 ## Operator runbooks
 
 The Cloudflare hidden-origin mail worker plan is documented in:
