@@ -15,6 +15,8 @@ def _run_project_workbench_on_real_files() -> dict:
     concern = SCRIPTS / "mcel-concern-core.js"
     workbench = SCRIPTS / "mcel-project-concern-workbench.js"
     files = [
+        SCRIPTS / "git-tools-project-workflow.js",
+        SCRIPTS / "git-tools-file-basket.js",
         SCRIPTS / "task-manager.js",
         SCRIPTS / "file-explorer.js",
         SCRIPTS / "website-builder.js",
@@ -100,7 +102,13 @@ def test_file_basket_work_order_is_a_real_migration_target() -> None:
     report = _run_project_workbench_on_real_files()
     order = next(order for order in report["workOrders"] if order["concernId"] == "concern.file-basket")
 
-    assert order["id"] == "task-manager.file-basket"
+    assert order["id"] == "git-tools.file-basket"
+    assert order["app"] == "git-tools"
+    assert order["sourceFile"].endswith("git-tools-file-basket.js")
+    assert order["implementationOwner"] == "git-tools"
+    assert order["legacySurfaceIds"] == ["task-manager.file-basket"]
+    assert order["ownershipStatus"] == "extracted-git-tools-boundary"
+    assert "git-tools-file-basket.js" in order["ownershipNote"]
     assert order["targetContract"] == "pattern.file-basket"
     assert order["contractLabel"] == "File Basket Contract"
     assert order["priority"] in {"critical", "high"}
@@ -128,10 +136,34 @@ def test_file_basket_work_order_is_a_real_migration_target() -> None:
     assert any("blocked" in item or "selected output" in item for item in order["testsNeeded"])
 
 
+def test_file_basket_deprecated_task_manager_alias_resolves_to_git_tools_owner() -> None:
+    report = _run_project_workbench_on_real_files()
+
+    legacy = next(
+        order
+        for order in report["workOrders"]
+        if "task-manager.file-basket" in order.get("legacySurfaceIds", [])
+    )
+    by_id = {order["id"]: order for order in report["workOrders"]}
+
+    assert legacy["id"] == "git-tools.file-basket"
+    assert legacy["app"] == "git-tools"
+    assert legacy["sourceFile"].endswith("git-tools-file-basket.js")
+    assert "task-manager.file-basket" not in by_id
+
+    queue_item = next(item for item in report["migrationQueue"] if item["id"] == "git-tools.file-basket")
+    assert queue_item["ownerApp"] == "git-tools"
+    assert queue_item["sourceFile"].endswith("git-tools-file-basket.js")
+    assert queue_item["legacySurfaceIds"] == ["task-manager.file-basket"]
+    assert queue_item["firstSafeMigration"].startswith("Use git-tools-file-basket.js")
+
+
 def test_project_workbench_produces_safe_first_patches_for_key_apps() -> None:
     report = _run_project_workbench_on_real_files()
     by_id = {order["id"]: order for order in report["workOrders"]}
 
+    assert "git-tools.file-basket" in by_id
+    assert "task-manager.file-basket" not in by_id
     assert "file-explorer.resource-browser" in by_id
     assert "website-builder.deploy-preflight" in by_id
     assert "chat-console.execution-cell" in by_id

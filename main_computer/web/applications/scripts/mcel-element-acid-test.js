@@ -651,9 +651,13 @@
         const adapter = mcelFileBasketModel();
         const definition = requireDefinition(definitionsById, "element.resource.file-basket-model");
         const model = adapter.buildFileBasketModel(fileBasketSpecimenReview(), {
-          surfaceId: "task-manager.file-basket",
+          surfaceId: "git-tools.file-basket",
+          canonicalSurfaceId: "git-tools.file-basket",
+          legacySurfaceIds: ["task-manager.file-basket"],
+          ownerApp: "git-tools",
           sourceConcern: "concern.file-basket",
-          sourceFile: "main_computer/web/applications/scripts/task-manager.js"
+          sourceFile: "main_computer/web/applications/scripts/git-tools-file-basket.js",
+          ownershipStatus: "extracted-git-tools-boundary"
         });
         const selectedRoot = adapter.toggleDirectorySelection(model, [], "");
         const selectedSummary = adapter.selectionSummary(model, selectedRoot);
@@ -671,8 +675,8 @@
         const header = createNode(document, "header", "mcel-file-basket-model-proof-head");
         header.append(
           createNode(document, "p", "eyebrow", "First safe migration proof"),
-          createNode(document, "h6", "", "Task Manager File Basket now has a pure MCEL model adapter."),
-          createNode(document, "p", "", "This does not replace the current Git/Task Manager view yet. It creates the contract boundary the workbench requested: fields, identity, hierarchy, selectable state, blocked reason, and selected output.")
+          createNode(document, "h6", "", "Git Tools File Basket now has a pure MCEL model adapter."),
+          createNode(document, "p", "", "This does not replace the current Git/Task Manager view yet. It marks the Git-owned file-basket boundary now extracted to git-tools-file-basket.js: fields, identity, hierarchy, selectable state, blocked reason, and selected output.")
         );
 
         const scoreGrid = createNode(document, "div", "mcel-file-basket-model-score-grid");

@@ -1167,6 +1167,20 @@ class ExperimentalFoundationDbCreditLedger:
 
         return {"ok": True, **_tx(self.db)}
 
+    def bridge_deposit_status(self, deposit_id: str) -> dict[str, Any]:
+        clean_deposit = str(deposit_id or "").strip()
+        if not clean_deposit:
+            raise ValueError("deposit_id is required.")
+
+        @self.fdb.transactional
+        def _tx(tr: Any) -> dict[str, Any]:
+            payload = self._read_dict(tr, "bridge_deposit", clean_deposit)
+            if payload is None:
+                raise KeyError(f"Unknown bridge deposit: {clean_deposit}")
+            return {"deposit": payload}
+
+        return {"ok": True, **_tx(self.db)}
+
     def confirm_bridge_deposit(self, *, deposit_id: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
         clean_deposit = str(deposit_id or "").strip()
         if not clean_deposit:
@@ -1359,6 +1373,20 @@ class ExperimentalFoundationDbCreditLedger:
                 now=now,
             )
             return {"idempotent": False, "payout": payout, "wallet_lock": lock, "audit_event": event}
+
+        return {"ok": True, **_tx(self.db)}
+
+    def bridge_payout_status(self, payout_id: str) -> dict[str, Any]:
+        clean_payout = str(payout_id or "").strip()
+        if not clean_payout:
+            raise ValueError("payout_id is required.")
+
+        @self.fdb.transactional
+        def _tx(tr: Any) -> dict[str, Any]:
+            payload = self._read_dict(tr, "bridge_payout", clean_payout)
+            if payload is None:
+                raise KeyError(f"Unknown bridge payout: {clean_payout}")
+            return {"payout": payload}
 
         return {"ok": True, **_tx(self.db)}
 
