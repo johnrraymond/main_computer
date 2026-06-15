@@ -219,6 +219,7 @@ APPLICATION_ROUTE_NAMES = {
     "website-builder",
     "mcel-lab",
     "worker",
+    "wallet",
 }
 APPLICATION_ROUTE_ALIASES = {
     "layout-builder": "game-editor",

@@ -192,7 +192,22 @@ def _phase9_worker_offer_from_payload(payload: dict[str, Any]) -> dict[str, Any]
         or capabilities.get("execution_mode")
         or PHASE9_EXECUTION_MODE
     ).strip() or PHASE9_EXECUTION_MODE
-    return {
+    assigned_ring = None
+    for candidate in (
+        payload.get("assigned_ring"),
+        payload.get("ring"),
+        capabilities.get("assigned_ring"),
+        capabilities.get("ring"),
+        capabilities.get("requested_ring"),
+    ):
+        try:
+            text = str(candidate).strip()
+            if text:
+                assigned_ring = int(text)
+                break
+        except (TypeError, ValueError):
+            continue
+    offer = {
         "offer_id": _phase9_offer_id(
             worker_node_id=str(payload.get("node_id", "") or ""),
             models=models,
@@ -216,6 +231,9 @@ def _phase9_worker_offer_from_payload(payload: dict[str, Any]) -> dict[str, Any]
             "settlement_mode": "rounded_batch_v0",
         },
     }
+    if assigned_ring is not None:
+        offer["assigned_ring"] = assigned_ring
+    return offer
 
 
 def _utc_now() -> str:
@@ -2427,6 +2445,33 @@ class HubServerHandler(_JsonHandler):
         if path == "/api/hub/v1/credits":
             self._send_json(self.server.credit_ledger.status())
             return
+        if path == "/api/hub/v1/bridge/mock-chain/wallets":
+            if not hasattr(self.server.credit_ledger, "mock_chain_wallet_status"):
+                self._send_json({"ok": False, "error": "mock chain bridge is not available on this ledger."}, status=HTTPStatus.NOT_IMPLEMENTED)
+                return
+            wallet_address = query.get("wallet_address", [""])[0]
+            self._send_json(self.server.credit_ledger.mock_chain_wallet_status(wallet_address))
+            return
+        if path == "/api/hub/v1/bridge/wallet-locks":
+            if not hasattr(self.server.credit_ledger, "wallet_lock_status"):
+                self._send_json({"ok": False, "error": "wallet locks are not available on this ledger."}, status=HTTPStatus.NOT_IMPLEMENTED)
+                return
+            wallet_address = query.get("wallet_address", [""])[0]
+            self._send_json(self.server.credit_ledger.wallet_lock_status(wallet_address))
+            return
+        if path == "/api/hub/v1/bridge/audit":
+            if not hasattr(self.server.credit_ledger, "list_bridge_audit"):
+                self._send_json({"ok": False, "error": "bridge audit is not available on this ledger."}, status=HTTPStatus.NOT_IMPLEMENTED)
+                return
+            limit = int(query.get("limit", ["100"])[0] or 100)
+            events = self.server.credit_ledger.list_bridge_audit(
+                wallet_address=query.get("wallet_address", [""])[0],
+                account_id=query.get("account_id", [""])[0],
+                worker_node_id=query.get("worker_node_id", [""])[0],
+                limit=limit,
+            )
+            self._send_json({"ok": True, "events": events, "event_count": len(events)})
+            return
         if path == "/api/hub/v1/credits/indexer":
             self._send_json(self.server.credit_indexer.status())
             return
@@ -2600,6 +2645,16 @@ class HubServerHandler(_JsonHandler):
                         capabilities["execution"] = execution
                     if body.get("execution_mode") is not None:
                         capabilities["execution_mode"] = str(body.get("execution_mode") or "")
+                    for ring_key in ("assigned_ring", "ring", "requested_ring"):
+                        if body.get(ring_key) is not None:
+                            capabilities["assigned_ring"] = body.get(ring_key)
+                            break
+                    raw_wallet_address = body.get("wallet_address") or body.get("worker_wallet_address") or body.get("payout_wallet_address")
+                    if raw_wallet_address is None and isinstance(body.get("wallet"), dict):
+                        raw_wallet_address = body.get("wallet", {}).get("address")
+                    wallet_address = normalize_address(str(raw_wallet_address)) if raw_wallet_address else ""
+                    if wallet_address:
+                        capabilities["wallet_address"] = wallet_address
                     raw_price = body.get("credits_per_request")
                     if raw_price is None and pricing:
                         raw_price = pricing.get("credits_per_request")
@@ -2665,13 +2720,27 @@ class HubServerHandler(_JsonHandler):
                     )
                     if not worker_id:
                         raise ValueError("worker_node_id is required.")
+                    capabilities = dict(body.get("capabilities", {})) if isinstance(body.get("capabilities"), dict) else None
+                    for ring_key in ("assigned_ring", "ring", "requested_ring"):
+                        if body.get(ring_key) is not None:
+                            if capabilities is None:
+                                capabilities = {}
+                            capabilities["assigned_ring"] = body.get(ring_key)
+                            break
+                    raw_wallet_address = body.get("wallet_address") or body.get("worker_wallet_address") or body.get("payout_wallet_address")
+                    if raw_wallet_address is not None:
+                        if capabilities is None:
+                            capabilities = {}
+                        wallet_address = normalize_address(str(raw_wallet_address)) if raw_wallet_address else ""
+                        if wallet_address:
+                            capabilities["wallet_address"] = wallet_address
                     self._worker_route_diag_step(diag_id, "worker.heartbeat", "registry.heartbeat_worker.start", diag_started_at, worker_node_id=worker_id)
                     worker = self.server.registry.heartbeat_worker(
                         worker_id,
                         status=str(body.get("status", "available")),
                         model=str(body.get("model", "")),
                         models=[str(item) for item in body.get("models", [])] if isinstance(body.get("models"), list) else None,
-                        capabilities=dict(body.get("capabilities", {})) if isinstance(body.get("capabilities"), dict) else None,
+                        capabilities=capabilities,
                         queue_depth=int(body.get("queue_depth")) if body.get("queue_depth") is not None else None,
                         active_requests=int(body.get("active_requests")) if body.get("active_requests") is not None else None,
                         max_concurrency=int(body.get("max_concurrency")) if body.get("max_concurrency") is not None else None,
@@ -2975,6 +3044,120 @@ class HubServerHandler(_JsonHandler):
                     metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
                 )
                 self._send_json(result)
+                return
+            if path == "/api/hub/v1/bridge/mock-chain/mint":
+                if not hasattr(self.server.credit_ledger, "mock_chain_mint"):
+                    self._send_json({"ok": False, "error": "mock chain bridge is not available on this ledger."}, status=HTTPStatus.NOT_IMPLEMENTED)
+                    return
+                body = self._read_json()
+                self._send_json(
+                    self.server.credit_ledger.mock_chain_mint(
+                        wallet_address=str(body.get("wallet_address", "")),
+                        credits=int(body.get("credits", 0) or 0),
+                        idempotency_key=str(body.get("idempotency_key", "")),
+                        memo=str(body.get("memo", "")),
+                        metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
+                    )
+                )
+                return
+            if path == "/api/hub/v1/bridge/deposits":
+                if not hasattr(self.server.credit_ledger, "create_bridge_deposit"):
+                    self._send_json({"ok": False, "error": "mock chain bridge is not available on this ledger."}, status=HTTPStatus.NOT_IMPLEMENTED)
+                    return
+                body = self._read_json()
+                self._send_json(
+                    self.server.credit_ledger.create_bridge_deposit(
+                        wallet_address=str(body.get("wallet_address", "")),
+                        account_id=str(body.get("account_id", self.server.config.hub_client_node_id)),
+                        credits=int(body.get("credits", 0) or 0),
+                        idempotency_key=str(body.get("idempotency_key", "")),
+                        memo=str(body.get("memo", "")),
+                        metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
+                    )
+                )
+                return
+            if path == "/api/hub/v1/bridge/deposits/confirm":
+                if not hasattr(self.server.credit_ledger, "confirm_bridge_deposit"):
+                    self._send_json({"ok": False, "error": "mock chain bridge is not available on this ledger."}, status=HTTPStatus.NOT_IMPLEMENTED)
+                    return
+                body = self._read_json()
+                self._send_json(
+                    self.server.credit_ledger.confirm_bridge_deposit(
+                        deposit_id=str(body.get("deposit_id", "")),
+                        metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
+                    )
+                )
+                return
+            if path == "/api/hub/v1/bridge/payouts":
+                if not hasattr(self.server.credit_ledger, "request_bridge_payout"):
+                    self._send_json({"ok": False, "error": "mock chain bridge is not available on this ledger."}, status=HTTPStatus.NOT_IMPLEMENTED)
+                    return
+                body = self._read_json()
+                wallet_address = normalize_address(str(body.get("wallet_address", "")))
+                worker_node_id = str(body.get("worker_node_id") or body.get("node_id") or "")
+                if wallet_address:
+                    status = self.server.registry.status()
+                    workers = [item for item in status.get("workers", []) if isinstance(item, dict)]
+                    wallet_workers = []
+                    for worker in workers:
+                        caps = dict(worker.get("capabilities", {})) if isinstance(worker.get("capabilities"), dict) else {}
+                        worker_wallet = normalize_address(str(worker.get("wallet_address") or caps.get("wallet_address") or ""))
+                        if worker_wallet == wallet_address:
+                            wallet_workers.append(worker)
+                    active_workers = [
+                        worker
+                        for worker in wallet_workers
+                        if int(worker.get("active_requests", 0) or 0) > 0
+                    ]
+                    if active_workers:
+                        self._send_json(
+                            {
+                                "ok": False,
+                                "error": "wallet has active worker leases; payout requires a quiet wallet",
+                                "error_type": "wallet_active_worker_leases",
+                                "wallet_address": wallet_address,
+                                "active_worker_node_ids": [str(worker.get("node_id", "")) for worker in active_workers],
+                                "active_worker_count": len(active_workers),
+                            },
+                            status=HTTPStatus.CONFLICT,
+                        )
+                        return
+                self._send_json(
+                    self.server.credit_ledger.request_bridge_payout(
+                        wallet_address=wallet_address,
+                        account_id=str(body.get("account_id", "")),
+                        worker_node_id=worker_node_id,
+                        credits=int(body.get("credits", 0) or 0),
+                        idempotency_key=str(body.get("idempotency_key", "")),
+                        memo=str(body.get("memo", "")),
+                        metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
+                    )
+                )
+                return
+            if path == "/api/hub/v1/bridge/payouts/confirm":
+                if not hasattr(self.server.credit_ledger, "confirm_bridge_payout"):
+                    self._send_json({"ok": False, "error": "mock chain bridge is not available on this ledger."}, status=HTTPStatus.NOT_IMPLEMENTED)
+                    return
+                body = self._read_json()
+                self._send_json(
+                    self.server.credit_ledger.confirm_bridge_payout(
+                        payout_id=str(body.get("payout_id", "")),
+                        metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
+                    )
+                )
+                return
+            if path == "/api/hub/v1/bridge/payouts/fail":
+                if not hasattr(self.server.credit_ledger, "fail_bridge_payout"):
+                    self._send_json({"ok": False, "error": "mock chain bridge is not available on this ledger."}, status=HTTPStatus.NOT_IMPLEMENTED)
+                    return
+                body = self._read_json()
+                self._send_json(
+                    self.server.credit_ledger.fail_bridge_payout(
+                        payout_id=str(body.get("payout_id", "")),
+                        reason=str(body.get("reason", "")),
+                        metadata=dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {},
+                    )
+                )
                 return
             if path in {
                 "/api/hub/v1/workers/settlements/chain-executions",

@@ -2596,6 +2596,10 @@ body.mcel-modal-open {
   color: rgba(226, 232, 240, 0.9);
 }
 
+.mcel-resource-tree-row > * {
+  min-width: 0;
+}
+
 .mcel-element-showcase-keypad .mcel-element-showcase-surface-body {
   grid-template-columns: repeat(3, minmax(2.5rem, 1fr));
 }
@@ -2695,6 +2699,7 @@ body.mcel-modal-open {
 }
 
 .mcel-resource-tree-view-stage {
+  min-width: 0;
   border: 1px solid rgba(148, 163, 184, 0.22);
   border-radius: 24px;
   overflow: hidden;
@@ -2703,6 +2708,7 @@ body.mcel-modal-open {
 }
 
 .mcel-resource-tree-mode {
+  min-width: 0;
   display: grid;
   gap: 0.75rem;
   padding: 0.9rem;
@@ -2727,6 +2733,7 @@ body.mcel-modal-open {
 }
 
 .mcel-resource-tree-viewport {
+  min-width: 0;
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 18px;
   overflow: auto;
@@ -2736,8 +2743,9 @@ body.mcel-modal-open {
 
 .mcel-resource-tree-row {
   --row-hover: rgba(59, 130, 246, 0.14);
+  min-width: 0;
   display: grid;
-  grid-template-columns: 1.25rem 1.45rem minmax(0, 1fr) auto auto auto;
+  grid-template-columns: 1.25rem 1.45rem minmax(7rem, 1fr) minmax(4rem, 0.45fr) minmax(1.25rem, auto) minmax(6rem, 0.58fr);
   align-items: center;
   gap: 0.35rem;
   min-height: 1.8rem;
@@ -2802,8 +2810,12 @@ body.mcel-modal-open {
 .mcel-resource-tree-meta,
 .mcel-resource-tree-badge,
 .mcel-resource-tree-policy {
+  min-width: 0;
   font-size: 0.72rem;
   color: rgba(203, 213, 225, 0.74);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mcel-resource-tree-badge {
@@ -2904,12 +2916,19 @@ body.mcel-modal-open {
 
 .mcel-resource-treegrid-row {
   display: grid;
-  grid-template-columns: minmax(12rem, 1.4fr) minmax(8rem, 0.8fr) minmax(6rem, 0.7fr) minmax(4rem, 0.4fr) minmax(7rem, 0.7fr);
+  grid-template-columns: minmax(13rem, 1.5fr) minmax(7.5rem, 0.8fr) minmax(6rem, 0.7fr) minmax(4rem, 0.4fr) minmax(7rem, 0.75fr);
   gap: 0.65rem;
   align-items: center;
   min-height: 2rem;
   padding: 0.25rem 0.6rem;
   border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.mcel-resource-treegrid-row > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mcel-resource-treegrid-head {
@@ -2932,7 +2951,7 @@ body.mcel-modal-open {
 /* Column browser */
 .mcel-resource-column-browser {
   display: grid;
-  grid-template-columns: repeat(3, minmax(10rem, 1fr));
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.35fr) minmax(0, 1.05fr);
   min-height: 24rem;
   border: 1px solid rgba(148, 163, 184, 0.2);
   border-radius: 18px;
@@ -2942,6 +2961,7 @@ body.mcel-modal-open {
 }
 
 .mcel-resource-column {
+  min-width: 0;
   display: grid;
   align-content: start;
   gap: 0.25rem;
@@ -2960,16 +2980,665 @@ body.mcel-modal-open {
 }
 
 .mcel-resource-column button {
+  display: block;
+  width: 100%;
+  min-width: 0;
   justify-content: flex-start;
   min-height: 2rem;
   border: 0;
   background: transparent;
   color: inherit;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mcel-resource-column button.is-selected {
   background: #dbeafe;
   box-shadow: inset 3px 0 0 #3b82f6;
+}
+
+/* Explorer view menu + pane parity */
+.mcel-resource-view-menu {
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 18px;
+  padding: 0.7rem;
+  background: rgba(2, 6, 23, 0.52);
+}
+
+.mcel-resource-view-menu-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.mcel-resource-view-menu-head strong {
+  color: rgba(240, 249, 255, 0.96);
+}
+
+.mcel-resource-view-menu-head span {
+  max-width: 70ch;
+  color: rgba(203, 213, 225, 0.78);
+  font-size: 0.78rem;
+}
+
+.mcel-resource-view-menu-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.8rem, 1fr));
+  gap: 0.4rem;
+}
+
+.mcel-resource-view-menu-option {
+  min-width: 0;
+  min-height: 2.15rem;
+  justify-content: flex-start;
+  border-color: rgba(148, 163, 184, 0.24);
+  background: rgba(15, 23, 42, 0.68);
+  color: rgba(226, 232, 240, 0.92);
+}
+
+.mcel-resource-view-menu-option[aria-pressed="true"] {
+  border-color: rgba(125, 211, 252, 0.78);
+  background: rgba(14, 116, 144, 0.32);
+}
+
+.mcel-resource-icon-grid,
+.mcel-resource-list-view,
+.mcel-resource-tile-view,
+.mcel-resource-content-view {
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 18px;
+  padding: 0.75rem;
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+.mcel-resource-icon-grid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.mcel-resource-icon-grid-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.mcel-resource-icon-grid-header span,
+.mcel-resource-icon-card-meta,
+.mcel-resource-list-row span,
+.mcel-resource-tile-card span,
+.mcel-resource-content-row span,
+.mcel-resource-content-row p {
+  color: #475569;
+  font-size: 0.78rem;
+}
+
+.mcel-resource-icon-size-rail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.mcel-resource-icon-size-rail span {
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 999px;
+  padding: 0.18rem 0.45rem;
+  background: #ffffff;
+  font-size: 0.72rem;
+}
+
+.mcel-resource-icon-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(8.4rem, 1fr));
+  gap: 0.55rem;
+}
+
+.mcel-resource-icon-card {
+  min-width: 0;
+  display: grid;
+  justify-items: center;
+  gap: 0.3rem;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 12px;
+  padding: 0.65rem 0.5rem;
+  background: #ffffff;
+  color: inherit;
+  text-align: center;
+}
+
+.mcel-resource-icon-card[aria-selected="true"],
+.mcel-resource-list-row[aria-selected="true"],
+.mcel-resource-tile-card[aria-selected="true"],
+.mcel-resource-content-row[aria-selected="true"] {
+  background: #dbeafe;
+  outline: 1px solid #60a5fa;
+}
+
+.mcel-resource-icon-card-glyph {
+  display: inline-grid;
+  place-items: center;
+  width: 3.4rem;
+  height: 3.4rem;
+  border-radius: 12px;
+  font-weight: 900;
+}
+
+.mcel-resource-icon-card--medium .mcel-resource-icon-card-glyph {
+  width: 2.6rem;
+  height: 2.6rem;
+}
+
+.mcel-resource-icon-card-label {
+  max-width: 100%;
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.mcel-resource-icon-card-meta {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcel-resource-list-view {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 0.3rem 0.5rem;
+}
+
+.mcel-resource-list-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 1.45rem minmax(0, 1fr) minmax(4.5rem, 0.45fr) minmax(3rem, 0.25fr);
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 2rem;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  padding: 0.25rem 0.45rem;
+  background: #ffffff;
+  color: inherit;
+  text-align: left;
+}
+
+.mcel-resource-list-row > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcel-resource-tile-view {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+  gap: 0.65rem;
+}
+
+.mcel-resource-tile-card {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 2.6rem minmax(0, 1fr);
+  grid-template-rows: auto auto auto;
+  column-gap: 0.65rem;
+  row-gap: 0.15rem;
+  align-items: center;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 12px;
+  padding: 0.7rem;
+  background: #ffffff;
+  color: inherit;
+  text-align: left;
+}
+
+.mcel-resource-tile-glyph {
+  grid-row: 1 / 4;
+  display: inline-grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 10px;
+  font-weight: 900;
+}
+
+.mcel-resource-tile-card strong,
+.mcel-resource-tile-card span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcel-resource-content-view {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.mcel-resource-content-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 2.4rem minmax(0, 1fr);
+  grid-template-rows: auto auto auto;
+  column-gap: 0.75rem;
+  row-gap: 0.2rem;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 14px;
+  padding: 0.7rem;
+  background: #ffffff;
+}
+
+.mcel-resource-content-glyph {
+  grid-row: 1 / 4;
+  display: inline-grid;
+  place-items: center;
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 10px;
+  font-weight: 900;
+}
+
+.mcel-resource-content-row strong,
+.mcel-resource-content-row span,
+.mcel-resource-content-row p {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcel-element-showcase-details-pane .mcel-element-showcase-surface-body,
+.mcel-element-showcase-view-contract .mcel-element-showcase-surface-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+
+.mcel-resource-view-menu-option--macos {
+  border-style: dashed;
+}
+
+.mcel-resource-view-menu-option--linux {
+  border-style: double;
+}
+
+.mcel-resource-view-menu-status {
+  min-height: 1.55rem;
+  border: 1px solid rgba(125, 211, 252, 0.22);
+  border-radius: 999px;
+  padding: 0.3rem 0.55rem;
+  background: rgba(8, 47, 73, 0.28);
+  color: rgba(224, 242, 254, 0.88);
+  font-size: 0.74rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcel-resource-tree-workbench[data-resource-icon-size="72"] .mcel-resource-icon-card-glyph {
+  width: 4.5rem;
+  height: 4.5rem;
+  font-size: 1.12rem;
+}
+
+.mcel-resource-tree-workbench[data-resource-icon-size="56"] .mcel-resource-icon-card-glyph {
+  width: 3.6rem;
+  height: 3.6rem;
+}
+
+.mcel-resource-tree-workbench[data-resource-icon-size="40"] .mcel-resource-icon-card-glyph {
+  width: 2.7rem;
+  height: 2.7rem;
+}
+
+.mcel-resource-tree-workbench[data-resource-icon-size="24"] .mcel-resource-icon-card-glyph {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 8px;
+  font-size: 0.68rem;
+}
+
+.mcel-resource-finder-gallery,
+.mcel-resource-finder-column-inspector,
+.mcel-resource-gnome-grid,
+.mcel-resource-gnome-list,
+.mcel-resource-dolphin-split,
+.mcel-resource-thunar-compact {
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 18px;
+  padding: 0.75rem;
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+.mcel-resource-finder-gallery {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(11rem, 0.34fr);
+  grid-template-areas:
+    "preview inspector"
+    "strip inspector";
+  gap: 0.75rem;
+}
+
+.mcel-resource-finder-gallery-preview {
+  grid-area: preview;
+  min-width: 0;
+  display: grid;
+  place-items: center;
+  gap: 0.55rem;
+  min-height: 12rem;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 16px;
+  background: linear-gradient(180deg, #ffffff, #e2e8f0);
+  text-align: center;
+}
+
+.mcel-resource-finder-gallery-glyph {
+  display: inline-grid;
+  place-items: center;
+  width: 5.5rem;
+  height: 5.5rem;
+  border-radius: 20px;
+  font-weight: 900;
+}
+
+.mcel-resource-finder-gallery-preview strong,
+.mcel-resource-finder-gallery-preview p {
+  max-width: min(46ch, 100%);
+  margin: 0;
+}
+
+.mcel-resource-finder-gallery-strip {
+  grid-area: strip;
+  min-width: 0;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(6.4rem, 7.6rem);
+  gap: 0.45rem;
+  overflow-x: auto;
+  padding-bottom: 0.2rem;
+}
+
+.mcel-resource-finder-gallery-thumb {
+  min-width: 0;
+  display: grid;
+  gap: 0.25rem;
+  justify-items: center;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 12px;
+  padding: 0.45rem;
+  background: #ffffff;
+  color: inherit;
+}
+
+.mcel-resource-finder-gallery-thumb span:last-child,
+.mcel-resource-gnome-card strong,
+.mcel-resource-thunar-item span:last-child {
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcel-resource-finder-inspector {
+  grid-area: inspector;
+  align-content: start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 16px;
+  padding: 0.7rem;
+  background: #ffffff;
+}
+
+.mcel-resource-finder-column-inspector {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(9rem, 1fr));
+  gap: 0;
+  overflow: hidden;
+}
+
+.mcel-resource-finder-column {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 0.25rem;
+  min-height: 18rem;
+  padding: 0.65rem;
+  border-right: 1px solid rgba(15, 23, 42, 0.12);
+  background: #ffffff;
+}
+
+.mcel-resource-finder-column:last-child {
+  border-right: 0;
+}
+
+.mcel-resource-finder-column--inspector {
+  background: #f1f5f9;
+}
+
+.mcel-resource-finder-column strong,
+.mcel-resource-gnome-header strong,
+.mcel-resource-dolphin-pane > strong,
+.mcel-resource-thunar-header strong {
+  color: #0f172a;
+}
+
+.mcel-resource-finder-column button {
+  min-width: 0;
+  justify-content: flex-start;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcel-resource-finder-column button.is-selected,
+.mcel-resource-finder-gallery-thumb[aria-selected="true"],
+.mcel-resource-gnome-card[aria-selected="true"],
+.mcel-resource-gnome-list-row[aria-selected="true"],
+.mcel-resource-dolphin-row[aria-selected="true"],
+.mcel-resource-thunar-item[aria-selected="true"] {
+  background: #dbeafe;
+  outline: 1px solid #60a5fa;
+}
+
+.mcel-resource-gnome-grid {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.mcel-resource-gnome-header,
+.mcel-resource-thunar-header {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.mcel-resource-gnome-header span {
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 999px;
+  padding: 0.24rem 0.55rem;
+  background: #ffffff;
+  font-size: 0.76rem;
+}
+
+.mcel-resource-gnome-grid-content {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(8.2rem, 1fr));
+  gap: 0.55rem;
+}
+
+.mcel-resource-gnome-card {
+  position: relative;
+  min-width: 0;
+  display: grid;
+  justify-items: center;
+  gap: 0.28rem;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 14px;
+  padding: 0.7rem 0.45rem;
+  background: #ffffff;
+  color: inherit;
+  text-align: center;
+}
+
+.mcel-resource-gnome-check {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.4rem;
+  display: inline-grid;
+  place-items: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 999px;
+  background: #f8fafc;
+  font-size: 0.7rem;
+}
+
+.mcel-resource-gnome-glyph {
+  display: inline-grid;
+  place-items: center;
+  width: 3.2rem;
+  height: 3.2rem;
+  border-radius: 12px;
+  font-weight: 900;
+}
+
+.mcel-resource-gnome-card span:last-child {
+  color: #64748b;
+  font-size: 0.72rem;
+}
+
+.mcel-resource-gnome-list {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.mcel-resource-gnome-list-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 1.35rem minmax(0, 1fr) minmax(5rem, 0.7fr) minmax(4.5rem, 0.48fr) minmax(3.8rem, 0.35fr) minmax(5.5rem, 0.52fr);
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 2.05rem;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  padding: 0.3rem 0.45rem;
+  background: #ffffff;
+  color: inherit;
+  text-align: left;
+}
+
+.mcel-resource-gnome-list-head {
+  background: #e2e8f0;
+}
+
+.mcel-resource-gnome-list-row > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcel-resource-dolphin-split {
+  display: grid;
+  grid-template-columns: minmax(7.5rem, 0.34fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.6rem;
+}
+
+.mcel-resource-dolphin-places,
+.mcel-resource-dolphin-pane {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 0.35rem;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 14px;
+  padding: 0.65rem;
+  background: #ffffff;
+}
+
+.mcel-resource-dolphin-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(4.5rem, 0.45fr) minmax(3rem, 0.3fr) minmax(5rem, 0.55fr);
+  gap: 0.4rem;
+  align-items: center;
+  border: 0;
+  border-radius: 8px;
+  padding: 0.3rem 0.4rem;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.mcel-resource-dolphin-head {
+  background: #e2e8f0;
+  font-weight: 800;
+}
+
+.mcel-resource-dolphin-row > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcel-resource-thunar-compact {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.mcel-resource-thunar-header {
+  justify-content: space-between;
+}
+
+.mcel-resource-thunar-header span {
+  color: #64748b;
+  font-size: 0.76rem;
+}
+
+.mcel-resource-thunar-columns {
+  columns: 3 12rem;
+  column-gap: 0.6rem;
+}
+
+.mcel-resource-thunar-item {
+  min-width: 0;
+  width: 100%;
+  display: inline-grid;
+  grid-template-columns: 1.45rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0 0 0.28rem;
+  break-inside: avoid;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  padding: 0.25rem 0.35rem;
+  background: #ffffff;
+  color: inherit;
+  text-align: left;
 }
 
 /* Outline + proof views */
@@ -3021,8 +3690,23 @@ body.mcel-modal-open {
 
 @media (max-width: 1100px) {
   .mcel-resource-tree-view-lab,
-  .mcel-resource-column-browser {
+  .mcel-resource-column-browser,
+  .mcel-resource-finder-gallery,
+  .mcel-resource-finder-column-inspector,
+  .mcel-resource-dolphin-split {
     grid-template-columns: 1fr;
+  }
+
+  .mcel-resource-finder-gallery {
+    grid-template-areas:
+      "preview"
+      "strip"
+      "inspector";
+  }
+
+  .mcel-resource-view-menu-head,
+  .mcel-resource-icon-grid-header {
+    display: grid;
   }
 
   .mcel-resource-column {
@@ -3037,11 +3721,1421 @@ body.mcel-modal-open {
     grid-template-columns: 1.25rem 1.3rem minmax(0, 1fr);
   }
 
+  .mcel-resource-list-row,
+  .mcel-resource-tile-card,
+  .mcel-resource-content-row,
+  .mcel-resource-gnome-list-row,
+  .mcel-resource-dolphin-row {
+    grid-template-columns: 1.8rem minmax(0, 1fr);
+  }
+
   .mcel-resource-tree-meta,
   .mcel-resource-tree-badge,
   .mcel-resource-tree-policy,
   .mcel-resource-treegrid-row span:nth-child(n+2),
   .mcel-resource-treegrid-row strong:nth-child(n+2) {
     display: none;
+  }
+}
+
+
+/* Contract-first MVC resource-view mockup */
+.mcel-resource-mvc-contract {
+  display: grid;
+  gap: 0.75rem;
+  border: 1px solid rgba(125, 211, 252, 0.28);
+  border-radius: 22px;
+  padding: 0.85rem;
+  background:
+    linear-gradient(135deg, rgba(8, 13, 28, 0.94), rgba(13, 25, 44, 0.78)),
+    rgba(2, 6, 23, 0.84);
+}
+
+.mcel-resource-mvc-head {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.mcel-resource-mvc-head strong {
+  color: rgba(240, 249, 255, 0.98);
+}
+
+.mcel-resource-mvc-head span {
+  max-width: 105ch;
+  color: rgba(203, 213, 225, 0.8);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.mcel-resource-mvc-role-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.mcel-resource-mvc-card,
+.mcel-resource-mvc-panel,
+.mcel-resource-mvc-resolver {
+  min-width: 0;
+  display: grid;
+  gap: 0.35rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 16px;
+  padding: 0.65rem;
+  background: rgba(15, 23, 42, 0.7);
+}
+
+.mcel-resource-mvc-card strong,
+.mcel-resource-mvc-panel strong,
+.mcel-resource-mvc-resolver strong {
+  color: rgba(186, 230, 253, 0.96);
+}
+
+.mcel-resource-mvc-card span,
+.mcel-resource-mvc-panel p {
+  margin: 0;
+  color: rgba(226, 232, 240, 0.76);
+  font-size: 0.78rem;
+  line-height: 1.42;
+}
+
+.mcel-resource-mvc-field-strip,
+.mcel-resource-mvc-command-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.mcel-resource-mvc-field,
+.mcel-resource-mvc-command-strip span,
+.mcel-resource-mvc-command,
+.mcel-resource-mvc-resolver-item {
+  min-width: 0;
+  border: 1px solid rgba(125, 211, 252, 0.22);
+  border-radius: 999px;
+  padding: 0.18rem 0.48rem;
+  background: rgba(14, 116, 144, 0.18);
+  color: rgba(224, 242, 254, 0.92);
+  font-size: 0.72rem;
+}
+
+.mcel-resource-mvc-command {
+  cursor: pointer;
+  font: inherit;
+}
+
+.mcel-resource-mvc-command:hover,
+.mcel-resource-mvc-command:focus-visible {
+  border-color: rgba(186, 230, 253, 0.72);
+  background: rgba(14, 165, 233, 0.22);
+  outline: none;
+}
+
+.mcel-resource-mvc-interaction-status {
+  min-width: 0;
+  border: 1px solid rgba(59, 130, 246, 0.26);
+  border-radius: 12px;
+  padding: 0.45rem 0.55rem;
+  background: rgba(30, 64, 175, 0.16);
+  color: rgba(219, 234, 254, 0.94);
+  font-size: 0.76rem;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.mcel-resource-mvc-treegrid {
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 16px;
+  overflow: auto;
+  background: #030712;
+  color: rgba(226, 232, 240, 0.92);
+}
+
+.mcel-resource-mvc-row {
+  min-width: 62rem;
+  display: grid;
+  grid-template-columns:
+    var(--mcel-mvc-select-col, 4.5rem)
+    minmax(0, var(--mcel-mvc-path-col, 23rem))
+    minmax(0, var(--mcel-mvc-status-col, 7.2rem))
+    minmax(0, var(--mcel-mvc-bucket-col, 6.2rem))
+    minmax(0, var(--mcel-mvc-risk-col, 5.6rem))
+    minmax(0, var(--mcel-mvc-source-col, 6.8rem))
+    minmax(0, var(--mcel-mvc-reason-col, 20rem))
+    minmax(0, var(--mcel-mvc-modified-col, 7.5rem));
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 2.15rem;
+  padding: 0.25rem 0.55rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.mcel-resource-mvc-row[hidden] {
+  display: none;
+}
+
+.mcel-resource-mvc-row:focus,
+.mcel-resource-mvc-row:focus-within {
+  outline: 2px solid rgba(125, 211, 252, 0.74);
+  outline-offset: -2px;
+}
+
+.mcel-resource-mvc-row--header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border-top: 0;
+  background: #0f172a;
+  color: rgba(240, 249, 255, 0.98);
+}
+
+.mcel-resource-mvc-header-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+}
+
+.mcel-resource-mvc-resize-handle {
+  inline-size: 1.15rem;
+  block-size: 1.35rem;
+  flex: 0 0 auto;
+  border: 1px solid rgba(125, 211, 252, 0.26);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.7);
+  color: rgba(186, 230, 253, 0.95);
+  cursor: col-resize;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.mcel-resource-mvc-resize-handle:hover,
+.mcel-resource-mvc-resize-handle:focus-visible {
+  border-color: rgba(186, 230, 253, 0.72);
+  background: rgba(14, 116, 144, 0.36);
+  outline: none;
+}
+
+.mcel-resource-mvc-contract[data-mcel-resizing-column] .mcel-resource-mvc-treegrid {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.mcel-resource-mvc-row > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcel-resource-mvc-row[aria-selected="true"] {
+  background: rgba(37, 99, 235, 0.22);
+}
+
+.mcel-resource-mvc-row[aria-disabled="true"] {
+  color: rgba(148, 163, 184, 0.68);
+  background: rgba(127, 29, 29, 0.14);
+}
+
+.mcel-resource-mvc-select,
+.mcel-resource-mvc-expander {
+  inline-size: 1.6rem;
+  block-size: 1.6rem;
+  border: 1px solid rgba(125, 211, 252, 0.22);
+  border-radius: 9px;
+  background: rgba(15, 23, 42, 0.72);
+  color: rgba(125, 211, 252, 0.95);
+  cursor: pointer;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.mcel-resource-mvc-select:disabled,
+.mcel-resource-mvc-expander:disabled {
+  cursor: not-allowed;
+  opacity: 0.54;
+}
+
+.mcel-resource-mvc-select:hover:not(:disabled),
+.mcel-resource-mvc-select:focus-visible,
+.mcel-resource-mvc-expander:hover:not(:disabled),
+.mcel-resource-mvc-expander:focus-visible {
+  border-color: rgba(186, 230, 253, 0.72);
+  background: rgba(14, 116, 144, 0.34);
+  outline: none;
+}
+
+.mcel-resource-mvc-path {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding-left: calc(var(--mcel-tree-depth, 0) * 1rem);
+  font-weight: 800;
+}
+
+.mcel-resource-mvc-path-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcel-resource-mvc-reason {
+  color: rgba(203, 213, 225, 0.82);
+}
+
+.mcel-resource-mvc-risk {
+  justify-self: start;
+  border-radius: 999px;
+  padding: 0.08rem 0.42rem;
+  background: rgba(250, 204, 21, 0.15);
+}
+
+.mcel-resource-mvc-risk--blocked {
+  background: rgba(239, 68, 68, 0.16);
+}
+
+.mcel-resource-mvc-output {
+  display: block;
+  min-width: 0;
+  border: 1px solid rgba(34, 197, 94, 0.26);
+  border-radius: 14px;
+  padding: 0.65rem;
+  background: rgba(20, 83, 45, 0.22);
+  color: rgba(220, 252, 231, 0.92);
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.mcel-resource-mvc-resolver {
+  grid-template-columns: minmax(9rem, auto) minmax(0, 1fr);
+  align-items: start;
+}
+
+.mcel-resource-mvc-resolver strong {
+  grid-row: 1 / span 4;
+}
+
+.mcel-resource-mvc-resolver-item {
+  border-radius: 12px;
+  white-space: normal;
+  line-height: 1.35;
+}
+
+.mcel-resource-mvc-resolver-item--rejected {
+  border-color: rgba(248, 113, 113, 0.3);
+  background: rgba(127, 29, 29, 0.2);
+  color: rgba(254, 226, 226, 0.92);
+}
+
+@media (max-width: 980px) {
+  .mcel-resource-mvc-role-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mcel-resource-mvc-resolver {
+    grid-template-columns: 1fr;
+  }
+
+  .mcel-resource-mvc-resolver strong {
+    grid-row: auto;
+  }
+}
+
+
+
+/* MVC treegrid interaction polish: controls must look like controls, not debug glyph soup. */
+.mcel-resource-mvc-treegrid {
+  scrollbar-gutter: stable both-edges;
+}
+
+.mcel-resource-mvc-row {
+  width: max-content;
+  min-width: 100%;
+  gap: 0.35rem;
+}
+
+.mcel-resource-mvc-row--header > .mcel-resource-mvc-header-cell {
+  position: relative;
+  overflow: visible;
+  padding-right: 1.05rem;
+}
+
+.mcel-resource-mvc-row > .mcel-resource-mvc-select,
+.mcel-resource-mvc-row > .mcel-resource-mvc-path {
+  overflow: visible;
+}
+
+.mcel-resource-mvc-select {
+  justify-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: 2rem;
+  block-size: 2rem;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+}
+
+.mcel-resource-mvc-select:hover:not(:disabled),
+.mcel-resource-mvc-select:focus-visible {
+  background: rgba(14, 116, 144, 0.2);
+  outline: 2px solid rgba(125, 211, 252, 0.68);
+  outline-offset: -2px;
+}
+
+.mcel-resource-mvc-select-box {
+  display: inline-grid;
+  place-items: center;
+  inline-size: 1.05rem;
+  block-size: 1.05rem;
+  border: 1.5px solid rgba(125, 211, 252, 0.72);
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(2, 6, 23, 0.84);
+}
+
+.mcel-resource-mvc-select[data-mcel-mvc-selection-state="selected"] .mcel-resource-mvc-select-box {
+  border-color: rgba(34, 211, 238, 0.95);
+  background: rgba(14, 116, 144, 0.92);
+}
+
+.mcel-resource-mvc-select[data-mcel-mvc-selection-state="selected"] .mcel-resource-mvc-select-box::after {
+  content: "✓";
+  color: #ecfeff;
+  font-size: 0.82rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.mcel-resource-mvc-select[data-mcel-mvc-selection-state="mixed"] .mcel-resource-mvc-select-box {
+  border-color: rgba(250, 204, 21, 0.92);
+  background: rgba(113, 63, 18, 0.9);
+}
+
+.mcel-resource-mvc-select[data-mcel-mvc-selection-state="mixed"] .mcel-resource-mvc-select-box::after {
+  content: "–";
+  color: #fef9c3;
+  font-size: 1rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.mcel-resource-mvc-select[data-mcel-mvc-selection-state="blocked"] .mcel-resource-mvc-select-box {
+  border-color: rgba(248, 113, 113, 0.58);
+  background: rgba(69, 10, 10, 0.72);
+}
+
+.mcel-resource-mvc-select[data-mcel-mvc-selection-state="blocked"] .mcel-resource-mvc-select-box::after {
+  content: "×";
+  color: rgba(254, 202, 202, 0.92);
+  font-size: 0.9rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.mcel-resource-mvc-select:disabled {
+  opacity: 0.86;
+}
+
+.mcel-resource-mvc-select-text {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.mcel-resource-mvc-expander {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  inline-size: 1.25rem;
+  block-size: 1.35rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(186, 230, 253, 0.98);
+  font-size: 0.86rem;
+}
+
+.mcel-resource-mvc-expander:hover:not(:disabled),
+.mcel-resource-mvc-expander:focus-visible {
+  background: rgba(14, 116, 144, 0.22);
+  outline: 1px solid rgba(125, 211, 252, 0.54);
+}
+
+.mcel-resource-mvc-expander:disabled {
+  visibility: hidden;
+}
+
+.mcel-resource-mvc-resize-handle {
+  position: absolute;
+  inset-block: 0.25rem;
+  inset-inline-end: -0.36rem;
+  z-index: 3;
+  display: inline-flex;
+  align-items: stretch;
+  justify-content: center;
+  inline-size: 0.72rem;
+  block-size: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: transparent;
+  cursor: col-resize;
+}
+
+.mcel-resource-mvc-resize-grip {
+  display: block;
+  inline-size: 2px;
+  block-size: 100%;
+  border-radius: 999px;
+  background: rgba(125, 211, 252, 0.32);
+  opacity: 0.72;
+}
+
+.mcel-resource-mvc-resize-handle:hover .mcel-resource-mvc-resize-grip,
+.mcel-resource-mvc-resize-handle:focus-visible .mcel-resource-mvc-resize-grip,
+.mcel-resource-mvc-resize-handle[data-mcel-active-resize="true"] .mcel-resource-mvc-resize-grip {
+  inline-size: 3px;
+  background: rgba(34, 211, 238, 0.98);
+  opacity: 1;
+}
+
+.mcel-resource-mvc-resize-handle:focus-visible {
+  outline: 2px solid rgba(125, 211, 252, 0.74);
+  outline-offset: 2px;
+}
+
+.mcel-resource-mvc-contract[data-mcel-resizing-column] .mcel-resource-mvc-resize-handle:not([data-mcel-active-resize="true"]) .mcel-resource-mvc-resize-grip {
+  opacity: 0.24;
+}
+
+
+/* MCEL Toolkit Atlas: reusable primitives before one-off widgets */
+.mcel-toolkit-atlas {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 0 0, rgba(14, 165, 233, 0.18), transparent 35%),
+    linear-gradient(135deg, rgba(2, 6, 23, 0.96), rgba(15, 23, 42, 0.9));
+  box-shadow: 0 18px 50px rgba(2, 6, 23, 0.32);
+}
+
+.mcel-toolkit-atlas-head {
+  display: grid;
+  gap: 0.35rem;
+  max-width: 110ch;
+}
+
+.mcel-toolkit-atlas-head h6 {
+  margin: 0;
+  color: rgba(240, 249, 255, 0.98);
+  font-size: 1.05rem;
+}
+
+.mcel-toolkit-atlas-head p:not(.eyebrow) {
+  margin: 0;
+  color: rgba(203, 213, 225, 0.86);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.mcel-toolkit-score-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.mcel-toolkit-score-grid article {
+  min-width: 0;
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.65rem;
+  border: 1px solid rgba(125, 211, 252, 0.22);
+  border-radius: 16px;
+  background: rgba(8, 13, 28, 0.78);
+}
+
+.mcel-toolkit-score-grid strong {
+  color: rgba(252, 211, 77, 0.98);
+  font-size: 1.05rem;
+}
+
+.mcel-toolkit-score-grid span {
+  min-width: 0;
+  color: rgba(226, 232, 240, 0.82);
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcel-toolkit-layer-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.mcel-toolkit-layer-card {
+  min-width: 0;
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.65rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.mcel-toolkit-layer-card strong {
+  color: rgba(186, 230, 253, 0.98);
+  font-size: 0.8rem;
+}
+
+.mcel-toolkit-layer-card p {
+  margin: 0;
+  color: rgba(203, 213, 225, 0.78);
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.mcel-toolkit-layer-card span {
+  color: rgba(252, 211, 77, 0.88);
+  font-size: 0.68rem;
+}
+
+.mcel-toolkit-primitive-deck {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.mcel-toolkit-card {
+  min-width: 0;
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.7rem;
+  border: 1px solid rgba(125, 211, 252, 0.2);
+  border-radius: 18px;
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.mcel-toolkit-card strong {
+  color: rgba(248, 250, 252, 0.98);
+  font-size: 0.82rem;
+}
+
+.mcel-toolkit-card p {
+  margin: 0;
+  min-height: 2.8em;
+  color: rgba(203, 213, 225, 0.82);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.mcel-toolkit-card--control {
+  border-color: rgba(34, 211, 238, 0.32);
+}
+
+.mcel-toolkit-card--cell {
+  border-color: rgba(167, 139, 250, 0.32);
+}
+
+.mcel-toolkit-card--controller {
+  border-color: rgba(251, 191, 36, 0.3);
+}
+
+.mcel-toolkit-card--contract {
+  border-color: rgba(74, 222, 128, 0.28);
+}
+
+.mcel-toolkit-pill-row,
+.mcel-toolkit-state-row,
+.mcel-toolkit-support-row,
+.mcel-toolkit-missing-row,
+.mcel-toolkit-requirement-strip,
+.mcel-toolkit-assembly-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.28rem;
+  min-width: 0;
+}
+
+.mcel-toolkit-pill-row span,
+.mcel-toolkit-state-row span,
+.mcel-toolkit-support-row span,
+.mcel-toolkit-missing-row span,
+.mcel-toolkit-requirement-strip span,
+.mcel-toolkit-assembly-pills span {
+  max-width: 100%;
+  min-width: 0;
+  padding: 0.18rem 0.42rem;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 999px;
+  color: rgba(226, 232, 240, 0.78);
+  background: rgba(2, 6, 23, 0.62);
+  font-size: 0.66rem;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcel-toolkit-state-row span {
+  border-color: rgba(56, 189, 248, 0.24);
+  color: rgba(186, 230, 253, 0.92);
+}
+
+.mcel-toolkit-support-row span {
+  border-color: rgba(74, 222, 128, 0.2);
+  color: rgba(187, 247, 208, 0.86);
+}
+
+.mcel-toolkit-missing-row span {
+  border-color: rgba(248, 113, 113, 0.28);
+  color: rgba(254, 202, 202, 0.9);
+}
+
+.mcel-toolkit-state-rack,
+.mcel-toolkit-resolver,
+.mcel-toolkit-assembly {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.8rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 20px;
+  background: rgba(8, 13, 28, 0.7);
+}
+
+.mcel-toolkit-state-rack > strong,
+.mcel-toolkit-resolver > strong,
+.mcel-toolkit-assembly > strong {
+  color: rgba(248, 250, 252, 0.98);
+}
+
+.mcel-toolkit-state-specimen {
+  display: grid;
+  grid-template-columns: 11rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.7rem;
+  min-width: 0;
+}
+
+.mcel-toolkit-state-specimen > strong {
+  color: rgba(186, 230, 253, 0.92);
+  font-size: 0.74rem;
+}
+
+.mcel-toolkit-control-rail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.42rem;
+  min-width: 0;
+}
+
+.mcel-toolkit-control-sample {
+  min-width: 7rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.38rem;
+  padding: 0.32rem 0.48rem;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 12px;
+  color: rgba(226, 232, 240, 0.84);
+  background: rgba(15, 23, 42, 0.76);
+  font-size: 0.68rem;
+}
+
+.mcel-toolkit-control-sample i {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 1rem;
+  height: 1rem;
+  border: 1px solid rgba(125, 211, 252, 0.48);
+  border-radius: 4px;
+  background: rgba(2, 6, 23, 0.84);
+}
+
+.mcel-toolkit-control-sample span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcel-toolkit-control-sample[data-mcel-toolkit-state="checked"] i,
+.mcel-toolkit-control-sample[data-mcel-toolkit-state="selected"] i {
+  background: rgba(14, 165, 233, 0.36);
+}
+
+.mcel-toolkit-control-sample[data-mcel-toolkit-state="checked"] i::after,
+.mcel-toolkit-control-sample[data-mcel-toolkit-state="selected"] i::after {
+  content: "✓";
+  color: rgba(240, 249, 255, 0.95);
+  font-size: 0.78rem;
+  line-height: 1;
+}
+
+.mcel-toolkit-control-sample[data-mcel-toolkit-state="mixed"] i::after {
+  content: "";
+  width: 0.5rem;
+  height: 0.14rem;
+  border-radius: 999px;
+  background: rgba(240, 249, 255, 0.92);
+}
+
+.mcel-toolkit-control-sample[data-mcel-toolkit-state="blocked"],
+.mcel-toolkit-control-sample[data-mcel-toolkit-state="disabled"] {
+  opacity: 0.7;
+}
+
+.mcel-toolkit-control-sample[data-mcel-toolkit-state="blocked"] i {
+  border-color: rgba(248, 113, 113, 0.42);
+  background: rgba(127, 29, 29, 0.28);
+}
+
+.mcel-toolkit-control-sample[data-mcel-toolkit-state="blocked"] i::after {
+  content: "×";
+  color: rgba(254, 202, 202, 0.95);
+  font-size: 0.78rem;
+}
+
+.mcel-toolkit-control-sample[data-mcel-toolkit-state="focus"],
+.mcel-toolkit-control-sample[data-mcel-toolkit-state="keyboard-focus"] {
+  outline: 2px solid rgba(56, 189, 248, 0.72);
+  outline-offset: 2px;
+}
+
+.mcel-toolkit-control-sample--disclosure i {
+  border-radius: 999px;
+}
+
+.mcel-toolkit-control-sample--disclosure[data-mcel-toolkit-state="expanded"] i::after {
+  content: "⌄";
+  color: rgba(240, 249, 255, 0.95);
+}
+
+.mcel-toolkit-control-sample--disclosure[data-mcel-toolkit-state="collapsed"] i::after {
+  content: "›";
+  color: rgba(240, 249, 255, 0.95);
+}
+
+.mcel-toolkit-control-sample--disclosure[data-mcel-toolkit-state="leaf"] i {
+  border-color: transparent;
+  background: transparent;
+}
+
+.mcel-toolkit-control-sample--resize i {
+  width: 0.18rem;
+  border-radius: 999px;
+  background: rgba(125, 211, 252, 0.55);
+}
+
+.mcel-toolkit-control-sample--resize[data-mcel-toolkit-state="active"] i,
+.mcel-toolkit-control-sample--resize[data-mcel-toolkit-state="hover"] i {
+  box-shadow: 0 0 0 0.3rem rgba(56, 189, 248, 0.14);
+}
+
+.mcel-toolkit-control-sample--header i {
+  border-radius: 3px;
+}
+
+.mcel-toolkit-control-sample--header[data-mcel-toolkit-state="sorted-asc"] i::after {
+  content: "↑";
+  color: rgba(240, 249, 255, 0.95);
+}
+
+.mcel-toolkit-control-sample--header[data-mcel-toolkit-state="sorted-desc"] i::after {
+  content: "↓";
+  color: rgba(240, 249, 255, 0.95);
+}
+
+.mcel-toolkit-control-sample--row {
+  min-width: 8.5rem;
+}
+
+.mcel-toolkit-control-sample--row[data-mcel-toolkit-state="blocked"] {
+  border-color: rgba(248, 113, 113, 0.28);
+  background: rgba(127, 29, 29, 0.18);
+}
+
+.mcel-toolkit-resolver p,
+.mcel-toolkit-assembly p {
+  margin: 0;
+  color: rgba(203, 213, 225, 0.82);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.mcel-toolkit-view-candidates {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.mcel-toolkit-view-candidate {
+  min-width: 0;
+  display: grid;
+  gap: 0.38rem;
+  padding: 0.65rem;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.mcel-toolkit-view-candidate--eligible {
+  border-color: rgba(74, 222, 128, 0.28);
+  background:
+    linear-gradient(135deg, rgba(22, 101, 52, 0.12), transparent),
+    rgba(15, 23, 42, 0.72);
+}
+
+.mcel-toolkit-view-candidate--rejected {
+  border-color: rgba(248, 113, 113, 0.22);
+  background:
+    linear-gradient(135deg, rgba(127, 29, 29, 0.14), transparent),
+    rgba(15, 23, 42, 0.72);
+}
+
+.mcel-toolkit-view-candidate strong {
+  color: rgba(248, 250, 252, 0.95);
+  font-size: 0.78rem;
+}
+
+.mcel-toolkit-view-candidate p {
+  color: rgba(203, 213, 225, 0.78);
+  font-size: 0.7rem;
+}
+
+@media (max-width: 1180px) {
+  .mcel-toolkit-score-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .mcel-toolkit-layer-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mcel-toolkit-primitive-deck,
+  .mcel-toolkit-view-candidates {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .mcel-toolkit-score-grid,
+  .mcel-toolkit-layer-grid,
+  .mcel-toolkit-primitive-deck,
+  .mcel-toolkit-view-candidates {
+    grid-template-columns: 1fr;
+  }
+
+  .mcel-toolkit-state-specimen {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+.mcel-concern-atlas {
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem;
+  border: 1px solid rgba(125, 211, 252, 0.2);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 12% 8%, rgba(14, 165, 233, 0.16), transparent 34%),
+    linear-gradient(135deg, rgba(15, 23, 42, 0.94), rgba(2, 6, 23, 0.86));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.mcel-concern-atlas-head {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.mcel-concern-atlas-head h6 {
+  margin: 0;
+  color: rgba(248, 250, 252, 0.97);
+  font-size: 1.02rem;
+}
+
+.mcel-concern-atlas-head p:not(.eyebrow) {
+  max-width: 78rem;
+  margin: 0;
+  color: rgba(203, 213, 225, 0.84);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.mcel-concern-score-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.mcel-concern-score-grid article {
+  min-width: 0;
+  padding: 0.72rem;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.mcel-concern-score-grid strong {
+  display: block;
+  color: rgba(240, 249, 255, 0.98);
+  font-size: 1.05rem;
+}
+
+.mcel-concern-score-grid span {
+  color: rgba(148, 163, 184, 0.86);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.mcel-concern-family-strip,
+.mcel-concern-role-strip,
+.mcel-concern-toolkit-strip,
+.mcel-concern-plan-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.mcel-concern-family-strip span,
+.mcel-concern-role-strip span,
+.mcel-concern-toolkit-strip span,
+.mcel-concern-plan-pills span {
+  max-width: 100%;
+  padding: 0.22rem 0.45rem;
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  border-radius: 999px;
+  background: rgba(14, 165, 233, 0.08);
+  color: rgba(224, 242, 254, 0.88);
+  font-size: 0.68rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcel-concern-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.mcel-concern-card {
+  min-width: 0;
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.78rem;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 18px;
+  background: rgba(15, 23, 42, 0.76);
+}
+
+.mcel-concern-card[data-mcel-concern-gap="severe"] {
+  border-color: rgba(248, 113, 113, 0.34);
+  background:
+    linear-gradient(135deg, rgba(127, 29, 29, 0.17), transparent),
+    rgba(15, 23, 42, 0.76);
+}
+
+.mcel-concern-card[data-mcel-concern-gap="major"] {
+  border-color: rgba(251, 191, 36, 0.28);
+  background:
+    linear-gradient(135deg, rgba(146, 64, 14, 0.14), transparent),
+    rgba(15, 23, 42, 0.76);
+}
+
+.mcel-concern-card strong {
+  color: rgba(248, 250, 252, 0.96);
+  font-size: 0.88rem;
+}
+
+.mcel-concern-card p {
+  margin: 0;
+  color: rgba(203, 213, 225, 0.82);
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+.mcel-concern-file {
+  min-width: 0;
+  color: rgba(125, 211, 252, 0.86);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.68rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcel-concern-boundary-map {
+  display: grid;
+  gap: 0.28rem;
+  padding: 0.48rem;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.34);
+}
+
+.mcel-concern-boundary-map span {
+  min-width: 0;
+  color: rgba(226, 232, 240, 0.8);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.66rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcel-concern-mvc-split {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+
+.mcel-concern-mvc-split div {
+  min-width: 0;
+  display: grid;
+  gap: 0.22rem;
+  padding: 0.42rem;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.55);
+}
+
+.mcel-concern-mvc-split b {
+  color: rgba(248, 250, 252, 0.9);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.mcel-concern-mvc-split span {
+  color: rgba(203, 213, 225, 0.78);
+  font-size: 0.64rem;
+  line-height: 1.25;
+}
+
+.mcel-concern-plan {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.78rem;
+  border: 1px solid rgba(74, 222, 128, 0.2);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(22, 101, 52, 0.14), transparent),
+    rgba(15, 23, 42, 0.74);
+}
+
+.mcel-concern-plan strong {
+  color: rgba(240, 253, 244, 0.96);
+  font-size: 0.82rem;
+}
+
+.mcel-concern-plan p {
+  margin: 0;
+  color: rgba(203, 213, 225, 0.82);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+@media (max-width: 1180px) {
+  .mcel-concern-score-grid,
+  .mcel-concern-card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mcel-concern-mvc-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .mcel-concern-score-grid,
+  .mcel-concern-card-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+.mcel-project-concern-workbench {
+  display: grid;
+  gap: 0.9rem;
+  padding: 1rem;
+  border: 1px solid rgba(168, 85, 247, 0.22);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 15% 10%, rgba(168, 85, 247, 0.18), transparent 35%),
+    radial-gradient(circle at 85% 0%, rgba(20, 184, 166, 0.12), transparent 32%),
+    linear-gradient(135deg, rgba(15, 23, 42, 0.95), rgba(2, 6, 23, 0.88));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.mcel-project-concern-workbench-head {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.mcel-project-concern-workbench-head h6 {
+  margin: 0;
+  color: rgba(250, 245, 255, 0.98);
+  font-size: 1.03rem;
+}
+
+.mcel-project-concern-workbench-head p:not(.eyebrow) {
+  max-width: 80rem;
+  margin: 0;
+  color: rgba(221, 214, 254, 0.84);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.mcel-project-workbench-score-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.mcel-project-workbench-score-grid article {
+  min-width: 0;
+  padding: 0.68rem;
+  border: 1px solid rgba(196, 181, 253, 0.18);
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.74);
+}
+
+.mcel-project-workbench-score-grid strong {
+  display: block;
+  color: rgba(253, 244, 255, 0.98);
+  font-size: 1rem;
+}
+
+.mcel-project-workbench-score-grid span {
+  color: rgba(196, 181, 253, 0.82);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.mcel-project-migration-queue {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.75rem;
+  border: 1px solid rgba(45, 212, 191, 0.2);
+  border-radius: 18px;
+  background: rgba(15, 23, 42, 0.62);
+}
+
+.mcel-project-migration-queue > strong,
+.mcel-project-next-patch strong {
+  color: rgba(240, 253, 250, 0.95);
+  font-size: 0.82rem;
+}
+
+.mcel-project-migration-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(12rem, 1.2fr) minmax(10rem, 0.8fr) minmax(18rem, 2fr);
+  gap: 0.55rem;
+  align-items: center;
+  padding: 0.48rem 0.58rem;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.32);
+}
+
+.mcel-project-migration-row[data-mcel-project-migration-priority="critical"] {
+  border-color: rgba(248, 113, 113, 0.32);
+}
+
+.mcel-project-migration-row[data-mcel-project-migration-priority="high"] {
+  border-color: rgba(251, 191, 36, 0.27);
+}
+
+.mcel-project-migration-row b {
+  min-width: 0;
+  color: rgba(248, 250, 252, 0.94);
+  font-size: 0.72rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcel-project-migration-row span,
+.mcel-project-migration-row p {
+  min-width: 0;
+  margin: 0;
+  color: rgba(203, 213, 225, 0.8);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.mcel-project-migration-row p {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcel-project-work-order-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.mcel-project-work-order-card {
+  min-width: 0;
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.82rem;
+  border: 1px solid rgba(196, 181, 253, 0.18);
+  border-radius: 18px;
+  background: rgba(15, 23, 42, 0.76);
+}
+
+.mcel-project-work-order-card[data-mcel-project-work-order-priority="critical"] {
+  border-color: rgba(248, 113, 113, 0.35);
+  background:
+    linear-gradient(135deg, rgba(127, 29, 29, 0.16), transparent),
+    rgba(15, 23, 42, 0.76);
+}
+
+.mcel-project-work-order-card[data-mcel-project-work-order-priority="high"] {
+  border-color: rgba(251, 191, 36, 0.28);
+  background:
+    linear-gradient(135deg, rgba(146, 64, 14, 0.13), transparent),
+    rgba(15, 23, 42, 0.76);
+}
+
+.mcel-project-work-order-card strong {
+  min-width: 0;
+  color: rgba(248, 250, 252, 0.96);
+  font-size: 0.86rem;
+}
+
+.mcel-project-work-order-card p,
+.mcel-project-work-order-card li {
+  margin: 0;
+  color: rgba(203, 213, 225, 0.82);
+  font-size: 0.72rem;
+  line-height: 1.38;
+}
+
+.mcel-project-work-order-meta {
+  min-width: 0;
+  color: rgba(216, 180, 254, 0.86);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.68rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcel-project-work-order-failures {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  padding-left: 1rem;
+}
+
+.mcel-project-contract-strip,
+.mcel-project-view-strip,
+.mcel-project-first-patch,
+.mcel-project-proof-plan {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  padding: 0.45rem;
+  border: 1px solid rgba(148, 163, 184, 0.13);
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.3);
+}
+
+.mcel-project-first-patch,
+.mcel-project-proof-plan {
+  display: grid;
+  align-items: start;
+}
+
+.mcel-project-contract-strip b,
+.mcel-project-first-patch b,
+.mcel-project-proof-plan b {
+  color: rgba(248, 250, 252, 0.9);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.mcel-project-contract-strip span,
+.mcel-project-view-strip span,
+.mcel-project-first-patch span,
+.mcel-project-proof-plan span {
+  min-width: 0;
+  max-width: 100%;
+  padding: 0.2rem 0.42rem;
+  border: 1px solid rgba(196, 181, 253, 0.18);
+  border-radius: 999px;
+  background: rgba(88, 28, 135, 0.16);
+  color: rgba(233, 213, 255, 0.88);
+  font-size: 0.65rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcel-project-view-strip span[data-mcel-project-view-eligible="false"] {
+  border-color: rgba(248, 113, 113, 0.24);
+  background: rgba(127, 29, 29, 0.16);
+  color: rgba(254, 202, 202, 0.9);
+}
+
+.mcel-project-next-patch {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.75rem;
+  border: 1px solid rgba(74, 222, 128, 0.22);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(20, 83, 45, 0.15), transparent),
+    rgba(15, 23, 42, 0.74);
+}
+
+.mcel-project-next-patch p {
+  margin: 0;
+  color: rgba(203, 213, 225, 0.82);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+@media (max-width: 1180px) {
+  .mcel-project-workbench-score-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .mcel-project-work-order-grid,
+  .mcel-project-migration-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .mcel-project-workbench-score-grid,
+  .mcel-project-work-order-grid {
+    grid-template-columns: 1fr;
   }
 }

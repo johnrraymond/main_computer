@@ -315,6 +315,9 @@ class ViewportStaticPageTests(unittest.TestCase):
         self.assertEqual(_application_route_target("/applications/worker"), "worker")
         self.assertEqual(_application_route_target("/apps/worker"), "worker")
         self.assertEqual(_application_route_target("/app/worker"), "worker")
+        self.assertEqual(_application_route_target("/applications/wallet"), "wallet")
+        self.assertEqual(_application_route_target("/apps/wallet"), "wallet")
+        self.assertEqual(_application_route_target("/app/wallet"), "wallet")
         self.assertEqual(_application_route_target("/applications/website-builder"), "website-builder")
         self.assertEqual(_application_route_target("/applications/website-builder/hub-site"), "website-builder")
         self.assertEqual(_application_route_target("/apps/website-builder/blog-site"), "website-builder")
@@ -369,6 +372,11 @@ class ViewportStaticPageTests(unittest.TestCase):
                 worker_page = response.read().decode("utf-8")
             self.assertIn("Main Computer Applications", worker_page)
             self.assertIn("Lock AI model when working", worker_page)
+
+            with urlopen(f"{base}/applications/wallet", timeout=5) as response:
+                wallet_page = response.read().decode("utf-8")
+            self.assertIn("Main Computer Applications", wallet_page)
+            self.assertIn("Standalone wallet connect/disconnect workbench is ready.", wallet_page)
 
             with self.assertRaises(HTTPError) as invalid_app:
                 urlopen(f"{base}/applications/not-a-real-app", timeout=5)

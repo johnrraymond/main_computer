@@ -132,13 +132,15 @@
       color: var(--accent);
     }
 
-    .wallet-agent-credit-form {
+    .wallet-agent-credit-form,
+    .wallet-dns-control-form {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 0.75rem;
     }
 
-    .wallet-agent-credit-form label {
+    .wallet-agent-credit-form label,
+    .wallet-dns-control-form label {
       display: grid;
       gap: 0.35rem;
       color: var(--muted);
@@ -146,7 +148,9 @@
     }
 
     .wallet-agent-credit-form input,
-    .wallet-agent-credit-form textarea {
+    .wallet-agent-credit-form textarea,
+    .wallet-dns-control-form input,
+    .wallet-dns-control-form select {
       width: 100%;
       box-sizing: border-box;
       border: 1px solid rgba(148, 163, 184, 0.24);
@@ -162,11 +166,23 @@
     }
 
     .wallet-agent-credit-memo,
-    .wallet-agent-credit-form button {
+    .wallet-dns-control-value,
+    .wallet-agent-credit-form button,
+    .wallet-dns-control-form button {
       grid-column: 1 / -1;
     }
 
-    .wallet-agent-credit-form button {
+    .wallet-dns-control-checkbox {
+      grid-template-columns: auto minmax(0, 1fr);
+      align-items: center;
+    }
+
+    .wallet-dns-control-checkbox input {
+      width: auto;
+    }
+
+    .wallet-agent-credit-form button,
+    .wallet-dns-control-form button {
       border: 1px solid rgba(125, 211, 252, 0.42);
       border-radius: 999px;
       padding: 0.72rem 1rem;
@@ -176,17 +192,21 @@
     }
 
     .wallet-agent-credit-form button:hover,
-    .wallet-agent-credit-form button:focus-visible {
+    .wallet-agent-credit-form button:focus-visible,
+    .wallet-dns-control-form button:hover,
+    .wallet-dns-control-form button:focus-visible {
       border-color: rgba(125, 211, 252, 0.72);
       background: rgba(14, 165, 233, 0.26);
     }
 
-    .wallet-agent-credit-form button:disabled {
+    .wallet-agent-credit-form button:disabled,
+    .wallet-dns-control-form button:disabled {
       cursor: not-allowed;
       opacity: 0.62;
     }
 
-    .wallet-agent-credit-list {
+    .wallet-agent-credit-list,
+    .wallet-dns-control-list {
       display: grid;
       gap: 0.5rem;
       margin: 0;
@@ -194,7 +214,8 @@
       color: var(--muted);
     }
 
-    .wallet-agent-credit-list li::marker {
+    .wallet-agent-credit-list li::marker,
+    .wallet-dns-control-list li::marker {
       color: var(--accent);
     }
 
@@ -203,7 +224,8 @@
         grid-template-columns: 1fr;
       }
 
-      .wallet-agent-credit-form {
+      .wallet-agent-credit-form,
+      .wallet-dns-control-form {
         grid-template-columns: 1fr;
       }
     }

@@ -56,6 +56,21 @@ def test_wallet_ui_has_buttons_status_surfaces_and_ethers_loader() -> None:
         'id="wallet-agent-credit-status"',
         'id="wallet-agent-credit-last-grant"',
         'id="wallet-agent-credit-list"',
+        'id="wallet-dns-control-form"',
+        'id="wallet-dns-control-mode"',
+        'id="wallet-dns-control-zone"',
+        'id="wallet-dns-control-record-name"',
+        'id="wallet-dns-control-record-type"',
+        'id="wallet-dns-control-record-value"',
+        'id="wallet-dns-control-ttl"',
+        'id="wallet-dns-control-proxied"',
+        'id="wallet-dns-control-nameserver"',
+        'id="wallet-dns-control-admin-url"',
+        'id="wallet-dns-control-save-button"',
+        'id="wallet-dns-control-refresh-button"',
+        'id="wallet-dns-control-status"',
+        'id="wallet-dns-control-last-profile"',
+        'id="wallet-dns-control-list"',
     ]
     for expected_id in expected_ids:
         assert expected_id in html
@@ -65,15 +80,22 @@ def test_wallet_ui_has_buttons_status_surfaces_and_ethers_loader() -> None:
     assert "stable signer/network reads" in html
     assert "Agent Helper Credits" in html
     assert "small Compute Credit balance" in html
+    assert "DNS Control Plane" in html
+    assert "Cloudflare-managed DNS" in html
+    assert "Run my own authoritative DNS" in html
     assert "const walletApp = document.querySelector" in bindings
     assert "const walletConnectButton = document.querySelector" in bindings
     assert "const walletDisconnectButton = document.querySelector" in bindings
     assert "const walletAgentCreditForm = document.querySelector" in bindings
     assert "const walletAgentCreditGrantButton = document.querySelector" in bindings
+    assert "const walletDnsControlForm = document.querySelector" in bindings
+    assert "const walletDnsControlSaveButton = document.querySelector" in bindings
     assert ".wallet-app" in css
     assert ".wallet-actions" in css
     assert ".wallet-agent-credit-form" in css
     assert ".wallet-agent-credit-list" in css
+    assert ".wallet-dns-control-form" in css
+    assert ".wallet-dns-control-list" in css
 
 
 def test_wallet_app_uses_ethers_for_connect_disconnect_and_chain_policy() -> None:
@@ -108,12 +130,19 @@ def test_wallet_app_uses_ethers_for_connect_disconnect_and_chain_policy() -> Non
     assert "disconnect.ethers.revokePermissions.start" in js
     assert "disconnect.done" in js
     assert 'const WALLET_AGENT_CREDIT_GRANT_ENDPOINT = "/api/applications/wallet/agent-credit-grants";' in js
+    assert 'const WALLET_DNS_CONTROL_ENDPOINT = "/api/applications/wallet/dns-control";' in js
     assert "async function hydrateWalletAgentCreditGrants" in js
     assert "async function requestWalletAgentCreditGrant" in js
+    assert "async function hydrateWalletDnsControlProfiles" in js
+    assert "async function requestWalletDnsControlSave" in js
     assert "walletAgentCreditForm.addEventListener" in js
+    assert "walletDnsControlForm.addEventListener" in js
     assert "agent-credit-grant.issued" in js
+    assert "dns-control-profile.saved" in js
     assert "hydrateAgentCreditGrants" in js
     assert "requestAgentCreditGrant" in js
+    assert "hydrateDnsControlProfiles" in js
+    assert "requestDnsControlSave" in js
     assert "wallet.accountsChanged.observed" in js
     assert "wallet.chainChanged.observed" in js
     assert "Force Disconnect / Reset" in js
@@ -153,3 +182,21 @@ def test_wallet_agent_credit_grant_api_contract_is_routed_to_hub_admin_issue() -
     assert '"agent_credit_grant": True' in energy
     assert "credits must be between 1 and 100" in energy
 
+
+def test_wallet_dns_control_profile_api_contract_supports_cloudflare_and_self_hosted_dns() -> None:
+    dispatch = VIEWPORT_ROUTE_DISPATCH.read_text(encoding="utf-8")
+    energy = VIEWPORT_ROUTES_ENERGY.read_text(encoding="utf-8")
+
+    assert 'route_path == "/api/applications/wallet/dns-control"' in dispatch
+    assert "self._handle_wallet_dns_control_profiles_load()" in dispatch
+    assert "self._handle_wallet_dns_control_profile_save()" in dispatch
+
+    assert "def _handle_wallet_dns_control_profiles_load" in energy
+    assert "def _handle_wallet_dns_control_profile_save" in energy
+    assert "wallet_dns_control_profiles.json" in energy
+    assert "provider_mode must be either cloudflare or self-hosted" in energy
+    assert '"cloudflare_dns_records"' in energy
+    assert '"self_hosted_authoritative_zone"' in energy
+    assert '"wallet_owned_dns_profile"' in energy
+    assert "Store provider API tokens outside the browser" in energy
+    assert "self-hosted DNS requires nameserver_host or admin_url" in energy

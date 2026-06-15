@@ -1666,14 +1666,21 @@ def test_mcel_lab_element_library_acid_test_is_wired() -> None:
     lab = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
     css = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
     registry = (WEB_APP / "scripts" / "mcel-element-registry.js").read_text(encoding="utf-8")
+    toolkit = (WEB_APP / "scripts" / "mcel-toolkit-core.js").read_text(encoding="utf-8")
     elements = (WEB_APP / "scripts" / "mcel-elements-core.js").read_text(encoding="utf-8")
     acid = (WEB_APP / "scripts" / "mcel-element-acid-test.js").read_text(encoding="utf-8")
 
+    assert "<!-- @include applications/scripts/mcel-toolkit-core.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-concern-core.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-project-concern-workbench.js -->" in html
     assert "<!-- @include applications/scripts/mcel-element-registry.js -->" in html
     assert "<!-- @include applications/scripts/mcel-elements-core.js -->" in html
     assert "<!-- @include applications/scripts/mcel-element-acid-test.js -->" in html
     assert (
         html.index("mcel-specimen-planner.js")
+        < html.index("mcel-toolkit-core.js")
+        < html.index("mcel-concern-core.js")
+        < html.index("mcel-project-concern-workbench.js")
         < html.index("mcel-element-registry.js")
         < html.index("mcel-elements-core.js")
         < html.index("mcel-element-acid-test.js")
@@ -1711,6 +1718,49 @@ def test_mcel_lab_element_library_acid_test_is_wired() -> None:
         "element.core.collection",
         "element.core.collection-row",
         "element.core.preview-pane",
+        "element.core.mvc-model",
+        "element.core.mvc-controller",
+        "element.core.mvc-view",
+        "element.toolkit.foundation-token",
+        "element.toolkit.selection-control",
+        "element.toolkit.disclosure-control",
+        "element.toolkit.resize-handle",
+        "element.toolkit.sort-indicator",
+        "element.toolkit.filter-chip",
+        "element.toolkit.command-button",
+        "element.toolkit.drag-handle",
+        "element.toolkit.bulk-selector",
+        "element.toolkit.path-cell",
+        "element.toolkit.name-cell",
+        "element.toolkit.status-cell",
+        "element.toolkit.risk-cell",
+        "element.toolkit.datetime-cell",
+        "element.toolkit.reason-cell",
+        "element.toolkit.diffstat-cell",
+        "element.toolkit.action-cell",
+        "element.toolkit.collection-view",
+        "element.toolkit.toolbar",
+        "element.toolkit.split-pane",
+        "element.toolkit.inspector-pane",
+        "element.toolkit.preview-pane",
+        "element.toolkit.status-bar",
+        "element.toolkit.selection-controller",
+        "element.toolkit.expansion-controller",
+        "element.toolkit.column-sizing-controller",
+        "element.toolkit.sort-filter-controller",
+        "element.toolkit.safety-controller",
+        "element.toolkit.view-resolver",
+        "element.toolkit.contract-pattern",
+        "element.concern.catalog",
+        "element.concern.detector",
+        "element.concern.boundary-map",
+        "element.concern.contract-gap",
+        "element.concern.mvc-split",
+        "element.concern.replacement-plan",
+        "element.concern.project-workbench",
+        "element.concern.work-order",
+        "element.concern.migration-queue",
+        "element.concern.proof-plan",
         "element.resource.directory-tree",
         "element.resource.tree-viewport",
         "element.resource.tree-branch",
@@ -1724,6 +1774,12 @@ def test_mcel_lab_element_library_acid_test_is_wired() -> None:
         "element.resource.file-boundary",
         "element.resource.path-bar",
         "element.resource.resource-row",
+        "element.resource.view-contract",
+        "element.resource.selection-contract",
+        "element.resource.contract-treegrid",
+        "element.resource.view-mode-controller",
+        "element.resource.icon-grid",
+        "element.resource.details-pane",
         "element.operational.process-table",
         "element.operational.server-control",
         "element.operational.pid-action",
@@ -1762,6 +1818,42 @@ def test_mcel_lab_element_library_acid_test_is_wired() -> None:
     assert "miller-columns" in elements
     assert "outline-tree" in elements
     assert "accessibility-proof" in elements
+    assert "extra-large-icons" in elements
+    assert "tiles" in elements
+    assert "content" in elements
+    assert "details-pane" in elements
+    assert "preview-pane" in elements
+    assert "finder-gallery" in elements
+    assert "finder-column-inspector" in elements
+    assert "gnome-grid" in elements
+    assert "gnome-list" in elements
+    assert "dolphin-split-details" in elements
+    assert "thunar-compact" in elements
+    assert "GNOME Files view switcher" in elements
+    assert "Dolphin split/details view" in elements
+    assert "Thunar compact view" in elements
+    assert "long-names-ellipsis-not-overlap" in elements
+    assert "element.resource.view-mode-controller" in elements
+    assert "element.resource.view-contract" in elements
+    assert "element.resource.selection-contract" in elements
+    assert "element.resource.contract-treegrid" in elements
+    assert "element.core.mvc-model" in elements
+    assert "element.core.mvc-controller" in elements
+    assert "element.core.mvc-view" in elements
+    assert "explicit-file-paths" in elements
+    assert "multi-column-fields-do-not-collapse-into-title" in elements
+    assert "blocked-rows-visible-not-selectable" in elements
+    assert "interactive expand/collapse" in elements
+    assert "resizable columns" in elements
+    assert "resizable-columns-stay-inside-treegrid" in elements
+    assert "selection-controls-look-like-checkboxes" in elements
+    assert "resizable-columns-use-edge-grips" in elements
+    assert "legible checkbox controls" in elements
+    assert "keyboard resizable columns" in elements
+    assert "columnWidths" in elements
+    assert "title-only tree" in elements
+    assert "element.resource.icon-grid" in elements
+    assert "element.resource.details-pane" in elements
     assert "aria-expanded" in elements
     assert "aria-selected" in elements
     assert "activeNodeId" in elements
@@ -1785,7 +1877,7 @@ def test_mcel_lab_element_library_acid_test_is_wired() -> None:
     assert "renderOperationalWorkbench" in acid
     assert "renderNetworkComputeAuthoringWorkbench" in acid
     assert "mcel-element-showcase-workbench" in acid
-    assert "real tree view patterns replacing Wunderbaum" in acid
+    assert "contract-first MVC tree views replacing Wunderbaum" in acid
     assert "TREE_VIEW_MODES" in acid
     assert "Cycle tree views" in acid
     assert "Explorer sidebar" in acid
@@ -1794,6 +1886,122 @@ def test_mcel_lab_element_library_acid_test_is_wired() -> None:
     assert "Column browser" in acid
     assert "Outline tree" in acid
     assert "Keyboard proof" in acid
+    assert "Icon grid" in acid
+    assert "List view" in acid
+    assert "Tiles view" in acid
+    assert "Content view" in acid
+    assert "RESOURCE_VIEW_MENU_OPTIONS" in acid
+    assert "Extra large icons" in acid
+    assert "Large icons" in acid
+    assert "Medium icons" in acid
+    assert "Small icons" in acid
+    assert "Details pane" in acid
+    assert "Preview pane" in acid
+    assert "View menu parity" in acid
+    assert "wireResourceViewMenu" in acid
+    assert "mcelResourceViewTarget" in acid
+    assert "Active view:" in acid
+    assert "fileExplorerViewParityReady" in acid
+    assert "crossPlatformResourceViewParityReady" in acid
+    assert "mac/linux parity=" in acid
+    assert "Finder Gallery" in acid
+    assert "Finder Columns + Inspector" in acid
+    assert "GNOME Files grid" in acid
+    assert "GNOME Files list" in acid
+    assert "Dolphin split/details" in acid
+    assert "Thunar compact" in acid
+    assert "finder-gallery" in acid
+    assert "finder-column-inspector" in acid
+    assert "gnome-grid" in acid
+    assert "gnome-list" in acid
+    assert "dolphin-split-details" in acid
+    assert "thunar-compact" in acid
+    assert "RESOURCE_VIEW_MVC_CONTRACT" in acid
+    assert "RESOURCE_VIEW_MVC_ROLES" in acid
+    assert "Resource MVC contract-first file basket mock" in acid
+    assert "renderResourceMvcContractMockup" in acid
+    assert "resourceMvcBasketRows" in acid
+    assert "MVC Model" in acid
+    assert "MVC Controller" in acid
+    assert "MVC View" in acid
+    assert "View resolver" in acid
+    assert "hierarchical-explicit-files" in acid
+    assert "explicit-file-paths" in acid
+    assert "directories are shortcuts" in acid
+    assert "toggleDirectoryShortcut" in acid
+    assert "selectAllEligible" in acid
+    assert "collapseAll" in acid
+    assert "resetColumnWidths" in acid
+    assert "blocked rows visible, not selectable" in acid
+    assert "title-only tree rejected" in acid
+    assert "data-mcel-view-contract" in acid
+    assert "data-mcel-selection-contract" in acid
+    assert "mcelViewCapabilities" in acid
+    assert "wireResourceMvcContractMockup" in acid
+    assert "data-mcel-mvc-interactive" in acid
+    assert "data-mcel-mvc-select" in acid
+    assert "data-mcel-mvc-expander" in acid
+    assert "data-mcel-resize-column" in acid
+    assert "mcel-resource-mvc-select-box" in acid
+    assert "mcel-resource-mvc-select-text" in acid
+    assert "mcel-resource-mvc-resize-grip" in acid
+    assert "aria-checked" in acid
+    assert "aria-keyshortcuts" in acid
+    assert "ArrowLeft" in acid
+    assert "pointerdown" in acid
+    assert "setResourceMvcColumnWidth" in acid
+    assert "applyResourceMvcColumnPreset" in acid
+    assert "selected every eligible file" in acid.lower()
+    assert "resourceMvcContractReady" in acid
+    assert "resourceMvcInteractiveReady" in acid
+    assert "resource MVC interactive=" in acid
+    assert "global.McelToolkitCore" in toolkit
+    assert "TOOLKIT_VERSION" in toolkit
+    assert "PRIMITIVES" in toolkit
+    assert "VIEW_RECIPES" in toolkit
+    assert "CONTRACT_PATTERNS" in toolkit
+    assert "resolveViews" in toolkit
+    assert "evaluateView" in toolkit
+    assert "buildToolkitReadinessReport" in toolkit
+    assert "control.selection.tristate" in toolkit
+    assert "control.resize-handle" in toolkit
+    assert "controller.view-resolver" in toolkit
+    assert "pattern.file-basket" in toolkit
+    assert "blocked-visible-not-selectable" in toolkit
+    assert "titleOnlyTreeRejected" in toolkit
+    assert "noOneOffControls" in toolkit
+    assert "element.toolkit.foundation-token" in elements
+    assert "element.toolkit.selection-control" in elements
+    assert "element.toolkit.disclosure-control" in elements
+    assert "element.toolkit.resize-handle" in elements
+    assert "element.toolkit.path-cell" in elements
+    assert "element.toolkit.status-cell" in elements
+    assert "element.toolkit.risk-cell" in elements
+    assert "element.toolkit.reason-cell" in elements
+    assert "element.toolkit.collection-view" in elements
+    assert "element.toolkit.selection-controller" in elements
+    assert "element.toolkit.column-sizing-controller" in elements
+    assert "element.toolkit.view-resolver" in elements
+    assert "element.toolkit.contract-pattern" in elements
+    assert "MCEL Toolkit Atlas" in acid
+    assert "renderToolkitAtlas" in acid
+    assert "mcelToolkitCore" in acid
+    assert "mcel-toolkit-atlas" in acid
+    assert "mcel-toolkit-primitive-deck" in acid
+    assert "mcel-toolkit-state-rack" in acid
+    assert "mcel-toolkit-resolver" in acid
+    assert "mcel-toolkit-assembly" in acid
+    assert "data-mcel-toolkit-primitive" in acid
+    assert "data-mcel-toolkit-view-candidate" in acid
+    assert "toolkitAtlasReady" in acid
+    assert "toolkitResolverRejectsTitleOnlyTree" in acid
+    assert "Toolkit primitives" in acid
+    assert "Primitive state specimens" in acid
+    assert "Needs → contract → visualization resolver" in acid
+    assert "File-basket assembly map" in acid
+    assert "Stop inventing one-off widgets" in acid
+    assert "resource MVC contract=" in acid
+    assert "long labels" in acid
     assert "appendTreeNode" in acid
     assert "tree-viewport" in acid
     assert "Selection model" in acid
@@ -1830,4 +2038,44 @@ def test_mcel_lab_element_library_acid_test_is_wired() -> None:
     assert ".mcel-resource-tree-viewport--ide" in css
     assert ".mcel-resource-treegrid" in css
     assert ".mcel-resource-column-browser" in css
+    assert ".mcel-resource-view-menu" in css
+    assert ".mcel-resource-view-menu-option" in css
+    assert ".mcel-resource-icon-grid" in css
+    assert ".mcel-resource-list-view" in css
+    assert ".mcel-resource-tile-view" in css
+    assert ".mcel-resource-content-view" in css
+    assert ".mcel-resource-view-menu-status" in css
+    assert ".mcel-toolkit-atlas" in css
+    assert ".mcel-toolkit-score-grid" in css
+    assert ".mcel-toolkit-layer-grid" in css
+    assert ".mcel-toolkit-primitive-deck" in css
+    assert ".mcel-toolkit-card" in css
+    assert ".mcel-toolkit-state-rack" in css
+    assert ".mcel-toolkit-control-sample" in css
+    assert ".mcel-toolkit-resolver" in css
+    assert ".mcel-toolkit-view-candidate" in css
+    assert ".mcel-toolkit-assembly" in css
+    assert ".mcel-resource-mvc-contract" in css
+    assert ".mcel-resource-mvc-role-grid" in css
+    assert ".mcel-resource-mvc-card" in css
+    assert ".mcel-resource-mvc-field-strip" in css
+    assert ".mcel-resource-mvc-treegrid" in css
+    assert ".mcel-resource-mvc-row" in css
+    assert ".mcel-resource-mvc-select" in css
+    assert ".mcel-resource-mvc-select-box" in css
+    assert ".mcel-resource-mvc-select-text" in css
+    assert ".mcel-resource-mvc-expander" in css
+    assert ".mcel-resource-mvc-resize-handle" in css
+    assert ".mcel-resource-mvc-resize-grip" in css
+    assert ".mcel-resource-mvc-interaction-status" in css
+    assert ".mcel-resource-mvc-output" in css
+    assert ".mcel-resource-mvc-resolver" in css
+    assert ".mcel-resource-finder-gallery" in css
+    assert ".mcel-resource-finder-column-inspector" in css
+    assert ".mcel-resource-gnome-grid" in css
+    assert ".mcel-resource-gnome-list" in css
+    assert ".mcel-resource-dolphin-split" in css
+    assert ".mcel-resource-thunar-compact" in css
+    assert "[data-resource-icon-size=\"72\"]" in css
+    assert ".mcel-element-showcase-details-pane" in css
     assert ".mcel-resource-tree-proof-card" in css

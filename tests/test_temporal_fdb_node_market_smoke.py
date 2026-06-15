@@ -6,12 +6,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+import main_computer.temporal_fdb_node_market_smoke as smoke_mod
 from main_computer.temporal_fdb_node_market_smoke import (
     NodeMarketSmokeConfig,
     RequestSpec,
     build_parser,
     build_worker_nodes,
     match_worker_for_request,
+    _effective_fdb_start_mode,
+    _prepare_fdb_dependency_before_probe,
     _run_storage_step,
     run_temporal_fdb_node_market_smoke,
 )
@@ -41,8 +44,71 @@ def test_cli_defaults_target_fdb_live_temporal_and_fifty_nodes() -> None:
     assert args.quiet is False
     assert args.progress_interval_seconds == 2.0
     assert args.storage_operation_timeout_seconds == 15.0
+    assert args.fdb_start_mode == "auto"
+    assert args.no_bootstrap_fdb is False
 
 
+def test_cli_fdb_start_modes_and_legacy_no_bootstrap_alias() -> None:
+    always = build_parser().parse_args(["--fdb-start-mode", "always"])
+    assert always.fdb_start_mode == "always"
+    assert always.no_bootstrap_fdb is False
+
+    never = build_parser().parse_args(["--fdb-start-mode", "never"])
+    assert never.fdb_start_mode == "never"
+
+    legacy = build_parser().parse_args(["--no-bootstrap-fdb"])
+    assert legacy.no_bootstrap_fdb is True
+    assert _effective_fdb_start_mode(NodeMarketSmokeConfig(repo_root=REPO_ROOT, bootstrap_fdb=False)) == "never"
+
+
+def test_fdb_start_auto_runs_existing_bootstrap_when_cluster_file_is_missing(tmp_path, monkeypatch) -> None:
+    events: list[str] = []
+
+    class SilentProgress:
+        def emit(self, event: str, **fields: object) -> None:
+            events.append(f"{event}:{fields.get('reason', '')}")
+
+    def fake_bootstrap(config: NodeMarketSmokeConfig, *, progress: object, reason: str) -> None:
+        events.append(f"bootstrap:{reason}")
+        cluster_file = config.resolved_fdb_cluster_file()
+        cluster_file.parent.mkdir(parents=True, exist_ok=True)
+        cluster_file.write_text("docker:docker@127.0.0.1:4550\n", encoding="utf-8")
+
+    monkeypatch.setattr(smoke_mod, "_run_fdb_bootstrap_helper", fake_bootstrap)
+
+    config = NodeMarketSmokeConfig(
+        repo_root=tmp_path,
+        fdb_cluster_file=Path(".foundationdb") / "docker.cluster",
+        fdb_start_mode="auto",
+    )
+    _prepare_fdb_dependency_before_probe(config, progress=SilentProgress())  # type: ignore[arg-type]
+
+    assert "fdb_cluster_file_missing:" in events
+    assert "bootstrap:cluster_file_missing" in events
+    assert config.resolved_fdb_cluster_file().exists()
+
+
+def test_fdb_start_always_runs_existing_bootstrap_even_when_cluster_file_exists(tmp_path, monkeypatch) -> None:
+    events: list[str] = []
+    cluster_file = tmp_path / ".foundationdb" / "docker.cluster"
+    cluster_file.parent.mkdir(parents=True, exist_ok=True)
+    cluster_file.write_text("stale:stale@127.0.0.1:4550\n", encoding="utf-8")
+
+    class SilentProgress:
+        def emit(self, event: str, **fields: object) -> None:
+            events.append(f"{event}:{fields.get('reason', '')}")
+
+    def fake_bootstrap(config: NodeMarketSmokeConfig, *, progress: object, reason: str) -> None:
+        events.append(f"bootstrap:{reason}")
+
+    monkeypatch.setattr(smoke_mod, "_run_fdb_bootstrap_helper", fake_bootstrap)
+
+    _prepare_fdb_dependency_before_probe(
+        NodeMarketSmokeConfig(repo_root=tmp_path, fdb_start_mode="always"),
+        progress=SilentProgress(),  # type: ignore[arg-type]
+    )
+
+    assert events == ["bootstrap:fdb_start_mode_always"]
 
 
 def test_storage_step_timeout_fails_with_diagnostic() -> None:

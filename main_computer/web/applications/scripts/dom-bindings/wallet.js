@@ -16,3 +16,19 @@
     const walletAgentCreditStatus = document.querySelector("#wallet-agent-credit-status");
     const walletAgentCreditLastGrant = document.querySelector("#wallet-agent-credit-last-grant");
     const walletAgentCreditList = document.querySelector("#wallet-agent-credit-list");
+    const walletDnsControlForm = document.querySelector("#wallet-dns-control-form");
+    const walletDnsControlMode = document.querySelector("#wallet-dns-control-mode");
+    const walletDnsControlZone = document.querySelector("#wallet-dns-control-zone");
+    const walletDnsControlRecordName = document.querySelector("#wallet-dns-control-record-name");
+    const walletDnsControlRecordType = document.querySelector("#wallet-dns-control-record-type");
+    const walletDnsControlRecordValue = document.querySelector("#wallet-dns-control-record-value");
+    const walletDnsControlTtl = document.querySelector("#wallet-dns-control-ttl");
+    const walletDnsControlProxied = document.querySelector("#wallet-dns-control-proxied");
+    const walletDnsControlNameserver = document.querySelector("#wallet-dns-control-nameserver");
+    const walletDnsControlAdminUrl = document.querySelector("#wallet-dns-control-admin-url");
+    const walletDnsControlSaveButton = document.querySelector("#wallet-dns-control-save-button");
+    const walletDnsControlRefreshButton = document.querySelector("#wallet-dns-control-refresh-button");
+    const walletDnsControlStatus = document.querySelector("#wallet-dns-control-status");
+    const walletDnsControlLastProfile = document.querySelector("#wallet-dns-control-last-profile");
+    const walletDnsControlList = document.querySelector("#wallet-dns-control-list");
+
