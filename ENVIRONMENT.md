@@ -373,3 +373,27 @@ MAIN_COMPUTER_ONLYOFFICE_JWT_SECRET=<stable-secret>
 ```
 
 ONLYOFFICE Docs uses port `18085` by default because local platform site publishing owns ports `18080`-`18083`.
+
+## Temporal/FDB Hub lab after reboot
+
+From the repository root in PowerShell after activating the virtualenv:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+
+python -m tools.temporal_lab.local_temporal up --pull
+python -m tools.temporal_lab.local_temporal status
+
+python .\scripts\smoke_foundationdb_credit_ledger_primitives.py --keep-container
+```
+
+Then run the acceptance smokes:
+
+```powershell
+python .\scripts\smoke_temporal_fdb_hub_node_market.py
+python .\scripts\smoke_temporal_fdb_hub_multi_hub.py
+python .\scripts\smoke_temporal_fdb_hub_stress.py
+```
+
+The stress smoke is the mock-chain bridge soak/freeze test. It should run before swapping the mock bridge for a dev-chain backend.
+

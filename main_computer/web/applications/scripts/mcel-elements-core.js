@@ -451,7 +451,8 @@ def("element.resource.file-boundary", "Read-only File Boundary", "resource", "re
             "element.resource.tree-drag-drop-boundary",
             "element.resource.view-contract",
             "element.resource.selection-contract",
-            "element.resource.contract-treegrid"
+            "element.resource.contract-treegrid",
+            "element.resource.file-basket-model"
           ],
           scrollPolicy: "owns-tree-viewport-scroll",
           layoutLaws: ["tree-owns-one-scrollport", "active-row-remains-visible", "indentation-preserves-readable-labels", "long-names-ellipsis-not-overlap", "side-pane-does-not-steal-tree-scrollport", "no-illegal-nested-scrollbars"],
@@ -649,6 +650,17 @@ def("element.resource.file-boundary", "Read-only File Boundary", "resource", "re
           dataModel: {requires: ["hierarchy", "multi-column metadata", "field type metadata", "tri-state selection", "legible checkbox controls", "blocked rows visible, not selectable", "selected output preview", "interactive expand/collapse", "resizable columns", "keyboard resizable columns"]},
           decoderHints: ["treegrid", "details", "columns", "resizable columns", "edge resize grip", "checkbox selection", "expand collapse", "file basket", "contract-first", "explicit-file-paths"],
           supersedes: ["single title column", "Wunderbaum title metadata smear"]
+        }),
+        def("element.resource.file-basket-model", "File Basket Model Adapter", "resource", "file-basket-model", "Pure contract model for Task Manager/Git file baskets: fields, repo-relative identity, hierarchy, selectable state, blocked reason, and selected-output proof before any renderer is replaced.", {
+          allowedChildren: ["element.resource.view-contract", "element.resource.selection-contract", "element.resource.contract-treegrid"],
+          riskPolicy: analysis,
+          scrollPolicy: "no-owned-scroll",
+          layoutLaws: ["model-does-not-render", "typed-fields-remain-structured", "blocked-rows-visible-not-selectable", "selected-output-is-explicit-file-paths"],
+          stateModel: {required: ["fields", "rows", "hierarchy", "selectionContract", "safetyContract"], optional: ["defaultSelectedPaths", "blockedPaths", "viewContract", "invalidCandidates"]},
+          interactionModel: {mutatesDom: false, ownsTruth: true, handoff: "controller-selection"},
+          dataModel: {requires: ["path", "status", "bucket", "risk", "reason", "modified", "blockedReason"]},
+          decoderHints: ["file basket model", "pure adapter", "first safe migration", "selected output", "blocked rows", "contract boundary"],
+          supersedes: ["view-specific selection scraping", "typed metadata flattened into node title"]
         }),
         def("element.resource.view-mode-controller", "Resource View Mode Controller", "resource", "view-controller", "Cross-platform view menu that switches Windows Explorer icon/list/details/tiles/content, macOS Finder gallery/columns, GNOME/KDE/XFCE Linux layouts, sort/group state, and side-pane visibility without mutating resources.", {
           riskPolicy: safe,

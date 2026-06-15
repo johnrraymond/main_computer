@@ -67,6 +67,7 @@ class HubNodeMarketSmokeConfig:
     keepalive_interval_seconds: float = 2.0
     account_id: str = "temporal-fdb-hub-node-market-client"
     requester_wallet_address: str = "0x0000000000000000000000000000000000000aa1"
+    worker_wallet_addresses: tuple[str, ...] = ()
     model: str = "temporal-fdb-hub-node-market-model"
     task_queue_prefix: str = NODE_MARKET_TASK_QUEUE_PREFIX + "-hub"
     run_id: str | None = None
@@ -449,8 +450,31 @@ def _worker_wallet_address(spec: Any) -> str:
     return _smoke_wallet_address(f"worker:{getattr(spec, 'node_id', '')}")
 
 
-def _worker_payload(spec: Any, *, model: str) -> dict[str, Any]:
-    wallet_address = _worker_wallet_address(spec)
+def _worker_index(spec: Any) -> int | None:
+    match = re.search(r"(\d+)$", str(getattr(spec, "node_id", "")))
+    if not match:
+        return None
+    return max(0, int(match.group(1)) - 1)
+
+
+def _worker_wallet_address_for_config(config: HubNodeMarketSmokeConfig, spec: Any) -> str:
+    index = _worker_index(spec)
+    if index is not None and 0 <= index < len(config.worker_wallet_addresses):
+        wallet_address = str(config.worker_wallet_addresses[index]).strip()
+        if wallet_address:
+            return wallet_address
+    return _worker_wallet_address(spec)
+
+
+def _split_wallet_addresses(value: object) -> tuple[str, ...]:
+    raw = str(value or "").strip()
+    if not raw:
+        return ()
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _worker_payload(spec: Any, *, model: str, wallet_address: str | None = None) -> dict[str, Any]:
+    wallet_address = wallet_address or _worker_wallet_address(spec)
     return {
         "node_id": spec.node_id,
         "endpoint": spec.endpoint,
@@ -488,12 +512,12 @@ async def _heartbeat_loop(
         "worker_node_id": node.node_id,
         "status": "available",
         "assigned_ring": node.ring,
-        "wallet_address": _worker_wallet_address(node),
+        "wallet_address": _worker_wallet_address_for_config(config, node),
         "capabilities": {
             "worker_pull_v0": True,
             "assigned_ring": node.ring,
             "task_queue": node.task_queue,
-            "wallet_address": _worker_wallet_address(node),
+            "wallet_address": _worker_wallet_address_for_config(config, node),
             "keepalive": {"mode": "periodic-http-heartbeat"},
         },
         "max_concurrency": node.max_concurrency,
@@ -564,7 +588,12 @@ def _verify_backends(config: HubNodeMarketSmokeConfig, *, progress: _ProgressRep
             )
 
 
-def _bridge_fund_requester(config: HubNodeMarketSmokeConfig, *, progress: _ProgressReporter) -> dict[str, Any]:
+def _bridge_fund_requester(
+    config: HubNodeMarketSmokeConfig,
+    *,
+    progress: _ProgressReporter,
+    before_confirm_callback: Any | None = None,
+) -> dict[str, Any]:
     wallet_address = str(config.requester_wallet_address or "").strip()
     if not wallet_address:
         wallet_address = _smoke_wallet_address(f"requester:{config.account_id}:{config.run_id}")
@@ -617,12 +646,26 @@ def _bridge_fund_requester(config: HubNodeMarketSmokeConfig, *, progress: _Progr
     deposit_id = str(deposit_payload.get("deposit_id", ""))
     if not deposit_id:
         raise NodeMarketSmokeError(f"Bridge deposit did not return deposit_id: {deposit}")
+    confirm_metadata: dict[str, Any] = {"run_id": config.run_id, "smoke": "temporal_fdb_hub_node_market"}
+    dev_chain_confirmation = None
+    if before_confirm_callback is not None:
+        dev_chain_confirmation = before_confirm_callback(
+            {
+                "deposit_id": deposit_id,
+                "wallet_address": wallet_address,
+                "account_id": config.account_id,
+                "credits": config.deposit_credits,
+                "deposit": deposit_payload,
+            }
+        )
+        if dev_chain_confirmation is not None:
+            confirm_metadata["dev_chain"] = dev_chain_confirmation
     confirmed = _post_json(
         config.hub_url,
         "/api/hub/v1/bridge/deposits/confirm",
         {
             "deposit_id": deposit_id,
-            "metadata": {"run_id": config.run_id, "smoke": "temporal_fdb_hub_node_market"},
+            "metadata": confirm_metadata,
         },
         timeout=config.http_timeout_seconds,
     )
@@ -642,6 +685,7 @@ def _bridge_fund_requester(config: HubNodeMarketSmokeConfig, *, progress: _Progr
         "mint": mint,
         "deposit": deposit_payload,
         "confirmed": confirmed,
+        "dev_chain_confirmation": dev_chain_confirmation,
     }
 
 
@@ -653,7 +697,7 @@ def _verify_surprise_payout_rejected_during_active_work(
 ) -> dict[str, Any]:
     """A payout may arrive out of the blue; while the wallet has an active lease it must be rejected."""
 
-    wallet_address = _worker_wallet_address(worker)
+    wallet_address = _worker_wallet_address_for_config(config, worker)
     error = _post_json_expect_http_error(
         config.hub_url,
         "/api/hub/v1/bridge/payouts",
@@ -855,7 +899,7 @@ def _exercise_worker_payout(
         raise NodeMarketSmokeError("Cannot exercise mock-chain payout without a selected worker.")
     payout_worker_id = selected_worker_ids[0]
     worker = nodes_by_id[payout_worker_id]
-    wallet_address = _worker_wallet_address(worker)
+    wallet_address = _worker_wallet_address_for_config(config, worker)
     payout_credits = max(1, int(config.max_price_credits or 1))
 
     failed_recovery = _exercise_failed_payout_recovery(
@@ -1046,7 +1090,7 @@ def _register_workers(config: HubNodeMarketSmokeConfig, nodes: list[Any], *, pro
         result = _post_json(
             config.hub_url,
             "/api/hub/v1/workers/register",
-            _worker_payload(node, model=config.model),
+            _worker_payload(node, model=config.model, wallet_address=_worker_wallet_address_for_config(config, node)),
             timeout=config.http_timeout_seconds,
         )
         worker = result.get("worker", {}) if isinstance(result.get("worker"), dict) else {}
@@ -1558,6 +1602,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--token-interval-seconds", type=float, default=0.02)
     parser.add_argument("--account-id", default="temporal-fdb-hub-node-market-client")
     parser.add_argument("--requester-wallet-address", default="0x0000000000000000000000000000000000000aa1")
+    parser.add_argument("--worker-wallet-addresses", default="", help="Comma-separated worker wallet addresses to assign by node index.")
     parser.add_argument("--model", default="temporal-fdb-hub-node-market-model")
     parser.add_argument("--task-queue-prefix", default=NODE_MARKET_TASK_QUEUE_PREFIX + "-hub")
     parser.add_argument("--run-id", default="")
@@ -1602,6 +1647,7 @@ def _config_from_args(args: argparse.Namespace) -> HubNodeMarketSmokeConfig:
         token_interval_seconds=_positive_float(args.token_interval_seconds, field_name="token_interval_seconds", minimum=0.0),
         account_id=str(args.account_id),
         requester_wallet_address=str(args.requester_wallet_address),
+        worker_wallet_addresses=_split_wallet_addresses(args.worker_wallet_addresses),
         model=str(args.model),
         task_queue_prefix=str(args.task_queue_prefix),
         run_id=str(args.run_id or "") or None,

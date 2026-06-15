@@ -54,12 +54,18 @@ HUB_ADMIN_WALLET_SCHEMA = "main-computer.hub-admin-wallet.v1"
 HUB_ADMIN_WALLET_FILENAME = "hub-admin-wallet.json"
 SMOKE_CLIENT_WALLET_SCHEMA = "main-computer.smoke-client-wallet.v1"
 SMOKE_CLIENT_WALLET_FILENAME = "smoke-client-wallet.json"
+NODE_WALLETS_SCHEMA = "main-computer.dev-chain-node-wallets.v1"
+NODE_WALLETS_FILENAME = "node-wallets"
+PAYOUT_ADMIN_WALLETS_SCHEMA = "main-computer.dev-chain-payout-admin-wallets.v1"
+PAYOUT_ADMIN_WALLETS_FILENAME = "payout-admin-wallets"
 HUB_CREDIT_BRIDGE_ESCROW_KEY = "hub_credit_bridge_escrow"
 HUB_CREDIT_BRIDGE_ESCROW_DEPLOY_CHOICE = "hub-credit-bridge-escrow"
 HUB_ADMIN_PREVIEW_ADDRESS = "0x0000000000000000000000000000000000000a11"
 SMOKE_CLIENT_PREVIEW_ADDRESS = "0x000000000000000000000000000000000000c11e"
 DEFAULT_HUB_ADMIN_FUNDING_WEI = "10000000000000000000"
 DEFAULT_SMOKE_CLIENT_FUNDING_WEI = "5000000000000000000"
+DEFAULT_NODE_WALLET_FUNDING_WEI = "1000000000000000000"
+DEFAULT_PAYOUT_ADMIN_FUNDING_WEI = "2000000000000000000"
 DEFAULT_PRIVATE_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 DEFAULT_DEPLOYER_ADDRESS = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 # Constructor returns 32 zero bytes using PUSH0 (0x5f), so eth_estimateGas fails on pre-Shanghai chains.
@@ -117,6 +123,15 @@ class SmokeClientWallet:
 
 
 @dataclass(frozen=True)
+class GeneratedDevWallet:
+    wallet_id: str
+    role: str
+    address: str
+    private_key: str
+    source: str = "generated-local-dev"
+
+
+@dataclass(frozen=True)
 class DockerPortOwner:
     container_id: str
     name: str
@@ -125,6 +140,10 @@ class DockerPortOwner:
 
 def log(message: str = "") -> None:
     print(message, flush=True)
+
+
+def setup_log(message: str) -> None:
+    log(f"SETUP: {message}")
 
 
 def repo_root() -> Path:
@@ -237,6 +256,36 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-smoke-client-wallet",
         action="store_true",
         help="Do not create, fund, or publish the per-network smoke client wallet.",
+    )
+    parser.add_argument(
+        "--run-scoped-wallets",
+        action="store_true",
+        help=(
+            "Store generated Hub admin/smoke client wallets under the current run directory instead of "
+            "reusing the chain-scoped dev wallet. Useful for smokes that need inspectable per-run identities."
+        ),
+    )
+    parser.add_argument(
+        "--node-wallet-count",
+        type=int,
+        default=0,
+        help="Generate and fund this many per-run node recipient wallets in the deployment manifest.",
+    )
+    parser.add_argument(
+        "--node-wallet-funding-wei",
+        default=DEFAULT_NODE_WALLET_FUNDING_WEI,
+        help="Native wei sent from the deployer to each generated node wallet.",
+    )
+    parser.add_argument(
+        "--payout-admin-wallet-count",
+        type=int,
+        default=0,
+        help="Generate and fund this many per-run payout admin wallets for later bridge/payout integration.",
+    )
+    parser.add_argument(
+        "--payout-admin-funding-wei",
+        default=DEFAULT_PAYOUT_ADMIN_FUNDING_WEI,
+        help="Native wei sent from the deployer to each generated payout admin wallet.",
     )
     parser.add_argument("--max-payout-wei", default="1000000000000000000")
     parser.add_argument("--payout-delay-blocks", default="1")
@@ -542,9 +591,12 @@ def hub_admin_wallet_filename(chain_id: int) -> str:
     return f"hub-admin-wallet-{int(chain_id)}.json"
 
 
-def hub_admin_wallet_path(args: argparse.Namespace, root: Path) -> Path:
+def hub_admin_wallet_path(args: argparse.Namespace, root: Path, rid: str | None = None) -> Path:
     env_name = validate_environment_name(args.environment)
-    return deployment_output_root(args, root) / env_name / hub_admin_wallet_filename(args.chain_id)
+    base = deployment_output_root(args, root) / env_name
+    if getattr(args, "run_scoped_wallets", False) and rid:
+        base = base / "runs" / rid
+    return base / hub_admin_wallet_filename(args.chain_id)
 
 
 def legacy_hub_admin_wallet_path(args: argparse.Namespace, root: Path) -> Path:
@@ -579,6 +631,8 @@ def derive_address_for_private_key(args: argparse.Namespace, root: Path, private
         docker_cast_command(args, ["wallet", "address", "--private-key", private_key], root=root),
         check=True,
         echo=False,
+        progress_label="derive wallet address with cast",
+        progress_interval_s=5.0,
     )
     output = (completed.stdout or "") + "\n" + (completed.stderr or "")
     match = re.search(r"0x[0-9a-fA-F]{40}", output)
@@ -608,23 +662,32 @@ def write_hub_admin_wallet(path: Path, *, chain_id: int, address: str, private_k
 
 
 def create_hub_admin_wallet(args: argparse.Namespace, root: Path, path: Path) -> HubAdminWallet:
+    setup_log("creating run-scoped Hub admin wallet private key")
     while True:
         private_key = "0x" + secrets.token_hex(32)
         if int(private_key, 16) != 0:
             break
+    setup_log("deriving run-scoped Hub admin wallet address")
     address = derive_address_for_private_key(args, root, private_key)
     if address.lower() == str(DEFAULT_OFFICE_KEYS[0]["address"]).lower():
         raise RuntimeError("generated Hub admin wallet unexpectedly matched the deployer address")
+    setup_log(f"derived run-scoped Hub admin wallet address={address}")
     wallet = write_hub_admin_wallet(path, chain_id=args.chain_id, address=address, private_key=private_key)
     log(f"Created Hub admin wallet: {metadata_path(path, root)} ({address})")
     return wallet
 
 
-def resolve_hub_admin_wallet(args: argparse.Namespace, root: Path, *, create_missing: bool) -> HubAdminWallet | None:
+def resolve_hub_admin_wallet(
+    args: argparse.Namespace,
+    root: Path,
+    *,
+    create_missing: bool,
+    rid: str | None = None,
+) -> HubAdminWallet | None:
     if not hub_admin_required(args):
         return None
 
-    path = hub_admin_wallet_path(args, root)
+    path = hub_admin_wallet_path(args, root, rid)
     existing = load_hub_admin_wallet(path, args.chain_id)
     if existing is not None:
         log(f"Loaded Hub admin wallet: {metadata_path(path, root)} ({existing.address})")
@@ -632,9 +695,10 @@ def resolve_hub_admin_wallet(args: argparse.Namespace, root: Path, *, create_mis
 
     # Older dev-chain resets stored a single wallet at runtime/deployments/hub-admin-wallet.json.
     # Do not let that dev wallet block testnet/mainnet deploys; reuse it only when it matches
-    # the requested chain id, and migrate it into the chain-scoped location.
+    # the requested chain id, and migrate it into the chain-scoped location. Run-scoped smokes
+    # intentionally skip this migration so every run gets a distinct Hub admin/bridge controller.
     legacy_path = legacy_hub_admin_wallet_path(args, root)
-    if legacy_path != path and legacy_path.exists():
+    if not getattr(args, "run_scoped_wallets", False) and legacy_path != path and legacy_path.exists():
         try:
             legacy_wallet = load_hub_admin_wallet(legacy_path, args.chain_id)
         except ValueError as exc:
@@ -665,9 +729,12 @@ def smoke_client_wallet_filename(chain_id: int) -> str:
     return f"smoke-client-wallet-{int(chain_id)}.json"
 
 
-def smoke_client_wallet_path(args: argparse.Namespace, root: Path) -> Path:
+def smoke_client_wallet_path(args: argparse.Namespace, root: Path, rid: str | None = None) -> Path:
     env_name = validate_environment_name(args.environment)
-    return deployment_output_root(args, root) / env_name / smoke_client_wallet_filename(args.chain_id)
+    base = deployment_output_root(args, root) / env_name
+    if getattr(args, "run_scoped_wallets", False) and rid:
+        base = base / "runs" / rid
+    return base / smoke_client_wallet_filename(args.chain_id)
 
 
 def load_smoke_client_wallet(path: Path, chain_id: int) -> SmokeClientWallet | None:
@@ -714,23 +781,32 @@ def write_smoke_client_wallet(path: Path, *, chain_id: int, address: str, privat
 
 
 def create_smoke_client_wallet(args: argparse.Namespace, root: Path, path: Path) -> SmokeClientWallet:
+    setup_log("creating run-scoped requester/smoke-client wallet private key")
     while True:
         private_key = "0x" + secrets.token_hex(32)
         if int(private_key, 16) != 0:
             break
+    setup_log("deriving run-scoped requester/smoke-client wallet address")
     address = derive_address_for_private_key(args, root, private_key)
     if address.lower() == str(DEFAULT_OFFICE_KEYS[0]["address"]).lower():
         raise RuntimeError("generated smoke client wallet unexpectedly matched the deployer address")
+    setup_log(f"derived run-scoped requester/smoke-client wallet address={address}")
     wallet = write_smoke_client_wallet(path, chain_id=args.chain_id, address=address, private_key=private_key)
     log(f"Created smoke client wallet: {metadata_path(path, root)} ({address})")
     return wallet
 
 
-def resolve_smoke_client_wallet(args: argparse.Namespace, root: Path, *, create_missing: bool) -> SmokeClientWallet | None:
+def resolve_smoke_client_wallet(
+    args: argparse.Namespace,
+    root: Path,
+    *,
+    create_missing: bool,
+    rid: str | None = None,
+) -> SmokeClientWallet | None:
     if getattr(args, "skip_smoke_client_wallet", False):
         return None
 
-    path = smoke_client_wallet_path(args, root)
+    path = smoke_client_wallet_path(args, root, rid)
     existing = load_smoke_client_wallet(path, args.chain_id)
     if existing is not None:
         log(f"Loaded smoke client wallet: {metadata_path(path, root)} ({existing.address})")
@@ -826,14 +902,259 @@ def fund_smoke_client_wallet(args: argparse.Namespace, rid: str, wallet: SmokeCl
     if wallet is None or wallet.private_key is None:
         return
     log(f"Funding smoke client wallet {wallet.address} with {args.smoke_client_funding_wei} wei")
-    run_command(smoke_client_fund_command(args, rid, wallet, root), timeout_s=args.deploy_timeout_s)
+    run_command(
+        smoke_client_fund_command(args, rid, wallet, root),
+        timeout_s=args.deploy_timeout_s,
+        progress_label=f"fund smoke client wallet {wallet.address}",
+        progress_interval_s=5.0,
+    )
 
 
 def fund_hub_admin_wallet(args: argparse.Namespace, rid: str, wallet: HubAdminWallet | None, root: Path) -> None:
     if wallet is None or wallet.private_key is None:
         return
     log(f"Funding Hub admin wallet {wallet.address} with {args.hub_admin_funding_wei} wei")
-    run_command(hub_admin_fund_command(args, rid, wallet, root), timeout_s=args.deploy_timeout_s)
+    run_command(
+        hub_admin_fund_command(args, rid, wallet, root),
+        timeout_s=args.deploy_timeout_s,
+        progress_label=f"fund Hub admin wallet {wallet.address}",
+        progress_interval_s=5.0,
+    )
+
+
+def generated_wallets_filename(kind: str, chain_id: int) -> str:
+    return f"{kind}-{int(chain_id)}.json"
+
+
+def generated_wallets_path(args: argparse.Namespace, root: Path, rid: str, *, kind: str) -> Path:
+    env_name = validate_environment_name(args.environment)
+    return deployment_output_root(args, root) / env_name / "runs" / rid / generated_wallets_filename(kind, args.chain_id)
+
+
+def generated_wallet_manifest_schema(kind: str) -> str:
+    if kind == NODE_WALLETS_FILENAME:
+        return NODE_WALLETS_SCHEMA
+    if kind == PAYOUT_ADMIN_WALLETS_FILENAME:
+        return PAYOUT_ADMIN_WALLETS_SCHEMA
+    raise ValueError(f"unknown generated wallet kind: {kind}")
+
+
+def create_generated_dev_wallets(
+    args: argparse.Namespace,
+    root: Path,
+    *,
+    kind: str,
+    role: str,
+    count: int,
+) -> list[GeneratedDevWallet]:
+    total = max(0, int(count or 0))
+    setup_log(f"creating {total} run-scoped {role} wallet(s) for manifest kind={kind}")
+    wallets: list[GeneratedDevWallet] = []
+    for index in range(total):
+        wallet_id = f"{role}-{index + 1:04d}"
+        setup_log(f"generating {role} wallet {index + 1}/{total} wallet_id={wallet_id}")
+        while True:
+            private_key = "0x" + secrets.token_hex(32)
+            if int(private_key, 16) != 0:
+                break
+        setup_log(f"deriving {role} wallet {index + 1}/{total} wallet_id={wallet_id}")
+        address = derive_address_for_private_key(args, root, private_key)
+        setup_log(f"derived {role} wallet {index + 1}/{total} wallet_id={wallet_id} address={address}")
+        wallets.append(
+            GeneratedDevWallet(
+                wallet_id=wallet_id,
+                role=role,
+                address=address,
+                private_key=private_key,
+            )
+        )
+    setup_log(f"created {len(wallets)} run-scoped {role} wallet(s)")
+    return wallets
+
+
+def write_generated_wallet_manifest(
+    path: Path,
+    *,
+    schema: str,
+    chain_id: int,
+    run_id: str,
+    wallets: list[GeneratedDevWallet],
+) -> None:
+    setup_log(f"writing generated wallet manifest path={path} wallets={len(wallets)}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema": schema,
+        "chain_id": chain_id,
+        "run_id": run_id,
+        "created_at": dt.datetime.now(dt.UTC).isoformat(),
+        "wallets": [
+            {
+                "wallet_id": wallet.wallet_id,
+                "role": wallet.role,
+                "address": wallet.address,
+                "private_key": wallet.private_key,
+                "source": wallet.source,
+            }
+            for wallet in wallets
+        ],
+    }
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if os.name != "nt":
+        os.chmod(tmp_path, 0o600)
+    tmp_path.replace(path)
+    if os.name != "nt":
+        os.chmod(path, 0o600)
+
+
+def resolve_generated_wallets(
+    args: argparse.Namespace,
+    root: Path,
+    rid: str,
+    *,
+    kind: str,
+    role: str,
+    count: int,
+    create_missing: bool,
+) -> tuple[Path, list[GeneratedDevWallet]]:
+    path = generated_wallets_path(args, root, rid, kind=kind)
+    if path.exists():
+        setup_log(f"loading existing {role} wallet manifest path={path}")
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid generated wallet manifest JSON: {path}") from exc
+        if not isinstance(payload, dict) or payload.get("schema") != generated_wallet_manifest_schema(kind):
+            raise ValueError(f"unexpected generated wallet manifest schema in {path}")
+        wallets: list[GeneratedDevWallet] = []
+        for item in payload.get("wallets", []):
+            if not isinstance(item, dict):
+                continue
+            address = item.get("address")
+            private_key = item.get("private_key")
+            if not is_address(address) or not is_private_key(private_key):
+                raise ValueError(f"invalid generated wallet in {path}: {item}")
+            wallets.append(
+                GeneratedDevWallet(
+                    wallet_id=str(item.get("wallet_id") or f"{role}-{len(wallets) + 1:04d}"),
+                    role=str(item.get("role") or role),
+                    address=str(address),
+                    private_key=str(private_key),
+                    source=str(item.get("source") or "generated-local-dev"),
+                )
+            )
+        log(f"Loaded {len(wallets)} {role} wallet(s): {metadata_path(path, root)}")
+        return path, wallets
+
+    if not create_missing or int(count or 0) <= 0:
+        setup_log(f"no {role} wallets requested or creation disabled count={int(count or 0)}")
+        return path, []
+    setup_log(f"creating missing {role} wallet manifest path={path} count={int(count or 0)}")
+    wallets = create_generated_dev_wallets(args, root, kind=kind, role=role, count=count)
+    write_generated_wallet_manifest(
+        path,
+        schema=generated_wallet_manifest_schema(kind),
+        chain_id=args.chain_id,
+        run_id=rid,
+        wallets=wallets,
+    )
+    log(f"Created {len(wallets)} {role} wallet(s): {metadata_path(path, root)}")
+    return path, wallets
+
+
+def generated_wallets_payload(path: Path, wallets: list[GeneratedDevWallet], root: Path, *, funding_wei: str) -> dict:
+    return {
+        "wallet_path": metadata_path(path, root),
+        "count": len(wallets),
+        "funding_wei": str(funding_wei),
+        "wallets": [
+            {
+                "wallet_id": wallet.wallet_id,
+                "role": wallet.role,
+                "address": wallet.address,
+                "private_key": wallet.private_key,
+                "source": wallet.source,
+            }
+            for wallet in wallets
+        ],
+    }
+
+
+def public_generated_wallets_record(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    wallets = []
+    for item in value.get("wallets", []):
+        if not isinstance(item, dict):
+            continue
+        address = item.get("address")
+        if not is_address(address):
+            continue
+        wallets.append(
+            {
+                "wallet_id": item.get("wallet_id"),
+                "role": item.get("role"),
+                "address": address,
+                "source": item.get("source"),
+            }
+        )
+    if not wallets and not value.get("wallet_path"):
+        return None
+    return {
+        "wallet_path": str(value.get("wallet_path") or ""),
+        "count": int(value.get("count", len(wallets)) or len(wallets)),
+        "funding_wei": str(value.get("funding_wei", "")),
+        "wallets": wallets,
+    }
+
+
+def generated_wallet_fund_command(
+    args: argparse.Namespace,
+    rid: str,
+    wallet: GeneratedDevWallet,
+    root: Path,
+    *,
+    funding_wei: str,
+) -> list[str]:
+    return docker_cast_command(
+        args,
+        [
+            "send",
+            wallet.address,
+            "--value",
+            str(funding_wei),
+            "--rpc-url",
+            container_rpc_url(args, rid),
+            "--private-key",
+            args.private_key,
+            "--json",
+        ],
+        root=root,
+        rid=rid,
+        use_network=True,
+    )
+
+
+def fund_generated_wallets(
+    args: argparse.Namespace,
+    rid: str,
+    wallets: list[GeneratedDevWallet],
+    root: Path,
+    *,
+    funding_wei: str,
+    label: str,
+) -> None:
+    if not wallets:
+        return
+    setup_log(f"funding {len(wallets)} {label} wallet(s) with {funding_wei} wei each")
+    for wallet in wallets:
+        log(f"Funding {label} wallet {wallet.wallet_id} {wallet.address} with {funding_wei} wei")
+        run_command(
+            generated_wallet_fund_command(args, rid, wallet, root, funding_wei=funding_wei),
+            timeout_s=args.deploy_timeout_s,
+            progress_label=f"fund {label} wallet {wallet.wallet_id} {wallet.address}",
+            progress_interval_s=5.0,
+        )
 
 
 def display_command(command: list[str]) -> str:
@@ -856,16 +1177,53 @@ def run_command(
     timeout_s: float | None = None,
     check: bool = True,
     echo: bool = True,
+    progress_label: str | None = None,
+    progress_interval_s: float = 10.0,
 ) -> subprocess.CompletedProcess[str]:
-    completed = subprocess.run(
-        command,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=process_timeout_arg(timeout_s),
-    )
+    timeout = process_timeout_arg(timeout_s)
+    if not progress_label:
+        completed = subprocess.run(
+            command,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+    else:
+        started_at = time.monotonic()
+        deadline = None if timeout is None else started_at + timeout
+        next_progress_at = started_at + max(1.0, float(progress_interval_s))
+        process = subprocess.Popen(
+            command,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        stdout = ""
+        stderr = ""
+        while True:
+            now = time.monotonic()
+            if deadline is not None and now >= deadline:
+                process.kill()
+                stdout, stderr = process.communicate()
+                raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr)
+            poll_timeout = 0.5
+            if deadline is not None:
+                poll_timeout = min(poll_timeout, max(0.01, deadline - now))
+            try:
+                stdout, stderr = process.communicate(timeout=poll_timeout)
+                break
+            except subprocess.TimeoutExpired:
+                now = time.monotonic()
+                if now >= next_progress_at:
+                    setup_log(f"still running: {progress_label} elapsed_s={int(now - started_at)}")
+                    next_progress_at = now + max(1.0, float(progress_interval_s))
+        completed = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
     if echo and completed.stdout:
         print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n")
     if echo and completed.stderr:
@@ -1064,15 +1422,21 @@ def deadline_expired(deadline: float | None) -> bool:
 def wait_for_rpc(url: str, chain_id: int, timeout_s: float) -> None:
     deadline = timeout_deadline(timeout_s)
     last_error: Exception | None = None
+    next_status_at = time.monotonic() + 5.0
     while not deadline_expired(deadline):
         try:
             actual = rpc(url, "eth_chainId")
             actual_id = int(str(actual), 16)
             if actual_id != chain_id:
                 raise RuntimeError(f"wrong chain id: expected {chain_id}, got {actual_id}")
+            setup_log(f"RPC ready at {url} chain_id={chain_id}")
             return
         except Exception as exc:  # noqa: BLE001 - diagnostic retry loop
             last_error = exc
+            now = time.monotonic()
+            if now >= next_status_at:
+                setup_log(f"still waiting for RPC at {url}; last_error={exc}")
+                next_status_at = now + 5.0
             time.sleep(0.5)
     raise RuntimeError(f"RPC did not become ready at {url}: {last_error}")
 
@@ -1280,6 +1644,8 @@ def deploy_payload(
     deployments: dict[str, dict],
     hub_admin: dict | None = None,
     smoke_client: dict | None = None,
+    node_wallets: dict | None = None,
+    payout_admin_wallets: dict | None = None,
 ) -> dict:
     chain_payload = {
         "chain_id": args.chain_id,
@@ -1309,6 +1675,8 @@ def deploy_payload(
         },
         "hub_admin": hub_admin,
         "smoke_client": smoke_client,
+        "node_wallets": node_wallets,
+        "payout_admin_wallets": payout_admin_wallets,
         "deployments": deployments,
     }
 
@@ -1325,6 +1693,8 @@ def public_deployment_payload(payload: dict) -> dict:
     root = repo_root()
     public_hub_admin = public_hub_admin_record(payload.get("hub_admin"), root)
     public_smoke_client = public_smoke_client_record(payload.get("smoke_client"), root)
+    public_node_wallets = public_generated_wallets_record(payload.get("node_wallets"))
+    public_payout_admin_wallets = public_generated_wallets_record(payload.get("payout_admin_wallets"))
     public_payload = {
         "schema": DEPLOYMENT_SCHEMA,
         "environment": str(payload.get("environment") or DEFAULT_DEPLOYMENT_ENVIRONMENT),
@@ -1351,6 +1721,10 @@ def public_deployment_payload(payload: dict) -> dict:
         public_payload["hub_admin"] = public_hub_admin
     if public_smoke_client is not None:
         public_payload["smoke_client"] = public_smoke_client
+    if public_node_wallets is not None:
+        public_payload["node_wallets"] = public_node_wallets
+    if public_payout_admin_wallets is not None:
+        public_payload["payout_admin_wallets"] = public_payout_admin_wallets
     return public_payload
 
 
@@ -1409,6 +1783,14 @@ def env_payload(payload: dict) -> str:
         lines.append(f"MAIN_COMPUTER_SMOKE_CLIENT_ADDRESS={smoke_client['address']}")
     if smoke_client.get("wallet_path"):
         lines.append(f"MAIN_COMPUTER_SMOKE_CLIENT_WALLET_PATH={smoke_client['wallet_path']}")
+    node_wallets = payload.get("node_wallets") if isinstance(payload.get("node_wallets"), dict) else {}
+    for index, wallet in enumerate(node_wallets.get("wallets", []) if isinstance(node_wallets.get("wallets"), list) else []):
+        if isinstance(wallet, dict) and wallet.get("address"):
+            lines.append(f"MAIN_COMPUTER_DEV_NODE_{index}_ADDRESS={wallet['address']}")
+    payout_admin_wallets = payload.get("payout_admin_wallets") if isinstance(payload.get("payout_admin_wallets"), dict) else {}
+    for index, wallet in enumerate(payout_admin_wallets.get("wallets", []) if isinstance(payout_admin_wallets.get("wallets"), list) else []):
+        if isinstance(wallet, dict) and wallet.get("address"):
+            lines.append(f"MAIN_COMPUTER_DEV_PAYOUT_ADMIN_{index}_ADDRESS={wallet['address']}")
     for index, office in enumerate(payload.get("offices", [])):
         lines.append(f"MAIN_COMPUTER_DEV_OFFICE_{index}_ADDRESS={office['address']}")
         if office.get("private_key"):
@@ -1439,8 +1821,16 @@ def deployed_contracts(args: argparse.Namespace, rid: str, hub_admin_address: st
     contracts_root = repo_root() / "contracts"
     result: dict[str, dict] = {}
     for spec in deployment_specs(args, hub_admin_address):
+        setup_log(f"deploying contract {spec.key} from {spec.target}")
         command = docker_deploy_command(args, spec, contracts_root, rid)
-        completed = run_command(command, timeout_s=args.deploy_timeout_s, check=False, echo=False)
+        completed = run_command(
+            command,
+            timeout_s=args.deploy_timeout_s,
+            check=False,
+            echo=False,
+            progress_label=f"deploy contract {spec.key}",
+            progress_interval_s=10.0,
+        )
         if completed.returncode != 0:
             print_output(completed.stdout)
             print_output(completed.stderr, stream=sys.stderr)
@@ -1458,6 +1848,7 @@ def deployed_contracts(args: argparse.Namespace, rid: str, hub_admin_address: st
             raise RuntimeError(f"could not parse deployed address for {spec.key}")
 
         verify_deployed_contract_code(args, rid, spec, address)
+        setup_log(f"deployed contract {spec.key} at {address}")
         if transient_warnings:
             log(
                 f"NOTE: forge emitted {len(transient_warnings)} transient block-fetch warning(s) while deploying "
@@ -1475,6 +1866,14 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--hub-admin-funding-wei must be greater than zero")
     if not getattr(args, "skip_smoke_client_wallet", False) and int(str(args.smoke_client_funding_wei), 0) <= 0:
         raise ValueError("--smoke-client-funding-wei must be greater than zero")
+    if int(getattr(args, "node_wallet_count", 0) or 0) < 0:
+        raise ValueError("--node-wallet-count must be zero or greater")
+    if int(getattr(args, "payout_admin_wallet_count", 0) or 0) < 0:
+        raise ValueError("--payout-admin-wallet-count must be zero or greater")
+    if int(getattr(args, "node_wallet_count", 0) or 0) > 0 and int(str(args.node_wallet_funding_wei), 0) <= 0:
+        raise ValueError("--node-wallet-funding-wei must be greater than zero when node wallets are generated")
+    if int(getattr(args, "payout_admin_wallet_count", 0) or 0) > 0 and int(str(args.payout_admin_funding_wei), 0) <= 0:
+        raise ValueError("--payout-admin-funding-wei must be greater than zero when payout admin wallets are generated")
     parse_offices(args.offices)
     validate_environment_name(args.environment)
     host_rpc_endpoint(args.host_rpc_url)
@@ -1494,8 +1893,12 @@ def print_plan(
     rid: str,
     hub_admin: HubAdminWallet | None = None,
     smoke_client: SmokeClientWallet | None = None,
+    node_wallets: list[GeneratedDevWallet] | None = None,
+    payout_admin_wallets: list[GeneratedDevWallet] | None = None,
 ) -> None:
     root = repo_root()
+    node_wallets = list(node_wallets or [])
+    payout_admin_wallets = list(payout_admin_wallets or [])
     run_dir = output_root(args, root) / "runs" / rid
     log(f"Repository root: {root}")
     log(f"Run id: {rid}")
@@ -1514,6 +1917,12 @@ def print_plan(
     if smoke_client is not None:
         log(f"Smoke client wallet: {metadata_path(smoke_client.path, root)}")
         log(f"Smoke client address: {smoke_client.address}")
+    if node_wallets:
+        log(f"Generated node wallets: {len(node_wallets)}")
+        log(f"First node wallet: {node_wallets[0].address}")
+    if payout_admin_wallets:
+        log(f"Generated payout admin wallets: {len(payout_admin_wallets)}")
+        log(f"First payout admin wallet: {payout_admin_wallets[0].address}")
     log()
     log("Planned commands:")
     if getattr(args, "external_chain", False):
@@ -1527,6 +1936,10 @@ def print_plan(
             log("$ " + display_command(hub_admin_fund_command(args, rid, hub_admin, root)))
         if smoke_client is not None:
             log("$ " + display_command(smoke_client_fund_command(args, rid, smoke_client, root)))
+        for wallet in node_wallets:
+            log("$ " + display_command(generated_wallet_fund_command(args, rid, wallet, root, funding_wei=args.node_wallet_funding_wei)))
+        for wallet in payout_admin_wallets:
+            log("$ " + display_command(generated_wallet_fund_command(args, rid, wallet, root, funding_wei=args.payout_admin_funding_wei)))
         for spec in deployment_specs(args, hub_admin.address if hub_admin else None):
             log("$ " + display_command(docker_deploy_command(args, spec, root / "contracts", rid)))
 
@@ -1590,6 +2003,7 @@ def main(argv: list[str] | None = None) -> int:
         validate_args(args)
         rid = resolved_run_id(args)
         root = repo_root()
+        setup_log(f"starting dev-chain reset for run_id={rid}")
         require_unlocked_production_state(
             root,
             output_root(args, root),
@@ -1597,14 +2011,44 @@ def main(argv: list[str] | None = None) -> int:
             action="run dev-chain reset",
         )
         if args.port_strategy == "auto" and not args.dry_run and not getattr(args, "external_chain", False):
+            setup_log(f"choosing an available host RPC port from {args.host_rpc_url}")
             prepare_host_rpc_port(args)
+            setup_log(f"selected host RPC URL {args.host_rpc_url}")
 
         create_admin_wallet = bool(args.yes and not args.dry_run)
-        hub_admin = resolve_hub_admin_wallet(args, root, create_missing=create_admin_wallet)
-        smoke_client = resolve_smoke_client_wallet(args, root, create_missing=create_admin_wallet)
-        print_plan(args, rid, hub_admin, smoke_client)
+        setup_log("resolving run-scoped Hub admin wallet")
+        hub_admin = resolve_hub_admin_wallet(args, root, create_missing=create_admin_wallet, rid=rid)
+        setup_log("resolving run-scoped requester/smoke-client wallet")
+        smoke_client = resolve_smoke_client_wallet(args, root, create_missing=create_admin_wallet, rid=rid)
+        setup_log(f"resolving run-scoped node wallet manifest count={args.node_wallet_count}")
+        node_wallets_path, node_wallets = resolve_generated_wallets(
+            args,
+            root,
+            rid,
+            kind=NODE_WALLETS_FILENAME,
+            role="node",
+            count=args.node_wallet_count,
+            create_missing=create_admin_wallet,
+        )
+        setup_log(f"resolving run-scoped payout admin wallet manifest count={args.payout_admin_wallet_count}")
+        payout_admin_wallets_path, payout_admin_wallets = resolve_generated_wallets(
+            args,
+            root,
+            rid,
+            kind=PAYOUT_ADMIN_WALLETS_FILENAME,
+            role="payout-admin",
+            count=args.payout_admin_wallet_count,
+            create_missing=create_admin_wallet,
+        )
+        print_plan(args, rid, hub_admin, smoke_client, node_wallets, payout_admin_wallets)
+        setup_log(
+            "plan ready: "
+            f"node_wallets={len(node_wallets)} payout_admin_wallets={len(payout_admin_wallets)} "
+            f"external_chain={bool(getattr(args, 'external_chain', False))} no_deploy={bool(args.no_deploy)}"
+        )
 
         if args.dry_run:
+            setup_log("dry run only; writing preview deployment metadata")
             payload = deploy_payload(
                 args=args,
                 rid=rid,
@@ -1612,6 +2056,13 @@ def main(argv: list[str] | None = None) -> int:
                 deployments=planned_deployments(args, hub_admin.address if hub_admin else None),
                 hub_admin=hub_admin_payload(hub_admin, root, args),
                 smoke_client=smoke_client_payload(smoke_client, root, args),
+                node_wallets=generated_wallets_payload(node_wallets_path, node_wallets, root, funding_wei=args.node_wallet_funding_wei),
+                payout_admin_wallets=generated_wallets_payload(
+                    payout_admin_wallets_path,
+                    payout_admin_wallets,
+                    root,
+                    funding_wei=args.payout_admin_funding_wei,
+                ),
             )
             write_outputs(args, rid, payload)
             return 0
@@ -1622,24 +2073,51 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         if getattr(args, "external_chain", False):
+            setup_log(f"checking external chain RPC at {args.host_rpc_url}")
             wait_for_rpc(args.host_rpc_url, args.chain_id, args.wait_timeout_s)
+            setup_log("checking external chain fork compatibility")
             require_modern_external_chain(args.host_rpc_url, wait_timeout_s=args.wait_timeout_s)
         else:
+            setup_log(f"ensuring Docker network {network_name(args, rid)}")
             ensure_network(args, rid)
+            setup_log(f"replacing dev-chain container {container_name(args, rid)} if it already exists")
             remove_existing_container(args, rid)
             if args.port_strategy != "auto":
+                setup_log(f"preparing requested host RPC port for {args.host_rpc_url}")
                 prepare_host_rpc_port(args)
+            setup_log(f"starting local Anvil container {container_name(args, rid)}")
             run_command(anvil_command(args, rid))
+            setup_log(f"waiting for local dev-chain RPC at {args.host_rpc_url}")
             wait_for_rpc(args.host_rpc_url, args.chain_id, args.wait_timeout_s)
 
         deployments: dict[str, dict]
         if args.no_deploy:
+            setup_log("contract deployment disabled with --no-deploy")
             deployments = {}
         else:
+            setup_log("funding hub admin and smoke requester wallets")
             fund_hub_admin_wallet(args, rid, hub_admin, root)
             fund_smoke_client_wallet(args, rid, smoke_client, root)
+            fund_generated_wallets(
+                args,
+                rid,
+                node_wallets,
+                root,
+                funding_wei=args.node_wallet_funding_wei,
+                label="node",
+            )
+            fund_generated_wallets(
+                args,
+                rid,
+                payout_admin_wallets,
+                root,
+                funding_wei=args.payout_admin_funding_wei,
+                label="payout admin",
+            )
+            setup_log("deploying dev-chain contracts")
             deployments = deployed_contracts(args, rid, hub_admin.address if hub_admin else None)
 
+        setup_log("writing run deployment metadata and current dev-chain pointer")
         payload = deploy_payload(
             args=args,
             rid=rid,
@@ -1647,8 +2125,16 @@ def main(argv: list[str] | None = None) -> int:
             deployments=deployments,
             hub_admin=hub_admin_payload(hub_admin, root, args),
             smoke_client=smoke_client_payload(smoke_client, root, args),
+            node_wallets=generated_wallets_payload(node_wallets_path, node_wallets, root, funding_wei=args.node_wallet_funding_wei),
+            payout_admin_wallets=generated_wallets_payload(
+                payout_admin_wallets_path,
+                payout_admin_wallets,
+                root,
+                funding_wei=args.payout_admin_funding_wei,
+            ),
         )
         write_outputs(args, rid, payload)
+        setup_log(f"dev-chain reset complete for run_id={rid}")
         return 0
     except Exception as exc:  # noqa: BLE001 - operator-facing script
         log()
