@@ -37,16 +37,17 @@ from main_computer.temporal_fdb_hub_node_market_smoke import (
     _validate_lease,
     _verify_backends,
     _verify_expected_audit_types,
+    _split_wallet_addresses,
     _worker_payload,
-    _worker_wallet_address,
+    _worker_wallet_address_for_config,
 )
 from main_computer.temporal_fdb_node_market_smoke import (
     NODE_MARKET_TASK_QUEUE_PREFIX,
     build_worker_nodes,
     _execute_requests,
     _make_request_payload,
-    _positive_float,
-    _positive_int,
+    _positive_float as _validate_positive_float,
+    _positive_int as _validate_positive_int,
 )
 from tools.temporal_lab.event_log import DEFAULT_EVENT_LOG_PATH, read_jsonl_events
 from tools.temporal_lab.local_temporal import DEFAULT_NAMESPACE
@@ -55,6 +56,20 @@ from tools.temporal_lab.local_temporal import DEFAULT_NAMESPACE
 DEFAULT_MULTI_HUB_REPORT_PATH = Path("runtime") / "temporal_lab" / "temporal_fdb_hub_multi_hub_report.json"
 DEFAULT_MULTI_HUB_A_URL = DEFAULT_HUB_URL
 DEFAULT_MULTI_HUB_B_URL = "http://127.0.0.1:8871"
+
+
+def _positive_int(value: object) -> int:
+    try:
+        return _validate_positive_int(value, field_name="value")
+    except NodeMarketSmokeError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _positive_float(value: object) -> float:
+    try:
+        return _validate_positive_float(value, field_name="value")
+    except NodeMarketSmokeError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 @dataclass(frozen=True)
@@ -77,6 +92,7 @@ class HubMultiHubSmokeConfig:
     keepalive_interval_seconds: float = 2.0
     account_id: str = "temporal-fdb-hub-multi-hub-client"
     requester_wallet_address: str = "0x0000000000000000000000000000000000000bb1"
+    worker_wallet_addresses: tuple[str, ...] = ()
     model: str = "temporal-fdb-hub-multi-hub-model"
     task_queue_prefix: str = NODE_MARKET_TASK_QUEUE_PREFIX + "-multi-hub"
     run_id: str | None = None
@@ -125,6 +141,7 @@ class HubMultiHubSmokeConfig:
             keepalive_interval_seconds=self.keepalive_interval_seconds,
             account_id=self.account_id,
             requester_wallet_address=self.requester_wallet_address,
+            worker_wallet_addresses=self.worker_wallet_addresses,
             model=self.model,
             task_queue_prefix=self.task_queue_prefix,
             run_id=self.run_id,
@@ -185,7 +202,7 @@ def _register_workers_multi(
         result = _post_json(
             cfg.hub_url,
             "/api/hub/v1/workers/register",
-            _worker_payload(node, model=cfg.model),
+            _worker_payload(node, model=cfg.model, wallet_address=_worker_wallet_address_for_config(cfg, node)),
             timeout=cfg.http_timeout_seconds,
         )
         worker = result.get("worker", {}) if isinstance(result.get("worker"), dict) else {}
@@ -412,7 +429,7 @@ def _verify_surprise_payout_rejected_cross_hub(
     progress: _ProgressReporter,
 ) -> dict[str, Any]:
     request_cfg = configs["hub_a"]
-    wallet_address = _worker_wallet_address(worker)
+    wallet_address = _worker_wallet_address_for_config(request_cfg, worker)
     error = _post_json_expect_http_error(
         request_cfg.hub_url,
         "/api/hub/v1/bridge/payouts",
@@ -594,6 +611,7 @@ def _exercise_cross_hub_payout_lock(
     nodes_by_id: dict[str, Any],
     selected_worker_ids: list[str],
     progress: _ProgressReporter,
+    before_confirm_callback: Any | None = None,
 ) -> dict[str, Any]:
     if not selected_worker_ids:
         raise NodeMarketSmokeError("Cannot exercise cross-Hub payout lock without a selected worker.")
@@ -601,7 +619,7 @@ def _exercise_cross_hub_payout_lock(
     config_b = configs["hub_b"]
     payout_worker_id = selected_worker_ids[0]
     worker = nodes_by_id[payout_worker_id]
-    wallet_address = _worker_wallet_address(worker)
+    wallet_address = _worker_wallet_address_for_config(config_a, worker)
     payout_credits = max(1, int(config_a.max_price_credits or 1))
 
     payout = _post_json(
@@ -651,12 +669,31 @@ def _exercise_cross_hub_payout_lock(
     if probe_worker_id == payout_worker_id:
         raise NodeMarketSmokeError(f"Hub B selected locked payout worker {payout_worker_id}: {probe_quote}")
 
+    confirm_metadata: dict[str, Any] = {
+        "run_id": config_a.run_id,
+        "smoke": "temporal_fdb_hub_multi_hub",
+        "confirm_hub": "hub_b",
+    }
+    dev_chain_confirmation = None
+    if before_confirm_callback is not None:
+        dev_chain_confirmation = before_confirm_callback(
+            {
+                "payout_id": payout_id,
+                "wallet_address": wallet_address,
+                "worker_node_id": payout_worker_id,
+                "credits": payout_credits,
+                "payout": payout_payload,
+            }
+        )
+        if dev_chain_confirmation is not None:
+            confirm_metadata["dev_chain"] = dev_chain_confirmation
+
     confirmed = _post_json(
         config_b.hub_url,
         "/api/hub/v1/bridge/payouts/confirm",
         {
             "payout_id": payout_id,
-            "metadata": {"run_id": config_a.run_id, "smoke": "temporal_fdb_hub_multi_hub", "confirm_hub": "hub_b"},
+            "metadata": confirm_metadata,
         },
         timeout=config_b.http_timeout_seconds,
     )
@@ -697,6 +734,7 @@ def _exercise_cross_hub_payout_lock(
         "worker_node_id": payout_worker_id,
         "payout": payout_payload,
         "confirmed": confirmed,
+        "dev_chain_confirmation": dev_chain_confirmation,
         "lock_visible_cross_hub": True,
         "locked_wallet_excluded_cross_hub": probe_worker_id != payout_worker_id,
         "quote_probe_selected_worker_id": probe_worker_id,
@@ -975,6 +1013,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--keepalive-interval-seconds", type=_positive_float, default=2.0)
     parser.add_argument("--account-id", default="temporal-fdb-hub-multi-hub-client")
     parser.add_argument("--requester-wallet-address", default="0x0000000000000000000000000000000000000bb1")
+    parser.add_argument("--worker-wallet-addresses", default="", help="Comma-separated worker wallet addresses to assign by node index.")
     parser.add_argument("--model", default="temporal-fdb-hub-multi-hub-model")
     parser.add_argument("--task-queue-prefix", default=NODE_MARKET_TASK_QUEUE_PREFIX + "-multi-hub")
     parser.add_argument("--run-id", default=None)
@@ -1012,6 +1051,7 @@ def _config_from_args(args: argparse.Namespace) -> HubMultiHubSmokeConfig:
         keepalive_interval_seconds=args.keepalive_interval_seconds,
         account_id=args.account_id,
         requester_wallet_address=args.requester_wallet_address,
+        worker_wallet_addresses=_split_wallet_addresses(args.worker_wallet_addresses),
         model=args.model,
         task_queue_prefix=args.task_queue_prefix,
         run_id=args.run_id,

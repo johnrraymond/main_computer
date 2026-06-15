@@ -8,12 +8,14 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 from main_computer.config import MainComputerConfig
 from main_computer.hub import HubHttpServer
 from main_computer.temporal_fdb_hub_node_market_smoke import (
     HubNodeMarketSmokeConfig,
     _post_json,
+    _worker_wallet_address_for_config,
     run_temporal_fdb_hub_node_market_smoke,
 )
 
@@ -160,6 +162,24 @@ class TemporalFdbHubNodeMarketSmokeTests(unittest.TestCase):
         self.assertTrue(result["retried"])
         self.assertEqual(_RetryOnceHandler.attempts, 2)
 
+
+
+    def test_worker_wallet_addresses_can_be_assigned_by_node_index(self) -> None:
+        config = HubNodeMarketSmokeConfig(
+            repo_root=Path.cwd(),
+            worker_wallet_addresses=(
+                "0x0000000000000000000000000000000000000101",
+                "0x0000000000000000000000000000000000000102",
+            ),
+        )
+
+        first = SimpleNamespace(node_id="node-001")
+        second = SimpleNamespace(node_id="node-002")
+        fallback = SimpleNamespace(node_id="node-003")
+
+        self.assertEqual(_worker_wallet_address_for_config(config, first), "0x0000000000000000000000000000000000000101")
+        self.assertEqual(_worker_wallet_address_for_config(config, second), "0x0000000000000000000000000000000000000102")
+        self.assertNotEqual(_worker_wallet_address_for_config(config, fallback), "")
 
 
 if __name__ == "__main__":

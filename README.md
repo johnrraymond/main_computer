@@ -312,12 +312,15 @@ python -m tools.temporal_lab.local_temporal status
 python .\scripts\smoke_foundationdb_credit_ledger_primitives.py --keep-container
 ```
 
-Then run the single-Hub or multi-Hub smoke:
+Then run the single-Hub, multi-Hub, or stress smoke:
 
 ```powershell
 python .\scripts\smoke_temporal_fdb_hub_node_market.py
 python .\scripts\smoke_temporal_fdb_hub_multi_hub.py
+python .\scripts\smoke_temporal_fdb_hub_stress.py
 ```
+
+The stress smoke starts two Hub frontends, generates background health/status/credit/audit/quote chatter while the worker market executes, and fails if the freeze detector sees no meaningful progress before its timeout.
 
 The smokes auto-start `exp-fdb-hub.py` by default and now print these bring-up
 commands when Temporal, FoundationDB, or the expected Hub ports are not ready.
