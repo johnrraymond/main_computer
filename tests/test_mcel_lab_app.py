@@ -1872,6 +1872,15 @@ def test_mcel_lab_element_library_acid_test_is_wired() -> None:
     assert "densityModes" in registry
     assert "statefulElementCount" in registry
 
+    assert "renderLabMissionControl" in acid
+    assert "wireLabWorkbenchModes" in acid
+    assert "mcel-lab-mission-control" in acid
+    assert "data-mcel-lab-mission-control" in acid
+    assert "data-mcel-lab-current-target" in acid
+    assert "data-mcel-lab-mode" in acid
+    assert "data-mcel-lab-panel" in acid
+    assert "guided cockpit" in acid.lower()
+    assert "Mission Control" in acid
     assert "buildDemoUi" in acid
     assert "renderResourceWorkbench" in acid
     assert "renderOperationalWorkbench" in acid
@@ -2022,6 +2031,12 @@ def test_mcel_lab_element_library_acid_test_is_wired() -> None:
     assert "illegalNestedScrollbars" in acid
     assert "data-mcel-element-acid-root" in acid
 
+    assert ".mcel-lab-workbench-tabs" in css
+    assert ".mcel-lab-workbench-panel" in css
+    assert ".mcel-lab-mission-control" in css
+    assert ".mcel-lab-mission-hero" in css
+    assert ".mcel-lab-mission-flow" in css
+    assert ".mcel-lab-mission-map" in css
     assert ".mcel-element-acid" in css
     assert ".mcel-element-acid-grid" in css
     assert ".mcel-element-acid-card" in css

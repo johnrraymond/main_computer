@@ -5139,3 +5139,401 @@ body.mcel-modal-open {
     grid-template-columns: 1fr;
   }
 }
+.mcel-file-basket-model-proof {
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 18px;
+  padding: 1rem;
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.95), rgba(17, 24, 39, 0.82));
+  display: grid;
+  gap: 0.85rem;
+}
+
+.mcel-file-basket-model-proof-head {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.mcel-file-basket-model-proof-head h6 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.mcel-file-basket-model-proof-head p {
+  margin: 0;
+  color: rgba(226, 232, 240, 0.78);
+}
+
+.mcel-file-basket-model-score-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: 0.55rem;
+}
+
+.mcel-file-basket-model-score-grid article {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 14px;
+  padding: 0.65rem;
+  background: rgba(2, 6, 23, 0.42);
+  display: grid;
+  gap: 0.2rem;
+}
+
+.mcel-file-basket-model-score-grid strong {
+  font-size: 1.2rem;
+}
+
+.mcel-file-basket-model-score-grid span {
+  color: rgba(226, 232, 240, 0.7);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.mcel-file-basket-model-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  overflow: hidden;
+  border-radius: 14px;
+}
+
+.mcel-file-basket-model-table th,
+.mcel-file-basket-model-table td {
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  padding: 0.45rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcel-file-basket-model-table th {
+  color: rgba(226, 232, 240, 0.78);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.mcel-file-basket-model-table td {
+  color: rgba(248, 250, 252, 0.9);
+  font-size: 0.82rem;
+}
+
+.mcel-file-basket-model-table tr[data-mcel-file-basket-row-selectable="false"] td {
+  color: rgba(248, 113, 113, 0.86);
+}
+
+.mcel-file-basket-model-proof-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.mcel-file-basket-model-proof-list span {
+  border: 1px solid rgba(125, 211, 252, 0.28);
+  border-radius: 999px;
+  padding: 0.35rem 0.55rem;
+  background: rgba(14, 165, 233, 0.08);
+  color: rgba(224, 242, 254, 0.9);
+  font-size: 0.76rem;
+}
+
+
+
+/* MCEL Lab Mission Control: keep the lab effective instead of dumping every proof at once */
+.mcel-lab-workbench-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+  position: sticky;
+  top: 0.25rem;
+  z-index: 3;
+  padding: 0.55rem;
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  border-radius: 20px;
+  background: rgba(2, 6, 23, 0.86);
+  box-shadow: 0 14px 44px rgba(2, 6, 23, 0.24);
+  backdrop-filter: blur(18px);
+}
+
+.mcel-lab-workbench-tabs button {
+  min-height: 2.15rem;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 999px;
+  padding: 0.42rem 0.8rem;
+  color: rgba(226, 232, 240, 0.82);
+  background: rgba(15, 23, 42, 0.68);
+  font-size: 0.78rem;
+  letter-spacing: 0.01em;
+}
+
+.mcel-lab-workbench-tabs button.active,
+.mcel-lab-workbench-tabs button[aria-selected="true"] {
+  border-color: rgba(56, 189, 248, 0.58);
+  color: rgba(240, 249, 255, 0.98);
+  background:
+    linear-gradient(135deg, rgba(14, 165, 233, 0.34), rgba(168, 85, 247, 0.22)),
+    rgba(15, 23, 42, 0.92);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 0 0 1px rgba(14, 165, 233, 0.08);
+}
+
+.mcel-lab-workbench-panels {
+  min-width: 0;
+  display: grid;
+  gap: 1rem;
+}
+
+.mcel-lab-workbench-panel {
+  min-width: 0;
+  display: grid;
+  gap: 1rem;
+}
+
+.mcel-lab-workbench-panel[hidden] {
+  display: none !important;
+}
+
+.mcel-lab-mission-control {
+  min-width: 0;
+  display: grid;
+  gap: 1rem;
+  padding: clamp(1rem, 2vw, 1.4rem);
+  border: 1px solid rgba(56, 189, 248, 0.34);
+  border-radius: 30px;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(14, 165, 233, 0.28), transparent 34%),
+    radial-gradient(circle at 86% 10%, rgba(168, 85, 247, 0.22), transparent 32%),
+    radial-gradient(circle at 50% 100%, rgba(45, 212, 191, 0.1), transparent 38%),
+    linear-gradient(135deg, rgba(2, 6, 23, 0.98), rgba(15, 23, 42, 0.92));
+  box-shadow: 0 24px 70px rgba(2, 6, 23, 0.42);
+  overflow: hidden;
+}
+
+.mcel-lab-mission-hero {
+  display: grid;
+  grid-template-columns: minmax(20rem, 1.35fr) minmax(18rem, 0.9fr);
+  gap: 1rem;
+  align-items: stretch;
+}
+
+.mcel-lab-mission-copy {
+  min-width: 0;
+  display: grid;
+  gap: 0.55rem;
+  align-content: center;
+  padding: clamp(0.5rem, 1vw, 0.9rem);
+}
+
+.mcel-lab-mission-copy h6 {
+  margin: 0;
+  max-width: 14ch;
+  color: rgba(248, 250, 252, 0.98);
+  font-size: clamp(2rem, 4.5vw, 4.2rem);
+  line-height: 0.92;
+  letter-spacing: -0.07em;
+}
+
+.mcel-lab-mission-copy p:not(.eyebrow) {
+  max-width: 66ch;
+  margin: 0;
+  color: rgba(203, 213, 225, 0.86);
+  font-size: 0.95rem;
+  line-height: 1.55;
+}
+
+.mcel-lab-mission-status {
+  min-width: 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.mcel-lab-mission-status article,
+.mcel-lab-mission-score-grid article,
+.mcel-lab-mission-focus,
+.mcel-lab-mission-map button {
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(8, 13, 28, 0.72);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.mcel-lab-mission-status article {
+  display: grid;
+  gap: 0.22rem;
+  padding: 0.75rem;
+  border-radius: 18px;
+}
+
+.mcel-lab-mission-status span,
+.mcel-lab-mission-score-grid span,
+.mcel-lab-mission-flow span,
+.mcel-lab-mission-map span {
+  min-width: 0;
+  color: rgba(148, 163, 184, 0.9);
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.mcel-lab-mission-status strong {
+  min-width: 0;
+  color: rgba(240, 249, 255, 0.96);
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
+.mcel-lab-mission-score-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.mcel-lab-mission-score-grid article {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.72rem;
+  border-radius: 16px;
+}
+
+.mcel-lab-mission-score-grid strong {
+  color: rgba(252, 211, 77, 0.98);
+  font-size: 1.15rem;
+}
+
+.mcel-lab-mission-score-grid span {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.mcel-lab-mission-flow {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mcel-lab-mission-flow li {
+  min-width: 0;
+  position: relative;
+  display: grid;
+  gap: 0.22rem;
+  padding: 0.75rem 0.75rem 0.75rem 0.9rem;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 18px;
+  background: rgba(15, 23, 42, 0.58);
+}
+
+.mcel-lab-mission-flow li::before {
+  content: "";
+  position: absolute;
+  inset: 0.75rem auto 0.75rem 0.45rem;
+  width: 0.22rem;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.4);
+}
+
+.mcel-lab-mission-flow li[data-mcel-mission-step-state="done"]::before {
+  background: rgba(34, 197, 94, 0.9);
+}
+
+.mcel-lab-mission-flow li[data-mcel-mission-step-state="current"] {
+  border-color: rgba(56, 189, 248, 0.42);
+  background:
+    linear-gradient(135deg, rgba(14, 165, 233, 0.18), transparent),
+    rgba(15, 23, 42, 0.7);
+}
+
+.mcel-lab-mission-flow li[data-mcel-mission-step-state="current"]::before,
+.mcel-lab-mission-flow li[data-mcel-mission-step-state="next"]::before {
+  background: rgba(56, 189, 248, 0.95);
+}
+
+.mcel-lab-mission-flow b {
+  color: rgba(248, 250, 252, 0.96);
+  font-size: 0.82rem;
+}
+
+.mcel-lab-mission-focus {
+  display: grid;
+  gap: 0.45rem;
+  padding: 1rem;
+  border-color: rgba(45, 212, 191, 0.28);
+  border-radius: 22px;
+  background:
+    linear-gradient(135deg, rgba(20, 184, 166, 0.16), transparent),
+    rgba(15, 23, 42, 0.72);
+}
+
+.mcel-lab-mission-focus h6 {
+  margin: 0;
+  color: rgba(240, 253, 250, 0.98);
+  font-size: 1.15rem;
+}
+
+.mcel-lab-mission-focus p {
+  margin: 0;
+  color: rgba(204, 251, 241, 0.82);
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.mcel-lab-mission-map {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.mcel-lab-mission-map button {
+  display: grid;
+  gap: 0.28rem;
+  min-height: 6rem;
+  padding: 0.78rem;
+  text-align: left;
+  border-radius: 18px;
+}
+
+.mcel-lab-mission-map button:hover,
+.mcel-lab-mission-map button:focus-visible {
+  border-color: rgba(56, 189, 248, 0.48);
+  background:
+    linear-gradient(135deg, rgba(14, 165, 233, 0.18), rgba(168, 85, 247, 0.08)),
+    rgba(15, 23, 42, 0.86);
+}
+
+.mcel-lab-mission-map strong {
+  color: rgba(248, 250, 252, 0.95);
+  font-size: 0.86rem;
+}
+
+@media (max-width: 1180px) {
+  .mcel-lab-mission-hero,
+  .mcel-lab-mission-flow,
+  .mcel-lab-mission-map {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .mcel-lab-mission-score-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .mcel-lab-workbench-tabs {
+    position: static;
+  }
+
+  .mcel-lab-mission-hero,
+  .mcel-lab-mission-score-grid,
+  .mcel-lab-mission-flow,
+  .mcel-lab-mission-map {
+    grid-template-columns: 1fr;
+  }
+
+  .mcel-lab-mission-copy h6 {
+    max-width: none;
+    font-size: 2.2rem;
+  }
+}

@@ -476,3 +476,52 @@ bridge audit readback and reconciliation still pass
 
 This does not make Hub process memory authoritative. The safe production shape remains: all money, locks, leases, request state, and idempotency decisions live in shared durable state, while Hub processes act as stateless HTTP/control-plane frontends.
 
+## Multi-Hub stress/freeze smoke
+
+After the single-Hub and multi-Hub golden paths pass, use the stress smoke before wiring the bridge to a dev chain:
+
+```powershell
+python .\scripts\smoke_temporal_fdb_hub_stress.py
+```
+
+The stress smoke keeps the same chain-shaped mock bridge and starts two Hub frontends against one FoundationDB namespace. While the market is submitting, leasing, executing, settling, and exercising payout locks, background clients generate frontend chatter:
+
+```text
+health checks
+status checks
+credit status checks
+wallet-lock reads
+bridge audit reads
+quote probes
+worker heartbeats
+```
+
+It is intentionally a safety/degradation check, not just a throughput benchmark. A passing run means:
+
+```text
+quote/submit still crosses Hubs
+leases and result completions still cross Hubs
+duplicate result replay remains idempotent
+surprise payout during active work is still rejected
+payout locks remain visible across Hubs
+locked wallets remain excluded from new work
+Hub A can fail over to Hub B for final readback
+bridge audit readback still works
+bridge reconciliation still passes
+the freeze detector did not see a long no-progress stall
+```
+
+Default scale is larger than the golden path: 80 registered workers, 30 market requests, and 8 chatter clients. Tune it down while debugging or up while soaking:
+
+```powershell
+python .\scripts\smoke_temporal_fdb_hub_stress.py `
+  --node-count 40 `
+  --request-count 12 `
+  --chatter-clients 4 `
+  --chatter-rounds 10 `
+  --freeze-timeout-seconds 30 `
+  --progress
+```
+
+If the stress smoke fails with a freeze detector message, read the `last_progress_label` in the failure and the JSON report at `runtime/temporal_lab/temporal_fdb_hub_stress_report.json` when available. A freeze failure means the lab stopped making meaningful market/chatter progress for longer than the configured timeout; it should not be treated as a normal test assertion failure.
+
