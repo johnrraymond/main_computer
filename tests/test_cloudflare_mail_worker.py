@@ -40,13 +40,26 @@ def test_worker_source_posts_raw_rfc822_stream_to_https_ingest() -> None:
     plan = module.build_plan(domain="greatlibrary.io", ingest_host="mail-ingest.greatlibrary.io")
     source = module.render_worker_source(plan)
 
-    assert "async email(message: ForwardableEmailMessage" in source
+    assert "async email(message, env, ctx)" in source
     assert 'headers.set("Content-Type", "message/rfc822")' in source
     assert 'headers.set("X-Envelope-From", message.from)' in source
     assert 'headers.set("X-Envelope-To", message.to)' in source
     assert "body: message.raw" in source
     assert "await fetch(ingestUrl" in source
     assert "message.setReject(\"message too large\")" in source
+
+
+def test_worker_source_is_dashboard_compatible_javascript() -> None:
+    module = _load_module()
+    plan = module.build_plan(domain="greatlibrary.io", ingest_host="mail-ingest.greatlibrary.io")
+    source = module.render_worker_source(plan)
+
+    assert source.lstrip().startswith("// @ts-nocheck")
+    assert "export interface" not in source
+    assert ": ForwardableEmailMessage" not in source
+    assert ": ExecutionContext" not in source
+    assert ": Promise<void>" not in source
+    assert "let response: Response" not in source
 
 
 def test_compose_is_self_contained_and_does_not_publish_raw_mail_ports() -> None:
@@ -193,6 +206,13 @@ def test_prepare_creates_contract_secret_and_manual_cloudflare_artifacts(tmp_pat
     assert contract["routing"]["forwards"] == {"johnrraymond": "johnrraymond@gmail.com"}
     assert contract["routing"]["drops"] == ["info"]
     assert contract["routing"]["catch_all_to_worker"] is True
+
+    worker_source = (tmp_path / "worker" / "src" / "index.ts").read_text(encoding="utf-8")
+    assert "export interface" not in worker_source
+    assert "async email(message, env, ctx)" in worker_source
+
+    dashboard_doc = (tmp_path / "cloudflare" / "worker-dashboard-paste.md").read_text(encoding="utf-8")
+    assert "JavaScript-compatible" in dashboard_doc
 
     routing_doc = (tmp_path / "cloudflare" / "manual-routing-plan.md").read_text(encoding="utf-8")
     assert "johnrraymond@greatlibrary.io" in routing_doc

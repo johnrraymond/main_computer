@@ -5,6 +5,7 @@ import asyncio
 import json
 import queue
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -33,6 +34,7 @@ from tools.temporal_lab.models import FakeTokenRequest, normalize_ring
 
 ExecutionMode = Literal["live-temporal", "direct-activity"]
 LedgerBackend = Literal["foundationdb", "json"]
+FdbStartMode = Literal["auto", "never", "always"]
 
 
 DEFAULT_NODE_MARKET_REPORT_PATH = Path("runtime") / "temporal_lab" / "temporal_fdb_node_market_report.json"
@@ -70,6 +72,55 @@ class _ProgressReporter:
 
 class NodeMarketSmokeError(ProtectedModePretestError):
     """Raised when the node-market smoke cannot complete safely."""
+
+
+def _temporal_lab_startup_help(temporal_address: str, namespace: str) -> str:
+    return (
+        "Temporal is not reachable for the live Temporal lab. After a reboot, start the local lab pieces from "
+        "the repository root in an activated virtualenv:\n"
+        "  python -m tools.temporal_lab.local_temporal up --pull\n"
+        "  python -m tools.temporal_lab.local_temporal status\n"
+        f"Expected Temporal address: {temporal_address}\n"
+        f"Expected Temporal namespace: {namespace}"
+    )
+
+
+def _temporal_host_port(temporal_address: str) -> tuple[str, int] | None:
+    text = str(temporal_address or "").strip()
+    if not text:
+        return None
+    if "://" in text:
+        text = text.split("://", 1)[1]
+    text = text.rsplit("/", 1)[-1]
+    if text.startswith("[") and "]:" in text:
+        host, port_text = text[1:].split("]:", 1)
+    elif ":" in text:
+        host, port_text = text.rsplit(":", 1)
+    else:
+        return None
+    try:
+        return host or "localhost", int(port_text)
+    except ValueError:
+        return None
+
+
+def _tcp_connects(host: str, port: int, *, timeout: float = 2.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=max(0.2, float(timeout))):
+            return True
+    except OSError:
+        return False
+
+
+def _ensure_temporal_listening(config: "NodeMarketSmokeConfig", *, progress: _ProgressReporter) -> None:
+    endpoint = _temporal_host_port(config.temporal_address)
+    if endpoint is None:
+        return
+    host, port = endpoint
+    if _tcp_connects(host, port, timeout=2.0):
+        return
+    progress.emit("temporal_not_reachable", address=config.temporal_address, namespace=config.namespace)
+    raise NodeMarketSmokeError(_temporal_lab_startup_help(config.temporal_address, config.namespace))
 
 
 def _run_storage_step(
@@ -311,6 +362,7 @@ class NodeMarketSmokeConfig:
     fdb_namespace: str | None = None
     fdb_api_version: int = 740
     bootstrap_fdb: bool = True
+    fdb_start_mode: FdbStartMode = "auto"
     bootstrap_fdb_keep_container: bool = True
     storage_operation_timeout_seconds: float = 15.0
     node_count: int = 50
@@ -670,8 +722,15 @@ async def _execute_live_temporal_requests(
 
     from tools.temporal_lab.workflows import FakeTokenWorkflow
 
+    _ensure_temporal_listening(config, progress=progress)
     progress.emit("temporal_connect_start", address=config.temporal_address, namespace=config.namespace)
-    client = await Client.connect(config.temporal_address, namespace=config.namespace)
+    try:
+        client = await Client.connect(config.temporal_address, namespace=config.namespace)
+    except Exception as exc:
+        raise NodeMarketSmokeError(
+            _temporal_lab_startup_help(config.temporal_address, config.namespace)
+            + f"\nOriginal Temporal client error: {exc}"
+        ) from exc
     progress.emit("temporal_connect_ok", address=config.temporal_address, namespace=config.namespace)
 
     async with AsyncExitStack() as stack:
@@ -798,16 +857,28 @@ async def _execute_requests(
     raise NodeMarketSmokeError(f"unknown execution mode: {config.execution_mode}")
 
 
-def _bootstrap_fdb_if_needed(config: NodeMarketSmokeConfig, *, progress: _ProgressReporter) -> None:
-    cluster_file = config.resolved_fdb_cluster_file()
-    if cluster_file.exists():
-        progress.emit("fdb_cluster_file_found", cluster_file=cluster_file)
-        return
+def _effective_fdb_start_mode(config: NodeMarketSmokeConfig) -> FdbStartMode:
     if not config.bootstrap_fdb:
+        return "never"
+    mode = str(config.fdb_start_mode or "auto").lower()
+    if mode not in {"auto", "never", "always"}:
+        raise NodeMarketSmokeError(f"fdb_start_mode must be one of auto, never, always; got {config.fdb_start_mode!r}")
+    return mode  # type: ignore[return-value]
+
+
+def _run_fdb_bootstrap_helper(
+    config: NodeMarketSmokeConfig,
+    *,
+    progress: _ProgressReporter,
+    reason: str,
+) -> None:
+    cluster_file = config.resolved_fdb_cluster_file()
+    mode = _effective_fdb_start_mode(config)
+    if mode == "never":
         raise NodeMarketSmokeError(
-            f"FoundationDB cluster file not found: {cluster_file}. "
-            "Run scripts/smoke_foundationdb_credit_ledger_primitives.py --keep-container first, "
-            "or rerun this smoke without --no-bootstrap-fdb."
+            f"FoundationDB is not ready ({reason}) and FDB startup is disabled. "
+            "Run `python scripts/smoke_foundationdb_credit_ledger_primitives.py --keep-container` first, "
+            "or rerun this smoke with `--fdb-start-mode auto`."
         )
 
     helper = config.repo_root / "scripts" / "smoke_foundationdb_credit_ledger_primitives.py"
@@ -829,30 +900,135 @@ def _bootstrap_fdb_if_needed(config: NodeMarketSmokeConfig, *, progress: _Progre
     if config.bootstrap_fdb_keep_container:
         cmd.append("--keep-container")
 
-    progress.emit("fdb_bootstrap_start", helper=helper, cluster_file=cluster_file)
-    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as output:
-        process = subprocess.Popen(
-            cmd,
-            cwd=config.repo_root,
-            text=True,
-            stdout=output,
-            stderr=subprocess.STDOUT,
-        )
-        waited_seconds = 0.0
-        while process.poll() is None:
-            sleep_seconds = min(max(0.5, progress.interval_seconds), 5.0)
-            time.sleep(sleep_seconds)
-            waited_seconds += sleep_seconds
-            progress.emit("fdb_bootstrap_waiting", waited_seconds=round(waited_seconds, 1), cluster_file=cluster_file)
-        output.seek(0)
-        detail = output.read().strip()
-        returncode = process.returncode
+    cluster_file.parent.mkdir(parents=True, exist_ok=True)
+    progress.emit(
+        "fdb_bootstrap_start",
+        reason=reason,
+        helper=helper,
+        cluster_file=cluster_file,
+        keep_container=config.bootstrap_fdb_keep_container,
+    )
+    process = subprocess.Popen(
+        cmd,
+        cwd=config.repo_root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+    )
+    output_lines: list[str] = []
+    output_queue: queue.Queue[str] = queue.Queue()
 
+    def _reader() -> None:
+        assert process.stdout is not None
+        try:
+            for raw_line in process.stdout:
+                output_queue.put(raw_line.rstrip())
+        finally:
+            try:
+                process.stdout.close()
+            except Exception:
+                pass
+
+    reader = threading.Thread(target=_reader, name="node-market-fdb-bootstrap-output", daemon=True)
+    reader.start()
+    started = time.perf_counter()
+    while process.poll() is None or not output_queue.empty():
+        try:
+            line = output_queue.get(timeout=0.25)
+        except queue.Empty:
+            progress.heartbeat(
+                "fdb_bootstrap",
+                "fdb_bootstrap_waiting",
+                waited_seconds=round(time.perf_counter() - started, 1),
+                cluster_file=cluster_file,
+            )
+            continue
+        if not line:
+            continue
+        output_lines.append(line)
+        progress.emit("fdb_bootstrap_output", line=line[:300])
+
+    reader.join(timeout=1.0)
+    returncode = process.returncode
     if returncode != 0:
+        detail = "\n".join(output_lines[-80:]).strip()
         raise NodeMarketSmokeError(f"FDB bootstrap helper failed with code {returncode}:\n{detail}")
-    progress.emit("fdb_bootstrap_ok", cluster_file=cluster_file)
+    progress.emit("fdb_bootstrap_ok", cluster_file=cluster_file, reason=reason)
     if not cluster_file.exists():
         raise NodeMarketSmokeError(f"FDB bootstrap completed but cluster file was not created: {cluster_file}")
+
+
+def _prepare_fdb_dependency_before_probe(config: NodeMarketSmokeConfig, *, progress: _ProgressReporter) -> None:
+    cluster_file = config.resolved_fdb_cluster_file()
+    mode = _effective_fdb_start_mode(config)
+    if mode == "always":
+        _run_fdb_bootstrap_helper(config, progress=progress, reason="fdb_start_mode_always")
+        return
+    if cluster_file.exists():
+        progress.emit("fdb_cluster_file_found", cluster_file=cluster_file, start_mode=mode)
+        return
+    progress.emit("fdb_cluster_file_missing", cluster_file=cluster_file, start_mode=mode)
+    _run_fdb_bootstrap_helper(config, progress=progress, reason="cluster_file_missing")
+
+
+def _probe_fdb_storage(
+    *,
+    ledger: CreditLedger,
+    registry: WorkerRegistry,
+    namespace: str,
+    config: NodeMarketSmokeConfig,
+    progress: _ProgressReporter,
+) -> None:
+    progress.emit(
+        "fdb_storage_probe_start",
+        timeout_seconds=config.storage_operation_timeout_seconds,
+        namespace=namespace,
+    )
+    _run_storage_step(
+        label="fdb_ledger_status_probe",
+        timeout_seconds=config.storage_operation_timeout_seconds,
+        progress=progress,
+        operation=lambda: ledger.status(recent_limit=1),
+    )
+    _run_storage_step(
+        label="fdb_registry_status_probe",
+        timeout_seconds=config.storage_operation_timeout_seconds,
+        progress=progress,
+        operation=registry.status,
+    )
+    progress.emit("fdb_storage_probe_ok", namespace=namespace)
+
+
+def _build_fdb_ledger_and_registry(
+    config: NodeMarketSmokeConfig,
+    *,
+    namespace: str,
+) -> tuple[CreditLedger, WorkerRegistry]:
+    from main_computer.exp_fdb_credit_ledger import (
+        ExperimentalFoundationDbConfig,
+        ExperimentalFoundationDbCreditLedger,
+    )
+    from main_computer.exp_fdb_hub_state import (
+        ExperimentalFoundationDbHubState,
+        ExperimentalFoundationDbRegistry,
+    )
+
+    fdb_config = ExperimentalFoundationDbConfig(
+        cluster_file=config.resolved_fdb_cluster_file(),
+        namespace=namespace,
+        api_version=config.fdb_api_version,
+        repo_root=config.repo_root,
+    )
+    ledger = ExperimentalFoundationDbCreditLedger(fdb_config)
+    state = ExperimentalFoundationDbHubState(fdb_config)
+    registry = ExperimentalFoundationDbRegistry(
+        state,
+        root=config.repo_root / "runtime" / "temporal_lab" / "node_market_fdb_registry",
+        allow_insecure_dev_network=True,
+    )
+    return ledger, registry
+
 
 
 def _prepare_ledger_and_registry(
@@ -863,49 +1039,48 @@ def _prepare_ledger_and_registry(
 ) -> tuple[CreditLedger, WorkerRegistry, tempfile.TemporaryDirectory[str] | None]:
     if config.ledger_backend == "foundationdb":
         progress.emit("ledger_prepare_start", backend="foundationdb")
-        _bootstrap_fdb_if_needed(config, progress=progress)
-        from main_computer.exp_fdb_credit_ledger import (
-            ExperimentalFoundationDbConfig,
-            ExperimentalFoundationDbCreditLedger,
-        )
-        from main_computer.exp_fdb_hub_state import (
-            ExperimentalFoundationDbHubState,
-            ExperimentalFoundationDbRegistry,
-        )
+        start_mode = _effective_fdb_start_mode(config)
+        _prepare_fdb_dependency_before_probe(config, progress=progress)
 
         namespace = config.fdb_namespace or f"main-computer-node-market-{run_id}"
-        fdb_config = ExperimentalFoundationDbConfig(
-            cluster_file=config.resolved_fdb_cluster_file(),
-            namespace=namespace,
-            api_version=config.fdb_api_version,
-            repo_root=config.repo_root,
-        )
-        ledger = ExperimentalFoundationDbCreditLedger(fdb_config)
-        state = ExperimentalFoundationDbHubState(fdb_config)
-        registry = ExperimentalFoundationDbRegistry(
-            state,
-            root=config.repo_root / "runtime" / "temporal_lab" / "node_market_fdb_registry",
-            allow_insecure_dev_network=True,
-        )
+        ledger, registry = _build_fdb_ledger_and_registry(config, namespace=namespace)
+        try:
+            _probe_fdb_storage(
+                ledger=ledger,
+                registry=registry,
+                namespace=namespace,
+                config=config,
+                progress=progress,
+            )
+        except NodeMarketSmokeError as exc:
+            if start_mode != "auto":
+                raise
+            progress.emit(
+                "fdb_storage_probe_failed",
+                start_mode=start_mode,
+                reason=str(exc)[:300],
+            )
+            _run_fdb_bootstrap_helper(
+                config,
+                progress=progress,
+                reason="storage_probe_failed",
+            )
+            ledger, registry = _build_fdb_ledger_and_registry(config, namespace=namespace)
+            progress.emit("fdb_storage_reprobe_start", namespace=namespace)
+            _probe_fdb_storage(
+                ledger=ledger,
+                registry=registry,
+                namespace=namespace,
+                config=config,
+                progress=progress,
+            )
         progress.emit(
-            "fdb_storage_probe_start",
-            timeout_seconds=config.storage_operation_timeout_seconds,
+            "ledger_prepare_ok",
+            backend="foundationdb",
             namespace=namespace,
+            registry_backend=registry.backend,
+            fdb_start_mode=start_mode,
         )
-        _run_storage_step(
-            label="fdb_ledger_status_probe",
-            timeout_seconds=config.storage_operation_timeout_seconds,
-            progress=progress,
-            operation=lambda: ledger.status(recent_limit=1),
-        )
-        _run_storage_step(
-            label="fdb_registry_status_probe",
-            timeout_seconds=config.storage_operation_timeout_seconds,
-            progress=progress,
-            operation=registry.status,
-        )
-        progress.emit("fdb_storage_probe_ok", namespace=namespace)
-        progress.emit("ledger_prepare_ok", backend="foundationdb", namespace=namespace, registry_backend=registry.backend)
         return ledger, registry, None
 
     if config.ledger_backend == "json":
@@ -922,6 +1097,7 @@ def _prepare_ledger_and_registry(
         return HubCreditLedger(ledger_root), InMemoryWorkerRegistry(), tempdir
 
     raise NodeMarketSmokeError(f"unknown ledger backend: {config.ledger_backend}")
+
 
 
 def _register_workers(registry: WorkerRegistry, nodes: list[WorkerNodeSpec], *, config: NodeMarketSmokeConfig, progress: _ProgressReporter) -> list[dict[str, Any]]:
@@ -1292,6 +1468,7 @@ async def run_temporal_fdb_node_market_smoke(config: NodeMarketSmokeConfig) -> d
                 "cluster_file": str(config.resolved_fdb_cluster_file()) if config.ledger_backend == "foundationdb" else "",
                 "namespace": config.fdb_namespace or f"main-computer-node-market-{run_id}",
                 "bootstrap_enabled": config.bootstrap_fdb,
+                "start_mode": config.fdb_start_mode,
             },
             "scenario": {
                 "node_count": node_count,
@@ -1370,7 +1547,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fdb-cluster-file", type=Path, default=DEFAULT_FDB_CLUSTER_FILE)
     parser.add_argument("--fdb-namespace", default=None)
     parser.add_argument("--fdb-api-version", type=int, default=740)
-    parser.add_argument("--no-bootstrap-fdb", action="store_true")
+    parser.add_argument(
+        "--fdb-start-mode",
+        choices=("auto", "never", "always"),
+        default="auto",
+        help=(
+            "How to prepare dev FoundationDB before the market smoke. "
+            "auto probes existing FDB and starts the existing FDB primitive smoke if unhealthy; "
+            "always starts it first; never only probes and fails if unavailable."
+        ),
+    )
+    parser.add_argument(
+        "--no-bootstrap-fdb",
+        action="store_true",
+        help="legacy alias for --fdb-start-mode never",
+    )
     parser.add_argument("--stop-fdb-container-after-bootstrap", action="store_true")
     parser.add_argument(
         "--storage-operation-timeout-seconds",
@@ -1430,6 +1621,7 @@ def main(argv: list[str] | None = None) -> int:
                     fdb_namespace=args.fdb_namespace,
                     fdb_api_version=args.fdb_api_version,
                     bootstrap_fdb=not args.no_bootstrap_fdb,
+                    fdb_start_mode="never" if args.no_bootstrap_fdb else args.fdb_start_mode,
                     bootstrap_fdb_keep_container=not args.stop_fdb_container_after_bootstrap,
                     storage_operation_timeout_seconds=args.storage_operation_timeout_seconds,
                     node_count=args.nodes,

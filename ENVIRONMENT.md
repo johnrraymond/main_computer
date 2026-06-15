@@ -18,6 +18,32 @@ cd "$env:USERPROFILE\dsl\main_computer_test"
 python -m unittest discover -s tests -v
 ```
 
+## Temporal / FoundationDB lab after a reboot
+
+The Hub-backed Temporal/FDB smokes need Docker Desktop, the local Temporal dev
+server, and the local FoundationDB smoke container. From the repository root in
+PowerShell with the virtualenv active:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+
+python -m tools.temporal_lab.local_temporal up --pull
+python -m tools.temporal_lab.local_temporal status
+
+python .\scripts\smoke_foundationdb_credit_ledger_primitives.py --keep-container
+```
+
+Then run the current golden-path smokes:
+
+```powershell
+python .\scripts\smoke_temporal_fdb_hub_node_market.py
+python .\scripts\smoke_temporal_fdb_hub_multi_hub.py
+```
+
+The Hub processes are auto-started by those smokes by default. If the
+multi-Hub smoke reports that ports `8870` or `8871` are already listening, stop
+the stale Hub process or pass alternate `--hub-a-url` / `--hub-b-url` ports.
+
 Start the console viewport directly:
 
 ```powershell

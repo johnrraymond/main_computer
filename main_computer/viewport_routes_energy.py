@@ -1002,6 +1002,165 @@ class ViewportEnergyRoutesMixin:
             self.server.signal("api-worker-wallet-funding-import-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
+    def _wallet_dns_control_profiles_path(self) -> Path:
+        return self.server.debug_root / "wallet_dns_control_profiles.json"
+
+    def _load_wallet_dns_control_profiles(self) -> list[dict[str, Any]]:
+        path = self._wallet_dns_control_profiles_path()
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return []
+        except json.JSONDecodeError:
+            return []
+        profiles = payload.get("profiles") if isinstance(payload, dict) else payload
+        if not isinstance(profiles, list):
+            return []
+        return [dict(item) for item in profiles if isinstance(item, dict)][:100]
+
+    def _save_wallet_dns_control_profiles(self, profiles: list[dict[str, Any]]) -> None:
+        path = self._wallet_dns_control_profiles_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"profiles": [dict(item) for item in profiles[:100]]}
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    def _normalize_wallet_dns_control_mode(self, value: Any) -> str:
+        mode = str(value or "cloudflare").strip().lower()
+        if mode in {"cloudflare", "cloudflare-managed", "cf"}:
+            return "cloudflare"
+        if mode in {"self-hosted", "self_hosted", "own-dns", "own_dns", "authoritative"}:
+            return "self-hosted"
+        raise ValueError("provider_mode must be either cloudflare or self-hosted.")
+
+    def _normalize_wallet_dns_control_text(self, value: Any, *, field: str, required: bool = True, max_length: int = 253) -> str:
+        text = str(value or "").strip()
+        if required and not text:
+            raise ValueError(f"{field} is required.")
+        if len(text) > max_length:
+            raise ValueError(f"{field} must be {max_length} characters or fewer.")
+        if any(ch in text for ch in "\r\n\x00"):
+            raise ValueError(f"{field} contains unsafe characters.")
+        return text
+
+    def _normalize_wallet_dns_control_zone(self, value: Any) -> str:
+        zone = self._normalize_wallet_dns_control_text(value, field="zone").rstrip(".").lower()
+        if not re.fullmatch(r"(?=.{1,253}$)(?!-)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", zone):
+            raise ValueError("zone must be a valid domain name.")
+        return zone
+
+    def _normalize_wallet_dns_control_record_name(self, value: Any) -> str:
+        name = self._normalize_wallet_dns_control_text(value or "@", field="record_name", max_length=253)
+        return name.rstrip(".") or "@"
+
+    def _normalize_wallet_dns_control_record_type(self, value: Any) -> str:
+        record_type = str(value or "A").strip().upper()
+        allowed = {"A", "AAAA", "CNAME", "MX", "TXT", "NS", "CAA", "SRV"}
+        if record_type not in allowed:
+            raise ValueError("record_type must be one of: A, AAAA, CNAME, MX, TXT, NS, CAA, SRV.")
+        return record_type
+
+    def _normalize_wallet_dns_control_ttl(self, value: Any) -> int:
+        try:
+            ttl = int(str(value or "300").strip())
+        except (TypeError, ValueError):
+            raise ValueError("ttl must be a whole number of seconds.") from None
+        if ttl < 60 or ttl > 86400:
+            raise ValueError("ttl must be between 60 and 86400 seconds.")
+        return ttl
+
+    def _wallet_dns_control_defaults(self) -> dict[str, Any]:
+        return {
+            "provider_mode": "cloudflare",
+            "ttl": 300,
+            "record_type": "A",
+            "cloudflare_token_env": "CLOUDFLARE_API_TOKEN",
+            "self_hosted_nameserver_hint": "ns1.example.com",
+        }
+
+    def _wallet_dns_control_status_message(self, profile: dict[str, Any] | None = None) -> str:
+        if not profile:
+            return "Connect wallet, choose Cloudflare or self-hosted DNS, then save a control profile."
+        provider = "Cloudflare DNS" if profile.get("provider_mode") == "cloudflare" else "self-hosted authoritative DNS"
+        return f"Saved {provider} control profile for {profile.get('zone', 'zone')}."
+
+    def _handle_wallet_dns_control_profiles_load(self) -> None:
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Wallet DNS control is only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                return
+            profiles = self._load_wallet_dns_control_profiles()
+            self.server.signal("api-wallet-dns-control-load", count=len(profiles))
+            self._send_json({
+                "ok": True,
+                "defaults": self._wallet_dns_control_defaults(),
+                "status_message": self._wallet_dns_control_status_message(profiles[0] if profiles else None),
+                "profiles": profiles[:20],
+            })
+        except Exception as exc:
+            self.server.signal("api-wallet-dns-control-load-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+    def _handle_wallet_dns_control_profile_save(self) -> None:
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Wallet DNS control is only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                return
+            body = self._read_json()
+            owner_wallet = self._normalize_worker_wallet_address(body.get("owner_wallet", body.get("wallet_address", "")))
+            provider_mode = self._normalize_wallet_dns_control_mode(body.get("provider_mode"))
+            zone = self._normalize_wallet_dns_control_zone(body.get("zone"))
+            record_name = self._normalize_wallet_dns_control_record_name(body.get("record_name", "@"))
+            record_type = self._normalize_wallet_dns_control_record_type(body.get("record_type", "A"))
+            record_value = self._normalize_wallet_dns_control_text(body.get("record_value"), field="record_value", max_length=2048)
+            ttl = self._normalize_wallet_dns_control_ttl(body.get("ttl", 300))
+            proxied = self._coerce_bool(body.get("proxied"), default=False)
+            nameserver_host = self._normalize_wallet_dns_control_text(body.get("nameserver_host", ""), field="nameserver_host", required=False)
+            admin_url = self._normalize_wallet_dns_control_text(body.get("admin_url", ""), field="admin_url", required=False, max_length=500)
+
+            if provider_mode == "self-hosted" and not nameserver_host and not admin_url:
+                raise ValueError("self-hosted DNS requires nameserver_host or admin_url.")
+            if provider_mode == "cloudflare":
+                nameserver_host = ""
+                admin_url = ""
+
+            profile = {
+                "id": f"dns_profile_{uuid.uuid4().hex[:16]}",
+                "created_at": datetime.now(tz=timezone.utc).isoformat(),
+                "owner_wallet": owner_wallet,
+                "provider_mode": provider_mode,
+                "zone": zone,
+                "record_name": record_name,
+                "record_type": record_type,
+                "record_value": record_value,
+                "ttl": ttl,
+                "proxied": bool(proxied) if provider_mode == "cloudflare" else False,
+                "nameserver_host": nameserver_host,
+                "admin_url": admin_url,
+                "control_actions": [
+                    "cloudflare_dns_records" if provider_mode == "cloudflare" else "self_hosted_authoritative_zone",
+                    "wallet_owned_dns_profile",
+                ],
+                "secret_policy": "Store provider API tokens outside the browser; use environment variables or the self-hosted DNS admin service.",
+            }
+            profiles = [profile, *self._load_wallet_dns_control_profiles()]
+            self._save_wallet_dns_control_profiles(profiles)
+            self.server.signal(
+                "api-wallet-dns-control-save",
+                provider_mode=provider_mode,
+                zone=zone,
+                owner_wallet=owner_wallet,
+            )
+            self._send_json({
+                "ok": True,
+                "profile": profile,
+                "profiles": profiles[:20],
+                "defaults": self._wallet_dns_control_defaults(),
+                "status_message": self._wallet_dns_control_status_message(profile),
+            })
+        except Exception as exc:
+            self.server.signal("api-wallet-dns-control-save-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
     def _wallet_agent_credit_grants_path(self) -> Path:
         return self.server.debug_root / "wallet_agent_credit_grants.json"
 

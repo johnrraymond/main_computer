@@ -418,7 +418,7 @@ def render_worker_dashboard_paste(plan: CloudflareMailWorkerPlan) -> str:
 
         ## Worker code
 
-        Paste the contents of:
+        Paste the contents of this JavaScript-compatible file:
 
         ```text
         worker/src/index.ts
@@ -844,17 +844,17 @@ def js_string(value: str) -> str:
 def render_worker_source(plan: CloudflareMailWorkerPlan) -> str:
     return textwrap.dedent(
         f'''\
-        export interface Env {{
-          MAIL_INGEST_URL: string;
-          {plan.secret_binding}: string;
-          MAX_MESSAGE_BYTES?: string;
-          INGEST_FAILURE_POLICY?: "throw" | "reject";
-        }}
+        // @ts-nocheck
+        // JavaScript-compatible Worker source.
+        //
+        // This file intentionally avoids TypeScript-only syntax so the same
+        // source can be pasted into the Cloudflare dashboard editor and also
+        // deployed by Wrangler.
 
         const SECRET_HEADER = {js_string(plan.secret_header)};
 
         export default {{
-          async email(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext): Promise<void> {{
+          async email(message, env, ctx) {{
             const maxBytes = Number(env.MAX_MESSAGE_BYTES || "{plan.max_message_bytes}");
             if (!Number.isFinite(maxBytes) || maxBytes <= 0) {{
               message.setReject("mail worker is misconfigured");
@@ -883,7 +883,7 @@ def render_worker_source(plan: CloudflareMailWorkerPlan) -> str:
             if (subject) headers.set("X-Original-Subject", subject.slice(0, 512));
             if (messageId) headers.set("X-Original-Message-ID", messageId.slice(0, 512));
 
-            let response: Response;
+            let response;
             try {{
               response = await fetch(ingestUrl, {{
                 method: "POST",

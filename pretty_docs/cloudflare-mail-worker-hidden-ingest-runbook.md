@@ -98,7 +98,7 @@ The most important files are:
 ```text
 mail-worker-contract.json
 secrets/mail_ingest_secret
-worker/src/index.ts
+worker/src/index.ts  # JavaScript-compatible Worker source
 worker/wrangler.toml
 coolify/compose.yaml
 coolify/mail_ingest.py
@@ -293,7 +293,7 @@ Use the generated files instead of inventing one-off dashboard code:
 ```text
 runtime/cloudflare-mail-worker/greatlibrary.io/cloudflare/worker-dashboard-paste.md
 runtime/cloudflare-mail-worker/greatlibrary.io/cloudflare/wrangler-commands.md
-runtime/cloudflare-mail-worker/greatlibrary.io/worker/src/index.ts
+runtime/cloudflare-mail-worker/greatlibrary.io/worker/src/index.ts  # JavaScript-compatible Worker source
 runtime/cloudflare-mail-worker/greatlibrary.io/worker/wrangler.toml
 ```
 

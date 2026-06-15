@@ -257,7 +257,7 @@ class HubAIRequest:
         if not messages:
             raise ValueError("At least one message is required.")
         metadata = dict(payload.get("metadata", {})) if isinstance(payload.get("metadata"), dict) else {}
-        for key in ("execution_mode", "pricing_mode", "quote_id"):
+        for key in ("execution_mode", "pricing_mode", "quote_id", "requested_ring", "max_price_credits"):
             if payload.get(key) is not None and key not in metadata:
                 metadata[key] = payload.get(key)
         idempotency_key = str(payload.get("idempotency_key") or metadata.get("idempotency_key") or "").strip()
@@ -266,7 +266,13 @@ class HubAIRequest:
         ).strip()
         account_id = str(payload.get("account_id") or metadata.get("account_id") or "").strip()
         try:
-            max_credits = int(payload.get("max_credits") or metadata.get("max_credits") or 0)
+            max_credits = int(
+                payload.get("max_credits")
+                or payload.get("max_price_credits")
+                or metadata.get("max_credits")
+                or metadata.get("max_price_credits")
+                or 0
+            )
         except (TypeError, ValueError):
             max_credits = 0
         try:

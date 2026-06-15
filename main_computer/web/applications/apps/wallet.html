@@ -80,6 +80,80 @@
         </ul>
       </article>
 
+      <article class="wallet-card wallet-dns-control-card mc-app-pane" data-mc-component-id="wallet.dns-control-card" data-mc-component-kind="panel" data-mc-component-label="DNS Control Card" data-mc-component-owner="wallet.grid">
+        <div class="wallet-card-head">
+          <div>
+            <h3>DNS Control Plane</h3>
+            <p>Control Cloudflare-managed zones or run your own authoritative DNS from a wallet-owned profile without storing provider secrets in the browser.</p>
+          </div>
+        </div>
+        <form class="wallet-dns-control-form" id="wallet-dns-control-form" data-mc-component-id="wallet.dns-control-form" data-mc-component-kind="form" data-mc-component-label="DNS Control Profile Form" data-mc-component-owner="wallet.dns-control-card">
+          <label>
+            <span>DNS mode</span>
+            <select id="wallet-dns-control-mode">
+              <option value="cloudflare">Cloudflare-managed DNS</option>
+              <option value="self-hosted">Run my own authoritative DNS</option>
+            </select>
+          </label>
+          <label>
+            <span>Zone / domain</span>
+            <input id="wallet-dns-control-zone" type="text" inputmode="url" autocomplete="off" placeholder="example.com">
+          </label>
+          <label>
+            <span>Record name</span>
+            <input id="wallet-dns-control-record-name" type="text" autocomplete="off" placeholder="@ or app">
+          </label>
+          <label>
+            <span>Record type</span>
+            <select id="wallet-dns-control-record-type">
+              <option value="A">A</option>
+              <option value="AAAA">AAAA</option>
+              <option value="CNAME">CNAME</option>
+              <option value="MX">MX</option>
+              <option value="TXT">TXT</option>
+              <option value="NS">NS</option>
+              <option value="CAA">CAA</option>
+              <option value="SRV">SRV</option>
+            </select>
+          </label>
+          <label class="wallet-dns-control-value">
+            <span>Record value</span>
+            <input id="wallet-dns-control-record-value" type="text" autocomplete="off" placeholder="target IP, host, or TXT value">
+          </label>
+          <label>
+            <span>TTL seconds</span>
+            <input id="wallet-dns-control-ttl" type="number" min="60" max="86400" step="1" value="300">
+          </label>
+          <label class="wallet-dns-control-checkbox">
+            <input id="wallet-dns-control-proxied" type="checkbox">
+            <span>Cloudflare proxy / orange cloud</span>
+          </label>
+          <label>
+            <span>Authoritative nameserver</span>
+            <input id="wallet-dns-control-nameserver" type="text" autocomplete="off" placeholder="ns1.example.com">
+          </label>
+          <label>
+            <span>Self-hosted DNS admin URL</span>
+            <input id="wallet-dns-control-admin-url" type="url" inputmode="url" autocomplete="off" placeholder="http://127.0.0.1:8081">
+          </label>
+          <button type="submit" id="wallet-dns-control-save-button">Save DNS Control Profile</button>
+          <button type="button" id="wallet-dns-control-refresh-button">Refresh DNS Profiles</button>
+        </form>
+        <dl class="wallet-state-list wallet-dns-control-status-list" data-mc-component-id="wallet.dns-control-status-list" data-mc-component-kind="status" data-mc-component-label="DNS Control Status" data-mc-component-owner="wallet.dns-control-card">
+          <div>
+            <dt>Status</dt>
+            <dd id="wallet-dns-control-status">Connect wallet, choose Cloudflare or self-hosted DNS, then save a control profile.</dd>
+          </div>
+          <div>
+            <dt>Last Profile</dt>
+            <dd id="wallet-dns-control-last-profile">none</dd>
+          </div>
+        </dl>
+        <ul class="wallet-dns-control-list" id="wallet-dns-control-list" aria-live="polite" data-mc-component-id="wallet.dns-control-list" data-mc-component-kind="log" data-mc-component-label="DNS Control Profiles" data-mc-component-owner="wallet.dns-control-card">
+          <li>No DNS control profiles yet.</li>
+        </ul>
+      </article>
+
       <article class="wallet-card mc-app-pane" data-mc-component-id="wallet.log-card" data-mc-component-kind="panel" data-mc-component-label="Wallet Log Card" data-mc-component-owner="wallet.grid">
         <div class="wallet-card-head">
           <div>

@@ -16,6 +16,21 @@
         statusMessage: "Connect wallet, enter a helper wallet, then grant credits.",
         grants: [],
         lastGrant: null
+      },
+      dnsControl: {
+        status: "idle",
+        statusMessage: "Connect wallet, choose Cloudflare or self-hosted DNS, then save a control profile.",
+        providerMode: "cloudflare",
+        zone: "",
+        recordName: "@",
+        recordType: "A",
+        recordValue: "",
+        ttl: 300,
+        proxied: false,
+        nameserverHost: "",
+        adminUrl: "",
+        profiles: [],
+        lastProfile: null
       }
     });
 
@@ -29,9 +44,12 @@
     const WALLET_DEV_CHAIN_CURRENCY_NAME = "Main Computer XLAG Credit";
     const WALLET_DEV_CHAIN_CURRENCY_SYMBOL = "MCXLAG";
     const WALLET_AGENT_CREDIT_GRANT_ENDPOINT = "/api/applications/wallet/agent-credit-grants";
+    const WALLET_DNS_CONTROL_ENDPOINT = "/api/applications/wallet/dns-control";
     const WALLET_AGENT_CREDIT_DEFAULT_HUB_URL = "http://127.0.0.1:8770";
     const WALLET_AGENT_CREDIT_DEFAULT_MEMO = "Agent helper credits for parallel verification workers.";
     const WALLET_AGENT_CREDIT_MAX_GRANT = 100;
+    const WALLET_DNS_CONTROL_DEFAULT_STATUS = "Connect wallet, choose Cloudflare or self-hosted DNS, then save a control profile.";
+    const WALLET_DNS_CONTROL_RECORD_TYPES = new Set(["A", "AAAA", "CNAME", "MX", "TXT", "NS", "CAA", "SRV"]);
 
     function walletNowIso() {
       return new Date().toISOString();
@@ -63,6 +81,31 @@
     function walletNormalizeHubUrl(value) {
       const text = String(value || "").trim().replace(/\/+$/, "");
       return text || WALLET_AGENT_CREDIT_DEFAULT_HUB_URL;
+    }
+
+    function walletNormalizeDnsMode(value) {
+      const text = String(value || "").trim().toLowerCase();
+      return text === "self-hosted" ? "self-hosted" : "cloudflare";
+    }
+
+    function walletDnsModeLabel(value) {
+      return walletNormalizeDnsMode(value) === "self-hosted" ? "self-hosted DNS" : "Cloudflare DNS";
+    }
+
+    function walletNormalizeDnsText(value, fallback = "") {
+      const text = String(value || "").trim();
+      return text || fallback;
+    }
+
+    function walletNormalizeDnsRecordType(value) {
+      const text = String(value || "").trim().toUpperCase();
+      return WALLET_DNS_CONTROL_RECORD_TYPES.has(text) ? text : "A";
+    }
+
+    function walletNormalizeDnsTtl(value) {
+      const parsed = Number.parseInt(String(value || "").trim(), 10);
+      if (!Number.isFinite(parsed)) return 300;
+      return Math.min(86400, Math.max(60, parsed));
     }
 
     function walletNormalizeChainIdHex(value) {
@@ -210,6 +253,26 @@
         : [];
       walletAppState.agentCredits.lastGrant = walletAppState.agentCredits.lastGrant && typeof walletAppState.agentCredits.lastGrant === "object"
         ? walletAppState.agentCredits.lastGrant
+        : null;
+      if (!walletAppState.dnsControl || typeof walletAppState.dnsControl !== "object") {
+        walletAppState.dnsControl = {};
+      }
+      walletAppState.dnsControl.status = String(walletAppState.dnsControl.status || "idle");
+      walletAppState.dnsControl.statusMessage = String(walletAppState.dnsControl.statusMessage || WALLET_DNS_CONTROL_DEFAULT_STATUS);
+      walletAppState.dnsControl.providerMode = walletNormalizeDnsMode(walletAppState.dnsControl.providerMode);
+      walletAppState.dnsControl.zone = walletNormalizeDnsText(walletAppState.dnsControl.zone);
+      walletAppState.dnsControl.recordName = walletNormalizeDnsText(walletAppState.dnsControl.recordName, "@");
+      walletAppState.dnsControl.recordType = walletNormalizeDnsRecordType(walletAppState.dnsControl.recordType);
+      walletAppState.dnsControl.recordValue = walletNormalizeDnsText(walletAppState.dnsControl.recordValue);
+      walletAppState.dnsControl.ttl = walletNormalizeDnsTtl(walletAppState.dnsControl.ttl);
+      walletAppState.dnsControl.proxied = Boolean(walletAppState.dnsControl.proxied);
+      walletAppState.dnsControl.nameserverHost = walletNormalizeDnsText(walletAppState.dnsControl.nameserverHost);
+      walletAppState.dnsControl.adminUrl = walletNormalizeDnsText(walletAppState.dnsControl.adminUrl);
+      walletAppState.dnsControl.profiles = Array.isArray(walletAppState.dnsControl.profiles)
+        ? walletAppState.dnsControl.profiles.slice(0, 20)
+        : [];
+      walletAppState.dnsControl.lastProfile = walletAppState.dnsControl.lastProfile && typeof walletAppState.dnsControl.lastProfile === "object"
+        ? walletAppState.dnsControl.lastProfile
         : null;
       walletAppState.hookState = String(walletAppState.hookState || "idle");
       walletAppState.providerState = String(walletAppState.providerState || "not-installed");
@@ -381,6 +444,62 @@
             const created = String(grant.created_at || grant.createdAt || "").replace("T", " ").slice(0, 19);
             item.textContent = `${created || "recent"} · ${grant.credits} credits · ${walletShortAddress(grant.recipient_wallet || grant.account_id || "")}`;
             walletAgentCreditList.appendChild(item);
+          });
+        }
+      }
+
+      const dnsState = walletAppState.dnsControl;
+      const dnsBusy = dnsState.status === "saving" || dnsState.status === "loading";
+
+      if (walletDnsControlMode) walletDnsControlMode.value = dnsState.providerMode || "cloudflare";
+      if (walletDnsControlZone && !walletDnsControlZone.dataset.walletUserEdited) walletDnsControlZone.value = dnsState.zone || "";
+      if (walletDnsControlRecordName && !walletDnsControlRecordName.dataset.walletUserEdited) walletDnsControlRecordName.value = dnsState.recordName || "@";
+      if (walletDnsControlRecordType) walletDnsControlRecordType.value = dnsState.recordType || "A";
+      if (walletDnsControlRecordValue && !walletDnsControlRecordValue.dataset.walletUserEdited) walletDnsControlRecordValue.value = dnsState.recordValue || "";
+      if (walletDnsControlTtl && !walletDnsControlTtl.dataset.walletUserEdited) walletDnsControlTtl.value = String(dnsState.ttl || 300);
+      if (walletDnsControlProxied) walletDnsControlProxied.checked = Boolean(dnsState.proxied);
+      if (walletDnsControlNameserver && !walletDnsControlNameserver.dataset.walletUserEdited) walletDnsControlNameserver.value = dnsState.nameserverHost || "";
+      if (walletDnsControlAdminUrl && !walletDnsControlAdminUrl.dataset.walletUserEdited) walletDnsControlAdminUrl.value = dnsState.adminUrl || "";
+
+      if (walletDnsControlStatus) {
+        walletDnsControlStatus.textContent = dnsState.statusMessage;
+      }
+      if (walletDnsControlLastProfile) {
+        const last = dnsState.lastProfile;
+        walletDnsControlLastProfile.textContent = last
+          ? `${walletDnsModeLabel(last.provider_mode)} · ${last.zone} · ${last.record_name || "@"} ${last.record_type || "A"}`
+          : "none";
+      }
+      if (walletDnsControlSaveButton) {
+        walletDnsControlSaveButton.disabled = dnsBusy || !connected;
+        walletDnsControlSaveButton.textContent = dnsBusy
+          ? "Saving…"
+          : connected
+            ? "Save DNS Control Profile"
+            : "Connect Wallet First";
+        if (dnsBusy) {
+          walletDnsControlSaveButton.setAttribute("aria-busy", "true");
+        } else {
+          walletDnsControlSaveButton.removeAttribute("aria-busy");
+        }
+      }
+      if (walletDnsControlRefreshButton) {
+        walletDnsControlRefreshButton.disabled = dnsBusy;
+        walletDnsControlRefreshButton.textContent = dnsBusy ? "Refreshing…" : "Refresh DNS Profiles";
+      }
+      if (walletDnsControlList) {
+        walletDnsControlList.innerHTML = "";
+        const profiles = Array.isArray(dnsState.profiles) ? dnsState.profiles.slice(0, 6) : [];
+        if (!profiles.length) {
+          const item = document.createElement("li");
+          item.textContent = "No DNS control profiles yet.";
+          walletDnsControlList.appendChild(item);
+        } else {
+          profiles.forEach((profile) => {
+            const item = document.createElement("li");
+            const created = String(profile.created_at || profile.createdAt || "").replace("T", " ").slice(0, 19);
+            item.textContent = `${created || "recent"} · ${walletDnsModeLabel(profile.provider_mode)} · ${profile.zone} · ${profile.record_name || "@"} ${profile.record_type || "A"}`;
+            walletDnsControlList.appendChild(item);
           });
         }
       }
@@ -713,6 +832,155 @@
       }
     }
 
+    async function hydrateWalletDnsControlProfiles() {
+      walletEnsureStateShape();
+
+      walletAppState.dnsControl.status = "loading";
+      walletAppState.dnsControl.statusMessage = "Loading wallet DNS control profiles…";
+      renderWalletApp();
+
+      try {
+        const response = await fetch(WALLET_DNS_CONTROL_ENDPOINT, {
+          headers: {"Accept": "application/json"}
+        });
+        const payload = await response.json();
+        if (!response.ok || payload?.ok === false) {
+          throw new Error(payload?.error || `HTTP ${response.status}`);
+        }
+        walletAppState.dnsControl.status = "idle";
+        walletAppState.dnsControl.statusMessage = payload.status_message || WALLET_DNS_CONTROL_DEFAULT_STATUS;
+        walletAppState.dnsControl.profiles = Array.isArray(payload.profiles) ? payload.profiles.slice(0, 20) : [];
+        walletAppState.dnsControl.lastProfile = walletAppState.dnsControl.profiles[0] || walletAppState.dnsControl.lastProfile;
+        const defaults = payload.defaults && typeof payload.defaults === "object" ? payload.defaults : {};
+        walletAppState.dnsControl.providerMode = walletNormalizeDnsMode(defaults.provider_mode || walletAppState.dnsControl.providerMode);
+        walletAppState.dnsControl.ttl = walletNormalizeDnsTtl(defaults.ttl || walletAppState.dnsControl.ttl);
+        walletRecordEvent("dns-control-profiles.loaded", {
+          count: walletAppState.dnsControl.profiles.length
+        });
+      } catch (error) {
+        walletAppState.dnsControl.status = "failed";
+        walletAppState.dnsControl.statusMessage = `DNS profiles unavailable: ${walletErrorMessage(error)}`;
+        walletRecordEvent("dns-control-profiles.failed", {
+          message: walletErrorMessage(error)
+        });
+      } finally {
+        renderWalletApp();
+      }
+    }
+
+    async function requestWalletDnsControlSave(event) {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+
+      walletEnsureStateShape();
+
+      const ownerWallet = walletNormalizeAccountAddress(walletAppState.wallet.address);
+      const providerMode = walletNormalizeDnsMode(walletDnsControlMode?.value);
+      const zone = walletNormalizeDnsText(walletDnsControlZone?.value);
+      const recordName = walletNormalizeDnsText(walletDnsControlRecordName?.value, "@");
+      const recordType = walletNormalizeDnsRecordType(walletDnsControlRecordType?.value);
+      const recordValue = walletNormalizeDnsText(walletDnsControlRecordValue?.value);
+      const ttl = walletNormalizeDnsTtl(walletDnsControlTtl?.value);
+      const proxied = Boolean(walletDnsControlProxied?.checked);
+      const nameserverHost = walletNormalizeDnsText(walletDnsControlNameserver?.value);
+      const adminUrl = walletNormalizeDnsText(walletDnsControlAdminUrl?.value);
+
+      if (!ownerWallet) {
+        walletAppState.dnsControl.status = "blocked";
+        walletAppState.dnsControl.statusMessage = "Connect the primary wallet before saving DNS control.";
+        walletRecordEvent("dns-control.blocked.not-connected");
+        return;
+      }
+      if (!zone) {
+        walletAppState.dnsControl.status = "blocked";
+        walletAppState.dnsControl.statusMessage = "Enter the DNS zone or domain to control.";
+        walletRecordEvent("dns-control.blocked.missing-zone");
+        return;
+      }
+      if (!recordValue) {
+        walletAppState.dnsControl.status = "blocked";
+        walletAppState.dnsControl.statusMessage = "Enter the DNS record value to publish or stage.";
+        walletRecordEvent("dns-control.blocked.missing-record-value");
+        return;
+      }
+      if (providerMode === "self-hosted" && !nameserverHost && !adminUrl) {
+        walletAppState.dnsControl.status = "blocked";
+        walletAppState.dnsControl.statusMessage = "Self-hosted DNS needs an authoritative nameserver or admin URL.";
+        walletRecordEvent("dns-control.blocked.self-hosted-target");
+        return;
+      }
+
+      walletAppState.dnsControl.status = "saving";
+      walletAppState.dnsControl.statusMessage = `Saving ${walletDnsModeLabel(providerMode)} control profile for ${zone}…`;
+      renderWalletApp();
+
+      try {
+        const response = await fetch(WALLET_DNS_CONTROL_ENDPOINT, {
+          method: "POST",
+          headers: {
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            owner_wallet: ownerWallet,
+            provider_mode: providerMode,
+            zone,
+            record_name: recordName,
+            record_type: recordType,
+            record_value: recordValue,
+            ttl,
+            proxied,
+            nameserver_host: nameserverHost,
+            admin_url: adminUrl
+          })
+        });
+        const payload = await response.json();
+        if (!response.ok || payload?.ok === false) {
+          throw new Error(payload?.error || `HTTP ${response.status}`);
+        }
+
+        const profile = payload.profile || {
+          created_at: walletNowIso(),
+          owner_wallet: ownerWallet,
+          provider_mode: providerMode,
+          zone,
+          record_name: recordName,
+          record_type: recordType,
+          record_value: recordValue,
+          ttl,
+          proxied,
+          nameserver_host: nameserverHost,
+          admin_url: adminUrl
+        };
+        walletAppState.dnsControl.status = "saved";
+        walletAppState.dnsControl.statusMessage = payload.status_message || `Saved ${walletDnsModeLabel(providerMode)} control profile for ${zone}.`;
+        walletAppState.dnsControl.providerMode = providerMode;
+        walletAppState.dnsControl.zone = zone;
+        walletAppState.dnsControl.recordName = recordName;
+        walletAppState.dnsControl.recordType = recordType;
+        walletAppState.dnsControl.recordValue = recordValue;
+        walletAppState.dnsControl.ttl = ttl;
+        walletAppState.dnsControl.proxied = proxied;
+        walletAppState.dnsControl.nameserverHost = nameserverHost;
+        walletAppState.dnsControl.adminUrl = adminUrl;
+        walletAppState.dnsControl.lastProfile = profile;
+        walletAppState.dnsControl.profiles = [profile, ...walletAppState.dnsControl.profiles].slice(0, 20);
+        walletRecordEvent("dns-control-profile.saved", {
+          mode: walletDnsModeLabel(providerMode),
+          zone,
+          record: `${recordName} ${recordType}`
+        });
+      } catch (error) {
+        walletAppState.dnsControl.status = "failed";
+        walletAppState.dnsControl.statusMessage = `DNS control save failed: ${walletErrorMessage(error)}`;
+        walletRecordEvent("dns-control-profile.failed", {
+          message: walletErrorMessage(error)
+        });
+      } finally {
+        renderWalletApp();
+      }
+    }
+
     async function requestWalletDisconnectHook(event) {
       event?.preventDefault?.();
       event?.stopPropagation?.();
@@ -945,8 +1213,32 @@
           walletAgentCreditHubUrl.dataset.walletUserEdited = "true";
         });
       }
+      if (walletDnsControlForm && !walletDnsControlForm.dataset.walletBound) {
+        walletDnsControlForm.dataset.walletBound = "true";
+        walletDnsControlForm.addEventListener("submit", requestWalletDnsControlSave, true);
+      }
+      if (walletDnsControlRefreshButton && !walletDnsControlRefreshButton.dataset.walletBound) {
+        walletDnsControlRefreshButton.dataset.walletBound = "true";
+        walletDnsControlRefreshButton.addEventListener("click", hydrateWalletDnsControlProfiles, true);
+      }
+      [
+        walletDnsControlZone,
+        walletDnsControlRecordName,
+        walletDnsControlRecordValue,
+        walletDnsControlTtl,
+        walletDnsControlNameserver,
+        walletDnsControlAdminUrl
+      ].forEach((field) => {
+        if (field && !field.dataset.walletBound) {
+          field.dataset.walletBound = "true";
+          field.addEventListener("input", () => {
+            field.dataset.walletUserEdited = "true";
+          });
+        }
+      });
 
       hydrateWalletAgentCreditGrants();
+      hydrateWalletDnsControlProfiles();
       walletBindProviderEvents();
       renderWalletApp();
 
@@ -963,6 +1255,8 @@
         waitForStableProvider: walletWaitForStableProvider,
         hydrateAgentCreditGrants: hydrateWalletAgentCreditGrants,
         requestAgentCreditGrant: requestWalletAgentCreditGrant,
+        hydrateDnsControlProfiles: hydrateWalletDnsControlProfiles,
+        requestDnsControlSave: requestWalletDnsControlSave,
         requestMultiSessionKeySignature,
         buildMultiSessionKeyMessage: walletBuildMultiSessionKeyMessage
       };

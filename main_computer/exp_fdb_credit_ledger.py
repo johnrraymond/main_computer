@@ -34,6 +34,7 @@ from main_computer.hub_credit_models import (
     WorkerClaim,
     WorkerEarning,
     clean_account_id,
+    normalize_address,
     clean_worker_id,
     make_worker_commitment,
     stable_id,
@@ -221,6 +222,11 @@ class ExperimentalFoundationDbCreditLedger:
                 "charges": self._list_dicts(tr, "charge"),
                 "worker_earnings": self._list_dicts(tr, "worker_earning"),
                 "worker_claims": self._list_dicts(tr, "worker_claim"),
+                "mock_chain_wallets": self._list_dicts(tr, "mock_chain_wallet"),
+                "bridge_deposits": self._list_dicts(tr, "bridge_deposit"),
+                "bridge_payouts": self._list_dicts(tr, "bridge_payout"),
+                "wallet_locks": self._list_dicts(tr, "wallet_lock"),
+                "bridge_audit": self._list_dicts(tr, "bridge_audit"),
             }
 
         return _tx(self.db)
@@ -253,6 +259,16 @@ class ExperimentalFoundationDbCreditLedger:
             "worker_earning_count": len(earnings),
             "worker_claim_count": len(claims),
             "recent_transactions": [tx.as_dict() for tx in transactions[: max(0, int(recent_limit or 25))]],
+            "mock_chain": {
+                "wallet_count": len(snapshot.get("mock_chain_wallets", [])),
+                "deposit_count": len(snapshot.get("bridge_deposits", [])),
+                "payout_count": len(snapshot.get("bridge_payouts", [])),
+                "active_wallet_lock_count": sum(1 for lock in snapshot.get("wallet_locks", []) if str(lock.get("status", "active")) == "active"),
+                "audit_event_count": len(snapshot.get("bridge_audit", [])),
+                "chain_available_credit_wei": str(sum(int(wallet.get("available_credit_wei", 0) or 0) for wallet in snapshot.get("mock_chain_wallets", []))),
+                "pending_deposit_credit_wei": str(sum(int(dep.get("credit_wei", 0) or 0) for dep in snapshot.get("bridge_deposits", []) if str(dep.get("status", "")) == "pending")),
+                "pending_payout_credit_wei": str(sum(int(payout.get("credit_wei", 0) or 0) for payout in snapshot.get("bridge_payouts", []) if str(payout.get("status", "")) == "pending")),
+            },
             "totals": {
                 "available_credits": sum(account.available_credits for account in accounts),
                 "held_credits": sum(account.held_credits for account in accounts),
@@ -457,6 +473,11 @@ class ExperimentalFoundationDbCreditLedger:
                 return {"idempotent": True, "hold": hold.as_dict(), "account": account.as_dict()}
 
             current = self._account_from_payload(self._read_dict(tr, "account", clean_account), clean_account, now=now)
+            owner_wallet = normalize_address(current.owner_address)
+            if owner_wallet:
+                active_lock = self._read_dict(tr, "wallet_lock", owner_wallet)
+                if isinstance(active_lock, dict) and str(active_lock.get("status", "active")) == "active":
+                    raise ValueError(f"Wallet {owner_wallet} is locked for payout; new holds are blocked.")
             if current.available_credit_wei < clean_wei:
                 raise ValueError(
                     f"Insufficient Compute Credits for account {clean_account}: "
@@ -490,6 +511,16 @@ class ExperimentalFoundationDbCreditLedger:
             self._write_dict(tr, "account", account.account_id, account.as_dict())
             self._write_dict(tr, "hold", proposed.hold_id, proposed.as_dict())
             self._write_dict(tr, "transaction", tx.transaction_id, tx.as_dict())
+            self._write_audit_event(
+                tr,
+                event_type="hub.hold.created",
+                wallet_address=owner_wallet,
+                account_id=account.account_id,
+                amount_wei=clean_wei,
+                reference_id=proposed.hold_id,
+                metadata={"request_id": clean_request, **dict(metadata or {})},
+                now=now,
+            )
             return {"idempotent": False, "hold": proposed.as_dict(), "account": account.as_dict(), "transaction": tx.as_dict()}
 
         result = _tx(self.db)
@@ -557,6 +588,16 @@ class ExperimentalFoundationDbCreditLedger:
             self._write_dict(tr, "account", account.account_id, account.as_dict())
             self._write_dict(tr, "hold", released.hold_id, released.as_dict())
             self._write_dict(tr, "transaction", tx.transaction_id, tx.as_dict())
+            self._write_audit_event(
+                tr,
+                event_type="hub.hold.released",
+                wallet_address=normalize_address(account.owner_address),
+                account_id=account.account_id,
+                amount_wei=hold.credit_wei,
+                reference_id=hold.hold_id,
+                metadata={"request_id": hold.request_id, "reason": reason, **dict(metadata or {})},
+                now=now,
+            )
             return {"idempotent": False, "hold": released.as_dict(), "account": account.as_dict(), "transaction": tx.as_dict()}
 
         result = _tx(self.db)
@@ -705,8 +746,35 @@ class ExperimentalFoundationDbCreditLedger:
             self._write_dict(tr, "hold", charged_hold.hold_id, charged_hold.as_dict())
             self._write_dict(tr, "charge", charge.charge_id, charge.as_dict())
             self._write_dict(tr, "transaction", charge_tx.transaction_id, charge_tx.as_dict())
+            requester_wallet = normalize_address(account.owner_address)
+            self._write_audit_event(
+                tr,
+                event_type="hub.hold.charged",
+                wallet_address=requester_wallet,
+                account_id=account.account_id,
+                worker_node_id=clean_worker,
+                amount_wei=clean_charged,
+                reference_id=charge.charge_id,
+                metadata={"request_id": hold.request_id, "hold_id": hold.hold_id, **dict(metadata or {})},
+                now=now,
+            )
             if earning:
                 self._write_dict(tr, "worker_earning", earning.earning_id, earning.as_private_dict())
+                self._write_audit_event(
+                    tr,
+                    event_type="hub.worker.earning.recorded",
+                    worker_node_id=clean_worker,
+                    amount_wei=clean_charged,
+                    reference_id=earning.earning_id,
+                    metadata={
+                        "request_id": hold.request_id,
+                        "hold_id": hold.hold_id,
+                        "charge_id": charge.charge_id,
+                        "account_id": account.account_id,
+                        **dict(metadata or {}),
+                    },
+                    now=now,
+                )
             if released_wei:
                 release_tx = HubCreditTransaction(
                     transaction_id=stable_id("ctx", {"type": "hold_released", "hold_id": hold.hold_id, "charge_id": charge.charge_id}),
@@ -721,6 +789,17 @@ class ExperimentalFoundationDbCreditLedger:
                     metadata={**dict(metadata or {}), "experimental_fdb": True},
                 )
                 self._write_dict(tr, "transaction", release_tx.transaction_id, release_tx.as_dict())
+                self._write_audit_event(
+                    tr,
+                    event_type="hub.hold.released",
+                    wallet_address=requester_wallet,
+                    account_id=account.account_id,
+                    worker_node_id=clean_worker,
+                    amount_wei=released_wei,
+                    reference_id=hold.hold_id,
+                    metadata={"request_id": hold.request_id, "charge_id": charge.charge_id, **dict(metadata or {})},
+                    now=now,
+                )
 
             return {
                 "idempotent": False,
@@ -861,6 +940,569 @@ class ExperimentalFoundationDbCreditLedger:
 
     def record_worker_settlement_proof(self, **kwargs: Any) -> dict[str, Any]:
         raise NotImplementedError("exp-fdb-hub.py does not implement settlement proofs yet.")
+
+
+    def _wallet_payload(self, tr: Any, wallet_address: str, *, now: str | None = None) -> dict[str, Any]:
+        clean_wallet = normalize_address(wallet_address)
+        if not clean_wallet:
+            raise ValueError("wallet_address is required.")
+        payload = self._read_dict(tr, "mock_chain_wallet", clean_wallet)
+        if isinstance(payload, dict):
+            return payload
+        timestamp = now or utc_now()
+        return {
+            "wallet_address": clean_wallet,
+            "available_credit_wei": "0",
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+
+    def _write_audit_event(
+        self,
+        tr: Any,
+        *,
+        event_type: str,
+        wallet_address: str = "",
+        account_id: str = "",
+        worker_node_id: str = "",
+        amount_wei: int | str = 0,
+        reference_id: str = "",
+        metadata: dict[str, Any] | None = None,
+        now: str | None = None,
+    ) -> dict[str, Any]:
+        timestamp = now or utc_now()
+        clean_wallet = normalize_address(wallet_address)
+        clean_account = clean_account_id(account_id, default="") if account_id else ""
+        clean_worker = clean_worker_id(worker_node_id, default="") if worker_node_id else ""
+        payload = {
+            "event_id": stable_id(
+                "baudit",
+                {
+                    "event_type": str(event_type or ""),
+                    "wallet_address": clean_wallet,
+                    "account_id": clean_account,
+                    "worker_node_id": clean_worker,
+                    "amount_wei": str(amount_wei or 0),
+                    "reference_id": str(reference_id or ""),
+                    "created_at": timestamp,
+                },
+            ),
+            "event_type": str(event_type or "").strip(),
+            "wallet_address": clean_wallet,
+            "account_id": clean_account,
+            "worker_node_id": clean_worker,
+            "amount_wei": str(int(amount_wei or 0)),
+            "amount_display": credit_wei_to_decimal_text(int(amount_wei or 0)),
+            "reference_id": str(reference_id or ""),
+            "created_at": timestamp,
+            "metadata": dict(metadata or {}),
+        }
+        self._write_dict(tr, "bridge_audit", payload["event_id"], payload)
+        return payload
+
+    def list_bridge_audit(
+        self,
+        *,
+        wallet_address: str = "",
+        account_id: str = "",
+        worker_node_id: str = "",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clean_wallet = normalize_address(wallet_address)
+        clean_account = clean_account_id(account_id, default="") if account_id else ""
+        clean_worker = clean_worker_id(worker_node_id, default="") if worker_node_id else ""
+        events = list(self._snapshot().get("bridge_audit", []))
+        if clean_wallet:
+            events = [event for event in events if normalize_address(event.get("wallet_address", "")) == clean_wallet]
+        if clean_account:
+            events = [event for event in events if str(event.get("account_id", "")) == clean_account]
+        if clean_worker:
+            events = [event for event in events if str(event.get("worker_node_id", "")) == clean_worker]
+        events.sort(key=lambda item: str(item.get("created_at", "")), reverse=True)
+        return events[: max(0, int(limit or 100))]
+
+    def mock_chain_wallet_status(self, wallet_address: str = "") -> dict[str, Any]:
+        clean_wallet = normalize_address(wallet_address)
+        wallets = list(self._snapshot().get("mock_chain_wallets", []))
+        if clean_wallet:
+            wallets = [wallet for wallet in wallets if normalize_address(wallet.get("wallet_address", "")) == clean_wallet]
+        wallets.sort(key=lambda item: str(item.get("wallet_address", "")))
+        return {
+            "ok": True,
+            "backend": "foundationdb",
+            "wallets": wallets,
+            "wallet_count": len(wallets),
+            "total_available_credit_wei": str(sum(int(wallet.get("available_credit_wei", 0) or 0) for wallet in wallets)),
+            "total_available_credits_display": credit_wei_to_decimal_text(sum(int(wallet.get("available_credit_wei", 0) or 0) for wallet in wallets)),
+        }
+
+    def wallet_lock_status(self, wallet_address: str = "") -> dict[str, Any]:
+        clean_wallet = normalize_address(wallet_address)
+        locks = list(self._snapshot().get("wallet_locks", []))
+        if clean_wallet:
+            locks = [lock for lock in locks if normalize_address(lock.get("wallet_address", "")) == clean_wallet]
+        active_locks = [lock for lock in locks if str(lock.get("status", "active")) == "active"]
+        locks.sort(key=lambda item: str(item.get("created_at", "")), reverse=True)
+        return {
+            "ok": True,
+            "wallet_address": clean_wallet,
+            "locked": bool(active_locks),
+            "active_locks": active_locks,
+            "locks": locks,
+            "lock_count": len(locks),
+        }
+
+    def is_wallet_locked(self, wallet_address: str) -> bool:
+        clean_wallet = normalize_address(wallet_address)
+        if not clean_wallet:
+            return False
+        payload = self.wallet_lock_status(clean_wallet)
+        return bool(payload.get("locked"))
+
+    def mock_chain_mint(
+        self,
+        *,
+        wallet_address: str,
+        credits: int,
+        idempotency_key: str = "",
+        memo: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        clean_wallet = normalize_address(wallet_address)
+        credit_wei = credit_count_to_wei(credits)
+        if not clean_wallet:
+            raise ValueError("wallet_address is required.")
+        if credit_wei <= 0:
+            raise ValueError("credits must be positive.")
+        clean_key = str(idempotency_key or "").strip()
+        idem_key = self._key("bridge_idempotency", f"mock_chain_mint:{clean_key}") if clean_key else None
+        now = utc_now()
+
+        @self.fdb.transactional
+        def _tx(tr: Any) -> dict[str, Any]:
+            if idem_key is not None and _json_loads(tr[idem_key].wait()) is not None:
+                wallet = self._wallet_payload(tr, clean_wallet, now=now)
+                return {"idempotent": True, "wallet": wallet}
+            wallet = self._wallet_payload(tr, clean_wallet, now=now)
+            wallet = {
+                **wallet,
+                "available_credit_wei": str(int(wallet.get("available_credit_wei", 0) or 0) + credit_wei),
+                "updated_at": now,
+            }
+            self._write_dict(tr, "mock_chain_wallet", clean_wallet, wallet)
+            event = self._write_audit_event(
+                tr,
+                event_type="mock_chain.mint",
+                wallet_address=clean_wallet,
+                amount_wei=credit_wei,
+                reference_id=clean_key,
+                metadata={**dict(metadata or {}), "memo": memo},
+                now=now,
+            )
+            if idem_key is not None:
+                tr[idem_key] = _json_dumps({"event_id": event["event_id"], "created_at": now})
+            return {"idempotent": False, "wallet": wallet, "audit_event": event}
+
+        return {"ok": True, **_tx(self.db)}
+
+    def create_bridge_deposit(
+        self,
+        *,
+        wallet_address: str,
+        account_id: str,
+        credits: int,
+        idempotency_key: str = "",
+        memo: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        clean_wallet = normalize_address(wallet_address)
+        clean_account = clean_account_id(account_id)
+        credit_wei = credit_count_to_wei(credits)
+        if not clean_wallet:
+            raise ValueError("wallet_address is required.")
+        if credit_wei <= 0:
+            raise ValueError("credits must be positive.")
+        clean_key = str(idempotency_key or "").strip()
+        deposit_id = stable_id("bdep", {"wallet_address": clean_wallet, "account_id": clean_account, "credit_wei": str(credit_wei), "idempotency_key": clean_key})
+        now = utc_now()
+
+        @self.fdb.transactional
+        def _tx(tr: Any) -> dict[str, Any]:
+            existing = self._read_dict(tr, "bridge_deposit", deposit_id)
+            if existing is not None:
+                return {"idempotent": True, "deposit": existing}
+            wallet = self._wallet_payload(tr, clean_wallet, now=now)
+            available = int(wallet.get("available_credit_wei", 0) or 0)
+            if available < credit_wei:
+                raise ValueError(
+                    f"Insufficient mock-chain funds for {clean_wallet}: "
+                    f"{credit_wei_to_decimal_text(available)} available, {credit_wei_to_decimal_text(credit_wei)} required."
+                )
+            wallet = {**wallet, "available_credit_wei": str(available - credit_wei), "updated_at": now}
+            deposit = {
+                "deposit_id": deposit_id,
+                "wallet_address": clean_wallet,
+                "account_id": clean_account,
+                "credit_wei": str(credit_wei),
+                "credits": credit_wei_to_whole_credits_floor(credit_wei),
+                "status": "pending",
+                "memo": memo,
+                "created_at": now,
+                "confirmed_at": "",
+                "metadata": dict(metadata or {}),
+            }
+            self._write_dict(tr, "mock_chain_wallet", clean_wallet, wallet)
+            self._write_dict(tr, "bridge_deposit", deposit_id, deposit)
+            event = self._write_audit_event(
+                tr,
+                event_type="bridge.deposit.requested",
+                wallet_address=clean_wallet,
+                account_id=clean_account,
+                amount_wei=credit_wei,
+                reference_id=deposit_id,
+                metadata=dict(metadata or {}),
+                now=now,
+            )
+            return {"idempotent": False, "deposit": deposit, "wallet": wallet, "audit_event": event}
+
+        return {"ok": True, **_tx(self.db)}
+
+    def confirm_bridge_deposit(self, *, deposit_id: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        clean_deposit = str(deposit_id or "").strip()
+        if not clean_deposit:
+            raise ValueError("deposit_id is required.")
+        now = utc_now()
+
+        @self.fdb.transactional
+        def _tx(tr: Any) -> dict[str, Any]:
+            payload = self._read_dict(tr, "bridge_deposit", clean_deposit)
+            if payload is None:
+                raise KeyError(f"Unknown bridge deposit: {clean_deposit}")
+            if str(payload.get("status", "")) == "confirmed":
+                account = self._account_from_payload(self._read_dict(tr, "account", str(payload.get("account_id", ""))), str(payload.get("account_id", "")), now=now)
+                return {"idempotent": True, "deposit": payload, "account": account.as_dict()}
+            if str(payload.get("status", "")) != "pending":
+                raise ValueError(f"Cannot confirm bridge deposit {clean_deposit} with status {payload.get('status')}.")
+            credit_wei = int(payload.get("credit_wei", 0) or 0)
+            account_id = clean_account_id(str(payload.get("account_id", "")))
+            wallet_address = normalize_address(str(payload.get("wallet_address", "")))
+            current = self._account_from_payload(self._read_dict(tr, "account", account_id), account_id, now=now)
+            account = HubCreditAccount(
+                account_id=current.account_id,
+                owner_address=wallet_address or current.owner_address,
+                available_credit_wei=current.available_credit_wei + credit_wei,
+                held_credit_wei=current.held_credit_wei,
+                spent_credit_wei=current.spent_credit_wei,
+                earned_credit_wei=current.earned_credit_wei,
+                bridge_completed_credit_wei=current.bridge_completed_credit_wei + credit_wei,
+                created_at=current.created_at,
+                updated_at=now,
+                metadata={**dict(current.metadata or {}), "bridge_wallet_address": wallet_address},
+            )
+            deposit = {**payload, "status": "confirmed", "confirmed_at": now, "metadata": {**dict(payload.get("metadata", {}) or {}), **dict(metadata or {})}}
+            tx = HubCreditTransaction(
+                transaction_id=stable_id("ctx", {"type": "bridge_deposit_completed", "deposit_id": clean_deposit}),
+                account_id=account.account_id,
+                transaction_type="bridge_deposit_completed",
+                credits=0,
+                credit_wei=credit_wei,
+                created_at=now,
+                memo=f"mock chain bridge deposit {clean_deposit}",
+                metadata={"deposit_id": clean_deposit, "wallet_address": wallet_address, **dict(metadata or {})},
+            )
+            self._write_dict(tr, "account", account.account_id, account.as_dict())
+            self._write_dict(tr, "bridge_deposit", clean_deposit, deposit)
+            self._write_dict(tr, "transaction", tx.transaction_id, tx.as_dict())
+            event = self._write_audit_event(
+                tr,
+                event_type="bridge.deposit.confirmed",
+                wallet_address=wallet_address,
+                account_id=account_id,
+                amount_wei=credit_wei,
+                reference_id=clean_deposit,
+                metadata=dict(metadata or {}),
+                now=now,
+            )
+            return {"idempotent": False, "deposit": deposit, "account": account.as_dict(), "transaction": tx.as_dict(), "audit_event": event}
+
+        result = _tx(self.db)
+        return {"ok": True, **result, "ledger": self.status(recent_limit=10)}
+
+    def request_bridge_payout(
+        self,
+        *,
+        wallet_address: str,
+        account_id: str = "",
+        worker_node_id: str = "",
+        credits: int = 0,
+        idempotency_key: str = "",
+        memo: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        clean_wallet = normalize_address(wallet_address)
+        clean_account = clean_account_id(account_id, default="") if account_id else ""
+        clean_worker = clean_worker_id(worker_node_id, default="") if worker_node_id else ""
+        requested_wei = credit_count_to_wei(credits) if int(credits or 0) > 0 else 0
+        if not clean_wallet:
+            raise ValueError("wallet_address is required.")
+        if not clean_account and not clean_worker:
+            raise ValueError("account_id or worker_node_id is required.")
+        clean_key = str(idempotency_key or "").strip()
+        payout_id = stable_id("bpayout", {"wallet_address": clean_wallet, "account_id": clean_account, "worker_node_id": clean_worker, "credit_wei": str(requested_wei), "idempotency_key": clean_key})
+        now = utc_now()
+
+        @self.fdb.transactional
+        def _tx(tr: Any) -> dict[str, Any]:
+            existing = self._read_dict(tr, "bridge_payout", payout_id)
+            if existing is not None:
+                return {"idempotent": True, "payout": existing, "wallet_lock": self._read_dict(tr, "wallet_lock", clean_wallet)}
+            active_lock = self._read_dict(tr, "wallet_lock", clean_wallet)
+            if isinstance(active_lock, dict) and str(active_lock.get("status", "active")) == "active":
+                raise ValueError(f"Wallet {clean_wallet} is already locked by payout {active_lock.get('payout_id')}.")
+            selected_earnings: list[WorkerEarning] = []
+            amount_wei = requested_wei
+            if clean_worker:
+                earnings = [
+                    _earning_from_dict(item)
+                    for item in self._list_dicts(tr, "worker_earning")
+                    if str(item.get("worker_node_id", "")) == clean_worker and str(item.get("status", "earned")) == "earned"
+                ]
+                earnings.sort(key=lambda item: item.created_at)
+                available_wei = sum(earning.earned_credit_wei for earning in earnings)
+                if amount_wei <= 0:
+                    amount_wei = available_wei
+                if available_wei < amount_wei or amount_wei <= 0:
+                    raise ValueError(
+                        f"Insufficient worker earnings for {clean_worker}: "
+                        f"{credit_wei_to_decimal_text(available_wei)} claimable, {credit_wei_to_decimal_text(amount_wei)} requested."
+                    )
+                running = 0
+                for earning in earnings:
+                    selected_earnings.append(earning)
+                    running += earning.earned_credit_wei
+                    if running >= amount_wei:
+                        break
+                if running != amount_wei:
+                    raise ValueError("Partial worker earning payouts are not implemented in mock chain bridge v0.")
+            else:
+                account = self._account_from_payload(self._read_dict(tr, "account", clean_account), clean_account, now=now)
+                if account.owner_address and normalize_address(account.owner_address) != clean_wallet:
+                    raise ValueError(f"Account {clean_account} belongs to {account.owner_address}, not {clean_wallet}.")
+                if account.held_credit_wei > 0:
+                    raise ValueError(f"Account {clean_account} has active holds; payout requires a quiet wallet/account.")
+                if amount_wei <= 0:
+                    amount_wei = account.available_credit_wei
+                if account.available_credit_wei < amount_wei or amount_wei <= 0:
+                    raise ValueError(
+                        f"Insufficient Hub bridged credits for {clean_account}: "
+                        f"{credit_wei_to_decimal_text(account.available_credit_wei)} available, {credit_wei_to_decimal_text(amount_wei)} requested."
+                    )
+                updated = HubCreditAccount(
+                    account_id=account.account_id,
+                    owner_address=clean_wallet,
+                    available_credit_wei=account.available_credit_wei - amount_wei,
+                    held_credit_wei=account.held_credit_wei,
+                    spent_credit_wei=account.spent_credit_wei,
+                    earned_credit_wei=account.earned_credit_wei,
+                    bridge_completed_credit_wei=account.bridge_completed_credit_wei,
+                    created_at=account.created_at,
+                    updated_at=now,
+                    metadata={**dict(account.metadata or {}), "bridge_wallet_address": clean_wallet},
+                )
+                self._write_dict(tr, "account", updated.account_id, updated.as_dict())
+            payout = {
+                "payout_id": payout_id,
+                "wallet_address": clean_wallet,
+                "account_id": clean_account,
+                "worker_node_id": clean_worker,
+                "earning_ids": [earning.earning_id for earning in selected_earnings],
+                "credit_wei": str(amount_wei),
+                "credits": credit_wei_to_whole_credits_floor(amount_wei),
+                "status": "pending",
+                "memo": memo,
+                "created_at": now,
+                "confirmed_at": "",
+                "failed_at": "",
+                "metadata": dict(metadata or {}),
+            }
+            lock = {
+                "wallet_address": clean_wallet,
+                "payout_id": payout_id,
+                "status": "active",
+                "reason": "bridge_payout_pending",
+                "created_at": now,
+                "released_at": "",
+                "metadata": {"account_id": clean_account, "worker_node_id": clean_worker},
+            }
+            self._write_dict(tr, "bridge_payout", payout_id, payout)
+            self._write_dict(tr, "wallet_lock", clean_wallet, lock)
+            self._write_audit_event(
+                tr,
+                event_type="bridge.wallet.locked",
+                wallet_address=clean_wallet,
+                account_id=clean_account,
+                worker_node_id=clean_worker,
+                amount_wei=amount_wei,
+                reference_id=payout_id,
+                metadata={"reason": "bridge_payout_pending", **dict(metadata or {})},
+                now=now,
+            )
+            event = self._write_audit_event(
+                tr,
+                event_type="bridge.payout.requested",
+                wallet_address=clean_wallet,
+                account_id=clean_account,
+                worker_node_id=clean_worker,
+                amount_wei=amount_wei,
+                reference_id=payout_id,
+                metadata={"earning_ids": payout["earning_ids"], **dict(metadata or {})},
+                now=now,
+            )
+            return {"idempotent": False, "payout": payout, "wallet_lock": lock, "audit_event": event}
+
+        return {"ok": True, **_tx(self.db)}
+
+    def confirm_bridge_payout(self, *, payout_id: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        clean_payout = str(payout_id or "").strip()
+        if not clean_payout:
+            raise ValueError("payout_id is required.")
+        now = utc_now()
+
+        @self.fdb.transactional
+        def _tx(tr: Any) -> dict[str, Any]:
+            payload = self._read_dict(tr, "bridge_payout", clean_payout)
+            if payload is None:
+                raise KeyError(f"Unknown bridge payout: {clean_payout}")
+            if str(payload.get("status", "")) == "confirmed":
+                return {"idempotent": True, "payout": payload, "wallet_lock": self._read_dict(tr, "wallet_lock", normalize_address(payload.get("wallet_address", "")))}
+            if str(payload.get("status", "")) != "pending":
+                raise ValueError(f"Cannot confirm bridge payout {clean_payout} with status {payload.get('status')}.")
+            wallet_address = normalize_address(str(payload.get("wallet_address", "")))
+            amount_wei = int(payload.get("credit_wei", 0) or 0)
+            wallet = self._wallet_payload(tr, wallet_address, now=now)
+            wallet = {**wallet, "available_credit_wei": str(int(wallet.get("available_credit_wei", 0) or 0) + amount_wei), "updated_at": now}
+            payout = {**payload, "status": "confirmed", "confirmed_at": now, "metadata": {**dict(payload.get("metadata", {}) or {}), **dict(metadata or {})}}
+            for earning_id in [str(item) for item in payout.get("earning_ids", []) if str(item)]:
+                earning_payload = self._read_dict(tr, "worker_earning", earning_id)
+                if isinstance(earning_payload, dict):
+                    earning = _earning_from_dict(earning_payload)
+                    paid = WorkerEarning(
+                        earning_id=earning.earning_id,
+                        worker_node_id=earning.worker_node_id,
+                        request_id=earning.request_id,
+                        credits=0,
+                        worker_commitment=earning.worker_commitment,
+                        earned_credit_wei=earning.earned_credit_wei,
+                        status="paid",
+                        batch_id=clean_payout,
+                        created_at=earning.created_at,
+                    )
+                    self._write_dict(tr, "worker_earning", paid.earning_id, paid.as_private_dict())
+            lock = self._read_dict(tr, "wallet_lock", wallet_address) or {}
+            released_lock = {**lock, "status": "released", "released_at": now}
+            self._write_dict(tr, "mock_chain_wallet", wallet_address, wallet)
+            self._write_dict(tr, "bridge_payout", clean_payout, payout)
+            self._write_dict(tr, "wallet_lock", wallet_address, released_lock)
+            self._write_audit_event(
+                tr,
+                event_type="bridge.wallet.unlocked",
+                wallet_address=wallet_address,
+                account_id=str(payload.get("account_id", "")),
+                worker_node_id=str(payload.get("worker_node_id", "")),
+                amount_wei=amount_wei,
+                reference_id=clean_payout,
+                metadata={"reason": "bridge_payout_confirmed", **dict(metadata or {})},
+                now=now,
+            )
+            tx = HubCreditTransaction(
+                transaction_id=stable_id("ctx", {"type": "withdrawal_released", "payout_id": clean_payout}),
+                account_id=clean_account_id(str(payload.get("account_id") or payload.get("worker_node_id") or wallet_address)),
+                transaction_type="withdrawal_released",
+                credits=0,
+                credit_wei=amount_wei,
+                created_at=now,
+                worker_node_id=str(payload.get("worker_node_id", "")),
+                memo=f"mock chain payout confirmed {clean_payout}",
+                metadata={"payout_id": clean_payout, "wallet_address": wallet_address, **dict(metadata or {})},
+            )
+            self._write_dict(tr, "transaction", tx.transaction_id, tx.as_dict())
+            event = self._write_audit_event(
+                tr,
+                event_type="bridge.payout.confirmed",
+                wallet_address=wallet_address,
+                account_id=str(payload.get("account_id", "")),
+                worker_node_id=str(payload.get("worker_node_id", "")),
+                amount_wei=amount_wei,
+                reference_id=clean_payout,
+                metadata=dict(metadata or {}),
+                now=now,
+            )
+            return {"idempotent": False, "payout": payout, "wallet": wallet, "wallet_lock": released_lock, "transaction": tx.as_dict(), "audit_event": event}
+
+        result = _tx(self.db)
+        return {"ok": True, **result, "ledger": self.status(recent_limit=10)}
+
+    def fail_bridge_payout(self, *, payout_id: str, reason: str = "", metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        clean_payout = str(payout_id or "").strip()
+        if not clean_payout:
+            raise ValueError("payout_id is required.")
+        now = utc_now()
+
+        @self.fdb.transactional
+        def _tx(tr: Any) -> dict[str, Any]:
+            payload = self._read_dict(tr, "bridge_payout", clean_payout)
+            if payload is None:
+                raise KeyError(f"Unknown bridge payout: {clean_payout}")
+            if str(payload.get("status", "")) != "pending":
+                return {"idempotent": True, "payout": payload}
+            wallet_address = normalize_address(str(payload.get("wallet_address", "")))
+            amount_wei = int(payload.get("credit_wei", 0) or 0)
+            account_id = str(payload.get("account_id", ""))
+            if account_id:
+                account = self._account_from_payload(self._read_dict(tr, "account", account_id), account_id, now=now)
+                refunded = HubCreditAccount(
+                    account_id=account.account_id,
+                    owner_address=account.owner_address or wallet_address,
+                    available_credit_wei=account.available_credit_wei + amount_wei,
+                    held_credit_wei=account.held_credit_wei,
+                    spent_credit_wei=account.spent_credit_wei,
+                    earned_credit_wei=account.earned_credit_wei,
+                    bridge_completed_credit_wei=account.bridge_completed_credit_wei,
+                    created_at=account.created_at,
+                    updated_at=now,
+                    metadata=account.metadata,
+                )
+                self._write_dict(tr, "account", refunded.account_id, refunded.as_dict())
+            payout = {**payload, "status": "failed", "failed_at": now, "failure_reason": reason, "metadata": {**dict(payload.get("metadata", {}) or {}), **dict(metadata or {})}}
+            lock = self._read_dict(tr, "wallet_lock", wallet_address) or {}
+            released_lock = {**lock, "status": "released", "released_at": now, "release_reason": "payout_failed"}
+            self._write_dict(tr, "bridge_payout", clean_payout, payout)
+            self._write_dict(tr, "wallet_lock", wallet_address, released_lock)
+            self._write_audit_event(
+                tr,
+                event_type="bridge.wallet.unlocked",
+                wallet_address=wallet_address,
+                account_id=account_id,
+                worker_node_id=str(payload.get("worker_node_id", "")),
+                amount_wei=amount_wei,
+                reference_id=clean_payout,
+                metadata={"reason": "bridge_payout_failed", **dict(metadata or {})},
+                now=now,
+            )
+            event = self._write_audit_event(
+                tr,
+                event_type="bridge.payout.failed",
+                wallet_address=wallet_address,
+                account_id=account_id,
+                worker_node_id=str(payload.get("worker_node_id", "")),
+                amount_wei=amount_wei,
+                reference_id=clean_payout,
+                metadata={"reason": reason, **dict(metadata or {})},
+                now=now,
+            )
+            return {"idempotent": False, "payout": payout, "wallet_lock": released_lock, "audit_event": event}
+
+        return {"ok": True, **_tx(self.db)}
 
     def bridge_reconciliation_totals(self, account_id: str = "") -> dict[str, Any]:
         return {"ok": True, "account_id": str(account_id or ""), "records": [], "record_count": 0}
