@@ -2216,7 +2216,7 @@ function gitProjectCommitTreeStats(nodes = []) {
       const status = gitProjectCommitNormalizeStatus(data);
       if (status === "untracked") stats.untracked += 1;
       if (status.startsWith("tracked_")) stats.changed += 1;
-      if (data.group === "blocked_possible_secrets" || String(data.risk || "").toLowerCase().includes("block") || status === "conflicted") {
+      if (data.blocked || data.selectable === false || data.group === "blocked_possible_secrets" || String(data.risk || "").toLowerCase().includes("block") || status === "conflicted") {
         stats.blocked += 1;
       }
     }
@@ -2297,6 +2297,135 @@ function gitProjectCommitCandidateItems(review = {}) {
   return Array.from(byPath.values()).map(({item, group}) => ({item, group}));
 }
 
+function gitProjectCommitFileBasketAdapter() {
+  return globalThis.McelFileBasketModel || null;
+}
+
+function gitProjectCommitFileBasketControllerAdapter() {
+  return globalThis.McelFileBasketController || null;
+}
+
+function gitProjectCommitFileBasketModel(review = {}) {
+  const adapter = gitProjectCommitFileBasketAdapter();
+  if (!adapter?.buildFileBasketModel) return null;
+  try {
+    return adapter.buildFileBasketModel(review, {
+      surfaceId: "task-manager.file-basket",
+      sourceConcern: "concern.file-basket",
+      sourceFile: "main_computer/web/applications/scripts/task-manager.js"
+    });
+  } catch (error) {
+    console.warn("Could not build MCEL file basket model.", error);
+    return null;
+  }
+}
+
+function gitProjectCommitFileBasketModelJson(model = null) {
+  if (!model) return "";
+  try {
+    return JSON.stringify(model);
+  } catch (error) {
+    console.warn("Could not serialize MCEL file basket model.", error);
+    return "";
+  }
+}
+
+function gitProjectCommitTreeFileTitleFromModel(row = {}) {
+  const titleParts = [
+    `${row.statusSymbol || "·"} ${row.name || row.path || "file"}`,
+    row.statusLabel || row.status || "",
+    row.bucketLabel || row.bucket || "",
+    String(row.meta || "").replace(String(row.statusLabel || ""), "").replace(/^\s*·\s*/, ""),
+    row.reason && row.reason !== row.blockedReason ? row.reason : "",
+  ].filter(Boolean);
+  return titleParts.join(" · ");
+}
+
+function gitProjectCommitTreeNodeFromModelNode(modelNode = {}) {
+  const kind = modelNode.kind || "file";
+  if (kind === "file") {
+    const selectable = modelNode.selectable !== false;
+    const statusTone = modelNode.statusTone || "unknown";
+    const bucketTone = modelNode.bucketTone || "review";
+    return gitProjectCommitCreateTreeNode(gitProjectCommitTreeFileTitleFromModel(modelNode), `file:${modelNode.path}`, {
+      type: "file",
+      selected: Boolean(modelNode.selectedByDefault && selectable),
+      unselectable: !selectable,
+      checkbox: selectable,
+      classes: [
+        "git-project-commit-tree-file",
+        `git-project-commit-tree-file-${statusTone}`,
+        `git-project-commit-node-${bucketTone}`,
+      ].join(" "),
+      data: {
+        kind: "file",
+        path: modelNode.path || "",
+        name: modelNode.name || "",
+        group: modelNode.bucket || "",
+        groupTitle: modelNode.bucketLabel || modelNode.bucket || "",
+        bucket: modelNode.bucket || "",
+        bucketLabel: modelNode.bucketLabel || modelNode.bucket || "",
+        selectable,
+        selectedByDefault: Boolean(modelNode.selectedByDefault && selectable),
+        blocked: Boolean(modelNode.blocked || !selectable),
+        blockedReason: modelNode.blockedReason || "",
+        status: modelNode.status || "unknown",
+        statusLabel: modelNode.statusLabel || modelNode.status || "unknown",
+        statusSymbol: modelNode.statusSymbol || "·",
+        statusTone,
+        risk: modelNode.risk || "",
+        classifications: Array.isArray(modelNode.classifications) ? modelNode.classifications.slice() : [],
+        reason: modelNode.reason || "",
+        modified: modelNode.modified || "",
+        meta: modelNode.meta || "",
+        findings: Number(modelNode.findings || 0),
+        modelRowId: modelNode.id || "",
+      },
+    });
+  }
+
+  const children = (Array.isArray(modelNode.children) ? modelNode.children : [])
+    .map(gitProjectCommitTreeNodeFromModelNode)
+    .filter(Boolean);
+  const selectable = modelNode.selectable !== false && Number(modelNode.selectableFileCount || 0) > 0;
+  return gitProjectCommitCreateTreeNode(modelNode.name || modelNode.path || "Candidate files", `dir:${modelNode.path || ""}/`, {
+    type: "dir",
+    expanded: false,
+    selected: modelNode.selectionState === "all",
+    checkbox: selectable,
+    unselectable: !selectable,
+    classes: "git-project-commit-tree-dir git-project-commit-node-dir",
+    children,
+    data: {
+      kind: "dir",
+      name: modelNode.name || "",
+      path: modelNode.path || "",
+      selectable,
+      selectionState: modelNode.selectionState || "none",
+      totalFiles: Number(modelNode.fileCount || 0),
+      blockedFiles: Number(modelNode.blockedFileCount || 0),
+      selectableFiles: Number(modelNode.selectableFileCount || 0),
+      modelRowId: modelNode.id || "",
+    },
+  });
+}
+
+function gitProjectCommitTreeSourceFromModel(model = null) {
+  const hierarchy = Array.isArray(model?.hierarchy) ? model.hierarchy : [];
+  if (!hierarchy.length) return null;
+  const root = gitProjectCommitCreateTreeNode("Candidate files", "candidate-files", {
+    type: "dir",
+    folder: true,
+    expanded: true,
+    checkbox: true,
+    data: {kind: "dir", path: "", selectable: true},
+    children: hierarchy.map(gitProjectCommitTreeNodeFromModelNode).filter(Boolean),
+  });
+  gitProjectCommitAnnotateDirectoryStats(root);
+  gitProjectCommitFinalizeDirectorySelection(root);
+  return root.children.length ? root.children : null;
+}
+
 function gitProjectCommitSortTreeNodes(nodes = []) {
   nodes.sort((a, b) => {
     const aDir = a.data?.kind === "dir";
@@ -2323,7 +2452,7 @@ function gitProjectCommitAnnotateDirectoryStats(node) {
       const status = gitProjectCommitNormalizeStatus(data);
       if (status === "untracked") untracked += 1;
       if (status.startsWith("tracked_")) changed += 1;
-      if (data.group === "blocked_possible_secrets" || String(data.risk || "").toLowerCase().includes("block") || status === "conflicted") {
+      if (data.blocked || data.selectable === false || data.group === "blocked_possible_secrets" || String(data.risk || "").toLowerCase().includes("block") || status === "conflicted") {
         blocked += 1;
       }
     } else if (data.kind === "dir") {
@@ -2435,7 +2564,21 @@ function gitProjectCommitInsertTreePath(root, item = {}, group = {}) {
   });
 }
 
-function gitProjectCommitTreeSource(review = {}) {
+function gitProjectCommitEmptyTreeSource() {
+  return [
+    gitProjectCommitCreateTreeNode("No candidate files returned by the planner", "empty:candidate-files", {
+      type: "empty",
+      checkbox: false,
+      unselectable: true,
+      data: {kind: "empty", selectable: false},
+    }),
+  ];
+}
+
+function gitProjectCommitTreeSource(review = {}, fileBasketModel = gitProjectCommitFileBasketModel(review)) {
+  const modelTree = gitProjectCommitTreeSourceFromModel(fileBasketModel);
+  if (Array.isArray(modelTree) && modelTree.length) return modelTree;
+
   const root = gitProjectCommitCreateTreeNode("Candidate files", "candidate-files", {
     type: "dir",
     folder: true,
@@ -2448,19 +2591,19 @@ function gitProjectCommitTreeSource(review = {}) {
   gitProjectCommitAnnotateDirectoryStats(root);
   gitProjectCommitFinalizeDirectorySelection(root);
   if (!root.children.length) {
-    return [
-      gitProjectCommitCreateTreeNode("No candidate files returned by the planner", "empty:candidate-files", {
-        type: "empty",
-        checkbox: false,
-        unselectable: true,
-        data: {kind: "empty", selectable: false},
-      }),
-    ];
+    return gitProjectCommitEmptyTreeSource();
   }
   return root.children;
 }
 
 function gitProjectCommitReviewCandidatePaths(review = {}) {
+  const fileBasketModel = gitProjectCommitFileBasketModel(review);
+  if (Array.isArray(fileBasketModel?.rows)) {
+    return fileBasketModel.rows
+      .map((row = {}) => row.path || "")
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b));
+  }
   const paths = new Set();
   gitProjectCommitCandidateItems(review).forEach(({item = {}} = {}) => {
     const path = String(item.path || "").replace(/\\/g, "/").replace(/^\/+/, "");
@@ -2495,6 +2638,8 @@ function gitProjectCommitFallbackTreeHtml(nodes = []) {
           ${checked}
           ${disabled}
           data-git-commit-tree-checkbox="${isDir ? "dir" : isFile ? "file" : "none"}"
+          data-git-commit-path="${escapeHtml(path)}"
+          data-git-commit-selectable="${checkbox ? "true" : "false"}"
           ${isFile ? `data-git-commit-file="${escapeHtml(path)}"` : ""}>
         <span>
           <strong>${escapeHtml(isFile && path ? path : node.title || "")}</strong>
@@ -2508,11 +2653,15 @@ function gitProjectCommitFallbackTreeHtml(nodes = []) {
 }
 
 function gitProjectCommitBasketHtml(review = {}) {
-  const treeSource = gitProjectCommitTreeSource(review);
+  const fileBasketModel = gitProjectCommitFileBasketModel(review);
+  const treeSource = gitProjectCommitTreeSource(review, fileBasketModel);
   const groups = gitProjectCommitGroups(review);
   const totals = gitProjectCommitTreeStats(treeSource);
-  const selectedTotal = groups.selected_by_default.filter((item = {}) => item.path).length;
-  return `<section class="git-project-commit-right" data-git-commit-basket>
+  const selectedTotal = Array.isArray(fileBasketModel?.defaultSelectedPaths)
+    ? fileBasketModel.defaultSelectedPaths.length
+    : groups.selected_by_default.filter((item = {}) => item.path).length;
+  const modelJson = gitProjectCommitFileBasketModelJson(fileBasketModel);
+  return `<section class="git-project-commit-right" data-git-commit-basket data-git-commit-file-basket-model-ready="${fileBasketModel ? "true" : "false"}">
     ${gitProjectCommitRepoIdentityHtml(review)}
     <div class="git-project-subscreen-panel-head">
       <strong>File basket</strong>
@@ -2525,6 +2674,7 @@ function gitProjectCommitBasketHtml(review = {}) {
       <span class="is-blocked">Blocked <strong>${Number(totals.blocked)}</strong></span>
     </div>
     <p class="git-project-muted">Repo file tree: select files directly or select folders as a shortcut. Checked folders mean all selectable child files are selected; mixed folders mean only some child files are selected. ${selectedTotal ? `${selectedTotal} file${selectedTotal === 1 ? "" : "s"} selected by default.` : "Review candidates are not selected until you choose them."}</p>
+    ${modelJson ? `<textarea hidden data-git-commit-file-basket-model>${escapeHtml(modelJson)}</textarea>` : ""}
     <textarea hidden data-git-commit-tree-source>${escapeHtml(JSON.stringify(treeSource))}</textarea>
     <div class="git-project-commit-wunderbaum-shell">
       <div class="git-project-commit-wunderbaum wb-skeleton wb-initializing" data-git-commit-tree></div>
@@ -2600,6 +2750,136 @@ function gitProjectCommitReadTreeSource(workbench) {
   } catch (error) {
     return [];
   }
+}
+
+function gitProjectCommitReadFileBasketModel(workbench) {
+  const sourceNode = workbench?.querySelector?.("[data-git-commit-file-basket-model]");
+  if (!sourceNode) return null;
+  try {
+    const parsed = JSON.parse(sourceNode.value || "null");
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function gitProjectCommitSortSelectedPaths(paths = []) {
+  return Array.from(new Set((Array.isArray(paths) ? paths : []).filter(Boolean)))
+    .sort((a, b) => String(a).localeCompare(String(b)));
+}
+
+function gitProjectCommitSelectionController(workbench, paths = null) {
+  const controllerAdapter = gitProjectCommitFileBasketControllerAdapter();
+  const model = gitProjectCommitReadFileBasketModel(workbench);
+  if (!controllerAdapter?.createFileBasketController || !model) return null;
+  try {
+    return controllerAdapter.createFileBasketController(model, {
+      selectedPaths: Array.isArray(paths) ? paths : model.defaultSelectedPaths,
+      sourceSurface: "task-manager.file-basket"
+    });
+  } catch (error) {
+    console.warn("Could not create MCEL file basket selection controller.", error);
+    return null;
+  }
+}
+
+function gitProjectCommitAdapterSelectedOutput(workbench, paths = []) {
+  const fallbackPaths = gitProjectCommitSortSelectedPaths(paths);
+  const model = gitProjectCommitReadFileBasketModel(workbench);
+  const controllerAdapter = gitProjectCommitFileBasketControllerAdapter();
+  if (controllerAdapter?.selectedOutput && model) {
+    try {
+      return controllerAdapter.selectedOutput(model, fallbackPaths);
+    } catch (error) {
+      console.warn("Could not normalize selection through MCEL file basket controller.", error);
+    }
+  }
+  const adapter = gitProjectCommitFileBasketAdapter();
+  if (!adapter?.selectedOutput || !model) return fallbackPaths;
+  return adapter.selectedOutput(model, fallbackPaths);
+}
+
+function gitProjectCommitSelectionAdapterReport(workbench, rawPaths = []) {
+  const fallbackPaths = gitProjectCommitSortSelectedPaths(rawPaths);
+  const model = gitProjectCommitReadFileBasketModel(workbench);
+  const controllerAdapter = gitProjectCommitFileBasketControllerAdapter();
+  if (controllerAdapter?.selectionReport && model) {
+    try {
+      const report = controllerAdapter.selectionReport(model, fallbackPaths);
+      return {
+        enabled: true,
+        controller: "McelFileBasketController",
+        rawPaths: report.rawPaths || fallbackPaths,
+        selectedPaths: report.selectedPaths || [],
+        matches: report.matches === true,
+        summary: report.summary || null,
+      };
+    } catch (error) {
+      console.warn("Could not build MCEL file basket controller report.", error);
+    }
+  }
+  const adapter = gitProjectCommitFileBasketAdapter();
+  if (!adapter?.selectedOutput || !model) {
+    return {
+      enabled: false,
+      rawPaths: fallbackPaths,
+      selectedPaths: fallbackPaths,
+      matches: true,
+      summary: null,
+    };
+  }
+  const selectedPaths = adapter.selectedOutput(model, fallbackPaths);
+  return {
+    enabled: true,
+    controller: "McelFileBasketModel",
+    rawPaths: fallbackPaths,
+    selectedPaths,
+    matches: JSON.stringify(fallbackPaths) === JSON.stringify(selectedPaths),
+    summary: typeof adapter.selectionSummary === "function" ? adapter.selectionSummary(model, fallbackPaths) : null,
+  };
+}
+
+function gitProjectCommitApplySelectionCommand(workbench, command = "", payload = {}, selectedPaths = []) {
+  const model = gitProjectCommitReadFileBasketModel(workbench);
+  const controllerAdapter = gitProjectCommitFileBasketControllerAdapter();
+  const fallbackPaths = gitProjectCommitSortSelectedPaths(selectedPaths);
+  if (!controllerAdapter?.applySelectionCommand || !model) {
+    return {ok: false, selectedPaths: fallbackPaths, output: fallbackPaths, reason: "MCEL file basket controller unavailable"};
+  }
+  try {
+    return controllerAdapter.applySelectionCommand(model, fallbackPaths, command, payload);
+  } catch (error) {
+    console.warn("Could not apply MCEL file basket selection command.", error);
+    return {ok: false, selectedPaths: fallbackPaths, output: fallbackPaths, reason: String(error?.message || error)};
+  }
+}
+
+function gitProjectCommitCanSelectTreeNode(workbench, node = {}) {
+  const data = node?.data || {};
+  if (data.kind === "empty" || data.selectable === false) return false;
+  const model = gitProjectCommitReadFileBasketModel(workbench);
+  const controllerAdapter = gitProjectCommitFileBasketControllerAdapter();
+  if (controllerAdapter?.canSelectTreeNode && model) {
+    try {
+      return controllerAdapter.canSelectTreeNode(model, node);
+    } catch (error) {
+      console.warn("Could not ask MCEL file basket controller about tree-node selectability.", error);
+    }
+  }
+  return data.selectable !== false && data.kind !== "empty";
+}
+
+function gitProjectCommitDirectorySelectionState(workbench, selectedPaths = [], directoryPath = "") {
+  const model = gitProjectCommitReadFileBasketModel(workbench);
+  const controllerAdapter = gitProjectCommitFileBasketControllerAdapter();
+  if (controllerAdapter?.deriveDirectorySelectionState && model) {
+    try {
+      return controllerAdapter.deriveDirectorySelectionState(model, selectedPaths, directoryPath);
+    } catch (error) {
+      console.warn("Could not derive MCEL file basket directory selection state.", error);
+    }
+  }
+  return "";
 }
 
 function gitProjectCommitFlattenTreeFiles(nodes = [], out = []) {
@@ -2704,12 +2984,16 @@ function gitProjectCommitVisitTreeNodes(tree, visitor) {
   }
 }
 
-function gitProjectCommitSelectedFilesFromFallback(workbench) {
+function gitProjectCommitRawSelectedFilesFromFallback(workbench) {
   const files = gitProjectCommitFlattenTreeFiles(gitProjectCommitReadTreeSource(workbench));
   const index = gitProjectCommitBuildFileIndex(files);
   return Array.from(workbench?.querySelectorAll?.("[data-git-commit-tree-checkbox='file']:checked") || [])
-    .map((input) => gitProjectCommitCanonicalFilePath(input.dataset.gitCommitFile || input.value || "", index))
+    .map((input) => gitProjectCommitCanonicalFilePath(input.dataset.gitCommitFile || input.dataset.gitCommitPath || input.value || "", index))
     .filter(Boolean);
+}
+
+function gitProjectCommitSelectedFilesFromFallback(workbench) {
+  return gitProjectCommitAdapterSelectedOutput(workbench, gitProjectCommitRawSelectedFilesFromFallback(workbench));
 }
 
 function gitProjectCommitSelectedFilesFromWunderbaum(tree) {
@@ -2740,7 +3024,7 @@ function gitProjectCommitSelectedFilesFromWunderbaum(tree) {
     console.warn("Could not visit selected Wunderbaum nodes.", error);
   }
 
-  return Array.from(paths).sort((a, b) => a.localeCompare(b));
+  return gitProjectCommitAdapterSelectedOutput(workbench, Array.from(paths));
 }
 
 function gitProjectCommitSelectedFilesFromDom(workbench) {
@@ -2783,7 +3067,7 @@ function gitProjectCommitSelectedFilesFromDom(workbench) {
       }
     }
   });
-  return Array.from(paths).sort((a, b) => a.localeCompare(b));
+  return gitProjectCommitAdapterSelectedOutput(workbench, Array.from(paths));
 }
 
 function gitProjectCommitSelectedFilesFromWorkbench(workbench) {
@@ -2794,7 +3078,7 @@ function gitProjectCommitSelectedFilesFromWorkbench(workbench) {
   if (!tree || workbench?.dataset?.gitCommitWunderbaumFallback === "true") {
     gitProjectCommitSelectedFilesFromFallback(workbench).forEach((path) => paths.add(path));
   }
-  return Array.from(paths).sort((a, b) => a.localeCompare(b));
+  return gitProjectCommitAdapterSelectedOutput(workbench, Array.from(paths));
 }
 
 function gitProjectCommitReviewStats(workbench, selectedPaths = []) {
@@ -3552,12 +3836,30 @@ function gitProjectWireCommitExecution(workbench) {
 }
 
 function gitProjectCommitUpdateSelectedPreview(workbench, paths = null) {
-  const selectedPaths = Array.isArray(paths) ? paths : gitProjectCommitSelectedFilesFromWorkbench(workbench);
+  const selectedPaths = Array.isArray(paths) ? gitProjectCommitAdapterSelectedOutput(workbench, paths) : gitProjectCommitSelectedFilesFromWorkbench(workbench);
+  const adapterReport = gitProjectCommitSelectionAdapterReport(workbench, selectedPaths);
   const preview = workbench.querySelector("[data-git-commit-selected-preview]");
-  if (preview) preview.textContent = gitProjectCommitSelectedPreviewText(selectedPaths);
-  workbench.dataset.gitCommitSelectedCount = String(selectedPaths.length);
-  gitProjectCommitUpdateReviewStatus(workbench, selectedPaths);
-  gitProjectCommitUpdateFinalReadiness(workbench, selectedPaths);
+  if (preview) preview.textContent = gitProjectCommitSelectedPreviewText(adapterReport.selectedPaths);
+  workbench.dataset.gitCommitSelectedCount = String(adapterReport.selectedPaths.length);
+  if (adapterReport.enabled) {
+    workbench.dataset.gitCommitSelectionAdapter = adapterReport.controller || "McelFileBasketModel";
+    workbench.dataset.gitCommitSelectionController = adapterReport.controller === "McelFileBasketController" ? "true" : "false";
+    workbench.dataset.gitCommitAdapterSelectedCount = String(adapterReport.selectedPaths.length);
+    workbench.dataset.gitCommitAdapterSelectionMatches = adapterReport.matches ? "true" : "normalized";
+    if (adapterReport.summary) {
+      workbench.dataset.gitCommitAdapterBlockedSelected = String(adapterReport.summary.selectedBlocked || 0);
+      workbench.dataset.gitCommitAdapterInvalidSelected = String((adapterReport.summary.invalidSelectedPaths || []).length);
+    }
+  } else {
+    delete workbench.dataset.gitCommitSelectionAdapter;
+    delete workbench.dataset.gitCommitSelectionController;
+    delete workbench.dataset.gitCommitAdapterSelectedCount;
+    delete workbench.dataset.gitCommitAdapterSelectionMatches;
+    delete workbench.dataset.gitCommitAdapterBlockedSelected;
+    delete workbench.dataset.gitCommitAdapterInvalidSelected;
+  }
+  gitProjectCommitUpdateReviewStatus(workbench, adapterReport.selectedPaths);
+  gitProjectCommitUpdateFinalReadiness(workbench, adapterReport.selectedPaths);
 }
 
 function gitProjectCommitStepTarget(workbench, stepId = "") {
@@ -3656,12 +3958,20 @@ function gitProjectCommitScrollWunderbaumTop(element) {
   });
 }
 
-function gitProjectCommitUpdateFallbackParents(scope) {
+function gitProjectCommitUpdateFallbackParents(scope, workbench = null, selectedPaths = []) {
   if (!scope) return;
+  const selected = new Set(gitProjectCommitSortSelectedPaths(selectedPaths));
   const nodes = Array.from(scope.querySelectorAll("[data-git-commit-tree-node='dir'], [data-git-commit-tree-node='group']")).reverse();
   nodes.forEach((node) => {
     const dirInput = node.querySelector(":scope > label input[data-git-commit-tree-checkbox='dir']");
     if (!dirInput || dirInput.disabled) return;
+    const path = dirInput.dataset.gitCommitPath || "";
+    const controllerState = workbench ? gitProjectCommitDirectorySelectionState(workbench, Array.from(selected), path) : "";
+    if (controllerState) {
+      dirInput.checked = controllerState === "all";
+      dirInput.indeterminate = controllerState === "mixed";
+      return;
+    }
     const childInputs = Array.from(node.querySelectorAll(":scope > ul input[data-git-commit-tree-checkbox='file'], :scope > ul input[data-git-commit-tree-checkbox='dir']")).filter((input) => !input.disabled);
     if (!childInputs.length) return;
     const checked = childInputs.filter((input) => input.checked).length;
@@ -3671,6 +3981,25 @@ function gitProjectCommitUpdateFallbackParents(scope) {
   });
 }
 
+function gitProjectCommitSyncFallbackSelection(workbench, selectedPaths = []) {
+  const fallback = workbench?.querySelector?.("[data-git-commit-tree-fallback]");
+  if (!fallback) return gitProjectCommitAdapterSelectedOutput(workbench, selectedPaths);
+  const normalized = gitProjectCommitAdapterSelectedOutput(workbench, selectedPaths);
+  const selected = new Set(normalized);
+  const files = gitProjectCommitFlattenTreeFiles(gitProjectCommitReadTreeSource(workbench));
+  const index = gitProjectCommitBuildFileIndex(files);
+  fallback.querySelectorAll("[data-git-commit-tree-checkbox='file']").forEach((input) => {
+    const path = gitProjectCommitCanonicalFilePath(input.dataset.gitCommitFile || input.dataset.gitCommitPath || input.value || "", index);
+    input.checked = selected.has(path);
+    input.indeterminate = false;
+  });
+  fallback.querySelectorAll("[data-git-commit-tree-checkbox='dir']").forEach((input) => {
+    input.indeterminate = false;
+  });
+  gitProjectCommitUpdateFallbackParents(fallback, workbench, normalized);
+  return normalized;
+}
+
 function gitProjectInitializeCommitFallbackTree(workbench) {
   const fallback = workbench.querySelector("[data-git-commit-tree-fallback]");
   if (!fallback || fallback.dataset.gitCommitFallbackReady === "true") return;
@@ -3678,20 +4007,27 @@ function gitProjectInitializeCommitFallbackTree(workbench) {
   fallback.addEventListener("change", (event) => {
     const input = event.target?.closest?.("[data-git-commit-tree-checkbox]");
     if (!input) return;
+    const currentPaths = gitProjectCommitRawSelectedFilesFromFallback(workbench);
+    let selectedPaths = currentPaths;
     if (input.dataset.gitCommitTreeCheckbox === "dir") {
-      const node = input.closest("[data-git-commit-tree-node]");
-      node?.querySelectorAll("ul input[data-git-commit-tree-checkbox]").forEach((child) => {
-        if (!child.disabled) {
-          child.checked = input.checked;
-          child.indeterminate = false;
-        }
-      });
+      const result = gitProjectCommitApplySelectionCommand(workbench, "set-directory-selection", {
+        path: input.dataset.gitCommitPath || "",
+        selected: input.checked
+      }, currentPaths);
+      selectedPaths = result.selectedPaths || currentPaths;
+    } else if (input.dataset.gitCommitTreeCheckbox === "file") {
+      const result = gitProjectCommitApplySelectionCommand(workbench, "set-file-selection", {
+        path: input.dataset.gitCommitFile || input.dataset.gitCommitPath || "",
+        selected: input.checked
+      }, currentPaths);
+      selectedPaths = result.selectedPaths || currentPaths;
     }
-    gitProjectCommitUpdateFallbackParents(fallback);
-    gitProjectCommitUpdateSelectedPreview(workbench, gitProjectCommitSelectedFilesFromFallback(workbench));
+    const normalized = gitProjectCommitSyncFallbackSelection(workbench, selectedPaths);
+    gitProjectCommitUpdateSelectedPreview(workbench, normalized);
   });
-  gitProjectCommitUpdateFallbackParents(fallback);
-  gitProjectCommitUpdateSelectedPreview(workbench, gitProjectCommitSelectedFilesFromFallback(workbench));
+  const initialPaths = gitProjectCommitSelectedFilesFromWorkbench(workbench);
+  gitProjectCommitSyncFallbackSelection(workbench, initialPaths);
+  gitProjectCommitUpdateSelectedPreview(workbench, initialPaths);
 }
 
 function gitProjectInitializeCommitWunderbaum(workbench) {
@@ -3717,7 +4053,7 @@ function gitProjectInitializeCommitWunderbaum(workbench) {
       const tree = new Wunderbaum({
         id: `git-commit-${Math.random().toString(36).slice(2)}`,
         element,
-        checkbox: (event) => event.node?.data?.selectable !== false && event.node?.data?.kind !== "empty",
+        checkbox: (event) => gitProjectCommitCanSelectTreeNode(workbench, event.node),
         selectMode: "hier",
         types: {
           dir: {icon: "bi bi-folder", classes: "git-project-commit-tree-dir"},
@@ -3725,7 +4061,7 @@ function gitProjectInitializeCommitWunderbaum(workbench) {
           empty: {icon: "bi bi-dash-circle", classes: "git-project-commit-tree-empty", checkbox: false, unselectable: true},
         },
         source: {children: source},
-        beforeSelect: (event) => event.node?.data?.selectable !== false && event.node?.data?.kind !== "empty",
+        beforeSelect: (event) => gitProjectCommitCanSelectTreeNode(workbench, event.node),
         tooltip: (event) => {
           const data = event.node?.data || {};
           return [data.path, data.groupTitle, data.reason, data.meta].filter(Boolean).join(" · ");

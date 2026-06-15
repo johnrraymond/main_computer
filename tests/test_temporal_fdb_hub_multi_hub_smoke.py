@@ -26,9 +26,27 @@ def test_multi_hub_config_uses_one_shared_namespace_and_distinct_roots(tmp_path:
 
 
 def test_multi_hub_parser_defaults_to_failover_and_autostart(tmp_path: Path) -> None:
-    args = build_parser().parse_args(["--repo-root", str(tmp_path), "--run-id", "parser-smoke"])
+    args = build_parser().parse_args(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--run-id",
+            "parser-smoke",
+            "--node-count",
+            "40",
+            "--request-count",
+            "12",
+            "--token-count",
+            "3",
+            "--progress",
+        ]
+    )
     config = _config_from_args(args)
 
+    assert config.node_count == 40
+    assert config.request_count == 12
+    assert config.token_count == 3
+    assert args.progress is True
     assert config.hub_start_mode == "auto"
     assert config.failover_hub_a is True
     assert config.hub_a_url == DEFAULT_MULTI_HUB_A_URL

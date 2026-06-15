@@ -335,7 +335,7 @@ def test_deployed_contracts_suppresses_transient_forge_warning_after_code_verifi
     ]
     run_count = {"value": 0}
 
-    def fake_run_command(command, *, timeout_s=None, check=True, echo=True):
+    def fake_run_command(command, *, timeout_s=None, check=True, echo=True, **_kwargs):
         index = run_count["value"]
         run_count["value"] += 1
         return subprocess.CompletedProcess(
@@ -677,3 +677,79 @@ def test_dev_chain_reset_defaults_wait_and_deploy_forever() -> None:
     assert args.wait_timeout_s == 0.0
     assert args.deploy_timeout_s == 0.0
 
+
+
+def test_run_scoped_generated_wallets_are_published_without_private_keys(tmp_path: Path, monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+    parser = reset.build_parser()
+    args = parser.parse_args(
+        [
+            "--yes",
+            "--run-id",
+            "unique-run",
+            "--run-scoped-wallets",
+            "--node-wallet-count",
+            "2",
+            "--payout-admin-wallet-count",
+            "1",
+            "--deployment-output-dir",
+            str(tmp_path / "runtime" / "deployments"),
+        ]
+    )
+    reset.validate_args(args)
+
+    counter = {"value": 0}
+
+    def fake_derive(_args, _root, _private_key):
+        counter["value"] += 1
+        return "0x" + f"{counter['value']:040x}"
+
+    monkeypatch.setattr(reset, "derive_address_for_private_key", fake_derive)
+
+    node_path, node_wallets = reset.resolve_generated_wallets(
+        args,
+        tmp_path,
+        "unique-run",
+        kind=reset.NODE_WALLETS_FILENAME,
+        role="node",
+        count=args.node_wallet_count,
+        create_missing=True,
+    )
+    payout_path, payout_wallets = reset.resolve_generated_wallets(
+        args,
+        tmp_path,
+        "unique-run",
+        kind=reset.PAYOUT_ADMIN_WALLETS_FILENAME,
+        role="payout-admin",
+        count=args.payout_admin_wallet_count,
+        create_missing=True,
+    )
+
+    assert node_path == tmp_path / "runtime" / "deployments" / "dev" / "runs" / "unique-run" / "node-wallets-42424242.json"
+    assert payout_path == tmp_path / "runtime" / "deployments" / "dev" / "runs" / "unique-run" / "payout-admin-wallets-42424242.json"
+    assert [wallet.address for wallet in node_wallets] == [
+        "0x0000000000000000000000000000000000000001",
+        "0x0000000000000000000000000000000000000002",
+    ]
+    assert [wallet.address for wallet in payout_wallets] == ["0x0000000000000000000000000000000000000003"]
+
+    payload = reset.generated_wallets_payload(
+        node_path,
+        node_wallets,
+        tmp_path,
+        funding_wei=args.node_wallet_funding_wei,
+    )
+    public = reset.public_generated_wallets_record(payload)
+
+    assert public is not None
+    assert public["count"] == 2
+    assert public["wallets"][0]["address"] == "0x0000000000000000000000000000000000000001"
+    assert "private_key" not in json.dumps(public)
+
+
+def test_setup_log_uses_operator_visible_prefix(capsys) -> None:
+    reset = load_dev_chain_reset()
+
+    reset.setup_log("unit setup phase")
+
+    assert capsys.readouterr().out == "SETUP: unit setup phase\n"

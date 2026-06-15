@@ -1,7 +1,7 @@
     (function (global) {
       "use strict";
 
-      const ACID_VERSION = "0.2.5";
+      const ACID_VERSION = "0.2.6";
       const acidElementIds = [
         "element.core.app",
         "element.core.region",
@@ -73,6 +73,7 @@
         "element.resource.view-contract",
         "element.resource.selection-contract",
         "element.resource.contract-treegrid",
+        "element.resource.file-basket-model",
         "element.resource.view-mode-controller",
         "element.resource.icon-grid",
         "element.resource.details-pane",
@@ -360,6 +361,44 @@
         };
       }
 
+      function mcelFileBasketModel() {
+        return global.McelFileBasketModel || {
+          buildFileBasketModel: () => ({
+            fields: [],
+            rows: [],
+            hierarchy: [],
+            selectablePaths: [],
+            blockedPaths: [],
+            defaultSelectedPaths: [],
+            stats: {},
+            viewContract: {eligibleViews: [], rejectedViews: [], titleOnlyTreeRejected: false}
+          }),
+          toggleDirectorySelection: () => [],
+          selectionSummary: () => ({selected: 0, selectedBlocked: 0, selectedPaths: []}),
+          resolveViewEligibility: () => ({eligible: false, missingCapabilities: ["adapter unavailable"]}),
+          buildReadinessReport: () => ({ready: false})
+        };
+      }
+
+      function fileBasketSpecimenReview() {
+        return {
+          candidate_groups: {
+            selected_by_default: [
+              {path: "main_computer/web/applications/scripts/task-manager.js", status: "modified", classifications: ["source"], modified: "today"}
+            ],
+            review_before_selecting: [
+              {path: "tests/test_mcel_file_basket_model.py", status: "untracked", risk: "review", reason: "new contract proof"}
+            ],
+            blocked_possible_secrets: [
+              {path: "runtime/secrets.env", status: "untracked", risk: "blocked", reason: "secret-looking runtime file", blocking_security_findings_count: 1}
+            ],
+            excluded_generated_runtime: [
+              {path: "runtime/cache/task-manager.tmp", status: "untracked", reason: "generated runtime"}
+            ]
+          }
+        };
+      }
+
       function toolkitDefinitionFor(definitionsById, primitive, fallbackId = "element.core.panel") {
         const candidateId = primitive?.elementId || fallbackId;
         return definitionsById.get(candidateId) || definitionsById.get(fallbackId);
@@ -607,6 +646,83 @@
         return shell;
       }
 
+
+      function renderFileBasketModelProof(document, parent, definitionsById) {
+        const adapter = mcelFileBasketModel();
+        const definition = requireDefinition(definitionsById, "element.resource.file-basket-model");
+        const model = adapter.buildFileBasketModel(fileBasketSpecimenReview(), {
+          surfaceId: "task-manager.file-basket",
+          sourceConcern: "concern.file-basket",
+          sourceFile: "main_computer/web/applications/scripts/task-manager.js"
+        });
+        const selectedRoot = adapter.toggleDirectorySelection(model, [], "");
+        const selectedSummary = adapter.selectionSummary(model, selectedRoot);
+        const titleOnly = adapter.resolveViewEligibility(model, "title-only-tree");
+        const treegrid = adapter.resolveViewEligibility(model, "contract-treegrid");
+
+        const shell = applyElementAttributes(createNode(document, "section", "mcel-file-basket-model-proof"), definition, "file-basket-model-proof");
+        shell.setAttribute("aria-label", "File Basket Model Adapter Proof");
+        shell.setAttribute("data-mcel-file-basket-model-proof", "true");
+        shell.setAttribute("data-mcel-file-basket-contract", model.contractId || "");
+        shell.setAttribute("data-mcel-file-basket-selectable-count", String(model.selectablePaths?.length || 0));
+        shell.setAttribute("data-mcel-file-basket-blocked-count", String(model.blockedPaths?.length || 0));
+        shell.setAttribute("data-mcel-file-basket-title-only-rejected", titleOnly.eligible ? "false" : "true");
+
+        const header = createNode(document, "header", "mcel-file-basket-model-proof-head");
+        header.append(
+          createNode(document, "p", "eyebrow", "First safe migration proof"),
+          createNode(document, "h6", "", "Task Manager File Basket now has a pure MCEL model adapter."),
+          createNode(document, "p", "", "This does not replace the current Git/Task Manager view yet. It creates the contract boundary the workbench requested: fields, identity, hierarchy, selectable state, blocked reason, and selected output.")
+        );
+
+        const scoreGrid = createNode(document, "div", "mcel-file-basket-model-score-grid");
+        [
+          ["Fields", String(model.fields?.length || 0)],
+          ["Rows", String(model.rows?.length || 0)],
+          ["Selectable", String(model.selectablePaths?.length || 0)],
+          ["Blocked visible", String(model.blockedPaths?.length || 0)],
+          ["Root selects", String(selectedRoot.length)],
+          ["Blocked selected", String(selectedSummary.selectedBlocked || 0)]
+        ].forEach(([label, value]) => {
+          const card = createNode(document, "article", "");
+          card.append(createNode(document, "strong", "", value), createNode(document, "span", "", label));
+          scoreGrid.appendChild(card);
+        });
+
+        const table = createNode(document, "table", "mcel-file-basket-model-table");
+        const thead = createNode(document, "thead", "");
+        const headerRow = createNode(document, "tr", "");
+        ["Path", "Status", "Bucket", "Risk", "Selectable", "Blocked reason"].forEach((label) => headerRow.appendChild(createNode(document, "th", "", label)));
+        thead.appendChild(headerRow);
+        const tbody = createNode(document, "tbody", "");
+        (model.rows || []).forEach((row) => {
+          const tr = createNode(document, "tr", "");
+          tr.setAttribute("data-mcel-file-basket-row", row.path);
+          tr.setAttribute("data-mcel-file-basket-row-selectable", row.selectable ? "true" : "false");
+          [
+            row.path,
+            row.statusLabel || row.status,
+            row.bucketLabel || row.bucket,
+            row.risk,
+            row.selectable ? "yes" : "no",
+            row.blockedReason || "—"
+          ].forEach((value) => tr.appendChild(createNode(document, "td", "", value || "—")));
+          tbody.appendChild(tr);
+        });
+        table.append(thead, tbody);
+
+        const proof = createNode(document, "div", "mcel-file-basket-model-proof-list");
+        [
+          `selection output: ${selectedSummary.selectedPaths.join(", ") || "none"}`,
+          treegrid.eligible ? "contract-treegrid satisfies required capabilities" : `contract-treegrid missing: ${treegrid.missingCapabilities.join(", ")}`,
+          titleOnly.eligible ? "title-only tree incorrectly accepted" : `title-only tree rejected: ${titleOnly.missingCapabilities.join(", ")}`,
+          "blocked rows stay visible and cannot enter selected output"
+        ].forEach((item) => proof.appendChild(createNode(document, "span", "", item)));
+
+        shell.append(header, scoreGrid, table, proof);
+        parent.appendChild(shell);
+        return shell;
+      }
 
       function renderToolkitAtlas(document, parent, definitionsById) {
         const toolkit = mcelToolkitCore();
@@ -2182,6 +2298,129 @@
         parent.appendChild(lane);
       }
 
+      function renderLabMissionControl(document, parent, definitionsById) {
+        const projectWorkbench = mcelProjectConcernWorkbench();
+        const workbench = projectWorkbench.buildSpecimenWorkbench({limit: 6});
+        const toolkitReport = mcelToolkitCore().buildToolkitReadinessReport();
+        const concernReport = mcelConcernCore().buildReadinessReport();
+        const fileBasketReport = mcelFileBasketModel().buildReadinessReport();
+        const next = workbench.recommendedNextPatch || {};
+        const topOrder = (workbench.workOrders || [])[0] || {};
+        const missionDefinition = requireDefinition(definitionsById, "element.concern.project-workbench");
+
+        const shell = applyElementAttributes(createNode(document, "section", "mcel-lab-mission-control"), missionDefinition, "lab-mission-control");
+        shell.setAttribute("data-mcel-lab-mission-control", "true");
+        shell.setAttribute("data-mcel-lab-current-target", next.id || topOrder.id || "none");
+        shell.setAttribute("data-mcel-lab-current-stage", fileBasketReport.ready ? "model-adapter-extracted" : "concern-detected");
+        shell.setAttribute("data-mcel-lab-visual-priority", "guided-cockpit");
+
+        const hero = createNode(document, "div", "mcel-lab-mission-hero");
+        const heroCopy = createNode(document, "div", "mcel-lab-mission-copy");
+        heroCopy.append(
+          createNode(document, "p", "eyebrow", "MCEL Mission Control"),
+          createNode(document, "h6", "", "A guided cockpit for turning real UI slime into contract-first MVC migrations."),
+          createNode(document, "p", "", "The lab now opens on the decision path instead of the full proof dump: detect the concern, choose the contract, extract the model, prove the boundary, then replace the view.")
+        );
+        const status = createNode(document, "div", "mcel-lab-mission-status");
+        [
+          ["Current target", next.id || topOrder.id || "no target"],
+          ["Stage", fileBasketReport.ready ? "model adapter extracted" : "concern detected"],
+          ["Next patch", next.firstSafeMigration || "select a migration order"],
+          ["Proof", next.proofNeeded || "add contract proof"]
+        ].forEach(([label, value]) => {
+          const item = createNode(document, "article", "");
+          item.append(createNode(document, "span", "", label), createNode(document, "strong", "", value));
+          status.appendChild(item);
+        });
+        hero.append(heroCopy, status);
+
+        const scoreGrid = createNode(document, "div", "mcel-lab-mission-score-grid");
+        [
+          ["Detected concerns", String(concernReport.detectedConcernCount || 0)],
+          ["Critical work orders", String(workbench.summary?.criticalCount || 0)],
+          ["Backed first patch", String(workbench.summary?.backedFirstSafePatchCount || 0)],
+          ["Toolkit primitives", String(toolkitReport.primitiveCount || 0)],
+          ["Adapter fields", String(fileBasketReport.fieldCount || 0)],
+          ["Title tree", toolkitReport.titleOnlyTreeRejected ? "rejected" : "unchecked"]
+        ].forEach(([label, value]) => {
+          const card = createNode(document, "article", "");
+          card.append(createNode(document, "strong", "", value), createNode(document, "span", "", label));
+          scoreGrid.appendChild(card);
+        });
+
+        const flow = createNode(document, "ol", "mcel-lab-mission-flow");
+        [
+          ["Detect", "source-aware concern map", "done"],
+          ["Resolve", "contract and eligible views", "done"],
+          ["Extract", "file-basket model adapter", fileBasketReport.ready ? "current" : "next"],
+          ["Integrate", "route existing UI through adapter", fileBasketReport.ready ? "next" : "locked"],
+          ["Replace", "contract treegrid after proof", "locked"]
+        ].forEach(([label, body, state]) => {
+          const step = createNode(document, "li", "");
+          step.setAttribute("data-mcel-mission-step-state", state);
+          step.append(createNode(document, "b", "", label), createNode(document, "span", "", body));
+          flow.appendChild(step);
+        });
+
+        const focus = createNode(document, "section", "mcel-lab-mission-focus");
+        focus.append(
+          createNode(document, "p", "eyebrow", "Recommended movement"),
+          createNode(document, "h6", "", next.id || topOrder.id || "No work order selected"),
+          createNode(document, "p", "", next.firstSafeMigration || "The migration queue is waiting for a work order."),
+          createNode(document, "p", "", next.proofNeeded ? `Proof obligation: ${next.proofNeeded}.` : "Proof obligations will appear after a target is selected.")
+        );
+
+        const map = createNode(document, "div", "mcel-lab-mission-map");
+        [
+          ["concerns", "Concern Workbench", "Where responsibilities are tangled."],
+          ["toolkit", "Toolkit Atlas", "The reusable controls, cells, collections, layouts, and controllers."],
+          ["proofs", "Migration Proofs", "Adapter and contract boundaries that make replacement safe."],
+          ["views", "Visual Specimens", "Explorer/Finder/Linux/treegrid proof surfaces."],
+          ["registry", "Registry", "The full element catalog when auditing definitions."]
+        ].forEach(([mode, title, body]) => {
+          const card = createNode(document, "button", "");
+          card.type = "button";
+          card.setAttribute("data-mcel-lab-mode-target", mode);
+          card.append(createNode(document, "strong", "", title), createNode(document, "span", "", body));
+          map.appendChild(card);
+        });
+
+        shell.append(hero, scoreGrid, flow, focus, map);
+        parent.appendChild(shell);
+        return shell;
+      }
+
+      function createWorkbenchPanel(document, id, label, isActive) {
+        const panel = createNode(document, "section", "mcel-lab-workbench-panel");
+        panel.setAttribute("data-mcel-lab-panel", id);
+        panel.setAttribute("aria-label", label);
+        if (!isActive) panel.hidden = true;
+        return panel;
+      }
+
+      function wireLabWorkbenchModes(shell) {
+        const buttons = Array.from(shell.querySelectorAll("[data-mcel-lab-mode]"));
+        const panels = Array.from(shell.querySelectorAll("[data-mcel-lab-panel]"));
+        function activate(mode) {
+          buttons.forEach((button) => {
+            const active = button.getAttribute("data-mcel-lab-mode") === mode;
+            button.classList.toggle("active", active);
+            button.setAttribute("aria-selected", active ? "true" : "false");
+          });
+          panels.forEach((panel) => {
+            panel.hidden = panel.getAttribute("data-mcel-lab-panel") !== mode;
+          });
+          shell.setAttribute("data-mcel-lab-active-mode", mode);
+        }
+        buttons.forEach((button) => {
+          button.addEventListener("click", () => activate(button.getAttribute("data-mcel-lab-mode") || "mission"));
+        });
+        shell.querySelectorAll("[data-mcel-lab-mode-target]").forEach((targetButton) => {
+          targetButton.addEventListener("click", () => activate(targetButton.getAttribute("data-mcel-lab-mode-target") || "mission"));
+        });
+        activate(shell.getAttribute("data-mcel-lab-active-mode") || "mission");
+      }
+
       function buildDemoUi(document, canvas, definitions) {
         canvas.replaceChildren();
         const definitionsById = new Map(definitions.map((definition) => [definition.id, definition]));
@@ -2199,15 +2438,45 @@
 
         const workbench = createNode(document, "div", "mcel-element-showcase-workbench");
         workbench.setAttribute("data-mcel-element-showcase", "composed-ui");
-        renderToolkitAtlas(document, workbench, definitionsById);
-        renderConcernIntelligenceAtlas(document, workbench, definitionsById);
-        renderProjectConcernWorkbench(document, workbench, definitionsById);
-        renderResourceWorkbench(document, workbench, definitionsById);
-        renderOperationalWorkbench(document, workbench, definitionsById);
-        renderNetworkComputeAuthoringWorkbench(document, workbench, definitionsById);
+        workbench.setAttribute("data-mcel-lab-active-mode", "mission");
+
+        const modeNav = createNode(document, "nav", "mcel-lab-workbench-tabs");
+        modeNav.setAttribute("aria-label", "MCEL lab workbench modes");
+        [
+          ["mission", "Mission Control"],
+          ["concerns", "Concerns"],
+          ["toolkit", "Toolkit"],
+          ["proofs", "Proofs"],
+          ["views", "Views"],
+          ["registry", "Registry"]
+        ].forEach(([id, label], index) => {
+          const button = createNode(document, "button", "", label);
+          button.type = "button";
+          button.setAttribute("data-mcel-lab-mode", id);
+          button.setAttribute("aria-selected", index === 0 ? "true" : "false");
+          if (index === 0) button.classList.add("active");
+          modeNav.appendChild(button);
+        });
+
+        const panels = createNode(document, "div", "mcel-lab-workbench-panels");
+        const missionPanel = createWorkbenchPanel(document, "mission", "MCEL Mission Control", true);
+        const concernPanel = createWorkbenchPanel(document, "concerns", "Concern intelligence and migration workbench", false);
+        const toolkitPanel = createWorkbenchPanel(document, "toolkit", "Toolkit atlas", false);
+        const proofPanel = createWorkbenchPanel(document, "proofs", "Migration proof surfaces", false);
+        const viewPanel = createWorkbenchPanel(document, "views", "Visual resource specimens", false);
+        const registryPanel = createWorkbenchPanel(document, "registry", "Element registry catalog", false);
+
+        renderLabMissionControl(document, missionPanel, definitionsById);
+        renderConcernIntelligenceAtlas(document, concernPanel, definitionsById);
+        renderProjectConcernWorkbench(document, concernPanel, definitionsById);
+        renderToolkitAtlas(document, toolkitPanel, definitionsById);
+        renderFileBasketModelProof(document, proofPanel, definitionsById);
+        renderResourceWorkbench(document, viewPanel, definitionsById);
+        renderOperationalWorkbench(document, viewPanel, definitionsById);
+        renderNetworkComputeAuthoringWorkbench(document, viewPanel, definitionsById);
 
         const catalogDisclosure = createNode(document, "details", "mcel-element-acid-catalog");
-        catalogDisclosure.open = false;
+        catalogDisclosure.open = true;
         const catalogSummary = createNode(document, "summary", "", "Open registry card catalog");
         const layout = createNode(document, "div", "mcel-element-acid-layout");
         const navigation = applyElementAttributes(createNode(document, "aside", "mcel-element-acid-nav"), requireDefinition(definitionsById, "element.resource.directory-tree"), "catalog-directory-tree");
@@ -2234,8 +2503,12 @@
 
         layout.append(navigation, grid, proofRail);
         catalogDisclosure.append(catalogSummary, layout);
-        shell.append(hero, workbench, catalogDisclosure);
+        registryPanel.appendChild(catalogDisclosure);
+        panels.append(missionPanel, concernPanel, toolkitPanel, proofPanel, viewPanel, registryPanel);
+        workbench.append(modeNav, panels);
+        shell.append(hero, workbench);
         canvas.appendChild(shell);
+        wireLabWorkbenchModes(workbench);
         return records;
       }
 
@@ -2277,6 +2550,8 @@
           concernResourceBrowserDetected: concernReport.resourceBrowserDetected === true,
           concernDeployPreflightDetected: concernReport.deployPreflightDetected === true,
           concernExecutionCellDetected: concernReport.executionCellDetected === true,
+          fileBasketModelAdapterReady: mcelFileBasketModel().buildReadinessReport().ready === true,
+          fileBasketModelAdapterFieldCount: mcelFileBasketModel().buildReadinessReport().fieldCount || 0,
           illegalNestedScrollbars: 0,
           serializationReady: records.every((record) => record.elementId && record.kind && record.proofPolicy),
           supersedesTreeView: Boolean(global.McelElementRegistry?.get?.("element.resource.directory-tree")?.supersedes?.includes?.("TreeView")),
@@ -2334,6 +2609,7 @@
           ["Tree primitives", String(report.hardTreePrimitiveCount || 0)],
           ["Toolkit primitives", String(report.toolkitPrimitiveCount || 0)],
           ["Toolkit atlas", report.toolkitAtlasReady ? "yes" : "no"],
+          ["File basket adapter", report.fileBasketModelAdapterReady ? "yes" : "no"],
           ["Explorer view parity", report.fileExplorerViewParityReady ? "yes" : "no"],
           ["macOS/Linux views", report.crossPlatformResourceViewParityReady ? "yes" : "no"],
           ["MVC contract", report.resourceMvcContractReady ? "yes" : "no"],
@@ -2368,6 +2644,7 @@
           `resource MVC commands=${report.resourceMvcCommandCount || 0}`,
           `resource MVC selected output=${report.resourceMvcSelectedOutputCount || 0}`,
           `resource MVC interactive=${report.resourceMvcInteractiveReady ? "ready" : "incomplete"}`,
+          `file basket adapter=${report.fileBasketModelAdapterReady ? "ready" : "incomplete"}`,
           `tree patterns=${(report.researchedTreePatterns || []).join(",")}`,
           `tree primitives=${report.hardTreePrimitiveCount || 0}`,
           `tree replacement=${report.treeReplacementReady ? "ready" : "incomplete"}`,

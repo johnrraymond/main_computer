@@ -450,6 +450,33 @@
         })));
       }
 
+
+      function implementationStatusFor(contractId) {
+        if (contractId === "pattern.file-basket" && global.McelFileBasketModel?.buildReadinessReport) {
+          const report = global.McelFileBasketModel.buildReadinessReport();
+          return {
+            status: report.ready ? "adapter-ready" : "adapter-incomplete",
+            label: report.ready ? "FileBasketModel adapter available" : "FileBasketModel adapter incomplete",
+            firstSafePatchBacked: report.ready === true,
+            module: "McelFileBasketModel",
+            proof: [
+              `fields=${report.fieldCount || 0}`,
+              `rows=${report.rowCount || 0}`,
+              `selectable=${report.selectableCount || 0}`,
+              `blocked=${report.blockedCount || 0}`,
+              report.titleOnlyTreeRejected ? "title-only tree rejected" : "title-only tree not rejected"
+            ]
+          };
+        }
+        return {
+          status: "not-started",
+          label: "No implementation adapter registered yet",
+          firstSafePatchBacked: false,
+          module: "",
+          proof: []
+        };
+      }
+
       function buildWorkOrder(concern, options = {}) {
         const contract = contractForConcern(concern);
         const template = WORK_ORDER_TEMPLATES[concern?.id] || {};
@@ -490,6 +517,7 @@
           rejectedViews: clone(contract?.rejectedViews || []),
           proofObligations: clone(contract?.proofObligations || []),
           firstSafeMigration: clone(template.firstSafeMigration || []),
+          implementationStatus: implementationStatusFor(contract?.id || concern.recommendedContract || ""),
           migrationPhases: clone(template.migrationPhases || []),
           testsNeeded: clone(template.testsNeeded || []),
           lineEvidence,
@@ -559,7 +587,8 @@
             appCount: Object.keys(byApp).length,
             hasFirstSafePatchForEveryHighPriority: workOrders
               .filter((order) => order.priority === "critical" || order.priority === "high")
-              .every((order) => order.firstSafeMigration.length && order.testsNeeded.length)
+              .every((order) => order.firstSafeMigration.length && order.testsNeeded.length),
+            backedFirstSafePatchCount: workOrders.filter((order) => order.implementationStatus?.firstSafePatchBacked).length
           },
           workOrders,
           migrationQueue,
@@ -588,6 +617,7 @@
         buildProjectConcernWorkbench,
         buildSpecimenWorkbench,
         buildWorkOrder,
+        implementationStatusFor,
         getWorkOrder
       };
     })(typeof window !== "undefined" ? window : globalThis);
