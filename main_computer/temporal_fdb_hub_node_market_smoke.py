@@ -81,6 +81,8 @@ class HubNodeMarketSmokeConfig:
     hub_namespace_prefix: str = DEFAULT_AUTO_HUB_NAMESPACE_PREFIX
     hub_root: Path = DEFAULT_AUTO_HUB_ROOT
     cluster_file: Path = DEFAULT_AUTO_HUB_CLUSTER_FILE
+    hub_bridge_backend: str = "mock-chain"
+    dev_chain_deployment_path: Path | None = None
 
     def resolved_report_path(self) -> Path | None:
         if self.report_path is None:
@@ -95,6 +97,12 @@ class HubNodeMarketSmokeConfig:
 
     def resolved_cluster_file(self) -> Path:
         return self.cluster_file if self.cluster_file.is_absolute() else self.repo_root / self.cluster_file
+
+    def resolved_dev_chain_deployment_path(self) -> Path | None:
+        if self.dev_chain_deployment_path is None:
+            return None
+        path = self.dev_chain_deployment_path
+        return path if path.is_absolute() else self.repo_root / path
 
 
 def _decode_error_payload(body: str) -> dict[str, Any]:
@@ -275,8 +283,15 @@ def _auto_hub_command(config: HubNodeMarketSmokeConfig) -> list[str]:
         str(config.resolved_hub_root() / str(config.run_id or "run")),
         "--cluster-file",
         str(config.resolved_cluster_file()),
-        "--noverbose",
+        "--bridge-backend",
+        str(config.hub_bridge_backend or "mock-chain"),
     ]
+    dev_chain_deployment_path = config.resolved_dev_chain_deployment_path()
+    if dev_chain_deployment_path is not None:
+        command.extend(["--dev-chain-deployment-path", str(dev_chain_deployment_path)])
+    command.extend([
+        "--noverbose",
+    ])
     return command
 
 

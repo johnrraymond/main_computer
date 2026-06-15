@@ -155,24 +155,29 @@
 
       const WORK_ORDER_TEMPLATES = {
         "concern.file-basket": {
-          title: "Replace file basket slime with a contract treegrid workbench",
+          title: "Shrink the Git Tools file basket and project workflow extraction before replacing the view",
           currentFailure: [
+            "Git/project file-basket behavior and wizard action queue policy now have Git-owned extraction modules, but legacy Task Manager compatibility wrappers still call them until the surrounding Git workflow is strangled.",
             "Typed file fields are present but can be flattened into a single title string.",
             "Selection output is scraped from widget-specific tree state instead of derived by a controller.",
             "Blocked/selectable policy exists but is not declared as a first-class safety contract."
           ],
           migrationPhases: [
+            "Mark git-tools.file-basket as the canonical owner and keep task-manager.file-basket only as a deprecated alias.",
             "Extract FileBasketModel adapter from candidate groups and file metadata.",
             "Extract FileBasketSelectionController while preserving the current DOM tree.",
-            "Add selected-output and blocked-row contract tests.",
+            "Keep new Git file-basket semantics in git-tools-file-basket.js, move wizard action queue policy into git-tools-project-workflow.js, and remove compatibility callers as surrounding Git workflow extraction continues.",
             "Swap the renderer to the MCEL treegrid only after model/controller proof is stable."
           ],
           firstSafeMigration: [
-            "Create a pure model adapter that returns fields, identity, hierarchy, selectable state, and blocked reason.",
+            "Use git-tools-file-basket.js as the canonical file-basket integration boundary, use git-tools-project-workflow.js for wizard action queue policy, and keep task-manager.file-basket only as a deprecated alias.",
             "Keep the existing view untouched.",
-            "Add tests that selected output remains explicit repo-relative file paths."
+            "Add tests that Task Manager only delegates to GitToolsFileBasket and does not own the canonical file-basket model/tree/output glue."
           ],
           testsNeeded: [
+            "git-tools.file-basket is the canonical work order id",
+            "task-manager.file-basket remains a deprecated alias only",
+            "git-tools-project-workflow.js owns wizard action queue semantics",
             "selecting a directory selects only selectable descendants",
             "blocked rows remain visible and never enter selected output",
             "title-only tree is rejected by the view resolver"
@@ -387,8 +392,13 @@
         return normalized.split("/").pop()?.replace(/\.js$/, "") || "project";
       }
 
+      function appForConcern(concern) {
+        return concern?.ownerApp || inferAppId(concern?.file || "");
+      }
+
       function inferSurfaceId(concern) {
-        const app = inferAppId(concern?.file || "");
+        if (concern?.canonicalSurfaceId) return concern.canonicalSurfaceId;
+        const app = appForConcern(concern);
         const concernPart = String(concern?.id || "concern.unknown").replace(/^concern\./, "");
         return `${app}.${concernPart}`;
       }
@@ -482,6 +492,8 @@
         const template = WORK_ORDER_TEMPLATES[concern?.id] || {};
         const priorityScore = computePriority(concern, contract);
         const surfaceId = inferSurfaceId(concern);
+        const app = appForConcern(concern);
+        const legacySurfaceIds = asArray(concern?.legacySurfaceIds);
         const lineEvidence = asArray(concern?.ranges).map((range) => ({
           role: range.role,
           label: range.label,
@@ -496,8 +508,12 @@
           concernId: concern.id,
           label: concern.label,
           title: template.title || `Replace ${concern.label} with an MCEL contract`,
-          app: inferAppId(concern.file),
+          app,
           sourceFile: concern.file,
+          implementationOwner: app,
+          legacySurfaceIds,
+          ownershipStatus: concern.ownershipStatus || "",
+          ownershipNote: concern.ownershipNote || "",
           priorityScore,
           priority: priorityBand(priorityScore),
           confidence: concern.confidence,
@@ -559,12 +575,17 @@
           priority: order.priority,
           priorityScore: order.priorityScore,
           targetContract: order.targetContract,
+          ownerApp: order.app,
+          sourceFile: order.sourceFile,
+          legacySurfaceIds: clone(order.legacySurfaceIds || []),
           firstSafeMigration: order.firstSafeMigration[0] || "extract contract adapter",
           proofNeeded: order.testsNeeded[0] || "add contract proof"
         }));
         const firstSafePatchQueue = workOrders.slice(0, Number(options.limit || 5)).map((order) => ({
           id: order.id,
           title: order.title,
+          ownerApp: order.app,
+          legacySurfaceIds: clone(order.legacySurfaceIds || []),
           steps: order.firstSafeMigration,
           testsNeeded: order.testsNeeded
         }));
@@ -607,7 +628,11 @@
       }
 
       function getWorkOrder(workbench, id) {
-        return asArray(workbench?.workOrders).find((order) => order.id === id || order.concernId === id) || null;
+        return asArray(workbench?.workOrders).find((order) => (
+          order.id === id ||
+          order.concernId === id ||
+          asArray(order.legacySurfaceIds).includes(id)
+        )) || null;
       }
 
       global.McelProjectConcernWorkbench = {

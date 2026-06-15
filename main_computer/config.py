@@ -142,6 +142,8 @@ class MainComputerConfig:
     hub_worker_node_id: str = "main-computer-worker"
     hub_worker_endpoint: str | None = None
     hub_credits_per_request: int = 1
+    hub_bridge_backend: str = "mock-chain"
+    hub_dev_chain_deployment_path: Path | None = None
     hub_root: Path = DEFAULT_HUB_ROOT
     hub_network: str = DEFAULT_HUB_NETWORK
     hub_network_display_name: str = "Main Computer Local Devnet"
@@ -307,6 +309,10 @@ class MainComputerConfig:
             hub_worker_node_id=os.environ.get("MAIN_COMPUTER_HUB_WORKER_NODE_ID", "main-computer-worker"),
             hub_worker_endpoint=os.environ.get("MAIN_COMPUTER_HUB_WORKER_ENDPOINT") or None,
             hub_credits_per_request=max(1, hub_credits_per_request),
+            hub_bridge_backend=os.environ.get("MAIN_COMPUTER_HUB_BRIDGE_BACKEND", "mock-chain").strip().lower() or "mock-chain",
+            hub_dev_chain_deployment_path=Path(os.environ["MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH"])
+            if os.environ.get("MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH")
+            else None,
             hub_root=Path(os.environ.get("MAIN_COMPUTER_HUB_ROOT", str(DEFAULT_HUB_ROOT))),
             hub_network=os.environ.get("MAIN_COMPUTER_HUB_NETWORK", DEFAULT_HUB_NETWORK).strip() or DEFAULT_HUB_NETWORK,
             hub_network_display_name=os.environ.get("MAIN_COMPUTER_HUB_NETWORK_DISPLAY_NAME", "Main Computer Local Devnet").strip() or "Main Computer Local Devnet",
