@@ -297,34 +297,6 @@ docker compose -f docker-compose.gitea.yml up -d gitea
 docker compose -f docker-compose.dev.yml --profile smoke run --rm executor-smoke
 ```
 
-## Temporal/FDB Hub lab after reboot
-
-For the current Hub-backed Temporal/FDB acceptance lab, start the local
-dependencies from the repository root in PowerShell after activating the
-virtualenv:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-
-python -m tools.temporal_lab.local_temporal up --pull
-python -m tools.temporal_lab.local_temporal status
-
-python .\scripts\smoke_foundationdb_credit_ledger_primitives.py --keep-container
-```
-
-Then run the single-Hub, multi-Hub, or stress smoke:
-
-```powershell
-python .\scripts\smoke_temporal_fdb_hub_node_market.py
-python .\scripts\smoke_temporal_fdb_hub_multi_hub.py
-python .\scripts\smoke_temporal_fdb_hub_stress.py
-```
-
-The stress smoke starts two Hub frontends, generates background health/status/credit/audit/quote chatter while the worker market executes, and fails if the freeze detector sees no meaningful progress before its timeout.
-
-The smokes auto-start `exp-fdb-hub.py` by default and now print these bring-up
-commands when Temporal, FoundationDB, or the expected Hub ports are not ready.
-
 ## Operator runbooks
 
 The Cloudflare hidden-origin mail worker plan is documented in:
@@ -333,7 +305,14 @@ The Cloudflare hidden-origin mail worker plan is documented in:
 pretty_docs/cloudflare-mail-worker-hidden-ingest-runbook.md
 ```
 
-That runbook explains the staged contract flow for `tools/cloudflare_mail_worker.py`,
-including `prepare`, contract-based `coolify-apply`, generated Cloudflare Worker
-artifacts, Email Routing rules, and the current implementation checkpoint.
+The Great Library hosted email account roadmap is documented in:
+
+```text
+pretty_docs/great-library-email-account-system-plan.md
+```
+
+The runbook explains the staged contract flow for `tools/cloudflare_mail_worker.py`.
+The account-system plan explains how the working ingest path grows into
+signup-driven Great Library mailboxes, user passwords, aliases, webmail, and
+outbound sending.
 

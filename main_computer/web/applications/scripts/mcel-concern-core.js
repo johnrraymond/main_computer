@@ -6,9 +6,14 @@
       const CONCERN_CATALOG = [
         {
           id: "concern.file-basket",
-          label: "File basket",
+          label: "Git Tools file basket",
           family: "workflow",
-          purpose: "User chooses exact file paths for an operation while hierarchy, metadata, blocked state, and selected output stay truthful.",
+          ownerApp: "git-tools",
+          canonicalSurfaceId: "git-tools.file-basket",
+          legacySurfaceIds: ["task-manager.file-basket"],
+          ownershipStatus: "extracted-git-tools-boundary",
+          ownershipNote: "Git/project file-basket behavior now has Git-owned file-basket and project-workflow extraction modules; task-manager.file-basket remains only a deprecated alias while legacy callers are strangled.",
+          purpose: "Git/project workflows choose exact file paths for an operation while hierarchy, metadata, blocked state, and selected output stay truthful.",
           mvcSplit: {
             model: ["candidate files", "repo-relative identity", "status/group/risk/reason metadata", "blocked/selectable state"],
             controller: ["toggle file", "toggle directory shortcut", "select all eligible", "derive mixed state", "reject blocked rows"],
@@ -176,31 +181,36 @@
       const RULES = [
         {
           concernId: "concern.file-basket",
-          pathIncludes: ["task-manager.js", "git-tools"],
+          ownerApp: "git-tools",
+          canonicalSurfaceId: "git-tools.file-basket",
+          legacySurfaceIds: ["task-manager.file-basket"],
+          ownershipStatus: "extracted-git-tools-boundary",
+          ownershipNote: "Detector intentionally finds git-tools-file-basket.js as the Git-owned file-basket extraction module and git-tools-project-workflow.js as the adjacent workflow boundary; task-manager.file-basket is a deprecated alias only.",
+          pathIncludes: ["git-tools-file-basket.js"],
           requiredTokenScore: 4,
           tokens: [
-            "gitProjectCommitCandidateItems",
-            "gitProjectCommitTreeSource",
-            "gitProjectCommitInsertTreePath",
-            "gitProjectCommitSelectedFilesFromWorkbench",
-            "gitProjectInitializeCommitWunderbaum",
+            "candidateItems",
+            "treeSource",
+            "insertTreePath",
+            "selectedFilesFromWorkbench",
+            "GitToolsFileBasket",
             "titleParts",
             "selectable",
             "blocked",
             "candidate_groups"
           ],
           linePatterns: [
-            {pattern: /function\s+gitProjectCommitCandidateItems\b/, role: "model", label: "candidate file model"},
-            {pattern: /function\s+gitProjectCommitFileMeta\b/, role: "model", label: "typed file metadata"},
-            {pattern: /function\s+gitProjectCommitInsertTreePath\b/, role: "model", label: "hierarchy construction"},
+            {pattern: /function\s+candidateItems\b/, role: "model", label: "candidate file model"},
+            {pattern: /function\s+fileMeta\b/, role: "model", label: "typed file metadata"},
+            {pattern: /function\s+insertTreePath\b/, role: "model", label: "hierarchy construction"},
             {pattern: /\btitleParts\b/, role: "view-gap", label: "typed fields collapsed into node title"},
-            {pattern: /function\s+gitProjectCommitSelectedFilesFrom(?:Workbench|Wunderbaum|Fallback|Dom)\b/, role: "controller", label: "selected file output extraction"},
-            {pattern: /function\s+gitProjectCommitUpdateFallbackParents\b/, role: "controller", label: "derived mixed directory state"},
-            {pattern: /function\s+gitProjectInitializeCommitWunderbaum\b/, role: "view", label: "view adapter/wunderbaum initialization"},
+            {pattern: /function\s+selectedFilesFrom(?:Workbench|Wunderbaum|Fallback|Dom)\b/, role: "controller", label: "selected file output extraction"},
+            {pattern: /function\s+finalizeDirectorySelection\b/, role: "controller", label: "derived mixed directory state"},
+            {pattern: /function\s+basketHtml\b/, role: "view", label: "preserved view adapter source"},
             {pattern: /blocked|selectable|selected_by_default/, role: "safety", label: "blocked/selectable safety language"}
           ],
           contractGap: "severe",
-          missingContractReason: "File choice, hierarchy, metadata, blocked rows, and selected output exist in code, but the code can still collapse typed fields into title strings and scrape widget-specific selection."
+          missingContractReason: "Git file choice, hierarchy, metadata, blocked rows, selected output, and wizard action queue policy now have Git-owned extraction modules, but the preserved renderer can still collapse typed fields into title strings and scrape widget-specific selection. Continue shrinking legacy callers before view replacement."
         },
         {
           concernId: "concern.resource-browser",
@@ -506,6 +516,11 @@
           inferredMvcSplit: inferMvcSplit(rule.concernId),
           recommendedToolkit: inferToolkit(rule.concernId),
           recommendedContract: inferMvcSplit(rule.concernId).contract || "pattern.unresolved",
+          ownerApp: rule.ownerApp || catalog.ownerApp || "",
+          canonicalSurfaceId: rule.canonicalSurfaceId || catalog.canonicalSurfaceId || "",
+          legacySurfaceIds: (rule.legacySurfaceIds || catalog.legacySurfaceIds || []).slice(),
+          ownershipStatus: rule.ownershipStatus || catalog.ownershipStatus || "",
+          ownershipNote: rule.ownershipNote || catalog.ownershipNote || "",
           slimeSignals: [
             hasViewGap ? "view-gap" : "",
             hasController && hasModel && hasViewGap ? "model-controller-view-in-one-region" : "",
@@ -556,18 +571,19 @@
       function projectSpecimenFiles() {
         return [
           {
-            path: "main_computer/web/applications/scripts/task-manager.js",
+            path: "main_computer/web/applications/scripts/git-tools-file-basket.js",
             text: `
-              function gitProjectCommitCandidateItems(review = {}) { const groups = review.candidate_groups || {}; }
-              function gitProjectCommitFileMeta(item = {}, group = {}) { return {status: item.status, risk: item.risk, reason: item.reason}; }
-              function gitProjectCommitInsertTreePath(root, item = {}, group = {}) {
+              function candidateItems(review = {}) { const groups = review.candidate_groups || {}; }
+              function fileMeta(item = {}, group = {}) { return {status: item.status, risk: item.risk, reason: item.reason}; }
+              function insertTreePath(root, item = {}, group = {}) {
                 const titleParts = [item.path, item.status, group.title, item.risk, item.reason];
                 const selectable = group.selectable !== false;
                 const blocked = item.blocked || item.blocking_security_findings_count;
               }
-              function gitProjectCommitSelectedFilesFromWorkbench(workbench) { return selectedPaths; }
-              function gitProjectCommitUpdateFallbackParents(scope) { input.indeterminate = mixed; }
-              function gitProjectInitializeCommitWunderbaum(workbench) { const tree = new Wunderbaum({checkbox: true}); }
+              function selectedFilesFromWorkbench(workbench) { return selectedPaths; }
+              function finalizeDirectorySelection(scope) { input.indeterminate = mixed; }
+              function basketHtml(review = {}) { return "data-git-commit-file-basket-model"; }
+              global.GitToolsFileBasket = {candidateItems, treeSource, selectedFilesFromWorkbench};
             `
           },
           {

@@ -3,6 +3,9 @@
 
       const FILE_BASKET_MODEL_VERSION = "0.1.0";
       const CONTRACT_ID = "pattern.file-basket";
+      const DEFAULT_SURFACE_ID = "git-tools.file-basket";
+      const LEGACY_SURFACE_IDS = ["task-manager.file-basket"];
+      const OWNER_APP = "git-tools";
 
       const FILE_BASKET_FIELDS = [
         {id: "path", label: "Path", type: "path", primary: true},
@@ -454,9 +457,14 @@
         const model = {
           version: FILE_BASKET_MODEL_VERSION,
           contractId: CONTRACT_ID,
-          surfaceId: options.surfaceId || "task-manager.file-basket",
+          surfaceId: options.surfaceId || DEFAULT_SURFACE_ID,
+          canonicalSurfaceId: options.canonicalSurfaceId || DEFAULT_SURFACE_ID,
+          legacySurfaceIds: Array.isArray(options.legacySurfaceIds) ? options.legacySurfaceIds.slice() : LEGACY_SURFACE_IDS.slice(),
+          ownerApp: options.ownerApp || OWNER_APP,
           sourceConcern: options.sourceConcern || "concern.file-basket",
-          sourceFile: options.sourceFile || "main_computer/web/applications/scripts/task-manager.js",
+          sourceFile: options.sourceFile || "main_computer/web/applications/scripts/mcel-file-basket-model.js",
+          ownershipStatus: options.ownershipStatus || "model-adapter-ready",
+          ownershipNote: options.ownershipNote || "Pure FileBasketModel adapter is reusable; Git Tools owns app-specific file-basket integration through git-tools-file-basket.js.",
           fields: clone(FILE_BASKET_FIELDS),
           requiredCapabilities: REQUIRED_CAPABILITIES.slice(),
           selectionContract: {

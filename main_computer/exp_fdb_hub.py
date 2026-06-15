@@ -132,6 +132,10 @@ def build_experimental_config(args: argparse.Namespace, *, port: int) -> tuple[M
         hub_root = repo_root / hub_root
 
     hub_url = args.hub_url or f"http://{args.host}:{port}"
+    dev_chain_deployment_path = Path(args.dev_chain_deployment_path) if args.dev_chain_deployment_path else base.hub_dev_chain_deployment_path
+    if dev_chain_deployment_path is not None and not dev_chain_deployment_path.is_absolute():
+        dev_chain_deployment_path = repo_root / dev_chain_deployment_path
+
     config = replace(
         base,
         hub_root=hub_root,
@@ -142,6 +146,8 @@ def build_experimental_config(args: argparse.Namespace, *, port: int) -> tuple[M
         hub_network_display_name="Experimental FDB Hub",
         hub_network_kind="experimental",
         hub_allow_insecure_dev_network=True,
+        hub_bridge_backend=str(args.bridge_backend or base.hub_bridge_backend or "mock-chain").strip().lower() or "mock-chain",
+        hub_dev_chain_deployment_path=dev_chain_deployment_path,
     )
 
     cluster_file = _cluster_file_from_args(args, repo_root=repo_root)
@@ -320,6 +326,8 @@ def create_exp_fdb_hub_server(args: argparse.Namespace, *, port: int) -> Experim
     print(f"FDB namespace: {fdb_config.namespace}")
     print(f"FDB credit ledger health: {fdb_health}")
     print(f"FDB hub state health: {state_health}")
+    bridge_backend_status = getattr(server.bridge_backend, "status", lambda: {"backend": config.hub_bridge_backend})()
+    print(f"Hub bridge backend: {bridge_backend_status}")
     return server
 
 
@@ -487,6 +495,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hub-url", help="Public URL advertised for this experimental hub. Defaults per port when omitted.")
     parser.add_argument("--hub-root", type=Path, default=DEFAULT_EXP_FDB_HUB_ROOT, help="Separate runtime root for the experimental hub.")
     parser.add_argument("--cluster-file", type=Path, default=DEFAULT_EXP_FDB_CLUSTER_FILE, help="FoundationDB cluster file written by the FDB smoke.")
+    parser.add_argument("--bridge-backend", choices=["mock-chain", "dev-chain"], default=None, help="Hub bridge backend for bridge confirm endpoints. Defaults to env/default mock-chain.")
+    parser.add_argument("--dev-chain-deployment-path", type=Path, default=None, help="Deployment metadata JSON used when --bridge-backend dev-chain is selected.")
     parser.add_argument("--namespace", default=DEFAULT_EXP_FDB_NAMESPACE, help="FDB tuple namespace for this experiment.")
     parser.add_argument("--api-version", type=int, default=740, help="FoundationDB API version to request.")
     parser.add_argument("--repo-root", type=Path, help="Repository root. Defaults to the current working directory.")

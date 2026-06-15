@@ -26,6 +26,19 @@ remote sender
 The public internet sends SMTP to Cloudflare. The origin server receives only
 authenticated HTTPS ingest requests from the Worker.
 
+## Account-system roadmap
+
+This runbook covers the working hidden-ingest pipeline. The larger product plan
+for signup-driven Great Library email accounts is documented in:
+
+```text
+pretty_docs/great-library-email-account-system-plan.md
+```
+
+That plan is the source for the next implementation phases: user registry,
+passwords, aliases, known-user delivery, webmail, public signup, outbound
+sending, backups, and moderation.
+
 ## Non-goals
 
 This is not a traditional public mail server deployment.
@@ -98,7 +111,7 @@ The most important files are:
 ```text
 mail-worker-contract.json
 secrets/mail_ingest_secret
-worker/src/index.ts  # JavaScript-compatible Worker source
+worker/src/index.ts
 worker/wrangler.toml
 coolify/compose.yaml
 coolify/mail_ingest.py
@@ -293,7 +306,7 @@ Use the generated files instead of inventing one-off dashboard code:
 ```text
 runtime/cloudflare-mail-worker/greatlibrary.io/cloudflare/worker-dashboard-paste.md
 runtime/cloudflare-mail-worker/greatlibrary.io/cloudflare/wrangler-commands.md
-runtime/cloudflare-mail-worker/greatlibrary.io/worker/src/index.ts  # JavaScript-compatible Worker source
+runtime/cloudflare-mail-worker/greatlibrary.io/worker/src/index.ts
 runtime/cloudflare-mail-worker/greatlibrary.io/worker/wrangler.toml
 ```
 
@@ -453,8 +466,11 @@ Planned next increments:
 ```text
 Add a contract-based verify action.
 Add scripted Coolify project creation if the project is missing.
-Add a Dovecot/webmail mailbox reader profile.
-Add outbound relay configuration.
+Add the mail user registry foundation.
+Add password hashing and admin password reset commands.
+Make ingest deliver only to known users/aliases, with quarantine for unknowns.
+Add a webmail/mailbox reader profile.
+Add outbound relay configuration after abuse controls exist.
 Optionally add Cloudflare API apply as a separate, explicit stage.
 ```
 

@@ -155,40 +155,40 @@ function initTaskManagerApp() {
   refreshTaskManager().catch(() => null);
 }
 
+
+function gitProjectWorkflowIntegration() {
+  const workflow = globalThis.GitToolsProjectWorkflow;
+  if (!workflow) {
+    throw new Error("GitToolsProjectWorkflow module is not loaded.");
+  }
+  return workflow;
+}
+
+function gitProjectWorkflowHooks() {
+  return {
+    actionKey: gitProjectActionKey,
+    actionStatusLabel: gitProjectActionStatusLabel,
+    commitCardTitle: gitProjectCommitCardTitle,
+    isCommitCard: gitProjectStepIsCommitCard,
+  };
+}
+
 const gitProjectWizardActionMap = new Map();
 
-function gitToolsRequest(path, payload = {}) {
-  return fetch(path, {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(payload)
-  }).then(async (response) => {
-    const raw = await response.text();
-    let data = {};
-    if (raw.trim()) {
-      try {
-        data = JSON.parse(raw);
-      } catch (_error) {
-        data = {raw};
-      }
-    }
-    if (!response.ok) {
-      const message = data.error || data.message || data.raw || `HTTP ${response.status}`;
-      const error = new Error(message);
-      error.status = response.status;
-      error.details = data;
-      throw error;
-    }
-    return data;
-  });
-}
-function gitToolsOperationErrorText(prefix, error) {
-  const lines = [`${prefix}: ${error?.message || error}`];
-  if (error?.status) lines.push(`HTTP status: ${error.status}`);
-  if (error?.details && Object.keys(error.details).length) {
-    lines.push("", "Details:", JSON.stringify(error.details, null, 2));
+function gitToolsStatusApi() {
+  const api = globalThis.GitToolsStatusApi;
+  if (!api) {
+    throw new Error("GitToolsStatusApi module is not loaded.");
   }
-  return lines.join("\n");
+  return api;
+}
+
+function gitToolsRequest(path, payload = {}) {
+  return gitToolsStatusApi().request(path, payload);
+}
+
+function gitToolsOperationErrorText(prefix, error) {
+  return gitToolsStatusApi().operationErrorText(prefix, error);
 }
 function projectBadges(project = {}, inspection = null) {
   const badges = [];
@@ -379,7 +379,7 @@ async function gitProjectInitializeSelectedFolderFromBoundary(selectedPath = "",
   gitProjectRepoBoundaryModalStatus(modal, "Starting Git in the selected folder…", "actionable");
   setGitProjectNextStep("Starting Git in this folder…", "The backend safety runner is validating and running git init for the selected folder.", path, "actionable");
   const commands = gitProjectRepoBoundaryInitCommands(path);
-  const data = await gitToolsRequest("/api/applications/git/project/action/run", {
+  const data = await gitToolsStatusApi().runProjectAction({
     action_key: "repo-boundary:initialize_repository_here",
     label: "Start Git in this folder",
     repo_dir: path,
@@ -408,7 +408,7 @@ async function gitProjectUseParentRepositoryFromBoundary(parentPath = "", modal 
   gitProjectSetRepoBoundaryButtonsDisabled(modal, true);
   gitProjectRepoBoundaryModalStatus(modal, "Switching Git Tools to the parent repository…", "actionable");
   setGitProjectNextStep("Using parent repository…", "Registering and selecting the parent Git root for future Git actions.", path, "actionable");
-  const data = await gitToolsRequest("/api/applications/git/project/add", {path, select: true});
+  const data = await gitToolsStatusApi().addProject({path, select: true});
   gitProjectsLastState = data;
   renderGitProjects(data);
   if (data.current_project?.path) gitProjectSetTargetPathInputs(data.current_project.path);
@@ -575,7 +575,7 @@ function renderGitProjectNextStep(data = null) {
   }
 }
 async function loadGitProjects() {
-  const data = await gitToolsRequest("/api/applications/git/projects", {});
+  const data = await gitToolsStatusApi().fetchProjects();
   gitProjectsLastState = data;
   renderGitProjects(data);
   if (data.current_project?.path) {
@@ -649,7 +649,7 @@ async function handleGitProjectAction(action, projectId) {
   if (action === "select") {
     clearGitServerTargetForProjectChange();
     setGitProjectNextStep("Inspecting selected project…", "Running git_dirty.py plan and Git state checks.", projectId, "actionable");
-    const data = await gitToolsRequest("/api/applications/git/project/select", {project_id: projectId});
+    const data = await gitToolsStatusApi().selectProject(projectId);
     gitProjectsLastState = data;
     renderGitProjects(data);
     if (data.current_project?.path) gitProjectSetTargetPathInputs(data.current_project.path);
@@ -657,18 +657,18 @@ async function handleGitProjectAction(action, projectId) {
     await inspectSelectedGitProject();
     await refreshGitStatus();
   } else if (action === "archive") {
-    const data = await gitToolsRequest("/api/applications/git/project/archive", {project_id: projectId});
+    const data = await gitToolsStatusApi().archiveProject(projectId);
     gitProjectsLastState = data;
     renderGitProjects(data);
   } else if (action === "restore") {
     clearGitServerTargetForProjectChange();
-    const data = await gitToolsRequest("/api/applications/git/project/restore", {project_id: projectId, select: true});
+    const data = await gitToolsStatusApi().restoreProject(projectId, {select: true});
     gitProjectsLastState = data;
     renderGitProjects(data);
     if (data.current_project?.path) gitProjectSetTargetPathInputs(data.current_project.path);
     await refreshGitServerTargetPrefunk({announce: false, preserveEdited: false});
   } else if (action === "lock" || action === "unlock") {
-    const data = await gitToolsRequest("/api/applications/git/project/lock", {project_id: projectId, locked: action === "lock"});
+    const data = await gitToolsStatusApi().setProjectLock({projectId, locked: action === "lock"});
     gitProjectsLastState = data;
     renderGitProjects(data);
     await inspectSelectedGitProject({quiet: true}).catch(() => null);
@@ -682,7 +682,7 @@ async function addGitProjectFromInput() {
   if (!path) return;
   try {
     setGitProjectNextStep("Adding project…", "The project will be selected and inspected after it is registered.", path, "actionable");
-    const data = await gitToolsRequest("/api/applications/git/project/add", {path, select: true});
+    const data = await gitToolsStatusApi().addProject({path, select: true});
     gitProjectsLastState = data;
     renderGitProjects(data);
     if (data.current_project?.path) gitProjectSetTargetPathInputs(data.current_project.path);
@@ -698,7 +698,7 @@ async function setSelectedGitProjectLock(locked) {
   const project = currentGitProject();
   if (!project) return;
   try {
-    const data = await gitToolsRequest("/api/applications/git/project/lock", {project_id: project.id, locked});
+    const data = await gitToolsStatusApi().setProjectLock({projectId: project.id, locked});
     gitProjectsLastState = data;
     renderGitProjects(data);
     await inspectSelectedGitProject({quiet: true});
@@ -714,7 +714,7 @@ async function inspectSelectedGitProject(options = {}) {
     if (!options.quiet) {
       setGitProjectNextStep("Inspecting selected project…", "Running git_dirty.py plan and Git state checks.", projectId || "current", "actionable");
     }
-    const data = await gitToolsRequest("/api/applications/git/project/inspect", payload);
+    const data = await gitToolsStatusApi().inspectProject(payload);
     gitProjectLastInspection = data;
     if (data.project?.path) gitProjectSetTargetPathInputs(data.project.path);
     renderGitProjectInspection(data);
@@ -743,21 +743,13 @@ function formatCommandForReport(command = {}) {
   return command.command || command.template || "";
 }
 function firstActionableWizardStep(wizard = {}) {
-  const steps = Array.isArray(wizard.steps) ? wizard.steps : [];
-  return steps.find((step) => !["succeeded", "skipped", "blocked"].includes(step.state || "") && !step.locked) || steps[0] || null;
+  return gitProjectWorkflowIntegration().firstActionableWizardStep(wizard);
 }
 function humanizeGitProjectToken(value = "") {
-  return String(value || "")
-    .replace(/[_-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .split(" ")
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
+  return gitProjectWorkflowIntegration().humanizeToken(value);
 }
 function gitProjectActionKey(step = {}, scope = "wizard") {
-  return `${scope}:${step.id || "step"}:${Number(step.order || 0)}`;
+  return gitProjectWorkflowIntegration().actionKey(step, scope);
 }
 const GIT_PROJECT_MC_FEATURE_ID = "git-tools.feature.projects";
 function gitProjectMcSlug(value = "", fallback = "item") {
@@ -1041,7 +1033,7 @@ function setGitProjectActionRunning(actionKey = "", running = false) {
 }
 async function pollGitProjectActionHistory(actionKey = "", label = "") {
   try {
-    const status = await gitToolsRequest("/api/applications/git/server/operation/status", {});
+    const status = await gitToolsStatusApi().fetchOperationStatus();
     const active = status.active || null;
     if (active) {
       appendGitProjectActionHistory(actionKey, {
@@ -1059,7 +1051,7 @@ async function pollGitProjectActionHistory(actionKey = "", label = "") {
 }
 async function stopGitProjectAction(actionKey = "") {
   appendGitProjectActionHistory(actionKey, {status: "canceled", label: actionKey, result: {message: "Stop button clicked."}});
-  await gitToolsRequest("/api/applications/git/server/operation/cancel", {}).catch((error) => {
+  await gitToolsStatusApi().cancelOperation().catch((error) => {
     appendGitProjectActionHistory(actionKey, {status: "failed", label: actionKey, result: {error: error.message || String(error)}});
   });
 }
@@ -1091,7 +1083,7 @@ async function runGitProjectAction(actionKey) {
     pollGitProjectActionHistory(actionKey, action.label).catch(() => null);
   }, 1200);
   try {
-    const data = await gitToolsRequest("/api/applications/git/project/action/run", {
+    const data = await gitToolsStatusApi().runProjectAction({
       action_key: actionKey,
       label: action.label,
       commands: commandLines,
@@ -1129,205 +1121,31 @@ function gitProjectFirstCommitGateOrder(step = {}) {
   return Number.POSITIVE_INFINITY;
 }
 function weightForWizardStep(step = {}, data = {}) {
-  const project = data.project || {};
-  const git = data.git || {};
-  const dirty = data.dirty_plan || {};
-  let weight = 60 - Number(step.order || 0);
-  const id = `${step.id || ""} ${step.label || ""}`.toLowerCase();
-  if (!git.is_git_repo) weight += 25;
-  if (!git.has_head && (id.includes("initial snapshot") || id.includes("initial_snapshot") || id.includes("first git commit") || id.includes("prepare_commit_snapshot") || id.includes("take snapshot") || id.includes("commit") || id.includes("gitignore"))) weight += 40;
-  if (id.includes("prepare_commit_snapshot") || id.includes("take snapshot")) weight += 16;
-  if (id.includes("secrets_filter") || id.includes("secrets / filter")) weight += 18;
-  if (id.includes("push")) weight -= 10;
-  if (id.includes("find repository root")) weight += 8;
-  if (id.includes("save current state")) weight += 24;
-  if (id.includes("classify")) weight += 6;
-  if (id.includes("start tracking")) weight += 18;
-  if (id.includes("ignore generated")) weight += 14;
-  if (id.includes("inspect configured remotes")) weight += 4;
-  if (id.includes("push")) weight += 8;
-  if (project.locked && !id.includes("find repository root") && !id.includes("inspect configured remotes") && !id.includes("classify")) weight += 2;
-  if (Number(dirty.dirty_score || 0) >= 20) weight += 4;
-  return Math.max(weight, 1);
+  return gitProjectWorkflowIntegration().weightForWizardStep(step, data);
 }
-const GIT_PROJECT_EVIDENCE_STEP_IDS = new Set([
-  "find_repository_root",
-  "measure_dirty_state",
-  "make_cleanup_plan",
-  "classify_changed_files",
-  "find_blocking_problems",
-  "rank_cleanup_risk",
-  "explain_each_dirty_item",
-  "compare_to_remote_state",
-  "find_nested_repositories",
-  "find_generated_artifacts",
-  "inspect_configured_remotes",
-  "list_saved_states",
-  "refresh_action_log",
-]);
-const GIT_PROJECT_ATTENTION_STEP_IDS = new Set([
-  "choose_correct_repository_root",
-  "stop_until_repository_is_clear",
-  "show_merge_conflicts",
-  "open_conflict_for_manual_fix",
-  "abort_merge_or_rebase",
-  "initial-snapshot-required",
-]);
-const GIT_PROJECT_USER_ACTION_KINDS = new Set([
-  "repository",
-  "safety",
-  "preserve",
-  "ignore",
-  "cleanup",
-  "conflict",
-  "workflow",
-  "remote",
-  "execution",
-]);
-const GIT_PROJECT_COMMIT_CARD_STEP_IDS = new Set([
-  "prepare_commit_snapshot",
-  "create_initial_snapshot",
-  "record_current_work_as_commit",
-  "start_tracking_real_work",
-]);
 function gitProjectStepId(step = {}) {
-  return String(step.id || "").trim();
+  return gitProjectWorkflowIntegration().stepId(step);
 }
 function gitProjectStepKind(step = {}) {
-  return String(step.kind || "").trim();
+  return gitProjectWorkflowIntegration().stepKind(step);
 }
 function gitProjectRemoteStepIsCurrentlyRequired(data = {}) {
-  const wizard = data.wizard || {};
-  const steps = Array.isArray(wizard.steps) ? wizard.steps : [];
-  return steps.some((step = {}) => {
-    const id = gitProjectStepId(step);
-    if (id === "inspect_configured_remotes") return false;
-    if (!id.includes("remote") && !id.includes("gitea") && !id.includes("server") && !id.includes("push")) return false;
-    const key = gitProjectActionKey(step, "wizard");
-    return gitProjectActionStatusLabel(key) !== "completed";
-  });
+  return gitProjectWorkflowIntegration().remoteStepIsCurrentlyRequired(data, gitProjectWorkflowHooks());
 }
 function gitProjectStepIsReadOnlyEvidence(step = {}, data = {}) {
-  const id = gitProjectStepId(step);
-  const kind = gitProjectStepKind(step);
-  if (step.locked || step.destructive || step.safe === false) return false;
-  if (id === "inspect_configured_remotes") return !gitProjectRemoteStepIsCurrentlyRequired(data);
-  if (GIT_PROJECT_EVIDENCE_STEP_IDS.has(id)) return true;
-  if (kind === "analysis") return true;
-  return false;
+  return gitProjectWorkflowIntegration().stepIsReadOnlyEvidence(step, data, gitProjectWorkflowHooks());
 }
 function gitProjectStepIsUserAction(step = {}, data = {}) {
-  if (gitProjectStepIsReadOnlyEvidence(step, data)) return false;
-  const id = gitProjectStepId(step);
-  const kind = gitProjectStepKind(step);
-  if (GIT_PROJECT_ATTENTION_STEP_IDS.has(id)) return true;
-  if (step.locked || step.destructive || step.safe === false) return true;
-  if (GIT_PROJECT_USER_ACTION_KINDS.has(kind)) return true;
-  return ["blocked", "ready", "running", "planned"].includes(step.state || "");
+  return gitProjectWorkflowIntegration().stepIsUserAction(step, data, gitProjectWorkflowHooks());
 }
 function gitProjectStepBlockedReason(step = {}, data = {}) {
-  const project = data.project || {};
-  const git = data.git || {};
-  const id = `${step.id || ""} ${step.label || ""}`.toLowerCase();
-  if (git.is_git_repo && git.has_head === false && id.includes("push")) {
-    return "Waiting for prerequisite: Has HEAD.";
-  }
-  if (project.locked && gitProjectStepIsUserAction(step, data) && !gitProjectStepIsReadOnlyEvidence(step, data)) {
-    return "Project is locked; unlock only when you intend to mutate state.";
-  }
-  if (Array.isArray(step.requires) && step.requires.length) {
-    return `Waiting for prerequisite: ${step.requires.map(humanizeGitProjectToken).join(", ")}.`;
-  }
-  if (step.locked) return "Locked until the prerequisite safety step is complete.";
-  if (step.destructive) return "Destructive action; save current state before running.";
-  if (step.state === "blocked") return "Blocked by current repository state.";
-  return "";
+  return gitProjectWorkflowIntegration().stepBlockedReason(step, data, gitProjectWorkflowHooks());
 }
 function classifyGitProjectWizardStep(step = {}, data = {}, actionKey = "") {
-  const status = actionKey ? gitProjectActionStatusLabel(actionKey) : "idle";
-  if (step.state === "completed" || step.completed) {
-    return {
-      lane: "satisfied",
-      tone: "complete",
-      reason: step.gitignore_success?.message || "Prerequisite already satisfied.",
-      showRunner: false,
-      status,
-    };
-  }
-  if (status === "completed") {
-    return {
-      lane: "completed",
-      tone: "complete",
-      reason: "Already completed in this browser session.",
-      showRunner: false,
-      status,
-    };
-  }
-  if (["queued", "running"].includes(status)) {
-    return {
-      lane: "ready_action",
-      tone: "actionable",
-      reason: "This action is already active.",
-      showRunner: true,
-      status,
-    };
-  }
-  if (gitProjectStepIsReadOnlyEvidence(step, data)) {
-    return {
-      lane: "evidence",
-      tone: "informative",
-      reason: "Read-only evidence; it does not require the user to unblock the workflow.",
-      showRunner: false,
-      status,
-    };
-  }
-  if (GIT_PROJECT_ATTENTION_STEP_IDS.has(gitProjectStepId(step))) {
-    return {
-      lane: "attention",
-      tone: "blocking",
-      reason: "Requires a user decision before the workflow can safely continue.",
-      showRunner: false,
-      status,
-    };
-  }
-  const blockedReason = gitProjectStepBlockedReason(step, data);
-  if (step.locked || step.destructive) {
-    return {
-      lane: "destructive_locked",
-      tone: "blocking",
-      reason: blockedReason || "Locked or destructive action.",
-      showRunner: true,
-      status,
-    };
-  }
-  if (blockedReason || step.state === "blocked") {
-    return {
-      lane: "waiting_action",
-      tone: "blocking",
-      reason: blockedReason || "Waiting for a prerequisite.",
-      showRunner: true,
-      status,
-    };
-  }
-  if (gitProjectStepIsUserAction(step, data)) {
-    return {
-      lane: "ready_action",
-      tone: "actionable",
-      reason: "Actionable: the user must make a decision or run this to move the process forward.",
-      showRunner: true,
-      status,
-    };
-  }
-  return {
-    lane: "evidence",
-    tone: "informative",
-    reason: "Context only.",
-    showRunner: false,
-    status,
-  };
+  return gitProjectWorkflowIntegration().classifyWizardStep(step, data, actionKey, gitProjectWorkflowHooks());
 }
 function toneForWizardStep(step = {}, data = {}) {
-  return classifyGitProjectWizardStep(step, data).tone;
+  return gitProjectWorkflowIntegration().toneForWizardStep(step, data, gitProjectWorkflowHooks());
 }
 function gitProjectCardSelector(attr, value = "") {
   const escaped = (window.CSS && typeof window.CSS.escape === "function")
@@ -1352,10 +1170,7 @@ function gitProjectCommitCardTitle(step = {}) {
   return String(opened.title || review.title || "TAKE SNAPSHOT / COMMIT").trim();
 }
 function gitProjectVisibleStepLabel(step = {}) {
-  const label = String(step.label || "Step").trim() || "Step";
-  const commitTitle = gitProjectCommitCardTitle(step);
-  if (!commitTitle || /commit|snapshot/i.test(label)) return label;
-  return `${label} — ${commitTitle}`;
+  return gitProjectWorkflowIntegration().visibleStepLabel(step, gitProjectWorkflowHooks());
 }
 function gitProjectOpenCardButtonLabel(step = {}) {
   if (gitProjectStepId(step) === "secrets_filter") return "Open Security Review";
@@ -1593,55 +1408,27 @@ const GIT_PROJECT_WUNDERBAUM_ASSETS = {
 };
 let gitProjectWunderbaumLoadPromise = null;
 
-function gitProjectCommitGroups(review = {}) {
-  const groups = review.candidate_groups || {};
+function gitProjectCommitFileBasketIntegration() {
+  const integration = globalThis.GitToolsFileBasket;
+  if (!integration) {
+    throw new Error("GitToolsFileBasket integration module is not loaded.");
+  }
+  return integration;
+}
+
+function gitProjectCommitFileBasketHooks() {
   return {
-    selected_by_default: Array.isArray(groups.selected_by_default) ? groups.selected_by_default : [],
-    review_before_selecting: Array.isArray(groups.review_before_selecting) ? groups.review_before_selecting : [],
-    blocked_possible_secrets: Array.isArray(groups.blocked_possible_secrets) ? groups.blocked_possible_secrets : [],
-    excluded_generated_runtime: Array.isArray(groups.excluded_generated_runtime) ? groups.excluded_generated_runtime : [],
+    escapeHtml,
+    repoIdentityHtml: gitProjectCommitRepoIdentityHtml,
   };
 }
 
+function gitProjectCommitGroups(review = {}) {
+  return gitProjectCommitFileBasketIntegration().groups(review);
+}
+
 function gitProjectCommitGroupConfig() {
-  return [
-    {
-      key: "selected_by_default",
-      title: "Selected by default",
-      subtitle: "Clean source/config/test files selected by the planner",
-      selectable: true,
-      expanded: true,
-      reason: "selected by default",
-      tone: "clean",
-    },
-    {
-      key: "review_before_selecting",
-      title: "Review before selecting",
-      subtitle: "Candidate files that need human approval before staging",
-      selectable: true,
-      expanded: true,
-      reason: "needs review",
-      tone: "review",
-    },
-    {
-      key: "blocked_possible_secrets",
-      title: "Blocked",
-      subtitle: "Files blocked by upstream gates or secret-looking labels",
-      selectable: false,
-      expanded: true,
-      reason: "blocked by Secrets / Filter",
-      tone: "blocked",
-    },
-    {
-      key: "excluded_generated_runtime",
-      title: "Excluded generated/runtime",
-      subtitle: "Generated, cache, runtime, or build-output paths kept out of staging",
-      selectable: false,
-      expanded: false,
-      reason: "excluded generated/runtime",
-      tone: "excluded",
-    },
-  ];
+  return gitProjectCommitFileBasketIntegration().groupConfig();
 }
 
 function gitProjectCommitOpenedCard(review = {}) {
@@ -2176,440 +1963,79 @@ function gitProjectCommitCenterHtml(step = {}, selectedPanel = "gate_summary") {
 }
 
 function gitProjectCommitNormalizeStatus(item = {}) {
-  const raw = String(item.status || item.state || "").toLowerCase();
-  if (raw.includes("untracked") || raw === "??" || item.untracked) return "untracked";
-  if (raw.includes("renamed") || item.renamed) return "tracked_renamed";
-  if (raw.includes("deleted") || item.deleted) return "tracked_deleted";
-  if (raw.includes("conflict") || item.conflicted) return "conflicted";
-  if (raw.includes("modified") || raw.includes("changed") || raw.includes("tracked") || raw.includes("staged") || item.staged || item.unstaged) {
-    return "tracked_changed";
-  }
-  return raw || "unknown";
+  return gitProjectCommitFileBasketIntegration().normalizeStatus(item);
 }
 
 function gitProjectCommitStatusDisplay(status = "") {
-  const normalized = String(status || "unknown").toLowerCase();
-  if (normalized === "untracked") {
-    return {symbol: "+", label: "untracked", tone: "untracked"};
-  }
-  if (normalized === "tracked_deleted") {
-    return {symbol: "✓", label: "tracked deleted", tone: "tracked"};
-  }
-  if (normalized === "tracked_renamed") {
-    return {symbol: "✓", label: "tracked renamed", tone: "tracked"};
-  }
-  if (normalized === "tracked_changed") {
-    return {symbol: "✓", label: "tracked changed", tone: "tracked"};
-  }
-  if (normalized === "conflicted") {
-    return {symbol: "!", label: "conflicted", tone: "blocked"};
-  }
-  return {symbol: "·", label: normalized, tone: "unknown"};
+  return gitProjectCommitFileBasketIntegration().statusDisplay(status);
 }
 
 function gitProjectCommitTreeStats(nodes = []) {
-  const stats = {total: 0, untracked: 0, changed: 0, blocked: 0};
-  const visit = (node = {}) => {
-    const data = node.data || {};
-    if (data.kind === "file") {
-      stats.total += 1;
-      const status = gitProjectCommitNormalizeStatus(data);
-      if (status === "untracked") stats.untracked += 1;
-      if (status.startsWith("tracked_")) stats.changed += 1;
-      if (data.blocked || data.selectable === false || data.group === "blocked_possible_secrets" || String(data.risk || "").toLowerCase().includes("block") || status === "conflicted") {
-        stats.blocked += 1;
-      }
-    }
-    (Array.isArray(node.children) ? node.children : []).forEach(visit);
-  };
-  nodes.forEach(visit);
-  return stats;
+  return gitProjectCommitFileBasketIntegration().treeStats(nodes);
 }
 
 function gitProjectCommitFileMeta(item = {}, group = {}) {
-  const labels = Array.isArray(item.classifications) ? item.classifications.filter(Boolean) : [];
-  const status = gitProjectCommitNormalizeStatus(item);
-  const statusDisplay = gitProjectCommitStatusDisplay(status);
-  const risk = item.risk || item.privacy_risk || group.tone || "review";
-  const findings = Number(item.blocking_security_findings_count || item.privacy_findings_count || 0);
-  const detailParts = [
-    statusDisplay.label,
-    labels.join(" · "),
-    risk,
-    findings ? `${findings} finding${findings === 1 ? "" : "s"}` : "",
-    item.modified ? `edited ${item.modified}` : "",
-  ].filter(Boolean);
-  return {
-    labels,
-    status,
-    statusDisplay,
-    risk,
-    findings,
-    reason: item.reason || group.reason || "",
-    modified: item.modified || "",
-    meta: detailParts.join(" · "),
-  };
+  return gitProjectCommitFileBasketIntegration().fileMeta(item, group);
 }
 
 function gitProjectCommitCreateTreeNode(title, key, options = {}) {
-  const children = Array.isArray(options.children) ? options.children : [];
-  const isContainer = Boolean(options.folder || options.type === "dir");
-  const node = {
-    title,
-    key,
-    type: options.type || (isContainer ? "dir" : "file"),
-    selected: Boolean(options.selected),
-    unselectable: Boolean(options.unselectable),
-    checkbox: options.checkbox !== false,
-    classes: options.classes || options.extraClasses || "",
-    data: options.data || {},
-  };
-  if (options.expanded === true) {
-    node.expanded = true;
-  }
-  if (isContainer || children.length) {
-    node.children = children;
-  }
-  return node;
+  return gitProjectCommitFileBasketIntegration().createTreeNode(title, key, options);
 }
 
 function gitProjectCommitCandidateItems(review = {}) {
-  const groups = gitProjectCommitGroups(review);
-  const configs = gitProjectCommitGroupConfig();
-  const precedence = {
-    selected_by_default: 10,
-    review_before_selecting: 20,
-    excluded_generated_runtime: 30,
-    blocked_possible_secrets: 40,
-  };
-  const byPath = new Map();
-  configs.forEach((group) => {
-    (groups[group.key] || []).forEach((item = {}) => {
-      const path = String(item.path || "").replace(/\\/g, "/").replace(/^\/+/, "");
-      if (!path) return;
-      const previous = byPath.get(path);
-      const rank = precedence[group.key] || 0;
-      if (!previous || rank >= previous.rank) {
-        byPath.set(path, {item: {...item, path}, group, rank});
-      }
-    });
-  });
-  return Array.from(byPath.values()).map(({item, group}) => ({item, group}));
+  return gitProjectCommitFileBasketIntegration().candidateItems(review);
 }
 
 function gitProjectCommitFileBasketAdapter() {
-  return globalThis.McelFileBasketModel || null;
-}
-
-function gitProjectCommitFileBasketControllerAdapter() {
-  return globalThis.McelFileBasketController || null;
+  return gitProjectCommitFileBasketIntegration().adapter();
 }
 
 function gitProjectCommitFileBasketModel(review = {}) {
-  const adapter = gitProjectCommitFileBasketAdapter();
-  if (!adapter?.buildFileBasketModel) return null;
-  try {
-    return adapter.buildFileBasketModel(review, {
-      surfaceId: "task-manager.file-basket",
-      sourceConcern: "concern.file-basket",
-      sourceFile: "main_computer/web/applications/scripts/task-manager.js"
-    });
-  } catch (error) {
-    console.warn("Could not build MCEL file basket model.", error);
-    return null;
-  }
+  return gitProjectCommitFileBasketIntegration().model(review);
 }
 
 function gitProjectCommitFileBasketModelJson(model = null) {
-  if (!model) return "";
-  try {
-    return JSON.stringify(model);
-  } catch (error) {
-    console.warn("Could not serialize MCEL file basket model.", error);
-    return "";
-  }
+  return gitProjectCommitFileBasketIntegration().modelJson(model);
 }
 
 function gitProjectCommitTreeFileTitleFromModel(row = {}) {
-  const titleParts = [
-    `${row.statusSymbol || "·"} ${row.name || row.path || "file"}`,
-    row.statusLabel || row.status || "",
-    row.bucketLabel || row.bucket || "",
-    String(row.meta || "").replace(String(row.statusLabel || ""), "").replace(/^\s*·\s*/, ""),
-    row.reason && row.reason !== row.blockedReason ? row.reason : "",
-  ].filter(Boolean);
-  return titleParts.join(" · ");
+  return gitProjectCommitFileBasketIntegration().treeFileTitleFromModel(row);
 }
 
 function gitProjectCommitTreeNodeFromModelNode(modelNode = {}) {
-  const kind = modelNode.kind || "file";
-  if (kind === "file") {
-    const selectable = modelNode.selectable !== false;
-    const statusTone = modelNode.statusTone || "unknown";
-    const bucketTone = modelNode.bucketTone || "review";
-    return gitProjectCommitCreateTreeNode(gitProjectCommitTreeFileTitleFromModel(modelNode), `file:${modelNode.path}`, {
-      type: "file",
-      selected: Boolean(modelNode.selectedByDefault && selectable),
-      unselectable: !selectable,
-      checkbox: selectable,
-      classes: [
-        "git-project-commit-tree-file",
-        `git-project-commit-tree-file-${statusTone}`,
-        `git-project-commit-node-${bucketTone}`,
-      ].join(" "),
-      data: {
-        kind: "file",
-        path: modelNode.path || "",
-        name: modelNode.name || "",
-        group: modelNode.bucket || "",
-        groupTitle: modelNode.bucketLabel || modelNode.bucket || "",
-        bucket: modelNode.bucket || "",
-        bucketLabel: modelNode.bucketLabel || modelNode.bucket || "",
-        selectable,
-        selectedByDefault: Boolean(modelNode.selectedByDefault && selectable),
-        blocked: Boolean(modelNode.blocked || !selectable),
-        blockedReason: modelNode.blockedReason || "",
-        status: modelNode.status || "unknown",
-        statusLabel: modelNode.statusLabel || modelNode.status || "unknown",
-        statusSymbol: modelNode.statusSymbol || "·",
-        statusTone,
-        risk: modelNode.risk || "",
-        classifications: Array.isArray(modelNode.classifications) ? modelNode.classifications.slice() : [],
-        reason: modelNode.reason || "",
-        modified: modelNode.modified || "",
-        meta: modelNode.meta || "",
-        findings: Number(modelNode.findings || 0),
-        modelRowId: modelNode.id || "",
-      },
-    });
-  }
-
-  const children = (Array.isArray(modelNode.children) ? modelNode.children : [])
-    .map(gitProjectCommitTreeNodeFromModelNode)
-    .filter(Boolean);
-  const selectable = modelNode.selectable !== false && Number(modelNode.selectableFileCount || 0) > 0;
-  return gitProjectCommitCreateTreeNode(modelNode.name || modelNode.path || "Candidate files", `dir:${modelNode.path || ""}/`, {
-    type: "dir",
-    expanded: false,
-    selected: modelNode.selectionState === "all",
-    checkbox: selectable,
-    unselectable: !selectable,
-    classes: "git-project-commit-tree-dir git-project-commit-node-dir",
-    children,
-    data: {
-      kind: "dir",
-      name: modelNode.name || "",
-      path: modelNode.path || "",
-      selectable,
-      selectionState: modelNode.selectionState || "none",
-      totalFiles: Number(modelNode.fileCount || 0),
-      blockedFiles: Number(modelNode.blockedFileCount || 0),
-      selectableFiles: Number(modelNode.selectableFileCount || 0),
-      modelRowId: modelNode.id || "",
-    },
-  });
+  return gitProjectCommitFileBasketIntegration().treeNodeFromModelNode(modelNode);
 }
 
 function gitProjectCommitTreeSourceFromModel(model = null) {
-  const hierarchy = Array.isArray(model?.hierarchy) ? model.hierarchy : [];
-  if (!hierarchy.length) return null;
-  const root = gitProjectCommitCreateTreeNode("Candidate files", "candidate-files", {
-    type: "dir",
-    folder: true,
-    expanded: true,
-    checkbox: true,
-    data: {kind: "dir", path: "", selectable: true},
-    children: hierarchy.map(gitProjectCommitTreeNodeFromModelNode).filter(Boolean),
-  });
-  gitProjectCommitAnnotateDirectoryStats(root);
-  gitProjectCommitFinalizeDirectorySelection(root);
-  return root.children.length ? root.children : null;
+  return gitProjectCommitFileBasketIntegration().treeSourceFromModel(model);
 }
 
 function gitProjectCommitSortTreeNodes(nodes = []) {
-  nodes.sort((a, b) => {
-    const aDir = a.data?.kind === "dir";
-    const bDir = b.data?.kind === "dir";
-    if (aDir !== bDir) return aDir ? -1 : 1;
-    return String(a.title || "").localeCompare(String(b.title || ""), undefined, {sensitivity: "base"});
-  });
-  nodes.forEach((node) => {
-    if (Array.isArray(node.children)) gitProjectCommitSortTreeNodes(node.children);
-  });
-  return nodes;
+  return gitProjectCommitFileBasketIntegration().sortTreeNodes(nodes);
 }
 
 function gitProjectCommitAnnotateDirectoryStats(node) {
-  const children = Array.isArray(node.children) ? node.children : [];
-  let total = 0;
-  let untracked = 0;
-  let changed = 0;
-  let blocked = 0;
-  children.forEach((child) => {
-    const data = child.data || {};
-    if (data.kind === "file") {
-      total += 1;
-      const status = gitProjectCommitNormalizeStatus(data);
-      if (status === "untracked") untracked += 1;
-      if (status.startsWith("tracked_")) changed += 1;
-      if (data.blocked || data.selectable === false || data.group === "blocked_possible_secrets" || String(data.risk || "").toLowerCase().includes("block") || status === "conflicted") {
-        blocked += 1;
-      }
-    } else if (data.kind === "dir") {
-      const childStats = gitProjectCommitAnnotateDirectoryStats(child);
-      total += childStats.total;
-      untracked += childStats.untracked;
-      changed += childStats.changed;
-      blocked += childStats.blocked;
-    }
-  });
-  node.data = {...(node.data || {}), totalFiles: total, untrackedFiles: untracked, changedFiles: changed, blockedFiles: blocked};
-  if (node.data.kind === "dir" && node.data.path) {
-    const name = String(node.data.name || node.title || "");
-    const countLabel = `${total} file${total === 1 ? "" : "s"}`;
-    const statusParts = [
-      untracked ? `+ ${untracked}` : "",
-      changed ? `✓ ${changed}` : "",
-      blocked ? `! ${blocked}` : "",
-    ].filter(Boolean);
-    node.title = [name, "dir", countLabel, ...statusParts].filter(Boolean).join(" · ");
-  }
-  return {total, untracked, changed, blocked};
+  return gitProjectCommitFileBasketIntegration().annotateDirectoryStats(node);
 }
 
 function gitProjectCommitFinalizeDirectorySelection(node) {
-  const children = Array.isArray(node.children) ? node.children : [];
-  if (!children.length) return Boolean(node.data?.selectable);
-  const selectableChildren = children
-    .map(gitProjectCommitFinalizeDirectorySelection)
-    .filter(Boolean);
-  const selectable = selectableChildren.length > 0;
-  node.data = {...(node.data || {}), selectable};
-  node.checkbox = selectable;
-  node.unselectable = !selectable;
-  return selectable;
+  return gitProjectCommitFileBasketIntegration().finalizeDirectorySelection(node);
 }
 
 function gitProjectCommitInsertTreePath(root, item = {}, group = {}) {
-  const path = String(item.path || "").replace(/\\/g, "/").replace(/^\/+/, "");
-  if (!path) return;
-  const parts = path.split("/").filter(Boolean);
-  let cursor = root;
-  let cursorPath = "";
-  parts.forEach((part, index) => {
-    cursorPath = cursorPath ? `${cursorPath}/${part}` : part;
-    const isFile = index === parts.length - 1;
-    let child = cursor.children.find((node) => node.data?.path === cursorPath && node.data?.kind === (isFile ? "file" : "dir"));
-    if (!child) {
-      if (isFile) {
-        const meta = gitProjectCommitFileMeta(item, group);
-        const selectable = group.selectable !== false;
-        const selected = Boolean((group.key === "selected_by_default" || item.selected_by_default) && selectable);
-        const groupLabel = group.title || group.key || "Candidate";
-        const statusDisplay = meta.statusDisplay || gitProjectCommitStatusDisplay(meta.status);
-        const titleParts = [
-          `${statusDisplay.symbol} ${part}`,
-          statusDisplay.label,
-          groupLabel,
-          meta.meta.replace(statusDisplay.label, "").replace(/^\s*·\s*/, ""),
-          meta.reason && meta.reason !== group.reason ? meta.reason : "",
-        ].filter(Boolean);
-        child = gitProjectCommitCreateTreeNode(titleParts.join(" · "), `file:${cursorPath}`, {
-          type: "file",
-          selected,
-          unselectable: !selectable,
-          checkbox: selectable,
-          classes: [
-            "git-project-commit-tree-file",
-            `git-project-commit-tree-file-${statusDisplay.tone}`,
-            `git-project-commit-node-${group.tone || "review"}`,
-          ].join(" "),
-          data: {
-            kind: "file",
-            path,
-            name: part,
-            group: group.key,
-            groupTitle: group.title,
-            selectable,
-            status: meta.status,
-            statusLabel: statusDisplay.label,
-            statusSymbol: statusDisplay.symbol,
-            statusTone: statusDisplay.tone,
-            risk: meta.risk,
-            classifications: meta.labels,
-            reason: meta.reason,
-            modified: meta.modified,
-            meta: meta.meta,
-          },
-        });
-      } else {
-        child = gitProjectCommitCreateTreeNode(part, `dir:${cursorPath}/`, {
-          type: "dir",
-          expanded: false,
-          selected: false,
-          checkbox: true,
-          unselectable: false,
-          classes: "git-project-commit-tree-dir git-project-commit-node-dir",
-          data: {
-            kind: "dir",
-            name: part,
-            path: cursorPath,
-            selectable: true,
-          },
-        });
-      }
-      cursor.children.push(child);
-    }
-    cursor = child;
-  });
+  return gitProjectCommitFileBasketIntegration().insertTreePath(root, item, group);
 }
 
 function gitProjectCommitEmptyTreeSource() {
-  return [
-    gitProjectCommitCreateTreeNode("No candidate files returned by the planner", "empty:candidate-files", {
-      type: "empty",
-      checkbox: false,
-      unselectable: true,
-      data: {kind: "empty", selectable: false},
-    }),
-  ];
+  return gitProjectCommitFileBasketIntegration().emptyTreeSource();
 }
 
 function gitProjectCommitTreeSource(review = {}, fileBasketModel = gitProjectCommitFileBasketModel(review)) {
-  const modelTree = gitProjectCommitTreeSourceFromModel(fileBasketModel);
-  if (Array.isArray(modelTree) && modelTree.length) return modelTree;
-
-  const root = gitProjectCommitCreateTreeNode("Candidate files", "candidate-files", {
-    type: "dir",
-    folder: true,
-    expanded: true,
-    checkbox: true,
-    data: {kind: "dir", path: "", selectable: true},
-  });
-  gitProjectCommitCandidateItems(review).forEach(({item, group}) => gitProjectCommitInsertTreePath(root, item, group));
-  gitProjectCommitSortTreeNodes(root.children);
-  gitProjectCommitAnnotateDirectoryStats(root);
-  gitProjectCommitFinalizeDirectorySelection(root);
-  if (!root.children.length) {
-    return gitProjectCommitEmptyTreeSource();
-  }
-  return root.children;
+  return gitProjectCommitFileBasketIntegration().treeSource(review, fileBasketModel);
 }
 
 function gitProjectCommitReviewCandidatePaths(review = {}) {
-  const fileBasketModel = gitProjectCommitFileBasketModel(review);
-  if (Array.isArray(fileBasketModel?.rows)) {
-    return fileBasketModel.rows
-      .map((row = {}) => row.path || "")
-      .filter(Boolean)
-      .sort((a, b) => a.localeCompare(b));
-  }
-  const paths = new Set();
-  gitProjectCommitCandidateItems(review).forEach(({item = {}} = {}) => {
-    const path = String(item.path || "").replace(/\\/g, "/").replace(/^\/+/, "");
-    if (path) paths.add(path);
-  });
-  return Array.from(paths).sort((a, b) => a.localeCompare(b));
+  return gitProjectCommitFileBasketIntegration().reviewCandidatePaths(review);
 }
 
 function gitProjectCommitStepFromInspection(data = {}) {
@@ -2622,67 +2048,11 @@ function gitProjectCommitReviewFromInspection(data = {}) {
 }
 
 function gitProjectCommitFallbackTreeHtml(nodes = []) {
-  const renderNode = (node = {}) => {
-    const data = node.data || {};
-    const children = Array.isArray(node.children) ? node.children : [];
-    const isFile = data.kind === "file";
-    const isDir = data.kind === "dir" || data.kind === "group";
-    const checkbox = node.checkbox !== false && data.selectable !== false;
-    const checked = node.selected && checkbox ? "checked" : "";
-    const disabled = checkbox ? "" : "disabled";
-    const path = data.path || "";
-    const meta = data.meta || data.subtitle || data.reason || "";
-    return `<li class="git-project-commit-fallback-node ${isDir ? "is-dir" : ""} ${isFile ? "is-file" : ""}" data-git-commit-tree-node="${escapeHtml(data.kind || "node")}" data-git-commit-status="${escapeHtml(data.status || "")}">
-      <label>
-        <input type="checkbox"
-          ${checked}
-          ${disabled}
-          data-git-commit-tree-checkbox="${isDir ? "dir" : isFile ? "file" : "none"}"
-          data-git-commit-path="${escapeHtml(path)}"
-          data-git-commit-selectable="${checkbox ? "true" : "false"}"
-          ${isFile ? `data-git-commit-file="${escapeHtml(path)}"` : ""}>
-        <span>
-          <strong>${escapeHtml(isFile && path ? path : node.title || "")}</strong>
-          ${meta ? `<small>${escapeHtml(meta)}</small>` : ""}
-        </span>
-      </label>
-      ${children.length ? `<ul>${children.map(renderNode).join("")}</ul>` : ""}
-    </li>`;
-  };
-  return `<ul class="git-project-commit-fallback-tree">${nodes.map(renderNode).join("")}</ul>`;
+  return gitProjectCommitFileBasketIntegration().fallbackTreeHtml(nodes, {escapeHtml});
 }
 
 function gitProjectCommitBasketHtml(review = {}) {
-  const fileBasketModel = gitProjectCommitFileBasketModel(review);
-  const treeSource = gitProjectCommitTreeSource(review, fileBasketModel);
-  const groups = gitProjectCommitGroups(review);
-  const totals = gitProjectCommitTreeStats(treeSource);
-  const selectedTotal = Array.isArray(fileBasketModel?.defaultSelectedPaths)
-    ? fileBasketModel.defaultSelectedPaths.length
-    : groups.selected_by_default.filter((item = {}) => item.path).length;
-  const modelJson = gitProjectCommitFileBasketModelJson(fileBasketModel);
-  return `<section class="git-project-commit-right" data-git-commit-basket data-git-commit-file-basket-model-ready="${fileBasketModel ? "true" : "false"}">
-    ${gitProjectCommitRepoIdentityHtml(review)}
-    <div class="git-project-subscreen-panel-head">
-      <strong>File basket</strong>
-      <span>directories first · files under paths</span>
-    </div>
-    <div class="git-project-commit-basket-summary">
-      <span>Total candidates <strong>${Number(totals.total)}</strong></span>
-      <span class="is-untracked">+ Untracked <strong>${Number(totals.untracked)}</strong></span>
-      <span class="is-tracked">✓ Changed <strong>${Number(totals.changed)}</strong></span>
-      <span class="is-blocked">Blocked <strong>${Number(totals.blocked)}</strong></span>
-    </div>
-    <p class="git-project-muted">Repo file tree: select files directly or select folders as a shortcut. Checked folders mean all selectable child files are selected; mixed folders mean only some child files are selected. ${selectedTotal ? `${selectedTotal} file${selectedTotal === 1 ? "" : "s"} selected by default.` : "Review candidates are not selected until you choose them."}</p>
-    ${modelJson ? `<textarea hidden data-git-commit-file-basket-model>${escapeHtml(modelJson)}</textarea>` : ""}
-    <textarea hidden data-git-commit-tree-source>${escapeHtml(JSON.stringify(treeSource))}</textarea>
-    <div class="git-project-commit-wunderbaum-shell">
-      <div class="git-project-commit-wunderbaum wb-skeleton wb-initializing" data-git-commit-tree></div>
-      <div class="git-project-commit-tree-fallback" data-git-commit-tree-fallback>
-        ${gitProjectCommitFallbackTreeHtml(treeSource)}
-      </div>
-    </div>
-  </section>`;
+  return gitProjectCommitFileBasketIntegration().basketHtml(review, gitProjectCommitFileBasketHooks());
 }
 
 function gitProjectWunderbaumConstructor() {
@@ -2742,373 +2112,71 @@ function gitProjectLoadWunderbaum() {
 }
 
 function gitProjectCommitReadTreeSource(workbench) {
-  const sourceNode = workbench?.querySelector?.("[data-git-commit-tree-source]");
-  if (!sourceNode) return [];
-  try {
-    const parsed = JSON.parse(sourceNode.value || "[]");
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (error) {
-    return [];
-  }
+  return gitProjectCommitFileBasketIntegration().readTreeSource(workbench);
 }
 
 function gitProjectCommitReadFileBasketModel(workbench) {
-  const sourceNode = workbench?.querySelector?.("[data-git-commit-file-basket-model]");
-  if (!sourceNode) return null;
-  try {
-    const parsed = JSON.parse(sourceNode.value || "null");
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch (error) {
-    return null;
-  }
+  return gitProjectCommitFileBasketIntegration().readFileBasketModel(workbench);
 }
 
 function gitProjectCommitSortSelectedPaths(paths = []) {
-  return Array.from(new Set((Array.isArray(paths) ? paths : []).filter(Boolean)))
-    .sort((a, b) => String(a).localeCompare(String(b)));
-}
-
-function gitProjectCommitSelectionController(workbench, paths = null) {
-  const controllerAdapter = gitProjectCommitFileBasketControllerAdapter();
-  const model = gitProjectCommitReadFileBasketModel(workbench);
-  if (!controllerAdapter?.createFileBasketController || !model) return null;
-  try {
-    return controllerAdapter.createFileBasketController(model, {
-      selectedPaths: Array.isArray(paths) ? paths : model.defaultSelectedPaths,
-      sourceSurface: "task-manager.file-basket"
-    });
-  } catch (error) {
-    console.warn("Could not create MCEL file basket selection controller.", error);
-    return null;
-  }
+  return gitProjectCommitFileBasketIntegration().sortSelectedPaths(paths);
 }
 
 function gitProjectCommitAdapterSelectedOutput(workbench, paths = []) {
-  const fallbackPaths = gitProjectCommitSortSelectedPaths(paths);
-  const model = gitProjectCommitReadFileBasketModel(workbench);
-  const controllerAdapter = gitProjectCommitFileBasketControllerAdapter();
-  if (controllerAdapter?.selectedOutput && model) {
-    try {
-      return controllerAdapter.selectedOutput(model, fallbackPaths);
-    } catch (error) {
-      console.warn("Could not normalize selection through MCEL file basket controller.", error);
-    }
-  }
-  const adapter = gitProjectCommitFileBasketAdapter();
-  if (!adapter?.selectedOutput || !model) return fallbackPaths;
-  return adapter.selectedOutput(model, fallbackPaths);
+  return gitProjectCommitFileBasketIntegration().adapterSelectedOutput(workbench, paths);
 }
 
 function gitProjectCommitSelectionAdapterReport(workbench, rawPaths = []) {
-  const fallbackPaths = gitProjectCommitSortSelectedPaths(rawPaths);
-  const model = gitProjectCommitReadFileBasketModel(workbench);
-  const controllerAdapter = gitProjectCommitFileBasketControllerAdapter();
-  if (controllerAdapter?.selectionReport && model) {
-    try {
-      const report = controllerAdapter.selectionReport(model, fallbackPaths);
-      return {
-        enabled: true,
-        controller: "McelFileBasketController",
-        rawPaths: report.rawPaths || fallbackPaths,
-        selectedPaths: report.selectedPaths || [],
-        matches: report.matches === true,
-        summary: report.summary || null,
-      };
-    } catch (error) {
-      console.warn("Could not build MCEL file basket controller report.", error);
-    }
-  }
-  const adapter = gitProjectCommitFileBasketAdapter();
-  if (!adapter?.selectedOutput || !model) {
-    return {
-      enabled: false,
-      rawPaths: fallbackPaths,
-      selectedPaths: fallbackPaths,
-      matches: true,
-      summary: null,
-    };
-  }
-  const selectedPaths = adapter.selectedOutput(model, fallbackPaths);
-  return {
-    enabled: true,
-    controller: "McelFileBasketModel",
-    rawPaths: fallbackPaths,
-    selectedPaths,
-    matches: JSON.stringify(fallbackPaths) === JSON.stringify(selectedPaths),
-    summary: typeof adapter.selectionSummary === "function" ? adapter.selectionSummary(model, fallbackPaths) : null,
-  };
-}
-
-function gitProjectCommitApplySelectionCommand(workbench, command = "", payload = {}, selectedPaths = []) {
-  const model = gitProjectCommitReadFileBasketModel(workbench);
-  const controllerAdapter = gitProjectCommitFileBasketControllerAdapter();
-  const fallbackPaths = gitProjectCommitSortSelectedPaths(selectedPaths);
-  if (!controllerAdapter?.applySelectionCommand || !model) {
-    return {ok: false, selectedPaths: fallbackPaths, output: fallbackPaths, reason: "MCEL file basket controller unavailable"};
-  }
-  try {
-    return controllerAdapter.applySelectionCommand(model, fallbackPaths, command, payload);
-  } catch (error) {
-    console.warn("Could not apply MCEL file basket selection command.", error);
-    return {ok: false, selectedPaths: fallbackPaths, output: fallbackPaths, reason: String(error?.message || error)};
-  }
-}
-
-function gitProjectCommitCanSelectTreeNode(workbench, node = {}) {
-  const data = node?.data || {};
-  if (data.kind === "empty" || data.selectable === false) return false;
-  const model = gitProjectCommitReadFileBasketModel(workbench);
-  const controllerAdapter = gitProjectCommitFileBasketControllerAdapter();
-  if (controllerAdapter?.canSelectTreeNode && model) {
-    try {
-      return controllerAdapter.canSelectTreeNode(model, node);
-    } catch (error) {
-      console.warn("Could not ask MCEL file basket controller about tree-node selectability.", error);
-    }
-  }
-  return data.selectable !== false && data.kind !== "empty";
-}
-
-function gitProjectCommitDirectorySelectionState(workbench, selectedPaths = [], directoryPath = "") {
-  const model = gitProjectCommitReadFileBasketModel(workbench);
-  const controllerAdapter = gitProjectCommitFileBasketControllerAdapter();
-  if (controllerAdapter?.deriveDirectorySelectionState && model) {
-    try {
-      return controllerAdapter.deriveDirectorySelectionState(model, selectedPaths, directoryPath);
-    } catch (error) {
-      console.warn("Could not derive MCEL file basket directory selection state.", error);
-    }
-  }
-  return "";
+  return gitProjectCommitFileBasketIntegration().selectionAdapterReport(workbench, rawPaths);
 }
 
 function gitProjectCommitFlattenTreeFiles(nodes = [], out = []) {
-  nodes.forEach((node = {}) => {
-    const data = node.data || {};
-    if (data.kind === "file" && data.path) out.push(data);
-    if (Array.isArray(node.children)) gitProjectCommitFlattenTreeFiles(node.children, out);
-  });
-  return out;
+  return gitProjectCommitFileBasketIntegration().flattenTreeFiles(nodes, out);
 }
 
 function gitProjectCommitBuildFileIndex(files = []) {
-  const exact = new Set();
-  const baseCounts = new Map();
-  const baseToPath = new Map();
-  files.forEach((file = {}) => {
-    const path = String(file.path || "").replace(/\\/g, "/");
-    if (!path) return;
-    exact.add(path);
-    const base = path.split("/").pop();
-    baseCounts.set(base, (baseCounts.get(base) || 0) + 1);
-    baseToPath.set(base, path);
-  });
-  const uniqueBaseToPath = new Map();
-  baseToPath.forEach((path, base) => {
-    if (baseCounts.get(base) === 1) uniqueBaseToPath.set(base, path);
-  });
-  return {files, exact, uniqueBaseToPath};
+  return gitProjectCommitFileBasketIntegration().buildFileIndex(files);
 }
 
 function gitProjectCommitCleanPathCandidate(value = "") {
-  let text = String(value || "").trim();
-  if (!text) return "";
-  text = text
-    .replace(/\\/g, "/")
-    .replace(/^[\s✓☑☐+>›▸▾-]+/g, "")
-    .replace(/^file:/i, "")
-    .replace(/^folder:/i, "")
-    .replace(/^dir:/i, "")
-    .trim();
-  text = text
-    .replace(/\s+·\s+.*$/g, "")
-    .replace(/\s+-\s+untracked\s+.*$/i, "")
-    .replace(/\s+-\s+modified\s+.*$/i, "")
-    .replace(/\s+-\s+deleted\s+.*$/i, "")
-    .replace(/\s+-\s+renamed\s+.*$/i, "")
-    .replace(/\s+-\s+review before selecting\s+.*$/i, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  return text;
+  return gitProjectCommitFileBasketIntegration().cleanPathCandidate(value);
 }
 
 function gitProjectCommitCanonicalFilePath(value = "", index = gitProjectCommitBuildFileIndex()) {
-  const raw = gitProjectCommitCleanPathCandidate(value);
-  if (!raw) return "";
-  if (/\bdir\b.*\bfiles?\b/i.test(raw) || /^\d+\s+files?\b/i.test(raw)) return "";
-  if (index.exact.has(raw)) return raw;
-  const withoutRoot = raw.replace(/^main_computer_test\//, "");
-  if (index.exact.has(withoutRoot)) return withoutRoot;
-  const suffixMatches = index.files
-    .map((file = {}) => String(file.path || "").replace(/\\/g, "/"))
-    .filter((path) => path === raw || path.endsWith(`/${raw}`));
-  if (suffixMatches.length === 1) return suffixMatches[0];
-  const base = raw.split("/").pop();
-  if (index.uniqueBaseToPath.has(base)) return index.uniqueBaseToPath.get(base);
-  return "";
+  return gitProjectCommitFileBasketIntegration().canonicalFilePath(value, index);
 }
 
 function gitProjectCommitTreeNodePath(node, index) {
-  const candidates = [
-    node?.data?.path,
-    node?.data?.file,
-    node?.data?.repoPath,
-    node?.data?.gitCommitFile,
-    node?.key,
-    node?.title,
-  ];
-  for (const candidate of candidates) {
-    const path = gitProjectCommitCanonicalFilePath(candidate, index);
-    if (path) return path;
-  }
-  return "";
+  return gitProjectCommitFileBasketIntegration().treeNodePath(node, index);
 }
 
 function gitProjectCommitTreeNodeSelected(node) {
-  try {
-    if (typeof node?.isSelected === "function" && node.isSelected()) return true;
-  } catch (error) {
-    return false;
-  }
-  return Boolean(node?.selected || node?._selected || node?.data?.selected);
+  return gitProjectCommitFileBasketIntegration().treeNodeSelected(node);
 }
 
 function gitProjectCommitVisitTreeNodes(tree, visitor) {
-  if (!tree || typeof visitor !== "function") return;
-  if (typeof tree.visit === "function") {
-    tree.visit(visitor);
-    return;
-  }
-  if (tree.rootNode && typeof tree.rootNode.visit === "function") {
-    tree.rootNode.visit(visitor);
-  }
-}
-
-function gitProjectCommitRawSelectedFilesFromFallback(workbench) {
-  const files = gitProjectCommitFlattenTreeFiles(gitProjectCommitReadTreeSource(workbench));
-  const index = gitProjectCommitBuildFileIndex(files);
-  return Array.from(workbench?.querySelectorAll?.("[data-git-commit-tree-checkbox='file']:checked") || [])
-    .map((input) => gitProjectCommitCanonicalFilePath(input.dataset.gitCommitFile || input.dataset.gitCommitPath || input.value || "", index))
-    .filter(Boolean);
+  return gitProjectCommitFileBasketIntegration().visitTreeNodes(tree, visitor);
 }
 
 function gitProjectCommitSelectedFilesFromFallback(workbench) {
-  return gitProjectCommitAdapterSelectedOutput(workbench, gitProjectCommitRawSelectedFilesFromFallback(workbench));
+  return gitProjectCommitFileBasketIntegration().selectedFilesFromFallback(workbench);
 }
 
 function gitProjectCommitSelectedFilesFromWunderbaum(tree) {
-  const workbench = tree?.gitCommitWorkbench || tree?.element?.closest?.("[data-git-commit-workbench]") || tree?.options?.element?.closest?.("[data-git-commit-workbench]");
-  const files = gitProjectCommitFlattenTreeFiles(gitProjectCommitReadTreeSource(workbench));
-  const index = gitProjectCommitBuildFileIndex(files);
-  const paths = new Set();
-
-  try {
-    if (typeof tree?.getSelectedNodes === "function") {
-      (tree.getSelectedNodes() || []).forEach((node) => {
-        if (node?.data?.selectable === false) return;
-        const path = gitProjectCommitTreeNodePath(node, index);
-        if (path) paths.add(path);
-      });
-    }
-  } catch (error) {
-    console.warn("Could not read selected Wunderbaum nodes.", error);
-  }
-
-  try {
-    gitProjectCommitVisitTreeNodes(tree, (node) => {
-      if (!gitProjectCommitTreeNodeSelected(node) || node?.data?.selectable === false) return;
-      const path = gitProjectCommitTreeNodePath(node, index);
-      if (path) paths.add(path);
-    });
-  } catch (error) {
-    console.warn("Could not visit selected Wunderbaum nodes.", error);
-  }
-
-  return gitProjectCommitAdapterSelectedOutput(workbench, Array.from(paths));
+  return gitProjectCommitFileBasketIntegration().selectedFilesFromWunderbaum(tree);
 }
 
 function gitProjectCommitSelectedFilesFromDom(workbench) {
-  const files = gitProjectCommitFlattenTreeFiles(gitProjectCommitReadTreeSource(workbench));
-  const index = gitProjectCommitBuildFileIndex(files);
-  const treeElement = workbench?.querySelector?.("[data-git-commit-tree]");
-  const paths = new Set();
-  if (!treeElement) return [];
-  const selectedElements = treeElement.querySelectorAll(`
-    input[type="checkbox"]:checked,
-    [role="checkbox"][aria-checked="true"],
-    .wb-checkbox[aria-checked="true"],
-    .wb-checkbox.wb-selected,
-    .wb-checkbox.wb-checked,
-    .wb-row.wb-selected,
-    .wb-row[aria-selected="true"],
-    .wb-node.wb-selected,
-    [role="treeitem"][aria-selected="true"]
-  `);
-  selectedElements.forEach((element) => {
-    const row = element.closest(".wb-row, .wb-node, [role='treeitem'], li, tr") || element.parentElement || element;
-    const candidates = [];
-    [element, row].forEach((candidateElement) => {
-      if (!candidateElement) return;
-      ["data-git-commit-file", "data-path", "data-key", "data-ref-key", "data-node-key", "title", "aria-label", "value"].forEach((attr) => {
-        const value = candidateElement.getAttribute?.(attr);
-        if (value && value !== "on") candidates.push(value);
-      });
-      Object.values(candidateElement.dataset || {}).forEach((value) => {
-        if (value && value !== "on") candidates.push(value);
-      });
-    });
-    const titleElement = row.querySelector?.(".wb-title, [class*='title'], [data-title]") || row;
-    if (titleElement?.textContent) candidates.push(titleElement.textContent);
-    for (const candidate of candidates) {
-      const path = gitProjectCommitCanonicalFilePath(candidate, index);
-      if (path) {
-        paths.add(path);
-        return;
-      }
-    }
-  });
-  return gitProjectCommitAdapterSelectedOutput(workbench, Array.from(paths));
+  return gitProjectCommitFileBasketIntegration().selectedFilesFromDom(workbench);
 }
 
 function gitProjectCommitSelectedFilesFromWorkbench(workbench) {
-  const tree = workbench?.gitCommitWunderbaum || workbench?.querySelector?.("[data-git-commit-tree]")?._wb_tree;
-  const paths = new Set();
-  gitProjectCommitSelectedFilesFromWunderbaum(tree).forEach((path) => paths.add(path));
-  gitProjectCommitSelectedFilesFromDom(workbench).forEach((path) => paths.add(path));
-  if (!tree || workbench?.dataset?.gitCommitWunderbaumFallback === "true") {
-    gitProjectCommitSelectedFilesFromFallback(workbench).forEach((path) => paths.add(path));
-  }
-  return gitProjectCommitAdapterSelectedOutput(workbench, Array.from(paths));
+  return gitProjectCommitFileBasketIntegration().selectedFilesFromWorkbench(workbench);
 }
 
 function gitProjectCommitReviewStats(workbench, selectedPaths = []) {
-  const files = gitProjectCommitFlattenTreeFiles(gitProjectCommitReadTreeSource(workbench));
-  const selected = new Set(selectedPaths);
-  const isReviewFile = (file = {}) => (
-    file.group === "review_before_selecting" ||
-    String(file.groupTitle || "").toLowerCase().includes("review") ||
-    String(file.risk || file.privacy_risk || "").toLowerCase().includes("review")
-  );
-  const isBlockedFile = (file = {}) => (
-    file.group === "blocked_possible_secrets" ||
-    String(file.risk || file.privacy_risk || "").toLowerCase().includes("block") ||
-    String(file.status || "").toLowerCase().includes("conflict") ||
-    file.selectable === false
-  );
-  const reviewFiles = files.filter(isReviewFile);
-  const blockedFiles = files.filter(isBlockedFile);
-  const selectedFiles = files.filter((file = {}) => selected.has(file.path));
-  const selectedReview = selectedFiles.filter(isReviewFile);
-  const selectedBlocked = selectedFiles.filter(isBlockedFile);
-  return {
-    total: files.length,
-    selected: selectedPaths.length,
-    review: reviewFiles.length,
-    blocked: blockedFiles.length,
-    selectedReview: selectedReview.length,
-    selectedBlocked: selectedBlocked.length,
-    selectedBlockedPaths: selectedBlocked.map((file = {}) => file.path).filter(Boolean),
-  };
+  return gitProjectCommitFileBasketIntegration().reviewStats(workbench, selectedPaths);
 }
 
 function gitProjectCommitControlChecked(workbench, key = "") {
@@ -3472,7 +2540,7 @@ async function gitProjectCommitRefreshAfterCompletion(workbench, event = {}) {
   const payload = current.id ? {project_id: current.id} : {};
   try {
     gitProjectCommitSetExecutionStatus(workbench, "Commit finished. Refreshing uncommitted file list…");
-    const data = await gitToolsRequest("/api/applications/git/project/inspect", payload);
+    const data = await gitToolsStatusApi().inspectProject(payload);
     gitProjectLastInspection = data;
     if (data.project?.path) gitProjectSetTargetPathInputs(data.project.path);
     if (gitProjectsLastState && data.project) {
@@ -3561,7 +2629,7 @@ function gitProjectCommitStopExecution(workbench, message = "Commit run stopped.
   if (doButton) doButton.disabled = true;
   if (run?.jobId && !run.cancelRequestSent) {
     run.cancelRequestSent = true;
-    gitToolsRequest("/api/applications/git/project/commit/cancel", {job_id: run.jobId})
+    gitToolsStatusApi().cancelProjectCommit(run.jobId)
       .then((data) => {
         gitProjectCommitAppendExecutionLine(workbench, data.message || "Backend cancellation requested.");
         if (data.status) gitProjectCommitSetExecutionStatus(workbench, `Backend commit job status: ${data.status}`);
@@ -3770,7 +2838,7 @@ async function gitProjectCommitRunExecution(workbench) {
   );
   gitProjectCommitAppendExecutionLine(workbench, "Starting backend selected-file commit job...");
   try {
-    const data = await gitToolsRequest("/api/applications/git/project/commit/start", payload);
+    const data = await gitToolsStatusApi().startProjectCommit(payload);
     run.jobId = data.job_id || "";
     gitProjectCommitAppendExecutionLine(workbench, `Commit job started: ${run.jobId || "(unknown job id)"}`);
     gitProjectCommitStartEventStream(workbench, data);
@@ -3842,8 +2910,7 @@ function gitProjectCommitUpdateSelectedPreview(workbench, paths = null) {
   if (preview) preview.textContent = gitProjectCommitSelectedPreviewText(adapterReport.selectedPaths);
   workbench.dataset.gitCommitSelectedCount = String(adapterReport.selectedPaths.length);
   if (adapterReport.enabled) {
-    workbench.dataset.gitCommitSelectionAdapter = adapterReport.controller || "McelFileBasketModel";
-    workbench.dataset.gitCommitSelectionController = adapterReport.controller === "McelFileBasketController" ? "true" : "false";
+    workbench.dataset.gitCommitSelectionAdapter = "McelFileBasketModel";
     workbench.dataset.gitCommitAdapterSelectedCount = String(adapterReport.selectedPaths.length);
     workbench.dataset.gitCommitAdapterSelectionMatches = adapterReport.matches ? "true" : "normalized";
     if (adapterReport.summary) {
@@ -3852,7 +2919,6 @@ function gitProjectCommitUpdateSelectedPreview(workbench, paths = null) {
     }
   } else {
     delete workbench.dataset.gitCommitSelectionAdapter;
-    delete workbench.dataset.gitCommitSelectionController;
     delete workbench.dataset.gitCommitAdapterSelectedCount;
     delete workbench.dataset.gitCommitAdapterSelectionMatches;
     delete workbench.dataset.gitCommitAdapterBlockedSelected;
@@ -3958,20 +3024,12 @@ function gitProjectCommitScrollWunderbaumTop(element) {
   });
 }
 
-function gitProjectCommitUpdateFallbackParents(scope, workbench = null, selectedPaths = []) {
+function gitProjectCommitUpdateFallbackParents(scope) {
   if (!scope) return;
-  const selected = new Set(gitProjectCommitSortSelectedPaths(selectedPaths));
   const nodes = Array.from(scope.querySelectorAll("[data-git-commit-tree-node='dir'], [data-git-commit-tree-node='group']")).reverse();
   nodes.forEach((node) => {
     const dirInput = node.querySelector(":scope > label input[data-git-commit-tree-checkbox='dir']");
     if (!dirInput || dirInput.disabled) return;
-    const path = dirInput.dataset.gitCommitPath || "";
-    const controllerState = workbench ? gitProjectCommitDirectorySelectionState(workbench, Array.from(selected), path) : "";
-    if (controllerState) {
-      dirInput.checked = controllerState === "all";
-      dirInput.indeterminate = controllerState === "mixed";
-      return;
-    }
     const childInputs = Array.from(node.querySelectorAll(":scope > ul input[data-git-commit-tree-checkbox='file'], :scope > ul input[data-git-commit-tree-checkbox='dir']")).filter((input) => !input.disabled);
     if (!childInputs.length) return;
     const checked = childInputs.filter((input) => input.checked).length;
@@ -3981,25 +3039,6 @@ function gitProjectCommitUpdateFallbackParents(scope, workbench = null, selected
   });
 }
 
-function gitProjectCommitSyncFallbackSelection(workbench, selectedPaths = []) {
-  const fallback = workbench?.querySelector?.("[data-git-commit-tree-fallback]");
-  if (!fallback) return gitProjectCommitAdapterSelectedOutput(workbench, selectedPaths);
-  const normalized = gitProjectCommitAdapterSelectedOutput(workbench, selectedPaths);
-  const selected = new Set(normalized);
-  const files = gitProjectCommitFlattenTreeFiles(gitProjectCommitReadTreeSource(workbench));
-  const index = gitProjectCommitBuildFileIndex(files);
-  fallback.querySelectorAll("[data-git-commit-tree-checkbox='file']").forEach((input) => {
-    const path = gitProjectCommitCanonicalFilePath(input.dataset.gitCommitFile || input.dataset.gitCommitPath || input.value || "", index);
-    input.checked = selected.has(path);
-    input.indeterminate = false;
-  });
-  fallback.querySelectorAll("[data-git-commit-tree-checkbox='dir']").forEach((input) => {
-    input.indeterminate = false;
-  });
-  gitProjectCommitUpdateFallbackParents(fallback, workbench, normalized);
-  return normalized;
-}
-
 function gitProjectInitializeCommitFallbackTree(workbench) {
   const fallback = workbench.querySelector("[data-git-commit-tree-fallback]");
   if (!fallback || fallback.dataset.gitCommitFallbackReady === "true") return;
@@ -4007,27 +3046,20 @@ function gitProjectInitializeCommitFallbackTree(workbench) {
   fallback.addEventListener("change", (event) => {
     const input = event.target?.closest?.("[data-git-commit-tree-checkbox]");
     if (!input) return;
-    const currentPaths = gitProjectCommitRawSelectedFilesFromFallback(workbench);
-    let selectedPaths = currentPaths;
     if (input.dataset.gitCommitTreeCheckbox === "dir") {
-      const result = gitProjectCommitApplySelectionCommand(workbench, "set-directory-selection", {
-        path: input.dataset.gitCommitPath || "",
-        selected: input.checked
-      }, currentPaths);
-      selectedPaths = result.selectedPaths || currentPaths;
-    } else if (input.dataset.gitCommitTreeCheckbox === "file") {
-      const result = gitProjectCommitApplySelectionCommand(workbench, "set-file-selection", {
-        path: input.dataset.gitCommitFile || input.dataset.gitCommitPath || "",
-        selected: input.checked
-      }, currentPaths);
-      selectedPaths = result.selectedPaths || currentPaths;
+      const node = input.closest("[data-git-commit-tree-node]");
+      node?.querySelectorAll("ul input[data-git-commit-tree-checkbox]").forEach((child) => {
+        if (!child.disabled) {
+          child.checked = input.checked;
+          child.indeterminate = false;
+        }
+      });
     }
-    const normalized = gitProjectCommitSyncFallbackSelection(workbench, selectedPaths);
-    gitProjectCommitUpdateSelectedPreview(workbench, normalized);
+    gitProjectCommitUpdateFallbackParents(fallback);
+    gitProjectCommitUpdateSelectedPreview(workbench, gitProjectCommitSelectedFilesFromWorkbench(workbench));
   });
-  const initialPaths = gitProjectCommitSelectedFilesFromWorkbench(workbench);
-  gitProjectCommitSyncFallbackSelection(workbench, initialPaths);
-  gitProjectCommitUpdateSelectedPreview(workbench, initialPaths);
+  gitProjectCommitUpdateFallbackParents(fallback);
+  gitProjectCommitUpdateSelectedPreview(workbench, gitProjectCommitSelectedFilesFromWorkbench(workbench));
 }
 
 function gitProjectInitializeCommitWunderbaum(workbench) {
@@ -4053,7 +3085,7 @@ function gitProjectInitializeCommitWunderbaum(workbench) {
       const tree = new Wunderbaum({
         id: `git-commit-${Math.random().toString(36).slice(2)}`,
         element,
-        checkbox: (event) => gitProjectCommitCanSelectTreeNode(workbench, event.node),
+        checkbox: (event) => event.node?.data?.selectable !== false && event.node?.data?.kind !== "empty",
         selectMode: "hier",
         types: {
           dir: {icon: "bi bi-folder", classes: "git-project-commit-tree-dir"},
@@ -4061,7 +3093,7 @@ function gitProjectInitializeCommitWunderbaum(workbench) {
           empty: {icon: "bi bi-dash-circle", classes: "git-project-commit-tree-empty", checkbox: false, unselectable: true},
         },
         source: {children: source},
-        beforeSelect: (event) => gitProjectCommitCanSelectTreeNode(workbench, event.node),
+        beforeSelect: (event) => event.node?.data?.selectable !== false && event.node?.data?.kind !== "empty",
         tooltip: (event) => {
           const data = event.node?.data || {};
           return [data.path, data.groupTitle, data.reason, data.meta].filter(Boolean).join(" · ");
@@ -4516,7 +3548,7 @@ async function runGitProjectSecretsFilterSavedChoiceUpdate(input) {
     item.disabled = true;
   });
   try {
-    const data = await gitToolsRequest("/api/applications/git/project/action/run", {
+    const data = await gitToolsStatusApi().runProjectAction({
       action_key: actionKey,
       label,
       commands: [],
@@ -4587,7 +3619,7 @@ async function runGitProjectSecretsFilterAction(button) {
     item.disabled = true;
   });
   try {
-    const data = await gitToolsRequest("/api/applications/git/project/action/run", {
+    const data = await gitToolsStatusApi().runProjectAction({
       action_key: actionKey,
       label,
       commands: [],
@@ -4719,7 +3751,7 @@ async function gitProjectArchiveRefresh(workbench) {
   const status = workbench?.querySelector("[data-git-archive-status]");
   const output = workbench?.querySelector("[data-git-archive-output]");
   if (status) status.textContent = "Running git status…";
-  const data = await gitToolsRequest("/api/applications/git/project/archive-files/status", gitProjectArchiveRuntimePayload(workbench));
+  const data = await gitToolsStatusApi().fetchArchiveFilesStatus(gitProjectArchiveRuntimePayload(workbench));
   gitProjectArchiveRenderStatus(workbench, data);
   if (output) output.textContent = data.short_status || "No changed files.";
   return data;
@@ -4745,7 +3777,7 @@ async function gitProjectArchiveRun(workbench, dryRun = true) {
     dry_run: dryRun,
   };
   if (status) status.textContent = dryRun ? "Previewing archive operation…" : "Archiving selected files…";
-  const data = await gitToolsRequest("/api/applications/git/project/archive-files", payload);
+  const data = await gitToolsStatusApi().archiveFiles(payload);
   if (output) output.textContent = JSON.stringify(data, null, 2);
   if (status) status.textContent = dryRun ? "Archive preview complete." : `Archived to ${data.archive_branch || "archive branch"}.`;
   if (!dryRun) {
@@ -4983,7 +4015,7 @@ async function gitProjectSaveGitignoreWorkbench(workbench) {
   }
   if (status) status.textContent = "Saving .gitignore…";
   try {
-    const data = await gitToolsRequest("/api/applications/git/project/gitignore/save", payload);
+    const data = await gitToolsStatusApi().saveGitignore(payload);
     const gitignoreFile = data.gitignore_file || {};
     const savedLines = Array.isArray(gitignoreFile.lines)
       ? gitignoreFile.lines.map((line = {}) => gitProjectNormalizeGitignoreLineText(line.text ?? line))
@@ -5197,190 +4229,39 @@ function renderGitProjectInspection(data) {
   renderGitProjectWizard(wizard, data);
 }
 
-const GIT_PROJECT_WIZARD_HIDDEN_ACTION_IDS = new Set([
-  "save_current_state",
-  "push_current_branch_to_local_server",
-  "inspect_configured_remotes",
-  "remove_untracked_generated_files",
-]);
-const GIT_PROJECT_WIZARD_HIDDEN_ACTION_LABELS = new Set([
-  "save current state",
-  "push current branch to local server",
-  "push to local gitea",
-  "inspect configured remotes",
-  "remove generated untracked files",
-]);
-const GIT_PROJECT_GITIGNORE_REVIEW_IDS = new Set([
-  "ignore_generated_files",
-  "ignore_local_environment_files",
-]);
-const GIT_PROJECT_GITIGNORE_REVIEW_LABELS = new Set([
-  "ignore generated files",
-  "ignore local environment files",
-]);
-const GIT_PROJECT_SECRETS_FILTER_LABELS = new Set([
-  "secrets / filter",
-  "security / secrets",
-  "review security / secrets",
-]);
 function gitProjectNormalizedWizardLabel(value = "") {
-  return String(value || "")
-    .replace(/^\s*\d+\.\s*/, "")
-    .trim()
-    .replace(/\s+/g, " ")
-    .toLowerCase();
+  return gitProjectWorkflowIntegration().normalizedWizardLabel(value);
 }
 function gitProjectWizardStepMatches(step = {}, ids = new Set(), labels = new Set()) {
-  const id = gitProjectStepId(step);
-  if (ids.has(id)) return true;
-  const visibleLabel = gitProjectNormalizedWizardLabel(gitProjectVisibleStepLabel(step));
-  const rawLabel = gitProjectNormalizedWizardLabel(step.label || "");
-  return labels.has(visibleLabel) || labels.has(rawLabel);
+  return gitProjectWorkflowIntegration().wizardStepMatches(step, ids, labels, gitProjectWorkflowHooks());
 }
 function gitProjectWizardStepShouldHideInActionQueue(step = {}) {
-  return gitProjectWizardStepMatches(
-    step,
-    GIT_PROJECT_WIZARD_HIDDEN_ACTION_IDS,
-    GIT_PROJECT_WIZARD_HIDDEN_ACTION_LABELS
-  );
+  return gitProjectWorkflowIntegration().wizardStepShouldHideInActionQueue(step, gitProjectWorkflowHooks());
 }
 function gitProjectWizardStepIsGitignoreReviewCandidate(step = {}) {
-  return gitProjectWizardStepMatches(
-    step,
-    GIT_PROJECT_GITIGNORE_REVIEW_IDS,
-    GIT_PROJECT_GITIGNORE_REVIEW_LABELS
-  );
+  return gitProjectWorkflowIntegration().wizardStepIsGitignoreReviewCandidate(step, gitProjectWorkflowHooks());
 }
 function gitProjectWizardStepIsSecretsFilterCandidate(step = {}) {
-  const id = gitProjectStepId(step);
-  if (id === "secrets_filter") return true;
-  const label = gitProjectNormalizedWizardLabel(step.label || gitProjectVisibleStepLabel(step));
-  return GIT_PROJECT_SECRETS_FILTER_LABELS.has(label);
+  return gitProjectWorkflowIntegration().wizardStepIsSecretsFilterCandidate(step, gitProjectWorkflowHooks());
 }
 function gitProjectNormalizeSecretsFilterStep(step = {}) {
-  return {
-    ...step,
-    id: "secrets_filter",
-    label: "Review Security / Secrets",
-    why: step.why || "Check selected files for API keys, usernames, credentials, tokens, private keys, generated artifacts, and risky content before committing.",
-    kind: step.kind || "safety",
-  };
+  return gitProjectWorkflowIntegration().normalizeSecretsFilterStep(step);
 }
 function gitProjectUniqueStrings(...groups) {
-  const seen = new Set();
-  const values = [];
-  groups.flat().forEach((item) => {
-    const value = String(item || "").trim();
-    if (!value || seen.has(value)) return;
-    seen.add(value);
-    values.push(value);
-  });
-  return values;
+  return gitProjectWorkflowIntegration().uniqueStrings(...groups);
 }
 function gitProjectWizardStepPaths(step = {}) {
-  return Array.isArray(step.paths) ? step.paths : [];
+  return gitProjectWorkflowIntegration().wizardStepPaths(step);
 }
 function gitProjectWizardIgnoreRules(step = {}, key = "ignore_rules") {
-  if (Array.isArray(step[key])) return step[key];
-  const groups = step.ignore_rule_groups || {};
-  if (key === "ignore_rules" && Array.isArray(groups.safe)) return groups.safe;
-  if (key === "questionable_ignore_rules" && Array.isArray(groups.questionable)) return groups.questionable;
-  return [];
+  return gitProjectWorkflowIntegration().wizardIgnoreRules(step, key);
 }
 function gitProjectMergeGitignoreReviewSteps(steps = []) {
-  const candidates = steps.filter(Boolean);
-  if (!candidates.length) return null;
-  const generatedStep = candidates.find((step) => gitProjectStepId(step) === "ignore_generated_files") || null;
-  const localEnvStep = candidates.find((step) => gitProjectStepId(step) === "ignore_local_environment_files") || null;
-  const base = generatedStep || localEnvStep || candidates[0];
-  const generatedPaths = generatedStep ? gitProjectWizardStepPaths(generatedStep) : [];
-  const localEnvPaths = localEnvStep ? gitProjectWizardStepPaths(localEnvStep) : [];
-  const uniquePaths = gitProjectUniqueStrings(
-    ...candidates.map((step) => gitProjectWizardStepPaths(step)),
-    ...candidates.map((step) => Array.isArray(step.affected_paths) ? step.affected_paths : [])
-  ).sort();
-  const generatedPathSet = new Set(generatedPaths);
-  const sharedPathCount = localEnvPaths.filter((path) => generatedPathSet.has(path)).length;
-  const safeRules = gitProjectUniqueStrings(...candidates.map((step) => gitProjectWizardIgnoreRules(step, "ignore_rules")));
-  const questionableRules = gitProjectUniqueStrings(...candidates.map((step) => gitProjectWizardIgnoreRules(step, "questionable_ignore_rules")));
-  const safePaths = gitProjectUniqueStrings(...candidates.map((step) => Array.isArray(step.safe_paths) ? step.safe_paths : []));
-  const questionablePaths = gitProjectUniqueStrings(...candidates.map((step) => Array.isArray(step.questionable_paths) ? step.questionable_paths : []));
-  const mergedStep = {
-    ...base,
-    label: ".gitignore review",
-    why: [
-      "Generated/debug files and local environment files appear to be untracked noise.",
-      "Review the combined candidate list and add appropriate patterns to .gitignore or local excludes.",
-    ].join(" "),
-    paths: uniquePaths,
-    affected_paths: uniquePaths,
-    safe_paths: safePaths,
-    questionable_paths: questionablePaths,
-    ignore_rules: safeRules,
-    questionable_ignore_rules: questionableRules,
-    ignore_rule_groups: {
-      ...(base.ignore_rule_groups || {}),
-      safe: safeRules,
-      questionable: questionableRules,
-    },
-    gitignore_review_summary: {
-      generated_path_count: generatedPaths.length,
-      local_environment_path_count: localEnvPaths.length,
-      unique_path_count: uniquePaths.length,
-      shared_path_count: sharedPathCount,
-    },
-    gitignore_path_summary: `Paths (${uniquePaths.length}; ${generatedPaths.length} generated, ${localEnvPaths.length} local/env, ${sharedPathCount} overlap)`,
-    uiReason: "Combined .gitignore review card: generated/debug and local environment candidates are shown together.",
-    tone: "actionable",
-    uiLane: "ready_action",
-    weight: Math.max(...candidates.map((step) => Number(step.weight || 0)), Number(base.weight || 0)),
-    showRunner: candidates.some((step) => step.showRunner !== false),
-  };
-  return mergedStep;
+  return gitProjectWorkflowIntegration().mergeGitignoreReviewSteps(steps);
 }
 function gitProjectWizardDisplayActions(actions = []) {
-  const gitignoreCandidates = actions.filter(gitProjectWizardStepIsGitignoreReviewCandidate);
-  const mergedGitignoreReview = gitProjectMergeGitignoreReviewSteps(gitignoreCandidates);
-  const secretsFilterStep = actions.find(gitProjectWizardStepIsSecretsFilterCandidate) || null;
-  let insertedGitignoreReview = false;
-  let insertedSecretsFilter = false;
-
-  const displayActions = actions.reduce((displayActions, step) => {
-    if (gitProjectWizardStepShouldHideInActionQueue(step)) return displayActions;
-
-    if (gitProjectWizardStepIsGitignoreReviewCandidate(step)) {
-      if (!insertedGitignoreReview && mergedGitignoreReview) {
-        displayActions.push(mergedGitignoreReview);
-        insertedGitignoreReview = true;
-      }
-      return displayActions;
-    }
-
-    if (gitProjectWizardStepIsSecretsFilterCandidate(step)) {
-      if (!insertedSecretsFilter) {
-        displayActions.push(gitProjectNormalizeSecretsFilterStep(step));
-        insertedSecretsFilter = true;
-      }
-      return displayActions;
-    }
-
-    displayActions.push(step);
-    return displayActions;
-  }, []);
-
-  if (!insertedSecretsFilter && secretsFilterStep) {
-    const insertAt = displayActions.findIndex((step) => gitProjectStepIsCommitCard(step));
-    const normalized = gitProjectNormalizeSecretsFilterStep(secretsFilterStep);
-    if (insertAt >= 0) {
-      displayActions.splice(insertAt, 0, normalized);
-    } else {
-      displayActions.push(normalized);
-    }
-  }
-
-  return displayActions;
+  return gitProjectWorkflowIntegration().wizardDisplayActions(actions, gitProjectWorkflowHooks());
 }
-
 function renderGitProjectWizard(wizard, data = {}) {
   if (!gitProjectWizardPlan) return;
   const steps = Array.isArray(wizard.steps) ? wizard.steps : [];
@@ -5640,7 +4521,7 @@ function renderGitOperationStatus(data, {renderOutput = false} = {}) {
   }
 }
 async function refreshGitOperationStatus(options = {}) {
-  const data = await gitToolsRequest("/api/applications/git/server/operation/status", {});
+  const data = await gitToolsStatusApi().fetchOperationStatus();
   renderGitOperationStatus(data, options);
   return data;
 }
@@ -5688,7 +4569,7 @@ async function cancelGitServerOperation() {
   }
   if (gitServerOutput) gitServerOutput.textContent = "Cancel requested. Waiting for the running subprocess to stop...";
   try {
-    const data = await gitToolsRequest("/api/applications/git/server/operation/cancel", {});
+    const data = await gitToolsStatusApi().cancelOperation();
     renderGitOperationStatus(data, {renderOutput: true});
     startGitOperationPolling({renderOutput: true});
   } catch (error) {
@@ -6153,7 +5034,7 @@ function renderGitShimList(data) {
 async function refreshGitShims() {
   if (!gitShimList) return;
   try {
-    const data = await gitToolsRequest("/api/applications/git/shims", {});
+    const data = await gitToolsStatusApi().fetchShims();
     renderGitShimList(data);
   } catch (error) {
     gitShimList.innerHTML = `<div class="git-tools-empty">Shim inventory failed: ${escapeHtml(error.message || error)}</div>`;
@@ -6176,7 +5057,7 @@ async function extractGitConsoleShims() {
   }
   gitConsoleOutput.textContent = "Extracting git-control.py commands into shims...";
   try {
-    const data = await gitToolsRequest("/api/applications/git/console/extract", {ai_output: aiOutput});
+    const data = await gitToolsStatusApi().extractConsoleCommands(aiOutput);
     showGitConsolePayload(data);
     if (Array.isArray(data.shims) && data.shims.length && gitShimId) {
       gitToolsSelectedShim = data.shims[0].id || "";
@@ -6199,7 +5080,7 @@ async function runGitConsoleCommand() {
   }
   gitConsoleOutput.textContent = "Running git-control command and saving its shim...";
   try {
-    const data = await gitToolsRequest("/api/applications/git/console/run", {command, repo_dir: gitToolsRepoDirValue(".")});
+    const data = await gitToolsStatusApi().runConsoleCommand({command, repoDir: gitToolsRepoDirValue(".")});
     showGitConsolePayload(data);
     if (data.shim?.id && gitShimId) {
       gitToolsSelectedShim = data.shim.id;
@@ -6218,7 +5099,7 @@ async function askGitAiForShim() {
   const prompt = gitConsoleInput.value || "";
   gitConsoleOutput.textContent = "Asking AI with ordained git-control shims loaded as context...";
   try {
-    const data = await gitToolsRequest("/api/applications/git/ai-shim", {prompt});
+    const data = await gitToolsStatusApi().createAiShim(prompt);
     showGitConsolePayload(data);
     const firstShim = Array.isArray(data.shims) && data.shims.length ? data.shims[0] : null;
     if (firstShim?.id && gitShimId) {
@@ -6236,7 +5117,7 @@ async function createGitPlanShim() {
   updateGitWorkflowSectionSummary("shim-builder", "plan shim requested");
   if (gitConsoleOutput) gitConsoleOutput.textContent = "Creating shim-first git plan...";
   try {
-    const data = await gitToolsRequest("/api/applications/git/control/plan", {prompt: gitConsoleInput?.value || ""});
+    const data = await gitToolsStatusApi().planControl(gitConsoleInput?.value || "");
     showGitConsolePayload(data);
     if (data.plan_shim?.id && gitShimId) {
       gitToolsSelectedShim = data.plan_shim.id;
@@ -6257,7 +5138,7 @@ async function viewGitShim() {
   }
   if (gitShimOutput) gitShimOutput.textContent = "Loading shim...";
   try {
-    const data = await gitToolsRequest("/api/applications/git/shim/read", {shim_id: shimId});
+    const data = await gitToolsStatusApi().readShim(shimId);
     gitToolsSelectedShim = shimId;
     if (gitShimId) gitShimId.value = shimId;
     const commands = Array.isArray(data.git_commands) && data.git_commands.length
@@ -6280,7 +5161,7 @@ async function runGitShim() {
   }
   if (gitShimOutput) gitShimOutput.textContent = "Running stored shim...";
   try {
-    const data = await gitToolsRequest("/api/applications/git/shim/run", {shim_id: shimId});
+    const data = await gitToolsStatusApi().runShim(shimId);
     gitShimOutput.textContent = JSON.stringify(data, null, 2);
     await refreshGitStatus();
     await refreshGitShims();
@@ -6297,7 +5178,7 @@ async function setGitShimOrdination(ordained) {
   }
   if (gitShimOutput) gitShimOutput.textContent = ordained ? "Ordaining shim for future AI context..." : "Removing shim from ordained AI context...";
   try {
-    const data = await gitToolsRequest("/api/applications/git/shim/ordination", {shim_id: shimId, ordained});
+    const data = await gitToolsStatusApi().setShimOrdination({shimId, ordained});
     gitShimOutput.textContent = JSON.stringify(data, null, 2);
     await refreshGitShims();
     await viewGitShim();
@@ -6314,7 +5195,7 @@ async function deleteGitShim() {
   }
   if (gitShimOutput) gitShimOutput.textContent = "Deleting shim...";
   try {
-    const data = await gitToolsRequest("/api/applications/git/shim/delete", {shim_id: shimId});
+    const data = await gitToolsStatusApi().deleteShim(shimId);
     gitToolsSelectedShim = "";
     if (gitShimId) gitShimId.value = "";
     gitShimOutput.textContent = JSON.stringify(data, null, 2);
@@ -6327,7 +5208,7 @@ async function refreshGitStatus() {
   const repoDir = gitToolsRepoDirValue(".");
   if (gitToolsStatus) gitToolsStatus.textContent = "Loading git status...";
   try {
-    const data = await gitToolsRequest("/api/applications/git/status", {repo_dir: repoDir});
+    const data = await gitToolsStatusApi().fetchStatus({repoDir});
     gitToolsLastStatus = data;
     gitServerApplyTargetPrefunk(gitServerTargetFromStatus(data), {announce: false, preserveEdited: true});
     if (gitServerExternalUrl && !gitServerExternalUrl.value.trim()) {
@@ -6348,7 +5229,7 @@ async function refreshGitStatus() {
 async function refreshGitPatches() {
   if (!gitPatchList) return;
   try {
-    const data = await gitToolsRequest("/api/applications/git/patches", {});
+    const data = await gitToolsStatusApi().fetchPatches();
     renderGitPatchGroups(data);
     if (gitDryRunName && !gitDryRunName.value && Array.isArray(data.dry_runs) && data.dry_runs.length) {
       gitDryRunName.value = data.dry_runs[0].name || "";
@@ -6366,11 +5247,11 @@ async function previewGitPatch() {
   }
   gitPatchPreviewOutput.textContent = "Loading patch preview...";
   try {
-    const data = await gitToolsRequest("/api/applications/git/patch/read", {patch_name: patchName});
+    const data = await gitToolsStatusApi().readPatch(patchName);
     gitToolsSelectedPatch = patchName;
     gitPatchPreviewOutput.textContent = data.preview || "Patch preview is empty.";
     updateGitWorkflowSectionSummary("patch-actions", `preview loaded: ${patchName}`);
-    renderGitPatchGroups(await gitToolsRequest("/api/applications/git/patches", {}));
+    renderGitPatchGroups(await gitToolsStatusApi().fetchPatches());
   } catch (error) {
     gitPatchPreviewOutput.textContent = `Patch preview failed: ${error.message || error}`;
   }
@@ -6384,7 +5265,7 @@ async function loadGitDryRun() {
   }
   gitDryRunOutput.textContent = "Loading dry-run preview...";
   try {
-    const data = await gitToolsRequest("/api/applications/git/dry-run/read", {run_name: runName});
+    const data = await gitToolsStatusApi().readDryRun(runName);
     gitToolsSelectedDryRun = runName;
     const previewFiles = Array.isArray(data.preview_files) ? data.preview_files.map((item) => item.relative_path).join("\n") : "";
     const deletions = Array.isArray(data.deletions) ? data.deletions.map((item) => item.relative_path).join("\n") : "";
@@ -6394,7 +5275,7 @@ async function loadGitDryRun() {
       deletions ? `Deletion markers:\n${deletions}` : "",
     ].filter(Boolean).join("\n\n");
     updateGitWorkflowSectionSummary("dry-run", `dry-run preview loaded: ${runName}`);
-    renderGitPatchGroups(await gitToolsRequest("/api/applications/git/patches", {}));
+    renderGitPatchGroups(await gitToolsStatusApi().fetchPatches());
   } catch (error) {
     gitDryRunOutput.textContent = `Dry-run preview failed: ${error.message || error}`;
   }
@@ -6408,7 +5289,7 @@ async function runGitPatchDryRun() {
   }
   gitDryRunOutput.textContent = "Running patch harness dry run...";
   try {
-    const data = await gitToolsRequest("/api/applications/git/patch/apply", {
+    const data = await gitToolsStatusApi().applyPatchDryRun({
       patch_name: patchName,
       target_root: gitPatchTarget.value || ".",
       dry_run: true,
@@ -6718,7 +5599,7 @@ function gitServerApplyTargetPrefunk(data, {announce = false, preserveEdited = t
 async function refreshGitServerTargetPrefunk(options = {}) {
   const repoDir = gitToolsRepoDirValue(".");
   try {
-    const data = await gitToolsRequest("/api/applications/git/server/target-prefunk", {repo_dir: repoDir});
+    const data = await gitToolsStatusApi().fetchServerTargetPrefunk({repoDir});
     gitServerApplyTargetPrefunk(data, options);
     return data;
   } catch (error) {
@@ -7017,7 +5898,7 @@ async function applyLocalGitServerRemote() {
     ["starting/verifying standalone Gitea", "checking local Gitea user", "creating/verifying repository", "configuring local-gitea remote"]
   );
   try {
-    const data = await runGitServerOperationRequest("/api/applications/git/server/setup-local", payload, [
+    const data = await runGitServerOperationRequest(gitToolsStatusApi().endpoints.serverSetupLocal, payload, [
       "Setting up local Git server...",
       `Remote: ${payload.remote}`,
       `URL: ${url}`,
@@ -7067,7 +5948,7 @@ async function pushLocalGitServerRemote() {
     ["starting/verifying standalone Gitea", "creating/verifying repository", "creating temporary push token", "running git push -u HEAD"]
   );
   try {
-    const data = await runGitServerOperationRequest("/api/applications/git/server/push-local", payload, [
+    const data = await runGitServerOperationRequest(gitToolsStatusApi().endpoints.serverPushLocal, payload, [
       "Preparing local Git server and pushing HEAD...",
       `Remote: ${payload.remote}`,
       `URL: ${url}`,
@@ -7133,7 +6014,7 @@ async function planGiteaPushMirror() {
     return;
   }
   try {
-    const data = await gitToolsRequest("/api/applications/git/server/mirror/plan", payload);
+    const data = await gitToolsStatusApi().planServerMirror(payload);
     if (gitServerOutput) gitServerOutput.textContent = JSON.stringify(data, null, 2);
     updateGitWorkflowSectionSummary("git-server", "server mirror plan ready");
   } catch (error) {
@@ -7184,7 +6065,7 @@ async function setupGiteaPushMirror() {
     ["starting/verifying local Gitea", "creating/verifying local repository", "checking existing push mirrors", "creating push mirror"]
   );
   try {
-    const data = await runGitServerOperationRequest("/api/applications/git/server/mirror/setup", payload, [
+    const data = await runGitServerOperationRequest(gitToolsStatusApi().endpoints.serverMirrorSetup, payload, [
       "Setting up local Gitea push mirror...",
       `External URL: ${externalUrl}`,
     ]);
@@ -7209,7 +6090,7 @@ async function runGitServerRemoteCommand() {
   }
   if (gitServerOutput) gitServerOutput.textContent = `Running local git command:\n${command}`;
   try {
-    const data = await runGitServerOperationRequest("/api/applications/git/console/run", {command, repo_dir: gitToolsRepoDirValue(".")}, [
+    const data = await runGitServerOperationRequest(gitToolsStatusApi().endpoints.consoleRun, {command, repo_dir: gitToolsRepoDirValue(".")}, [
       `Running local git command: ${command}`,
       `Repository path: ${gitToolsRepoDirValue(".")}`,
     ]);
@@ -7260,7 +6141,7 @@ async function refreshGitServerStatus() {
   if (!gitServerPane) return;
   if (gitServerStatus) gitServerStatus.textContent = "Loading Git server status...";
   try {
-    const data = await gitToolsRequest("/api/applications/git/server/status", {});
+    const data = await gitToolsStatusApi().fetchServerStatus();
     renderGitServerStatus(data);
   } catch (error) {
     if (gitServerStatus) gitServerStatus.textContent = `Git server status failed: ${error.message || error}`;
@@ -7273,7 +6154,7 @@ async function runGitServerAction(action) {
   if (!(await ensureGitServerDockerAvailable(`Git server ${action}`))) return;
   if (gitServerOutput) gitServerOutput.textContent = `Running Docker git server action: ${action}...`;
   try {
-    const data = await runGitServerOperationRequest("/api/applications/git/server/action", {action}, [
+    const data = await runGitServerOperationRequest(gitToolsStatusApi().endpoints.serverAction, {action}, [
       `Running Docker git server action: ${action}`,
     ]);
     if (!data) return;

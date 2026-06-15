@@ -13,6 +13,8 @@ SCRIPTS = WEB_APP / "scripts"
 def _run_concern_detector_on_project() -> dict:
     core = SCRIPTS / "mcel-concern-core.js"
     files = [
+        SCRIPTS / "git-tools-project-workflow.js",
+        SCRIPTS / "git-tools-file-basket.js",
         SCRIPTS / "task-manager.js",
         SCRIPTS / "file-explorer.js",
         SCRIPTS / "website-builder.js",
@@ -85,7 +87,7 @@ def test_mcel_concern_detector_finds_real_project_concerns() -> None:
     ids = {concern["id"] for concern in report["concerns"]}
 
     assert report["projectId"] == "main_computer_test.real"
-    assert report["analyzedFileCount"] == 5
+    assert report["analyzedFileCount"] == 7
     assert report["detectedConcernCount"] >= 6
     assert report["severeContractGapCount"] >= 3
     assert report["canDriveMcelContracts"] is True
@@ -114,7 +116,7 @@ def test_mcel_concern_detector_maps_file_basket_to_mvc_contract_and_toolkit() ->
     assert "candidate file model" in labels
     assert "typed fields collapsed into node title" in labels
     assert "selected file output extraction" in labels
-    assert "view adapter/wunderbaum initialization" in labels
+    assert "preserved view adapter source" in labels
 
     toolkit = set(file_basket["recommendedToolkit"])
     assert "control.selection.tristate" in toolkit

@@ -12,7 +12,6 @@ SCRIPTS = WEB_APP / "scripts"
 
 def _run_file_basket_node() -> dict:
     model = SCRIPTS / "mcel-file-basket-model.js"
-    controller = SCRIPTS / "mcel-file-basket-controller.js"
     workbench = SCRIPTS / "mcel-project-concern-workbench.js"
     toolkit = SCRIPTS / "mcel-toolkit-core.js"
     concern = SCRIPTS / "mcel-concern-core.js"
@@ -53,6 +52,8 @@ def _run_file_basket_node() -> dict:
         }
     }
     files = [
+        SCRIPTS / "git-tools-project-workflow.js",
+        SCRIPTS / "git-tools-file-basket.js",
         SCRIPTS / "task-manager.js",
         SCRIPTS / "file-explorer.js",
         SCRIPTS / "website-builder.js",
@@ -65,7 +66,7 @@ const vm = require("vm");
 globalThis.window = globalThis;
 vm.runInThisContext(fs.readFileSync({json.dumps(str(model))}, "utf8"), {{filename: "mcel-file-basket-model.js"}});
 const review = {json.dumps(sample_review)};
-const fileBasket = globalThis.McelFileBasketModel.buildFileBasketModel(review, {{surfaceId: "task-manager.file-basket"}});
+const fileBasket = globalThis.McelFileBasketModel.buildFileBasketModel(review, {{surfaceId: "git-tools.file-basket"}});
 const rootSelection = globalThis.McelFileBasketModel.toggleDirectorySelection(fileBasket, [], "");
 const srcSelection = globalThis.McelFileBasketModel.toggleDirectorySelection(fileBasket, [], "main_computer/web/applications/scripts");
 const blockedSelection = globalThis.McelFileBasketModel.toggleFileSelection(fileBasket, [], "runtime/secrets.env", true);
@@ -74,22 +75,6 @@ const rootSummary = globalThis.McelFileBasketModel.selectionSummary(fileBasket, 
 const titleOnly = globalThis.McelFileBasketModel.resolveViewEligibility(fileBasket, "title-only-tree");
 const treegrid = globalThis.McelFileBasketModel.resolveViewEligibility(fileBasket, "contract-treegrid");
 const readiness = globalThis.McelFileBasketModel.buildReadinessReport();
-
-vm.runInThisContext(fs.readFileSync({json.dumps(str(controller))}, "utf8"), {{filename: "mcel-file-basket-controller.js"}});
-const fileBasketController = globalThis.McelFileBasketController.createFileBasketController(fileBasket, {{selectedPaths: []}});
-const controllerRootResult = fileBasketController.apply("set-directory-selection", {{path: "", selected: true}});
-const controllerSrcResult = fileBasketController.apply("set-directory-selection", {{path: "main_computer/web/applications/scripts", selected: false}});
-const controllerBlockedResult = fileBasketController.apply("set-file-selection", {{path: "runtime/secrets.env", selected: true}});
-const controllerMixedState = globalThis.McelFileBasketController.deriveDirectorySelectionState(
-  fileBasket,
-  ["main_computer/web/applications/scripts/task-manager.js"],
-  ""
-);
-const controllerReport = globalThis.McelFileBasketController.selectionReport(fileBasket, [
-  "main_computer/web/applications/scripts/task-manager.js",
-  "runtime/secrets.env"
-]);
-const controllerReadiness = globalThis.McelFileBasketController.buildReadinessReport();
 
 vm.runInThisContext(fs.readFileSync({json.dumps(str(toolkit))}, "utf8"), {{filename: "mcel-toolkit-core.js"}});
 vm.runInThisContext(fs.readFileSync({json.dumps(str(concern))}, "utf8"), {{filename: "mcel-concern-core.js"}});
@@ -100,7 +85,8 @@ const projectFiles = {json.dumps([str(path) for path in files])}.map((path) => {
 const projectWorkbench = globalThis.McelProjectConcernWorkbench.buildProjectConcernWorkbench(projectFiles, {{
   projectId: "main_computer_test.file-basket-model"
 }});
-const fileBasketOrder = globalThis.McelProjectConcernWorkbench.getWorkOrder(projectWorkbench, "task-manager.file-basket");
+const fileBasketOrder = globalThis.McelProjectConcernWorkbench.getWorkOrder(projectWorkbench, "git-tools.file-basket");
+const legacyFileBasketOrder = globalThis.McelProjectConcernWorkbench.getWorkOrder(projectWorkbench, "task-manager.file-basket");
 
 console.log(JSON.stringify({{
   fileBasket,
@@ -112,13 +98,8 @@ console.log(JSON.stringify({{
   titleOnly,
   treegrid,
   readiness,
-  controllerRootResult,
-  controllerSrcResult,
-  controllerBlockedResult,
-  controllerMixedState,
-  controllerReport,
-  controllerReadiness,
-  fileBasketOrder
+  fileBasketOrder,
+  legacyFileBasketOrder
 }}));
 """
     result = subprocess.run(["node", "-e", node_script], check=True, text=True, capture_output=True)
@@ -127,8 +108,8 @@ console.log(JSON.stringify({{
 
 def _run_task_manager_file_basket_integration_node() -> dict:
     model = SCRIPTS / "mcel-file-basket-model.js"
-    controller = SCRIPTS / "mcel-file-basket-controller.js"
     task_manager = SCRIPTS / "task-manager.js"
+    git_file_basket = SCRIPTS / "git-tools-file-basket.js"
     sample_review = {
         "candidate_groups": {
             "selected_by_default": [
@@ -185,10 +166,10 @@ globalThis.escapeHtml = (value) => String(value ?? "")
   .replace(/"/g, "&quot;")
   .replace(/'/g, "&#039;");
 vm.runInThisContext(fs.readFileSync({json.dumps(str(model))}, "utf8"), {{filename: "mcel-file-basket-model.js"}});
-vm.runInThisContext(fs.readFileSync({json.dumps(str(controller))}, "utf8"), {{filename: "mcel-file-basket-controller.js"}});
+vm.runInThisContext(fs.readFileSync({json.dumps(str(git_file_basket))}, "utf8"), {{filename: "git-tools-file-basket.js"}});
 
 const taskText = fs.readFileSync({json.dumps(str(task_manager))}, "utf8");
-const start = taskText.indexOf("function gitProjectCommitGroups");
+const start = taskText.indexOf("function gitProjectCommitFileBasketIntegration");
 const end = taskText.indexOf("function gitProjectCommitSelectedReadiness");
 if (start < 0 || end < 0 || end <= start) {{
   throw new Error("Could not isolate Task Manager file-basket integration helpers.");
@@ -244,17 +225,6 @@ const adapterReport = gitProjectCommitSelectionAdapterReport(workbench, [
   "src/secrets.env",
   "build/cache.tmp"
 ]);
-const controllerCommand = gitProjectCommitApplySelectionCommand(workbench, "set-directory-selection", {{
-  path: "src",
-  selected: true
-}}, []);
-const controllerBlockedCommand = gitProjectCommitApplySelectionCommand(workbench, "set-file-selection", {{
-  path: "src/secrets.env",
-  selected: true
-}}, []);
-const controllerCanSelectFile = gitProjectCommitCanSelectTreeNode(workbench, {{data: {{kind: "file", path: "src/app.js", selectable: true}}}});
-const controllerCanSelectBlocked = gitProjectCommitCanSelectTreeNode(workbench, {{data: {{kind: "file", path: "src/secrets.env", selectable: false}}}});
-const controllerCanSelectDirectory = gitProjectCommitCanSelectTreeNode(workbench, {{data: {{kind: "dir", path: "src", selectable: true}}}});
 const reviewCandidatePaths = gitProjectCommitReviewCandidatePaths(review);
 
 console.log(JSON.stringify({{
@@ -267,11 +237,6 @@ console.log(JSON.stringify({{
   blockedAttempt,
   adapterSelected,
   adapterReport,
-  controllerCommand,
-  controllerBlockedCommand,
-  controllerCanSelectFile,
-  controllerCanSelectBlocked,
-  controllerCanSelectDirectory,
   reviewCandidatePaths,
   basketHtmlIncludesModel: basketHtml.includes("data-git-commit-file-basket-model"),
   basketHtmlModelReady: basketHtml.includes('data-git-commit-file-basket-model-ready="true"')
@@ -284,16 +249,16 @@ console.log(JSON.stringify({{
 def test_mcel_file_basket_model_is_loaded_before_task_manager_and_workbench() -> None:
     html = (ROOT / "main_computer" / "web" / "applications.html").read_text(encoding="utf-8")
     model = (SCRIPTS / "mcel-file-basket-model.js").read_text(encoding="utf-8")
-    controller = (SCRIPTS / "mcel-file-basket-controller.js").read_text(encoding="utf-8")
     task_manager = (SCRIPTS / "task-manager.js").read_text(encoding="utf-8")
+    git_file_basket = (SCRIPTS / "git-tools-file-basket.js").read_text(encoding="utf-8")
     elements = (SCRIPTS / "mcel-elements-core.js").read_text(encoding="utf-8")
     acid = (SCRIPTS / "mcel-element-acid-test.js").read_text(encoding="utf-8")
     css = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
 
     assert "<!-- @include applications/scripts/mcel-file-basket-model.js -->" in html
-    assert "<!-- @include applications/scripts/mcel-file-basket-controller.js -->" in html
-    assert html.index("mcel-file-basket-model.js") < html.index("mcel-file-basket-controller.js")
-    assert html.index("mcel-file-basket-controller.js") < html.index("task-manager.js")
+    assert "<!-- @include applications/scripts/git-tools-project-workflow.js -->" in html
+    assert "<!-- @include applications/scripts/git-tools-file-basket.js -->" in html
+    assert html.index("mcel-file-basket-model.js") < html.index("git-tools-project-workflow.js") < html.index("git-tools-file-basket.js") < html.index("task-manager.js")
     assert html.index("mcel-file-basket-model.js") < html.index("mcel-project-concern-workbench.js")
 
     assert "global.McelFileBasketModel" in model
@@ -303,27 +268,22 @@ def test_mcel_file_basket_model_is_loaded_before_task_manager_and_workbench() ->
     assert "selectedFilesAreSourceOfTruth" in model
     assert "title-only-tree" in model
 
-    assert "global.McelFileBasketController" in controller
-    assert "createFileBasketController" in controller
-    assert "applySelectionCommand" in controller
-    assert "set-directory-selection" in controller
-    assert "blockedCommandRejected" in controller
-
+    assert "global.GitToolsFileBasket" in git_file_basket
+    assert "sourceFile: SOURCE_FILE" in git_file_basket
+    assert "function treeSource" in git_file_basket
+    assert "function selectedFilesFromWorkbench" in git_file_basket
+    assert "data-git-commit-file-basket-model" in git_file_basket
     assert "function gitProjectCommitFileBasketModel" in task_manager
-    assert "adapter.buildFileBasketModel" in task_manager
+    assert "GitToolsFileBasket" in task_manager
+    assert "adapter.buildFileBasketModel" not in task_manager
     assert "function gitProjectCommitTreeSourceFromModel" in task_manager
-    assert "data-git-commit-file-basket-model" in task_manager
     assert "gitProjectCommitAdapterSelectedOutput" in task_manager
     assert "gitProjectCommitSelectionAdapterReport" in task_manager
-    assert "function gitProjectCommitFileBasketControllerAdapter" in task_manager
-    assert "gitProjectCommitApplySelectionCommand" in task_manager
-    assert "gitProjectCommitCanSelectTreeNode" in task_manager
-    assert "gitCommitSelectionController" in task_manager
 
     assert "element.resource.file-basket-model" in elements
     assert "File Basket Model Adapter" in elements
     assert "renderFileBasketModelProof" in acid
-    assert "Task Manager File Basket now has a pure MCEL model adapter." in acid
+    assert "Git Tools File Basket now has a pure MCEL model adapter." in acid
     assert ".mcel-file-basket-model-proof" in css
 
 
@@ -333,7 +293,11 @@ def test_file_basket_model_preserves_fields_hierarchy_and_selection_contract() -
 
     assert report["readiness"]["ready"] is True
     assert model["contractId"] == "pattern.file-basket"
-    assert model["surfaceId"] == "task-manager.file-basket"
+    assert model["surfaceId"] == "git-tools.file-basket"
+    assert model["canonicalSurfaceId"] == "git-tools.file-basket"
+    assert model["ownerApp"] == "git-tools"
+    assert model["legacySurfaceIds"] == ["task-manager.file-basket"]
+    assert model["ownershipStatus"] == "model-adapter-ready"
 
     fields = {field["id"] for field in model["fields"]}
     assert {"path", "status", "bucket", "risk", "reason", "modified", "blockedReason"} <= fields
@@ -363,30 +327,25 @@ def test_file_basket_model_preserves_fields_hierarchy_and_selection_contract() -
     assert "multi-column-fields" in report["titleOnly"]["missingCapabilities"]
     assert model["viewContract"]["titleOnlyTreeRejected"] is True
 
-    assert report["controllerReadiness"]["ready"] is True
-    assert report["controllerRootResult"]["selectedPaths"] == model["selectablePaths"]
-    assert report["controllerRootResult"]["summary"]["selectedBlocked"] == 0
-    assert report["controllerSrcResult"]["selectedPaths"] == ["tests/test_mcel_file_basket_model.py"]
-    assert report["controllerBlockedResult"]["ok"] is False
-    assert report["controllerBlockedResult"]["summary"]["selectedBlocked"] == 0
-    assert report["controllerMixedState"] == "mixed"
-    assert report["controllerReport"]["controllerId"] == "controller.file-basket-selection"
-    assert report["controllerReport"]["selectedPaths"] == ["main_computer/web/applications/scripts/task-manager.js"]
-    assert report["controllerReport"]["summary"]["invalidSelectedPaths"] == ["runtime/secrets.env"]
-
 
 def test_project_workbench_marks_file_basket_first_safe_patch_as_backed_by_adapter() -> None:
     report = _run_file_basket_node()
     order = report["fileBasketOrder"]
 
-    assert order["id"] == "task-manager.file-basket"
+    assert order["id"] == "git-tools.file-basket"
+    assert report["legacyFileBasketOrder"]["id"] == "git-tools.file-basket"
+    assert order["app"] == "git-tools"
+    assert order["sourceFile"].endswith("git-tools-file-basket.js")
+    assert order["legacySurfaceIds"] == ["task-manager.file-basket"]
+    assert order["ownershipStatus"] == "extracted-git-tools-boundary"
     assert order["targetContract"] == "pattern.file-basket"
     assert order["implementationStatus"]["status"] == "adapter-ready"
     assert order["implementationStatus"]["firstSafePatchBacked"] is True
     assert order["implementationStatus"]["module"] == "McelFileBasketModel"
     assert any("title-only tree rejected" in proof for proof in order["implementationStatus"]["proof"])
 
-    assert "Create a pure model adapter" in order["firstSafeMigration"][0]
+    assert "git-tools-file-basket.js" in order["firstSafeMigration"][0]
+    assert any("FileBasketModel adapter" in step for step in order["migrationPhases"])
     assert "blocked rows visible but not selectable" in order["safetyContract"]
 
 
@@ -395,7 +354,11 @@ def test_task_manager_file_basket_uses_adapter_for_tree_source_and_selected_outp
     model = report["model"]
 
     assert model["contractId"] == "pattern.file-basket"
-    assert model["surfaceId"] == "task-manager.file-basket"
+    assert model["surfaceId"] == "git-tools.file-basket"
+    assert model["canonicalSurfaceId"] == "git-tools.file-basket"
+    assert model["ownerApp"] == "git-tools"
+    assert model["legacySurfaceIds"] == ["task-manager.file-basket"]
+    assert model["ownershipStatus"] == "extracted-git-tools-boundary"
     assert report["basketHtmlIncludesModel"] is True
     assert report["basketHtmlModelReady"] is True
 
@@ -422,22 +385,9 @@ def test_task_manager_file_basket_uses_adapter_for_tree_source_and_selected_outp
     assert report["blockedAttempt"] == []
     assert report["adapterSelected"] == ["src/app.js", "src/feature/needs-review.js"]
     assert report["adapterReport"]["enabled"] is True
-    assert report["adapterReport"]["controller"] == "McelFileBasketController"
     assert report["adapterReport"]["selectedPaths"] == ["src/app.js"]
     assert report["adapterReport"]["summary"]["selectedBlocked"] == 0
     assert set(report["adapterReport"]["summary"]["invalidSelectedPaths"]) == {"build/cache.tmp", "src/secrets.env"}
-
-    assert report["controllerCommand"]["selectedPaths"] == [
-        "src/app.js",
-        "src/feature/needs-review.js",
-        "src/lib/util.js",
-    ]
-    assert report["controllerCommand"]["summary"]["selectedBlocked"] == 0
-    assert report["controllerBlockedCommand"]["ok"] is False
-    assert report["controllerBlockedCommand"]["selectedPaths"] == []
-    assert report["controllerCanSelectFile"] is True
-    assert report["controllerCanSelectBlocked"] is False
-    assert report["controllerCanSelectDirectory"] is True
 
     assert report["reviewCandidatePaths"] == [
         "build/cache.tmp",
