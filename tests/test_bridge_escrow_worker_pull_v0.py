@@ -220,7 +220,7 @@ class BridgeEscrowWorkerPullV0Tests(unittest.TestCase):
         polled = post_json(f"{hub_base}/api/hub/v1/workers/poll", {"worker_node_id": "pull-worker-02"})
         self.assertIsNone(polled["lease"])
 
-    def test_expired_lease_requeues_request_and_old_lease_is_rejected(self) -> None:
+    def test_expired_worker_pull_lease_fails_request_releases_hold_and_rejects_late_result(self) -> None:
         hub, hub_base = self._start_hub(credits_per_request=5)
         hub.credit_ledger.issue(account_id="requester", credits=100, memo="fund")
         post_json(
@@ -266,10 +266,21 @@ class BridgeEscrowWorkerPullV0Tests(unittest.TestCase):
         )
         self.assertEqual(expired_result["_http_status"], 400)
 
+        final_status = get_json(f"{hub_base}/api/hub/v1/requests/{first['request_id']}")["request"]
+        self.assertEqual(final_status["state"], "failed")
+        self.assertEqual(final_status["terminal_reason"], "worker_lost_timeout")
+        self.assertFalse(final_status.get("charge_id"))
+
+        charges = get_json(f"{hub_base}/api/hub/v1/requests/{first['request_id']}/charges")
+        self.assertEqual(charges["charge_count"], 0)
+
+        events = get_json(f"{hub_base}/api/hub/v1/requests/{first['request_id']}/events")["events"]
+        event_types = [event["type"] for event in events]
+        self.assertIn("payment.hold.released", event_types)
+        self.assertIn("request.failed", event_types)
+
         second = post_json(f"{hub_base}/api/hub/v1/workers/poll", {"worker_node_id": "pull-worker-03"})["lease"]
-        self.assertIsInstance(second, dict)
-        self.assertEqual(second["request_id"], first["request_id"])
-        self.assertNotEqual(second["lease_id"], first["lease_id"])
+        self.assertIsNone(second)
 
 
 if __name__ == "__main__":

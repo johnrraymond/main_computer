@@ -65,6 +65,10 @@ def test_stress_parser_defaults_to_autostart_failover_and_chatter(tmp_path: Path
     assert config.mockchain is False
     assert config.dev_chain_payout_admin_wallet_count == 4
     assert config.node_reconnect_events == 4
+    assert config.worker_connection_recover_events == 2
+    assert config.worker_connection_lost_events == 2
+    assert config.worker_connection_lease_seconds == 1.0
+    assert config.worker_connection_lost_after_seconds == 1.25
     assert config.random_bridge_funding_events == 3
     assert config.random_bridge_payout_events == 3
     assert config.random_bridge_failed_payout_events == 1
@@ -108,6 +112,14 @@ def test_stress_parser_allows_bridge_random_event_overrides(tmp_path: Path) -> N
             str(tmp_path),
             "--node-reconnect-events",
             "6",
+            "--worker-connection-recover-events",
+            "3",
+            "--worker-connection-lost-events",
+            "2",
+            "--worker-connection-lease-seconds",
+            "1.5",
+            "--worker-connection-lost-after-seconds",
+            "1.75",
             "--random-bridge-funding-events",
             "5",
             "--random-bridge-payout-events",
@@ -119,6 +131,10 @@ def test_stress_parser_allows_bridge_random_event_overrides(tmp_path: Path) -> N
     config = _config_from_args(args)
 
     assert config.node_reconnect_events == 6
+    assert config.worker_connection_recover_events == 3
+    assert config.worker_connection_lost_events == 2
+    assert config.worker_connection_lease_seconds == 1.5
+    assert config.worker_connection_lost_after_seconds == 1.75
     assert config.random_bridge_funding_events == 5
     assert config.random_bridge_payout_events == 4
     assert config.random_bridge_failed_payout_events == 2
