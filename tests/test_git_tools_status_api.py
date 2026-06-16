@@ -171,15 +171,18 @@ def test_git_tools_status_api_request_contract_and_helpers() -> None:
 def test_task_manager_delegates_git_api_boundary_to_status_api() -> None:
     task_manager = (SCRIPTS / "task-manager.js").read_text(encoding="utf-8")
     status_api = (SCRIPTS / "git-tools-status-api.js").read_text(encoding="utf-8")
+    server_panel = (SCRIPTS / "git-tools-server-panel.js").read_text(encoding="utf-8")
+    patch_inventory = (SCRIPTS / "git-tools-patch-inventory.js").read_text(encoding="utf-8")
 
     assert "function gitToolsRequest(path, payload = {})" in task_manager
     assert "return gitToolsStatusApi().request(path, payload);" in task_manager
     assert "return fetch(path" not in task_manager
     assert "gitToolsStatusApi().fetchStatus({repoDir})" in task_manager
-    assert "gitToolsStatusApi().fetchPatches()" in task_manager
-    assert "gitToolsStatusApi().readPatch(patchName)" in task_manager
-    assert "gitToolsStatusApi().applyPatchDryRun({" in task_manager
-    assert "gitToolsStatusApi().fetchServerStatus()" in task_manager
+    assert "gitToolsStatusApi().fetchPatches()" in patch_inventory
+    assert "gitToolsStatusApi().readPatch(patchName)" in patch_inventory
+    assert "gitToolsStatusApi().applyPatchDryRun({" in patch_inventory
+    assert "gitToolsStatusApi().fetchServerStatus()" in server_panel
+    assert "gitToolsStatusApi().endpoints.serverAction" in server_panel
 
     assert '"/api/applications/git/status"' not in task_manager
     assert '"/api/applications/git/patches"' not in task_manager

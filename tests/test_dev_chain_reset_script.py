@@ -753,3 +753,36 @@ def test_setup_log_uses_operator_visible_prefix(capsys) -> None:
     reset.setup_log("unit setup phase")
 
     assert capsys.readouterr().out == "SETUP: unit setup phase\n"
+
+
+def test_private_key_env_resolves_deployer_key(monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+    monkeypatch.setenv("UNIT_DEPLOYER_PRIVATE_KEY", "0x" + ("11" * 32))
+    parser = reset.build_parser()
+    args = parser.parse_args(["--dry-run", "--private-key-env", "UNIT_DEPLOYER_PRIVATE_KEY"])
+
+    reset.validate_args(args)
+
+    assert args.private_key == "0x" + ("11" * 32)
+
+
+def test_private_key_env_rejects_direct_private_key_conflict(monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+    monkeypatch.setenv("UNIT_DEPLOYER_PRIVATE_KEY", "0x" + ("11" * 32))
+    parser = reset.build_parser()
+    args = parser.parse_args(
+        [
+            "--dry-run",
+            "--private-key",
+            "0x" + ("22" * 32),
+            "--private-key-env",
+            "UNIT_DEPLOYER_PRIVATE_KEY",
+        ]
+    )
+
+    try:
+        reset.validate_args(args)
+    except ValueError as exc:
+        assert "--private-key and --private-key-env" in str(exc)
+    else:  # pragma: no cover - failure clarity
+        raise AssertionError("expected private key source conflict")
