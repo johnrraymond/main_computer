@@ -16,7 +16,10 @@ is also written as ``coolify/mail_ingest.py`` for review and local testing.
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
+import getpass
+import hashlib
 import json
 import os
 import re
@@ -24,6 +27,7 @@ import secrets
 import sys
 import textwrap
 import urllib.parse
+from datetime import datetime, timezone
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -36,6 +40,21 @@ DEFAULT_SECRET_NAME = "MAIL_INGEST_SECRET"
 DEFAULT_INGEST_PATH = "/inbound/cloudflare-email"
 DEFAULT_LISTEN_PORT = 8080
 DEFAULT_MAX_MESSAGE_BYTES = 25 * 1024 * 1024
+USER_REGISTRY_SCHEMA = "main-computer.great-library-mail-users.v1"
+USER_REGISTRY_FILE = "mail-users.json"
+PASSWORD_HASH_ALGORITHM = "pbkdf2_sha256"
+PASSWORD_HASH_ITERATIONS = 600_000
+PASSWORD_MIN_LENGTH = 12
+RESERVED_MAIL_LOCALS = (
+    "admin",
+    "root",
+    "postmaster",
+    "abuse",
+    "security",
+    "info",
+    "support",
+    "billing",
+)
 
 TOOL_DIR = Path(__file__).resolve().parent
 if str(TOOL_DIR) not in sys.path:
@@ -306,6 +325,7 @@ def contract_dict(plan: CloudflareMailWorkerPlan, routing: dict[str, Any]) -> di
         "secret_binding": plan.secret_binding,
         "secret_header": plan.secret_header,
         "secret_file": "secrets/mail_ingest_secret",
+        "user_registry_file": USER_REGISTRY_FILE,
         "coolify": {
             "service_name": plan.service_name,
             "compose_project": plan.compose_project,
@@ -484,13 +504,16 @@ def write_prepare_outputs(
     (cloudflare_dir / "wrangler-commands.md").write_text(render_wrangler_commands(plan), encoding="utf-8")
 
     contract = contract_dict(plan, routing)
-    (out_dir / "mail-worker-contract.json").write_text(json.dumps(contract, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    contract_path = out_dir / "mail-worker-contract.json"
+    contract_path.write_text(json.dumps(contract, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    user_registry_path = ensure_mail_user_registry_file(contract, out_dir)
 
     return {
         "ok": True,
         "out": str(out_dir),
-        "contract": str(out_dir / "mail-worker-contract.json"),
+        "contract": str(contract_path),
         "secret_file": str(secret_path),
+        "user_registry_file": str(user_registry_path),
         "domain": plan.domain,
         "worker_name": plan.worker_name,
         "ingest_url": plan.ingest_url,
@@ -609,6 +632,290 @@ def resolve_contract_secret(
     if not value:
         raise WorkerPlanError(f"Contract secret file is empty: {path}")
     return value, f"contract:{relative.as_posix()}", path
+
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def normalize_mail_local(value: str, *, field: str = "local part", allow_reserved: bool = False) -> str:
+    local = str(value or "").strip().lower()
+    if not local:
+        raise WorkerPlanError(f"Missing {field}.")
+    if "@" in local:
+        raise WorkerPlanError(f"{field} must be a local part, not a full email address.")
+    if not re.match(r"^[a-z0-9][a-z0-9._-]{0,62}$", local):
+        raise WorkerPlanError(
+            f"Invalid {field}: {value!r}. Use 1-63 lowercase letters, numbers, dots, underscores, or hyphens."
+        )
+    if not allow_reserved and local in RESERVED_MAIL_LOCALS:
+        reserved = ", ".join(RESERVED_MAIL_LOCALS)
+        raise WorkerPlanError(f"Reserved {field}: {local!r}. Reserved names: {reserved}.")
+    return local
+
+
+def registry_relative_path(contract: dict[str, Any]) -> Path:
+    return _safe_relative_contract_path(str(contract.get("user_registry_file") or USER_REGISTRY_FILE))
+
+
+def user_registry_path_from_contract(contract: dict[str, Any], contract_dir: Path) -> Path:
+    return contract_dir / registry_relative_path(contract)
+
+
+def empty_mail_user_registry(domain: str) -> dict[str, Any]:
+    clean_domain = normalize_domain(domain)
+    return {
+        "schema": USER_REGISTRY_SCHEMA,
+        "domain": clean_domain,
+        "users": {},
+        "aliases": {},
+        "reserved_locals": list(RESERVED_MAIL_LOCALS),
+        "created_at": utc_now(),
+        "updated_at": utc_now(),
+    }
+
+
+def normalize_mail_user_registry(registry: dict[str, Any], *, domain: str) -> dict[str, Any]:
+    if not isinstance(registry, dict):
+        raise WorkerPlanError("Mail user registry JSON must be an object.")
+    schema = str(registry.get("schema") or "")
+    if schema != USER_REGISTRY_SCHEMA:
+        raise WorkerPlanError(f"Unsupported mail user registry schema: {schema!r}")
+    clean_domain = normalize_domain(domain)
+    registry_domain = normalize_domain(str(registry.get("domain") or clean_domain), field="registry domain")
+    if registry_domain != clean_domain:
+        raise WorkerPlanError(f"Mail user registry domain {registry_domain!r} does not match contract domain {clean_domain!r}.")
+    registry.setdefault("domain", clean_domain)
+    users = registry.get("users")
+    aliases = registry.get("aliases")
+    if not isinstance(users, dict):
+        raise WorkerPlanError("Mail user registry field users must be an object.")
+    if not isinstance(aliases, dict):
+        raise WorkerPlanError("Mail user registry field aliases must be an object.")
+    registry.setdefault("reserved_locals", list(RESERVED_MAIL_LOCALS))
+    registry.setdefault("created_at", utc_now())
+    registry.setdefault("updated_at", utc_now())
+    return registry
+
+
+def load_mail_user_registry(contract: dict[str, Any], contract_dir: Path) -> tuple[dict[str, Any], Path, bool]:
+    domain = _contract_str(contract, "domain")
+    path = user_registry_path_from_contract(contract, contract_dir)
+    if not path.exists():
+        return empty_mail_user_registry(domain), path, False
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise WorkerPlanError(f"Mail user registry is not valid JSON: {path}") from exc
+    return normalize_mail_user_registry(raw, domain=domain), path, True
+
+
+def save_mail_user_registry(registry: dict[str, Any], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    registry["updated_at"] = utc_now()
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(json.dumps(registry, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def ensure_mail_user_registry_file(contract: dict[str, Any], contract_dir: Path) -> Path:
+    registry, path, existed = load_mail_user_registry(contract, contract_dir)
+    if not existed:
+        save_mail_user_registry(registry, path)
+    return path
+
+
+def password_hash(password: str, *, iterations: int = PASSWORD_HASH_ITERATIONS) -> str:
+    raw = str(password)
+    if len(raw) < PASSWORD_MIN_LENGTH:
+        raise WorkerPlanError(f"Password must be at least {PASSWORD_MIN_LENGTH} characters.")
+    if "\x00" in raw or "\n" in raw or "\r" in raw:
+        raise WorkerPlanError("Password must not contain NUL or newline characters.")
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", raw.encode("utf-8"), salt, iterations)
+    salt_b64 = base64.urlsafe_b64encode(salt).decode("ascii").rstrip("=")
+    digest_b64 = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    return f"{PASSWORD_HASH_ALGORITHM}${iterations}${salt_b64}${digest_b64}"
+
+
+def read_password_for_cli(args: argparse.Namespace) -> str:
+    explicit = str(getattr(args, "password", "") or "")
+    if explicit:
+        return explicit
+
+    env_name = str(getattr(args, "password_env", "") or "").strip()
+    if env_name:
+        value = os.environ.get(env_name, "")
+        if value:
+            return value
+        raise WorkerPlanError(f"Environment variable {env_name!r} is empty or unset.")
+
+    file_name = str(getattr(args, "password_file", "") or "").strip()
+    if file_name:
+        path = Path(file_name)
+        value = path.read_text(encoding="utf-8").strip()
+        if value:
+            return value
+        raise WorkerPlanError(f"Password file is empty: {path}")
+
+    first = getpass.getpass("New mail password: ")
+    second = getpass.getpass("Confirm new mail password: ")
+    if first != second:
+        raise WorkerPlanError("Passwords did not match.")
+    return first
+
+
+def user_record_public(record: dict[str, Any]) -> dict[str, Any]:
+    public = dict(record)
+    password_hash_value = str(public.pop("password_hash", "") or "")
+    public["password_hash_set"] = bool(password_hash_value)
+    return public
+
+
+def registry_users_list(registry: dict[str, Any]) -> list[dict[str, Any]]:
+    return [user_record_public(registry["users"][local]) for local in sorted(registry["users"])]
+
+
+def registry_aliases_list(registry: dict[str, Any]) -> list[dict[str, Any]]:
+    return [dict(registry["aliases"][local]) for local in sorted(registry["aliases"])]
+
+
+def registry_result(registry: dict[str, Any], path: Path) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "schema": registry.get("schema"),
+        "domain": registry.get("domain"),
+        "registry_file": str(path),
+        "users": registry_users_list(registry),
+        "aliases": registry_aliases_list(registry),
+    }
+
+
+def create_mail_user(args: argparse.Namespace) -> dict[str, Any]:
+    contract, contract_dir = load_mail_worker_contract(args.contract)
+    registry, path, _ = load_mail_user_registry(contract, contract_dir)
+    domain = _contract_str(contract, "domain")
+    local = normalize_mail_local(args.local, field="user local part")
+    users = registry["users"]
+    aliases = registry["aliases"]
+    if local in users:
+        raise WorkerPlanError(f"Mail user already exists: {local}")
+    if local in aliases:
+        raise WorkerPlanError(f"Cannot create user {local!r}; that local part is already an alias.")
+    now = utc_now()
+    display_name = str(getattr(args, "display_name", "") or "").strip() or local
+    users[local] = {
+        "local": local,
+        "address": f"{local}@{domain}",
+        "display_name": display_name,
+        "enabled": True,
+        "mail_enabled": True,
+        "password_hash": "",
+        "password_set_at": "",
+        "aliases": [],
+        "created_at": now,
+        "updated_at": now,
+    }
+    save_mail_user_registry(registry, path)
+    return {
+        "ok": True,
+        "action": "user-add",
+        "domain": domain,
+        "registry_file": str(path),
+        "user": user_record_public(users[local]),
+    }
+
+
+def list_mail_users(args: argparse.Namespace) -> dict[str, Any]:
+    contract, contract_dir = load_mail_worker_contract(args.contract)
+    registry, path, _ = load_mail_user_registry(contract, contract_dir)
+    return registry_result(registry, path)
+
+
+def set_mail_user_password(args: argparse.Namespace) -> dict[str, Any]:
+    contract, contract_dir = load_mail_worker_contract(args.contract)
+    registry, path, _ = load_mail_user_registry(contract, contract_dir)
+    local = normalize_mail_local(args.local, field="user local part")
+    users = registry["users"]
+    if local not in users:
+        raise WorkerPlanError(f"Mail user does not exist: {local}")
+    users[local]["password_hash"] = password_hash(read_password_for_cli(args))
+    users[local]["password_set_at"] = utc_now()
+    users[local]["updated_at"] = utc_now()
+    save_mail_user_registry(registry, path)
+    return {
+        "ok": True,
+        "action": "user-password-set",
+        "domain": registry["domain"],
+        "registry_file": str(path),
+        "user": user_record_public(users[local]),
+    }
+
+
+def add_mail_alias(args: argparse.Namespace) -> dict[str, Any]:
+    contract, contract_dir = load_mail_worker_contract(args.contract)
+    registry, path, _ = load_mail_user_registry(contract, contract_dir)
+    domain = _contract_str(contract, "domain")
+    alias = normalize_mail_local(args.alias, field="alias local part")
+    target = normalize_mail_local(args.target, field="target user local part", allow_reserved=True)
+    users = registry["users"]
+    aliases = registry["aliases"]
+    if target not in users:
+        raise WorkerPlanError(f"Target mail user does not exist: {target}")
+    if alias in users:
+        raise WorkerPlanError(f"Cannot create alias {alias!r}; that local part is already a user.")
+    if alias in aliases:
+        raise WorkerPlanError(f"Mail alias already exists: {alias}")
+    if alias == target:
+        raise WorkerPlanError("Alias and target user must be different local parts.")
+    now = utc_now()
+    aliases[alias] = {
+        "alias": alias,
+        "address": f"{alias}@{domain}",
+        "target": target,
+        "target_address": users[target]["address"],
+        "enabled": True,
+        "created_at": now,
+        "updated_at": now,
+    }
+    user_aliases = set(users[target].get("aliases") or [])
+    user_aliases.add(alias)
+    users[target]["aliases"] = sorted(user_aliases)
+    users[target]["updated_at"] = now
+    save_mail_user_registry(registry, path)
+    return {
+        "ok": True,
+        "action": "alias-add",
+        "domain": domain,
+        "registry_file": str(path),
+        "alias": dict(aliases[alias]),
+    }
+
+
+def list_mail_aliases(args: argparse.Namespace) -> dict[str, Any]:
+    contract, contract_dir = load_mail_worker_contract(args.contract)
+    registry, path, _ = load_mail_user_registry(contract, contract_dir)
+    return {
+        "ok": True,
+        "domain": registry["domain"],
+        "registry_file": str(path),
+        "aliases": registry_aliases_list(registry),
+    }
+
+
+def mail_user_registry_action(args: argparse.Namespace) -> dict[str, Any]:
+    if args.action == "user-add":
+        return create_mail_user(args)
+    if args.action == "user-list":
+        return list_mail_users(args)
+    if args.action == "user-password-set":
+        return set_mail_user_password(args)
+    if args.action == "alias-add":
+        return add_mail_alias(args)
+    if args.action == "alias-list":
+        return list_mail_aliases(args)
+    raise WorkerPlanError(f"Unsupported mail registry action: {args.action}")
 
 
 def args_with_contract_defaults(args: argparse.Namespace, contract: dict[str, Any]) -> argparse.Namespace:
@@ -1864,7 +2171,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "action",
         nargs="?",
         default="docs",
-        choices=["docs", "help", "plan", "worker", "wrangler", "compose", "ingest", "routing", "commands", "write", "prepare", "cloudflare-guide", "validate", "coolify-check", "coolify-discover", "coolify-sync", "coolify-apply", "apply"],
+        choices=["docs", "help", "plan", "worker", "wrangler", "compose", "ingest", "routing", "commands", "write", "prepare", "cloudflare-guide", "validate", "coolify-check", "coolify-discover", "coolify-sync", "coolify-apply", "apply", "user-add", "user-list", "user-password-set", "alias-add", "alias-list"],
     )
     parser.add_argument("--contract", default="", help="Stage-one mail-worker-contract.json for contract-based Coolify apply.")
     parser.add_argument("--domain", default="", help="Mail domain, e.g. greatlibrary.io.")
@@ -1902,6 +2209,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-deploy", action="store_true", help="For coolify-sync/apply, update the service but do not trigger a deployment.")
     parser.add_argument("--quiet", action="store_true", help="Suppress operator progress logs; final JSON is still printed.")
     parser.add_argument("--show-secret", action="store_true", help="For cloudflare-guide, print the shared ingest secret for dashboard entry instead of redacting it.")
+
+    parser.add_argument("--local", default="", help="Mail registry user local part for user-* actions.")
+    parser.add_argument("--display-name", default="", help="Display name for user-add.")
+    parser.add_argument("--alias", default="", help="Alias local part for alias-add.")
+    parser.add_argument("--target", default="", help="Target user local part for alias-add.")
+    parser.add_argument("--password", default="", help="Password for user-password-set. Prefer the interactive prompt, --password-env, or --password-file.")
+    parser.add_argument("--password-env", default="", help="Environment variable containing the password for user-password-set.")
+    parser.add_argument("--password-file", default="", help="File containing the password for user-password-set.")
 
     parser.add_argument("--no-catch-all", action="store_true")
     parser.add_argument("--catch-all-to-worker", action="store_true", help="Explicitly document catch-all Email Routing to the Worker. This is the default unless --no-catch-all is used.")
@@ -1951,6 +2266,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.action == "coolify-apply":
             print_json(coolify_apply_from_contract(args))
+            return 0
+        if args.action in {"user-add", "user-list", "user-password-set", "alias-add", "alias-list"}:
+            print_json(mail_user_registry_action(args))
             return 0
         plan = plan_from_args(args)
         if args.action == "validate":
