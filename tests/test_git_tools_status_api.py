@@ -96,12 +96,15 @@ def test_git_tools_status_api_module_loads_before_legacy_task_manager() -> None:
     html = (WEB_ROOT / "applications.html").read_text(encoding="utf-8")
     task_manager = (SCRIPTS / "task-manager.js").read_text(encoding="utf-8")
     legacy_bridge = (SCRIPTS / "git-tools-legacy-ui-bridge.js").read_text(encoding="utf-8")
+    project_shared = (SCRIPTS / "git-tools-project-shared.js").read_text(encoding="utf-8")
+    status_refresh_bridge = (SCRIPTS / "git-tools-status-refresh-bridge.js").read_text(encoding="utf-8")
     status_api = (SCRIPTS / "git-tools-status-api.js").read_text(encoding="utf-8")
 
     assert "<!-- @include applications/scripts/git-tools-status-api.js -->" in html
     assert html.index("git-tools-project-workflow.js") < html.index("git-tools-status-api.js")
     assert html.index("git-tools-file-basket.js") < html.index("git-tools-status-api.js")
-    assert html.index("git-tools-status-api.js") < html.index("git-tools-legacy-ui-bridge.js")
+    assert html.index("git-tools-status-api.js") < html.index("git-tools-project-shared.js")
+    assert html.index("git-tools-project-shared.js") < html.index("git-tools-legacy-ui-bridge.js")
     assert html.index("git-tools-legacy-ui-bridge.js") < html.index("task-manager.js")
     assert html.index("git-tools-status-api.js") < html.index("git-tools.js")
 
@@ -111,8 +114,9 @@ def test_git_tools_status_api_module_loads_before_legacy_task_manager() -> None:
     assert "/api/applications/git/patch/apply" in status_api
     assert "/api/applications/git/server/status" in status_api
 
-    assert "function gitToolsStatusApi" in legacy_bridge
-    assert "GitToolsStatusApi" in legacy_bridge
+    assert "function gitToolsStatusApi" in project_shared
+    assert "GitToolsStatusApi" in project_shared
+    assert "global.GitToolsLegacyUiBridge" in legacy_bridge
 
 
 def test_git_tools_status_api_request_contract_and_helpers() -> None:
@@ -173,15 +177,18 @@ def test_git_tools_status_api_request_contract_and_helpers() -> None:
 def test_task_manager_delegates_git_api_boundary_to_status_api() -> None:
     task_manager = (SCRIPTS / "task-manager.js").read_text(encoding="utf-8")
     legacy_bridge = (SCRIPTS / "git-tools-legacy-ui-bridge.js").read_text(encoding="utf-8")
+    project_shared = (SCRIPTS / "git-tools-project-shared.js").read_text(encoding="utf-8")
+    status_refresh_bridge = (SCRIPTS / "git-tools-status-refresh-bridge.js").read_text(encoding="utf-8")
     status_api = (SCRIPTS / "git-tools-status-api.js").read_text(encoding="utf-8")
     server_panel = (SCRIPTS / "git-tools-server-panel.js").read_text(encoding="utf-8")
     patch_inventory = (SCRIPTS / "git-tools-patch-inventory.js").read_text(encoding="utf-8")
 
-    assert "function gitToolsRequest(path, payload = {})" in legacy_bridge
-    assert "return gitToolsStatusApi().request(path, payload);" in legacy_bridge
+    assert "function gitToolsRequest(path, payload = {})" in project_shared
+    assert "return gitToolsStatusApi().request(path, payload);" in project_shared
     assert "return fetch(path" not in task_manager
     assert "return fetch(path" not in legacy_bridge
-    assert "gitToolsStatusApi().fetchStatus({repoDir})" in legacy_bridge
+    assert "return fetch(path" not in project_shared
+    assert "gitToolsStatusApi().fetchStatus({repoDir})" in status_refresh_bridge
     assert "gitToolsStatusApi().fetchPatches()" in patch_inventory
     assert "gitToolsStatusApi().readPatch(patchName)" in patch_inventory
     assert "gitToolsStatusApi().applyPatchDryRun({" in patch_inventory
