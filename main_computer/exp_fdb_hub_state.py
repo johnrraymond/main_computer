@@ -17,6 +17,7 @@ from main_computer.hub import (
     HUB_SECURITY_PROFILE,
     HUB_WORKER_LEASE_SECONDS,
     HUB_WORKER_STALE_AFTER_SECONDS,
+    HUB_WORKER_INSTANCE_SLOT_LIMIT,
     HubRegistry,
     HubUpstream,
     HubWorker,
@@ -197,9 +198,9 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
         if not normalized:
             raise ValueError("Worker payload did not normalize to a valid worker.")
         clean = normalized[0]
-        node_id = str(clean["node_id"])
-        self._clear_worker_indexes(tr, node_id)
-        tr[self._worker_key(node_id)] = _json_dumps(clean)
+        worker_identity = str(clean.get("worker_instance_id") or clean["node_id"])
+        self._clear_worker_indexes(tr, worker_identity)
+        tr[self._worker_key(worker_identity)] = _json_dumps(clean)
         self._write_worker_indexes(tr, clean)
 
     def _read_upstream_payload(self, tr: Any, node_id: str) -> dict[str, Any] | None:
@@ -219,7 +220,7 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
             payload = json.loads(bytes(item.value).decode("utf-8"))
             if isinstance(payload, dict):
                 workers.append(payload)
-        return sorted(workers, key=lambda item: str(item.get("node_id", "")))
+        return sorted(workers, key=lambda item: (str(item.get("node_id", "")), str(item.get("worker_instance_id") or item.get("node_id", ""))))
 
     def _all_upstream_payloads(self, tr: Any) -> list[dict[str, Any]]:
         key_range = self.state.range_for("upstream_hub")
@@ -247,9 +248,10 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
         if model and model not in models:
             models.insert(0, model)
         node_id = str(worker.get("node_id", ""))
+        worker_identity = str(worker.get("worker_instance_id") or node_id)
         parts: list[tuple[Any, ...]] = []
         for model_name in models or [""]:
-            parts.append((network, ring, model_name, price_bucket, active, node_id))
+            parts.append((network, ring, model_name, price_bucket, active, node_id, worker_identity))
         return parts
 
     def _clear_worker_indexes(self, tr: Any, node_id: str) -> None:
@@ -269,10 +271,11 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
 
     def _write_worker_indexes(self, tr: Any, worker: dict[str, Any]) -> None:
         node_id = str(worker.get("node_id", ""))
+        worker_identity = str(worker.get("worker_instance_id") or node_id)
         for index_no, parts in enumerate(self._worker_index_parts(worker)):
             idx_key = self.state.pack("idx_worker_available", *parts)
             tr[idx_key] = b""
-            tr[self.state.pack("idx_worker_available_rev", node_id, index_no)] = _json_dumps({"key_hex": idx_key.hex()})
+            tr[self.state.pack("idx_worker_available_rev", worker_identity, index_no)] = _json_dumps({"key_hex": idx_key.hex()})
 
     def _load(self) -> dict[str, Any]:
         @self.fdb.transactional
@@ -351,8 +354,10 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
         queue_depth: int = 0,
         active_requests: int = 0,
         max_concurrency: int = 1,
+        worker_instance_id: str = "",
     ) -> HubWorker:
         clean_node_id = _clean_node_id(node_id, default="hub-worker")
+        clean_worker_instance_id = _clean_node_id(worker_instance_id, default="") if worker_instance_id else clean_node_id
         clean_endpoint = str(endpoint or "").strip().rstrip("/")
         if not clean_endpoint:
             raise ValueError("Worker endpoint is required.")
@@ -366,6 +371,7 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
         clean_models = self._normalize_models(model=model, models=models)
         primary_model = clean_models[0] if clean_models else str(model or "").strip()
         clean_capabilities = dict(capabilities or {})
+        clean_capabilities.setdefault("worker_instance_id", clean_worker_instance_id)
         precision_source = (
             settlement_precision_places
             if settlement_precision_places is not None
@@ -373,17 +379,18 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
         )
         clean_settlement_precision = normalize_worker_payout_precision_places(precision_source)
         clean_capabilities.setdefault("settlement_precision_places", clean_settlement_precision)
-        clean_max_concurrency = max(1, int(max_concurrency or 1))
+        clean_max_concurrency = HUB_WORKER_INSTANCE_SLOT_LIMIT
         clean_active = min(max(0, int(active_requests or 0)), clean_max_concurrency)
         clean_queue_depth = max(0, int(queue_depth or 0))
 
         @self.fdb.transactional
         def _tx(tr: Any) -> dict[str, Any]:
-            existing = self._read_worker_payload(tr, clean_node_id) or {}
+            existing = self._read_worker_payload(tr, clean_worker_instance_id) or {}
             registered_at = str(existing.get("registered_at") or now)
             worker = HubWorker(
                 node_id=clean_node_id,
                 endpoint=clean_endpoint,
+                worker_instance_id=clean_worker_instance_id,
                 model=primary_model,
                 models=clean_models,
                 status="available" if clean_active < clean_max_concurrency else "busy",
@@ -395,6 +402,7 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
                 offer=_phase9_worker_offer_from_payload(
                     {
                         "node_id": clean_node_id,
+                        "worker_instance_id": clean_worker_instance_id,
                         "model": primary_model,
                         "models": clean_models,
                         "credits_per_request": credit_price,
@@ -423,17 +431,20 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
         queue_depth: int | None = None,
         active_requests: int | None = None,
         max_concurrency: int | None = None,
+        worker_instance_id: str = "",
     ) -> HubWorker:
         clean_node_id = _clean_node_id(node_id, default="hub-worker")
+        clean_worker_instance_id = _clean_node_id(worker_instance_id, default="") if worker_instance_id else clean_node_id
         now = _utc_now()
 
         @self.fdb.transactional
         def _tx(tr: Any) -> dict[str, Any]:
-            item = self._read_worker_payload(tr, clean_node_id)
+            item = self._read_worker_payload(tr, clean_worker_instance_id)
+            if not isinstance(item, dict) and clean_worker_instance_id != clean_node_id:
+                item = self._read_worker_payload(tr, clean_node_id)
             if not isinstance(item, dict):
-                raise KeyError(f"Unknown hub worker: {clean_node_id}")
-            current_max = max(1, int(item.get("max_concurrency", 1) or 1))
-            next_max = max(1, int(max_concurrency or current_max))
+                raise KeyError(f"Unknown hub worker: {clean_worker_instance_id or clean_node_id}")
+            next_max = HUB_WORKER_INSTANCE_SLOT_LIMIT
             next_active = max(0, int(item.get("active_requests", 0) or 0)) if active_requests is None else max(0, int(active_requests or 0))
             next_active = min(next_active, next_max)
             clean_status = str(status or item.get("status") or "available").strip().lower()
@@ -458,13 +469,25 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
 
         return self._worker_from_payload(_tx(self.db))
 
-    def get_worker(self, node_id: str) -> HubWorker | None:
+    def get_worker(self, node_id: str, *, worker_instance_id: str = "") -> HubWorker | None:
         clean_node_id = _clean_node_id(node_id, default="hub-worker")
+        clean_worker_instance_id = _clean_node_id(worker_instance_id, default="") if worker_instance_id else ""
         self.expire_stale_workers()
 
         @self.fdb.transactional
         def _tx(tr: Any) -> dict[str, Any] | None:
-            return self._read_worker_payload(tr, clean_node_id)
+            if clean_worker_instance_id:
+                return self._read_worker_payload(tr, clean_worker_instance_id)
+            direct = self._read_worker_payload(tr, clean_node_id)
+            if isinstance(direct, dict):
+                return direct
+            matches = [item for item in self._all_worker_payloads(tr) if item.get("node_id") == clean_node_id]
+            if len(matches) == 1:
+                return matches[0]
+            for item in matches:
+                if str(item.get("worker_instance_id") or item.get("node_id") or "") == clean_node_id:
+                    return item
+            return None
 
         payload = _tx(self.db)
         return self._worker_from_payload(payload) if isinstance(payload, dict) else None
@@ -554,15 +577,18 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
         payload = _tx(self.db)
         return HubUpstream(**payload) if isinstance(payload, dict) else None
 
-    def mark_worker(self, node_id: str, *, status: str) -> None:
+    def mark_worker(self, node_id: str, *, status: str, worker_instance_id: str = "") -> None:
         clean_node_id = _clean_node_id(node_id, default="hub-worker")
+        clean_worker_instance_id = _clean_node_id(worker_instance_id, default="") if worker_instance_id else clean_node_id
         clean_status = str(status or "available").strip().lower()
         if clean_status not in {"available", "configured", "busy", "offline", "stale", "draining"}:
             clean_status = "available"
 
         @self.fdb.transactional
         def _tx(tr: Any) -> None:
-            worker = self._read_worker_payload(tr, clean_node_id)
+            worker = self._read_worker_payload(tr, clean_worker_instance_id)
+            if not isinstance(worker, dict) and clean_worker_instance_id != clean_node_id:
+                worker = self._read_worker_payload(tr, clean_node_id)
             if not isinstance(worker, dict):
                 return
             worker["status"] = clean_status
@@ -581,10 +607,12 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
         *,
         request_id: str = "",
         preferred_node_id: str = "",
+        preferred_worker_instance_id: str = "",
         lease_seconds: float | None = None,
     ) -> HubWorker | None:
         desired = str(model or "").strip()
         preferred = _clean_node_id(preferred_node_id, default="") if preferred_node_id else ""
+        preferred_instance = _clean_node_id(preferred_worker_instance_id, default="") if preferred_worker_instance_id else ""
         lease_s = self.worker_lease_s if lease_seconds is None else max(1.0, float(lease_seconds))
 
         @self.fdb.transactional
@@ -595,13 +623,25 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
             candidates = [
                 item
                 for item in workers
-                if self._is_worker_lease_candidate(item, desired=desired, preferred_node_id=preferred, allow_model_fallback=False)
+                if self._is_worker_lease_candidate(
+                    item,
+                    desired=desired,
+                    preferred_node_id=preferred,
+                    preferred_worker_instance_id=preferred_instance,
+                    allow_model_fallback=False,
+                )
             ]
-            if not candidates and desired and not preferred:
+            if not candidates and desired and not preferred and not preferred_instance:
                 candidates = [
                     item
                     for item in workers
-                    if self._is_worker_lease_candidate(item, desired="", preferred_node_id="", allow_model_fallback=True)
+                    if self._is_worker_lease_candidate(
+                        item,
+                        desired="",
+                        preferred_node_id="",
+                        preferred_worker_instance_id="",
+                        allow_model_fallback=True,
+                    )
                 ]
             if not candidates:
                 return None
@@ -611,9 +651,10 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
                     max(0, int(item.get("queue_depth", 0) or 0)) + max(0, int(item.get("active_requests", 0) or 0)),
                     str(item.get("last_seen_at", "") or item.get("registered_at", "")),
                     str(item.get("node_id", "")),
+                    str(item.get("worker_instance_id") or item.get("node_id") or ""),
                 ),
             )[0]
-            max_concurrency = max(1, int(worker.get("max_concurrency", 1) or 1))
+            max_concurrency = HUB_WORKER_INSTANCE_SLOT_LIMIT
             active = min(max_concurrency, max(0, int(worker.get("active_requests", 0) or 0)) + 1)
             worker["active_requests"] = active
             worker["status"] = "busy" if active >= max_concurrency else "available"
@@ -628,15 +669,18 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
         payload = _tx(self.db)
         return self._worker_from_payload(payload) if isinstance(payload, dict) else None
 
-    def release_worker(self, node_id: str, *, request_id: str = "", success: bool = True) -> None:
+    def release_worker(self, node_id: str, *, request_id: str = "", success: bool = True, worker_instance_id: str = "") -> None:
         clean_node_id = _clean_node_id(node_id, default="hub-worker")
+        clean_worker_instance_id = _clean_node_id(worker_instance_id, default="") if worker_instance_id else clean_node_id
 
         @self.fdb.transactional
         def _tx(tr: Any) -> None:
-            worker = self._read_worker_payload(tr, clean_node_id)
+            worker = self._read_worker_payload(tr, clean_worker_instance_id)
+            if not isinstance(worker, dict) and clean_worker_instance_id != clean_node_id:
+                worker = self._read_worker_payload(tr, clean_node_id)
             if not isinstance(worker, dict):
                 return
-            max_concurrency = max(1, int(worker.get("max_concurrency", 1) or 1))
+            max_concurrency = HUB_WORKER_INSTANCE_SLOT_LIMIT
             active = max(0, int(worker.get("active_requests", 0) or 0) - 1)
             worker["active_requests"] = active
             worker["status"] = "available" if success else "offline"
@@ -675,6 +719,7 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
                 key=lambda item: (
                     max(0, int(item.get("queue_depth", 0) or 0)) + max(0, int(item.get("active_requests", 0) or 0)),
                     str(item.get("last_seen_at", "") or item.get("registered_at", "")),
+                    str(item.get("worker_instance_id") or item.get("node_id") or ""),
                 ),
             )[0] if available else None
 
@@ -863,11 +908,15 @@ class ExperimentalFoundationDbRequestStateStore(_StateComponent):
         expires_at: str,
         credits_queued: int,
         attempt_history: list[dict[str, Any]],
+        worker_instance_id: str = "",
     ) -> HubRequestRecord | None:
         """Atomically move one queued request to leased, or return None if another hub won."""
 
         clean = str(request_id or "").strip()
         clean_worker_id = clean_node_id(worker_node_id, default="hub-worker")
+        clean_worker_instance_id = (
+            clean_node_id(worker_instance_id, default="") if worker_instance_id else clean_worker_id
+        )
         if not clean or not clean_worker_id:
             return None
 
@@ -881,10 +930,16 @@ class ExperimentalFoundationDbRequestStateStore(_StateComponent):
                 return None
             if not record.hold_id or record.charge_id:
                 return None
-            if record.requested_worker_node_id and record.requested_worker_node_id != clean_worker_id:
+            if record.selected_worker_instance_id and record.selected_worker_instance_id != clean_worker_instance_id:
+                return None
+            if record.requested_worker_node_id and record.requested_worker_node_id not in {
+                clean_worker_id,
+                clean_worker_instance_id,
+            }:
                 return None
             record.state = "leased"
             record.selected_worker_node_id = clean_worker_id
+            record.selected_worker_instance_id = clean_worker_instance_id
             record.lease_id = str(lease_id or "")
             record.lease_expires_at = str(expires_at or "")
             record.credits_queued = max(0, int(credits_queued or 0))
@@ -896,6 +951,7 @@ class ExperimentalFoundationDbRequestStateStore(_StateComponent):
                     "state": record.state,
                     "created_at": record.updated_at,
                     "worker_node_id": clean_worker_id,
+                    "worker_instance_id": clean_worker_instance_id,
                     "lease_id": record.lease_id,
                     "expires_at": record.lease_expires_at,
                 }

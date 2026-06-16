@@ -704,7 +704,7 @@ class HubServerTests(unittest.TestCase):
                 with urlopen(register_request, timeout=5) as response:
                     registered = json.loads(response.read().decode("utf-8"))
                 self.assertEqual(registered["worker"]["models"], ["fake-model", "vision-model"])
-                self.assertEqual(registered["worker"]["max_concurrency"], 2)
+                self.assertEqual(registered["worker"]["max_concurrency"], 1)
 
                 heartbeat_request = Request(
                     f"{hub_base}/api/hub/v1/workers/heartbeat-worker/heartbeat",
@@ -728,7 +728,7 @@ class HubServerTests(unittest.TestCase):
                 with urlopen(f"{hub_base}/api/hub/v1/workers/heartbeat-worker?debug=1", timeout=5) as response:
                     worker_status = json.loads(response.read().decode("utf-8"))
                 self.assertEqual(worker_status["worker"]["node_id"], "heartbeat-worker")
-                self.assertEqual(worker_status["worker"]["max_concurrency"], 2)
+                self.assertEqual(worker_status["worker"]["max_concurrency"], 1)
                 self.assertEqual(worker_status["worker"]["capabilities"]["gpu"], "test-gpu")
                 self.assertIn("endpoint", worker_status["worker"])
 
@@ -811,6 +811,89 @@ class HubServerTests(unittest.TestCase):
             self.assertFalse(heartbeat.stale)
             self.assertEqual(heartbeat.status, "available")
             self.assertIsNotNone(registry.select_worker("fake-model"))
+
+    def test_hub_registry_treats_each_worker_registration_as_one_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as hub_tmp:
+            registry = HubRegistry(Path(hub_tmp), allow_insecure_dev_network=False)
+            registered = registry.register_worker(
+                node_id="Single Slot Worker",
+                endpoint="http://127.0.0.1:9999",
+                model="fake-model",
+                max_concurrency=4,
+            )
+            self.assertEqual(registered.max_concurrency, 1)
+            self.assertEqual(registry.status()["available_worker_count"], 1)
+
+            first_lease = registry.lease_worker("fake-model", request_id="req-1", preferred_node_id="single-slot-worker")
+            self.assertIsNotNone(first_lease)
+            self.assertEqual(first_lease.max_concurrency, 1)
+            self.assertEqual(first_lease.active_requests, 1)
+            self.assertEqual(registry.status()["available_worker_count"], 0)
+
+            second_lease = registry.lease_worker("fake-model", request_id="req-2", preferred_node_id="single-slot-worker")
+            self.assertIsNone(second_lease)
+
+            registry.register_worker(
+                node_id="Second Slot Worker",
+                endpoint="http://127.0.0.1:9998",
+                model="fake-model",
+                max_concurrency=4,
+            )
+            independent_lease = registry.lease_worker("fake-model", request_id="req-2", preferred_node_id="second-slot-worker")
+            self.assertIsNotNone(independent_lease)
+            self.assertEqual(independent_lease.node_id, "second-slot-worker")
+
+    def test_hub_registry_allows_multiple_single_slot_instances_for_one_node(self) -> None:
+        with tempfile.TemporaryDirectory() as hub_tmp:
+            registry = HubRegistry(Path(hub_tmp), allow_insecure_dev_network=False)
+            first = registry.register_worker(
+                node_id="Shared Node",
+                worker_instance_id="shared-node-slot-a",
+                endpoint="http://127.0.0.1:9999",
+                model="fake-model",
+                max_concurrency=4,
+            )
+            second = registry.register_worker(
+                node_id="Shared Node",
+                worker_instance_id="shared-node-slot-b",
+                endpoint="http://127.0.0.1:9998",
+                model="fake-model",
+                max_concurrency=4,
+            )
+            self.assertEqual(first.node_id, "shared-node")
+            self.assertEqual(second.node_id, "shared-node")
+            self.assertEqual(first.worker_instance_id, "shared-node-slot-a")
+            self.assertEqual(second.worker_instance_id, "shared-node-slot-b")
+            self.assertEqual(registry.status()["worker_count"], 2)
+            self.assertEqual(registry.status()["available_worker_count"], 2)
+
+            first_lease = registry.lease_worker(
+                "fake-model",
+                request_id="req-slot-a",
+                preferred_node_id="shared-node",
+                preferred_worker_instance_id="shared-node-slot-a",
+            )
+            self.assertIsNotNone(first_lease)
+            self.assertEqual(first_lease.worker_instance_id, "shared-node-slot-a")
+            self.assertEqual(registry.status()["available_worker_count"], 1)
+
+            same_slot_busy = registry.lease_worker(
+                "fake-model",
+                request_id="req-slot-a-2",
+                preferred_node_id="shared-node",
+                preferred_worker_instance_id="shared-node-slot-a",
+            )
+            self.assertIsNone(same_slot_busy)
+
+            second_lease = registry.lease_worker(
+                "fake-model",
+                request_id="req-slot-b",
+                preferred_node_id="shared-node",
+                preferred_worker_instance_id="shared-node-slot-b",
+            )
+            self.assertIsNotNone(second_lease)
+            self.assertEqual(second_lease.worker_instance_id, "shared-node-slot-b")
+
 
     def test_hub_provider_defaults_to_temporary_key_encrypted_envelopes(self) -> None:
         captured: dict[str, object] = {}
@@ -1109,7 +1192,7 @@ class HubServerTests(unittest.TestCase):
                 worker = payload["workers"][0]
                 self.assertEqual(worker["node_id"], "gpu-admin-worker")
                 self.assertEqual(worker["models"], ["fake-model", "backup-model"])
-                self.assertEqual(worker["max_concurrency"], 3)
+                self.assertEqual(worker["max_concurrency"], 1)
                 self.assertIn("fake-model", payload["models"])
                 self.assertEqual(payload["status"]["available_worker_count"], 1)
             finally:

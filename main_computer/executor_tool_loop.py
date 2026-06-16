@@ -7,6 +7,7 @@ from typing import Any, Sequence
 
 from main_computer.executor_backend import ExecutorBackend
 from main_computer.executor_models import ExecutorRequest, ExecutorResult
+from main_computer.ai_control import ai_control_prompt_text
 from main_computer.models import ChatMessage, ChatResponse
 from main_computer.providers import LLMProvider
 
@@ -125,7 +126,7 @@ def run_executor_tool_loop(
     upload_context = _upload_context_text(uploads)
 
     messages: list[ChatMessage] = [
-        ChatMessage(role="system", content=EXECUTOR_TOOL_LOOP_SYSTEM_PROMPT),
+        ChatMessage(role="system", content=ai_control_prompt_text("executor_tool_loop.system", EXECUTOR_TOOL_LOOP_SYSTEM_PROMPT)),
         ChatMessage(role="system", content=context_text),
         ChatMessage(
             role="user",

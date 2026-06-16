@@ -50,7 +50,8 @@ def test_mcel_project_concern_workbench_is_loaded_between_detector_and_registry(
     css = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
 
     assert "<!-- @include applications/scripts/mcel-project-concern-workbench.js -->" in html
-    assert html.index("mcel-concern-core.js") < html.index("mcel-project-concern-workbench.js") < html.index("mcel-element-registry.js")
+    assert "<!-- @include applications/scripts/mcel-git-file-basket-treegrid-lab.js -->" in html
+    assert html.index("mcel-concern-core.js") < html.index("mcel-project-concern-workbench.js") < html.index("mcel-git-file-basket-treegrid-lab.js") < html.index("mcel-element-registry.js")
 
     assert "global.McelProjectConcernWorkbench" in workbench
     assert "buildProjectConcernWorkbench" in workbench
@@ -68,12 +69,14 @@ def test_mcel_project_concern_workbench_is_loaded_between_detector_and_registry(
     assert "renderProjectConcernWorkbench" in acid
     assert "Main Computer Project Concern Workbench" in acid
     assert "mcelProjectConcernWorkbench" in acid
+    assert "renderGitFileBasketTreegridLab" in acid
     assert "firstSafeMigration" in acid
 
     assert ".mcel-project-concern-workbench" in css
     assert ".mcel-project-work-order-card" in css
     assert ".mcel-project-migration-queue" in css
     assert ".mcel-project-proof-plan" in css
+    assert ".mcel-git-treegrid-lab" in css
 
 
 def test_project_workbench_turns_real_concerns_into_ranked_work_orders() -> None:
@@ -155,7 +158,7 @@ def test_file_basket_deprecated_task_manager_alias_resolves_to_git_tools_owner()
     assert queue_item["ownerApp"] == "git-tools"
     assert queue_item["sourceFile"].endswith("git-tools-file-basket.js")
     assert queue_item["legacySurfaceIds"] == ["task-manager.file-basket"]
-    assert queue_item["firstSafeMigration"].startswith("Use git-tools-file-basket-contract-view.js")
+    assert queue_item["firstSafeMigration"].startswith("Exercise git-tools.file-basket in an MCEL lab-only contract treegrid surface")
 
 
 def test_project_workbench_produces_safe_first_patches_for_key_apps() -> None:

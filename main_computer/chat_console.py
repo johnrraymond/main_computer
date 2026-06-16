@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from main_computer.ai_control import ai_control_prompt_text
 from main_computer.models import ChatAttachment, ChatMessage, ChatResponse
 from main_computer.output_snippets import parse_fenced_code_snippets
 
@@ -132,7 +133,7 @@ def attachment_from_payload(payload: dict[str, Any]) -> ChatAttachment | None:
 def build_notebook_ai_messages(source: str, attachments: list[dict[str, Any]] | None = None) -> list[ChatMessage]:
     chat_attachments = [item for item in (attachment_from_payload(payload) for payload in attachments or []) if item]
     return [
-        ChatMessage(role="system", content=NOTEBOOK_AI_SYSTEM_PROMPT),
+        ChatMessage(role="system", content=ai_control_prompt_text("chat_console.notebook_ai.system", NOTEBOOK_AI_SYSTEM_PROMPT)),
         ChatMessage(role="user", content=str(source or ""), attachments=chat_attachments),
     ]
 
