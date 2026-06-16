@@ -235,8 +235,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--private-key-env",
         default=None,
         help=(
-            "Read the deployer private key from this environment variable. "
-            "This is intended for operator wrappers so the key is not passed to this script directly."
+            "Read the deployer private key from this environment variable before building funding/deploy "
+            "commands. This keeps operator-facing wrappers from passing private keys as command-line args."
         ),
     )
     parser.add_argument("--offices", default=None, help="Comma-separated list of exactly four office addresses.")
@@ -1868,25 +1868,31 @@ def deployed_contracts(args: argparse.Namespace, rid: str, hub_admin_address: st
 
 
 
-def resolve_private_key_argument(args: argparse.Namespace) -> None:
-    env_name = str(getattr(args, "private_key_env", "") or "").strip()
-    if not env_name:
-        return
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", env_name):
+def validate_private_key_env_name(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("--private-key-env must name a non-empty environment variable")
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", raw):
         raise ValueError("--private-key-env must be a valid environment variable name")
-    explicit_private_key = str(getattr(args, "private_key", "") or "")
-    if explicit_private_key and explicit_private_key != DEFAULT_PRIVATE_KEY:
-        raise ValueError("--private-key and --private-key-env cannot both be provided")
-    private_key = str(os.environ.get(env_name, "") or "").strip()
-    if not private_key:
-        raise ValueError(f"environment variable {env_name} is not set or is empty")
+    return raw
+
+
+def resolve_private_key_from_env(args: argparse.Namespace) -> None:
+    env_name = getattr(args, "private_key_env", None)
+    if env_name is None or not str(env_name).strip():
+        return
+    env_name = validate_private_key_env_name(str(env_name))
+    value = os.environ.get(env_name)
+    if value is None or not value.strip():
+        raise ValueError(f"--private-key-env {env_name} is not set or is empty")
+    private_key = value.strip()
     if not is_private_key(private_key):
-        raise ValueError(f"environment variable {env_name} must contain a 0x-prefixed 32-byte private key")
+        raise ValueError(f"--private-key-env {env_name} does not contain a 32-byte hex private key")
+    args.private_key_env = env_name
     args.private_key = private_key
 
-
 def validate_args(args: argparse.Namespace) -> None:
-    resolve_private_key_argument(args)
+    resolve_private_key_from_env(args)
     if args.accounts <= 1:
         raise ValueError("--accounts must be greater than one for the local office key pool")
     if int(str(args.hub_admin_funding_wei), 0) <= 0:

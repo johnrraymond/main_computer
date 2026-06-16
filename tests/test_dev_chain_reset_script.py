@@ -755,34 +755,30 @@ def test_setup_log_uses_operator_visible_prefix(capsys) -> None:
     assert capsys.readouterr().out == "SETUP: unit setup phase\n"
 
 
-def test_private_key_env_resolves_deployer_key(monkeypatch) -> None:
+def test_private_key_env_overrides_private_key(monkeypatch) -> None:
     reset = load_dev_chain_reset()
-    monkeypatch.setenv("UNIT_DEPLOYER_PRIVATE_KEY", "0x" + ("11" * 32))
     parser = reset.build_parser()
+    key = "0x" + "12" * 32
+    monkeypatch.setenv("UNIT_DEPLOYER_PRIVATE_KEY", key)
+
     args = parser.parse_args(["--dry-run", "--private-key-env", "UNIT_DEPLOYER_PRIVATE_KEY"])
 
     reset.validate_args(args)
 
-    assert args.private_key == "0x" + ("11" * 32)
+    assert args.private_key == key
+    assert args.private_key_env == "UNIT_DEPLOYER_PRIVATE_KEY"
 
 
-def test_private_key_env_rejects_direct_private_key_conflict(monkeypatch) -> None:
+def test_private_key_env_rejects_empty_value(monkeypatch) -> None:
     reset = load_dev_chain_reset()
-    monkeypatch.setenv("UNIT_DEPLOYER_PRIVATE_KEY", "0x" + ("11" * 32))
     parser = reset.build_parser()
-    args = parser.parse_args(
-        [
-            "--dry-run",
-            "--private-key",
-            "0x" + ("22" * 32),
-            "--private-key-env",
-            "UNIT_DEPLOYER_PRIVATE_KEY",
-        ]
-    )
+    monkeypatch.setenv("UNIT_DEPLOYER_PRIVATE_KEY", "")
+
+    args = parser.parse_args(["--dry-run", "--private-key-env", "UNIT_DEPLOYER_PRIVATE_KEY"])
 
     try:
         reset.validate_args(args)
     except ValueError as exc:
-        assert "--private-key and --private-key-env" in str(exc)
-    else:  # pragma: no cover - failure clarity
-        raise AssertionError("expected private key source conflict")
+        assert "not set or is empty" in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("expected empty --private-key-env value to be rejected")

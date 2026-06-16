@@ -4,13 +4,17 @@ from types import SimpleNamespace
 
 from main_computer.node_behavior_chaos import (
     NodeReconnectScenarioConfig,
+    RequesterDisconnectResultRetentionScenarioConfig,
     WorkerConnectionReliabilityScenarioConfig,
     compact_node_behavior_summary,
+    compact_requester_disconnect_result_retention_summary,
     compact_worker_connection_reliability_summary,
     exercise_node_reconnect_scenario,
+    exercise_requester_disconnect_result_retention_scenario,
     exercise_worker_connection_reliability_scenario,
     heartbeat_payload_for_node,
     plan_node_reconnect_events,
+    plan_requester_disconnect_result_retention_events,
     plan_worker_connection_reliability_events,
     summarize_worker_status,
 )
@@ -344,3 +348,144 @@ def test_worker_connection_reliability_scenario_classifies_recover_and_lost_path
     assert result["no_charge_after_lost_count"] == 1
     assert result["payout_integrity_ok"] is True
     assert compact_worker_connection_reliability_summary(result)["lost_timeout_failed_count"] == 1
+
+
+
+def test_plan_requester_disconnect_result_retention_events_filters_quote_incompatible_workers() -> None:
+    nodes = [
+        _node("node-too-expensive", ring=0, price_credits=4),
+        _node("node-compatible-a", ring=1, price_credits=2),
+        _node("node-compatible-b", ring=2, price_credits=2),
+        _node("node-too-low-service", ring=3, price_credits=1),
+    ]
+
+    plans = plan_requester_disconnect_result_retention_events(
+        nodes,
+        event_count=3,
+        seed="unit",
+        hub_labels=("hub_a", "hub_b"),
+        requested_ring=2,
+        max_price_credits=2,
+    )
+
+    assert len(plans) == 3
+    assert {plan.node_id for plan in plans} <= {"node-compatible-a", "node-compatible-b"}
+
+
+def test_requester_disconnect_result_retention_scenario_pickup_and_payout_integrity() -> None:
+    nodes = [_node("node-001"), _node("node-002")]
+    configs = {
+        "hub_a": SimpleNamespace(
+            hub_url="http://hub-a",
+            model="unit-model",
+            account_id="requester",
+            max_price_credits=2,
+            requested_ring=2,
+            run_id="unit-run",
+            http_timeout_seconds=3.0,
+            http_retry_attempts=1,
+        ),
+        "hub_b": SimpleNamespace(
+            hub_url="http://hub-b",
+            model="unit-model",
+            account_id="requester",
+            max_price_credits=2,
+            requested_ring=2,
+            run_id="unit-run",
+            http_timeout_seconds=3.0,
+            http_retry_attempts=1,
+        ),
+    }
+    requests: dict[str, dict[str, object]] = {}
+    charges: dict[str, int] = {}
+    earnings: dict[str, int] = {}
+
+    def post_json(hub_url: str, path: str, payload: dict[str, object], **kwargs: object) -> dict[str, object]:
+        if path == "/api/hub/v1/requests/quote":
+            node_id = str(payload["requested_worker_node_id"])
+            return {
+                "quote": {
+                    "quote_id": f"quote-{payload['idempotency_key']}",
+                    "selected_worker_node_id": node_id,
+                    "selected_offer": {"worker_node_id": node_id, "credits_per_request": 2},
+                    "quoted_credits": 2,
+                    "max_credits": 2,
+                    "execution_mode": "worker_pull_v0",
+                }
+            }
+        if path == "/api/hub/v1/requests":
+            request_id = f"request-{len(requests)+1}"
+            requests[request_id] = {
+                "request_id": request_id,
+                "state": "queued",
+                "worker_node_id": str(payload["requested_worker_node_id"]),
+                "response": {},
+            }
+            return {"request": dict(requests[request_id])}
+        if path == "/api/hub/v1/workers/poll":
+            node_id = str(payload["worker_node_id"])
+            request = next(
+                item for item in requests.values()
+                if item["state"] == "queued" and item["worker_node_id"] == node_id
+            )
+            request["state"] = "leased"
+            return {"ok": True, "lease": {"request_id": request["request_id"], "lease_id": f"lease-{request['request_id']}"}}
+        if path == "/api/hub/v1/workers/results":
+            request_id = str(payload["request_id"])
+            response = dict(dict(payload["result"])["response"])  # type: ignore[index]
+            response["metadata"] = {
+                **dict(response.get("metadata", {})),
+                "hub": {
+                    "result_retention": {
+                        "retained": True,
+                        "window_seconds": 3600,
+                        "expires_at": "2999-01-01T00:00:00+00:00",
+                    }
+                },
+            }
+            requests[request_id]["state"] = "completed"
+            requests[request_id]["response"] = response
+            charges[request_id] = 1
+            earnings[request_id] = 1
+            return {"ok": True, "request": {"request_id": request_id, "state": "completed", "response": response}}
+        raise AssertionError(path)
+
+    def get_json(hub_url: str, path: str, **kwargs: object) -> dict[str, object]:
+        if path.endswith("/charges"):
+            request_id = path.split("/requests/")[1].split("/charges")[0]
+            count = charges.get(request_id, 0)
+            return {"charge_count": count, "charges": [{}] * count}
+        if "/worker-earnings" in path:
+            request_id = path.split("request_id=")[-1]
+            count = earnings.get(request_id, 0)
+            return {"worker_earning_count": count, "worker_earnings": [{}] * count}
+        if "/result?" in path:
+            request_id = path.split("/requests/")[1].split("/result")[0]
+            return {
+                "ok": True,
+                "result_available": True,
+                "retained": True,
+                "expired": False,
+                "result": dict(requests[request_id]["response"]),
+                "request": dict(requests[request_id]),
+            }
+        raise AssertionError(path)
+
+    result = exercise_requester_disconnect_result_retention_scenario(
+        configs=configs,
+        nodes=nodes,
+        scenario=RequesterDisconnectResultRetentionScenarioConfig(
+            event_count=1,
+            pickup_after_seconds=0.0,
+            result_retention_window_seconds=3600,
+            seed="unit",
+        ),
+        post_json=post_json,
+        get_json=get_json,
+    )
+
+    assert result["result_retained_count"] == 1
+    assert result["result_pickup_count"] == 1
+    assert result["expired_count"] == 0
+    assert result["worker_payout_integrity_ok"] is True
+    assert compact_requester_disconnect_result_retention_summary(result)["result_pickup_count"] == 1

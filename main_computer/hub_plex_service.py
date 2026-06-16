@@ -31,6 +31,7 @@ HUB_WORKER_SESSION_CHAT_PATH = "/api/hub/worker/sessions/chat"
 PHASE9_PRICING_MODE = "market_offer_fixed_per_call_v0"
 PHASE9_PRICING_TYPE = "fixed_per_call_v0"
 PHASE9_EXECUTION_MODE = "worker_pull_v0"
+DEFAULT_REQUESTER_RESULT_RETENTION_WINDOW_SECONDS = 3600
 
 
 def phase9_offer_id(*, worker_node_id: str, models: list[str], credits_per_request: int, execution_mode: str) -> str:
@@ -822,6 +823,128 @@ class AIRequestPlexService:
             }
         return {"ok": True, "lease": None}
 
+    def _record_result_retention_window_seconds(self, record: HubRequestRecord) -> int:
+        metadata = (
+            dict(record.request_payload.get("metadata", {}))
+            if isinstance(record.request_payload, dict) and isinstance(record.request_payload.get("metadata"), dict)
+            else {}
+        )
+        raw = (
+            metadata.get("requester_result_retention_window_seconds")
+            or metadata.get("result_retention_window_seconds")
+            or metadata.get("pickup_window_seconds")
+            or DEFAULT_REQUESTER_RESULT_RETENTION_WINDOW_SECONDS
+        )
+        try:
+            return max(0, int(float(raw)))
+        except (TypeError, ValueError):
+            return DEFAULT_REQUESTER_RESULT_RETENTION_WINDOW_SECONDS
+
+    def _record_result_retention_payload(
+        self,
+        record: HubRequestRecord,
+        *,
+        retained_at: str | None = None,
+    ) -> dict[str, Any]:
+        retained_at_text = str(retained_at or record.updated_at or utc_now())
+        window_seconds = self._record_result_retention_window_seconds(record)
+        retained_dt = parse_utc(retained_at_text) or datetime.now(tz=timezone.utc)
+        expires_at = (
+            retained_dt + timedelta(seconds=window_seconds)
+            if window_seconds > 0
+            else retained_dt
+        ).isoformat()
+        return {
+            "mode": "requester_result_pickup_v0",
+            "retained": True,
+            "window_seconds": window_seconds,
+            "retained_at": retained_at_text,
+            "expires_at": expires_at,
+        }
+
+    def _record_result_retention_status(self, record: HubRequestRecord) -> dict[str, Any]:
+        metadata = dict(record.response.get("metadata", {})) if isinstance(record.response, dict) and isinstance(record.response.get("metadata"), dict) else {}
+        hub_metadata = dict(metadata.get("hub", {})) if isinstance(metadata.get("hub"), dict) else {}
+        retention = (
+            dict(hub_metadata.get("result_retention", {}))
+            if isinstance(hub_metadata.get("result_retention"), dict)
+            else self._record_result_retention_payload(record)
+        )
+        expires_at = str(retention.get("expires_at", "") or "")
+        expires_dt = parse_utc(expires_at)
+        expired = bool(expires_dt is not None and expires_dt < datetime.now(tz=timezone.utc))
+        retention["expired"] = expired
+        retention["retained"] = bool(retention.get("retained", True)) and not expired
+        return retention
+
+    def pickup_completed_result(
+        self,
+        request_id: str,
+        *,
+        account_id: str = "",
+        client_node_id: str = "",
+        polling_base_path: str = "/api/hub/v1/requests",
+    ) -> dict[str, Any]:
+        """Return a retained completed result for a reconnecting requester.
+
+        Worker loss is still terminal/no-charge.  This pickup path is only for
+        requests that already completed successfully while the requester was not
+        actively polling the Hub.
+        """
+
+        clean_request_id = str(request_id or "").strip()
+        if not clean_request_id:
+            raise ValueError("request_id is required.")
+        record = self.request_store.get(clean_request_id)
+        if record is None:
+            raise KeyError(f"Unknown hub request: {clean_request_id}")
+        clean_account_id = clean_node_id(account_id, default="") if account_id else ""
+        clean_client_id = clean_node_id(client_node_id, default="") if client_node_id else ""
+        if clean_account_id and record.account_id and clean_account_id != record.account_id:
+            raise PermissionError("Requester account does not own this request.")
+        if clean_client_id and clean_client_id != record.client_node_id:
+            raise PermissionError("Requester client does not own this request.")
+        retention = self._record_result_retention_status(record)
+        status = HubRequestStatus.from_record(
+            record,
+            polling_url=f"{polling_base_path.rstrip('/')}/{record.request_id}",
+        ).as_dict()
+        if record.state != "completed" or not isinstance(record.response, dict):
+            return {
+                "ok": False,
+                "request_id": record.request_id,
+                "state": record.state,
+                "retained": False,
+                "expired": False,
+                "result_available": False,
+                "retention": retention,
+                "request": status,
+            }
+        if bool(retention.get("expired", False)):
+            return {
+                "ok": False,
+                "request_id": record.request_id,
+                "state": record.state,
+                "retained": False,
+                "expired": True,
+                "result_available": False,
+                "retention": retention,
+                "request": status,
+            }
+        response = sanitize_hub_response_payload(record.response)
+        return {
+            "ok": True,
+            "request_id": record.request_id,
+            "state": record.state,
+            "retained": True,
+            "expired": False,
+            "result_available": True,
+            "retention": retention,
+            "response": response,
+            "result": response,
+            "request": status,
+        }
+
     def submit_worker_result(
         self,
         *,
@@ -909,6 +1032,8 @@ class AIRequestPlexService:
         )
         self._release_record_worker(record, success=True)
         metadata = dict(response.metadata)
+        retained_at = utc_now()
+        result_retention = self._record_result_retention_payload(record, retained_at=retained_at)
         metadata["hub"] = {
             "request_id": record.request_id,
             "worker_node_id": clean_worker_id,
@@ -917,6 +1042,7 @@ class AIRequestPlexService:
             "payout_queue": energy_status.get("payout_queue", {}),
             "security_mode": "legacy-plaintext-worker-pull-v0",
             "hub_blind": False,
+            "result_retention": result_retention,
             "worker_pull_v0": True,
             "lease_id": clean_lease_id,
         }
@@ -964,7 +1090,14 @@ class AIRequestPlexService:
             error="",
             terminal_reason="completed",
             event_type="request.completed",
-            event={"worker_node_id": clean_worker_id, "lease_id": clean_lease_id, "worker_pull_v0": True},
+            event={
+                "worker_node_id": clean_worker_id,
+                "lease_id": clean_lease_id,
+                "worker_pull_v0": True,
+                "requester_result_retained": True,
+                "result_retention_window_seconds": result_retention["window_seconds"],
+                "result_retention_expires_at": result_retention["expires_at"],
+            },
         )
         return {
             "ok": True,
