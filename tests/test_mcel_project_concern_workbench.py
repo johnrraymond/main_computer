@@ -155,7 +155,7 @@ def test_file_basket_deprecated_task_manager_alias_resolves_to_git_tools_owner()
     assert queue_item["ownerApp"] == "git-tools"
     assert queue_item["sourceFile"].endswith("git-tools-file-basket.js")
     assert queue_item["legacySurfaceIds"] == ["task-manager.file-basket"]
-    assert queue_item["firstSafeMigration"].startswith("Use git-tools-file-basket.js")
+    assert queue_item["firstSafeMigration"].startswith("Use git-tools-file-basket-contract-view.js")
 
 
 def test_project_workbench_produces_safe_first_patches_for_key_apps() -> None:

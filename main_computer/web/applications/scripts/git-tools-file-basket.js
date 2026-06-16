@@ -192,6 +192,10 @@
     return global.McelFileBasketModel || null;
   }
 
+  function contractView() {
+    return global.GitToolsFileBasketContractView || null;
+  }
+
   function model(review = {}) {
     const modelAdapter = adapter();
     if (!modelAdapter?.buildFileBasketModel) return null;
@@ -504,6 +508,19 @@
     return Array.from(paths).sort((a, b) => a.localeCompare(b));
   }
 
+  function defaultSelectedPathsFromTreeSource(nodes = []) {
+    const paths = [];
+    const visit = (node = {}) => {
+      const data = node.data || {};
+      if (data.kind === "file" && node.selected && data.selectable !== false && data.path) {
+        paths.push(data.path);
+      }
+      (Array.isArray(node.children) ? node.children : []).forEach(visit);
+    };
+    nodes.forEach(visit);
+    return sortSelectedPaths(paths);
+  }
+
   function fallbackTreeHtml(nodes = [], options = {}) {
     const htmlEscape = typeof options.escapeHtml === "function" ? options.escapeHtml : escapeHtml;
     const renderNode = (node = {}) => {
@@ -545,11 +562,13 @@
     const serializedModel = modelJson(fileBasketModel);
     const htmlEscape = typeof options.escapeHtml === "function" ? options.escapeHtml : escapeHtml;
     const repoIdentityHtml = typeof options.repoIdentityHtml === "function" ? options.repoIdentityHtml(review) : "";
-    return `<section class="git-project-commit-right" data-git-commit-basket data-git-commit-file-basket-model-ready="${fileBasketModel ? "true" : "false"}">
+    const renderer = "legacy-wunderbaum";
+    const rendererLabel = "directories first · files under paths";
+    return `<section class="git-project-commit-right" data-git-commit-basket data-git-commit-file-basket-model-ready="${fileBasketModel ? "true" : "false"}" data-git-commit-file-basket-renderer="${renderer}">
       ${repoIdentityHtml}
       <div class="git-project-subscreen-panel-head">
         <strong>File basket</strong>
-        <span>directories first · files under paths</span>
+        <span>${rendererLabel}</span>
       </div>
       <div class="git-project-commit-basket-summary">
         <span>Total candidates <strong>${Number(totals.total)}</strong></span>
@@ -559,8 +578,8 @@
       </div>
       <p class="git-project-muted">Repo file tree: select files directly or select folders as a shortcut. Checked folders mean all selectable child files are selected; mixed folders mean only some child files are selected. ${selectedTotal ? `${selectedTotal} file${selectedTotal === 1 ? "" : "s"} selected by default.` : "Review candidates are not selected until you choose them."}</p>
       ${serializedModel ? `<textarea hidden data-git-commit-file-basket-model>${htmlEscape(serializedModel)}</textarea>` : ""}
-      <textarea hidden data-git-commit-tree-source>${htmlEscape(JSON.stringify(source))}</textarea>
-      <div class="git-project-commit-wunderbaum-shell">
+      <textarea hidden data-git-commit-tree-source data-git-commit-legacy-tree-source>${htmlEscape(JSON.stringify(source))}</textarea>
+      <div class="git-project-commit-wunderbaum-shell" data-git-commit-legacy-tree-active="true">
         <div class="git-project-commit-wunderbaum wb-skeleton wb-initializing" data-git-commit-tree></div>
         <div class="git-project-commit-tree-fallback" data-git-commit-tree-fallback>
           ${fallbackTreeHtml(source, {escapeHtml: htmlEscape})}
@@ -812,7 +831,16 @@
     return adapterSelectedOutput(workbench, Array.from(paths));
   }
 
+  function selectedFilesFromContractTreegrid(workbench) {
+    const view = contractView();
+    if (!workbench?.querySelector?.("[data-git-commit-contract-treegrid]") || typeof view?.selectedFilesFromContractTreegrid !== "function") return [];
+    return adapterSelectedOutput(workbench, view.selectedFilesFromContractTreegrid(workbench));
+  }
+
   function selectedFilesFromWorkbench(workbench) {
+    if (workbench?.querySelector?.("[data-git-commit-contract-treegrid]")) {
+      return selectedFilesFromContractTreegrid(workbench);
+    }
     const tree = workbench?.gitCommitWunderbaum || workbench?.querySelector?.("[data-git-commit-tree]")?._wb_tree;
     const paths = new Set();
     selectedFilesFromWunderbaum(tree).forEach((path) => paths.add(path));
@@ -867,6 +895,7 @@
     createTreeNode,
     candidateItems,
     adapter,
+    contractView,
     model,
     modelJson,
     treeFileTitleFromModel,
@@ -879,6 +908,7 @@
     emptyTreeSource,
     treeSource,
     reviewCandidatePaths,
+    defaultSelectedPathsFromTreeSource,
     fallbackTreeHtml,
     basketHtml,
     readTreeSource,
@@ -896,6 +926,7 @@
     selectedFilesFromFallback,
     selectedFilesFromWunderbaum,
     selectedFilesFromDom,
+    selectedFilesFromContractTreegrid,
     selectedFilesFromWorkbench,
     reviewStats,
   };

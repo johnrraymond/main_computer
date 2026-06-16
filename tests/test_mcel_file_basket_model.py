@@ -250,6 +250,7 @@ def test_mcel_file_basket_model_is_loaded_before_task_manager_and_workbench() ->
     legacy_bridge = (SCRIPTS / "git-tools-legacy-ui-bridge.js").read_text(encoding="utf-8")
     commit_workbench = (SCRIPTS / "git-tools-commit-workbench.js").read_text(encoding="utf-8")
     git_file_basket = (SCRIPTS / "git-tools-file-basket.js").read_text(encoding="utf-8")
+    contract_view = (SCRIPTS / "git-tools-file-basket-contract-view.js").read_text(encoding="utf-8")
     elements = (SCRIPTS / "mcel-elements-core.js").read_text(encoding="utf-8")
     acid = (SCRIPTS / "mcel-element-acid-test.js").read_text(encoding="utf-8")
     css = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
@@ -257,7 +258,8 @@ def test_mcel_file_basket_model_is_loaded_before_task_manager_and_workbench() ->
     assert "<!-- @include applications/scripts/mcel-file-basket-model.js -->" in html
     assert "<!-- @include applications/scripts/git-tools-project-workflow.js -->" in html
     assert "<!-- @include applications/scripts/git-tools-file-basket.js -->" in html
-    assert html.index("mcel-file-basket-model.js") < html.index("git-tools-project-workflow.js") < html.index("git-tools-file-basket.js") < html.index("git-tools-commit-workbench.js") < html.index("git-tools-legacy-ui-bridge.js") < html.index("task-manager.js")
+    assert "<!-- @include applications/scripts/git-tools-file-basket-contract-view.js -->" in html
+    assert html.index("mcel-file-basket-model.js") < html.index("git-tools-project-workflow.js") < html.index("git-tools-file-basket.js") < html.index("git-tools-file-basket-contract-view.js") < html.index("git-tools-commit-workbench.js") < html.index("git-tools-legacy-ui-bridge.js") < html.index("task-manager.js")
     assert html.index("mcel-file-basket-model.js") < html.index("mcel-project-concern-workbench.js")
 
     assert "global.McelFileBasketModel" in model
@@ -272,6 +274,9 @@ def test_mcel_file_basket_model_is_loaded_before_task_manager_and_workbench() ->
     assert "function treeSource" in git_file_basket
     assert "function selectedFilesFromWorkbench" in git_file_basket
     assert "data-git-commit-file-basket-model" in git_file_basket
+    assert "global.GitToolsFileBasketContractView" in contract_view
+    assert "buildContractTreegridRows" in contract_view
+    assert "initializeContractTreegrid" in contract_view
     assert "function gitProjectCommitFileBasketModel" in commit_workbench
     assert "GitToolsFileBasket" in commit_workbench
     assert "adapter.buildFileBasketModel" not in task_manager
@@ -346,7 +351,7 @@ def test_project_workbench_marks_file_basket_first_safe_patch_as_backed_by_adapt
     assert order["implementationStatus"]["module"] == "McelFileBasketModel"
     assert any("title-only tree rejected" in proof for proof in order["implementationStatus"]["proof"])
 
-    assert "git-tools-file-basket.js" in order["firstSafeMigration"][0]
+    assert "git-tools-file-basket-contract-view.js" in order["firstSafeMigration"][0]
     assert any("FileBasketModel adapter" in step for step in order["migrationPhases"])
     assert "blocked rows visible but not selectable" in order["safetyContract"]
 

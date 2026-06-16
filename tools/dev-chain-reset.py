@@ -1165,8 +1165,37 @@ def fund_generated_wallets(
         )
 
 
+SENSITIVE_COMMAND_OPTIONS = {"--private-key", "--mnemonic", "--mnemonic-path"}
+
+
+def redact_command_token(value: object) -> str:
+    token = str(value)
+    for option in SENSITIVE_COMMAND_OPTIONS:
+        prefix = option + "="
+        if token.startswith(prefix):
+            return prefix + "<redacted>"
+    if is_private_key(token):
+        return "<redacted-private-key>"
+    return token
+
+
+def redacted_command(command: list[str]) -> list[str]:
+    redacted: list[str] = []
+    redact_next = False
+    for value in command:
+        token = str(value)
+        if redact_next:
+            redacted.append("<redacted>")
+            redact_next = False
+            continue
+        redacted.append(redact_command_token(token))
+        if token in SENSITIVE_COMMAND_OPTIONS:
+            redact_next = True
+    return redacted
+
+
 def display_command(command: list[str]) -> str:
-    return " ".join(command)
+    return " ".join(redacted_command(command))
 
 
 def process_timeout_arg(timeout_s: float | None) -> float | None:
@@ -1190,15 +1219,18 @@ def run_command(
 ) -> subprocess.CompletedProcess[str]:
     timeout = process_timeout_arg(timeout_s)
     if not progress_label:
-        completed = subprocess.run(
-            command,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"command timed out after {timeout}s: {display_command(command)}") from exc
     else:
         started_at = time.monotonic()
         deadline = None if timeout is None else started_at + timeout
@@ -1218,7 +1250,7 @@ def run_command(
             if deadline is not None and now >= deadline:
                 process.kill()
                 stdout, stderr = process.communicate()
-                raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr)
+                raise RuntimeError(f"command timed out after {timeout}s: {display_command(command)}")
             poll_timeout = 0.5
             if deadline is not None:
                 poll_timeout = min(poll_timeout, max(0.01, deadline - now))
