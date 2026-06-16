@@ -1491,9 +1491,17 @@ class GitToolsServiceTests(unittest.TestCase):
 
 
     def test_git_project_frontend_labels_nested_commit_workbench_cards(self) -> None:
-        script = (self.repo_root / "main_computer" / "web" / "applications" / "scripts" / "task-manager.js").read_text(encoding="utf-8")
+        scripts_dir = self.repo_root / "main_computer" / "web" / "applications" / "scripts"
+        script = "\n".join(
+            (scripts_dir / name).read_text(encoding="utf-8")
+            for name in (
+                "git-tools-project-shared.js",
+                "git-tools-project-wizard-rendering.js",
+                "git-tools-commit-workbench.js",
+            )
+        )
 
-        self.assertIn("GIT_PROJECT_COMMIT_CARD_STEP_IDS", script)
+        self.assertIn("function gitProjectStepIsCommitCard", script)
         self.assertIn("function gitProjectVisibleStepLabel", script)
         self.assertIn("Open commit pane", script)
         self.assertIn("Commit workbench attached here", script)
