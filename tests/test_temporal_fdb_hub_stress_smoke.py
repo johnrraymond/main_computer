@@ -64,6 +64,7 @@ def test_stress_parser_defaults_to_autostart_failover_and_chatter(tmp_path: Path
     assert config.failover_hub_a is True
     assert config.mockchain is False
     assert config.dev_chain_payout_admin_wallet_count == 4
+    assert config.node_reconnect_events == 4
     assert config.random_bridge_funding_events == 3
     assert config.random_bridge_payout_events == 3
     assert config.random_bridge_failed_payout_events == 1
@@ -105,6 +106,8 @@ def test_stress_parser_allows_bridge_random_event_overrides(tmp_path: Path) -> N
         [
             "--repo-root",
             str(tmp_path),
+            "--node-reconnect-events",
+            "6",
             "--random-bridge-funding-events",
             "5",
             "--random-bridge-payout-events",
@@ -115,6 +118,7 @@ def test_stress_parser_allows_bridge_random_event_overrides(tmp_path: Path) -> N
     )
     config = _config_from_args(args)
 
+    assert config.node_reconnect_events == 6
     assert config.random_bridge_funding_events == 5
     assert config.random_bridge_payout_events == 4
     assert config.random_bridge_failed_payout_events == 2

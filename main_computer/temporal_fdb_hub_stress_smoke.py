@@ -12,6 +12,11 @@ from typing import Any
 from urllib.parse import urlencode
 
 from main_computer.dev_chain_smoke_support import bring_up_dev_chain_for_smoke, snapshot_balances_wei
+from main_computer.node_behavior_chaos import (
+    NodeReconnectScenarioConfig,
+    compact_node_behavior_summary,
+    exercise_node_reconnect_scenario,
+)
 from main_computer.temporal_fdb_hub_multi_hub_smoke import (
     DEFAULT_MULTI_HUB_A_URL,
     DEFAULT_MULTI_HUB_B_URL,
@@ -40,6 +45,7 @@ from main_computer.temporal_fdb_hub_node_market_smoke import (
     _post_json,
     _verify_backends,
     _verify_expected_audit_types,
+    _worker_payload,
     _worker_wallet_address_for_config,
 )
 from main_computer.temporal_fdb_node_market_smoke import (
@@ -244,6 +250,7 @@ class HubStressSmokeConfig:
     chatter_interval_seconds: float = 0.02
     freeze_timeout_seconds: float = 30.0
     failover_hub_a: bool = True
+    node_reconnect_events: int = 4
     random_bridge_funding_events: int = 3
     random_bridge_payout_events: int = 3
     random_bridge_failed_payout_events: int = 1
@@ -828,6 +835,7 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
     dev_chain_movements: dict[str, Any] = {}
     random_bridge_funding: dict[str, Any] = {"requested_count": 0, "confirmed_count": 0, "total_credits": 0, "events": []}
     random_bridge_payouts: dict[str, Any] = {"confirmed_requested_count": 0, "confirmed_count": 0, "failed_requested_count": 0, "failed_count": 0, "confirmed_events": [], "failed_events": []}
+    node_behavior: dict[str, Any] = {"requested_count": 0, "planned_count": 0, "completed_count": 0, "offline_seen_count": 0, "available_after_reconnect_count": 0, "duplicate_registration_count": 0, "cross_hub_status_ok": True, "events": []}
     bridge_backend = "mock-chain-lite" if config.mockchain else "dev-chain"
     if not config.mockchain:
         dev_chain_run_token = config.dev_chain_run_id or run_id
@@ -929,6 +937,26 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
         nodes = build_worker_nodes(node_count=config.node_count, run_id=run_id, task_queue_prefix=config.task_queue_prefix)
         registration_counts = _register_workers_multi(configs, nodes, progress=progress)
         nodes_by_id = {node.node_id: node for node in nodes}
+
+        node_behavior = await _await_or_freeze(
+            asyncio.to_thread(
+                exercise_node_reconnect_scenario,
+                configs=configs,
+                nodes=nodes,
+                scenario=NodeReconnectScenarioConfig(
+                    event_count=config.node_reconnect_events,
+                    seed=run_id,
+                    verify_cross_hub=True,
+                ),
+                post_json=_post_json,
+                get_json=_get_json,
+                worker_payload=_worker_payload,
+                worker_wallet_address=_worker_wallet_address_for_config,
+                progress=progress,
+            ),
+            watchdog_task=watchdog_task,
+        )
+        tracker.touch("node_behavior_reconnect_complete")
 
         for index, node in enumerate(nodes, start=1):
             heartbeat_cfg = config_a if index % 2 else config_b
@@ -1211,6 +1239,13 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
             "bridge_random_payout_confirmed_count": int(random_bridge_payouts.get("confirmed_count", 0) or 0),
             "bridge_random_payout_failed_count": int(random_bridge_payouts.get("failed_count", 0) or 0),
             "bridge_active_work_payout_rejection_count": 1 if bool(surprise_payout_rejection.get("rejected")) else 0,
+            "node_reconnect_requested_count": int(node_behavior.get("requested_count", 0) or 0),
+            "node_reconnect_completed_count": int(node_behavior.get("completed_count", 0) or 0),
+            "node_reconnect_offline_seen_count": int(node_behavior.get("offline_seen_count", 0) or 0),
+            "node_reconnect_available_after_reconnect_count": int(node_behavior.get("available_after_reconnect_count", 0) or 0),
+            "node_reconnect_duplicate_registration_count": int(node_behavior.get("duplicate_registration_count", 0) or 0),
+            "node_reconnect_cross_hub_status_ok": bool(node_behavior.get("cross_hub_status_ok", True)),
+            "node_behavior_summary": compact_node_behavior_summary(node_behavior),
             "dev_chain_balance_delta_nonzero_count": (
                 len(dev_chain_rollup.get("balance_deltas_nonzero_wei", {})) if dev_chain_rollup is not None else 0
             ),
@@ -1261,6 +1296,7 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
             "bridge_audit_readback_ok": report["bridge_audit_readback_ok"],
             "bridge_reconciliation_ok": report["bridge_reconciliation_ok"],
             "freeze_detection_ok": report["freeze_detection_ok"],
+            "node_reconnect_cross_hub_status_ok": report["node_reconnect_cross_hub_status_ok"],
         }
         if config.failover_hub_a:
             required["hub_a_failover_completed_via_hub_b"] = report["hub_a_failover_completed_via_hub_b"]
@@ -1352,6 +1388,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chatter-rounds", type=_positive_int, default=30)
     parser.add_argument("--chatter-interval-seconds", type=float, default=0.02)
     parser.add_argument("--freeze-timeout-seconds", type=_positive_float, default=30.0)
+    parser.add_argument("--node-reconnect-events", type=int, default=4, help="Seeded offline/reconnect node behavior events before work starts; use 0 to disable.")
     parser.add_argument("--random-bridge-funding-events", type=_positive_int, default=3)
     parser.add_argument("--random-bridge-payout-events", type=_positive_int, default=3)
     parser.add_argument("--random-bridge-failed-payout-events", type=_positive_int, default=1)
@@ -1403,6 +1440,7 @@ def _config_from_args(args: argparse.Namespace) -> HubStressSmokeConfig:
         chatter_interval_seconds=args.chatter_interval_seconds,
         freeze_timeout_seconds=args.freeze_timeout_seconds,
         failover_hub_a=not args.no_failover_hub_a,
+        node_reconnect_events=max(0, int(args.node_reconnect_events or 0)),
         random_bridge_funding_events=args.random_bridge_funding_events,
         random_bridge_payout_events=args.random_bridge_payout_events,
         random_bridge_failed_payout_events=args.random_bridge_failed_payout_events,
@@ -1470,6 +1508,12 @@ def main(argv: list[str] | None = None) -> int:
         "bridge_random_payout_confirmed_count",
         "bridge_random_payout_failed_count",
         "bridge_active_work_payout_rejection_count",
+        "node_reconnect_requested_count",
+        "node_reconnect_completed_count",
+        "node_reconnect_offline_seen_count",
+        "node_reconnect_available_after_reconnect_count",
+        "node_reconnect_duplicate_registration_count",
+        "node_reconnect_cross_hub_status_ok",
         "nodes_registered",
         "requests_completed",
         "selected_worker_count",
