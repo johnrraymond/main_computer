@@ -4,10 +4,14 @@ from types import SimpleNamespace
 
 from main_computer.node_behavior_chaos import (
     NodeReconnectScenarioConfig,
+    WorkerConnectionReliabilityScenarioConfig,
     compact_node_behavior_summary,
+    compact_worker_connection_reliability_summary,
     exercise_node_reconnect_scenario,
+    exercise_worker_connection_reliability_scenario,
     heartbeat_payload_for_node,
     plan_node_reconnect_events,
+    plan_worker_connection_reliability_events,
     summarize_worker_status,
 )
 
@@ -129,3 +133,171 @@ def test_exercise_node_reconnect_scenario_reuses_same_node_record() -> None:
     assert result["cross_hub_status_ok"] is True
     assert compact_node_behavior_summary(result)["completed_count"] == 1
     assert any(path == "/api/hub/v1/workers/register" for _, path, _ in calls)
+
+
+def test_plan_worker_connection_reliability_events_covers_recover_and_lost_modes() -> None:
+    nodes = [_node(f"node-{index:03d}") for index in range(1, 6)]
+
+    first = plan_worker_connection_reliability_events(
+        nodes,
+        recover_before_timeout_events=2,
+        lost_timeout_events=1,
+        seed="unit",
+        hub_labels=("hub_a", "hub_b"),
+    )
+    second = plan_worker_connection_reliability_events(
+        nodes,
+        recover_before_timeout_events=2,
+        lost_timeout_events=1,
+        seed="unit",
+        hub_labels=("hub_a", "hub_b"),
+    )
+
+    assert first == second
+    assert len(first) == 3
+    assert [plan.mode for plan in first].count("recover_before_timeout") == 2
+    assert [plan.mode for plan in first].count("lost_after_timeout") == 1
+
+
+def test_worker_connection_reliability_scenario_classifies_recover_and_lost_paths() -> None:
+    nodes = [_node("node-001"), _node("node-002")]
+    configs = {
+        "hub_a": SimpleNamespace(
+            hub_url="http://hub-a",
+            model="unit-model",
+            account_id="requester",
+            max_price_credits=2,
+            requested_ring=2,
+            run_id="unit-run",
+            http_timeout_seconds=3.0,
+            http_retry_attempts=1,
+        ),
+        "hub_b": SimpleNamespace(
+            hub_url="http://hub-b",
+            model="unit-model",
+            account_id="requester",
+            max_price_credits=2,
+            requested_ring=2,
+            run_id="unit-run",
+            http_timeout_seconds=3.0,
+            http_retry_attempts=1,
+        ),
+    }
+    requests: dict[str, dict[str, object]] = {}
+    leases: dict[str, dict[str, object]] = {}
+    node_status: dict[str, str] = {node.node_id: "available" for node in nodes}
+    charges: dict[str, int] = {}
+    earnings: dict[str, int] = {}
+
+    def post_json(hub_url: str, path: str, payload: dict[str, object], **kwargs: object) -> dict[str, object]:
+        if path == "/api/hub/v1/requests/quote":
+            node_id = str(payload["requested_worker_node_id"])
+            return {
+                "quote": {
+                    "quote_id": f"quote-{payload['idempotency_key']}",
+                    "selected_worker_node_id": node_id,
+                    "selected_offer": {"worker_node_id": node_id, "credits_per_request": 2},
+                    "quoted_credits": 2,
+                    "max_credits": 2,
+                    "execution_mode": "worker_pull_v0",
+                }
+            }
+        if path == "/api/hub/v1/requests":
+            request_id = f"request-{len(requests)+1}"
+            requests[request_id] = {
+                "request_id": request_id,
+                "state": "queued",
+                "terminal_reason": "",
+                "worker_node_id": str(payload["requested_worker_node_id"]),
+            }
+            return {"request": dict(requests[request_id])}
+        if path == "/api/hub/v1/workers/poll":
+            node_id = str(payload["worker_node_id"])
+            request = next(
+                item for item in requests.values()
+                if item["state"] == "queued" and item["worker_node_id"] == node_id
+            )
+            request["state"] = "leased"
+            lease = {"request_id": request["request_id"], "lease_id": f"lease-{request['request_id']}"}
+            leases[str(request["request_id"])] = lease
+            return {"ok": True, "lease": dict(lease)}
+        if path == "/api/hub/v1/workers/heartbeat":
+            node_status[str(payload["worker_node_id"])] = str(payload.get("status") or "available")
+            return {"ok": True}
+        if path == "/api/hub/v1/workers/register":
+            node_status[str(payload["node_id"])] = "available"
+            return {"ok": True, "worker": {"node_id": payload["node_id"], "status": "available"}}
+        if path == "/api/hub/v1/workers/results":
+            request_id = str(payload["request_id"])
+            request = requests[request_id]
+            request["state"] = "completed"
+            charges[request_id] = 1
+            earnings[request_id] = 1
+            return {
+                "ok": True,
+                "request": {"request_id": request_id, "state": "completed"},
+                "duplicate_completion_additional_charge": 0,
+            }
+        raise AssertionError(path)
+
+    def get_json(hub_url: str, path: str, **kwargs: object) -> dict[str, object]:
+        if "/charges" in path:
+            request_id = path.split("/requests/")[1].split("/charges")[0]
+            count = charges.get(request_id, 0)
+            return {"charge_count": count, "charges": [{}] * count}
+        if "/worker-earnings" in path:
+            request_id = path.split("request_id=")[-1]
+            count = earnings.get(request_id, 0)
+            return {"worker_earning_count": count, "worker_earnings": [{}] * count}
+        if "/events" in path:
+            request_id = path.split("/requests/")[1].split("/events")[0]
+            request = requests[request_id]
+            if request["state"] == "failed":
+                return {"events": [{"type": "payment.hold.released"}, {"type": "request.failed"}]}
+            return {"events": [{"type": "request.completed"}]}
+        if "/requests/" in path:
+            request_id = path.rsplit("/", 1)[-1]
+            return {"request": dict(requests[request_id])}
+        return {"workers": [{"node_id": node_id, "status": status} for node_id, status in node_status.items()]}
+
+    def post_json_expect_http_error(hub_url: str, path: str, payload: dict[str, object], **kwargs: object) -> dict[str, object]:
+        request_id = str(payload["request_id"])
+        requests[request_id]["state"] = "failed"
+        requests[request_id]["terminal_reason"] = "worker_lost_timeout"
+        charges[request_id] = 0
+        return {"error": "Worker result lease has expired; request failed without charging requester.", "_http_status": 400}
+
+    def worker_payload(node: object, *, model: str, wallet_address: str) -> dict[str, object]:
+        return {
+            "node_id": getattr(node, "node_id"),
+            "endpoint": getattr(node, "endpoint"),
+            "model": model,
+            "capabilities": {"wallet_address": wallet_address},
+        }
+
+    def wallet_address(config: object, node: object) -> str:
+        return f"0x{int(getattr(node, 'node_id')[-3:]):040x}"
+
+    result = exercise_worker_connection_reliability_scenario(
+        configs=configs,
+        nodes=nodes,
+        scenario=WorkerConnectionReliabilityScenarioConfig(
+            recover_before_timeout_events=1,
+            lost_timeout_events=1,
+            lease_seconds=1.0,
+            lost_after_seconds=0.0,
+            seed="unit",
+        ),
+        post_json=post_json,
+        get_json=get_json,
+        post_json_expect_http_error=post_json_expect_http_error,
+        worker_payload=worker_payload,
+        worker_wallet_address=wallet_address,
+    )
+
+    assert result["recover_before_timeout_completed_count"] == 1
+    assert result["lost_timeout_failed_count"] == 1
+    assert result["late_result_rejected_count"] == 1
+    assert result["no_charge_after_lost_count"] == 1
+    assert result["payout_integrity_ok"] is True
+    assert compact_worker_connection_reliability_summary(result)["lost_timeout_failed_count"] == 1
