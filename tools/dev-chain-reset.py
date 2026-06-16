@@ -231,6 +231,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--foundry-image", default=FOUNDRY_IMAGE)
     parser.add_argument("--private-key", default=DEFAULT_PRIVATE_KEY)
+    parser.add_argument(
+        "--private-key-env",
+        default=None,
+        help=(
+            "Read the deployer private key from this environment variable. "
+            "This is intended for operator wrappers so the key is not passed to this script directly."
+        ),
+    )
     parser.add_argument("--offices", default=None, help="Comma-separated list of exactly four office addresses.")
     parser.add_argument("--accounts", type=int, default=4, help="Anvil account pool size. Must be greater than one.")
     parser.add_argument("--balance", default="10000", help="Initial Anvil balance per account.")
@@ -1859,7 +1867,26 @@ def deployed_contracts(args: argparse.Namespace, rid: str, hub_admin_address: st
     return result
 
 
+
+def resolve_private_key_argument(args: argparse.Namespace) -> None:
+    env_name = str(getattr(args, "private_key_env", "") or "").strip()
+    if not env_name:
+        return
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", env_name):
+        raise ValueError("--private-key-env must be a valid environment variable name")
+    explicit_private_key = str(getattr(args, "private_key", "") or "")
+    if explicit_private_key and explicit_private_key != DEFAULT_PRIVATE_KEY:
+        raise ValueError("--private-key and --private-key-env cannot both be provided")
+    private_key = str(os.environ.get(env_name, "") or "").strip()
+    if not private_key:
+        raise ValueError(f"environment variable {env_name} is not set or is empty")
+    if not is_private_key(private_key):
+        raise ValueError(f"environment variable {env_name} must contain a 0x-prefixed 32-byte private key")
+    args.private_key = private_key
+
+
 def validate_args(args: argparse.Namespace) -> None:
+    resolve_private_key_argument(args)
     if args.accounts <= 1:
         raise ValueError("--accounts must be greater than one for the local office key pool")
     if int(str(args.hub_admin_funding_wei), 0) <= 0:
