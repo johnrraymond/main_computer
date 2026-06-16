@@ -14,8 +14,11 @@ from urllib.parse import urlencode
 from main_computer.dev_chain_smoke_support import bring_up_dev_chain_for_smoke, snapshot_balances_wei
 from main_computer.node_behavior_chaos import (
     NodeReconnectScenarioConfig,
+    WorkerConnectionReliabilityScenarioConfig,
     compact_node_behavior_summary,
+    compact_worker_connection_reliability_summary,
     exercise_node_reconnect_scenario,
+    exercise_worker_connection_reliability_scenario,
 )
 from main_computer.temporal_fdb_hub_multi_hub_smoke import (
     DEFAULT_MULTI_HUB_A_URL,
@@ -43,6 +46,7 @@ from main_computer.temporal_fdb_hub_node_market_smoke import (
     _heartbeat_loop,
     _local_lab_startup_help,
     _post_json,
+    _post_json_expect_http_error,
     _verify_backends,
     _verify_expected_audit_types,
     _worker_payload,
@@ -251,6 +255,10 @@ class HubStressSmokeConfig:
     freeze_timeout_seconds: float = 30.0
     failover_hub_a: bool = True
     node_reconnect_events: int = 4
+    worker_connection_recover_events: int = 2
+    worker_connection_lost_events: int = 2
+    worker_connection_lease_seconds: float = 1.0
+    worker_connection_lost_after_seconds: float = 1.25
     random_bridge_funding_events: int = 3
     random_bridge_payout_events: int = 3
     random_bridge_failed_payout_events: int = 1
@@ -836,6 +844,19 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
     random_bridge_funding: dict[str, Any] = {"requested_count": 0, "confirmed_count": 0, "total_credits": 0, "events": []}
     random_bridge_payouts: dict[str, Any] = {"confirmed_requested_count": 0, "confirmed_count": 0, "failed_requested_count": 0, "failed_count": 0, "confirmed_events": [], "failed_events": []}
     node_behavior: dict[str, Any] = {"requested_count": 0, "planned_count": 0, "completed_count": 0, "offline_seen_count": 0, "available_after_reconnect_count": 0, "duplicate_registration_count": 0, "cross_hub_status_ok": True, "events": []}
+    worker_connection_reliability: dict[str, Any] = {
+        "recover_requested_count": 0,
+        "lost_requested_count": 0,
+        "planned_count": 0,
+        "completed_count": 0,
+        "recover_before_timeout_completed_count": 0,
+        "lost_timeout_failed_count": 0,
+        "late_result_rejected_count": 0,
+        "no_charge_after_lost_count": 0,
+        "duplicate_result_replay_count": 0,
+        "payout_integrity_ok": True,
+        "events": [],
+    }
     bridge_backend = "mock-chain-lite" if config.mockchain else "dev-chain"
     if not config.mockchain:
         dev_chain_run_token = config.dev_chain_run_id or run_id
@@ -957,6 +978,30 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
             watchdog_task=watchdog_task,
         )
         tracker.touch("node_behavior_reconnect_complete")
+
+        worker_connection_reliability = await _await_or_freeze(
+            asyncio.to_thread(
+                exercise_worker_connection_reliability_scenario,
+                configs=configs,
+                nodes=nodes,
+                scenario=WorkerConnectionReliabilityScenarioConfig(
+                    recover_before_timeout_events=config.worker_connection_recover_events,
+                    lost_timeout_events=config.worker_connection_lost_events,
+                    lease_seconds=config.worker_connection_lease_seconds,
+                    lost_after_seconds=config.worker_connection_lost_after_seconds,
+                    seed=run_id,
+                    verify_cross_hub=True,
+                ),
+                post_json=_post_json,
+                get_json=_get_json,
+                post_json_expect_http_error=_post_json_expect_http_error,
+                worker_payload=_worker_payload,
+                worker_wallet_address=_worker_wallet_address_for_config,
+                progress=progress,
+            ),
+            watchdog_task=watchdog_task,
+        )
+        tracker.touch("worker_connection_reliability_complete")
 
         for index, node in enumerate(nodes, start=1):
             heartbeat_cfg = config_a if index % 2 else config_b
@@ -1246,6 +1291,14 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
             "node_reconnect_duplicate_registration_count": int(node_behavior.get("duplicate_registration_count", 0) or 0),
             "node_reconnect_cross_hub_status_ok": bool(node_behavior.get("cross_hub_status_ok", True)),
             "node_behavior_summary": compact_node_behavior_summary(node_behavior),
+            "worker_connection_recover_requested_count": int(worker_connection_reliability.get("recover_requested_count", 0) or 0),
+            "worker_connection_lost_requested_count": int(worker_connection_reliability.get("lost_requested_count", 0) or 0),
+            "worker_connection_recover_completed_count": int(worker_connection_reliability.get("recover_before_timeout_completed_count", 0) or 0),
+            "worker_connection_lost_failed_count": int(worker_connection_reliability.get("lost_timeout_failed_count", 0) or 0),
+            "worker_connection_late_result_rejected_count": int(worker_connection_reliability.get("late_result_rejected_count", 0) or 0),
+            "worker_connection_no_charge_after_lost_count": int(worker_connection_reliability.get("no_charge_after_lost_count", 0) or 0),
+            "worker_connection_payout_integrity_ok": bool(worker_connection_reliability.get("payout_integrity_ok", True)),
+            "worker_connection_reliability_summary": compact_worker_connection_reliability_summary(worker_connection_reliability),
             "dev_chain_balance_delta_nonzero_count": (
                 len(dev_chain_rollup.get("balance_deltas_nonzero_wei", {})) if dev_chain_rollup is not None else 0
             ),
@@ -1389,6 +1442,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chatter-interval-seconds", type=float, default=0.02)
     parser.add_argument("--freeze-timeout-seconds", type=_positive_float, default=30.0)
     parser.add_argument("--node-reconnect-events", type=int, default=4, help="Seeded offline/reconnect node behavior events before work starts; use 0 to disable.")
+    parser.add_argument("--worker-connection-recover-events", type=int, default=2, help="Seeded active-lease worker disconnects that reconnect before timeout; use 0 to disable.")
+    parser.add_argument("--worker-connection-lost-events", type=int, default=2, help="Seeded active-lease worker disconnects that exceed timeout and must fail/no-charge; use 0 to disable.")
+    parser.add_argument("--worker-connection-lease-seconds", type=_positive_float, default=1.0, help="Short lease duration used for worker connection reliability probes.")
+    parser.add_argument("--worker-connection-lost-after-seconds", type=_positive_float, default=1.25, help="How long to wait before submitting the late result in worker-lost probes.")
     parser.add_argument("--random-bridge-funding-events", type=_positive_int, default=3)
     parser.add_argument("--random-bridge-payout-events", type=_positive_int, default=3)
     parser.add_argument("--random-bridge-failed-payout-events", type=_positive_int, default=1)
@@ -1441,6 +1498,10 @@ def _config_from_args(args: argparse.Namespace) -> HubStressSmokeConfig:
         freeze_timeout_seconds=args.freeze_timeout_seconds,
         failover_hub_a=not args.no_failover_hub_a,
         node_reconnect_events=max(0, int(args.node_reconnect_events or 0)),
+        worker_connection_recover_events=max(0, int(args.worker_connection_recover_events or 0)),
+        worker_connection_lost_events=max(0, int(args.worker_connection_lost_events or 0)),
+        worker_connection_lease_seconds=args.worker_connection_lease_seconds,
+        worker_connection_lost_after_seconds=args.worker_connection_lost_after_seconds,
         random_bridge_funding_events=args.random_bridge_funding_events,
         random_bridge_payout_events=args.random_bridge_payout_events,
         random_bridge_failed_payout_events=args.random_bridge_failed_payout_events,
@@ -1514,6 +1575,13 @@ def main(argv: list[str] | None = None) -> int:
         "node_reconnect_available_after_reconnect_count",
         "node_reconnect_duplicate_registration_count",
         "node_reconnect_cross_hub_status_ok",
+        "worker_connection_recover_requested_count",
+        "worker_connection_lost_requested_count",
+        "worker_connection_recover_completed_count",
+        "worker_connection_lost_failed_count",
+        "worker_connection_late_result_rejected_count",
+        "worker_connection_no_charge_after_lost_count",
+        "worker_connection_payout_integrity_ok",
         "nodes_registered",
         "requests_completed",
         "selected_worker_count",

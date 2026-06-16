@@ -352,3 +352,448 @@ def compact_node_behavior_summary(result: dict[str, Any]) -> dict[str, Any]:
         "duplicate_registration_count": int(result.get("duplicate_registration_count", 0) or 0),
         "cross_hub_status_ok": bool(result.get("cross_hub_status_ok", True)),
     }
+
+
+@dataclass(frozen=True)
+class WorkerConnectionReliabilityEventPlan:
+    event_id: str
+    node_id: str
+    mode: str
+    submit_hub: str
+    poll_hub: str
+    result_hub: str
+
+
+@dataclass(frozen=True)
+class WorkerConnectionReliabilityScenarioConfig:
+    """Configuration for worker disconnect behavior while a request is leased.
+
+    The scenario covers both sides of the worker-connection policy:
+    reconnect-before-timeout is accepted and charged once; worker-lost timeout
+    fails the request, releases the requester hold, and rejects late results.
+    """
+
+    recover_before_timeout_events: int = 0
+    lost_timeout_events: int = 0
+    lease_seconds: float = 1.0
+    lost_after_seconds: float = 1.25
+    seed: str = ""
+    verify_cross_hub: bool = True
+
+
+def plan_worker_connection_reliability_events(
+    nodes: list[Any] | tuple[Any, ...],
+    *,
+    recover_before_timeout_events: int,
+    lost_timeout_events: int,
+    seed: str,
+    hub_labels: list[str] | tuple[str, ...] = ("hub_a", "hub_b"),
+) -> list[WorkerConnectionReliabilityEventPlan]:
+    count_recover = max(0, int(recover_before_timeout_events or 0))
+    count_lost = max(0, int(lost_timeout_events or 0))
+    labels = [str(label) for label in hub_labels if str(label)]
+    candidates = [node for node in nodes if _node_id(node)]
+    if (count_recover + count_lost) <= 0 or not candidates or not labels:
+        return []
+    rng = random.Random(f"{seed}:worker-connection-reliability")
+    rng.shuffle(candidates)
+    modes = ["recover_before_timeout"] * count_recover + ["lost_after_timeout"] * count_lost
+    plans: list[WorkerConnectionReliabilityEventPlan] = []
+    for index, mode in enumerate(modes, start=1):
+        node = candidates[(index - 1) % len(candidates)]
+        submit_hub = labels[rng.randrange(len(labels))]
+        poll_options = [label for label in labels if label != submit_hub] or labels
+        poll_hub = poll_options[rng.randrange(len(poll_options))]
+        result_options = labels if len(labels) > 1 else [poll_hub]
+        result_hub = result_options[rng.randrange(len(result_options))]
+        plans.append(
+            WorkerConnectionReliabilityEventPlan(
+                event_id=f"worker-connection-{index:02d}",
+                node_id=_node_id(node),
+                mode=mode,
+                submit_hub=submit_hub,
+                poll_hub=poll_hub,
+                result_hub=result_hub,
+            )
+        )
+    return plans
+
+
+def _post_worker_connection_request(
+    *,
+    config: Any,
+    node_id: str,
+    event_id: str,
+    post_json: Callable[..., dict[str, Any]],
+) -> dict[str, Any]:
+    logical_id = f"{config.run_id}-{event_id}-{node_id}"
+    quote_payload = {
+        "account_id": config.account_id,
+        "client_node_id": config.account_id,
+        "model": config.model,
+        "prompt": f"Worker connection reliability probe {event_id} for {node_id}",
+        "max_credits": int(config.max_price_credits),
+        "max_price_credits": int(config.max_price_credits),
+        "requested_ring": int(config.requested_ring),
+        "worker_node_id": node_id,
+        "requested_worker_node_id": node_id,
+        "execution_mode": "worker_pull_v0",
+        "pricing_mode": "market_offer_fixed_per_call_v0",
+        "idempotency_key": f"{logical_id}-quote",
+        "metadata": {
+            "worker_pull_v0": True,
+            "node_behavior_scenario": "worker_connection_reliability",
+            "node_behavior_event_id": event_id,
+            "requested_worker_node_id": node_id,
+        },
+    }
+    quote = post_json(
+        config.hub_url,
+        "/api/hub/v1/requests/quote",
+        quote_payload,
+        timeout=config.http_timeout_seconds,
+        retry_attempts=config.http_retry_attempts,
+    )["quote"]
+    selected_offer = quote.get("selected_offer", {}) if isinstance(quote.get("selected_offer"), dict) else {}
+    selected_worker_id = str(selected_offer.get("worker_node_id") or quote.get("selected_worker_node_id") or "")
+    if selected_worker_id != node_id:
+        raise NodeBehaviorScenarioError(
+            f"Worker connection probe {event_id} expected quote for {node_id}, got {selected_worker_id}: {quote}"
+        )
+    submit_payload = {
+        **quote_payload,
+        "quote_id": quote["quote_id"],
+        "metadata": {
+            **quote_payload["metadata"],
+            "quote_id": quote["quote_id"],
+            "quote": dict(quote),
+            "selected_offer": dict(selected_offer),
+        },
+        "idempotency_key": f"{logical_id}-submit",
+    }
+    submitted = post_json(
+        config.hub_url,
+        "/api/hub/v1/requests",
+        submit_payload,
+        timeout=config.http_timeout_seconds,
+        retry_attempts=config.http_retry_attempts,
+    )["request"]
+    return {"quote": quote, "submitted": submitted}
+
+
+def _poll_worker_connection_lease(
+    *,
+    config: Any,
+    node_id: str,
+    event_id: str,
+    lease_seconds: float,
+    post_json: Callable[..., dict[str, Any]],
+) -> dict[str, Any]:
+    result = post_json(
+        config.hub_url,
+        "/api/hub/v1/workers/poll",
+        {
+            "worker_node_id": node_id,
+            "lease_seconds": max(1.0, float(lease_seconds or 1.0)),
+            "node_behavior_event_id": event_id,
+        },
+        timeout=config.http_timeout_seconds,
+        retry_attempts=config.http_retry_attempts,
+    )
+    lease = result.get("lease")
+    if not isinstance(lease, dict):
+        raise NodeBehaviorScenarioError(f"Worker connection probe {event_id} did not receive a lease for {node_id}: {result}")
+    return lease
+
+
+def _worker_connection_result_payload(*, config: Any, event_id: str, mode: str) -> dict[str, Any]:
+    return {
+        "status": "success",
+        "response": {
+            "content": f"worker connection reliability result {event_id}",
+            "provider": "node-behavior-chaos",
+            "model": config.model,
+            "metadata": {
+                "node_behavior_scenario": "worker_connection_reliability",
+                "node_behavior_event_id": event_id,
+                "worker_connection_mode": mode,
+            },
+        },
+    }
+
+
+def _event_types(events_payload: dict[str, Any]) -> list[str]:
+    events = events_payload.get("events", [])
+    if not isinstance(events, list):
+        return []
+    return [str(event.get("event_type") or event.get("type") or "") for event in events if isinstance(event, dict)]
+
+
+def exercise_worker_connection_reliability_scenario(
+    *,
+    configs: dict[str, Any],
+    nodes: list[Any] | tuple[Any, ...],
+    scenario: WorkerConnectionReliabilityScenarioConfig,
+    post_json: Callable[..., dict[str, Any]],
+    get_json: Callable[..., dict[str, Any]],
+    post_json_expect_http_error: Callable[..., dict[str, Any]],
+    worker_payload: Callable[..., dict[str, Any]],
+    worker_wallet_address: Callable[[Any, Any], str],
+    progress: Any | None = None,
+) -> dict[str, Any]:
+    """Exercise active-lease worker disconnect policy through Hub HTTP APIs."""
+
+    hub_labels = tuple(configs.keys())
+    plans = plan_worker_connection_reliability_events(
+        list(nodes),
+        recover_before_timeout_events=scenario.recover_before_timeout_events,
+        lost_timeout_events=scenario.lost_timeout_events,
+        seed=scenario.seed,
+        hub_labels=hub_labels,
+    )
+    nodes_by_id = {_node_id(node): node for node in nodes if _node_id(node)}
+    events: list[dict[str, Any]] = []
+    recover_completed = 0
+    lost_failed = 0
+    late_result_rejected = 0
+    no_charge_after_lost = 0
+    duplicate_result_count = 0
+    payout_integrity_ok = True
+
+    def emit(event: str, **fields: Any) -> None:
+        if progress is not None and hasattr(progress, "emit"):
+            progress.emit(event, **fields)
+
+    for plan in plans:
+        node = nodes_by_id.get(plan.node_id)
+        if node is None:
+            raise NodeBehaviorScenarioError(f"Worker connection plan referenced unknown node: {plan.node_id}")
+        submit_config = configs[plan.submit_hub]
+        poll_config = configs[plan.poll_hub]
+        result_config = configs[plan.result_hub]
+        wallet_address = worker_wallet_address(submit_config, node)
+        emit(
+            "node_behavior_worker_connection_start",
+            event_id=plan.event_id,
+            mode=plan.mode,
+            node_id=plan.node_id,
+            submit_hub=plan.submit_hub,
+            poll_hub=plan.poll_hub,
+            result_hub=plan.result_hub,
+        )
+
+        request_record = _post_worker_connection_request(
+            config=submit_config,
+            node_id=plan.node_id,
+            event_id=plan.event_id,
+            post_json=post_json,
+        )
+        request_id = str(request_record["submitted"].get("request_id", ""))
+        lease = _poll_worker_connection_lease(
+            config=poll_config,
+            node_id=plan.node_id,
+            event_id=plan.event_id,
+            lease_seconds=scenario.lease_seconds,
+            post_json=post_json,
+        )
+        if str(lease.get("request_id", "")) != request_id:
+            raise NodeBehaviorScenarioError(
+                f"Worker connection probe {plan.event_id} leased wrong request: expected={request_id} lease={lease}"
+            )
+
+        # Simulate the worker connection dropping while it owns a lease.
+        post_json(
+            poll_config.hub_url,
+            "/api/hub/v1/workers/heartbeat",
+            heartbeat_payload_for_node(
+                node,
+                status="offline",
+                wallet_address=wallet_address,
+                behavior_event_id=plan.event_id,
+            ),
+            timeout=poll_config.http_timeout_seconds,
+            retry_attempts=poll_config.http_retry_attempts,
+        )
+
+        if plan.mode == "recover_before_timeout":
+            # Same identity returns before the lease deadline, then submits the
+            # original result under the original lease.
+            post_json(
+                result_config.hub_url,
+                "/api/hub/v1/workers/register",
+                worker_payload(node, model=result_config.model, wallet_address=wallet_address),
+                timeout=result_config.http_timeout_seconds,
+                retry_attempts=result_config.http_retry_attempts,
+            )
+            post_json(
+                result_config.hub_url,
+                "/api/hub/v1/workers/heartbeat",
+                heartbeat_payload_for_node(
+                    node,
+                    status="available",
+                    wallet_address=wallet_address,
+                    behavior_event_id=plan.event_id,
+                ),
+                timeout=result_config.http_timeout_seconds,
+                retry_attempts=result_config.http_retry_attempts,
+            )
+            completion_payload = post_json(
+                result_config.hub_url,
+                "/api/hub/v1/workers/results",
+                {
+                    "worker_node_id": plan.node_id,
+                    "request_id": request_id,
+                    "lease_id": lease["lease_id"],
+                    "result": _worker_connection_result_payload(config=result_config, event_id=plan.event_id, mode=plan.mode),
+                },
+                timeout=result_config.http_timeout_seconds,
+                retry_attempts=result_config.http_retry_attempts,
+            )
+            completion = completion_payload.get("request", {}) if isinstance(completion_payload.get("request"), dict) else {}
+            if completion.get("state") != "completed":
+                raise NodeBehaviorScenarioError(
+                    f"Reconnect-before-timeout probe {plan.event_id} did not complete {request_id}: {completion_payload}"
+                )
+            replay = post_json(
+                submit_config.hub_url,
+                "/api/hub/v1/workers/results",
+                {
+                    "worker_node_id": plan.node_id,
+                    "request_id": request_id,
+                    "lease_id": lease["lease_id"],
+                    "result": _worker_connection_result_payload(config=submit_config, event_id=plan.event_id, mode="duplicate_replay"),
+                },
+                timeout=submit_config.http_timeout_seconds,
+                retry_attempts=submit_config.http_retry_attempts,
+            )
+            duplicate_charge = int(replay.get("duplicate_completion_additional_charge", 0) or 0)
+            duplicate_result_count += 1
+            if duplicate_charge != 0:
+                raise NodeBehaviorScenarioError(f"Duplicate replay charged again for {request_id}: {replay}")
+            charges = get_json(
+                result_config.hub_url,
+                f"/api/hub/v1/requests/{request_id}/charges",
+                timeout=result_config.http_timeout_seconds,
+            )
+            earnings = get_json(
+                result_config.hub_url,
+                f"/api/hub/v1/credits/worker-earnings?{urlencode({'worker_node_id': plan.node_id, 'request_id': request_id})}",
+                timeout=result_config.http_timeout_seconds,
+            )
+            if int(charges.get("charge_count", 0) or 0) != 1:
+                payout_integrity_ok = False
+                raise NodeBehaviorScenarioError(f"Expected one charge after reconnect recovery for {request_id}: {charges}")
+            if int(earnings.get("worker_earning_count", 0) or 0) < 1:
+                payout_integrity_ok = False
+                raise NodeBehaviorScenarioError(f"Expected worker earning after reconnect recovery for {request_id}: {earnings}")
+            recover_completed += 1
+            event_result = {
+                "event_id": plan.event_id,
+                "mode": plan.mode,
+                "node_id": plan.node_id,
+                "request_id": request_id,
+                "lease_id": lease["lease_id"],
+                "completed": True,
+                "charge_count": int(charges.get("charge_count", 0) or 0),
+                "worker_earning_count": int(earnings.get("worker_earning_count", 0) or 0),
+            }
+        else:
+            time.sleep(max(0.0, float(scenario.lost_after_seconds or 0.0)))
+            late_error = post_json_expect_http_error(
+                result_config.hub_url,
+                "/api/hub/v1/workers/results",
+                {
+                    "worker_node_id": plan.node_id,
+                    "request_id": request_id,
+                    "lease_id": lease["lease_id"],
+                    "result": _worker_connection_result_payload(config=result_config, event_id=plan.event_id, mode=plan.mode),
+                },
+                timeout=result_config.http_timeout_seconds,
+                expected_status=400,
+            )
+            late_result_rejected += 1
+            status = get_json(result_config.hub_url, f"/api/hub/v1/requests/{request_id}", timeout=result_config.http_timeout_seconds)["request"]
+            if status.get("state") != "failed" or status.get("terminal_reason") != "worker_lost_timeout":
+                raise NodeBehaviorScenarioError(f"Lost-worker probe {plan.event_id} did not fail cleanly: {status}")
+            charges = get_json(
+                result_config.hub_url,
+                f"/api/hub/v1/requests/{request_id}/charges",
+                timeout=result_config.http_timeout_seconds,
+            )
+            if int(charges.get("charge_count", 0) or 0) != 0:
+                raise NodeBehaviorScenarioError(f"Lost-worker probe {plan.event_id} charged requester unexpectedly: {charges}")
+            events_payload = get_json(result_config.hub_url, f"/api/hub/v1/requests/{request_id}/events", timeout=result_config.http_timeout_seconds)
+            event_types = _event_types(events_payload)
+            if "request.failed" not in event_types or "payment.hold.released" not in event_types:
+                raise NodeBehaviorScenarioError(f"Lost-worker probe {plan.event_id} missing failure/hold-release events: {event_types}")
+            # Restore node availability for the rest of the stress run.
+            post_json(
+                result_config.hub_url,
+                "/api/hub/v1/workers/register",
+                worker_payload(node, model=result_config.model, wallet_address=wallet_address),
+                timeout=result_config.http_timeout_seconds,
+                retry_attempts=result_config.http_retry_attempts,
+            )
+            post_json(
+                result_config.hub_url,
+                "/api/hub/v1/workers/heartbeat",
+                heartbeat_payload_for_node(
+                    node,
+                    status="available",
+                    wallet_address=wallet_address,
+                    behavior_event_id=plan.event_id,
+                ),
+                timeout=result_config.http_timeout_seconds,
+                retry_attempts=result_config.http_retry_attempts,
+            )
+            lost_failed += 1
+            no_charge_after_lost += 1
+            event_result = {
+                "event_id": plan.event_id,
+                "mode": plan.mode,
+                "node_id": plan.node_id,
+                "request_id": request_id,
+                "lease_id": lease["lease_id"],
+                "failed": True,
+                "terminal_reason": status.get("terminal_reason"),
+                "charge_count": int(charges.get("charge_count", 0) or 0),
+                "late_error": late_error,
+            }
+
+        emit(
+            "node_behavior_worker_connection_done",
+            event_id=plan.event_id,
+            mode=plan.mode,
+            node_id=plan.node_id,
+            request_id=request_id,
+        )
+        events.append(event_result)
+
+    requested_recover = max(0, int(scenario.recover_before_timeout_events or 0))
+    requested_lost = max(0, int(scenario.lost_timeout_events or 0))
+    return {
+        "recover_requested_count": requested_recover,
+        "lost_requested_count": requested_lost,
+        "planned_count": len(plans),
+        "completed_count": len(events),
+        "recover_before_timeout_completed_count": recover_completed,
+        "lost_timeout_failed_count": lost_failed,
+        "late_result_rejected_count": late_result_rejected,
+        "no_charge_after_lost_count": no_charge_after_lost,
+        "duplicate_result_replay_count": duplicate_result_count,
+        "payout_integrity_ok": payout_integrity_ok,
+        "events": events,
+    }
+
+
+def compact_worker_connection_reliability_summary(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "recover_requested_count": int(result.get("recover_requested_count", 0) or 0),
+        "lost_requested_count": int(result.get("lost_requested_count", 0) or 0),
+        "completed_count": int(result.get("completed_count", 0) or 0),
+        "recover_before_timeout_completed_count": int(result.get("recover_before_timeout_completed_count", 0) or 0),
+        "lost_timeout_failed_count": int(result.get("lost_timeout_failed_count", 0) or 0),
+        "late_result_rejected_count": int(result.get("late_result_rejected_count", 0) or 0),
+        "no_charge_after_lost_count": int(result.get("no_charge_after_lost_count", 0) or 0),
+        "payout_integrity_ok": bool(result.get("payout_integrity_ok", True)),
+    }

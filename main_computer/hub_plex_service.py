@@ -864,17 +864,8 @@ class AIRequestPlexService:
             raise ValueError("Worker result was submitted by the wrong worker.")
         lease_deadline = parse_utc(record.lease_expires_at)
         if lease_deadline is not None and lease_deadline < datetime.now(tz=timezone.utc):
-            self.request_store.update(
-                record.request_id,
-                state="queued",
-                selected_worker_node_id="",
-                lease_id="",
-                lease_expires_at="",
-                event_type="worker_pull.lease.expired",
-                event={"lease_id": clean_lease_id, "worker_node_id": clean_worker_id},
-            )
-            self._release_record_worker(record, success=True)
-            raise ValueError("Worker result lease has expired.")
+            self._fail_worker_pull_lease_timeout(record)
+            raise ValueError("Worker result lease has expired; request failed without charging requester.")
         if not isinstance(result, dict):
             raise ValueError("result must be a JSON object.")
         status = str(result.get("status") or "success").strip().lower()
@@ -1899,6 +1890,40 @@ class AIRequestPlexService:
             models.append(model)
         return not models or desired in models
 
+    def _fail_worker_pull_lease_timeout(self, record: HubRequestRecord, *, reason: str = "worker_lost_timeout") -> HubRequestRecord:
+        """Mark an expired worker-pull lease as failed without charging the requester.
+
+        Worker-pull v0 treats temporary disconnects as recoverable until the lease
+        deadline.  Once that deadline passes, the request is no longer requeued
+        implicitly: the requester must make a new request, the paid hold is
+        released, and any late worker result is rejected without creating a
+        worker earning.
+        """
+
+        worker_node_id = str(record.selected_worker_node_id or "").strip()
+        lease_id = str(record.lease_id or "").strip()
+        error = "Worker disconnected or failed to return a result before the lease deadline."
+        self._release_paid_hold_for_request(record.request_id, reason=reason, error=error)
+        failed = self.request_store.update(
+            record.request_id,
+            state="failed",
+            error=error,
+            terminal_reason=reason,
+            lease_id="",
+            lease_expires_at="",
+            event_type="request.failed",
+            event={
+                "reason": reason,
+                "lease_id": lease_id,
+                "worker_node_id": worker_node_id,
+                "worker_pull_v0": True,
+                "charge_created": False,
+                "requester_charged": False,
+            },
+        )
+        self._release_record_worker(record, success=False)
+        return failed
+
     def _expire_worker_pull_leases(self) -> int:
         now = datetime.now(tz=timezone.utc)
         changed = 0
@@ -1906,16 +1931,7 @@ class AIRequestPlexService:
             deadline = parse_utc(record.lease_expires_at)
             if deadline is None or deadline >= now:
                 continue
-            self.request_store.update(
-                record.request_id,
-                state="queued",
-                selected_worker_node_id="",
-                lease_id="",
-                lease_expires_at="",
-                event_type="worker_pull.lease.expired",
-                event={"lease_id": record.lease_id, "worker_node_id": record.selected_worker_node_id},
-            )
-            self._release_record_worker(record, success=True)
+            self._fail_worker_pull_lease_timeout(record)
             changed += 1
         return changed
 
