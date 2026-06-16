@@ -29,6 +29,7 @@ const context = {{
   console,
   window: null,
   GitToolsStatusApi: {{surfaceId: "git-tools.status-api"}},
+  GitToolsLegacyUiBridge: {{surfaceId: "git-tools.legacy-ui-bridge"}},
   GitToolsFileBasket: {{SURFACE_ID: "git-tools.file-basket"}},
   GitToolsProjectWorkflow: {{SOURCE_FILE: "git-tools-project-workflow.js"}},
   GitToolsServerPanel: {{surfaceId: "git-tools.server-panel"}},
@@ -156,7 +157,8 @@ def test_git_tools_entrypoint_owns_only_git_startup_boundary() -> None:
     assert "<!-- @include applications/scripts/git-tools.js -->" in html
     assert html.index("git-tools-project-workflow.js") < html.index("git-tools.js")
     assert html.index("git-tools-file-basket.js") < html.index("git-tools.js")
-    assert html.index("git-tools-status-api.js") < html.index("git-tools.js")
+    assert html.index("git-tools-status-api.js") < html.index("git-tools-legacy-ui-bridge.js")
+    assert html.index("git-tools-legacy-ui-bridge.js") < html.index("git-tools.js")
     assert html.index("git-tools-server-panel.js") < html.index("git-tools-project-panel.js")
     assert html.index("git-tools-project-panel.js") < html.index("git-tools-patch-inventory.js")
     assert html.index("git-tools-patch-inventory.js") < html.index("task-manager.js")
@@ -171,6 +173,7 @@ def test_git_tools_entrypoint_owns_only_git_startup_boundary() -> None:
     assert "function initGitToolsApp()" in git_tools
     assert "function bindGitToolsControl(control, eventName, handler)" in git_tools
     assert "GitToolsStatusApi" in git_tools
+    assert "GitToolsLegacyUiBridge" in git_tools
     assert "GitToolsFileBasket" in git_tools
     assert "GitToolsProjectWorkflow" in git_tools
     assert "GitToolsServerPanel" in git_tools
@@ -195,6 +198,7 @@ def test_git_tools_entrypoint_exports_compatibility_init_and_binds_controls() ->
     assert report["surfaceId"] == "git-tools.entrypoint"
     assert report["readiness"] == {
         "statusApi": True,
+        "legacyUiBridge": True,
         "fileBasket": True,
         "projectWorkflow": True,
         "serverPanel": True,
