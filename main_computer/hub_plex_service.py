@@ -1317,6 +1317,7 @@ class AIRequestPlexService:
         requested = clean_node_id(requested_worker_node_id, default="") if requested_worker_node_id else ""
         compatible: list[dict[str, Any]] = []
         unpriced_match = False
+        cheapest_over_budget_price: int | None = None
         for worker in workers:
             if not isinstance(worker, dict):
                 continue
@@ -1342,10 +1343,19 @@ class AIRequestPlexService:
             if requested_ring is not None:
                 if worker_ring is None or worker_ring > requested_ring:
                     continue
+            offer_price = max(0, int(offer.get("credits_per_request", 0) or 0))
+            if max_credits > 0 and offer_price > max_credits:
+                if cheapest_over_budget_price is None or offer_price < cheapest_over_budget_price:
+                    cheapest_over_budget_price = offer_price
+                continue
             if worker_ring is not None and "assigned_ring" not in offer:
                 offer = {**offer, "assigned_ring": worker_ring}
             compatible.append(offer)
         if not compatible:
+            if cheapest_over_budget_price is not None:
+                raise ValueError(
+                    f"Selected worker offer price {cheapest_over_budget_price} exceeds requester max_credits {max_credits}."
+                )
             if requested_ring is not None:
                 raise ValueError(
                     "No compatible priced worker offer is available for this model, execution mode, "
