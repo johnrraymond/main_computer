@@ -782,3 +782,69 @@ def test_private_key_env_rejects_empty_value(monkeypatch) -> None:
         assert "not set or is empty" in str(exc)
     else:  # pragma: no cover - defensive assertion
         raise AssertionError("expected empty --private-key-env value to be rejected")
+
+
+def test_display_command_redacts_private_key_arguments() -> None:
+    reset = load_dev_chain_reset()
+    key = "0x" + "12" * 32
+    address = "0x" + "34" * 20
+
+    displayed = reset.display_command(
+        [
+            "cast",
+            "send",
+            address,
+            "--private-key",
+            key,
+            "--private-key=" + key,
+            "--json",
+        ]
+    )
+
+    assert key not in displayed
+    assert address in displayed
+    assert "--private-key <redacted>" in displayed
+    assert "--private-key=<redacted>" in displayed
+
+
+def test_run_command_failure_redacts_private_key(monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+    key = "0x" + "56" * 32
+    command = ["cast", "send", "--private-key", key]
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(command, 1, "", "")
+
+    monkeypatch.setattr(reset.subprocess, "run", fake_run)
+
+    try:
+        reset.run_command(command)
+    except RuntimeError as exc:
+        message = str(exc)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("expected run_command to raise on non-zero exit")
+
+    assert key not in message
+    assert "--private-key <redacted>" in message
+
+
+def test_run_command_timeout_redacts_private_key(monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+    key = "0x" + "78" * 32
+    command = ["forge", "create", "--private-key", key]
+
+    def fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(command, 1)
+
+    monkeypatch.setattr(reset.subprocess, "run", fake_run)
+
+    try:
+        reset.run_command(command, timeout_s=1)
+    except RuntimeError as exc:
+        message = str(exc)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("expected run_command timeout to raise")
+
+    assert key not in message
+    assert "--private-key <redacted>" in message
+
