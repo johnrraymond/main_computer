@@ -15,6 +15,7 @@ def _run_contract_treegrid_node() -> dict:
     controller = SCRIPTS / "mcel-file-basket-controller.js"
     git_file_basket = SCRIPTS / "git-tools-file-basket.js"
     contract_view = SCRIPTS / "git-tools-file-basket-contract-view.js"
+    treegrid_lab = SCRIPTS / "mcel-git-file-basket-treegrid-lab.js"
     commit_workbench = SCRIPTS / "git-tools-commit-workbench.js"
     toolkit = SCRIPTS / "mcel-toolkit-core.js"
     concern = SCRIPTS / "mcel-concern-core.js"
@@ -68,6 +69,7 @@ def _run_contract_treegrid_node() -> dict:
         SCRIPTS / "git-tools-project-workflow.js",
         SCRIPTS / "git-tools-file-basket.js",
         SCRIPTS / "git-tools-file-basket-contract-view.js",
+        SCRIPTS / "mcel-git-file-basket-treegrid-lab.js",
         SCRIPTS / "git-tools-commit-workbench.js",
         SCRIPTS / "git-tools-legacy-ui-bridge.js",
         SCRIPTS / "task-manager.js",
@@ -84,6 +86,7 @@ vm.runInThisContext(fs.readFileSync({json.dumps(str(model))}, "utf8"), {{filenam
 vm.runInThisContext(fs.readFileSync({json.dumps(str(controller))}, "utf8"), {{filename: "mcel-file-basket-controller.js"}});
 vm.runInThisContext(fs.readFileSync({json.dumps(str(git_file_basket))}, "utf8"), {{filename: "git-tools-file-basket.js"}});
 vm.runInThisContext(fs.readFileSync({json.dumps(str(contract_view))}, "utf8"), {{filename: "git-tools-file-basket-contract-view.js"}});
+vm.runInThisContext(fs.readFileSync({json.dumps(str(treegrid_lab))}, "utf8"), {{filename: "mcel-git-file-basket-treegrid-lab.js"}});
 vm.runInThisContext(fs.readFileSync({json.dumps(str(commit_workbench))}, "utf8"), {{filename: "git-tools-commit-workbench.js"}});
 
 const review = {json.dumps(sample_review)};
@@ -108,10 +111,22 @@ const directoryContractOutput = globalThis.GitToolsFileBasketContractView.select
 const readiness = globalThis.GitToolsFileBasketContractView.summarizeContractTreegridReadiness(fileBasket, {{
   selectedPaths: fileBasket.defaultSelectedPaths,
   legacySelectedPaths,
-  legacyRollbackAvailable: true
+  legacyRendererActive: true,
+  legacyRollbackAvailable: true,
+  activeReplacement: false,
+  visibleRenderer: "mcel-lab-git-treegrid"
 }});
 const comparison = globalThis.GitToolsFileBasketContractView.compareLegacyAndContractSelection(fileBasket, legacySelectedPaths);
 const basketHtml = globalThis.GitToolsFileBasket.basketHtml(review);
+const contractTreegridHtml = globalThis.GitToolsFileBasketContractView.renderContractTreegridHtml(fileBasket, {{
+  selectedPaths: fileBasket.defaultSelectedPaths,
+  legacySelectedPaths,
+  legacyRendererActive: true,
+  legacyRollbackAvailable: true,
+  activeReplacement: false,
+  visibleRenderer: "mcel-lab-git-treegrid"
+}});
+const labReport = globalThis.McelGitFileBasketTreegridLab.buildInteractiveGitTreegridLabReport();
 
 vm.runInThisContext(fs.readFileSync({json.dumps(str(toolkit))}, "utf8"), {{filename: "mcel-toolkit-core.js"}});
 vm.runInThisContext(fs.readFileSync({json.dumps(str(concern))}, "utf8"), {{filename: "mcel-concern-core.js"}});
@@ -120,7 +135,7 @@ const projectFiles = {json.dumps([str(path) for path in project_files])}.map((pa
   return {{path, text: fs.readFileSync(path, "utf8")}};
 }});
 const projectReport = globalThis.McelProjectConcernWorkbench.buildProjectConcernWorkbench(projectFiles, {{
-  projectId: "main_computer_test.contract-treegrid"
+  projectId: "main_computer_test.contract-treegrid-lab"
 }});
 const order = globalThis.McelProjectConcernWorkbench.getWorkOrder(projectReport, "git-tools.file-basket");
 
@@ -136,10 +151,15 @@ console.log(JSON.stringify({{
   directorySelection,
   blockedAttempt,
   directoryContractOutput,
+  labReport,
   basketHtmlIncludesContractTreegrid: basketHtml.includes("data-git-commit-contract-treegrid"),
-  basketHtmlRenderer: basketHtml.includes('data-git-commit-file-basket-renderer="contract-treegrid"'),
+  basketHtmlRendererContract: basketHtml.includes('data-git-commit-file-basket-renderer="contract-treegrid"'),
+  basketHtmlRendererLegacy: basketHtml.includes('data-git-commit-file-basket-renderer="legacy-wunderbaum"'),
   basketHtmlIncludesLegacyRollback: basketHtml.includes("data-git-commit-legacy-tree-rollback"),
   basketHtmlIncludesActiveLegacyWunderbaum: basketHtml.includes('data-git-commit-legacy-tree-active="true"'),
+  contractHtmlIncludesResizeHandles: contractTreegridHtml.includes("data-git-commit-contract-resize-handle"),
+  contractHtmlIncludesColumnVars: contractTreegridHtml.includes("--git-treegrid-path-col"),
+  contractHtmlIncludesIndentSpacer: contractTreegridHtml.includes("git-project-contract-treegrid-indent"),
   commitWorkbenchUsesContractInit: typeof globalThis.GitToolsCommitWorkbench.gitProjectCommitInitializeContractTreegrid === "function",
   order
 }}));
@@ -148,50 +168,75 @@ console.log(JSON.stringify({{
     return json.loads(result.stdout)
 
 
-def test_git_tools_file_basket_restores_legacy_tree_renderer_while_contract_view_stays_prepared() -> None:
+def test_git_tools_file_basket_uses_legacy_renderer_while_lab_mounts_treegrid() -> None:
     html = (ROOT / "main_computer" / "web" / "applications.html").read_text(encoding="utf-8")
     contract_view = (SCRIPTS / "git-tools-file-basket-contract-view.js").read_text(encoding="utf-8")
     git_file_basket = (SCRIPTS / "git-tools-file-basket.js").read_text(encoding="utf-8")
-    commit_workbench = (SCRIPTS / "git-tools-commit-workbench.js").read_text(encoding="utf-8")
-    css = (WEB_APP / "styles" / "git-tools.css").read_text(encoding="utf-8")
+    treegrid_lab = (SCRIPTS / "mcel-git-file-basket-treegrid-lab.js").read_text(encoding="utf-8")
+    acid = (SCRIPTS / "mcel-element-acid-test.js").read_text(encoding="utf-8")
+    css = (WEB_APP / "styles" / "mcel-lab.css").read_text(encoding="utf-8")
 
     assert "<!-- @include applications/scripts/git-tools-file-basket-contract-view.js -->" in html
-    assert html.index("mcel-file-basket-controller.js") < html.index("git-tools-file-basket.js") < html.index("git-tools-file-basket-contract-view.js") < html.index("git-tools-commit-workbench.js")
+    assert "<!-- @include applications/scripts/mcel-git-file-basket-treegrid-lab.js -->" in html
+    assert html.index("git-tools-file-basket-contract-view.js") < html.index("mcel-project-concern-workbench.js") < html.index("mcel-git-file-basket-treegrid-lab.js") < html.index("mcel-element-acid-test.js")
 
     assert "global.GitToolsFileBasketContractView" in contract_view
     assert "buildContractTreegridRows" in contract_view
     assert "summarizeContractTreegridReadiness" in contract_view
     assert "compareLegacyAndContractSelection" in contract_view
     assert "initializeContractTreegrid" in contract_view
+    assert "refreshTreegridVisibility" in contract_view
+    assert "setDirectoryExpanded" in contract_view
+    assert "setTreegridColumnWidth" in contract_view
+    assert "data-git-commit-contract-resize-handle" in contract_view
+    assert 'columnSizingController: "controller.column-sizing"' in contract_view
+    assert 'data-git-commit-contract-treegrid-active="${activeReplacement ? "true" : "false"}"' in contract_view
+    assert "activeReplacement: options.activeReplacement === true" in contract_view
 
-    assert "data-git-commit-file-basket-renderer" in git_file_basket
-    assert 'data-git-commit-file-basket-renderer="${renderer}"' in git_file_basket
-    assert 'data-git-commit-legacy-tree-active="true"' in git_file_basket
-    assert "data-git-commit-legacy-tree-rollback" not in git_file_basket
+    assert 'const renderer = "legacy-wunderbaum"' in git_file_basket
+    assert 'const contractTreegridHtml = "";' in git_file_basket
+    assert "data-git-commit-legacy-tree-active" in git_file_basket
 
-    assert "gitProjectCommitInitializeContractTreegrid" in commit_workbench
-    assert "[data-git-commit-contract-treegrid]" in commit_workbench
-    assert ".git-project-contract-treegrid" in css
-    assert '.git-project-contract-treegrid input[type="checkbox"]' in css
+    assert "global.McelGitFileBasketTreegridLab" in treegrid_lab
+    assert "renderInteractiveGitTreegridLab" in treegrid_lab
+    assert "buildInteractiveGitTreegridLabReport" in treegrid_lab
+    assert "buildViewModeCatalog" in treegrid_lab
+    assert "data-mcel-git-treegrid-view-mode-option" in treegrid_lab
+    assert "column-browser-inspector" in treegrid_lab
+    assert "plain-tree-primary" in treegrid_lab
+    assert "replacementGate: \"deferred-until-interactive-lab-proof-passes\"" in treegrid_lab
+    assert "renderGitFileBasketTreegridLab" in acid
+
+    assert ".mcel-git-treegrid-lab" in css
+    assert '.mcel-git-treegrid-lab .git-project-contract-treegrid input[type="checkbox"]' in css
     assert "flex: 0 0 14px" in css
     assert "width: 14px" in css
     assert "padding: 0" in css
-    assert "flex: 1 1 auto" in css
+    assert ".git-project-contract-treegrid-resize-handle" in (WEB_APP / "styles" / "git-tools.css").read_text(encoding="utf-8")
+    assert "var(--git-treegrid-path-col" in css
+    assert ".mcel-git-treegrid-lab-side" in css
+    assert ".mcel-git-treegrid-view-mode-switcher" in css
+    assert ".mcel-git-view-column-browser" in css
+    assert ".mcel-git-view-icon-grid" in css
 
 
-def test_contract_treegrid_rows_preserve_contract_and_controller_selection() -> None:
+def test_contract_treegrid_rows_preserve_contract_selection_but_are_not_live_git_renderer() -> None:
     report = _run_contract_treegrid_node()
 
     assert report["basketHtmlIncludesContractTreegrid"] is False
-    assert report["basketHtmlRenderer"] is False
+    assert report["basketHtmlRendererContract"] is False
+    assert report["basketHtmlRendererLegacy"] is True
     assert report["basketHtmlIncludesLegacyRollback"] is False
     assert report["basketHtmlIncludesActiveLegacyWunderbaum"] is True
     assert report["commitWorkbenchUsesContractInit"] is True
+    assert report["contractHtmlIncludesResizeHandles"] is True
+    assert report["contractHtmlIncludesColumnVars"] is True
+    assert report["contractHtmlIncludesIndentSpacer"] is True
 
     readiness = report["readiness"]
     assert readiness["ready"] is True
     assert readiness["activeReplacement"] is False
-    assert readiness["visibleRenderer"] == "legacy-wunderbaum"
+    assert readiness["visibleRenderer"] == "mcel-lab-git-treegrid"
     assert readiness["legacyRendererActive"] is True
     assert readiness["legacyRollbackAvailable"] is True
     assert readiness["treegridEligible"] is True
@@ -233,14 +278,61 @@ def test_contract_treegrid_rows_preserve_contract_and_controller_selection() -> 
     assert report["blockedAttempt"]["selectedPaths"] == report["directorySelection"]["selectedPaths"]
 
 
-def test_project_workbench_marks_git_file_basket_as_contract_treegrid_prepared_with_legacy_active() -> None:
+def test_mcel_lab_exercises_git_shaped_treegrid_before_replacement() -> None:
+    report = _run_contract_treegrid_node()
+    lab = report["labReport"]
+
+    assert lab["ready"] is True
+    assert lab["targetConcern"] == "git-tools.file-basket"
+    assert lab["activeInGitTools"] is False
+    assert lab["gitToolsRenderer"] == "legacy-wunderbaum"
+    assert lab["visibleRenderer"] == "mcel-lab-git-treegrid"
+    assert lab["replacementGate"] == "deferred-until-interactive-lab-proof-passes"
+    assert lab["defaultViewMode"] == "contract-treegrid"
+    assert {"contract-treegrid", "details-tree"} <= set(lab["eligibleViewModeIds"])
+    assert {"compact-audit-list", "data-table", "column-browser-inspector", "title-only-tree", "plain-tree-primary", "icon-grid-primary"} <= set(lab["rejectedViewModeIds"])
+    view_modes = {mode["id"]: mode for mode in lab["viewModes"]}
+    assert view_modes["contract-treegrid"]["interactive"] is True
+    assert view_modes["details-tree"]["interactive"] is True
+    assert view_modes["column-browser-inspector"]["status"] == "rejected"
+    assert "tri-state-selection" in view_modes["column-browser-inspector"]["missingCapabilities"]
+    assert view_modes["plain-tree-primary"]["status"] == "rejected"
+    assert lab["readiness"]["activeReplacement"] is False
+    assert lab["readiness"]["legacyRendererActive"] is True
+
+    proof = lab["proofChecks"]
+    assert proof["legacyGitTreeStillActive"] is True
+    assert proof["labOnlyTreegrid"] is True
+    assert proof["activeReplacement"] is False
+    assert proof["rowsHaveRepoRelativeIdentity"] is True
+    assert proof["pathCellsStructured"] is True
+    assert proof["typedFieldsStructured"] is True
+    assert proof["blockedRowsVisible"] is True
+    assert proof["blockedRowsSelectable"] is False
+    assert proof["selectedBlockedPaths"] == []
+    assert proof["directorySelectionMatchesContractOutput"] is True
+    assert proof["directorySelectionUsesSelectableDescendants"] is True
+    assert proof["disclosureExpansionPrepared"] is True
+    assert proof["columnResizePrepared"] is True
+    assert proof["viewModeOptionsAvailable"] is True
+    assert proof["eligibleViewModesIncludeTreegrid"] is True
+    assert proof["rejectedViewModesPreserved"] is True
+    assert proof["selectedOutputMatchesLegacy"] is True
+    assert proof["titleOnlyTreeRejected"] is True
+
+    assert "runtime/git-tools/.env.local" in lab["scenarios"]["probes"]["blocked"]
+    assert lab["scenarios"]["blockedAttempt"]["ok"] is False
+    assert lab["directoryContractOutput"] == lab["scenarios"]["directorySelection"]["selectedPaths"]
+
+
+def test_project_workbench_marks_git_file_basket_as_interactive_lab_target() -> None:
     report = _run_contract_treegrid_node()
     order = report["order"]
 
     assert order["id"] == "git-tools.file-basket"
-    assert order["implementationStatus"]["status"] == "contract-treegrid-prepared"
-    assert order["implementationStatus"]["module"] == "GitToolsFileBasketContractView"
-    assert any("selected output matches" in proof for proof in order["implementationStatus"]["proof"])
-    assert "git-tools-file-basket-contract-view.js" in order["firstSafeMigration"][0]
-    assert any("legacy Wunderbaum/fallback tree as the active visible selector" in phase for phase in order["firstSafeMigration"])
-    assert any("Restore the legacy Git Tools tree" in phase for phase in order["migrationPhases"])
+    assert order["implementationStatus"]["status"] == "interactive-lab-active"
+    assert order["implementationStatus"]["module"] == "McelGitFileBasketTreegridLab"
+    assert any("legacy-wunderbaum" in proof for proof in order["implementationStatus"]["proof"])
+    assert any("replacement deferred" in proof for proof in order["implementationStatus"]["proof"])
+    assert "mcel lab-only contract treegrid surface" in order["firstSafeMigration"][0].lower()
+    assert any("interactive MCEL lab surface" in phase for phase in order["migrationPhases"])

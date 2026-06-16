@@ -30,6 +30,10 @@ def test_exp_fdb_state_defines_atomic_worker_pull_claim_and_scheduler_index() ->
     assert '"worker_pull.lease.granted"' in module
     assert "idx_worker_available" in module
     assert "available_workers_by_network_ring_model_price" in module
+    assert 'worker_instance_id: str = ""' in module
+    assert "clean_worker_instance_id" in module
+    assert "preferred_worker_instance_id" in module
+    assert '"worker_instance_id": clean_worker_instance_id' in module
 
 
 def test_worker_pull_uses_atomic_claim_when_store_supports_it() -> None:

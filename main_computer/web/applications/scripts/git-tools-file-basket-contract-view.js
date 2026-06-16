@@ -9,13 +9,22 @@
     collectionView: "collection.treegrid",
     selectionControl: "control.selection.tristate",
     disclosureControl: "control.disclosure",
+    resizeHandle: "control.resize-handle",
     pathCell: "cell.path",
     statusCell: "cell.status",
     riskCell: "cell.risk",
     reasonCell: "cell.reason",
     expansionController: "controller.expansion",
+    columnSizingController: "controller.column-sizing",
     selectionController: "controller.selection"
   });
+
+  const TREEGRID_COLUMNS = Object.freeze([
+    {id: "path", label: "Path", cssVar: "--git-treegrid-path-col", defaultWidth: "minmax(22rem, 1.65fr)", minWidth: 240},
+    {id: "status", label: "Status", cssVar: "--git-treegrid-status-col", defaultWidth: "minmax(8rem, 0.48fr)", minWidth: 104},
+    {id: "risk", label: "Risk", cssVar: "--git-treegrid-risk-col", defaultWidth: "minmax(8rem, 0.48fr)", minWidth: 96},
+    {id: "reason", label: "Reason", cssVar: "--git-treegrid-reason-col", defaultWidth: "minmax(14rem, 0.78fr)", minWidth: 160}
+  ]);
 
   function escapeHtml(value = "") {
     return String(value ?? "")
@@ -335,8 +344,8 @@
       version: VERSION,
       surfaceId: SURFACE_ID,
       contractId: fileBasketModel.contractId || CONTRACT_ID,
-      visibleRenderer: options.visibleRenderer || "legacy-wunderbaum",
-      legacyRendererActive: options.legacyRendererActive !== false,
+      visibleRenderer: options.visibleRenderer || (options.activeReplacement === true ? "contract-treegrid" : "mcel-lab-git-treegrid"),
+      legacyRendererActive: options.legacyRendererActive === true,
       legacyRollbackAvailable: options.legacyRollbackAvailable !== false,
       prepared: true,
       activeReplacement: options.activeReplacement === true,
@@ -356,6 +365,31 @@
       toolkitPrimitives: {...TOOLKIT_PRIMITIVES},
       comparison
     };
+  }
+
+  function treegridColumnStyle() {
+    return TREEGRID_COLUMNS
+      .map((column) => `${column.cssVar}: ${column.defaultWidth}`)
+      .join("; ");
+  }
+
+  function columnById(columnId = "") {
+    return TREEGRID_COLUMNS.find((column) => column.id === columnId) || null;
+  }
+
+  function columnHeaderHtml(column = {}, index = 0) {
+    const isLast = index >= TREEGRID_COLUMNS.length - 1;
+    const resizeHandle = isLast ? "" : `<button type="button"
+        class="git-project-contract-treegrid-resize-handle"
+        data-git-commit-contract-resize-handle="${escapeHtml(column.id)}"
+        aria-label="Resize ${escapeHtml(column.label || column.id)} column"
+        tabindex="0"></button>`;
+    return `<div role="columnheader"
+        data-git-commit-contract-column="${escapeHtml(column.id)}"
+        data-git-commit-contract-resizable-column="${escapeHtml(column.id)}">
+      <span>${escapeHtml(column.label || column.id)}</span>
+      ${resizeHandle}
+    </div>`;
   }
 
   function ariaCheckedForState(state = "unchecked") {
@@ -381,6 +415,7 @@
         ${isDirectory ? `aria-expanded="true" data-git-commit-contract-expanded="true"` : ""}
         style="--git-tree-depth:${Number(row.depth || 0)}">
       <div class="git-project-contract-treegrid-cell is-path" role="gridcell">
+        <span class="git-project-contract-treegrid-indent" aria-hidden="true"></span>
         ${isDirectory ? `<button type="button" class="git-project-contract-treegrid-disclosure" data-git-commit-contract-disclosure="${escapeHtml(row.repoRelativePath)}" aria-label="Collapse ${escapeHtml(label)}" aria-expanded="true">▾</button>` : `<span class="git-project-contract-treegrid-leaf" aria-hidden="true">•</span>`}
         <input type="checkbox"
           data-git-commit-contract-checkbox="${isDirectory ? "dir" : "file"}"
@@ -407,28 +442,28 @@
     const readiness = summarizeContractTreegridReadiness(fileBasketModel, {
       selectedPaths,
       legacySelectedPaths: options.legacySelectedPaths || selectedPaths,
+      legacyRendererActive: options.legacyRendererActive === true,
       legacyRollbackAvailable: options.legacyRollbackAvailable !== false,
-      visibleRenderer: "contract-treegrid",
-      legacyRendererActive: false,
-      activeReplacement: true
+      activeReplacement: options.activeReplacement === true,
+      visibleRenderer: options.visibleRenderer || (options.activeReplacement === true ? "contract-treegrid" : "mcel-lab-git-treegrid")
     });
+    const activeReplacement = readiness.activeReplacement === true;
     const htmlEscape = typeof options.escapeHtml === "function" ? options.escapeHtml : escapeHtml;
     const serializedRows = JSON.stringify(rows);
     const serializedReadiness = JSON.stringify(readiness);
+    const proofLabel = activeReplacement ? "MCEL contract treegrid active" : "MCEL contract treegrid lab surface";
     return `<textarea hidden data-git-commit-contract-treegrid-source>${htmlEscape(serializedRows)}</textarea>
       <textarea hidden data-git-commit-contract-treegrid-readiness>${htmlEscape(serializedReadiness)}</textarea>
-      <div class="git-project-contract-treegrid-shell" data-git-commit-contract-treegrid data-git-commit-contract-treegrid-active="true" data-git-commit-contract-view="${htmlEscape(SURFACE_ID)}">
+      <div class="git-project-contract-treegrid-shell" data-git-commit-contract-treegrid data-git-commit-contract-treegrid-active="${activeReplacement ? "true" : "false"}" data-git-commit-contract-view="${htmlEscape(SURFACE_ID)}" style="${htmlEscape(treegridColumnStyle())}">
         <div class="git-project-contract-treegrid-proof" data-git-commit-contract-proof>
-          <strong>MCEL contract treegrid active</strong>
+          <strong>${proofLabel}</strong>
           <span>selected output proof ${readiness.selectedOutputMatchesLegacy ? "matches" : "needs review"}</span>
           <span>blocked rows visible · non-selectable</span>
+          <span>expansion and column sizing stay lab-owned</span>
         </div>
-        <div class="git-project-contract-treegrid" role="treegrid" aria-label="Git Tools file basket contract treegrid" aria-colcount="4">
+        <div class="git-project-contract-treegrid" role="treegrid" aria-label="Git Tools file basket contract treegrid" aria-colcount="${TREEGRID_COLUMNS.length}">
           <div class="git-project-contract-treegrid-head" role="row">
-            <div role="columnheader">Path</div>
-            <div role="columnheader">Status</div>
-            <div role="columnheader">Risk</div>
-            <div role="columnheader">Reason</div>
+            ${TREEGRID_COLUMNS.map(columnHeaderHtml).join("")}
           </div>
           <div class="git-project-contract-treegrid-body" data-git-commit-contract-treegrid-body>
             ${rows.map(contractRowHtml).join("") || `<div class="git-project-contract-treegrid-empty">No candidate files.</div>`}
@@ -518,13 +553,103 @@
     return {...result, selectedPaths: selected, output: selected};
   }
 
-  function setDescendantsHidden(workbench, parentPath = "", hidden = false) {
-    const prefix = parentPath ? `${parentPath}/` : "";
-    Array.from(workbench?.querySelectorAll?.("[data-git-commit-contract-row]") || []).forEach((row) => {
+  function directoryRowsByPath(workbench) {
+    const map = new Map();
+    Array.from(workbench?.querySelectorAll?.("[data-git-commit-contract-row='directory']") || []).forEach((row) => {
       const path = normalizeRepoPath(row.dataset.gitCommitContractPath || "");
-      if (!path || path === parentPath || !path.startsWith(prefix)) return;
-      row.hidden = hidden;
+      if (path) map.set(path, row);
     });
+    return map;
+  }
+
+  function hasCollapsedAncestor(row, directoryRows) {
+    let parentPath = normalizeRepoPath(row?.dataset?.gitCommitContractParent || "");
+    const seen = new Set();
+    while (parentPath && !seen.has(parentPath)) {
+      seen.add(parentPath);
+      const parentRow = directoryRows.get(parentPath);
+      if (parentRow?.dataset?.gitCommitContractExpanded === "false") return true;
+      parentPath = normalizeRepoPath(parentRow?.dataset?.gitCommitContractParent || "");
+    }
+    return false;
+  }
+
+  function refreshTreegridVisibility(workbench) {
+    const directoryRows = directoryRowsByPath(workbench);
+    let visibleCount = 0;
+    Array.from(workbench?.querySelectorAll?.("[data-git-commit-contract-row]") || []).forEach((row) => {
+      const visible = !hasCollapsedAncestor(row, directoryRows);
+      row.hidden = !visible;
+      row.dataset.gitCommitContractVisible = visible ? "true" : "false";
+      if (visible) visibleCount += 1;
+    });
+    const treegrid = workbench?.querySelector?.("[data-git-commit-contract-treegrid]");
+    if (treegrid) treegrid.dataset.gitCommitContractVisibleRows = String(visibleCount);
+    return visibleCount;
+  }
+
+  function setDirectoryExpanded(workbench, path = "", expanded = true) {
+    const normalizedPath = normalizeRepoPath(path);
+    const row = Array.from(workbench?.querySelectorAll?.("[data-git-commit-contract-row='directory']") || [])
+      .find((candidate) => normalizeRepoPath(candidate.dataset.gitCommitContractPath || "") === normalizedPath);
+    if (!row) return false;
+    const button = row.querySelector?.("[data-git-commit-contract-disclosure]");
+    row.dataset.gitCommitContractExpanded = expanded ? "true" : "false";
+    row.setAttribute("aria-expanded", expanded ? "true" : "false");
+    if (button) {
+      button.textContent = expanded ? "▾" : "▸";
+      button.setAttribute("aria-expanded", expanded ? "true" : "false");
+      button.setAttribute("aria-label", `${expanded ? "Collapse" : "Expand"} ${normalizedPath || "Candidate files"}`);
+    }
+    refreshTreegridVisibility(workbench);
+    return true;
+  }
+
+  function setTreegridColumnWidth(workbench, columnId = "", width = 0) {
+    const column = columnById(columnId);
+    const treegrid = workbench?.querySelector?.("[data-git-commit-contract-treegrid]");
+    if (!column || !treegrid) return false;
+    const nextWidth = Math.max(column.minWidth || 80, Math.round(Number(width) || 0));
+    treegrid.style.setProperty(column.cssVar, `${nextWidth}px`);
+    treegrid.dataset.gitCommitContractColumnResized = "true";
+    treegrid.dataset.gitCommitContractLastResizedColumn = column.id;
+    treegrid.dataset[`gitCommitContract${column.id.charAt(0).toUpperCase()}${column.id.slice(1)}ColumnWidth`] = String(nextWidth);
+    return true;
+  }
+
+  function initializeColumnResizing(workbench) {
+    const treegrid = workbench?.querySelector?.("[data-git-commit-contract-treegrid]");
+    if (!treegrid) return false;
+    treegrid.addEventListener("pointerdown", (event) => {
+      const handle = event.target?.closest?.("[data-git-commit-contract-resize-handle]");
+      if (!handle) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const columnId = handle.dataset.gitCommitContractResizeHandle || "";
+      const header = handle.closest?.("[data-git-commit-contract-column]");
+      const startWidth = header?.getBoundingClientRect?.().width || columnById(columnId)?.minWidth || 120;
+      const startX = Number(event.clientX || 0);
+      const pointerId = event.pointerId;
+      treegrid.dataset.gitCommitContractResizeActive = columnId;
+      handle.setPointerCapture?.(pointerId);
+
+      const onPointerMove = (moveEvent) => {
+        const delta = Number(moveEvent.clientX || 0) - startX;
+        setTreegridColumnWidth(workbench, columnId, startWidth + delta);
+      };
+      const onPointerEnd = () => {
+        delete treegrid.dataset.gitCommitContractResizeActive;
+        handle.removeEventListener("pointermove", onPointerMove);
+        handle.removeEventListener("pointerup", onPointerEnd);
+        handle.removeEventListener("pointercancel", onPointerEnd);
+        handle.releasePointerCapture?.(pointerId);
+      };
+
+      handle.addEventListener("pointermove", onPointerMove);
+      handle.addEventListener("pointerup", onPointerEnd, {once: true});
+      handle.addEventListener("pointercancel", onPointerEnd, {once: true});
+    });
+    return true;
   }
 
   function initializeContractTreegrid(workbench, options = {}) {
@@ -543,17 +668,12 @@
     treegrid.addEventListener("click", (event) => {
       const button = event.target?.closest?.("[data-git-commit-contract-disclosure]");
       if (!button) return;
+      event.preventDefault();
+      event.stopPropagation();
       const path = normalizeRepoPath(button.dataset.gitCommitContractDisclosure || "");
       const row = button.closest("[data-git-commit-contract-row]");
       const nextExpanded = row?.dataset?.gitCommitContractExpanded !== "false" ? false : true;
-      if (row) {
-        row.dataset.gitCommitContractExpanded = nextExpanded ? "true" : "false";
-        row.setAttribute("aria-expanded", nextExpanded ? "true" : "false");
-      }
-      button.textContent = nextExpanded ? "▾" : "▸";
-      button.setAttribute("aria-expanded", nextExpanded ? "true" : "false");
-      button.setAttribute("aria-label", `${nextExpanded ? "Collapse" : "Expand"} ${path || "Candidate files"}`);
-      setDescendantsHidden(workbench, path, !nextExpanded);
+      setDirectoryExpanded(workbench, path, nextExpanded);
     });
 
     treegrid.addEventListener("change", (event) => {
@@ -567,6 +687,8 @@
       if (onSelectionChange) onSelectionChange(result.selectedPaths || []);
     });
 
+    initializeColumnResizing(workbench);
+    refreshTreegridVisibility(workbench);
     const selected = syncTreegridDom(workbench, currentSelectedPathsFromDom(workbench));
     if (onSelectionChange) onSelectionChange(selected);
     return true;
@@ -589,6 +711,9 @@
     readContractRows,
     selectedFilesFromContractTreegrid,
     applyTreegridSelectionCommand,
+    refreshTreegridVisibility,
+    setDirectoryExpanded,
+    setTreegridColumnWidth,
     initializeContractTreegrid
   });
 })(typeof window !== "undefined" ? window : globalThis);

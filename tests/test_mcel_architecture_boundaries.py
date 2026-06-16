@@ -67,6 +67,7 @@ MCEL_LAYER_INVENTORY = {
         "main_computer/web/applications/scripts/mcel-toolkit-core.js",
         "main_computer/web/applications/scripts/mcel-file-basket-model.js",
         "main_computer/web/applications/scripts/mcel-file-basket-controller.js",
+        "main_computer/web/applications/scripts/mcel-git-file-basket-treegrid-lab.js",
         "main_computer/web/applications/scripts/mcel-concern-core.js",
         "main_computer/web/applications/scripts/mcel-project-concern-workbench.js",
         "main_computer/web/applications/scripts/mcel-command-surface.js",

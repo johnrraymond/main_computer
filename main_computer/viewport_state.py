@@ -211,6 +211,7 @@ APPLICATION_ROUTE_NAMES = {
     "task-manager",
     "terminal",
     "chat-console",
+    "ai-control",
     "email",
     "git-tools",
     "code-editor",

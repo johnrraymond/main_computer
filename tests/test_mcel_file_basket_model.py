@@ -351,7 +351,7 @@ def test_project_workbench_marks_file_basket_first_safe_patch_as_backed_by_adapt
     assert order["implementationStatus"]["module"] == "McelFileBasketModel"
     assert any("title-only tree rejected" in proof for proof in order["implementationStatus"]["proof"])
 
-    assert "git-tools-file-basket-contract-view.js" in order["firstSafeMigration"][0]
+    assert "MCEL lab-only contract treegrid surface" in order["firstSafeMigration"][0]
     assert any("FileBasketModel adapter" in step for step in order["migrationPhases"])
     assert "blocked rows visible but not selectable" in order["safetyContract"]
 

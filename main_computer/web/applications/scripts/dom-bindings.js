@@ -6,6 +6,7 @@
     <!-- @include applications/scripts/dom-bindings/task-manager.js -->
     <!-- @include applications/scripts/dom-bindings/terminal.js -->
     <!-- @include applications/scripts/dom-bindings/chat-console.js -->
+    <!-- @include applications/scripts/dom-bindings/ai-control.js -->
     <!-- @include applications/scripts/dom-bindings/email.js -->
     <!-- @include applications/scripts/dom-bindings/git-tools.js -->
     <!-- @include applications/scripts/dom-bindings/file-explorer.js -->

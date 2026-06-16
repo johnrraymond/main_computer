@@ -361,6 +361,19 @@
         };
       }
 
+      function mcelGitFileBasketTreegridLab() {
+        return global.McelGitFileBasketTreegridLab || {
+          buildInteractiveGitTreegridLabReport: () => ({
+            ready: false,
+            activeInGitTools: false,
+            gitToolsRenderer: "legacy-wunderbaum",
+            visibleRenderer: "mcel-lab-git-treegrid",
+            proofChecks: {}
+          }),
+          renderInteractiveGitTreegridLab: null
+        };
+      }
+
       function mcelFileBasketModel() {
         return global.McelFileBasketModel || {
           buildFileBasketModel: () => ({
@@ -644,6 +657,27 @@
         shell.append(header, scoreGrid, queue, orderGrid, nextPatch);
         parent.appendChild(shell);
         return shell;
+      }
+
+
+      function renderGitFileBasketTreegridLab(document, parent) {
+        const lab = mcelGitFileBasketTreegridLab();
+        const report = lab.buildInteractiveGitTreegridLabReport?.() || {};
+        if (typeof lab.renderInteractiveGitTreegridLab === "function") {
+          const surface = lab.renderInteractiveGitTreegridLab(document);
+          parent.appendChild(surface);
+          return surface;
+        }
+        const fallback = createNode(document, "section", "mcel-git-treegrid-lab");
+        fallback.setAttribute("data-mcel-git-file-basket-treegrid-lab", "true");
+        fallback.setAttribute("data-mcel-git-treegrid-active-in-git-tools", "false");
+        fallback.append(
+          createNode(document, "p", "eyebrow", "Git file-basket treegrid lab"),
+          createNode(document, "h6", "", "Contract treegrid lab module unavailable."),
+          createNode(document, "p", "", `Git Tools renderer should remain ${report.gitToolsRenderer || "legacy-wunderbaum"} while the lab proof is unavailable.`)
+        );
+        parent.appendChild(fallback);
+        return fallback;
       }
 
 
@@ -2328,7 +2362,7 @@
         const status = createNode(document, "div", "mcel-lab-mission-status");
         [
           ["Current target", next.id || topOrder.id || "no target"],
-          ["Stage", fileBasketReport.ready ? "model adapter extracted" : "concern detected"],
+          ["Stage", mcelGitFileBasketTreegridLab().buildInteractiveGitTreegridLabReport?.().ready ? "interactive Git treegrid lab" : (fileBasketReport.ready ? "model adapter extracted" : "concern detected")],
           ["Next patch", next.firstSafeMigration || "select a migration order"],
           ["Proof", next.proofNeeded || "add contract proof"]
         ].forEach(([label, value]) => {
@@ -2356,9 +2390,9 @@
         [
           ["Detect", "source-aware concern map", "done"],
           ["Resolve", "contract and eligible views", "done"],
-          ["Extract", "file-basket model adapter", fileBasketReport.ready ? "current" : "next"],
-          ["Integrate", "route existing UI through adapter", fileBasketReport.ready ? "next" : "locked"],
-          ["Replace", "contract treegrid after proof", "locked"]
+          ["Extract", "file-basket model adapter", "done"],
+          ["Lab", "interactive Git treegrid proof", mcelGitFileBasketTreegridLab().buildInteractiveGitTreegridLabReport?.().ready ? "current" : "next"],
+          ["Replace", "Git renderer only after lab proof", "locked"]
         ].forEach(([label, body, state]) => {
           const step = createNode(document, "li", "");
           step.setAttribute("data-mcel-mission-step-state", state);
@@ -2475,6 +2509,7 @@
         renderProjectConcernWorkbench(document, concernPanel, definitionsById);
         renderToolkitAtlas(document, toolkitPanel, definitionsById);
         renderFileBasketModelProof(document, proofPanel, definitionsById);
+        renderGitFileBasketTreegridLab(document, viewPanel);
         renderResourceWorkbench(document, viewPanel, definitionsById);
         renderOperationalWorkbench(document, viewPanel, definitionsById);
         renderNetworkComputeAuthoringWorkbench(document, viewPanel, definitionsById);

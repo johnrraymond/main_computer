@@ -17,6 +17,7 @@ import sys
 import time
 from typing import Any, Callable, Iterable, Sequence
 
+from main_computer.ai_control import ai_control_prompt_text
 from main_computer.models import ChatMessage, ChatResponse
 
 
@@ -293,7 +294,7 @@ class TrustContractChatRunner:
         provider_name = str(getattr(provider, "name", provider.__class__.__name__))
         model_name = str(getattr(provider, "model", ""))
         model_messages = [
-            ChatMessage(role="system", content=TRUST_CONTRACT_SYSTEM_PROMPT),
+            ChatMessage(role="system", content=ai_control_prompt_text("rag_trust_contract.system", TRUST_CONTRACT_SYSTEM_PROMPT)),
             ChatMessage(role="system", content=_format_evidence_for_model(evidence)),
             *list(messages or []),
             ChatMessage(role="user", content=prompt),

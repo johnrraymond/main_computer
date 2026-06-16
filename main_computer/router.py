@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from dataclasses import dataclass
+from pathlib import Path
 
 from main_computer.ai_web_search import (
     DEFAULT_WEB_SEARCH_LABEL,
@@ -14,6 +15,7 @@ from main_computer.ai_web_search import (
 )
 from main_computer.catalog import ProjectCatalog, WorkspaceContextPack
 from main_computer.chat_console import build_notebook_ai_messages
+from main_computer.ai_control import ai_control_prompt_text
 from main_computer.config import MainComputerConfig
 from main_computer.models import ChatMessage, ChatResponse
 from main_computer.rag_trust_contract_chat import (
@@ -96,7 +98,7 @@ class MainComputer:
         context_pack = context_pack or self.context_pack(prompt)
         web_search_context, web_search_text = self._web_search_context(prompt)
         messages = [
-            ChatMessage(role="system", content=SYSTEM_PROMPT),
+            ChatMessage(role="system", content=ai_control_prompt_text("router.system", SYSTEM_PROMPT)),
             ChatMessage(role="system", content=context_pack.text),
             *([ChatMessage(role="system", content=web_search_text)] if web_search_text else []),
             ChatMessage(role="user", content=prompt),
@@ -123,7 +125,7 @@ class MainComputer:
             print(f"[fallback][router] terminal suggestion prompt chars={len(prompt)} cwd={cwd}", flush=True)
         context_pack = self.context_pack(prompt)
         messages = [
-            ChatMessage(role="system", content=TERMINAL_SUGGESTION_SYSTEM_PROMPT),
+            ChatMessage(role="system", content=ai_control_prompt_text("router.terminal_suggestion.system", TERMINAL_SUGGESTION_SYSTEM_PROMPT)),
             ChatMessage(role="system", content=context_pack.text),
             ChatMessage(
                 role="user",
@@ -159,7 +161,7 @@ class MainComputer:
         context_pack = self.context_pack(source)
         web_search_context, web_search_text = self._web_search_context(source)
         messages = [
-            ChatMessage(role="system", content=SYSTEM_PROMPT),
+            ChatMessage(role="system", content=ai_control_prompt_text("router.system", SYSTEM_PROMPT)),
             ChatMessage(role="system", content=context_pack.text),
             *([ChatMessage(role="system", content=web_search_text)] if web_search_text else []),
             *build_notebook_ai_messages(source, attachments or []),
@@ -186,7 +188,7 @@ class MainComputer:
             print(f"[fallback][router] trust-contract chat source chars={len(source)} attachments={len(attachments or [])}", flush=True)
         context_pack = self.context_pack(source)
         messages = [
-            ChatMessage(role="system", content=SYSTEM_PROMPT),
+            ChatMessage(role="system", content=ai_control_prompt_text("router.system", SYSTEM_PROMPT)),
             *build_notebook_ai_messages(source, attachments or []),
         ]
         evidence: list[dict] = []

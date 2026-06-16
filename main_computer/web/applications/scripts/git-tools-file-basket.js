@@ -562,8 +562,10 @@
     const serializedModel = modelJson(fileBasketModel);
     const htmlEscape = typeof options.escapeHtml === "function" ? options.escapeHtml : escapeHtml;
     const repoIdentityHtml = typeof options.repoIdentityHtml === "function" ? options.repoIdentityHtml(review) : "";
+    const legacySelectedPaths = defaultSelectedPathsFromTreeSource(source);
     const renderer = "legacy-wunderbaum";
     const rendererLabel = "directories first · files under paths";
+    const contractTreegridHtml = "";
     return `<section class="git-project-commit-right" data-git-commit-basket data-git-commit-file-basket-model-ready="${fileBasketModel ? "true" : "false"}" data-git-commit-file-basket-renderer="${renderer}">
       ${repoIdentityHtml}
       <div class="git-project-subscreen-panel-head">
@@ -579,12 +581,13 @@
       <p class="git-project-muted">Repo file tree: select files directly or select folders as a shortcut. Checked folders mean all selectable child files are selected; mixed folders mean only some child files are selected. ${selectedTotal ? `${selectedTotal} file${selectedTotal === 1 ? "" : "s"} selected by default.` : "Review candidates are not selected until you choose them."}</p>
       ${serializedModel ? `<textarea hidden data-git-commit-file-basket-model>${htmlEscape(serializedModel)}</textarea>` : ""}
       <textarea hidden data-git-commit-tree-source data-git-commit-legacy-tree-source>${htmlEscape(JSON.stringify(source))}</textarea>
-      <div class="git-project-commit-wunderbaum-shell" data-git-commit-legacy-tree-active="true">
+      ${contractTreegridHtml || `<div class="git-project-commit-wunderbaum-shell" data-git-commit-legacy-tree-active="true">
         <div class="git-project-commit-wunderbaum wb-skeleton wb-initializing" data-git-commit-tree></div>
         <div class="git-project-commit-tree-fallback" data-git-commit-tree-fallback>
           ${fallbackTreeHtml(source, {escapeHtml: htmlEscape})}
         </div>
-      </div>
+      </div>`}
+      ${contractTreegridHtml ? `<div hidden data-git-commit-legacy-tree-rollback>${fallbackTreeHtml(source, {escapeHtml: htmlEscape})}</div>` : ""}
     </section>`;
   }
 
