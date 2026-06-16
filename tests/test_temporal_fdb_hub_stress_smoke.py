@@ -18,6 +18,7 @@ from main_computer.temporal_fdb_hub_stress_smoke import (
     _print_dev_chain_rollup,
     _dev_chain_movement_from_bridge_confirm,
     _print_setup_status,
+    _stress_requester_audit_readback_limit,
     build_parser,
 )
 
@@ -99,6 +100,12 @@ def test_freeze_tracker_fires_after_no_progress() -> None:
             await tracker.watch(stop_event)
 
     asyncio.run(run())
+
+
+def test_stress_requester_audit_limit_scales_for_acid_request_volume() -> None:
+    assert _stress_requester_audit_readback_limit(30) == 400
+    assert _stress_requester_audit_readback_limit(250) == 850
+    assert _stress_requester_audit_readback_limit("250") == 850
 
 
 
