@@ -96,9 +96,10 @@ def test_git_tools_gitignore_workbench_loads_before_legacy_bridge() -> None:
     assert "function gitProjectSaveGitignoreWorkbench(workbench)" not in task_manager
     assert "function gitProjectInitializeGitignoreWorkbenches(container)" not in task_manager
     assert "function gitProjectConfirmDiscardGitignoreChanges(subscreen)" not in task_manager
-    assert "gitProjectIgnoreWorkbenchHtml" in legacy_bridge
-    assert "gitProjectInitializeGitignoreWorkbenches" in legacy_bridge
-    assert "gitProjectConfirmDiscardGitignoreChanges" in legacy_bridge
+    assert "gitProjectIgnoreWorkbenchHtml" in gitignore_workbench
+    assert "gitProjectInitializeGitignoreWorkbenches" in gitignore_workbench
+    assert "gitProjectConfirmDiscardGitignoreChanges" in gitignore_workbench
+    assert "gitProjectIgnoreWorkbenchHtml" not in legacy_bridge
 
     assert "GitToolsGitignoreWorkbench" in git_tools
     assert "gitignoreWorkbench" in git_tools
