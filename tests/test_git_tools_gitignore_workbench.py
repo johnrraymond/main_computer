@@ -76,6 +76,7 @@ console.log(JSON.stringify({{
 def test_git_tools_gitignore_workbench_loads_before_legacy_bridge() -> None:
     html = (WEB_ROOT / "applications.html").read_text(encoding="utf-8")
     task_manager = (SCRIPTS / "task-manager.js").read_text(encoding="utf-8")
+    legacy_bridge = (SCRIPTS / "git-tools-legacy-ui-bridge.js").read_text(encoding="utf-8")
     git_tools = (SCRIPTS / "git-tools.js").read_text(encoding="utf-8")
     gitignore_workbench = (SCRIPTS / "git-tools-gitignore-workbench.js").read_text(encoding="utf-8")
 
@@ -95,9 +96,9 @@ def test_git_tools_gitignore_workbench_loads_before_legacy_bridge() -> None:
     assert "function gitProjectSaveGitignoreWorkbench(workbench)" not in task_manager
     assert "function gitProjectInitializeGitignoreWorkbenches(container)" not in task_manager
     assert "function gitProjectConfirmDiscardGitignoreChanges(subscreen)" not in task_manager
-    assert "gitProjectIgnoreWorkbenchHtml" in task_manager
-    assert "gitProjectInitializeGitignoreWorkbenches" in task_manager
-    assert "gitProjectConfirmDiscardGitignoreChanges" in task_manager
+    assert "gitProjectIgnoreWorkbenchHtml" in legacy_bridge
+    assert "gitProjectInitializeGitignoreWorkbenches" in legacy_bridge
+    assert "gitProjectConfirmDiscardGitignoreChanges" in legacy_bridge
 
     assert "GitToolsGitignoreWorkbench" in git_tools
     assert "gitignoreWorkbench" in git_tools

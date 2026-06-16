@@ -8,6 +8,7 @@
   function gitToolsEntrypointModules() {
     return Object.freeze({
       statusApi: global.GitToolsStatusApi || null,
+      legacyUiBridge: global.GitToolsLegacyUiBridge || null,
       fileBasket: global.GitToolsFileBasket || null,
       projectWorkflow: global.GitToolsProjectWorkflow || null,
       serverPanel: global.GitToolsServerPanel || null,
@@ -21,6 +22,7 @@
     const modules = gitToolsEntrypointModules();
     return Object.freeze({
       statusApi: Boolean(modules.statusApi),
+      legacyUiBridge: Boolean(modules.legacyUiBridge),
       fileBasket: Boolean(modules.fileBasket),
       projectWorkflow: Boolean(modules.projectWorkflow),
       serverPanel: Boolean(modules.serverPanel),
