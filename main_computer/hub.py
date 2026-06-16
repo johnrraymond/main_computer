@@ -1004,6 +1004,13 @@ class HubDispatcher:
     def get_request_status(self, request_id: str) -> dict[str, Any]:
         return self.plex_service.get_status(request_id).as_dict()
 
+    def pickup_request_result(self, request_id: str, *, account_id: str = "", client_node_id: str = "") -> dict[str, Any]:
+        return self.plex_service.pickup_completed_result(
+            request_id,
+            account_id=account_id,
+            client_node_id=client_node_id,
+        )
+
     def cancel_request(self, request_id: str) -> dict[str, Any]:
         return self.plex_service.cancel(request_id).as_dict()
 
@@ -2452,6 +2459,24 @@ class HubServerHandler(_JsonHandler):
             limit = int(query.get("limit", ["100"])[0] or 100)
             requests = self.server.dispatcher.list_requests(limit=limit, states=states)
             self._send_json({"ok": True, "requests": requests, "request_count": len(requests)})
+            return
+        if path.startswith("/api/hub/v1/requests/") and (path.endswith("/result") or path.endswith("/pickup")):
+            suffix = "/result" if path.endswith("/result") else "/pickup"
+            request_id = path.removeprefix("/api/hub/v1/requests/").removesuffix(suffix).strip("/")
+            if not request_id or "/" in request_id:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            try:
+                payload = self.server.dispatcher.pickup_request_result(
+                    request_id,
+                    account_id=str(query.get("account_id", [""])[0] or ""),
+                    client_node_id=str(query.get("client_node_id", [""])[0] or ""),
+                )
+                self._send_json(payload)
+            except PermissionError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.FORBIDDEN)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
             return
         if path.startswith("/api/hub/v1/requests/") and path.endswith("/charges"):
             request_id = path.removeprefix("/api/hub/v1/requests/").removesuffix("/charges").strip("/")

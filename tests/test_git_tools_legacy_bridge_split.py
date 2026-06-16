@@ -56,6 +56,8 @@ for (const [filename, globalName] of Object.entries(moduleMap)) {{
 console.log(JSON.stringify({{
   globals,
   legacySurfaceId: context.GitToolsLegacyUiBridge?.surfaceId || "",
+  legacyRole: context.GitToolsLegacyUiBridge?.role || "",
+  legacyModuleGlobals: context.GitToolsLegacyUiBridge?.moduleGlobals || {{}},
   legacyReadiness: context.GitToolsLegacyUiBridge?.readiness?.() || {{}},
   hasCommitCompat: typeof context.gitProjectCommitWorkbenchHtml === "function",
   hasShimCompat: typeof context.refreshGitShims === "function",
@@ -79,6 +81,8 @@ def test_legacy_bridge_is_small_and_split_modules_are_loaded_before_task_manager
         assert global_name in module_text
 
     assert "global.GitToolsLegacyUiBridge" in legacy_bridge
+    assert "post-split shared glue and readiness only" in legacy_bridge
+    assert len(legacy_bridge.splitlines()) <= 80
     assert "function gitProjectCommitWorkbenchHtml" not in legacy_bridge
     assert "function renderGitProjectWizard" not in legacy_bridge
     assert "async function refreshGitShims" not in legacy_bridge
@@ -90,6 +94,8 @@ def test_split_modules_export_compatibility_globals_and_bridge_reports_readiness
     report = _run_split_module_node()
 
     assert report["legacySurfaceId"] == "git-tools.legacy-ui-bridge"
+    assert report["legacyRole"] == "post-split shared glue and readiness only"
+    assert set(report["legacyModuleGlobals"].values()) == set(SPLIT_MODULES.values())
     assert all(item["present"] for item in report["globals"].values())
     assert all(report["legacyReadiness"].values())
     assert report["hasCommitCompat"]
