@@ -71,6 +71,8 @@ def test_git_tools_project_workflow_module_is_loaded_before_legacy_task_manager(
     html = (ROOT / "main_computer" / "web" / "applications.html").read_text(encoding="utf-8")
     task_manager = (SCRIPTS / "task-manager.js").read_text(encoding="utf-8")
     legacy_bridge = (SCRIPTS / "git-tools-legacy-ui-bridge.js").read_text(encoding="utf-8")
+    project_shared = (SCRIPTS / "git-tools-project-shared.js").read_text(encoding="utf-8")
+    project_wizard = (SCRIPTS / "git-tools-project-wizard-rendering.js").read_text(encoding="utf-8")
     workflow = (SCRIPTS / "git-tools-project-workflow.js").read_text(encoding="utf-8")
 
     assert "<!-- @include applications/scripts/git-tools-project-workflow.js -->" in html
@@ -82,16 +84,18 @@ def test_git_tools_project_workflow_module_is_loaded_before_legacy_task_manager(
     assert "function wizardDisplayActions" in workflow
     assert "function classifyWizardStep" in workflow
 
-    assert "function gitProjectWorkflowIntegration" in legacy_bridge
-    assert "GitToolsProjectWorkflow" in legacy_bridge
-    assert "wizardDisplayActions(actions" in legacy_bridge
-    assert "classifyWizardStep(step" in legacy_bridge
+    assert "function gitProjectWorkflowIntegration" in project_shared
+    assert "GitToolsProjectWorkflow" in project_shared
+    assert "wizardDisplayActions(actions" in workflow
+    assert "classifyWizardStep(step" in workflow
     assert "const GIT_PROJECT_WIZARD_HIDDEN_ACTION_IDS" not in task_manager
     assert "const GIT_PROJECT_EVIDENCE_STEP_IDS" not in task_manager
     assert "const GIT_PROJECT_USER_ACTION_KINDS" not in task_manager
     assert "const GIT_PROJECT_WIZARD_HIDDEN_ACTION_IDS" not in legacy_bridge
     assert "const GIT_PROJECT_EVIDENCE_STEP_IDS" not in legacy_bridge
     assert "const GIT_PROJECT_USER_ACTION_KINDS" not in legacy_bridge
+    assert "GitToolsProjectShared" in project_shared
+    assert "GitToolsProjectWizardRendering" in project_wizard
 
 
 def test_git_tools_project_workflow_owns_action_queue_and_classification_policy() -> None:

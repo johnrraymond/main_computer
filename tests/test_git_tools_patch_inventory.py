@@ -158,6 +158,7 @@ def test_git_tools_patch_inventory_loads_before_legacy_bridge() -> None:
     html = (WEB_ROOT / "applications.html").read_text(encoding="utf-8")
     task_manager = (SCRIPTS / "task-manager.js").read_text(encoding="utf-8")
     legacy_bridge = (SCRIPTS / "git-tools-legacy-ui-bridge.js").read_text(encoding="utf-8")
+    status_refresh_bridge = (SCRIPTS / "git-tools-status-refresh-bridge.js").read_text(encoding="utf-8")
     git_tools = (SCRIPTS / "git-tools.js").read_text(encoding="utf-8")
     patch_inventory = (SCRIPTS / "git-tools-patch-inventory.js").read_text(encoding="utf-8")
 
@@ -180,7 +181,8 @@ def test_git_tools_patch_inventory_loads_before_legacy_bridge() -> None:
     assert "async function previewGitPatch()" not in task_manager
     assert "async function loadGitDryRun()" not in task_manager
     assert "async function runGitPatchDryRun()" not in task_manager
-    assert "refreshGitPatches()" in legacy_bridge
+    assert "refreshGitPatches()" in status_refresh_bridge
+    assert "GitToolsLegacyUiBridge" in git_tools
 
     assert "GitToolsPatchInventory" in git_tools
     assert "patchInventory" in git_tools
