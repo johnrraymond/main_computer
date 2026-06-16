@@ -415,3 +415,174 @@ def test_cloudflare_guide_can_print_secret_when_explicitly_requested(tmp_path: P
     assert f"MAIL_INGEST_SECRET={secret}" in guide
     assert "--show-secret was used" not in guide
 
+
+
+def test_prepare_creates_mail_user_registry_without_overwriting_existing_users(tmp_path: Path) -> None:
+    module = _load_module()
+
+    assert module.main([
+        "prepare",
+        "--domain", "greatlibrary.io",
+        "--ingest-host", "mail-ingest.greatlibrary.io",
+        "--worker-name", "greatlibrary-mail-ingest",
+        "--out", str(tmp_path),
+    ]) == 0
+
+    contract = json.loads((tmp_path / "mail-worker-contract.json").read_text(encoding="utf-8"))
+    assert contract["user_registry_file"] == "mail-users.json"
+
+    registry_path = tmp_path / "mail-users.json"
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    assert registry["schema"] == "main-computer.great-library-mail-users.v1"
+    assert registry["domain"] == "greatlibrary.io"
+    assert registry["users"] == {}
+    assert registry["aliases"] == {}
+    assert "admin" in registry["reserved_locals"]
+
+    args = module.parse_args([
+        "user-add",
+        "--contract", str(tmp_path / "mail-worker-contract.json"),
+        "--local", "alice",
+        "--display-name", "Alice",
+    ])
+    assert module.mail_user_registry_action(args)["user"]["local"] == "alice"
+
+    assert module.main([
+        "prepare",
+        "--domain", "greatlibrary.io",
+        "--ingest-host", "mail-ingest.greatlibrary.io",
+        "--worker-name", "greatlibrary-mail-ingest",
+        "--out", str(tmp_path),
+    ]) == 0
+
+    registry_after = json.loads(registry_path.read_text(encoding="utf-8"))
+    assert "alice" in registry_after["users"]
+
+
+def test_mail_user_registry_cli_adds_user_password_and_alias_without_plaintext(tmp_path: Path) -> None:
+    module = _load_module()
+
+    plan = module.build_plan(domain="greatlibrary.io", ingest_host="mail-ingest.greatlibrary.io")
+    routing = module.build_routing_contract(
+        domain=plan.domain,
+        worker_name=plan.worker_name,
+        forwards=(),
+        drops=(),
+        catch_all_to_worker=True,
+    )
+    module.write_prepare_outputs(plan, tmp_path, routing=routing, secret="registry-test-secret")
+    contract_path = tmp_path / "mail-worker-contract.json"
+
+    user_result = module.mail_user_registry_action(module.parse_args([
+        "user-add",
+        "--contract", str(contract_path),
+        "--local", "Alice",
+        "--display-name", "Alice Example",
+    ]))
+    assert user_result["user"]["local"] == "alice"
+    assert user_result["user"]["address"] == "alice@greatlibrary.io"
+    assert user_result["user"]["password_hash_set"] is False
+    assert "password_hash" not in user_result["user"]
+
+    password = "correct horse battery staple"
+    password_result = module.mail_user_registry_action(module.parse_args([
+        "user-password-set",
+        "--contract", str(contract_path),
+        "--local", "alice",
+        "--password", password,
+    ]))
+    assert password_result["user"]["password_hash_set"] is True
+    assert "password_hash" not in password_result["user"]
+
+    alias_result = module.mail_user_registry_action(module.parse_args([
+        "alias-add",
+        "--contract", str(contract_path),
+        "--alias", "a.smith",
+        "--target", "alice",
+    ]))
+    assert alias_result["alias"]["address"] == "a.smith@greatlibrary.io"
+    assert alias_result["alias"]["target"] == "alice"
+
+    registry_text = (tmp_path / "mail-users.json").read_text(encoding="utf-8")
+    assert password not in registry_text
+    registry = json.loads(registry_text)
+    stored_hash = registry["users"]["alice"]["password_hash"]
+    assert stored_hash.startswith("pbkdf2_sha256$600000$")
+    assert registry["users"]["alice"]["aliases"] == ["a.smith"]
+
+    list_result = module.mail_user_registry_action(module.parse_args([
+        "user-list",
+        "--contract", str(contract_path),
+    ]))
+    assert list_result["users"][0]["local"] == "alice"
+    assert list_result["users"][0]["password_hash_set"] is True
+    assert "password_hash" not in list_result["users"][0]
+    assert list_result["aliases"][0]["alias"] == "a.smith"
+
+    alias_list = module.mail_user_registry_action(module.parse_args([
+        "alias-list",
+        "--contract", str(contract_path),
+    ]))
+    assert alias_list["aliases"][0]["target_address"] == "alice@greatlibrary.io"
+
+
+def test_mail_user_registry_rejects_reserved_names_and_duplicate_aliases(tmp_path: Path) -> None:
+    module = _load_module()
+
+    plan = module.build_plan(domain="greatlibrary.io", ingest_host="mail-ingest.greatlibrary.io")
+    routing = module.build_routing_contract(
+        domain=plan.domain,
+        worker_name=plan.worker_name,
+        forwards=(),
+        drops=(),
+        catch_all_to_worker=True,
+    )
+    module.write_prepare_outputs(plan, tmp_path, routing=routing, secret="registry-test-secret")
+    contract_path = tmp_path / "mail-worker-contract.json"
+
+    try:
+        module.mail_user_registry_action(module.parse_args([
+            "user-add",
+            "--contract", str(contract_path),
+            "--local", "admin",
+        ]))
+    except module.WorkerPlanError as exc:
+        assert "Reserved" in str(exc)
+    else:
+        raise AssertionError("reserved user local part should be rejected")
+
+    module.mail_user_registry_action(module.parse_args([
+        "user-add",
+        "--contract", str(contract_path),
+        "--local", "alice",
+    ]))
+
+    try:
+        module.mail_user_registry_action(module.parse_args([
+            "alias-add",
+            "--contract", str(contract_path),
+            "--alias", "info",
+            "--target", "alice",
+        ]))
+    except module.WorkerPlanError as exc:
+        assert "Reserved" in str(exc)
+    else:
+        raise AssertionError("reserved alias local part should be rejected")
+
+    module.mail_user_registry_action(module.parse_args([
+        "alias-add",
+        "--contract", str(contract_path),
+        "--alias", "a.smith",
+        "--target", "alice",
+    ]))
+    try:
+        module.mail_user_registry_action(module.parse_args([
+            "alias-add",
+            "--contract", str(contract_path),
+            "--alias", "a.smith",
+            "--target", "alice",
+        ]))
+    except module.WorkerPlanError as exc:
+        assert "already exists" in str(exc)
+    else:
+        raise AssertionError("duplicate alias should be rejected")

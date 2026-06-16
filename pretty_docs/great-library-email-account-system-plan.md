@@ -64,6 +64,32 @@ unknown recipient   -> reject or quarantine
 
 The user registry becomes the source of truth for receiving mail and logging in.
 
+
+## Implementation checkpoint: registry foundation
+
+Implemented foundation in `tools/cloudflare_mail_worker.py`:
+
+```text
+prepare writes mail-users.json next to mail-worker-contract.json without overwriting existing users.
+user-add creates an enabled mailbox identity.
+user-password-set stores a PBKDF2-SHA256 password hash only.
+user-list prints users without exposing password hashes.
+alias-add creates an alias that targets an existing user.
+alias-list prints configured aliases.
+```
+
+The registry file is intentionally local to the generated contract directory for
+this tranche:
+
+```text
+runtime/cloudflare-mail-worker/<domain>/mail-users.json
+```
+
+It is the future source of truth for both the ingest policy and the webmail login
+layer. This patch does **not** yet change delivery policy; unknown catch-all
+recipients can still be written by the deployed ingest app until the known-user
+ingest tranche is applied.
+
 ## Feature set 1: user registry
 
 Purpose: define who has a Great Library mailbox.
@@ -110,8 +136,9 @@ Password rules:
 
 ```text
 Store password hashes only.
-Use Argon2id if available; otherwise use a strong standard library fallback only
-as an interim local-development option.
+This foundation uses PBKDF2-SHA256 from the Python standard library as an
+interim implementation. Prefer Argon2id when the dedicated webmail app dependency
+set is introduced.
 Never store plaintext passwords in contracts, generated docs, or Coolify output.
 ```
 

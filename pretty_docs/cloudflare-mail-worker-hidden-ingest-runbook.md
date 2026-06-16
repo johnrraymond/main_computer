@@ -71,6 +71,11 @@ tools/cloudflare_mail_worker.py coolify-check
 tools/cloudflare_mail_worker.py coolify-discover
 tools/cloudflare_mail_worker.py coolify-sync
 tools/cloudflare_mail_worker.py cloudflare-guide
+tools/cloudflare_mail_worker.py user-add
+tools/cloudflare_mail_worker.py user-password-set
+tools/cloudflare_mail_worker.py user-list
+tools/cloudflare_mail_worker.py alias-add
+tools/cloudflare_mail_worker.py alias-list
 ```
 
 The important completed stages are:
@@ -97,6 +102,49 @@ POP/IMAP mailbox reader service
 Outbound sending relay
 Mailbox management/admin UI
 ```
+
+## Mail user registry foundation
+
+`prepare` now also creates a registry file next to the generated contract:
+
+```text
+runtime/cloudflare-mail-worker/greatlibrary.io/mail-users.json
+```
+
+The contract references this as `user_registry_file`. Re-running `prepare` keeps
+an existing registry in place so operator-created users and aliases are not
+silently erased.
+
+Initial account-management commands:
+
+```powershell
+python tools/cloudflare_mail_worker.py user-add `
+  --contract runtime/cloudflare-mail-worker/greatlibrary.io/mail-worker-contract.json `
+  --local alice `
+  --display-name "Alice"
+
+python tools/cloudflare_mail_worker.py user-password-set `
+  --contract runtime/cloudflare-mail-worker/greatlibrary.io/mail-worker-contract.json `
+  --local alice
+
+python tools/cloudflare_mail_worker.py user-list `
+  --contract runtime/cloudflare-mail-worker/greatlibrary.io/mail-worker-contract.json
+
+python tools/cloudflare_mail_worker.py alias-add `
+  --contract runtime/cloudflare-mail-worker/greatlibrary.io/mail-worker-contract.json `
+  --alias a.smith `
+  --target alice
+
+python tools/cloudflare_mail_worker.py alias-list `
+  --contract runtime/cloudflare-mail-worker/greatlibrary.io/mail-worker-contract.json
+```
+
+Passwords are stored as hashes only. `user-list` reports whether a password is
+set but does not print the hash.
+
+The deployed ingest service has not yet been switched to known-user enforcement
+in this registry tranche. Apply the later ingest-policy patch before treating the
+catch-all as protected from unknown-recipient Maildir creation.
 
 ## The deployment contract
 
