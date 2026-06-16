@@ -888,3 +888,329 @@ def compact_worker_connection_reliability_summary(result: dict[str, Any]) -> dic
         "no_charge_after_lost_count": int(result.get("no_charge_after_lost_count", 0) or 0),
         "payout_integrity_ok": bool(result.get("payout_integrity_ok", True)),
     }
+
+
+@dataclass(frozen=True)
+class RequesterDisconnectResultRetentionEventPlan:
+    event_id: str
+    node_id: str
+    submit_hub: str
+    poll_hub: str
+    result_hub: str
+    pickup_hub: str
+
+
+@dataclass(frozen=True)
+class RequesterDisconnectResultRetentionScenarioConfig:
+    """Configuration for requester-side disconnect and durable result pickup.
+
+    This intentionally does not exercise worker-lost behavior.  The worker
+    completes valid work while the requester is not actively polling, then the
+    requester reconnects and picks up the retained completed result.
+    """
+
+    event_count: int = 0
+    pickup_after_seconds: float = 0.1
+    result_retention_window_seconds: int = 3600
+    seed: str = ""
+    verify_cross_hub: bool = True
+
+
+def plan_requester_disconnect_result_retention_events(
+    nodes: list[Any] | tuple[Any, ...],
+    *,
+    event_count: int,
+    seed: str,
+    hub_labels: list[str] | tuple[str, ...] = ("hub_a", "hub_b"),
+    requested_ring: Any = None,
+    max_price_credits: Any = None,
+) -> list[RequesterDisconnectResultRetentionEventPlan]:
+    count = max(0, int(event_count or 0))
+    labels = [str(label) for label in hub_labels if str(label)]
+    candidates = _quote_compatible_nodes(
+        list(nodes),
+        requested_ring=requested_ring,
+        max_price_credits=max_price_credits,
+    )
+    if count <= 0 or not candidates or not labels:
+        return []
+    rng = random.Random(f"{seed}:requester-disconnect-result-retention")
+    rng.shuffle(candidates)
+    plans: list[RequesterDisconnectResultRetentionEventPlan] = []
+    for index in range(1, count + 1):
+        node = candidates[(index - 1) % len(candidates)]
+        submit_hub = labels[rng.randrange(len(labels))]
+        poll_options = [label for label in labels if label != submit_hub] or labels
+        poll_hub = poll_options[rng.randrange(len(poll_options))]
+        result_options = labels if len(labels) > 1 else [poll_hub]
+        result_hub = result_options[rng.randrange(len(result_options))]
+        pickup_options = labels if len(labels) > 1 else [result_hub]
+        pickup_hub = pickup_options[rng.randrange(len(pickup_options))]
+        plans.append(
+            RequesterDisconnectResultRetentionEventPlan(
+                event_id=f"requester-disconnect-{index:02d}",
+                node_id=_node_id(node),
+                submit_hub=submit_hub,
+                poll_hub=poll_hub,
+                result_hub=result_hub,
+                pickup_hub=pickup_hub,
+            )
+        )
+    return plans
+
+
+def _post_requester_disconnect_request(
+    *,
+    config: Any,
+    node_id: str,
+    event_id: str,
+    retention_window_seconds: int,
+    post_json: Callable[..., dict[str, Any]],
+) -> dict[str, Any]:
+    logical_id = f"{config.run_id}-{event_id}-{node_id}"
+    quote_payload = {
+        "account_id": config.account_id,
+        "client_node_id": config.account_id,
+        "model": config.model,
+        "prompt": f"Requester disconnect result-retention probe {event_id} for {node_id}",
+        "max_credits": int(config.max_price_credits),
+        "max_price_credits": int(config.max_price_credits),
+        "requested_ring": int(config.requested_ring),
+        "worker_node_id": node_id,
+        "requested_worker_node_id": node_id,
+        "execution_mode": "worker_pull_v0",
+        "pricing_mode": "market_offer_fixed_per_call_v0",
+        "idempotency_key": f"{logical_id}-quote",
+        "metadata": {
+            "worker_pull_v0": True,
+            "node_behavior_scenario": "requester_disconnect_result_retention",
+            "node_behavior_event_id": event_id,
+            "requested_worker_node_id": node_id,
+            "requester_result_retention_window_seconds": max(0, int(retention_window_seconds or 0)),
+        },
+    }
+    quote = post_json(
+        config.hub_url,
+        "/api/hub/v1/requests/quote",
+        quote_payload,
+        timeout=config.http_timeout_seconds,
+        retry_attempts=config.http_retry_attempts,
+    )["quote"]
+    selected_offer = quote.get("selected_offer", {}) if isinstance(quote.get("selected_offer"), dict) else {}
+    selected_worker_id = str(selected_offer.get("worker_node_id") or quote.get("selected_worker_node_id") or "")
+    if selected_worker_id != node_id:
+        raise NodeBehaviorScenarioError(
+            f"Requester disconnect probe {event_id} expected quote for {node_id}, got {selected_worker_id}: {quote}"
+        )
+    submit_payload = {
+        **quote_payload,
+        "quote_id": quote["quote_id"],
+        "metadata": {
+            **quote_payload["metadata"],
+            "quote_id": quote["quote_id"],
+            "quote": dict(quote),
+            "selected_offer": dict(selected_offer),
+        },
+        "idempotency_key": f"{logical_id}-submit",
+    }
+    submitted = post_json(
+        config.hub_url,
+        "/api/hub/v1/requests",
+        submit_payload,
+        timeout=config.http_timeout_seconds,
+        retry_attempts=config.http_retry_attempts,
+    )["request"]
+    return {"quote": quote, "submitted": submitted}
+
+
+def _requester_disconnect_result_payload(*, config: Any, event_id: str) -> dict[str, Any]:
+    return {
+        "status": "success",
+        "response": {
+            "content": f"requester disconnect retained result {event_id}",
+            "provider": "node-behavior-chaos",
+            "model": config.model,
+            "metadata": {
+                "node_behavior_scenario": "requester_disconnect_result_retention",
+                "node_behavior_event_id": event_id,
+            },
+        },
+    }
+
+
+def exercise_requester_disconnect_result_retention_scenario(
+    *,
+    configs: dict[str, Any],
+    nodes: list[Any] | tuple[Any, ...],
+    scenario: RequesterDisconnectResultRetentionScenarioConfig,
+    post_json: Callable[..., dict[str, Any]],
+    get_json: Callable[..., dict[str, Any]],
+    progress: Any | None = None,
+) -> dict[str, Any]:
+    """Exercise requester disconnect -> later completed-result pickup via Hub APIs."""
+
+    hub_labels = tuple(configs.keys())
+    requested_ring, max_price_credits = _scenario_quote_constraints(configs)
+    plans = plan_requester_disconnect_result_retention_events(
+        list(nodes),
+        event_count=scenario.event_count,
+        seed=scenario.seed,
+        hub_labels=hub_labels,
+        requested_ring=requested_ring,
+        max_price_credits=max_price_credits,
+    )
+    if max(0, int(scenario.event_count or 0)) > 0 and not plans:
+        raise NodeBehaviorScenarioError(
+            "Requester disconnect result-retention scenario has no quote-compatible worker candidates: "
+            f"requested_ring={requested_ring} max_price_credits={max_price_credits}"
+        )
+    events: list[dict[str, Any]] = []
+    retained_count = 0
+    pickup_count = 0
+    expired_count = 0
+    payout_integrity_ok = True
+
+    def emit(event: str, **fields: Any) -> None:
+        if progress is not None and hasattr(progress, "emit"):
+            progress.emit(event, **fields)
+
+    for plan in plans:
+        submit_config = configs[plan.submit_hub]
+        poll_config = configs[plan.poll_hub]
+        result_config = configs[plan.result_hub]
+        pickup_config = configs[plan.pickup_hub]
+        emit(
+            "node_behavior_requester_disconnect_start",
+            event_id=plan.event_id,
+            node_id=plan.node_id,
+            submit_hub=plan.submit_hub,
+            poll_hub=plan.poll_hub,
+            result_hub=plan.result_hub,
+            pickup_hub=plan.pickup_hub,
+        )
+
+        request_record = _post_requester_disconnect_request(
+            config=submit_config,
+            node_id=plan.node_id,
+            event_id=plan.event_id,
+            retention_window_seconds=scenario.result_retention_window_seconds,
+            post_json=post_json,
+        )
+        request_id = str(request_record["submitted"].get("request_id", ""))
+        lease = _poll_worker_connection_lease(
+            config=poll_config,
+            node_id=plan.node_id,
+            event_id=plan.event_id,
+            lease_seconds=30.0,
+            post_json=post_json,
+        )
+        if str(lease.get("request_id", "")) != request_id:
+            raise NodeBehaviorScenarioError(
+                f"Requester disconnect probe {plan.event_id} leased wrong request: expected={request_id} lease={lease}"
+            )
+
+        # The requester is intentionally silent here: no request status polling
+        # occurs between submission and worker completion.
+        completed_payload = post_json(
+            result_config.hub_url,
+            "/api/hub/v1/workers/results",
+            {
+                "worker_node_id": plan.node_id,
+                "request_id": request_id,
+                "lease_id": lease["lease_id"],
+                "result": _requester_disconnect_result_payload(config=result_config, event_id=plan.event_id),
+            },
+            timeout=result_config.http_timeout_seconds,
+            retry_attempts=result_config.http_retry_attempts,
+        )
+        completed = completed_payload.get("request", {}) if isinstance(completed_payload.get("request"), dict) else {}
+        if completed.get("state") != "completed":
+            raise NodeBehaviorScenarioError(
+                f"Requester disconnect probe {plan.event_id} did not complete while requester was offline: {completed_payload}"
+            )
+        retention = (
+            completed.get("response", {})
+            .get("metadata", {})
+            .get("hub", {})
+            .get("result_retention", {})
+            if isinstance(completed.get("response"), dict)
+            else {}
+        )
+        if not isinstance(retention, dict) or not retention.get("retained"):
+            raise NodeBehaviorScenarioError(f"Completed result did not advertise requester retention: {completed}")
+        retained_count += 1
+        time.sleep(max(0.0, float(scenario.pickup_after_seconds or 0.0)))
+
+        pickup = get_json(
+            pickup_config.hub_url,
+            f"/api/hub/v1/requests/{request_id}/result?{urlencode({'account_id': pickup_config.account_id})}",
+            timeout=pickup_config.http_timeout_seconds,
+        )
+        if pickup.get("expired"):
+            expired_count += 1
+            raise NodeBehaviorScenarioError(f"Retained requester result expired before pickup for {request_id}: {pickup}")
+        result = pickup.get("result", {}) if isinstance(pickup.get("result"), dict) else {}
+        if pickup.get("ok") is not True or pickup.get("result_available") is not True:
+            raise NodeBehaviorScenarioError(f"Requester result pickup was not available for {request_id}: {pickup}")
+        if str(result.get("content", "")) != f"requester disconnect retained result {plan.event_id}":
+            raise NodeBehaviorScenarioError(f"Requester picked up wrong result for {request_id}: {pickup}")
+        charges = get_json(
+            pickup_config.hub_url,
+            f"/api/hub/v1/requests/{request_id}/charges",
+            timeout=pickup_config.http_timeout_seconds,
+        )
+        earnings = get_json(
+            pickup_config.hub_url,
+            f"/api/hub/v1/credits/worker-earnings?{urlencode({'worker_node_id': plan.node_id, 'request_id': request_id})}",
+            timeout=pickup_config.http_timeout_seconds,
+        )
+        if int(charges.get("charge_count", 0) or 0) != 1:
+            payout_integrity_ok = False
+            raise NodeBehaviorScenarioError(f"Requester disconnect completion did not charge exactly once for {request_id}: {charges}")
+        if int(earnings.get("worker_earning_count", 0) or 0) < 1:
+            payout_integrity_ok = False
+            raise NodeBehaviorScenarioError(f"Requester disconnect completion did not create worker earning for {request_id}: {earnings}")
+        pickup_count += 1
+        event_result = {
+            "event_id": plan.event_id,
+            "node_id": plan.node_id,
+            "request_id": request_id,
+            "lease_id": lease["lease_id"],
+            "retained": True,
+            "picked_up": True,
+            "expired": False,
+            "retention": retention,
+            "charge_count": int(charges.get("charge_count", 0) or 0),
+            "worker_earning_count": int(earnings.get("worker_earning_count", 0) or 0),
+        }
+        emit(
+            "node_behavior_requester_disconnect_done",
+            event_id=plan.event_id,
+            node_id=plan.node_id,
+            request_id=request_id,
+        )
+        events.append(event_result)
+
+    requested_count = max(0, int(scenario.event_count or 0))
+    return {
+        "requested_count": requested_count,
+        "completed_count": len(events),
+        "result_retained_count": retained_count,
+        "result_pickup_count": pickup_count,
+        "retention_window_seconds": max(0, int(scenario.result_retention_window_seconds or 0)),
+        "expired_count": expired_count,
+        "worker_payout_integrity_ok": payout_integrity_ok,
+        "events": events,
+    }
+
+
+def compact_requester_disconnect_result_retention_summary(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "requested_count": int(result.get("requested_count", 0) or 0),
+        "completed_count": int(result.get("completed_count", 0) or 0),
+        "result_retained_count": int(result.get("result_retained_count", 0) or 0),
+        "result_pickup_count": int(result.get("result_pickup_count", 0) or 0),
+        "retention_window_seconds": int(result.get("retention_window_seconds", 0) or 0),
+        "expired_count": int(result.get("expired_count", 0) or 0),
+        "worker_payout_integrity_ok": bool(result.get("worker_payout_integrity_ok", True)),
+    }

@@ -16,16 +16,34 @@ VIEWPORT_ROUTE_DISPATCH = (PROJECT_ROOT / "main_computer/viewport_route_dispatch
 VIEWPORT_ROUTES_GIT = (PROJECT_ROOT / "main_computer/viewport_routes_git.py").read_text(encoding="utf-8")
 GIT_TOOLS_PY = (PROJECT_ROOT / "main_computer/git_tools.py").read_text(encoding="utf-8")
 GIT_DIRTY_PY = (PROJECT_ROOT / "git_dirty.py").read_text(encoding="utf-8")
-TASK_MANAGER_JS = (PROJECT_ROOT / "main_computer/web/applications/scripts/task-manager.js").read_text(encoding="utf-8")
+GIT_TOOLS_SCRIPT_DIR = PROJECT_ROOT / "main_computer/web/applications/scripts"
+TASK_MANAGER_JS = (GIT_TOOLS_SCRIPT_DIR / "task-manager.js").read_text(encoding="utf-8")
+GIT_TOOLS_MODULE_JS = "\n".join(
+    (GIT_TOOLS_SCRIPT_DIR / name).read_text(encoding="utf-8")
+    for name in (
+        "git-tools-project-workflow.js",
+        "git-tools-project-shared.js",
+        "git-tools-commit-workbench.js",
+        "git-tools-secrets-filter-workbench.js",
+        "git-tools-archive-workbench.js",
+        "git-tools-project-card-subscreen.js",
+        "git-tools-project-wizard-rendering.js",
+        "git-tools-status-refresh-bridge.js",
+        "git-tools-page-wizard.js",
+        "git-tools-shim-console.js",
+        "git-tools-gitignore-workbench.js",
+        "git-tools-status-api.js",
+    )
+)
 
 
 class GitPageWizardWorkflowTests(unittest.TestCase):
     def test_gitignore_right_pane_distinguishes_not_loaded_from_empty_file(self) -> None:
-        self.assertIn("content_read === true", TASK_MANAGER_JS)
-        self.assertIn("contents were not loaded", TASK_MANAGER_JS)
-        self.assertIn("gitProjectGitignoreFileSummary", TASK_MANAGER_JS)
-        self.assertIn("appears to be empty", TASK_MANAGER_JS)
-        self.assertNotIn(".gitignore exists but has no lines yet.", TASK_MANAGER_JS)
+        self.assertIn("content_read === true", GIT_TOOLS_MODULE_JS)
+        self.assertIn("contents were not loaded", GIT_TOOLS_MODULE_JS)
+        self.assertIn("gitProjectGitignoreFileSummary", GIT_TOOLS_MODULE_JS)
+        self.assertIn("appears to be empty", GIT_TOOLS_MODULE_JS)
+        self.assertNotIn(".gitignore exists but has no lines yet.", GIT_TOOLS_MODULE_JS)
 
     def test_gitignore_cleanup_card_has_real_save_and_dirty_model(self) -> None:
         expected_js = (
@@ -42,7 +60,7 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         )
         for snippet in expected_js:
             with self.subTest(snippet=snippet):
-                self.assertIn(snippet, TASK_MANAGER_JS)
+                self.assertIn(snippet, GIT_TOOLS_MODULE_JS)
         for snippet in (
             ".git-project-gitignore-line.is-pending",
             ".git-project-gitignore-line.is-deleted",
@@ -137,7 +155,7 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             "function gitProjectWizardDisplayActions(actions = [])",
             "function gitProjectMergeGitignoreReviewSteps(steps = [])",
             "function gitProjectWizardStepShouldHideInActionQueue(step = {})",
-            "GIT_PROJECT_WIZARD_HIDDEN_ACTION_IDS",
+            "WIZARD_HIDDEN_ACTION_IDS",
             "save_current_state",
             "push_current_branch_to_local_server",
             "inspect_configured_remotes",
@@ -353,8 +371,8 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         expected_js = (
             "function gitProjectWizardStepIsSecretsFilterCandidate(step = {})",
             "function gitProjectNormalizeSecretsFilterStep(step = {})",
-            "const secretsFilterStep = actions.find(gitProjectWizardStepIsSecretsFilterCandidate) || null;",
-            "displayActions.push(gitProjectNormalizeSecretsFilterStep(step));",
+            "const secretsFilterStep = actions.find((step) => wizardStepIsSecretsFilterCandidate(step, hooks)) || null;",
+            "displayActions.push(normalizeSecretsFilterStep(step));",
             "displayActions.splice(insertAt, 0, normalized);",
             'label: "Review Security / Secrets"',
             '"Open Security Review"',
@@ -363,7 +381,7 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         )
         for snippet in expected_js:
             with self.subTest(snippet=snippet):
-                self.assertIn(snippet, TASK_MANAGER_JS)
+                self.assertIn(snippet, GIT_TOOLS_MODULE_JS)
 
     def test_dirty_planner_emits_standalone_secrets_filter_before_commit_cards(self) -> None:
         expected_snippets = (
@@ -565,7 +583,7 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         )
         for snippet in expected_js:
             with self.subTest(snippet=snippet):
-                self.assertIn(snippet, TASK_MANAGER_JS)
+                self.assertIn(snippet, GIT_TOOLS_MODULE_JS)
 
         expected_backend = (
             "def git_project_archive_files_status",
@@ -602,11 +620,11 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         )
         for snippet in expected_snippets:
             with self.subTest(snippet=snippet):
-                self.assertIn(snippet, TASK_MANAGER_JS + GIT_TOOLS_CSS)
+                self.assertIn(snippet, GIT_TOOLS_MODULE_JS + GIT_TOOLS_CSS)
 
-        render_start = TASK_MANAGER_JS.index("const renderStepCard = (step, displayIndex) => {")
-        render_end = TASK_MANAGER_JS.index("  const renderStepGroup =", render_start)
-        render_step_card = TASK_MANAGER_JS[render_start:render_end]
+        render_start = GIT_TOOLS_MODULE_JS.index("const renderStepCard = (step, displayIndex) => {")
+        render_end = GIT_TOOLS_MODULE_JS.index("  const renderStepGroup =", render_start)
+        render_step_card = GIT_TOOLS_MODULE_JS[render_start:render_end]
         forbidden_closed_card_snippets = (
             "Command preview",
             "pathSummary",

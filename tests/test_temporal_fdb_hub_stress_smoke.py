@@ -69,6 +69,9 @@ def test_stress_parser_defaults_to_autostart_failover_and_chatter(tmp_path: Path
     assert config.worker_connection_lost_events == 2
     assert config.worker_connection_lease_seconds == 1.0
     assert config.worker_connection_lost_after_seconds == 1.25
+    assert config.requester_disconnect_events == 2
+    assert config.requester_disconnect_pickup_after_seconds == 0.1
+    assert config.requester_result_retention_window_seconds == 3600
     assert config.random_bridge_funding_events == 3
     assert config.random_bridge_payout_events == 3
     assert config.random_bridge_failed_payout_events == 1
@@ -120,6 +123,12 @@ def test_stress_parser_allows_bridge_random_event_overrides(tmp_path: Path) -> N
             "1.5",
             "--worker-connection-lost-after-seconds",
             "1.75",
+            "--requester-disconnect-events",
+            "3",
+            "--requester-disconnect-pickup-after-seconds",
+            "0.5",
+            "--requester-result-retention-window-seconds",
+            "120",
             "--random-bridge-funding-events",
             "5",
             "--random-bridge-payout-events",
@@ -135,6 +144,9 @@ def test_stress_parser_allows_bridge_random_event_overrides(tmp_path: Path) -> N
     assert config.worker_connection_lost_events == 2
     assert config.worker_connection_lease_seconds == 1.5
     assert config.worker_connection_lost_after_seconds == 1.75
+    assert config.requester_disconnect_events == 3
+    assert config.requester_disconnect_pickup_after_seconds == 0.5
+    assert config.requester_result_retention_window_seconds == 120
     assert config.random_bridge_funding_events == 5
     assert config.random_bridge_payout_events == 4
     assert config.random_bridge_failed_payout_events == 2

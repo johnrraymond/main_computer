@@ -14,10 +14,13 @@ from urllib.parse import urlencode
 from main_computer.dev_chain_smoke_support import bring_up_dev_chain_for_smoke, snapshot_balances_wei
 from main_computer.node_behavior_chaos import (
     NodeReconnectScenarioConfig,
+    RequesterDisconnectResultRetentionScenarioConfig,
     WorkerConnectionReliabilityScenarioConfig,
     compact_node_behavior_summary,
+    compact_requester_disconnect_result_retention_summary,
     compact_worker_connection_reliability_summary,
     exercise_node_reconnect_scenario,
+    exercise_requester_disconnect_result_retention_scenario,
     exercise_worker_connection_reliability_scenario,
 )
 from main_computer.temporal_fdb_hub_multi_hub_smoke import (
@@ -259,6 +262,9 @@ class HubStressSmokeConfig:
     worker_connection_lost_events: int = 2
     worker_connection_lease_seconds: float = 1.0
     worker_connection_lost_after_seconds: float = 1.25
+    requester_disconnect_events: int = 2
+    requester_disconnect_pickup_after_seconds: float = 0.1
+    requester_result_retention_window_seconds: int = 3600
     random_bridge_funding_events: int = 3
     random_bridge_payout_events: int = 3
     random_bridge_failed_payout_events: int = 1
@@ -1003,6 +1009,26 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
         )
         tracker.touch("worker_connection_reliability_complete")
 
+        requester_disconnect_result_retention = await _await_or_freeze(
+            asyncio.to_thread(
+                exercise_requester_disconnect_result_retention_scenario,
+                configs=configs,
+                nodes=nodes,
+                scenario=RequesterDisconnectResultRetentionScenarioConfig(
+                    event_count=config.requester_disconnect_events,
+                    pickup_after_seconds=config.requester_disconnect_pickup_after_seconds,
+                    result_retention_window_seconds=config.requester_result_retention_window_seconds,
+                    seed=run_id,
+                    verify_cross_hub=True,
+                ),
+                post_json=_post_json,
+                get_json=_get_json,
+                progress=progress,
+            ),
+            watchdog_task=watchdog_task,
+        )
+        tracker.touch("requester_disconnect_result_retention_complete")
+
         for index, node in enumerate(nodes, start=1):
             heartbeat_cfg = config_a if index % 2 else config_b
             heartbeat_tasks.append(asyncio.create_task(_heartbeat_loop(config=heartbeat_cfg, node=node, stop_event=stop_event)))
@@ -1299,6 +1325,13 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
             "worker_connection_no_charge_after_lost_count": int(worker_connection_reliability.get("no_charge_after_lost_count", 0) or 0),
             "worker_connection_payout_integrity_ok": bool(worker_connection_reliability.get("payout_integrity_ok", True)),
             "worker_connection_reliability_summary": compact_worker_connection_reliability_summary(worker_connection_reliability),
+            "requester_disconnect_result_requested_count": int(requester_disconnect_result_retention.get("requested_count", 0) or 0),
+            "requester_disconnect_result_retained_count": int(requester_disconnect_result_retention.get("result_retained_count", 0) or 0),
+            "requester_reconnect_result_pickup_count": int(requester_disconnect_result_retention.get("result_pickup_count", 0) or 0),
+            "requester_result_retention_window_seconds": int(requester_disconnect_result_retention.get("retention_window_seconds", 0) or 0),
+            "requester_result_expired_count": int(requester_disconnect_result_retention.get("expired_count", 0) or 0),
+            "requester_disconnect_worker_payout_integrity_ok": bool(requester_disconnect_result_retention.get("worker_payout_integrity_ok", True)),
+            "requester_disconnect_result_retention_summary": compact_requester_disconnect_result_retention_summary(requester_disconnect_result_retention),
             "dev_chain_balance_delta_nonzero_count": (
                 len(dev_chain_rollup.get("balance_deltas_nonzero_wei", {})) if dev_chain_rollup is not None else 0
             ),
@@ -1350,7 +1383,16 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
             "bridge_reconciliation_ok": report["bridge_reconciliation_ok"],
             "freeze_detection_ok": report["freeze_detection_ok"],
             "node_reconnect_cross_hub_status_ok": report["node_reconnect_cross_hub_status_ok"],
+            "requester_disconnect_worker_payout_integrity_ok": report["requester_disconnect_worker_payout_integrity_ok"],
         }
+        if config.requester_disconnect_events > 0:
+            required["requester_disconnect_result_retained"] = (
+                report["requester_disconnect_result_retained_count"] == report["requester_disconnect_result_requested_count"]
+            )
+            required["requester_reconnect_result_pickup"] = (
+                report["requester_reconnect_result_pickup_count"] == report["requester_disconnect_result_requested_count"]
+            )
+            required["requester_result_not_expired"] = report["requester_result_expired_count"] == 0
         if config.failover_hub_a:
             required["hub_a_failover_completed_via_hub_b"] = report["hub_a_failover_completed_via_hub_b"]
         failed = sorted(key for key, value in required.items() if not value)
@@ -1446,6 +1488,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--worker-connection-lost-events", type=int, default=2, help="Seeded active-lease worker disconnects that exceed timeout and must fail/no-charge; use 0 to disable.")
     parser.add_argument("--worker-connection-lease-seconds", type=_positive_float, default=1.0, help="Short lease duration used for worker connection reliability probes.")
     parser.add_argument("--worker-connection-lost-after-seconds", type=_positive_float, default=1.25, help="How long to wait before submitting the late result in worker-lost probes.")
+    parser.add_argument("--requester-disconnect-events", type=int, default=2, help="Seeded requester disconnect/result-pickup probes; use 0 to disable.")
+    parser.add_argument("--requester-disconnect-pickup-after-seconds", type=float, default=0.1, help="How long the requester stays silent after worker completion before result pickup.")
+    parser.add_argument("--requester-result-retention-window-seconds", type=_positive_int, default=3600, help="Durable completed-result pickup window advertised by requester-disconnect probes.")
     parser.add_argument("--random-bridge-funding-events", type=_positive_int, default=3)
     parser.add_argument("--random-bridge-payout-events", type=_positive_int, default=3)
     parser.add_argument("--random-bridge-failed-payout-events", type=_positive_int, default=1)
@@ -1502,6 +1547,9 @@ def _config_from_args(args: argparse.Namespace) -> HubStressSmokeConfig:
         worker_connection_lost_events=max(0, int(args.worker_connection_lost_events or 0)),
         worker_connection_lease_seconds=args.worker_connection_lease_seconds,
         worker_connection_lost_after_seconds=args.worker_connection_lost_after_seconds,
+        requester_disconnect_events=max(0, int(args.requester_disconnect_events or 0)),
+        requester_disconnect_pickup_after_seconds=max(0.0, float(args.requester_disconnect_pickup_after_seconds or 0.0)),
+        requester_result_retention_window_seconds=max(0, int(args.requester_result_retention_window_seconds or 0)),
         random_bridge_funding_events=args.random_bridge_funding_events,
         random_bridge_payout_events=args.random_bridge_payout_events,
         random_bridge_failed_payout_events=args.random_bridge_failed_payout_events,
@@ -1582,6 +1630,12 @@ def main(argv: list[str] | None = None) -> int:
         "worker_connection_late_result_rejected_count",
         "worker_connection_no_charge_after_lost_count",
         "worker_connection_payout_integrity_ok",
+        "requester_disconnect_result_requested_count",
+        "requester_disconnect_result_retained_count",
+        "requester_reconnect_result_pickup_count",
+        "requester_result_retention_window_seconds",
+        "requester_result_expired_count",
+        "requester_disconnect_worker_payout_integrity_ok",
         "nodes_registered",
         "requests_completed",
         "selected_worker_count",

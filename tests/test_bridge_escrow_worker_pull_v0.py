@@ -283,5 +283,74 @@ class BridgeEscrowWorkerPullV0Tests(unittest.TestCase):
         self.assertIsNone(second)
 
 
+    def test_completed_worker_pull_result_is_retained_for_requester_pickup(self) -> None:
+        _hub, hub_base = self._start_hub(credits_per_request=5)
+        account_id = "requester-pickup"
+        _hub.credit_ledger.issue(account_id=account_id, credits=100, memo="fund pickup requester")
+        post_json(
+            f"{hub_base}/api/hub/v1/workers/register",
+            {
+                "node_id": "Pickup Worker 01",
+                "endpoint": "http://127.0.0.1:1",
+                "model": "mock-fast-chat",
+                "credits_per_request": 5,
+            },
+        )
+        submitted = post_json(
+            f"{hub_base}/api/hub/v1/requests",
+            {
+                "account_id": account_id,
+                "client_node_id": account_id,
+                "model": "mock-fast-chat",
+                "prompt": "complete while requester is away",
+                "max_credits": 10,
+                "execution_mode": "worker_pull_v0",
+                "metadata": {
+                    "worker_pull_v0": True,
+                    "requester_result_retention_window_seconds": 60,
+                },
+            },
+        )["request"]
+        lease = post_json(
+            f"{hub_base}/api/hub/v1/workers/poll",
+            {"worker_node_id": "pickup-worker-01", "lease_seconds": 10},
+        )["lease"]
+
+        completed = post_json(
+            f"{hub_base}/api/hub/v1/workers/results",
+            {
+                "worker_node_id": "pickup-worker-01",
+                "request_id": lease["request_id"],
+                "lease_id": lease["lease_id"],
+                "result": {
+                    "status": "success",
+                    "response": {
+                        "content": "stored result",
+                        "provider": "mock-worker",
+                        "model": "mock-fast-chat",
+                    },
+                },
+            },
+        )["request"]
+
+        self.assertEqual(completed["state"], "completed")
+        self.assertEqual(completed["request_id"], submitted["request_id"])
+        retention = completed["response"]["metadata"]["hub"]["result_retention"]
+        self.assertTrue(retention["retained"])
+        self.assertEqual(retention["window_seconds"], 60)
+
+        pickup = get_json(f"{hub_base}/api/hub/v1/requests/{lease['request_id']}/result?account_id={account_id}")
+        self.assertTrue(pickup["ok"])
+        self.assertTrue(pickup["result_available"])
+        self.assertTrue(pickup["retained"])
+        self.assertFalse(pickup["expired"])
+        self.assertEqual(pickup["result"]["content"], "stored result")
+        self.assertEqual(pickup["request"]["state"], "completed")
+
+        charges = get_json(f"{hub_base}/api/hub/v1/requests/{lease['request_id']}/charges")
+        self.assertEqual(charges["charge_count"], 1)
+
+
+
 if __name__ == "__main__":
     unittest.main()
