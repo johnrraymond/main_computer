@@ -335,6 +335,7 @@ class HubAIResponse:
 @dataclass(frozen=True)
 class HubWorkerSummary:
     node_id: str
+    worker_instance_id: str = ""
     model: str = ""
     models: list[str] = field(default_factory=list)
     status: str = "available"
@@ -363,6 +364,7 @@ class HubWorkerSummary:
             models.insert(0, model)
         return cls(
             node_id=str(payload.get("node_id", "")),
+            worker_instance_id=str(payload.get("worker_instance_id") or payload.get("node_id", "")),
             model=model,
             models=models,
             status=str(payload.get("status", "available") or "available"),
@@ -383,7 +385,7 @@ class HubWorkerSummary:
             offer=dict(payload.get("offer", {})) if isinstance(payload.get("offer"), dict) else {},
             queue_depth=max(0, int(payload.get("queue_depth", 0) or 0)),
             active_requests=max(0, int(payload.get("active_requests", 0) or 0)),
-            max_concurrency=max(1, int(payload.get("max_concurrency", 1) or 1)),
+            max_concurrency=1,
             lease_expires_at=str(payload.get("lease_expires_at", "") or ""),
             stale=bool(payload.get("stale", False)) or str(payload.get("status", "")).lower() == "stale",
         )
@@ -391,6 +393,7 @@ class HubWorkerSummary:
     def as_dict(self) -> dict[str, Any]:
         data = {
             "node_id": self.node_id,
+            "worker_instance_id": self.worker_instance_id or self.node_id,
             "model": self.model,
             "models": list(self.models),
             "status": self.status,
@@ -421,6 +424,7 @@ class HubRequestRecord:
     created_at: str = ""
     updated_at: str = ""
     selected_worker_node_id: str = ""
+    selected_worker_instance_id: str = ""
     selected_upstream_hub_node_id: str = ""
     session_id: str = ""
     error: str = ""
@@ -458,6 +462,7 @@ class HubRequestRecord:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "selected_worker_node_id": self.selected_worker_node_id,
+            "selected_worker_instance_id": self.selected_worker_instance_id,
             "selected_upstream_hub_node_id": self.selected_upstream_hub_node_id,
             "session_id": self.session_id,
             "error": self.error,
@@ -500,6 +505,7 @@ class HubRequestRecord:
             created_at=str(payload.get("created_at", "") or ""),
             updated_at=str(payload.get("updated_at", "") or ""),
             selected_worker_node_id=str(payload.get("selected_worker_node_id", "") or ""),
+            selected_worker_instance_id=str(payload.get("selected_worker_instance_id", "") or ""),
             selected_upstream_hub_node_id=str(payload.get("selected_upstream_hub_node_id", "") or ""),
             session_id=str(payload.get("session_id", "") or ""),
             error=str(payload.get("error", "") or ""),
@@ -539,6 +545,7 @@ class HubRequestStatus:
     created_at: str
     updated_at: str
     selected_worker_node_id: str = ""
+    selected_worker_instance_id: str = ""
     selected_upstream_hub_node_id: str = ""
     session_id: str = ""
     error: str = ""
@@ -577,6 +584,7 @@ class HubRequestStatus:
             created_at=record.created_at,
             updated_at=record.updated_at,
             selected_worker_node_id=record.selected_worker_node_id,
+            selected_worker_instance_id=record.selected_worker_instance_id,
             selected_upstream_hub_node_id=record.selected_upstream_hub_node_id,
             session_id=record.session_id,
             error=record.error,
@@ -615,6 +623,7 @@ class HubRequestStatus:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "selected_worker_node_id": self.selected_worker_node_id,
+            "selected_worker_instance_id": self.selected_worker_instance_id,
             "selected_upstream_hub_node_id": self.selected_upstream_hub_node_id,
             "session_id": self.session_id,
             "error": self.error,
@@ -664,6 +673,7 @@ class HubRequestStatus:
             data["selected_offer"] = {
                 "offer_id": str(selected_offer.get("offer_id", "")),
                 "worker_node_id": str(selected_offer.get("worker_node_id", "")),
+                "worker_instance_id": str(selected_offer.get("worker_instance_id", "") or selected_offer.get("worker_node_id", "")),
                 "credits_per_request": max(0, int(selected_offer.get("credits_per_request", 0) or 0)),
                 "unit": str(selected_offer.get("unit", "compute_credit") or "compute_credit"),
                 "execution_mode": str(selected_offer.get("execution_mode", "") or ""),

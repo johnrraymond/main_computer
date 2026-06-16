@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from main_computer.ai_control import ai_control_prompt_text
 from main_computer.config import MainComputerConfig
 from main_computer.models import ChatMessage, ChatResponse
 from main_computer.rag_trust_contract_chat import (
@@ -540,7 +541,7 @@ def _run_chat_console_ai_child(command: dict[str, Any], stdout: WorkerStdout, *,
         context_pack = None
         web_search_context, web_search_text = {"disabled": True, "reason": "mounted_editor_scope"}, ""
         messages = [
-            ChatMessage(role="system", content=__import__("main_computer.router", fromlist=["SYSTEM_PROMPT"]).SYSTEM_PROMPT),
+            ChatMessage(role="system", content=ai_control_prompt_text("router.system", __import__("main_computer.router", fromlist=["SYSTEM_PROMPT"]).SYSTEM_PROMPT)),
             ChatMessage(role="system", content=scoped_context_text),
             *build_notebook_ai_messages(source, attachments),
         ]
@@ -548,7 +549,7 @@ def _run_chat_console_ai_child(command: dict[str, Any], stdout: WorkerStdout, *,
         context_pack = computer.context_pack(source)
         web_search_context, web_search_text = computer._web_search_context(source)
         messages = [
-            ChatMessage(role="system", content=__import__("main_computer.router", fromlist=["SYSTEM_PROMPT"]).SYSTEM_PROMPT),
+            ChatMessage(role="system", content=ai_control_prompt_text("router.system", __import__("main_computer.router", fromlist=["SYSTEM_PROMPT"]).SYSTEM_PROMPT)),
             ChatMessage(role="system", content=context_pack.text),
             *([ChatMessage(role="system", content=web_search_text)] if web_search_text else []),
             *build_notebook_ai_messages(source, attachments),

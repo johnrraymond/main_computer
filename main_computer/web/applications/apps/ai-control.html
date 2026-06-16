@@ -1,0 +1,50 @@
+<section class="ai-control-app" id="ai-control-app" aria-label="AI Control" data-mc-component-id="applications.ai-control" data-mc-component-kind="workspace" data-mc-component-label="AI Control">
+  <div class="app-fullscreen-widget ai-control-shell" data-mc-widget-id="ai-control.workspace" data-mc-widget-kind="workspace" data-mc-widget-label="AI Control Workspace">
+    <div class="widget-head ai-control-head">
+      <div>
+        <h3>AI Control</h3>
+        <p>One view of how each AI surface prepares messages before provider.chat(...), including editable static prompts.</p>
+      </div>
+      <div class="ai-control-actions">
+        <button type="button" id="ai-control-refresh">Refresh</button>
+      </div>
+    </div>
+
+    <div class="ai-control-status" id="ai-control-status" role="status" aria-live="polite">AI Control has not loaded prompt structure yet.</div>
+
+    <div class="ai-control-summary-grid" aria-label="AI Control summary">
+      <div class="status-card">
+        <strong>AI surfaces</strong>
+        <p id="ai-control-surface-count">0</p>
+      </div>
+      <div class="status-card">
+        <strong>Static prompts</strong>
+        <p id="ai-control-prompt-count">0</p>
+      </div>
+      <div class="status-card">
+        <strong>Overrides</strong>
+        <p id="ai-control-override-count">0</p>
+      </div>
+    </div>
+
+    <div class="ai-control-layout ai-control-single-view">
+      <section class="ai-control-surface-list-panel" aria-label="AI surfaces">
+        <div class="ai-control-panel-head">
+          <strong>AI Surfaces</strong>
+          <span id="ai-control-surface-list-summary">no surfaces loaded</span>
+        </div>
+        <div class="ai-control-surface-list" id="ai-control-surface-list" role="list"></div>
+      </section>
+
+      <section class="ai-control-detail-panel" aria-label="AI surface prompt structure">
+        <div class="ai-control-panel-head">
+          <strong id="ai-control-detail-title">Select an AI surface</strong>
+          <span id="ai-control-detail-meta">Message order and static prompt editors</span>
+        </div>
+        <div class="ai-control-detail" id="ai-control-detail">
+          <div class="ai-control-empty">Select an AI surface to inspect how that call is prepared.</div>
+        </div>
+      </section>
+    </div>
+  </div>
+</section>

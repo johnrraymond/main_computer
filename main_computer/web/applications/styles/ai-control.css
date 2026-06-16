@@ -1,0 +1,326 @@
+.ai-control-app {
+  display: grid;
+  min-height: 100%;
+}
+
+.ai-control-shell {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+}
+
+.ai-control-head,
+.ai-control-panel-head,
+.ai-control-prompt-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.ai-control-head h3 {
+  margin: 0 0 0.25rem;
+}
+
+.ai-control-head p,
+.ai-control-section-head p {
+  margin: 0;
+  color: var(--muted, #6b7280);
+}
+
+.ai-control-actions,
+.ai-control-prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.ai-control-actions button:disabled,
+.ai-control-prompt-actions button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ai-control-status {
+  padding: 0.75rem;
+  border: 1px solid var(--panel-border, #d1d5db);
+  border-radius: 0.75rem;
+  background: var(--panel-soft, rgba(148, 163, 184, 0.12));
+}
+
+.ai-control-status.error,
+.ai-control-warning {
+  border-color: rgba(220, 38, 38, 0.35);
+  background: rgba(254, 226, 226, 0.55);
+}
+
+.ai-control-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.ai-control-layout.ai-control-single-view {
+  display: grid;
+  grid-template-columns: minmax(17rem, 0.85fr) minmax(28rem, 1.6fr);
+  gap: 1rem;
+  min-height: 38rem;
+}
+
+.ai-control-surface-list-panel,
+.ai-control-detail-panel {
+  border: 1px solid var(--panel-border, #d1d5db);
+  border-radius: 0.85rem;
+  background: var(--panel-bg, rgba(255, 255, 255, 0.75));
+  overflow: hidden;
+  min-width: 0;
+}
+
+.ai-control-panel-head {
+  padding: 0.85rem;
+  border-bottom: 1px solid var(--panel-border, #d1d5db);
+  background: var(--panel-soft, rgba(148, 163, 184, 0.10));
+}
+
+.ai-control-panel-head span {
+  color: var(--muted, #6b7280);
+  font-size: 0.88rem;
+}
+
+.ai-control-surface-list {
+  display: grid;
+  max-height: 46rem;
+  overflow: auto;
+}
+
+.ai-control-surface-button {
+  text-align: left;
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.75rem 0.85rem;
+  border: 0;
+  border-bottom: 1px solid var(--panel-border, #d1d5db);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.ai-control-surface-button:hover,
+.ai-control-surface-button.active {
+  background: var(--panel-soft, rgba(148, 163, 184, 0.16));
+}
+
+.ai-control-surface-button strong,
+.ai-control-surface-id,
+.ai-control-surface-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-control-surface-id,
+.ai-control-surface-meta,
+.ai-control-muted {
+  color: var(--muted, #6b7280);
+  font-size: 0.84rem;
+}
+
+.ai-control-badge {
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  border-radius: 999px;
+  padding: 0.08rem 0.45rem;
+  background: rgba(34, 197, 94, 0.14);
+  color: rgb(22, 101, 52);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.ai-control-detail {
+  display: grid;
+  gap: 1rem;
+  padding: 0.9rem;
+  max-height: 46rem;
+  overflow: auto;
+}
+
+.ai-control-empty {
+  padding: 1rem;
+  color: var(--muted, #6b7280);
+}
+
+.ai-control-surface-card,
+.ai-control-prompt-card {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.9rem;
+  border: 1px solid var(--panel-border, #d1d5db);
+  border-radius: 0.75rem;
+  background: var(--panel-soft, rgba(148, 163, 184, 0.08));
+  min-width: 0;
+}
+
+.ai-control-surface-card h4,
+.ai-control-surface-card p,
+.ai-control-surface-card dl,
+.ai-control-prompt-card h4,
+.ai-control-prompt-card p {
+  margin: 0;
+}
+
+.ai-control-surface-card dl {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.ai-control-surface-card dl div,
+.ai-control-prompt-meta-row {
+  display: grid;
+  grid-template-columns: 8rem minmax(0, 1fr);
+  gap: 0.5rem;
+}
+
+.ai-control-surface-card dt,
+.ai-control-prompt-meta-row strong,
+.ai-control-slot-index,
+.ai-control-slot-role,
+.ai-control-slot-kind {
+  font-weight: 700;
+}
+
+.ai-control-surface-card dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.ai-control-detail code,
+.ai-control-surface-card code,
+.ai-control-prompt-card code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ai-control-slot-list {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ai-control-slot-list li {
+  display: grid;
+  grid-template-columns: 2rem 6rem 11rem minmax(0, 1fr);
+  gap: 0.45rem;
+  align-items: start;
+  padding: 0.45rem;
+  border: 1px solid var(--panel-border, #d1d5db);
+  border-radius: 0.5rem;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.ai-control-slot-kind.optional {
+  color: var(--muted, #6b7280);
+}
+
+.ai-control-inline-prompt-link {
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: center;
+  margin-left: 0.35rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.ai-control-prompt-editors {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.ai-control-section-head {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.ai-control-section-head h4 {
+  margin: 0;
+}
+
+.ai-control-prompt-card-head h4,
+.ai-control-prompt-card-head p {
+  margin: 0;
+}
+
+.ai-control-prompt-card-head {
+  align-items: start;
+}
+
+.ai-control-surfaces {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.ai-control-description {
+  margin: 0;
+  color: var(--muted, #6b7280);
+}
+
+.ai-control-editor-label {
+  font-weight: 700;
+}
+
+.ai-control-editor {
+  width: 100%;
+  min-height: 16rem;
+  resize: vertical;
+  font: 0.9rem/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  padding: 0.75rem;
+  border: 1px solid var(--panel-border, #d1d5db);
+  border-radius: 0.65rem;
+  background: rgba(255, 255, 255, 0.85);
+  color: inherit;
+}
+
+.ai-control-default-details {
+  border: 1px solid var(--panel-border, #d1d5db);
+  border-radius: 0.65rem;
+  padding: 0.65rem;
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.ai-control-default-details pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 18rem;
+  overflow: auto;
+}
+
+@media (max-width: 980px) {
+  .ai-control-layout.ai-control-single-view,
+  .ai-control-summary-grid,
+  .ai-control-surface-card dl div,
+  .ai-control-prompt-meta-row {
+    grid-template-columns: 1fr;
+  }
+
+  .ai-control-slot-list li {
+    grid-template-columns: 2rem 1fr;
+  }
+
+  .ai-control-slot-label {
+    grid-column: 1 / -1;
+  }
+
+  .ai-control-head,
+  .ai-control-panel-head,
+  .ai-control-prompt-card-head {
+    display: grid;
+  }
+}

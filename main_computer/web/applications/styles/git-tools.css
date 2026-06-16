@@ -3587,7 +3587,11 @@
 .git-project-contract-treegrid-head,
 .git-project-contract-treegrid-row {
   display: grid;
-  grid-template-columns: minmax(280px, 1.45fr) minmax(120px, 0.45fr) minmax(110px, 0.45fr) minmax(180px, 0.75fr);
+  grid-template-columns:
+    var(--git-treegrid-path-col, minmax(280px, 1.45fr))
+    var(--git-treegrid-status-col, minmax(120px, 0.45fr))
+    var(--git-treegrid-risk-col, minmax(110px, 0.45fr))
+    var(--git-treegrid-reason-col, minmax(180px, 0.75fr));
   align-items: stretch;
   min-width: 780px;
 }
@@ -3610,6 +3614,55 @@
   min-width: 0;
   border-right: 1px solid rgba(255, 255, 255, 0.06);
   padding: 8px 10px;
+}
+
+.git-project-contract-treegrid-head > div {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+}
+
+.git-project-contract-treegrid-head > div > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-project-contract-treegrid-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  z-index: 3;
+  display: block;
+  width: 8px;
+  height: 100%;
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.git-project-contract-treegrid-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  left: 3px;
+  width: 1px;
+  background: rgba(255, 206, 77, 0.28);
+}
+
+.git-project-contract-treegrid-resize-handle:hover::after,
+.git-project-contract-treegrid-resize-handle:focus-visible::after {
+  width: 2px;
+  background: var(--gold);
 }
 
 .git-project-contract-treegrid-head > div:last-child,
@@ -3650,7 +3703,13 @@
 }
 
 .git-project-contract-treegrid-cell.is-path {
-  padding-left: calc(10px + (var(--git-tree-depth, 0) * 18px));
+  gap: 6px;
+}
+
+.git-project-contract-treegrid-indent {
+  display: inline-block;
+  width: calc(var(--git-tree-depth, 0) * 18px);
+  flex: 0 0 auto;
 }
 
 .git-project-contract-treegrid-cell.is-status,
@@ -3670,22 +3729,36 @@
 }
 
 .git-project-contract-treegrid-disclosure {
+  appearance: none;
   display: inline-grid;
-  width: 20px;
-  height: 20px;
-  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  min-height: 16px;
+  flex: 0 0 16px;
   place-items: center;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: #050605;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
   color: inherit;
+  font: inherit;
+  line-height: 1;
+  padding: 0;
   cursor: pointer;
+}
+
+.git-project-contract-treegrid-disclosure:hover,
+.git-project-contract-treegrid-disclosure:focus-visible {
+  outline: 1px solid rgba(255, 206, 77, 0.42);
+  outline-offset: 1px;
+  background: rgba(255, 206, 77, 0.08);
 }
 
 .git-project-contract-treegrid-leaf {
   display: inline-grid;
-  width: 20px;
-  flex: 0 0 auto;
+  width: 16px;
+  min-width: 16px;
+  flex: 0 0 16px;
   place-items: center;
   color: var(--muted);
 }

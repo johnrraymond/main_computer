@@ -10,6 +10,7 @@ from urllib.request import Request, urlopen
 from urllib.parse import parse_qs, urlsplit
 
 from main_computer.viewport_state import *  # noqa: F401,F403
+from main_computer.ai_control import ai_control_calls_snapshot, ai_control_prompt_catalog, ai_control_save_prompt_override
 from main_computer.dev_faucet import DevFaucetError, xlag_dev_faucet, xlag_dev_faucet_status
 from main_computer.executor_service import load_executor_service_state
 from main_computer.hub_networks import HubNetworkConfigError, load_hub_network_registry
@@ -1739,6 +1740,14 @@ def dispatch_get(self) -> None:
     if route_path.startswith("/api/executor/artifacts/"):
         self._handle_executor_artifact_get()
         return
+    if route_path == "/api/applications/ai-control/prompts":
+        self.server.signal("api-applications-ai-control-prompts")
+        self._send_json(ai_control_prompt_catalog(self.server.debug_root))
+        return
+    if route_path == "/api/applications/ai-control/calls":
+        self.server.signal("api-applications-ai-control-calls")
+        self._send_json(ai_control_calls_snapshot(self.server.debug_root))
+        return
     if route_path == "/api/activity/snapshot":
         self.server.signal("api-activity-snapshot")
         self._send_json(self.server.activity.snapshot(self.server))
@@ -1930,6 +1939,22 @@ def dispatch_post(self) -> None:
         return
     if self.path == "/api/applications/terminal/suggest":
         self._handle_terminal_suggest()
+        return
+    if route_path == "/api/applications/ai-control/prompts/override":
+        try:
+            body = self._read_json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        result = ai_control_save_prompt_override(
+            self.server.debug_root,
+            prompt_id=str(body.get("id") or body.get("prompt_id") or ""),
+            content=body.get("content") if "content" in body else None,
+            reset=bool(body.get("reset")),
+        )
+        status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
+        self.server.signal("api-applications-ai-control-prompt-override", prompt_id=body.get("id") or body.get("prompt_id"), reset=bool(body.get("reset")))
+        self._send_json(result, status)
         return
     if route_path == "/api/applications/email/check":
         self._handle_email_check_mail()

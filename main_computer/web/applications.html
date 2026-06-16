@@ -12,6 +12,7 @@
     <!-- @include applications/styles/app-layout.css -->
     <!-- @include applications/styles/document.css -->
     <!-- @include applications/styles/chat-console.css -->
+    <!-- @include applications/styles/ai-control.css -->
     <!-- @include applications/styles/email.css -->
     <!-- @include applications/styles/calculator.css -->
     <!-- @include applications/styles/spreadsheet.css -->
@@ -79,6 +80,10 @@
         <a class="app-card ready" href="/applications/chat-console" data-app="chat-console" data-activity-open="snapshots">
           <strong>Chat Console</strong>
           <span>AI/code/Terminal/Mathics notebook cells</span>
+        </a>
+        <a class="app-card ready" href="/applications/ai-control" data-app="ai-control" data-activity-open="ai">
+          <strong>AI Control</strong>
+          <span>inspect active AI calls, prompts, system messages, and responses</span>
         </a>
         <a class="app-card ready" href="/applications/email" data-app="email" data-activity-open="streams" data-mc-component-id="applications.card.email" data-mc-component-kind="action" data-mc-component-label="Open Email" data-mc-component-owner="applications.launcher" data-mc-feature-id="applications.launching">
           <strong>Email</strong>
@@ -168,6 +173,7 @@
           <!-- @include applications/apps/task-manager.html -->
           <!-- @include applications/apps/terminal.html -->
           <!-- @include applications/apps/chat-console.html -->
+          <!-- @include applications/apps/ai-control.html -->
           <!-- @include applications/apps/email.html -->
           <!-- @include applications/apps/git-tools.html -->
           <!-- @include applications/apps/code-editor.html -->
@@ -287,6 +293,7 @@
     <!-- @include applications/scripts/chat-console-state.js -->
     <!-- @include applications/scripts/chat-console-code-runtime.js -->
     <!-- @include applications/scripts/chat-console.js -->
+    <!-- @include applications/scripts/ai-control.js -->
     <!-- @include applications/scripts/email.js -->
     <!-- @include applications/scripts/file-explorer.js -->
     <!-- @include applications/scripts/code-editor-file-map.js -->

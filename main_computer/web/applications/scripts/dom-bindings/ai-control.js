@@ -1,0 +1,11 @@
+    const aiControlApp = document.querySelector("#ai-control-app");
+    const aiControlRefresh = document.querySelector("#ai-control-refresh");
+    const aiControlStatus = document.querySelector("#ai-control-status");
+    const aiControlSurfaceCount = document.querySelector("#ai-control-surface-count");
+    const aiControlPromptCount = document.querySelector("#ai-control-prompt-count");
+    const aiControlOverrideCount = document.querySelector("#ai-control-override-count");
+    const aiControlSurfaceListSummary = document.querySelector("#ai-control-surface-list-summary");
+    const aiControlSurfaceList = document.querySelector("#ai-control-surface-list");
+    const aiControlDetailTitle = document.querySelector("#ai-control-detail-title");
+    const aiControlDetailMeta = document.querySelector("#ai-control-detail-meta");
+    const aiControlDetail = document.querySelector("#ai-control-detail");
