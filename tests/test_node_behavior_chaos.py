@@ -16,11 +16,12 @@ from main_computer.node_behavior_chaos import (
 )
 
 
-def _node(node_id: str) -> SimpleNamespace:
+def _node(node_id: str, *, ring: int = 1, price_credits: int = 2) -> SimpleNamespace:
     return SimpleNamespace(
         node_id=node_id,
         endpoint=f"http://127.0.0.1/{node_id}",
-        ring=1,
+        ring=ring,
+        price_credits=price_credits,
         task_queue=f"queue-{node_id}",
         max_concurrency=2,
     )
@@ -36,6 +37,26 @@ def test_plan_node_reconnect_events_is_seeded_and_cross_hub() -> None:
     assert len(first) == 3
     assert {plan.event_id for plan in first} == {"node-reconnect-01", "node-reconnect-02", "node-reconnect-03"}
     assert all(plan.offline_hub != plan.reconnect_hub for plan in first)
+
+
+def test_plan_node_reconnect_events_filters_quote_incompatible_workers() -> None:
+    nodes = [
+        _node("node-expensive-ring0", ring=0, price_credits=4),
+        _node("node-affordable-ring1", ring=1, price_credits=2),
+        _node("node-expensive-ring2", ring=2, price_credits=3),
+        _node("node-cheap-low-service", ring=3, price_credits=1),
+    ]
+
+    plans = plan_node_reconnect_events(
+        nodes,
+        event_count=3,
+        seed="unit",
+        hub_labels=("hub_a", "hub_b"),
+        requested_ring=2,
+        max_price_credits=2,
+    )
+
+    assert {plan.node_id for plan in plans} == {"node-affordable-ring1"}
 
 
 def test_status_summary_detects_offline_available_and_duplicate_records() -> None:
@@ -157,6 +178,28 @@ def test_plan_worker_connection_reliability_events_covers_recover_and_lost_modes
     assert len(first) == 3
     assert [plan.mode for plan in first].count("recover_before_timeout") == 2
     assert [plan.mode for plan in first].count("lost_after_timeout") == 1
+
+
+def test_plan_worker_connection_reliability_events_filters_quote_incompatible_workers() -> None:
+    nodes = [
+        _node("node-too-expensive", ring=0, price_credits=4),
+        _node("node-compatible-a", ring=1, price_credits=2),
+        _node("node-compatible-b", ring=2, price_credits=2),
+        _node("node-too-low-service", ring=3, price_credits=1),
+    ]
+
+    plans = plan_worker_connection_reliability_events(
+        nodes,
+        recover_before_timeout_events=2,
+        lost_timeout_events=1,
+        seed="unit",
+        hub_labels=("hub_a", "hub_b"),
+        requested_ring=2,
+        max_price_credits=2,
+    )
+
+    assert len(plans) == 3
+    assert {plan.node_id for plan in plans} <= {"node-compatible-a", "node-compatible-b"}
 
 
 def test_worker_connection_reliability_scenario_classifies_recover_and_lost_paths() -> None:

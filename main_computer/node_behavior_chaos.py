@@ -45,6 +45,69 @@ def _node_ring(node: Any) -> int:
     return int(getattr(node, "ring", 0) or 0)
 
 
+def _clean_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _node_price_credits(node: Any) -> int | None:
+    for attribute in ("price_credits", "credits_per_request"):
+        parsed = _clean_optional_int(getattr(node, attribute, None))
+        if parsed is not None:
+            return parsed
+    capabilities = getattr(node, "capabilities", None)
+    if isinstance(capabilities, dict):
+        pricing = capabilities.get("pricing", {})
+        if isinstance(pricing, dict):
+            parsed = _clean_optional_int(pricing.get("credits_per_request"))
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _quote_compatible_nodes(
+    nodes: list[Any] | tuple[Any, ...],
+    *,
+    requested_ring: Any = None,
+    max_price_credits: Any = None,
+) -> list[Any]:
+    """Return nodes that are safe to pin in quote-backed behavior probes.
+
+    Reconnect and worker-connection probes mutate the same shared worker registry
+    used by later quotes.  In the stress lab, those probes must not refresh or pin
+    workers whose advertised offer could never satisfy the requester budget.
+    """
+    clean_requested_ring = _clean_optional_int(requested_ring)
+    clean_max_price_credits = _clean_optional_int(max_price_credits)
+    candidates: list[Any] = []
+    for node in nodes:
+        if not _node_id(node):
+            continue
+        if clean_requested_ring is not None and _node_ring(node) > clean_requested_ring:
+            continue
+        node_price = _node_price_credits(node)
+        if clean_max_price_credits is not None and node_price is not None and node_price > clean_max_price_credits:
+            continue
+        candidates.append(node)
+    return candidates
+
+
+def _scenario_quote_constraints(configs: dict[str, Any]) -> tuple[int | None, int | None]:
+    for config in configs.values():
+        requested_ring = _clean_optional_int(getattr(config, "requested_ring", None))
+        max_price_credits = _clean_optional_int(getattr(config, "max_price_credits", None))
+        if requested_ring is not None or max_price_credits is not None:
+            return requested_ring, max_price_credits
+    return None, None
+
+
 def _node_task_queue(node: Any) -> str:
     return str(getattr(node, "task_queue", "") or "")
 
@@ -59,6 +122,8 @@ def plan_node_reconnect_events(
     event_count: int,
     seed: str,
     hub_labels: list[str] | tuple[str, ...] = ("hub_a", "hub_b"),
+    requested_ring: Any = None,
+    max_price_credits: Any = None,
 ) -> list[NodeReconnectEventPlan]:
     """Return a deterministic reconnect plan without mutating Hub state."""
 
@@ -67,7 +132,11 @@ def plan_node_reconnect_events(
     if count <= 0 or not nodes or not labels:
         return []
     rng = random.Random(f"{seed}:node-reconnect")
-    candidates = [node for node in nodes if _node_id(node)]
+    candidates = _quote_compatible_nodes(
+        list(nodes),
+        requested_ring=requested_ring,
+        max_price_credits=max_price_credits,
+    )
     rng.shuffle(candidates)
     plans: list[NodeReconnectEventPlan] = []
     for index, node in enumerate(candidates[:count], start=1):
@@ -199,12 +268,20 @@ def exercise_node_reconnect_scenario(
     """
 
     hub_labels = tuple(configs.keys())
+    requested_ring, max_price_credits = _scenario_quote_constraints(configs)
     plans = plan_node_reconnect_events(
         list(nodes),
         event_count=scenario.event_count,
         seed=scenario.seed,
         hub_labels=hub_labels,
+        requested_ring=requested_ring,
+        max_price_credits=max_price_credits,
     )
+    if max(0, int(scenario.event_count or 0)) > 0 and not plans:
+        raise NodeBehaviorScenarioError(
+            "Node reconnect scenario has no quote-compatible worker candidates: "
+            f"requested_ring={requested_ring} max_price_credits={max_price_credits}"
+        )
     nodes_by_id = {_node_id(node): node for node in nodes if _node_id(node)}
     events: list[dict[str, Any]] = []
     duplicate_registration_count = 0
@@ -388,11 +465,17 @@ def plan_worker_connection_reliability_events(
     lost_timeout_events: int,
     seed: str,
     hub_labels: list[str] | tuple[str, ...] = ("hub_a", "hub_b"),
+    requested_ring: Any = None,
+    max_price_credits: Any = None,
 ) -> list[WorkerConnectionReliabilityEventPlan]:
     count_recover = max(0, int(recover_before_timeout_events or 0))
     count_lost = max(0, int(lost_timeout_events or 0))
     labels = [str(label) for label in hub_labels if str(label)]
-    candidates = [node for node in nodes if _node_id(node)]
+    candidates = _quote_compatible_nodes(
+        list(nodes),
+        requested_ring=requested_ring,
+        max_price_credits=max_price_credits,
+    )
     if (count_recover + count_lost) <= 0 or not candidates or not labels:
         return []
     rng = random.Random(f"{seed}:worker-connection-reliability")
@@ -544,13 +627,21 @@ def exercise_worker_connection_reliability_scenario(
     """Exercise active-lease worker disconnect policy through Hub HTTP APIs."""
 
     hub_labels = tuple(configs.keys())
+    requested_ring, max_price_credits = _scenario_quote_constraints(configs)
     plans = plan_worker_connection_reliability_events(
         list(nodes),
         recover_before_timeout_events=scenario.recover_before_timeout_events,
         lost_timeout_events=scenario.lost_timeout_events,
         seed=scenario.seed,
         hub_labels=hub_labels,
+        requested_ring=requested_ring,
+        max_price_credits=max_price_credits,
     )
+    if (max(0, int(scenario.recover_before_timeout_events or 0)) + max(0, int(scenario.lost_timeout_events or 0))) > 0 and not plans:
+        raise NodeBehaviorScenarioError(
+            "Worker connection reliability scenario has no quote-compatible worker candidates: "
+            f"requested_ring={requested_ring} max_price_credits={max_price_credits}"
+        )
     nodes_by_id = {_node_id(node): node for node in nodes if _node_id(node)}
     events: list[dict[str, Any]] = []
     recover_completed = 0
