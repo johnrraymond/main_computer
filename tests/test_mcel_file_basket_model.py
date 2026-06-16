@@ -54,6 +54,7 @@ def _run_file_basket_node() -> dict:
     files = [
         SCRIPTS / "git-tools-project-workflow.js",
         SCRIPTS / "git-tools-file-basket.js",
+        SCRIPTS / "git-tools-legacy-ui-bridge.js",
         SCRIPTS / "task-manager.js",
         SCRIPTS / "file-explorer.js",
         SCRIPTS / "website-builder.js",
@@ -108,7 +109,7 @@ console.log(JSON.stringify({{
 
 def _run_task_manager_file_basket_integration_node() -> dict:
     model = SCRIPTS / "mcel-file-basket-model.js"
-    task_manager = SCRIPTS / "task-manager.js"
+    legacy_bridge = SCRIPTS / "git-tools-legacy-ui-bridge.js"
     git_file_basket = SCRIPTS / "git-tools-file-basket.js"
     sample_review = {
         "candidate_groups": {
@@ -168,13 +169,7 @@ globalThis.escapeHtml = (value) => String(value ?? "")
 vm.runInThisContext(fs.readFileSync({json.dumps(str(model))}, "utf8"), {{filename: "mcel-file-basket-model.js"}});
 vm.runInThisContext(fs.readFileSync({json.dumps(str(git_file_basket))}, "utf8"), {{filename: "git-tools-file-basket.js"}});
 
-const taskText = fs.readFileSync({json.dumps(str(task_manager))}, "utf8");
-const start = taskText.indexOf("function gitProjectCommitFileBasketIntegration");
-const end = taskText.indexOf("function gitProjectCommitSelectedReadiness");
-if (start < 0 || end < 0 || end <= start) {{
-  throw new Error("Could not isolate Task Manager file-basket integration helpers.");
-}}
-vm.runInThisContext(taskText.slice(start, end), {{filename: "task-manager-file-basket-integration-slice.js"}});
+vm.runInThisContext(fs.readFileSync({json.dumps(str(legacy_bridge))}, "utf8"), {{filename: "git-tools-legacy-ui-bridge.js"}});
 
 const review = {json.dumps(sample_review)};
 const modelFromTaskManager = gitProjectCommitFileBasketModel(review);
@@ -250,6 +245,7 @@ def test_mcel_file_basket_model_is_loaded_before_task_manager_and_workbench() ->
     html = (ROOT / "main_computer" / "web" / "applications.html").read_text(encoding="utf-8")
     model = (SCRIPTS / "mcel-file-basket-model.js").read_text(encoding="utf-8")
     task_manager = (SCRIPTS / "task-manager.js").read_text(encoding="utf-8")
+    legacy_bridge = (SCRIPTS / "git-tools-legacy-ui-bridge.js").read_text(encoding="utf-8")
     git_file_basket = (SCRIPTS / "git-tools-file-basket.js").read_text(encoding="utf-8")
     elements = (SCRIPTS / "mcel-elements-core.js").read_text(encoding="utf-8")
     acid = (SCRIPTS / "mcel-element-acid-test.js").read_text(encoding="utf-8")
@@ -258,7 +254,7 @@ def test_mcel_file_basket_model_is_loaded_before_task_manager_and_workbench() ->
     assert "<!-- @include applications/scripts/mcel-file-basket-model.js -->" in html
     assert "<!-- @include applications/scripts/git-tools-project-workflow.js -->" in html
     assert "<!-- @include applications/scripts/git-tools-file-basket.js -->" in html
-    assert html.index("mcel-file-basket-model.js") < html.index("git-tools-project-workflow.js") < html.index("git-tools-file-basket.js") < html.index("task-manager.js")
+    assert html.index("mcel-file-basket-model.js") < html.index("git-tools-project-workflow.js") < html.index("git-tools-file-basket.js") < html.index("git-tools-legacy-ui-bridge.js") < html.index("task-manager.js")
     assert html.index("mcel-file-basket-model.js") < html.index("mcel-project-concern-workbench.js")
 
     assert "global.McelFileBasketModel" in model
@@ -273,12 +269,13 @@ def test_mcel_file_basket_model_is_loaded_before_task_manager_and_workbench() ->
     assert "function treeSource" in git_file_basket
     assert "function selectedFilesFromWorkbench" in git_file_basket
     assert "data-git-commit-file-basket-model" in git_file_basket
-    assert "function gitProjectCommitFileBasketModel" in task_manager
-    assert "GitToolsFileBasket" in task_manager
+    assert "function gitProjectCommitFileBasketModel" in legacy_bridge
+    assert "GitToolsFileBasket" in legacy_bridge
     assert "adapter.buildFileBasketModel" not in task_manager
-    assert "function gitProjectCommitTreeSourceFromModel" in task_manager
-    assert "gitProjectCommitAdapterSelectedOutput" in task_manager
-    assert "gitProjectCommitSelectionAdapterReport" in task_manager
+    assert "adapter.buildFileBasketModel" not in legacy_bridge
+    assert "function gitProjectCommitTreeSourceFromModel" in legacy_bridge
+    assert "gitProjectCommitAdapterSelectedOutput" in legacy_bridge
+    assert "gitProjectCommitSelectionAdapterReport" in legacy_bridge
 
     assert "element.resource.file-basket-model" in elements
     assert "File Basket Model Adapter" in elements
