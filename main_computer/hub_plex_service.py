@@ -159,15 +159,22 @@ def market_worker_offer_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         or PHASE9_EXECUTION_MODE
     )
     worker_node_id = str(existing_offer.get("worker_node_id") or worker.get("node_id") or "")
+    worker_instance_id = str(
+        existing_offer.get("worker_instance_id")
+        or worker.get("worker_instance_id")
+        or capabilities.get("worker_instance_id")
+        or worker_node_id
+    )
     assigned_ring = _worker_ring_from_payload(worker)
     offer = {
         "offer_id": str(existing_offer.get("offer_id") or phase9_offer_id(
-            worker_node_id=worker_node_id,
+            worker_node_id=worker_instance_id or worker_node_id,
             models=models,
             credits_per_request=credits,
             execution_mode=execution_mode,
         )),
         "worker_node_id": worker_node_id,
+        "worker_instance_id": worker_instance_id,
         "seller_kind": str(existing_offer.get("seller_kind") or "hub_connected_worker"),
         "models": models,
         "capabilities": list(existing_offer.get("capabilities", []))
@@ -694,14 +701,22 @@ class AIRequestPlexService:
         self,
         *,
         worker_node_id: str,
+        worker_instance_id: str = "",
         lease_seconds: float | None = None,
         polling_base_path: str = "/api/hub/v1/requests",
     ) -> dict[str, Any]:
         """Return one held queued request as a worker-pull lease, if available."""
 
         clean_worker_id = clean_node_id(worker_node_id, default="hub-worker")
+        clean_worker_instance_id = (
+            clean_node_id(worker_instance_id, default="") if worker_instance_id else clean_worker_id
+        )
         self._expire_worker_pull_leases()
-        worker = self.registry.get_worker(clean_worker_id) if hasattr(self.registry, "get_worker") else None
+        worker = (
+            self.registry.get_worker(clean_worker_id, worker_instance_id=clean_worker_instance_id)
+            if hasattr(self.registry, "get_worker")
+            else None
+        )
         if worker is None:
             raise KeyError(f"Unknown hub worker: {clean_worker_id}")
 
@@ -712,19 +727,30 @@ class AIRequestPlexService:
         for record in candidates:
             if not record.hold_id or record.charge_id:
                 continue
-            if record.requested_worker_node_id and record.requested_worker_node_id != clean_worker_id:
+            worker_node_identity = str(_item_value(worker, "node_id", clean_worker_id))
+            worker_instance_identity = str(_item_value(worker, "worker_instance_id", worker_node_identity))
+            if record.selected_worker_instance_id and record.selected_worker_instance_id != worker_instance_identity:
+                continue
+            if record.requested_worker_node_id and record.requested_worker_node_id not in {
+                clean_worker_id,
+                clean_worker_instance_id,
+                worker_node_identity,
+                worker_instance_identity,
+            }:
                 continue
             if not self._worker_can_run_record(worker, record):
                 continue
             leased_worker = self.registry.lease_worker(
                 record.model,
                 request_id=record.request_id,
-                preferred_node_id=clean_worker_id,
+                preferred_node_id=record.requested_worker_node_id or worker_node_identity,
+                preferred_worker_instance_id=record.selected_worker_instance_id or worker_instance_identity,
                 lease_seconds=lease_seconds or self.timeout_s,
             ) if hasattr(self.registry, "lease_worker") else worker
             if leased_worker is None:
                 return {"ok": True, "lease": None}
             worker_node_id = str(_item_value(leased_worker, "node_id", clean_worker_id))
+            leased_worker_instance_id = str(_item_value(leased_worker, "worker_instance_id", worker_node_id))
             selected_offer = self._record_selected_offer(record)
             quoted_credits = self._record_quoted_credits(record)
             worker_credits = quoted_credits or max(1, int(_item_value(leased_worker, "credits_per_request", 1) or 1))
@@ -740,26 +766,38 @@ class AIRequestPlexService:
                     error=f"Worker requires {worker_credits} credits but request held {record.max_credits}.",
                     terminal_reason="worker_price_exceeds_hold",
                     event_type="request.failed",
-                    event={"worker_node_id": worker_node_id, "credits_per_request": worker_credits},
+                    event={
+                        "worker_node_id": worker_node_id,
+                        "worker_instance_id": leased_worker_instance_id,
+                        "credits_per_request": worker_credits,
+                    },
                 )
                 self._release_record_worker(
-                    HubRequestRecord.from_dict({**record.as_dict(), "selected_worker_node_id": worker_node_id}),
+                    HubRequestRecord.from_dict(
+                        {
+                            **record.as_dict(),
+                            "selected_worker_node_id": worker_node_id,
+                            "selected_worker_instance_id": leased_worker_instance_id,
+                        }
+                    ),
                     success=False,
                 )
                 continue
-            lease_id = stable_lease_id(record.request_id, worker_node_id)
+            lease_id = stable_lease_id(record.request_id, leased_worker_instance_id)
             expires_at = (datetime.now(tz=timezone.utc) + timedelta(seconds=max(1.0, float(lease_seconds or self.timeout_s)))).isoformat()
             request_payload = dict(record.request_payload)
             attempt_history = self._record_attempt(
                 record,
                 attempt=max(1, len(record.attempt_history) + 1),
                 worker_node_id=worker_node_id,
+                worker_instance_id=leased_worker_instance_id,
                 worker_model=str(_item_value(leased_worker, "model", "") or record.model),
             )
             if hasattr(self.request_store, "claim_worker_pull_lease"):
                 claimed_record = self.request_store.claim_worker_pull_lease(
                     record.request_id,
                     worker_node_id=worker_node_id,
+                    worker_instance_id=leased_worker_instance_id,
                     lease_id=lease_id,
                     expires_at=expires_at,
                     credits_queued=worker_credits,
@@ -767,7 +805,13 @@ class AIRequestPlexService:
                 )
                 if claimed_record is None:
                     self._release_record_worker(
-                        HubRequestRecord.from_dict({**record.as_dict(), "selected_worker_node_id": worker_node_id}),
+                        HubRequestRecord.from_dict(
+                            {
+                                **record.as_dict(),
+                                "selected_worker_node_id": worker_node_id,
+                                "selected_worker_instance_id": leased_worker_instance_id,
+                            }
+                        ),
                         success=True,
                     )
                     continue
@@ -777,12 +821,18 @@ class AIRequestPlexService:
                     record.request_id,
                     state="leased",
                     selected_worker_node_id=worker_node_id,
+                    selected_worker_instance_id=leased_worker_instance_id,
                     lease_id=lease_id,
                     lease_expires_at=expires_at,
                     credits_queued=worker_credits,
                     attempt_history=attempt_history,
                     event_type="worker_pull.lease.granted",
-                    event={"worker_node_id": worker_node_id, "lease_id": lease_id, "expires_at": expires_at},
+                    event={
+                        "worker_node_id": worker_node_id,
+                        "worker_instance_id": leased_worker_instance_id,
+                        "lease_id": lease_id,
+                        "expires_at": expires_at,
+                    },
                 )
             lease = {
                 "lease_id": lease_id,
@@ -794,6 +844,8 @@ class AIRequestPlexService:
                 and isinstance(request_payload.get("metadata", {}).get("mock_provider_config"), dict)
                 else {},
                 "expires_at": expires_at,
+                "worker_node_id": worker_node_id,
+                "worker_instance_id": leased_worker_instance_id,
             }
             market_metadata = self._record_market_metadata(record)
             if market_metadata:
@@ -808,6 +860,9 @@ class AIRequestPlexService:
                     lease["selected_offer"] = {
                         "offer_id": str(selected_offer.get("offer_id", "")),
                         "worker_node_id": str(selected_offer.get("worker_node_id", "")),
+                        "worker_instance_id": str(
+                            selected_offer.get("worker_instance_id", "") or selected_offer.get("worker_node_id", "")
+                        ),
                         "credits_per_request": max(0, int(selected_offer.get("credits_per_request", 0) or 0)),
                     }
                     assigned_ring = _optional_int(selected_offer.get("assigned_ring"))
@@ -952,12 +1007,16 @@ class AIRequestPlexService:
         request_id: str,
         lease_id: str,
         result: dict[str, Any],
+        worker_instance_id: str = "",
         polling_base_path: str = "/api/hub/v1/requests",
     ) -> dict[str, Any]:
         """Accept a worker-pull result and finalize paid accounting exactly once."""
 
         self._expire_worker_pull_leases()
         clean_worker_id = clean_node_id(worker_node_id, default="hub-worker")
+        clean_worker_instance_id = (
+            clean_node_id(worker_instance_id, default="") if worker_instance_id else clean_worker_id
+        )
         clean_request_id = str(request_id or "").strip()
         clean_lease_id = str(lease_id or "").strip()
         if not clean_request_id or not clean_lease_id:
@@ -968,6 +1027,8 @@ class AIRequestPlexService:
         if record.state == "completed" or record.charge_id:
             if record.selected_worker_node_id and record.selected_worker_node_id != clean_worker_id:
                 raise ValueError("Worker result replay was submitted by the wrong worker.")
+            if record.selected_worker_instance_id and record.selected_worker_instance_id != clean_worker_instance_id:
+                raise ValueError("Worker result replay was submitted by the wrong worker instance.")
             if record.lease_id and record.lease_id != clean_lease_id:
                 raise ValueError("Worker result replay lease_id does not match the accepted lease.")
             return {
@@ -985,6 +1046,8 @@ class AIRequestPlexService:
             raise ValueError("Worker result lease_id does not match the active lease.")
         if record.selected_worker_node_id != clean_worker_id:
             raise ValueError("Worker result was submitted by the wrong worker.")
+        if record.selected_worker_instance_id and record.selected_worker_instance_id != clean_worker_instance_id:
+            raise ValueError("Worker result was submitted by the wrong worker instance.")
         lease_deadline = parse_utc(record.lease_expires_at)
         if lease_deadline is not None and lease_deadline < datetime.now(tz=timezone.utc):
             self._fail_worker_pull_lease_timeout(record)
@@ -1004,7 +1067,12 @@ class AIRequestPlexService:
                 lease_id="",
                 lease_expires_at="",
                 event_type="request.failed",
-                event={"worker_node_id": clean_worker_id, "lease_id": clean_lease_id, "error": error},
+                event={
+                    "worker_node_id": clean_worker_id,
+                    "worker_instance_id": clean_worker_instance_id,
+                    "lease_id": clean_lease_id,
+                    "error": error,
+                },
             )
             return {"ok": False, "request": HubRequestStatus.from_record(failed, polling_url=f"{polling_base_path.rstrip('/')}/{record.request_id}").as_dict()}
 
@@ -1037,6 +1105,7 @@ class AIRequestPlexService:
         metadata["hub"] = {
             "request_id": record.request_id,
             "worker_node_id": clean_worker_id,
+            "worker_instance_id": clean_worker_instance_id,
             "credits_queued": worker_credits,
             "settlement": "batched-worker-claim",
             "payout_queue": energy_status.get("payout_queue", {}),
@@ -1060,6 +1129,9 @@ class AIRequestPlexService:
                 metadata["hub"]["selected_offer"] = {
                     "offer_id": str(selected_offer.get("offer_id", "")),
                     "worker_node_id": str(selected_offer.get("worker_node_id", "")),
+                    "worker_instance_id": str(
+                        selected_offer.get("worker_instance_id", "") or selected_offer.get("worker_node_id", "")
+                    ),
                     "credits_per_request": max(0, int(selected_offer.get("credits_per_request", 0) or 0)),
                 }
         if receipt:
@@ -1315,6 +1387,13 @@ class AIRequestPlexService:
                 request.model,
                 request_id=request_id,
                 preferred_node_id=request.requested_worker_node_id,
+                preferred_worker_instance_id=str(
+                    (
+                        request.metadata.get("selected_offer", {})
+                        if isinstance(request.metadata, dict) and isinstance(request.metadata.get("selected_offer"), dict)
+                        else {}
+                    ).get("worker_instance_id", "")
+                ),
                 lease_seconds=self.timeout_s,
             )
         return self.registry.select_worker(request.model)
@@ -1324,7 +1403,12 @@ class AIRequestPlexService:
         if not node_id:
             return
         if hasattr(self.registry, "release_worker"):
-            self.registry.release_worker(node_id, request_id=record.request_id, success=success)
+            self.registry.release_worker(
+                node_id,
+                request_id=record.request_id,
+                success=success,
+                worker_instance_id=record.selected_worker_instance_id,
+            )
             return
         self.registry.mark_worker(node_id, status="available" if success else "offline")
 
@@ -1335,6 +1419,7 @@ class AIRequestPlexService:
         attempt: int,
         worker_node_id: str,
         worker_model: str,
+        worker_instance_id: str = "",
         error: str = "",
     ) -> list[dict[str, Any]]:
         history = [dict(item) for item in record.attempt_history]
@@ -1342,6 +1427,7 @@ class AIRequestPlexService:
             {
                 "attempt": attempt,
                 "worker_node_id": worker_node_id,
+                "worker_instance_id": worker_instance_id or worker_node_id,
                 "model": worker_model,
                 "error": error,
                 "created_at": utc_now(),
@@ -1429,6 +1515,7 @@ class AIRequestPlexService:
             "selected_offer": dict(selected),
             "selected_offer_id": str(selected.get("offer_id", "")),
             "selected_worker_node_id": str(selected.get("worker_node_id", "")),
+            "selected_worker_instance_id": str(selected.get("worker_instance_id", "") or selected.get("worker_node_id", "")),
             "selected_offer_price_source": str(selected.get("price_source", "worker_registration") or "worker_registration"),
             "created_at": now,
             "expires_at": (datetime.now(tz=timezone.utc) + timedelta(minutes=5)).isoformat(),
@@ -1454,7 +1541,10 @@ class AIRequestPlexService:
         for worker in workers:
             if not isinstance(worker, dict):
                 continue
-            if requested and str(worker.get("node_id", "")) != requested:
+            if requested and requested not in {
+                str(worker.get("node_id", "")),
+                str(worker.get("worker_instance_id") or worker.get("node_id", "")),
+            }:
                 continue
             state = str(worker.get("status", "available") or "available").lower()
             if state not in {"available", "configured"} or bool(worker.get("stale", False)):
@@ -1502,9 +1592,13 @@ class AIRequestPlexService:
             compatible,
             key=lambda offer: (
                 max(0, int(offer.get("credits_per_request", 0) or 0)),
-                assignment_counts.get(str(offer.get("worker_node_id", "")), 0),
+                assignment_counts.get(
+                    str(offer.get("worker_instance_id", "") or offer.get("worker_node_id", "")),
+                    0,
+                ),
                 max(0, int(offer.get("assigned_ring", 1_000_000) or 1_000_000)),
                 str(offer.get("worker_node_id", "")),
+                str(offer.get("worker_instance_id", "") or offer.get("worker_node_id", "")),
                 str(offer.get("offer_id", "")),
             ),
         )[0]
@@ -1525,19 +1619,26 @@ class AIRequestPlexService:
 
         counts: dict[str, int] = {}
         for record in records:
-            worker_node_id = ""
+            worker_identity = ""
             market_metadata = self._record_market_metadata(record)
             if market_metadata:
                 selected_offer = self._record_selected_offer(record)
-                worker_node_id = str(
-                    selected_offer.get("worker_node_id")
+                worker_identity = str(
+                    selected_offer.get("worker_instance_id")
+                    or market_metadata.get("selected_worker_instance_id")
+                    or selected_offer.get("worker_node_id")
                     or market_metadata.get("selected_worker_node_id")
                     or ""
                 ).strip()
-            if not worker_node_id:
-                worker_node_id = str(record.requested_worker_node_id or record.selected_worker_node_id or "").strip()
-            if worker_node_id:
-                counts[worker_node_id] = counts.get(worker_node_id, 0) + 1
+            if not worker_identity:
+                worker_identity = str(
+                    record.selected_worker_instance_id
+                    or record.requested_worker_node_id
+                    or record.selected_worker_node_id
+                    or ""
+                ).strip()
+            if worker_identity:
+                counts[worker_identity] = counts.get(worker_identity, 0) + 1
         return counts
 
     def _worker_payload_supports_model(self, worker: dict[str, Any], model: str) -> bool:
@@ -1619,11 +1720,20 @@ class AIRequestPlexService:
             record.request_id,
             request_payload=payload,
             requested_worker_node_id=str(quote.get("selected_worker_node_id") or selected_offer.get("worker_node_id") or ""),
+            selected_worker_instance_id=str(
+                quote.get("selected_worker_instance_id")
+                or selected_offer.get("worker_instance_id")
+                or selected_offer.get("worker_node_id")
+                or ""
+            ),
             event_type="phase9.market_quote.accepted",
             event={
                 "quote_id": str(quote.get("quote_id", "")),
                 "offer_id": str(selected_offer.get("offer_id", "")),
                 "worker_node_id": str(selected_offer.get("worker_node_id", "")),
+                "worker_instance_id": str(
+                    selected_offer.get("worker_instance_id", "") or selected_offer.get("worker_node_id", "")
+                ),
                 "requested_ring": _optional_int(quote.get("requested_ring")),
                 "assigned_ring": _optional_int(selected_offer.get("assigned_ring")),
                 "quoted_credits": max(0, int(quote.get("quoted_credits", 0) or 0)),
@@ -1861,6 +1971,7 @@ class AIRequestPlexService:
                 break
             worker_payload = _public_payload(worker)
             worker_node_id = str(_item_value(worker, "node_id", ""))
+            worker_instance_id = str(_item_value(worker, "worker_instance_id", worker_node_id))
             worker_endpoint = str(_item_value(worker, "endpoint", "")).rstrip("/")
             worker_model = str(_item_value(worker, "model", "") or "")
             worker_credits = max(1, int(_item_value(worker, "credits_per_request", 1) or 1))
@@ -1868,15 +1979,22 @@ class AIRequestPlexService:
                 current,
                 attempt=attempt,
                 worker_node_id=worker_node_id,
+                worker_instance_id=worker_instance_id,
                 worker_model=worker_model,
             )
             self.request_store.update(
                 record.request_id,
                 state="dispatching",
                 selected_worker_node_id=worker_node_id,
+                selected_worker_instance_id=worker_instance_id,
                 attempt_history=attempt_history,
                 event_type="worker.selected",
-                event={"attempt": attempt, "worker_node_id": worker_node_id, "worker_model": worker_model},
+                event={
+                    "attempt": attempt,
+                    "worker_node_id": worker_node_id,
+                    "worker_instance_id": worker_instance_id,
+                    "worker_model": worker_model,
+                },
             )
             payload = {
                 "request_id": record.request_id,
@@ -1899,7 +2017,7 @@ class AIRequestPlexService:
                     record.request_id,
                     state="running",
                     event_type="request.started",
-                    event={"attempt": attempt, "worker_node_id": worker_node_id},
+                    event={"attempt": attempt, "worker_node_id": worker_node_id, "worker_instance_id": worker_instance_id},
                 )
                 response_payload = self._post_json(worker_endpoint + HUB_WORKER_CHAT_PATH, payload)
                 response = chat_response_from_payload(
@@ -1911,7 +2029,12 @@ class AIRequestPlexService:
                 last_error = exc
                 try:
                     if hasattr(self.registry, "release_worker"):
-                        self.registry.release_worker(worker_node_id, request_id=record.request_id, success=False)
+                        self.registry.release_worker(
+                            worker_node_id,
+                            request_id=record.request_id,
+                            success=False,
+                            worker_instance_id=worker_instance_id,
+                        )
                     else:
                         self.registry.mark_worker(worker_node_id, status="offline")
                 finally:
@@ -1920,6 +2043,7 @@ class AIRequestPlexService:
                         refreshed,
                         attempt=attempt,
                         worker_node_id=worker_node_id,
+                        worker_instance_id=worker_instance_id,
                         worker_model=worker_model,
                         error=str(exc),
                     )
@@ -1931,7 +2055,12 @@ class AIRequestPlexService:
                         attempt_history=failed_history,
                         error=str(exc),
                         event_type="worker.offline",
-                        event={"attempt": attempt, "worker_node_id": worker_node_id, "error": str(exc)},
+                        event={
+                            "attempt": attempt,
+                            "worker_node_id": worker_node_id,
+                            "worker_instance_id": worker_instance_id,
+                            "error": str(exc),
+                        },
                     )
                 continue
 
@@ -1948,13 +2077,20 @@ class AIRequestPlexService:
                 request_id=record.request_id,
             )
             self._release_record_worker(
-                HubRequestRecord.from_dict({**record.as_dict(), "selected_worker_node_id": worker_node_id}),
+                HubRequestRecord.from_dict(
+                    {
+                        **record.as_dict(),
+                        "selected_worker_node_id": worker_node_id,
+                        "selected_worker_instance_id": worker_instance_id,
+                    }
+                ),
                 success=True,
             )
             metadata = dict(response.metadata)
             metadata["hub"] = {
                 "request_id": record.request_id,
                 "worker_node_id": worker_node_id,
+                "worker_instance_id": worker_instance_id,
                 "worker_endpoint": worker_endpoint,
                 "credits_queued": worker_credits,
                 "settlement": "batched-worker-claim",
@@ -1975,6 +2111,7 @@ class AIRequestPlexService:
                 record.request_id,
                 state="completed",
                 selected_worker_node_id=worker_node_id,
+                selected_worker_instance_id=worker_instance_id,
                 response={
                     "content": completed.content,
                     "provider": completed.provider,

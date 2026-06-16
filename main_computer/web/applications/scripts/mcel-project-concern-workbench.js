@@ -155,29 +155,33 @@
 
       const WORK_ORDER_TEMPLATES = {
         "concern.file-basket": {
-          title: "Replace the Git Tools file basket with the contract treegrid",
+          title: "Harden the Git Tools file basket contract treegrid in the MCEL lab",
           currentFailure: [
-            "Git/project file-basket behavior and wizard action queue policy now have Git-owned extraction modules, but the visible file basket still needs to stop depending on widget-specific selection state.",
+            "The first live replacement attempt proved the contract treegrid is not yet visually or interactively ready for the real Git Tools page.",
+            "Git Tools must keep the legacy Wunderbaum/fallback pathway active while MCEL gets a focused interactive Git file-basket test surface.",
             "Typed file fields must remain structured in path/status/risk/reason cells instead of being flattened into a single title string.",
-            "Selection output must be derived by the FileBasketSelectionController and then reflected by the view.",
-            "Blocked rows must remain visible while staying non-selectable."
+            "Selection output must be derived by the FileBasketSelectionController and then reflected by the lab view before another replacement attempt."
           ],
           migrationPhases: [
             "Mark git-tools.file-basket as the canonical owner and keep task-manager.file-basket only as a deprecated alias.",
             "Extract FileBasketModel adapter from candidate groups and file metadata.",
             "Extract FileBasketSelectionController while preserving the current DOM tree.",
-            "Prepare a contract treegrid row source beside the legacy renderer.",
-            "Restore the legacy Git Tools tree as the active renderer until the contract treegrid has browser-grade proof."
+            "Restore the real Git Tools file basket to the legacy tree pathway.",
+            "Mount the same model/controller/contract treegrid in an interactive MCEL lab surface using Git-shaped data.",
+            "Only make the MCEL contract treegrid the active file-basket renderer after the lab proves layout, selection, expansion, column resizing, and blocked-row behavior."
           ],
           firstSafeMigration: [
-            "Use git-tools-file-basket-contract-view.js as a prepared contract row/proof source for git-tools.file-basket.",
-            "Keep the legacy Wunderbaum/fallback tree as the active visible selector while the contract treegrid is hardened.",
-            "Add tests that selected output matches between legacy defaults, controller output, and the contract treegrid preparation layer."
+            "Exercise git-tools.file-basket in an MCEL lab-only contract treegrid surface.",
+            "Keep the real Git Tools file basket on the legacy Wunderbaum/fallback renderer until the lab proof is stable.",
+            "Add tests that selected output matches between legacy defaults, controller output, and the lab contract treegrid."
           ],
           testsNeeded: [
             "git-tools.file-basket is the canonical work order id",
             "task-manager.file-basket remains a deprecated alias only",
-            "git-tools-project-workflow.js owns wizard action queue semantics",
+            "real Git Tools file basket renderer remains legacy-wunderbaum",
+            "MCEL lab mounts the Git-shaped contract treegrid interactively",
+            "MCEL lab treegrid disclosures collapse/expand rows without changing selection",
+            "MCEL lab treegrid exposes resize handles for path/status/risk/reason columns",
             "selecting a directory selects only selectable descendants",
             "blocked rows remain visible and never enter selected output",
             "title-only tree is rejected by the view resolver"
@@ -465,6 +469,9 @@
         if (contractId === "pattern.file-basket" && global.McelFileBasketModel?.buildReadinessReport) {
           const report = global.McelFileBasketModel.buildReadinessReport();
           if (report.ready && global.GitToolsFileBasketContractView?.summarizeContractTreegridReadiness && global.McelFileBasketModel?.buildFileBasketModel) {
+            const labReport = typeof global.McelGitFileBasketTreegridLab?.buildInteractiveGitTreegridLabReport === "function"
+              ? global.McelGitFileBasketTreegridLab.buildInteractiveGitTreegridLabReport()
+              : null;
             const specimen = global.McelFileBasketModel.buildFileBasketModel({
               candidate_groups: {
                 selected_by_default: [{path: "main_computer/web/applications/scripts/task-manager.js", status: "modified", classifications: ["source"], modified: "today"}],
@@ -476,20 +483,27 @@
             const contractReport = global.GitToolsFileBasketContractView.summarizeContractTreegridReadiness(specimen, {
               selectedPaths: specimen.defaultSelectedPaths,
               legacySelectedPaths: specimen.defaultSelectedPaths,
-              legacyRollbackAvailable: true
+              legacyRendererActive: true,
+              legacyRollbackAvailable: true,
+              activeReplacement: false,
+              visibleRenderer: "mcel-lab-git-treegrid"
             });
             if (contractReport.ready) {
               return {
-                status: "contract-treegrid-prepared",
-                label: "Contract treegrid prepared; legacy Git Tools tree restored as active renderer",
+                status: labReport?.ready ? "interactive-lab-active" : "contract-treegrid-prepared",
+                label: labReport?.ready
+                  ? "Git file-basket contract treegrid is active in the MCEL lab; Git Tools keeps the legacy tree renderer"
+                  : "Contract treegrid prepared, but visible Git Tools replacement is deferred",
                 firstSafePatchBacked: true,
-                module: "GitToolsFileBasketContractView",
+                module: labReport?.ready ? "McelGitFileBasketTreegridLab" : "GitToolsFileBasketContractView",
                 proof: [
-                  `rows=${contractReport.rowCount || 0}`,
+                  `rows=${labReport?.rows?.length || contractReport.rowCount || 0}`,
                   `files=${contractReport.fileRowCount || 0}`,
                   `directories=${contractReport.directoryRowCount || 0}`,
                   `blocked=${contractReport.blockedRowCount || 0}`,
+                  "real Git Tools renderer remains legacy-wunderbaum",
                   contractReport.selectedOutputMatchesLegacy ? "selected output matches legacy/controller proof" : "selected output mismatch",
+                  contractReport.activeReplacement ? "replacement active" : "replacement deferred to lab proof",
                   contractReport.titleOnlyTreeRejected ? "title-only tree rejected" : "title-only tree not rejected"
                 ]
               };

@@ -220,6 +220,92 @@ class BridgeEscrowWorkerPullV0Tests(unittest.TestCase):
         polled = post_json(f"{hub_base}/api/hub/v1/workers/poll", {"worker_node_id": "pull-worker-02"})
         self.assertIsNone(polled["lease"])
 
+    def test_worker_pull_lease_is_owned_by_worker_instance(self) -> None:
+        hub, hub_base = self._start_hub(credits_per_request=5)
+        account_id = "requester-worker-instance"
+        hub.credit_ledger.issue(account_id=account_id, credits=100, memo="fund worker instance requester")
+        for instance_id in ("shared-worker-slot-a", "shared-worker-slot-b"):
+            registered = post_json(
+                f"{hub_base}/api/hub/v1/workers/register",
+                {
+                    "node_id": "Shared Worker Node",
+                    "worker_instance_id": instance_id,
+                    "endpoint": "http://127.0.0.1:1",
+                    "model": "mock-fast-chat",
+                    "models": ["mock-fast-chat"],
+                    "credits_per_request": 5,
+                    "capabilities": {"provider": "mock", "worker_pull_v0": True},
+                },
+            )
+            self.assertTrue(registered["ok"])
+            self.assertEqual(registered["worker"]["node_id"], "shared-worker-node")
+            self.assertEqual(registered["worker"]["worker_instance_id"], instance_id)
+
+        submitted = post_json(
+            f"{hub_base}/api/hub/v1/requests",
+            {
+                "account_id": account_id,
+                "client_node_id": account_id,
+                "model": "mock-fast-chat",
+                "prompt": "instance-owned work",
+                "max_credits": 10,
+                "execution_mode": "worker_pull_v0",
+                "metadata": {"worker_pull_v0": True},
+            },
+        )["request"]
+        selected_instance_id = submitted["selected_worker_instance_id"]
+        self.assertEqual(selected_instance_id, "shared-worker-slot-a")
+
+        wrong_poll = post_json(
+            f"{hub_base}/api/hub/v1/workers/poll",
+            {"worker_node_id": "shared-worker-node", "worker_instance_id": "shared-worker-slot-b"},
+        )
+        self.assertIsNone(wrong_poll["lease"])
+
+        polled = post_json(
+            f"{hub_base}/api/hub/v1/workers/poll",
+            {"worker_node_id": "shared-worker-node", "worker_instance_id": selected_instance_id},
+        )
+        lease = polled["lease"]
+        self.assertIsInstance(lease, dict)
+        self.assertEqual(lease["worker_node_id"], "shared-worker-node")
+        self.assertEqual(lease["worker_instance_id"], selected_instance_id)
+
+        wrong_result = post_json(
+            f"{hub_base}/api/hub/v1/workers/results",
+            {
+                "worker_node_id": "shared-worker-node",
+                "worker_instance_id": "shared-worker-slot-b",
+                "request_id": lease["request_id"],
+                "lease_id": lease["lease_id"],
+                "result": {
+                    "status": "success",
+                    "response": {"content": "wrong slot", "provider": "mock-worker", "model": "mock-fast-chat"},
+                },
+            },
+            allow_error=True,
+        )
+        self.assertEqual(wrong_result["_http_status"], 400)
+        self.assertIn("wrong worker instance", wrong_result["error"])
+
+        completed = post_json(
+            f"{hub_base}/api/hub/v1/workers/results",
+            {
+                "worker_node_id": "shared-worker-node",
+                "worker_instance_id": selected_instance_id,
+                "request_id": lease["request_id"],
+                "lease_id": lease["lease_id"],
+                "result": {
+                    "status": "success",
+                    "response": {"content": "right slot", "provider": "mock-worker", "model": "mock-fast-chat"},
+                },
+            },
+        )["request"]
+        self.assertEqual(completed["state"], "completed")
+        self.assertEqual(completed["selected_worker_node_id"], "shared-worker-node")
+        self.assertEqual(completed["selected_worker_instance_id"], selected_instance_id)
+        self.assertEqual(completed["response"]["metadata"]["hub"]["worker_instance_id"], selected_instance_id)
+
     def test_expired_worker_pull_lease_fails_request_releases_hold_and_rejects_late_result(self) -> None:
         hub, hub_base = self._start_hub(credits_per_request=5)
         hub.credit_ledger.issue(account_id="requester", credits=100, memo="fund")

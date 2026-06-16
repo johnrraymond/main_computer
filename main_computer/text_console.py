@@ -7,6 +7,7 @@ import json
 import re
 from typing import Any
 
+from main_computer.ai_control import ai_control_prompt_text
 from main_computer.config import MainComputerConfig
 from main_computer.models import ChatMessage, ChatResponse
 from main_computer.router import MainComputer, SYSTEM_PROMPT as ROUTER_SYSTEM_PROMPT
@@ -1276,14 +1277,14 @@ def build_action_preflight_messages(
         f"- working_directory: {config.working_directory}"
     )
     messages = [
-        ChatMessage(role="system", content=ACTION_PREFLIGHT_PROMPT),
+        ChatMessage(role="system", content=ai_control_prompt_text("text_console.action_preflight.system", ACTION_PREFLIGHT_PROMPT)),
         ChatMessage(role="system", content=action_spec_catalog_prompt(specs)),
         ChatMessage(role="system", content=text_console_target_profile_catalog_prompt()),
         ChatMessage(role="system", content=root_hint),
     ]
     threaded_context = list(conversation_messages or [])
     if threaded_context:
-        messages.append(ChatMessage(role="system", content=THREAD_TERMINAL_RESULT_CONTEXT_PROMPT))
+        messages.append(ChatMessage(role="system", content=ai_control_prompt_text("text_console.thread_terminal_result_context.system", THREAD_TERMINAL_RESULT_CONTEXT_PROMPT)))
         messages.extend(threaded_context)
     messages.append(ChatMessage(role="user", content=str(request_text or "")))
     return messages
@@ -1323,7 +1324,7 @@ def build_operator_final_messages(
     base_messages = compact_model_messages_for_operator(model_input)
     threaded_context = list(conversation_messages or [])
     inserted = [
-        ChatMessage(role="system", content=FINAL_OPERATOR_PROMPT),
+        ChatMessage(role="system", content=ai_control_prompt_text("text_console.final_operator.system", FINAL_OPERATOR_PROMPT)),
         ChatMessage(role="system", content=selected_action_specs_prompt(specs, selected_spec_ids)),
     ]
     if base_messages and base_messages[-1].role == "user":
@@ -1550,7 +1551,7 @@ def build_text_console_clob_grounded_answer_messages(
         f"- working_directory: {text_console_config.working_directory}"
     )
     return [
-        ChatMessage(role="system", content=CLOB_GROUNDED_ANSWER_PROMPT),
+        ChatMessage(role="system", content=ai_control_prompt_text("text_console.clob_grounded_answer.system", CLOB_GROUNDED_ANSWER_PROMPT)),
         ChatMessage(role="system", content=root_hint),
         ChatMessage(role="system", content=str(clob_lookup_text or "").strip()),
         ChatMessage(role="user", content=str(prompt or "")),
@@ -1658,10 +1659,10 @@ def build_text_console_model_input(
     context_pack = computer.context_pack(source)
     web_search_context, web_search_text = computer._web_search_context(source)
     messages = [
-        ChatMessage(role="system", content=ROUTER_SYSTEM_PROMPT),
+        ChatMessage(role="system", content=ai_control_prompt_text("router.system", ROUTER_SYSTEM_PROMPT)),
         ChatMessage(role="system", content=context_pack.text),
         *([ChatMessage(role="system", content=web_search_text)] if web_search_text else []),
-        ChatMessage(role="system", content=TEXT_CONSOLE_AI_SYSTEM_PROMPT),
+        ChatMessage(role="system", content=ai_control_prompt_text("text_console.chat.system", TEXT_CONSOLE_AI_SYSTEM_PROMPT)),
         ChatMessage(role="user", content=str(source or "")),
     ]
     return TextConsoleModelInput(

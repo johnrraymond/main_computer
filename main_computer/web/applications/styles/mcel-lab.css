@@ -5537,3 +5537,510 @@ body.mcel-modal-open {
     font-size: 2.2rem;
   }
 }
+
+
+/* Git file-basket contract treegrid lab */
+.mcel-git-treegrid-lab {
+  display: grid;
+  gap: 1rem;
+  margin: 0 0 1.25rem;
+  padding: clamp(1rem, 2vw, 1.35rem);
+  border: 1px solid rgba(45, 212, 191, 0.3);
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(20, 184, 166, 0.22), transparent 34%),
+    radial-gradient(circle at 92% 0%, rgba(245, 158, 11, 0.16), transparent 30%),
+    linear-gradient(135deg, rgba(2, 6, 23, 0.98), rgba(15, 23, 42, 0.94));
+  color: rgba(226, 232, 240, 0.94);
+  overflow: hidden;
+}
+
+.mcel-git-treegrid-lab-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(16rem, 0.75fr);
+  gap: 1rem;
+  align-items: stretch;
+}
+
+.mcel-git-treegrid-lab-header h6 {
+  margin: 0.15rem 0 0.35rem;
+  color: rgba(248, 250, 252, 0.98);
+  font-size: clamp(1.45rem, 2.4vw, 2.25rem);
+  line-height: 1.02;
+}
+
+.mcel-git-treegrid-lab-header p {
+  max-width: 76ch;
+  margin: 0;
+  color: rgba(203, 213, 225, 0.82);
+}
+
+.mcel-git-treegrid-lab-status,
+.mcel-git-treegrid-lab-proof {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  align-content: start;
+}
+
+.mcel-git-treegrid-lab-status span,
+.mcel-git-treegrid-lab-proof span {
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: center;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 999px;
+  padding: 0.4rem 0.65rem;
+  background: rgba(15, 23, 42, 0.72);
+  color: rgba(203, 213, 225, 0.82);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.mcel-git-treegrid-lab-status strong,
+.mcel-git-treegrid-lab-proof span[data-mcel-git-treegrid-proof-ok="true"] {
+  color: rgba(134, 239, 172, 0.98);
+}
+
+.mcel-git-treegrid-lab-proof span[data-mcel-git-treegrid-proof-ok="false"] {
+  border-color: rgba(251, 146, 60, 0.42);
+  color: rgba(253, 186, 116, 0.96);
+}
+
+.mcel-git-treegrid-lab-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.mcel-git-treegrid-lab-controls button {
+  border: 1px solid rgba(45, 212, 191, 0.38);
+  border-radius: 999px;
+  padding: 0.55rem 0.85rem;
+  background: rgba(20, 184, 166, 0.12);
+  color: rgba(204, 251, 241, 0.96);
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.mcel-git-treegrid-lab-controls button:hover {
+  border-color: rgba(94, 234, 212, 0.72);
+  background: rgba(20, 184, 166, 0.2);
+}
+
+.mcel-git-treegrid-lab-body {
+  display: grid;
+  grid-template-columns: minmax(32rem, 1fr) minmax(17rem, 0.34fr);
+  gap: 1rem;
+  min-width: 0;
+  align-items: stretch;
+}
+
+.mcel-git-treegrid-lab-tree,
+.mcel-git-treegrid-lab-side {
+  min-width: 0;
+}
+
+.mcel-git-treegrid-lab .git-project-contract-treegrid-shell {
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.mcel-git-treegrid-lab .git-project-contract-treegrid {
+  min-height: 330px;
+  height: min(54vh, 520px);
+  background: rgba(2, 6, 23, 0.88);
+}
+
+.mcel-git-treegrid-lab .git-project-contract-treegrid-head,
+.mcel-git-treegrid-lab .git-project-contract-treegrid-row {
+  grid-template-columns:
+    var(--git-treegrid-path-col, minmax(22rem, 1.65fr))
+    var(--git-treegrid-status-col, minmax(8rem, 0.48fr))
+    var(--git-treegrid-risk-col, minmax(8rem, 0.48fr))
+    var(--git-treegrid-reason-col, minmax(14rem, 0.78fr));
+  min-width: 760px;
+}
+
+.mcel-git-treegrid-lab .git-project-contract-treegrid-cell.is-path {
+  display: flex;
+  min-width: 0;
+  gap: 0.35rem;
+}
+
+.mcel-git-treegrid-lab .git-project-contract-treegrid input[type="checkbox"] {
+  box-sizing: border-box;
+  flex: 0 0 14px;
+  width: 14px;
+  min-width: 14px;
+  max-width: 14px;
+  height: 14px;
+  min-height: 14px;
+  margin: 0;
+  padding: 0;
+}
+
+.mcel-git-treegrid-lab .git-project-contract-treegrid-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcel-git-treegrid-lab-side {
+  display: grid;
+  gap: 0.75rem;
+  align-content: start;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 18px;
+  padding: 0.9rem;
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.mcel-git-treegrid-lab-side strong {
+  color: rgba(248, 250, 252, 0.96);
+}
+
+.mcel-git-treegrid-lab-side p {
+  margin: 0;
+  color: rgba(203, 213, 225, 0.78);
+}
+
+.mcel-git-treegrid-lab-side ul {
+  display: grid;
+  gap: 0.4rem;
+  max-height: 16rem;
+  margin: 0;
+  padding-left: 1rem;
+  overflow: auto;
+}
+
+.mcel-git-treegrid-lab-side li {
+  color: rgba(226, 232, 240, 0.9);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.mcel-git-treegrid-lab-side details {
+  min-width: 0;
+}
+
+.mcel-git-treegrid-lab-side pre {
+  max-height: 18rem;
+  margin: 0.6rem 0 0;
+  overflow: auto;
+  color: rgba(203, 213, 225, 0.82);
+  font-size: 0.72rem;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 1100px) {
+  .mcel-git-treegrid-lab-header,
+  .mcel-git-treegrid-lab-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+.mcel-git-treegrid-view-mode-switcher {
+  display: grid;
+  gap: 0.75rem;
+  border: 1px solid rgba(45, 212, 191, 0.24);
+  border-radius: 20px;
+  padding: 0.85rem;
+  background: rgba(2, 6, 23, 0.58);
+}
+
+.mcel-git-treegrid-view-mode-intro {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.mcel-git-treegrid-view-mode-intro strong {
+  color: rgba(248, 250, 252, 0.98);
+  font-size: 0.92rem;
+}
+
+.mcel-git-treegrid-view-mode-intro span {
+  color: rgba(203, 213, 225, 0.78);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.mcel-git-treegrid-view-mode-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.mcel-git-treegrid-view-mode-options button {
+  display: grid;
+  gap: 0.15rem;
+  min-width: min(11rem, 100%);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 16px;
+  padding: 0.55rem 0.7rem;
+  background: rgba(15, 23, 42, 0.74);
+  color: rgba(226, 232, 240, 0.9);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mcel-git-treegrid-view-mode-options button strong {
+  font-size: 0.78rem;
+  line-height: 1.1;
+}
+
+.mcel-git-treegrid-view-mode-options button span {
+  color: rgba(148, 163, 184, 0.9);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.055em;
+}
+
+.mcel-git-treegrid-view-mode-options button.is-active {
+  border-color: rgba(45, 212, 191, 0.78);
+  background: rgba(20, 184, 166, 0.18);
+  box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.22) inset;
+}
+
+.mcel-git-treegrid-view-mode-options button[data-mcel-git-treegrid-view-mode-status="rejected"] {
+  border-color: rgba(251, 146, 60, 0.28);
+}
+
+.mcel-git-treegrid-view-mode {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.mcel-git-treegrid-view-notice {
+  display: grid;
+  gap: 0.25rem;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 16px;
+  padding: 0.72rem 0.85rem;
+  background: rgba(15, 23, 42, 0.66);
+}
+
+.mcel-git-treegrid-view-notice strong {
+  color: rgba(248, 250, 252, 0.96);
+}
+
+.mcel-git-treegrid-view-notice span {
+  color: rgba(203, 213, 225, 0.8);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.mcel-git-treegrid-view-notice[data-mcel-git-treegrid-view-status="rejected"] {
+  border-color: rgba(251, 146, 60, 0.32);
+  background: rgba(67, 20, 7, 0.28);
+}
+
+.mcel-git-view-compact-audit,
+.mcel-git-view-flat-table,
+.mcel-git-view-title-tree,
+.mcel-git-view-icon-grid,
+.mcel-git-view-column-browser {
+  min-height: 330px;
+  max-height: min(54vh, 520px);
+  overflow: auto;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 18px;
+  background: rgba(2, 6, 23, 0.82);
+}
+
+.mcel-git-view-compact-audit {
+  display: grid;
+  gap: 0.55rem;
+  align-content: start;
+  padding: 0.75rem;
+}
+
+.mcel-git-view-compact-audit article,
+.mcel-git-view-icon-grid article {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 14px;
+  padding: 0.65rem;
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.mcel-git-view-compact-audit article {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.mcel-git-view-compact-audit article.is-blocked,
+.mcel-git-view-flat-table .is-blocked,
+.mcel-git-view-title-tree .is-blocked,
+.mcel-git-view-icon-grid article.is-blocked,
+.mcel-git-view-column .is-blocked {
+  opacity: 0.72;
+  border-color: rgba(248, 113, 113, 0.32);
+}
+
+.mcel-git-view-compact-audit strong,
+.mcel-git-view-icon-grid strong {
+  color: rgba(248, 250, 252, 0.96);
+}
+
+.mcel-git-view-compact-audit span,
+.mcel-git-view-compact-audit small,
+.mcel-git-view-icon-grid small,
+.mcel-git-view-icon-grid span {
+  color: rgba(203, 213, 225, 0.78);
+  overflow-wrap: anywhere;
+}
+
+.mcel-git-view-flat-table {
+  display: grid;
+  align-content: start;
+}
+
+.mcel-git-view-flat-table [role="row"] {
+  display: grid;
+  grid-template-columns: minmax(22rem, 1.4fr) minmax(8rem, 0.5fr) minmax(7rem, 0.4fr) minmax(12rem, 0.9fr);
+  min-width: 760px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.mcel-git-view-flat-table [role="cell"],
+.mcel-git-view-flat-table [role="columnheader"] {
+  min-width: 0;
+  padding: 0.55rem 0.65rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcel-git-view-flat-table-head {
+  color: rgba(248, 250, 252, 0.92);
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.045em;
+  background: rgba(15, 23, 42, 0.9);
+}
+
+.mcel-git-view-column-browser {
+  display: grid;
+  grid-template-columns: minmax(13rem, 0.85fr) minmax(13rem, 0.75fr) minmax(16rem, 1fr);
+  min-width: 760px;
+}
+
+.mcel-git-view-column {
+  display: grid;
+  gap: 0.45rem;
+  align-content: start;
+  min-width: 0;
+  padding: 0.75rem;
+  border-right: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.mcel-git-view-column:last-child {
+  border-right: 0;
+}
+
+.mcel-git-view-column strong {
+  color: rgba(248, 250, 252, 0.94);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.74rem;
+}
+
+.mcel-git-view-column span {
+  display: block;
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 12px;
+  padding: 0.5rem 0.55rem;
+  color: rgba(203, 213, 225, 0.82);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcel-git-view-column span.is-current {
+  border-color: rgba(45, 212, 191, 0.56);
+  color: rgba(204, 251, 241, 0.96);
+  background: rgba(20, 184, 166, 0.12);
+}
+
+.mcel-git-view-title-tree {
+  display: grid;
+  gap: 0.1rem;
+  align-content: start;
+  padding: 0.75rem;
+}
+
+.mcel-git-view-title-tree [role="treeitem"] {
+  display: flex;
+  gap: 0.45rem;
+  align-items: center;
+  min-width: 0;
+  padding: 0.35rem 0.45rem 0.35rem calc(0.45rem + (var(--git-tree-depth, 0) * 1.2rem));
+  color: rgba(226, 232, 240, 0.9);
+}
+
+.mcel-git-view-title-tree [role="treeitem"].is-directory {
+  color: rgba(254, 215, 170, 0.98);
+}
+
+.mcel-git-view-title-tree strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcel-git-view-icon-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: 0.65rem;
+  align-content: start;
+  padding: 0.75rem;
+}
+
+.mcel-git-view-icon-grid article {
+  display: grid;
+  place-items: center;
+  gap: 0.3rem;
+  min-height: 6.5rem;
+  text-align: center;
+}
+
+.mcel-git-treegrid-lab-side dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.35rem 0.6rem;
+  margin: 0.6rem 0 0;
+}
+
+.mcel-git-treegrid-lab-side dt {
+  color: rgba(148, 163, 184, 0.92);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.mcel-git-treegrid-lab-side dd {
+  min-width: 0;
+  margin: 0;
+  color: rgba(226, 232, 240, 0.9);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+  .mcel-git-view-column-browser {
+    grid-template-columns: 1fr;
+    min-width: 0;
+  }
+
+  .mcel-git-view-column {
+    border-right: 0;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  }
+}

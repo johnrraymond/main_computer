@@ -138,6 +138,7 @@
       const isTaskManager = normalizedApp === "task-manager";
       const isTerminal = normalizedApp === "terminal";
       const isChatConsole = normalizedApp === "chat-console";
+      const isAiControl = normalizedApp === "ai-control";
       const isEmail = normalizedApp === "email";
       const isGitTools = normalizedApp === "git-tools";
       const isCodeEditor = normalizedApp === "code-editor";
@@ -169,6 +170,7 @@
       taskManagerApp.style.display = isTaskManager ? "grid" : "none";
       terminalApp.style.display = isTerminal ? "grid" : "none";
       chatConsoleApp.style.display = isChatConsole ? "grid" : "none";
+      if (aiControlApp) aiControlApp.style.display = isAiControl ? "grid" : "none";
       if (emailApp) emailApp.style.display = isEmail ? "grid" : "none";
       gitToolsApp.style.display = isGitTools ? "grid" : "none";
       codeEditorApp.style.display = isCodeEditor ? "grid" : "none";
@@ -178,7 +180,7 @@
       if (mcelLabApp) mcelLabApp.style.display = isMcelLab ? "grid" : "none";
       if (workerApp) workerApp.style.display = isWorker ? "grid" : "none";
       if (walletApp) walletApp.style.display = isWallet ? "grid" : "none";
-      stubMessage.style.display = isWebgl || isCalculator || isDocument || isSpreadsheet || isOnlyOffice || isTaskManager || isTerminal || isChatConsole || isEmail || isGitTools || isCodeEditor || isFileExplorer || isGameEditor || isWebsiteBuilder || isMcelLab || isWorker || isWallet ? "none" : "grid";
+      stubMessage.style.display = isWebgl || isCalculator || isDocument || isSpreadsheet || isOnlyOffice || isTaskManager || isTerminal || isChatConsole || isAiControl || isEmail || isGitTools || isCodeEditor || isFileExplorer || isGameEditor || isWebsiteBuilder || isMcelLab || isWorker || isWallet ? "none" : "grid";
       demoControls.style.display = isWebgl ? "grid" : "none";
       layoutDesktopIcons(normalizedApp);
       if (isWebgl) {
@@ -231,6 +233,10 @@
         running = false;
         glStatus.textContent = "chat console ready";
         initChatConsoleApp();
+      } else if (isAiControl) {
+        running = false;
+        glStatus.textContent = "AI Control ready";
+        initAiControlApp();
       } else if (isEmail) {
         running = false;
         glStatus.textContent = "email ready";

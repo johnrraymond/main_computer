@@ -59,6 +59,7 @@ HUB_WORKER_SESSION_START_PATH = "/api/hub/worker/sessions/start"
 HUB_WORKER_SESSION_CHAT_PATH = "/api/hub/worker/sessions/chat"
 HUB_WORKER_STALE_AFTER_SECONDS = 90.0
 HUB_WORKER_LEASE_SECONDS = 600.0
+HUB_WORKER_INSTANCE_SLOT_LIMIT = 1
 PHASE9_PRICING_MODE = "market_offer_fixed_per_call_v0"
 PHASE9_PRICING_TYPE = "fixed_per_call_v0"
 PHASE9_EXECUTION_MODE = "worker_pull_v0"
@@ -208,14 +209,17 @@ def _phase9_worker_offer_from_payload(payload: dict[str, Any]) -> dict[str, Any]
                 break
         except (TypeError, ValueError):
             continue
+    worker_node_id = str(payload.get("node_id", "") or "")
+    worker_instance_id = str(payload.get("worker_instance_id") or worker_node_id)
     offer = {
         "offer_id": _phase9_offer_id(
-            worker_node_id=str(payload.get("node_id", "") or ""),
+            worker_node_id=worker_instance_id,
             models=models,
             credits_per_request=credits,
             execution_mode=execution_mode,
         ),
-        "worker_node_id": str(payload.get("node_id", "") or ""),
+        "worker_node_id": worker_node_id,
+        "worker_instance_id": worker_instance_id,
         "seller_kind": "hub_connected_worker",
         "models": models,
         "capabilities": [str(item) for item in capabilities.get("capabilities", [])]
@@ -309,6 +313,7 @@ def chat_response_from_dict(payload: dict[str, Any], *, default_provider: str, d
 class HubWorker:
     node_id: str
     endpoint: str
+    worker_instance_id: str = ""
     model: str = ""
     models: list[str] = field(default_factory=list)
     status: str = "available"
@@ -326,6 +331,8 @@ class HubWorker:
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
+        if not data.get("worker_instance_id"):
+            data["worker_instance_id"] = data.get("node_id", "")
         offer = dict(self.offer) if self.offer else _phase9_worker_offer_from_payload(data)
         if offer:
             data["offer"] = offer
@@ -410,8 +417,10 @@ class HubRegistry:
         queue_depth: int = 0,
         active_requests: int = 0,
         max_concurrency: int = 1,
+        worker_instance_id: str = "",
     ) -> HubWorker:
         clean_node_id = _clean_node_id(node_id, default="hub-worker")
+        clean_worker_instance_id = _clean_node_id(worker_instance_id, default="") if worker_instance_id else clean_node_id
         clean_endpoint = str(endpoint or "").strip().rstrip("/")
         if not clean_endpoint:
             raise ValueError("Worker endpoint is required.")
@@ -425,6 +434,7 @@ class HubRegistry:
         clean_models = self._normalize_models(model=model, models=models)
         primary_model = clean_models[0] if clean_models else str(model or "").strip()
         clean_capabilities = dict(capabilities or {})
+        clean_capabilities.setdefault("worker_instance_id", clean_worker_instance_id)
         precision_source = (
             settlement_precision_places
             if settlement_precision_places is not None
@@ -432,17 +442,32 @@ class HubRegistry:
         )
         clean_settlement_precision = normalize_worker_payout_precision_places(precision_source)
         clean_capabilities.setdefault("settlement_precision_places", clean_settlement_precision)
-        clean_max_concurrency = max(1, int(max_concurrency or 1))
+        # One worker registration represents one live worker-instance slot.
+        # A second simultaneous AI request must come from a second worker connection
+        # with its own node/instance identity, not a multi-slot max_concurrency bump.
+        clean_max_concurrency = HUB_WORKER_INSTANCE_SLOT_LIMIT
         clean_active = min(max(0, int(active_requests or 0)), clean_max_concurrency)
         clean_queue_depth = max(0, int(queue_depth or 0))
         with self._lock:
             data = self._load()
-            workers = [item for item in data["workers"] if item.get("node_id") != clean_node_id]
-            existing = next((item for item in data["workers"] if item.get("node_id") == clean_node_id), {})
+            workers = [
+                item
+                for item in data["workers"]
+                if str(item.get("worker_instance_id") or item.get("node_id") or "") != clean_worker_instance_id
+            ]
+            existing = next(
+                (
+                    item
+                    for item in data["workers"]
+                    if str(item.get("worker_instance_id") or item.get("node_id") or "") == clean_worker_instance_id
+                ),
+                {},
+            )
             registered_at = str(existing.get("registered_at") or now)
             worker = HubWorker(
                 node_id=clean_node_id,
                 endpoint=clean_endpoint,
+                worker_instance_id=clean_worker_instance_id,
                 model=primary_model,
                 models=clean_models,
                 status="available" if clean_active < clean_max_concurrency else "busy",
@@ -454,6 +479,7 @@ class HubRegistry:
                 offer=_phase9_worker_offer_from_payload(
                     {
                         "node_id": clean_node_id,
+                        "worker_instance_id": clean_worker_instance_id,
                         "model": primary_model,
                         "models": clean_models,
                         "credits_per_request": credit_price,
@@ -482,16 +508,21 @@ class HubRegistry:
         queue_depth: int | None = None,
         active_requests: int | None = None,
         max_concurrency: int | None = None,
+        worker_instance_id: str = "",
     ) -> HubWorker:
         clean_node_id = _clean_node_id(node_id, default="hub-worker")
+        clean_worker_instance_id = _clean_node_id(worker_instance_id, default="") if worker_instance_id else ""
         now = _utc_now()
         with self._lock:
             data = self._load()
             for item in data["workers"]:
-                if item.get("node_id") != clean_node_id:
+                item_instance_id = str(item.get("worker_instance_id") or item.get("node_id") or "")
+                if clean_worker_instance_id:
+                    if item_instance_id != clean_worker_instance_id:
+                        continue
+                elif item.get("node_id") != clean_node_id:
                     continue
-                current_max = max(1, int(item.get("max_concurrency", 1) or 1))
-                next_max = max(1, int(max_concurrency or current_max))
+                next_max = HUB_WORKER_INSTANCE_SLOT_LIMIT
                 next_active = max(0, int(item.get("active_requests", 0) or 0)) if active_requests is None else max(0, int(active_requests or 0))
                 next_active = min(next_active, next_max)
                 clean_status = str(status or item.get("status") or "available").strip().lower()
@@ -516,12 +547,21 @@ class HubRegistry:
                 return worker
         raise KeyError(f"Unknown hub worker: {clean_node_id}")
 
-    def get_worker(self, node_id: str) -> HubWorker | None:
+    def get_worker(self, node_id: str, *, worker_instance_id: str = "") -> HubWorker | None:
         clean_node_id = _clean_node_id(node_id, default="hub-worker")
+        clean_worker_instance_id = _clean_node_id(worker_instance_id, default="") if worker_instance_id else ""
         self.expire_stale_workers()
         data = self._load()
-        for item in data["workers"]:
-            if item.get("node_id") == clean_node_id:
+        if clean_worker_instance_id:
+            for item in data["workers"]:
+                if str(item.get("worker_instance_id") or item.get("node_id") or "") == clean_worker_instance_id:
+                    return self._worker_from_payload(item)
+            return None
+        matches = [item for item in data["workers"] if item.get("node_id") == clean_node_id]
+        if len(matches) == 1:
+            return self._worker_from_payload(matches[0])
+        for item in matches:
+            if str(item.get("worker_instance_id") or item.get("node_id") or "") == clean_node_id:
                 return self._worker_from_payload(item)
         return None
 
@@ -619,8 +659,9 @@ class HubRegistry:
             )
         return sorted(available, key=lambda upstream: upstream.last_seen_at or upstream.registered_at)[0] if available else None
 
-    def mark_worker(self, node_id: str, *, status: str) -> None:
+    def mark_worker(self, node_id: str, *, status: str, worker_instance_id: str = "") -> None:
         clean_node_id = _clean_node_id(node_id, default="hub-worker")
+        clean_worker_instance_id = _clean_node_id(worker_instance_id, default="") if worker_instance_id else ""
         clean_status = str(status or "available").strip().lower()
         if clean_status not in {"available", "configured", "busy", "offline", "stale", "draining"}:
             clean_status = "available"
@@ -628,14 +669,19 @@ class HubRegistry:
             data = self._load()
             changed = False
             for worker in data["workers"]:
-                if worker.get("node_id") == clean_node_id:
-                    worker["status"] = clean_status
-                    worker["last_seen_at"] = _utc_now()
-                    worker["stale"] = clean_status == "stale"
-                    if clean_status in {"offline", "stale", "draining"}:
-                        worker["active_requests"] = 0
-                        worker["lease_expires_at"] = ""
-                    changed = True
+                item_instance_id = str(worker.get("worker_instance_id") or worker.get("node_id") or "")
+                if clean_worker_instance_id:
+                    if item_instance_id != clean_worker_instance_id:
+                        continue
+                elif worker.get("node_id") != clean_node_id:
+                    continue
+                worker["status"] = clean_status
+                worker["last_seen_at"] = _utc_now()
+                worker["stale"] = clean_status == "stale"
+                if clean_status in {"offline", "stale", "draining"}:
+                    worker["active_requests"] = 0
+                    worker["lease_expires_at"] = ""
+                changed = True
             if changed:
                 self._save(data)
 
@@ -645,10 +691,12 @@ class HubRegistry:
         *,
         request_id: str = "",
         preferred_node_id: str = "",
+        preferred_worker_instance_id: str = "",
         lease_seconds: float | None = None,
     ) -> HubWorker | None:
         desired = str(model or "").strip()
         preferred = _clean_node_id(preferred_node_id, default="") if preferred_node_id else ""
+        preferred_instance = _clean_node_id(preferred_worker_instance_id, default="") if preferred_worker_instance_id else ""
         lease_s = self.worker_lease_s if lease_seconds is None else max(1.0, float(lease_seconds))
         with self._lock:
             self._expire_stale_workers_unlocked(self._load(), stale_after_s=self.worker_stale_after_s)
@@ -656,13 +704,25 @@ class HubRegistry:
             candidates = [
                 item
                 for item in data["workers"]
-                if self._is_worker_lease_candidate(item, desired=desired, preferred_node_id=preferred, allow_model_fallback=False)
+                if self._is_worker_lease_candidate(
+                    item,
+                    desired=desired,
+                    preferred_node_id=preferred,
+                    preferred_worker_instance_id=preferred_instance,
+                    allow_model_fallback=False,
+                )
             ]
-            if not candidates and desired and not preferred:
+            if not candidates and desired and not preferred and not preferred_instance:
                 candidates = [
                     item
                     for item in data["workers"]
-                    if self._is_worker_lease_candidate(item, desired="", preferred_node_id="", allow_model_fallback=True)
+                    if self._is_worker_lease_candidate(
+                        item,
+                        desired="",
+                        preferred_node_id="",
+                        preferred_worker_instance_id="",
+                        allow_model_fallback=True,
+                    )
                 ]
             if not candidates:
                 return None
@@ -672,6 +732,7 @@ class HubRegistry:
                     max(0, int(item.get("queue_depth", 0) or 0)) + max(0, int(item.get("active_requests", 0) or 0)),
                     str(item.get("last_seen_at", "") or item.get("registered_at", "")),
                     str(item.get("node_id", "")),
+                    str(item.get("worker_instance_id") or item.get("node_id") or ""),
                 ),
             )[0]
             max_concurrency = max(1, int(worker.get("max_concurrency", 1) or 1))
@@ -686,13 +747,18 @@ class HubRegistry:
             self._save(data)
             return self._worker_from_payload(worker)
 
-    def release_worker(self, node_id: str, *, request_id: str = "", success: bool = True) -> None:
+    def release_worker(self, node_id: str, *, request_id: str = "", success: bool = True, worker_instance_id: str = "") -> None:
         clean_node_id = _clean_node_id(node_id, default="hub-worker")
+        clean_worker_instance_id = _clean_node_id(worker_instance_id, default="") if worker_instance_id else ""
         with self._lock:
             data = self._load()
             changed = False
             for worker in data["workers"]:
-                if worker.get("node_id") != clean_node_id:
+                item_instance_id = str(worker.get("worker_instance_id") or worker.get("node_id") or "")
+                if clean_worker_instance_id:
+                    if item_instance_id != clean_worker_instance_id:
+                        continue
+                elif worker.get("node_id") != clean_node_id:
                     continue
                 max_concurrency = max(1, int(worker.get("max_concurrency", 1) or 1))
                 active = max(0, int(worker.get("active_requests", 0) or 0) - 1)
@@ -752,17 +818,19 @@ class HubRegistry:
                 continue
             endpoint = str(item.get("endpoint", "")).strip().rstrip("/")
             node_id = _clean_node_id(str(item.get("node_id", "")), default="")
+            worker_instance_id = _clean_node_id(str(item.get("worker_instance_id") or node_id), default=node_id)
             if not node_id or not endpoint:
                 continue
             models = self._normalize_models(model=str(item.get("model", "") or ""), models=item.get("models") if isinstance(item.get("models"), list) else None)
             primary_model = models[0] if models else str(item.get("model", "") or "")
-            max_concurrency = max(1, int(item.get("max_concurrency", 1) or 1))
+            max_concurrency = HUB_WORKER_INSTANCE_SLOT_LIMIT
             active_requests = min(max_concurrency, max(0, int(item.get("active_requests", 0) or 0)))
             status = str(item.get("status", "available") or "available").lower()
             if status not in {"available", "configured", "busy", "offline", "stale", "draining"}:
                 status = "available"
             normalized_worker = {
                 "node_id": node_id,
+                "worker_instance_id": worker_instance_id,
                 "endpoint": endpoint,
                 "model": primary_model,
                 "models": models,
@@ -848,7 +916,8 @@ class HubRegistry:
         *,
         desired: str,
         preferred_node_id: str,
-        allow_model_fallback: bool,
+        preferred_worker_instance_id: str = "",
+        allow_model_fallback: bool = False,
     ) -> bool:
         status = str(item.get("status", "available")).lower()
         if status not in {"available", "configured"}:
@@ -860,7 +929,10 @@ class HubRegistry:
         if active >= max_concurrency:
             return False
         node_id = str(item.get("node_id", ""))
-        if preferred_node_id and node_id != preferred_node_id:
+        worker_instance_id = str(item.get("worker_instance_id") or node_id)
+        if preferred_worker_instance_id and worker_instance_id != preferred_worker_instance_id:
+            return False
+        if preferred_node_id and node_id != preferred_node_id and worker_instance_id != preferred_node_id:
             return False
         if not desired or allow_model_fallback:
             return True
@@ -878,6 +950,7 @@ class HubRegistry:
         return HubWorker(
             node_id=str(item.get("node_id", "")),
             endpoint=str(item.get("endpoint", "")).rstrip("/"),
+            worker_instance_id=str(item.get("worker_instance_id") or item.get("node_id", "")),
             model=model,
             models=models,
             status=str(item.get("status", "available")),
@@ -983,8 +1056,18 @@ class HubDispatcher:
     def submit_worker_pull(self, request: HubAIRequest) -> dict[str, Any]:
         return self.plex_service.submit_worker_pull(request).as_dict()
 
-    def poll_worker(self, *, worker_node_id: str, lease_seconds: float | None = None) -> dict[str, Any]:
-        return self.plex_service.poll_worker(worker_node_id=worker_node_id, lease_seconds=lease_seconds)
+    def poll_worker(
+        self,
+        *,
+        worker_node_id: str,
+        worker_instance_id: str = "",
+        lease_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        return self.plex_service.poll_worker(
+            worker_node_id=worker_node_id,
+            worker_instance_id=worker_instance_id,
+            lease_seconds=lease_seconds,
+        )
 
     def submit_worker_result(
         self,
@@ -993,9 +1076,11 @@ class HubDispatcher:
         request_id: str,
         lease_id: str,
         result: dict[str, Any],
+        worker_instance_id: str = "",
     ) -> dict[str, Any]:
         return self.plex_service.submit_worker_result(
             worker_node_id=worker_node_id,
+            worker_instance_id=worker_instance_id,
             request_id=request_id,
             lease_id=lease_id,
             result=result,
@@ -1523,6 +1608,10 @@ class HubServerHandler(_JsonHandler):
             worker_payload=worker_payload,
         )
         assigned_ring = str(verification["requested_ring"])
+        worker_instance_id = _clean_node_id(
+            str(worker_payload.get("worker_instance_id") or worker_payload.get("connection_id") or verification["worker_node_id"]),
+            default=verification["worker_node_id"],
+        )
         ring_policy = {"0": "operator", "1": "protected", "2": "public"}[assigned_ring]
         pricing_policy = f"{ring_policy}-{verification['network']}"
 
@@ -1545,6 +1634,7 @@ class HubServerHandler(_JsonHandler):
                     "hub_url": verification["hub_url"],
                     "chain_id": verification["chain_id"],
                     "worker_node_id": verification["worker_node_id"],
+                    "worker_instance_id": worker_instance_id,
                     "issued_at": verification.get("issued_at"),
                     "expires_at": verification.get("expires_at"),
                 },
@@ -1553,6 +1643,7 @@ class HubServerHandler(_JsonHandler):
                 "wallet_address": verification["wallet_address"],
                 "credit_wallet": verification["credit_wallet"],
                 "pricing_policy": pricing_policy,
+                "worker_instance_id": worker_instance_id,
             }
         )
 
@@ -1570,12 +1661,15 @@ class HubServerHandler(_JsonHandler):
             queue_depth=int(worker_payload.get("queue_depth", 0) or 0),
             active_requests=int(worker_payload.get("active_requests", 0) or 0),
             max_concurrency=int(worker_payload.get("max_concurrency", 1) or 1),
+            worker_instance_id=worker_instance_id,
         )
         self.server.energy_ledger.register_node(worker.node_id, "gpu-worker", worker.endpoint)
         worker_data = worker.as_dict()
         worker_data.update(
             {
-                "worker_id": worker.node_id,
+                "worker_id": worker.worker_instance_id or worker.node_id,
+                "worker_instance_id": worker.worker_instance_id or worker.node_id,
+                "worker_node_id": worker.node_id,
                 "wallet_address": verification["wallet_address"],
                 "credit_wallet": verification["credit_wallet"],
                 "network": verification["network"],
@@ -2741,6 +2835,7 @@ class HubServerHandler(_JsonHandler):
                         queue_depth=int(body.get("queue_depth", 0) or 0),
                         active_requests=int(body.get("active_requests", 0) or 0),
                         max_concurrency=int(body.get("max_concurrency", 1) or 1),
+                        worker_instance_id=str(body.get("worker_instance_id") or body.get("connection_id") or ""),
                     )
                     self._worker_route_diag_step(
                         diag_id,
@@ -2777,6 +2872,7 @@ class HubServerHandler(_JsonHandler):
                     self._worker_route_diag_step(diag_id, "worker.heartbeat", "read_json.start", diag_started_at)
                     body = self._read_json()
                     worker_id = str(body.get("worker_node_id") or body.get("node_id") or "").strip()
+                    worker_instance_id = str(body.get("worker_instance_id") or body.get("connection_id") or "").strip()
                     self._worker_route_diag_step(
                         diag_id,
                         "worker.heartbeat",
@@ -2811,6 +2907,7 @@ class HubServerHandler(_JsonHandler):
                         queue_depth=int(body.get("queue_depth")) if body.get("queue_depth") is not None else None,
                         active_requests=int(body.get("active_requests")) if body.get("active_requests") is not None else None,
                         max_concurrency=int(body.get("max_concurrency")) if body.get("max_concurrency") is not None else None,
+                        worker_instance_id=worker_instance_id,
                     )
                     self._worker_route_diag_step(diag_id, "worker.heartbeat", "registry.heartbeat_worker.done", diag_started_at, worker_node_id=worker.node_id)
                     self._worker_route_diag_step(diag_id, "worker.heartbeat", "hub_status.omitted", diag_started_at)
@@ -2838,6 +2935,8 @@ class HubServerHandler(_JsonHandler):
                     self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "read_json.start", diag_started_at)
                     body = self._read_json()
                     worker_id = path.removeprefix("/api/hub/v1/workers/").removesuffix("/heartbeat").strip("/")
+                    worker_instance_id = str(body.get("worker_instance_id") or body.get("connection_id") or worker_id).strip()
+                    worker_node_id = str(body.get("worker_node_id") or body.get("node_id") or worker_id).strip()
                     self._worker_route_diag_step(
                         diag_id,
                         "worker.heartbeat_by_id",
@@ -2861,6 +2960,7 @@ class HubServerHandler(_JsonHandler):
                         queue_depth=int(body.get("queue_depth")) if body.get("queue_depth") is not None else None,
                         active_requests=int(body.get("active_requests")) if body.get("active_requests") is not None else None,
                         max_concurrency=int(body.get("max_concurrency")) if body.get("max_concurrency") is not None else None,
+                        worker_instance_id=worker_instance_id,
                     )
                     self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "registry.heartbeat_worker.done", diag_started_at, worker_node_id=worker.node_id)
                     self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "hub_status.omitted", diag_started_at)
@@ -2888,6 +2988,7 @@ class HubServerHandler(_JsonHandler):
                     self._worker_route_diag_step(diag_id, "worker.poll", "read_json.start", diag_started_at)
                     body = self._read_json()
                     worker_id = str(body.get("worker_node_id") or body.get("node_id") or "").strip()
+                    worker_instance_id = str(body.get("worker_instance_id") or body.get("connection_id") or worker_id).strip()
                     self._worker_route_diag_step(
                         diag_id,
                         "worker.poll",
@@ -2901,6 +3002,7 @@ class HubServerHandler(_JsonHandler):
                     self._worker_route_diag_step(diag_id, "worker.poll", "dispatcher.poll_worker.start", diag_started_at, worker_node_id=worker_id)
                     response_payload = self.server.dispatcher.poll_worker(
                         worker_node_id=worker_id,
+                        worker_instance_id=worker_instance_id,
                         lease_seconds=float(body.get("lease_seconds")) if body.get("lease_seconds") is not None else None,
                     )
                     lease = response_payload.get("lease") if isinstance(response_payload, dict) else None
@@ -2938,6 +3040,7 @@ class HubServerHandler(_JsonHandler):
                     self._worker_route_diag_step(diag_id, "worker.results", "read_json.start", diag_started_at)
                     body = self._read_json()
                     worker_id = str(body.get("worker_node_id") or body.get("node_id") or "")
+                    worker_instance_id = str(body.get("worker_instance_id") or body.get("connection_id") or worker_id).strip()
                     result = body.get("result") if isinstance(body.get("result"), dict) else body.get("response")
                     self._worker_route_diag_step(
                         diag_id,
@@ -2955,6 +3058,7 @@ class HubServerHandler(_JsonHandler):
                     self._worker_route_diag_step(diag_id, "worker.results", "dispatcher.submit_worker_result.start", diag_started_at, worker_node_id=worker_id)
                     response_payload = self.server.dispatcher.submit_worker_result(
                         worker_node_id=worker_id,
+                        worker_instance_id=worker_instance_id,
                         request_id=str(body.get("request_id", "")),
                         lease_id=str(body.get("lease_id", "")),
                         result=result,
