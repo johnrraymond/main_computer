@@ -120,6 +120,21 @@ def _positive_float(value: object) -> float:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+def _stress_requester_audit_readback_limit(request_count: object) -> int:
+    """Fetch enough requester audit rows to include initial bridge deposit events.
+
+    High-volume runs can append two requester hold audit rows per paid request
+    after the initial bridge deposit.  A fixed limit of 400 is too shallow for
+    request_count=250, so size the readback window with extra headroom.
+    """
+
+    try:
+        count = max(0, int(request_count or 0))
+    except (TypeError, ValueError):
+        count = 0
+    return max(400, count * 3 + 100)
+
+
 class _FreezeTracker:
     """Tracks last meaningful market/chatter progress and fails a run that stalls."""
 
@@ -1150,7 +1165,8 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
         if mock_chain_status and not bridge_reconciliation_ok:
             raise NodeMarketSmokeError(f"Mock chain bridge did not reconcile after stress run: {mock_chain_status}")
 
-        requester_events = _bridge_audit_events(config_b, account_id=config.account_id, limit=400)
+        requester_audit_limit = _stress_requester_audit_readback_limit(config.request_count)
+        requester_events = _bridge_audit_events(config_b, account_id=config.account_id, limit=requester_audit_limit)
         worker_events = _bridge_audit_events(config_b, worker_node_id=str(payout.get("worker_node_id", "")), limit=400)
         _verify_expected_audit_types(
             label="stress requester",
@@ -1175,6 +1191,7 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
         progress.emit(
             "stress_audit_readback_ok",
             requester_event_count=len(requester_events),
+            requester_audit_limit=requester_audit_limit,
             worker_event_count=len(worker_events),
             worker_node_id=str(payout.get("worker_node_id", "")),
         )

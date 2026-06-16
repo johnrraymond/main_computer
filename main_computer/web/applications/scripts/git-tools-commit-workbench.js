@@ -21,6 +21,10 @@ function gitProjectCommitFileBasketIntegration() {
   return integration;
 }
 
+function gitProjectCommitFileBasketContractView() {
+  return globalThis.GitToolsFileBasketContractView || null;
+}
+
 function gitProjectCommitFileBasketHooks() {
   return {
     escapeHtml,
@@ -780,6 +784,16 @@ function gitProjectCommitSelectedFilesFromWorkbench(workbench) {
   return gitProjectCommitFileBasketIntegration().selectedFilesFromWorkbench(workbench);
 }
 
+function gitProjectCommitInitializeContractTreegrid(workbench) {
+  const contractView = gitProjectCommitFileBasketContractView();
+  if (!workbench?.querySelector?.("[data-git-commit-contract-treegrid]") || typeof contractView?.initializeContractTreegrid !== "function") {
+    return false;
+  }
+  return contractView.initializeContractTreegrid(workbench, {
+    onSelectionChange: (selectedPaths = []) => gitProjectCommitUpdateSelectedPreview(workbench, selectedPaths),
+  });
+}
+
 function gitProjectCommitReviewStats(workbench, selectedPaths = []) {
   return gitProjectCommitFileBasketIntegration().reviewStats(workbench, selectedPaths);
 }
@@ -1088,6 +1102,10 @@ function gitProjectCommitRefreshExecutionRemainingFiles(workbench, review = {}) 
 
 function gitProjectCommitReinitializeBasketTree(workbench) {
   if (!workbench) return;
+  const contractTreegrid = workbench.querySelector("[data-git-commit-contract-treegrid]");
+  if (contractTreegrid) {
+    delete contractTreegrid.dataset.gitCommitContractTreegridReady;
+  }
   const element = workbench.querySelector("[data-git-commit-tree]");
   if (element) {
     delete element.dataset.gitWunderbaumReady;
@@ -1099,8 +1117,11 @@ function gitProjectCommitReinitializeBasketTree(workbench) {
     fallback.hidden = false;
   }
   delete workbench.dataset.gitCommitWorkbenchReady;
+  delete workbench.dataset.gitCommitWunderbaumFallback;
   workbench.gitCommitWunderbaum = null;
-  gitProjectInitializeCommitWunderbaum(workbench);
+  if (!gitProjectCommitInitializeContractTreegrid(workbench)) {
+    gitProjectInitializeCommitWunderbaum(workbench);
+  }
 }
 
 function gitProjectCommitRefreshWorkbenchFromReview(workbench, step = {}) {
@@ -1669,6 +1690,7 @@ function gitProjectInitializeCommitFallbackTree(workbench) {
 
 function gitProjectInitializeCommitWunderbaum(workbench) {
   if (!workbench || workbench.dataset.gitCommitWorkbenchReady === "true") return;
+  if (workbench.querySelector?.("[data-git-commit-contract-treegrid]")) return;
   workbench.dataset.gitCommitWorkbenchReady = "true";
   gitProjectInitializeCommitFallbackTree(workbench);
   const element = workbench.querySelector("[data-git-commit-tree]");
@@ -1746,7 +1768,9 @@ function gitProjectInitializeCommitWorkbenches(container) {
     gitProjectWireCommitStepNavigation(workbench);
     gitProjectWireCommitExecution(workbench);
     gitProjectCommitUpdateSelectedPreview(workbench);
-    gitProjectInitializeCommitWunderbaum(workbench);
+    if (!gitProjectCommitInitializeContractTreegrid(workbench)) {
+      gitProjectInitializeCommitWunderbaum(workbench);
+    }
   });
 }
 
@@ -1758,6 +1782,7 @@ function gitProjectInitializeCommitWorkbenches(container) {
     GIT_PROJECT_WUNDERBAUM_ASSETS,
     gitProjectWunderbaumLoadPromise,
     gitProjectCommitFileBasketIntegration,
+    gitProjectCommitFileBasketContractView,
     gitProjectCommitFileBasketHooks,
     gitProjectCommitGroups,
     gitProjectCommitGroupConfig,
@@ -1834,6 +1859,7 @@ function gitProjectInitializeCommitWorkbenches(container) {
     gitProjectCommitSelectedFilesFromWunderbaum,
     gitProjectCommitSelectedFilesFromDom,
     gitProjectCommitSelectedFilesFromWorkbench,
+    gitProjectCommitInitializeContractTreegrid,
     gitProjectCommitReviewStats,
     gitProjectCommitControlChecked,
     gitProjectCommitSummaryValue,
@@ -1886,6 +1912,7 @@ function gitProjectInitializeCommitWorkbenches(container) {
     GIT_PROJECT_WUNDERBAUM_ASSETS,
     gitProjectWunderbaumLoadPromise,
     gitProjectCommitFileBasketIntegration,
+    gitProjectCommitFileBasketContractView,
     gitProjectCommitFileBasketHooks,
     gitProjectCommitGroups,
     gitProjectCommitGroupConfig,
@@ -1962,6 +1989,7 @@ function gitProjectInitializeCommitWorkbenches(container) {
     gitProjectCommitSelectedFilesFromWunderbaum,
     gitProjectCommitSelectedFilesFromDom,
     gitProjectCommitSelectedFilesFromWorkbench,
+    gitProjectCommitInitializeContractTreegrid,
     gitProjectCommitReviewStats,
     gitProjectCommitControlChecked,
     gitProjectCommitSummaryValue,

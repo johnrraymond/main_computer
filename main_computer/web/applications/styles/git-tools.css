@@ -3545,3 +3545,171 @@
   background: rgba(184, 255, 122, 0.12);
 }
 
+
+.git-project-contract-treegrid-shell {
+  display: flex;
+  flex: 1 1 460px;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  min-height: 420px;
+  overflow: hidden;
+}
+
+.git-project-contract-treegrid-proof {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: rgba(87, 255, 164, 0.07);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.git-project-contract-treegrid-proof strong {
+  color: var(--mint);
+}
+
+.git-project-contract-treegrid {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 420px;
+  height: min(60vh, 560px);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #010201;
+}
+
+.git-project-contract-treegrid-head,
+.git-project-contract-treegrid-row {
+  display: grid;
+  grid-template-columns: minmax(280px, 1.45fr) minmax(120px, 0.45fr) minmax(110px, 0.45fr) minmax(180px, 0.75fr);
+  align-items: stretch;
+  min-width: 780px;
+}
+
+.git-project-contract-treegrid-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border-bottom: 1px solid var(--line);
+  background: #050605;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.git-project-contract-treegrid-head > div,
+.git-project-contract-treegrid-cell {
+  min-width: 0;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 8px 10px;
+}
+
+.git-project-contract-treegrid-head > div:last-child,
+.git-project-contract-treegrid-cell:last-child {
+  border-right: 0;
+}
+
+.git-project-contract-treegrid-body {
+  min-height: 0;
+  overflow: auto;
+}
+
+.git-project-contract-treegrid-row {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.055);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.git-project-contract-treegrid-row:hover {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.git-project-contract-treegrid-row.is-directory {
+  color: #ffb45f;
+  font-weight: 800;
+}
+
+.git-project-contract-treegrid-row.is-blocked {
+  color: var(--muted);
+  background: rgba(255, 111, 111, 0.06);
+}
+
+.git-project-contract-treegrid-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.git-project-contract-treegrid-cell.is-path {
+  padding-left: calc(10px + (var(--git-tree-depth, 0) * 18px));
+}
+
+.git-project-contract-treegrid-cell.is-status,
+.git-project-contract-treegrid-cell.is-risk,
+.git-project-contract-treegrid-cell.is-reason {
+  color: var(--muted);
+}
+
+.git-project-contract-treegrid-path {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  color: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-project-contract-treegrid-disclosure {
+  display: inline-grid;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #050605;
+  color: inherit;
+  cursor: pointer;
+}
+
+.git-project-contract-treegrid-leaf {
+  display: inline-grid;
+  width: 20px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--muted);
+}
+
+.git-project-contract-treegrid input[type="checkbox"] {
+  box-sizing: border-box;
+  flex: 0 0 14px;
+  width: 14px;
+  min-width: 14px;
+  max-width: 14px;
+  height: 14px;
+  min-height: 14px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--mint);
+}
+
+.git-project-contract-treegrid input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.git-project-contract-treegrid-empty {
+  padding: 14px;
+  color: var(--muted);
+}
+
