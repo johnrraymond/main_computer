@@ -20,6 +20,7 @@ from main_computer.hub_plex_models import (
     chat_response_from_payload,
     clean_node_id,
     sanitize_hub_response_payload,
+    sanitize_requester_response_payload,
 )
 from main_computer.hub_security import HUB_SECURITY_PROFILE, hub_transport_is_encrypted_or_loopback
 from main_computer.hub_credit_models import (
@@ -91,8 +92,10 @@ def _worker_ring_from_payload(payload: dict[str, Any]) -> int | None:
     for candidate in (
         existing_offer.get("assigned_ring"),
         existing_offer.get("ring"),
+        worker.get("effective_ring"),
         worker.get("assigned_ring"),
         worker.get("ring"),
+        capabilities.get("effective_ring"),
         capabilities.get("assigned_ring"),
         capabilities.get("ring"),
         capabilities.get("requested_ring"),
@@ -1182,7 +1185,7 @@ class AIRequestPlexService:
                 "retention": retention,
                 "request": status,
             }
-        response = sanitize_hub_response_payload(record.response)
+        response = sanitize_requester_response_payload(record.response)
         return {
             "ok": True,
             "request_id": record.request_id,

@@ -215,6 +215,17 @@ def test_mcel_lab_adds_supercut_html_translation_module_for_git_tools() -> None:
     assert "runtimeChanges" in supercut
     assert "originalPoint" in supercut
 
+
+def test_mcel_supercut_risk_outlines_require_explicit_debug_overlay() -> None:
+    supercut = (WEB_APP / "scripts" / "mcel-supercut.js").read_text(encoding="utf-8")
+
+    assert 'const SUPERCUT_DEBUG_ATTRIBUTE = "data-mcel-supercut-debug";' in supercut
+    assert 'options.debugOverlay === true || options.debug === true || options.showRiskOutlines === true' in supercut
+    assert 'body[${SUPERCUT_BODY_ATTRIBUTE}="active"][${SUPERCUT_DEBUG_ATTRIBUTE}="true"] [data-mcel-supercut-risk]:not([data-mcel-supercut-risk="safe"])' in supercut
+    assert 'body[${SUPERCUT_BODY_ATTRIBUTE}="active"] [data-mcel-supercut-risk]:not([data-mcel-supercut-risk="safe"])' not in supercut
+    assert 'doc.body.removeAttribute(SUPERCUT_DEBUG_ATTRIBUTE);' in supercut
+
+
 def test_mcel_lab_task_manager_specimen_route_is_valid_and_observational() -> None:
     assert (
         _application_route_target("/applications/task-manager/server-processes?mcel_lab_specimen=task-manager")

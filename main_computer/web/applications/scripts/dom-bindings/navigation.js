@@ -4,6 +4,7 @@
     const terminalAnalysis = document.querySelector("#terminal-analysis");
     const terminalAnalysisToggle = document.querySelector("#terminal-analysis-toggle");
     const appCopy = {
+      desktop: ["Desktop", "Choose an app from the desktop grid.", "Desktop app launcher is ready."],
       webgl: ["Game Surface", "Arcstorm finale surface is ready.", "Game surface renders the selected Arcstorm finale sprite/particle showcase."],
       calculator: ["Calculator", "Local arithmetic tool is ready.", "Calculator is running."],
       document: ["Document Editor", "Editable writing workspace is ready.", "Document Editor is running."],
@@ -26,8 +27,11 @@
     const desktopApps = [
       {app: "webgl", glyph: "G", title: "Game Surface", summary: "project preview"},
       {app: "calculator", glyph: "C", title: "Calculator", summary: "arithmetic tool"},
+      {app: "document", glyph: "D", title: "Document Editor", summary: "writing workspace"},
+      {app: "spreadsheet", glyph: "S", title: "Spreadsheet", summary: "sheet workspace"},
+      {app: "onlyoffice", glyph: "O", title: "ONLYOFFICE", summary: "XLSX editor"},
       {app: "task-manager", glyph: "T", title: "Task Manager", summary: "operations deck"},
-      {app: "terminal", glyph: "S", title: "Terminal", summary: "command shell"},
+      {app: "terminal", glyph: ">", title: "Terminal", summary: "command shell"},
       {app: "chat-console", glyph: "N", title: "Chat Console", summary: "notebook cells"},
       {app: "ai-control", glyph: "AI", title: "AI Control", summary: "prompt structure"},
       {app: "email", glyph: "@", title: "Email", summary: "unified mail client"},
@@ -65,11 +69,11 @@
     }
 
     function applicationPath(appName, options = {}) {
-      const normalized = routeableApps.has(appName) ? appName : "calculator";
+      const normalized = routeableApps.has(appName) ? appName : "desktop";
       if (normalized === "website-builder") {
         return websiteBuilderPath(options.siteId || "");
       }
-      return normalized === "calculator" ? "/applications" : `/applications/${normalized}`;
+      return normalized === "desktop" ? "/applications" : `/applications/${normalized}`;
     }
 
     function normalizedTaskNotebookTab(tabName) {

@@ -9,6 +9,9 @@
       --mint: #a7d86d;
       --shell: #070806;
       --panel: #11110e;
+      --app-taskbar-rail-width: 56px;
+      --app-taskbar-buffer: 14px;
+      --app-taskbar-reserved-width: calc(var(--app-taskbar-rail-width) + var(--app-taskbar-buffer));
     }
     * { box-sizing: border-box; }
     html, body { min-height: 100%; margin: 0; }
@@ -60,10 +63,13 @@
     }
     main {
       display: grid;
-      grid-template-columns: minmax(220px, 300px) minmax(420px, 1fr) minmax(240px, 320px);
+      grid-template-columns: minmax(420px, 1fr) minmax(240px, 320px);
       gap: 16px;
       padding: 16px;
       min-height: 0;
+    }
+    body[data-has-app-taskbar="true"] main {
+      padding-left: calc(16px + var(--app-taskbar-reserved-width));
     }
     .panel {
       border: 1px solid var(--line);
@@ -73,18 +79,80 @@
       overflow: auto;
     }
     .launcher {
+      position: fixed;
+      top: 96px;
+      left: 0;
+      bottom: 16px;
+      z-index: 1300;
+      width: min(300px, calc(100vw - 16px));
+      max-width: calc(100vw - 16px);
       display: grid;
+      grid-auto-rows: max-content;
       gap: 12px;
       align-content: start;
       padding: 14px;
+      overflow-x: hidden;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.66);
+      transform: translateX(calc(-100% + var(--app-taskbar-rail-width)));
+      transition: transform 180ms ease, box-shadow 180ms ease;
+      direction: rtl;
+      scrollbar-gutter: stable;
+    }
+    .launcher:hover,
+    .launcher:focus-within {
+      transform: translateX(0);
+      box-shadow: 0 28px 80px rgba(0, 0, 0, 0.76);
+    }
+    .launcher > * {
+      direction: ltr;
+      min-width: 0;
+    }
+    .launcher::before,
+    .launcher::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: var(--app-taskbar-rail-width);
+    }
+    .launcher::before {
+      content: "Apps";
+      display: grid;
+      place-items: center;
+      border-left: 1px solid var(--line);
+      background: #0a0a08;
+      color: var(--gold);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      writing-mode: vertical-rl;
+      text-orientation: mixed;
+      pointer-events: none;
+      opacity: 1;
+      transition: opacity 120ms ease;
+    }
+    .launcher::after {
+      background: transparent;
+      pointer-events: none;
+    }
+    .launcher:hover::before,
+    .launcher:focus-within::before {
+      opacity: 0;
     }
     .launcher h2, .status h2 {
+      min-width: 0;
       color: var(--gold);
       font-size: 18px;
       text-transform: uppercase;
+      overflow-wrap: anywhere;
     }
     .app-card {
       width: 100%;
+      min-width: 0;
       display: grid;
       gap: 6px;
       text-align: left;
@@ -95,15 +163,20 @@
       min-height: 86px;
       padding: 10px 14px;
       cursor: pointer;
+      overflow: hidden;
     }
     .app-card strong {
+      min-width: 0;
       color: var(--ink);
       font-size: 18px;
+      overflow-wrap: anywhere;
     }
     .app-card span {
+      min-width: 0;
       color: var(--muted);
       font-weight: 600;
       line-height: 1.35;
+      overflow-wrap: anywhere;
     }
     .app-card.active {
       border-color: var(--sky);
@@ -398,6 +471,48 @@
       transform-style: preserve-3d;
       pointer-events: none;
     }
+    .desktop-overlay.desktop-home {
+      padding: 72px 24px 24px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 16px;
+      align-content: start;
+      overflow: auto;
+      perspective: none;
+      transform-style: flat;
+      pointer-events: auto;
+      background:
+        radial-gradient(circle at 18% 14%, rgba(115, 214, 255, 0.18), transparent 34%),
+        radial-gradient(circle at 84% 12%, rgba(246, 199, 91, 0.14), transparent 32%),
+        #020302;
+    }
+    .desktop-overlay.desktop-home .desktop-caption {
+      top: 20px;
+      bottom: auto;
+      left: 24px;
+      font-size: 14px;
+      color: var(--gold);
+    }
+    .desktop-overlay.desktop-home .desktop-icon {
+      position: relative;
+      left: auto;
+      top: auto;
+      width: auto;
+      min-width: 0;
+      max-width: none;
+      min-height: 116px;
+      transform: none !important;
+      transition: transform 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+    }
+    .desktop-overlay.desktop-home .desktop-icon:hover,
+    .desktop-overlay.desktop-home .desktop-icon:focus-visible {
+      transform: translateY(-2px) !important;
+      border-color: var(--gold);
+      outline: none;
+      box-shadow:
+        0 22px 34px rgba(0, 0, 0, 0.48),
+        0 0 0 1px rgba(246, 199, 91, 0.48);
+    }
     .desktop-caption {
       position: absolute;
       left: 14px;
@@ -451,8 +566,19 @@
       border-radius: 8px;
       background: var(--gold);
       color: #120d05;
-      font-weight: 900;
       box-shadow: inset 0 0 0 1px rgba(18, 13, 5, 0.28);
+      overflow: hidden;
+    }
+    .desktop-icon .desktop-glyph-svg {
+      width: 18px;
+      height: 18px;
+      display: block;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      vector-effect: non-scaling-stroke;
     }
     .desktop-icon.active {
       border-color: var(--gold);

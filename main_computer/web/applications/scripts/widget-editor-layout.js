@@ -1,3 +1,13 @@
+    function widgetEditorEscapeHtml(value = "") {
+      return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        "\"": "&quot;",
+        "'": "&#39;"
+      }[char]));
+    }
+
     function ensureWidgetEditorChrome() {
       let paneCreated = false;
       if (!widgetEditorRoot) {
@@ -186,23 +196,23 @@
     }
 
     function renderWidgetEditorSelectField(name, label, value, options) {
-      const optionHtml = options.map(([optionValue, optionLabel]) => `<option value="${escapeHtml(optionValue)}" ${value === optionValue ? "selected" : ""}>${escapeHtml(optionLabel)}</option>`).join("");
+      const optionHtml = options.map(([optionValue, optionLabel]) => `<option value="${widgetEditorEscapeHtml(optionValue)}" ${value === optionValue ? "selected" : ""}>${widgetEditorEscapeHtml(optionLabel)}</option>`).join("");
       return `<label class="mc-widget-editor-field">${label}<select data-widget-editor-field="${name}">${optionHtml}</select></label>`;
     }
 
     function renderWidgetEditorSchemaFields(target, schema, resolved, override) {
       const fieldHtml = [];
       const checked = (key, defaultValue = false) => Boolean(resolved[key] ?? defaultValue) ? "checked" : "";
-      const overrideValue = (key) => escapeHtml(override[key] ?? "");
+      const overrideValue = (key) => widgetEditorEscapeHtml(override[key] ?? "");
       for (const field of schema.fields) {
         if (field === "label") {
-          fieldHtml.push(`<label class="mc-widget-editor-field">label override<input data-widget-editor-field="label" value="${overrideValue("label")}" placeholder="${escapeHtml(target.dataset.mcWidgetLabel || "")}"></label>`);
+          fieldHtml.push(`<label class="mc-widget-editor-field">label override<input data-widget-editor-field="label" value="${overrideValue("label")}" placeholder="${widgetEditorEscapeHtml(target.dataset.mcWidgetLabel || "")}"></label>`);
         } else if (field === "visible") {
           fieldHtml.push(`<label class="mc-widget-editor-field">visible<input data-widget-editor-field="visible" type="checkbox" ${checked("visible", true)}></label>`);
         } else if (field === "disabled" && "disabled" in target) {
           fieldHtml.push(`<label class="mc-widget-editor-field">disabled<input data-widget-editor-field="disabled" type="checkbox" ${checked("disabled")} ></label>`);
         } else if (field === "placeholder" && "placeholder" in target) {
-          fieldHtml.push(`<label class="mc-widget-editor-field">placeholder<input data-widget-editor-field="placeholder" value="${escapeHtml(resolved.placeholder || "")}" placeholder="${escapeHtml(target.getAttribute("placeholder") || "")}"></label>`);
+          fieldHtml.push(`<label class="mc-widget-editor-field">placeholder<input data-widget-editor-field="placeholder" value="${widgetEditorEscapeHtml(resolved.placeholder || "")}" placeholder="${widgetEditorEscapeHtml(target.getAttribute("placeholder") || "")}"></label>`);
         } else if (field === "density") {
           fieldHtml.push(renderWidgetEditorSelectField("density", "density preset", resolved.density, widgetEditorPresetOptions.density));
         } else if (field === "layoutPreset") {
@@ -245,9 +255,9 @@
             <button type="button" data-widget-editor-action="reset-pane">Reset Pane</button>
           </div>
           <div class="mc-widget-editor-meta">
-            <strong>${escapeHtml(label)}</strong>
-            <span>ID: ${escapeHtml(id || "none")}</span>
-            <span>Kind: ${escapeHtml(widgetKind || schema.label.toLowerCase())}</span>
+            <strong>${widgetEditorEscapeHtml(label)}</strong>
+            <span>ID: ${widgetEditorEscapeHtml(id || "none")}</span>
+            <span>Kind: ${widgetEditorEscapeHtml(widgetKind || schema.label.toLowerCase())}</span>
           </div>
           ${target ? `
             ${renderWidgetEditorSchemaFields(target, schema, resolved, override)}

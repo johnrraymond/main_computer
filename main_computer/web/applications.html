@@ -32,7 +32,7 @@
     <!-- @include applications/styles/activity-dock.css -->
   </style>
 </head>
-<body>
+<body data-has-app-taskbar="true">
   <div class="viewport" data-mc-component-id="main-computer.applications" data-mc-component-kind="workspace" data-mc-component-label="Applications">
     <header>
       <h1>Main Computer Applications</h1>
@@ -49,11 +49,15 @@
     <main>
       <aside class="panel launcher" aria-label="Application launcher" data-mc-component-id="applications.launcher" data-mc-component-kind="panel" data-mc-component-label="Application Launcher" data-mc-feature-id="applications.launching">
         <h2>Applications</h2>
+        <a class="app-card ready active" href="/applications" data-app="desktop" data-mc-component-id="applications.card.desktop" data-mc-component-kind="action" data-mc-component-label="Open Desktop" data-mc-component-owner="applications.launcher" data-mc-feature-id="applications.launching">
+          <strong>Desktop</strong>
+          <span>desktop app grid for launching tools</span>
+        </a>
         <a class="app-card ready" href="/applications/webgl" data-app="webgl">
           <strong>Game Surface</strong>
           <span>Arcstorm finale sprite/particle showcase</span>
         </a>
-        <a class="app-card active" href="/applications" data-app="calculator">
+        <a class="app-card ready" href="/applications/calculator" data-app="calculator">
           <strong>Calculator</strong>
           <span>local arithmetic tool</span>
         </a>
@@ -123,11 +127,11 @@
         </a>
       </aside>
 
-      <section class="panel stage" aria-label="Active application" data-mc-component-id="applications.workspace" data-mc-component-kind="workspace" data-mc-component-label="Application Workspace">
+      <section class="panel stage" tabindex="-1" aria-label="Active application" data-mc-component-id="applications.workspace" data-mc-component-kind="workspace" data-mc-component-label="Application Workspace">
         <div class="stage-head">
           <div class="stage-title">
-            <h2 id="active-app-title">Game Surface</h2>
-            <p id="active-app-summary">Arcstorm finale surface is ready.</p>
+            <h2 id="active-app-title">Desktop</h2>
+            <p id="active-app-summary">Choose an app from the desktop grid.</p>
           </div>
           <div class="stage-advanced" id="stage-advanced" aria-label="Advanced application tools">
             <button class="stage-advanced-toggle" id="stage-advanced-toggle" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="stage-advanced-pane" data-mc-component-id="applications.stage.advanced-toggle" data-mc-component-kind="action" data-mc-component-label="Toggle Advanced Tools">Advanced</button>
@@ -162,9 +166,12 @@
               <aside class="stage-advanced-chat" id="onlyoffice-advanced-chat-panel" aria-label="ONLYOFFICE advanced embedded Chat Console" data-chat-console-embed="onlyoffice" data-chat-console-active-app="onlyoffice" data-chat-console-id-prefix="onlyoffice-advanced-chat" data-chat-console-class-prefix="onlyoffice-advanced" data-chat-console-title="Advanced Chat Console" data-chat-console-subtitle="Embedded beside ONLYOFFICE. Use the notebook type tabs for AI, JS, Python, BASIC, and more." data-chat-console-notebook-id="onlyoffice-advanced-chat-notebook" data-chat-console-status-id="onlyoffice-advanced-chat-status" data-chat-console-thread-title="ONLYOFFICE Advanced Chat"></aside>
             </div>
           </div>
-          <div class="stage-status" id="gl-status">game surface loading</div>
+          <div class="stage-status" id="gl-status">desktop ready</div>
         </div>
         <div class="canvas-wrap">
+          <div id="desktop-overlay" class="desktop-overlay" aria-label="Desktop application launcher" data-mc-component-id="applications.desktop" data-mc-component-kind="workspace" data-mc-component-label="Desktop App Launcher">
+            <div class="desktop-caption">Desktop applications</div>
+          </div>
           <!-- @include applications/apps/webgl.html -->
           <!-- @include applications/apps/calculator.html -->
           <!-- @include applications/apps/document.html -->

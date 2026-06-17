@@ -35,12 +35,16 @@ DEFAULT_TIMEOUT_S = 25.0
 DEFAULT_RETRIES = 1
 DEFAULT_RETRY_SLEEP_S = 2.0
 DEFAULT_DOCKERFILE_LOCATION = "/Dockerfile.hub"
+DEFAULT_EXP_FDB_DOCKERFILE_LOCATION = "/Dockerfile.hub.exp-fdb"
 DEFAULT_BASE_DIRECTORY = "/"
 DEFAULT_HEALTH_PATH = "/api/hub/status"
 DEFAULT_JSON_RPC_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "MainComputerHubDeployer/1.0"
 )
+HUB_IMPLEMENTATION_REGULAR = "regular"
+HUB_IMPLEMENTATION_EXP_FDB = "exp-fdb"
+HUB_IMPLEMENTATION_CHOICES = (HUB_IMPLEMENTATION_REGULAR, HUB_IMPLEMENTATION_EXP_FDB)
 
 
 class CoolifyHubDeployError(RuntimeError):
@@ -302,19 +306,105 @@ def validate_remote_profile(profile: HubNetworkProfile) -> None:
         )
 
 
-def hub_service_name(network: str) -> str:
+def validate_hub_deploy_args(profile: HubNetworkProfile, args: argparse.Namespace) -> None:
+    implementation = hub_implementation(args)
+    if getattr(args, "replace_regular_hub", False) and implementation != HUB_IMPLEMENTATION_EXP_FDB:
+        raise CoolifyHubDeployError("--replace-regular-hub is only valid with --hub-implementation exp-fdb.")
+
+    if implementation == HUB_IMPLEMENTATION_EXP_FDB:
+        namespace = exp_fdb_namespace(profile, args)
+        if not namespace.strip():
+            raise CoolifyHubDeployError("Experimental FDB Hub namespace must not be empty.")
+        runtime_dir = str(
+            getattr(args, "hub_runtime_dir", "")
+            or hub_state_mount_path(profile.network_key, implementation=implementation)
+        )
+        cluster_file = exp_fdb_cluster_file_path(profile, args, runtime_dir=runtime_dir)
+        if not cluster_file.strip():
+            raise CoolifyHubDeployError("Experimental FDB Hub cluster file path must not be empty.")
+
+
+def hub_implementation(args: argparse.Namespace | None) -> str:
+    value = str(getattr(args, "hub_implementation", HUB_IMPLEMENTATION_REGULAR) or HUB_IMPLEMENTATION_REGULAR).strip().lower()
+    if value not in HUB_IMPLEMENTATION_CHOICES:
+        raise CoolifyHubDeployError(
+            f"Unknown Hub implementation {value!r}; expected one of {', '.join(HUB_IMPLEMENTATION_CHOICES)}."
+        )
+    return value
+
+
+def is_exp_fdb_hub(args: argparse.Namespace | None) -> bool:
+    return hub_implementation(args) == HUB_IMPLEMENTATION_EXP_FDB
+
+
+def hub_service_name(
+    network: str,
+    *,
+    implementation: str = HUB_IMPLEMENTATION_REGULAR,
+    replace_regular_hub: bool = False,
+) -> str:
+    if implementation == HUB_IMPLEMENTATION_EXP_FDB and not replace_regular_hub:
+        return f"main-computer-{network}-exp-fdb-hub"
     return f"main-computer-{network}-hub"
 
 
-def hub_state_mount_path(network: str) -> str:
+def hub_state_mount_path(network: str, *, implementation: str = HUB_IMPLEMENTATION_REGULAR) -> str:
+    if implementation == HUB_IMPLEMENTATION_EXP_FDB:
+        return f"/data/main-computer/hub/{network}-exp-fdb"
     return f"/data/main-computer/hub/{network}"
 
 
-def hub_volume_name(network: str) -> str:
+def hub_volume_name(network: str, *, implementation: str = HUB_IMPLEMENTATION_REGULAR) -> str:
+    if implementation == HUB_IMPLEMENTATION_EXP_FDB:
+        return f"{network}_exp_fdb_hub_state"
     return f"{network}_hub_state"
 
 
-def hub_start_command(profile: HubNetworkProfile, runtime_dir: str) -> str:
+def exp_fdb_cluster_file_path(profile: HubNetworkProfile, args: argparse.Namespace, *, runtime_dir: str) -> str:
+    explicit = str(getattr(args, "fdb_cluster_file", "") or "").strip()
+    if explicit:
+        return explicit
+    return str(Path(runtime_dir) / "fdb.cluster")
+
+
+def exp_fdb_namespace(profile: HubNetworkProfile, args: argparse.Namespace) -> str:
+    explicit = str(getattr(args, "fdb_namespace", "") or "").strip()
+    if explicit:
+        return explicit
+    return f"main-computer-{profile.network_key}-exp-fdb"
+
+
+def hub_start_command(profile: HubNetworkProfile, runtime_dir: str, args: argparse.Namespace | None = None) -> str:
+    if is_exp_fdb_hub(args):
+        assert args is not None
+        parts = [
+            "--host",
+            shell_word(profile.hub_bind_host),
+            "--port",
+            shell_word(str(profile.hub_bind_port)),
+            "--hub-url",
+            shell_word(profile.hub_url),
+            "--hub-root",
+            shell_word(runtime_dir),
+            "--cluster-file",
+            shell_word(exp_fdb_cluster_file_path(profile, args, runtime_dir=runtime_dir)),
+            "--namespace",
+            shell_word(exp_fdb_namespace(profile, args)),
+            "--network-key",
+            shell_word(profile.network_key),
+            "--network-display-name",
+            shell_word(profile.display_name),
+            "--network-kind",
+            shell_word(profile.kind),
+            "--no-fdb-autostart",
+            "--no-activate-cached-native-client",
+        ]
+        if profile.chain_id is not None:
+            parts.extend(["--chain-id", shell_word(str(profile.chain_id))])
+        if profile.chain_rpc_url:
+            parts.extend(["--chain-rpc-url", shell_word(profile.chain_rpc_url)])
+        return " ".join(parts)
+
     return " ".join(
         [
             "--network",
@@ -336,14 +426,16 @@ def shell_word(value: str) -> str:
     return text
 
 
-def default_dockerfile_location(profile: HubNetworkProfile) -> str:
+def default_dockerfile_location(profile: HubNetworkProfile, args: argparse.Namespace | None = None) -> str:
+    if is_exp_fdb_hub(args):
+        return DEFAULT_EXP_FDB_DOCKERFILE_LOCATION
     if profile.network_key in {"testnet", "mainnet"}:
         return f"/Dockerfile.hub.{profile.network_key}"
     return DEFAULT_DOCKERFILE_LOCATION
 
 
 def effective_dockerfile_location(profile: HubNetworkProfile, args: argparse.Namespace) -> str:
-    return str(getattr(args, "dockerfile_location", "") or default_dockerfile_location(profile))
+    return str(getattr(args, "dockerfile_location", "") or default_dockerfile_location(profile, args))
 
 
 def coolify_domain_with_backend_port(profile: HubNetworkProfile) -> str:
@@ -375,9 +467,13 @@ def application_payload(
     service_name: str,
     runtime_dir: str,
 ) -> dict[str, Any]:
+    description = f"Main Computer {profile.network_key} Hub"
+    if is_exp_fdb_hub(args):
+        description = f"Main Computer {profile.network_key} experimental FDB Hub"
+
     payload: dict[str, Any] = {
         "name": service_name,
-        "description": f"Main Computer {profile.network_key} Hub",
+        "description": description,
         "project_uuid": args.coolify_project_uuid,
         "server_uuid": args.coolify_server_uuid,
         "environment_name": args.coolify_environment_name,
@@ -388,7 +484,7 @@ def application_payload(
         "dockerfile_location": effective_dockerfile_location(profile, args),
         "ports_exposes": str(profile.hub_bind_port),
         "domains": coolify_domain_with_backend_port(profile),
-        "start_command": hub_start_command(profile, runtime_dir),
+        "start_command": hub_start_command(profile, runtime_dir, args),
         "health_check_enabled": True,
         "health_check_path": args.health_path,
         "instant_deploy": False,
@@ -415,8 +511,14 @@ def application_update_payload(
     return payload
 
 
-def storage_payload(profile: HubNetworkProfile, *, runtime_dir: str) -> dict[str, Any]:
-    return {"type": "persistent", "name": hub_volume_name(profile.network_key), "mount_path": runtime_dir, "host_path": runtime_dir}
+def storage_payload(profile: HubNetworkProfile, *, runtime_dir: str, args: argparse.Namespace | None = None) -> dict[str, Any]:
+    implementation = hub_implementation(args)
+    return {
+        "type": "persistent",
+        "name": hub_volume_name(profile.network_key, implementation=implementation),
+        "mount_path": runtime_dir,
+        "host_path": runtime_dir,
+    }
 
 
 def storage_matches(item: dict[str, Any], *, name: str, mount_path: str) -> bool:
@@ -757,7 +859,7 @@ def update_application(client: CoolifyClient, profile: HubNetworkProfile, args: 
 
 
 def ensure_storage(client: CoolifyClient, profile: HubNetworkProfile, args: argparse.Namespace, *, application_uuid: str, runtime_dir: str, tried: list[dict[str, Any]]) -> dict[str, Any]:
-    name = hub_volume_name(profile.network_key)
+    name = hub_volume_name(profile.network_key, implementation=hub_implementation(args))
     list_path = f"/api/v1/applications/{urllib.parse.quote(application_uuid)}/storages"
     response = client.request("GET", list_path)
     storages = body_items(response.body, "storages", "persistent_storages") if response.ok else []
@@ -770,7 +872,7 @@ def ensure_storage(client: CoolifyClient, profile: HubNetworkProfile, args: argp
             raise CoolifyHubDeployError(f"Multiple persistent storages match {name!r}/{runtime_dir!r}; refusing to guess.")
     if args.no_create_storage:
         return {"ok": False, "source": "skipped", "message": "Persistent storage create skipped by --no-create-storage."}
-    payload = storage_payload(profile, runtime_dir=runtime_dir)
+    payload = storage_payload(profile, runtime_dir=runtime_dir, args=args)
     response = client.request("POST", list_path, payload)
     tried.append({"operation": "create-storage", "path": list_path, "payload": payload, "response": response_to_dict(response)})
     if response.ok:
@@ -837,23 +939,39 @@ def load_profile(args: argparse.Namespace) -> HubNetworkProfile:
     registry = load_hub_network_registry(args.network_config)
     profile = registry.get(args.network)
     validate_remote_profile(profile)
+    validate_hub_deploy_args(profile, args)
     return profile
 
 
 def plan_result(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[str, Any]:
-    runtime_dir = args.hub_runtime_dir or hub_state_mount_path(profile.network_key)
-    service_name = args.coolify_application_name or hub_service_name(profile.network_key)
-    return {
+    implementation = hub_implementation(args)
+    runtime_dir = args.hub_runtime_dir or hub_state_mount_path(profile.network_key, implementation=implementation)
+    service_name = args.coolify_application_name or hub_service_name(
+        profile.network_key,
+        implementation=implementation,
+        replace_regular_hub=bool(getattr(args, "replace_regular_hub", False)),
+    )
+    result: dict[str, Any] = {
         "network": profile.network_key,
+        "hub_implementation": implementation,
         "service_name": service_name,
         "runtime_dir": runtime_dir,
-        "volume_name": hub_volume_name(profile.network_key),
+        "volume_name": hub_volume_name(profile.network_key, implementation=implementation),
         "public_url": profile.hub_url,
         "chain_rpc_url": profile.chain_rpc_url,
         "chain_id": profile.chain_id,
         "application_payload": application_payload(profile, args, service_name=service_name, runtime_dir=runtime_dir),
-        "storage_payload": storage_payload(profile, runtime_dir=runtime_dir),
+        "storage_payload": storage_payload(profile, runtime_dir=runtime_dir, args=args),
     }
+    if implementation == HUB_IMPLEMENTATION_EXP_FDB:
+        result["fdb_cluster_file"] = exp_fdb_cluster_file_path(profile, args, runtime_dir=runtime_dir)
+        result["fdb_namespace"] = exp_fdb_namespace(profile, args)
+        result["replace_regular_hub"] = bool(getattr(args, "replace_regular_hub", False))
+        result["operator_note"] = (
+            "Experimental FDB Hub deploys with --no-fdb-autostart; mount a valid FoundationDB cluster file "
+            f"at {result['fdb_cluster_file']!r} before applying or starting the application."
+        )
+    return result
 
 
 def check_mode_for_profile(profile: HubNetworkProfile, mode: str, *, testnet_default: str = "warn", mainnet_default: str = "require") -> str:
@@ -974,6 +1092,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument("--network-config", type=Path, default=None, help="Path to hub_networks.json.")
     parser.add_argument("--hub-runtime-dir", default="", help="Container path for persistent Hub runtime state.")
+    parser.add_argument(
+        "--hub-implementation",
+        choices=HUB_IMPLEMENTATION_CHOICES,
+        default=HUB_IMPLEMENTATION_REGULAR,
+        help="Hub implementation to deploy. regular preserves the existing Dockerfile/CLI Hub; exp-fdb deploys exp-fdb-hub.py.",
+    )
+    parser.add_argument(
+        "--replace-regular-hub",
+        action="store_true",
+        help=(
+            "With --hub-implementation exp-fdb, update the normal main-computer-<network>-hub Coolify application "
+            "instead of creating the side-by-side main-computer-<network>-exp-fdb-hub application."
+        ),
+    )
+    parser.add_argument(
+        "--fdb-cluster-file",
+        default="",
+        help=(
+            "Container path to the FoundationDB cluster file for --hub-implementation exp-fdb. "
+            "Defaults to <hub-runtime-dir>/fdb.cluster."
+        ),
+    )
+    parser.add_argument(
+        "--fdb-namespace",
+        default="",
+        help="FoundationDB tuple namespace for --hub-implementation exp-fdb. Defaults to main-computer-<network>-exp-fdb.",
+    )
 
     parser.add_argument("--coolify-url", default="", help="Coolify base URL.")
     parser.add_argument("--coolify-token", default="", help="Coolify bearer token. Prefer --coolify-token-env.")

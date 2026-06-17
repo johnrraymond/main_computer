@@ -36,6 +36,10 @@ def _args(**overrides):
         "github_app_uuid": "",
         "deploy_key_uuid": "",
         "hub_runtime_dir": "",
+        "hub_implementation": coolify_hub_service.HUB_IMPLEMENTATION_REGULAR,
+        "replace_regular_hub": False,
+        "fdb_cluster_file": "",
+        "fdb_namespace": "",
         "coolify_application_name": "",
         "rpc_check": "auto",
         "rpc_user_agent": coolify_hub_service.DEFAULT_JSON_RPC_USER_AGENT,
@@ -180,6 +184,55 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(plan["public_url"], "https://testnet-hub.greatlibrary.io")
         self.assertEqual(plan["application_payload"]["dockerfile_location"], "/Dockerfile.hub.testnet")
         self.assertNotIn("urls", plan["application_payload"])
+
+    def test_exp_fdb_plan_uses_side_by_side_service_and_fdb_startup(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
+        args = _args(hub_implementation=coolify_hub_service.HUB_IMPLEMENTATION_EXP_FDB)
+        plan = coolify_hub_service.plan_result(profile, args)
+
+        self.assertEqual(plan["hub_implementation"], "exp-fdb")
+        self.assertEqual(plan["service_name"], "main-computer-mainnet-exp-fdb-hub")
+        self.assertEqual(plan["runtime_dir"], "/data/main-computer/hub/mainnet-exp-fdb")
+        self.assertEqual(plan["volume_name"], "mainnet_exp_fdb_hub_state")
+        self.assertEqual(plan["fdb_cluster_file"], "/data/main-computer/hub/mainnet-exp-fdb/fdb.cluster")
+        self.assertEqual(plan["fdb_namespace"], "main-computer-mainnet-exp-fdb")
+        payload = plan["application_payload"]
+        self.assertEqual(payload["dockerfile_location"], "/Dockerfile.hub.exp-fdb")
+        self.assertEqual(payload["ports_exposes"], "8790")
+        self.assertEqual(payload["domains"], "https://mainnet-hub.greatlibrary.io:8790")
+        self.assertIn("--hub-root /data/main-computer/hub/mainnet-exp-fdb", payload["start_command"])
+        self.assertIn("--cluster-file /data/main-computer/hub/mainnet-exp-fdb/fdb.cluster", payload["start_command"])
+        self.assertIn("--namespace main-computer-mainnet-exp-fdb", payload["start_command"])
+        self.assertIn("--network-key mainnet", payload["start_command"])
+        self.assertIn("--chain-id 42424240", payload["start_command"])
+        self.assertIn("--chain-rpc-url https://mainnet-rpc.greatlibrary.io", payload["start_command"])
+        self.assertIn("--no-fdb-autostart", payload["start_command"])
+
+    def test_exp_fdb_can_explicitly_replace_regular_hub_service_name(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
+        args = _args(
+            hub_implementation=coolify_hub_service.HUB_IMPLEMENTATION_EXP_FDB,
+            replace_regular_hub=True,
+            fdb_cluster_file="/data/main-computer/fdb/fdb.cluster",
+            fdb_namespace="main-computer-mainnet-cutover",
+        )
+        plan = coolify_hub_service.plan_result(profile, args)
+
+        self.assertEqual(plan["service_name"], "main-computer-mainnet-hub")
+        self.assertTrue(plan["replace_regular_hub"])
+        self.assertEqual(plan["fdb_cluster_file"], "/data/main-computer/fdb/fdb.cluster")
+        self.assertEqual(plan["fdb_namespace"], "main-computer-mainnet-cutover")
+        self.assertIn("--cluster-file /data/main-computer/fdb/fdb.cluster", plan["application_payload"]["start_command"])
+        self.assertIn("--namespace main-computer-mainnet-cutover", plan["application_payload"]["start_command"])
+
+    def test_replace_regular_hub_requires_exp_fdb_implementation(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
+        args = _args(replace_regular_hub=True)
+
+        with self.assertRaises(coolify_hub_service.CoolifyHubDeployError) as ctx:
+            coolify_hub_service.validate_hub_deploy_args(profile, args)
+
+        self.assertIn("--hub-implementation exp-fdb", str(ctx.exception))
 
     def test_resolve_context_creates_missing_hub_environment(self) -> None:
         profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
@@ -330,6 +383,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
     def test_network_dockerfiles_have_matching_safe_defaults_and_healthcheck_client(self) -> None:
         testnet_dockerfile = (REPO_ROOT / "Dockerfile.hub.testnet").read_text(encoding="utf-8")
         mainnet_dockerfile = (REPO_ROOT / "Dockerfile.hub.mainnet").read_text(encoding="utf-8")
+        exp_fdb_dockerfile = (REPO_ROOT / "Dockerfile.hub.exp-fdb").read_text(encoding="utf-8")
 
         self.assertIn("curl wget", testnet_dockerfile)
         self.assertIn("--network\", \"testnet", testnet_dockerfile)
@@ -339,6 +393,14 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertIn("--network\", \"mainnet", mainnet_dockerfile)
         self.assertIn("--port\", \"8790", mainnet_dockerfile)
         self.assertIn("/data/main-computer/hub/mainnet", mainnet_dockerfile)
+
+        self.assertIn("FoundationDB.Client.Native", exp_fdb_dockerfile)
+        self.assertIn("foundationdb==${FDB_PYTHON_VERSION}", exp_fdb_dockerfile)
+        self.assertIn("libfdb_c.so", exp_fdb_dockerfile)
+        self.assertIn('ENTRYPOINT ["python", "/app/exp-fdb-hub.py"]', exp_fdb_dockerfile)
+        self.assertIn("--no-fdb-autostart", exp_fdb_dockerfile)
+        self.assertIn("--no-activate-cached-native-client", exp_fdb_dockerfile)
+        self.assertIn("/api/hub/status", exp_fdb_dockerfile)
 
 
     def test_json_rpc_uses_operator_headers_for_https_edges(self) -> None:
@@ -428,6 +490,22 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(request.full_url, "https://mainnet-hub.greatlibrary.io/api/hub/status")
         self.assertEqual(request.get_header("Accept"), "application/json")
         self.assertEqual(request.get_header("User-agent"), "UnitTestHubAgent/2.0")
+
+
+    def test_hub_coolify_runbook_documents_regular_and_exp_fdb_deploys(self) -> None:
+        runbook = REPO_ROOT / "pretty_docs" / "hub-coolify-deploy-runbook.md"
+
+        text = runbook.read_text(encoding="utf-8")
+
+        self.assertIn("coolify_hub_service.py plan mainnet", text)
+        self.assertIn("coolify_hub_service.py apply mainnet", text)
+        self.assertIn("--hub-implementation exp-fdb", text)
+        self.assertIn("--replace-regular-hub", text)
+        self.assertIn("--fdb-cluster-file /data/main-computer/fdb/fdb.cluster", text)
+        self.assertIn("/Dockerfile.hub.exp-fdb", text)
+        self.assertIn("main-computer-mainnet-exp-fdb-hub", text)
+        self.assertIn("main-computer-mainnet-hub", text)
+
 
 
 if __name__ == "__main__":

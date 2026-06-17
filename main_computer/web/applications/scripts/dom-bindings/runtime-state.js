@@ -1,7 +1,7 @@
     let running = true;
     let frameCount = 0;
     let startedAt = performance.now();
-    let currentApp = "calculator";
+    let currentApp = "desktop";
     let xterm = null;
     let xtermFit = null;
     let terminalBuffer = "";

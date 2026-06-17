@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 r"""
 openclaw_ops_smoke.py
 
@@ -14,12 +14,11 @@ Purpose:
 Run:
 
   set MAIN_COMPUTER_OPENCLAW_TOKEN=make-a-new-token
-  for /f "delims=" %I in ('python -c "from pathlib import Path; import main_computer.openclaw_ops_smoke as m; print(Path(m.__file__).resolve().parents[1])"') do set OPENCLAW_OPS_ROOT=%I
-  python openclaw_ops_smoke.py serve --host 127.0.0.1 --port 8791
+  python -m main_computer.openclaw_ops_smoke serve --host 127.0.0.1 --port 8791
 
 Smoke test:
 
-  python openclaw_ops_smoke.py smoke --base-url http://127.0.0.1:8791 --token make-a-new-token
+  python -m main_computer.openclaw_ops_smoke smoke --base-url http://127.0.0.1:8791 --token make-a-new-token
 
 Endpoints:
 
@@ -366,6 +365,17 @@ class OpsHandler(BaseHTTPRequestHandler):
 
 class OpsServer(ThreadingHTTPServer):
     config: Config
+
+
+def default_ops_root() -> Path:
+    """
+    Return the repository/package root that contains the OpenClaw ops bridge.
+
+    This keeps ``serve --root`` optional for the local smoke path while still
+    allowing operators to override the exposed read-only root explicitly with
+    ``--root`` or ``OPENCLAW_OPS_ROOT``.
+    """
+    return Path(__file__).resolve().parents[1]
 
 
 def serve(args: argparse.Namespace) -> None:

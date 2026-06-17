@@ -97,6 +97,54 @@ def _write_dev_chain_latest(root: Path, *, host_rpc_url: str = "http://127.0.0.1
     return payload
 
 
+def _write_energy_network_latest(root: Path, network: str, *, chain_id: int, offices: list[str] | None = None) -> dict:
+    office_addresses = offices or [
+        "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+        "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
+        "0x90F79bf6EB2c4f870365E785982E1f101E93b906",
+    ]
+    payload = {
+        "schema": "main-computer.deployment.v1",
+        "environment": network,
+        "run_id": f"{network}-unit-run",
+        "created_at": "2026-06-16T00:00:00Z",
+        "source": {"kind": "unit-test"},
+        "chain": {
+            "chain_id": chain_id,
+            "host_rpc_url": f"http://127.0.0.1:{18000 + chain_id % 1000}",
+            "rpc_url": f"http://127.0.0.1:{18000 + chain_id % 1000}",
+        },
+        "offices": [
+            {"office": f"O{index}", "title": title, "address": address}
+            for index, (title, address) in enumerate(
+                zip(["Captain", "First Officer", "Second Officer", "Third Officer"], office_addresses)
+            )
+        ],
+        "contracts": {
+            "alpha-beta-lockout": {
+                "target": "AlphaBetaLockout.sol:AlphaBetaLockout",
+                "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "transaction_hash": "0x" + "a" * 64,
+            },
+            "xlag-bridge-reserve": {
+                "target": "src/XLagBridgeReserve.sol:XLagBridgeReserve",
+                "address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "transaction_hash": "0x" + "b" * 64,
+            },
+            "hub_credit_bridge_escrow": {
+                "target": "src/HubCreditBridgeEscrow.sol:HubCreditBridgeEscrow",
+                "address": "0xcccccccccccccccccccccccccccccccccccccccc",
+                "transaction_hash": "0x" + "c" * 64,
+            },
+        },
+    }
+    path = root / "runtime" / "deployments" / network / "latest.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return payload
+
+
 class ViewportEnergyRouteTests(unittest.TestCase):
     def test_energy_index_contains_control_hooks(self) -> None:
         self.assertIn("Main Computer Energy Credits", ENERGY_INDEX_HTML)
@@ -153,6 +201,70 @@ class ViewportEnergyRouteTests(unittest.TestCase):
         self.assertIn("/api/hub/config", ENERGY_INDEX_HTML)
         self.assertIn("hub-provider-state", ENERGY_INDEX_HTML)
         self.assertIn("hub-connect-upstream", ENERGY_INDEX_HTML)
+
+
+
+    def test_energy_index_contains_mcel_network_monitor(self) -> None:
+        self.assertIn("Mainnet Energy Credits Command Center", ENERGY_INDEX_HTML)
+        self.assertIn("/api/energy/networks/status?live=1", ENERGY_INDEX_HTML)
+        self.assertIn('data-mc-kind="read-only-command-center"', ENERGY_INDEX_HTML)
+        self.assertIn("energy-network-ribbon", ENERGY_INDEX_HTML)
+        self.assertIn("Contract Inventory", ENERGY_INDEX_HTML)
+        self.assertIn("Captain to Third Officer", ENERGY_INDEX_HTML)
+
+    def test_energy_index_collapses_raw_config_blobs_by_default(self) -> None:
+        self.assertIn('data-mc-kind="collapsed-config-blob"', ENERGY_INDEX_HTML)
+        self.assertIn("Raw hub configuration response", ENERGY_INDEX_HTML)
+        self.assertIn("Raw X-LAG contract status payload", ENERGY_INDEX_HTML)
+        self.assertIn("Raw energy chain RPC/config payload", ENERGY_INDEX_HTML)
+        self.assertIn("Raw bridge governance policy payload", ENERGY_INDEX_HTML)
+        self.assertIn("Raw local ledger balance payload", ENERGY_INDEX_HTML)
+        collapsed = re.findall(r'<details[^>]*data-mc-kind="collapsed-config-blob"[^>]*>', ENERGY_INDEX_HTML)
+        self.assertEqual(5, len(collapsed))
+        self.assertTrue(all(" open" not in tag for tag in collapsed))
+
+    def test_energy_networks_status_api_reports_four_network_monitor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            _write_energy_network_latest(root, "mainnet", chain_id=42424240)
+            _write_energy_network_latest(root, "testnet", chain_id=42424241)
+            _write_energy_network_latest(root, "test", chain_id=42424241)
+            _write_energy_network_latest(root, "dev", chain_id=42424242)
+            old_cwd = os.getcwd()
+            server = None
+            thread = None
+            os.chdir(root)
+            try:
+                server = ViewportServer(("127.0.0.1", 0), MainComputerConfig(workspace=root), verbose=False)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+
+                base = f"http://127.0.0.1:{server.server_port}"
+                with urlopen(f"{base}/api/energy/networks/status?live=0", timeout=5) as response:
+                    self.assertEqual(response.status, 200)
+                    payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertTrue(payload["ok"])
+                self.assertEqual("read-only-monitor", payload["mode"])
+                self.assertEqual("mainnet", payload["default_network"])
+                self.assertEqual(["mainnet", "testnet", "test", "dev"], [network["network"] for network in payload["networks"]])
+                mainnet = payload["networks"][0]
+                self.assertEqual("mainnet", mainnet["network"])
+                self.assertEqual("unsafe", mainnet["overall_status"])
+                self.assertTrue(mainnet["read_only"])
+                self.assertEqual("monitor-only", mainnet["mutation_policy"])
+                self.assertEqual(
+                    ["alpha-beta-lockout", "xlag-bridge-reserve", "hub_credit_bridge_escrow"],
+                    [contract["key"] for contract in mainnet["contracts"]],
+                )
+                self.assertTrue(any("default Anvil" in warning for warning in mainnet["warnings"]))
+            finally:
+                if server is not None:
+                    server.shutdown()
+                    server.server_close()
+                if thread is not None:
+                    thread.join(timeout=5)
+                os.chdir(old_cwd)
 
 
     def test_energy_components_have_widget_metadata_layer(self) -> None:
