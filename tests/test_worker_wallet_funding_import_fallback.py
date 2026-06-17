@@ -117,10 +117,10 @@ def test_worker_wallet_funding_completion_rejects_bad_deposit_id() -> None:
 
 
 def test_worker_wallet_funding_config_reads_deploy_owned_escrow_address(tmp_path) -> None:
-    deployments = tmp_path / "runtime" / "deployments"
+    deployments = tmp_path / "runtime" / "deployments" / "dev"
     deployments.mkdir(parents=True)
-    current_json = deployments / "current.json"
-    current_json.write_text(
+    deployment_manifest = deployments / "latest.json"
+    deployment_manifest.write_text(
         json.dumps(
             {
                 "chain": {

@@ -73,10 +73,10 @@ Deploy the local test chain and publish the app-facing deployment runtime:
 
 ```powershell
 python .\tools\dev-chain-reset.py --yes --run-id test-machine-dev --environment dev --port-strategy replace-project
-python .\tools\dev-chain-diagnosis.py --state .\runtime\deployments\current.json
+python .\tools\dev-chain-diagnosis.py --state .\runtime\deployments\dev\latest.json
 ```
 
-This generates local runtime files such as `runtime/deployments/current.json`, `runtime/dev-chain/latest.json`, `runtime/dev-chain/latest.env`, and `runtime/deployments/hub-admin-wallet.json`. They are machine-local state and should stay out of Git.
+This generates local runtime files such as `runtime/deployments/dev/latest.json`, `runtime/dev-chain/latest.json`, `runtime/dev-chain/latest.env`, and `runtime/deployments/hub-admin-wallet.json`. They are machine-local state and should stay out of Git.
 
 To publish the same app-facing deployment runtime from the local QBFT testnet
 instead of Anvil, restart the QBFT lab with the current London/EIP-1559 + Shanghai/PUSH0 genesis,
@@ -97,7 +97,7 @@ python .\tools\smoke_besu_qbft_one_validator.py deploy
 python -m main_computer.cli hub --network test
 ```
 
-The testnet deployment writes `runtime/deployments/current.json` with
+The testnet deployment writes `runtime/deployments/dev/latest.json` with
 `environment=test`, chain id `42424241`, and RPC URL `http://127.0.0.1:30010`,
 so the existing golden runtime lookup can consume it without a separate testnet
 code path.

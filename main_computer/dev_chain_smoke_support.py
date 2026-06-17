@@ -243,7 +243,7 @@ def bring_up_dev_chain_for_smoke(
         )
         raise RuntimeError(f"dev-chain bring-up failed for {dev_chain_run_id}\n{details}")
 
-    deployment_path = _deployment_output_root(root) / "current.json"
+    deployment_path = _deployment_output_root(root) / "dev" / "latest.json"
     _emit_status(status, "dev_chain_deployment_load", deployment_path=deployment_path)
     deployment = _load_json(deployment_path)
     chain = deployment.get("chain") if isinstance(deployment.get("chain"), dict) else {}

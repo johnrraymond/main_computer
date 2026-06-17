@@ -140,8 +140,8 @@ def test_write_release_evidence_report_records_preflight_and_source_manifest(tmp
     (tmp_path / "main_computer" / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
     (tmp_path / "release_reports").mkdir()
     (tmp_path / "release_reports" / "old.json").write_text("{}", encoding="utf-8")
-    (tmp_path / "runtime" / "deployments").mkdir(parents=True)
-    (tmp_path / "runtime" / "deployments" / "current.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "runtime" / "deployments" / "dev").mkdir(parents=True)
+    (tmp_path / "runtime" / "deployments" / "dev" / "latest.json").write_text("{}", encoding="utf-8")
     (tmp_path / ".venv").mkdir()
     (tmp_path / ".venv" / "pyvenv.cfg").write_text("home = /private/path\n", encoding="utf-8")
     (tmp_path / ".tmp").mkdir()
@@ -173,7 +173,7 @@ def test_write_release_evidence_report_records_preflight_and_source_manifest(tmp
                 name="source-health",
                 command=(str(Path.home() / "dsl" / ".venv" / "Scripts" / "python.exe"), "tools/project_diagnosis.py"),
                 returncode=0,
-                stdout=f"PASS from {tmp_path}\\runtime\\deployments\\current.json\n",
+                stdout=f"PASS from {tmp_path}\\runtime\\deployments\\dev\\latest.json\n",
                 stderr=f"venv={tmp_path / '.venv'}\n",
                 elapsed_s=0.1,
             ),
@@ -216,7 +216,7 @@ def test_write_release_evidence_report_records_preflight_and_source_manifest(tmp
     assert "Scripts\\\\python.exe" not in serialized
     assert ".venv" not in serialized
     assert ".prod.lock" not in serialized
-    assert "runtime/deployments/current.json" not in serialized
+    assert "runtime/deployments/dev/latest.json" not in serialized
     assert "contracts/cache/solidity-files-cache.json" not in serialized
     assert "main_computer/.main_computer_browser_profile" not in serialized
     assert "release_reports/" not in serialized
@@ -226,7 +226,7 @@ def test_write_release_evidence_report_records_preflight_and_source_manifest(tmp
     manifest_paths = {item["path"] for item in data["source_manifest"]["files"]}
     assert "main_computer/__init__.py" in manifest_paths
     assert "release_reports/old.json" not in manifest_paths
-    assert "runtime/deployments/current.json" not in manifest_paths
+    assert "runtime/deployments/dev/latest.json" not in manifest_paths
     assert ".venv/pyvenv.cfg" not in manifest_paths
     assert ".tmp/scratch.txt" not in manifest_paths
     assert "aider.log/aider.log" not in manifest_paths

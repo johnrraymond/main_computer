@@ -182,7 +182,7 @@ def test_stress_worker_wallet_addresses_flow_to_each_hub_config(tmp_path: Path) 
 
 
 def test_stress_dev_chain_backend_flows_to_auto_started_hubs(tmp_path: Path) -> None:
-    deployment_path = tmp_path / "runtime" / "deployments" / "current.json"
+    deployment_path = tmp_path / "runtime" / "deployments" / "dev" / "latest.json"
     config = HubStressSmokeConfig(
         repo_root=tmp_path,
         run_id="bridge-backend",

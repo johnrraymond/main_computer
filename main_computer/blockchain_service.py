@@ -32,16 +32,16 @@ DEFAULT_DEV_CHAIN_ENVIRONMENT = "dev"
 DEFAULT_DEV_CHAIN_PORT_STRATEGY = "replace-project"
 DEFAULT_DEV_CHAIN_WAIT_TIMEOUT_S = "30"
 DEFAULT_DEV_CHAIN_RESET_PROCESS_TIMEOUT_S = 900.0
-DEPLOYMENT_CURRENT_RELATIVE_PATH = Path("runtime") / "deployments" / "current.json"
+DEV_DEPLOYMENT_LATEST_RELATIVE_PATH = Path("runtime") / "deployments" / "dev" / "latest.json"
 SERVICE_NAME = "main-computer-blockchain-service"
-DEPLOYMENT_RUNTIME_SOURCE = "runtime-deployments-current"
+DEPLOYMENT_RUNTIME_SOURCE = "runtime-deployments-dev-latest"
 EXTERNAL_RUNTIME_SOURCE = "blockchain-service-env"
 REQUIRED_CONTRACT_KEYS = ("hub_credit_bridge_escrow",)
 DEV_CHAIN_RESET_COMMAND = (
     "python .\\tools\\dev-chain-reset.py --yes --run-id test-machine-dev "
     "--environment dev --port-strategy replace-project"
 )
-DEV_CHAIN_DIAGNOSIS_COMMAND = "python .\\tools\\dev-chain-diagnosis.py --state .\\runtime\\deployments\\current.json"
+DEV_CHAIN_DIAGNOSIS_COMMAND = "python .\\tools\\dev-chain-diagnosis.py --state .\\runtime\\deployments\\dev\\latest.json"
 DEFAULT_DEV_OFFICES = (
     {
         "office": "O0",
@@ -459,7 +459,7 @@ class BlockchainService:
                 "contracts": {},
             }
 
-        return self._deployment_current_config()
+        return self._deployment_latest_config()
 
     def _local_dev_chain_auto_start_enabled(self) -> bool:
         return not _disabled_flag(os.environ.get("MAIN_COMPUTER_DEV_CHAIN_AUTO_START", "1"))
@@ -552,15 +552,15 @@ class BlockchainService:
         )
 
     def _trigger_for_pre_config(self, config: dict[str, Any]) -> str | None:
-        if config.get("mode") != "deployment-current":
+        if config.get("mode") != "deployment-latest":
             return None
         if config.get("ok"):
             return None
         config_state = str(config.get("state") or "")
         if config_state in {
-            "missing-deployment-current",
-            "invalid-deployment-current",
-            "incomplete-deployment-current",
+            "missing-deployment-latest",
+            "invalid-deployment-latest",
+            "incomplete-deployment-latest",
         }:
             return config_state
         return None
@@ -572,7 +572,7 @@ class BlockchainService:
         rpc: dict[str, Any],
         contracts: dict[str, Any],
     ) -> str | None:
-        if config.get("mode") != "deployment-current" or not config.get("ok"):
+        if config.get("mode") != "deployment-latest" or not config.get("ok"):
             return None
         if not rpc.get("ok"):
             return "rpc-" + str(rpc.get("state") or "down")
@@ -583,7 +583,7 @@ class BlockchainService:
         return None
 
     def _docker_delegation_status(self, config: dict[str, Any]) -> dict[str, Any]:
-        if config.get("mode") != "deployment-current":
+        if config.get("mode") != "deployment-latest":
             return self._component(
                 ok=True,
                 state="not-required",
@@ -595,18 +595,18 @@ class BlockchainService:
             message="local dev-chain boot is owned by blockchain_service; reset attempts retry until Docker and RPC are ready",
         )
 
-    def _deployment_current_path(self) -> Path:
-        return self.root / DEPLOYMENT_CURRENT_RELATIVE_PATH
+    def _deployment_latest_path(self) -> Path:
+        return self.root / DEV_DEPLOYMENT_LATEST_RELATIVE_PATH
 
-    def _deployment_current_config(self) -> dict[str, Any]:
-        path = self._deployment_current_path()
+    def _deployment_latest_config(self) -> dict[str, Any]:
+        path = self._deployment_latest_path()
         if not path.exists():
             return {
                 "ok": False,
-                "mode": "deployment-current",
-                "state": "missing-deployment-current",
+                "mode": "deployment-latest",
+                "state": "missing-deployment-latest",
                 "message": (
-                    "runtime/deployments/current.json is missing; the blockchain golden path has not been "
+                    "runtime/deployments/dev/latest.json is missing; the blockchain golden path has not been "
                     f"published. Run: {DEV_CHAIN_RESET_COMMAND}"
                 ),
                 "deployment_path": str(path),
@@ -618,9 +618,9 @@ class BlockchainService:
         except (OSError, json.JSONDecodeError) as exc:
             return {
                 "ok": False,
-                "mode": "deployment-current",
-                "state": "invalid-deployment-current",
-                "message": "runtime/deployments/current.json could not be read as valid JSON",
+                "mode": "deployment-latest",
+                "state": "invalid-deployment-latest",
+                "message": "runtime/deployments/dev/latest.json could not be read as valid JSON",
                 "deployment_path": str(path),
                 "error": str(exc),
                 "reset_command": DEV_CHAIN_RESET_COMMAND,
@@ -629,9 +629,9 @@ class BlockchainService:
         if not isinstance(payload, dict):
             return {
                 "ok": False,
-                "mode": "deployment-current",
-                "state": "invalid-deployment-current",
-                "message": "runtime/deployments/current.json must contain a JSON object",
+                "mode": "deployment-latest",
+                "state": "invalid-deployment-latest",
+                "message": "runtime/deployments/dev/latest.json must contain a JSON object",
                 "deployment_path": str(path),
                 "reset_command": DEV_CHAIN_RESET_COMMAND,
                 "diagnosis_command": DEV_CHAIN_DIAGNOSIS_COMMAND,
@@ -642,7 +642,7 @@ class BlockchainService:
         env_rpc_url = os.environ.get("MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL")
         rpc_url = env_rpc_url or deployment_rpc_url
         chain_id = _coerce_int(os.environ.get("MAIN_COMPUTER_ENERGY_CHAIN_ID") or chain.get("chain_id"), default=DEFAULT_CHAIN_ID)
-        rpc_source = "environment" if env_rpc_url else "deployment-current"
+        rpc_source = "environment" if env_rpc_url else "deployment-latest"
         contracts = payload.get("contracts") or payload.get("deployments") or {}
         if not isinstance(contracts, dict):
             contracts = {}
@@ -665,10 +665,10 @@ class BlockchainService:
                 parts.append("invalid address for " + ", ".join(invalid_required))
             return {
                 "ok": False,
-                "mode": "deployment-current",
-                "state": "incomplete-deployment-current",
+                "mode": "deployment-latest",
+                "state": "incomplete-deployment-latest",
                 "message": (
-                    "runtime/deployments/current.json is not a usable golden-path deployment "
+                    "runtime/deployments/dev/latest.json is not a usable golden-path deployment "
                     f"({'; '.join(parts)}). Run: {DEV_CHAIN_RESET_COMMAND}"
                 ),
                 "deployment_path": str(path),
@@ -683,9 +683,9 @@ class BlockchainService:
         source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
         return {
             "ok": True,
-            "mode": "deployment-current",
+            "mode": "deployment-latest",
             "state": "configured",
-            "message": "using deployment-owned runtime/deployments/current.json golden-path blockchain config",
+            "message": "using deployment-owned runtime/deployments/dev/latest.json golden-path blockchain config",
             "env_path": str(self.blockchain_env_path),
             "deployment_path": str(path),
             "rpc_url": rpc_url,
@@ -728,11 +728,11 @@ class BlockchainService:
     def _contract_code_status(self, config: dict[str, Any], rpc: dict[str, Any]) -> dict[str, Any]:
         if not config.get("ok"):
             return self._component(ok=False, state="blocked", message="blockchain config is not ready")
-        if config.get("mode") != "deployment-current":
+        if config.get("mode") != "deployment-latest":
             return self._component(
                 ok=True,
                 state="not-required",
-                message="external blockchain mode does not require deployment-current contract-code checks",
+                message="external blockchain mode does not require deployment-latest contract-code checks",
             )
         if not rpc.get("ok"):
             return self._component(
@@ -754,7 +754,7 @@ class BlockchainService:
                 checked[key] = {
                     "ok": False,
                     "state": "missing-address",
-                    "message": "required contract address is missing from runtime/deployments/current.json",
+                    "message": "required contract address is missing from runtime/deployments/dev/latest.json",
                 }
                 failures.append(key)
                 continue
@@ -809,7 +809,7 @@ class BlockchainService:
         compose = self._component(
             ok=True,
             state="removed",
-            message="legacy Compose dev-chain fallback has been removed; runtime/deployments/current.json is the local golden path",
+            message="legacy Compose dev-chain fallback has been removed; runtime/deployments/dev/latest.json is the local golden path",
         )
 
         if config.get("ok"):

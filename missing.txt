@@ -45,7 +45,7 @@ Needed closure:
 
 The faucet/deployment runtime files are not expected to be committed:
 
-- `runtime/deployments/current.json`
+- `runtime/deployments/dev/latest.json`
 - `runtime/dev-chain/latest.json`
 - `runtime/dev-chain/latest.env`
 
@@ -67,7 +67,7 @@ Needed closure:
   restart the local app.
 - Do not fix this by committing generated files under `runtime/deployments/` or
   `runtime/dev-chain/`.
-- Keep documentation clear that `runtime/deployments/current.json` is an output
+- Keep documentation clear that `runtime/deployments/dev/latest.json` is an output
   of the dev deploy step, not a source-controlled input.
 
 ## 3. Production promotion and production parity

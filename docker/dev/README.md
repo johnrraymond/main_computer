@@ -25,7 +25,7 @@ docker-compose.dev.yml
 python .\tools\dev-chain-reset.py --yes --run-id test-machine-dev --environment dev --port-strategy replace-project
 ```
 
-This publishes `runtime/deployments/current.json`, which the app verifies before using bridge contracts.
+This publishes `runtime/deployments/dev/latest.json`, which the app verifies before using bridge contracts.
 
 ## Start the hub on the host
 
@@ -38,7 +38,7 @@ python -m main_computer.cli hub --network dev
 
 The local QBFT test profile listens on `127.0.0.1:8780` and talks to the
 non-validator RPC node at `http://127.0.0.1:30010` after the smoke lab has
-published `runtime/deployments/current.json`. The smoke lab uses London/EIP-1559
+published `runtime/deployments/dev/latest.json`. The smoke lab uses London/EIP-1559
 from genesis and does not deploy through legacy transactions or older-EVM compiler downgrades:
 
 ```powershell
@@ -226,5 +226,5 @@ python -m main_computer.cli chat `
 ## Ethereum dev chain
 
 The app-facing Anvil soft chain runs on chain id `42424242` and is owned by
-`tools/dev-chain-reset.py`. It publishes `runtime/deployments/current.json` and
+`tools/dev-chain-reset.py`. It publishes `runtime/deployments/dev/latest.json` and
 keeps Docker Compose from starting a second chain on the same RPC port.
