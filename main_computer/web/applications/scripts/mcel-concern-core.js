@@ -104,6 +104,20 @@
             view: ["data table", "status cells", "command/action cells"],
             contract: "pattern.process-table"
           }
+        },
+        {
+          id: "concern.tabbed-workspace",
+          label: "Tabbed workspace",
+          family: "view-state",
+          ownerApp: "task-manager",
+          canonicalSurfaceId: "task-manager.data-notebook",
+          purpose: "User switches between sibling panels through active tab state while panel data and route sync remain explicit.",
+          mvcSplit: {
+            model: ["tab ids", "labels", "activeTabId", "panel ids", "route aliases"],
+            controller: ["activate tab", "normalize unknown tab", "sync route", "keyboard movement"],
+            view: ["tablist", "tabs", "tabpanel surfaces", "active/hidden state"],
+            contract: "pattern.tabbed-workspace"
+          }
         }
       ];
 
@@ -175,6 +189,13 @@
           "controller.safety-gate",
           "collection.data-table",
           "pattern.process-table"
+        ],
+        "concern.tabbed-workspace": [
+          "layout.tabbed-workspace",
+          "layout.tab-list",
+          "control.tab",
+          "controller.tab-state",
+          "pattern.tabbed-workspace"
         ]
       };
 
@@ -371,6 +392,35 @@
           ],
           contractGap: "minor",
           missingContractReason: "Operational process state is table-like and command-bearing; detector should keep it out of one-off status rows."
+        },
+        {
+          concernId: "concern.tabbed-workspace",
+          ownerApp: "task-manager",
+          canonicalSurfaceId: "task-manager.data-notebook",
+          pathIncludes: ["task-manager.html", "task-manager.js", "navigation.js"],
+          requiredTokenScore: 3,
+          tokens: [
+            "role=\"tablist\"",
+            "role=\"tab\"",
+            "role=\"tabpanel\"",
+            "aria-selected",
+            "aria-controls",
+            "data-task-tab",
+            "data-task-panel",
+            "setTaskNotebookTab",
+            "taskNotebookTabFromPath"
+          ],
+          linePatterns: [
+            {pattern: /role=["']tablist["']|task-notebook-tabs/, role: "view", label: "tablist strip"},
+            {pattern: /role=["']tab["']|data-task-tab=/, role: "view", label: "tab affordance"},
+            {pattern: /role=["']tabpanel["']|data-task-panel=/, role: "view", label: "controlled panel"},
+            {pattern: /aria-selected|aria-controls|aria-labelledby/, role: "safety", label: "tab accessibility state"},
+            {pattern: /function\s+setTaskNotebookTab\b|setTaskNotebookTab\(/, role: "controller", label: "tab activation controller"},
+            {pattern: /taskNotebookTabFromPath|taskManagerTabPath|syncTaskManagerTabRoute/, role: "controller", label: "route sync"},
+            {pattern: /taskNotebookActiveTab|activeTab|normalizedTaskNotebookTab/, role: "model", label: "active tab state"}
+          ],
+          contractGap: "major",
+          missingContractReason: "Task Manager already has tablist/tab/tabpanel evidence and route sync, but MCEL needs a first-class tabbed-workspace contract so tabs are not treated as generic buttons."
         }
       ];
 
@@ -625,6 +675,21 @@
               function renderChatConsoleOutputPart(outputCell, part) {}
               function renderChatConsoleOutputTable(rows) {}
             `
+          },
+          {
+            path: "main_computer/web/applications/apps/task-manager.html",
+            text: `
+              <div class="task-pane task-notebook" data-widget-label="Task Data Notebook">
+                <div class="task-notebook-tabs" id="task-notebook-tabs" role="tablist" aria-label="Task manager data views">
+                  <button class="task-tab-button active" data-task-tab-group="task-notebook" data-task-tab="server-processes" role="tab" aria-selected="true" aria-controls="task-panel-processes">Server Processes</button>
+                  <button class="task-tab-button" data-task-tab-group="task-notebook" data-task-tab="all-processes" role="tab" aria-selected="false" aria-controls="task-panel-all-processes">All Processes</button>
+                </div>
+                <section class="task-tab-panel" id="task-panel-processes" data-task-panel="server-processes" role="tabpanel" aria-labelledby="task-tab-processes"></section>
+                <section class="task-tab-panel" id="task-panel-all-processes" data-task-panel="all-processes" role="tabpanel" aria-labelledby="task-tab-all-processes" hidden></section>
+              </div>
+              function setTaskNotebookTab(tabName) { taskNotebookActiveTab = normalizedTaskNotebookTab(tabName); }
+              function taskNotebookTabFromPath(pathname) { return normalizedTaskNotebookTab(pathname); }
+            `
           }
         ];
       }
@@ -639,6 +704,7 @@
           resourceBrowserDetected: report.concerns.some((concern) => concern.id === "concern.resource-browser"),
           deployPreflightDetected: report.concerns.some((concern) => concern.id === "concern.deploy-preflight"),
           executionCellDetected: report.concerns.some((concern) => concern.id === "concern.execution-cell"),
+          tabbedWorkspaceDetected: report.concerns.some((concern) => concern.id === "concern.tabbed-workspace"),
           canDriveMcelContracts: report.canDriveMcelContracts,
           highPriorityConcerns: report.highPriorityConcerns
         };

@@ -168,34 +168,91 @@
 
 .task-notebook {
   grid-column: 1 / -1;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0)),
+    #060706;
+}
+
+.task-pane.task-notebook {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 12px;
+  gap: 0;
 }
 
 .task-notebook-tabs {
+  position: relative;
+  z-index: 2;
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-end;
+  gap: 0;
+  min-height: 37px;
+  padding: 0 8px;
+  margin: 0 0 -1px;
+  border-bottom: 1px solid rgba(246, 199, 91, 0.48);
 }
 
 .task-tab-button {
-  border: 1px solid rgba(115, 214, 255, 0.28);
-  border-radius: 999px;
-  background: #060706;
-  color: var(--sky);
-  padding: 7px 12px;
+  appearance: none;
+  position: relative;
+  min-height: 34px;
+  margin: 0 3px 0 0;
+  border: 1px solid rgba(201, 192, 170, 0.28);
+  border-bottom-color: rgba(246, 199, 91, 0.48);
+  border-radius: 10px 10px 0 0;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0)),
+    #0b0d09;
+  color: var(--muted);
+  padding: 7px 13px 8px;
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.02em;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055);
 }
 
-.task-tab-button.active {
-  color: #090806;
-  background: var(--gold);
-  border-color: rgba(246, 199, 91, 0.82);
-  box-shadow: none;
+.task-tab-button:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: rgba(115, 214, 255, 0.6);
+  border-bottom-color: rgba(246, 199, 91, 0.48);
+  background:
+    linear-gradient(180deg, rgba(115, 214, 255, 0.12), rgba(115, 214, 255, 0.025)),
+    #0d100d;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.task-tab-button:focus-visible {
+  outline: 2px solid rgba(115, 214, 255, 0.86);
+  outline-offset: -2px;
+}
+
+.task-tab-button.active,
+.task-tab-button[aria-selected="true"] {
+  top: 1px;
+  color: var(--gold);
+  background:
+    linear-gradient(180deg, rgba(246, 199, 91, 0.13), rgba(255, 255, 255, 0.015)),
+    #010201;
+  border-color: rgba(246, 199, 91, 0.64);
+  border-bottom-color: #010201;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 -1px 10px rgba(246, 199, 91, 0.06);
+}
+
+.task-tab-button.active::after,
+.task-tab-button[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background: #010201;
 }
 
 .task-tab-panels,
@@ -203,8 +260,16 @@
   min-height: 0;
 }
 
+.task-tab-panels {
+  border: 1px solid rgba(246, 199, 91, 0.48);
+  border-radius: 0 10px 10px 10px;
+  background: #010201;
+  overflow: hidden;
+}
+
 .task-tab-panel {
   display: grid;
+  height: 100%;
 }
 
 .task-tab-panel[hidden] {
@@ -213,6 +278,9 @@
 
 .task-notebook .task-grid-scroll {
   height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .task-overview-card,
