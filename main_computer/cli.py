@@ -26,6 +26,7 @@ from main_computer.hub_networks import (
     load_hub_network_registry,
     resolve_profile_runtime_defaults,
 )
+from main_computer import openclaw_ops_smoke
 from main_computer.openclaw_bridge import DEFAULT_OPENCLAW_BRIDGE_PORT, serve as serve_openclaw_bridge
 from main_computer.recurrent_thinking import run_from_args as run_recurrent_thinking_from_args
 from main_computer.static_code_analyzer import emit_report as emit_code_stats_report
@@ -226,9 +227,14 @@ def cmd_openclaw_bridge(args: argparse.Namespace) -> int:
         _config_from_args(args),
         host=args.host,
         port=args.port,
-        token=args.token,
+        token=args.token or os.environ.get("MAIN_COMPUTER_OPENCLAW_TOKEN"),
         verbose=args.verbose,
     )
+    return 0
+
+
+def cmd_openclaw_ops(args: argparse.Namespace) -> int:
+    args.openclaw_ops_func(args)
     return 0
 
 
@@ -406,6 +412,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Suppress bridge signal output.",
     )
     openclaw_bridge.set_defaults(func=cmd_openclaw_bridge)
+
+    openclaw_ops = sub.add_parser(
+        "openclaw-ops",
+        help="Run the token-protected OpenClaw read-only ops smoke bridge.",
+    )
+    openclaw_ops_sub = openclaw_ops.add_subparsers(dest="openclaw_ops_command", required=True)
+
+    openclaw_ops_serve = openclaw_ops_sub.add_parser("serve", help="Run the local operations bridge.")
+    openclaw_ops_serve.add_argument("--host", default=openclaw_ops_smoke.DEFAULT_HOST)
+    openclaw_ops_serve.add_argument("--port", type=int, default=openclaw_ops_smoke.DEFAULT_PORT)
+    openclaw_ops_serve.add_argument("--token", default=None)
+    openclaw_ops_serve.add_argument(
+        "--root",
+        default=None,
+        help="Read-only root. Defaults to OPENCLAW_OPS_ROOT or the repository/package root containing this script.",
+    )
+    openclaw_ops_serve.add_argument("--max-read-bytes", type=int, default=openclaw_ops_smoke.DEFAULT_MAX_READ_BYTES)
+    openclaw_ops_serve.set_defaults(func=cmd_openclaw_ops, openclaw_ops_func=openclaw_ops_smoke.serve)
+
+    openclaw_ops_smoke_cmd = openclaw_ops_sub.add_parser("smoke", help="Run smoke checks against the bridge.")
+    openclaw_ops_smoke_cmd.add_argument("--base-url", default=f"http://{openclaw_ops_smoke.DEFAULT_HOST}:{openclaw_ops_smoke.DEFAULT_PORT}")
+    openclaw_ops_smoke_cmd.add_argument("--token", default=None)
+    openclaw_ops_smoke_cmd.add_argument("--timeout", type=int, default=10)
+    openclaw_ops_smoke_cmd.add_argument("--verbose", action="store_true")
+    openclaw_ops_smoke_cmd.set_defaults(func=cmd_openclaw_ops, openclaw_ops_func=openclaw_ops_smoke.smoke)
 
     heartbeat = sub.add_parser("heartbeat", help="Start the external heartbeat control service.")
     heartbeat.add_argument("--workspace", help="Workspace root where pid files and logs live.")

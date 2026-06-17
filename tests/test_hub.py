@@ -34,6 +34,251 @@ class HubServerTests(unittest.TestCase):
         thread.start()
         return thread
 
+    def _post_json(self, url: str, payload: dict[str, object]) -> dict[str, object]:
+        request = Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def _get_json(self, url: str) -> dict[str, object]:
+        with urlopen(url, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def _ring_config_path(self, directory: str, payload: dict[str, object]) -> Path:
+        path = Path(directory) / "ring.config.json"
+        path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        return path
+
+    def _hub_config_for_ring_tests(self, directory: str, *, ring_config_path: Path | None = None) -> MainComputerConfig:
+        return MainComputerConfig(
+            workspace=Path(directory),
+            model="fake-model",
+            hub_root=Path(directory) / "hub-runtime",
+            hub_credits_per_request=2,
+            hub_ring_config_path=ring_config_path,
+        )
+
+    def test_ring_admission_status_reports_hash_and_private_counts_only(self) -> None:
+        wallet_ring0 = "0x0000000000000000000000000000000000000001"
+        wallet_ring2 = "0x0000000000000000000000000000000000000002"
+        with tempfile.TemporaryDirectory() as hub_tmp:
+            ring_config_path = self._ring_config_path(
+                hub_tmp,
+                {
+                    "default_min_ring": 3,
+                    "wallet_min_ring": {
+                        wallet_ring0.upper(): 0,
+                        wallet_ring2: 2,
+                    },
+                },
+            )
+            hub = HubHttpServer(("127.0.0.1", 0), self._hub_config_for_ring_tests(hub_tmp, ring_config_path=ring_config_path), verbose=False)
+            hub_thread = self._start_server(hub)
+            try:
+                status = self._get_json(f"http://127.0.0.1:{hub.server_port}/api/hub/v1/status")
+                self.assertTrue(status["ring_config_enabled"])
+                self.assertTrue(status["ring_config_load_ok"])
+                self.assertEqual(status["ring_config_default_min_ring"], 3)
+                self.assertEqual(status["ring_config_allowlisted_wallet_count"], 2)
+                self.assertEqual(status["ring_config_allowlisted_ring0_wallet_count"], 1)
+                self.assertTrue(str(status["ring_config_hash"]).startswith("sha256:"))
+                self.assertNotIn("wallet_min_ring", status)
+                self.assertNotIn(wallet_ring0, json.dumps(status).lower())
+            finally:
+                hub.shutdown()
+                hub.server_close()
+                hub_thread.join(timeout=2)
+
+    def test_ring_admission_defaults_all_workers_to_ring3_when_no_config_is_provided(self) -> None:
+        wallet = "0x0000000000000000000000000000000000000013"
+        with tempfile.TemporaryDirectory() as hub_tmp:
+            hub = HubHttpServer(("127.0.0.1", 0), self._hub_config_for_ring_tests(hub_tmp), verbose=False)
+            hub_thread = self._start_server(hub)
+            try:
+                hub_base = f"http://127.0.0.1:{hub.server_port}"
+                payload = self._post_json(
+                    f"{hub_base}/api/hub/v1/workers/register",
+                    {
+                        "node_id": "no-config-ring-probe",
+                        "endpoint": "http://127.0.0.1:1/no-config-ring-probe",
+                        "model": "fake-model",
+                        "wallet_address": wallet,
+                        "requested_ring": 1,
+                        "credits_per_request": 2,
+                    },
+                )
+
+                self.assertTrue(payload["ok"])
+                self.assertEqual(payload["requested_ring"], 3)
+                self.assertEqual(payload["effective_ring"], 3)
+                self.assertEqual(payload["minimum_allowed_ring"], 3)
+                self.assertEqual(payload["allowed_min_ring"], 3)
+                self.assertEqual(payload["ring_admission_status"], "accepted")
+                self.assertIn("defaulting worker to ring 3", payload["ring_admission_message"])
+                status = hub.registry.status()
+                self.assertEqual(status["worker_count"], 1)
+                caps = status["workers"][0]["capabilities"]
+                self.assertEqual(caps["requested_ring"], 3)
+                self.assertEqual(caps["assigned_ring"], 3)
+                self.assertEqual(caps["effective_ring"], 3)
+                self.assertEqual(hub.registry.ring_admission_audit_count(), 0)
+            finally:
+                hub.shutdown()
+                hub.server_close()
+                hub_thread.join(timeout=2)
+
+    def test_ring_admission_rejects_high_trust_registration_without_registry_write_when_configured(self) -> None:
+        wallet = "0x0000000000000000000000000000000000000003"
+        with tempfile.TemporaryDirectory() as hub_tmp:
+            ring_config_path = self._ring_config_path(
+                hub_tmp,
+                {"default_min_ring": 3, "wallet_min_ring": {}},
+            )
+            hub = HubHttpServer(("127.0.0.1", 0), self._hub_config_for_ring_tests(hub_tmp, ring_config_path=ring_config_path), verbose=False)
+            hub_thread = self._start_server(hub)
+            try:
+                hub_base = f"http://127.0.0.1:{hub.server_port}"
+                request = Request(
+                    f"{hub_base}/api/hub/v1/workers/register",
+                    data=json.dumps(
+                        {
+                            "node_id": "ring-probe",
+                            "endpoint": "http://127.0.0.1:1/ring-probe",
+                            "model": "fake-model",
+                            "wallet_address": wallet,
+                            "requested_ring": 1,
+                            "credits_per_request": 2,
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+
+                with self.assertRaises(HTTPError) as raised:
+                    urlopen(request, timeout=5)
+
+                self.assertEqual(raised.exception.code, 403)
+                payload = json.loads(raised.exception.read().decode("utf-8"))
+                self.assertFalse(payload["ok"])
+                self.assertEqual(payload["error"], "ring_not_allowed")
+                self.assertEqual(payload["requested_ring"], 1)
+                self.assertIsNone(payload["effective_ring"])
+                self.assertEqual(payload["minimum_allowed_ring"], 3)
+                self.assertEqual(payload["allowed_min_ring"], 3)
+                self.assertEqual(payload["fallback_ring"], 3)
+                self.assertEqual(hub.registry.status()["worker_count"], 0)
+                self.assertEqual(hub.registry.ring_admission_audit_count(), 1)
+                audit_events = hub.registry.list_ring_admission_audit()
+                self.assertEqual(audit_events[0]["event_type"], "ring_admission_rejected")
+                self.assertEqual(audit_events[0]["requested_ring"], 1)
+            finally:
+                hub.shutdown()
+                hub.server_close()
+                hub_thread.join(timeout=2)
+
+    def test_ring_admission_allowlisted_wallet_can_register_ring0(self) -> None:
+        wallet = "0x0000000000000000000000000000000000000004"
+        with tempfile.TemporaryDirectory() as hub_tmp:
+            ring_config_path = self._ring_config_path(
+                hub_tmp,
+                {"default_min_ring": 3, "wallet_min_ring": {wallet.upper(): 0}},
+            )
+            hub = HubHttpServer(("127.0.0.1", 0), self._hub_config_for_ring_tests(hub_tmp, ring_config_path=ring_config_path), verbose=False)
+            hub_thread = self._start_server(hub)
+            try:
+                hub_base = f"http://127.0.0.1:{hub.server_port}"
+                payload = self._post_json(
+                    f"{hub_base}/api/hub/v1/workers/register",
+                    {
+                        "node_id": "ring0-worker",
+                        "endpoint": "http://127.0.0.1:1/ring0-worker",
+                        "model": "fake-model",
+                        "wallet_address": wallet,
+                        "requested_ring": 0,
+                        "credits_per_request": 2,
+                    },
+                )
+
+                self.assertTrue(payload["ok"])
+                self.assertEqual(payload["requested_ring"], 0)
+                self.assertEqual(payload["effective_ring"], 0)
+                self.assertEqual(payload["minimum_allowed_ring"], 0)
+                self.assertEqual(payload["allowed_min_ring"], 0)
+                self.assertEqual(payload["ring_admission_status"], "accepted")
+                status = hub.registry.status()
+                self.assertEqual(status["worker_count"], 1)
+                caps = status["workers"][0]["capabilities"]
+                self.assertEqual(caps["effective_ring"], 0)
+                self.assertEqual(caps["minimum_allowed_ring"], 0)
+            finally:
+                hub.shutdown()
+                hub.server_close()
+                hub_thread.join(timeout=2)
+
+    def test_heartbeat_preserves_ring_and_rejects_ring_change_without_registry_write(self) -> None:
+        wallet = "0x0000000000000000000000000000000000000005"
+        with tempfile.TemporaryDirectory() as hub_tmp:
+            ring_config_path = self._ring_config_path(
+                hub_tmp,
+                {"default_min_ring": 3, "wallet_min_ring": {wallet: 0}},
+            )
+            hub = HubHttpServer(("127.0.0.1", 0), self._hub_config_for_ring_tests(hub_tmp, ring_config_path=ring_config_path), verbose=False)
+            hub_thread = self._start_server(hub)
+            try:
+                hub_base = f"http://127.0.0.1:{hub.server_port}"
+                self._post_json(
+                    f"{hub_base}/api/hub/v1/workers/register",
+                    {
+                        "node_id": "ring3-worker",
+                        "endpoint": "http://127.0.0.1:1/ring3-worker",
+                        "model": "fake-model",
+                        "wallet_address": wallet,
+                        "requested_ring": 3,
+                        "credits_per_request": 2,
+                    },
+                )
+
+                heartbeat = self._post_json(
+                    f"{hub_base}/api/hub/v1/workers/heartbeat",
+                    {"worker_node_id": "ring3-worker", "status": "available"},
+                )
+                self.assertTrue(heartbeat["ok"])
+                self.assertEqual(heartbeat["effective_ring"], 3)
+                self.assertEqual(heartbeat["ring_admission_status"], "accepted")
+
+                request = Request(
+                    f"{hub_base}/api/hub/v1/workers/heartbeat",
+                    data=json.dumps(
+                        {
+                            "worker_node_id": "ring3-worker",
+                            "wallet_address": wallet,
+                            "requested_ring": 2,
+                            "status": "available",
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with self.assertRaises(HTTPError) as raised:
+                    urlopen(request, timeout=5)
+
+                self.assertEqual(raised.exception.code, 409)
+                payload = json.loads(raised.exception.read().decode("utf-8"))
+                self.assertFalse(payload["ok"])
+                self.assertEqual(payload["error"], "ring_change_requires_reregister")
+                self.assertEqual(payload["requested_ring"], 2)
+                self.assertEqual(payload["effective_ring"], 3)
+                self.assertEqual(hub.registry.status()["workers"][0]["capabilities"]["effective_ring"], 3)
+                self.assertEqual(hub.registry.ring_admission_audit_count(), 1)
+            finally:
+                hub.shutdown()
+                hub.server_close()
+                hub_thread.join(timeout=2)
+
     def test_worker_route_diagnostics_log_register_stages(self) -> None:
         with tempfile.TemporaryDirectory() as hub_tmp:
             hub_config = MainComputerConfig(

@@ -149,6 +149,7 @@ class MainComputerConfig:
     hub_network_display_name: str = "Main Computer Local Devnet"
     hub_network_kind: str = DEFAULT_HUB_NETWORK_KIND
     hub_network_config_path: Path | None = None
+    hub_ring_config_path: Path | None = None
     hub_bind_host: str = DEFAULT_HUB_BIND_HOST
     hub_bind_port: int = DEFAULT_HUB_BIND_PORT
     chain_rpc_url: str | None = DEFAULT_CHAIN_RPC_URL
@@ -319,6 +320,9 @@ class MainComputerConfig:
             hub_network_kind=os.environ.get("MAIN_COMPUTER_HUB_NETWORK_KIND", DEFAULT_HUB_NETWORK_KIND).strip() or DEFAULT_HUB_NETWORK_KIND,
             hub_network_config_path=Path(os.environ["MAIN_COMPUTER_HUB_NETWORKS_FILE"])
             if os.environ.get("MAIN_COMPUTER_HUB_NETWORKS_FILE")
+            else None,
+            hub_ring_config_path=Path(os.environ["MAIN_COMPUTER_HUB_RING_CONFIG_PATH"])
+            if os.environ.get("MAIN_COMPUTER_HUB_RING_CONFIG_PATH")
             else None,
             hub_bind_host=os.environ.get("MAIN_COMPUTER_HUB_HOST", DEFAULT_HUB_BIND_HOST).strip() or DEFAULT_HUB_BIND_HOST,
             hub_bind_port=max(1, min(65535, hub_bind_port)),

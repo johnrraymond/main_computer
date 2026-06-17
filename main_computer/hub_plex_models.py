@@ -146,6 +146,59 @@ def sanitize_hub_response_payload(payload: Any, *, precision_places: Any = None)
     return response
 
 
+_REQUESTER_WORKER_IDENTITY_KEYS = {
+    "selected_worker_node_id",
+    "selected_worker_instance_id",
+    "requested_worker_node_id",
+    "worker_node_id",
+    "worker_instance_id",
+    "worker_id",
+    "worker_wallet_address",
+    "worker_wallet",
+    "worker_endpoint",
+    "worker_endpoint_url",
+    "active_worker_node_ids",
+}
+
+
+def strip_requester_worker_identity(payload: Any) -> Any:
+    """Recursively remove raw worker routing identity from requester-visible payloads.
+
+    Requesters may keep opaque complaint/reporting material such as
+    ``worker_commitment`` and ``report_token``.  Raw node, instance, endpoint,
+    and wallet fields remain private to Hub/ring-control surfaces.
+    """
+
+    if isinstance(payload, dict):
+        clean: dict[str, Any] = {}
+        removed_identity = False
+        for key, value in payload.items():
+            key_text = str(key)
+            if key_text in _REQUESTER_WORKER_IDENTITY_KEYS:
+                removed_identity = True
+                continue
+            clean[key_text] = strip_requester_worker_identity(value)
+        if removed_identity and "worker_identity_private" not in clean:
+            clean["worker_identity_private"] = True
+        return clean
+    if isinstance(payload, list):
+        return [strip_requester_worker_identity(item) for item in payload]
+    return payload
+
+
+def sanitize_requester_response_payload(payload: Any, *, precision_places: Any = None) -> Any:
+    """Return a requester-safe result/response payload.
+
+    This combines the existing payout privacy sanitization with recursive worker
+    identity stripping so duplicated ``response``/``result`` envelopes cannot
+    leak selected worker internals.
+    """
+
+    return strip_requester_worker_identity(
+        sanitize_hub_response_payload(payload, precision_places=precision_places)
+    )
+
+
 def chat_message_to_payload(message: ChatMessage | dict[str, Any]) -> dict[str, Any]:
     if isinstance(message, ChatMessage):
         return {
@@ -702,49 +755,27 @@ class HubRequestStatus:
     def as_requester_dict(self) -> dict[str, Any]:
         """Return requester-facing status without raw worker routing identity."""
 
-        data = self.as_dict()
-        receipt = dict(data.get("receipt", {})) if isinstance(data.get("receipt"), dict) else {}
+        data = strip_requester_worker_identity(self.as_dict())
         data["selected_worker_node_id"] = ""
         data["selected_worker_instance_id"] = ""
+        data["requested_worker_node_id"] = ""
         data["worker_identity_private"] = True
+
         if self.receipt:
-            public_receipt = dict(receipt)
-            public_receipt.pop("worker_wallet_address", None)
-            data["receipt"] = public_receipt
-        if receipt.get("worker_commitment"):
-            data["worker_commitment"] = str(receipt.get("worker_commitment", ""))
-        if data.get("selected_offer") and isinstance(data["selected_offer"], dict):
-            selected_offer = dict(data["selected_offer"])
-            selected_offer.pop("worker_node_id", None)
-            selected_offer.pop("worker_instance_id", None)
+            original_receipt = dict(self.receipt)
+            receipt = strip_requester_worker_identity(original_receipt)
+            data["receipt"] = receipt
+            if original_receipt.get("worker_commitment"):
+                data["worker_commitment"] = str(original_receipt.get("worker_commitment", ""))
+
+        selected_offer = data.get("selected_offer")
+        if isinstance(selected_offer, dict):
+            selected_offer = dict(selected_offer)
             selected_offer["worker_identity_private"] = True
             data["selected_offer"] = selected_offer
-        response = data.get("response")
-        if isinstance(response, dict):
-            metadata = response.get("metadata")
-            if isinstance(metadata, dict):
-                hub = metadata.get("hub")
-                if isinstance(hub, dict):
-                    clean_hub = dict(hub)
-                    clean_hub.pop("worker_node_id", None)
-                    clean_hub.pop("worker_instance_id", None)
-                    payment = clean_hub.get("payment")
-                    if isinstance(payment, dict):
-                        public_payment = dict(payment)
-                        public_payment.pop("worker_wallet_address", None)
-                        clean_hub["payment"] = public_payment
-                    selected = clean_hub.get("selected_offer")
-                    if isinstance(selected, dict):
-                        clean_selected = dict(selected)
-                        clean_selected.pop("worker_node_id", None)
-                        clean_selected.pop("worker_instance_id", None)
-                        clean_selected["worker_identity_private"] = True
-                        clean_hub["selected_offer"] = clean_selected
-                    metadata = dict(metadata)
-                    metadata["hub"] = clean_hub
-                    response = dict(response)
-                    response["metadata"] = metadata
-                    data["response"] = response
+
+        if self.response is not None:
+            data["response"] = sanitize_requester_response_payload(self.response)
         return data
 
 

@@ -129,3 +129,33 @@ def test_mcel_runtime_hydration_powers_site_mode_without_lab_replacing_everythin
     assert "mcelRuntimeEnsureStyle(doc)" in hydrate_body
     assert "renderThisSource" in hydrate_body
     assert 'mode: "render"' in hydrate_body
+
+
+def test_mcel_runtime_diagnostics_do_not_draw_page_outlines_without_debug_overlay() -> None:
+    text = build_mcel_runtime_text(ROOT)
+
+    assert 'html[data-mcel-runtime-diagnostics="true"] body.mcel-powered-site :where([data-mc][data-mcel-runtime-hydrated="true"])' not in text
+    assert 'html[data-mcel-runtime-diagnostics="true"] body.mcel-powered-site :where([data-mcel-runtime-layout-issue])' not in text
+    assert 'html[data-mcel-runtime-debug="true"][data-mcel-runtime-diagnostics="true"] body.mcel-powered-site :where([data-mc][data-mcel-runtime-hydrated="true"])' in text
+    assert 'html[data-mcel-runtime-debug="true"][data-mcel-runtime-diagnostics="true"] body.mcel-powered-site :where([data-mcel-runtime-layout-issue])' in text
+
+
+def test_mcel_runtime_vanity_defect_outlines_require_debug_overlay() -> None:
+    text = build_mcel_runtime_text(ROOT)
+
+    assert '\nbody.mcel-powered-site [${runtimeVanityDefectAttribute}] {' not in text
+    assert '\nbody.mcel-powered-site [${runtimeVanityContainerDefectAttribute}] {' not in text
+    assert 'html[data-mcel-runtime-debug="true"] body.mcel-powered-site [${runtimeVanityDefectAttribute}]' in text
+    assert 'html[data-mcel-runtime-debug="true"] body.mcel-powered-site [${runtimeVanityContainerDefectAttribute}]' in text
+    assert 'body.mcel-powered-site [${runtimeVanityFixAttribute}~="wrap-anywhere"]' in text
+    assert 'body.mcel-powered-site [${runtimeVanityFixAttribute}~="code-chip"]' in text
+
+
+def test_hub_site_runtime_copy_gates_mcel_vanity_outlines_without_debug() -> None:
+    hub_runtime = ROOT / "runtime" / "websites" / "hub-site" / "runtime.js"
+    text = hub_runtime.read_text(encoding="utf-8")
+
+    assert '\nbody.mcel-powered-site [${runtimeVanityDefectAttribute}] {' not in text
+    assert '\nbody.mcel-powered-site [${runtimeVanityContainerDefectAttribute}] {' not in text
+    assert 'html[data-mcel-runtime-debug="true"] body.mcel-powered-site [${runtimeVanityDefectAttribute}]' in text
+    assert 'html[data-mcel-runtime-debug="true"] body.mcel-powered-site [${runtimeVanityContainerDefectAttribute}]' in text

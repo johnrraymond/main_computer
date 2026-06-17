@@ -787,6 +787,20 @@
       return event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
     }
 
+    function focusActiveWorkspaceAfterPointerAppSelection(button, event) {
+      const launcher = button?.closest?.(".launcher");
+      if (!launcher || event.detail === 0) return;
+      const activeElement = document.activeElement;
+      if (!activeElement || !launcher.contains(activeElement)) return;
+      const workspace = document.querySelector("[data-mc-component-id='applications.workspace']");
+      if (workspace instanceof HTMLElement) {
+        workspace.focus({preventScroll: true});
+      }
+      if (launcher.contains(document.activeElement)) {
+        activeElement.blur?.();
+      }
+    }
+
     ensureDesktopIcons();
     document.querySelectorAll("[data-app]").forEach((button) => {
       button.addEventListener("click", (event) => {
@@ -795,5 +809,6 @@
           event.preventDefault();
         }
         setActiveApp(button.dataset.app);
+        focusActiveWorkspaceAfterPointerAppSelection(button, event);
       });
     });

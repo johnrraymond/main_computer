@@ -803,12 +803,12 @@ _MCEL_RUNTIME_WRAPPER = r'''
     const style = targetDoc.createElement("style");
     style.setAttribute(runtimeVanityStyleAttribute, mcelRuntimeVersion);
     style.textContent = `
-body.mcel-powered-site [${runtimeVanityDefectAttribute}] {
+html[data-mcel-runtime-debug="true"] body.mcel-powered-site [${runtimeVanityDefectAttribute}] {
   outline: 2px solid #f97316 !important;
   outline-offset: 3px !important;
 }
 
-body.mcel-powered-site [${runtimeVanityContainerDefectAttribute}] {
+html[data-mcel-runtime-debug="true"] body.mcel-powered-site [${runtimeVanityContainerDefectAttribute}] {
   box-shadow:
     0 0 0 2px rgba(249, 115, 22, .42),
     0 18px 60px rgba(249, 115, 22, .18) !important;
@@ -1980,12 +1980,12 @@ body.mcel-powered-site :where(.mc-section[data-mcel-runtime-hydrated="true"]) {
   max-width: none;
 }
 
-html[data-mcel-runtime-diagnostics="true"] body.mcel-powered-site :where([data-mc][data-mcel-runtime-hydrated="true"]) {
+html[data-mcel-runtime-debug="true"][data-mcel-runtime-diagnostics="true"] body.mcel-powered-site :where([data-mc][data-mcel-runtime-hydrated="true"]) {
   outline: 1px dashed rgba(56, 189, 248, .55);
   outline-offset: -2px;
 }
 
-html[data-mcel-runtime-diagnostics="true"] body.mcel-powered-site :where([data-mcel-runtime-layout-issue]) {
+html[data-mcel-runtime-debug="true"][data-mcel-runtime-diagnostics="true"] body.mcel-powered-site :where([data-mcel-runtime-layout-issue]) {
   outline: 2px solid #f97316 !important;
   outline-offset: 2px;
 }

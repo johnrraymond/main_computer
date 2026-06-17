@@ -1836,6 +1836,9 @@ def dispatch_get(self) -> None:
         self.server.signal("api-debug-assets-history")
         self._send_json(self.server.debug_asset_revisions.status())
         return
+    if route_path == "/api/energy/networks/status":
+        self._handle_energy_networks_status()
+        return
     if self.path == "/api/energy/status":
         self.server.signal("api-energy-status")
         self._send_json(self.server.energy_ledger.status())

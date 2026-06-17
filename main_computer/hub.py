@@ -49,6 +49,12 @@ from main_computer.hub_credit_models import (
 from main_computer.multisession_key_signing import normalize_address, parse_iso_datetime, recover_personal_sign_address, verify_personal_sign_blob
 from main_computer.hub_plex_models import HubAIRequest, HubWorkerSummary
 from main_computer.hub_plex_service import AIRequestPlexService
+from main_computer.ring_admission import (
+    RingAdmissionConfig,
+    RingAdmissionDecision,
+    load_ring_admission_config,
+    normalize_requested_ring,
+)
 from main_computer.models import ChatAttachment, ChatMessage, ChatResponse
 
 
@@ -795,6 +801,47 @@ class HubRegistry:
             key=lambda worker: (worker.queue_depth + worker.active_requests, worker.last_seen_at or worker.registered_at),
         )[0] if available else None
 
+    def record_ring_admission_rejection(self, event: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(event)
+        payload.setdefault("event_type", "ring_admission_rejected")
+        payload.setdefault("created_at", _utc_now())
+        seed = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        payload.setdefault("event_id", "ring-admission-" + hashlib.sha256(seed).hexdigest()[:24])
+        audit_path = self.root / "ring_admission_audit.jsonl"
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            with audit_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+        return payload
+
+    def list_ring_admission_audit(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        audit_path = self.root / "ring_admission_audit.jsonl"
+        if not audit_path.exists():
+            return []
+        clean_limit = max(1, int(limit or 500))
+        events: list[dict[str, Any]] = []
+        try:
+            lines = audit_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        for line in lines[-clean_limit:]:
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                events.append(payload)
+        return events
+
+    def ring_admission_audit_count(self) -> int:
+        audit_path = self.root / "ring_admission_audit.jsonl"
+        if not audit_path.exists():
+            return 0
+        try:
+            return sum(1 for line in audit_path.read_text(encoding="utf-8").splitlines() if line.strip())
+        except OSError:
+            return 0
+
     def _load(self) -> dict[str, Any]:
         if self.path.exists():
             try:
@@ -1289,12 +1336,26 @@ class _JsonHandler(BaseHTTPRequestHandler):
         self._worker_route_diag_step(diag_id, route, "route_gate.released", started_at, worker_route_in_flight=in_flight)
 
     def _worker_route_success_payload(self, worker: Any) -> dict[str, Any]:
-        return {
+        worker_data = worker.as_dict()
+        capabilities = worker_data.get("capabilities", {}) if isinstance(worker_data.get("capabilities"), dict) else {}
+        payload = {
             "ok": True,
-            "worker": worker.as_dict(),
+            "worker": worker_data,
             "hub": {"status_omitted": True},
             "hub_status_omitted": True,
         }
+        for key in (
+            "requested_ring",
+            "effective_ring",
+            "minimum_allowed_ring",
+            "allowed_min_ring",
+            "ring_admission_status",
+            "ring_admission_message",
+            "fallback_ring",
+        ):
+            if key in capabilities:
+                payload[key] = capabilities.get(key)
+        return payload
 
     def _discard_request_body(self) -> None:
         transfer_encoding = str(self.headers.get("Transfer-Encoding", "") or "").lower()
@@ -1370,6 +1431,7 @@ class HubHttpServer(ThreadingHTTPServer):
         self.verbose = verbose
         self.config = config
         self.hub_root = hub_root
+        self.ring_admission_config = load_ring_admission_config(getattr(config, "hub_ring_config_path", None))
         self.registry = HubRegistry(
             hub_root,
             allow_insecure_dev_network=config.hub_allow_insecure_dev_network,
@@ -1522,6 +1584,208 @@ class HubServerHandler(_JsonHandler):
             "ring_available_worker_count": len([worker for worker in ring_workers if self._worker_is_available_for_pool(worker)]),
         }
 
+    def _normalize_worker_wallet_address(self, value: Any) -> str:
+        if value is None:
+            return ""
+        try:
+            return normalize_address(str(value))
+        except ValueError:
+            return str(value or "").strip().lower()
+
+    def _wallet_address_from_worker_payload(self, body: dict[str, Any], capabilities: dict[str, Any] | None = None) -> str:
+        raw_wallet_address = (
+            body.get("wallet_address")
+            or body.get("worker_wallet_address")
+            or body.get("payout_wallet_address")
+        )
+        if raw_wallet_address is None and isinstance(body.get("wallet"), dict):
+            raw_wallet_address = body.get("wallet", {}).get("address")
+        if raw_wallet_address is None and isinstance(capabilities, dict):
+            raw_wallet_address = (
+                capabilities.get("wallet_address")
+                or capabilities.get("worker_wallet_address")
+                or capabilities.get("payout_wallet_address")
+            )
+        return self._normalize_worker_wallet_address(raw_wallet_address)
+
+    def _payload_has_requested_ring(self, body: dict[str, Any], capabilities: dict[str, Any] | None = None) -> bool:
+        for ring_key in ("assigned_ring", "ring", "requested_ring"):
+            if body.get(ring_key) is not None:
+                return True
+        if isinstance(capabilities, dict):
+            for ring_key in ("effective_ring", "assigned_ring", "ring", "requested_ring"):
+                if capabilities.get(ring_key) is not None:
+                    return True
+        return False
+
+    def _requested_ring_from_worker_payload(
+        self,
+        body: dict[str, Any],
+        capabilities: dict[str, Any] | None = None,
+        *,
+        default: int | None = 3,
+    ) -> int:
+        for ring_key in ("assigned_ring", "ring", "requested_ring"):
+            if body.get(ring_key) is not None:
+                return normalize_requested_ring(body.get(ring_key), default=default, field_name=ring_key)
+        if isinstance(capabilities, dict):
+            for ring_key in ("effective_ring", "assigned_ring", "ring", "requested_ring"):
+                if capabilities.get(ring_key) is not None:
+                    return normalize_requested_ring(capabilities.get(ring_key), default=default, field_name=f"capabilities.{ring_key}")
+        return normalize_requested_ring(None, default=default, field_name="requested_ring")
+
+    def _current_worker_effective_ring(self, worker: HubWorker | None) -> int | None:
+        if worker is None:
+            return None
+        capabilities = worker.capabilities if isinstance(worker.capabilities, dict) else {}
+        for ring_key in ("effective_ring", "assigned_ring", "requested_ring", "ring"):
+            if capabilities.get(ring_key) is not None:
+                return normalize_requested_ring(capabilities.get(ring_key), default=None, field_name=f"current.{ring_key}")
+        offer = worker.offer if isinstance(worker.offer, dict) else {}
+        if offer.get("assigned_ring") is not None:
+            return normalize_requested_ring(offer.get("assigned_ring"), default=None, field_name="current.offer.assigned_ring")
+        return None
+
+    def _ring_admission_rejection_payload(
+        self,
+        *,
+        decision: RingAdmissionDecision,
+        wallet_address: str,
+        node_id: str,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "ok": False,
+            **decision.as_response_fields(),
+        }
+        if error:
+            payload["error"] = error
+        payload.setdefault("error", decision.error or "ring_not_allowed")
+        if wallet_address:
+            payload["wallet_address"] = wallet_address
+        if node_id:
+            payload["node_id"] = _clean_node_id(node_id, default=node_id)
+        return payload
+
+    def _record_ring_admission_rejection(
+        self,
+        *,
+        wallet_address: str,
+        node_id: str,
+        worker_instance_id: str = "",
+        requested_ring: int,
+        minimum_allowed_ring: int,
+        fallback_ring: int | None,
+        error: str,
+        message: str,
+    ) -> None:
+        try:
+            self.server.registry.record_ring_admission_rejection(
+                {
+                    "event_type": "ring_admission_rejected",
+                    "wallet_address": wallet_address,
+                    "node_id": _clean_node_id(node_id, default=node_id),
+                    "worker_instance_id": _clean_node_id(worker_instance_id, default="") if worker_instance_id else "",
+                    "requested_ring": int(requested_ring),
+                    "minimum_allowed_ring": int(minimum_allowed_ring),
+                    "allowed_min_ring": int(minimum_allowed_ring),
+                    "fallback_ring": int(fallback_ring) if fallback_ring is not None else None,
+                    "error": str(error or "ring_not_allowed"),
+                    "message": str(message or ""),
+                    "ring_config_hash": self.server.ring_admission_config.config_hash(),
+                }
+            )
+        except Exception:
+            if self.server.verbose:
+                print("hub ring admission audit write failed", file=sys.stderr, flush=True)
+
+    def _evaluate_ring_registration(
+        self,
+        *,
+        body: dict[str, Any],
+        capabilities: dict[str, Any],
+    ) -> tuple[RingAdmissionDecision, str]:
+        wallet_address = self._wallet_address_from_worker_payload(body, capabilities)
+        requested_ring = self._requested_ring_from_worker_payload(body, capabilities, default=3)
+        decision = self.server.ring_admission_config.evaluate(
+            wallet_address=wallet_address,
+            requested_ring=requested_ring,
+        )
+        return decision, wallet_address
+
+    def _apply_accepted_ring_admission(
+        self,
+        *,
+        capabilities: dict[str, Any],
+        decision: RingAdmissionDecision,
+        wallet_address: str,
+    ) -> None:
+        effective_ring = int(decision.effective_ring if decision.effective_ring is not None else decision.requested_ring)
+        capabilities["requested_ring"] = int(decision.requested_ring)
+        capabilities["assigned_ring"] = effective_ring
+        capabilities["effective_ring"] = effective_ring
+        capabilities["minimum_allowed_ring"] = int(decision.minimum_allowed_ring)
+        capabilities["allowed_min_ring"] = int(decision.minimum_allowed_ring)
+        capabilities["ring_admission_status"] = "accepted"
+        capabilities["ring_admission_message"] = decision.message
+        if wallet_address:
+            capabilities["wallet_address"] = wallet_address
+
+    def _preserve_registered_ring_capabilities(
+        self,
+        *,
+        capabilities: dict[str, Any],
+        current_worker: HubWorker | None,
+    ) -> None:
+        if current_worker is None:
+            return
+        current_capabilities = current_worker.capabilities if isinstance(current_worker.capabilities, dict) else {}
+        for key in (
+            "requested_ring",
+            "assigned_ring",
+            "effective_ring",
+            "minimum_allowed_ring",
+            "allowed_min_ring",
+            "ring_admission_status",
+            "ring_admission_message",
+            "wallet_address",
+        ):
+            if key in current_capabilities and key not in capabilities:
+                capabilities[key] = current_capabilities[key]
+
+    def _heartbeat_ring_change_rejection_payload(
+        self,
+        *,
+        requested_ring: int,
+        current_effective_ring: int | None,
+        minimum_allowed_ring: int,
+        wallet_address: str,
+        node_id: str,
+    ) -> dict[str, Any]:
+        message = (
+            "Heartbeat cannot change worker ring; re-register to change rings."
+            if current_effective_ring is None
+            else f"Heartbeat cannot change worker ring from {current_effective_ring} to {requested_ring}; re-register to change rings."
+        )
+        payload: dict[str, Any] = {
+            "ok": False,
+            "error": "ring_change_requires_reregister",
+            "requested_ring": int(requested_ring),
+            "effective_ring": current_effective_ring,
+            "current_effective_ring": current_effective_ring,
+            "minimum_allowed_ring": int(minimum_allowed_ring),
+            "allowed_min_ring": int(minimum_allowed_ring),
+            "fallback_ring": current_effective_ring,
+            "ring_admission_status": "rejected",
+            "ring_admission_message": message,
+            "message": message,
+        }
+        if wallet_address:
+            payload["wallet_address"] = wallet_address
+        if node_id:
+            payload["node_id"] = _clean_node_id(node_id, default=node_id)
+        return payload
+
     def _verify_worker_connect_order(self, *, signed_connection: dict[str, Any], worker_payload: dict[str, Any]) -> dict[str, Any]:
         message_text = str(signed_connection.get("message") or "").strip()
         signature = str(signed_connection.get("signature") or "").strip()
@@ -1561,8 +1825,8 @@ class HubServerHandler(_JsonHandler):
             raise ValueError(f"bad worker connect network: {network!r}")
 
         requested_ring = str(message.get("requested_ring") or "").strip()
-        if requested_ring not in {"0", "1", "2"}:
-            raise ValueError("worker connect requested_ring must be 0, 1, or 2.")
+        if requested_ring not in {"0", "1", "2", "3"}:
+            raise ValueError("worker connect requested_ring must be 0, 1, 2, or 3.")
         if requested_ring != str(signed_connection.get("requested_ring") or ""):
             raise ValueError("signed_connection.requested_ring does not match the signed message.")
 
@@ -1634,11 +1898,36 @@ class HubServerHandler(_JsonHandler):
             worker_payload=worker_payload,
         )
         assigned_ring = str(verification["requested_ring"])
+        ring_decision = self.server.ring_admission_config.evaluate(
+            wallet_address=verification["wallet_address"],
+            requested_ring=assigned_ring,
+        )
+        if not ring_decision.ok:
+            worker_node_id = str(worker_payload.get("node_id", ""))
+            worker_instance_id_for_audit = _clean_node_id(
+                str(worker_payload.get("worker_instance_id") or worker_payload.get("connection_id") or worker_node_id),
+                default=worker_node_id,
+            )
+            self._record_ring_admission_rejection(
+                wallet_address=verification["wallet_address"],
+                node_id=worker_node_id,
+                worker_instance_id=worker_instance_id_for_audit,
+                requested_ring=ring_decision.requested_ring,
+                minimum_allowed_ring=ring_decision.minimum_allowed_ring,
+                fallback_ring=ring_decision.fallback_ring,
+                error=ring_decision.error or "ring_not_allowed",
+                message=ring_decision.message,
+            )
+            return self._ring_admission_rejection_payload(
+                decision=ring_decision,
+                wallet_address=verification["wallet_address"],
+                node_id=worker_node_id,
+            )
         worker_instance_id = _clean_node_id(
             str(worker_payload.get("worker_instance_id") or worker_payload.get("connection_id") or verification["worker_node_id"]),
             default=verification["worker_node_id"],
         )
-        ring_policy = {"0": "operator", "1": "protected", "2": "public"}[assigned_ring]
+        ring_policy = {"0": "operator", "1": "protected", "2": "public", "3": "marketplace"}[assigned_ring]
         pricing_policy = f"{ring_policy}-{verification['network']}"
 
         capabilities = dict(worker_payload.get("capabilities", {})) if isinstance(worker_payload.get("capabilities"), dict) else {}
@@ -1664,8 +1953,13 @@ class HubServerHandler(_JsonHandler):
                     "issued_at": verification.get("issued_at"),
                     "expires_at": verification.get("expires_at"),
                 },
-                "requested_ring": verification["requested_ring"],
-                "assigned_ring": assigned_ring,
+                "requested_ring": int(ring_decision.requested_ring),
+                "assigned_ring": int(ring_decision.effective_ring if ring_decision.effective_ring is not None else ring_decision.requested_ring),
+                "effective_ring": int(ring_decision.effective_ring if ring_decision.effective_ring is not None else ring_decision.requested_ring),
+                "minimum_allowed_ring": int(ring_decision.minimum_allowed_ring),
+                "allowed_min_ring": int(ring_decision.minimum_allowed_ring),
+                "ring_admission_status": "accepted",
+                "ring_admission_message": ring_decision.message,
                 "wallet_address": verification["wallet_address"],
                 "credit_wallet": verification["credit_wallet"],
                 "pricing_policy": pricing_policy,
@@ -1699,8 +1993,13 @@ class HubServerHandler(_JsonHandler):
                 "wallet_address": verification["wallet_address"],
                 "credit_wallet": verification["credit_wallet"],
                 "network": verification["network"],
-                "requested_ring": verification["requested_ring"],
-                "assigned_ring": assigned_ring,
+                "requested_ring": int(ring_decision.requested_ring),
+                "assigned_ring": int(ring_decision.effective_ring if ring_decision.effective_ring is not None else ring_decision.requested_ring),
+                "effective_ring": int(ring_decision.effective_ring if ring_decision.effective_ring is not None else ring_decision.requested_ring),
+                "minimum_allowed_ring": int(ring_decision.minimum_allowed_ring),
+                "allowed_min_ring": int(ring_decision.minimum_allowed_ring),
+                "ring_admission_status": "accepted",
+                "ring_admission_message": ring_decision.message,
                 "pricing_policy": pricing_policy,
                 "status": worker_data.get("status", "available"),
                 "lease_expires_at": worker_data.get("lease_expires_at", ""),
@@ -1714,8 +2013,13 @@ class HubServerHandler(_JsonHandler):
             "wallet_address": verification["wallet_address"],
             "credit_wallet": verification["credit_wallet"],
             "network": verification["network"],
-            "requested_ring": verification["requested_ring"],
-            "assigned_ring": assigned_ring,
+            "requested_ring": int(ring_decision.requested_ring),
+            "assigned_ring": int(ring_decision.effective_ring if ring_decision.effective_ring is not None else ring_decision.requested_ring),
+            "effective_ring": int(ring_decision.effective_ring if ring_decision.effective_ring is not None else ring_decision.requested_ring),
+            "minimum_allowed_ring": int(ring_decision.minimum_allowed_ring),
+            "allowed_min_ring": int(ring_decision.minimum_allowed_ring),
+            "ring_admission_status": "accepted",
+            "ring_admission_message": ring_decision.message,
             "pricing_policy": pricing_policy,
             "status": "registered",
             "verification": verification,
@@ -2497,6 +2801,8 @@ class HubServerHandler(_JsonHandler):
             }
             bridge_backend_status = getattr(self.server.bridge_backend, "status", lambda: {"backend": self.server.config.hub_bridge_backend})()
             status["bridge_backend"] = bridge_backend_status
+            status.update(self.server.ring_admission_config.public_status())
+            status["ring_admission_rejection_audit_count"] = self.server.registry.ring_admission_audit_count()
             status["security"] = {
                 "high_security_default": self.server.config.hub_high_security,
                 "hub_blind_envelopes": self.server.config.hub_high_security,
@@ -2843,7 +3149,9 @@ class HubServerHandler(_JsonHandler):
                 return
             if path in {"/api/hub/workers/connect", "/api/hub/v1/workers/connect"}:
                 try:
-                    self._send_json(self._handle_worker_connect_order(self._read_json()))
+                    result = self._handle_worker_connect_order(self._read_json())
+                    status = HTTPStatus.FORBIDDEN if result.get("error") == "ring_not_allowed" else HTTPStatus.OK
+                    self._send_json(result, status=status)
                 except Exception as exc:
                     self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
@@ -2871,16 +3179,34 @@ class HubServerHandler(_JsonHandler):
                         capabilities["execution"] = execution
                     if body.get("execution_mode") is not None:
                         capabilities["execution_mode"] = str(body.get("execution_mode") or "")
-                    for ring_key in ("assigned_ring", "ring", "requested_ring"):
-                        if body.get(ring_key) is not None:
-                            capabilities["assigned_ring"] = body.get(ring_key)
-                            break
-                    raw_wallet_address = body.get("wallet_address") or body.get("worker_wallet_address") or body.get("payout_wallet_address")
-                    if raw_wallet_address is None and isinstance(body.get("wallet"), dict):
-                        raw_wallet_address = body.get("wallet", {}).get("address")
-                    wallet_address = normalize_address(str(raw_wallet_address)) if raw_wallet_address else ""
-                    if wallet_address:
-                        capabilities["wallet_address"] = wallet_address
+                    decision, wallet_address = self._evaluate_ring_registration(body=body, capabilities=capabilities)
+                    if not decision.ok:
+                        worker_node_id = str(body.get("node_id", ""))
+                        worker_instance_id = str(body.get("worker_instance_id") or body.get("connection_id") or "")
+                        self._record_ring_admission_rejection(
+                            wallet_address=wallet_address,
+                            node_id=worker_node_id,
+                            worker_instance_id=worker_instance_id,
+                            requested_ring=decision.requested_ring,
+                            minimum_allowed_ring=decision.minimum_allowed_ring,
+                            fallback_ring=decision.fallback_ring,
+                            error=decision.error or "ring_not_allowed",
+                            message=decision.message,
+                        )
+                        self._send_json(
+                            self._ring_admission_rejection_payload(
+                                decision=decision,
+                                wallet_address=wallet_address,
+                                node_id=worker_node_id,
+                            ),
+                            status=HTTPStatus.FORBIDDEN,
+                        )
+                        return
+                    self._apply_accepted_ring_admission(
+                        capabilities=capabilities,
+                        decision=decision,
+                        wallet_address=wallet_address,
+                    )
                     raw_price = body.get("credits_per_request")
                     if raw_price is None and pricing:
                         raw_price = pricing.get("credits_per_request")
@@ -2949,19 +3275,74 @@ class HubServerHandler(_JsonHandler):
                     if not worker_id:
                         raise ValueError("worker_node_id is required.")
                     capabilities = dict(body.get("capabilities", {})) if isinstance(body.get("capabilities"), dict) else None
-                    for ring_key in ("assigned_ring", "ring", "requested_ring"):
-                        if body.get(ring_key) is not None:
-                            if capabilities is None:
-                                capabilities = {}
-                            capabilities["assigned_ring"] = body.get(ring_key)
-                            break
-                    raw_wallet_address = body.get("wallet_address") or body.get("worker_wallet_address") or body.get("payout_wallet_address")
-                    if raw_wallet_address is not None:
+                    current_worker = self.server.registry.get_worker(worker_id, worker_instance_id=worker_instance_id)
+                    heartbeat_sent_ring = self._payload_has_requested_ring(body, capabilities)
+                    if heartbeat_sent_ring:
                         if capabilities is None:
                             capabilities = {}
-                        wallet_address = normalize_address(str(raw_wallet_address)) if raw_wallet_address else ""
-                        if wallet_address:
-                            capabilities["wallet_address"] = wallet_address
+                        wallet_address = self._wallet_address_from_worker_payload(body, capabilities)
+                        if not wallet_address and current_worker is not None:
+                            wallet_address = self._wallet_address_from_worker_payload({}, current_worker.capabilities)
+                        requested_ring = self._requested_ring_from_worker_payload(body, capabilities, default=None)
+                        decision = self.server.ring_admission_config.evaluate(
+                            wallet_address=wallet_address,
+                            requested_ring=requested_ring,
+                        )
+                        current_effective_ring = self._current_worker_effective_ring(current_worker)
+                        if not decision.ok:
+                            self._record_ring_admission_rejection(
+                                wallet_address=wallet_address,
+                                node_id=worker_id,
+                                worker_instance_id=worker_instance_id,
+                                requested_ring=decision.requested_ring,
+                                minimum_allowed_ring=decision.minimum_allowed_ring,
+                                fallback_ring=decision.fallback_ring,
+                                error=decision.error or "ring_not_allowed",
+                                message=decision.message,
+                            )
+                            self._send_json(
+                                self._ring_admission_rejection_payload(
+                                    decision=decision,
+                                    wallet_address=wallet_address,
+                                    node_id=worker_id,
+                                ),
+                                status=HTTPStatus.FORBIDDEN,
+                            )
+                            return
+                        if current_effective_ring is not None and requested_ring != current_effective_ring:
+                            payload = self._heartbeat_ring_change_rejection_payload(
+                                requested_ring=requested_ring,
+                                current_effective_ring=current_effective_ring,
+                                minimum_allowed_ring=decision.minimum_allowed_ring,
+                                wallet_address=wallet_address,
+                                node_id=worker_id,
+                            )
+                            self._record_ring_admission_rejection(
+                                wallet_address=wallet_address,
+                                node_id=worker_id,
+                                worker_instance_id=worker_instance_id,
+                                requested_ring=requested_ring,
+                                minimum_allowed_ring=decision.minimum_allowed_ring,
+                                fallback_ring=current_effective_ring,
+                                error="ring_change_requires_reregister",
+                                message=str(payload.get("message", "")),
+                            )
+                            self._send_json(payload, status=HTTPStatus.CONFLICT)
+                            return
+                        self._apply_accepted_ring_admission(
+                            capabilities=capabilities,
+                            decision=decision,
+                            wallet_address=wallet_address,
+                        )
+                        self._preserve_registered_ring_capabilities(
+                            capabilities=capabilities,
+                            current_worker=current_worker,
+                        )
+                    elif capabilities is not None:
+                        self._preserve_registered_ring_capabilities(
+                            capabilities=capabilities,
+                            current_worker=current_worker,
+                        )
                     self._worker_route_diag_step(diag_id, "worker.heartbeat", "registry.heartbeat_worker.start", diag_started_at, worker_node_id=worker_id)
                     worker = self.server.registry.heartbeat_worker(
                         worker_id,
@@ -3015,13 +3396,82 @@ class HubServerHandler(_JsonHandler):
                         self.send_error(HTTPStatus.NOT_FOUND)
                         self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "send_error.done", diag_started_at, status=404)
                         return
+                    capabilities = dict(body.get("capabilities", {})) if isinstance(body.get("capabilities"), dict) else None
+                    current_worker = self.server.registry.get_worker(worker_id, worker_instance_id=worker_instance_id)
+                    heartbeat_sent_ring = self._payload_has_requested_ring(body, capabilities)
+                    if heartbeat_sent_ring:
+                        if capabilities is None:
+                            capabilities = {}
+                        wallet_address = self._wallet_address_from_worker_payload(body, capabilities)
+                        if not wallet_address and current_worker is not None:
+                            wallet_address = self._wallet_address_from_worker_payload({}, current_worker.capabilities)
+                        requested_ring = self._requested_ring_from_worker_payload(body, capabilities, default=None)
+                        decision = self.server.ring_admission_config.evaluate(
+                            wallet_address=wallet_address,
+                            requested_ring=requested_ring,
+                        )
+                        current_effective_ring = self._current_worker_effective_ring(current_worker)
+                        if not decision.ok:
+                            self._record_ring_admission_rejection(
+                                wallet_address=wallet_address,
+                                node_id=worker_id,
+                                worker_instance_id=worker_instance_id,
+                                requested_ring=decision.requested_ring,
+                                minimum_allowed_ring=decision.minimum_allowed_ring,
+                                fallback_ring=decision.fallback_ring,
+                                error=decision.error or "ring_not_allowed",
+                                message=decision.message,
+                            )
+                            self._send_json(
+                                self._ring_admission_rejection_payload(
+                                    decision=decision,
+                                    wallet_address=wallet_address,
+                                    node_id=worker_id,
+                                ),
+                                status=HTTPStatus.FORBIDDEN,
+                            )
+                            return
+                        if current_effective_ring is not None and requested_ring != current_effective_ring:
+                            payload = self._heartbeat_ring_change_rejection_payload(
+                                requested_ring=requested_ring,
+                                current_effective_ring=current_effective_ring,
+                                minimum_allowed_ring=decision.minimum_allowed_ring,
+                                wallet_address=wallet_address,
+                                node_id=worker_id,
+                            )
+                            self._record_ring_admission_rejection(
+                                wallet_address=wallet_address,
+                                node_id=worker_id,
+                                worker_instance_id=worker_instance_id,
+                                requested_ring=requested_ring,
+                                minimum_allowed_ring=decision.minimum_allowed_ring,
+                                fallback_ring=current_effective_ring,
+                                error="ring_change_requires_reregister",
+                                message=str(payload.get("message", "")),
+                            )
+                            self._send_json(payload, status=HTTPStatus.CONFLICT)
+                            return
+                        self._apply_accepted_ring_admission(
+                            capabilities=capabilities,
+                            decision=decision,
+                            wallet_address=wallet_address,
+                        )
+                        self._preserve_registered_ring_capabilities(
+                            capabilities=capabilities,
+                            current_worker=current_worker,
+                        )
+                    elif capabilities is not None:
+                        self._preserve_registered_ring_capabilities(
+                            capabilities=capabilities,
+                            current_worker=current_worker,
+                        )
                     self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "registry.heartbeat_worker.start", diag_started_at, worker_node_id=worker_id)
                     worker = self.server.registry.heartbeat_worker(
                         worker_id,
                         status=str(body.get("status", "available")),
                         model=str(body.get("model", "")),
                         models=[str(item) for item in body.get("models", [])] if isinstance(body.get("models"), list) else None,
-                        capabilities=dict(body.get("capabilities", {})) if isinstance(body.get("capabilities"), dict) else None,
+                        capabilities=capabilities,
                         queue_depth=int(body.get("queue_depth")) if body.get("queue_depth") is not None else None,
                         active_requests=int(body.get("active_requests")) if body.get("active_requests") is not None else None,
                         max_concurrency=int(body.get("max_concurrency")) if body.get("max_concurrency") is not None else None,
