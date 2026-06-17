@@ -2,14 +2,309 @@ from __future__ import annotations
 
 from dataclasses import replace
 import ipaddress
+import json
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from main_computer.viewport_state import *  # noqa: F401,F403
 from main_computer.hub_networks import HubNetworkConfigError, load_hub_network_registry
 
 class ViewportEnergyRoutesMixin:
+
+    _ENERGY_NETWORK_ORDER = ("mainnet", "testnet", "test", "dev")
+    _ENERGY_EXPECTED_CONTRACTS = (
+        ("alpha-beta-lockout", "AlphaBetaLockout"),
+        ("xlag-bridge-reserve", "XLagBridgeReserve"),
+        ("hub_credit_bridge_escrow", "HubCreditBridgeEscrow"),
+    )
+    _ANVIL_DEFAULT_OFFICES = {
+        "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+        "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+        "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
+        "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
+    }
+
+    def _energy_bool_query(self, name: str, *, default: bool = True) -> bool:
+        query = parse_qs(urlsplit(self.path).query)
+        raw = query.get(name, [None])[0]
+        if raw is None:
+            return default
+        return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+
+    def _energy_hex_to_int(self, value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(str(value), 16 if str(value).strip().lower().startswith("0x") else 10)
+        except (TypeError, ValueError):
+            return None
+
+    def _energy_rpc_call(self, rpc_url: str, method: str, params: list[Any] | None = None, *, timeout_s: float = 0.75) -> Any:
+        payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}).encode("utf-8")
+        request = Request(
+            str(rpc_url),
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=timeout_s) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        if isinstance(result, dict) and result.get("error"):
+            error = result.get("error")
+            if isinstance(error, dict):
+                raise ValueError(str(error.get("message") or error))
+            raise ValueError(str(error))
+        if not isinstance(result, dict):
+            raise ValueError("RPC response was not a JSON object.")
+        return result.get("result")
+
+    def _energy_profile_manifest_path(self, profile: Any) -> Path:
+        path = profile.deployment_manifest_path or Path("runtime") / "deployments" / profile.network_key / "latest.json"
+        path = Path(path)
+        if path.is_absolute():
+            return path
+        return self.server.debug_root / path
+
+    def _energy_load_manifest_status(self, profile: Any) -> tuple[Path, dict[str, Any] | None, list[str]]:
+        path = self._energy_profile_manifest_path(profile)
+        warnings: list[str] = []
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return path, None, [f"Deployment manifest is missing: {path}"]
+        except json.JSONDecodeError as exc:
+            return path, None, [f"Deployment manifest is not valid JSON: {exc}"]
+        if not isinstance(manifest, dict):
+            return path, None, ["Deployment manifest root is not an object."]
+        return path, manifest, warnings
+
+    def _energy_contract_map(self, manifest: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+        if not isinstance(manifest, dict):
+            return {}
+        raw = manifest.get("contracts")
+        if not isinstance(raw, dict):
+            raw = manifest.get("deployments")
+        if not isinstance(raw, dict):
+            return {}
+        contracts: dict[str, dict[str, Any]] = {}
+        for key, value in raw.items():
+            if isinstance(value, dict):
+                contracts[str(key)] = value
+        return contracts
+
+    def _energy_contract_inventory(
+        self,
+        *,
+        contracts: dict[str, dict[str, Any]],
+        rpc_url: str,
+        live: bool,
+        rpc_reachable: bool,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        warnings: list[str] = []
+        expected_keys = [key for key, _label in self._ENERGY_EXPECTED_CONTRACTS]
+        extra_keys = sorted(key for key in contracts if key not in expected_keys)
+        inventory: list[dict[str, Any]] = []
+        for key, label in [*self._ENERGY_EXPECTED_CONTRACTS, *[(extra, extra) for extra in extra_keys]]:
+            raw = contracts.get(key) or {}
+            address = str(raw.get("address") or "").strip()
+            code_bytes = None
+            has_code = None
+            code_error = ""
+            if key in expected_keys and not raw:
+                warnings.append(f"{label} is missing from the deployment manifest.")
+            elif not address:
+                warnings.append(f"{label} has no deployed address in the manifest.")
+            if live and rpc_reachable and address and rpc_url:
+                try:
+                    code = self._energy_rpc_call(rpc_url, "eth_getCode", [address, "latest"])
+                    code_text = str(code or "0x")
+                    has_code = code_text not in {"", "0x", "0X"}
+                    code_bytes = max(0, (len(code_text.removeprefix("0x").removeprefix("0X")) // 2))
+                    if not has_code:
+                        warnings.append(f"{label} has no bytecode at {address}.")
+                except Exception as exc:
+                    code_error = str(exc)
+                    warnings.append(f"{label} bytecode check failed: {code_error}")
+            inventory.append(
+                {
+                    "key": key,
+                    "label": label,
+                    "address": address,
+                    "target": str(raw.get("target") or ""),
+                    "transaction_hash": str(raw.get("transaction_hash") or ""),
+                    "configured": bool(raw),
+                    "has_code": has_code,
+                    "code_bytes": code_bytes,
+                    "code_error": code_error,
+                }
+            )
+        return inventory, warnings
+
+    def _energy_authority_summary(self, manifest: dict[str, Any] | None, *, network_key: str, kind: str) -> tuple[list[dict[str, Any]], list[str], bool]:
+        raw_offices = manifest.get("offices") if isinstance(manifest, dict) else None
+        offices: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        default_offices: list[str] = []
+        if isinstance(raw_offices, list):
+            for office in raw_offices:
+                if not isinstance(office, dict):
+                    continue
+                address = str(office.get("address") or "").strip()
+                normalized = address.lower()
+                is_default = normalized in self._ANVIL_DEFAULT_OFFICES
+                if is_default:
+                    default_offices.append(str(office.get("title") or office.get("office") or address))
+                offices.append(
+                    {
+                        "office": str(office.get("office") or ""),
+                        "title": str(office.get("title") or ""),
+                        "address": address,
+                        "default_anvil": is_default,
+                    }
+                )
+        elif manifest is not None:
+            warnings.append("Deployment manifest does not include office authority.")
+        if default_offices and str(kind).lower() in {"mainnet", "testnet"}:
+            warnings.append(
+                f"{network_key} authority is unsafe: {', '.join(default_offices)} match default Anvil office identities."
+            )
+        elif default_offices and str(kind).lower() == "test":
+            warnings.append(
+                f"{network_key} is using default Anvil office identities for local validation."
+            )
+        return offices, warnings, bool(default_offices and str(kind).lower() in {"mainnet", "testnet"})
+
+    def _energy_network_status(self, profile: Any, *, live: bool) -> dict[str, Any]:
+        manifest_path, manifest, warnings = self._energy_load_manifest_status(profile)
+        manifest_chain = manifest.get("chain") if isinstance(manifest, dict) else {}
+        if not isinstance(manifest_chain, dict):
+            manifest_chain = {}
+        manifest_environment = str(manifest.get("environment") or "") if isinstance(manifest, dict) else ""
+        manifest_chain_id = self._energy_hex_to_int(manifest_chain.get("chain_id")) if manifest_chain else None
+        run_id = str(manifest.get("run_id") or "") if isinstance(manifest, dict) else ""
+        created_at = str(manifest.get("created_at") or "") if isinstance(manifest, dict) else ""
+        source = manifest.get("source") if isinstance(manifest, dict) else {}
+        if not isinstance(source, dict):
+            source = {}
+        source_kind = str(source.get("kind") or source.get("source_kind") or "")
+        rpc_url = str(profile.chain_rpc_url or manifest_chain.get("host_rpc_url") or manifest_chain.get("rpc_url") or "").strip()
+        expected_chain_id = profile.chain_id
+
+        if manifest is not None and manifest_environment and manifest_environment != profile.network_key:
+            warnings.append(f"Manifest environment {manifest_environment!r} does not match registry network {profile.network_key!r}.")
+        if expected_chain_id is not None and manifest_chain_id is not None and int(expected_chain_id) != int(manifest_chain_id):
+            warnings.append(f"Manifest chain id {manifest_chain_id} does not match expected chain id {expected_chain_id}.")
+
+        live_chain_id = None
+        block_number = None
+        rpc_reachable = False
+        rpc_error = ""
+        if live and rpc_url:
+            try:
+                live_chain_id = self._energy_hex_to_int(self._energy_rpc_call(rpc_url, "eth_chainId"))
+                block_number = self._energy_hex_to_int(self._energy_rpc_call(rpc_url, "eth_blockNumber"))
+                rpc_reachable = True
+                if expected_chain_id is not None and live_chain_id is not None and int(live_chain_id) != int(expected_chain_id):
+                    warnings.append(f"Live RPC chain id {live_chain_id} does not match expected chain id {expected_chain_id}.")
+            except Exception as exc:
+                rpc_error = str(exc)
+                warnings.append(f"RPC unreachable: {rpc_error}")
+        elif live and not rpc_url:
+            warnings.append("No RPC URL is configured for this network.")
+
+        contracts, contract_warnings = self._energy_contract_inventory(
+            contracts=self._energy_contract_map(manifest),
+            rpc_url=rpc_url,
+            live=live,
+            rpc_reachable=rpc_reachable,
+        )
+        warnings.extend(contract_warnings)
+        offices, authority_warnings, unsafe_authority = self._energy_authority_summary(
+            manifest,
+            network_key=profile.network_key,
+            kind=profile.kind,
+        )
+        warnings.extend(authority_warnings)
+
+        missing_manifest = manifest is None
+        chain_mismatch = any("chain id" in warning and "does not match" in warning for warning in warnings)
+        contract_missing = any(
+            contract["key"] in {key for key, _label in self._ENERGY_EXPECTED_CONTRACTS}
+            and (not contract["configured"] or contract.get("has_code") is False)
+            for contract in contracts
+        )
+        if unsafe_authority or chain_mismatch:
+            overall = "unsafe"
+        elif missing_manifest or (live and not rpc_reachable) or contract_missing or warnings:
+            overall = "degraded"
+        else:
+            overall = "healthy"
+
+        return {
+            "network": profile.network_key,
+            "network_key": profile.network_key,
+            "display_name": profile.display_name,
+            "kind": profile.kind,
+            "rank": "primary" if profile.network_key == "mainnet" else "secondary",
+            "expected_chain_id": expected_chain_id,
+            "configured_rpc_url": rpc_url,
+            "hub_url": profile.hub_url,
+            "deployment_manifest_path": str(manifest_path),
+            "manifest_present": manifest is not None,
+            "manifest_environment": manifest_environment,
+            "manifest_chain_id": manifest_chain_id,
+            "run_id": run_id,
+            "created_at": created_at,
+            "source_kind": source_kind,
+            "rpc_reachable": rpc_reachable,
+            "rpc_error": rpc_error,
+            "live_chain_id": live_chain_id,
+            "chain_id_ok": (
+                expected_chain_id is not None
+                and live_chain_id is not None
+                and int(expected_chain_id) == int(live_chain_id)
+            )
+            if live
+            else None,
+            "block_number": block_number,
+            "contracts": contracts,
+            "offices": offices,
+            "warnings": warnings,
+            "overall_status": overall,
+            "read_only": True,
+            "mutation_policy": "monitor-only",
+        }
+
+    def _handle_energy_networks_status(self) -> None:
+        try:
+            live = self._energy_bool_query("live", default=True)
+            registry = load_hub_network_registry()
+            ordered = [key for key in self._ENERGY_NETWORK_ORDER if key in registry.networks]
+            ordered.extend(key for key in registry.networks if key not in ordered)
+            networks = [self._energy_network_status(registry.networks[key], live=live) for key in ordered]
+            selected = registry.default_network if registry.default_network in registry.networks else ordered[0]
+            self.server.signal("api-energy-networks-status", live=live, selected=selected, networks=len(networks))
+            self._send_json(
+                {
+                    "ok": True,
+                    "schema": "main-computer.energy-networks.status.v1",
+                    "mode": "read-only-monitor",
+                    "default_network": selected,
+                    "live": live,
+                    "networks": networks,
+                    "summary": {
+                        "total": len(networks),
+                        "healthy": sum(1 for network in networks if network["overall_status"] == "healthy"),
+                        "degraded": sum(1 for network in networks if network["overall_status"] == "degraded"),
+                        "unsafe": sum(1 for network in networks if network["overall_status"] == "unsafe"),
+                    },
+                }
+            )
+        except Exception as exc:
+            self.server.signal("api-energy-networks-status-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
     def _handle_energy_register_node(self) -> None:
         try:
             body = self._read_json()

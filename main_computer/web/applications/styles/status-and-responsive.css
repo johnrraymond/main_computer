@@ -183,7 +183,11 @@
       .file-map-list { max-height: 260px; }
     }
     @media (max-width: 620px) {
-      header, main { padding: 12px; }
+      header { padding: 12px; }
+      main { padding: 12px; }
+      body[data-has-app-taskbar="true"] main {
+        padding-left: calc(12px + var(--app-taskbar-reserved-width));
+      }
       h1 { font-size: 20px; }
       .demo-controls { grid-template-columns: 1fr; }
       .terminal-controls { grid-template-columns: 1fr; }

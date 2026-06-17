@@ -203,6 +203,7 @@ def _clear_viewport_pid_file(path: Path) -> None:
 
 APPLICATION_ROUTE_PREFIXES = ("/applications", "/apps", "/app")
 APPLICATION_ROUTE_NAMES = {
+    "desktop",
     "webgl",
     "calculator",
     "document",
@@ -226,7 +227,7 @@ APPLICATION_ROUTE_ALIASES = {
     "layout-builder": "game-editor",
     "web-test-bed": "mcel-lab",
 }
-APPLICATION_ROUTE_DEFAULT = "calculator"
+APPLICATION_ROUTE_DEFAULT = "desktop"
 APPLICATION_TASK_MANAGER_TABS = {
     "server-processes",
     "all-processes",

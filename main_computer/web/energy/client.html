@@ -1,0 +1,918 @@
+  <script>
+
+    const energyNetworkMonitor = document.querySelector("#energy-network-monitor");
+    const energyNetworkHeroStatus = document.querySelector("#energy-network-hero-status");
+    const energyNetworkHeroChain = document.querySelector("#energy-network-hero-chain");
+    const energyNetworkHeroContracts = document.querySelector("#energy-network-hero-contracts");
+    const energyNetworkSelectedName = document.querySelector("#energy-network-selected-name");
+    const energyNetworkSelectedStatus = document.querySelector("#energy-network-selected-status");
+    const energyNetworkExpectedChain = document.querySelector("#energy-network-expected-chain");
+    const energyNetworkLiveChain = document.querySelector("#energy-network-live-chain");
+    const energyNetworkBlock = document.querySelector("#energy-network-block");
+    const energyNetworkRpc = document.querySelector("#energy-network-rpc");
+    const energyNetworkManifest = document.querySelector("#energy-network-manifest");
+    const energyNetworkRun = document.querySelector("#energy-network-run");
+    const energyNetworkContracts = document.querySelector("#energy-network-contracts");
+    const energyNetworkContractCount = document.querySelector("#energy-network-contract-count");
+    const energyNetworkOffices = document.querySelector("#energy-network-offices");
+    const energyNetworkAuthorityBadge = document.querySelector("#energy-network-authority-badge");
+    const energyNetworkWarnings = document.querySelector("#energy-network-warnings");
+    const energyNetworkLastRefresh = document.querySelector("#energy-network-last-refresh");
+    let energyNetworkPayload = null;
+    let energySelectedNetwork = "mainnet";
+    const passcode = document.querySelector("#energy-passcode");
+    const nodeId = document.querySelector("#node-id");
+    const nodeRole = document.querySelector("#node-role");
+    const nodeEndpoint = document.querySelector("#node-endpoint");
+    const creditAmount = document.querySelector("#credit-amount");
+    const creditMemo = document.querySelector("#credit-memo");
+    const hubProvider = document.querySelector("#hub-provider");
+    const hubProviderState = document.querySelector("#hub-provider-state");
+    const hubLocalStatus = document.querySelector("#hub-local-status");
+    const hubUrl = document.querySelector("#hub-url");
+    const hubClientNodeId = document.querySelector("#hub-client-node-id");
+    const hubTimeoutS = document.querySelector("#hub-timeout-s");
+    const hubUpstreamUrl = document.querySelector("#hub-upstream-url");
+    const hubUpstreamNodeId = document.querySelector("#hub-upstream-node-id");
+    const hubUpstreamCredits = document.querySelector("#hub-upstream-credits");
+    const hubConfigStatus = document.querySelector("#hub-config-status");
+    const statusBox = document.querySelector("#energy-status");
+    const nodesBox = document.querySelector("#nodes");
+    const txBox = document.querySelector("#transactions");
+    const headNode = document.querySelector("#head-node");
+    const chainName = document.querySelector("#chain-name");
+    const nodeCount = document.querySelector("#node-count");
+    const energyChainConnected = document.querySelector("#energy-chain-connected");
+    const energyChainId = document.querySelector("#energy-chain-id");
+    const energyChainExpectedId = document.querySelector("#energy-chain-expected-id");
+    const energyChainIdOk = document.querySelector("#energy-chain-id-ok");
+    const energyChainBlock = document.querySelector("#energy-chain-block");
+    const energyChainPeers = document.querySelector("#energy-chain-peers");
+    const energyChainDefaults = document.querySelector("#energy-chain-defaults");
+    const energyChainRpcSource = document.querySelector("#energy-chain-rpc-source");
+    const energyChainIdSource = document.querySelector("#energy-chain-id-source");
+    const energyChainError = document.querySelector("#energy-chain-error");
+    const energyChainStatus = document.querySelector("#energy-chain-status");
+    const bridgeGovernanceModel = document.querySelector("#bridge-governance-model");
+    const bridgeGovernanceAlpha = document.querySelector("#bridge-governance-alpha");
+    const bridgeGovernanceBeta = document.querySelector("#bridge-governance-beta");
+    const bridgeGovernanceAdversary = document.querySelector("#bridge-governance-adversary");
+    const bridgeGovernanceContestRule = document.querySelector("#bridge-governance-contest-rule");
+    const bridgeGovernanceOutsideConsensus = document.querySelector("#bridge-governance-outside-consensus");
+    const bridgeGovernanceExecution = document.querySelector("#bridge-governance-execution");
+    const bridgeGovernanceStatus = document.querySelector("#bridge-governance-status");
+    const bridgeOrderCaptain = document.querySelector("#bridge-order-captain");
+    const bridgeOrderConn = document.querySelector("#bridge-order-conn");
+    const bridgeOrderBelay = document.querySelector("#bridge-order-belay");
+    const bridgeOrderHelm = document.querySelector("#bridge-order-helm");
+    const bridgeOrderExecution = document.querySelector("#bridge-order-execution");
+    const xlagContractAddress = document.querySelector("#xlag-contract-address");
+    const xlagContractChain = document.querySelector("#xlag-contract-chain");
+    const xlagContractOfficeList = document.querySelector("#xlag-contract-office-list");
+    const xlagContractActiveAccount = document.querySelector("#xlag-contract-active-account");
+    const xlagContractActiveOffice = document.querySelector("#xlag-contract-active-office");
+    const xlagContractActionResult = document.querySelector("#xlag-contract-action-result");
+    const xlagContractStatus = document.querySelector("#xlag-contract-status");
+    const xlagWalletDiagnostics = document.querySelector("#xlag-wallet-diagnostics");
+    const xlagPayoutRecipient = document.querySelector("#xlag-payout-recipient");
+    const xlagPayoutAmountWei = document.querySelector("#xlag-payout-amount-wei");
+    const xlagPayoutMemo = document.querySelector("#xlag-payout-memo");
+    const xlagPayoutExpiresBlock = document.querySelector("#xlag-payout-expires-block");
+    const xlagPayoutId = document.querySelector("#xlag-payout-id");
+    const xlagResetOffice = document.querySelector("#xlag-reset-office");
+    const xlagResetNewAddress = document.querySelector("#xlag-reset-new-address");
+    const xlagResetReason = document.querySelector("#xlag-reset-reason");
+    const xlagResetExpiresBlock = document.querySelector("#xlag-reset-expires-block");
+    const xlagResetId = document.querySelector("#xlag-reset-id");
+    const xlagWalletSmokeGuide = document.querySelector("#xlag-wallet-smoke-guide");
+    const xlagWalletSmokeId = document.querySelector("#xlag-wallet-smoke-id");
+    const xlagWalletSmokeMemo = document.querySelector("#xlag-wallet-smoke-memo");
+    const xlagWalletSmokeStatus = document.querySelector("#xlag-wallet-smoke-status");
+    const xlagAnyUserFrobWallet = document.querySelector("#xlag-any-user-frob-wallet");
+    const xlagAnyUserFrobChainOk = document.querySelector("#xlag-any-user-frob-chain-ok");
+    const xlagAnyUserFrobAvailable = document.querySelector("#xlag-any-user-frob-available");
+    const xlagAnyUserFrobNonce = document.querySelector("#xlag-any-user-frob-nonce");
+    const xlagAnyUserFrobBalance = document.querySelector("#xlag-any-user-frob-balance");
+    const xlagDevFaucetAmount = document.querySelector("#xlag-dev-faucet-amount");
+    const xlagDevFaucetStatus = document.querySelector("#xlag-dev-faucet-status");
+    const xlagAnyUserFrobId = document.querySelector("#xlag-any-user-frob-id");
+    const xlagAnyUserFrobMemo = document.querySelector("#xlag-any-user-frob-memo");
+    const xlagAnyUserFrobStatus = document.querySelector("#xlag-any-user-frob-status");
+    let xlagStatus = null;
+    let xlagActiveAccount = "";
+    let xlagWalletLastAction = "not started";
+    let xlagWalletLastError = "none";
+    let xlagLastSubmittedFrobId = "";
+    const xlagPendingActions = new Set();
+
+    function xlagWalletErrorMessage(error) {
+      const pieces = [];
+      if (error && typeof error === "object" && "code" in error) pieces.push(`code ${error.code}`);
+      pieces.push(String(error?.message || error || "unknown wallet error"));
+      return pieces.join(": ");
+    }
+    function xlagWalletLog(level, message, detail = null) {
+      const fn = console[level] || console.log;
+      if (detail === null || detail === undefined) {
+        fn.call(console, "[energy:xlag-wallet]", message);
+      } else {
+        fn.call(console, "[energy:xlag-wallet]", message, detail);
+      }
+    }
+    function xlagExpectedChainDetails() {
+      const live = xlagStatus?.live || {};
+      const expectedRaw = live.expected_chain_id || xlagStatus?.chain_id || live.chain_id;
+      const expected = expectedRaw ? Number(expectedRaw) : null;
+      return {
+        expected,
+        expectedHex: expected ? `0x${expected.toString(16)}` : "",
+        rpcUrl: live.rpc_url || xlagStatus?.rpc_url || "http://127.0.0.1:18545",
+        chainName: live.chain_name || "Main Computer Dev Chain",
+        currencySymbol: live.currency_symbol || "MCXLAG"
+      };
+    }
+    function xlagSetWalletMessage(message, target = null) {
+      if (target) target.textContent = message;
+      xlagContractActionResult.textContent = message;
+      xlagWalletLastAction = message;
+    }
+    function xlagSetButtonPending(button, pending, pendingText = "Waiting for MetaMask...") {
+      if (!button) return;
+      if (!button.dataset.readyText) button.dataset.readyText = button.textContent;
+      if (pending) {
+        button.disabled = true;
+        button.setAttribute("aria-busy", "true");
+        button.textContent = pendingText;
+      } else {
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+        button.textContent = button.dataset.readyText || button.textContent;
+      }
+    }
+    async function xlagRunExclusive(actionKey, button, target, pendingText, task) {
+      if (xlagPendingActions.has(actionKey)) {
+        const message = `${actionKey} is already waiting for MetaMask or confirmation; duplicate click ignored.`;
+        xlagSetWalletMessage(message, target);
+        xlagWalletLog("warn", "duplicate wallet action ignored", {actionKey});
+        return null;
+      }
+      xlagPendingActions.add(actionKey);
+      xlagSetButtonPending(button, true, pendingText);
+      try {
+        return await task();
+      } finally {
+        xlagPendingActions.delete(actionKey);
+        xlagSetButtonPending(button, false);
+      }
+    }
+    function xlagSendButton(event, actionKey, selector, types, values, target = xlagContractActionResult) {
+      return xlagRunExclusive(actionKey, event.currentTarget, target, "Waiting for MetaMask...", () => xlagSend(selector, types, values));
+    }
+    async function refreshXlagWalletDiagnostics(context = "manual") {
+      const detail = {context, provider: Boolean(window.ethereum), lastAction: xlagWalletLastAction, lastError: xlagWalletLastError};
+      const {expected, expectedHex, rpcUrl, currencySymbol} = xlagExpectedChainDetails();
+      const lines = [
+        `context: ${context}`,
+        `provider: ${window.ethereum ? "available" : "missing"}`,
+        `expected chain: ${expected || "unknown"} ${expectedHex || ""}`.trim(),
+        `configured rpc: ${rpcUrl || "unknown"}`,
+        `last action: ${xlagWalletLastAction}`,
+        `last error: ${xlagWalletLastError}`
+      ];
+      if (!window.ethereum) {
+        lines.push("next step: install/enable MetaMask or another injected browser wallet for this page.");
+        xlagWalletDiagnostics.textContent = lines.join("\n");
+        xlagWalletLog("warn", "browser wallet provider missing", detail);
+        return detail;
+      }
+      try {
+        const chainHex = await window.ethereum.request({method: "eth_chainId"});
+        const chainId = Number(BigInt(chainHex));
+        detail.walletChainId = chainId;
+        detail.walletChainHex = chainHex;
+        detail.chainMatchesExpected = expected ? chainId === expected : null;
+        lines.push(`wallet chain: ${chainId} ${chainHex}`);
+        lines.push(`wallet chain ok: ${expected ? String(chainId === expected) : "unknown"}`);
+      } catch (error) {
+        const message = xlagWalletErrorMessage(error);
+        detail.chainError = message;
+        lines.push(`wallet chain error: ${message}`);
+      }
+      try {
+        const accounts = await window.ethereum.request({method: "eth_accounts"});
+        const normalized = (accounts || []).map((account) => String(account).toLowerCase());
+        detail.accounts = normalized;
+        if (normalized[0]) {
+          xlagActiveAccount = normalized[0];
+          xlagContractActiveAccount.textContent = xlagActiveAccount;
+          xlagAnyUserFrobWallet.textContent = xlagActiveAccount;
+        }
+        lines.push(`accounts: ${normalized.length}`);
+        lines.push(`selected account: ${normalized[0] || "not connected"}`);
+      } catch (error) {
+        const message = xlagWalletErrorMessage(error);
+        detail.accountsError = message;
+        lines.push(`accounts error: ${message}`);
+      }
+      lines.push(`native currency: ${currencySymbol}`);
+      lines.push("console prefix: [energy:xlag-wallet]");
+      try {
+        if (xlagActiveAccount) {
+          const balanceHex = await window.ethereum.request({method: "eth_getBalance", params: [xlagActiveAccount, "latest"]});
+          const balanceEng = formatWeiToEng(balanceHex);
+          detail.balanceWei = String(BigInt(balanceHex));
+          detail.balanceEng = balanceEng;
+          xlagAnyUserFrobBalance.textContent = `${balanceEng} Compute Credits`;
+          lines.push(`native balance: ${balanceEng} Compute Credits`);
+        } else {
+          xlagAnyUserFrobBalance.textContent = "not connected";
+        }
+      } catch (error) {
+        const message = xlagWalletErrorMessage(error);
+        detail.balanceError = message;
+        xlagAnyUserFrobBalance.textContent = "unknown";
+        lines.push(`balance error: ${message}`);
+      }
+      xlagWalletDiagnostics.textContent = lines.join("\n");
+      xlagWalletLog("debug", "diagnostics updated", detail);
+      return detail;
+    }
+    function xlagHandleWalletError(error, target = null, context = "wallet action") {
+      const message = xlagWalletErrorMessage(error);
+      xlagWalletLastAction = context;
+      xlagWalletLastError = message;
+      xlagWalletLog("error", `${context} failed`, {message, error});
+      const output = `${context} failed: ${message}`;
+      if (target) target.textContent = output;
+      xlagContractActionResult.textContent = output;
+      refreshXlagWalletDiagnostics(context);
+    }
+
+    async function energyRequest(path, payload = {}) {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({...payload, passcode: passcode.value})
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      return data;
+    }
+    function hubConfigPayload(connectUpstream = false) {
+      return {
+        hub_url: hubUrl.value,
+        hub_client_node_id: hubClientNodeId.value,
+        hub_timeout_s: Number(hubTimeoutS.value || 600),
+        upstream_hub_url: hubUpstreamUrl.value,
+        upstream_node_id: hubUpstreamNodeId.value,
+        upstream_credits_per_request: Number(hubUpstreamCredits.value || 1),
+        connect_upstream: Boolean(connectUpstream)
+      };
+    }
+    function renderHubConfig(data) {
+      const saved = data.saved || {};
+      hubProvider.value = data.active_provider || "ollama";
+      hubUrl.value = data.hub_url || saved.hub_url || "http://127.0.0.1:8770";
+      hubClientNodeId.value = data.hub_client_node_id || saved.hub_client_node_id || "main-computer-client";
+      hubTimeoutS.value = data.hub_timeout_s || saved.hub_timeout_s || 600;
+      hubUpstreamUrl.value = saved.upstream_hub_url || hubUpstreamUrl.value || "";
+      hubProviderState.textContent = `${data.active_provider || data.provider || "unknown"} | ${data.model || "unknown model"}`;
+      const local = data.local_hub_status || {};
+      const status = local.status || {};
+      hubLocalStatus.textContent = local.reachable ? `${status.worker_count || 0} workers | ${status.upstream_count || 0} upstreams` : "not reachable";
+      hubConfigStatus.textContent = JSON.stringify(data, null, 2);
+    }
+    async function refreshHubConfig() {
+      try {
+        const response = await fetch("/api/hub/config", {cache: "no-store"});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        renderHubConfig(data);
+      } catch (error) {
+        hubProviderState.textContent = "unavailable";
+        hubLocalStatus.textContent = "unknown";
+        hubConfigStatus.textContent = String(error.message || error);
+      }
+    }
+    async function saveHubConfig(connectUpstream = false) {
+      try {
+        const data = await energyRequest("/api/hub/config", hubConfigPayload(connectUpstream));
+        renderHubConfig(data);
+      } catch (error) {
+        hubConfigStatus.textContent = String(error.message || error);
+      }
+    }
+    function render(data) {
+      headNode.textContent = `${data.head.node_id} | ${data.head.role}`;
+      chainName.textContent = `${data.network.name} | ${data.network.currency}`;
+      nodeCount.textContent = `${data.nodes.length + 1} configured nodes`;
+      statusBox.textContent = JSON.stringify(data.balances, null, 2);
+      nodesBox.textContent = "";
+      [data.head, ...data.nodes].forEach((node) => {
+        const item = document.createElement("div");
+        item.className = "node";
+        item.innerHTML = `<strong>${node.node_id}</strong>${node.role} | ${node.endpoint || "local"} | balance ${data.balances[node.node_id] || 0}`;
+        nodesBox.append(item);
+      });
+      txBox.textContent = "";
+      data.transactions.slice().reverse().forEach((tx) => {
+        const item = document.createElement("div");
+        item.className = "tx";
+        item.innerHTML = `<strong>${tx.tx_id} | ${tx.kind}</strong>${tx.node_id} | ${tx.credits} | ${tx.memo || "no memo"}`;
+        txBox.append(item);
+      });
+    }
+    function displayValue(value) {
+      return value === null || value === undefined ? "unknown" : String(value);
+    }
+    function formatWeiToEng(weiValue) {
+      const wei = BigInt(weiValue || 0);
+      const base = 1000000000000000000n;
+      const whole = wei / base;
+      const fraction = (wei % base).toString().padStart(18, "0").replace(/0+$/, "");
+      return fraction ? `${whole}.${fraction}` : `${whole}`;
+    }
+    function renderChainStatus(data) {
+      if (!data.enabled) {
+        energyChainConnected.textContent = "disabled";
+      } else {
+        energyChainConnected.textContent = data.connected ? "yes" : "no";
+      }
+      energyChainId.textContent = displayValue(data.chain_id);
+      energyChainExpectedId.textContent = displayValue(data.expected_chain_id);
+      energyChainIdOk.textContent = data.chain_id_ok === null || data.chain_id_ok === undefined ? "unknown" : String(Boolean(data.chain_id_ok));
+      energyChainBlock.textContent = displayValue(data.block_number);
+      energyChainPeers.textContent = displayValue(data.peer_count);
+      energyChainDefaults.textContent = data.using_defaults ? (data.defaults_used || []).join(", ") : "none";
+      energyChainRpcSource.textContent = displayValue(data.config_source?.rpc_url);
+      energyChainIdSource.textContent = displayValue(data.config_source?.expected_chain_id);
+      energyChainError.textContent = data.error || "";
+      energyChainStatus.textContent = JSON.stringify(data, null, 2);
+    }
+    async function refreshChain() {
+      try {
+        const response = await fetch("/api/energy/chain/status", {cache: "no-store"});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        renderChainStatus(data);
+      } catch (error) {
+        energyChainConnected.textContent = "no";
+        energyChainId.textContent = "unknown";
+        energyChainExpectedId.textContent = "unknown";
+        energyChainIdOk.textContent = "unknown";
+        energyChainBlock.textContent = "unknown";
+        energyChainPeers.textContent = "unknown";
+        energyChainDefaults.textContent = "unknown";
+        energyChainRpcSource.textContent = "unknown";
+        energyChainIdSource.textContent = "unknown";
+        energyChainError.textContent = String(error.message || error);
+        energyChainStatus.textContent = JSON.stringify({error: String(error.message || error)}, null, 2);
+      }
+    }
+    function officeLabel(office) {
+      return office ? office.title : "unknown";
+    }
+    function renderBridgeGovernance(data) {
+      const offices = data.offices || {};
+      bridgeGovernanceModel.textContent = data.model || "unknown";
+      bridgeGovernanceAlpha.textContent = `${officeLabel(offices.O0)} + ${officeLabel(offices.O1)}`;
+      bridgeGovernanceBeta.textContent = `${officeLabel(offices.O2)} + ${officeLabel(offices.O3)}`;
+      bridgeGovernanceAdversary.textContent = data.adversary?.any_pair_can_collude ? "Any pair can collude" : "unknown";
+      bridgeGovernanceContestRule.textContent = data.safety?.any_office_can_contest ? "Any office can contest" : "unknown";
+      bridgeGovernanceOutsideConsensus.textContent = data.safety?.outside_consensus_required_on_contest ? "Contest => outside consensus" : "unknown";
+      bridgeGovernanceExecution.textContent = data.execution?.reserve_execution_enabled ? "Execution enabled" : "Execution disabled";
+      const orderFlow = data.bridge_order_flow || {};
+      bridgeOrderCaptain.textContent = orderFlow.captain_touches_computer_required === false ? "Captain gives intent; no computer touch required" : "Captain gives intent";
+      bridgeOrderConn.textContent = orderFlow.console_operator_role === "conn" ? "Conn relays" : "console relay";
+      bridgeOrderBelay.textContent = orderFlow.first_officer_touches_computer_required === false ? "First Officer may belay; no computer touch required" : "First Officer may belay";
+      bridgeOrderHelm.textContent = orderFlow.seconding_station === "helm" ? "Helm seconds/carries" : "seconding station";
+      bridgeOrderExecution.textContent = orderFlow.execution?.serious_outcomes_require_governance ? "serious execution disabled/policy-gated" : "execution disabled";
+      bridgeGovernanceStatus.textContent = [
+        "Alpha/Beta is grammar, not trust",
+        bridgeGovernanceAdversary.textContent,
+        bridgeGovernanceContestRule.textContent,
+        bridgeGovernanceOutsideConsensus.textContent,
+        bridgeGovernanceExecution.textContent,
+        bridgeOrderCaptain.textContent,
+        bridgeOrderConn.textContent,
+        bridgeOrderBelay.textContent,
+        bridgeOrderHelm.textContent,
+        bridgeOrderExecution.textContent,
+        "",
+        JSON.stringify(data, null, 2)
+      ].join("\n");
+    }
+    async function refreshBridgeGovernance() {
+      try {
+        const response = await fetch("/api/bridge/governance", {cache: "no-store"});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        renderBridgeGovernance(data);
+      } catch (error) {
+        const message = String(error.message || error);
+        bridgeGovernanceModel.textContent = "unavailable";
+        bridgeGovernanceAlpha.textContent = "unknown";
+        bridgeGovernanceBeta.textContent = "unknown";
+        bridgeGovernanceAdversary.textContent = "unknown";
+        bridgeGovernanceContestRule.textContent = "unknown";
+        bridgeGovernanceOutsideConsensus.textContent = "unknown";
+        bridgeGovernanceExecution.textContent = "Execution disabled";
+        bridgeOrderCaptain.textContent = "unknown";
+        bridgeOrderConn.textContent = "unknown";
+        bridgeOrderBelay.textContent = "unknown";
+        bridgeOrderHelm.textContent = "unknown";
+        bridgeOrderExecution.textContent = "Execution disabled";
+        bridgeGovernanceStatus.textContent = message;
+      }
+    }
+    function stripHex(value) {
+      return String(value || "").replace(/^0x/i, "");
+    }
+    function padWord(hex) {
+      return stripHex(hex).padStart(64, "0");
+    }
+    function encodeUint(value) {
+      return BigInt(value || 0).toString(16).padStart(64, "0");
+    }
+    function encodeAddress(value) {
+      const clean = stripHex(value).toLowerCase();
+      if (!/^[0-9a-f]{40}$/.test(clean)) throw new Error("Invalid address");
+      return clean.padStart(64, "0");
+    }
+    function encodeBytes32(value) {
+      const clean = stripHex(value).toLowerCase();
+      if (!/^[0-9a-f]{1,64}$/.test(clean)) throw new Error("Invalid bytes32 value");
+      return clean.padStart(64, "0");
+    }
+    function encodeStringTail(value) {
+      const bytes = new TextEncoder().encode(String(value || ""));
+      const length = encodeUint(bytes.length);
+      const hex = Array.from(bytes).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+      const paddedLength = Math.ceil(hex.length / 64) * 64;
+      return length + hex.padEnd(paddedLength, "0");
+    }
+    function abiEncode(types, values) {
+      const head = [];
+      const tail = [];
+      let offset = types.length * 32;
+      types.forEach((type, index) => {
+        const value = values[index];
+        if (type === "string") {
+          const encoded = encodeStringTail(value);
+          head.push(encodeUint(offset));
+          tail.push(encoded);
+          offset += encoded.length / 2;
+        } else if (type === "address") {
+          head.push(encodeAddress(value));
+        } else if (type === "bytes32") {
+          head.push(encodeBytes32(value));
+        } else {
+          head.push(encodeUint(value));
+        }
+      });
+      return head.join("") + tail.join("");
+    }
+    function contractData(selector, types = [], values = []) {
+      return selector + abiEncode(types, values);
+    }
+    function randomSmokeId() {
+      const bytes = new Uint8Array(32);
+      window.crypto.getRandomValues(bytes);
+      return "0x" + Array.from(bytes).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    }
+    async function xlagEnsureExpectedChain() {
+      if (!window.ethereum) throw new Error("Browser wallet not available.");
+      const {expected, expectedHex, rpcUrl, chainName, currencySymbol} = xlagExpectedChainDetails();
+      if (!expected) {
+        xlagWalletLog("warn", "expected chain is unknown; skipping wallet chain enforcement");
+        return;
+      }
+      const actualHex = await window.ethereum.request({method: "eth_chainId"});
+      const actual = Number(BigInt(actualHex));
+      if (actual === expected) {
+        xlagWalletLog("debug", "wallet is already on the expected chain", {expected, expectedHex, actualHex});
+        return;
+      }
+      xlagWalletLog("warn", "wallet chain mismatch; requesting switch", {expected, expectedHex, actual, actualHex, rpcUrl});
+      try {
+        await window.ethereum.request({method: "wallet_switchEthereumChain", params: [{chainId: expectedHex}]});
+      } catch (error) {
+        if (error && typeof error === "object" && error.code === 4902 && rpcUrl) {
+          xlagWalletLog("warn", "wallet does not know the dev chain; requesting addEthereumChain", {expected, expectedHex, rpcUrl});
+          await window.ethereum.request({
+            method: "wallet_addEthereumChain",
+            params: [{
+              chainId: expectedHex,
+              chainName,
+              nativeCurrency: {name: currencySymbol, symbol: currencySymbol, decimals: 18},
+              rpcUrls: [rpcUrl]
+            }]
+          });
+        } else {
+          throw new Error(`Switch wallet to chain ${expected} (${expectedHex}) before sending. ${xlagWalletErrorMessage(error)}`);
+        }
+      }
+      const confirmedHex = await window.ethereum.request({method: "eth_chainId"});
+      const confirmed = Number(BigInt(confirmedHex));
+      if (confirmed !== expected) {
+        throw new Error(`Wallet is still on chain ${confirmed} (${confirmedHex}); expected ${expected} (${expectedHex}).`);
+      }
+      xlagWalletLog("info", "wallet chain is ready", {expected, expectedHex, confirmedHex});
+    }
+    function renderWalletSmokeGuide(data) {
+      const live = data?.live || {};
+      const smoke = live.wallet_smoke || {};
+      const guide = [
+        "1) Run: python .\\dev-chain-wallet-smoke-guide.py --show-private-keys",
+        `2) MetaMask RPC: ${live.rpc_url || "http://127.0.0.1:18545"}`,
+        `3) Chain ID: ${live.expected_chain_id || data.chain_id || "42424242"} / symbol Compute Credits`,
+        "4) Import an O0/O1/O2/O3 dev office private key.",
+        `5) Call ${smoke.function || "finalizeWalletSmokeTest(bytes32,string)"} from one office wallet.`,
+        `selector ${smoke.selector || "0xaa46bd04"}`
+      ];
+      xlagWalletSmokeGuide.textContent = guide.join("\n");
+      xlagWalletSmokeStatus.textContent = [
+        `available: ${smoke.available === false ? "no, redeploy the dev chain" : "yes"}`,
+        `nonce: ${smoke.nonce ?? "unknown"}`,
+        `last finalizer: ${smoke.last_finalizer || "none"}`,
+        `last office: ${smoke.last_office ?? "none"}`,
+        `last id: ${smoke.last_smoke_id || "none"}`,
+        `last memo: ${smoke.last_memo || "none"}`,
+        `last block: ${smoke.last_block ?? "none"}`,
+        smoke.error ? `error: ${smoke.error}` : "error: none"
+      ].join("\n");
+    }
+    function renderAnyUserFrobberStatus(data) {
+      const live = data?.live || {};
+      const frob = live.any_user_frobber || {};
+      const chainOk = live.chain_id_ok === null || live.chain_id_ok === undefined ? "unknown" : String(Boolean(live.chain_id_ok));
+      xlagAnyUserFrobWallet.textContent = xlagActiveAccount || "not connected";
+      xlagAnyUserFrobChainOk.textContent = chainOk;
+      xlagAnyUserFrobAvailable.textContent = frob.available === false ? "no, redeploy the dev chain" : "yes";
+      xlagAnyUserFrobNonce.textContent = frob.nonce ?? "unknown";
+      xlagAnyUserFrobStatus.textContent = [
+        `function: ${frob.function || "frobByAnyUser(bytes32,string)"}`,
+        `selector: ${frob.selector || "0xbcd0a3bf"}`,
+        `requires: ${frob.requires || "any connected browser wallet on the configured dev chain"}`,
+        `effect: ${frob.effect || "harmless dev-chain write; no reserve funds move"}`,
+        `nonce: ${frob.nonce ?? "unknown"}`,
+        `last frobber: ${frob.last_frobber || "none"}`,
+        `last id: ${frob.last_frob_id || "none"}`,
+        `last memo: ${frob.last_frob_memo || "none"}`,
+        `last block: ${frob.last_block ?? "none"}`,
+        frob.error ? `error: ${frob.error}` : "error: none"
+      ].join("\n");
+    }
+    async function xlagConnectWallet() {
+      if (!window.ethereum) throw new Error("Browser wallet not available. Use MetaMask or another injected wallet on this page.");
+      xlagWalletLastAction = "requesting accounts";
+      xlagWalletLastError = "none";
+      xlagWalletLog("info", "requesting browser wallet accounts");
+      const accounts = await window.ethereum.request({method: "eth_requestAccounts"});
+      xlagActiveAccount = (accounts && accounts[0] || "").toLowerCase();
+      if (!xlagActiveAccount) throw new Error("Wallet returned no accounts. Unlock the wallet and approve account access for this site.");
+      xlagContractActiveAccount.textContent = xlagActiveAccount;
+      xlagAnyUserFrobWallet.textContent = xlagActiveAccount;
+      xlagWalletLastAction = `connected ${xlagActiveAccount}; checking chain`;
+      xlagWalletLog("info", "wallet account connected", {account: xlagActiveAccount});
+      await xlagEnsureExpectedChain();
+      xlagWalletLastAction = `connected ${xlagActiveAccount}`;
+      await refreshXlagWalletDiagnostics("connect-wallet");
+      return xlagActiveAccount;
+    }
+    async function xlagSend(selector, types, values) {
+      await xlagEnsureExpectedChain();
+      const from = xlagActiveAccount || await xlagConnectWallet();
+      if (!xlagStatus?.contract_address) throw new Error("X-LAG contract address is not configured.");
+      const tx = {from, to: xlagStatus.contract_address, data: contractData(selector, types, values)};
+      xlagWalletLastAction = `sending transaction ${selector}`;
+      xlagWalletLog("info", "requesting transaction signature", {selector, from, to: tx.to, valueTypes: types});
+      const txHash = await window.ethereum.request({method: "eth_sendTransaction", params: [tx]});
+      xlagWalletLastAction = `sent ${txHash}`;
+      xlagWalletLastError = "none";
+      xlagContractActionResult.textContent = `sent ${txHash}`;
+      xlagWalletLog("info", "transaction submitted", {selector, txHash});
+      await refreshXlagWalletDiagnostics("transaction-sent");
+      return txHash;
+    }
+    async function xlagRequestDevFaucet() {
+      const account = xlagActiveAccount || await xlagConnectWallet();
+      if (!account) throw new Error("Connect a browser wallet before using the dev faucet.");
+      const amountEng = String(xlagDevFaucetAmount.value || "1").trim() || "1";
+      xlagSetWalletMessage(`requesting ${amountEng} Compute Credits from local dev faucet...`, xlagDevFaucetStatus);
+      xlagWalletLog("info", "requesting local dev faucet funding", {account, amountEng});
+      const response = await fetch("/api/xlag/dev/faucet", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({address: account, amount_credits: amountEng})
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      xlagWalletLastAction = `dev faucet sent ${data.tx_hash}`;
+      xlagWalletLastError = "none";
+      xlagDevFaucetStatus.textContent = [
+        `sent ${data.amount_credits || amountEng} Compute Credits`,
+        `to ${data.to || account}`,
+        `tx ${data.tx_hash}`,
+        data.note || "local dev faucet transfer submitted"
+      ].join("\n");
+      xlagWalletLog("info", "local dev faucet transfer submitted", data);
+      setTimeout(() => refreshXlagWalletDiagnostics("dev-faucet-funded"), 900);
+      return data;
+    }
+    function decodeAddressWord(word) {
+      return "0x" + word.slice(24);
+    }
+    function decodeOffices(result) {
+      const clean = stripHex(result);
+      return [0, 1, 2, 3].map((index) => decodeAddressWord(clean.slice(index * 64, index * 64 + 64)));
+    }
+    async function xlagCall(data) {
+      if (!window.ethereum || !xlagStatus?.contract_address) return null;
+      return window.ethereum.request({method: "eth_call", params: [{to: xlagStatus.contract_address, data}, "latest"]});
+    }
+    async function refreshXLagContract() {
+      try {
+        const response = await fetch("/api/xlag/contract/status", {cache: "no-store"});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        xlagStatus = data;
+        xlagContractAddress.textContent = data.contract_address || "not configured";
+        xlagContractChain.textContent = String(data.chain_id || "unknown");
+        xlagContractStatus.textContent = JSON.stringify(data, null, 2);
+        renderWalletSmokeGuide(data);
+        renderAnyUserFrobberStatus(data);
+        if (!data.configured) {
+          xlagContractOfficeList.textContent = "Set MAIN_COMPUTER_XLAG_CONTRACT_ADDRESS after deployment.";
+          xlagContractActiveOffice.textContent = "unknown office";
+          renderAnyUserFrobberStatus(data);
+          return;
+        }
+        if (window.ethereum) {
+          const accounts = await window.ethereum.request({method: "eth_accounts"});
+          xlagActiveAccount = (accounts && accounts[0] || "").toLowerCase();
+          xlagContractActiveAccount.textContent = xlagActiveAccount || "not connected";
+          xlagAnyUserFrobWallet.textContent = xlagActiveAccount || "not connected";
+          const officesRaw = await xlagCall("0x9e718f3a");
+          if (officesRaw) {
+            const offices = decodeOffices(officesRaw);
+            xlagContractOfficeList.textContent = offices.map((office, index) => `O${index}: ${office}`).join("\n");
+            const officeIndex = offices.findIndex((office) => office.toLowerCase() === xlagActiveAccount);
+            xlagContractActiveOffice.textContent = officeIndex >= 0 ? `O${officeIndex}` : "unknown office";
+          }
+        } else {
+          xlagActiveAccount = "";
+          xlagContractActiveAccount.textContent = "wallet unavailable";
+          xlagAnyUserFrobWallet.textContent = "wallet unavailable";
+          xlagAnyUserFrobBalance.textContent = "wallet unavailable";
+          xlagContractActiveOffice.textContent = "unknown office";
+        }
+        renderAnyUserFrobberStatus(data);
+        await refreshXlagWalletDiagnostics("contract-status-refresh");
+      } catch (error) {
+        xlagContractActionResult.textContent = String(error.message || error);
+        xlagHandleWalletError(error, xlagWalletDiagnostics, "contract status refresh");
+      }
+    }
+
+    function energyShort(value, head = 8, tail = 6) {
+      const text = String(value || "");
+      if (!text) return "not configured";
+      if (text.length <= head + tail + 3) return text;
+      return `${text.slice(0, head)}…${text.slice(-tail)}`;
+    }
+    function energyStatusTitle(status) {
+      const clean = String(status || "unknown");
+      return clean.charAt(0).toUpperCase() + clean.slice(1);
+    }
+    function energySetText(node, value) {
+      if (node) node.textContent = value == null || value === "" ? "unknown" : String(value);
+    }
+    function energyNetworkByKey(key) {
+      const networks = energyNetworkPayload?.networks || [];
+      return networks.find((network) => network.network === key || network.network_key === key) || networks[0] || null;
+    }
+    function energyRenderNetworkCards(networks) {
+      (networks || []).forEach((network) => {
+        const key = network.network || network.network_key;
+        const card = document.querySelector(`[data-network-option="${key}"]`);
+        const status = document.querySelector(`[data-network-card-status="${key}"]`);
+        const detail = document.querySelector(`[data-network-card-detail="${key}"]`);
+        if (card) {
+          card.dataset.state = network.overall_status || "unknown";
+          card.setAttribute("aria-pressed", String(key === energySelectedNetwork));
+        }
+        energySetText(status, energyStatusTitle(network.overall_status));
+        const chain = network.live_chain_id || network.expected_chain_id || "unknown";
+        const rpc = network.rpc_reachable ? "RPC live" : "RPC not live";
+        energySetText(detail, `chain ${chain} · ${rpc}`);
+      });
+    }
+    function energyRenderContracts(network) {
+      if (!energyNetworkContracts) return;
+      const contracts = network?.contracts || [];
+      if (!contracts.length) {
+        energyNetworkContracts.innerHTML = "<p>No contract inventory was reported.</p>";
+        energySetText(energyNetworkContractCount, "0 contracts");
+        return;
+      }
+      const healthy = contracts.filter((contract) => contract.has_code === true).length;
+      energySetText(energyNetworkContractCount, `${healthy}/${contracts.length} live`);
+      energyNetworkContracts.innerHTML = contracts.map((contract) => {
+        const hasCode = contract.has_code === true ? "true" : contract.has_code === false ? "false" : "unknown";
+        const code = contract.has_code === true ? `${contract.code_bytes || 0} bytes` : contract.has_code === false ? "no bytecode" : "not checked";
+        return `
+          <div class="contract-item" data-code="${hasCode}">
+            <strong>${contract.label || contract.key}</strong>
+            <code>${contract.address || "missing address"}</code>
+            <span>${code}</span>
+            <small>${contract.target || ""}</small>
+          </div>
+        `;
+      }).join("");
+    }
+    function energyRenderOffices(network) {
+      if (!energyNetworkOffices) return;
+      const offices = network?.offices || [];
+      if (!offices.length) {
+        energyNetworkOffices.innerHTML = "<p>No office authority was reported.</p>";
+        energySetText(energyNetworkAuthorityBadge, "missing");
+        return;
+      }
+      const defaultCount = offices.filter((office) => office.default_anvil).length;
+      energySetText(energyNetworkAuthorityBadge, defaultCount ? `${defaultCount} default` : "rotated");
+      energyNetworkOffices.innerHTML = offices.map((office) => `
+        <div class="office-item" data-default-anvil="${office.default_anvil ? "true" : "false"}">
+          <strong>${office.office || ""} ${office.title || "Office"}</strong>
+          <code>${office.address || "missing address"}</code>
+          <span>${office.default_anvil ? "default Anvil identity" : "non-default identity"}</span>
+        </div>
+      `).join("");
+    }
+    function energyRenderWarnings(network) {
+      if (!energyNetworkWarnings) return;
+      const warnings = network?.warnings || [];
+      if (!warnings.length) {
+        energyNetworkWarnings.innerHTML = '<li class="ok">No monitor warnings for the selected network.</li>';
+        return;
+      }
+      energyNetworkWarnings.innerHTML = warnings.map((warning) => {
+        const unsafe = /unsafe|does not match|no bytecode|missing|unreachable/i.test(String(warning));
+        return `<li class="${unsafe ? "unsafe" : ""}">${warning}</li>`;
+      }).join("");
+    }
+    function energyRenderSelectedNetwork(network) {
+      if (!network) return;
+      const status = network.overall_status || "unknown";
+      if (energyNetworkMonitor) energyNetworkMonitor.dataset.state = status;
+      energySetText(energyNetworkSelectedName, network.display_name || network.network || "Network");
+      energySetText(energyNetworkSelectedStatus, energyStatusTitle(status));
+      if (energyNetworkSelectedStatus) energyNetworkSelectedStatus.dataset.state = status;
+      energySetText(energyNetworkExpectedChain, network.expected_chain_id || "unknown");
+      energySetText(energyNetworkLiveChain, network.live_chain_id || (network.rpc_reachable ? "unknown" : "offline"));
+      energySetText(energyNetworkBlock, network.block_number == null ? "unknown" : network.block_number);
+      energySetText(energyNetworkRpc, network.configured_rpc_url || "not configured");
+      energySetText(energyNetworkManifest, network.manifest_present ? energyShort(network.deployment_manifest_path, 28, 24) : "missing");
+      energySetText(energyNetworkRun, network.run_id || "no run id");
+      energyRenderContracts(network);
+      energyRenderOffices(network);
+      energyRenderWarnings(network);
+    }
+    function energyRenderNetworkMonitor(payload) {
+      if (!payload || !Array.isArray(payload.networks)) return;
+      energyNetworkPayload = payload;
+      if (!energyNetworkByKey(energySelectedNetwork)) {
+        energySelectedNetwork = payload.default_network || "mainnet";
+      }
+      const selected = energyNetworkByKey(energySelectedNetwork);
+      const mainnet = energyNetworkByKey("mainnet") || selected;
+      energyRenderNetworkCards(payload.networks);
+      energyRenderSelectedNetwork(selected);
+      energySetText(energyNetworkHeroStatus, energyStatusTitle(mainnet?.overall_status));
+      energySetText(energyNetworkHeroChain, mainnet ? `${mainnet.live_chain_id || "offline"} / ${mainnet.expected_chain_id || "unknown"}` : "unknown");
+      const contracts = mainnet?.contracts || [];
+      const liveContracts = contracts.filter((contract) => contract.has_code === true).length;
+      energySetText(energyNetworkHeroContracts, contracts.length ? `${liveContracts}/${contracts.length} live` : "not reported");
+      energySetText(energyNetworkLastRefresh, new Date().toLocaleTimeString());
+    }
+    async function refreshEnergyNetworkMonitor() {
+      if (!energyNetworkMonitor) return;
+      try {
+        const response = await fetch("/api/energy/networks/status?live=1", {cache: "no-store"});
+        const payload = await response.json();
+        if (!response.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${response.status}`);
+        energyRenderNetworkMonitor(payload);
+      } catch (error) {
+        const message = String(error.message || error);
+        energySetText(energyNetworkHeroStatus, "monitor degraded");
+        energySetText(energyNetworkLastRefresh, message);
+        if (energyNetworkWarnings) {
+          energyNetworkWarnings.innerHTML = `<li class="unsafe">Network monitor failed: ${message}</li>`;
+        }
+      }
+    }
+    document.querySelectorAll("[data-network-option]").forEach((button) => {
+      button.addEventListener("click", () => {
+        energySelectedNetwork = button.dataset.networkOption || "mainnet";
+        if (energyNetworkPayload) energyRenderNetworkMonitor(energyNetworkPayload);
+      });
+    });
+
+    async function refresh() {
+      try {
+        const response = await fetch("/api/energy/status", {cache: "no-store"});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        render(data);
+      } catch (error) {
+        statusBox.textContent = String(error.message || error);
+      }
+      refreshEnergyNetworkMonitor();
+      refreshChain();
+      refreshBridgeGovernance();
+      refreshXLagContract();
+      refreshHubConfig();
+    }
+    document.querySelector("#register-node").addEventListener("click", async () => {
+      try {
+        render(await energyRequest("/api/energy/nodes/register", {node_id: nodeId.value, role: nodeRole.value, endpoint: nodeEndpoint.value}));
+      } catch (error) {
+        statusBox.textContent = String(error.message || error);
+      }
+    });
+    document.querySelector("#issue-credit").addEventListener("click", async () => {
+      try {
+        render(await energyRequest("/api/energy/credits/issue", {node_id: nodeId.value, credits: Number(creditAmount.value), memo: creditMemo.value}));
+      } catch (error) {
+        statusBox.textContent = String(error.message || error);
+      }
+    });
+    document.querySelector("#spend-credit").addEventListener("click", async () => {
+      try {
+        render(await energyRequest("/api/energy/credits/spend", {node_id: nodeId.value, credits: Number(creditAmount.value), memo: creditMemo.value}));
+      } catch (error) {
+        statusBox.textContent = String(error.message || error);
+      }
+    });
+    document.querySelector("#refresh-energy").addEventListener("click", refresh);
+    document.querySelector("#hub-apply-config").addEventListener("click", () => saveHubConfig(false));
+    document.querySelector("#hub-connect-upstream").addEventListener("click", () => saveHubConfig(true));
+    document.querySelector("#hub-refresh-config").addEventListener("click", refreshHubConfig);
+    document.querySelector("#xlag-wallet-connect").addEventListener("click", (event) => {
+      xlagSetWalletMessage("connecting wallet...", xlagWalletSmokeStatus);
+      xlagRunExclusive("wallet connect", event.currentTarget, xlagWalletSmokeStatus, "Connecting...", () => xlagConnectWallet().then(refreshXLagContract))
+        .catch((error) => xlagHandleWalletError(error, xlagWalletSmokeStatus, "wallet smoke connect"));
+    });
+    document.querySelector("#xlag-wallet-smoke-new-id").addEventListener("click", () => {
+      xlagWalletSmokeId.value = randomSmokeId();
+      xlagWalletSmokeStatus.textContent = `ready ${xlagWalletSmokeId.value}`;
+    });
+    document.querySelector("#xlag-wallet-smoke-finalize").addEventListener("click", (event) => {
+      if (!xlagWalletSmokeId.value) xlagWalletSmokeId.value = randomSmokeId();
+      xlagSendButton(event, "wallet smoke transaction", "0xaa46bd04", ["bytes32", "string"], [xlagWalletSmokeId.value, xlagWalletSmokeMemo.value], xlagWalletSmokeStatus)
+        .then((txHash) => {
+          if (!txHash) return;
+          xlagWalletSmokeStatus.textContent = `sent ${txHash}\nwaiting for live status refresh`;
+          setTimeout(refreshXLagContract, 900);
+        })
+        .catch((error) => xlagHandleWalletError(error, xlagWalletSmokeStatus, "wallet smoke transaction"));
+    });
+    document.querySelector("#xlag-any-user-frob-connect").addEventListener("click", (event) => {
+      xlagSetWalletMessage("connecting wallet...", xlagAnyUserFrobStatus);
+      xlagRunExclusive("wallet connect", event.currentTarget, xlagAnyUserFrobStatus, "Connecting...", () => xlagConnectWallet().then(refreshXLagContract))
+        .catch((error) => xlagHandleWalletError(error, xlagAnyUserFrobStatus, "any user frob connect"));
+    });
+    document.querySelector("#xlag-any-user-frob-new-id").addEventListener("click", () => {
+      xlagLastSubmittedFrobId = "";
+      xlagAnyUserFrobId.value = randomSmokeId();
+      xlagAnyUserFrobStatus.textContent = `ready ${xlagAnyUserFrobId.value}`;
+    });
+    document.querySelector("#xlag-dev-faucet-fund").addEventListener("click", (event) => {
+      xlagRunExclusive("dev faucet funding", event.currentTarget, xlagDevFaucetStatus, "Funding...", () => xlagRequestDevFaucet())
+        .catch((error) => xlagHandleWalletError(error, xlagDevFaucetStatus, "dev faucet funding"));
+    });
+    document.querySelector("#xlag-any-user-frob-submit").addEventListener("click", (event) => {
+      xlagRunExclusive("any user frob transaction", event.currentTarget, xlagAnyUserFrobStatus, "Waiting for MetaMask...", async () => {
+        if (!xlagAnyUserFrobId.value) xlagAnyUserFrobId.value = randomSmokeId();
+        const frobId = String(xlagAnyUserFrobId.value || "").trim();
+        if (xlagLastSubmittedFrobId && frobId.toLowerCase() === xlagLastSubmittedFrobId.toLowerCase()) {
+          throw new Error("This frob id was already submitted. Click New ID before sending another frob.");
+        }
+        const txHash = await xlagSend("0xbcd0a3bf", ["bytes32", "string"], [frobId, xlagAnyUserFrobMemo.value]);
+        xlagLastSubmittedFrobId = frobId;
+        xlagAnyUserFrobStatus.textContent = `sent ${txHash}\nwaiting for live status refresh\nClick New ID before sending another frob.`;
+        setTimeout(refreshXLagContract, 900);
+        return txHash;
+      }).catch((error) => xlagHandleWalletError(error, xlagAnyUserFrobStatus, "any user frob transaction"));
+    });
+    document.querySelector("#xlag-payout-propose").addEventListener("click", (event) => xlagSendButton(event, "payout propose transaction", "0x707216b1", ["address", "uint256", "string", "uint64"], [xlagPayoutRecipient.value, xlagPayoutAmountWei.value, xlagPayoutMemo.value, xlagPayoutExpiresBlock.value]).catch((error) => xlagHandleWalletError(error, xlagContractActionResult, "payout propose transaction")));
+    document.querySelector("#xlag-payout-second").addEventListener("click", (event) => xlagSendButton(event, "payout second transaction", "0xa74928e3", ["uint256"], [xlagPayoutId.value]).catch((error) => xlagHandleWalletError(error, xlagContractActionResult, "payout second transaction")));
+    document.querySelector("#xlag-payout-belay").addEventListener("click", (event) => xlagSendButton(event, "payout belay transaction", "0x135b2083", ["uint256"], [xlagPayoutId.value]).catch((error) => xlagHandleWalletError(error, xlagContractActionResult, "payout belay transaction")));
+    document.querySelector("#xlag-payout-contest").addEventListener("click", (event) => xlagSendButton(event, "payout contest transaction", "0x7e3b404b", ["uint256"], [xlagPayoutId.value]).catch((error) => xlagHandleWalletError(error, xlagContractActionResult, "payout contest transaction")));
+    document.querySelector("#xlag-payout-execute").addEventListener("click", (event) => xlagSendButton(event, "payout execute transaction", "0x21814f90", ["uint256"], [xlagPayoutId.value]).catch((error) => xlagHandleWalletError(error, xlagContractActionResult, "payout execute transaction")));
+    document.querySelector("#xlag-reset-propose").addEventListener("click", (event) => xlagSendButton(event, "reset propose transaction", "0x033f4b4d", ["uint8", "address", "string", "uint64"], [xlagResetOffice.value, xlagResetNewAddress.value, xlagResetReason.value, xlagResetExpiresBlock.value]).catch((error) => xlagHandleWalletError(error, xlagContractActionResult, "reset propose transaction")));
+    document.querySelector("#xlag-reset-approve").addEventListener("click", (event) => xlagSendButton(event, "reset approve transaction", "0xee9804c7", ["uint256"], [xlagResetId.value]).catch((error) => xlagHandleWalletError(error, xlagContractActionResult, "reset approve transaction")));
+    document.querySelector("#xlag-reset-contest").addEventListener("click", (event) => xlagSendButton(event, "reset contest transaction", "0x7e3b404b", ["uint256"], [xlagResetId.value]).catch((error) => xlagHandleWalletError(error, xlagContractActionResult, "reset contest transaction")));
+    document.querySelector("#xlag-reset-execute").addEventListener("click", (event) => xlagSendButton(event, "reset execute transaction", "0x0d3cb42a", ["uint256"], [xlagResetId.value]).catch((error) => xlagHandleWalletError(error, xlagContractActionResult, "reset execute transaction")));
+    refresh();
+  </script>
