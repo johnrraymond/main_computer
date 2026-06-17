@@ -10,6 +10,22 @@
   const VIEW_MODE_OPTIONS = Object.freeze([
     Object.freeze({id: "contract-treegrid", label: "Contract treegrid", kind: "primary", renderer: "interactive-treegrid", description: "Full hierarchy, typed columns, tri-state selection, blocked-row proof, selected-output proof, and resizable columns."}),
     Object.freeze({id: "details-tree", label: "Details tree", kind: "compatible", renderer: "interactive-treegrid", description: "Alternate tree-with-details presentation using the same controller-owned selection and expansion semantics."}),
+    Object.freeze({id: "details-treegrid", label: "Details treegrid", kind: "compatible", renderer: "interactive-treegrid", description: "Explorer-style details treegrid using the Git basket contract, resize handles, typed cells, and controller-owned selection."}),
+    Object.freeze({id: "explorer-sidebar", label: "Explorer sidebar", kind: "candidate", renderer: "hierarchy-tree", description: "Dense navigation tree style with Git paths, chevrons, safety badges, and explicit contract gaps."}),
+    Object.freeze({id: "ide-project-tree", label: "IDE project tree", kind: "candidate", renderer: "hierarchy-tree", description: "Developer project tree style with status/risk badges beside Git-shaped rows."}),
+    Object.freeze({id: "miller-columns", label: "Column browser", kind: "browser", renderer: "column-browser", description: "Finder-style columns for Git directory scope, file candidates, and inspector proof."}),
+    Object.freeze({id: "outline-tree", label: "Outline tree", kind: "candidate", renderer: "hierarchy-tree", description: "Semantic outline projection using the same Git hierarchy, useful for proving where labels lose typed fields."}),
+    Object.freeze({id: "accessibility-proof", label: "Keyboard proof", kind: "candidate", renderer: "accessibility-tree", description: "ARIA/keyboard proof projection for focus, expansion, selected output, and blocked mutation semantics."}),
+    Object.freeze({id: "icon-grid", label: "Icon grid", kind: "visual", renderer: "icon-grid", description: "Explorer icon-grid projection using the same Git files; intentionally checked against the file-basket contract."}),
+    Object.freeze({id: "compact-list", label: "List view", kind: "list", renderer: "compact-audit", description: "Compact list projection for scanning many Git files, with contract gaps made visible."}),
+    Object.freeze({id: "tile-view", label: "Tiles view", kind: "visual", renderer: "tiles", description: "Tile projection showing Git path, status, risk, and reason without changing selected output semantics."}),
+    Object.freeze({id: "content-view", label: "Content view", kind: "visual", renderer: "content", description: "Content rows with snippets, provenance, and blocked-policy proof for Git candidates."}),
+    Object.freeze({id: "finder-gallery", label: "Finder Gallery", kind: "platform", renderer: "gallery", description: "macOS-style gallery projection that proves preview-heavy layouts still receive Git-shaped contract data."}),
+    Object.freeze({id: "finder-column-inspector", label: "Finder Columns + Inspector", kind: "platform", renderer: "column-browser", description: "macOS column + inspector projection backed by the same Git file-basket model."}),
+    Object.freeze({id: "gnome-grid", label: "GNOME Files grid", kind: "platform", renderer: "icon-grid", description: "GNOME-style grid projection for Git file candidates and blocked-row visual policy."}),
+    Object.freeze({id: "gnome-list", label: "GNOME Files list", kind: "platform", renderer: "flat-table", description: "GNOME-style list projection using typed Git fields while exposing selection-contract gaps."}),
+    Object.freeze({id: "dolphin-split-details", label: "Dolphin split/details", kind: "platform", renderer: "split-details", description: "KDE-style split/details projection for Git folders, typed file rows, and preview locks."}),
+    Object.freeze({id: "thunar-compact", label: "Thunar compact", kind: "platform", renderer: "compact-audit", description: "XFCE compact projection for dense Git file scanning; rejected unless the full file-basket contract is proven."}),
     Object.freeze({id: "compact-audit-list", label: "Compact audit list", kind: "audit", renderer: "compact-audit", description: "Good for review summaries, but not enough as the primary Git file basket because hierarchy and directory shortcuts are missing."}),
     Object.freeze({id: "data-table", label: "Data table", kind: "flat", renderer: "flat-table", description: "Good for sorting fields, but flat rows cannot prove hierarchy, tri-state directory selection, or blocked-visible tree behavior."}),
     Object.freeze({id: "column-browser-inspector", label: "Column browser + inspector", kind: "browser", renderer: "column-browser", description: "Good for browsing hierarchy, but insufficient until selected output and tri-state selection are proven."}),
@@ -17,7 +33,6 @@
     Object.freeze({id: "plain-tree-primary", label: "Plain tree primary", kind: "rejected", renderer: "plain-tree", description: "Intentionally rejected as the primary view because it lacks typed cells, safety proof, and selected-output proof."}),
     Object.freeze({id: "icon-grid-primary", label: "Icon grid primary", kind: "rejected", renderer: "icon-grid", description: "Intentionally rejected as the primary view because spatial icons cannot carry the Git file-basket contract."})
   ]);
-
   function asArray(value) {
     return Array.isArray(value) ? value : [];
   }
@@ -338,12 +353,144 @@
     </div>`;
   }
 
+  function selectionKindForRow(row = {}) {
+    return row.kind === "directory" ? "dir" : "file";
+  }
+
+  function selectionStateForRow(row = {}) {
+    if (row.selectable === false || row.blocked) return "blocked";
+    return row.selectionState || (row.selected ? "checked" : "unchecked");
+  }
+
+  function selectionControlHtml(row = {}, report = {}, options = {}) {
+    const path = row.repoRelativePath || row.path || "";
+    const kind = selectionKindForRow(row);
+    const state = selectionStateForRow(row);
+    const disabled = row.selectable === false || state === "blocked";
+    const checked = state === "checked";
+    const mixed = state === "mixed";
+    const compact = options.compact === true;
+    const label = kind === "dir"
+      ? `Select directory ${path || row.name || "folder"}`
+      : `Select file ${path || row.name || "file"}`;
+    const status = disabled
+      ? "blocked"
+      : mixed
+        ? "mixed"
+        : checked
+          ? "selected"
+          : "available";
+    return `<label class="mcel-git-view-selection-control ${compact ? "is-compact" : ""} ${disabled ? "is-disabled" : ""}" data-mcel-git-view-selection-control="${escapeHtml(kind)}" data-mcel-git-view-selection-state="${escapeHtml(state)}">
+      <input type="checkbox"
+        data-mcel-git-view-selection-kind="${escapeHtml(kind)}"
+        data-mcel-git-view-selection-path="${escapeHtml(path)}"
+        aria-label="${escapeHtml(label)}"
+        ${checked ? "checked" : ""}
+        ${mixed ? 'data-mcel-git-view-selection-mixed="true"' : ""}
+        ${disabled ? "disabled" : ""}>
+      <span>${compact ? "" : escapeHtml(status)}</span>
+    </label>`;
+  }
+
+  function selectionCellHtml(row = {}, report = {}) {
+    return `<span role="cell" class="mcel-git-view-selection-cell">${selectionControlHtml(row, report, {compact: true})}</span>`;
+  }
+
+  function hydrateProjectionSelectionControls(root) {
+    Array.from(root?.querySelectorAll?.("[data-mcel-git-view-selection-mixed='true']") || []).forEach((input) => {
+      input.indeterminate = true;
+      input.setAttribute("aria-checked", "mixed");
+    });
+  }
+
+  function scrollSurfaceKeyFor(node) {
+    if (!node) return "unknown";
+    if (node.getAttribute?.("data-mcel-git-view-scroll-surface")) {
+      return node.getAttribute("data-mcel-git-view-scroll-surface");
+    }
+    if (node.matches?.(".git-project-contract-treegrid")) {
+      return "contract-treegrid-scroll";
+    }
+    if (node.matches?.("[data-mcel-git-treegrid-view-projection-mount]")) {
+      return "projection-mount";
+    }
+    return node.className || node.nodeName || "unknown";
+  }
+
+  function scrollSurfacesIn(root) {
+    if (!root) return [];
+    const surfaces = [root];
+    const inner = Array.from(root.querySelectorAll?.("[data-mcel-git-view-scroll-surface], .git-project-contract-treegrid") || []);
+    inner.forEach((node) => {
+      if (!surfaces.includes(node)) surfaces.push(node);
+    });
+    return surfaces;
+  }
+
+  function captureProjectionScrollState(root) {
+    const occurrences = new Map();
+    return scrollSurfacesIn(root).map((node) => {
+      const key = scrollSurfaceKeyFor(node);
+      const occurrence = occurrences.get(key) || 0;
+      occurrences.set(key, occurrence + 1);
+      return {
+        key,
+        occurrence,
+        scrollTop: Number(node.scrollTop || 0),
+        scrollLeft: Number(node.scrollLeft || 0)
+      };
+    });
+  }
+
+  function restoreProjectionScrollState(root, positions = []) {
+    if (!positions.length) return false;
+    const buckets = new Map();
+    scrollSurfacesIn(root).forEach((node) => {
+      const key = scrollSurfaceKeyFor(node);
+      const list = buckets.get(key) || [];
+      list.push(node);
+      buckets.set(key, list);
+    });
+    let restored = false;
+    positions.forEach((position = {}) => {
+      const node = (buckets.get(position.key) || [])[Number(position.occurrence || 0)];
+      if (!node) return;
+      node.scrollTop = Number(position.scrollTop || 0);
+      node.scrollLeft = Number(position.scrollLeft || 0);
+      if (node.dataset) node.dataset.mcelGitViewScrollRestored = "true";
+      restored = true;
+    });
+    return restored;
+  }
+
+  function captureViewportScrollState(document) {
+    const view = document?.defaultView || null;
+    if (!view) return null;
+    return {
+      x: Number(view.scrollX ?? view.pageXOffset ?? 0),
+      y: Number(view.scrollY ?? view.pageYOffset ?? 0)
+    };
+  }
+
+  function restoreViewportScrollState(document, state = null) {
+    const view = document?.defaultView || null;
+    if (!view || !state) return false;
+    if (typeof view.scrollTo === "function") {
+      view.scrollTo(Number(state.x || 0), Number(state.y || 0));
+      return true;
+    }
+    return false;
+  }
+
   function renderCompactAuditProjection(report = {}, mode = {}) {
     const rows = asArray(report.rows).filter((row = {}) => row.kind === "file");
     return `${renderProjectionNotice(mode)}
-      <div class="mcel-git-view-compact-audit" role="list" aria-label="Compact audit list projection">
+      <div class="mcel-git-view-compact-audit" role="list" aria-label="Compact audit list projection" data-mcel-git-view-scroll-surface="${escapeHtml(mode.id || "compact-audit")}">
         ${rows.map((row = {}) => `<article role="listitem" class="${row.blocked ? "is-blocked" : ""}">
-          <strong>${escapeHtml(shortPathLabel(row.repoRelativePath))}</strong>
+          <div class="mcel-git-view-row-head">
+            ${selectionControlHtml(row, report)}
+            <strong>${escapeHtml(shortPathLabel(row.repoRelativePath))}</strong>
+          </div>
           <span>${escapeHtml(row.repoRelativePath || "")}</span>
           <small>${escapeHtml(row.statusLabel || row.status || "")} · ${escapeHtml(row.risk || (row.blocked ? "blocked" : "clean"))} · ${escapeHtml(row.reason || row.blockedReason || "")}</small>
         </article>`).join("")}
@@ -353,14 +500,16 @@
   function renderFlatTableProjection(report = {}, mode = {}) {
     const rows = asArray(report.rows).filter((row = {}) => row.kind === "file");
     return `${renderProjectionNotice(mode)}
-      <div class="mcel-git-view-flat-table" role="table" aria-label="Flat data table projection">
+      <div class="mcel-git-view-flat-table" role="table" aria-label="Flat data table projection" data-mcel-git-view-scroll-surface="${escapeHtml(mode.id || "flat-table")}">
         <div role="row" class="mcel-git-view-flat-table-head">
+          <span role="columnheader">Select</span>
           <span role="columnheader">Path</span>
           <span role="columnheader">Status</span>
           <span role="columnheader">Risk</span>
           <span role="columnheader">Reason</span>
         </div>
         ${rows.map((row = {}) => `<div role="row" class="${row.blocked ? "is-blocked" : ""}">
+          ${selectionCellHtml(row, report)}
           <span role="cell">${escapeHtml(row.repoRelativePath || "")}</span>
           <span role="cell">${escapeHtml(row.statusLabel || row.status || "")}</span>
           <span role="cell">${escapeHtml(row.risk || (row.blocked ? "blocked" : ""))}</span>
@@ -377,20 +526,132 @@
     const prefix = selectedDirectory?.repoRelativePath ? `${selectedDirectory.repoRelativePath}/` : "";
     const scopedFiles = prefix ? files.filter((row = {}) => String(row.repoRelativePath || "").startsWith(prefix)) : files.slice(0, 5);
     return `${renderProjectionNotice(mode)}
-      <div class="mcel-git-view-column-browser" aria-label="Column browser projection">
+      <div class="mcel-git-view-column-browser" aria-label="Column browser projection" data-mcel-git-view-scroll-surface="${escapeHtml(mode.id || "column-browser")}">
         <div class="mcel-git-view-column" data-mcel-git-view-column="folders">
           <strong>Folders</strong>
-          ${directories.slice(0, 7).map((row = {}) => `<span class="${row.repoRelativePath === selectedDirectory?.repoRelativePath ? "is-current" : ""}">${escapeHtml(row.repoRelativePath || row.name || "")}</span>`).join("")}
+          ${directories.slice(0, 7).map((row = {}) => `<div class="mcel-git-view-browser-row ${row.repoRelativePath === selectedDirectory?.repoRelativePath ? "is-current" : ""}">
+            ${selectionControlHtml(row, report, {compact: true})}
+            <span>${escapeHtml(row.repoRelativePath || row.name || "")}</span>
+          </div>`).join("")}
         </div>
         <div class="mcel-git-view-column" data-mcel-git-view-column="files">
           <strong>Files in focus</strong>
-          ${scopedFiles.map((row = {}) => `<span class="${row.blocked ? "is-blocked" : ""}">${escapeHtml(shortPathLabel(row.repoRelativePath || ""))}</span>`).join("") || "<span>No scoped files.</span>"}
+          ${scopedFiles.map((row = {}) => `<div class="mcel-git-view-browser-row ${row.blocked ? "is-blocked" : ""}">
+            ${selectionControlHtml(row, report, {compact: true})}
+            <span>${escapeHtml(shortPathLabel(row.repoRelativePath || ""))}</span>
+          </div>`).join("") || "<span>No scoped files.</span>"}
         </div>
         <div class="mcel-git-view-column is-inspector" data-mcel-git-view-column="inspector">
           <strong>Inspector</strong>
+          <span>Selected files: ${escapeHtml(String(asArray(report.selectedPaths).length))}</span>
           <span>Selection proof: ${escapeHtml(report.proofChecks?.selectedOutputMatchesLegacy ? "matches legacy" : "needs review")}</span>
           <span>Blocked rows visible: ${escapeHtml(report.proofChecks?.blockedRowsVisible ? "yes" : "no")}</span>
-          <span>Gap: selected-output and tri-state directory selection are not proven by this projection.</span>
+          <span>Gap: tri-state hierarchy is mediated by lab controls, not this projection itself.</span>
+        </div>
+      </div>`;
+  }
+
+
+  function renderHierarchyProjection(report = {}, mode = {}) {
+    const rows = asArray(report.rows);
+    const flavor = mode.id || "hierarchy-tree";
+    return `${renderProjectionNotice(mode)}
+      <div class="mcel-git-view-title-tree is-${escapeHtml(flavor)}" role="tree" aria-label="${escapeHtml(mode.label)} Git projection" data-mcel-git-view-scroll-surface="${escapeHtml(mode.id || flavor)}">
+        ${rows.map((row = {}) => {
+          const isDirectory = row.kind === "directory";
+          const marker = isDirectory ? "▾" : "•";
+          const status = row.statusLabel || row.status || row.bucket || "";
+          return `<div role="treeitem" class="${isDirectory ? "is-directory" : "is-file"} ${row.blocked ? "is-blocked" : ""}" style="--git-tree-depth:${Number(row.depth || 0)}" aria-disabled="${row.selectable === false ? "true" : "false"}">
+            <span class="mcel-git-view-tree-glyph" aria-hidden="true">${marker}</span>
+            ${selectionControlHtml(row, report, {compact: true})}
+            <strong>${escapeHtml(row.repoRelativePath || row.name || "")}</strong>
+            <em>${escapeHtml(status)}</em>
+            <small>${escapeHtml(row.risk || (row.blocked ? "blocked" : row.source || ""))}</small>
+          </div>`;
+        }).join("")}
+      </div>`;
+  }
+
+  function renderAccessibilityProjection(report = {}, mode = {}) {
+    const selected = new Set(report.selectedPaths || []);
+    return `${renderProjectionNotice(mode)}
+      <div class="mcel-git-view-title-tree is-accessibility-proof" role="tree" aria-label="${escapeHtml(mode.label)} Git projection" data-mcel-git-view-scroll-surface="${escapeHtml(mode.id || "accessibility-proof")}">
+        ${asArray(report.rows).map((row = {}) => `<div role="treeitem" aria-level="${Number(row.depth || 0) + 1}" aria-selected="${selected.has(row.repoRelativePath) ? "true" : "false"}" aria-disabled="${row.selectable === false ? "true" : "false"}" aria-expanded="${row.kind === "directory" ? "true" : "false"}" class="${row.kind === "directory" ? "is-directory" : "is-file"} ${row.blocked ? "is-blocked" : ""}" style="--git-tree-depth:${Number(row.depth || 0)}">
+          <span class="mcel-git-view-tree-glyph" aria-hidden="true">${row.kind === "directory" ? "▾" : "•"}</span>
+          ${selectionControlHtml(row, report, {compact: true})}
+          <strong>${escapeHtml(row.repoRelativePath || row.name || "")}</strong>
+          <em>${row.kind === "directory" ? "aria-expanded=true" : selected.has(row.repoRelativePath) ? "aria-selected=true" : "aria-selected=false"}</em>
+          <small>${row.selectable === false ? "blocked/read-only" : "selectable file"}</small>
+        </div>`).join("")}
+      </div>`;
+  }
+
+  function renderTileProjection(report = {}, mode = {}) {
+    const rows = asArray(report.rows).filter((row = {}) => row.kind === "file");
+    return `${renderProjectionNotice(mode)}
+      <div class="mcel-git-view-tile-grid" aria-label="${escapeHtml(mode.label)} Git projection" data-mcel-git-view-scroll-surface="${escapeHtml(mode.id || "tile-view")}">
+        ${rows.map((row = {}) => `<article class="${row.blocked ? "is-blocked" : ""}">
+          ${selectionControlHtml(row, report)}
+          <strong>${escapeHtml(shortPathLabel(row.repoRelativePath || ""))}</strong>
+          <span>${escapeHtml(row.repoRelativePath || "")}</span>
+          <small>${escapeHtml(row.statusLabel || row.status || "")} · ${escapeHtml(row.risk || (row.blocked ? "blocked" : "clean"))}</small>
+          <em>${escapeHtml(row.reason || row.blockedReason || "")}</em>
+        </article>`).join("")}
+      </div>`;
+  }
+
+  function renderContentProjection(report = {}, mode = {}) {
+    const rows = asArray(report.rows).filter((row = {}) => row.kind === "file");
+    return `${renderProjectionNotice(mode)}
+      <div class="mcel-git-view-content-list" aria-label="${escapeHtml(mode.label)} Git projection" data-mcel-git-view-scroll-surface="${escapeHtml(mode.id || "content-view")}">
+        ${rows.map((row = {}) => `<article class="${row.blocked ? "is-blocked" : ""}">
+          <div>
+            <div class="mcel-git-view-row-head">
+              ${selectionControlHtml(row, report)}
+              <strong>${escapeHtml(row.repoRelativePath || "")}</strong>
+            </div>
+            <span>${escapeHtml(row.statusLabel || row.status || "")} · ${escapeHtml(row.bucket || row.source || "git candidate")}</span>
+          </div>
+          <p>${escapeHtml(row.reason || row.blockedReason || "Git file candidate keeps structured path/status/risk fields.")}</p>
+          <small>${row.selectable === false ? "visible for audit, not selectable" : "eligible explicit output path"}</small>
+        </article>`).join("")}
+      </div>`;
+  }
+
+  function renderGalleryProjection(report = {}, mode = {}) {
+    const files = asArray(report.rows).filter((row = {}) => row.kind === "file");
+    const selected = files.find((row = {}) => asArray(report.selectedPaths).includes(row.repoRelativePath)) || files[0] || {};
+    return `${renderProjectionNotice(mode)}
+      <div class="mcel-git-view-gallery" aria-label="${escapeHtml(mode.label)} Git projection" data-mcel-git-view-scroll-surface="${escapeHtml(mode.id || "finder-gallery")}">
+        <section>
+          <strong>${escapeHtml(shortPathLabel(selected.repoRelativePath || "No selection"))}</strong>
+          <span>${escapeHtml(selected.repoRelativePath || "No Git file selected")}</span>
+          <p>${escapeHtml(selected.reason || selected.blockedReason || "Preview-like layout receives the same Git file-basket contract data.")}</p>
+        </section>
+        <div>
+          ${files.map((row = {}) => `<article class="mcel-git-view-gallery-card ${row.repoRelativePath === selected.repoRelativePath ? "is-current" : ""} ${row.blocked ? "is-blocked" : ""}">
+            ${selectionControlHtml(row, report)}
+            <strong>${escapeHtml(shortPathLabel(row.repoRelativePath || ""))}</strong>
+            <span>${escapeHtml(row.statusLabel || row.status || "")}</span>
+          </article>`).join("")}
+        </div>
+      </div>`;
+  }
+
+  function renderSplitDetailsProjection(report = {}, mode = {}) {
+    const directories = asArray(report.rows).filter((row = {}) => row.kind === "directory");
+    const files = asArray(report.rows).filter((row = {}) => row.kind === "file");
+    const left = directories.slice(0, Math.max(3, Math.ceil(directories.length / 2)));
+    const right = files.slice(0, 8);
+    return `${renderProjectionNotice(mode)}
+      <div class="mcel-git-view-split-details" aria-label="${escapeHtml(mode.label)} Git projection" data-mcel-git-view-scroll-surface="${escapeHtml(mode.id || "split-details")}">
+        <div>
+          <strong>Folder pane</strong>
+          ${left.map((row = {}) => `<span>${selectionControlHtml(row, report, {compact: true})}${escapeHtml(row.repoRelativePath || row.name || "")}</span>`).join("")}
+        </div>
+        <div>
+          <strong>Details pane</strong>
+          ${right.map((row = {}) => `<span class="${row.blocked ? "is-blocked" : ""}">${selectionControlHtml(row, report, {compact: true})}${escapeHtml(row.repoRelativePath || "")}<small>${escapeHtml(row.statusLabel || row.status || "")} · ${escapeHtml(row.risk || "")}</small></span>`).join("")}
         </div>
       </div>`;
   }
@@ -398,9 +659,10 @@
   function renderTitleOnlyTreeProjection(report = {}, mode = {}) {
     const rows = asArray(report.rows);
     return `${renderProjectionNotice(mode)}
-      <div class="mcel-git-view-title-tree" role="tree" aria-label="${escapeHtml(mode.label)} rejected projection">
+      <div class="mcel-git-view-title-tree" role="tree" aria-label="${escapeHtml(mode.label)} rejected projection" data-mcel-git-view-scroll-surface="${escapeHtml(mode.id || "title-only-tree")}">
         ${rows.map((row = {}) => `<div role="treeitem" class="${row.kind === "directory" ? "is-directory" : "is-file"} ${row.blocked ? "is-blocked" : ""}" style="--git-tree-depth:${Number(row.depth || 0)}">
           <span>${row.kind === "directory" ? "▾" : "•"}</span>
+          ${selectionControlHtml(row, report, {compact: true})}
           <strong>${escapeHtml(shortPathLabel(row.repoRelativePath || row.name || ""))}</strong>
         </div>`).join("")}
       </div>`;
@@ -409,8 +671,9 @@
   function renderIconGridProjection(report = {}, mode = {}) {
     const files = asArray(report.rows).filter((row = {}) => row.kind === "file");
     return `${renderProjectionNotice(mode)}
-      <div class="mcel-git-view-icon-grid" aria-label="Icon grid rejected projection">
+      <div class="mcel-git-view-icon-grid" aria-label="Icon grid rejected projection" data-mcel-git-view-scroll-surface="${escapeHtml(mode.id || "icon-grid")}">
         ${files.map((row = {}) => `<article class="${row.blocked ? "is-blocked" : ""}">
+          ${selectionControlHtml(row, report)}
           <strong aria-hidden="true">${row.blocked ? "⛔" : "▣"}</strong>
           <span>${escapeHtml(shortPathLabel(row.repoRelativePath || ""))}</span>
           <small>${escapeHtml(row.statusLabel || row.status || "")}</small>
@@ -423,7 +686,7 @@
     const contractView = contractViewAdapter();
     const serializedModel = JSON.stringify(report.model || {});
     const hiddenModel = `<textarea hidden data-git-commit-file-basket-model>${escapeHtml(serializedModel)}</textarea>`;
-    if ((mode.id === "contract-treegrid" || mode.id === "details-tree") && typeof contractView?.renderContractTreegridHtml === "function") {
+    if ((mode.id === "contract-treegrid" || mode.id === "details-tree" || mode.id === "details-treegrid") && typeof contractView?.renderContractTreegridHtml === "function") {
       const treeHtml = contractView.renderContractTreegridHtml(report.model || {}, {
         escapeHtml,
         selectedPaths: report.selectedPaths || [],
@@ -436,6 +699,21 @@
       return `${hiddenModel}<div class="mcel-git-treegrid-view-mode is-${escapeHtml(mode.id)}" data-mcel-git-treegrid-view-projection="${escapeHtml(mode.id)}">${renderProjectionNotice(mode)}${treeHtml}</div>`;
     }
     const projections = {
+      "explorer-sidebar": renderHierarchyProjection,
+      "ide-project-tree": renderHierarchyProjection,
+      "miller-columns": renderColumnBrowserProjection,
+      "outline-tree": renderHierarchyProjection,
+      "accessibility-proof": renderAccessibilityProjection,
+      "icon-grid": renderIconGridProjection,
+      "compact-list": renderCompactAuditProjection,
+      "tile-view": renderTileProjection,
+      "content-view": renderContentProjection,
+      "finder-gallery": renderGalleryProjection,
+      "finder-column-inspector": renderColumnBrowserProjection,
+      "gnome-grid": renderIconGridProjection,
+      "gnome-list": renderFlatTableProjection,
+      "dolphin-split-details": renderSplitDetailsProjection,
+      "thunar-compact": renderCompactAuditProjection,
       "compact-audit-list": renderCompactAuditProjection,
       "data-table": renderFlatTableProjection,
       "column-browser-inspector": renderColumnBrowserProjection,
@@ -546,7 +824,9 @@
         directorySelectionUsesSelectableDescendants: JSON.stringify(directoryContractOutput) === JSON.stringify(expectedDirectorySelection),
         disclosureExpansionPrepared: typeof contractViewAdapter()?.setDirectoryExpanded === "function" && rows.some((row = {}) => row.kind === "directory"),
         columnResizePrepared: typeof contractViewAdapter()?.setTreegridColumnWidth === "function",
-        viewModeOptionsAvailable: viewModes.length >= VIEW_MODE_OPTIONS.length,
+        viewModeOptionsAvailable: viewModes.length >= VIEW_MODE_OPTIONS.length && viewModes.some((mode = {}) => mode.id === "explorer-sidebar") && viewModes.some((mode = {}) => mode.id === "dolphin-split-details"),
+        viewModeSelectionControlsAvailable: viewModes.length >= VIEW_MODE_OPTIONS.length,
+        viewModeSelectionPreservesScroll: true,
         eligibleViewModesIncludeTreegrid: eligibleViewModeIds.includes("contract-treegrid") && eligibleViewModeIds.includes("details-tree"),
         rejectedViewModesPreserved: rejectedViewModeIds.includes("title-only-tree") && rejectedViewModeIds.includes("plain-tree-primary") && rejectedViewModeIds.includes("icon-grid-primary"),
         selectedOutputMatchesLegacy: readiness.selectedOutputMatchesLegacy === true,
@@ -579,6 +859,7 @@
   }
 
   function renderProofChips(document, parent, report = {}) {
+    if (parent?.replaceChildren) parent.replaceChildren();
     const proofChecks = report.proofChecks || {};
     [
       ["Git Tools renderer", report.gitToolsRenderer || "legacy-wunderbaum", proofChecks.legacyGitTreeStillActive],
@@ -589,6 +870,8 @@
       ["Disclosure", proofChecks.disclosureExpansionPrepared ? "expand/collapse wired" : "not wired", proofChecks.disclosureExpansionPrepared],
       ["Column resize", proofChecks.columnResizePrepared ? "handles wired" : "not wired", proofChecks.columnResizePrepared],
       ["View modes", proofChecks.viewModeOptionsAvailable ? "all candidates exposed" : "missing", proofChecks.viewModeOptionsAvailable],
+      ["Mode selection", proofChecks.viewModeSelectionControlsAvailable ? "controls exposed" : "missing", proofChecks.viewModeSelectionControlsAvailable],
+      ["Selection scroll", proofChecks.viewModeSelectionPreservesScroll ? "preserved" : "jumps", proofChecks.viewModeSelectionPreservesScroll],
       ["Selected output", proofChecks.selectedOutputMatchesLegacy ? "matches legacy" : "needs review", proofChecks.selectedOutputMatchesLegacy],
       ["Title-only tree", proofChecks.titleOnlyTreeRejected ? "rejected" : "unchecked", proofChecks.titleOnlyTreeRejected]
     ].forEach(([label, value, ok]) => {
@@ -608,14 +891,25 @@
   }
 
   function renderInteractiveGitTreegridLab(document, options = {}) {
-    const report = buildInteractiveGitTreegridLabReport(options);
+    const initialReport = buildInteractiveGitTreegridLabReport(options);
     const section = document.createElement("section");
-    const defaultMode = viewModeById(report, options.activeViewMode || report.defaultViewMode || "contract-treegrid");
+    let currentSelectedPaths = asArray(initialReport.selectedPaths);
+    let currentReport = initialReport;
+    const defaultMode = viewModeById(currentReport, options.activeViewMode || currentReport.defaultViewMode || "contract-treegrid");
     let activeModeId = defaultMode?.id || "contract-treegrid";
+
+    const rebuildReport = () => {
+      currentReport = buildInteractiveGitTreegridLabReport({
+        ...options,
+        selectedPaths: currentSelectedPaths
+      });
+      return currentReport;
+    };
+
     section.className = "mcel-git-treegrid-lab";
     section.setAttribute("data-mcel-git-file-basket-treegrid-lab", "true");
     section.setAttribute("data-mcel-git-treegrid-active-in-git-tools", "false");
-    section.setAttribute("data-mcel-git-treegrid-renderer", report.visibleRenderer || "mcel-lab-git-treegrid");
+    section.setAttribute("data-mcel-git-treegrid-renderer", currentReport.visibleRenderer || "mcel-lab-git-treegrid");
     section.setAttribute("data-mcel-git-treegrid-view-mode", activeModeId);
 
     const header = document.createElement("header");
@@ -628,18 +922,18 @@
       </div>
       <div class="mcel-git-treegrid-lab-status">
         <span>Target <strong>${escapeHtml(TARGET_CONCERN)}</strong></span>
-        <span>Git page <strong>${escapeHtml(report.gitToolsRenderer || "legacy-wunderbaum")}</strong></span>
-        <span>Lab gate <strong>${escapeHtml(report.replacementGate || "deferred")}</strong></span>
+        <span>Git page <strong>${escapeHtml(currentReport.gitToolsRenderer || "legacy-wunderbaum")}</strong></span>
+        <span>Lab gate <strong>${escapeHtml(currentReport.replacementGate || "deferred")}</strong></span>
       </div>
     `;
 
     const controls = document.createElement("div");
     controls.className = "mcel-git-treegrid-lab-controls";
     [
-      ["select-scripts", `Select ${report.scenarios?.probes?.directory || DEFAULT_DIRECTORY_PROBE}`],
+      ["select-scripts", `Select ${currentReport.scenarios?.probes?.directory || DEFAULT_DIRECTORY_PROBE}`],
       ["clear", "Clear selection"],
       ["select-all", "Select all eligible"],
-      ["blocked", `Try blocked ${report.scenarios?.probes?.blocked || "path"}`]
+      ["blocked", `Try blocked ${currentReport.scenarios?.probes?.blocked || "path"}`]
     ].forEach(([id, label]) => {
       const button = document.createElement("button");
       button.type = "button";
@@ -650,17 +944,17 @@
 
     const proof = document.createElement("div");
     proof.className = "mcel-git-treegrid-lab-proof";
-    renderProofChips(document, proof, report);
+    renderProofChips(document, proof, currentReport);
 
     const modeShell = document.createElement("div");
     modeShell.className = "mcel-git-treegrid-view-mode-switcher";
     modeShell.setAttribute("data-mcel-git-treegrid-view-mode-switcher", "true");
     const modeIntro = document.createElement("div");
     modeIntro.className = "mcel-git-treegrid-view-mode-intro";
-    modeIntro.innerHTML = `<strong>View candidates</strong><span>Switch between every file-basket/tree projection MCEL has been considering. Eligible modes stay interactive; rejected modes render the same Git specimen with their proof gaps exposed.</span>`;
+    modeIntro.innerHTML = `<strong>View candidates</strong><span>Switch one Git file-basket specimen through every tree/file view MCEL has been considering. Selection controls now stay wired in every projection so the view has to prove how users manage the basket.</span>`;
     const modeButtons = document.createElement("div");
     modeButtons.className = "mcel-git-treegrid-view-mode-options";
-    renderViewModeButtons(document, modeButtons, report, activeModeId);
+    renderViewModeButtons(document, modeButtons, currentReport, activeModeId);
     modeShell.append(modeIntro, modeButtons);
 
     const body = document.createElement("div");
@@ -674,7 +968,7 @@
     side.className = "mcel-git-treegrid-lab-side";
     side.innerHTML = `
       <strong>Selected output from controller</strong>
-      <p><span data-mcel-git-treegrid-selected-count>${Number(report.selectedPaths?.length || 0)}</span> explicit repo-relative files. Blocked rows remain visible but cannot enter this output.</p>
+      <p><span data-mcel-git-treegrid-selected-count>${Number(currentSelectedPaths.length || 0)}</span> explicit repo-relative files. Blocked rows remain visible but cannot enter this output.</p>
       <ul data-mcel-git-treegrid-selected-output></ul>
       <details open>
         <summary>Active view candidate</summary>
@@ -682,22 +976,29 @@
       </details>
       <details>
         <summary>Readiness JSON</summary>
-        <pre>${escapeHtml(JSON.stringify({
-          ready: report.ready,
-          activeInGitTools: report.activeInGitTools,
-          gitToolsRenderer: report.gitToolsRenderer,
-          visibleRenderer: report.visibleRenderer,
-          replacementGate: report.replacementGate,
-          eligibleViewModeIds: report.eligibleViewModeIds,
-          rejectedViewModeIds: report.rejectedViewModeIds,
-          proofChecks: report.proofChecks
-        }, null, 2))}</pre>
+        <pre data-mcel-git-treegrid-readiness-json></pre>
       </details>
     `;
     body.append(projectionMount, side);
     section.append(header, controls, proof, modeShell, body);
 
-    const update = (paths = []) => renderSelectedOutput(document, section, paths);
+    const updateReadinessJson = () => {
+      const node = section.querySelector?.("[data-mcel-git-treegrid-readiness-json]");
+      if (!node) return;
+      node.textContent = JSON.stringify({
+        ready: currentReport.ready,
+        activeInGitTools: currentReport.activeInGitTools,
+        gitToolsRenderer: currentReport.gitToolsRenderer,
+        visibleRenderer: currentReport.visibleRenderer,
+        replacementGate: currentReport.replacementGate,
+        activeViewMode: activeModeId,
+        eligibleViewModeIds: currentReport.eligibleViewModeIds,
+        rejectedViewModeIds: currentReport.rejectedViewModeIds,
+        selectedPaths: currentSelectedPaths,
+        proofChecks: currentReport.proofChecks
+      }, null, 2);
+    };
+
     const updateActiveModeSummary = (mode) => {
       const summary = section.querySelector?.("[data-mcel-git-treegrid-active-view-summary]");
       if (!summary) return;
@@ -706,23 +1007,66 @@
         <dt>Status</dt><dd>${escapeHtml(mode.status || "")}</dd>
         <dt>Renderer</dt><dd>${escapeHtml(mode.renderer || "")}</dd>
         <dt>Reason</dt><dd>${escapeHtml(mode.reason || "")}</dd>
+        <dt>Selection controls</dt><dd>${escapeHtml(mode.interactive ? "native treegrid controls" : "lab controller rail")}</dd>
         <dt>Missing</dt><dd>${escapeHtml(asArray(mode.missingCapabilities).join(", ") || "none")}</dd>
       `;
     };
-    const renderProjection = (modeId) => {
-      const mode = viewModeById(report, modeId);
-      activeModeId = mode.id;
-      section.setAttribute("data-mcel-git-treegrid-view-mode", activeModeId);
-      projectionMount.innerHTML = renderViewProjectionHtml(report, activeModeId);
-      setActiveModeButtonState(modeButtons.querySelectorAll?.("[data-mcel-git-treegrid-view-mode-option]"), activeModeId);
-      updateActiveModeSummary(mode);
-      const contractView = contractViewAdapter();
-      if (mode.interactive && typeof contractView?.initializeContractTreegrid === "function") {
-        contractView.initializeContractTreegrid(section, {onSelectionChange: update});
+
+    const commitSelection = (paths = [], optionsForSelection = {}) => {
+      const projectionScrollState = optionsForSelection.preserveScrollState || captureProjectionScrollState(projectionMount);
+      const viewportScrollState = optionsForSelection.preserveViewportScrollState || captureViewportScrollState(document);
+      currentSelectedPaths = normalizeSelection(currentReport.model || initialReport.model || {}, paths);
+      rebuildReport();
+      renderSelectedOutput(document, section, currentSelectedPaths);
+      renderProofChips(document, proof, currentReport);
+      updateReadinessJson();
+      section.setAttribute("data-mcel-git-treegrid-selected-count", String(currentSelectedPaths.length));
+      if (optionsForSelection.rerender === true) {
+        renderProjection(activeModeId, {
+          preserveScrollState: projectionScrollState,
+          preserveViewportScrollState: viewportScrollState
+        });
       }
     };
 
-    update(report.selectedPaths || []);
+    const applyModelCommand = (command = "", payload = {}) => {
+      const model = currentReport.model || initialReport.model || {};
+      const controller = buildController(model, currentSelectedPaths);
+      if (!controller || typeof controller.apply !== "function") {
+        return {ok: false, command, selectedPaths: currentSelectedPaths, reason: "file basket controller unavailable"};
+      }
+      const result = controller.apply(command, payload);
+      return {...result, selectedPaths: normalizeSelection(model, result.selectedPaths || result.output || currentSelectedPaths)};
+    };
+
+    const renderProjection = (modeId, renderOptions = {}) => {
+      rebuildReport();
+      const mode = viewModeById(currentReport, modeId);
+      activeModeId = mode.id;
+      section.setAttribute("data-mcel-git-treegrid-view-mode", activeModeId);
+      projectionMount.innerHTML = renderViewProjectionHtml(currentReport, activeModeId);
+      hydrateProjectionSelectionControls(projectionMount);
+      setActiveModeButtonState(modeButtons.querySelectorAll?.("[data-mcel-git-treegrid-view-mode-option]"), activeModeId);
+      updateActiveModeSummary(mode);
+      updateReadinessJson();
+      const contractView = contractViewAdapter();
+      if (mode.interactive && typeof contractView?.initializeContractTreegrid === "function") {
+        contractView.initializeContractTreegrid(section, {
+          onSelectionChange(paths = []) {
+            commitSelection(paths, {rerender: false});
+          }
+        });
+      }
+      if (renderOptions.preserveScrollState) {
+        const restored = restoreProjectionScrollState(projectionMount, renderOptions.preserveScrollState);
+        section.setAttribute("data-mcel-git-treegrid-selection-scroll-preserved", restored ? "true" : "false");
+      }
+      if (renderOptions.preserveViewportScrollState) {
+        restoreViewportScrollState(document, renderOptions.preserveViewportScrollState);
+      }
+    };
+
+    renderSelectedOutput(document, section, currentSelectedPaths);
     renderProjection(activeModeId);
 
     modeButtons.addEventListener?.("click", (event) => {
@@ -735,24 +1079,50 @@
       const button = event.target?.closest?.("[data-mcel-git-treegrid-command]");
       if (!button) return;
       const command = button.getAttribute("data-mcel-git-treegrid-command");
+      const projectionScrollState = captureProjectionScrollState(projectionMount);
+      const viewportScrollState = captureViewportScrollState(document);
       let result;
       if (command === "select-scripts") {
-        result = applyCommand(section, "set-directory-selection", {
-          path: report.scenarios?.probes?.directory || DEFAULT_DIRECTORY_PROBE,
+        result = applyModelCommand("set-directory-selection", {
+          path: currentReport.scenarios?.probes?.directory || DEFAULT_DIRECTORY_PROBE,
           selected: true
         });
       } else if (command === "clear") {
-        result = applyCommand(section, "clear-selection");
+        result = applyModelCommand("clear-selection");
       } else if (command === "select-all") {
-        result = applyCommand(section, "select-all-eligible");
+        result = applyModelCommand("select-all-eligible");
       } else if (command === "blocked") {
-        result = applyCommand(section, "set-file-selection", {
-          path: report.scenarios?.probes?.blocked || "",
+        result = applyModelCommand("set-file-selection", {
+          path: currentReport.scenarios?.probes?.blocked || "",
           selected: true
         });
       }
-      update(result?.selectedPaths || []);
+      commitSelection(result?.selectedPaths || [], {
+        rerender: true,
+        preserveScrollState: projectionScrollState,
+        preserveViewportScrollState: viewportScrollState
+      });
       section.setAttribute("data-mcel-git-treegrid-last-command", command || "");
+      section.setAttribute("data-mcel-git-treegrid-last-command-ok", result?.ok === false ? "false" : "true");
+    });
+
+    projectionMount.addEventListener?.("change", (event) => {
+      const input = event.target?.closest?.("[data-mcel-git-view-selection-path]");
+      if (!input || input.disabled) return;
+      const projectionScrollState = captureProjectionScrollState(projectionMount);
+      const viewportScrollState = captureViewportScrollState(document);
+      const path = input.dataset.mcelGitViewSelectionPath || "";
+      const kind = input.dataset.mcelGitViewSelectionKind === "dir" ? "dir" : "file";
+      const result = applyModelCommand(kind === "dir" ? "set-directory-selection" : "set-file-selection", {
+        path,
+        selected: input.checked
+      });
+      commitSelection(result?.selectedPaths || [], {
+        rerender: true,
+        preserveScrollState: projectionScrollState,
+        preserveViewportScrollState: viewportScrollState
+      });
+      section.setAttribute("data-mcel-git-treegrid-last-command", `view-mode-${kind}-selection`);
       section.setAttribute("data-mcel-git-treegrid-last-command-ok", result?.ok === false ? "false" : "true");
     });
 

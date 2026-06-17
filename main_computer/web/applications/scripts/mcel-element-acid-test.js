@@ -2413,7 +2413,7 @@
           ["concerns", "Concern Workbench", "Where responsibilities are tangled."],
           ["toolkit", "Toolkit Atlas", "The reusable controls, cells, collections, layouts, and controllers."],
           ["proofs", "Migration Proofs", "Adapter and contract boundaries that make replacement safe."],
-          ["views", "Visual Specimens", "Explorer/Finder/Linux/treegrid proof surfaces."],
+          ["views", "Git Basket Views", "One Git-shaped specimen cycled through Explorer/Finder/Linux/treegrid projections."],
           ["registry", "Registry", "The full element catalog when auditing definitions."]
         ].forEach(([mode, title, body]) => {
           const card = createNode(document, "button", "");
@@ -2470,7 +2470,7 @@
           <div>
             <p class="eyebrow">MCEL Element Library Acid Test</p>
             <h5>A real-looking UI workbench made from purpose-aware elements.</h5>
-            <p>This is not a card catalog: the resource workbench cycles Explorer, IDE, treegrid, column-browser, outline, keyboard-proof, icon-grid, list, tiles, and content views, with Preview and Details panes, so we can prove MCEL can supersede Wunderbaum/TreeView instead of drawing toy pills.</p>
+            <p>This is not a card catalog: the Views panel now focuses on the Git file-basket treegrid lab. Explorer, IDE, Finder, Linux, list, tile, and content projections are selectable modes of that one Git specimen instead of competing demo surfaces.</p>
           </div>
         `;
 
@@ -2510,9 +2510,8 @@
         renderToolkitAtlas(document, toolkitPanel, definitionsById);
         renderFileBasketModelProof(document, proofPanel, definitionsById);
         renderGitFileBasketTreegridLab(document, viewPanel);
-        renderResourceWorkbench(document, viewPanel, definitionsById);
-        renderOperationalWorkbench(document, viewPanel, definitionsById);
-        renderNetworkComputeAuthoringWorkbench(document, viewPanel, definitionsById);
+        viewPanel.setAttribute("data-mcel-lab-single-active-git-view-surface", "true");
+        viewPanel.setAttribute("data-mcel-lab-retired-generic-resource-gallery", "true");
 
         const catalogDisclosure = createNode(document, "details", "mcel-element-acid-catalog");
         catalogDisclosure.open = true;

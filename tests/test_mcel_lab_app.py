@@ -1673,6 +1673,7 @@ def test_mcel_lab_element_library_acid_test_is_wired() -> None:
     assert "<!-- @include applications/scripts/mcel-toolkit-core.js -->" in html
     assert "<!-- @include applications/scripts/mcel-concern-core.js -->" in html
     assert "<!-- @include applications/scripts/mcel-project-concern-workbench.js -->" in html
+    assert "<!-- @include applications/scripts/mcel-git-file-basket-treegrid-lab.js -->" in html
     assert "<!-- @include applications/scripts/mcel-element-registry.js -->" in html
     assert "<!-- @include applications/scripts/mcel-elements-core.js -->" in html
     assert "<!-- @include applications/scripts/mcel-element-acid-test.js -->" in html
@@ -1681,6 +1682,7 @@ def test_mcel_lab_element_library_acid_test_is_wired() -> None:
         < html.index("mcel-toolkit-core.js")
         < html.index("mcel-concern-core.js")
         < html.index("mcel-project-concern-workbench.js")
+        < html.index("mcel-git-file-basket-treegrid-lab.js")
         < html.index("mcel-element-registry.js")
         < html.index("mcel-elements-core.js")
         < html.index("mcel-element-acid-test.js")
@@ -1886,6 +1888,12 @@ def test_mcel_lab_element_library_acid_test_is_wired() -> None:
     assert "renderOperationalWorkbench" in acid
     assert "renderNetworkComputeAuthoringWorkbench" in acid
     assert "mcel-element-showcase-workbench" in acid
+    assert "renderGitFileBasketTreegridLab(document, viewPanel)" in acid
+    assert "data-mcel-lab-single-active-git-view-surface" in acid
+    assert "data-mcel-lab-retired-generic-resource-gallery" in acid
+    assert "renderResourceWorkbench(document, viewPanel" not in acid
+    assert "renderOperationalWorkbench(document, viewPanel" not in acid
+    assert "renderNetworkComputeAuthoringWorkbench(document, viewPanel" not in acid
     assert "contract-first MVC tree views replacing Wunderbaum" in acid
     assert "TREE_VIEW_MODES" in acid
     assert "Cycle tree views" in acid

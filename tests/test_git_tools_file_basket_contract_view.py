@@ -127,6 +127,26 @@ const contractTreegridHtml = globalThis.GitToolsFileBasketContractView.renderCon
   visibleRenderer: "mcel-lab-git-treegrid"
 }});
 const labReport = globalThis.McelGitFileBasketTreegridLab.buildInteractiveGitTreegridLabReport();
+const labViewProjectionHtml = Object.fromEntries([
+  "explorer-sidebar",
+  "ide-project-tree",
+  "data-table",
+  "compact-audit-list",
+  "icon-grid",
+  "finder-gallery",
+  "dolphin-split-details",
+  "thunar-compact",
+  "gnome-list",
+  "finder-column-inspector",
+  "title-only-tree",
+  "plain-tree-primary"
+].map((modeId) => [modeId, globalThis.McelGitFileBasketTreegridLab.renderViewProjectionHtml(labReport, modeId)]));
+const labViewSelectionControlCounts = Object.fromEntries(
+  Object.entries(labViewProjectionHtml).map(([modeId, html]) => [
+    modeId,
+    (html.match(/data-mcel-git-view-selection-path/g) || []).length
+  ])
+);
 
 vm.runInThisContext(fs.readFileSync({json.dumps(str(toolkit))}, "utf8"), {{filename: "mcel-toolkit-core.js"}});
 vm.runInThisContext(fs.readFileSync({json.dumps(str(concern))}, "utf8"), {{filename: "mcel-concern-core.js"}});
@@ -152,6 +172,19 @@ console.log(JSON.stringify({{
   blockedAttempt,
   directoryContractOutput,
   labReport,
+  labViewSelectionControlCounts,
+  labViewProjectionHtmlIncludesSelectionRail: Object.fromEntries(
+    Object.entries(labViewProjectionHtml).map(([modeId, html]) => [
+      modeId,
+      html.includes("data-mcel-git-view-selection-control") && html.includes("data-mcel-git-view-selection-path")
+    ])
+  ),
+  labViewProjectionHtmlIncludesScrollSurface: Object.fromEntries(
+    Object.entries(labViewProjectionHtml).map(([modeId, html]) => [
+      modeId,
+      html.includes("data-mcel-git-view-scroll-surface")
+    ])
+  ),
   basketHtmlIncludesContractTreegrid: basketHtml.includes("data-git-commit-contract-treegrid"),
   basketHtmlRendererContract: basketHtml.includes('data-git-commit-file-basket-renderer="contract-treegrid"'),
   basketHtmlRendererLegacy: basketHtml.includes('data-git-commit-file-basket-renderer="legacy-wunderbaum"'),
@@ -202,6 +235,13 @@ def test_git_tools_file_basket_uses_legacy_renderer_while_lab_mounts_treegrid() 
     assert "buildInteractiveGitTreegridLabReport" in treegrid_lab
     assert "buildViewModeCatalog" in treegrid_lab
     assert "data-mcel-git-treegrid-view-mode-option" in treegrid_lab
+    assert "data-mcel-git-view-selection-path" in treegrid_lab
+    assert "viewModeSelectionControlsAvailable" in treegrid_lab
+    assert "Selection controls now stay wired" in treegrid_lab
+    assert "explorer-sidebar" in treegrid_lab
+    assert "ide-project-tree" in treegrid_lab
+    assert "finder-gallery" in treegrid_lab
+    assert "dolphin-split-details" in treegrid_lab
     assert "column-browser-inspector" in treegrid_lab
     assert "plain-tree-primary" in treegrid_lab
     assert "replacementGate: \"deferred-until-interactive-lab-proof-passes\"" in treegrid_lab
@@ -218,6 +258,16 @@ def test_git_tools_file_basket_uses_legacy_renderer_while_lab_mounts_treegrid() 
     assert ".mcel-git-treegrid-view-mode-switcher" in css
     assert ".mcel-git-view-column-browser" in css
     assert ".mcel-git-view-icon-grid" in css
+    assert ".mcel-git-view-tile-grid" in css
+    assert ".mcel-git-view-gallery" in css
+    assert ".mcel-git-view-split-details" in css
+    assert ".mcel-git-view-selection-control" in css
+    assert ".mcel-git-view-selection-cell" in css
+    assert ".mcel-git-view-browser-row" in css
+    assert "captureProjectionScrollState" in treegrid_lab
+    assert "restoreProjectionScrollState" in treegrid_lab
+    assert "preserveScrollState" in treegrid_lab
+    assert "data-mcel-git-view-scroll-surface" in treegrid_lab
 
 
 def test_contract_treegrid_rows_preserve_contract_selection_but_are_not_live_git_renderer() -> None:
@@ -289,11 +339,15 @@ def test_mcel_lab_exercises_git_shaped_treegrid_before_replacement() -> None:
     assert lab["visibleRenderer"] == "mcel-lab-git-treegrid"
     assert lab["replacementGate"] == "deferred-until-interactive-lab-proof-passes"
     assert lab["defaultViewMode"] == "contract-treegrid"
-    assert {"contract-treegrid", "details-tree"} <= set(lab["eligibleViewModeIds"])
-    assert {"compact-audit-list", "data-table", "column-browser-inspector", "title-only-tree", "plain-tree-primary", "icon-grid-primary"} <= set(lab["rejectedViewModeIds"])
+    assert {"contract-treegrid", "details-tree", "details-treegrid"} <= set(lab["eligibleViewModeIds"])
+    assert {"explorer-sidebar", "ide-project-tree", "miller-columns", "outline-tree", "accessibility-proof", "icon-grid", "compact-list", "tile-view", "content-view", "finder-gallery", "finder-column-inspector", "gnome-grid", "gnome-list", "dolphin-split-details", "thunar-compact", "compact-audit-list", "data-table", "column-browser-inspector", "title-only-tree", "plain-tree-primary", "icon-grid-primary"} <= set(lab["rejectedViewModeIds"])
     view_modes = {mode["id"]: mode for mode in lab["viewModes"]}
     assert view_modes["contract-treegrid"]["interactive"] is True
     assert view_modes["details-tree"]["interactive"] is True
+    assert view_modes["details-treegrid"]["interactive"] is True
+    assert view_modes["explorer-sidebar"]["status"] == "rejected"
+    assert view_modes["finder-gallery"]["status"] == "rejected"
+    assert view_modes["dolphin-split-details"]["status"] == "rejected"
     assert view_modes["column-browser-inspector"]["status"] == "rejected"
     assert "tri-state-selection" in view_modes["column-browser-inspector"]["missingCapabilities"]
     assert view_modes["plain-tree-primary"]["status"] == "rejected"
@@ -315,10 +369,31 @@ def test_mcel_lab_exercises_git_shaped_treegrid_before_replacement() -> None:
     assert proof["disclosureExpansionPrepared"] is True
     assert proof["columnResizePrepared"] is True
     assert proof["viewModeOptionsAvailable"] is True
+    assert proof["viewModeSelectionControlsAvailable"] is True
+    assert proof["viewModeSelectionPreservesScroll"] is True
+    assert len(lab["viewModes"]) >= 24
     assert proof["eligibleViewModesIncludeTreegrid"] is True
     assert proof["rejectedViewModesPreserved"] is True
     assert proof["selectedOutputMatchesLegacy"] is True
     assert proof["titleOnlyTreeRejected"] is True
+
+    for mode_id in [
+        "explorer-sidebar",
+        "ide-project-tree",
+        "data-table",
+        "compact-audit-list",
+        "icon-grid",
+        "finder-gallery",
+        "dolphin-split-details",
+        "thunar-compact",
+        "gnome-list",
+        "finder-column-inspector",
+        "title-only-tree",
+        "plain-tree-primary",
+    ]:
+        assert report["labViewProjectionHtmlIncludesSelectionRail"][mode_id] is True
+        assert report["labViewSelectionControlCounts"][mode_id] > 0
+        assert report["labViewProjectionHtmlIncludesScrollSurface"][mode_id] is True
 
     assert "runtime/git-tools/.env.local" in lab["scenarios"]["probes"]["blocked"]
     assert lab["scenarios"]["blockedAttempt"]["ok"] is False
