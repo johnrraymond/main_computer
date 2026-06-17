@@ -197,6 +197,20 @@ class ExperimentalFoundationDbCreditLedger:
     def _write_dict(self, tr: Any, kind: str, item_id: str, payload: dict[str, Any]) -> None:
         tr[self._key(kind, item_id)] = _json_dumps(payload)
 
+    def _add_conflict_key(self, tr: Any, method_name: str, key: bytes) -> None:
+        """Make account/requester debit serialization explicit for FDB.
+
+        Normal FDB reads and writes already add conflict ranges.  The requester
+        wallet/account balance is the shared concurrency boundary for multiple
+        simultaneous requests from one wallet, so keep that conflict key explicit
+        near every hold/debit state transition.  This protects the invariant even
+        if later code accidentally changes a read to a snapshot read.
+        """
+
+        method = getattr(tr, method_name, None)
+        if callable(method):
+            method(key)
+
     def _list_dicts(self, tr: Any, kind: str) -> list[dict[str, Any]]:
         key_range = self.range_for(kind)
         result: list[dict[str, Any]] = []
@@ -466,6 +480,9 @@ class ExperimentalFoundationDbCreditLedger:
 
         @self.fdb.transactional
         def _tx(tr: Any) -> dict[str, Any]:
+            account_key = self._key("account", clean_account)
+            self._add_conflict_key(tr, "add_read_conflict_key", account_key)
+            self._add_conflict_key(tr, "add_write_conflict_key", account_key)
             existing = self._read_dict(tr, "hold", proposed.hold_id)
             if existing is not None:
                 hold = _hold_from_dict(existing)
@@ -545,6 +562,9 @@ class ExperimentalFoundationDbCreditLedger:
             if payload is None:
                 raise KeyError(f"Unknown credit hold: {clean_hold}")
             hold = _hold_from_dict(payload)
+            account_key = self._key("account", hold.account_id)
+            self._add_conflict_key(tr, "add_read_conflict_key", account_key)
+            self._add_conflict_key(tr, "add_write_conflict_key", account_key)
             account = self._account_from_payload(self._read_dict(tr, "account", hold.account_id), hold.account_id, now=now)
             if hold.status != "held":
                 return {"idempotent": True, "hold": hold.as_dict(), "account": account.as_dict()}
@@ -644,6 +664,9 @@ class ExperimentalFoundationDbCreditLedger:
             if payload is None:
                 raise KeyError(f"Unknown credit hold: {clean_hold}")
             hold = _hold_from_dict(payload)
+            account_key = self._key("account", hold.account_id)
+            self._add_conflict_key(tr, "add_read_conflict_key", account_key)
+            self._add_conflict_key(tr, "add_write_conflict_key", account_key)
 
             existing_charge = next(
                 (

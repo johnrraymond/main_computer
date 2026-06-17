@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import ast
 import inspect
 import json
+import re
 from pathlib import Path
 import threading
 import time
@@ -22,6 +23,7 @@ from main_computer.providers.base import LLMProvider
 AI_CONTROL_RUNTIME_DIR = Path("runtime") / "ai_control"
 AI_CONTROL_CALLS_FILENAME = "calls.json"
 AI_CONTROL_PROMPT_OVERRIDES_FILENAME = "prompt_overrides.json"
+AI_CONTROL_PROFILES_FILENAME = "profiles.json"
 _MAX_RECORDED_CALLS = 80
 _MAX_MESSAGE_CHARS = 12_000
 _MAX_RESPONSE_CHARS = 8_000
@@ -61,6 +63,25 @@ class AiControlMessageStructure:
     provider_call: str
     description: str
     slots: tuple[AiControlMessageSlot, ...]
+
+
+@dataclass(frozen=True)
+class AiControlComposable:
+    id: str
+    label: str
+    kind: str
+    description: str
+    prompt_text: str
+    source: str = "factory"
+
+
+@dataclass(frozen=True)
+class AiControlProfile:
+    id: str
+    name: str
+    description: str
+    enabled_composable_ids: tuple[str, ...]
+    source: str = "factory"
 
 
 AI_CONTROL_PROMPT_SOURCES: tuple[AiControlPromptSource, ...] = (
@@ -307,6 +328,126 @@ AI_CONTROL_MESSAGE_STRUCTURES: tuple[AiControlMessageStructure, ...] = (
 )
 
 
+AI_CONTROL_FACTORY_COMPOSABLES: tuple[AiControlComposable, ...] = (
+    AiControlComposable(
+        id="builtin.operator_real_workspace",
+        label="Operator in a real workspace",
+        kind="user_treatment",
+        description="Treat the user as a capable operator working in a real local Windows workspace.",
+        prompt_text=(
+            "Treat the user as a capable operator working in a real local Windows workspace. "
+            "They need grounded, executable help, not abstract reassurance."
+        ),
+    ),
+    AiControlComposable(
+        id="builtin.provider_honesty",
+        label="Be honest about provider and tool limits",
+        kind="limits",
+        description="Do not imply file, command, runtime, or hardware access unless that access actually exists.",
+        prompt_text=(
+            "Be explicit about provider and tool limits. Do not imply file, command, runtime, "
+            "patch, or hardware access unless that access was actually available and used."
+        ),
+    ),
+    AiControlComposable(
+        id="builtin.next_command",
+        label="Needs the next command",
+        kind="output_shape",
+        description="Prefer the most obvious next step and include the exact command when useful.",
+        prompt_text=(
+            "Prefer the most obvious next step over broad theory. When a command is appropriate, "
+            "include the exact next command."
+        ),
+    ),
+    AiControlComposable(
+        id="builtin.verified_vs_unverified",
+        label="Verified vs unverified split",
+        kind="verification",
+        description="Clearly separate what was actually checked from assumptions and remaining risk.",
+        prompt_text=(
+            "Separate verified facts from unverified assumptions. Do not claim tests, command success, "
+            "patch success, or runtime behavior unless it was actually verified."
+        ),
+    ),
+    AiControlComposable(
+        id="builtin.dry_run_before_mutation",
+        label="Dry-run before mutation",
+        kind="safety",
+        description="Prefer status checks, previews, and dry-runs before actions that mutate state.",
+        prompt_text=(
+            "Prefer status checks, previews, and dry-runs before mutation. Keep changes narrow, "
+            "reversible, and low-cleanup when possible."
+        ),
+    ),
+    AiControlComposable(
+        id="builtin.hardware_gate",
+        label="Real hardware is the judge",
+        kind="hardware",
+        description="Do not imply hardware success unless the result was tested on real hardware.",
+        prompt_text=(
+            "Real hardware is the final judge. Do not claim hardware success unless real hardware "
+            "was actually tested; mark hardware behavior as unverified otherwise."
+        ),
+    ),
+    AiControlComposable(
+        id="builtin.unforgiving_reviewer",
+        label="Unforgiving reviewer",
+        kind="user_treatment",
+        description="Treat the user as someone who may reject vague, overbroad, or costly work.",
+        prompt_text=(
+            "Treat the user as an unforgiving reviewer with limited patience for preventable ambiguity. "
+            "Optimize for work that is clear, narrow, reviewable, and worth keeping."
+        ),
+    ),
+)
+
+AI_CONTROL_FACTORY_COMPOSABLE_BY_ID = {item.id: item for item in AI_CONTROL_FACTORY_COMPOSABLES}
+
+AI_CONTROL_FACTORY_PROFILES: tuple[AiControlProfile, ...] = (
+    AiControlProfile(
+        id="factory.operator_safe",
+        name="Operator Safe",
+        description="Grounded, executable help for a real workspace operator.",
+        enabled_composable_ids=(
+            "builtin.operator_real_workspace",
+            "builtin.provider_honesty",
+            "builtin.verified_vs_unverified",
+            "builtin.next_command",
+        ),
+    ),
+    AiControlProfile(
+        id="factory.patch_builder",
+        name="Patch Builder",
+        description="Prepare narrow, reviewable code changes with dry-run-first habits.",
+        enabled_composable_ids=(
+            "builtin.operator_real_workspace",
+            "builtin.provider_honesty",
+            "builtin.verified_vs_unverified",
+            "builtin.dry_run_before_mutation",
+            "builtin.next_command",
+            "builtin.unforgiving_reviewer",
+        ),
+    ),
+    AiControlProfile(
+        id="factory.hardware_reviewer",
+        name="Hardware Reviewer",
+        description="Treat outputs as destined for real hardware and unforgiving validation.",
+        enabled_composable_ids=(
+            "builtin.operator_real_workspace",
+            "builtin.provider_honesty",
+            "builtin.verified_vs_unverified",
+            "builtin.next_command",
+            "builtin.hardware_gate",
+            "builtin.unforgiving_reviewer",
+        ),
+    ),
+)
+
+AI_CONTROL_FACTORY_PROFILE_BY_ID = {item.id: item for item in AI_CONTROL_FACTORY_PROFILES}
+AI_CONTROL_DEFAULT_PROFILE_ID = "factory.operator_safe"
+AI_CONTROL_PROFILE_SCHEMA = "main_computer.ai_control.profiles.v1"
+
+
 def _utc_now() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
 
@@ -324,6 +465,10 @@ def _calls_path(runtime_root: Path | str) -> Path:
 
 def _prompt_overrides_path(runtime_root: Path | str) -> Path:
     return Path(runtime_root) / AI_CONTROL_RUNTIME_DIR / AI_CONTROL_PROMPT_OVERRIDES_FILENAME
+
+
+def _profiles_path(runtime_root: Path | str) -> Path:
+    return Path(runtime_root) / AI_CONTROL_RUNTIME_DIR / AI_CONTROL_PROFILES_FILENAME
 
 
 def _read_calls(path: Path) -> list[dict[str, Any]]:
@@ -378,6 +523,588 @@ def _write_prompt_overrides(path: Path, overrides: dict[str, str]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(path)
+
+
+def _safe_id_fragment(value: str, *, fallback: str = "item") -> str:
+    text = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(value or "").strip().lower()).strip("._-")
+    return text or fallback
+
+
+def _unique_id(existing: set[str], prefix: str, label: str) -> str:
+    base = f"{prefix}.{_safe_id_fragment(label, fallback='custom')}"
+    candidate = base
+    counter = 2
+    while candidate in existing:
+        candidate = f"{base}_{counter}"
+        counter += 1
+    return candidate
+
+
+def _read_profiles_state(path: Path) -> dict[str, Any]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _write_profiles_state(path: Path, state: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "ok": True,
+        "schema": AI_CONTROL_PROFILE_SCHEMA,
+        "updated_at": _utc_now(),
+        "active_profile_id": str(state.get("active_profile_id") or AI_CONTROL_DEFAULT_PROFILE_ID),
+        "profile_overrides": state.get("profile_overrides") if isinstance(state.get("profile_overrides"), dict) else {},
+        "user_profiles": state.get("user_profiles") if isinstance(state.get("user_profiles"), dict) else {},
+        "composable_overrides": state.get("composable_overrides") if isinstance(state.get("composable_overrides"), dict) else {},
+        "user_composables": state.get("user_composables") if isinstance(state.get("user_composables"), dict) else {},
+        "profile_composable_overrides": (
+            state.get("profile_composable_overrides")
+            if isinstance(state.get("profile_composable_overrides"), dict)
+            else {}
+        ),
+    }
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _normalize_id_list(value: object) -> list[str]:
+    if not isinstance(value, list | tuple):
+        return []
+    out: list[str] = []
+    for item in value:
+        item_id = str(item or "").strip()
+        if item_id and item_id not in out:
+            out.append(item_id)
+    return out
+
+
+def _composable_to_dict(composable: AiControlComposable, *, has_override: bool = False) -> dict[str, Any]:
+    return {
+        "id": composable.id,
+        "label": composable.label,
+        "kind": composable.kind,
+        "description": composable.description,
+        "prompt_text": composable.prompt_text,
+        "source": composable.source,
+        "is_factory": composable.id in AI_CONTROL_FACTORY_COMPOSABLE_BY_ID,
+        "has_override": has_override,
+        "can_reset": has_override,
+        "can_delete": composable.source == "user",
+    }
+
+
+def _profile_to_dict(profile: AiControlProfile, *, has_override: bool = False) -> dict[str, Any]:
+    return {
+        "id": profile.id,
+        "name": profile.name,
+        "description": profile.description,
+        "enabled_composable_ids": list(profile.enabled_composable_ids),
+        "source": profile.source,
+        "is_factory": profile.id in AI_CONTROL_FACTORY_PROFILE_BY_ID,
+        "has_override": has_override,
+        "can_reset": has_override,
+        "can_delete": profile.source == "user",
+    }
+
+
+def _merged_composable_map(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {
+        item.id: _composable_to_dict(item)
+        for item in AI_CONTROL_FACTORY_COMPOSABLES
+    }
+    overrides = state.get("composable_overrides") if isinstance(state.get("composable_overrides"), dict) else {}
+    for composable_id, override in overrides.items():
+        key = str(composable_id or "").strip()
+        if key not in merged or not isinstance(override, dict):
+            continue
+        current = dict(merged[key])
+        for field in ("label", "kind", "description", "prompt_text"):
+            if isinstance(override.get(field), str):
+                current[field] = override[field]
+        current["has_override"] = True
+        current["can_reset"] = True
+        merged[key] = current
+    user_composables = state.get("user_composables") if isinstance(state.get("user_composables"), dict) else {}
+    for composable_id, item in user_composables.items():
+        key = str(composable_id or "").strip()
+        if not key or not isinstance(item, dict):
+            continue
+        merged[key] = {
+            "id": key,
+            "label": str(item.get("label") or key),
+            "kind": str(item.get("kind") or "user_defined"),
+            "description": str(item.get("description") or ""),
+            "prompt_text": str(item.get("prompt_text") or ""),
+            "source": "user",
+            "is_factory": False,
+            "has_override": False,
+            "can_reset": False,
+            "can_delete": True,
+        }
+    return merged
+
+
+def _merged_profile_map(state: dict[str, Any], composable_ids: set[str]) -> dict[str, dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {
+        item.id: _profile_to_dict(item)
+        for item in AI_CONTROL_FACTORY_PROFILES
+    }
+    overrides = state.get("profile_overrides") if isinstance(state.get("profile_overrides"), dict) else {}
+    for profile_id, override in overrides.items():
+        key = str(profile_id or "").strip()
+        if key not in merged or not isinstance(override, dict):
+            continue
+        current = dict(merged[key])
+        if isinstance(override.get("name"), str):
+            current["name"] = override["name"]
+        if isinstance(override.get("description"), str):
+            current["description"] = override["description"]
+        if isinstance(override.get("enabled_composable_ids"), list):
+            current["enabled_composable_ids"] = [
+                item for item in _normalize_id_list(override["enabled_composable_ids"])
+                if item in composable_ids
+            ]
+        current["has_override"] = True
+        current["can_reset"] = True
+        merged[key] = current
+    user_profiles = state.get("user_profiles") if isinstance(state.get("user_profiles"), dict) else {}
+    for profile_id, item in user_profiles.items():
+        key = str(profile_id or "").strip()
+        if not key or not isinstance(item, dict):
+            continue
+        merged[key] = {
+            "id": key,
+            "name": str(item.get("name") or key),
+            "description": str(item.get("description") or ""),
+            "enabled_composable_ids": [
+                item_id for item_id in _normalize_id_list(item.get("enabled_composable_ids"))
+                if item_id in composable_ids
+            ],
+            "source": "user",
+            "is_factory": False,
+            "has_override": False,
+            "can_reset": False,
+            "can_delete": True,
+        }
+    return merged
+
+
+def _profile_composable_override_map(state: dict[str, Any], profile_id: str) -> dict[str, dict[str, str]]:
+    all_overrides = (
+        state.get("profile_composable_overrides")
+        if isinstance(state.get("profile_composable_overrides"), dict)
+        else {}
+    )
+    raw = all_overrides.get(str(profile_id or "").strip())
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for composable_id, item in raw.items():
+        key = str(composable_id or "").strip()
+        if not key or not isinstance(item, dict):
+            continue
+        payload: dict[str, str] = {}
+        for field in ("label", "kind", "description", "prompt_text"):
+            if isinstance(item.get(field), str):
+                payload[field] = item[field]
+        if payload:
+            out[key] = payload
+    return out
+
+
+def _apply_profile_composable_override(
+    composable: dict[str, Any],
+    override: dict[str, str] | None,
+) -> dict[str, Any]:
+    item = dict(composable)
+    item["base_label"] = str(composable.get("label") or composable.get("id") or "")
+    item["base_kind"] = str(composable.get("kind") or "")
+    item["base_description"] = str(composable.get("description") or "")
+    item["base_prompt_text"] = str(composable.get("prompt_text") or "")
+    item["profile_override"] = {}
+    item["profile_has_override"] = False
+    item["can_reset_profile_choice"] = False
+    if override:
+        clean: dict[str, str] = {}
+        for field in ("label", "kind", "description", "prompt_text"):
+            if isinstance(override.get(field), str):
+                clean[field] = override[field]
+                item[field] = override[field]
+        if clean:
+            item["profile_override"] = clean
+            item["profile_has_override"] = True
+            item["can_reset_profile_choice"] = True
+    return item
+
+
+def _profile_choice_list(
+    profile: dict[str, Any],
+    composables: dict[str, dict[str, Any]],
+    state: dict[str, Any],
+) -> list[dict[str, Any]]:
+    enabled_ids = set(_normalize_id_list(profile.get("enabled_composable_ids")))
+    overrides = _profile_composable_override_map(state, str(profile.get("id") or ""))
+    choices: list[dict[str, Any]] = []
+    for composable in composables.values():
+        item = _apply_profile_composable_override(composable, overrides.get(str(composable.get("id") or "")))
+        item["enabled"] = str(item.get("id") or "") in enabled_ids
+        choices.append(item)
+    choices.sort(
+        key=lambda item: (
+            0 if item.get("enabled") else 1,
+            0 if item.get("is_factory") else 1,
+            str(item.get("kind") or ""),
+            str(item.get("label") or item.get("id")),
+        )
+    )
+    return choices
+
+
+def _sanitize_profile_composable_overrides(
+    value: object,
+    composables: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, str]]:
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for composable_id, item in value.items():
+        key = str(composable_id or "").strip()
+        if key not in composables or not isinstance(item, dict):
+            continue
+        base = composables[key]
+        payload: dict[str, str] = {}
+        for field in ("label", "kind", "description", "prompt_text"):
+            raw = item.get(field)
+            if not isinstance(raw, str):
+                continue
+            text = raw
+            if text != str(base.get(field) or ""):
+                payload[field] = text
+        if payload:
+            out[key] = payload
+    return out
+
+
+def _compile_profile_preview(
+    profile: dict[str, Any] | None,
+    composables: dict[str, dict[str, Any]],
+    state: dict[str, Any] | None = None,
+) -> str:
+    if not profile:
+        return ""
+    state = state or {}
+    lines = [
+        f"User treatment profile: {profile.get('name') or profile.get('id')}",
+    ]
+    description = str(profile.get("description") or "").strip()
+    if description:
+        lines.extend(["", description])
+    enabled_ids = _normalize_id_list(profile.get("enabled_composable_ids"))
+    overrides = _profile_composable_override_map(state, str(profile.get("id") or ""))
+    if enabled_ids:
+        lines.append("")
+        lines.append("Enabled profile choices:")
+        for composable_id in enabled_ids:
+            composable = composables.get(composable_id)
+            if not composable:
+                continue
+            effective = _apply_profile_composable_override(composable, overrides.get(composable_id))
+            prompt_text = str(effective.get("prompt_text") or "").strip()
+            if prompt_text:
+                lines.append(f"- {prompt_text}")
+    else:
+        lines.extend(["", "No profile choices are enabled yet."])
+    return "\n".join(lines).strip()
+
+
+def ai_control_profile_catalog(runtime_root: Path | str) -> dict[str, Any]:
+    """Return user-treatment profile UI state.
+
+    This is UI/state only. It does not inject composables into model calls yet.
+    """
+
+    runtime = Path(runtime_root).resolve()
+    path = _profiles_path(runtime)
+    state = _read_profiles_state(path)
+    composable_map = _merged_composable_map(state)
+    profile_map = _merged_profile_map(state, set(composable_map))
+    active_profile_id = str(state.get("active_profile_id") or AI_CONTROL_DEFAULT_PROFILE_ID)
+    if active_profile_id not in profile_map:
+        active_profile_id = AI_CONTROL_DEFAULT_PROFILE_ID if AI_CONTROL_DEFAULT_PROFILE_ID in profile_map else next(iter(profile_map), "")
+    profiles = list(profile_map.values())
+    profiles.sort(key=lambda item: (0 if item.get("is_factory") else 1, str(item.get("name") or item.get("id"))))
+    composables = list(composable_map.values())
+    composables.sort(key=lambda item: (0 if item.get("is_factory") else 1, str(item.get("kind") or ""), str(item.get("label") or item.get("id"))))
+    for profile in profiles:
+        profile["choices"] = _profile_choice_list(profile, composable_map, state)
+        profile["compiled_preview"] = _compile_profile_preview(profile, composable_map, state)
+        profile["is_active"] = profile["id"] == active_profile_id
+        profile["has_profile_choice_overrides"] = bool(_profile_composable_override_map(state, str(profile.get("id") or "")))
+    active_profile = profile_map.get(active_profile_id)
+    return {
+        "ok": True,
+        "schema": AI_CONTROL_PROFILE_SCHEMA,
+        "updated_at": _utc_now(),
+        "runtime_root": str(runtime),
+        "path": str(path),
+        "active_profile_id": active_profile_id,
+        "active_profile": {
+            **active_profile,
+            "choices": _profile_choice_list(active_profile, composable_map, state),
+            "compiled_preview": _compile_profile_preview(active_profile, composable_map, state),
+            "is_active": True,
+            "has_profile_choice_overrides": bool(_profile_composable_override_map(state, str(active_profile.get("id") or ""))),
+        } if active_profile else None,
+        "profile_count": len(profiles),
+        "composable_count": len(composables),
+        "profiles": profiles,
+        "composables": composables,
+        "note": "Profiles are not injected into AI calls yet; this is the UI/state control layer.",
+    }
+
+
+def ai_control_save_profile(
+    runtime_root: Path | str,
+    *,
+    profile_id: str | None = None,
+    name: str,
+    description: str = "",
+    enabled_composable_ids: Sequence[str] | None = None,
+    composable_overrides: object | None = None,
+    set_active: bool = False,
+) -> dict[str, Any]:
+    path = _profiles_path(runtime_root)
+    with _ai_control_lock:
+        state = _read_profiles_state(path)
+        composable_map = _merged_composable_map(state)
+        composable_ids = set(composable_map)
+        enabled_ids = [item for item in _normalize_id_list(list(enabled_composable_ids or [])) if item in composable_ids]
+        existing_ids = set(_merged_profile_map(state, composable_ids))
+        key = str(profile_id or "").strip()
+        if not key:
+            key = _unique_id(existing_ids, "user.profile", name)
+        if key in AI_CONTROL_FACTORY_PROFILE_BY_ID:
+            overrides = state.setdefault("profile_overrides", {})
+            overrides[key] = {
+                "name": str(name or key),
+                "description": str(description or ""),
+                "enabled_composable_ids": enabled_ids,
+            }
+        else:
+            profiles = state.setdefault("user_profiles", {})
+            profiles[key] = {
+                "name": str(name or key),
+                "description": str(description or ""),
+                "enabled_composable_ids": enabled_ids,
+            }
+        profile_choice_overrides = state.setdefault("profile_composable_overrides", {})
+        clean_choice_overrides = _sanitize_profile_composable_overrides(composable_overrides, composable_map)
+        if clean_choice_overrides:
+            profile_choice_overrides[key] = clean_choice_overrides
+        else:
+            profile_choice_overrides.pop(key, None)
+        if set_active:
+            state["active_profile_id"] = key
+        elif not state.get("active_profile_id"):
+            state["active_profile_id"] = AI_CONTROL_DEFAULT_PROFILE_ID
+        _write_profiles_state(path, state)
+    return ai_control_profile_catalog(runtime_root)
+
+
+def ai_control_duplicate_profile(runtime_root: Path | str, *, profile_id: str) -> dict[str, Any]:
+    path = _profiles_path(runtime_root)
+    with _ai_control_lock:
+        state = _read_profiles_state(path)
+        composables = _merged_composable_map(state)
+        profiles = _merged_profile_map(state, set(composables))
+        source = profiles.get(str(profile_id or "").strip())
+        if not source:
+            return {"ok": False, "error": f"Unknown AI profile id: {profile_id!r}"}
+        existing_ids = set(profiles)
+        key = _unique_id(existing_ids, "user.profile", f"{source.get('name') or source.get('id')} copy")
+        user_profiles = state.setdefault("user_profiles", {})
+        user_profiles[key] = {
+            "name": f"{source.get('name') or source.get('id')} Copy",
+            "description": str(source.get("description") or ""),
+            "enabled_composable_ids": _normalize_id_list(source.get("enabled_composable_ids")),
+        }
+        profile_choice_overrides = state.setdefault("profile_composable_overrides", {})
+        source_choice_overrides = _profile_composable_override_map(state, str(source.get("id") or ""))
+        if source_choice_overrides:
+            profile_choice_overrides[key] = source_choice_overrides
+        state["active_profile_id"] = key
+        _write_profiles_state(path, state)
+    return ai_control_profile_catalog(runtime_root)
+
+
+def ai_control_delete_profile(runtime_root: Path | str, *, profile_id: str) -> dict[str, Any]:
+    key = str(profile_id or "").strip()
+    if key in AI_CONTROL_FACTORY_PROFILE_BY_ID:
+        return {"ok": False, "error": "Factory profiles cannot be deleted. Use reset instead."}
+    path = _profiles_path(runtime_root)
+    with _ai_control_lock:
+        state = _read_profiles_state(path)
+        user_profiles = state.get("user_profiles") if isinstance(state.get("user_profiles"), dict) else {}
+        if key not in user_profiles:
+            return {"ok": False, "error": f"Unknown user profile id: {profile_id!r}"}
+        user_profiles.pop(key, None)
+        state["user_profiles"] = user_profiles
+        profile_choice_overrides = state.get("profile_composable_overrides") if isinstance(state.get("profile_composable_overrides"), dict) else {}
+        profile_choice_overrides.pop(key, None)
+        state["profile_composable_overrides"] = profile_choice_overrides
+        if state.get("active_profile_id") == key:
+            state["active_profile_id"] = AI_CONTROL_DEFAULT_PROFILE_ID
+        _write_profiles_state(path, state)
+    return ai_control_profile_catalog(runtime_root)
+
+
+def ai_control_reset_profile(runtime_root: Path | str, *, profile_id: str) -> dict[str, Any]:
+    key = str(profile_id or "").strip()
+    if key not in AI_CONTROL_FACTORY_PROFILE_BY_ID:
+        return {"ok": False, "error": "Only factory profiles can be reset to factory settings."}
+    path = _profiles_path(runtime_root)
+    with _ai_control_lock:
+        state = _read_profiles_state(path)
+        overrides = state.get("profile_overrides") if isinstance(state.get("profile_overrides"), dict) else {}
+        overrides.pop(key, None)
+        state["profile_overrides"] = overrides
+        profile_choice_overrides = state.get("profile_composable_overrides") if isinstance(state.get("profile_composable_overrides"), dict) else {}
+        profile_choice_overrides.pop(key, None)
+        state["profile_composable_overrides"] = profile_choice_overrides
+        _write_profiles_state(path, state)
+    return ai_control_profile_catalog(runtime_root)
+
+
+def ai_control_set_active_profile(runtime_root: Path | str, *, profile_id: str) -> dict[str, Any]:
+    key = str(profile_id or "").strip()
+    path = _profiles_path(runtime_root)
+    with _ai_control_lock:
+        state = _read_profiles_state(path)
+        composables = _merged_composable_map(state)
+        profiles = _merged_profile_map(state, set(composables))
+        if key not in profiles:
+            return {"ok": False, "error": f"Unknown AI profile id: {profile_id!r}"}
+        state["active_profile_id"] = key
+        _write_profiles_state(path, state)
+    return ai_control_profile_catalog(runtime_root)
+
+
+def ai_control_save_composable(
+    runtime_root: Path | str,
+    *,
+    composable_id: str | None = None,
+    label: str,
+    kind: str = "user_defined",
+    description: str = "",
+    prompt_text: str = "",
+) -> dict[str, Any]:
+    path = _profiles_path(runtime_root)
+    with _ai_control_lock:
+        state = _read_profiles_state(path)
+        existing = set(_merged_composable_map(state))
+        key = str(composable_id or "").strip()
+        if not key:
+            key = _unique_id(existing, "user.composable", label)
+        payload = {
+            "label": str(label or key),
+            "kind": str(kind or "user_defined"),
+            "description": str(description or ""),
+            "prompt_text": str(prompt_text or ""),
+        }
+        if key in AI_CONTROL_FACTORY_COMPOSABLE_BY_ID:
+            overrides = state.setdefault("composable_overrides", {})
+            overrides[key] = payload
+        else:
+            user_composables = state.setdefault("user_composables", {})
+            user_composables[key] = payload
+        if not state.get("active_profile_id"):
+            state["active_profile_id"] = AI_CONTROL_DEFAULT_PROFILE_ID
+        _write_profiles_state(path, state)
+    return ai_control_profile_catalog(runtime_root)
+
+
+def ai_control_delete_composable(runtime_root: Path | str, *, composable_id: str) -> dict[str, Any]:
+    key = str(composable_id or "").strip()
+    if key in AI_CONTROL_FACTORY_COMPOSABLE_BY_ID:
+        return {"ok": False, "error": "Factory composables cannot be deleted. Use reset instead."}
+    path = _profiles_path(runtime_root)
+    with _ai_control_lock:
+        state = _read_profiles_state(path)
+        user_composables = state.get("user_composables") if isinstance(state.get("user_composables"), dict) else {}
+        if key not in user_composables:
+            return {"ok": False, "error": f"Unknown user composable id: {composable_id!r}"}
+        user_composables.pop(key, None)
+        state["user_composables"] = user_composables
+        user_profiles = state.get("user_profiles") if isinstance(state.get("user_profiles"), dict) else {}
+        for profile in user_profiles.values():
+            if isinstance(profile, dict):
+                profile["enabled_composable_ids"] = [item for item in _normalize_id_list(profile.get("enabled_composable_ids")) if item != key]
+        overrides = state.get("profile_overrides") if isinstance(state.get("profile_overrides"), dict) else {}
+        for profile in overrides.values():
+            if isinstance(profile, dict):
+                profile["enabled_composable_ids"] = [item for item in _normalize_id_list(profile.get("enabled_composable_ids")) if item != key]
+        profile_choice_overrides = state.get("profile_composable_overrides") if isinstance(state.get("profile_composable_overrides"), dict) else {}
+        for profile_id, choice_overrides in list(profile_choice_overrides.items()):
+            if isinstance(choice_overrides, dict):
+                choice_overrides.pop(key, None)
+                if not choice_overrides:
+                    profile_choice_overrides.pop(profile_id, None)
+        state["profile_composable_overrides"] = profile_choice_overrides
+        _write_profiles_state(path, state)
+    return ai_control_profile_catalog(runtime_root)
+
+
+def ai_control_reset_composable(runtime_root: Path | str, *, composable_id: str) -> dict[str, Any]:
+    key = str(composable_id or "").strip()
+    if key not in AI_CONTROL_FACTORY_COMPOSABLE_BY_ID:
+        return {"ok": False, "error": "Only factory composables can be reset to factory settings."}
+    path = _profiles_path(runtime_root)
+    with _ai_control_lock:
+        state = _read_profiles_state(path)
+        overrides = state.get("composable_overrides") if isinstance(state.get("composable_overrides"), dict) else {}
+        overrides.pop(key, None)
+        state["composable_overrides"] = overrides
+        _write_profiles_state(path, state)
+    return ai_control_profile_catalog(runtime_root)
+
+
+def ai_control_handle_profile_action(runtime_root: Path | str, body: dict[str, Any]) -> dict[str, Any]:
+    action = str(body.get("action") or "").strip()
+    if action == "save_profile":
+        return ai_control_save_profile(
+            runtime_root,
+            profile_id=body.get("profile_id") or body.get("id"),
+            name=str(body.get("name") or ""),
+            description=str(body.get("description") or ""),
+            enabled_composable_ids=body.get("enabled_composable_ids") or [],
+            composable_overrides=body.get("composable_overrides") or {},
+            set_active=bool(body.get("set_active")),
+        )
+    if action == "duplicate_profile":
+        return ai_control_duplicate_profile(runtime_root, profile_id=str(body.get("profile_id") or body.get("id") or ""))
+    if action == "delete_profile":
+        return ai_control_delete_profile(runtime_root, profile_id=str(body.get("profile_id") or body.get("id") or ""))
+    if action == "reset_profile":
+        return ai_control_reset_profile(runtime_root, profile_id=str(body.get("profile_id") or body.get("id") or ""))
+    if action == "set_active_profile":
+        return ai_control_set_active_profile(runtime_root, profile_id=str(body.get("profile_id") or body.get("id") or ""))
+    if action == "save_composable":
+        return ai_control_save_composable(
+            runtime_root,
+            composable_id=body.get("composable_id") or body.get("id"),
+            label=str(body.get("label") or ""),
+            kind=str(body.get("kind") or "user_defined"),
+            description=str(body.get("description") or ""),
+            prompt_text=str(body.get("prompt_text") or ""),
+        )
+    if action == "delete_composable":
+        return ai_control_delete_composable(runtime_root, composable_id=str(body.get("composable_id") or body.get("id") or ""))
+    if action == "reset_composable":
+        return ai_control_reset_composable(runtime_root, composable_id=str(body.get("composable_id") or body.get("id") or ""))
+    return {"ok": False, "error": f"Unknown AI Control profile action: {action!r}"}
 
 
 def _repo_root_from_runtime_root(runtime_root: Path | str) -> Path:

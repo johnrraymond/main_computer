@@ -5,6 +5,8 @@ from pathlib import Path
 from main_computer.ai_control import (
     ai_call_surface,
     ai_control_calls_snapshot,
+    ai_control_handle_profile_action,
+    ai_control_profile_catalog,
     ai_control_prompt_catalog,
     ai_control_prompt_text,
     ai_control_save_prompt_override,
@@ -93,6 +95,97 @@ def test_ai_control_prompt_override_is_runtime_only_and_explicit(tmp_path: Path)
     assert ai_control_prompt_text("router.system", "source default", runtime_root=tmp_path) == "source default"
 
 
+def test_ai_control_profiles_are_named_sets_of_editable_composables(tmp_path: Path) -> None:
+    catalog = ai_control_profile_catalog(tmp_path)
+
+    assert catalog["ok"] is True
+    assert catalog["schema"] == "main_computer.ai_control.profiles.v1"
+    assert catalog["active_profile_id"] == "factory.operator_safe"
+    assert catalog["profile_count"] >= 3
+    assert catalog["composable_count"] >= 6
+
+    active = catalog["active_profile"]
+    assert active["name"] == "Operator Safe"
+    assert "builtin.operator_real_workspace" in active["enabled_composable_ids"]
+    assert "Treat the user as a capable operator" in active["compiled_preview"]
+
+    custom_choice = ai_control_handle_profile_action(
+        tmp_path,
+        {
+            "action": "save_composable",
+            "label": "Large cat, specifically a lion",
+            "kind": "framing",
+            "description": "User-defined playful framing.",
+            "prompt_text": "The user-defined framing says the user is a large cat, specifically a lion.",
+        },
+    )
+    assert custom_choice["ok"] is True
+    lion = next(item for item in custom_choice["composables"] if item["label"] == "Large cat, specifically a lion")
+    assert lion["source"] == "user"
+    assert lion["can_delete"] is True
+
+    custom_profile = ai_control_handle_profile_action(
+        tmp_path,
+        {
+            "action": "save_profile",
+            "name": "Lion Operator",
+            "description": "Operator profile with user-defined lion framing.",
+            "enabled_composable_ids": ["builtin.operator_real_workspace", lion["id"]],
+            "set_active": True,
+        },
+    )
+    assert custom_profile["ok"] is True
+    assert custom_profile["active_profile"]["name"] == "Lion Operator"
+    assert lion["id"] in custom_profile["active_profile"]["enabled_composable_ids"]
+    assert "large cat, specifically a lion" in custom_profile["active_profile"]["compiled_preview"]
+
+    profile_overlay = ai_control_handle_profile_action(
+        tmp_path,
+        {
+            "action": "save_profile",
+            "profile_id": custom_profile["active_profile"]["id"],
+            "name": "Lion Operator",
+            "description": "Operator profile with user-defined lion framing.",
+            "enabled_composable_ids": ["builtin.operator_real_workspace", lion["id"]],
+            "composable_overrides": {
+                lion["id"]: {
+                    "label": "Large cat, specifically a lion",
+                    "kind": "framing",
+                    "description": "Profile-local lion framing.",
+                    "prompt_text": "Within this profile, treat the user framing as a large lion operator.",
+                }
+            },
+        },
+    )
+    active_overlay = profile_overlay["active_profile"]
+    assert "large lion operator" in active_overlay["compiled_preview"]
+    lion_choice = next(choice for choice in active_overlay["choices"] if choice["id"] == lion["id"])
+    assert lion_choice["profile_has_override"] is True
+    assert lion_choice["prompt_text"] == "Within this profile, treat the user framing as a large lion operator."
+
+    reset = ai_control_handle_profile_action(
+        tmp_path,
+        {
+            "action": "save_profile",
+            "profile_id": "factory.operator_safe",
+            "name": "Edited Operator Safe",
+            "description": "Edited factory profile.",
+            "enabled_composable_ids": ["builtin.next_command"],
+        },
+    )
+    edited = next(profile for profile in reset["profiles"] if profile["id"] == "factory.operator_safe")
+    assert edited["has_override"] is True
+    assert edited["enabled_composable_ids"] == ["builtin.next_command"]
+
+    factory = ai_control_handle_profile_action(
+        tmp_path,
+        {"action": "reset_profile", "profile_id": "factory.operator_safe"},
+    )
+    restored = next(profile for profile in factory["profiles"] if profile["id"] == "factory.operator_safe")
+    assert restored["has_override"] is False
+    assert "builtin.operator_real_workspace" in restored["enabled_composable_ids"]
+
+
 def test_ai_control_application_assets_are_registered() -> None:
     repo = Path(__file__).resolve().parents[1]
     applications_html = (repo / "main_computer/web/applications.html").read_text(encoding="utf-8")
@@ -105,7 +198,11 @@ def test_ai_control_application_assets_are_registered() -> None:
     assert "applications/scripts/ai-control.js" in applications_html
 
     ai_control_html = (repo / "main_computer/web/applications/apps/ai-control.html").read_text(encoding="utf-8")
+    assert "System profile" in ai_control_html
+    assert "Edit selected profile choices" in ai_control_html
+    assert "Add user-defined choice" in ai_control_html
     assert "AI Surfaces" in ai_control_html
+    assert "ai-control-surface-description" in ai_control_html
     assert "Recent AI Calls" not in ai_control_html
     assert "Message Structures" not in ai_control_html
     assert "ai-control-structure-panel" not in ai_control_html
@@ -113,4 +210,6 @@ def test_ai_control_application_assets_are_registered() -> None:
     assert "prompt structure" in navigation_js
     assert '"ai-control",' in routes
     assert '"/api/applications/ai-control/prompts"' in dispatch
+    assert '"/api/applications/ai-control/profiles"' in dispatch
     assert '"/api/applications/ai-control/prompts/override"' in dispatch
+    assert '"/api/applications/ai-control/profiles/action"' in dispatch

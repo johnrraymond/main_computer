@@ -1013,6 +1013,7 @@ class HubDispatcher:
         request_store: Any | None = None,
         quote_store: Any | None = None,
         secure_session_store: Any | None = None,
+        feedback_store: Any | None = None,
     ) -> None:
         self.registry = registry
         self.ledger = ledger
@@ -1029,6 +1030,7 @@ class HubDispatcher:
             request_store=request_store,
             quote_store=quote_store,
             secure_session_store=secure_session_store,
+            feedback_store=feedback_store,
         )
 
     def quote(self, request: HubAIRequest) -> dict[str, Any]:
@@ -1104,6 +1106,30 @@ class HubDispatcher:
 
     def get_request_events(self, request_id: str) -> list[dict[str, Any]]:
         return self.plex_service.get_events(request_id)
+
+    def submit_request_feedback(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.plex_service.submit_requester_feedback(request_id, payload)
+
+    def get_request_feedback(self, request_id: str, *, account_id: str = "") -> dict[str, Any]:
+        return self.plex_service.get_request_feedback(request_id, account_id=account_id)
+
+    def worker_reliability_summary(
+        self,
+        *,
+        worker_node_id: str = "",
+        worker_commitment: str = "",
+        include_private: bool = False,
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        return self.plex_service.worker_reliability_summary(
+            worker_node_id=worker_node_id,
+            worker_commitment=worker_commitment,
+            include_private=include_private,
+            limit=limit,
+        )
+
+    def ring_control_feedback_summary(self, *, limit: int = 500) -> dict[str, Any]:
+        return self.plex_service.ring_control_feedback_summary(limit=limit)
 
     def metrics(self) -> dict[str, Any]:
         return self.plex_service.metrics()
@@ -2485,6 +2511,13 @@ class HubServerHandler(_JsonHandler):
         if path == "/api/hub/v1/metrics":
             self._send_json(self.server.dispatcher.metrics())
             return
+        if path == "/api/hub/v1/ring-control/feedback-summary":
+            try:
+                limit = int(query.get("limit", ["500"])[0] or 500)
+                self._send_json(self.server.dispatcher.ring_control_feedback_summary(limit=limit))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
         if path == "/api/hub/v1/workers":
             include_endpoint = str(query.get("debug", [""])[0]).lower() in {"1", "true", "yes"}
             status = self.server.registry.status()
@@ -2522,6 +2555,23 @@ class HubServerHandler(_JsonHandler):
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
+        if path.startswith("/api/hub/v1/workers/") and path.endswith("/feedback-summary"):
+            worker_id = path.removeprefix("/api/hub/v1/workers/").removesuffix("/feedback-summary").strip("/")
+            if not worker_id or "/" in worker_id:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            try:
+                limit = int(query.get("limit", ["500"])[0] or 500)
+                self._send_json(
+                    self.server.dispatcher.worker_reliability_summary(
+                        worker_node_id=worker_id,
+                        include_private=True,
+                        limit=limit,
+                    )
+                )
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
         if path.startswith("/api/hub/v1/workers/"):
             worker_id = path.removeprefix("/api/hub/v1/workers/").strip("/")
             if not worker_id or "/" in worker_id:
@@ -2553,6 +2603,21 @@ class HubServerHandler(_JsonHandler):
             limit = int(query.get("limit", ["100"])[0] or 100)
             requests = self.server.dispatcher.list_requests(limit=limit, states=states)
             self._send_json({"ok": True, "requests": requests, "request_count": len(requests)})
+            return
+        if path.startswith("/api/hub/v1/requests/") and path.endswith("/feedback"):
+            request_id = path.removeprefix("/api/hub/v1/requests/").removesuffix("/feedback").strip("/")
+            if not request_id or "/" in request_id:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            try:
+                self._send_json(
+                    self.server.dispatcher.get_request_feedback(
+                        request_id,
+                        account_id=str(query.get("account_id", [""])[0] or ""),
+                    )
+                )
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
             return
         if path.startswith("/api/hub/v1/requests/") and (path.endswith("/result") or path.endswith("/pickup")):
             suffix = "/result" if path.endswith("/result") else "/pickup"
@@ -3401,6 +3466,19 @@ class HubServerHandler(_JsonHandler):
                 else:
                     status_payload = self.server.dispatcher.submit(hub_request)
                 self._send_json({"ok": True, "request": status_payload})
+                return
+            if path.startswith("/api/hub/v1/requests/") and path.endswith("/feedback"):
+                request_id = path.removeprefix("/api/hub/v1/requests/").removesuffix("/feedback").strip("/")
+                if not request_id or "/" in request_id:
+                    self.send_error(HTTPStatus.NOT_FOUND)
+                    return
+                body = self._read_json()
+                try:
+                    self._send_json(self.server.dispatcher.submit_request_feedback(request_id, body))
+                except PermissionError as exc:
+                    self._send_json({"error": str(exc)}, status=HTTPStatus.FORBIDDEN)
+                except Exception as exc:
+                    self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
             if path.startswith("/api/hub/v1/requests/") and path.endswith("/cancel"):
                 request_id = path.removeprefix("/api/hub/v1/requests/").removesuffix("/cancel").strip("/")

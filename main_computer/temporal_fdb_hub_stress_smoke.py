@@ -68,6 +68,9 @@ from tools.temporal_lab.local_temporal import DEFAULT_NAMESPACE
 DEFAULT_STRESS_REPORT_PATH = Path("runtime") / "temporal_lab" / "temporal_fdb_hub_stress_report.json"
 DEFAULT_STRESS_A_URL = DEFAULT_MULTI_HUB_A_URL
 DEFAULT_STRESS_B_URL = DEFAULT_MULTI_HUB_B_URL
+DEFAULT_AGENT_FEEDBACK_FAIL_MARKER = "FAILFAILFAIL"
+DEFAULT_AGENT_FEEDBACK_NOISY_FAIL_CLAIM_RATE = 0.10
+DEFAULT_AGENT_FEEDBACK_RANDOM_FALSE_CLAIM_RATE = 0.05
 
 
 def _setup_status_fields(**fields: Any) -> str:
@@ -283,6 +286,10 @@ class HubStressSmokeConfig:
     random_bridge_funding_events: int = 3
     random_bridge_payout_events: int = 3
     random_bridge_failed_payout_events: int = 1
+    agent_feedback_reviews: bool = True
+    agent_feedback_fail_marker: str = DEFAULT_AGENT_FEEDBACK_FAIL_MARKER
+    agent_feedback_noisy_fail_claim_rate: float = DEFAULT_AGENT_FEEDBACK_NOISY_FAIL_CLAIM_RATE
+    agent_feedback_random_false_claim_rate: float = DEFAULT_AGENT_FEEDBACK_RANDOM_FALSE_CLAIM_RATE
 
     def resolved_report_path(self) -> Path | None:
         if self.report_path is None:
@@ -849,6 +856,355 @@ def _exercise_random_bridge_payout_events(
     }
 
 
+
+def _extract_result_content(payload: dict[str, Any]) -> str:
+    """Return requester-visible content from the Hub pickup/result payload."""
+
+    for key in ("response", "result"):
+        candidate = payload.get(key)
+        if isinstance(candidate, dict):
+            if "content" in candidate:
+                return str(candidate.get("content") or "")
+            nested = candidate.get("response")
+            if isinstance(nested, dict) and "content" in nested:
+                return str(nested.get("content") or "")
+    request = payload.get("request")
+    if isinstance(request, dict):
+        response = request.get("response")
+        if isinstance(response, dict):
+            if "content" in response:
+                return str(response.get("content") or "")
+            nested = response.get("response")
+            if isinstance(nested, dict) and "content" in nested:
+                return str(nested.get("content") or "")
+    return ""
+
+
+def _extract_report_token(payload: dict[str, Any], *, fallback: dict[str, Any] | None = None) -> str:
+    """Return the opaque requester report token from public pickup/readback payloads."""
+
+    sources: list[dict[str, Any]] = []
+    for key in ("request", "response", "result"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            sources.append(value)
+    if isinstance(fallback, dict):
+        sources.append(fallback)
+    for source in sources:
+        receipt = source.get("receipt") if isinstance(source, dict) else None
+        if isinstance(receipt, dict):
+            token = str(receipt.get("report_token") or "").strip()
+            if token:
+                return token
+        metadata = source.get("metadata") if isinstance(source, dict) else None
+        hub_metadata = metadata.get("hub") if isinstance(metadata, dict) else None
+        payment = hub_metadata.get("payment") if isinstance(hub_metadata, dict) else None
+        if isinstance(payment, dict):
+            token = str(payment.get("report_token") or "").strip()
+            if token:
+                return token
+    return ""
+
+
+def _count_requester_worker_identity_leaks(value: Any) -> int:
+    """Count raw worker identifiers leaked in requester-facing result pickup payloads."""
+
+    sensitive_keys = {
+        "selected_worker_node_id",
+        "selected_worker_instance_id",
+        "worker_node_id",
+        "worker_instance_id",
+        "worker_wallet_address",
+    }
+
+    def _present(item: Any) -> bool:
+        if item is None:
+            return False
+        if item == "":
+            return False
+        if item == [] or item == {}:
+            return False
+        return True
+
+    if isinstance(value, dict):
+        total = 0
+        for key, nested in value.items():
+            if str(key) in sensitive_keys and _present(nested):
+                total += 1
+            total += _count_requester_worker_identity_leaks(nested)
+        return total
+    if isinstance(value, list):
+        return sum(_count_requester_worker_identity_leaks(item) for item in value)
+    return 0
+
+
+def _compact_worker_review_readout(
+    *,
+    selected_worker_ids: list[str],
+    ring_summary: dict[str, Any],
+) -> list[dict[str, Any]]:
+    workers = ring_summary.get("workers", []) if isinstance(ring_summary.get("workers"), list) else []
+    by_id = {
+        str(item.get("worker_node_id", "") or ""): item
+        for item in workers
+        if isinstance(item, dict) and str(item.get("worker_node_id", "") or "")
+    }
+    readout: list[dict[str, Any]] = []
+    for worker_id in selected_worker_ids:
+        summary = by_id.get(worker_id, {})
+        tag_counts = summary.get("feedback_tag_counts", {}) if isinstance(summary.get("feedback_tag_counts"), dict) else {}
+        readout.append(
+            {
+                "worker_node_id": worker_id,
+                "completed_request_count": int(summary.get("completed_request_count", 0) or 0),
+                "feedback_count": int(summary.get("feedback_count", 0) or 0),
+                "accepted_count": int(summary.get("accepted_count", 0) or 0),
+                "rejected_count": int(summary.get("rejected_count", 0) or 0),
+                "needs_revision_count": int(summary.get("needs_revision_count", 0) or 0),
+                "average_score": float(summary.get("average_score", 0.0) or 0.0),
+                "fail_signal_observed_count": int(summary.get("fail_signal_observed_count", 0) or 0),
+                "agent_complaint_count": int(summary.get("agent_complaint_count", 0) or 0),
+                "noisy_requester_complaint_count": int(summary.get("noisy_requester_complaint_count", 0) or 0),
+                "bounded_negative_feedback_count": int(summary.get("bounded_negative_feedback_count", 0) or 0),
+                "feedback_tag_counts": dict(sorted(tag_counts.items())),
+            }
+        )
+    return readout
+
+
+def _exercise_agent_feedback_review_scenario(
+    configs: dict[str, HubNodeMarketSmokeConfig],
+    *,
+    config: HubStressSmokeConfig,
+    completed: list[dict[str, Any]],
+    selected_worker_ids: list[str],
+    bad_worker_node_id: str,
+    fail_marker: str,
+    progress: _StressProgress,
+) -> dict[str, Any]:
+    """Have the agent pick up results, review them, and read ring-control summaries.
+
+    The requester-facing side only uses request_id plus the opaque report token.
+    The private ring-control readback maps the resulting feedback to workers.
+    """
+
+    if not config.agent_feedback_reviews:
+        return {
+            "enabled": False,
+            "seeded_bad_worker_count": 0,
+            "seeded_bad_worker_id": "",
+            "fail_marker": fail_marker,
+            "worker_review_readout": [],
+        }
+
+    if not bad_worker_node_id:
+        raise NodeMarketSmokeError("Agent feedback reviews are enabled but no seeded bad worker was selected.")
+
+    config_a = configs["hub_a"]
+    config_b = configs["hub_b"]
+    labels = ("hub_a", "hub_b")
+    pickup_count = 0
+    fail_result_count = 0
+    agent_review_submitted_count = 0
+    agent_complaint_count = 0
+    noisy_fail_seen_count = 0
+    noisy_fail_complaint_count = 0
+    noisy_random_complaint_count = 0
+    random_false_complaint_count = 0
+    feedback_submission_count = 0
+    feedback_cross_hub_visible_count = 0
+    requester_visible_worker_id_leak_count = 0
+    feedback_errors: list[str] = []
+    rng = random.Random(f"{config.run_id}:agent-feedback:noisy-reviewers")
+    agent_run_id = f"agent-feedback-{config.run_id}"
+    completed_by_request = {str(item.get("request_id", "") or ""): item for item in completed if isinstance(item, dict)}
+
+    for index, request_id in enumerate(sorted(completed_by_request), start=1):
+        pickup_label = labels[index % 2]
+        submit_label = labels[(index + 1) % 2]
+        readback_label = pickup_label
+        pickup_cfg = configs[pickup_label]
+        submit_cfg = configs[submit_label]
+        readback_cfg = configs[readback_label]
+        query = urlencode({"account_id": config.account_id, "client_node_id": config.account_id})
+        pickup = _get_json(
+            pickup_cfg.hub_url,
+            f"/api/hub/v1/requests/{request_id}/result?{query}",
+            timeout=pickup_cfg.http_timeout_seconds,
+        )
+        pickup_count += 1
+        requester_visible_worker_id_leak_count += _count_requester_worker_identity_leaks(pickup)
+        content = _extract_result_content(pickup)
+        fail_seen = bool(fail_marker and fail_marker in content)
+        if fail_seen:
+            fail_result_count += 1
+            noisy_fail_seen_count += 1
+        fallback_record = completed_by_request.get(request_id, {})
+        report_token = _extract_report_token(pickup, fallback=fallback_record)
+        if not report_token:
+            feedback_errors.append(f"{request_id}:missing_report_token")
+            continue
+
+        score = 1 if fail_seen else 5
+        verdict = "rejected" if fail_seen else "accepted"
+        tags = ["low_quality", "fail_signal"] if fail_seen else ["correct", "useful"]
+        agent_payload = {
+            "account_id": config.account_id,
+            "requester_wallet_address": config.requester_wallet_address,
+            "report_token": report_token,
+            "score": score,
+            "verdict": verdict,
+            "feedback_tags": tags,
+            "note": "Agent saw FAILFAILFAIL in the result." if fail_seen else "Agent accepted the result.",
+            "source": "agent",
+            "feedback_channel": f"agent-{index:04d}",
+            "agent_run_id": agent_run_id,
+            "agent_step_id": f"step-{index:04d}",
+            "agent_label": "temporal-fdb-hub-stress-review",
+        }
+        submitted = _post_json(
+            submit_cfg.hub_url,
+            f"/api/hub/v1/requests/{request_id}/feedback",
+            agent_payload,
+            timeout=submit_cfg.http_timeout_seconds,
+            retry_attempts=submit_cfg.http_retry_attempts,
+        )
+        if submitted.get("ok") is not True:
+            feedback_errors.append(f"{request_id}:agent_submit_not_ok")
+        else:
+            agent_review_submitted_count += 1
+            feedback_submission_count += 1
+            if fail_seen:
+                agent_complaint_count += 1
+
+        if fail_seen and rng.random() < max(0.0, min(1.0, float(config.agent_feedback_noisy_fail_claim_rate))):
+            noisy_payload = {
+                "account_id": config.account_id,
+                "requester_wallet_address": config.requester_wallet_address,
+                "report_token": report_token,
+                "score": 1,
+                "verdict": "rejected",
+                "feedback_tags": ["low_quality", "fail_signal", "noisy_detected_fail"],
+                "note": "Noisy requester claimed the visible FAIL marker.",
+                "source": "noisy_requester",
+                "feedback_channel": f"noisy-fail-{index:04d}",
+                "agent_run_id": agent_run_id,
+                "agent_step_id": f"noisy-fail-{index:04d}",
+                "agent_label": "temporal-fdb-hub-stress-noisy-review",
+            }
+            noisy_submitted = _post_json(
+                submit_cfg.hub_url,
+                f"/api/hub/v1/requests/{request_id}/feedback",
+                noisy_payload,
+                timeout=submit_cfg.http_timeout_seconds,
+                retry_attempts=submit_cfg.http_retry_attempts,
+            )
+            if noisy_submitted.get("ok") is True:
+                noisy_fail_complaint_count += 1
+                feedback_submission_count += 1
+            else:
+                feedback_errors.append(f"{request_id}:noisy_fail_submit_not_ok")
+
+        random_roll = rng.random()
+        if random_roll < max(0.0, min(1.0, float(config.agent_feedback_random_false_claim_rate))):
+            random_payload = {
+                "account_id": config.account_id,
+                "requester_wallet_address": config.requester_wallet_address,
+                "report_token": report_token,
+                "score": 1,
+                "verdict": "rejected",
+                "feedback_tags": ["low_quality", "random_complaint"],
+                "note": "Noisy requester randomly complained regardless of result quality.",
+                "source": "noisy_requester",
+                "feedback_channel": f"noisy-random-{index:04d}",
+                "agent_run_id": agent_run_id,
+                "agent_step_id": f"noisy-random-{index:04d}",
+                "agent_label": "temporal-fdb-hub-stress-random-review",
+            }
+            random_submitted = _post_json(
+                submit_cfg.hub_url,
+                f"/api/hub/v1/requests/{request_id}/feedback",
+                random_payload,
+                timeout=submit_cfg.http_timeout_seconds,
+                retry_attempts=submit_cfg.http_retry_attempts,
+            )
+            if random_submitted.get("ok") is True:
+                noisy_random_complaint_count += 1
+                feedback_submission_count += 1
+                if not fail_seen:
+                    random_false_complaint_count += 1
+            else:
+                feedback_errors.append(f"{request_id}:noisy_random_submit_not_ok")
+
+        readback = _get_json(
+            readback_cfg.hub_url,
+            f"/api/hub/v1/requests/{request_id}/feedback?{urlencode({'account_id': config.account_id})}",
+            timeout=readback_cfg.http_timeout_seconds,
+        )
+        feedback_cross_hub_visible_count += int(readback.get("feedback_count", 0) or 0)
+
+    summary_limit = max(500, len(completed) * 4 + 100)
+    ring_summary = _get_json(
+        config_b.hub_url,
+        f"/api/hub/v1/ring-control/feedback-summary?{urlencode({'limit': str(summary_limit)})}",
+        timeout=config_b.http_timeout_seconds,
+    )
+    worker_review_readout = _compact_worker_review_readout(
+        selected_worker_ids=selected_worker_ids,
+        ring_summary=ring_summary if isinstance(ring_summary, dict) else {},
+    )
+    bad_worker_rows = [row for row in worker_review_readout if row.get("worker_node_id") == bad_worker_node_id]
+    ring_control_bad_worker_identified_count = sum(
+        1
+        for row in bad_worker_rows
+        if int(row.get("fail_signal_observed_count", 0) or 0) > 0 and int(row.get("rejected_count", 0) or 0) > 0
+    )
+    ring_control_false_positive_worker_count = sum(
+        1
+        for row in worker_review_readout
+        if row.get("worker_node_id") != bad_worker_node_id and int(row.get("rejected_count", 0) or 0) > 0
+    )
+    feedback_recorded_count = sum(int(row.get("feedback_count", 0) or 0) for row in worker_review_readout)
+    money_movement_count = int(ring_summary.get("feedback_money_movement_count", 0) or 0) if isinstance(ring_summary, dict) else 0
+
+    progress.emit(
+        "stress_agent_feedback_reviews_done",
+        bad_worker_node_id=bad_worker_node_id,
+        fail_result_count=fail_result_count,
+        agent_review_submitted_count=agent_review_submitted_count,
+        feedback_recorded_count=feedback_recorded_count,
+        requester_visible_worker_id_leak_count=requester_visible_worker_id_leak_count,
+        ring_control_bad_worker_identified_count=ring_control_bad_worker_identified_count,
+    )
+
+    return {
+        "enabled": True,
+        "seeded_bad_worker_count": 1,
+        "seeded_bad_worker_id": bad_worker_node_id,
+        "fail_marker": fail_marker,
+        "result_pickup_count": pickup_count,
+        "failfailfail_result_count": fail_result_count,
+        "agent_review_submitted_count": agent_review_submitted_count,
+        "agent_complaint_count": agent_complaint_count,
+        "noisy_fail_seen_count": noisy_fail_seen_count,
+        "noisy_fail_complaint_count": noisy_fail_complaint_count,
+        "noisy_random_complaint_count": noisy_random_complaint_count,
+        "random_false_complaint_count": random_false_complaint_count,
+        "feedback_submission_count": feedback_submission_count,
+        "feedback_recorded_count": feedback_recorded_count,
+        "feedback_cross_hub_visible_count": feedback_cross_hub_visible_count,
+        "requester_visible_worker_id_leak_count": requester_visible_worker_id_leak_count,
+        "ring_control_worker_review_summary_count": len(worker_review_readout),
+        "ring_control_bad_worker_identified_count": ring_control_bad_worker_identified_count,
+        "ring_control_false_positive_worker_count": ring_control_false_positive_worker_count,
+        "feedback_money_movement_count": money_movement_count,
+        "worker_review_readout": worker_review_readout,
+        "feedback_errors": feedback_errors,
+        "feedback_error_count": len(feedback_errors),
+        "ring_control_feedback_summary": ring_summary if isinstance(ring_summary, dict) else {},
+    }
+
+
 async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dict[str, Any]:
     run_id = config.run_id or f"{time.time_ns():x}"[-10:]
     object.__setattr__(config, "run_id", run_id)
@@ -864,6 +1220,13 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
     dev_chain_movements: dict[str, Any] = {}
     random_bridge_funding: dict[str, Any] = {"requested_count": 0, "confirmed_count": 0, "total_credits": 0, "events": []}
     random_bridge_payouts: dict[str, Any] = {"confirmed_requested_count": 0, "confirmed_count": 0, "failed_requested_count": 0, "failed_count": 0, "confirmed_events": [], "failed_events": []}
+    agent_feedback_reviews: dict[str, Any] = {
+        "enabled": bool(config.agent_feedback_reviews),
+        "seeded_bad_worker_count": 0,
+        "seeded_bad_worker_id": "",
+        "fail_marker": config.agent_feedback_fail_marker,
+        "worker_review_readout": [],
+    }
     node_behavior: dict[str, Any] = {"requested_count": 0, "planned_count": 0, "completed_count": 0, "offline_seen_count": 0, "available_after_reconnect_count": 0, "duplicate_registration_count": 0, "cross_hub_status_ok": True, "events": []}
     worker_connection_reliability: dict[str, Any] = {
         "recover_requested_count": 0,
@@ -1091,6 +1454,22 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
         )
         tracker.touch("quote_submit_complete")
 
+        result_content_by_worker_node_id: dict[str, str] = {}
+        agent_feedback_bad_worker_id = ""
+        if config.agent_feedback_reviews and request_jobs:
+            selected_for_review = sorted({match.worker.node_id for match, _request in request_jobs})
+            if selected_for_review:
+                agent_feedback_bad_worker_id = random.Random(f"{run_id}:agent-feedback:bad-worker").choice(selected_for_review)
+                result_content_by_worker_node_id[agent_feedback_bad_worker_id] = str(
+                    config.agent_feedback_fail_marker or DEFAULT_AGENT_FEEDBACK_FAIL_MARKER
+                )
+                progress.emit(
+                    "stress_agent_feedback_bad_worker_seeded",
+                    worker_node_id=agent_feedback_bad_worker_id,
+                    selected_worker_candidate_count=len(selected_for_review),
+                    fail_marker=config.agent_feedback_fail_marker,
+                )
+
         leases, completed, surprise_payout_rejection, route_execution_counts = await _await_or_freeze(
             _execute_and_settle_multi_hub(
                 configs,
@@ -1099,12 +1478,28 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
                 request_jobs=request_jobs,
                 event_log_path=event_log_path,
                 progress=progress,
+                result_content_by_worker_node_id=result_content_by_worker_node_id,
             ),
             watchdog_task=watchdog_task,
         )
         tracker.touch("execution_settlement_complete")
 
         selected_worker_ids = sorted({str(record.get("selected_worker_node_id", "")) for record in completed})
+        if config.agent_feedback_reviews:
+            agent_feedback_reviews = await _await_or_freeze(
+                asyncio.to_thread(
+                    _exercise_agent_feedback_review_scenario,
+                    configs,
+                    config=config,
+                    completed=completed,
+                    selected_worker_ids=selected_worker_ids,
+                    bad_worker_node_id=agent_feedback_bad_worker_id,
+                    fail_marker=str(config.agent_feedback_fail_marker or DEFAULT_AGENT_FEEDBACK_FAIL_MARKER),
+                    progress=progress,
+                ),
+                watchdog_task=watchdog_task,
+            )
+            tracker.touch("agent_feedback_reviews_complete")
         payout = await _await_or_freeze(
             asyncio.to_thread(
                 _exercise_cross_hub_payout_lock,
@@ -1357,6 +1752,29 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
             "requests_completed": len(completed),
             "selected_worker_count": len(selected_worker_ids),
             "selected_worker_ids": selected_worker_ids,
+            "agent_feedback_scenario_enabled": bool(agent_feedback_reviews.get("enabled", False)),
+            "agent_feedback_seeded_bad_worker_count": int(agent_feedback_reviews.get("seeded_bad_worker_count", 0) or 0),
+            "agent_feedback_seeded_bad_worker_id": str(agent_feedback_reviews.get("seeded_bad_worker_id", "") or ""),
+            "agent_feedback_fail_marker": str(agent_feedback_reviews.get("fail_marker", "") or ""),
+            "agent_feedback_result_pickup_count": int(agent_feedback_reviews.get("result_pickup_count", 0) or 0),
+            "agent_feedback_failfailfail_result_count": int(agent_feedback_reviews.get("failfailfail_result_count", 0) or 0),
+            "agent_feedback_agent_review_submitted_count": int(agent_feedback_reviews.get("agent_review_submitted_count", 0) or 0),
+            "agent_feedback_agent_complaint_count": int(agent_feedback_reviews.get("agent_complaint_count", 0) or 0),
+            "agent_feedback_noisy_fail_seen_count": int(agent_feedback_reviews.get("noisy_fail_seen_count", 0) or 0),
+            "agent_feedback_noisy_fail_complaint_count": int(agent_feedback_reviews.get("noisy_fail_complaint_count", 0) or 0),
+            "agent_feedback_noisy_random_complaint_count": int(agent_feedback_reviews.get("noisy_random_complaint_count", 0) or 0),
+            "agent_feedback_random_false_complaint_count": int(agent_feedback_reviews.get("random_false_complaint_count", 0) or 0),
+            "agent_feedback_submitted_count": int(agent_feedback_reviews.get("feedback_submission_count", 0) or 0),
+            "agent_feedback_recorded_count": int(agent_feedback_reviews.get("feedback_recorded_count", 0) or 0),
+            "agent_feedback_cross_hub_visible_count": int(agent_feedback_reviews.get("feedback_cross_hub_visible_count", 0) or 0),
+            "agent_feedback_feedback_error_count": int(agent_feedback_reviews.get("feedback_error_count", 0) or 0),
+            "agent_feedback_feedback_errors": list(agent_feedback_reviews.get("feedback_errors", []) or []),
+            "agent_feedback_money_movement_count": int(agent_feedback_reviews.get("feedback_money_movement_count", 0) or 0),
+            "requester_visible_worker_id_leak_count": int(agent_feedback_reviews.get("requester_visible_worker_id_leak_count", 0) or 0),
+            "ring_control_worker_review_summary_count": int(agent_feedback_reviews.get("ring_control_worker_review_summary_count", 0) or 0),
+            "ring_control_bad_worker_identified_count": int(agent_feedback_reviews.get("ring_control_bad_worker_identified_count", 0) or 0),
+            "ring_control_false_positive_worker_count": int(agent_feedback_reviews.get("ring_control_false_positive_worker_count", 0) or 0),
+            "worker_review_readout": list(agent_feedback_reviews.get("worker_review_readout", []) or []),
             "eligible_worker_count": eligible_worker_count,
             "selected_worker_rings": sorted({node.ring for node in selected_nodes}),
             "selected_worker_prices": sorted({node.price_credits for node in selected_nodes}),
@@ -1410,6 +1828,16 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
                 report["requester_reconnect_result_pickup_count"] == report["requester_disconnect_result_requested_count"]
             )
             required["requester_result_not_expired"] = report["requester_result_expired_count"] == 0
+        if config.agent_feedback_reviews:
+            required["agent_feedback_no_worker_identity_leak"] = report["requester_visible_worker_id_leak_count"] == 0
+            required["agent_feedback_no_money_movement"] = report["agent_feedback_money_movement_count"] == 0
+            required["agent_feedback_no_submit_errors"] = report["agent_feedback_feedback_error_count"] == 0
+            required["agent_feedback_bad_worker_seeded"] = report["agent_feedback_seeded_bad_worker_count"] == 1
+            required["agent_feedback_fail_marker_seen"] = report["agent_feedback_failfailfail_result_count"] > 0
+            required["agent_feedback_agent_complained_on_failures"] = (
+                report["agent_feedback_agent_complaint_count"] == report["agent_feedback_failfailfail_result_count"]
+            )
+            required["ring_control_bad_worker_identified"] = report["ring_control_bad_worker_identified_count"] == 1
         if config.failover_hub_a:
             required["hub_a_failover_completed_via_hub_b"] = report["hub_a_failover_completed_via_hub_b"]
         failed = sorted(key for key, value in required.items() if not value)
@@ -1511,6 +1939,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--random-bridge-funding-events", type=_positive_int, default=3)
     parser.add_argument("--random-bridge-payout-events", type=_positive_int, default=3)
     parser.add_argument("--random-bridge-failed-payout-events", type=_positive_int, default=1)
+    parser.add_argument("--no-agent-feedback-reviews", action="store_true", help="Disable seeded FAILFAILFAIL agent review/readout scenario.")
+    parser.add_argument("--agent-feedback-fail-marker", default=DEFAULT_AGENT_FEEDBACK_FAIL_MARKER)
+    parser.add_argument(
+        "--agent-feedback-noisy-fail-claim-rate",
+        type=float,
+        default=DEFAULT_AGENT_FEEDBACK_NOISY_FAIL_CLAIM_RATE,
+        help="Probability that a noisy requester complains after seeing the fail marker.",
+    )
+    parser.add_argument(
+        "--agent-feedback-random-false-claim-rate",
+        type=float,
+        default=DEFAULT_AGENT_FEEDBACK_RANDOM_FALSE_CLAIM_RATE,
+        help="Probability that a noisy requester complains regardless of result quality.",
+    )
     parser.add_argument("--no-failover-hub-a", action="store_true", help="Do not stop Hub A before final readback.")
     return parser
 
@@ -1570,7 +2012,34 @@ def _config_from_args(args: argparse.Namespace) -> HubStressSmokeConfig:
         random_bridge_funding_events=args.random_bridge_funding_events,
         random_bridge_payout_events=args.random_bridge_payout_events,
         random_bridge_failed_payout_events=args.random_bridge_failed_payout_events,
+        agent_feedback_reviews=not args.no_agent_feedback_reviews,
+        agent_feedback_fail_marker=str(args.agent_feedback_fail_marker or DEFAULT_AGENT_FEEDBACK_FAIL_MARKER),
+        agent_feedback_noisy_fail_claim_rate=max(0.0, min(1.0, float(args.agent_feedback_noisy_fail_claim_rate))),
+        agent_feedback_random_false_claim_rate=max(0.0, min(1.0, float(args.agent_feedback_random_false_claim_rate))),
     )
+
+
+def _print_worker_review_readout(readout: Any) -> None:
+    if not isinstance(readout, list) or not readout:
+        return
+    print("worker_review_readout_count: " + str(len(readout)))
+    for row in readout:
+        if not isinstance(row, dict):
+            continue
+        worker_id = str(row.get("worker_node_id", "") or "unknown")
+        printable = {
+            "completed": int(row.get("completed_request_count", 0) or 0),
+            "feedback": int(row.get("feedback_count", 0) or 0),
+            "accepted": int(row.get("accepted_count", 0) or 0),
+            "rejected": int(row.get("rejected_count", 0) or 0),
+            "avg_score": row.get("average_score", 0.0),
+            "fail_signal": int(row.get("fail_signal_observed_count", 0) or 0),
+            "agent_complaints": int(row.get("agent_complaint_count", 0) or 0),
+            "noisy_complaints": int(row.get("noisy_requester_complaint_count", 0) or 0),
+            "bounded_negative": int(row.get("bounded_negative_feedback_count", 0) or 0),
+            "tags": row.get("feedback_tag_counts", {}),
+        }
+        print(f"worker_review[{worker_id}]: " + json.dumps(printable, sort_keys=True))
 
 
 def _print_dev_chain_rollup(rollup: dict[str, Any]) -> None:
@@ -1657,6 +2126,24 @@ def main(argv: list[str] | None = None) -> int:
         "requests_completed",
         "selected_worker_count",
         "selected_worker_ids",
+        "agent_feedback_scenario_enabled",
+        "agent_feedback_seeded_bad_worker_count",
+        "agent_feedback_seeded_bad_worker_id",
+        "agent_feedback_failfailfail_result_count",
+        "agent_feedback_agent_review_submitted_count",
+        "agent_feedback_agent_complaint_count",
+        "agent_feedback_noisy_fail_seen_count",
+        "agent_feedback_noisy_fail_complaint_count",
+        "agent_feedback_noisy_random_complaint_count",
+        "agent_feedback_random_false_complaint_count",
+        "agent_feedback_submitted_count",
+        "agent_feedback_recorded_count",
+        "agent_feedback_cross_hub_visible_count",
+        "agent_feedback_money_movement_count",
+        "requester_visible_worker_id_leak_count",
+        "ring_control_worker_review_summary_count",
+        "ring_control_bad_worker_identified_count",
+        "ring_control_false_positive_worker_count",
         "stress_chatter_total_operations",
         "freeze_detection_ok",
         "quote_submit_cross_hub",
@@ -1671,6 +2158,7 @@ def main(argv: list[str] | None = None) -> int:
         "bridge_reconciliation_ok",
     ):
         print(f"{key}: {report.get(key)}")
+    _print_worker_review_readout(report.get("worker_review_readout"))
     if isinstance(report.get("dev_chain_rollup"), dict):
         _print_dev_chain_rollup(report["dev_chain_rollup"])
     return 0
