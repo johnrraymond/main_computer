@@ -4,6 +4,7 @@
       const SUPERCUT_VERSION = "0.1.0";
       const SUPERCUT_STYLE_ID = "mcel-supercut-runtime-style";
       const SUPERCUT_BODY_ATTRIBUTE = "data-mcel-supercut-runtime";
+      const SUPERCUT_DEBUG_ATTRIBUTE = "data-mcel-supercut-debug";
       const SUPERCUT_ATTRIBUTE = "data-mcel-supercut";
       const SUPERCUT_CLASS = "mcel-supercut-runtime-active";
       const COMPONENT_SELECTOR = [
@@ -438,7 +439,7 @@
             scrollbar-gutter: stable;
           }
 
-          body[${SUPERCUT_BODY_ATTRIBUTE}="active"] [data-mcel-supercut-risk]:not([data-mcel-supercut-risk="safe"]) {
+          body[${SUPERCUT_BODY_ATTRIBUTE}="active"][${SUPERCUT_DEBUG_ATTRIBUTE}="true"] [data-mcel-supercut-risk]:not([data-mcel-supercut-risk="safe"]) {
             outline: 1px dashed rgba(255, 198, 109, 0.24);
             outline-offset: 2px;
           }
@@ -599,6 +600,15 @@
         doc.body.setAttribute(SUPERCUT_BODY_ATTRIBUTE, "active");
         doc.body.classList.add(SUPERCUT_CLASS);
 
+        const debugOverlay = options.debugOverlay === true || options.debug === true || options.showRiskOutlines === true;
+        if (debugOverlay) {
+          doc.documentElement?.setAttribute?.(SUPERCUT_DEBUG_ATTRIBUTE, "true");
+          doc.body.setAttribute(SUPERCUT_DEBUG_ATTRIBUTE, "true");
+        } else {
+          doc.documentElement?.removeAttribute?.(SUPERCUT_DEBUG_ATTRIBUTE);
+          doc.body.removeAttribute(SUPERCUT_DEBUG_ATTRIBUTE);
+        }
+
         const inspection = inspectHtmlRuntime({
           document: doc,
           root,
@@ -681,7 +691,9 @@
         const root = options.root || doc?.querySelector?.(rootSelector) || null;
         if (!doc?.body) return false;
         doc.documentElement?.removeAttribute?.(SUPERCUT_BODY_ATTRIBUTE);
+        doc.documentElement?.removeAttribute?.(SUPERCUT_DEBUG_ATTRIBUTE);
         doc.body.removeAttribute(SUPERCUT_BODY_ATTRIBUTE);
+        doc.body.removeAttribute(SUPERCUT_DEBUG_ATTRIBUTE);
         doc.body.classList.remove(SUPERCUT_CLASS);
         doc.getElementById(SUPERCUT_STYLE_ID)?.remove?.();
         Array.from(doc.querySelectorAll?.(`[${SUPERCUT_ATTRIBUTE}], [data-mcel-supercut-id], [data-mcel-supercut-role], [data-mcel-supercut-purpose], [data-mcel-supercut-source], [data-mcel-supercut-fit], [data-mcel-supercut-executable], [data-mcel-supercut-round], [data-mcel-supercut-translator], [data-mcel-supercut-risk], [data-mcel-supercut-slime], [data-mcel-supercut-density], [data-mcel-supercut-root], [data-mcel-supercut-version], [data-mcel-supercut-rounds]`) || []).forEach((element) => {
@@ -747,6 +759,7 @@
         SUPERCUT_VERSION,
         SUPERCUT_STYLE_ID,
         SUPERCUT_BODY_ATTRIBUTE,
+        SUPERCUT_DEBUG_ATTRIBUTE,
         SUPERCUT_ATTRIBUTE,
         SUPERCUT_CLASS,
         inspectHtmlRuntime,

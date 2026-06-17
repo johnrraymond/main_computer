@@ -4,15 +4,15 @@
     }
 
     body.activity-dock-collapsed main {
-      grid-template-columns: minmax(220px, 300px) minmax(420px, 1fr) minmax(64px, 78px);
+      grid-template-columns: minmax(420px, 1fr) minmax(64px, 78px);
     }
 
     body.activity-dock-open main {
-      grid-template-columns: minmax(220px, 300px) minmax(420px, 1fr) minmax(320px, 420px);
+      grid-template-columns: minmax(420px, 1fr) minmax(320px, 420px);
     }
 
     body[data-active-app="document"].activity-dock-open main {
-      grid-template-columns: minmax(220px, 300px) minmax(420px, 1fr) minmax(64px, 78px);
+      grid-template-columns: minmax(420px, 1fr) minmax(64px, 78px);
     }
 
     .machine-activity-dock {

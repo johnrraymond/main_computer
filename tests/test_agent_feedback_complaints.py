@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from main_computer.hub_credit_models import make_report_token
-from main_computer.hub_plex_models import HubAIRequest, HubRequestRecord, HubRequestStatus
+from main_computer.hub_plex_models import HubAIRequest, HubRequestRecord, HubRequestStatus, strip_requester_worker_identity
 from main_computer.hub_plex_service import AIRequestPlexService, FeedbackStateStore, RequestStateStore
 
 
@@ -280,3 +280,109 @@ def test_agent_metadata_and_requester_status_privacy_helpers() -> None:
     assert "worker_wallet_address" not in requester_view["response"]["metadata"]["hub"]["payment"]
     assert "worker_node_id" not in requester_view["response"]["metadata"]["hub"]["selected_offer"]
     assert "worker_instance_id" not in requester_view["response"]["metadata"]["hub"]["selected_offer"]
+
+
+
+def test_requester_result_pickup_scrubs_all_response_and_request_identity_layers(tmp_path) -> None:
+    service, token = _service(tmp_path)
+    record = service.request_store.get("hub_req_feedback_01")
+    assert record is not None
+    record.updated_at = "2999-01-01T00:00:00+00:00"
+    record.response = {
+        "content": "ok",
+        "metadata": {
+            "hub": {
+                "worker_node_id": "ring3-bad-worker",
+                "worker_instance_id": "ring3-bad-worker-slot-1",
+                "payment": {
+                    "report_token": token,
+                    "worker_wallet_address": "0x3333333333333333333333333333333333333333",
+                },
+                "selected_offer": {
+                    "worker_node_id": "ring3-bad-worker",
+                    "worker_instance_id": "ring3-bad-worker-slot-1",
+                    "credits_per_request": 1,
+                },
+            }
+        },
+    }
+    record.request_payload = {
+        "metadata": {
+            "selected_offer": {
+                "worker_node_id": "ring3-bad-worker",
+                "worker_instance_id": "ring3-bad-worker-slot-1",
+                "credits_per_request": 1,
+            }
+        }
+    }
+    service.request_store.create(record)
+
+    pickup = service.pickup_completed_result("hub_req_feedback_01", account_id="agent-wallet")
+
+    assert pickup["ok"] is True
+    assert pickup["response"] == pickup["result"]
+    assert pickup["response"]["metadata"]["hub"]["payment"]["report_token"] == token
+    assert pickup["request"]["receipt"]["report_token"] == token
+    assert pickup["request"]["worker_commitment"] == "wcom_bad_worker_hidden"
+
+    def walk(value):
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                assert key not in {
+                    "worker_node_id",
+                    "worker_instance_id",
+                    "worker_wallet_address",
+                    "selected_worker_node_id",
+                    "selected_worker_instance_id",
+                } or nested in ("", None) or nested == [] or nested == {}
+                walk(nested)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(pickup)
+
+
+def test_recursive_requester_worker_identity_strip_keeps_report_tokens() -> None:
+    payload = {
+        "response": {
+            "metadata": {
+                "hub": {
+                    "worker_node_id": "hidden-worker",
+                    "worker_instance_id": "hidden-slot",
+                    "payment": {
+                        "report_token": "rpt_keep",
+                        "worker_wallet_address": "0x4444444444444444444444444444444444444444",
+                    },
+                    "nested": [
+                        {
+                            "selected_worker_node_id": "hidden-worker",
+                            "selected_worker_instance_id": "hidden-slot",
+                            "worker_commitment": "wcom_keep",
+                        }
+                    ],
+                }
+            }
+        }
+    }
+
+    clean = strip_requester_worker_identity(payload)
+    assert clean["response"]["metadata"]["hub"]["payment"]["report_token"] == "rpt_keep"
+    assert clean["response"]["metadata"]["hub"]["nested"][0]["worker_commitment"] == "wcom_keep"
+
+    def walk(value):
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                assert key not in {
+                    "worker_node_id",
+                    "worker_instance_id",
+                    "worker_wallet_address",
+                    "selected_worker_node_id",
+                    "selected_worker_instance_id",
+                }
+                walk(nested)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(clean)

@@ -53,7 +53,7 @@
         "image": "directus/directus:11.5.1",
         "internal_url": "http://hub-site-directus:8055",
         "kind": "directus",
-        "last_verified_at": "2026-06-09T20:25:09+00:00",
+        "last_verified_at": "2026-06-17T19:12:38+00:00",
         "ping_status": "ready",
         "public_url": "http://127.0.0.1:28200",
         "status": "service_reachable"
@@ -107,7 +107,7 @@
         "requested": true,
         "service": "hub-site-directus",
         "status": "ready",
-        "updated_at": "2026-06-09T20:25:09+00:00",
+        "updated_at": "2026-06-17T19:12:38+00:00",
         "verified": true
       },
       "sqlite_database": {
@@ -130,7 +130,7 @@
     "post_route_prefix": "/blog/",
     "route": "/blog",
     "status": "ready",
-    "updated_at": "2026-06-09T20:02:04+00:00"
+    "updated_at": "2026-06-17T19:12:27+00:00"
   },
   "builder": {
     "engine": "grapesjs",
@@ -168,7 +168,7 @@
         "post_route_prefix": "/blog/",
         "route": "/blog",
         "status": "ready",
-        "updated_at": "2026-06-09T20:02:04+00:00"
+        "updated_at": "2026-06-17T19:12:27+00:00"
       },
       "routes": {
         "index": "/blog",
@@ -185,16 +185,16 @@
     "dev_url": "http://localhost:18082/",
     "lanes": {
       "dev": {
+        "last_publish_verified": true,
+        "last_published_at": "2026-06-17T19:12:38+00:00",
+        "last_published_service": "hub-dev",
+        "last_published_url": "http://localhost:18082/",
         "port": 18082,
         "service": "hub-dev",
         "status_url": "http://localhost:18082/api/site/status",
         "url": "http://localhost:18082/"
       },
       "local": {
-        "last_publish_verified": true,
-        "last_published_at": "2026-06-09T20:25:09+00:00",
-        "last_published_service": "hub-local",
-        "last_published_url": "http://localhost:18080/",
         "port": 18080,
         "service": "hub-local",
         "status_url": "http://localhost:18080/api/site/status",
@@ -236,7 +236,7 @@
     "page_runtime": {
       "entry": "runtime.js",
       "id": "mcel",
-      "sha256": "3abd0eaa3402eb9c6b03138654a19d6b11923bbf2df4a918842760f42cdb59de"
+      "sha256": "e97702ff89852335b846071da96651eaa2cb2b97515c51a6cf1c3bdb50469879"
     }
   },
   "schema_version": 2,
@@ -245,5 +245,5 @@
     "kind": "host_runtime_site",
     "path": "runtime/websites/hub-site"
   },
-  "updated_at": "2026-06-14T04:10:42+00:00"
+  "updated_at": "2026-06-17T19:44:49+00:00"
 }

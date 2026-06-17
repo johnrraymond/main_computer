@@ -6,7 +6,7 @@ import json
 import random
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -228,6 +228,187 @@ async def _await_or_freeze(awaitable: Any, *, watchdog_task: asyncio.Task[Any] |
     return await task
 
 
+def _ring_admission_config_path(config: "HubStressSmokeConfig", *, run_id: str) -> Path:
+    return config.repo_root / "runtime" / "temporal_lab" / run_id / "ring.config.json"
+
+
+def _stress_pick_ring0_allowlisted_nodes(nodes: list[Any]) -> list[Any]:
+    preferred_indexes = [1, 2, 11, 12]
+    selected: list[Any] = []
+    for index in preferred_indexes:
+        if 0 <= index < len(nodes):
+            selected.append(nodes[index])
+    if len(selected) < min(4, len(nodes)):
+        selected_ids = {node.node_id for node in selected}
+        for node in nodes:
+            if node.node_id in selected_ids:
+                continue
+            selected.append(node)
+            selected_ids.add(node.node_id)
+            if len(selected) >= min(4, len(nodes)):
+                break
+    return selected[: min(4, len(nodes))]
+
+
+def _node_with_ring(node: Any, ring: int) -> Any:
+    try:
+        return replace(node, ring=int(ring))
+    except TypeError:
+        data = dict(getattr(node, "__dict__", {}))
+        data["ring"] = int(ring)
+        return type(node)(**data)
+
+
+def _prepare_ring_admission_world(
+    *,
+    config: "HubStressSmokeConfig",
+    configs: dict[str, HubNodeMarketSmokeConfig],
+    nodes: list[Any],
+    run_id: str,
+) -> tuple[list[Any], dict[str, Any]]:
+    allowlisted_original = _stress_pick_ring0_allowlisted_nodes(nodes)
+    allowlisted_ids = {node.node_id for node in allowlisted_original}
+    non_allowlisted = [node for node in nodes if node.node_id not in allowlisted_ids]
+    ring2_probe = non_allowlisted[0] if len(non_allowlisted) >= 1 else None
+    ring1_probe = non_allowlisted[1] if len(non_allowlisted) >= 2 else None
+    probe_ids = {node.node_id for node in (ring2_probe, ring1_probe) if node is not None}
+
+    final_nodes: list[Any] = []
+    for node in nodes:
+        final_ring = 0 if node.node_id in allowlisted_ids else 3
+        final_nodes.append(_node_with_ring(node, final_ring))
+
+    final_nodes_by_id = {node.node_id: node for node in final_nodes}
+    ring_config_path = _ring_admission_config_path(config, run_id=run_id)
+    ring_config_path.parent.mkdir(parents=True, exist_ok=True)
+    wallet_min_ring: dict[str, int] = {}
+    config_a = configs["hub_a"]
+    for node in allowlisted_original:
+        final_node = final_nodes_by_id[node.node_id]
+        wallet_min_ring[_worker_wallet_address_for_config(config_a, final_node).lower()] = 0
+    ring_config_payload = {
+        "default_min_ring": 3,
+        "wallet_min_ring": dict(sorted(wallet_min_ring.items())),
+    }
+    ring_config_path.write_text(json.dumps(ring_config_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    readout = {
+        "ring_config_enabled": True,
+        "ring_config_path": str(ring_config_path),
+        "ring_config_default_min_ring": 3,
+        "ring_config_allowlisted_ring0_wallet_count": len(wallet_min_ring),
+        "ring0_registration_requested_count": len(allowlisted_original),
+        "ring3_default_wallet_count": max(0, len(nodes) - len(allowlisted_original)),
+        "ring2_probe_node_id": ring2_probe.node_id if ring2_probe is not None else "",
+        "ring1_probe_node_id": ring1_probe.node_id if ring1_probe is not None else "",
+        "ring_admission_probe_ids": sorted(probe_ids),
+    }
+    return final_nodes, readout
+
+
+def _register_workers_with_ring_admission_multi(
+    configs: dict[str, HubNodeMarketSmokeConfig],
+    nodes: list[Any],
+    *,
+    progress: _StressProgress,
+    ring_readout: dict[str, Any],
+) -> dict[str, int]:
+    counts: dict[str, int] = {
+        "hub_a": 0,
+        "hub_b": 0,
+        "ring0_allowed": 0,
+        "ring0_rejected": 0,
+        "ring3_default": 0,
+        "ring2_probe_requested": 0,
+        "ring2_probe_rejected": 0,
+        "ring2_probe_fallback_ring3_succeeded": 0,
+        "ring1_probe_requested": 0,
+        "ring1_probe_rejected": 0,
+        "ring1_probe_ring2_retry_rejected": 0,
+        "ring1_probe_fallback_ring3_succeeded": 0,
+        "unauthorized_high_ring_allowed": 0,
+    }
+    ring2_probe_id = str(ring_readout.get("ring2_probe_node_id") or "")
+    ring1_probe_id = str(ring_readout.get("ring1_probe_node_id") or "")
+
+    def _cfg_for_index(index: int) -> tuple[str, HubNodeMarketSmokeConfig]:
+        label = "hub_a" if index % 2 else "hub_b"
+        return label, configs[label]
+
+    def _register(index: int, node: Any, *, ring: int, expect_fallback_bucket: str = "") -> dict[str, Any]:
+        label, cfg = _cfg_for_index(index)
+        ring_node = _node_with_ring(node, ring)
+        result = _post_json(
+            cfg.hub_url,
+            "/api/hub/v1/workers/register",
+            _worker_payload(ring_node, model=cfg.model, wallet_address=_worker_wallet_address_for_config(cfg, ring_node)),
+            timeout=cfg.http_timeout_seconds,
+            retry_attempts=cfg.http_retry_attempts,
+        )
+        worker = result.get("worker", {}) if isinstance(result.get("worker"), dict) else {}
+        capabilities = worker.get("capabilities", {}) if isinstance(worker.get("capabilities"), dict) else {}
+        effective_ring = capabilities.get("effective_ring", capabilities.get("assigned_ring"))
+        if int(effective_ring) != int(ring):
+            raise NodeMarketSmokeError(
+                f"{label} did not preserve accepted effective ring for {node.node_id}: expected {ring}, got {effective_ring!r}"
+            )
+        counts[label] += 1
+        if ring == 0:
+            counts["ring0_allowed"] += 1
+        elif ring == 3:
+            if expect_fallback_bucket:
+                counts[expect_fallback_bucket] += 1
+            else:
+                counts["ring3_default"] += 1
+        return result
+
+    def _expect_rejected(index: int, node: Any, *, ring: int, counter_key: str) -> dict[str, Any]:
+        label, cfg = _cfg_for_index(index)
+        probe_node = _node_with_ring(node, ring)
+        payload = _worker_payload(probe_node, model=cfg.model, wallet_address=_worker_wallet_address_for_config(cfg, probe_node))
+        result = _post_json_expect_http_error(
+            cfg.hub_url,
+            "/api/hub/v1/workers/register",
+            payload,
+            timeout=cfg.http_timeout_seconds,
+            expected_status=403,
+        )
+        if result.get("error") != "ring_not_allowed":
+            raise NodeMarketSmokeError(f"{label} rejected {node.node_id} with wrong ring admission error: {result}")
+        counts[counter_key] += 1
+        return result
+
+    for index, node in enumerate(nodes, start=1):
+        if node.node_id == ring2_probe_id:
+            counts["ring2_probe_requested"] += 1
+            rejected = _expect_rejected(index, node, ring=2, counter_key="ring2_probe_rejected")
+            if rejected.get("fallback_ring") != 3:
+                raise NodeMarketSmokeError(f"ring2 probe fallback was not ring 3: {rejected}")
+            _register(index, node, ring=3, expect_fallback_bucket="ring2_probe_fallback_ring3_succeeded")
+        elif node.node_id == ring1_probe_id:
+            counts["ring1_probe_requested"] += 1
+            rejected_ring1 = _expect_rejected(index, node, ring=1, counter_key="ring1_probe_rejected")
+            rejected_ring2 = _expect_rejected(index, node, ring=2, counter_key="ring1_probe_ring2_retry_rejected")
+            if rejected_ring1.get("fallback_ring") != 3 or rejected_ring2.get("fallback_ring") != 3:
+                raise NodeMarketSmokeError(f"ring1 probe fallback was not ring 3: {rejected_ring1}, {rejected_ring2}")
+            _register(index, node, ring=3, expect_fallback_bucket="ring1_probe_fallback_ring3_succeeded")
+        else:
+            _register(index, node, ring=int(node.ring))
+        if index == 1 or index == len(nodes) or index % 10 == 0:
+            progress.emit(
+                "stress_ring_admission_worker_registered",
+                worker_index=index,
+                workers_total=len(nodes),
+                node_id=node.node_id,
+                ring=node.ring,
+            )
+
+    unauthorized_allowed = counts["unauthorized_high_ring_allowed"]
+    if unauthorized_allowed:
+        raise NodeMarketSmokeError(f"Unauthorized high-trust ring registrations were allowed: {unauthorized_allowed}")
+    return counts
+
+
 @dataclass(frozen=True)
 class HubStressSmokeConfig:
     repo_root: Path
@@ -257,6 +438,7 @@ class HubStressSmokeConfig:
     dev_chain_deploy_timeout_seconds: float = 0.0
     hub_bridge_backend: str = "mock-chain"
     dev_chain_deployment_path: Path | None = None
+    ring_config_path: Path | None = None
     model: str = "temporal-fdb-hub-stress-model"
     task_queue_prefix: str = NODE_MARKET_TASK_QUEUE_PREFIX + "-stress"
     run_id: str | None = None
@@ -340,6 +522,7 @@ class HubStressSmokeConfig:
             cluster_file=self.cluster_file,
             hub_bridge_backend=self.hub_bridge_backend,
             dev_chain_deployment_path=self.dev_chain_deployment_path,
+            ring_config_path=self.ring_config_path,
         )
 
     def to_node_config(self) -> NodeMarketSmokeConfig:
@@ -1287,9 +1470,17 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
         object.__setattr__(config, "hub_bridge_backend", "mock-chain")
         object.__setattr__(config, "dev_chain_deployment_path", None)
 
+    base_nodes = build_worker_nodes(node_count=config.node_count, run_id=run_id, task_queue_prefix=config.task_queue_prefix)
+    object.__setattr__(config, "ring_config_path", _ring_admission_config_path(config, run_id=run_id))
     config_a = config.to_hub_config(config.hub_a_url, hub_name="hub-a")
     config_b = config.to_hub_config(config.hub_b_url, hub_name="hub-b")
     configs = {"hub_a": config_a, "hub_b": config_b}
+    nodes, ring_admission_readout = _prepare_ring_admission_world(
+        config=config,
+        configs=configs,
+        nodes=base_nodes,
+        run_id=run_id,
+    )
 
     event_log_path = config.resolved_event_log_path()
     event_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1327,6 +1518,23 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
         started_b = _wait_for_hub_health(config_b, progress=progress, label="stress_hub_b")
         _verify_backends(config_a, progress=progress)
         _verify_backends(config_b, progress=progress)
+        ring_status_a = _get_json(config_a.hub_url, "/api/hub/v1/status", timeout=config_a.http_timeout_seconds)
+        ring_status_b = _get_json(config_b.hub_url, "/api/hub/v1/status", timeout=config_b.http_timeout_seconds)
+        ring_hash_a = str(ring_status_a.get("ring_config_hash") or "")
+        ring_hash_b = str(ring_status_b.get("ring_config_hash") or "")
+        ring_admission_readout.update(
+            {
+                "ring_config_loaded_by_hub_a": bool(ring_status_a.get("ring_config_load_ok")),
+                "ring_config_loaded_by_hub_b": bool(ring_status_b.get("ring_config_load_ok")),
+                "ring_config_hash": ring_hash_a,
+                "ring_config_hash_match": bool(ring_hash_a and ring_hash_a == ring_hash_b),
+                "ring_admission_config_hash_match": bool(ring_hash_a and ring_hash_a == ring_hash_b),
+                "hub_a_ring_config_hash": ring_hash_a,
+                "hub_b_ring_config_hash": ring_hash_b,
+            }
+        )
+        if not ring_admission_readout["ring_admission_config_hash_match"]:
+            raise NodeMarketSmokeError(f"Hub ring admission config hashes do not match: A={ring_hash_a!r} B={ring_hash_b!r}")
         bridge_funding = _bridge_fund_requester(
             config_a,
             progress=progress,
@@ -1339,8 +1547,12 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
         if deposit_movement:
             dev_chain_movements["requester_deposit"] = deposit_movement
 
-        nodes = build_worker_nodes(node_count=config.node_count, run_id=run_id, task_queue_prefix=config.task_queue_prefix)
-        registration_counts = _register_workers_multi(configs, nodes, progress=progress)
+        registration_counts = _register_workers_with_ring_admission_multi(
+            configs,
+            nodes,
+            progress=progress,
+            ring_readout=ring_admission_readout,
+        )
         nodes_by_id = {node.node_id: node for node in nodes}
 
         node_behavior = await _await_or_freeze(
@@ -1695,6 +1907,38 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
             if not dev_chain_rollup["balance_deltas_nonzero_wei"]:
                 raise NodeMarketSmokeError("Dev-chain bridge movement produced no non-zero balance deltas.")
 
+        final_ring_status_a = _get_json(config_a.hub_url, "/api/hub/v1/status", timeout=config_a.http_timeout_seconds)
+        final_ring_status_b = _get_json(config_b.hub_url, "/api/hub/v1/status", timeout=config_b.http_timeout_seconds)
+        ring_rejection_audit_count = max(
+            int(final_ring_status_a.get("ring_admission_rejection_audit_count", 0) or 0),
+            int(final_ring_status_b.get("ring_admission_rejection_audit_count", 0) or 0),
+        )
+        ring_admission_readout.update(
+            {
+                "ring0_registration_allowed_count": int(registration_counts.get("ring0_allowed", 0) or 0),
+                "ring0_registration_rejected_count": int(registration_counts.get("ring0_rejected", 0) or 0),
+                "ring3_default_registration_count": (
+                    int(registration_counts.get("ring3_default", 0) or 0)
+                    + int(registration_counts.get("ring2_probe_fallback_ring3_succeeded", 0) or 0)
+                    + int(registration_counts.get("ring1_probe_fallback_ring3_succeeded", 0) or 0)
+                ),
+                "ring2_probe_requested_count": int(registration_counts.get("ring2_probe_requested", 0) or 0),
+                "ring2_probe_rejected_count": int(registration_counts.get("ring2_probe_rejected", 0) or 0),
+                "ring2_probe_fallback_ring3_succeeded_count": int(registration_counts.get("ring2_probe_fallback_ring3_succeeded", 0) or 0),
+                "ring1_probe_requested_count": int(registration_counts.get("ring1_probe_requested", 0) or 0),
+                "ring1_probe_rejected_count": int(registration_counts.get("ring1_probe_rejected", 0) or 0),
+                "ring1_probe_ring2_retry_rejected_count": int(registration_counts.get("ring1_probe_ring2_retry_rejected", 0) or 0),
+                "ring1_probe_fallback_ring3_succeeded_count": int(registration_counts.get("ring1_probe_fallback_ring3_succeeded", 0) or 0),
+                "unauthorized_high_ring_registration_allowed_count": int(registration_counts.get("unauthorized_high_ring_allowed", 0) or 0),
+                "ring_admission_rejection_audit_count": ring_rejection_audit_count,
+                "ring_admission_cross_hub_consistent": bool(ring_admission_readout.get("ring_admission_config_hash_match")),
+            }
+        )
+        if ring_admission_readout["unauthorized_high_ring_registration_allowed_count"] != 0:
+            raise NodeMarketSmokeError(f"Unauthorized high-trust ring registration was allowed: {ring_admission_readout}")
+        if ring_admission_readout["ring_admission_rejection_audit_count"] < 3:
+            raise NodeMarketSmokeError(f"Ring admission rejection audit count is too low: {ring_admission_readout}")
+
         report = {
             "ok": True,
             "run_id": run_id,
@@ -1704,6 +1948,7 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
             "execution_mode": config.execution_mode,
             "bridge_backend": bridge_backend,
             "mockchain": bool(config.mockchain),
+            **ring_admission_readout,
             "dev_chain_rollup": dev_chain_rollup,
             "dev_chain_run_id": dev_chain_context.run_id if dev_chain_context is not None else None,
             "dev_chain_requester_wallet_address": (
@@ -2103,6 +2348,29 @@ def main(argv: list[str] | None = None) -> int:
         "bridge_random_payout_confirmed_count",
         "bridge_random_payout_failed_count",
         "bridge_active_work_payout_rejection_count",
+        "ring_config_enabled",
+        "ring_config_path",
+        "ring_config_loaded_by_hub_a",
+        "ring_config_loaded_by_hub_b",
+        "ring_config_hash_match",
+        "ring_admission_config_hash_match",
+        "ring_config_default_min_ring",
+        "ring_config_allowlisted_ring0_wallet_count",
+        "ring0_registration_requested_count",
+        "ring0_registration_allowed_count",
+        "ring0_registration_rejected_count",
+        "ring3_default_wallet_count",
+        "ring3_default_registration_count",
+        "ring2_probe_requested_count",
+        "ring2_probe_rejected_count",
+        "ring2_probe_fallback_ring3_succeeded_count",
+        "ring1_probe_requested_count",
+        "ring1_probe_rejected_count",
+        "ring1_probe_ring2_retry_rejected_count",
+        "ring1_probe_fallback_ring3_succeeded_count",
+        "unauthorized_high_ring_registration_allowed_count",
+        "ring_admission_rejection_audit_count",
+        "ring_admission_cross_hub_consistent",
         "node_reconnect_requested_count",
         "node_reconnect_completed_count",
         "node_reconnect_offline_seen_count",

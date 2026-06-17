@@ -1,11 +1,11 @@
     function applicationFromPath(pathname = window.location.pathname) {
       const cleaned = String(pathname || "").replace(/\/+$/, "") || "/";
       const parts = cleaned.split("/").filter(Boolean);
-      if (!parts.length) return "calculator";
-      if (!["applications", "apps", "app"].includes(parts[0])) return "calculator";
-      if (parts.length < 2) return "calculator";
+      if (!parts.length) return "desktop";
+      if (!["applications", "apps", "app"].includes(parts[0])) return "desktop";
+      if (parts.length < 2) return "desktop";
       const candidate = applicationRouteAliases[parts[1]] || parts[1];
-      return routeableApps.has(candidate) ? candidate : "calculator";
+      return routeableApps.has(candidate) ? candidate : "desktop";
     }
 
     function syncApplicationRoute(appName, {replace = false} = {}) {
@@ -114,7 +114,7 @@
       }
     }
     function setActiveApp(appName, options = {}) {
-      const normalizedApp = routeableApps.has(appName) ? appName : "webgl";
+      const normalizedApp = routeableApps.has(appName) ? appName : "desktop";
       const syncRoute = options.syncRoute !== false;
       const replaceRoute = Boolean(options.replaceRoute);
       const previousApp = currentApp;
@@ -130,6 +130,7 @@
       activeTitle.textContent = title;
       activeSummary.textContent = summary;
       activeState.textContent = state;
+      const isDesktop = normalizedApp === "desktop";
       const isWebgl = normalizedApp === "webgl";
       const isCalculator = normalizedApp === "calculator";
       const isDocument = normalizedApp === "document";
@@ -162,7 +163,7 @@
         window.onlyofficeCloseAdvancedPane?.();
       }
       canvas.style.display = isWebgl ? "block" : "none";
-      if (desktopOverlay) desktopOverlay.style.display = isWebgl ? "block" : "none";
+      if (desktopOverlay) desktopOverlay.style.display = isDesktop ? "grid" : "none";
       calculatorApp.style.display = isCalculator ? "grid" : "none";
       documentApp.style.display = isDocument ? "grid" : "none";
       spreadsheetApp.style.display = isSpreadsheet ? "grid" : "none";
@@ -180,10 +181,13 @@
       if (mcelLabApp) mcelLabApp.style.display = isMcelLab ? "grid" : "none";
       if (workerApp) workerApp.style.display = isWorker ? "grid" : "none";
       if (walletApp) walletApp.style.display = isWallet ? "grid" : "none";
-      stubMessage.style.display = isWebgl || isCalculator || isDocument || isSpreadsheet || isOnlyOffice || isTaskManager || isTerminal || isChatConsole || isAiControl || isEmail || isGitTools || isCodeEditor || isFileExplorer || isGameEditor || isWebsiteBuilder || isMcelLab || isWorker || isWallet ? "none" : "grid";
+      stubMessage.style.display = isDesktop || isWebgl || isCalculator || isDocument || isSpreadsheet || isOnlyOffice || isTaskManager || isTerminal || isChatConsole || isAiControl || isEmail || isGitTools || isCodeEditor || isFileExplorer || isGameEditor || isWebsiteBuilder || isMcelLab || isWorker || isWallet ? "none" : "grid";
       demoControls.style.display = isWebgl ? "grid" : "none";
       layoutDesktopIcons(normalizedApp);
-      if (isWebgl) {
+      if (isDesktop) {
+        running = false;
+        glStatus.textContent = "desktop ready";
+      } else if (isWebgl) {
         running = true;
         glStatus.textContent = "game surface loading";
         initWebgl();

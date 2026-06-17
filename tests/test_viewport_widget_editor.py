@@ -221,6 +221,14 @@ class ViewportWidgetEditorTests(unittest.TestCase):
         duplicates = sorted({component_id for component_id in component_ids if component_ids.count(component_id) > 1})
         self.assertEqual(duplicates, [])
 
+    def test_widget_editor_uses_local_html_escape_helper(self) -> None:
+        helper_index = APPLICATIONS_INDEX_HTML.find("function widgetEditorEscapeHtml")
+        render_index = APPLICATIONS_INDEX_HTML.find("function renderWidgetEditorPane")
+        self.assertGreaterEqual(helper_index, 0)
+        self.assertGreater(render_index, helper_index)
+        self.assertIn("${widgetEditorEscapeHtml(label)}", APPLICATIONS_INDEX_HTML)
+        self.assertIn("widgetEditorEscapeHtml(target.dataset.mcWidgetLabel || \"\")", APPLICATIONS_INDEX_HTML)
+
 
 if __name__ == "__main__":
     unittest.main()

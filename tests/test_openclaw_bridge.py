@@ -130,6 +130,18 @@ class OpenClawBridgeTests(unittest.TestCase):
         self.assertEqual(args.port, 9000)
         self.assertEqual(args.token, "abc")
 
+    def test_cli_parser_supports_openclaw_ops_commands(self) -> None:
+        serve_args = build_parser().parse_args(["openclaw-ops", "serve", "--port", "9001", "--token", "abc"])
+        self.assertEqual(serve_args.command, "openclaw-ops")
+        self.assertEqual(serve_args.openclaw_ops_command, "serve")
+        self.assertEqual(serve_args.port, 9001)
+        self.assertEqual(serve_args.token, "abc")
+
+        smoke_args = build_parser().parse_args(["openclaw-ops", "smoke", "--base-url", "http://127.0.0.1:9001"])
+        self.assertEqual(smoke_args.command, "openclaw-ops")
+        self.assertEqual(smoke_args.openclaw_ops_command, "smoke")
+        self.assertEqual(smoke_args.base_url, "http://127.0.0.1:9001")
+
 
 if __name__ == "__main__":
     unittest.main()

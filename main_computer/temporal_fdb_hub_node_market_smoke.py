@@ -83,6 +83,7 @@ class HubNodeMarketSmokeConfig:
     cluster_file: Path = DEFAULT_AUTO_HUB_CLUSTER_FILE
     hub_bridge_backend: str = "mock-chain"
     dev_chain_deployment_path: Path | None = None
+    ring_config_path: Path | None = None
 
     def resolved_report_path(self) -> Path | None:
         if self.report_path is None:
@@ -102,6 +103,12 @@ class HubNodeMarketSmokeConfig:
         if self.dev_chain_deployment_path is None:
             return None
         path = self.dev_chain_deployment_path
+        return path if path.is_absolute() else self.repo_root / path
+
+    def resolved_ring_config_path(self) -> Path | None:
+        if self.ring_config_path is None:
+            return None
+        path = self.ring_config_path
         return path if path.is_absolute() else self.repo_root / path
 
 
@@ -289,6 +296,9 @@ def _auto_hub_command(config: HubNodeMarketSmokeConfig) -> list[str]:
     dev_chain_deployment_path = config.resolved_dev_chain_deployment_path()
     if dev_chain_deployment_path is not None:
         command.extend(["--dev-chain-deployment-path", str(dev_chain_deployment_path)])
+    ring_config_path = config.resolved_ring_config_path()
+    if ring_config_path is not None:
+        command.extend(["--ring-config-path", str(ring_config_path)])
     command.extend([
         "--noverbose",
     ])

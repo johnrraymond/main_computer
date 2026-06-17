@@ -1,0 +1,126 @@
+      <section
+        class="energy-command-center"
+        id="energy-network-monitor"
+        aria-label="Energy network command center"
+        data-mc="energy-network-monitor"
+        data-mc-kind="read-only-command-center"
+        data-mc-render="adaptive-dashboard"
+        data-mc-layout="hero-ribbon-detail"
+        data-mc-policy="inspect-only"
+        data-mc-default-network="mainnet"
+        data-energy-networks-query="/api/energy/networks/status?live=1"
+      >
+        <div class="energy-hero">
+          <div class="energy-hero-copy">
+            <p class="eyebrow">MCEL Network Monitor / Read-only</p>
+            <h2>Mainnet Energy Credits Command Center</h2>
+            <p>
+              MCEL treats this HTML as the source contract: mainnet is primary, dev/test/testnet are
+              validation lanes, and mutation surfaces stay outside the monitor.
+            </p>
+          </div>
+          <div class="energy-hero-status" aria-label="Network monitor summary">
+            <div class="hero-stat" data-mc="metric" data-mc-kind="network-state">
+              <span>Status</span>
+              <strong id="energy-network-hero-status">loading</strong>
+            </div>
+            <div class="hero-stat" data-mc="metric" data-mc-kind="chain-id">
+              <span>Chain</span>
+              <strong id="energy-network-hero-chain">loading</strong>
+            </div>
+            <div class="hero-stat" data-mc="metric" data-mc-kind="contract-health">
+              <span>Contracts</span>
+              <strong id="energy-network-hero-contracts">loading</strong>
+            </div>
+          </div>
+        </div>
+
+        <div
+          class="energy-network-ribbon"
+          id="energy-network-ribbon"
+          aria-label="Energy networks"
+          data-mc="collection"
+          data-mc-kind="network-selector"
+          data-mc-layout="priority-ribbon"
+        >
+          <button class="network-card primary" type="button" data-network-option="mainnet" data-mc="card" data-mc-kind="mainnet">
+            <span>Mainnet</span>
+            <strong data-network-card-status="mainnet">loading</strong>
+            <small data-network-card-detail="mainnet">chain 42424240</small>
+          </button>
+          <button class="network-card" type="button" data-network-option="testnet" data-mc="card" data-mc-kind="testnet">
+            <span>Testnet</span>
+            <strong data-network-card-status="testnet">loading</strong>
+            <small data-network-card-detail="testnet">chain 42424241</small>
+          </button>
+          <button class="network-card" type="button" data-network-option="test" data-mc="card" data-mc-kind="local-qbft">
+            <span>QBFT Test</span>
+            <strong data-network-card-status="test">loading</strong>
+            <small data-network-card-detail="test">chain 42424241</small>
+          </button>
+          <button class="network-card" type="button" data-network-option="dev" data-mc="card" data-mc-kind="local-dev">
+            <span>Dev</span>
+            <strong data-network-card-status="dev">loading</strong>
+            <small data-network-card-detail="dev">chain 42424242</small>
+          </button>
+        </div>
+
+        <div class="energy-monitor-grid" data-mc="layout" data-mc-kind="selected-network-detail">
+          <article class="monitor-panel network-detail-panel" data-mc="panel" data-mc-kind="network-detail">
+            <div class="panel-title-row">
+              <div>
+                <p class="eyebrow">Selected Network</p>
+                <h3 id="energy-network-selected-name">Mainnet</h3>
+              </div>
+              <strong class="status-pill" id="energy-network-selected-status">loading</strong>
+            </div>
+            <dl class="network-facts">
+              <div><dt>Expected chain</dt><dd id="energy-network-expected-chain">loading</dd></div>
+              <div><dt>Live chain</dt><dd id="energy-network-live-chain">loading</dd></div>
+              <div><dt>Block</dt><dd id="energy-network-block">loading</dd></div>
+              <div><dt>RPC</dt><dd id="energy-network-rpc">loading</dd></div>
+              <div><dt>Manifest</dt><dd id="energy-network-manifest">loading</dd></div>
+              <div><dt>Run</dt><dd id="energy-network-run">loading</dd></div>
+            </dl>
+          </article>
+
+          <article class="monitor-panel contract-panel" data-mc="panel" data-mc-kind="contract-inventory">
+            <div class="panel-title-row">
+              <div>
+                <p class="eyebrow">Expected Deployment</p>
+                <h3>Contract Inventory</h3>
+              </div>
+              <span id="energy-network-contract-count">loading</span>
+            </div>
+            <div class="contract-list" id="energy-network-contracts" data-mc="collection" data-mc-kind="contracts">
+              <p>Loading contract inventory...</p>
+            </div>
+          </article>
+
+          <article class="monitor-panel authority-panel" data-mc="panel" data-mc-kind="authority-state">
+            <div class="panel-title-row">
+              <div>
+                <p class="eyebrow">Ring 0 Authority</p>
+                <h3>Captain to Third Officer</h3>
+              </div>
+              <span id="energy-network-authority-badge">loading</span>
+            </div>
+            <div class="office-list" id="energy-network-offices" data-mc="collection" data-mc-kind="offices">
+              <p>Loading authority state...</p>
+            </div>
+          </article>
+
+          <article class="monitor-panel warning-panel" data-mc="status-feed" data-mc-kind="operator-warnings">
+            <div class="panel-title-row">
+              <div>
+                <p class="eyebrow">Operator Readout</p>
+                <h3>Warnings & Next Attention</h3>
+              </div>
+              <span id="energy-network-last-refresh">not refreshed</span>
+            </div>
+            <ul id="energy-network-warnings">
+              <li>Loading network warnings...</li>
+            </ul>
+          </article>
+        </div>
+      </section>

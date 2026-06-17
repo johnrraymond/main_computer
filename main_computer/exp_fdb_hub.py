@@ -49,6 +49,19 @@ DEFAULT_EXP_FDB_SMOKE_NAMESPACE = "main-computer-exp-fdb-autostart-smoke"
 DEFAULT_EXP_FDB_SMOKE_START_TIMEOUT_SECONDS = 45.0
 
 
+def _optional_int_arg(value: object, *, flag: str) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = int(text, 0)
+    except ValueError:
+        raise SystemExit(f"{flag} must be an integer, got {text!r}") from None
+    if parsed < 0:
+        raise SystemExit(f"{flag} must be non-negative")
+    return parsed
+
+
 class ExperimentalFoundationDbHubServerHandler(HubServerHandler):
     """Hub request handler with opt-in exp multi-hub access logging.
 
@@ -138,6 +151,20 @@ def build_experimental_config(args: argparse.Namespace, *, port: int) -> tuple[M
     dev_chain_deployment_path = Path(args.dev_chain_deployment_path) if args.dev_chain_deployment_path else base.hub_dev_chain_deployment_path
     if dev_chain_deployment_path is not None and not dev_chain_deployment_path.is_absolute():
         dev_chain_deployment_path = repo_root / dev_chain_deployment_path
+    ring_config_path = Path(args.ring_config_path) if getattr(args, "ring_config_path", None) else base.hub_ring_config_path
+    if ring_config_path is not None and not ring_config_path.is_absolute():
+        ring_config_path = repo_root / ring_config_path
+
+    network_key = str(getattr(args, "network_key", "exp-fdb") or "exp-fdb").strip() or "exp-fdb"
+    network_display_name = (
+        str(getattr(args, "network_display_name", "Experimental FDB Hub") or "Experimental FDB Hub").strip()
+        or "Experimental FDB Hub"
+    )
+    network_kind = str(getattr(args, "network_kind", "experimental") or "experimental").strip() or "experimental"
+    chain_id_arg = _optional_int_arg(getattr(args, "chain_id", ""), flag="--chain-id")
+    chain_id = chain_id_arg if chain_id_arg is not None else base.chain_id
+    chain_rpc_url_arg = str(getattr(args, "chain_rpc_url", "") or "").strip()
+    chain_rpc_url = chain_rpc_url_arg or base.chain_rpc_url
 
     config = replace(
         base,
@@ -145,12 +172,17 @@ def build_experimental_config(args: argparse.Namespace, *, port: int) -> tuple[M
         hub_bind_host=args.host,
         hub_bind_port=port,
         hub_url=hub_url,
-        hub_network="exp-fdb",
-        hub_network_display_name="Experimental FDB Hub",
-        hub_network_kind="experimental",
+        hub_network=network_key,
+        hub_network_display_name=network_display_name,
+        hub_network_kind=network_kind,
         hub_allow_insecure_dev_network=True,
         hub_bridge_backend=str(args.bridge_backend or base.hub_bridge_backend or "mock-chain").strip().lower() or "mock-chain",
         hub_dev_chain_deployment_path=dev_chain_deployment_path,
+        hub_ring_config_path=ring_config_path,
+        chain_id=chain_id,
+        chain_id_source="arg" if chain_id_arg is not None else base.chain_id_source,
+        chain_rpc_url=chain_rpc_url,
+        chain_rpc_url_source="arg" if chain_rpc_url_arg else base.chain_rpc_url_source,
     )
 
     cluster_file = _cluster_file_from_args(args, repo_root=repo_root)
@@ -327,6 +359,14 @@ def create_exp_fdb_hub_server(args: argparse.Namespace, *, port: int) -> Experim
     print(f"Worker route diagnostics: {'on' if server.worker_route_diagnostics else 'off'} (set HUB_WORKER_ROUTE_DIAGNOSTICS=1 to enable per-stage logging)")
     print(f"FDB cluster file: {fdb_config.cluster_file}")
     print(f"FDB namespace: {fdb_config.namespace}")
+    ring_status = server.ring_admission_config.public_status()
+    print(
+        "Ring admission config: "
+        f"path={ring_status.get('ring_config_path')} "
+        f"default_min_ring={ring_status.get('ring_config_default_min_ring')} "
+        f"allowlisted_wallet_count={ring_status.get('ring_config_allowlisted_wallet_count')} "
+        f"hash={ring_status.get('ring_config_hash')}"
+    )
     print(f"FDB credit ledger health: {fdb_health}")
     print(f"FDB hub state health: {state_health}")
     bridge_backend_status = getattr(server.bridge_backend, "status", lambda: {"backend": config.hub_bridge_backend})()
@@ -496,10 +536,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-ports", "--ports", default=None, help="Comma-separated experimental hub ports to bind, for example 8870,8871,8872. Defaults to 8870.")
     parser.add_argument("--port", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--hub-url", help="Public URL advertised for this experimental hub. Defaults per port when omitted.")
+    parser.add_argument("--network-key", default="exp-fdb", help="Hub network key advertised by /api/hub/status.")
+    parser.add_argument("--network-display-name", default="Experimental FDB Hub", help="Hub network display name advertised by /api/hub/status.")
+    parser.add_argument("--network-kind", default="experimental", help="Hub network kind advertised by /api/hub/status.")
+    parser.add_argument("--chain-id", default="", help="Chain ID advertised by /api/hub/status. Defaults to MAIN_COMPUTER_CHAIN_ID/base config.")
+    parser.add_argument("--chain-rpc-url", default="", help="Chain RPC URL advertised by /api/hub/status. Defaults to MAIN_COMPUTER_CHAIN_RPC_URL/base config.")
     parser.add_argument("--hub-root", type=Path, default=DEFAULT_EXP_FDB_HUB_ROOT, help="Separate runtime root for the experimental hub.")
     parser.add_argument("--cluster-file", type=Path, default=DEFAULT_EXP_FDB_CLUSTER_FILE, help="FoundationDB cluster file written by the FDB smoke.")
     parser.add_argument("--bridge-backend", choices=["mock-chain", "dev-chain"], default=None, help="Hub bridge backend for bridge confirm endpoints. Defaults to env/default mock-chain.")
     parser.add_argument("--dev-chain-deployment-path", type=Path, default=None, help="Deployment metadata JSON used when --bridge-backend dev-chain is selected.")
+    parser.add_argument("--ring-config-path", type=Path, default=None, help="JSON ring admission config path. Bad explicit configs fail startup.")
     parser.add_argument("--namespace", default=DEFAULT_EXP_FDB_NAMESPACE, help="FDB tuple namespace for this experiment.")
     parser.add_argument("--api-version", type=int, default=740, help="FoundationDB API version to request.")
     parser.add_argument("--repo-root", type=Path, help="Repository root. Defaults to the current working directory.")

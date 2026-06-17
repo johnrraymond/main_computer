@@ -341,6 +341,38 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
 
         return _tx(self.db)
 
+    def record_ring_admission_rejection(self, event: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(event)
+        payload.setdefault("event_type", "ring_admission_rejected")
+        payload.setdefault("created_at", _utc_now())
+        seed = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        payload.setdefault("event_id", "ring-admission-" + hashlib.sha256(seed).hexdigest()[:24])
+
+        @self.fdb.transactional
+        def _tx(tr: Any) -> None:
+            self._write_dict(tr, payload, "ring_admission_audit", str(payload["event_id"]))
+
+        _tx(self.db)
+        return payload
+
+    def list_ring_admission_audit(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        clean_limit = max(1, int(limit or 500))
+
+        @self.fdb.transactional
+        def _tx(tr: Any) -> list[dict[str, Any]]:
+            return self._list_dicts(tr, "ring_admission_audit", limit=clean_limit, reverse=True)
+
+        events = _tx(self.db)
+        return list(reversed(events))
+
+    def ring_admission_audit_count(self) -> int:
+        @self.fdb.transactional
+        def _tx(tr: Any) -> int:
+            key_range = self.state.range_for("ring_admission_audit")
+            return sum(1 for _item in tr.get_range(key_range.start, key_range.stop))
+
+        return int(_tx(self.db))
+
     def register_worker(
         self,
         *,

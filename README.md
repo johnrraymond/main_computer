@@ -299,6 +299,13 @@ docker compose -f docker-compose.dev.yml --profile smoke run --rm executor-smoke
 
 ## Operator runbooks
 
+Hosted Hub deployment, including the regular Hub and the experimental
+FoundationDB-backed Hub, is documented in:
+
+```text
+pretty_docs/hub-coolify-deploy-runbook.md
+```
+
 The Cloudflare hidden-origin mail worker plan is documented in:
 
 ```text
@@ -311,7 +318,10 @@ The Great Library hosted email account roadmap is documented in:
 pretty_docs/great-library-email-account-system-plan.md
 ```
 
-The runbook explains the staged contract flow for `tools/cloudflare_mail_worker.py`.
+The Hub runbook explains how to use `tools/coolify_hub_service.py` for regular
+`testnet`/`mainnet` deployment, side-by-side experimental FDB deployment, and
+explicit experimental replacement of the regular Hub. The mail worker runbook
+explains the staged contract flow for `tools/cloudflare_mail_worker.py`.
 The account-system plan explains how the working ingest path grows into
 signup-driven Great Library mailboxes, user passwords, aliases, webmail, and
 outbound sending.
