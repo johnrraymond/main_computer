@@ -93,8 +93,8 @@ class HubServerTests(unittest.TestCase):
                 hub.server_close()
                 hub_thread.join(timeout=2)
 
-    def test_ring_admission_defaults_all_workers_to_ring3_when_no_config_is_provided(self) -> None:
-        wallet = "0x0000000000000000000000000000000000000013"
+    def test_ring_admission_without_config_defaults_registration_to_ring3(self) -> None:
+        wallet = "0x0000000000000000000000000000000000000003"
         with tempfile.TemporaryDirectory() as hub_tmp:
             hub = HubHttpServer(("127.0.0.1", 0), self._hub_config_for_ring_tests(hub_tmp), verbose=False)
             hub_thread = self._start_server(hub)
@@ -103,8 +103,8 @@ class HubServerTests(unittest.TestCase):
                 payload = self._post_json(
                     f"{hub_base}/api/hub/v1/workers/register",
                     {
-                        "node_id": "no-config-ring-probe",
-                        "endpoint": "http://127.0.0.1:1/no-config-ring-probe",
+                        "node_id": "ring-probe",
+                        "endpoint": "http://127.0.0.1:1/ring-probe",
                         "model": "fake-model",
                         "wallet_address": wallet,
                         "requested_ring": 1,
@@ -118,20 +118,18 @@ class HubServerTests(unittest.TestCase):
                 self.assertEqual(payload["minimum_allowed_ring"], 3)
                 self.assertEqual(payload["allowed_min_ring"], 3)
                 self.assertEqual(payload["ring_admission_status"], "accepted")
-                self.assertIn("defaulting worker to ring 3", payload["ring_admission_message"])
-                status = hub.registry.status()
-                self.assertEqual(status["worker_count"], 1)
-                caps = status["workers"][0]["capabilities"]
-                self.assertEqual(caps["requested_ring"], 3)
-                self.assertEqual(caps["assigned_ring"], 3)
-                self.assertEqual(caps["effective_ring"], 3)
+                self.assertEqual(hub.registry.status()["worker_count"], 1)
+                worker = hub.registry.status()["workers"][0]
+                self.assertEqual(worker["capabilities"]["requested_ring"], 3)
+                self.assertEqual(worker["capabilities"]["assigned_ring"], 3)
+                self.assertEqual(worker["capabilities"]["effective_ring"], 3)
                 self.assertEqual(hub.registry.ring_admission_audit_count(), 0)
             finally:
                 hub.shutdown()
                 hub.server_close()
                 hub_thread.join(timeout=2)
 
-    def test_ring_admission_rejects_high_trust_registration_without_registry_write_when_configured(self) -> None:
+    def test_ring_admission_rejects_high_trust_registration_with_config_without_registry_write(self) -> None:
         wallet = "0x0000000000000000000000000000000000000003"
         with tempfile.TemporaryDirectory() as hub_tmp:
             ring_config_path = self._ring_config_path(
@@ -172,6 +170,8 @@ class HubServerTests(unittest.TestCase):
                 self.assertEqual(payload["fallback_ring"], 3)
                 self.assertEqual(hub.registry.status()["worker_count"], 0)
                 self.assertEqual(hub.registry.ring_admission_audit_count(), 1)
+                status = self._get_json(f"{hub_base}/api/hub/v1/status")
+                self.assertEqual(status["ring_admission_rejection_audit_count"], 1)
                 audit_events = hub.registry.list_ring_admission_audit()
                 self.assertEqual(audit_events[0]["event_type"], "ring_admission_rejected")
                 self.assertEqual(audit_events[0]["requested_ring"], 1)
