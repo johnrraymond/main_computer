@@ -475,7 +475,7 @@
         walletFunding: {
           // The escrow address is deploy-owned.  Do not revive stale/manual
           // browser storage here; workerRefreshHubCreditBridgeConfig reloads it
-          // from runtime/deployments/current.json through the local viewport.
+          // from runtime/deployments/dev/latest.json through the local viewport.
           bridgeContractAddress: "",
           amountCredits: String(walletFunding.amountCredits || walletFunding.amount_credits || WORKER_HUB_CREDIT_DEFAULT_AMOUNT),
           walletBalance: workerNormalizeWalletCreditBalance(walletFunding.walletBalance || walletFunding.wallet_balance),

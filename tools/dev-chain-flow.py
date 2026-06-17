@@ -40,7 +40,7 @@ from main_computer.prod_lock import require_unlocked_production_state
 
 COMPUTE_CREDIT_BASE_UNITS = 10**18
 ENG_WEI = COMPUTE_CREDIT_BASE_UNITS  # Deprecated compatibility alias.
-DEFAULT_DEPLOYMENT_FILE = Path("runtime/deployments/current.json")
+DEFAULT_DEPLOYMENT_FILE = Path("runtime/deployments/dev/latest.json")
 LEGACY_DEV_CHAIN_STATE_FILE = Path("runtime/dev-chain/latest.json")
 DEFAULT_STATE_FILE = DEFAULT_DEPLOYMENT_FILE
 DEFAULT_REPORT_FILE = Path("runtime/dev-chain/flow-latest.json")

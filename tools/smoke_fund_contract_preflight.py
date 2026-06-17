@@ -510,7 +510,7 @@ def start_embedded_viewport_server(root: Path, args: argparse.Namespace):
     imported_from = Path(__import__("main_computer").__file__ or "").resolve()
     print(f"OK: importing main_computer from {imported_from}")
 
-    runtime_path = root / "runtime" / "deployments" / "current.json"
+    runtime_path = root / "runtime" / "deployments" / "dev" / "latest.json"
     offices = (
         {
             "office": "O0",

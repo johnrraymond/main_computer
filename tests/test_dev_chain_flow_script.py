@@ -21,12 +21,12 @@ def load_dev_chain_flow():
 def test_flow_defaults_to_app_facing_deployment_manifest() -> None:
     flow = load_dev_chain_flow()
 
-    assert flow.DEFAULT_STATE_FILE == Path("runtime/deployments/current.json")
+    assert flow.DEFAULT_STATE_FILE == Path("runtime/deployments/dev/latest.json")
 
 
 def test_resolve_state_file_prefers_current_deployment_manifest(tmp_path: Path) -> None:
     flow = load_dev_chain_flow()
-    current = tmp_path / "runtime/deployments/current.json"
+    current = tmp_path / "runtime/deployments/dev/latest.json"
     legacy = tmp_path / "runtime/dev-chain/latest.json"
     current.parent.mkdir(parents=True)
     legacy.parent.mkdir(parents=True)

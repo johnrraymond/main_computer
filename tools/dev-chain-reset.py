@@ -1616,7 +1616,7 @@ def verify_deployed_contract_code(args: argparse.Namespace, rid: str, spec: Depl
         time.sleep(0.25)
     raise RuntimeError(
         f"{spec.key} deployed to {address}, but no contract code was readable at that address via {url}: {last_error}. "
-        "Run `python .\\tools\\dev-chain-diagnosis.py --state .\\runtime\\deployments\\current.json` after fixing the RPC."
+        "Run `python .\\tools\\dev-chain-diagnosis.py --state .\\runtime\\deployments\\dev\\latest.json` after fixing the RPC."
     )
 
 
@@ -2048,15 +2048,11 @@ def write_outputs(args: argparse.Namespace, rid: str, payload: dict) -> None:
 
     env_deploy_json = env_run_dir / "deployment.json"
     env_latest_json = env_base / "latest.json"
-    current_json = deploy_base / "current.json"
     env_deploy_json.write_text(public_json, encoding="utf-8")
     env_latest_json.write_text(public_json, encoding="utf-8")
-    current_json.parent.mkdir(parents=True, exist_ok=True)
-    current_json.write_text(public_json, encoding="utf-8")
 
     log(f"Wrote {env_deploy_json}")
     log(f"Wrote {env_latest_json}")
-    log(f"Wrote {current_json}")
 
 
 

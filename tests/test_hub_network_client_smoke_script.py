@@ -108,7 +108,7 @@ def test_load_smoke_client_wallet_requires_chain_and_manifest_address(tmp_path: 
 def test_load_deployment_manifest_prefers_selected_network_latest_over_current(tmp_path: Path) -> None:
     smoke = load_smoke_client()
     test_latest = tmp_path / "runtime" / "deployments" / "test" / "latest.json"
-    current = tmp_path / "runtime" / "deployments" / "current.json"
+    current = tmp_path / "runtime" / "deployments" / "dev" / "latest.json"
     test_latest.parent.mkdir(parents=True)
     current.parent.mkdir(parents=True, exist_ok=True)
     test_latest.write_text(json.dumps({"environment": "test", "marker": "test-latest"}), encoding="utf-8")

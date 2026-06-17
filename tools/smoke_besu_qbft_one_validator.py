@@ -964,13 +964,13 @@ def deploy_testnet(args: argparse.Namespace) -> int:
     print(f"  Docker RPC: http://{RPC_NODE_CONTAINER}:{RPC_CONTAINER_PORT}")
     print(f"  chain_id: {chain_id}")
     print(f"  deployer_balance_wei: {deployer_balance}")
-    print(f"  publication: {resolve_deployment_output_dir(args) / 'current.json'}")
+    print(f"  publication: {resolve_deployment_output_dir(args) / args.deployment_environment / 'latest.json'}")
     print()
     completed = run(command, check=False)
     if completed.returncode == 0:
         print()
         print("QBFT testnet deployment published the app-facing runtime manifest.")
-        print(f"  {resolve_deployment_output_dir(args) / 'current.json'}")
+        print(f"  {resolve_deployment_output_dir(args) / args.deployment_environment / 'latest.json'}")
         print()
         print("Run the Hub against it with:")
         print("  python -m main_computer.cli hub --network test")
@@ -1101,7 +1101,7 @@ def start_lab(args: argparse.Namespace, *, cleanup_on_failure: bool = False) -> 
         print()
         print("Use this RPC endpoint for hub/dev tooling:")
         print(f"  {public_rpc_url}")
-        print("Deploy contracts and publish runtime/deployments/current.json:")
+        print("Deploy contracts and publish runtime/deployments/dev/latest.json:")
         print("  python tools/smoke_besu_qbft_one_validator.py deploy")
         print("Monitor blocks:")
         print("  python tools/smoke_besu_qbft_one_validator.py monitor")
@@ -1316,7 +1316,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--deploy-contracts",
         action="store_true",
-        help="After up/restart, deploy the Main Computer contracts and publish runtime/deployments/current.json.",
+        help="After up/restart, deploy the Main Computer contracts and publish runtime/deployments/dev/latest.json.",
     )
     parser.add_argument("--foundry-image", default=DEFAULT_FOUNDRY_IMAGE, help=f"Foundry Docker image for contract deployment. Default: {DEFAULT_FOUNDRY_IMAGE}")
     parser.add_argument("--private-key", default=DEFAULT_DEPLOYER_PRIVATE_KEY, help="Deployer private key funded in the QBFT genesis.")

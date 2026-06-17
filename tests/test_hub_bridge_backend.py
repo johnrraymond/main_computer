@@ -32,7 +32,7 @@ def _write_deployment(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         address=addresses["controller"],
         private_key="0x" + "2" * 64,
     )
-    deployment_path = tmp_path / "runtime" / "deployments" / "current.json"
+    deployment_path = tmp_path / "runtime" / "deployments" / "dev" / "latest.json"
     deployment_path.parent.mkdir(parents=True, exist_ok=True)
     deployment_path.write_text(
         json.dumps(

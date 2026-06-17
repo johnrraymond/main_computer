@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
-DEFAULT_STATE_FILE = Path("runtime/deployments/current.json")
+DEFAULT_STATE_FILE = Path("runtime/deployments/dev/latest.json")
 LEGACY_STATE_FILE = Path("runtime/dev-chain/latest.json")
 DEFAULT_REPORT_PATH = Path("runtime/hub/worker_local_chain_settlement_execution_smoke.json")
 DEFAULT_RPC_URL = "http://127.0.0.1:18545"

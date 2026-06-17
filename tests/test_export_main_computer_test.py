@@ -71,7 +71,7 @@ class ExportMainComputerTestTests(unittest.TestCase):
     def test_export_script_includes_network_deployment_latest_manifests_without_unblocking_all_runtime(self) -> None:
         script = (ROOT / "export-main-computer-test.ps1").read_text(encoding="utf-8")
 
-        self.assertIn('"runtime/deployments/current.json"', script)
+        self.assertIn('"runtime/deployments/dev/latest.json"', script)
         self.assertIn('"runtime/deployments/dev/latest.json"', script)
         self.assertIn('"runtime/deployments/test/latest.json"', script)
         self.assertIn('"runtime/deployments/testnet/latest.json"', script)

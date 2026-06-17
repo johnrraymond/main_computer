@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_STATE_FILE = Path("runtime/deployments/current.json")
+DEFAULT_STATE_FILE = Path("runtime/deployments/dev/latest.json")
 LEGACY_STATE_FILE = Path("runtime/dev-chain/latest.json")
 DEFAULT_REPORT_FILE = Path("runtime/dev-chain/smoke-latest.json")
 DEFAULT_CHAIN_ID = 42424242
@@ -526,7 +526,7 @@ def write_report(path: Path, ok: bool, results: list[CheckResult], summary: dict
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Smoke-check a soft dev-chain deployment.")
-    parser.add_argument("--state", type=Path, default=DEFAULT_STATE_FILE, help="deploy state JSON, default runtime/deployments/current.json")
+    parser.add_argument("--state", type=Path, default=DEFAULT_STATE_FILE, help="deploy state JSON, default runtime/deployments/dev/latest.json")
     parser.add_argument("--rpc-url", default=None, help="override host RPC URL")
     parser.add_argument("--chain-id", type=int, default=None, help="override expected chain id")
     parser.add_argument("--timeout-s", type=float, default=5.0)
