@@ -70,7 +70,6 @@ class RingAdmissionConfig:
     explicit_path: bool = False
     load_ok: bool = True
     load_error: str = ""
-    force_default_ring: bool = False
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any], *, source_path: str = "", explicit_path: bool = False) -> "RingAdmissionConfig":
@@ -101,22 +100,20 @@ class RingAdmissionConfig:
             explicit_path=bool(explicit_path),
             load_ok=True,
             load_error="",
-            force_default_ring=False,
         )
 
     @classmethod
     def default(cls) -> "RingAdmissionConfig":
-        return cls(force_default_ring=True)
+        return cls()
 
     def minimum_allowed_ring_for_wallet(self, wallet_address: Any) -> int:
         wallet = normalize_wallet_address(wallet_address)
         return int(self.wallet_min_ring.get(wallet, self.default_min_ring))
 
     def evaluate(self, *, wallet_address: Any, requested_ring: Any) -> RingAdmissionDecision:
-        requested = normalize_requested_ring(requested_ring, default=self.default_min_ring)
-        minimum_allowed_ring = self.minimum_allowed_ring_for_wallet(wallet_address)
-        if self.force_default_ring:
-            default_ring = int(self.default_min_ring)
+        requested = normalize_requested_ring(requested_ring, default=RING_ADMISSION_DEFAULT_MINIMUM_ALLOWED_RING)
+        if not self.explicit_path:
+            default_ring = RING_ADMISSION_DEFAULT_MINIMUM_ALLOWED_RING
             return RingAdmissionDecision(
                 ok=True,
                 requested_ring=default_ring,
@@ -124,8 +121,10 @@ class RingAdmissionConfig:
                 minimum_allowed_ring=default_ring,
                 fallback_ring=None,
                 status="accepted",
-                message=f"No ring admission config is configured; defaulting worker to ring {default_ring}.",
+                message="No ring admission config was provided; defaulting worker to ring 3.",
             )
+
+        minimum_allowed_ring = self.minimum_allowed_ring_for_wallet(wallet_address)
         if requested < minimum_allowed_ring:
             return RingAdmissionDecision(
                 ok=False,
@@ -170,7 +169,6 @@ class RingAdmissionConfig:
             "ring_config_path": self.source_path or None,
             "ring_config_explicit_path": bool(self.explicit_path),
             "ring_config_load_ok": bool(self.load_ok),
-            "ring_config_force_default_ring": bool(self.force_default_ring),
             "ring_config_default_min_ring": int(self.default_min_ring),
             "ring_config_allowlisted_wallet_count": len(self.wallet_min_ring),
             "ring_config_allowlisted_ring0_wallet_count": ring0_count,

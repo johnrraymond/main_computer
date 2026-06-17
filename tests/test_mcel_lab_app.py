@@ -316,6 +316,73 @@ def test_mcel_lab_task_manager_enrichment_is_role_based_before_render() -> None:
     assert ".click(" not in specimen_block
 
 
+def test_mcel_task_manager_notebook_uses_canonical_tabbed_workspace() -> None:
+    task_html = (WEB_APP / "apps" / "task-manager.html").read_text(encoding="utf-8")
+    adapter = (WEB_APP / "scripts" / "task-manager-mcel.js").read_text(encoding="utf-8")
+    elements = (WEB_APP / "scripts" / "mcel-elements-core.js").read_text(encoding="utf-8")
+    toolkit = (WEB_APP / "scripts" / "mcel-toolkit-core.js").read_text(encoding="utf-8")
+    concerns = (WEB_APP / "scripts" / "mcel-concern-core.js").read_text(encoding="utf-8")
+
+    assert 'role="tablist"' in task_html
+    assert 'role="tab"' in task_html
+    assert 'role="tabpanel"' in task_html
+    assert "setTaskNotebookTab" in (WEB_APP / "scripts" / "task-manager.js").read_text(encoding="utf-8")
+
+    for element_id in [
+        "element.toolkit.tabbed-workspace",
+        "element.toolkit.tab-list",
+        "element.toolkit.tab",
+        "element.toolkit.tab-panel",
+        "element.toolkit.tab-controller",
+    ]:
+        assert element_id in elements
+        assert element_id in adapter
+
+    assert "tabs-are-view-state-not-command-buttons" in elements
+    assert "buttons pretending to be tabs" in elements
+    assert "pattern.tabbed-workspace" in toolkit
+    assert "layout.tabbed-workspace" in toolkit
+    assert "controller.tab-state" in toolkit
+    assert "tabbed-data-workspace" in toolkit
+    assert "button-row-as-navigation" in toolkit
+
+    assert "concern.tabbed-workspace" in concerns
+    assert "task-manager.data-notebook" in concerns
+    assert "tabbedWorkspaceDetected" in concerns
+
+    assert "TABBED_WORKSPACE_CONTRACT" in adapter
+    assert "buildTabbedWorkspaceModel" in adapter
+    assert "applyTabbedWorkspaceSemantics" in adapter
+    assert 'role: "workspace-tab"' in adapter
+    assert 'data-mcel-action-role", "switch-tab-view-state"' in adapter
+    assert 'data-mcel-action-risk", "safe"' in adapter
+    assert 'data-mcel-mutates", "false"' in adapter
+    assert "tabbedWorkspaceContractStatus" in adapter
+    assert "tabbedWorkspaceActiveTab" in adapter
+    assert 'role: "feed-tab"' not in adapter
+    assert "tabbed-data-feed" not in adapter
+
+
+def test_task_manager_notebook_tabs_have_visual_tab_affordance() -> None:
+    css = (WEB_APP / "styles" / "task-manager.css").read_text(encoding="utf-8")
+
+    tab_button_block = css.split(".task-tab-button {", 1)[1].split("}", 1)[0]
+    active_tab_block = css.split('.task-tab-button[aria-selected="true"] {', 1)[1].split("}", 1)[0]
+    panels_block = css.split(".task-tab-panels {", 1)[1].split("}", 1)[0]
+
+    assert ".task-pane.task-notebook" in css
+    assert "grid-template-rows: auto minmax(0, 1fr)" in css
+    assert "border-radius: 999px" not in tab_button_block
+    assert "border-radius: 10px 10px 0 0" in tab_button_block
+    assert "border-bottom-color: rgba(246, 199, 91, 0.48)" in tab_button_block
+    assert "border-bottom-color: #010201" in active_tab_block
+    assert ".task-tab-button.active::after" in css
+    assert 'task-tab-button[aria-selected="true"]::after' in css
+    assert "border-radius: 0 10px 10px 10px" in panels_block
+    assert ".task-notebook .task-grid-scroll" in css
+    assert "background: transparent" in css
+
+
 def test_mcel_lab_assets_define_round_trip_contract() -> None:
     app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
     contract = (WEB_APP / "scripts" / "mcel-contract.js").read_text(encoding="utf-8")
