@@ -33,6 +33,24 @@ class ControlPanelEnergyCreditsServiceTests(unittest.TestCase):
         self.assertEqual(service["severity"], "green")
         self.assertIn("mainnet is reachable", service["summary"])
 
+    def test_energy_credits_main_card_is_red_when_reachable_network_authority_is_unsafe(self) -> None:
+        service = self._service_for(
+            {
+                **self._network("mainnet", True),
+                "state": "unsafe",
+                "severity": "red",
+                "status_text": "reachable but unsafe",
+                "authority_status": "unsafe",
+            },
+            self._network("testnet", True),
+        )
+
+        self.assertEqual(service["state"], "unsafe")
+        self.assertEqual(service["severity"], "red")
+        self.assertIn("authority is unsafe", service["summary"])
+        self.assertIn("mainnet", service["summary"])
+
+
     def test_energy_credits_main_card_is_yellow_when_only_testnet_reachable(self) -> None:
         service = self._service_for(
             self._network("mainnet", False),
@@ -156,6 +174,11 @@ class ControlPanelNetworkUrlTests(unittest.TestCase):
             self.assertEqual(network["contracts_count"], 3)
             self.assertEqual(network["contracts_manifest_error"], "")
             self.assertTrue(str(network["contracts_manifest_path"]).endswith(f"runtime/deployments/{network['network_key']}/latest.json"))
+            self.assertEqual(network["authority_status"], "unsafe")
+            self.assertEqual(network["state"], "unsafe")
+            self.assertEqual(network["severity"], "red")
+            self.assertIn("default Anvil", network["authority_warning"])
+            self.assertIn("default Anvil", network["summary"])
             self.assertEqual(
                 set(network["contracts"]),
                 {"alpha-beta-lockout", "hub_credit_bridge_escrow", "xlag-bridge-reserve"},
