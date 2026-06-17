@@ -14,7 +14,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
-DEFAULT_STATE_FILE = Path("runtime/deployments/current.json")
+DEFAULT_STATE_FILE = Path("runtime/deployments/dev/latest.json")
 DEFAULT_OUT = Path("runtime/hub/bridge_escrow_dev_manifest.json")
 DEFAULT_ENV_OUT = Path("runtime/hub/bridge_escrow_dev.env")
 
@@ -507,7 +507,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if normalize_address(contract_address) == normalize_address(DEFAULT_CONTRACT_ADDRESS):
         smoke["warnings"].append(
-            "contract_address is the placeholder value; pass --contract-address or deploy/update runtime/deployments/current.json before chain-backed deposits."
+            "contract_address is the placeholder value; pass --contract-address or deploy/update runtime/deployments/dev/latest.json before chain-backed deposits."
         )
 
     if not args.skip_rpc_check:

@@ -44,7 +44,7 @@ def test_dev_chain_bridge_adapter_records_deposit_and_payout_with_redacted_comma
     _write_wallet(requester_wallet_path, address=requester, private_key=requester_key)
     _write_wallet(controller_wallet_path, address=controller, private_key=controller_key)
 
-    deployment_path = tmp_path / "runtime" / "deployments" / "current.json"
+    deployment_path = tmp_path / "runtime" / "deployments" / "dev" / "latest.json"
     deployment_path.parent.mkdir(parents=True, exist_ok=True)
     deployment_path.write_text(
         json.dumps(

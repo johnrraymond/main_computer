@@ -179,12 +179,12 @@ def test_bridge_parser_rejects_queue_amount_above_fund_amount() -> None:
 def test_bridge_defaults_to_app_facing_deployment_manifest() -> None:
     bridge = load_bridge()
 
-    assert bridge.DEFAULT_STATE_FILE == Path("runtime/deployments/current.json")
+    assert bridge.DEFAULT_STATE_FILE == Path("runtime/deployments/dev/latest.json")
 
 
 def test_bridge_resolve_state_file_prefers_current_deployment_manifest(tmp_path: Path) -> None:
     bridge = load_bridge()
-    current = tmp_path / "runtime/deployments/current.json"
+    current = tmp_path / "runtime/deployments/dev/latest.json"
     legacy = tmp_path / "runtime/dev-chain/latest.json"
     current.parent.mkdir(parents=True)
     legacy.parent.mkdir(parents=True)

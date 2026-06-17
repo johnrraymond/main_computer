@@ -39,9 +39,9 @@ def _deployment_payload(*, rpc_url: str = "http://127.0.0.1:18546", chain_id: in
 
 
 def test_production_shaped_deployment_runtime_takes_precedence_over_legacy_dev_chain(tmp_path: Path) -> None:
-    current = tmp_path / "runtime" / "deployments" / "current.json"
-    current.parent.mkdir(parents=True)
-    current.write_text(json.dumps(_deployment_payload()), encoding="utf-8")
+    latest = tmp_path / "runtime" / "deployments" / "dev" / "latest.json"
+    latest.parent.mkdir(parents=True)
+    latest.write_text(json.dumps(_deployment_payload()), encoding="utf-8")
 
     legacy = tmp_path / "runtime" / "dev-chain" / "latest.json"
     legacy.parent.mkdir(parents=True)
@@ -61,7 +61,7 @@ def test_production_shaped_deployment_runtime_takes_precedence_over_legacy_dev_c
 
     config = apply_dev_chain_runtime_config(MainComputerConfig(workspace=tmp_path), tmp_path)
 
-    assert config.dev_chain_runtime_path == current
+    assert config.dev_chain_runtime_path == latest
     assert config.dev_chain_runtime_source == "deployment-runtime"
     assert config.dev_chain_run_id == "prod-like-dev"
     assert config.energy_chain_rpc_url == "http://127.0.0.1:18546"
@@ -99,9 +99,9 @@ def test_legacy_dev_chain_runtime_still_works_when_public_deployment_is_absent(t
 
 
 def test_invalid_public_deployment_runtime_does_not_fall_through_to_legacy(tmp_path: Path) -> None:
-    current = tmp_path / "runtime" / "deployments" / "current.json"
-    current.parent.mkdir(parents=True)
-    current.write_text("[]", encoding="utf-8")
+    latest = tmp_path / "runtime" / "deployments" / "dev" / "latest.json"
+    latest.parent.mkdir(parents=True)
+    latest.write_text("[]", encoding="utf-8")
 
     legacy = tmp_path / "runtime" / "dev-chain" / "latest.json"
     legacy.parent.mkdir(parents=True)
@@ -109,7 +109,7 @@ def test_invalid_public_deployment_runtime_does_not_fall_through_to_legacy(tmp_p
 
     config = apply_dev_chain_runtime_config(MainComputerConfig(workspace=tmp_path), tmp_path)
 
-    assert config.dev_chain_runtime_path == current
+    assert config.dev_chain_runtime_path == latest
     assert config.dev_chain_runtime_source == "invalid"
-    assert "deployment runtime current.json" in str(config.dev_chain_runtime_error)
+    assert "deployment runtime dev latest.json" in str(config.dev_chain_runtime_error)
     assert config.energy_chain_rpc_url != "http://127.0.0.1:18599"

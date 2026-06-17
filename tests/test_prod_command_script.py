@@ -86,7 +86,7 @@ def test_deploy_local_refuses_when_prod_lock_exists(tmp_path: Path, monkeypatch)
     code = prod.main(["deploy-local", "--dry-run", "--run-id", "unit"])
 
     assert code == 1
-    assert not (tmp_path / "runtime" / "deployments" / "current.json").exists()
+    assert not (tmp_path / "runtime" / "deployments" / "dev" / "latest.json").exists()
 
 
 def test_deploy_local_forwards_prod_local_defaults_to_reset(tmp_path: Path, monkeypatch) -> None:
@@ -120,7 +120,7 @@ def test_deploy_local_forwards_prod_local_defaults_to_reset(tmp_path: Path, monk
 def test_lock_writes_prod_lock_from_current_deployment(tmp_path: Path, monkeypatch) -> None:
     prod = load_prod_command()
     monkeypatch.setattr(prod, "repo_root", lambda: tmp_path)
-    deployment_path = tmp_path / "runtime" / "deployments" / "current.json"
+    deployment_path = tmp_path / "runtime" / "deployments" / "dev" / "latest.json"
     deployment_path.parent.mkdir(parents=True)
     deployment_path.write_text(json.dumps(valid_deployment()) + "\n", encoding="utf-8")
 
@@ -133,7 +133,7 @@ def test_lock_writes_prod_lock_from_current_deployment(tmp_path: Path, monkeypat
     assert payload["schema"] == "main-computer.prod-lock.v1"
     assert payload["deployment"] == "prod-local"
     assert payload["protected"] is True
-    assert payload["deployment_manifest"] == "runtime/deployments/current.json"
+    assert payload["deployment_manifest"] == "runtime/deployments/dev/latest.json"
     assert payload["chain_id"] == 42424242
     assert payload["contracts"]["XLagBridgeReserve"] == "0x1111111111111111111111111111111111111111"
 
@@ -141,7 +141,7 @@ def test_lock_writes_prod_lock_from_current_deployment(tmp_path: Path, monkeypat
 def test_lock_refuses_to_overwrite_existing_lock(tmp_path: Path, monkeypatch) -> None:
     prod = load_prod_command()
     monkeypatch.setattr(prod, "repo_root", lambda: tmp_path)
-    deployment_path = tmp_path / "runtime" / "deployments" / "current.json"
+    deployment_path = tmp_path / "runtime" / "deployments" / "dev" / "latest.json"
     deployment_path.parent.mkdir(parents=True)
     deployment_path.write_text(json.dumps(valid_deployment()) + "\n", encoding="utf-8")
     lock_path = tmp_path / ".prod.lock"
@@ -156,7 +156,7 @@ def test_lock_refuses_to_overwrite_existing_lock(tmp_path: Path, monkeypatch) ->
 def test_lock_refuses_dry_run_deployment(tmp_path: Path, monkeypatch) -> None:
     prod = load_prod_command()
     monkeypatch.setattr(prod, "repo_root", lambda: tmp_path)
-    deployment_path = tmp_path / "runtime" / "deployments" / "current.json"
+    deployment_path = tmp_path / "runtime" / "deployments" / "dev" / "latest.json"
     deployment_path.parent.mkdir(parents=True)
     deployment_path.write_text(json.dumps(valid_deployment(dry_run=True)) + "\n", encoding="utf-8")
 
@@ -169,7 +169,7 @@ def test_lock_refuses_dry_run_deployment(tmp_path: Path, monkeypatch) -> None:
 def test_status_check_runs_read_only_rpc_and_code_checks(tmp_path: Path, monkeypatch, capsys) -> None:
     prod = load_prod_command()
     monkeypatch.setattr(prod, "repo_root", lambda: tmp_path)
-    deployment_path = tmp_path / "runtime" / "deployments" / "current.json"
+    deployment_path = tmp_path / "runtime" / "deployments" / "dev" / "latest.json"
     deployment_path.parent.mkdir(parents=True)
     deployment_path.write_text(json.dumps(valid_deployment()) + "\n", encoding="utf-8")
 
@@ -199,7 +199,7 @@ def test_status_check_runs_read_only_rpc_and_code_checks(tmp_path: Path, monkeyp
 def test_status_check_reports_unreachable_rpc_cleanly(tmp_path: Path, monkeypatch, capsys) -> None:
     prod = load_prod_command()
     monkeypatch.setattr(prod, "repo_root", lambda: tmp_path)
-    deployment_path = tmp_path / "runtime" / "deployments" / "current.json"
+    deployment_path = tmp_path / "runtime" / "deployments" / "dev" / "latest.json"
     deployment_path.parent.mkdir(parents=True)
     deployment_path.write_text(json.dumps(valid_deployment()) + "\n", encoding="utf-8")
 
@@ -213,13 +213,13 @@ def test_status_check_reports_unreachable_rpc_cleanly(tmp_path: Path, monkeypatc
     assert code == 1
     out = capsys.readouterr().out
     assert "FAIL: rpc: connection refused" in out
-    assert "FAIL: current deployment did not pass read-only checks." in out
+    assert "FAIL: selected deployment did not pass read-only checks." in out
 
 
 def test_lock_dry_run_prints_payload_without_creating_lock(tmp_path: Path, monkeypatch, capsys) -> None:
     prod = load_prod_command()
     monkeypatch.setattr(prod, "repo_root", lambda: tmp_path)
-    deployment_path = tmp_path / "runtime" / "deployments" / "current.json"
+    deployment_path = tmp_path / "runtime" / "deployments" / "dev" / "latest.json"
     deployment_path.parent.mkdir(parents=True)
     deployment_path.write_text(json.dumps(valid_deployment()) + "\n", encoding="utf-8")
 
@@ -238,7 +238,7 @@ def test_lock_dry_run_refuses_bad_manifest_without_creating_lock(tmp_path: Path,
     monkeypatch.setattr(prod, "repo_root", lambda: tmp_path)
     deployment = valid_deployment()
     deployment["contracts"].pop("xlag-bridge-reserve")
-    deployment_path = tmp_path / "runtime" / "deployments" / "current.json"
+    deployment_path = tmp_path / "runtime" / "deployments" / "dev" / "latest.json"
     deployment_path.parent.mkdir(parents=True)
     deployment_path.write_text(json.dumps(deployment) + "\n", encoding="utf-8")
 
@@ -251,7 +251,7 @@ def test_lock_dry_run_refuses_bad_manifest_without_creating_lock(tmp_path: Path,
 def test_lock_refuses_dev_environment(tmp_path: Path, monkeypatch) -> None:
     prod = load_prod_command()
     monkeypatch.setattr(prod, "repo_root", lambda: tmp_path)
-    deployment_path = tmp_path / "runtime" / "deployments" / "current.json"
+    deployment_path = tmp_path / "runtime" / "deployments" / "dev" / "latest.json"
     deployment_path.parent.mkdir(parents=True)
     deployment_path.write_text(json.dumps(valid_deployment(environment="dev")) + "\n", encoding="utf-8")
 
@@ -266,7 +266,7 @@ def test_lock_refuses_manifest_with_missing_chain_id(tmp_path: Path, monkeypatch
     monkeypatch.setattr(prod, "repo_root", lambda: tmp_path)
     deployment = valid_deployment()
     deployment["chain"].pop("chain_id")
-    deployment_path = tmp_path / "runtime" / "deployments" / "current.json"
+    deployment_path = tmp_path / "runtime" / "deployments" / "dev" / "latest.json"
     deployment_path.parent.mkdir(parents=True)
     deployment_path.write_text(json.dumps(deployment) + "\n", encoding="utf-8")
 
@@ -290,7 +290,7 @@ def test_lock_refuses_ambiguous_contract_addresses(tmp_path: Path, monkeypatch) 
             "address": "0x2222222222222222222222222222222222222222",
         },
     }
-    deployment_path = tmp_path / "runtime" / "deployments" / "current.json"
+    deployment_path = tmp_path / "runtime" / "deployments" / "dev" / "latest.json"
     deployment_path.parent.mkdir(parents=True)
     deployment_path.write_text(json.dumps(deployment) + "\n", encoding="utf-8")
 
@@ -303,7 +303,7 @@ def test_lock_refuses_ambiguous_contract_addresses(tmp_path: Path, monkeypatch) 
 def test_status_warns_when_lock_and_current_deployment_drift(tmp_path: Path, monkeypatch, capsys) -> None:
     prod = load_prod_command()
     monkeypatch.setattr(prod, "repo_root", lambda: tmp_path)
-    deployment_path = tmp_path / "runtime" / "deployments" / "current.json"
+    deployment_path = tmp_path / "runtime" / "deployments" / "dev" / "latest.json"
     deployment_path.parent.mkdir(parents=True)
     deployment = valid_deployment()
     deployment_path.write_text(json.dumps(deployment) + "\n", encoding="utf-8")

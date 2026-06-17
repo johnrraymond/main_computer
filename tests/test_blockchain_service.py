@@ -56,15 +56,15 @@ def write_executor_docker_ready(repo: Path) -> Path:
     return state_path
 
 
-def write_deployment_current(
+def write_dev_deployment_latest(
     repo: Path,
     *,
     rpc_url: str = DEFAULT_RPC_URL,
     chain_id: int = DEFAULT_CHAIN_ID,
     bridge_address: str = BRIDGE_ADDRESS,
 ) -> tuple[Path, str]:
-    current_path = repo / "runtime" / "deployments" / "current.json"
-    current_path.parent.mkdir(parents=True)
+    latest_path = repo / "runtime" / "deployments" / "dev" / "latest.json"
+    latest_path.parent.mkdir(parents=True)
     payload = {
         "schema": "main-computer.deployment.v1",
         "environment": "dev",
@@ -96,8 +96,8 @@ def write_deployment_current(
         },
     }
     text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-    current_path.write_text(text, encoding="utf-8")
-    return current_path, text
+    latest_path.write_text(text, encoding="utf-8")
+    return latest_path, text
 
 
 def ok_rpc_probe(rpc_url: str, expected_chain_id: int) -> dict[str, object]:
@@ -142,7 +142,7 @@ def missing_code_probe(rpc_url: str, address: str) -> dict[str, object]:
     }
 
 
-def test_boot_requires_deployment_current_json_when_env_is_missing(tmp_path: Path) -> None:
+def test_boot_requires_dev_deployment_latest_json_when_env_is_missing(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
     missing_env = tmp_path / "home" / ".env.blockchain"
     runner = FakeBlockchainRunner()
@@ -159,22 +159,22 @@ def test_boot_requires_deployment_current_json_when_env_is_missing(tmp_path: Pat
     state = service.boot()
 
     assert state["ok"] is False
-    assert state["mode"] == "deployment-current"
-    assert state["config"]["state"] == "missing-deployment-current"
+    assert state["mode"] == "deployment-latest"
+    assert state["config"]["state"] == "missing-deployment-latest"
     assert "tools\\dev-chain-reset.py" in state["config"]["reset_command"]
     assert state["docker"]["state"] == "self-managed-retry"
     assert state["compose"]["state"] == "removed"
     assert state["state"] == "booting"
     assert state["dev_chain"]["state"] == "reset-retry-pending"
-    assert state["dev_chain"]["trigger"] == "missing-deployment-current"
+    assert state["dev_chain"]["trigger"] == "missing-deployment-latest"
     assert state["rpc"]["state"] == "blocked"
     assert len(runner.calls) == 1
     assert load_blockchain_service_state(repo)["ok"] is False
 
 
-def test_boot_uses_deployment_current_json_and_does_not_edit_it(tmp_path: Path) -> None:
+def test_boot_uses_dev_deployment_latest_json_and_does_not_edit_it(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
-    current_path, original_text = write_deployment_current(repo)
+    latest_path, original_text = write_dev_deployment_latest(repo)
     runner = FakeBlockchainRunner()
     service = BlockchainService(
         root=repo,
@@ -189,11 +189,11 @@ def test_boot_uses_deployment_current_json_and_does_not_edit_it(tmp_path: Path) 
     state = service.boot()
 
     assert state["ok"] is True
-    assert state["mode"] == "deployment-current"
-    assert state["config"]["deployment_path"] == str(current_path)
+    assert state["mode"] == "deployment-latest"
+    assert state["config"]["deployment_path"] == str(latest_path)
     assert state["config"]["rpc_url"] == DEFAULT_RPC_URL
     assert state["config"]["chain_id"] == DEFAULT_CHAIN_ID
-    assert state["runtime"]["source"] == "runtime-deployments-current"
+    assert state["runtime"]["source"] == "runtime-deployments-dev-latest"
     assert state["runtime"]["deployment_source"] == "dev-chain-reset"
     assert state["runtime"]["offices"][0]["office"] == "O0"
     assert state["runtime"]["offices"][0]["address"] == "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
@@ -204,13 +204,13 @@ def test_boot_uses_deployment_current_json_and_does_not_edit_it(tmp_path: Path) 
     assert state["compose"]["state"] == "removed"
     assert state["dev_chain"]["state"] == "not-required"
     assert runner.calls == []
-    assert current_path.read_text(encoding="utf-8") == original_text
+    assert latest_path.read_text(encoding="utf-8") == original_text
     assert load_blockchain_service_state(repo)["ok"] is True
 
 
 def test_boot_fails_loudly_when_deployment_contract_code_is_missing(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
-    write_deployment_current(repo)
+    write_dev_deployment_latest(repo)
     service = BlockchainService(
         root=repo,
         blockchain_env_path=tmp_path / "missing.env",
@@ -257,7 +257,7 @@ def test_boot_uses_external_blockchain_env_without_docker_or_contract_code_check
     assert state["compose"]["state"] == "removed"
     assert state["contracts"]["state"] == "not-required"
     assert runner.calls == []
-    assert not (repo / "runtime" / "deployments" / "current.json").exists()
+    assert not (repo / "runtime" / "deployments" / "dev" / "latest.json").exists()
     assert state["runtime"]["source"] == "blockchain-service-env"
     assert state["runtime"]["environment"] == "external"
     assert state["runtime"]["rpc_url"] == "http://127.0.0.1:9999"
@@ -294,7 +294,7 @@ def test_external_blockchain_env_can_publish_dev_office_addresses(tmp_path: Path
 
     assert state["ok"] is True
     assert state["contracts"]["state"] == "not-required"
-    assert not (repo / "runtime" / "deployments" / "current.json").exists()
+    assert not (repo / "runtime" / "deployments" / "dev" / "latest.json").exists()
     assert state["runtime"]["environment"] == "dev"
     assert state["runtime"]["offices"] == [
         {
@@ -305,9 +305,9 @@ def test_external_blockchain_env_can_publish_dev_office_addresses(tmp_path: Path
     ]
 
 
-def test_watch_retries_deployment_current_rpc_until_ready(tmp_path: Path) -> None:
+def test_watch_retries_deployment_latest_rpc_until_ready(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
-    write_deployment_current(repo)
+    write_dev_deployment_latest(repo)
     attempts = {"count": 0}
     sleep_calls: list[float] = []
 
@@ -337,9 +337,9 @@ def test_watch_retries_deployment_current_rpc_until_ready(tmp_path: Path) -> Non
     assert [value for value in sleep_calls if value == 30] == [30, 30]
 
 
-def test_deployment_current_rpc_down_retries_reset_without_executor_state(tmp_path: Path) -> None:
+def test_deployment_latest_rpc_down_retries_reset_without_executor_state(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
-    write_deployment_current(repo)
+    write_dev_deployment_latest(repo)
     runner = FakeBlockchainRunner()
     service = BlockchainService(
         root=repo,
@@ -361,9 +361,9 @@ def test_deployment_current_rpc_down_retries_reset_without_executor_state(tmp_pa
     assert len(runner.calls) == 1
 
 
-def test_deployment_current_rpc_down_resets_after_executor_docker_ready(tmp_path: Path) -> None:
+def test_deployment_latest_rpc_down_resets_after_executor_docker_ready(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
-    write_deployment_current(repo)
+    write_dev_deployment_latest(repo)
     attempts = {"count": 0}
 
     def rpc_down_then_ready(rpc_url: str, expected_chain_id: int) -> dict[str, object]:
@@ -405,7 +405,7 @@ def test_deployment_current_rpc_down_resets_after_executor_docker_ready(tmp_path
 
 def test_watch_does_not_reset_again_after_boot_is_proven(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
-    write_deployment_current(repo)
+    write_dev_deployment_latest(repo)
     calls = {"rpc": 0}
     now = {"value": 0.0}
 
@@ -462,6 +462,6 @@ def test_legacy_compose_environment_does_not_start_a_fallback_chain(monkeypatch,
     state = service.boot()
 
     assert state["ok"] is False
-    assert state["mode"] == "deployment-current"
-    assert state["config"]["state"] == "missing-deployment-current"
+    assert state["mode"] == "deployment-latest"
+    assert state["config"]["state"] == "missing-deployment-latest"
     assert len(runner.calls) == 1
