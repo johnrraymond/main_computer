@@ -14,6 +14,13 @@ from main_computer.ai_control import ai_control_calls_snapshot, ai_control_handl
 from main_computer.dev_faucet import DevFaucetError, xlag_dev_faucet, xlag_dev_faucet_status
 from main_computer.executor_service import load_executor_service_state
 from main_computer.hub_networks import HubNetworkConfigError, load_hub_network_registry
+from main_computer.network_safety import (
+    ANVIL_DEFAULT_OFFICES,
+    authority_status as network_authority_status,
+    manifest_contract_address_map,
+    manifest_contract_entries,
+    manifest_office_entries,
+)
 from main_computer.service_control import control_status, enqueue_supervisor_action
 from main_computer.service_supervisor import load_service_supervisor_state
 
@@ -836,12 +843,7 @@ def _handle_control_panel_level4_diagnostic(self) -> None:
 
 
 _CONTROL_PANEL_NETWORK_ORDER = ("mainnet", "testnet", "test", "dev")
-_CONTROL_PANEL_ANVIL_DEFAULT_OFFICES = {
-    "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
-    "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
-    "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
-    "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
-}
+_CONTROL_PANEL_ANVIL_DEFAULT_OFFICES = ANVIL_DEFAULT_OFFICES
 
 
 def _control_panel_endpoint_parts(raw_url: str | None) -> tuple[str, int | None]:
@@ -975,105 +977,21 @@ def _control_panel_deployment_manifest_path(profile: object, runtime_root: Path 
 
 
 def _control_panel_manifest_contract_entries(payload: object) -> dict[str, dict[str, object]]:
-    if not isinstance(payload, dict):
-        return {}
-
-    merged: dict[str, dict[str, object]] = {}
-    for section_name in ("deployments", "contracts"):
-        section = payload.get(section_name)
-        if not isinstance(section, dict):
-            continue
-        for name, entry in section.items():
-            clean_name = str(name).strip()
-            if not clean_name or not isinstance(entry, dict):
-                continue
-            address = str(entry.get("address") or "").strip()
-            if not address:
-                continue
-            merged[clean_name] = dict(entry)
-    return merged
+    return manifest_contract_entries(payload, require_address=True)
 
 
 def _control_panel_manifest_contract_address_map(entries: dict[str, dict[str, object]]) -> dict[str, str]:
-    addresses: dict[str, str] = {}
-    for name, entry in entries.items():
-        address = str(entry.get("address") or "").strip()
-        if address:
-            addresses[name] = address
-    return addresses
+    return manifest_contract_address_map(entries)
 
 
 def _control_panel_manifest_office_entries(payload: object) -> list[dict[str, object]]:
-    if not isinstance(payload, dict):
-        return []
-    raw_offices = payload.get("offices")
-    if not isinstance(raw_offices, list):
-        return []
-
-    offices: list[dict[str, object]] = []
-    for raw_office in raw_offices:
-        if not isinstance(raw_office, dict):
-            continue
-        address = str(raw_office.get("address") or "").strip()
-        if not address:
-            continue
-        normalized = address.lower()
-        offices.append(
-            {
-                "office": str(raw_office.get("office") or ""),
-                "title": str(raw_office.get("title") or raw_office.get("office") or address),
-                "address": address,
-                "default_anvil": normalized in _CONTROL_PANEL_ANVIL_DEFAULT_OFFICES,
-            }
-        )
-    return offices
+    return manifest_office_entries(payload)
 
 
 def _control_panel_authority_status(profile: object, payload: object) -> dict[str, object]:
-    network_key = str(getattr(profile, "network_key", "") or "").strip()
-    kind = str(getattr(profile, "kind", "") or "").strip().lower()
-    offices = _control_panel_manifest_office_entries(payload)
-    default_offices = [
-        str(office.get("title") or office.get("office") or office.get("address") or "office")
-        for office in offices
-        if office.get("default_anvil")
-    ]
-
-    if not offices:
-        return {
-            "authority_status": "unknown",
-            "authority_warning": "deployment manifest does not include office authority",
-            "authority_default_offices": [],
-            "offices": offices,
-        }
-
-    if default_offices and kind in {"mainnet", "testnet"}:
-        return {
-            "authority_status": "unsafe",
-            "authority_warning": (
-                f"{network_key} authority is unsafe: "
-                f"{', '.join(default_offices)} match default Anvil office identities."
-            ),
-            "authority_default_offices": default_offices,
-            "offices": offices,
-        }
-
-    if default_offices:
-        return {
-            "authority_status": "default-dev-authority",
-            "authority_warning": (
-                f"{network_key} is using default Anvil office identities for local validation."
-            ),
-            "authority_default_offices": default_offices,
-            "offices": offices,
-        }
-
-    return {
-        "authority_status": "rotated",
-        "authority_warning": "",
-        "authority_default_offices": [],
-        "offices": offices,
-    }
+    authority = dict(network_authority_status(profile, payload))
+    authority.pop("authority_unsafe", None)
+    return authority
 
 
 def _control_panel_deployment_contracts(profile: object, runtime_root: Path | None = None) -> dict[str, object]:

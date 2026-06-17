@@ -363,24 +363,35 @@ def test_mcel_task_manager_notebook_uses_canonical_tabbed_workspace() -> None:
     assert "tabbed-data-feed" not in adapter
 
 
-def test_task_manager_notebook_tabs_have_visual_tab_affordance() -> None:
+def test_task_manager_notebook_css_uses_connected_tabs_not_action_buttons() -> None:
     css = (WEB_APP / "styles" / "task-manager.css").read_text(encoding="utf-8")
 
-    tab_button_block = css.split(".task-tab-button {", 1)[1].split("}", 1)[0]
-    active_tab_block = css.split('.task-tab-button[aria-selected="true"] {', 1)[1].split("}", 1)[0]
-    panels_block = css.split(".task-tab-panels {", 1)[1].split("}", 1)[0]
+    assert "\n.task-tab-button {\n" not in css
 
-    assert ".task-pane.task-notebook" in css
-    assert "grid-template-rows: auto minmax(0, 1fr)" in css
-    assert "border-radius: 999px" not in tab_button_block
-    assert "border-radius: 10px 10px 0 0" in tab_button_block
-    assert "border-bottom-color: rgba(246, 199, 91, 0.48)" in tab_button_block
-    assert "border-bottom-color: #010201" in active_tab_block
-    assert ".task-tab-button.active::after" in css
-    assert 'task-tab-button[aria-selected="true"]::after' in css
-    assert "border-radius: 0 10px 10px 10px" in panels_block
-    assert ".task-notebook .task-grid-scroll" in css
-    assert "background: transparent" in css
+    notebook_block = css.split(".task-pane.task-notebook {", 1)[1].split("\n}", 1)[0]
+    tab_strip_block = css.split(".task-notebook-tabs {", 1)[1].split("\n}", 1)[0]
+    tab_button_block = css.split(".task-notebook .task-tab-button {", 1)[1].split("\n}", 1)[0]
+    active_block = css.split(
+        '.task-notebook .task-tab-button.active,\n.task-notebook .task-tab-button[aria-selected="true"] {',
+        1,
+    )[1].split("\n}", 1)[0]
+    grid_scroll_block = css.split(".task-notebook .task-grid-scroll {", 1)[1].split("\n}", 1)[0]
+
+    assert "padding: 0;" in notebook_block
+    assert "gap: 0;" in notebook_block
+    assert "flex-wrap: nowrap;" in tab_strip_block
+    assert "border-bottom: 1px solid rgba(246, 199, 91, 0.42);" in tab_strip_block
+    assert "border-radius: 10px 10px 0 0;" in tab_button_block
+    assert "border-radius: 999px;" not in tab_button_block
+    assert "margin: 0 0 -1px;" in tab_button_block
+    assert "background: #0b0d09;" in tab_button_block
+    assert "color: var(--muted);" in tab_button_block
+    assert "background: var(--gold);" not in active_block
+    assert "background: #010201;" in active_block
+    assert "border-bottom-color: #010201;" in active_block
+    assert "color: var(--gold);" in active_block
+    assert "border: 0;" in grid_scroll_block
+    assert "border-radius: 0;" in grid_scroll_block
 
 
 def test_mcel_lab_assets_define_round_trip_contract() -> None:

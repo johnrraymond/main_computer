@@ -9,21 +9,20 @@ from urllib.request import Request, urlopen
 
 from main_computer.viewport_state import *  # noqa: F401,F403
 from main_computer.hub_networks import HubNetworkConfigError, load_hub_network_registry
+from main_computer.network_safety import (
+    ENERGY_EXPECTED_CONTRACTS,
+    authority_status as network_authority_status,
+    classify_network_safety,
+    hex_to_int,
+    manifest_contract_entries,
+    manifest_identity_warnings,
+    manifest_metadata,
+)
 
 class ViewportEnergyRoutesMixin:
 
     _ENERGY_NETWORK_ORDER = ("mainnet", "testnet", "test", "dev")
-    _ENERGY_EXPECTED_CONTRACTS = (
-        ("alpha-beta-lockout", "AlphaBetaLockout"),
-        ("xlag-bridge-reserve", "XLagBridgeReserve"),
-        ("hub_credit_bridge_escrow", "HubCreditBridgeEscrow"),
-    )
-    _ANVIL_DEFAULT_OFFICES = {
-        "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
-        "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
-        "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
-        "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
-    }
+    _ENERGY_EXPECTED_CONTRACTS = ENERGY_EXPECTED_CONTRACTS
 
     def _energy_bool_query(self, name: str, *, default: bool = True) -> bool:
         query = parse_qs(urlsplit(self.path).query)
@@ -33,12 +32,7 @@ class ViewportEnergyRoutesMixin:
         return str(raw).strip().lower() not in {"0", "false", "no", "off"}
 
     def _energy_hex_to_int(self, value: Any) -> int | None:
-        if value is None:
-            return None
-        try:
-            return int(str(value), 16 if str(value).strip().lower().startswith("0x") else 10)
-        except (TypeError, ValueError):
-            return None
+        return hex_to_int(value)
 
     def _energy_rpc_call(self, rpc_url: str, method: str, params: list[Any] | None = None, *, timeout_s: float = 0.75) -> Any:
         payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}).encode("utf-8")
@@ -80,18 +74,7 @@ class ViewportEnergyRoutesMixin:
         return path, manifest, warnings
 
     def _energy_contract_map(self, manifest: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
-        if not isinstance(manifest, dict):
-            return {}
-        raw = manifest.get("contracts")
-        if not isinstance(raw, dict):
-            raw = manifest.get("deployments")
-        if not isinstance(raw, dict):
-            return {}
-        contracts: dict[str, dict[str, Any]] = {}
-        for key, value in raw.items():
-            if isinstance(value, dict):
-                contracts[str(key)] = value
-        return contracts
+        return manifest_contract_entries(manifest)
 
     def _energy_contract_inventory(
         self,
@@ -141,60 +124,32 @@ class ViewportEnergyRoutesMixin:
             )
         return inventory, warnings
 
-    def _energy_authority_summary(self, manifest: dict[str, Any] | None, *, network_key: str, kind: str) -> tuple[list[dict[str, Any]], list[str], bool]:
-        raw_offices = manifest.get("offices") if isinstance(manifest, dict) else None
-        offices: list[dict[str, Any]] = []
-        warnings: list[str] = []
-        default_offices: list[str] = []
-        if isinstance(raw_offices, list):
-            for office in raw_offices:
-                if not isinstance(office, dict):
-                    continue
-                address = str(office.get("address") or "").strip()
-                normalized = address.lower()
-                is_default = normalized in self._ANVIL_DEFAULT_OFFICES
-                if is_default:
-                    default_offices.append(str(office.get("title") or office.get("office") or address))
-                offices.append(
-                    {
-                        "office": str(office.get("office") or ""),
-                        "title": str(office.get("title") or ""),
-                        "address": address,
-                        "default_anvil": is_default,
-                    }
-                )
-        elif manifest is not None:
-            warnings.append("Deployment manifest does not include office authority.")
-        if default_offices and str(kind).lower() in {"mainnet", "testnet"}:
-            warnings.append(
-                f"{network_key} authority is unsafe: {', '.join(default_offices)} match default Anvil office identities."
-            )
-        elif default_offices and str(kind).lower() == "test":
-            warnings.append(
-                f"{network_key} is using default Anvil office identities for local validation."
-            )
-        return offices, warnings, bool(default_offices and str(kind).lower() in {"mainnet", "testnet"})
+    def _energy_authority_summary(self, profile: Any, manifest: dict[str, Any] | None) -> tuple[list[dict[str, Any]], list[str], bool]:
+        authority = network_authority_status(profile, manifest)
+        warnings = []
+        if authority.get("authority_warning"):
+            warnings.append(str(authority["authority_warning"]))
+        return (
+            list(authority.get("offices") or []),
+            warnings,
+            bool(authority.get("authority_unsafe")),
+        )
 
     def _energy_network_status(self, profile: Any, *, live: bool) -> dict[str, Any]:
         manifest_path, manifest, warnings = self._energy_load_manifest_status(profile)
         manifest_chain = manifest.get("chain") if isinstance(manifest, dict) else {}
         if not isinstance(manifest_chain, dict):
             manifest_chain = {}
-        manifest_environment = str(manifest.get("environment") or "") if isinstance(manifest, dict) else ""
-        manifest_chain_id = self._energy_hex_to_int(manifest_chain.get("chain_id")) if manifest_chain else None
-        run_id = str(manifest.get("run_id") or "") if isinstance(manifest, dict) else ""
-        created_at = str(manifest.get("created_at") or "") if isinstance(manifest, dict) else ""
-        source = manifest.get("source") if isinstance(manifest, dict) else {}
-        if not isinstance(source, dict):
-            source = {}
-        source_kind = str(source.get("kind") or source.get("source_kind") or "")
+        metadata = manifest_metadata(manifest)
+        manifest_environment = str(metadata["manifest_environment"])
+        manifest_chain_id = metadata["manifest_chain_id"]
+        run_id = str(metadata["run_id"])
+        created_at = str(metadata["created_at"])
+        source_kind = str(metadata["source_kind"])
         rpc_url = str(profile.chain_rpc_url or manifest_chain.get("host_rpc_url") or manifest_chain.get("rpc_url") or "").strip()
         expected_chain_id = profile.chain_id
 
-        if manifest is not None and manifest_environment and manifest_environment != profile.network_key:
-            warnings.append(f"Manifest environment {manifest_environment!r} does not match registry network {profile.network_key!r}.")
-        if expected_chain_id is not None and manifest_chain_id is not None and int(expected_chain_id) != int(manifest_chain_id):
-            warnings.append(f"Manifest chain id {manifest_chain_id} does not match expected chain id {expected_chain_id}.")
+        warnings.extend(manifest_identity_warnings(profile, manifest))
 
         live_chain_id = None
         block_number = None
@@ -220,11 +175,7 @@ class ViewportEnergyRoutesMixin:
             rpc_reachable=rpc_reachable,
         )
         warnings.extend(contract_warnings)
-        offices, authority_warnings, unsafe_authority = self._energy_authority_summary(
-            manifest,
-            network_key=profile.network_key,
-            kind=profile.kind,
-        )
+        offices, authority_warnings, unsafe_authority = self._energy_authority_summary(profile, manifest)
         warnings.extend(authority_warnings)
 
         missing_manifest = manifest is None
@@ -234,12 +185,24 @@ class ViewportEnergyRoutesMixin:
             and (not contract["configured"] or contract.get("has_code") is False)
             for contract in contracts
         )
-        if unsafe_authority or chain_mismatch:
-            overall = "unsafe"
-        elif missing_manifest or (live and not rpc_reachable) or contract_missing or warnings:
-            overall = "degraded"
-        else:
-            overall = "healthy"
+        unsafe_reasons: list[str] = []
+        if unsafe_authority:
+            unsafe_reasons.append("unsafe authority")
+        if chain_mismatch:
+            unsafe_reasons.append("chain mismatch")
+        overall = classify_network_safety(
+            unsafe=unsafe_reasons,
+            degraded=[
+                reason
+                for reason in (
+                    "missing manifest" if missing_manifest else "",
+                    "rpc unreachable" if live and not rpc_reachable else "",
+                    "contract missing" if contract_missing else "",
+                    "warnings present" if warnings else "",
+                )
+                if reason
+            ],
+        )
 
         return {
             "network": profile.network_key,
