@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import tempfile
 import threading
@@ -70,6 +71,44 @@ class HubCreditLedgerTests(unittest.TestCase):
             self.assertEqual(ledger.get_account("buyer").available_credit_wei, 25000000000000000000)
             self.assertEqual(ledger.status()["deposit_count"], 1)
             self.assertEqual(len(ledger.list_transactions(account_id="buyer")), 1)
+
+    def test_concurrent_same_account_holds_are_atomic_and_do_not_overspend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = HubCreditLedger(Path(tmp))
+            ledger.issue(account_id="buyer", credits=10, memo="fund buyer")
+
+            def try_hold(index: int) -> tuple[str, dict[str, object] | str]:
+                try:
+                    result = ledger.create_hold(
+                        account_id="buyer",
+                        request_id=f"req-concurrent-{index}",
+                        credits=1,
+                        memo="same wallet concurrent request hold",
+                    )
+                    return "ok", result
+                except ValueError as exc:
+                    return "insufficient", str(exc)
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+                results = list(pool.map(try_hold, range(25)))
+
+            created = [payload for status, payload in results if status == "ok"]
+            rejected = [payload for status, payload in results if status == "insufficient"]
+
+            self.assertEqual(len(created), 10)
+            self.assertEqual(len(rejected), 15)
+            self.assertTrue(all("Insufficient Compute Credits" in str(item) for item in rejected))
+
+            account = ledger.get_account("buyer")
+            self.assertEqual(account.available_credit_wei, 0)
+            self.assertEqual(account.held_credit_wei, 10 * 10**18)
+            self.assertEqual(account.spent_credit_wei, 0)
+
+            status = ledger.status()
+            self.assertEqual(status["totals"]["available_credit_wei"], "0")
+            self.assertEqual(status["totals"]["held_credit_wei"], str(10 * 10**18))
+            self.assertEqual(status["active_hold_count"], 10)
+
 
     def test_credit_wei_hold_charge_and_release_preserve_fractional_amounts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

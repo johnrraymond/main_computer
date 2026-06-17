@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 import time
 from dataclasses import asdict
@@ -21,7 +22,12 @@ from main_computer.hub_plex_models import (
     sanitize_hub_response_payload,
 )
 from main_computer.hub_security import HUB_SECURITY_PROFILE, hub_transport_is_encrypted_or_loopback
-from main_computer.hub_credit_models import normalize_address
+from main_computer.hub_credit_models import (
+    WorkerQualityReport,
+    make_report_token,
+    normalize_address,
+    token_digest,
+)
 from main_computer.models import ChatResponse
 
 
@@ -305,6 +311,49 @@ def _worker_wallet_address_from_payload(item: Any) -> str:
     return normalize_address(str(wallet or ""))
 
 
+REQUESTER_FEEDBACK_VERDICTS = {"accepted", "rejected", "needs_revision"}
+REQUESTER_FEEDBACK_TAGS = {
+    "correct",
+    "useful",
+    "low_quality",
+    "wrong_format",
+    "incomplete",
+    "unsafe",
+    "timeout_but_recovered",
+    "fail_signal",
+    "random_noise",
+}
+
+
+def _clean_feedback_tag(value: Any) -> str:
+    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(value or "").strip().lower())
+
+
+def _feedback_public_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    clean = dict(payload)
+    clean.pop("worker_node_id", None)
+    clean.pop("worker_instance_id", None)
+    clean.pop("worker_wallet_address", None)
+    clean.pop("report_token_hash", None)
+    clean["worker_identity_private"] = True
+    clean["money_movement"] = False
+    return clean
+
+
+def _feedback_identity(report: dict[str, Any]) -> dict[str, str]:
+    requester = str(
+        report.get("requester_wallet_address")
+        or report.get("account_id")
+        or report.get("requester_account_id")
+        or ""
+    ).strip()
+    return {
+        "request_id": str(report.get("request_id", "") or "").strip(),
+        "account_id": str(report.get("account_id", "") or report.get("requester_account_id", "") or "").strip(),
+        "requester_key": requester,
+    }
+
+
 def _short_response_summary(response: ChatResponse) -> str:
     text = " ".join(str(response.content or "").split())
     if len(text) > 240:
@@ -540,6 +589,150 @@ class QuoteStateStore:
             encoding="utf-8",
         )
 
+
+class FeedbackStateStore:
+    """JSON-backed requester feedback/complaint records.
+
+    Current state is one feedback record per request/account pair.  Resubmitting
+    the same body is idempotent; changing the body replaces the current record
+    and appends the prior version to audit history.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.path = root / "hub_requester_feedback.json"
+        self._lock = threading.Lock()
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def submit(self, report: dict[str, Any]) -> dict[str, Any]:
+        clean = self._normalize_report(report)
+        key = str(clean["feedback_key"])
+        with self._lock:
+            data = self._load_unlocked()
+            current = data.get(key)
+            if isinstance(current, dict):
+                current_body = self._idempotency_body(current)
+                new_body = self._idempotency_body(clean)
+                if current_body == new_body:
+                    result = dict(current)
+                    result["idempotent"] = True
+                    return result
+                history = [dict(item) for item in current.get("history", []) if isinstance(item, dict)]
+                archived = dict(current)
+                archived.pop("history", None)
+                archived["archived_at"] = utc_now()
+                history.append(archived)
+                clean["version"] = max(1, int(current.get("version", 1) or 1)) + 1
+                clean["created_at"] = str(current.get("created_at") or clean["created_at"])
+                clean["updated_at"] = utc_now()
+                clean["history"] = history[-25:]
+            data[key] = clean
+            self._save_unlocked(data)
+        result = dict(clean)
+        result["idempotent"] = False
+        return result
+
+    def get_for_request(self, request_id: str, *, account_id: str = "") -> list[dict[str, Any]]:
+        clean_request = str(request_id or "").strip()
+        clean_account = clean_node_id(account_id, default="") if account_id else ""
+        if not clean_request:
+            return []
+        with self._lock:
+            records = [
+                dict(payload)
+                for payload in self._load_unlocked().values()
+                if isinstance(payload, dict)
+                and str(payload.get("request_id", "") or "") == clean_request
+                and (not clean_account or str(payload.get("account_id", "") or "") == clean_account)
+            ]
+        return sorted(records, key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""))
+
+    def list(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        clean_limit = min(2000, max(1, int(limit or 500)))
+        with self._lock:
+            records = [dict(payload) for payload in self._load_unlocked().values() if isinstance(payload, dict)]
+        return sorted(records, key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)[:clean_limit]
+
+    def _normalize_report(self, report: dict[str, Any]) -> dict[str, Any]:
+        request_id = str(report.get("request_id", "") or "").strip()
+        account_id = clean_node_id(str(report.get("account_id") or report.get("requester_account_id") or ""), default="")
+        if not request_id or not account_id:
+            raise ValueError("request_id and account_id are required for feedback.")
+        requester_wallet = normalize_address(str(report.get("requester_wallet_address", "") or ""))
+        now = utc_now()
+        supplied_key = str(report.get("feedback_key", "") or "").strip()
+        key = supplied_key or f"{request_id}:{account_id}"
+        clean = dict(report)
+        clean["feedback_key"] = key
+        clean["feedback_id"] = str(report.get("feedback_id") or hashlib.sha256(key.encode("utf-8")).hexdigest()[:24])
+        clean["request_id"] = request_id
+        clean["account_id"] = account_id
+        clean["requester_account_id"] = account_id
+        clean["requester_wallet_address"] = requester_wallet
+        clean["feedback_channel"] = clean_node_id(str(report.get("feedback_channel", "") or ""), default="") if report.get("feedback_channel") else ""
+        clean["score"] = max(1, min(5, int(report.get("score", report.get("rating", 1)) or 1)))
+        clean["rating"] = clean["score"]
+        verdict = str(report.get("verdict", "") or "").strip().lower()
+        if verdict not in REQUESTER_FEEDBACK_VERDICTS:
+            verdict = "accepted" if clean["score"] >= 4 else "rejected" if clean["score"] <= 2 else "needs_revision"
+        clean["verdict"] = verdict
+        tags: list[str] = []
+        for raw in report.get("feedback_tags", report.get("tags", [])) or []:
+            tag = _clean_feedback_tag(raw)
+            if tag and (tag in REQUESTER_FEEDBACK_TAGS or tag.startswith("lab_")) and tag not in tags:
+                tags.append(tag)
+        clean["feedback_tags"] = tags
+        clean["note"] = str(report.get("note", report.get("reason", "")) or "")[:1000]
+        clean["reason"] = str(report.get("reason") or clean["note"] or verdict)
+        clean["source"] = str(report.get("source") or "requester").strip().lower() or "requester"
+        clean["version"] = max(1, int(report.get("version", 1) or 1))
+        clean["created_at"] = str(report.get("created_at") or now)
+        clean["updated_at"] = str(report.get("updated_at") or now)
+        clean.setdefault("history", [])
+        clean["worker_identity_private"] = True
+        clean["money_movement"] = False
+        return clean
+
+    @staticmethod
+    def _idempotency_body(payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: payload.get(key)
+            for key in (
+                "request_id",
+                "account_id",
+                "worker_commitment",
+                "report_token_hash",
+                "score",
+                "verdict",
+                "feedback_tags",
+                "note",
+                "source",
+                "feedback_channel",
+                "agent_run_id",
+                "agent_step_id",
+                "parent_request_id",
+            )
+        }
+
+    def _load_unlocked(self) -> dict[str, dict[str, Any]]:
+        if self.path.exists():
+            try:
+                data = json.loads(self.path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    records = data.get("feedback", data)
+                    if isinstance(records, dict):
+                        return {str(key): dict(value) for key, value in records.items() if isinstance(value, dict)}
+            except (OSError, json.JSONDecodeError):
+                pass
+        return {}
+
+    def _save_unlocked(self, records: dict[str, dict[str, Any]]) -> None:
+        self.path.write_text(
+            json.dumps({"feedback": records}, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+
 class AIRequestPlexService:
     """Coordinates AI request routing from the hub API to worker machines."""
 
@@ -556,15 +749,18 @@ class AIRequestPlexService:
         request_store: Any | None = None,
         quote_store: Any | None = None,
         secure_session_store: Any | None = None,
+        feedback_store: Any | None = None,
     ) -> None:
         self.registry = registry
         self.ledger = ledger
         self.timeout_s = max(1.0, float(timeout_s or 600.0))
         self.allow_insecure_dev_network = bool(allow_insecure_dev_network)
         self.credit_ledger = credit_ledger
+        self.root = Path(root)
         self.default_credits_per_request = max(1, int(default_credits_per_request or 1))
         self.request_store = request_store if request_store is not None else RequestStateStore(root)
         self.quote_store = quote_store if quote_store is not None else QuoteStateStore(root)
+        self.feedback_store = feedback_store if feedback_store is not None else FeedbackStateStore(root)
         self.secure_session_store = secure_session_store
         self._secure_sessions: dict[str, dict[str, Any]] = {}
         self._session_lock = threading.Lock()
@@ -963,7 +1159,7 @@ class AIRequestPlexService:
         status = HubRequestStatus.from_record(
             record,
             polling_url=f"{polling_base_path.rstrip('/')}/{record.request_id}",
-        ).as_dict()
+        ).as_requester_dict()
         if record.state != "completed" or not isinstance(record.response, dict):
             return {
                 "ok": False,
@@ -1262,6 +1458,190 @@ class AIRequestPlexService:
 
     def get_events(self, request_id: str) -> list[dict[str, Any]]:
         return self.request_store.events(request_id)
+
+    def submit_requester_feedback(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Submit requester/agent feedback against a completed request.
+
+        The requester supplies a request id and opaque report token.  Worker
+        identity is copied from the completed request by the Hub and is only
+        returned through ring-control/private summaries.
+        """
+
+        clean_request_id = str(request_id or "").strip()
+        if not clean_request_id:
+            raise ValueError("request_id is required.")
+        record = self.request_store.get(clean_request_id)
+        if record is None:
+            raise KeyError(f"Unknown hub request: {clean_request_id}")
+        if record.state != "completed":
+            raise ValueError("Feedback can only be submitted for completed requests.")
+        receipt = self._record_receipt_for_feedback(record)
+        worker_commitment = str(receipt.get("worker_commitment", "") or "")
+        if not worker_commitment:
+            raise ValueError("Completed request does not have a worker commitment for feedback.")
+        expected_token = str(receipt.get("report_token", "") or "")
+        supplied_token = str(payload.get("report_token", "") or "").strip()
+        if expected_token and supplied_token != expected_token:
+            raise PermissionError("Invalid report token for request feedback.")
+        account_id = clean_node_id(str(payload.get("account_id") or payload.get("requester_account_id") or record.account_id or ""), default="")
+        if not account_id:
+            raise ValueError("account_id is required.")
+        if record.account_id and account_id != record.account_id:
+            raise PermissionError("Requester account does not own this request.")
+        metadata = dict(record.request_payload.get("metadata", {})) if isinstance(record.request_payload, dict) and isinstance(record.request_payload.get("metadata"), dict) else {}
+        feedback_channel_raw = str(payload.get("feedback_channel") or payload.get("reviewer_label") or "").strip()
+        feedback_channel = clean_node_id(feedback_channel_raw, default="") if feedback_channel_raw else ""
+        feedback_payload = {
+            "request_id": record.request_id,
+            "account_id": account_id,
+            "requester_account_id": account_id,
+            "requester_wallet_address": normalize_address(str(payload.get("requester_wallet_address", "") or "")),
+            "worker_commitment": worker_commitment,
+            "report_token_hash": token_digest(expected_token or supplied_token),
+            "worker_node_id": record.selected_worker_node_id,
+            "worker_instance_id": record.selected_worker_instance_id,
+            "worker_wallet_address": normalize_address(str(receipt.get("worker_wallet_address", "") or "")),
+            "score": payload.get("score", payload.get("rating", 1)),
+            "rating": payload.get("score", payload.get("rating", 1)),
+            "verdict": payload.get("verdict", ""),
+            "feedback_tags": payload.get("feedback_tags", payload.get("tags", [])),
+            "note": payload.get("note", payload.get("reason", "")),
+            "reason": payload.get("reason", payload.get("note", "")),
+            "source": payload.get("source", "requester"),
+            "agent_run_id": str(payload.get("agent_run_id") or metadata.get("agent_run_id") or ""),
+            "agent_step_id": str(payload.get("agent_step_id") or metadata.get("agent_step_id") or ""),
+            "parent_request_id": str(payload.get("parent_request_id") or metadata.get("parent_request_id") or ""),
+            "requester_connection_id": str(payload.get("requester_connection_id") or metadata.get("requester_connection_id") or ""),
+            "agent_label": str(payload.get("agent_label") or metadata.get("agent_label") or metadata.get("purpose") or ""),
+        }
+        if feedback_channel:
+            feedback_payload["feedback_channel"] = feedback_channel
+            feedback_payload["feedback_key"] = f"{record.request_id}:{account_id}:{feedback_channel}"
+        stored = self.feedback_store.submit(feedback_payload)
+        try:
+            self.request_store.update(
+                record.request_id,
+                event_type="request.feedback.submitted",
+                event={
+                    "feedback_id": str(stored.get("feedback_id", "")),
+                    "feedback_key": str(stored.get("feedback_key", "")),
+                    "account_id": account_id,
+                    "worker_commitment": worker_commitment,
+                    "verdict": str(stored.get("verdict", "")),
+                    "score": int(stored.get("score", 0) or 0),
+                    "source": str(stored.get("source", "")),
+                    "worker_identity_private": True,
+                    "money_movement": False,
+                },
+            )
+        except Exception:
+            pass
+        public = _feedback_public_payload(stored)
+        return {"ok": True, "feedback": public, "idempotent": bool(stored.get("idempotent", False))}
+
+    def get_request_feedback(self, request_id: str, *, account_id: str = "") -> dict[str, Any]:
+        clean_request_id = str(request_id or "").strip()
+        if not clean_request_id:
+            raise ValueError("request_id is required.")
+        records = self.feedback_store.get_for_request(clean_request_id, account_id=account_id)
+        public = [_feedback_public_payload(record) for record in records]
+        return {"ok": True, "request_id": clean_request_id, "feedback": public, "feedback_count": len(public)}
+
+    def worker_reliability_summary(
+        self,
+        *,
+        worker_node_id: str = "",
+        worker_commitment: str = "",
+        include_private: bool = False,
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        clean_worker_id = clean_node_id(worker_node_id, default="") if worker_node_id else ""
+        clean_commitment = str(worker_commitment or "").strip()
+        records = self.feedback_store.list(limit=limit)
+        if clean_worker_id:
+            records = [record for record in records if str(record.get("worker_node_id", "") or "") == clean_worker_id]
+        if clean_commitment:
+            records = [record for record in records if str(record.get("worker_commitment", "") or "") == clean_commitment]
+        completed_records = self.request_store.list(limit=limit, states={"completed"})
+        completed_for_worker = []
+        for record in completed_records:
+            receipt = dict(record.receipt) if isinstance(record.receipt, dict) else {}
+            if clean_worker_id and record.selected_worker_node_id != clean_worker_id:
+                continue
+            if clean_commitment and str(receipt.get("worker_commitment", "") or "") != clean_commitment:
+                continue
+            if clean_worker_id or clean_commitment:
+                completed_for_worker.append(record)
+        tag_counts: dict[str, int] = {}
+        verdict_counts = {"accepted": 0, "rejected": 0, "needs_revision": 0}
+        requester_keys: set[str] = set()
+        negative_requester_keys: set[str] = set()
+        source_counts: dict[str, int] = {}
+        score_total = 0
+        score_count = 0
+        for record in records:
+            score = max(1, min(5, int(record.get("score", record.get("rating", 0)) or 0)))
+            if score > 0:
+                score_total += score
+                score_count += 1
+            verdict = str(record.get("verdict", "") or "").strip().lower()
+            if verdict in verdict_counts:
+                verdict_counts[verdict] += 1
+            source = str(record.get("source", "") or "requester")
+            source_counts[source] = source_counts.get(source, 0) + 1
+            identity = _feedback_identity(record)
+            requester_key = identity["requester_key"]
+            if requester_key:
+                requester_keys.add(requester_key)
+                if verdict == "rejected" or score <= 2:
+                    negative_requester_keys.add(requester_key)
+            for tag in record.get("feedback_tags", []) or []:
+                clean_tag = _clean_feedback_tag(tag)
+                if clean_tag:
+                    tag_counts[clean_tag] = tag_counts.get(clean_tag, 0) + 1
+        summary = {
+            "ok": True,
+            "summary_mode": "ring_control_feedback_read_surface_v0",
+            "worker_identity_private_for_requesters": True,
+            "feedback_money_movement_count": 0,
+            "completed_request_count": len(completed_for_worker),
+            "feedback_count": len(records),
+            "accepted_count": verdict_counts["accepted"],
+            "rejected_count": verdict_counts["rejected"],
+            "needs_revision_count": verdict_counts["needs_revision"],
+            "average_score": round(score_total / score_count, 4) if score_count else 0.0,
+            "feedback_tag_counts": tag_counts,
+            "fail_signal_observed_count": int(tag_counts.get("fail_signal", 0)),
+            "agent_complaint_count": int(source_counts.get("agent", 0)),
+            "noisy_requester_complaint_count": int(source_counts.get("noisy_requester", 0)),
+            "unique_requester_count": len(requester_keys),
+            "bounded_negative_feedback_count": len(negative_requester_keys),
+        }
+        if include_private:
+            summary.update(
+                {
+                    "worker_node_id": clean_worker_id,
+                    "worker_commitment": clean_commitment,
+                    "private_worker_mapping_visible": True,
+                    "feedback": [dict(record) for record in records],
+                }
+            )
+        return summary
+
+    def ring_control_feedback_summary(self, *, limit: int = 500) -> dict[str, Any]:
+        records = self.feedback_store.list(limit=limit)
+        worker_ids = sorted({str(record.get("worker_node_id", "") or "") for record in records if str(record.get("worker_node_id", "") or "")})
+        summaries = [
+            self.worker_reliability_summary(worker_node_id=worker_id, include_private=True, limit=limit)
+            for worker_id in worker_ids
+        ]
+        return {
+            "ok": True,
+            "summary_mode": "ring_control_feedback_read_surface_v0",
+            "worker_summary_count": len(summaries),
+            "workers": summaries,
+            "feedback_money_movement_count": 0,
+        }
 
     def metrics(self) -> dict[str, Any]:
         request_metrics = self.request_store.metrics()
@@ -1837,6 +2217,24 @@ class AIRequestPlexService:
             },
         )
 
+    def _feedback_secret(self) -> str:
+        return str(os.environ.get("MAIN_COMPUTER_HUB_REPORT_SECRET") or "main-computer-dev-report-secret-v0")
+
+    def _record_receipt_for_feedback(self, record: HubRequestRecord) -> dict[str, Any]:
+        receipt = dict(record.receipt) if isinstance(record.receipt, dict) else {}
+        if not receipt and isinstance(record.response, dict):
+            metadata = dict(record.response.get("metadata", {})) if isinstance(record.response.get("metadata"), dict) else {}
+            hub_metadata = dict(metadata.get("hub", {})) if isinstance(metadata.get("hub"), dict) else {}
+            receipt = dict(hub_metadata.get("payment", {})) if isinstance(hub_metadata.get("payment"), dict) else {}
+        if receipt.get("worker_commitment") and not receipt.get("report_token"):
+            receipt["report_token"] = make_report_token(
+                hub_secret=self._feedback_secret(),
+                account_id=str(receipt.get("account_id") or record.account_id or ""),
+                request_id=record.request_id,
+                worker_commitment=str(receipt.get("worker_commitment", "") or ""),
+            )
+        return receipt
+
     def _finalize_paid_request(
         self,
         *,
@@ -1886,6 +2284,15 @@ class AIRequestPlexService:
             "created_at": charge_payload.get("created_at", utc_now()),
             "unit": "compute_credit",
         }
+        if receipt.get("worker_commitment"):
+            receipt["report_token"] = make_report_token(
+                hub_secret=self._feedback_secret(),
+                account_id=str(receipt.get("account_id") or record.account_id or ""),
+                request_id=record.request_id,
+                worker_commitment=str(receipt.get("worker_commitment", "") or ""),
+            )
+        if worker_wallet_address:
+            receipt["worker_wallet_address"] = worker_wallet_address
         if market_metadata:
             receipt.update(
                 {

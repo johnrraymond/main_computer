@@ -5844,7 +5844,11 @@ body.mcel-modal-open {
 .mcel-git-view-flat-table,
 .mcel-git-view-title-tree,
 .mcel-git-view-icon-grid,
-.mcel-git-view-column-browser {
+.mcel-git-view-column-browser,
+.mcel-git-view-tile-grid,
+.mcel-git-view-content-list,
+.mcel-git-view-gallery,
+.mcel-git-view-split-details {
   min-height: 330px;
   max-height: min(54vh, 520px);
   overflow: auto;
@@ -5873,24 +5877,121 @@ body.mcel-modal-open {
   gap: 0.2rem;
 }
 
+.mcel-git-view-row-head,
+.mcel-git-view-browser-row {
+  display: flex;
+  min-width: 0;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.mcel-git-view-row-head strong,
+.mcel-git-view-browser-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcel-git-view-selection-control {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 0.35rem;
+  align-items: center;
+  min-width: 0;
+  color: rgba(204, 251, 241, 0.86);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.mcel-git-view-selection-control input {
+  flex: 0 0 auto;
+  width: 0.95rem;
+  height: 0.95rem;
+  margin: 0;
+  accent-color: rgba(163, 230, 53, 0.95);
+}
+
+.mcel-git-view-selection-control.is-compact span {
+  display: none;
+}
+
+.mcel-git-view-selection-control.is-disabled {
+  color: rgba(248, 113, 113, 0.82);
+}
+
+.mcel-git-view-selection-control.is-disabled input {
+  cursor: not-allowed;
+  accent-color: rgba(248, 113, 113, 0.7);
+}
+
+.mcel-git-view-selection-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mcel-git-view-browser-row {
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 12px;
+  padding: 0.42rem 0.5rem;
+  color: rgba(203, 213, 225, 0.82);
+  background: rgba(15, 23, 42, 0.34);
+}
+
+.mcel-git-view-browser-row.is-current {
+  border-color: rgba(45, 212, 191, 0.56);
+  color: rgba(204, 251, 241, 0.96);
+  background: rgba(20, 184, 166, 0.12);
+}
+
+.mcel-git-view-column .mcel-git-view-browser-row span {
+  display: block;
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+}
+
 .mcel-git-view-compact-audit article.is-blocked,
 .mcel-git-view-flat-table .is-blocked,
 .mcel-git-view-title-tree .is-blocked,
 .mcel-git-view-icon-grid article.is-blocked,
+.mcel-git-view-tile-grid article.is-blocked,
+.mcel-git-view-content-list article.is-blocked,
+.mcel-git-view-gallery .is-blocked,
+.mcel-git-view-split-details .is-blocked,
 .mcel-git-view-column .is-blocked {
   opacity: 0.72;
   border-color: rgba(248, 113, 113, 0.32);
 }
 
 .mcel-git-view-compact-audit strong,
-.mcel-git-view-icon-grid strong {
+.mcel-git-view-icon-grid strong,
+.mcel-git-view-tile-grid strong,
+.mcel-git-view-content-list strong,
+.mcel-git-view-gallery strong,
+.mcel-git-view-split-details strong {
   color: rgba(248, 250, 252, 0.96);
 }
 
 .mcel-git-view-compact-audit span,
 .mcel-git-view-compact-audit small,
 .mcel-git-view-icon-grid small,
-.mcel-git-view-icon-grid span {
+.mcel-git-view-icon-grid span,
+.mcel-git-view-tile-grid span,
+.mcel-git-view-tile-grid small,
+.mcel-git-view-tile-grid em,
+.mcel-git-view-content-list span,
+.mcel-git-view-content-list p,
+.mcel-git-view-content-list small,
+.mcel-git-view-gallery span,
+.mcel-git-view-gallery p,
+.mcel-git-view-split-details span,
+.mcel-git-view-split-details small {
   color: rgba(203, 213, 225, 0.78);
   overflow-wrap: anywhere;
 }
@@ -5902,7 +6003,7 @@ body.mcel-modal-open {
 
 .mcel-git-view-flat-table [role="row"] {
   display: grid;
-  grid-template-columns: minmax(22rem, 1.4fr) minmax(8rem, 0.5fr) minmax(7rem, 0.4fr) minmax(12rem, 0.9fr);
+  grid-template-columns: minmax(4.5rem, 0.22fr) minmax(22rem, 1.4fr) minmax(8rem, 0.5fr) minmax(7rem, 0.4fr) minmax(12rem, 0.9fr);
   min-width: 760px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.14);
 }
@@ -6011,6 +6112,142 @@ body.mcel-modal-open {
   text-align: center;
 }
 
+.mcel-git-view-tree-glyph {
+  flex: 0 0 1rem;
+  text-align: center;
+  color: rgba(147, 197, 253, 0.9);
+}
+
+.mcel-git-view-title-tree [role="treeitem"] em,
+.mcel-git-view-title-tree [role="treeitem"] small {
+  margin-left: auto;
+  color: rgba(148, 163, 184, 0.86);
+  font-style: normal;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.mcel-git-view-title-tree [role="treeitem"] small {
+  margin-left: 0.45rem;
+  color: rgba(251, 191, 36, 0.82);
+}
+
+.mcel-git-view-tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+  gap: 0.7rem;
+  align-content: start;
+  padding: 0.75rem;
+}
+
+.mcel-git-view-tile-grid article,
+.mcel-git-view-content-list article {
+  display: grid;
+  gap: 0.28rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 15px;
+  padding: 0.72rem;
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.mcel-git-view-tile-grid article {
+  min-height: 7.5rem;
+}
+
+.mcel-git-view-content-list {
+  display: grid;
+  gap: 0.55rem;
+  align-content: start;
+  padding: 0.75rem;
+}
+
+.mcel-git-view-content-list article {
+  grid-template-columns: minmax(16rem, 0.9fr) minmax(18rem, 1.1fr) max-content;
+  align-items: start;
+}
+
+.mcel-git-view-content-list article p {
+  margin: 0;
+}
+
+.mcel-git-view-gallery {
+  display: grid;
+  grid-template-columns: minmax(18rem, 1.1fr) minmax(14rem, 0.9fr);
+  gap: 0.75rem;
+  min-width: 760px;
+  padding: 0.75rem;
+}
+
+.mcel-git-view-gallery section,
+.mcel-git-view-gallery button,
+.mcel-git-view-gallery-card {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.72);
+  color: rgba(226, 232, 240, 0.9);
+}
+
+.mcel-git-view-gallery section {
+  display: grid;
+  align-content: center;
+  gap: 0.5rem;
+  min-height: 15rem;
+  padding: 1rem;
+}
+
+.mcel-git-view-gallery div {
+  display: grid;
+  gap: 0.45rem;
+  align-content: start;
+  overflow: auto;
+}
+
+.mcel-git-view-gallery button,
+.mcel-git-view-gallery-card {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.55rem 0.65rem;
+  text-align: left;
+}
+
+.mcel-git-view-gallery button.is-current,
+.mcel-git-view-gallery-card.is-current {
+  border-color: rgba(45, 212, 191, 0.58);
+  background: rgba(20, 184, 166, 0.12);
+}
+
+.mcel-git-view-split-details {
+  display: grid;
+  grid-template-columns: minmax(14rem, 0.65fr) minmax(22rem, 1.35fr);
+  min-width: 760px;
+}
+
+.mcel-git-view-split-details > div {
+  display: grid;
+  gap: 0.45rem;
+  align-content: start;
+  padding: 0.75rem;
+  border-right: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.mcel-git-view-split-details > div:last-child {
+  border-right: 0;
+}
+
+.mcel-git-view-split-details span {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.2rem 0.45rem;
+  align-items: center;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 12px;
+  padding: 0.5rem 0.55rem;
+}
+
+.mcel-git-view-split-details span small {
+  grid-column: 2;
+}
+
 .mcel-git-treegrid-lab-side dl {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
@@ -6034,7 +6271,9 @@ body.mcel-modal-open {
 }
 
 @media (max-width: 900px) {
-  .mcel-git-view-column-browser {
+  .mcel-git-view-column-browser,
+  .mcel-git-view-gallery,
+  .mcel-git-view-split-details {
     grid-template-columns: 1fr;
     min-width: 0;
   }
