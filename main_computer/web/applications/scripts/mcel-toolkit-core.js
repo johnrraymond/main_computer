@@ -29,6 +29,7 @@
         {id: "control.command-button", elementId: "element.toolkit.command-button", layer: "control", label: "Command button", contract: "Actions declare risk, policy, enablement reason, and preview requirements.", states: ["enabled", "disabled", "busy", "danger", "blocked", "requires-preview"], supports: ["action-policy", "safety-gate", "status-feedback"]},
         {id: "control.drag-handle", elementId: "element.toolkit.drag-handle", layer: "control", label: "Drag handle", contract: "Move/reorder affordances are separate from selection and require explicit drop policy.", states: ["idle", "grabbed", "dragging", "drop-allowed", "drop-blocked"], supports: ["reorder", "drag-proof", "drop-boundary"]},
         {id: "control.bulk-selector", elementId: "element.toolkit.bulk-selector", layer: "control", label: "Bulk selector", contract: "Bulk state represents visible, filtered, and total eligible records without lying.", states: ["none", "some", "all-visible", "all-filtered", "all-eligible", "blocked-present"], supports: ["select-all-eligible", "filtered-selection", "selected-output-proof"]},
+        {id: "control.tab", elementId: "element.toolkit.tab", layer: "control", label: "Tab", contract: "A tab activates view state and its associated panel; it is not a command button.", states: ["selected", "unselected", "focused", "disabled"], supports: ["single-select-tabs", "panel-switching", "keyboard-navigation", "a11y-state"]},
 
         {id: "cell.path", elementId: "element.toolkit.path-cell", layer: "cell", label: "Path cell", contract: "Repo-relative, filesystem, URL, and breadcrumb paths have stable truncation and reveal behavior.", states: ["short", "deep", "overflow", "root", "highlighted-segment"], supports: ["path-hierarchy", "segment-copy", "long-labels"]},
         {id: "cell.icon-label", elementId: "element.toolkit.name-cell", layer: "cell", label: "Icon + label cell", contract: "Identity labels keep icon, name, badges, and secondary text aligned at all densities.", states: ["normal", "selected", "renaming", "warning", "blocked"], supports: ["primary-field", "preview-target", "resource-kind"]},
@@ -56,6 +57,8 @@
         {id: "layout.inspector-pane", elementId: "element.toolkit.inspector-pane", layer: "layout", label: "Inspector pane", contract: "Selected item metadata is read-only or edit-capable by explicit policy.", states: ["empty", "single-selected", "multi-selected", "blocked", "dirty"], supports: ["selected-detail", "properties", "policy-proof"]},
         {id: "layout.preview-pane", elementId: "element.toolkit.preview-pane", layer: "layout", label: "Preview pane", contract: "Preview content is coupled to selection and isolates unsafe rendering.", states: ["empty", "loading", "preview", "unsupported", "error"], supports: ["preview", "inspect", "read-only-boundary"]},
         {id: "layout.status-bar", elementId: "element.toolkit.status-bar", layer: "layout", label: "Status bar", contract: "Summary state, selection count, filter count, and last action are visible.", states: ["idle", "success", "warning", "error", "busy"], supports: ["feedback", "selected-output-count", "last-action"]},
+        {id: "layout.tabbed-workspace", elementId: "element.toolkit.tabbed-workspace", layer: "layout", label: "Tabbed workspace", contract: "Notebook shell where a tab strip selects sibling panels while preserving panel model truth.", states: ["active-tab", "inactive-panels-hidden", "route-synced", "keyboard-focus"], supports: ["single-select-tabs", "panel-switching", "route-sync", "preserve-panel-state", "keyboard-navigation"]},
+        {id: "layout.tab-list", elementId: "element.toolkit.tab-list", layer: "layout", label: "Tab list", contract: "Tab strip advertises its orientation, active tab, and panel mapping instead of acting as generic navigation.", states: ["horizontal", "wrapped", "focused", "overflow"], supports: ["single-select-tabs", "roving-tabindex", "a11y-state"]},
 
         {id: "controller.selection", elementId: "element.toolkit.selection-controller", layer: "controller", label: "Selection controller", contract: "The controller owns legal transitions and selected output derivation.", states: ["none", "some", "all", "mixed", "blocked-present"], supports: ["toggle", "range-select", "bulk-select", "explicit-output"]},
         {id: "controller.expansion", elementId: "element.toolkit.expansion-controller", layer: "controller", label: "Expansion controller", contract: "Expansion is view state that never deletes selected model truth.", states: ["collapsed", "expanded", "expand-all", "collapse-all", "lazy"], supports: ["tree-state", "visible-window", "preserve-selection"]},
@@ -63,12 +66,14 @@
         {id: "controller.sort-filter", elementId: "element.toolkit.sort-filter-controller", layer: "controller", label: "Sort/filter controller", contract: "Typed fields define legal comparators, predicates, and empty-state text.", states: ["unsorted", "sorted", "filtered", "empty-filter", "invalid-filter"], supports: ["field-sort", "facet-filter", "search"]},
         {id: "controller.safety-gate", elementId: "element.toolkit.safety-controller", layer: "controller", label: "Safety gate controller", contract: "Dangerous actions require preconditions, preview, and policy proof.", states: ["allowed", "blocked", "requires-preview", "requires-confirmation"], supports: ["no-click", "no-submit", "no-command-execution"]},
         {id: "controller.view-resolver", elementId: "element.toolkit.view-resolver", layer: "controller", label: "View resolver", contract: "Functional need plus contract requirements determine eligible visualizations.", states: ["resolved", "manual-override", "rejected", "needs-more-data"], supports: ["need-to-view", "capability-match", "explainability"]},
+        {id: "controller.tab-state", elementId: "element.toolkit.tab-controller", layer: "controller", label: "Tab state controller", contract: "Owns activeTabId, legal tab ids, route synchronization, and keyboard movement without executing commands.", states: ["active", "fallback-default", "route-synced", "keyboard-moving"], supports: ["single-select-tabs", "panel-switching", "route-sync", "keyboard-navigation"]},
 
         {id: "pattern.file-basket", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "File basket", contract: "Choose exact files for an operation with hierarchy shortcuts, typed metadata, and blocked rows.", states: ["collecting", "reviewing", "ready", "blocked-present"], supports: ["hierarchical-explicit-files", "selected-output-proof", "safety-gate"]},
         {id: "pattern.file-picker", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "File picker", contract: "Select one or many resources under read/mutation boundaries.", states: ["browse", "search", "selected", "invalid"], supports: ["path-navigation", "preview", "selection"]},
         {id: "pattern.resource-browser", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "Resource browser", contract: "Find, inspect, compare, preview, and act on resources by intent.", states: ["find", "browse", "compare", "inspect", "preview"], supports: ["intent-to-view", "details-pane", "column-browser"]},
         {id: "pattern.diff-selector", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "Diff selector", contract: "Review changed units and choose what enters a patch/commit.", states: ["unreviewed", "selected", "excluded", "conflict"], supports: ["diffstat", "risk", "explicit-output"]},
         {id: "pattern.process-table", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "Process table", contract: "Observe runtime processes while destructive actions are gated.", states: ["running", "stopped", "busy", "blocked"], supports: ["operational-scan", "status", "no-click-actions"]},
+        {id: "pattern.tabbed-workspace", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "Tabbed workspace", contract: "Switch between sibling workspace panels through declared tab state, active panel mapping, and optional route sync.", states: ["active-tab", "route-synced", "keyboard-ready", "panel-state-preserved"], supports: ["single-select-tabs", "panel-switching", "route-sync", "preserve-panel-state", "keyboard-navigation"]},
         {id: "pattern.settings-editor", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "Settings editor", contract: "Edit named configuration with validation, dirty state, and save policy.", states: ["clean", "dirty", "invalid", "saving", "blocked"], supports: ["form-state", "validation", "save-policy"]},
         {id: "pattern.permission-matrix", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "Permission matrix", contract: "Compare principals against capabilities with partial and blocked states.", states: ["allowed", "denied", "partial", "inherited", "blocked"], supports: ["matrix", "tri-state", "audit"]},
         {id: "pattern.log-explorer", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "Log explorer", contract: "Search, filter, group, and inspect streaming events.", states: ["live", "paused", "filtered", "selected"], supports: ["timeline", "search", "preview"]}
@@ -88,6 +93,13 @@
           capabilities: ["multi-column-fields", "typed-cells", "sort", "filter", "bulk-selection", "resizable-columns", "keyboard-navigation"],
           primitiveIds: ["control.selection.checkbox", "control.sort-indicator", "control.filter-chip", "control.resize-handle", "cell.status", "cell.risk", "controller.sort-filter", "controller.column-sizing"],
           bestFor: ["process-table", "settings-audit", "flat-review"]
+        },
+        {
+          id: "tabbed-data-workspace",
+          label: "Tabbed data workspace",
+          capabilities: ["single-select-tabs", "panel-switching", "route-sync", "preserve-panel-state", "keyboard-navigation", "a11y-state"],
+          primitiveIds: ["layout.tabbed-workspace", "layout.tab-list", "control.tab", "controller.tab-state"],
+          bestFor: ["tabbed-workspace", "notebook", "task-manager-data-views"]
         },
         {
           id: "plain-tree",
@@ -152,6 +164,17 @@
           mustReject: ["card-only"],
           selection: "row-action-policy",
           safety: ["kill/terminate require no-click proof"]
+        },
+        tabbedWorkspace: {
+          id: "tabbed-workspace",
+          label: "Tabbed workspace contract",
+          intent: "Switch between sibling panels by activeTabId while preserving panel state and never treating tabs as command execution.",
+          requires: ["single-select-tabs", "panel-switching", "keyboard-navigation", "a11y-state"],
+          fields: ["tabId", "label", "controlsPanelId", "selected", "panelVisible"],
+          requiredPrimitives: ["layout.tabbed-workspace", "layout.tab-list", "control.tab", "controller.tab-state"],
+          mustReject: ["button-row-as-navigation", "view-mode-controller"],
+          selection: "active-tab-view-state",
+          safety: ["tab activation is inspect-only view state", "route sync is optional and declared", "panel contents preserve model truth"]
         }
       };
 

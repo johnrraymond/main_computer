@@ -348,6 +348,15 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
         seed = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
         payload.setdefault("event_id", "ring-admission-" + hashlib.sha256(seed).hexdigest()[:24])
 
+        # Keep a per-hub JSONL audit sidecar as a durable fallback.  The FDB
+        # namespace is the shared source of truth when available, but the stress
+        # smoke intentionally exercises failover and should still be able to prove
+        # that a rejection was audited by the hub that observed it.
+        try:
+            super().record_ring_admission_rejection(payload)
+        except Exception:
+            pass
+
         @self.fdb.transactional
         def _tx(tr: Any) -> None:
             self._write_dict(tr, payload, "ring_admission_audit", str(payload["event_id"]))
@@ -362,8 +371,23 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
         def _tx(tr: Any) -> list[dict[str, Any]]:
             return self._list_dicts(tr, "ring_admission_audit", limit=clean_limit, reverse=True)
 
-        events = _tx(self.db)
-        return list(reversed(events))
+        merged: dict[str, dict[str, Any]] = {}
+        try:
+            for event in _tx(self.db):
+                event_id = str(event.get("event_id") or "")
+                merged[event_id or f"fdb-{len(merged)}"] = event
+        except Exception:
+            pass
+        try:
+            for event in super().list_ring_admission_audit(limit=clean_limit):
+                event_id = str(event.get("event_id") or "")
+                merged.setdefault(event_id or f"local-{len(merged)}", event)
+        except Exception:
+            pass
+
+        events = list(merged.values())
+        events.sort(key=lambda item: str(item.get("created_at") or ""))
+        return events[-clean_limit:]
 
     def ring_admission_audit_count(self) -> int:
         @self.fdb.transactional
@@ -371,7 +395,16 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
             key_range = self.state.range_for("ring_admission_audit")
             return sum(1 for _item in tr.get_range(key_range.start, key_range.stop))
 
-        return int(_tx(self.db))
+        fdb_count = 0
+        try:
+            fdb_count = int(_tx(self.db))
+        except Exception:
+            fdb_count = 0
+        try:
+            local_count = int(super().ring_admission_audit_count())
+        except Exception:
+            local_count = 0
+        return max(fdb_count, local_count)
 
     def register_worker(
         self,

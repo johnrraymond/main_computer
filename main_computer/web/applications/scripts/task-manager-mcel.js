@@ -23,8 +23,10 @@
         {selector: ".task-schedule-card", role: "deferred-command-form", kind: "form", fit: "compact-form"},
         {selector: ".task-schedule-card label", role: "field-row", kind: "form-field", fit: "compact-field-row"},
         {selector: ".task-schedule-list", role: "schedule-feed", kind: "feed", fit: "bounded-list"},
-        {selector: ".task-notebook", role: "tabbed-data-feed", kind: "feed", fit: "expansive-scroll"},
-        {selector: ".task-tab-button", role: "feed-tab", kind: "navigation", fit: "wrap-tabs"},
+        {selector: ".task-notebook", role: "tabbed-workspace", kind: "workspace", fit: "expansive-scroll", elementId: "element.toolkit.tabbed-workspace", contract: "pattern.tabbed-workspace"},
+        {selector: ".task-notebook-tabs", role: "tab-list", kind: "navigation", fit: "wrap-tabs", elementId: "element.toolkit.tab-list", contract: "pattern.tabbed-workspace"},
+        {selector: ".task-tab-button", role: "workspace-tab", kind: "tab", fit: "wrap-tabs", elementId: "element.toolkit.tab", contract: "pattern.tabbed-workspace"},
+        {selector: ".task-tab-panel", role: "workspace-panel", kind: "panel", fit: "expansive-scroll", elementId: "element.toolkit.tab-panel", contract: "pattern.tabbed-workspace"},
         {selector: ".task-grid-scroll", role: "data-grid-scrollport", kind: "scrollport", fit: "intentional-scroll"},
         {selector: ".task-table", role: "data-feed-table", kind: "table", fit: "expansive-table"},
         {selector: ".task-table td code", role: "command-preview", kind: "text-preview", fit: "single-line-ellipsis"},
@@ -48,7 +50,7 @@
         {selector: ".task-overview-card", role: "overview", label: "MCEL: overview", kind: "state"},
         {selector: ".task-controls-card", role: "audited-command-zone", label: "MCEL: audited command zone", kind: "actions"},
         {selector: ".task-schedule-card", role: "scheduler", label: "MCEL: scheduler", kind: "mutation"},
-        {selector: ".task-notebook", role: "live-data-notebook", label: "MCEL: live data notebook", kind: "feed"},
+        {selector: ".task-notebook", role: "live-data-notebook", label: "MCEL: tabbed data notebook", kind: "tabbed-workspace"},
         {selector: "#task-panel-processes", role: "server-process-feed", label: "MCEL: server process feed", kind: "feed"},
         {selector: "#task-panel-all-processes", role: "all-process-feed", label: "MCEL: all process feed", kind: "feed"},
         {selector: "#task-panel-connections", role: "connection-feed", label: "MCEL: connection feed", kind: "feed"},
@@ -68,6 +70,26 @@
         {selector: "[data-task-action=\"terminate-pid\"]", risk: "process-destructive", role: "terminate-pid", label: "process termination"},
         {selector: "[data-task-action=\"kill-pid\"]", risk: "process-destructive", role: "kill-pid", label: "process kill"}
       ];
+
+      const TABBED_WORKSPACE_CONTRACT = Object.freeze({
+        id: "task-manager.data-notebook",
+        elementId: "element.toolkit.tabbed-workspace",
+        concern: "concern.tabbed-workspace",
+        contract: "pattern.tabbed-workspace",
+        controllerElementId: "element.toolkit.tab-controller",
+        activeStateField: "activeTabId",
+        defaultTabId: "server-processes",
+        singleSelect: true,
+        routeSync: true,
+        statePolicy: "tabs are view state, not command buttons",
+        safetyClaim: "tab activation changes visible panels and route state only; it does not execute server, PID, schedule, or AI commands",
+        laws: [
+          "tabs-are-view-state-not-command-buttons",
+          "one-active-tab-controls-one-panel",
+          "hidden-panels-preserve-model-truth",
+          "route-sync-is-declared"
+        ]
+      });
 
       function ensureEnrichmentStyle(doc) {
         if (!doc?.head) return false;
@@ -215,6 +237,8 @@
         element.setAttribute("data-mcel-role", definition.role);
         element.setAttribute("data-mcel-kind", definition.kind || "surface");
         if (definition.fit) element.setAttribute("data-mcel-fit", definition.fit);
+        if (definition.elementId) element.setAttribute("data-mcel-element-id", definition.elementId);
+        if (definition.contract) element.setAttribute("data-mcel-contract", definition.contract);
         if (definition.fitContext) element.setAttribute("data-mcel-fit-context", definition.fitContext);
         if (definition.layout) element.setAttribute("data-mcel-layout", definition.layout);
         if (definition.layoutPolicy) element.setAttribute("data-mcel-layout-policy", definition.layoutPolicy);
@@ -307,6 +331,142 @@
         return control.closest?.("label") || control.parentElement;
       }
 
+      function cleanText(value) {
+        return String(value || "").replace(/\s+/g, " ").trim();
+      }
+
+      function taskPanelForTab(workspace, tab) {
+        const controls = tab?.getAttribute?.("aria-controls") || "";
+        const tabId = tab?.dataset?.taskTab || "";
+        const panels = Array.from(workspace?.querySelectorAll?.(".task-tab-panel") || []);
+        if (controls) {
+          return workspace?.ownerDocument?.getElementById?.(controls) || panels.find((panel) => panel.id === controls) || null;
+        }
+        return panels.find((panel) => (panel.dataset?.taskPanel || "") === tabId) || null;
+      }
+
+      function buildTabbedWorkspaceModel(doc, root) {
+        const workspace = root?.querySelector?.(".task-notebook") || doc?.querySelector?.(".task-notebook") || null;
+        const tabList = workspace?.querySelector?.(".task-notebook-tabs") || null;
+        const tabs = Array.from(workspace?.querySelectorAll?.('[data-task-tab-group="task-notebook"]') || []);
+        const panels = Array.from(workspace?.querySelectorAll?.(".task-tab-panel") || []);
+        const activeTab = tabs.find((tab) => tab.getAttribute("aria-selected") === "true" || tab.classList.contains("active")) || tabs[0] || null;
+        const activeTabId = activeTab?.dataset?.taskTab || TABBED_WORKSPACE_CONTRACT.defaultTabId;
+        const panelIds = new Set(panels.map((panel) => panel.id || panel.dataset?.taskPanel || "").filter(Boolean));
+        const problems = [];
+        if (!workspace) problems.push("missing workspace root");
+        if (!tabList) problems.push("missing tablist");
+        if (!tabs.length) problems.push("missing tabs");
+        if (tabs.length !== panels.length) problems.push("tab/panel count mismatch");
+        tabs.forEach((tab) => {
+          const tabId = tab.dataset?.taskTab || "";
+          const panel = taskPanelForTab(workspace, tab);
+          if (!tabId) problems.push(`tab ${tab.id || cleanText(tab.textContent) || "unknown"} missing data-task-tab`);
+          if (!panel) problems.push(`tab ${tabId || tab.id || "unknown"} missing controlled panel`);
+          else if (!panelIds.has(panel.id || panel.dataset?.taskPanel || "")) problems.push(`tab ${tabId} controls a panel outside the notebook`);
+        });
+        const selectedTabs = tabs.filter((tab) => tab.getAttribute("aria-selected") === "true");
+        if (selectedTabs.length !== 1) problems.push(`expected one selected tab, found ${selectedTabs.length}`);
+        return {
+          ...TABBED_WORKSPACE_CONTRACT,
+          present: Boolean(workspace),
+          activeTabId,
+          tabListPresent: Boolean(tabList),
+          tabCount: tabs.length,
+          panelCount: panels.length,
+          contractStatus: problems.length ? "warning" : "ready",
+          problems,
+          tabs: tabs.map((tab) => {
+            const panel = taskPanelForTab(workspace, tab);
+            const selected = (tab.dataset?.taskTab || "") === activeTabId;
+            return {
+              id: tab.dataset?.taskTab || tab.id || "",
+              domId: tab.id || "",
+              label: cleanText(tab.textContent),
+              selected,
+              controlsPanelId: panel?.id || tab.getAttribute("aria-controls") || "",
+              ariaSelected: tab.getAttribute("aria-selected") || "",
+              routeSynced: true,
+              actionPolicy: "view-state-only"
+            };
+          }),
+          panels: panels.map((panel) => ({
+            id: panel.dataset?.taskPanel || panel.id || "",
+            domId: panel.id || "",
+            labelledByTabId: panel.getAttribute("aria-labelledby") || "",
+            visible: !panel.hidden,
+            preservesState: true
+          }))
+        };
+      }
+
+      function stampTabbedWorkspaceElement(element, elementId, options = {}) {
+        if (!element) return 0;
+        element.setAttribute("data-mcel-element-id", elementId);
+        element.setAttribute("data-mcel-contract", TABBED_WORKSPACE_CONTRACT.contract);
+        element.setAttribute("data-mcel-concern", TABBED_WORKSPACE_CONTRACT.concern);
+        element.setAttribute("data-mcel-tab-workspace", TABBED_WORKSPACE_CONTRACT.id);
+        if (options.role) element.setAttribute("data-mcel-role", options.role);
+        if (options.kind) element.setAttribute("data-mcel-kind", options.kind);
+        if (options.state) element.setAttribute("data-mcel-state", options.state);
+        return 1;
+      }
+
+      function applyTabbedWorkspaceSemantics(doc, root, options = {}) {
+        const workspace = root?.querySelector?.(".task-notebook") || doc?.querySelector?.(".task-notebook") || null;
+        const model = buildTabbedWorkspaceModel(doc, root);
+        if (!workspace) return {model, enrichedElementCount: 0};
+        const enrichedBy = options.enrichedBy || "task-manager-adapter";
+        const source = options.source || "legacy-dom-reader";
+        const tabList = workspace.querySelector?.(".task-notebook-tabs") || null;
+        const tabs = Array.from(workspace.querySelectorAll?.('[data-task-tab-group="task-notebook"]') || []);
+        const panels = Array.from(workspace.querySelectorAll?.(".task-tab-panel") || []);
+        let count = 0;
+
+        count += stampTabbedWorkspaceElement(workspace, TABBED_WORKSPACE_CONTRACT.elementId, {role: "tabbed-workspace", kind: "workspace", state: model.contractStatus});
+        workspace.setAttribute("data-mcel-tab-active", model.activeTabId);
+        workspace.setAttribute("data-mcel-tab-count", String(model.tabCount));
+        workspace.setAttribute("data-mcel-tab-panel-count", String(model.panelCount));
+        workspace.setAttribute("data-mcel-state-policy", TABBED_WORKSPACE_CONTRACT.statePolicy);
+        workspace.setAttribute("data-mcel-safety-claim", TABBED_WORKSPACE_CONTRACT.safetyClaim);
+        workspace.setAttribute("data-mcel-enriched", enrichedBy);
+        workspace.setAttribute("data-mcel-enrichment-source", source);
+
+        if (tabList) {
+          count += stampTabbedWorkspaceElement(tabList, "element.toolkit.tab-list", {role: "tab-list", kind: "navigation", state: "single-select"});
+          tabList.setAttribute("data-mcel-tab-list-for", TABBED_WORKSPACE_CONTRACT.id);
+          tabList.setAttribute("data-mcel-tab-active", model.activeTabId);
+          tabList.setAttribute("data-mcel-enriched", enrichedBy);
+          tabList.setAttribute("data-mcel-enrichment-source", source);
+        }
+
+        tabs.forEach((tab) => {
+          const tabId = tab.dataset?.taskTab || tab.id || "";
+          const selected = tabId === model.activeTabId;
+          count += stampTabbedWorkspaceElement(tab, "element.toolkit.tab", {role: "workspace-tab", kind: "tab", state: selected ? "selected" : "unselected"});
+          tab.setAttribute("data-mcel-tab-id", tabId);
+          tab.setAttribute("data-mcel-tab-active", selected ? "true" : "false");
+          tab.setAttribute("data-mcel-tab-controls", tab.getAttribute("aria-controls") || "");
+          tab.setAttribute("data-mcel-action-role", "switch-tab-view-state");
+          tab.setAttribute("data-mcel-action-risk", "safe");
+          tab.setAttribute("data-mcel-mutates", "false");
+          tab.setAttribute("data-mcel-enriched", enrichedBy);
+          tab.setAttribute("data-mcel-enrichment-source", source);
+        });
+
+        panels.forEach((panel) => {
+          const panelId = panel.dataset?.taskPanel || panel.id || "";
+          const visible = !panel.hidden;
+          count += stampTabbedWorkspaceElement(panel, "element.toolkit.tab-panel", {role: "workspace-panel", kind: "panel", state: visible ? "visible" : "hidden"});
+          panel.setAttribute("data-mcel-tab-panel-for", panelId);
+          panel.setAttribute("data-mcel-tab-panel-state", visible ? "visible" : "hidden");
+          panel.setAttribute("data-mcel-enriched", enrichedBy);
+          panel.setAttribute("data-mcel-enrichment-source", source);
+        });
+
+        return {model, enrichedElementCount: count};
+      }
+
       function buildEnrichmentModel(doc, root, options = {}) {
         const reason = options.reason || "build-enrichment";
         const generatedBy = options.generatedBy || "task-manager-mcel-adapter";
@@ -365,6 +525,8 @@
           };
         });
 
+        const tabbedWorkspace = buildTabbedWorkspaceModel(doc, root);
+
         return {
           app: "task-manager",
           kind: "operator-console",
@@ -375,6 +537,7 @@
           components,
           fields,
           actions,
+          tabbedWorkspace,
           generatedBy,
           reason,
           builtAt: new Date().toISOString(),
@@ -384,7 +547,8 @@
             "checkbox controls reserve a fixed input slot and shrinkable label slot",
             "status text avoids accidental internal scroll traps",
             "command previews clip intentionally on one line",
-            "destructive action surfaces are classified but never executed"
+            "destructive action surfaces are classified but never executed",
+            "Task Manager notebook tabs are view state, not command buttons"
           ]
         };
       }
@@ -519,6 +683,9 @@
           });
         });
 
+        const tabbedWorkspaceResult = applyTabbedWorkspaceSemantics(doc, root, {enrichedBy, source});
+        enrichedElementCount += tabbedWorkspaceResult.enrichedElementCount;
+
         FIELD_ENRICHMENT.forEach((definition) => {
           const control = doc.querySelector?.(definition.control) || null;
           if (!control) return;
@@ -566,6 +733,11 @@
           fieldCount: model.fields.filter((item) => item.present).length,
           actionControlCount: model.actions.reduce((total, item) => total + item.count, 0),
           riskControlCount: model.actions.filter((item) => item.present && !["safe", "analysis"].includes(item.risk)).reduce((total, item) => total + item.count, 0),
+          tabbedWorkspacePresent: Boolean(model.tabbedWorkspace?.present),
+          tabbedWorkspaceActiveTab: model.tabbedWorkspace?.activeTabId || "",
+          tabbedWorkspaceTabCount: model.tabbedWorkspace?.tabCount || 0,
+          tabbedWorkspacePanelCount: model.tabbedWorkspace?.panelCount || 0,
+          tabbedWorkspaceContractStatus: model.tabbedWorkspace?.contractStatus || "unavailable",
           supercutActive: Boolean(supercut.active),
           supercutTranslator: supercut.translator || SUPERCUT_TRANSLATOR,
           supercutTaggedElementCount: supercut.taggedElementCount || 0,
@@ -596,8 +768,9 @@
           violations,
           enrichmentStyleId: ENRICHMENT_STYLE_ID,
           overlayMode: "semantic enrichment with role/fit attributes; layout repair comes from MCEL fit policies, not text-specific selectors",
+          tabbedWorkspaceContract: TABBED_WORKSPACE_CONTRACT,
           destructiveActionsExecuted: false,
-          safetyClaim: "MCEL enrichment reads, annotates, and applies role-based fit policies; it does not click server control, PID termination, or schedule actions",
+          safetyClaim: "MCEL enrichment reads, annotates, and applies role-based fit policies; Task Manager tabs are classified as view-state selectors and it does not click server control, PID termination, or schedule actions",
           appliedAt: new Date().toISOString()
         };
       }
@@ -613,7 +786,7 @@
           doc.getElementById(ENRICHMENT_STYLE_ID)?.remove?.();
         }
         clearTaskManagerSupercutTranslation(doc, rootSelector);
-        Array.from(doc.querySelectorAll?.("[data-mcel-enriched], [data-mcel-enrichment-source], [data-mcel-enrichment-selector], [data-mcel-role], [data-mcel-kind], [data-mcel-fit], [data-mcel-fit-context], [data-mcel-layout], [data-mcel-layout-policy], [data-mcel-layout-region], [data-mcel-region], [data-mcel-region-kind], [data-mcel-width-policy], [data-mcel-control-role], [data-mcel-control-priority], [data-mcel-action-role], [data-mcel-action-risk], [data-mcel-action-label], [data-mcel-mutates], [data-mcel-supercut], [data-mcel-supercut-purpose], [data-mcel-supercut-contract], [data-mcel-supercut-proof-policy], [data-mcel-supercut-rewrite-tag]") || []).forEach((element) => {
+        Array.from(doc.querySelectorAll?.("[data-mcel-enriched], [data-mcel-enrichment-source], [data-mcel-enrichment-selector], [data-mcel-role], [data-mcel-kind], [data-mcel-fit], [data-mcel-element-id], [data-mcel-contract], [data-mcel-concern], [data-mcel-tab-workspace], [data-mcel-tab-active], [data-mcel-tab-count], [data-mcel-tab-panel-count], [data-mcel-tab-list-for], [data-mcel-tab-id], [data-mcel-tab-controls], [data-mcel-tab-panel-for], [data-mcel-tab-panel-state], [data-mcel-state], [data-mcel-state-policy], [data-mcel-safety-claim], [data-mcel-fit-context], [data-mcel-layout], [data-mcel-layout-policy], [data-mcel-layout-region], [data-mcel-region], [data-mcel-region-kind], [data-mcel-width-policy], [data-mcel-control-role], [data-mcel-control-priority], [data-mcel-action-role], [data-mcel-action-risk], [data-mcel-action-label], [data-mcel-mutates], [data-mcel-supercut], [data-mcel-supercut-purpose], [data-mcel-supercut-contract], [data-mcel-supercut-proof-policy], [data-mcel-supercut-rewrite-tag]") || []).forEach((element) => {
           [
             "data-mcel-enriched",
             "data-mcel-enrichment-source",
@@ -621,6 +794,21 @@
             "data-mcel-role",
             "data-mcel-kind",
             "data-mcel-fit",
+            "data-mcel-element-id",
+            "data-mcel-contract",
+            "data-mcel-concern",
+            "data-mcel-tab-workspace",
+            "data-mcel-tab-active",
+            "data-mcel-tab-count",
+            "data-mcel-tab-panel-count",
+            "data-mcel-tab-list-for",
+            "data-mcel-tab-id",
+            "data-mcel-tab-controls",
+            "data-mcel-tab-panel-for",
+            "data-mcel-tab-panel-state",
+            "data-mcel-state",
+            "data-mcel-state-policy",
+            "data-mcel-safety-claim",
             "data-mcel-fit-context",
             "data-mcel-layout",
             "data-mcel-layout-policy",
@@ -661,9 +849,12 @@
         FIELD_ENRICHMENT,
         PANEL_LENS,
         ACTION_LENS,
+        TABBED_WORKSPACE_CONTRACT,
         ensureEnrichmentStyle,
         applyElementEnrichment,
         nearestControlLabel,
+        buildTabbedWorkspaceModel,
+        applyTabbedWorkspaceSemantics,
         buildEnrichmentModel,
         collectEnrichmentViolations,
         createUnavailableReport,

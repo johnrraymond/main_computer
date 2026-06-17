@@ -268,6 +268,52 @@
           decoderHints: ["list", "table", "treegrid", "icon grid", "column browser", "gallery", "timeline", "matrix"],
           supersedes: ["view mode picked by taste", "title-only tree for tabular data"]
         }),
+        def("element.toolkit.tabbed-workspace", "Toolkit Tabbed Workspace", "toolkit", "tabbed-workspace", "Notebook/workspace shell where sibling panels are switched by tab state rather than command execution.", {
+          htmlTag: "mcel-tabbed-workspace",
+          riskPolicy: safe,
+          allowedChildren: ["element.toolkit.tab-list", "element.toolkit.tab-panel", "element.toolkit.tab-controller"],
+          layoutLaws: ["tabs-are-view-state-not-command-buttons", "one-active-tab-controls-one-panel", "hidden-panels-preserve-model-truth", "tab-strip-wraps-without-horizontal-scroll", "no-illegal-nested-scrollbars"],
+          stateModel: {required: ["activeTabId", "tabs", "panels"], optional: ["routeSync", "disabledTabIds", "preservePanelState"]},
+          interactionModel: {selectTab: "view-state-only", keyboard: ["ArrowLeft", "ArrowRight", "Home", "End", "Enter", "Space"], ownsTruth: false},
+          accessibility: {role: "tablist + tab + tabpanel", requiredAttributes: ["aria-selected", "aria-controls", "aria-labelledby"]},
+          dataModel: {requires: ["tab id", "tab label", "controlled panel id", "active tab state", "panel visibility"]},
+          decoderHints: ["notebook", "tablist", "tabs", "tabpanel", "aria-selected", "aria-controls", "data-task-tab"],
+          supersedes: ["buttons pretending to be tabs", "one-off tab strip", "view buttons with hidden panel coupling"]
+        }),
+        def("element.toolkit.tab-list", "Toolkit Tab List", "toolkit", "tab-list", "Ordered strip of tabs that owns focus movement but not the panel data model.", {
+          htmlTag: "mcel-tab-list",
+          riskPolicy: safe,
+          allowedChildren: ["element.toolkit.tab"],
+          stateModel: {required: ["tabIds", "activeTabId"], optional: ["orientation", "overflow"]},
+          interactionModel: {rovingFocus: "inspect-only", select: "delegates-to-tab-controller"},
+          accessibility: {role: "tablist", requiredAttributes: ["aria-label"]},
+          decoderHints: ["tablist", "tab strip", "notebook tabs", "sheet tabs"]
+        }),
+        def("element.toolkit.tab", "Toolkit Tab", "toolkit", "tab", "Single selectable view-state affordance that activates exactly one associated panel.", {
+          htmlTag: "mcel-tab",
+          riskPolicy: safe,
+          stateModel: {required: ["tabId", "selected", "controlsPanelId"], optional: ["disabled", "route"]},
+          interactionModel: {activate: "view-state-only", click: "select-tab", keyboard: ["Enter", "Space"]},
+          accessibility: {role: "tab", requiredAttributes: ["aria-selected", "aria-controls"]},
+          decoderHints: ["role tab", "aria-selected", "aria-controls", "active tab", "data-task-tab"],
+          supersedes: ["navigation button used as tab", "command button that only hides panels"]
+        }),
+        def("element.toolkit.tab-panel", "Toolkit Tab Panel", "toolkit", "tab-panel", "Panel controlled by a tab; inactive visibility is view state while panel contents preserve model truth.", {
+          htmlTag: "mcel-tab-panel",
+          riskPolicy: inspectOnly,
+          scrollPolicy: "panel-owned-scroll-if-declared",
+          stateModel: {required: ["panelId", "labelledByTabId", "visible"], optional: ["preservesState", "loaded"]},
+          accessibility: {role: "tabpanel", requiredAttributes: ["aria-labelledby"]},
+          decoderHints: ["tabpanel", "aria-labelledby", "hidden panel", "data-task-panel"]
+        }),
+        def("element.toolkit.tab-controller", "Toolkit Tab Controller", "toolkit", "tab-controller", "MVC controller for tab activation, route synchronization, keyboard movement, and active panel derivation.", {
+          htmlTag: "mcel-tab-controller",
+          riskPolicy: safe,
+          stateModel: {required: ["activeTabId", "legalTabIds"], optional: ["routeSync", "defaultTabId", "lastActivatedAt"]},
+          interactionModel: {activateTab: "view-state-only", syncRoute: "inspect-only", rejectUnknownTab: "fallback-default"},
+          decoderHints: ["setTaskNotebookTab", "normalizedTaskNotebookTab", "taskNotebookTabFromPath", "sync route", "activeTabId"],
+          supersedes: ["ad hoc panel toggler", "unmodelled route tab coupling"]
+        }),
         def("element.toolkit.toolbar", "Toolkit Toolbar", "toolkit", "layout", "Command grouping shell that reports task grouping, overflow, risk, and enablement.", {
           htmlTag: "mcel-toolkit-toolbar",
           riskPolicy: safe,

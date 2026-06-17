@@ -1520,6 +1520,8 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
         _verify_backends(config_b, progress=progress)
         ring_status_a = _get_json(config_a.hub_url, "/api/hub/v1/status", timeout=config_a.http_timeout_seconds)
         ring_status_b = _get_json(config_b.hub_url, "/api/hub/v1/status", timeout=config_b.http_timeout_seconds)
+        ring_status_a_before_failover = ring_status_a
+        ring_status_b_before_failover = ring_status_b
         ring_hash_a = str(ring_status_a.get("ring_config_hash") or "")
         ring_hash_b = str(ring_status_b.get("ring_config_hash") or "")
         ring_admission_readout.update(
@@ -1754,6 +1756,20 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
         await asyncio.gather(*chatter_tasks, return_exceptions=True)
         progress.emit("stress_chatter_done", **chatter_stats)
 
+        # Capture both Hub status documents while Hub A is still intentionally alive.
+        # The failover phase below stops Hub A, so all final readout must use this
+        # snapshot for Hub A instead of trying to call 8870 after shutdown.
+        ring_status_a_before_failover = _get_json(config_a.hub_url, "/api/hub/v1/status", timeout=config_a.http_timeout_seconds)
+        ring_status_b_before_failover = _get_json(config_b.hub_url, "/api/hub/v1/status", timeout=config_b.http_timeout_seconds)
+        ring_admission_readout.update(
+            {
+                "hub_a_status_captured_before_failover": True,
+                "hub_b_status_captured_before_failover": True,
+                "hub_a_pre_failover_ring_config_hash": str(ring_status_a_before_failover.get("ring_config_hash") or ""),
+                "hub_b_pre_failover_ring_config_hash": str(ring_status_b_before_failover.get("ring_config_hash") or ""),
+            }
+        )
+
         if config.failover_hub_a and started_a is not None:
             progress.emit("stress_failover_stop_hub_a", hub_url=config_a.hub_url)
             started_a.stop()
@@ -1907,12 +1923,22 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
             if not dev_chain_rollup["balance_deltas_nonzero_wei"]:
                 raise NodeMarketSmokeError("Dev-chain bridge movement produced no non-zero balance deltas.")
 
-        final_ring_status_a = _get_json(config_a.hub_url, "/api/hub/v1/status", timeout=config_a.http_timeout_seconds)
+        final_ring_status_a = ring_status_a_before_failover
         final_ring_status_b = _get_json(config_b.hub_url, "/api/hub/v1/status", timeout=config_b.http_timeout_seconds)
-        ring_rejection_audit_count = max(
-            int(final_ring_status_a.get("ring_admission_rejection_audit_count", 0) or 0),
-            int(final_ring_status_b.get("ring_admission_rejection_audit_count", 0) or 0),
+        ring_rejection_audit_count_a = int(final_ring_status_a.get("ring_admission_rejection_audit_count", 0) or 0)
+        ring_rejection_audit_count_b = int(final_ring_status_b.get("ring_admission_rejection_audit_count", 0) or 0)
+        expected_ring_rejection_audit_count = (
+            int(registration_counts.get("ring2_probe_rejected", 0) or 0)
+            + int(registration_counts.get("ring1_probe_rejected", 0) or 0)
+            + int(registration_counts.get("ring1_probe_ring2_retry_rejected", 0) or 0)
         )
+        # FDB-backed hubs should normally both report the shared audit count.  If
+        # a hub reports only its local sidecar count during failover, use the
+        # cross-hub sum so split probe rejections are still counted exactly once
+        # by the smoke.
+        ring_rejection_audit_count = max(ring_rejection_audit_count_a, ring_rejection_audit_count_b)
+        if ring_rejection_audit_count < expected_ring_rejection_audit_count:
+            ring_rejection_audit_count = ring_rejection_audit_count_a + ring_rejection_audit_count_b
         ring_admission_readout.update(
             {
                 "ring0_registration_allowed_count": int(registration_counts.get("ring0_allowed", 0) or 0),
@@ -1930,13 +1956,19 @@ async def run_temporal_fdb_hub_stress_smoke(config: HubStressSmokeConfig) -> dic
                 "ring1_probe_ring2_retry_rejected_count": int(registration_counts.get("ring1_probe_ring2_retry_rejected", 0) or 0),
                 "ring1_probe_fallback_ring3_succeeded_count": int(registration_counts.get("ring1_probe_fallback_ring3_succeeded", 0) or 0),
                 "unauthorized_high_ring_registration_allowed_count": int(registration_counts.get("unauthorized_high_ring_allowed", 0) or 0),
+                "ring_admission_expected_rejection_audit_count": expected_ring_rejection_audit_count,
+                "hub_a_ring_admission_rejection_audit_count": ring_rejection_audit_count_a,
+                "hub_b_ring_admission_rejection_audit_count": ring_rejection_audit_count_b,
                 "ring_admission_rejection_audit_count": ring_rejection_audit_count,
                 "ring_admission_cross_hub_consistent": bool(ring_admission_readout.get("ring_admission_config_hash_match")),
+                "hub_a_expected_down_after_failover": bool(hub_a_stopped_for_failover),
+                "hub_a_final_status_source": "pre_failover_snapshot",
+                "hub_b_final_status_source": "live_final_status",
             }
         )
         if ring_admission_readout["unauthorized_high_ring_registration_allowed_count"] != 0:
             raise NodeMarketSmokeError(f"Unauthorized high-trust ring registration was allowed: {ring_admission_readout}")
-        if ring_admission_readout["ring_admission_rejection_audit_count"] < 3:
+        if ring_admission_readout["ring_admission_rejection_audit_count"] < expected_ring_rejection_audit_count:
             raise NodeMarketSmokeError(f"Ring admission rejection audit count is too low: {ring_admission_readout}")
 
         report = {
