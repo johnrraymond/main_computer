@@ -836,6 +836,12 @@ def _handle_control_panel_level4_diagnostic(self) -> None:
 
 
 _CONTROL_PANEL_NETWORK_ORDER = ("mainnet", "testnet", "test", "dev")
+_CONTROL_PANEL_ANVIL_DEFAULT_OFFICES = {
+    "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+    "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+    "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
+    "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
+}
 
 
 def _control_panel_endpoint_parts(raw_url: str | None) -> tuple[str, int | None]:
@@ -997,6 +1003,79 @@ def _control_panel_manifest_contract_address_map(entries: dict[str, dict[str, ob
     return addresses
 
 
+def _control_panel_manifest_office_entries(payload: object) -> list[dict[str, object]]:
+    if not isinstance(payload, dict):
+        return []
+    raw_offices = payload.get("offices")
+    if not isinstance(raw_offices, list):
+        return []
+
+    offices: list[dict[str, object]] = []
+    for raw_office in raw_offices:
+        if not isinstance(raw_office, dict):
+            continue
+        address = str(raw_office.get("address") or "").strip()
+        if not address:
+            continue
+        normalized = address.lower()
+        offices.append(
+            {
+                "office": str(raw_office.get("office") or ""),
+                "title": str(raw_office.get("title") or raw_office.get("office") or address),
+                "address": address,
+                "default_anvil": normalized in _CONTROL_PANEL_ANVIL_DEFAULT_OFFICES,
+            }
+        )
+    return offices
+
+
+def _control_panel_authority_status(profile: object, payload: object) -> dict[str, object]:
+    network_key = str(getattr(profile, "network_key", "") or "").strip()
+    kind = str(getattr(profile, "kind", "") or "").strip().lower()
+    offices = _control_panel_manifest_office_entries(payload)
+    default_offices = [
+        str(office.get("title") or office.get("office") or office.get("address") or "office")
+        for office in offices
+        if office.get("default_anvil")
+    ]
+
+    if not offices:
+        return {
+            "authority_status": "unknown",
+            "authority_warning": "deployment manifest does not include office authority",
+            "authority_default_offices": [],
+            "offices": offices,
+        }
+
+    if default_offices and kind in {"mainnet", "testnet"}:
+        return {
+            "authority_status": "unsafe",
+            "authority_warning": (
+                f"{network_key} authority is unsafe: "
+                f"{', '.join(default_offices)} match default Anvil office identities."
+            ),
+            "authority_default_offices": default_offices,
+            "offices": offices,
+        }
+
+    if default_offices:
+        return {
+            "authority_status": "default-dev-authority",
+            "authority_warning": (
+                f"{network_key} is using default Anvil office identities for local validation."
+            ),
+            "authority_default_offices": default_offices,
+            "offices": offices,
+        }
+
+    return {
+        "authority_status": "rotated",
+        "authority_warning": "",
+        "authority_default_offices": [],
+        "offices": offices,
+    }
+
+
 def _control_panel_deployment_contracts(profile: object, runtime_root: Path | None = None) -> dict[str, object]:
     manifest_path, candidates = _control_panel_deployment_manifest_path(profile, runtime_root)
     result: dict[str, object] = {
@@ -1008,6 +1087,10 @@ def _control_panel_deployment_contracts(profile: object, runtime_root: Path | No
         "count": 0,
         "error": "",
         "candidates": [str(path) for path in candidates],
+        "offices": [],
+        "authority_status": "unknown",
+        "authority_warning": "",
+        "authority_default_offices": [],
     }
 
     try:
@@ -1054,6 +1137,7 @@ def _control_panel_deployment_contracts(profile: object, runtime_root: Path | No
 
     entries = _control_panel_manifest_contract_entries(payload)
     addresses = _control_panel_manifest_contract_address_map(entries)
+    authority = _control_panel_authority_status(profile, payload)
     result.update(
         {
             "ok": bool(addresses),
@@ -1064,6 +1148,7 @@ def _control_panel_deployment_contracts(profile: object, runtime_root: Path | No
             "contract_addresses": addresses,
             "count": len(addresses),
             "error": "" if addresses else "deployment manifest contains no contract addresses",
+            **authority,
         }
     )
     return result
@@ -1121,6 +1206,9 @@ def _control_panel_network_status_cards(runtime_root: Path | None = None) -> dic
         rpc_reachable = rpc_probe.get("ok") if isinstance(rpc_probe, dict) else None
         deployment_contracts = _control_panel_deployment_contracts(profile, runtime_root)
         contracts_known = bool(deployment_contracts.get("ok"))
+        authority_status = str(deployment_contracts.get("authority_status") or "unknown")
+        authority_warning = str(deployment_contracts.get("authority_warning") or "")
+        authority_unsafe = authority_status == "unsafe"
         if key in {"test", "dev"} and rpc_reachable is False:
             state = "disabled"
             severity = "gray"
@@ -1135,6 +1223,13 @@ def _control_panel_network_status_cards(runtime_root: Path | None = None) -> dic
                 summary = "hub reachable; network identity endpoint responded"
         else:
             summary = _control_panel_network_down_summary(key, hub_endpoint)
+
+        if authority_unsafe:
+            state = "unsafe"
+            severity = "red"
+            status_text = "reachable but unsafe" if hub_reachable else "unsafe"
+            if authority_warning:
+                summary = f"{summary}; {authority_warning}"
 
         card = profile.as_status_payload()
         card.update(
@@ -1158,6 +1253,10 @@ def _control_panel_network_status_cards(runtime_root: Path | None = None) -> dic
                 "contracts_manifest_path": deployment_contracts.get("path"),
                 "contracts_manifest_error": deployment_contracts.get("error"),
                 "contracts_manifest_candidates": deployment_contracts.get("candidates") or [],
+                "authority_status": authority_status,
+                "authority_warning": authority_warning,
+                "authority_default_offices": deployment_contracts.get("authority_default_offices") or [],
+                "offices": deployment_contracts.get("offices") or [],
                 "contracts_manifest": deployment_contracts,
                 "state": state,
                 "severity": severity,
@@ -1188,6 +1287,12 @@ def _control_panel_energy_credits_service(network_topology: dict[str, object]) -
     def network_reachable(network: dict[str, object]) -> bool:
         return bool(network.get("hub_reachable"))
 
+    def network_authority_unsafe(network: dict[str, object]) -> bool:
+        return (
+            str(network.get("authority_status") or "").lower() == "unsafe"
+            or str(network.get("state") or "").lower() == "unsafe"
+        )
+
     mainnet = next((network for network in ordered if network_key(network) == "mainnet"), {})
     mainnet_reachable = bool(mainnet and network_reachable(mainnet))
     supporting_networks = [
@@ -1195,8 +1300,16 @@ def _control_panel_energy_credits_service(network_topology: dict[str, object]) -
         for network in ordered
         if network_key(network) != "mainnet" and network_reachable(network)
     ]
+    unsafe_networks = [network for network in ordered if network_authority_unsafe(network)]
 
-    if mainnet_reachable:
+    if unsafe_networks:
+        state = "unsafe"
+        severity = "red"
+        summary = (
+            "Energy Credits authority is unsafe on "
+            + ", ".join(network_key(network) or "unknown" for network in unsafe_networks)
+        )
+    elif mainnet_reachable:
         state = "healthy"
         severity = "green"
         summary = "Energy Credits mainnet is reachable"
