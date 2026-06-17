@@ -46,7 +46,7 @@ The defaults in the current tooling are:
 ```text
 chain id: 42424242
 RPC URL:  http://127.0.0.1:18545
-runtime:  runtime/deployments/current.json
+runtime:  runtime/deployments/dev/latest.json
 ```
 
 `tools/dev-chain-reset.py` is the lifecycle tool for this devnet. It starts or
@@ -56,7 +56,7 @@ the app-facing deployment runtime.
 The local devnet writes machine-local runtime files such as:
 
 ```text
-runtime/deployments/current.json
+runtime/deployments/dev/latest.json
 runtime/dev-chain/latest.json
 runtime/dev-chain/latest.env
 runtime/deployments/hub-admin-wallet.json
@@ -69,7 +69,7 @@ Those files are runtime state, not source code. They should stay out of Git.
 The key file is:
 
 ```text
-runtime/deployments/current.json
+runtime/deployments/dev/latest.json
 ```
 
 That file is the local golden path for contract/RPC discovery. The blockchain
@@ -82,7 +82,7 @@ In practical terms:
 ```text
 Anvil dev chain
   -> deployed contracts
-  -> runtime/deployments/current.json
+  -> runtime/deployments/dev/latest.json
   -> blockchain service / viewport APIs
   -> worker wallet funding UI and Hub credit bridge flow
 ```
@@ -160,7 +160,7 @@ to legacy transactions or a zero-base-fee compatibility chain. The app-facing
 output is still:
 
 ```text
-runtime/deployments/current.json
+runtime/deployments/dev/latest.json
 ```
 
 For the local QBFT testnet, that publication records:
@@ -350,7 +350,7 @@ Conceptually:
 The current Anvil devnet already has a partial version of this idea through:
 
 ```text
-runtime/deployments/current.json
+runtime/deployments/dev/latest.json
 ```
 
 The future should generalize that shape so the Hub can choose among:
@@ -415,7 +415,7 @@ Acceptance:
 
 ```text
 tools/build_contracts.py --test works
-tools/dev-chain-reset.py publishes runtime/deployments/current.json
+tools/dev-chain-reset.py publishes runtime/deployments/dev/latest.json
 Hub/worker can use the dev deployment runtime
 ```
 

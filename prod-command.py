@@ -17,7 +17,7 @@ from main_computer.prod_lock import find_production_lock, require_unlocked_produ
 
 DEPLOYMENT_SCHEMA = "main-computer.deployment.v1"
 PROD_LOCK_SCHEMA = "main-computer.prod-lock.v1"
-CURRENT_DEPLOYMENT = Path("runtime/deployments/current.json")
+DEFAULT_DEPLOYMENT_MANIFEST = Path("runtime/deployments/dev/latest.json")
 PROD_LOCK = Path(".prod.lock")
 
 CANONICAL_CONTRACT_ALIASES = {
@@ -219,7 +219,7 @@ def build_lock_payload(deployment_path: Path, deployment: dict[str, Any]) -> dic
         "environment": environment,
         "run_id": deployment_run_id(deployment),
         "locked_at": dt.datetime.now(dt.UTC).isoformat(),
-        "deployment_manifest": CURRENT_DEPLOYMENT.as_posix(),
+        "deployment_manifest": DEFAULT_DEPLOYMENT_MANIFEST.as_posix(),
         "deployment_manifest_sha256": manifest_sha256(deployment_path),
         "chain_id": deployment_chain_id(deployment),
         "rpc_url": deployment_rpc_url(deployment),
@@ -264,7 +264,7 @@ def run_read_only_checks(deployment: dict[str, Any]) -> bool:
     if errors:
         for error in errors:
             log(f"FAIL: manifest: {error}")
-        log("FAIL: current deployment did not pass read-only checks.")
+        log("FAIL: selected deployment did not pass read-only checks.")
         return False
 
     rpc_url = deployment_rpc_url(deployment)
@@ -283,7 +283,7 @@ def run_read_only_checks(deployment: dict[str, Any]) -> bool:
     except Exception as exc:  # noqa: BLE001 - operator diagnostic
         log(f"FAIL: rpc: {exc}")
         ok = False
-        log("FAIL: current deployment did not pass read-only checks.")
+        log("FAIL: selected deployment did not pass read-only checks.")
         return False
 
     for name, address in canonical_contracts(deployment).items():
@@ -299,7 +299,7 @@ def run_read_only_checks(deployment: dict[str, Any]) -> bool:
             ok = False
 
     if not ok:
-        log("FAIL: current deployment did not pass read-only checks.")
+        log("FAIL: selected deployment did not pass read-only checks.")
     return ok
 
 
@@ -339,7 +339,7 @@ def lock_drift_warnings(root: Path, deployment_path: Path, deployment: dict[str,
     if isinstance(expected_hash, str) and expected_hash:
         current_hash = manifest_sha256(deployment_path)
         if expected_hash != current_hash:
-            warnings.append("deployment_manifest_sha256 locked value does not match current.json")
+            warnings.append("deployment_manifest_sha256 locked value does not match selected deployment manifest")
 
     return warnings
 
@@ -362,7 +362,7 @@ def print_status(deployment: dict[str, Any] | None, lock_path: Path | None) -> N
 
 def command_status(args: argparse.Namespace) -> int:
     root = repo_root()
-    deployment_path = root / CURRENT_DEPLOYMENT
+    deployment_path = root / DEFAULT_DEPLOYMENT_MANIFEST
     lock_path = find_production_lock(root, deployment_path)
 
     if not deployment_path.exists():
@@ -430,7 +430,7 @@ def command_deploy_local(args: argparse.Namespace) -> int:
 
 def command_lock(args: argparse.Namespace) -> int:
     root = repo_root()
-    deployment_path = root / CURRENT_DEPLOYMENT
+    deployment_path = root / DEFAULT_DEPLOYMENT_MANIFEST
     lock_path = root / PROD_LOCK
 
     if lock_path.exists():
@@ -465,7 +465,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Operate the Main Computer production-shaped local deployment.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    status = subparsers.add_parser("status", help="Read the current deployment and production lock state.")
+    status = subparsers.add_parser("status", help="Read the selected deployment and production lock state.")
     status.add_argument("--check", action="store_true", help="Run read-only RPC and contract-code checks.")
     status.set_defaults(func=command_status)
 
@@ -477,7 +477,7 @@ def build_parser() -> argparse.ArgumentParser:
     deploy_local.add_argument("--host-rpc-url", default=None)
     deploy_local.set_defaults(func=command_deploy_local)
 
-    lock = subparsers.add_parser("lock", help="Write .prod.lock from runtime/deployments/current.json.")
+    lock = subparsers.add_parser("lock", help="Write .prod.lock from runtime/deployments/dev/latest.json.")
     lock.add_argument("--dry-run", action="store_true", help="Print the lock payload without writing .prod.lock.")
     lock.set_defaults(func=command_lock)
 

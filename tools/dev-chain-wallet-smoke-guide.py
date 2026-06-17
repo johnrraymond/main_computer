@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_STATE_FILE = Path("runtime/deployments/current.json")
+DEFAULT_STATE_FILE = Path("runtime/deployments/dev/latest.json")
 LEGACY_STATE_FILE = Path("runtime/dev-chain/latest.json")
 
 DEFAULT_DEV_OFFICES = [
@@ -162,7 +162,7 @@ def render_guide(state: dict[str, Any], *, smoke: str, reveal_keys: bool = False
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Print a browser-wallet smoke-test guide for the local X-LAG reserve.")
-    parser.add_argument("--state", default=None, help="Deployment state JSON. Defaults to current.json, then legacy latest.json.")
+    parser.add_argument("--state", default=None, help="Deployment state JSON. Defaults to runtime/deployments/dev/latest.json, then legacy runtime/dev-chain/latest.json.")
     parser.add_argument("--smoke-id", default=None, help="Explicit bytes32 id or label to hash into bytes32.")
     parser.add_argument("--show-private-keys", action="store_true", help="Display dev private keys. Hidden by default.")
     return parser

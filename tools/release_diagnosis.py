@@ -37,7 +37,7 @@ RELEASE_CRITICAL_TESTS = (
 CLEAN_SOURCE_EXCLUSIONS = (
     ".prod.lock",
     "runtime/",
-    "runtime/deployments/current.json",
+    "runtime/deployments/dev/latest.json",
     "energy_credits/",
     ".venv/",
     "venv/",

@@ -84,7 +84,7 @@ function Test-RepoPathAllowed {
 
   $allowedGeneratedExactPaths = @(
     "runtime/main-computer-runtime.json",
-    "runtime/deployments/current.json",
+    "runtime/deployments/dev/latest.json",
     "runtime/deployments/dev/latest.json",
     "runtime/deployments/test/latest.json",
     "runtime/deployments/testnet/latest.json",
@@ -413,7 +413,7 @@ function Assert-CleanExportStage {
 
   $allowedGeneratedExactPaths = @(
     "runtime/main-computer-runtime.json",
-    "runtime/deployments/current.json",
+    "runtime/deployments/dev/latest.json",
     "runtime/deployments/dev/latest.json",
     "runtime/deployments/test/latest.json",
     "runtime/deployments/testnet/latest.json",
@@ -635,7 +635,7 @@ $exportItems = @(
   "tools",
   "scripts",
   "runtime/main-computer-runtime.json",
-  "runtime/deployments/current.json",
+  "runtime/deployments/dev/latest.json",
   "runtime/deployments/dev/latest.json",
   "runtime/deployments/test/latest.json",
   "runtime/deployments/testnet/latest.json",

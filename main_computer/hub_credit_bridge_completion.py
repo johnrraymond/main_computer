@@ -50,7 +50,7 @@ class BridgeDeployment:
     bridge_controller_address: str
     hub_admin_address: str
     hub_admin_wallet_path: Path
-    current_json_path: Path
+    deployment_manifest_path: Path
 
     def as_public_dict(self) -> dict[str, Any]:
         return {
@@ -60,7 +60,7 @@ class BridgeDeployment:
             "bridge_controller_address": self.bridge_controller_address,
             "hub_admin_address": self.hub_admin_address,
             "hub_admin_wallet_path": str(self.hub_admin_wallet_path),
-            "current_json_path": str(self.current_json_path),
+            "deployment_manifest_path": str(self.deployment_manifest_path),
         }
 
 
@@ -310,15 +310,24 @@ class HubCreditBridgeContractClient:
         raise TimeoutError(f"Timed out waiting for completeDeposit receipt: {tx_hash}")
 
 
-def _candidate_current_json_paths(config: MainComputerConfig | None) -> list[Path]:
+def _repo_root_for_deployment_manifest(path: Path) -> Path:
+    parent = path.parent
+    if parent.name and parent.parent.name == "deployments" and parent.parent.parent.name == "runtime":
+        return parent.parent.parent.parent
+    if parent.name == "deployments" and parent.parent.name == "runtime":
+        return parent.parent.parent
+    return parent.parent.parent
+
+
+def _candidate_deployment_manifest_paths(config: MainComputerConfig | None) -> list[Path]:
     candidates: list[Path] = []
-    env_path = os.environ.get("MAIN_COMPUTER_DEPLOYMENT_CURRENT_PATH")
+    env_path = os.environ.get("MAIN_COMPUTER_DEPLOYMENT_MANIFEST_PATH")
     if env_path:
         candidates.append(Path(env_path))
 
     cwd = Path.cwd().resolve()
     for root in [cwd, *cwd.parents]:
-        candidates.append(root / "runtime" / "deployments" / "current.json")
+        candidates.append(root / "runtime" / "deployments" / "dev" / "latest.json")
 
     if config is not None:
         for raw in [config.hub_root, config.workspace]:
@@ -327,7 +336,7 @@ def _candidate_current_json_paths(config: MainComputerConfig | None) -> list[Pat
             except Exception:
                 continue
             for root in [base, *base.parents]:
-                candidates.append(root / "runtime" / "deployments" / "current.json")
+                candidates.append(root / "runtime" / "deployments" / "dev" / "latest.json")
 
     unique: list[Path] = []
     seen: set[str] = set()
@@ -339,8 +348,8 @@ def _candidate_current_json_paths(config: MainComputerConfig | None) -> list[Pat
     return unique
 
 
-def load_bridge_deployment(config: MainComputerConfig | None = None, *, current_json_path: Path | None = None) -> BridgeDeployment:
-    paths = [Path(current_json_path)] if current_json_path else _candidate_current_json_paths(config)
+def load_bridge_deployment(config: MainComputerConfig | None = None, *, deployment_manifest_path: Path | None = None) -> BridgeDeployment:
+    paths = [Path(deployment_manifest_path)] if deployment_manifest_path else _candidate_deployment_manifest_paths(config)
     last_error = ""
     for path in paths:
         try:
@@ -362,7 +371,7 @@ def load_bridge_deployment(config: MainComputerConfig | None = None, *, current_
             wallet_raw = str(hub_admin.get("wallet_path") or "").strip()
             if not wallet_raw:
                 raise ValueError("hub_admin.wallet_path is missing.")
-            repo_root = path.parent.parent.parent
+            repo_root = _repo_root_for_deployment_manifest(path)
             wallet_path = Path(wallet_raw)
             if not wallet_path.is_absolute():
                 wallet_path = repo_root / wallet_path
@@ -379,13 +388,13 @@ def load_bridge_deployment(config: MainComputerConfig | None = None, *, current_
                 bridge_controller_address=controller,
                 hub_admin_address=admin_address,
                 hub_admin_wallet_path=wallet_path,
-                current_json_path=path,
+                deployment_manifest_path=path,
             )
         except Exception as exc:
             last_error = f"{path}: {exc}"
             continue
     detail = f" Last error: {last_error}" if last_error else ""
-    raise FileNotFoundError("Could not find a usable runtime/deployments/current.json with hub_credit_bridge_escrow metadata." + detail)
+    raise FileNotFoundError("Could not find a usable runtime/deployments/dev/latest.json with hub_credit_bridge_escrow metadata." + detail)
 
 
 def load_hub_admin_private_key(deployment: BridgeDeployment) -> str:

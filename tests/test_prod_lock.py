@@ -10,7 +10,7 @@ from main_computer.prod_lock import (
 
 
 def test_find_production_lock_returns_none_for_unlocked_tree(tmp_path: Path) -> None:
-    assert find_production_lock(tmp_path, tmp_path / "runtime" / "deployments" / "current.json") is None
+    assert find_production_lock(tmp_path, tmp_path / "runtime" / "deployments" / "dev" / "latest.json") is None
 
 
 def test_require_unlocked_production_state_fails_closed_at_repo_root(tmp_path: Path) -> None:
@@ -20,7 +20,7 @@ def test_require_unlocked_production_state_fails_closed_at_repo_root(tmp_path: P
     try:
         require_unlocked_production_state(
             tmp_path,
-            tmp_path / "runtime" / "deployments" / "current.json",
+            tmp_path / "runtime" / "deployments" / "dev" / "latest.json",
             action="rewrite deployment manifest",
         )
     except ProductionLockError as exc:
@@ -35,7 +35,7 @@ def test_require_unlocked_production_state_checks_external_target_ancestors(tmp_
     repo = tmp_path / "repo"
     repo.mkdir()
     protected = tmp_path / "protected"
-    target = protected / "runtime" / "deployments" / "current.json"
+    target = protected / "runtime" / "deployments" / "dev" / "latest.json"
     target.parent.mkdir(parents=True)
     lock = protected / ".prod.lock"
     lock.write_text('{"deployment":"prod-local","protected":true}\n', encoding="utf-8")

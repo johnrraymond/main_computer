@@ -808,7 +808,7 @@ class ViewportEnergyRouteTests(unittest.TestCase):
     def test_xlag_dev_faucet_sends_native_dev_value_from_local_faucet_account(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            runtime_path = root / "runtime" / "deployments" / "current.json"
+            runtime_path = root / "runtime" / "deployments" / "dev" / "latest.json"
             runtime_path.parent.mkdir(parents=True)
             runtime_path.write_text(json.dumps({"environment": "dev"}), encoding="utf-8")
 
@@ -860,7 +860,7 @@ class ViewportEnergyRouteTests(unittest.TestCase):
     def test_xlag_dev_faucet_status_reports_runtime_chain_and_account_readiness(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            runtime_path = root / "runtime" / "deployments" / "current.json"
+            runtime_path = root / "runtime" / "deployments" / "dev" / "latest.json"
             runtime_path.parent.mkdir(parents=True)
             runtime_path.write_text(json.dumps({"environment": "dev"}), encoding="utf-8")
 
@@ -913,7 +913,7 @@ class ViewportEnergyRouteTests(unittest.TestCase):
     def test_xlag_dev_faucet_api_funds_connected_wallet_on_local_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            current = root / "runtime" / "deployments" / "current.json"
+            current = root / "runtime" / "deployments" / "dev" / "latest.json"
             current.parent.mkdir(parents=True)
             current.write_text(
                 json.dumps(

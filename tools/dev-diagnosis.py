@@ -108,7 +108,7 @@ ROLES: tuple[Role, ...] = (
         port=18545,
         url="http://127.0.0.1:18545",
         docker_service=None,
-        declared=("tools/dev-chain-reset.py managed Anvil soft chain", "runtime/deployments/current.json"),
+        declared=("tools/dev-chain-reset.py managed Anvil soft chain", "runtime/deployments/dev/latest.json"),
         probe_kind="eth_chain_id",
         process_needles=("anvil",),
     ),

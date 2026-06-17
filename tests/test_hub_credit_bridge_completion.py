@@ -60,7 +60,7 @@ def _deployment(tmp_path: Path) -> BridgeDeployment:
         bridge_controller_address=ADMIN,
         hub_admin_address=ADMIN,
         hub_admin_wallet_path=wallet_path,
-        current_json_path=tmp_path / "current.json",
+        deployment_manifest_path=tmp_path / "runtime" / "deployments" / "dev" / "latest.json",
     )
 
 

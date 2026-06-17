@@ -9,7 +9,7 @@ from typing import Any
 from main_computer.config import MainComputerConfig
 
 
-DEPLOYMENT_CURRENT_PATH = Path("runtime") / "deployments" / "current.json"
+DEV_DEPLOYMENT_LATEST_PATH = Path("runtime") / "deployments" / "dev" / "latest.json"
 DEV_CHAIN_LATEST_PATH = Path("runtime") / "dev-chain" / "latest.json"
 _DEPLOYMENT_RUNTIME_SOURCE = "deployment-runtime"
 _DEV_CHAIN_RUNTIME_SOURCE = "runtime-dev-chain"
@@ -19,18 +19,18 @@ def apply_dev_chain_runtime_config(config: MainComputerConfig, runtime_root: Pat
     """Overlay the published deployment runtime onto a config.
 
     Dev and production should share the same app-facing contract configuration
-    shape. Prefer runtime/deployments/current.json, a sanitized deployment
+    shape. Prefer runtime/deployments/dev/latest.json, a sanitized deployment
     publication without signing material. Fall back to the legacy dev-chain
     latest.json only when the production-shaped publication is absent.
     """
 
-    deployment_path = runtime_root / DEPLOYMENT_CURRENT_PATH
+    deployment_path = runtime_root / DEV_DEPLOYMENT_LATEST_PATH
     if deployment_path.exists():
         return _apply_runtime_file(
             config,
             deployment_path,
             source=_DEPLOYMENT_RUNTIME_SOURCE,
-            invalid_message="deployment runtime current.json must contain a JSON object",
+            invalid_message="deployment runtime dev latest.json must contain a JSON object",
         )
 
     legacy_path = runtime_root / DEV_CHAIN_LATEST_PATH

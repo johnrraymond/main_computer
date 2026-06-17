@@ -125,24 +125,23 @@ def test_dry_run_writes_soft_chroot_outputs(tmp_path: Path, monkeypatch) -> None
     assert latest["hub_admin"]["address"] == "0x0000000000000000000000000000000000000a11"
     assert (tmp_path / "legacy-dev-chain" / "runs" / "unit-dry-run" / "deploy.env").exists()
 
-    current = json.loads((deploy_root / "current.json").read_text(encoding="utf-8"))
-    env_latest = json.loads((deploy_root / "dev" / "latest.json").read_text(encoding="utf-8"))
-    assert current == env_latest
-    assert current["schema"] == "main-computer.deployment.v1"
-    assert current["chain"]["rpc_url"] == "http://127.0.0.1:18545"
-    assert current["contracts"]["xlag-bridge-reserve"]["target"] == "src/XLagBridgeReserve.sol:XLagBridgeReserve"
-    escrow = current["contracts"]["hub_credit_bridge_escrow"]
+    manifest = json.loads((deploy_root / "dev" / "latest.json").read_text(encoding="utf-8"))
+    assert not (deploy_root / "current.json").exists()
+    assert manifest["schema"] == "main-computer.deployment.v1"
+    assert manifest["chain"]["rpc_url"] == "http://127.0.0.1:18545"
+    assert manifest["contracts"]["xlag-bridge-reserve"]["target"] == "src/XLagBridgeReserve.sol:XLagBridgeReserve"
+    escrow = manifest["contracts"]["hub_credit_bridge_escrow"]
     assert escrow["target"] == "src/HubCreditBridgeEscrow.sol:HubCreditBridgeEscrow"
     assert escrow["payment_asset"] == "native"
     assert escrow["approval_required"] is False
-    assert escrow["bridge_controller_address"] == current["hub_admin"]["address"]
-    assert current["hub_admin"]["wallet_path"] == "deployments/dev/hub-admin-wallet-42424242.json"
-    assert current["smoke_client"]["address"] == "0x000000000000000000000000000000000000c11e"
-    assert current["smoke_client"]["wallet_path"] == "deployments/dev/smoke-client-wallet-42424242.json"
-    assert current["smoke_client"]["funding_wei"] == "5000000000000000000"
+    assert escrow["bridge_controller_address"] == manifest["hub_admin"]["address"]
+    assert manifest["hub_admin"]["wallet_path"] == "deployments/dev/hub-admin-wallet-42424242.json"
+    assert manifest["smoke_client"]["address"] == "0x000000000000000000000000000000000000c11e"
+    assert manifest["smoke_client"]["wallet_path"] == "deployments/dev/smoke-client-wallet-42424242.json"
+    assert manifest["smoke_client"]["funding_wei"] == "5000000000000000000"
     assert not (deploy_root / "hub-admin-wallet.json").exists()
-    assert "private_key" not in json.dumps(current)
-    assert "mnemonic" not in json.dumps(current)
+    assert "private_key" not in json.dumps(manifest)
+    assert "mnemonic" not in json.dumps(manifest)
 
 
 def test_hub_admin_wallet_is_created_and_reused(tmp_path: Path, monkeypatch) -> None:
@@ -432,7 +431,7 @@ def test_reset_refuses_to_write_when_prod_lock_exists(tmp_path: Path, monkeypatc
     code = reset.main(["--dry-run", "--run-id", "locked-reset"])
 
     assert code == 1
-    assert not (tmp_path / "runtime" / "deployments" / "current.json").exists()
+    assert not (tmp_path / "runtime" / "deployments" / "dev" / "latest.json").exists()
     assert not (tmp_path / "runtime" / "dev-chain" / "latest.json").exists()
 
 
@@ -608,16 +607,15 @@ def test_external_chain_dry_run_writes_test_publication_without_anvil_secrets(tm
     )
 
     assert code == 0
-    current = json.loads((deploy_root / "current.json").read_text(encoding="utf-8"))
-    latest = json.loads((deploy_root / "test" / "latest.json").read_text(encoding="utf-8"))
+    manifest = json.loads((deploy_root / "test" / "latest.json").read_text(encoding="utf-8"))
+    assert not (deploy_root / "current.json").exists()
 
-    assert current == latest
-    assert current["environment"] == "test"
-    assert current["source"] == {
+    assert manifest["environment"] == "test"
+    assert manifest["source"] == {
         "kind": "qbft-smoke-testnet-deploy",
         "project_name": "main-computer-qbft-testnet",
     }
-    assert current["chain"] == {
+    assert manifest["chain"] == {
         "chain_id": 42424241,
         "rpc_url": "http://127.0.0.1:30010",
         "host_rpc_url": "http://127.0.0.1:30010",
@@ -625,11 +623,11 @@ def test_external_chain_dry_run_writes_test_publication_without_anvil_secrets(tm
         "network": "smoke-besu-qbft-network",
         "container": "smoke-besu-qbft-rpc",
     }
-    assert current["smoke_client"]["wallet_path"] == "runtime/deployments/test/smoke-client-wallet-42424241.json"
-    assert current["smoke_client"]["address"] == "0x000000000000000000000000000000000000c11e"
-    assert "mnemonic" not in json.dumps(current)
-    assert "private_key" not in json.dumps(current)
-    assert current["contracts"]["hub_credit_bridge_escrow"]["payment_asset"] == "native"
+    assert manifest["smoke_client"]["wallet_path"] == "runtime/deployments/test/smoke-client-wallet-42424241.json"
+    assert manifest["smoke_client"]["address"] == "0x000000000000000000000000000000000000c11e"
+    assert "mnemonic" not in json.dumps(manifest)
+    assert "private_key" not in json.dumps(manifest)
+    assert manifest["contracts"]["hub_credit_bridge_escrow"]["payment_asset"] == "native"
 
 
 def test_zero_timeouts_are_unbounded_for_subprocesses(monkeypatch) -> None:

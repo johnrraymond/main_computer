@@ -63,7 +63,7 @@ For local restart/start automation, run the root helper from the repository root
 .\control-main-computer.ps1 restart -AutoAllow -Workspace "$PWD" -Port 8765 -HeartbeatPort 8766
 ```
 
-The root helper is useful after publishing a fresh dev-chain deployment runtime because an already-running viewport must be restarted before it sees the new `runtime/deployments/current.json`.
+The root helper is useful after publishing a fresh dev-chain deployment runtime because an already-running viewport must be restarted before it sees the new `runtime/deployments/dev/latest.json`.
 
 
 ## ONLYOFFICE local workbook editor
@@ -127,14 +127,14 @@ python .\tools\dev-chain-reset.py --yes --run-id test-machine-dev --environment 
 Then verify the generated deployment state:
 
 ```powershell
-python .\tools\dev-chain-diagnosis.py --state .\runtime\deployments\current.json
+python .\tools\dev-chain-diagnosis.py --state .\runtime\deployments\dev\latest.json
 ```
 
 Dev contract deployments publish the same app-facing runtime shape that
 production should use:
 
 ```text
-runtime/deployments/current.json
+runtime/deployments/dev/latest.json
 ```
 
 The reset/deploy flow also writes local operator state:
@@ -150,7 +150,7 @@ metadata or local development account material, so they stay ignored by Git and
 should not be copied into source control.
 
 After the dev-chain reset succeeds, restart the app so it reloads
-`runtime/deployments/current.json`:
+`runtime/deployments/dev/latest.json`:
 
 ```powershell
 .\control-main-computer.ps1 restart -AutoAllow -Workspace "$PWD" -Port 8765 -HeartbeatPort 8766
@@ -188,7 +188,7 @@ exercises the faucet-to-escrow path.
 ### Hub server and worker
 
 The dev-chain reset deploys `hub_credit_bridge_escrow` by default and publishes
-it in `runtime/deployments/current.json`. Start the Hub after that file exists.
+it in `runtime/deployments/dev/latest.json`. Start the Hub after that file exists.
 
 Start the Hub in its own PowerShell window with a named network profile:
 

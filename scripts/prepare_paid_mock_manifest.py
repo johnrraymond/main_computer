@@ -16,7 +16,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
-DEFAULT_STATE_FILE = Path("runtime/deployments/current.json")
+DEFAULT_STATE_FILE = Path("runtime/deployments/dev/latest.json")
 DEFAULT_OUT = Path("runtime/hub/paid_mock_dev_manifest.json")
 DEFAULT_ENV_OUT = Path("runtime/hub/paid_mock_dev.env")
 

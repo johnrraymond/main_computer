@@ -128,7 +128,6 @@ def load_deployment_manifest(network: str, explicit_path: str | None = None, *, 
         candidates.append(repo_relative_path(explicit_path, repo_root=repo_root))
     else:
         candidates.append(default_manifest_path(network, repo_root=repo_root))
-        candidates.append(repo_root / "runtime" / "deployments" / "current.json")
 
     errors: list[str] = []
     for candidate in candidates:
