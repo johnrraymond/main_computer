@@ -330,6 +330,7 @@ def _submit_results_and_verify_multi(
     *,
     progress: _ProgressReporter,
     hub_a_available: bool,
+    result_content_by_worker_node_id: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     config_a = configs["hub_a"]
     completed: list[dict[str, Any]] = []
@@ -340,15 +341,19 @@ def _submit_results_and_verify_multi(
         "replay_hub_b": 0,
         "cross_hub_replay_idempotent": True,
     }
+    content_by_worker = dict(result_content_by_worker_node_id or {})
     for index, result in enumerate(sorted(execution_results, key=lambda item: str(item.get("request_id", ""))), start=1):
         request_id = str(result["request_id"])
+        worker_node_id = str(result["worker_node_id"])
         lease = leases[request_id]
         workflow_result = result.get("workflow_result", {}) if isinstance(result.get("workflow_result"), dict) else {}
         token_count = int(workflow_result.get("token_count", config_a.token_count) or config_a.token_count)
+        injected_content = content_by_worker.get(worker_node_id)
+        result_content = injected_content if injected_content is not None else _response_content(token_count)
         response = {
             "status": "success",
             "response": {
-                "content": _response_content(token_count),
+                "content": result_content,
                 "provider": "temporal-lab-fake-token",
                 "model": config_a.model,
                 "metadata": {
@@ -357,6 +362,7 @@ def _submit_results_and_verify_multi(
                     "workflow_result": workflow_result,
                     "requester_visible_token_events": token_count,
                     "multi_hub": True,
+                    "agent_feedback_injected_failure": injected_content is not None,
                 },
             },
         }
@@ -368,7 +374,7 @@ def _submit_results_and_verify_multi(
             completion_cfg.hub_url,
             "/api/hub/v1/workers/results",
             {
-                "worker_node_id": str(result["worker_node_id"]),
+                "worker_node_id": worker_node_id,
                 "request_id": request_id,
                 "lease_id": lease["lease_id"],
                 "result": response,
@@ -383,7 +389,7 @@ def _submit_results_and_verify_multi(
             replay_cfg.hub_url,
             "/api/hub/v1/workers/results",
             {
-                "worker_node_id": str(result["worker_node_id"]),
+                "worker_node_id": worker_node_id,
                 "request_id": request_id,
                 "lease_id": lease["lease_id"],
                 "result": response,
@@ -401,7 +407,7 @@ def _submit_results_and_verify_multi(
         charges = _get_json(verify_cfg.hub_url, f"/api/hub/v1/requests/{request_id}/charges", timeout=verify_cfg.http_timeout_seconds)
         if int(charges.get("charge_count", 0) or 0) != 1:
             raise NodeMarketSmokeError(f"Expected one charge for {request_id}, got: {charges}")
-        earnings_query = urlencode({"worker_node_id": str(result["worker_node_id"]), "request_id": request_id})
+        earnings_query = urlencode({"worker_node_id": worker_node_id, "request_id": request_id})
         earnings = _get_json(verify_cfg.hub_url, f"/api/hub/v1/credits/worker-earnings?{earnings_query}", timeout=verify_cfg.http_timeout_seconds)
         if int(earnings.get("worker_earning_count", 0) or 0) < 1:
             raise NodeMarketSmokeError(f"Expected worker earning for {request_id}, got: {earnings}")
@@ -481,6 +487,7 @@ async def _execute_and_settle_multi_hub(
     request_jobs: list[tuple[WorkerMatch, Any]],
     event_log_path: Path,
     progress: _ProgressReporter,
+    result_content_by_worker_node_id: dict[str, str] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
     config_a = configs["hub_a"]
     config_b = configs["hub_b"]
@@ -594,6 +601,7 @@ async def _execute_and_settle_multi_hub(
             batch_leases,
             progress=progress,
             hub_a_available=hub_a_available,
+            result_content_by_worker_node_id=result_content_by_worker_node_id,
         )
         completed.extend(batch_completed)
         for key, value in batch_routes.items():

@@ -14,6 +14,7 @@ from main_computer.config import MainComputerConfig
 from main_computer.exp_fdb_credit_ledger import ExperimentalFoundationDbConfig, ExperimentalFoundationDbCreditLedger
 from main_computer.exp_fdb_hub_state import (
     ExperimentalFoundationDbEnergyCreditLedger,
+    ExperimentalFoundationDbFeedbackStateStore,
     ExperimentalFoundationDbHubState,
     ExperimentalFoundationDbMultiSessionKeyStore,
     ExperimentalFoundationDbQuoteStateStore,
@@ -109,6 +110,7 @@ class ExperimentalFoundationDbHubHttpServer(HubHttpServer):
         self.credit_bridge_completion = HubCreditBridgeCompletionService(self.credit_ledger, config)
         self.request_store = ExperimentalFoundationDbRequestStateStore(self.fdb_state)
         self.quote_store = ExperimentalFoundationDbQuoteStateStore(self.fdb_state)
+        self.feedback_store = ExperimentalFoundationDbFeedbackStateStore(self.fdb_state)
         self.secure_session_store = ExperimentalFoundationDbSecureSessionStore(self.fdb_state)
         self.multisession_key_store = ExperimentalFoundationDbMultiSessionKeyStore(self.fdb_state)
         self.dispatcher = HubDispatcher(
@@ -121,6 +123,7 @@ class ExperimentalFoundationDbHubHttpServer(HubHttpServer):
             request_store=self.request_store,
             quote_store=self.quote_store,
             secure_session_store=self.secure_session_store,
+            feedback_store=self.feedback_store,
         )
 
 

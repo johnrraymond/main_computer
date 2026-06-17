@@ -257,7 +257,19 @@ class HubAIRequest:
         if not messages:
             raise ValueError("At least one message is required.")
         metadata = dict(payload.get("metadata", {})) if isinstance(payload.get("metadata"), dict) else {}
-        for key in ("execution_mode", "pricing_mode", "quote_id", "requested_ring", "max_price_credits"):
+        for key in (
+            "execution_mode",
+            "pricing_mode",
+            "quote_id",
+            "requested_ring",
+            "max_price_credits",
+            "agent_run_id",
+            "agent_step_id",
+            "parent_request_id",
+            "requester_connection_id",
+            "agent_label",
+            "purpose",
+        ):
             if payload.get(key) is not None and key not in metadata:
                 metadata[key] = payload.get(key)
         idempotency_key = str(payload.get("idempotency_key") or metadata.get("idempotency_key") or "").strip()
@@ -685,6 +697,54 @@ class HubRequestStatus:
             data["response"] = sanitize_hub_response_payload(self.response)
         if self.polling_url:
             data["polling_url"] = self.polling_url
+        return data
+
+    def as_requester_dict(self) -> dict[str, Any]:
+        """Return requester-facing status without raw worker routing identity."""
+
+        data = self.as_dict()
+        receipt = dict(data.get("receipt", {})) if isinstance(data.get("receipt"), dict) else {}
+        data["selected_worker_node_id"] = ""
+        data["selected_worker_instance_id"] = ""
+        data["worker_identity_private"] = True
+        if self.receipt:
+            public_receipt = dict(receipt)
+            public_receipt.pop("worker_wallet_address", None)
+            data["receipt"] = public_receipt
+        if receipt.get("worker_commitment"):
+            data["worker_commitment"] = str(receipt.get("worker_commitment", ""))
+        if data.get("selected_offer") and isinstance(data["selected_offer"], dict):
+            selected_offer = dict(data["selected_offer"])
+            selected_offer.pop("worker_node_id", None)
+            selected_offer.pop("worker_instance_id", None)
+            selected_offer["worker_identity_private"] = True
+            data["selected_offer"] = selected_offer
+        response = data.get("response")
+        if isinstance(response, dict):
+            metadata = response.get("metadata")
+            if isinstance(metadata, dict):
+                hub = metadata.get("hub")
+                if isinstance(hub, dict):
+                    clean_hub = dict(hub)
+                    clean_hub.pop("worker_node_id", None)
+                    clean_hub.pop("worker_instance_id", None)
+                    payment = clean_hub.get("payment")
+                    if isinstance(payment, dict):
+                        public_payment = dict(payment)
+                        public_payment.pop("worker_wallet_address", None)
+                        clean_hub["payment"] = public_payment
+                    selected = clean_hub.get("selected_offer")
+                    if isinstance(selected, dict):
+                        clean_selected = dict(selected)
+                        clean_selected.pop("worker_node_id", None)
+                        clean_selected.pop("worker_instance_id", None)
+                        clean_selected["worker_identity_private"] = True
+                        clean_hub["selected_offer"] = clean_selected
+                    metadata = dict(metadata)
+                    metadata["hub"] = clean_hub
+                    response = dict(response)
+                    response["metadata"] = metadata
+                    data["response"] = response
         return data
 
 

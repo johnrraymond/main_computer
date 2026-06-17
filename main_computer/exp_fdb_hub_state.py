@@ -1112,6 +1112,174 @@ class ExperimentalFoundationDbQuoteStateStore(_StateComponent):
         return sorted(quotes, key=lambda item: str(item.get("created_at", "")))[-1]
 
 
+
+class ExperimentalFoundationDbFeedbackStateStore(_StateComponent):
+    """FDB-backed requester feedback records shared across Hub instances."""
+
+    def _feedback_key(self, feedback_key: str) -> bytes:
+        return self.pack("feedback", feedback_key)
+
+    def _read_feedback(self, tr: Any, feedback_key: str) -> dict[str, Any] | None:
+        return _json_loads(tr[self._feedback_key(feedback_key)].wait())
+
+    def _index_keys(self, payload: dict[str, Any]) -> list[bytes]:
+        feedback_key = str(payload.get("feedback_key", "") or "")
+        if not feedback_key:
+            return []
+        updated_at = str(payload.get("updated_at") or payload.get("created_at") or "")
+        keys = [self.pack("idx_feedback_updated", updated_at, feedback_key)]
+        for name, value in (
+            ("idx_feedback_request", payload.get("request_id")),
+            ("idx_feedback_account", payload.get("account_id")),
+            ("idx_feedback_worker_commitment", payload.get("worker_commitment")),
+            ("idx_feedback_worker_node_id", payload.get("worker_node_id")),
+            ("idx_feedback_agent_run", payload.get("agent_run_id")),
+        ):
+            clean_value = str(value or "").strip()
+            if clean_value:
+                keys.append(self.pack(name, clean_value, feedback_key))
+        return keys
+
+    def _clear_indexes(self, tr: Any, payload: dict[str, Any]) -> None:
+        for key in self._index_keys(payload):
+            del tr[key]
+
+    def _normalize_report(self, report: dict[str, Any]) -> dict[str, Any]:
+        request_id = str(report.get("request_id", "") or "").strip()
+        account_id = clean_node_id(str(report.get("account_id") or report.get("requester_account_id") or ""), default="")
+        if not request_id or not account_id:
+            raise ValueError("request_id and account_id are required for feedback.")
+        now = _utc_now()
+        clean = dict(report)
+        clean["feedback_key"] = str(report.get("feedback_key") or f"{request_id}:{account_id}")
+        clean["feedback_id"] = str(report.get("feedback_id") or hashlib.sha256(clean["feedback_key"].encode("utf-8")).hexdigest()[:24])
+        clean["request_id"] = request_id
+        clean["account_id"] = account_id
+        clean["requester_account_id"] = account_id
+        clean["feedback_channel"] = clean_node_id(str(report.get("feedback_channel", "") or ""), default="") if report.get("feedback_channel") else ""
+        clean["score"] = max(1, min(5, int(report.get("score", report.get("rating", 1)) or 1)))
+        clean["rating"] = clean["score"]
+        verdict = str(report.get("verdict", "") or "").strip().lower()
+        if verdict not in {"accepted", "rejected", "needs_revision"}:
+            verdict = "accepted" if clean["score"] >= 4 else "rejected" if clean["score"] <= 2 else "needs_revision"
+        clean["verdict"] = verdict
+        tags: list[str] = []
+        for raw in report.get("feedback_tags", report.get("tags", [])) or []:
+            tag = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(raw or "").strip().lower())
+            if tag and tag not in tags:
+                tags.append(tag)
+        clean["feedback_tags"] = tags
+        clean["note"] = str(report.get("note", report.get("reason", "")) or "")[:1000]
+        clean["reason"] = str(report.get("reason") or clean["note"] or verdict)
+        clean["source"] = str(report.get("source") or "requester").strip().lower() or "requester"
+        clean["version"] = max(1, int(report.get("version", 1) or 1))
+        clean["created_at"] = str(report.get("created_at") or now)
+        clean["updated_at"] = str(report.get("updated_at") or now)
+        clean.setdefault("history", [])
+        clean["worker_identity_private"] = True
+        clean["money_movement"] = False
+        return clean
+
+    @staticmethod
+    def _idempotency_body(payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: payload.get(key)
+            for key in (
+                "request_id",
+                "account_id",
+                "worker_commitment",
+                "report_token_hash",
+                "score",
+                "verdict",
+                "feedback_tags",
+                "note",
+                "source",
+                "feedback_channel",
+                "agent_run_id",
+                "agent_step_id",
+                "parent_request_id",
+            )
+        }
+
+    def submit(self, report: dict[str, Any]) -> dict[str, Any]:
+        clean = self._normalize_report(report)
+        feedback_key = str(clean["feedback_key"])
+
+        @self.fdb.transactional
+        def _tx(tr: Any) -> dict[str, Any]:
+            existing = self._read_feedback(tr, feedback_key)
+            if isinstance(existing, dict):
+                if self._idempotency_body(existing) == self._idempotency_body(clean):
+                    result = dict(existing)
+                    result["idempotent"] = True
+                    return result
+                self._clear_indexes(tr, existing)
+                history = [dict(item) for item in existing.get("history", []) if isinstance(item, dict)]
+                archived = dict(existing)
+                archived.pop("history", None)
+                archived["archived_at"] = _utc_now()
+                history.append(archived)
+                clean["version"] = max(1, int(existing.get("version", 1) or 1)) + 1
+                clean["created_at"] = str(existing.get("created_at") or clean["created_at"])
+                clean["updated_at"] = _utc_now()
+                clean["history"] = history[-25:]
+            tr[self._feedback_key(feedback_key)] = _json_dumps(clean)
+            for key in self._index_keys(clean):
+                tr[key] = _json_dumps({"feedback_key": feedback_key})
+            result = dict(clean)
+            result["idempotent"] = False
+            return result
+
+        return _tx(self.db)
+
+    def get_for_request(self, request_id: str, *, account_id: str = "") -> list[dict[str, Any]]:
+        clean_request = str(request_id or "").strip()
+        clean_account = clean_node_id(account_id, default="") if account_id else ""
+        if not clean_request:
+            return []
+
+        @self.fdb.transactional
+        def _tx(tr: Any) -> list[dict[str, Any]]:
+            key_range = self.range_for("idx_feedback_request", clean_request)
+            records: list[dict[str, Any]] = []
+            for item in tr.get_range(key_range.start, key_range.stop):
+                pointer = _json_loads(item.value)
+                feedback_key = str(pointer.get("feedback_key", "") if isinstance(pointer, dict) else "")
+                payload = self._read_feedback(tr, feedback_key)
+                if not isinstance(payload, dict):
+                    continue
+                if clean_account and str(payload.get("account_id", "") or "") != clean_account:
+                    continue
+                records.append(payload)
+            return records
+
+        return sorted([dict(item) for item in _tx(self.db)], key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""))
+
+    def list(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        clean_limit = min(2000, max(1, int(limit or 500)))
+
+        @self.fdb.transactional
+        def _tx(tr: Any) -> list[dict[str, Any]]:
+            records: list[dict[str, Any]] = []
+            key_range = self.range_for("idx_feedback_updated")
+            for item in tr.get_range(key_range.start, key_range.stop, limit=clean_limit, reverse=True):
+                pointer = _json_loads(item.value)
+                feedback_key = str(pointer.get("feedback_key", "") if isinstance(pointer, dict) else "")
+                payload = self._read_feedback(tr, feedback_key)
+                if isinstance(payload, dict):
+                    records.append(payload)
+            if not records:
+                fallback_range = self.range_for("feedback")
+                for item in tr.get_range(fallback_range.start, fallback_range.stop, limit=clean_limit):
+                    payload = json.loads(bytes(item.value).decode("utf-8"))
+                    if isinstance(payload, dict):
+                        records.append(payload)
+            return records
+
+        return [dict(item) for item in _tx(self.db)][:clean_limit]
+
+
+
 class ExperimentalFoundationDbSecureSessionStore(_StateComponent):
     def set(self, session_id: str, payload: dict[str, Any]) -> None:
         clean = str(session_id or "").strip()

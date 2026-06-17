@@ -83,6 +83,22 @@
       const VIEW_CAPABILITIES = {
         "contract-treegrid": REQUIRED_CAPABILITIES.concat(["resizable-columns", "row-inspector", "sort-filter"]),
         "details-tree": REQUIRED_CAPABILITIES.concat(["resizable-columns", "sort-filter"]),
+        "details-treegrid": REQUIRED_CAPABILITIES.concat(["resizable-columns", "sort-filter", "view-menu-parity"]),
+        "explorer-sidebar": ["hierarchy", "blocked-visible-not-selectable", "keyboard-navigation", "safe-read-boundary"],
+        "ide-project-tree": ["hierarchy", "typed-cells", "blocked-visible-not-selectable", "keyboard-navigation", "diagnostic-badges"],
+        "miller-columns": ["hierarchy", "typed-cells", "blocked-visible-not-selectable", "keyboard-navigation", "preview-coupling"],
+        "outline-tree": ["hierarchy", "keyboard-navigation", "semantic-outline"],
+        "accessibility-proof": ["hierarchy", "tri-state-selection", "blocked-visible-not-selectable", "expand-collapse", "keyboard-navigation"],
+        "icon-grid": ["typed-cells", "keyboard-navigation", "thumbnail-cards"],
+        "compact-list": ["multi-column-fields", "typed-cells", "blocked-visible-not-selectable", "keyboard-navigation"],
+        "tile-view": ["typed-cells", "blocked-visible-not-selectable", "keyboard-navigation", "metadata-tiles"],
+        "content-view": ["typed-cells", "blocked-visible-not-selectable", "keyboard-navigation", "preview-snippets"],
+        "finder-gallery": ["typed-cells", "blocked-visible-not-selectable", "keyboard-navigation", "preview-pane"],
+        "finder-column-inspector": ["hierarchy", "typed-cells", "blocked-visible-not-selectable", "keyboard-navigation", "inspector-pane"],
+        "gnome-grid": ["typed-cells", "blocked-visible-not-selectable", "keyboard-navigation", "responsive-grid"],
+        "gnome-list": ["multi-column-fields", "typed-cells", "blocked-visible-not-selectable", "keyboard-navigation"],
+        "dolphin-split-details": ["hierarchy", "multi-column-fields", "typed-cells", "blocked-visible-not-selectable", "keyboard-navigation", "split-pane"],
+        "thunar-compact": ["hierarchy", "typed-cells", "blocked-visible-not-selectable", "keyboard-navigation", "compact-density"],
         "compact-audit-list": ["multi-column-fields", "typed-cells", "blocked-visible-not-selectable", "selected-output-proof", "keyboard-navigation"],
         "data-table": ["multi-column-fields", "typed-cells", "selected-output-proof", "keyboard-navigation"],
         "column-browser-inspector": ["hierarchy", "typed-cells", "blocked-visible-not-selectable", "keyboard-navigation"],
@@ -437,8 +453,32 @@
       }
 
       function buildViewContract(model = {}) {
-        const views = ["contract-treegrid", "details-tree", "compact-audit-list", "data-table", "column-browser-inspector", "title-only-tree", "plain-tree-primary", "icon-grid-primary"]
-          .map((viewId) => resolveViewEligibility(model, viewId));
+        const views = [
+          "contract-treegrid",
+          "details-tree",
+          "details-treegrid",
+          "explorer-sidebar",
+          "ide-project-tree",
+          "miller-columns",
+          "outline-tree",
+          "accessibility-proof",
+          "icon-grid",
+          "compact-list",
+          "tile-view",
+          "content-view",
+          "finder-gallery",
+          "finder-column-inspector",
+          "gnome-grid",
+          "gnome-list",
+          "dolphin-split-details",
+          "thunar-compact",
+          "compact-audit-list",
+          "data-table",
+          "column-browser-inspector",
+          "title-only-tree",
+          "plain-tree-primary",
+          "icon-grid-primary"
+        ].map((viewId) => resolveViewEligibility(model, viewId));
         return {
           contractId: CONTRACT_ID,
           requiredCapabilities: REQUIRED_CAPABILITIES.slice(),

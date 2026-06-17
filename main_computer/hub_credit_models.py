@@ -679,16 +679,41 @@ class WorkerQualityReport:
     created_at: str = ""
     reviewed_at: str = ""
     admin_notes: str = ""
+    verdict: str = "needs_revision"
+    feedback_tags: list[str] = field(default_factory=list)
+    note: str = ""
+    source: str = "requester"
+    agent_run_id: str = ""
+    agent_step_id: str = ""
+    parent_request_id: str = ""
+    version: int = 1
+    updated_at: str = ""
 
     def __post_init__(self) -> None:
         clean_status = str(self.status or "submitted").strip()
         if clean_status not in QUALITY_REPORT_STATUSES:
             raise ValueError(f"Unsupported worker quality report status: {clean_status}")
-        object.__setattr__(self, "report_id", self.report_id or stable_id("rptcase", {"request_id": self.request_id, "account_id": self.account_id, "token": self.report_token_hash}))
-        object.__setattr__(self, "account_id", clean_account_id(self.account_id))
+        clean_account = clean_account_id(self.account_id)
+        clean_verdict = str(self.verdict or "needs_revision").strip().lower()
+        if clean_verdict not in {"accepted", "rejected", "needs_revision"}:
+            clean_verdict = "needs_revision"
+        clean_tags: list[str] = []
+        for raw in self.feedback_tags or []:
+            tag = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(raw or "").strip().lower())
+            if tag and tag not in clean_tags:
+                clean_tags.append(tag)
+        created = self.created_at or utc_now()
+        object.__setattr__(self, "report_id", self.report_id or stable_id("rptcase", {"request_id": self.request_id, "account_id": clean_account, "token": self.report_token_hash}))
+        object.__setattr__(self, "account_id", clean_account)
         object.__setattr__(self, "rating", max(1, min(5, int(self.rating or 1))))
         object.__setattr__(self, "status", clean_status)
-        object.__setattr__(self, "created_at", self.created_at or utc_now())
+        object.__setattr__(self, "created_at", created)
+        object.__setattr__(self, "updated_at", self.updated_at or created)
+        object.__setattr__(self, "verdict", clean_verdict)
+        object.__setattr__(self, "feedback_tags", clean_tags)
+        object.__setattr__(self, "note", str(self.note or self.reason or "")[:1000])
+        object.__setattr__(self, "source", str(self.source or "requester").strip().lower() or "requester")
+        object.__setattr__(self, "version", max(1, int(self.version or 1)))
 
     def as_user_dict(self) -> dict[str, Any]:
         return {
@@ -697,10 +722,22 @@ class WorkerQualityReport:
             "account_id": self.account_id,
             "worker_commitment": self.worker_commitment,
             "rating": self.rating,
+            "score": self.rating,
             "reason": self.reason,
+            "verdict": self.verdict,
+            "feedback_tags": list(self.feedback_tags),
+            "note": self.note,
+            "source": self.source,
+            "agent_run_id": self.agent_run_id,
+            "agent_step_id": self.agent_step_id,
+            "parent_request_id": self.parent_request_id,
             "status": self.status,
+            "version": self.version,
             "created_at": self.created_at,
+            "updated_at": self.updated_at,
             "reviewed_at": self.reviewed_at,
+            "worker_identity_private": True,
+            "money_movement": False,
         }
 
     def as_admin_dict(self) -> dict[str, Any]:

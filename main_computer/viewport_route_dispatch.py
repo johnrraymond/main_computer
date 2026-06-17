@@ -10,7 +10,7 @@ from urllib.request import Request, urlopen
 from urllib.parse import parse_qs, urlsplit
 
 from main_computer.viewport_state import *  # noqa: F401,F403
-from main_computer.ai_control import ai_control_calls_snapshot, ai_control_prompt_catalog, ai_control_save_prompt_override
+from main_computer.ai_control import ai_control_calls_snapshot, ai_control_handle_profile_action, ai_control_profile_catalog, ai_control_prompt_catalog, ai_control_save_prompt_override
 from main_computer.dev_faucet import DevFaucetError, xlag_dev_faucet, xlag_dev_faucet_status
 from main_computer.executor_service import load_executor_service_state
 from main_computer.hub_networks import HubNetworkConfigError, load_hub_network_registry
@@ -1744,6 +1744,10 @@ def dispatch_get(self) -> None:
         self.server.signal("api-applications-ai-control-prompts")
         self._send_json(ai_control_prompt_catalog(self.server.debug_root))
         return
+    if route_path == "/api/applications/ai-control/profiles":
+        self.server.signal("api-applications-ai-control-profiles")
+        self._send_json(ai_control_profile_catalog(self.server.debug_root))
+        return
     if route_path == "/api/applications/ai-control/calls":
         self.server.signal("api-applications-ai-control-calls")
         self._send_json(ai_control_calls_snapshot(self.server.debug_root))
@@ -1954,6 +1958,17 @@ def dispatch_post(self) -> None:
         )
         status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
         self.server.signal("api-applications-ai-control-prompt-override", prompt_id=body.get("id") or body.get("prompt_id"), reset=bool(body.get("reset")))
+        self._send_json(result, status)
+        return
+    if route_path == "/api/applications/ai-control/profiles/action":
+        try:
+            body = self._read_json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        result = ai_control_handle_profile_action(self.server.debug_root, body)
+        status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
+        self.server.signal("api-applications-ai-control-profile-action", action=body.get("action"))
         self._send_json(result, status)
         return
     if route_path == "/api/applications/email/check":

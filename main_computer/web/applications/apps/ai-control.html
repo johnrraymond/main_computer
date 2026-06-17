@@ -3,48 +3,129 @@
     <div class="widget-head ai-control-head">
       <div>
         <h3>AI Control</h3>
-        <p>One view of how each AI surface prepares messages before provider.chat(...), including editable static prompts.</p>
+        <p>Build named user-treatment profiles from editable checkbox choices, then inspect the static prompt structure for each AI surface.</p>
       </div>
       <div class="ai-control-actions">
         <button type="button" id="ai-control-refresh">Refresh</button>
       </div>
     </div>
 
-    <div class="ai-control-status" id="ai-control-status" role="status" aria-live="polite">AI Control has not loaded prompt structure yet.</div>
+    <div class="ai-control-status" id="ai-control-status" role="status" aria-live="polite">AI Control has not loaded profile or prompt structure yet.</div>
 
-    <div class="ai-control-summary-grid" aria-label="AI Control summary">
-      <div class="status-card">
-        <strong>AI surfaces</strong>
-        <p id="ai-control-surface-count">0</p>
+    <section class="ai-control-profile-manager" aria-label="AI user-treatment profile manager">
+      <div class="ai-control-section-head">
+        <div>
+          <h4>System profile</h4>
+          <p>Select a named profile, edit the checkbox choices inside it, or add user-defined choices. This is UI/state only for now; profiles are not injected into AI calls yet.</p>
+        </div>
+        <span id="ai-control-profile-summary">no profiles loaded</span>
       </div>
-      <div class="status-card">
-        <strong>Static prompts</strong>
-        <p id="ai-control-prompt-count">0</p>
+
+      <div class="ai-control-profile-grid">
+        <div class="ai-control-profile-picker">
+          <label for="ai-control-profile-select">
+            <strong>Profile</strong>
+            <span id="ai-control-active-profile-label">no active profile</span>
+          </label>
+          <select id="ai-control-profile-select">
+            <option value="">Loading profiles...</option>
+          </select>
+          <div class="ai-control-picker-description" id="ai-control-profile-description">
+            Pick a profile to see and edit the choices that compose it.
+          </div>
+          <div class="ai-control-profile-actions">
+            <button type="button" id="ai-control-new-profile">New Profile</button>
+            <button type="button" id="ai-control-duplicate-profile">Duplicate</button>
+            <button type="button" id="ai-control-set-active-profile">Set Active</button>
+            <button type="button" id="ai-control-save-profile">Save Profile</button>
+            <button type="button" id="ai-control-reset-profile">Reset Factory Profile</button>
+            <button type="button" id="ai-control-delete-profile">Delete User Profile</button>
+          </div>
+        </div>
+
+        <div class="ai-control-profile-editor">
+          <label>
+            <span>Profile name</span>
+            <input type="text" id="ai-control-profile-name" placeholder="Operator Safe">
+          </label>
+          <label>
+            <span>Profile description</span>
+            <textarea id="ai-control-profile-description-input" rows="3" placeholder="What this profile means and when to use it."></textarea>
+          </label>
+          <label>
+            <span>Compiled preview</span>
+            <textarea id="ai-control-profile-preview" rows="8" readonly placeholder="Enabled profile choices will compile here."></textarea>
+          </label>
+        </div>
       </div>
-      <div class="status-card">
-        <strong>Overrides</strong>
-        <p id="ai-control-override-count">0</p>
+
+      <section class="ai-control-profile-choices" aria-label="Profile choices">
+        <div class="ai-control-section-head">
+          <div>
+            <h4>Edit selected profile choices</h4>
+            <p>The entire selected profile is edited here. Check a choice to include it, then edit that profile’s overlay text directly. These edits only change the selected profile.</p>
+          </div>
+        </div>
+        <div class="ai-control-composable-list" id="ai-control-composable-list">
+          <div class="ai-control-empty">Profile choices have not loaded yet.</div>
+        </div>
+      </section>
+
+      <section class="ai-control-add-choice" aria-label="Add a user-defined choice">
+        <div class="ai-control-section-head">
+          <div>
+            <h4>Add user-defined choice</h4>
+            <p>Create a reusable choice, then enable or edit it inside any profile. Example: “Large cat, specifically a lion.”</p>
+          </div>
+        </div>
+        <div class="ai-control-new-choice-grid">
+          <label>
+            <span>Label</span>
+            <input type="text" id="ai-control-composable-label" placeholder="Large cat, specifically a lion">
+          </label>
+          <label>
+            <span>Kind</span>
+            <input type="text" id="ai-control-composable-kind" placeholder="framing">
+          </label>
+          <label>
+            <span>Description</span>
+            <textarea id="ai-control-composable-description" rows="3" placeholder="Short human-readable explanation."></textarea>
+          </label>
+          <label>
+            <span>Prompt text</span>
+            <textarea id="ai-control-composable-prompt" rows="4" placeholder="The model-facing text this choice would eventually contribute."></textarea>
+          </label>
+          <div class="ai-control-profile-actions">
+            <button type="button" id="ai-control-save-composable">Add User Choice</button>
+            <button type="button" id="ai-control-clear-composable">Clear Form</button>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <div class="ai-control-picker" aria-label="AI surface picker">
+      <label for="ai-control-surface-select">
+        <strong>AI Surfaces</strong>
+        <span id="ai-control-surface-list-summary">no surfaces loaded</span>
+      </label>
+      <select id="ai-control-surface-select">
+        <option value="">Loading AI surfaces...</option>
+      </select>
+      <div class="ai-control-picker-description" id="ai-control-surface-description">
+        Pick an AI surface to see what call path it represents and which static prompts prepare it.
       </div>
     </div>
 
-    <div class="ai-control-layout ai-control-single-view">
-      <section class="ai-control-surface-list-panel" aria-label="AI surfaces">
-        <div class="ai-control-panel-head">
-          <strong>AI Surfaces</strong>
-          <span id="ai-control-surface-list-summary">no surfaces loaded</span>
-        </div>
-        <div class="ai-control-surface-list" id="ai-control-surface-list" role="list"></div>
-      </section>
-
-      <section class="ai-control-detail-panel" aria-label="AI surface prompt structure">
-        <div class="ai-control-panel-head">
+    <section class="ai-control-surface-workspace" aria-label="AI surface prompt structure">
+      <div class="ai-control-panel-head">
+        <div>
           <strong id="ai-control-detail-title">Select an AI surface</strong>
-          <span id="ai-control-detail-meta">Message order and static prompt editors</span>
+          <span id="ai-control-detail-meta">Message order and editable static prompts</span>
         </div>
-        <div class="ai-control-detail" id="ai-control-detail">
-          <div class="ai-control-empty">Select an AI surface to inspect how that call is prepared.</div>
-        </div>
-      </section>
-    </div>
+      </div>
+      <div class="ai-control-detail" id="ai-control-detail">
+        <div class="ai-control-empty">Select an AI surface to inspect how that call is prepared.</div>
+      </div>
+    </section>
   </div>
 </section>
