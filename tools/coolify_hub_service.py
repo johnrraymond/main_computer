@@ -11,11 +11,15 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
+import shutil
 import socket
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -51,6 +55,8 @@ DEFAULT_LOCAL_COOLIFY_ENVIRONMENT_NAME = "production"
 DEFAULT_LOCAL_COOLIFY_SERVER_NAME = "localhost"
 DEFAULT_LOCAL_TEST_HUB_RUNTIME_DIR = "/srv/main-computer/hub/test-exp-fdb"
 DEFAULT_LOCAL_TEST_CONTAINER_RPC_URL = "http://host.docker.internal:30010"
+DEFAULT_LOCAL_TEST_BUILD_CONTEXT_DIRNAME = "hub-src"
+DEFAULT_LOCAL_TEST_RUNTIME_HOST_DIR = REPO_ROOT / "runtime" / "hub" / "test-exp-fdb"
 DEFAULT_LOCAL_COOLIFY_TOKEN_FILE = REPO_ROOT / "runtime" / "coolify-local-docker" / "api-token.txt"
 DEFAULT_APPLICATIONS_SERVICE_ENV_FILE = REPO_ROOT / "runtime" / "applications_service" / "applications.env"
 HUB_IMPLEMENTATION_REGULAR = "regular"
@@ -688,23 +694,57 @@ def yaml_quote(value: object) -> str:
     return json.dumps(str(value))
 
 
+def docker_desktop_host_bind_source(path: Path) -> str:
+    """Return a host path usable by Docker Compose running inside local Coolify.
+
+    Local Coolify runs the deployment from its Linux container while talking to
+    Docker Desktop.  Windows paths must therefore be translated to Docker
+    Desktop's Linux-side /run/desktop/mnt/host/<drive>/... form.
+    """
+
+    resolved = path.resolve()
+    text = resolved.as_posix()
+    drive = str(getattr(resolved, "drive", "") or "").rstrip(":").lower()
+    if drive and re.match(r"^[a-z]$", drive):
+        # Path.as_posix() on Windows starts with "C:/...".
+        suffix = text[2:] if len(text) >= 2 and text[1] == ":" else text
+        return f"/run/desktop/mnt/host/{drive}{suffix}"
+    return text
+
+
+def local_test_runtime_host_dir(args: argparse.Namespace | None = None) -> Path:
+    explicit = str(getattr(args, "local_hub_runtime_host_dir", "") or "").strip()
+    if explicit:
+        path = Path(explicit)
+        return path if path.is_absolute() else REPO_ROOT / path
+    env_value = str(os.environ.get("MAIN_COMPUTER_HUB_TEST_RUNTIME_HOST_DIR") or "").strip()
+    if env_value:
+        path = Path(env_value)
+        return path if path.is_absolute() else REPO_ROOT / path
+    return DEFAULT_LOCAL_TEST_RUNTIME_HOST_DIR
+
+
+def local_test_runtime_bind_source(args: argparse.Namespace | None = None) -> str:
+    return docker_desktop_host_bind_source(local_test_runtime_host_dir(args))
+
+
 def docker_compose_build_context(args: argparse.Namespace) -> str:
-    repo = str(getattr(args, "git_repo", "") or "").strip()
-    if not repo:
-        raise CoolifyHubDeployError("--git-repo is required for local Coolify service-compose Hub deploys.")
-    branch = str(getattr(args, "git_branch", "") or "main").strip() or "main"
-    if "#" in repo:
-        return repo
-    return f"{repo}#{branch}"
+    # Website Builder local Coolify deploys stage a relative build context into
+    # /data/coolify/services/<uuid> before triggering deployment.  Do the same
+    # for the Hub.  Remote Git build contexts make local docker compose/buildx
+    # misread the Dockerfile payload and fail with "dockerfile line greater than
+    # max allowed size of 65535".
+    return f"./{DEFAULT_LOCAL_TEST_BUILD_CONTEXT_DIRNAME}"
 
 
 def render_local_test_hub_compose(profile: HubNetworkProfile, args: argparse.Namespace, *, service_name: str, runtime_dir: str) -> str:
     runtime_dir = container_posix_path(runtime_dir).rstrip("/")
-    volume_name = hub_volume_name(profile.network_key, implementation=hub_implementation(args))
     command_parts = hub_command_parts(profile, runtime_dir, args)
     build_context = docker_compose_build_context(args)
     dockerfile = effective_dockerfile_location(profile, args).lstrip("/") or "Dockerfile.hub.exp-fdb"
     service_key = service_name.replace("_", "-")
+    runtime_bind = f"{local_test_runtime_bind_source(args)}:{runtime_dir}"
+    image = f"{service_name}:local"
     lines: list[str] = [
         f"name: {service_name}",
         "",
@@ -713,6 +753,8 @@ def render_local_test_hub_compose(profile: HubNetworkProfile, args: argparse.Nam
         "    build:",
         f"      context: {yaml_quote(build_context)}",
         f"      dockerfile: {yaml_quote(dockerfile)}",
+        f"    image: {yaml_quote(image)}",
+        "    pull_policy: build",
         "    restart: unless-stopped",
         "    ports:",
         f"      - {yaml_quote(f'127.0.0.1:{profile.hub_bind_port}:{profile.hub_bind_port}')}",
@@ -721,19 +763,11 @@ def render_local_test_hub_compose(profile: HubNetworkProfile, args: argparse.Nam
         "    extra_hosts:",
         "      - host.docker.internal:host-gateway",
         "    volumes:",
-        f"      - {yaml_quote(f'{volume_name}:{runtime_dir}')}",
+        f"      - {yaml_quote(runtime_bind)}",
         "    command:",
     ]
     lines.extend(f"      - {yaml_quote(part)}" for part in command_parts)
-    lines.extend(
-        [
-            "",
-            "volumes:",
-            f"  {volume_name}:",
-            f"    name: {volume_name}",
-            "",
-        ]
-    )
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -1048,6 +1082,243 @@ def service_uuid_from_body(body: Any) -> str:
     return ""
 
 
+def run_local_command(command: list[str], *, timeout_s: float = 60.0) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, text=True, capture_output=True, timeout=timeout_s)
+
+
+def docker_ps_names() -> list[str]:
+    try:
+        result = run_local_command(["docker", "ps", "--format", "{{.Names}}"], timeout_s=15.0)
+    except Exception:
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def local_coolify_container_name(args: argparse.Namespace | None = None) -> str:
+    """Return the running local Coolify container name used for service staging."""
+
+    app_env = applications_service_env_values(args)
+    for key in (
+        "COOLIFY_CONTAINER",
+        "COOLIFY_CONTAINER_NAME",
+        "COOLIFY_LOCAL_CONTAINER",
+        "COOLIFY_SERVICE_CONTAINER",
+        "APP_CONTAINER_NAME",
+        "CONTAINER_PREFIX",
+    ):
+        value = str(os.environ.get(key) or app_env.get(key) or "").strip()
+        if value:
+            return value
+
+    names = docker_ps_names()
+    preferred = [
+        "mc-coolify-main_computer",
+        "mc-coolify-main-computer",
+        "coolify",
+    ]
+    lowered = {name.lower(): name for name in names}
+    for name in preferred:
+        if name.lower() in lowered:
+            return lowered[name.lower()]
+
+    def is_main_coolify_container(name: str) -> bool:
+        clean = name.lower()
+        if "coolify" not in clean:
+            return False
+        blocked = ("redis", "db", "postgres", "database", "realtime", "soketi", "proxy", "traefik")
+        return not any(part in clean for part in blocked)
+
+    candidates = [name for name in names if is_main_coolify_container(name)]
+    return candidates[0] if len(candidates) == 1 else ""
+
+
+def hub_build_context_sources() -> tuple[list[Path], list[Path]]:
+    files = [
+        REPO_ROOT / "Dockerfile.hub.exp-fdb",
+        REPO_ROOT / "pyproject.toml",
+        REPO_ROOT / "requirements.txt",
+        REPO_ROOT / "exp-fdb-hub.py",
+    ]
+    dirs = [
+        REPO_ROOT / "main_computer",
+    ]
+    return files, dirs
+
+
+def copy_hub_build_context(destination: Path) -> dict[str, Any]:
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True, exist_ok=True)
+    files, dirs = hub_build_context_sources()
+    copied: list[str] = []
+    missing: list[str] = []
+
+    for source in files:
+        if source.is_file():
+            shutil.copy2(source, destination / source.name)
+            copied.append(source.relative_to(REPO_ROOT).as_posix())
+        else:
+            missing.append(source.relative_to(REPO_ROOT).as_posix())
+
+    def ignore_dir(_directory: str, names: list[str]) -> set[str]:
+        ignored: set[str] = set()
+        for name in names:
+            if name in {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}:
+                ignored.add(name)
+            elif name.endswith((".pyc", ".pyo")):
+                ignored.add(name)
+        return ignored
+
+    for source in dirs:
+        if source.is_dir():
+            shutil.copytree(source, destination / source.name, ignore=ignore_dir)
+            copied.append(source.relative_to(REPO_ROOT).as_posix() + "/")
+        else:
+            missing.append(source.relative_to(REPO_ROOT).as_posix() + "/")
+
+    if missing:
+        raise CoolifyHubDeployError("Missing Hub build context source(s): " + ", ".join(missing))
+    return {"copied": copied, "destination": str(destination)}
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def stage_local_test_hub_build_context(args: argparse.Namespace, *, service_uuid: str) -> dict[str, Any]:
+    """Stage the Hub build context into Coolify's local service workspace.
+
+    Coolify's raw Docker Compose services deploy from /data/coolify/services/<uuid>.
+    Local deploys must therefore use a relative build context that we copy into
+    that workspace before triggering /deploy.
+    """
+
+    result: dict[str, Any] = {
+        "ok": False,
+        "service_uuid": service_uuid,
+        "context": f"./{DEFAULT_LOCAL_TEST_BUILD_CONTEXT_DIRNAME}",
+        "issues": [],
+    }
+    if not service_uuid:
+        result["issues"].append("missing service UUID")
+        return result
+
+    container = local_coolify_container_name(args)
+    result["container"] = container
+    if not container:
+        result["issues"].append("could not identify the running local Coolify container for build context staging")
+        return result
+
+    target_dir = f"/data/coolify/services/{service_uuid}/{DEFAULT_LOCAL_TEST_BUILD_CONTEXT_DIRNAME}"
+    result["target_dir"] = target_dir
+
+    with tempfile.TemporaryDirectory(prefix="main-computer-hub-coolify-context-") as temp_root:
+        temp_context = Path(temp_root) / DEFAULT_LOCAL_TEST_BUILD_CONTEXT_DIRNAME
+        copied = copy_hub_build_context(temp_context)
+        result["source_context"] = copied
+
+        mkdir = run_local_command(
+            ["docker", "exec", "--user", "root", container, "sh", "-lc", f"rm -rf {target_dir!r} && mkdir -p {target_dir!r}"],
+            timeout_s=30.0,
+        )
+        commands: list[dict[str, Any]] = [
+            {
+                "op": "prepare-target",
+                "returncode": mkdir.returncode,
+                "stdout": mkdir.stdout[-1200:],
+                "stderr": mkdir.stderr[-1200:],
+            }
+        ]
+        if mkdir.returncode != 0:
+            result["commands"] = commands
+            result["issues"].append("failed to prepare Coolify service build context directory: " + (mkdir.stderr or mkdir.stdout)[-1200:])
+            return result
+
+        copy = run_local_command(["docker", "cp", str(temp_context) + "/.", f"{container}:{target_dir}/"], timeout_s=120.0)
+        commands.append(
+            {
+                "op": "copy-context",
+                "returncode": copy.returncode,
+                "stdout": copy.stdout[-1200:],
+                "stderr": copy.stderr[-1200:],
+            }
+        )
+        if copy.returncode != 0:
+            result["commands"] = commands
+            result["issues"].append("failed to copy Hub build context into Coolify service workspace: " + (copy.stderr or copy.stdout)[-1200:])
+            return result
+
+    verify_script = "\n".join(
+        [
+            "set -eu",
+            f"cd {target_dir!r}",
+            "test -f Dockerfile.hub.exp-fdb",
+            "test -f pyproject.toml",
+            "test -f exp-fdb-hub.py",
+            "test -d main_computer",
+            "sha256sum Dockerfile.hub.exp-fdb pyproject.toml exp-fdb-hub.py",
+        ]
+    )
+    verify = run_local_command(["docker", "exec", "--user", "root", container, "sh", "-lc", verify_script], timeout_s=30.0)
+    commands.append(
+        {
+            "op": "verify-context",
+            "returncode": verify.returncode,
+            "stdout": verify.stdout[-2000:],
+            "stderr": verify.stderr[-1200:],
+        }
+    )
+    result["commands"] = commands
+    if verify.returncode != 0:
+        result["issues"].append("failed to verify staged Hub build context: " + (verify.stderr or verify.stdout)[-1200:])
+        return result
+
+    expected = {
+        "Dockerfile.hub.exp-fdb": sha256_file(REPO_ROOT / "Dockerfile.hub.exp-fdb"),
+        "pyproject.toml": sha256_file(REPO_ROOT / "pyproject.toml"),
+        "exp-fdb-hub.py": sha256_file(REPO_ROOT / "exp-fdb-hub.py"),
+    }
+    staged: dict[str, str] = {}
+    for line in verify.stdout.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) == 2:
+            staged[Path(parts[1].strip().lstrip("*")).name] = parts[0]
+    mismatched = [name for name, digest in expected.items() if staged.get(name) != digest]
+    result["expected_sha256"] = expected
+    result["staged_sha256"] = staged
+    if mismatched:
+        result["issues"].append("staged Hub build context digest mismatch for: " + ", ".join(mismatched))
+        return result
+
+    result["ok"] = True
+    result["message"] = f"staged Hub build context into {target_dir}"
+    return result
+
+
+def ensure_local_test_runtime_host_dir(args: argparse.Namespace) -> dict[str, Any]:
+    host_dir = local_test_runtime_host_dir(args)
+    host_dir.mkdir(parents=True, exist_ok=True)
+    cluster_file = host_dir / "fdb.cluster"
+    return {
+        "ok": True,
+        "host_dir": str(host_dir),
+        "bind_source": local_test_runtime_bind_source(args),
+        "container_cluster_file": exp_fdb_cluster_file_path(
+            coolify_deploy_profile(load_profile(args), args),
+            args,
+            runtime_dir=str(getattr(args, "hub_runtime_dir", "") or DEFAULT_LOCAL_TEST_HUB_RUNTIME_DIR),
+        ),
+        "cluster_file_present": cluster_file.is_file(),
+        "cluster_file": str(cluster_file),
+    }
+
+
 def list_services(client: CoolifyClient) -> tuple[CoolifyResponse, list[dict[str, Any]]]:
     response = client.request("GET", "/api/v1/services")
     return response, body_items(response.body, "services")
@@ -1326,6 +1597,17 @@ def plan_result(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[st
                 "docker_compose_raw_bytes": len(service_payload.get("docker_compose_raw", "")),
             }
             result["docker_compose"] = compose
+            result["local_build_context"] = {
+                "compose_context": docker_compose_build_context(args),
+                "staged_service_path": f"/data/coolify/services/<service-uuid>/{DEFAULT_LOCAL_TEST_BUILD_CONTEXT_DIRNAME}",
+                "source_files": [path.relative_to(REPO_ROOT).as_posix() for path in hub_build_context_sources()[0] if path.exists()],
+                "source_dirs": [path.relative_to(REPO_ROOT).as_posix() for path in hub_build_context_sources()[1] if path.exists()],
+            }
+            result["local_runtime_bind"] = {
+                "host_dir": str(local_test_runtime_host_dir(args)),
+                "bind_source": local_test_runtime_bind_source(args),
+                "container_dir": runtime_dir,
+            }
     return result
 
 
@@ -1413,6 +1695,13 @@ def apply(args: argparse.Namespace) -> dict[str, Any]:
                 },
             }
         )
+        runtime_host = ensure_local_test_runtime_host_dir(args)
+        phases.append({"phase": "local-runtime-host-dir", "result": runtime_host})
+        staging = stage_local_test_hub_build_context(args, service_uuid=service_uuid)
+        phases.append({"phase": "stage-local-build-context", "result": staging})
+        if not staging.get("ok"):
+            issues = "; ".join(str(item) for item in staging.get("issues", []) if str(item).strip())
+            raise CoolifyHubDeployError("Could not stage local Hub build context before deploy: " + (issues or "unknown staging failure"))
         if not args.no_deploy:
             deploy_result = trigger_deploy_service(client, service_uuid=service_uuid, force=args.force_deploy, tried=tried)
             phases.append({"phase": "deploy", "result": deploy_result})
@@ -1524,6 +1813,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Existing local Coolify state dir for `apply test`. Defaults to MAIN_COMPUTER_COOLIFY_STATE_DIR, "
             "then COOLIFY_LOCAL_STATE from runtime/applications_service/applications.env, then runtime/coolify-local-docker."
+        ),
+    )
+    parser.add_argument(
+        "--local-hub-runtime-host-dir",
+        default="",
+        help=(
+            "Host directory bind-mounted into the local test Hub runtime. Defaults to "
+            "MAIN_COMPUTER_HUB_TEST_RUNTIME_HOST_DIR, then runtime/hub/test-exp-fdb."
         ),
     )
     parser.add_argument(
