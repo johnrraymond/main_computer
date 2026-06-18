@@ -621,6 +621,7 @@ $exportItems = @(
   "docker-compose.applications.yml",
   "docker-compose.gitea.yml",
   "Dockerfile.hub.exp-fdb",
+  "run-exp-fdb-hub.py",
   "docker",
   "deploy/local-platform",
   "deploy/coolify/local-docker",
