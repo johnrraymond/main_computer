@@ -450,6 +450,12 @@ wait-rpc
 deploy-contracts
 ```
 
+For `test` and `testnet`, the contract deployment phase generates non-default
+Ring 0 office wallets by default and publishes their public addresses into the
+scoped deployment manifest. Mainnet does not generate offices by default; pass
+operator-approved authority addresses or opt in explicitly only after reviewing
+the mainnet authority plan.
+
 `coolify-sync` first discovers the Coolify project and server, then discovers or
 creates the target environment before creating/updating the service through the
 API. Coolify 4.1.x service creation requires a real project, server, and project

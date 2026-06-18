@@ -72,6 +72,78 @@ function Resolve-PythonCommand {
   return "python"
 }
 
+function Test-LocalTcpPortOpen {
+  param([Parameter(Mandatory = $true)][int]$Port)
+
+  try {
+    $client = [System.Net.Sockets.TcpClient]::new()
+    try {
+      $async = $client.BeginConnect("127.0.0.1", $Port, $null, $null)
+      if (-not $async.AsyncWaitHandle.WaitOne(500, $false)) {
+        return $false
+      }
+      $client.EndConnect($async)
+      return $true
+    }
+    finally {
+      $client.Close()
+    }
+  }
+  catch {
+    return $false
+  }
+}
+
+function Get-DockerOnlyOfficeNamedContainerId {
+  $containerName = [string]$env:MAIN_COMPUTER_ONLYOFFICE_CONTAINER_NAME
+  if ([string]::IsNullOrWhiteSpace($containerName)) {
+    return ""
+  }
+
+  $nameFilter = "name=^/$containerName$"
+  $namedContainerId = (& docker ps -aq --filter $nameFilter 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1)
+  if (-not [string]::IsNullOrWhiteSpace([string]$namedContainerId)) {
+    return [string]$namedContainerId
+  }
+
+  return ""
+}
+
+function Test-DockerOnlyOfficeNamedContainerRunning {
+  $containerName = [string]$env:MAIN_COMPUTER_ONLYOFFICE_CONTAINER_NAME
+  if ([string]::IsNullOrWhiteSpace($containerName)) {
+    return $false
+  }
+
+  $running = (& docker inspect --format "{{.State.Running}}" $containerName 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1)
+  return (([string]$running).Trim().ToLowerInvariant() -eq "true")
+}
+
+function Start-DockerOnlyOfficeNamedContainerIfPresent {
+  $containerName = [string]$env:MAIN_COMPUTER_ONLYOFFICE_CONTAINER_NAME
+  if ([string]::IsNullOrWhiteSpace($containerName)) {
+    return $false
+  }
+
+  $containerId = Get-DockerOnlyOfficeNamedContainerId
+  if ([string]::IsNullOrWhiteSpace([string]$containerId)) {
+    return $false
+  }
+
+  if (Test-DockerOnlyOfficeNamedContainerRunning) {
+    Write-Host "Shared ONLYOFFICE named container already exists: $containerName ($containerId). Compose up will not recreate it."
+    return $true
+  }
+
+  Write-Host "Shared ONLYOFFICE named container exists but is stopped: $containerName ($containerId). Starting it without recreating."
+  & docker start $containerName | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "Existing shared ONLYOFFICE container '$containerName' could not be started; remove or repair it before rerunning startup."
+  }
+
+  return $true
+}
+
 function Invoke-DockerComposeOnlyOffice {
   param(
     [Parameter(Mandatory = $true)][string[]]$ComposeArgs,
@@ -194,6 +266,18 @@ function Invoke-DockerOnlyOffice {
 
   switch ($DockerAction) {
     "start" {
+      if (Test-LocalTcpPortOpen -Port $Port) {
+        Write-Host "Shared ONLYOFFICE already reachable on port $Port; start path will not recreate it."
+        $script:MainComputerOnlyOfficeNeedsFinalStatus = $true
+        return
+      }
+
+      if (Start-DockerOnlyOfficeNamedContainerIfPresent) {
+        Wait-DockerOnlyOfficeContainer
+        $script:MainComputerOnlyOfficeNeedsFinalStatus = $true
+        return
+      }
+
       Invoke-DockerComposeOnlyOffice @("up", "-d", "onlyoffice") -AllowFailure
       $composeExitCode = $script:MainComputerOnlyOfficeLastComposeExitCode
       if ($composeExitCode -ne 0) {
