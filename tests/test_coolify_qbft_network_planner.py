@@ -20,7 +20,7 @@ def _load_module():
     return module
 
 
-def test_default_testnet_plan_has_four_validators_and_dedicated_rpc() -> None:
+def test_default_testnet_plan_uses_one_besu_validator_as_rpc_for_low_resource_host() -> None:
     module = _load_module()
 
     plan = module.build_plan("testnet")
@@ -28,10 +28,14 @@ def test_default_testnet_plan_has_four_validators_and_dedicated_rpc() -> None:
 
     assert plan.environment == "testnet"
     assert plan.chain_id == 42424241
-    assert len([service for service in services if service.role == "validator"]) == 4
-    assert len([service for service in services if service.role == "rpc"]) == 1
-    assert module.rpc_target_service(plan).id == "rpc-1"
+    assert len([service for service in services if service.role == "validator"]) == 1
+    assert len([service for service in services if service.role == "rpc"]) == 0
+    assert module.rpc_target_service(plan).id == "validator-1"
     assert module.rpc_target_service(plan).rpc_host_port == 30010
+    assert plan.topology_policy.minimum_validators == 1
+    assert plan.topology_policy.minimum_rpc_nodes == 0
+    assert "single-Besu bring-up mode" in "\n".join(plan.warnings)
+    assert "No dedicated non-validator RPC node" in "\n".join(plan.warnings)
 
 
 def test_default_plan_assigns_globally_unique_host_ports() -> None:
@@ -43,10 +47,10 @@ def test_default_plan_assigns_globally_unique_host_ports() -> None:
         ports.extend([service.rpc_host_port, service.p2p_host_port])
 
     assert len(ports) == len(set(ports))
-    assert {30001, 30002, 30003, 30004, 30010, 30311, 30312, 30313, 30314, 30320}.issubset(set(ports))
+    assert set(ports) == {30010, 30311}
 
 
-def test_compose_render_contains_bootstrap_dedicated_rpc_and_managed_volume() -> None:
+def test_compose_render_contains_single_testnet_besu_and_managed_volume() -> None:
     module = _load_module()
 
     plan = module.build_plan("testnet", besu_image="hyperledger/besu:24.7.0")
@@ -55,21 +59,21 @@ def test_compose_render_contains_bootstrap_dedicated_rpc_and_managed_volume() ->
     assert "name: main-computer-qbft-testnet-testnet-a" in compose
     assert "qbft-bootstrap:" in compose
     assert "operator generate-blockchain-config" in compose
-    assert '"127.0.0.1:30001:8545"' in compose
     assert '"127.0.0.1:30010:8545"' in compose
     assert '"main-computer-qbft-testnet-testnet-a-runtime:/smoke"' in compose
     assert "--genesis-file=/smoke/genesis.json" in compose
+    assert "EXPECTED_QBFT_VALIDATOR_COUNT=1" in compose
+    assert "EXPECTED_QBFT_RPC_COUNT=0" in compose
     assert "waiting for QBFT bootstrap files for validator-1" in compose
     assert "missing required QBFT bootstrap file: /smoke/genesis.json" in compose
     assert "      - -ec" in compose
     assert "    command: |" not in compose
     assert "mc-qbft-rpc" in compose
-    assert "rpc-1:" in compose
-    assert "validator-2:" in compose
-    assert "validator-3:" in compose
-    assert "validator-4:" in compose
-    assert "waiting for QBFT bootstrap files for rpc-1" in compose
-    assert "--data-path=/smoke/rpc-node/data" in compose
+    assert "rpc-1:" not in compose
+    assert "validator-2:" not in compose
+    assert "validator-3:" not in compose
+    assert "validator-4:" not in compose
+    assert "--data-path=/smoke/validator-1/data" in compose
 
 
 def test_bootstrap_command_escapes_shell_dollars_for_docker_compose() -> None:
@@ -84,12 +88,12 @@ def test_bootstrap_command_escapes_shell_dollars_for_docker_compose() -> None:
     assert "$${QBFT_RESET_CHAIN:-false}" in bootstrap_entrypoint_script
     assert "\"$$BESU\" operator generate-blockchain-config" in bootstrap_entrypoint_script
     assert "set -- $$(find /tmp/qbft-networkFiles/keys" in bootstrap_entrypoint_script
-    assert "if [ \"$$#\" -ne 4 ]" in bootstrap_entrypoint_script
+    assert "if [ \"$$#\" -ne 1 ]" in bootstrap_entrypoint_script
     assert "pub=$$(tr -d" in bootstrap_entrypoint_script
     assert "pub=$${pub#0x}" in bootstrap_entrypoint_script
     assert "$${#pub}" in bootstrap_entrypoint_script
     assert "$$ENODE_1" in bootstrap_entrypoint_script
-    assert "$$ENODE_4" in bootstrap_entrypoint_script
+    assert "$$ENODE_4" not in bootstrap_entrypoint_script
 
 
 def test_bind_runtime_root_mode_uses_coolify_directory_hint() -> None:
@@ -206,7 +210,7 @@ def test_single_host_override_updates_address_and_coolify_url() -> None:
     assert host.ssh == "root@157.245.92.74"
     assert host.address == "157.245.92.74"
     assert host.coolify_url == "http://157.245.92.74:8000"
-    assert rpc.id == "rpc-1"
+    assert rpc.id == "validator-1"
     assert rpc.rpc_bind_host == "0.0.0.0"
     assert rpc.rpc_url_on_host == "http://157.245.92.74:30010"
 
@@ -260,7 +264,7 @@ def test_deploy_contracts_dry_run_uses_public_rpc_without_remote_ssh() -> None:
     assert "--generate-offices" in command
 
 
-def test_non_mainnet_generated_offices_can_be_disabled_for_contract_deploy() -> None:
+def test_testnet_deploy_contracts_can_opt_out_of_generated_offices() -> None:
     module = _load_module()
 
     plan = module.build_plan("testnet", public_rpc=True, single_host="root@157.245.92.74")
@@ -270,9 +274,10 @@ def test_non_mainnet_generated_offices_can_be_disabled_for_contract_deploy() -> 
         "--single-host",
         "root@157.245.92.74",
         "--public-rpc",
-        "--dry-run",
         "--no-generate-offices",
+        "--dry-run",
     ])
+
     result = module.deploy_contracts(plan, args)
 
     assert result["ok"] is True
@@ -282,29 +287,34 @@ def test_non_mainnet_generated_offices_can_be_disabled_for_contract_deploy() -> 
 def test_mainnet_does_not_generate_offices_by_default_but_can_opt_in() -> None:
     module = _load_module()
 
-    plan = module.build_plan("mainnet", allow_mainnet=True, public_rpc=True, single_host="root@157.245.92.74")
+    plan = module.build_plan("mainnet", allow_mainnet=True, public_rpc=True, single_host="root@203.0.113.10")
     default_args = module.parse_args([
         "deploy-contracts",
         "mainnet",
         "--allow-mainnet",
         "--single-host",
-        "root@157.245.92.74",
+        "root@203.0.113.10",
         "--public-rpc",
         "--dry-run",
     ])
-    explicit_args = module.parse_args([
+    opt_in_args = module.parse_args([
         "deploy-contracts",
         "mainnet",
         "--allow-mainnet",
         "--single-host",
-        "root@157.245.92.74",
+        "root@203.0.113.10",
         "--public-rpc",
-        "--dry-run",
         "--generate-offices",
+        "--dry-run",
     ])
 
-    assert "--generate-offices" not in module.deploy_contracts(plan, default_args)["command"]
-    assert "--generate-offices" in module.deploy_contracts(plan, explicit_args)["command"]
+    default_result = module.deploy_contracts(plan, default_args)
+    opt_in_result = module.deploy_contracts(plan, opt_in_args)
+
+    assert default_result["ok"] is True
+    assert "--generate-offices" not in default_result["command"]
+    assert opt_in_result["ok"] is True
+    assert "--generate-offices" in opt_in_result["command"]
 
 
 def test_generate_offices_flags_conflict() -> None:
@@ -317,9 +327,9 @@ def test_generate_offices_flags_conflict() -> None:
         "--single-host",
         "root@157.245.92.74",
         "--public-rpc",
-        "--dry-run",
         "--generate-offices",
         "--no-generate-offices",
+        "--dry-run",
     ])
 
     try:
@@ -327,7 +337,7 @@ def test_generate_offices_flags_conflict() -> None:
     except module.PlanError as exc:
         assert "--generate-offices and --no-generate-offices" in str(exc)
     else:
-        raise AssertionError("expected conflicting generated-office flags to fail")
+        raise AssertionError("conflicting office generation flags should fail")
 
 
 def test_coolify_client_timeout_returns_structured_failure(monkeypatch) -> None:
@@ -434,7 +444,8 @@ def test_coolify_sync_create_autodiscovers_single_project_and_server_and_uses_ba
     decoded_compose = base64.b64decode(create_payload["docker_compose_raw"]).decode("utf-8")
     assert "qbft-bootstrap:" in decoded_compose
     assert "validator-1:" in decoded_compose
-    assert "rpc-1:" in decoded_compose
+    assert "rpc-1:" not in decoded_compose
+    assert "validator-2:" not in decoded_compose
 
 
 def test_coolify_sync_uses_existing_environment_uuid_without_creating(monkeypatch) -> None:
@@ -683,11 +694,11 @@ def test_coolify_sync_create_path_uses_api_only_and_does_not_require_ssh(monkeyp
 def test_wait_for_rpc_requires_peer_and_block_advancement(monkeypatch) -> None:
     module = _load_module()
 
-    plan = module.build_plan("testnet", public_rpc=True)
+    plan = module.build_plan("testnet-split-example", public_rpc=True)
     args = module.parse_args(
         [
             "wait-rpc",
-            "testnet",
+            "testnet-split-example",
             "--rpc-url",
             "http://127.0.0.1:30010",
             "--rpc-timeout-s",

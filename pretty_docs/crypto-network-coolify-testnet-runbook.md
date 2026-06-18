@@ -123,9 +123,11 @@ RPC node count below topology_policy.minimum_rpc_nodes
 the mainnet seed without an explicit acknowledgement
 ```
 
-This lets the default `testnet` seed require four validators while the current
-lightweight `mainnet` bring-up seed can intentionally require one validator plus
-one dedicated RPC node.
+The current default `testnet` seed is intentionally low-resource: one Besu/QBFT
+validator that also owns the operator RPC port. That is a temporary test-machine
+constraint, not the long-term fault-tolerant topology. The lightweight `mainnet`
+bring-up seed still uses one validator plus one dedicated RPC node and requires
+explicit acknowledgement.
 
 Actual deployment can come after the planner proves the layout. The deploy step
 should call Coolify or SSH only after the same seed has already rendered a stable
@@ -401,8 +403,9 @@ qbft-bootstrap
 ```
 
 `qbft-bootstrap` runs inside the Coolify-managed stack and writes the chain
-identity files into a persistent named Docker volume before the validators start.
-For the default four-validator testnet seed that means:
+identity files into a persistent named Docker volume before Besu starts. For the
+current low-resource default testnet seed, that means one validator and no
+dedicated RPC sidecar:
 
 ```text
 genesis.json
@@ -410,18 +413,12 @@ qbftConfigFile.json
 static-nodes-all.json
 validator-1/data/key
 validator-1/static-nodes.json
-validator-2/data/key
-validator-2/static-nodes.json
-validator-3/data/key
-validator-3/static-nodes.json
-validator-4/data/key
-validator-4/static-nodes.json
-rpc-node/static-nodes.json
 network-metadata.json
 ```
 
-A lighter one-validator mainnet bring-up seed writes the same file classes, but
-only for the validator services actually present in that seed.
+The validator owns the public operator RPC port when `--public-rpc` is used. A
+future promoted testnet seed can reintroduce four validators plus a dedicated
+non-validator RPC node once the remote test machine can support it.
 
 That removes the manual host-prep command:
 
@@ -437,9 +434,11 @@ QBFT_RESET_CHAIN=true
 ```
 
 For first public operator access without SSH tunneling, `--public-rpc` exposes
-only the non-validator RPC host port. Validator RPC remains loopback-only and
-single-host validator P2P is not published outside the Coolify private network.
-Use a firewall/DNS policy before keeping public RPC open.
+the operator RPC host port. In the current single-Besu testnet seed, that RPC
+port belongs to `validator-1`; in the future four-validator seed it should move
+back to a dedicated non-validator RPC node. Single-host validator P2P is not
+published outside the Coolify private network. Use a firewall/DNS policy before
+keeping public RPC open.
 
 The apply phases are:
 
@@ -451,10 +450,9 @@ deploy-contracts
 ```
 
 For `test` and `testnet`, the contract deployment phase generates non-default
-Ring 0 office wallets by default and publishes their public addresses into the
-scoped deployment manifest. Mainnet does not generate offices by default; pass
-operator-approved authority addresses or opt in explicitly only after reviewing
-the mainnet authority plan.
+Ring 0 office wallets by default. Use `--no-generate-offices` only when you
+intentionally want to supply/keep an explicit authority set. Mainnet does not
+auto-generate authority wallets unless the operator passes `--generate-offices`.
 
 `coolify-sync` first discovers the Coolify project and server, then discovers or
 creates the target environment before creating/updating the service through the
