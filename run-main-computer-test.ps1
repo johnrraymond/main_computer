@@ -206,7 +206,7 @@ function New-DevModeProfile {
         ExecutorRoot = Join-Path $stateRoot "executor"
         WslRuntimeRoot = Join-Path $stateRoot "wsl"
         OnlyOfficePort = $OnlyOfficePort
-        OnlyOfficeProject = "main-computer-onlyoffice-$Key"
+        OnlyOfficeProject = "main-computer-onlyoffice"
         LocalServerProject = $localPlatformProject
         LocalServerRegistry = Join-Path $stateRoot "local-platform\sites.json"
         LocalServerCompose = Join-Path $stateRoot "local-platform\docker-compose.websites.yml"
@@ -231,10 +231,10 @@ function Resolve-RunnerMode {
         }
         "unleashed-mode" { return (Resolve-RunnerMode -ModeName "Unleashed") }
         "debug" {
-            return (New-DevModeProfile -Key "debug" -Label "Debug" -DistributionSuffix "debug" -GuidanceLevel "debug" -Port 28865 -HeartbeatPort 28866 -OnlyOfficePort 28085 -LocalServerPortStart 28080 -LocalServerGeneratedPortStart 28100 -LocalServerGeneratedPortEnd 28199 -CoolifyPort 27056 -CoolifySoketiPort 27156 -CoolifySoketiTerminalPort 27256)
+            return (New-DevModeProfile -Key "debug" -Label "Debug" -DistributionSuffix "debug" -GuidanceLevel "debug" -Port 28865 -HeartbeatPort 28866 -OnlyOfficePort 18085 -LocalServerPortStart 28080 -LocalServerGeneratedPortStart 28100 -LocalServerGeneratedPortEnd 28199 -CoolifyPort 27056 -CoolifySoketiPort 27156 -CoolifySoketiTerminalPort 27256)
         }
         "safe" {
-            return (New-DevModeProfile -Key "safe" -Label "Safe Mode" -DistributionSuffix "safe" -GuidanceLevel "guided" -Port 38865 -HeartbeatPort 38866 -OnlyOfficePort 38085 -LocalServerPortStart 38080 -LocalServerGeneratedPortStart 38100 -LocalServerGeneratedPortEnd 38199 -CoolifyPort 37056 -CoolifySoketiPort 37156 -CoolifySoketiTerminalPort 37256)
+            return (New-DevModeProfile -Key "safe" -Label "Safe Mode" -DistributionSuffix "safe" -GuidanceLevel "guided" -Port 38865 -HeartbeatPort 38866 -OnlyOfficePort 18085 -LocalServerPortStart 38080 -LocalServerGeneratedPortStart 38100 -LocalServerGeneratedPortEnd 38199 -CoolifyPort 37056 -CoolifySoketiPort 37156 -CoolifySoketiTerminalPort 37256)
         }
         "safe-mode" { return (Resolve-RunnerMode -ModeName "Safe") }
     }
@@ -318,6 +318,7 @@ function Set-RunnerEnvironment {
     $env:MAIN_COMPUTER_ONLYOFFICE_MODE = "docker"
     $env:MAIN_COMPUTER_ONLYOFFICE_PORT = "$($SelectedMode.OnlyOfficePort)"
     $env:MAIN_COMPUTER_ONLYOFFICE_PROJECT = $SelectedMode.OnlyOfficeProject
+    $env:MAIN_COMPUTER_ONLYOFFICE_CONTAINER_NAME = "main-computer-onlyoffice-documentserver"
     $env:MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL = "http://127.0.0.1:$($SelectedMode.OnlyOfficePort)"
     $env:MAIN_COMPUTER_ONLYOFFICE_INTERNAL_URL = "http://127.0.0.1:$($SelectedMode.OnlyOfficePort)"
     $env:MAIN_COMPUTER_ONLYOFFICE_BROWSER_PUBLIC_URL = "http://127.0.0.1:$($SelectedMode.OnlyOfficePort)"
@@ -526,7 +527,7 @@ function Invoke-DevModeCheck {
     Write-Host ("Mode: {0} [{1}]" -f $SelectedMode.Label, $SelectedMode.Key)
     Write-Host ("Repo root: {0}" -f $script:RepoRoot)
     Write-Host ("State root: {0}" -f $SelectedMode.StateRoot)
-    Write-Host "Shared services: Ollama and Gitea are machine-wide. Mode services: WSL executor, ONLYOFFICE, Local Server, and Local Coolify."
+    Write-Host "Shared services: Ollama, Gitea, and ONLYOFFICE are machine-wide. Mode services: WSL executor, Local Server, and Local Coolify."
 
     if ((Test-Path -LiteralPath (Join-Path $script:RepoRoot "pyproject.toml") -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $script:RepoRoot "main_computer") -PathType Container)) {
         Add-ModeCheckResult "Development checkout" "OK" "repo files found"
@@ -601,10 +602,10 @@ function Invoke-DevModeCheck {
 
     $onlyOfficePort = [int]$env:MAIN_COMPUTER_ONLYOFFICE_PORT
     if (Test-LocalTcpPortOpen -Port $onlyOfficePort) {
-        Add-ModeCheckResult "ONLYOFFICE for mode" "OK" ("{0} on port {1}" -f $SelectedMode.OnlyOfficeProject, $onlyOfficePort)
+        Add-ModeCheckResult "ONLYOFFICE shared service" "OK" ("machine-wide {0} is reachable on port {1}" -f $SelectedMode.OnlyOfficeProject, $onlyOfficePort)
     }
     else {
-        Add-ModeCheckResult "ONLYOFFICE for mode" "FAIL" ("not reachable for {0}; expected project {1} on port {2}" -f $SelectedMode.Label, $SelectedMode.OnlyOfficeProject, $onlyOfficePort)
+        Add-ModeCheckResult "ONLYOFFICE shared service" "FAIL" ("machine-wide ONLYOFFICE is not reachable on port {0}; this is shared across modes, not one ONLYOFFICE per mode" -f $onlyOfficePort)
     }
 
     $coolifyPort = [int]$env:MAIN_COMPUTER_COOLIFY_APP_PORT

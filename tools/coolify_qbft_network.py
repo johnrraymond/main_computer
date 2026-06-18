@@ -1369,6 +1369,16 @@ def is_local_coolify_plan(plan: NetworkPlan) -> bool:
     return plan.name in LOCAL_COOLIFY_SEEDS
 
 
+def should_generate_offices_for_contract_deploy(plan: NetworkPlan, args: argparse.Namespace) -> bool:
+    if bool(getattr(args, "generate_offices", False)) and bool(getattr(args, "no_generate_offices", False)):
+        raise PlanError("--generate-offices and --no-generate-offices cannot be combined")
+    if bool(getattr(args, "generate_offices", False)):
+        return True
+    if bool(getattr(args, "no_generate_offices", False)):
+        return False
+    return str(plan.environment or "").strip().lower() != "mainnet"
+
+
 def set_arg_default(args: argparse.Namespace, name: str, value: object) -> None:
     current = getattr(args, name, "")
     if current is None or str(current).strip() == "":
@@ -2545,7 +2555,7 @@ def deploy_contracts(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, A
         "--foundry-image",
         str(getattr(args, "foundry_image", "") or DEFAULT_FOUNDRY_IMAGE),
     ]
-    if is_local_coolify_plan(plan):
+    if should_generate_offices_for_contract_deploy(plan, args):
         command.append("--generate-offices")
     operator_log(args, "deploy-contracts command", command=" ".join(command))
     result = safe_subprocess_run(
@@ -2963,6 +2973,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--deployment-project-name", default="", help="Override contract deployment project name.")
     parser.add_argument("--deployment-environment", default="", help="Override contract deployment environment.")
     parser.add_argument("--deployment-source-kind", default="", help="Override the source.kind recorded in the deployment manifest.")
+    parser.add_argument(
+        "--generate-offices",
+        action="store_true",
+        help="Force generated Ring 0 office wallets during contract deployment. Default for non-mainnet networks.",
+    )
+    parser.add_argument(
+        "--no-generate-offices",
+        action="store_true",
+        help="Do not generate Ring 0 office wallets during contract deployment. Intended for explicit mainnet/operator authority flows.",
+    )
     parser.add_argument("--deployment-output-dir", default="", help="Override runtime deployment output directory.")
     parser.add_argument("--foundry-image", default=DEFAULT_FOUNDRY_IMAGE)
     parser.add_argument("--docker-subnet", default="", help="Override the local test QBFT Docker subnet before rendering Coolify compose.")
@@ -3107,7 +3127,8 @@ def render_operator_runbook() -> str:
             0x28757b1
 
         Contract deployment now publishes this Coolify surface as the first-class
-        testnet environment, not the local loopback test environment:
+        testnet environment, not the local loopback test environment, and generates
+        non-default Ring 0 office wallets by default for test/testnet deployments:
 
             runtime/deployments/testnet/latest.json
 

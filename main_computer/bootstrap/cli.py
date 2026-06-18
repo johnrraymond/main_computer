@@ -44,7 +44,7 @@ MODE_DEFAULTS = {
         "distribution_suffix": "debug",
         "port": 28865,
         "heartbeat_port": 28866,
-        "onlyoffice_port": 28085,
+        "onlyoffice_port": 18085,
         "docker_viewport_port": 28765,
         "hub_port": 28770,
         "hub_worker_port": 28771,
@@ -60,7 +60,7 @@ MODE_DEFAULTS = {
         "distribution_suffix": "safe",
         "port": 38865,
         "heartbeat_port": 38866,
-        "onlyoffice_port": 38085,
+        "onlyoffice_port": 18085,
         "docker_viewport_port": 38765,
         "hub_port": 38770,
         "hub_worker_port": 38771,
@@ -335,9 +335,11 @@ def build_mode_profiles(
 ) -> dict[str, dict[str, object]]:
     """Build the runner's three-mode profile table from the regular installer shape."""
 
+    shared_onlyoffice_port = args.onlyoffice_port if args.onlyoffice_port is not None else 18085
     profiles: dict[str, dict[str, object]] = {}
     for key in ("unleashed", "debug", "safe"):
         defaults = dict(MODE_DEFAULTS[key])
+        defaults["onlyoffice_port"] = shared_onlyoffice_port
         if key == "safe":
             defaults["port"] = args.safe_port
             defaults["heartbeat_port"] = args.safe_heartbeat_port
@@ -347,9 +349,6 @@ def build_mode_profiles(
                 defaults["port"] = args.port
             if args.heartbeat_port and args.heartbeat_port > 0:
                 defaults["heartbeat_port"] = args.heartbeat_port
-            if args.onlyoffice_port is not None:
-                defaults["onlyoffice_port"] = args.onlyoffice_port
-
         state_root = instance_store_root / safe_name(instance_name) / key
         venv_python = active_venv_python if key == active_mode_key else state_root / "venv" / "Scripts" / "python.exe"
         distribution = (
@@ -380,7 +379,7 @@ def build_mode_profiles(
             "hub_port": defaults["hub_port"],
             "hub_worker_port": defaults["hub_worker_port"],
             "ethereum_rpc_port": defaults["ethereum_rpc_port"],
-            "onlyoffice_project": f"main-computer-onlyoffice-{key}",
+            "onlyoffice_project": "main-computer-onlyoffice",
             "local_server_project": _mode_scoped_local_platform_project(instance_name, key),
             "local_server_registry": state_root / "local-platform" / "sites.json",
             "local_server_compose": state_root / "local-platform" / "docker-compose.websites.yml",
@@ -393,7 +392,7 @@ def build_mode_profiles(
             "coolify_soketi_port": coolify_ports["soketi"],
             "coolify_soketi_terminal_port": coolify_ports["soketi_terminal"],
             "firewall_rule": f"MainComputer-{safe_name(instance_name).replace('_', '-')}-{key}-WslOnly",
-            "shared_dependencies": ["Ollama", "Gitea", "Windows host services", "WSL host feature"],
+            "shared_dependencies": ["Ollama", "Gitea", "ONLYOFFICE", "Windows host services", "WSL host feature"],
         }
 
     return profiles
@@ -624,6 +623,7 @@ function Set-RunnerEnvironment {{
         $env:MAIN_COMPUTER_ONLYOFFICE_MODE = $OnlyOfficeMode
         $env:MAIN_COMPUTER_ONLYOFFICE_PORT = "$($SelectedMode.OnlyOfficePort)"
         $env:MAIN_COMPUTER_ONLYOFFICE_PROJECT = $SelectedMode.OnlyOfficeProject
+        $env:MAIN_COMPUTER_ONLYOFFICE_CONTAINER_NAME = "main-computer-onlyoffice-documentserver"
         $env:MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL = "http://127.0.0.1:$($SelectedMode.OnlyOfficePort)"
         $env:MAIN_COMPUTER_ONLYOFFICE_INTERNAL_URL = "http://127.0.0.1:$($SelectedMode.OnlyOfficePort)"
         $env:MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL = "http://host.docker.internal:$($SelectedMode.Port)"
@@ -834,7 +834,7 @@ function Invoke-InstalledModeCheck {{
     Write-Host "Main Computer quick installed environment check"
     Write-Host ("Mode: {{0}} [{{1}}]" -f $SelectedMode.Label, $SelectedMode.Key)
     Write-Host ("Install root: {{0}}" -f $InstallRoot)
-    Write-Host "Shared services: Ollama and Gitea are machine-wide. Mode services: WSL executor, ONLYOFFICE, Local Server, and Local Coolify."
+    Write-Host "Shared services: Ollama, Gitea, and ONLYOFFICE are machine-wide. Mode services: WSL executor, Local Server, and Local Coolify."
 
     $manifest = Join-Path $InstallRoot "main-computer-install.json"
     $runtimeManifest = Join-Path $InstallRoot "runtime\main-computer-install.json"
@@ -914,14 +914,14 @@ function Invoke-InstalledModeCheck {{
     if ($env:MAIN_COMPUTER_ONLYOFFICE_ENABLED -eq "1") {{
         $onlyOfficePort = [int]$env:MAIN_COMPUTER_ONLYOFFICE_PORT
         if (Test-LocalTcpPortOpen -Port $onlyOfficePort) {{
-            Add-ModeCheckResult "ONLYOFFICE for mode" "OK" ("{{0}} on port {{1}}" -f $SelectedMode.OnlyOfficeProject, $onlyOfficePort)
+            Add-ModeCheckResult "ONLYOFFICE shared service" "OK" ("machine-wide {{0}} is reachable on port {{1}}" -f $SelectedMode.OnlyOfficeProject, $onlyOfficePort)
         }}
         else {{
-            Add-ModeCheckResult "ONLYOFFICE for mode" "FAIL" ("not reachable for {{0}}; expected project {{1}} on port {{2}}" -f $SelectedMode.Label, $SelectedMode.OnlyOfficeProject, $onlyOfficePort)
+            Add-ModeCheckResult "ONLYOFFICE shared service" "FAIL" ("machine-wide ONLYOFFICE is not reachable on port {{0}}; this should be one shared install, not one per Main Computer mode" -f $onlyOfficePort)
         }}
     }}
     else {{
-        Add-ModeCheckResult "ONLYOFFICE for mode" "SKIP" "disabled for this install"
+        Add-ModeCheckResult "ONLYOFFICE shared service" "SKIP" "disabled for this install"
     }}
 
     if ($env:MAIN_COMPUTER_COOLIFY_LOCAL_ENABLED -eq "1") {{
@@ -1359,6 +1359,7 @@ def _service_env(
         env["MAIN_COMPUTER_ONLYOFFICE_MODE"] = effective_onlyoffice_mode
         env["MAIN_COMPUTER_ONLYOFFICE_PORT"] = str(profile["onlyoffice_port"])
         env["MAIN_COMPUTER_ONLYOFFICE_PROJECT"] = str(profile["onlyoffice_project"])
+        env["MAIN_COMPUTER_ONLYOFFICE_CONTAINER_NAME"] = "main-computer-onlyoffice-documentserver"
         env["MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL"] = f"http://127.0.0.1:{profile['onlyoffice_port']}"
         env["MAIN_COMPUTER_ONLYOFFICE_INTERNAL_URL"] = f"http://127.0.0.1:{profile['onlyoffice_port']}"
         env["MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL"] = f"http://host.docker.internal:{profile['port']}"

@@ -257,6 +257,77 @@ def test_deploy_contracts_dry_run_uses_public_rpc_without_remote_ssh() -> None:
     assert command[command.index("--wait-timeout-s") + 1] == "0.0"
     assert command[command.index("--deploy-timeout-s") + 1] == "0.0"
     assert command[command.index("--external-docker-network") + 1] == "bridge"
+    assert "--generate-offices" in command
+
+
+def test_non_mainnet_generated_offices_can_be_disabled_for_contract_deploy() -> None:
+    module = _load_module()
+
+    plan = module.build_plan("testnet", public_rpc=True, single_host="root@157.245.92.74")
+    args = module.parse_args([
+        "deploy-contracts",
+        "testnet",
+        "--single-host",
+        "root@157.245.92.74",
+        "--public-rpc",
+        "--dry-run",
+        "--no-generate-offices",
+    ])
+    result = module.deploy_contracts(plan, args)
+
+    assert result["ok"] is True
+    assert "--generate-offices" not in result["command"]
+
+
+def test_mainnet_does_not_generate_offices_by_default_but_can_opt_in() -> None:
+    module = _load_module()
+
+    plan = module.build_plan("mainnet", allow_mainnet=True, public_rpc=True, single_host="root@157.245.92.74")
+    default_args = module.parse_args([
+        "deploy-contracts",
+        "mainnet",
+        "--allow-mainnet",
+        "--single-host",
+        "root@157.245.92.74",
+        "--public-rpc",
+        "--dry-run",
+    ])
+    explicit_args = module.parse_args([
+        "deploy-contracts",
+        "mainnet",
+        "--allow-mainnet",
+        "--single-host",
+        "root@157.245.92.74",
+        "--public-rpc",
+        "--dry-run",
+        "--generate-offices",
+    ])
+
+    assert "--generate-offices" not in module.deploy_contracts(plan, default_args)["command"]
+    assert "--generate-offices" in module.deploy_contracts(plan, explicit_args)["command"]
+
+
+def test_generate_offices_flags_conflict() -> None:
+    module = _load_module()
+
+    plan = module.build_plan("testnet", public_rpc=True, single_host="root@157.245.92.74")
+    args = module.parse_args([
+        "deploy-contracts",
+        "testnet",
+        "--single-host",
+        "root@157.245.92.74",
+        "--public-rpc",
+        "--dry-run",
+        "--generate-offices",
+        "--no-generate-offices",
+    ])
+
+    try:
+        module.deploy_contracts(plan, args)
+    except module.PlanError as exc:
+        assert "--generate-offices and --no-generate-offices" in str(exc)
+    else:
+        raise AssertionError("expected conflicting generated-office flags to fail")
 
 
 def test_coolify_client_timeout_returns_structured_failure(monkeypatch) -> None:

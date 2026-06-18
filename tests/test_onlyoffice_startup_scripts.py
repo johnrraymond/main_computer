@@ -21,8 +21,13 @@ def test_onlyoffice_control_is_docker_only() -> None:
     assert 'function Get-DockerOnlyOfficeContainerId' in text
     assert 'function Wait-DockerOnlyOfficeContainer' in text
     assert 'docker compose up -d onlyoffice returned exit code $composeExitCode' in text
+    assert 'function Test-LocalTcpPortOpen' in text
+    assert 'function Start-DockerOnlyOfficeNamedContainerIfPresent' in text
+    assert 'Shared ONLYOFFICE already reachable on port $Port; start path will not recreate it.' in text
+    assert 'Compose up will not recreate it.' in text
     assert 'docker compose -f $composePath -p $ProjectName ps -q onlyoffice' in text
     assert 'docker ps -q --filter $nameFilter' in text
+    assert 'docker ps -aq --filter $nameFilter' in text
     assert 'docker inspect --format "{{.State.Running}} {{.Id}}" $containerName' in text
     assert 'ONLYOFFICE container is visible after $attempt docker/container inspection attempt(s)' in text
     assert '$script:MainComputerOnlyOfficeNeedsFinalStatus = $true' in text

@@ -727,7 +727,7 @@ function New-ModeIsolationProfile {
         DefaultPort = $DefaultPort
         DefaultHeartbeatPort = $DefaultHeartbeatPort
         DefaultOnlyOfficePort = $DefaultOnlyOfficePort
-        OnlyOfficeProjectName = "main-computer-onlyoffice-$Key"
+        OnlyOfficeProjectName = "main-computer-onlyoffice"
         CoolifyProjectName = $coolifyProjectName
         CoolifyStateRoot = Join-Path $stateRoot "coolify-local-docker"
         CoolifyPort = $coolifyPort
@@ -752,7 +752,7 @@ function New-ModeIsolationProfile {
         FirewallRuleName = "MainComputer-$InstallInstanceName-$Key-WslOnly"
         WslHostGatewayIp = ""
         WslGuestIp = ""
-        SharedDependencies = @("Ollama", "Gitea", "Windows host services", "WSL host feature")
+        SharedDependencies = @("Ollama", "Gitea", "ONLYOFFICE", "Windows host services", "WSL host feature")
     }
 }
 
@@ -765,8 +765,8 @@ function Get-MainComputerModeIsolationProfiles {
 
     return @(
         (New-ModeIsolationProfile -Root $Root -InstallInstanceName $InstallInstanceName -InstanceStoreRoot $InstanceStoreRoot -Key "unleashed" -Label "Unleashed Mode" -RuntimeProfileName "test" -DistributionSuffix "unleashed" -DefaultPort 8765 -DefaultHeartbeatPort 8766 -DefaultOnlyOfficePort 18085 -DefaultLocalServerPortStart 18080 -LocalServerGeneratedPortStart 18100 -LocalServerGeneratedPortEnd 18199 -GuidanceLevel "developer"),
-        (New-ModeIsolationProfile -Root $Root -InstallInstanceName $InstallInstanceName -InstanceStoreRoot $InstanceStoreRoot -Key "debug" -Label "Debug" -RuntimeProfileName "test" -DistributionSuffix "debug" -DefaultPort 28865 -DefaultHeartbeatPort 28866 -DefaultOnlyOfficePort 28085 -DefaultLocalServerPortStart 28080 -LocalServerGeneratedPortStart 28100 -LocalServerGeneratedPortEnd 28199 -GuidanceLevel "debug"),
-        (New-ModeIsolationProfile -Root $Root -InstallInstanceName $InstallInstanceName -InstanceStoreRoot $InstanceStoreRoot -Key "safe" -Label "Safe Mode" -RuntimeProfileName "prod" -DistributionSuffix "safe" -DefaultPort $SafePort -DefaultHeartbeatPort $SafeHeartbeatPort -DefaultOnlyOfficePort 38085 -DefaultLocalServerPortStart 38080 -LocalServerGeneratedPortStart 38100 -LocalServerGeneratedPortEnd 38199 -GuidanceLevel "guided")
+        (New-ModeIsolationProfile -Root $Root -InstallInstanceName $InstallInstanceName -InstanceStoreRoot $InstanceStoreRoot -Key "debug" -Label "Debug" -RuntimeProfileName "test" -DistributionSuffix "debug" -DefaultPort 28865 -DefaultHeartbeatPort 28866 -DefaultOnlyOfficePort 18085 -DefaultLocalServerPortStart 28080 -LocalServerGeneratedPortStart 28100 -LocalServerGeneratedPortEnd 28199 -GuidanceLevel "debug"),
+        (New-ModeIsolationProfile -Root $Root -InstallInstanceName $InstallInstanceName -InstanceStoreRoot $InstanceStoreRoot -Key "safe" -Label "Safe Mode" -RuntimeProfileName "prod" -DistributionSuffix "safe" -DefaultPort $SafePort -DefaultHeartbeatPort $SafeHeartbeatPort -DefaultOnlyOfficePort 18085 -DefaultLocalServerPortStart 38080 -LocalServerGeneratedPortStart 38100 -LocalServerGeneratedPortEnd 38199 -GuidanceLevel "guided")
     )
 }
 
@@ -2873,6 +2873,7 @@ function Set-RunnerEnvironment {
         $env:MAIN_COMPUTER_ONLYOFFICE_MODE = $OnlyOfficeMode
         $env:MAIN_COMPUTER_ONLYOFFICE_PORT = "$($SelectedMode.OnlyOfficePort)"
         $env:MAIN_COMPUTER_ONLYOFFICE_PROJECT = $SelectedMode.OnlyOfficeProject
+        $env:MAIN_COMPUTER_ONLYOFFICE_CONTAINER_NAME = "main-computer-onlyoffice-documentserver"
         $env:MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL = "http://127.0.0.1:$($SelectedMode.OnlyOfficePort)"
         $env:MAIN_COMPUTER_ONLYOFFICE_INTERNAL_URL = "http://127.0.0.1:$($SelectedMode.OnlyOfficePort)"
         $env:MAIN_COMPUTER_ONLYOFFICE_CALLBACK_BASE_URL = "http://host.docker.internal:$($SelectedMode.Port)"
@@ -3045,7 +3046,7 @@ function Invoke-InstalledModeCheck {
     Write-Host "Main Computer quick installed environment check"
     Write-Host ("Mode: {0} [{1}]" -f $SelectedMode.Label, $SelectedMode.Key)
     Write-Host ("Install root: {0}" -f $InstallRoot)
-    Write-Host "Shared services: Ollama and Gitea are machine-wide. Mode services: WSL executor, ONLYOFFICE, Local Server, and Local Coolify."
+    Write-Host "Shared services: Ollama, Gitea, and ONLYOFFICE are machine-wide. Mode services: WSL executor, Local Server, and Local Coolify."
 
     $manifest = Join-Path $InstallRoot "main-computer-install.json"
     $runtimeManifest = Join-Path $InstallRoot "runtime\main-computer-install.json"
@@ -3125,14 +3126,14 @@ function Invoke-InstalledModeCheck {
     if ($env:MAIN_COMPUTER_ONLYOFFICE_ENABLED -eq "1") {
         $onlyOfficePort = [int]$env:MAIN_COMPUTER_ONLYOFFICE_PORT
         if (Test-LocalTcpPortOpen -Port $onlyOfficePort) {
-            Add-ModeCheckResult "ONLYOFFICE for mode" "OK" ("{0} on port {1}" -f $SelectedMode.OnlyOfficeProject, $onlyOfficePort)
+            Add-ModeCheckResult "ONLYOFFICE shared service" "OK" ("machine-wide {0} is reachable on port {1}" -f $SelectedMode.OnlyOfficeProject, $onlyOfficePort)
         }
         else {
-            Add-ModeCheckResult "ONLYOFFICE for mode" "FAIL" ("not reachable for {0}; expected project {1} on port {2}" -f $SelectedMode.Label, $SelectedMode.OnlyOfficeProject, $onlyOfficePort)
+            Add-ModeCheckResult "ONLYOFFICE shared service" "FAIL" ("machine-wide ONLYOFFICE is not reachable on port {0}; this should be one shared install, not one per Main Computer mode" -f $onlyOfficePort)
         }
     }
     else {
-        Add-ModeCheckResult "ONLYOFFICE for mode" "SKIP" "disabled for this install"
+        Add-ModeCheckResult "ONLYOFFICE shared service" "SKIP" "disabled for this install"
     }
 
     if ($env:MAIN_COMPUTER_COOLIFY_LOCAL_ENABLED -eq "1") {
@@ -4472,6 +4473,7 @@ function Configure-AppEnvironment {
         $env:MAIN_COMPUTER_ONLYOFFICE_MODE = $script:EffectiveOnlyOfficeMode
         $env:MAIN_COMPUTER_ONLYOFFICE_PORT = "$OnlyOfficePort"
         $env:MAIN_COMPUTER_ONLYOFFICE_PROJECT = $ModeProfile.OnlyOfficeProjectName
+        $env:MAIN_COMPUTER_ONLYOFFICE_CONTAINER_NAME = "main-computer-onlyoffice-documentserver"
         $env:MAIN_COMPUTER_ONLYOFFICE_PUBLIC_URL = "http://127.0.0.1:$OnlyOfficePort"
         $env:MAIN_COMPUTER_ONLYOFFICE_INTERNAL_URL = "http://127.0.0.1:$OnlyOfficePort"
         $env:MAIN_COMPUTER_ONLYOFFICE_BROWSER_PUBLIC_URL = "http://127.0.0.1:$OnlyOfficePort"
@@ -4643,7 +4645,7 @@ function Start-OnlyOfficeIfRequested {
     }
 
     Write-Section "ONLYOFFICE service"
-    Add-BootstrapStatus "ONLYOFFICE lane" "OK" "$($ModeProfile.Label) uses fixed ONLYOFFICE port $OnlyOfficePort and compose project $($ModeProfile.OnlyOfficeProjectName)."
+    Add-BootstrapStatus "ONLYOFFICE shared service" "OK" "$($ModeProfile.Label) uses shared ONLYOFFICE port $OnlyOfficePort and compose project $($ModeProfile.OnlyOfficeProjectName)."
 
     $commonParams = @{
         Mode = $script:EffectiveOnlyOfficeMode
@@ -5051,9 +5053,7 @@ if (-not $PSBoundParameters.ContainsKey("OnlyOfficePort")) {
 }
 $selectedMode.DefaultOnlyOfficePort = [int]$OnlyOfficePort
 foreach ($profile in $modeProfiles) {
-    if ($profile.Key -eq $selectedMode.Key) {
-        $profile.DefaultOnlyOfficePort = [int]$OnlyOfficePort
-    }
+    $profile.DefaultOnlyOfficePort = [int]$OnlyOfficePort
 }
 $script:EffectiveOnlyOfficeMode = Resolve-OnlyOfficeRuntimeMode -RequestedMode $OnlyOfficeMode
 
