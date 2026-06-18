@@ -53,6 +53,7 @@ def _args(**overrides):
         "local_coolify_token_file": "",
         "local_coolify_state_dir": "",
         "applications_service_env_file": "",
+        "local_source_dir": "",
         "local_hub_runtime_host_dir": "",
         "hub_chain_rpc_url": "",
     }
@@ -203,6 +204,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
             coolify_server_uuid="",
             coolify_server_name="",
             hub_runtime_dir="",
+            git_repo="",
         )
 
         profile = coolify_hub_service.load_profile(args)
@@ -222,6 +224,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(plan["chain_rpc_url"], "http://127.0.0.1:30010")
         self.assertEqual(plan["hub_chain_rpc_url"], "http://host.docker.internal:30010")
         payload = plan["application_payload"]
+        self.assertNotIn("git_repository", payload)
         self.assertEqual(payload["ports_exposes"], "8780")
         self.assertEqual(payload["domains"], "http://127.0.0.1:8780")
         self.assertIn("python /app/exp-fdb-hub.py", payload["start_command"])
@@ -240,8 +243,53 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertIn("pull_policy: build", compose)
         self.assertIn("/srv/main-computer/hub/test-exp-fdb", compose)
         self.assertEqual(plan["local_build_context"]["compose_context"], "./hub-src")
+        self.assertFalse(plan["local_build_context"]["commit_required"])
+        self.assertIn("Dockerfile.hub.exp-fdb", plan["local_build_context"]["source_files"])
+        self.assertIn("main_computer/", plan["local_build_context"]["source_dirs"])
         self.assertIn("\"127.0.0.1:8780:8780\"", compose)
         self.assertIn("host.docker.internal:host-gateway", compose)
+        self.assertIn("main-computer-test-hub-fdb", compose)
+        self.assertIn("foundationdb/foundationdb:7.4.6", compose)
+        self.assertIn("FDB_NETWORKING_MODE: \"container\"", compose)
+        self.assertIn("FDB_CLUSTER_FILE_CONTENTS: \"docker:docker@main-computer-test-hub-fdb:4550\"", compose)
+        self.assertIn("fdbcli -C", compose)
+        self.assertIn("configure new single memory", compose)
+        self.assertIn("local_fdb", plan)
+        self.assertEqual(plan["local_fdb"]["cluster_contents"], "docker:docker@main-computer-test-hub-fdb:4550")
+        self.assertIn("No manual fdb.cluster seed file", plan["operator_note"])
+
+    def test_local_build_context_can_stage_custom_uncommitted_source_dir(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp)
+            (source / "Dockerfile.hub.exp-fdb").write_text("FROM scratch\n", encoding="utf-8")
+            (source / "pyproject.toml").write_text("[project]\nname='x'\nversion='0'\n", encoding="utf-8")
+            (source / "requirements.txt").write_text("", encoding="utf-8")
+            (source / "exp-fdb-hub.py").write_text("print('local edit')\n", encoding="utf-8")
+            (source / "main_computer").mkdir()
+            (source / "main_computer" / "__init__.py").write_text("", encoding="utf-8")
+
+            args = _args(network="test", local_source_dir=str(source), git_repo="")
+            source_root, files, dirs = coolify_hub_service.hub_build_context_sources(args)
+
+            self.assertEqual(source_root, source)
+            self.assertEqual([path.name for path in files], [
+                "Dockerfile.hub.exp-fdb",
+                "pyproject.toml",
+                "requirements.txt",
+                "exp-fdb-hub.py",
+            ])
+            self.assertEqual([path.name for path in dirs], ["main_computer"])
+
+    def test_remote_network_requires_git_repo_but_local_test_does_not(self) -> None:
+        local_args = _args(network="test", git_repo="")
+        local_profile = coolify_hub_service.load_profile(local_args)
+        self.assertEqual(local_profile.network_key, "test")
+
+        remote_args = _args(network="mainnet", git_repo="")
+        with self.assertRaises(coolify_hub_service.CoolifyHubDeployError):
+            coolify_hub_service.load_profile(remote_args)
 
     def test_local_test_token_file_is_used_when_operator_env_token_is_missing(self) -> None:
         with self.subTest("local token fallback"):

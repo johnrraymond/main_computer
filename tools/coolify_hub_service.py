@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import shlex
 import socket
 import subprocess
 import sys
@@ -56,6 +57,11 @@ DEFAULT_LOCAL_COOLIFY_SERVER_NAME = "localhost"
 DEFAULT_LOCAL_TEST_HUB_RUNTIME_DIR = "/srv/main-computer/hub/test-exp-fdb"
 DEFAULT_LOCAL_TEST_CONTAINER_RPC_URL = "http://host.docker.internal:30010"
 DEFAULT_LOCAL_TEST_BUILD_CONTEXT_DIRNAME = "hub-src"
+DEFAULT_LOCAL_TEST_FDB_SERVICE_KEY = "main-computer-test-hub-fdb"
+DEFAULT_LOCAL_TEST_FDB_IMAGE = "foundationdb/foundationdb:7.4.6"
+DEFAULT_LOCAL_TEST_FDB_PORT = 4550
+DEFAULT_LOCAL_TEST_FDB_CLUSTER_CONTENTS = f"docker:docker@{DEFAULT_LOCAL_TEST_FDB_SERVICE_KEY}:{DEFAULT_LOCAL_TEST_FDB_PORT}"
+DEFAULT_LOCAL_TEST_SOURCE_DIR = REPO_ROOT
 DEFAULT_LOCAL_TEST_RUNTIME_HOST_DIR = REPO_ROOT / "runtime" / "hub" / "test-exp-fdb"
 DEFAULT_LOCAL_COOLIFY_TOKEN_FILE = REPO_ROOT / "runtime" / "coolify-local-docker" / "api-token.txt"
 DEFAULT_APPLICATIONS_SERVICE_ENV_FILE = REPO_ROOT / "runtime" / "applications_service" / "applications.env"
@@ -476,6 +482,8 @@ def validate_coolify_profile(profile: HubNetworkProfile) -> None:
 
 
 def validate_hub_deploy_args(profile: HubNetworkProfile, args: argparse.Namespace) -> None:
+    if not is_local_test_profile(profile) and not str(getattr(args, "git_repo", "") or "").strip():
+        raise CoolifyHubDeployError("--git-repo is required for remote testnet/mainnet Hub application deploys.")
     implementation = hub_implementation(args)
     namespace = exp_fdb_namespace(profile, args)
     if not namespace.strip():
@@ -690,8 +698,26 @@ def storage_payload(profile: HubNetworkProfile, *, runtime_dir: str, args: argpa
     }
 
 
+
+def sh_quote(value: object) -> str:
+    return shlex.quote(str(value))
+
+
 def yaml_quote(value: object) -> str:
     return json.dumps(str(value))
+
+
+
+def local_test_source_dir(args: argparse.Namespace | None = None) -> Path:
+    explicit = str(getattr(args, "local_source_dir", "") or "").strip()
+    if explicit:
+        path = Path(explicit)
+        return path if path.is_absolute() else REPO_ROOT / path
+    env_value = str(os.environ.get("MAIN_COMPUTER_HUB_TEST_SOURCE_DIR") or "").strip()
+    if env_value:
+        path = Path(env_value)
+        return path if path.is_absolute() else REPO_ROOT / path
+    return DEFAULT_LOCAL_TEST_SOURCE_DIR
 
 
 def docker_desktop_host_bind_source(path: Path) -> str:
@@ -737,18 +763,68 @@ def docker_compose_build_context(args: argparse.Namespace) -> str:
     return f"./{DEFAULT_LOCAL_TEST_BUILD_CONTEXT_DIRNAME}"
 
 
+
+def local_test_fdb_cluster_contents() -> str:
+    return DEFAULT_LOCAL_TEST_FDB_CLUSTER_CONTENTS
+
+
+def local_test_hub_bootstrap_script(profile: HubNetworkProfile, args: argparse.Namespace, *, runtime_dir: str) -> str:
+    """Return the shell wrapper used by the local Coolify test Hub service.
+
+    The local Coolify service owns a short-lived FoundationDB sidecar.  The Hub
+    container writes the sidecar-facing cluster file into its runtime mount,
+    waits until the sidecar accepts `fdbcli status`, then execs the real Hub.
+    """
+
+    cluster_file = exp_fdb_cluster_file_path(profile, args, runtime_dir=runtime_dir)
+    cluster_contents = local_test_fdb_cluster_contents()
+    command = " ".join(command_token(part) for part in hub_command_parts(profile, runtime_dir, args))
+    return "\n".join(
+        [
+            "set -eu",
+            f"mkdir -p {sh_quote(runtime_dir)}",
+            f"printf '%s\\n' {sh_quote(cluster_contents)} > {sh_quote(cluster_file)}",
+            "for attempt in $(seq 1 60); do",
+            f"  fdbcli -C {sh_quote(cluster_file)} --exec 'configure new single memory' --timeout 10 >/tmp/main-computer-fdb-configure.log 2>&1 || true",
+            f"  if fdbcli -C {sh_quote(cluster_file)} --exec 'status' --timeout 10 >/tmp/main-computer-fdb-status.log 2>&1; then",
+            "    break",
+            "  fi",
+            "  if [ \"$attempt\" = \"60\" ]; then",
+            "    cat /tmp/main-computer-fdb-configure.log >&2 || true",
+            "    cat /tmp/main-computer-fdb-status.log >&2 || true",
+            "    exit 1",
+            "  fi",
+            "  sleep 1",
+            "done",
+            f"exec {command}",
+        ]
+    )
+
+
 def render_local_test_hub_compose(profile: HubNetworkProfile, args: argparse.Namespace, *, service_name: str, runtime_dir: str) -> str:
     runtime_dir = container_posix_path(runtime_dir).rstrip("/")
-    command_parts = hub_command_parts(profile, runtime_dir, args)
     build_context = docker_compose_build_context(args)
     dockerfile = effective_dockerfile_location(profile, args).lstrip("/") or "Dockerfile.hub.exp-fdb"
     service_key = service_name.replace("_", "-")
+    fdb_service_key = DEFAULT_LOCAL_TEST_FDB_SERVICE_KEY
     runtime_bind = f"{local_test_runtime_bind_source(args)}:{runtime_dir}"
     image = f"{service_name}:local"
+    bootstrap_script = local_test_hub_bootstrap_script(profile, args, runtime_dir=runtime_dir)
     lines: list[str] = [
         f"name: {service_name}",
         "",
         "services:",
+        f"  {fdb_service_key}:",
+        f"    image: {yaml_quote(DEFAULT_LOCAL_TEST_FDB_IMAGE)}",
+        "    restart: unless-stopped",
+        "    environment:",
+        f"      FDB_PORT: {yaml_quote(str(DEFAULT_LOCAL_TEST_FDB_PORT))}",
+        f"      FDB_COORDINATOR_PORT: {yaml_quote(str(DEFAULT_LOCAL_TEST_FDB_PORT))}",
+        "      FDB_NETWORKING_MODE: \"container\"",
+        f"      FDB_CLUSTER_FILE_CONTENTS: {yaml_quote(local_test_fdb_cluster_contents())}",
+        "    expose:",
+        f"      - {yaml_quote(str(DEFAULT_LOCAL_TEST_FDB_PORT))}",
+        "",
         f"  {service_key}:",
         "    build:",
         f"      context: {yaml_quote(build_context)}",
@@ -756,18 +832,23 @@ def render_local_test_hub_compose(profile: HubNetworkProfile, args: argparse.Nam
         f"    image: {yaml_quote(image)}",
         "    pull_policy: build",
         "    restart: unless-stopped",
+        "    depends_on:",
+        f"      - {fdb_service_key}",
         "    ports:",
         f"      - {yaml_quote(f'127.0.0.1:{profile.hub_bind_port}:{profile.hub_bind_port}')}",
         "    environment:",
         f"      HUB_HEALTH_PORT: {yaml_quote(str(profile.hub_bind_port))}",
+        f"      FDB_CLUSTER_FILE_CONTENTS: {yaml_quote(local_test_fdb_cluster_contents())}",
         "    extra_hosts:",
         "      - host.docker.internal:host-gateway",
         "    volumes:",
         f"      - {yaml_quote(runtime_bind)}",
         "    command:",
+        "      - \"sh\"",
+        "      - \"-lc\"",
+        f"      - {yaml_quote(bootstrap_script)}",
+        "",
     ]
-    lines.extend(f"      - {yaml_quote(part)}" for part in command_parts)
-    lines.append("")
     return "\n".join(lines)
 
 
@@ -1134,38 +1215,46 @@ def local_coolify_container_name(args: argparse.Namespace | None = None) -> str:
     return candidates[0] if len(candidates) == 1 else ""
 
 
-def hub_build_context_sources() -> tuple[list[Path], list[Path]]:
+def hub_build_context_sources(args: argparse.Namespace | None = None) -> tuple[Path, list[Path], list[Path]]:
+    source_root = local_test_source_dir(args)
     files = [
-        REPO_ROOT / "Dockerfile.hub.exp-fdb",
-        REPO_ROOT / "pyproject.toml",
-        REPO_ROOT / "requirements.txt",
-        REPO_ROOT / "exp-fdb-hub.py",
+        source_root / "Dockerfile.hub.exp-fdb",
+        source_root / "pyproject.toml",
+        source_root / "requirements.txt",
+        source_root / "exp-fdb-hub.py",
     ]
     dirs = [
-        REPO_ROOT / "main_computer",
+        source_root / "main_computer",
     ]
-    return files, dirs
+    return source_root, files, dirs
 
 
-def copy_hub_build_context(destination: Path) -> dict[str, Any]:
+def relative_to_source(path: Path, source_root: Path) -> str:
+    try:
+        return path.relative_to(source_root).as_posix()
+    except ValueError:
+        return path.name
+
+
+def copy_hub_build_context(destination: Path, args: argparse.Namespace | None = None) -> dict[str, Any]:
     if destination.exists():
         shutil.rmtree(destination)
     destination.mkdir(parents=True, exist_ok=True)
-    files, dirs = hub_build_context_sources()
+    source_root, files, dirs = hub_build_context_sources(args)
     copied: list[str] = []
     missing: list[str] = []
 
     for source in files:
         if source.is_file():
             shutil.copy2(source, destination / source.name)
-            copied.append(source.relative_to(REPO_ROOT).as_posix())
+            copied.append(relative_to_source(source, source_root))
         else:
-            missing.append(source.relative_to(REPO_ROOT).as_posix())
+            missing.append(relative_to_source(source, source_root))
 
     def ignore_dir(_directory: str, names: list[str]) -> set[str]:
         ignored: set[str] = set()
         for name in names:
-            if name in {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}:
+            if name in {".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv", "venv"}:
                 ignored.add(name)
             elif name.endswith((".pyc", ".pyo")):
                 ignored.add(name)
@@ -1174,13 +1263,13 @@ def copy_hub_build_context(destination: Path) -> dict[str, Any]:
     for source in dirs:
         if source.is_dir():
             shutil.copytree(source, destination / source.name, ignore=ignore_dir)
-            copied.append(source.relative_to(REPO_ROOT).as_posix() + "/")
+            copied.append(relative_to_source(source, source_root) + "/")
         else:
-            missing.append(source.relative_to(REPO_ROOT).as_posix() + "/")
+            missing.append(relative_to_source(source, source_root) + "/")
 
     if missing:
         raise CoolifyHubDeployError("Missing Hub build context source(s): " + ", ".join(missing))
-    return {"copied": copied, "destination": str(destination)}
+    return {"copied": copied, "destination": str(destination), "source_root": str(source_root)}
 
 
 def sha256_file(path: Path) -> str:
@@ -1220,7 +1309,7 @@ def stage_local_test_hub_build_context(args: argparse.Namespace, *, service_uuid
 
     with tempfile.TemporaryDirectory(prefix="main-computer-hub-coolify-context-") as temp_root:
         temp_context = Path(temp_root) / DEFAULT_LOCAL_TEST_BUILD_CONTEXT_DIRNAME
-        copied = copy_hub_build_context(temp_context)
+        copied = copy_hub_build_context(temp_context, args)
         result["source_context"] = copied
 
         mkdir = run_local_command(
@@ -1279,10 +1368,11 @@ def stage_local_test_hub_build_context(args: argparse.Namespace, *, service_uuid
         result["issues"].append("failed to verify staged Hub build context: " + (verify.stderr or verify.stdout)[-1200:])
         return result
 
+    source_root = local_test_source_dir(args)
     expected = {
-        "Dockerfile.hub.exp-fdb": sha256_file(REPO_ROOT / "Dockerfile.hub.exp-fdb"),
-        "pyproject.toml": sha256_file(REPO_ROOT / "pyproject.toml"),
-        "exp-fdb-hub.py": sha256_file(REPO_ROOT / "exp-fdb-hub.py"),
+        "Dockerfile.hub.exp-fdb": sha256_file(source_root / "Dockerfile.hub.exp-fdb"),
+        "pyproject.toml": sha256_file(source_root / "pyproject.toml"),
+        "exp-fdb-hub.py": sha256_file(source_root / "exp-fdb-hub.py"),
     }
     staged: dict[str, str] = {}
     for line in verify.stdout.splitlines():
@@ -1588,6 +1678,18 @@ def plan_result(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[st
             f"at {result['fdb_cluster_file']!r} before applying or starting the application."
         )
         if is_local_test_profile(profile):
+            result["operator_note"] = (
+                "Local test deploy starts a FoundationDB sidecar in the same Coolify service, writes "
+                f"{result['fdb_cluster_file']!r} at container startup, configures single-memory FDB if needed, "
+                "then starts the Hub. No manual fdb.cluster seed file or Git commit is required."
+            )
+            result["local_fdb"] = {
+                "service": DEFAULT_LOCAL_TEST_FDB_SERVICE_KEY,
+                "image": DEFAULT_LOCAL_TEST_FDB_IMAGE,
+                "port": DEFAULT_LOCAL_TEST_FDB_PORT,
+                "cluster_contents": local_test_fdb_cluster_contents(),
+                "cluster_file_written_by": "Hub container bootstrap command",
+            }
             compose = render_local_test_hub_compose(profile, args, service_name=service_name, runtime_dir=runtime_dir)
             service_payload = local_test_service_payload(profile, args, service_name=service_name, runtime_dir=runtime_dir)
             result["coolify_resource_kind"] = "service"
@@ -1597,11 +1699,15 @@ def plan_result(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[st
                 "docker_compose_raw_bytes": len(service_payload.get("docker_compose_raw", "")),
             }
             result["docker_compose"] = compose
+            source_root, source_files, source_dirs = hub_build_context_sources(args)
             result["local_build_context"] = {
                 "compose_context": docker_compose_build_context(args),
                 "staged_service_path": f"/data/coolify/services/<service-uuid>/{DEFAULT_LOCAL_TEST_BUILD_CONTEXT_DIRNAME}",
-                "source_files": [path.relative_to(REPO_ROOT).as_posix() for path in hub_build_context_sources()[0] if path.exists()],
-                "source_dirs": [path.relative_to(REPO_ROOT).as_posix() for path in hub_build_context_sources()[1] if path.exists()],
+                "source_root": str(source_root),
+                "source_files": [relative_to_source(path, source_root) for path in source_files if path.exists()],
+                "source_dirs": [relative_to_source(path, source_root) + "/" for path in source_dirs if path.exists()],
+                "commit_required": False,
+                "note": "Local test deploy stages this source tree into the Coolify service workspace before deploy.",
             }
             result["local_runtime_bind"] = {
                 "host_dir": str(local_test_runtime_host_dir(args)),
@@ -1816,6 +1922,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--local-source-dir",
+        default="",
+        help=(
+            "Local source tree to stage for `apply test`. Defaults to MAIN_COMPUTER_HUB_TEST_SOURCE_DIR, "
+            "then the current repository root. Uncommitted files in this tree are included."
+        ),
+    )
+    parser.add_argument(
         "--local-hub-runtime-host-dir",
         default="",
         help=(
@@ -1851,7 +1965,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--coolify-server-name", default="", help="Coolify server name to resolve exactly.")
     parser.add_argument("--coolify-destination-uuid", default="", help="Destination UUID if the server has multiple Docker destinations.")
 
-    parser.add_argument("--git-repo", required=True, help="Git repository URL for public repo mode, or owner/repo for GitHub App mode.")
+    parser.add_argument("--git-repo", default="", help="Git repository URL for remote testnet/mainnet application deploys. Not required for local `test`, which stages the local working tree.")
     parser.add_argument("--git-branch", default="main", help="Git branch to deploy.")
     parser.add_argument("--git-commit-sha", default="", help="Optional exact commit SHA.")
     parser.add_argument("--github-app-uuid", default="", help="Use private GitHub App create endpoint.")
