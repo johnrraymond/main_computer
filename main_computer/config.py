@@ -17,6 +17,7 @@ DEFAULT_HUB_NETWORK = "dev"
 DEFAULT_HUB_NETWORK_KIND = "dev"
 DEFAULT_HUB_BIND_HOST = "127.0.0.1"
 DEFAULT_HUB_BIND_PORT = 8770
+DEFAULT_HUB_BRIDGE_BACKEND = "dev-chain"
 DEFAULT_CHAIN_RPC_URL = DEFAULT_ENERGY_CHAIN_RPC_URL
 DEFAULT_CHAIN_ID = DEFAULT_ENERGY_CHAIN_ID
 DEFAULT_ONLYOFFICE_MODE = "docker"
@@ -142,7 +143,7 @@ class MainComputerConfig:
     hub_worker_node_id: str = "main-computer-worker"
     hub_worker_endpoint: str | None = None
     hub_credits_per_request: int = 1
-    hub_bridge_backend: str = "mock-chain"
+    hub_bridge_backend: str = DEFAULT_HUB_BRIDGE_BACKEND
     hub_dev_chain_deployment_path: Path | None = None
     hub_root: Path = DEFAULT_HUB_ROOT
     hub_network: str = DEFAULT_HUB_NETWORK
@@ -310,7 +311,7 @@ class MainComputerConfig:
             hub_worker_node_id=os.environ.get("MAIN_COMPUTER_HUB_WORKER_NODE_ID", "main-computer-worker"),
             hub_worker_endpoint=os.environ.get("MAIN_COMPUTER_HUB_WORKER_ENDPOINT") or None,
             hub_credits_per_request=max(1, hub_credits_per_request),
-            hub_bridge_backend=os.environ.get("MAIN_COMPUTER_HUB_BRIDGE_BACKEND", "mock-chain").strip().lower() or "mock-chain",
+            hub_bridge_backend=os.environ.get("MAIN_COMPUTER_HUB_BRIDGE_BACKEND", DEFAULT_HUB_BRIDGE_BACKEND).strip().lower() or DEFAULT_HUB_BRIDGE_BACKEND,
             hub_dev_chain_deployment_path=Path(os.environ["MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH"])
             if os.environ.get("MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH")
             else None,

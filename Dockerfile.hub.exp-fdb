@@ -39,7 +39,7 @@ RUN set -eux; \
 
 EXPOSE 8790 8785
 
-CMD ["python", "/app/exp-fdb-hub.py", "--host", "0.0.0.0", "--port", "8790", "--hub-root", "/data/main-computer/hub/mainnet-exp-fdb", "--cluster-file", "/data/main-computer/hub/mainnet-exp-fdb/fdb.cluster", "--namespace", "main-computer-mainnet-exp-fdb", "--network-key", "mainnet", "--network-display-name", "Main Computer Mainnet", "--network-kind", "mainnet", "--chain-id", "42424240", "--chain-rpc-url", "https://mainnet-rpc.greatlibrary.io", "--no-fdb-autostart", "--no-activate-cached-native-client"]
+CMD ["python", "/app/exp-fdb-hub.py", "--host", "0.0.0.0", "--port", "8790", "--hub-root", "/data/main-computer/hub/mainnet-exp-fdb", "--cluster-file", "/data/main-computer/hub/mainnet-exp-fdb/fdb.cluster", "--namespace", "main-computer-mainnet-exp-fdb", "--network-key", "mainnet", "--network-display-name", "Main Computer Mainnet", "--network-kind", "mainnet", "--chain-id", "42424240", "--chain-rpc-url", "https://mainnet-rpc.greatlibrary.io", "--bridge-backend", "dev-chain", "--dev-chain-deployment-path", "/app/runtime/deployments/mainnet/latest.json", "--no-fdb-autostart", "--no-activate-cached-native-client"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD wget -qO- "http://127.0.0.1:${HUB_HEALTH_PORT}/api/hub/status" >/dev/null || exit 1
