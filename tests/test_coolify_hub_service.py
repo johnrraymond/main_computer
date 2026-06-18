@@ -56,6 +56,8 @@ def _args(**overrides):
         "local_source_dir": "",
         "local_hub_runtime_host_dir": "",
         "hub_chain_rpc_url": "",
+        "bridge_backend": "",
+        "dev_chain_deployment_path": "",
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -123,7 +125,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertNotIn("urls", payload)
         self.assertEqual(
             payload["start_command"],
-            "python /app/exp-fdb-hub.py --host 0.0.0.0 --port 8790 --hub-url https://mainnet-hub.greatlibrary.io --hub-root /data/main-computer/hub/mainnet-exp-fdb --cluster-file /data/main-computer/hub/mainnet-exp-fdb/fdb.cluster --namespace main-computer-mainnet-exp-fdb --network-key mainnet --network-display-name Main-Computer-Mainnet --network-kind mainnet --no-fdb-autostart --no-activate-cached-native-client --chain-id 42424240 --chain-rpc-url https://mainnet-rpc.greatlibrary.io",
+            "python /app/exp-fdb-hub.py --host 0.0.0.0 --port 8790 --hub-url https://mainnet-hub.greatlibrary.io --hub-root /data/main-computer/hub/mainnet-exp-fdb --cluster-file /data/main-computer/hub/mainnet-exp-fdb/fdb.cluster --namespace main-computer-mainnet-exp-fdb --network-key mainnet --network-display-name Main-Computer-Mainnet --network-kind mainnet --no-fdb-autostart --no-activate-cached-native-client --bridge-backend dev-chain --dev-chain-deployment-path /app/runtime/deployments/mainnet/latest.json --chain-id 42424240 --chain-rpc-url https://mainnet-rpc.greatlibrary.io",
         )
         self.assertTrue(payload["health_check_enabled"])
         self.assertEqual(payload["health_check_path"], "/api/hub/status")
@@ -257,6 +259,27 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertIn("local_fdb", plan)
         self.assertEqual(plan["local_fdb"]["cluster_contents"], "docker:docker@main-computer-test-hub-fdb:4550")
         self.assertIn("No manual fdb.cluster seed file", plan["operator_note"])
+
+        self.assertEqual(plan["bridge_backend"], "dev-chain")
+        self.assertEqual(plan["dev_chain_deployment_path"], "/app/runtime/deployments/test/latest.json")
+        self.assertIn("--bridge-backend", compose)
+        self.assertIn("dev-chain", compose)
+        self.assertIn("--dev-chain-deployment-path", compose)
+        self.assertIn("/app/runtime/deployments/test/latest.json", compose)
+        self.assertIn(":ro", compose)
+        self.assertIn("/app/runtime/deployments", compose)
+
+    def test_mock_bridge_backend_is_explicit_override_for_lab_runs(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("test")
+        args = _args(network="test", bridge_backend="mock-chain", git_repo="")
+        plan = coolify_hub_service.plan_result(profile, args)
+        command = plan["application_payload"]["start_command"]
+
+        self.assertEqual(plan["bridge_backend"], "mock-chain")
+        self.assertIn("--bridge-backend mock-chain", command)
+        self.assertNotIn("--dev-chain-deployment-path", command)
+        self.assertIn("--bridge-backend", plan["docker_compose"])
+        self.assertIn("mock-chain", plan["docker_compose"])
 
     def test_local_build_context_can_stage_custom_uncommitted_source_dir(self) -> None:
         import tempfile
@@ -607,6 +630,10 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertIn('CMD ["python", "/app/exp-fdb-hub.py"', exp_fdb_dockerfile)
         self.assertNotIn('ENTRYPOINT ["python", "/app/exp-fdb-hub.py"]', exp_fdb_dockerfile)
         self.assertIn("EXPOSE 8790 8785", exp_fdb_dockerfile)
+        self.assertIn("--bridge-backend", exp_fdb_dockerfile)
+        self.assertIn("dev-chain", exp_fdb_dockerfile)
+        self.assertIn("--dev-chain-deployment-path", exp_fdb_dockerfile)
+        self.assertIn("/app/runtime/deployments/mainnet/latest.json", exp_fdb_dockerfile)
         self.assertIn("--no-fdb-autostart", exp_fdb_dockerfile)
         self.assertIn("--no-activate-cached-native-client", exp_fdb_dockerfile)
         self.assertIn("/api/hub/status", exp_fdb_dockerfile)
