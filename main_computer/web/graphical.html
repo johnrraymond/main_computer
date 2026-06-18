@@ -1627,7 +1627,13 @@
       sanityStartedAt: null,
       diagnosticsMode: "level5",
       level4Running: false,
-      telemetryRunning: false
+      telemetryRunning: false,
+      statusRequestSeq: 0,
+      latestRenderedStatusSeq: 0,
+      statusRefreshInFlight: false,
+      statusRefreshQueued: false,
+      networkGoodByKey: {},
+      networkGoodSeenAtMs: {}
     };
 
     const byId = (id) => document.getElementById(id);
@@ -1884,16 +1890,92 @@
       });
     }
 
+    function networkKeyOf(network) {
+      return String(network?.network_key || network?.key || network?.name || "").toLowerCase();
+    }
+
+    function networkIsLocalChainGood(network) {
+      if (!network || typeof network !== "object") return false;
+      const key = networkKeyOf(network);
+      if (key !== "test" && key !== "dev") return false;
+      if (network.severity !== "yellow" && network.severity !== "green") return false;
+      return Boolean(network.chain_reachable || network.rpc_reachable || network.status_text === "chain running");
+    }
+
+    function networkIsAmbiguousLocalDown(network) {
+      if (!network || typeof network !== "object") return false;
+      const key = networkKeyOf(network);
+      if (key !== "test" && key !== "dev") return false;
+      const status = String(network.status_text || "").toLowerCase();
+      const summary = String(network.summary || "").toLowerCase();
+      if (network.severity !== "gray" && network.state !== "disabled") return false;
+      if (network.contracts_status && network.contracts_status !== "known") return false;
+      return status.includes("not running") || summary.includes("down");
+    }
+
+    function cloneNetworkWithClientHold(previous, incoming, ageMs) {
+      const held = {...previous};
+      held.client_stabilized = true;
+      held.client_stabilized_age_ms = Math.round(ageMs);
+      held.client_fresh_probe = incoming;
+      held.summary = previous.summary || incoming.summary || "recent local chain status held";
+      if (!String(held.summary).includes("recent successful refresh")) {
+        held.summary = `${held.summary} (holding recent successful refresh while a later poll is ambiguous)`;
+      }
+      return held;
+    }
+
+    function stabilizeNetworksForRender(payload) {
+      const topology = payload?.network_topology || {};
+      const rawNetworks = Array.isArray(payload?.networks) ? payload.networks : (Array.isArray(topology.networks) ? topology.networks : []);
+      if (!rawNetworks.length) return payload;
+
+      const now = Date.now();
+      const holdMs = 45000;
+      const stabilizedNetworks = rawNetworks.map((network) => {
+        const key = networkKeyOf(network);
+        if (!key) return network;
+        const previous = state.networkGoodByKey[key];
+        const previousAt = Number(state.networkGoodSeenAtMs[key] || 0);
+        const ageMs = previousAt ? now - previousAt : Number.POSITIVE_INFINITY;
+        if (networkIsAmbiguousLocalDown(network) && previous && ageMs >= 0 && ageMs <= holdMs) {
+          return cloneNetworkWithClientHold(previous, network, ageMs);
+        }
+        if (networkIsLocalChainGood(network)) {
+          state.networkGoodByKey[key] = {...network};
+          state.networkGoodSeenAtMs[key] = now;
+        }
+        return network;
+      });
+
+      const nextTopology = {...topology, networks: stabilizedNetworks};
+      const nextPayload = {...payload, network_topology: nextTopology, networks: stabilizedNetworks};
+      if (Array.isArray(payload.services)) {
+        const badges = stabilizedNetworks.map((network) => ({
+          key: network.network_key || network.key || "",
+          label: String(network.network_key || network.key || "").toUpperCase(),
+          state: network.state || "unknown",
+          severity: network.severity || "gray",
+          status_text: network.status_text || network.state || "unknown"
+        }));
+        nextPayload.services = payload.services.map((service) => (
+          service?.id === "blockchain" ? {...service, network_badges: badges} : service
+        ));
+      }
+      return nextPayload;
+    }
+
     function render(payload) {
-      state.lastPayload = payload;
-      setOverall(payload);
-      renderMachine(payload);
-      renderDependencies(payload);
-      renderServices(payload);
-      renderNetworks(payload);
-      renderPorts(payload);
-      renderConfig(payload);
-      renderActivity(payload);
+      const stabilizedPayload = stabilizeNetworksForRender(payload);
+      state.lastPayload = stabilizedPayload;
+      setOverall(stabilizedPayload);
+      renderMachine(stabilizedPayload);
+      renderDependencies(stabilizedPayload);
+      renderServices(stabilizedPayload);
+      renderNetworks(stabilizedPayload);
+      renderPorts(stabilizedPayload);
+      renderConfig(stabilizedPayload);
+      renderActivity(stabilizedPayload);
     }
 
 
@@ -2318,18 +2400,33 @@
     }
 
     async function refreshStatus() {
+      if (state.statusRefreshInFlight) {
+        state.statusRefreshQueued = true;
+        return;
+      }
+      const requestSeq = ++state.statusRequestSeq;
+      state.statusRefreshInFlight = true;
       byId("refresh-button").disabled = true;
       try {
         const response = await fetch("/api/control-panel/status", {cache: "no-store"});
         const payload = await response.json();
         if (!response.ok || !payload.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        if (requestSeq < state.latestRenderedStatusSeq) return;
+        state.latestRenderedStatusSeq = requestSeq;
         render(payload);
       } catch (error) {
-        byId("overall-dot").className = "status-dot broken";
-        byId("overall-state").textContent = "status error";
-        byId("overall-message").innerHTML = `<span class="error">${text(error.message || error)}</span>`;
+        if (requestSeq >= state.latestRenderedStatusSeq) {
+          byId("overall-dot").className = "status-dot broken";
+          byId("overall-state").textContent = "status error";
+          byId("overall-message").innerHTML = `<span class="error">${text(error.message || error)}</span>`;
+        }
       } finally {
+        state.statusRefreshInFlight = false;
         byId("refresh-button").disabled = false;
+        if (state.statusRefreshQueued) {
+          state.statusRefreshQueued = false;
+          setTimeout(refreshStatus, 0);
+        }
       }
     }
 
