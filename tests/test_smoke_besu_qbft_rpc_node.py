@@ -37,12 +37,16 @@ def test_rpc_node_runtime_uses_validator_static_nodes_without_validator_key(tmp_
         {"enode": "enode://a@172.28.241.11:30303"},
         {"enode": "enode://b@172.28.241.12:30303"},
     ]
+    (tmp_path / "genesis.json").write_text('{"config":{"chainId":42424241}}\n', encoding="utf-8")
 
     module.install_rpc_node_files(tmp_path, validators=validators)
 
     rpc_node_dir = tmp_path / "rpc-node"
-    assert (rpc_node_dir / "data").is_dir()
-    assert not (rpc_node_dir / "data" / "key").exists()
+    active_data_dir = (rpc_node_dir / "active-data-dir.txt").read_text(encoding="utf-8").strip()
+    assert active_data_dir.startswith("data-")
+    assert active_data_dir != "data"
+    assert (rpc_node_dir / active_data_dir).is_dir()
+    assert not (rpc_node_dir / active_data_dir / "key").exists()
     static_nodes = json.loads((rpc_node_dir / "static-nodes.json").read_text(encoding="utf-8"))
     assert static_nodes == [validator["enode"] for validator in validators]
 
@@ -107,6 +111,69 @@ def test_qbft_genesis_funds_dev_deployer_accounts(tmp_path: Path) -> None:
     assert len(alloc) == 4
 
 
+def _write_generated_network_files(root: Path) -> Path:
+    network_files = root / "networkFiles"
+    keys_dir = network_files / "keys"
+    network_files.mkdir()
+    keys_dir.mkdir()
+    (network_files / "genesis.json").write_text('{"config":{"chainId":42424241},"alloc":{}}\n', encoding="utf-8")
+    for index in range(1, 5):
+        key_dir = keys_dir / f"{index:040x}"
+        key_dir.mkdir()
+        (key_dir / "key").write_text(f"validator-{index}-private-key\n", encoding="utf-8")
+        (key_dir / "key.pub").write_text(f"{index}" * 128 + "\n", encoding="utf-8")
+    return network_files
+
+
+def test_validator_runtime_uses_genesis_scoped_data_dirs_instead_of_stable_data(tmp_path: Path) -> None:
+    module = _load_smoke_module()
+    network_files = _write_generated_network_files(tmp_path)
+    stale_data = tmp_path / "validator-4" / "data"
+    stale_data.mkdir(parents=True)
+    (stale_data / "DATABASE_METADATA").write_text("old genesis db\n", encoding="utf-8")
+
+    validators = module.install_validator_files(
+        network_files,
+        tmp_path,
+        docker_subnet="172.28.241.0/24",
+    )
+
+    validator_4 = validators[3]
+    active_data_dir = (tmp_path / "validator-4" / "active-data-dir.txt").read_text(encoding="utf-8").strip()
+    assert active_data_dir.startswith("data-")
+    assert active_data_dir != "data"
+    assert validator_4["data_dir"] == f"validator-4/{active_data_dir}"
+    assert validator_4["container_data_path"] == f"/smoke/validator-4/{active_data_dir}"
+    assert (tmp_path / validator_4["data_dir"] / "key").read_text(encoding="utf-8") == "validator-4-private-key\n"
+    assert not (tmp_path / validator_4["data_dir"] / "DATABASE_METADATA").exists()
+    assert (stale_data / "DATABASE_METADATA").read_text(encoding="utf-8") == "old genesis db\n"
+
+
+def test_start_validator_uses_generated_container_data_path(tmp_path: Path, monkeypatch) -> None:
+    module = _load_smoke_module()
+    captured: dict[str, list[str]] = {}
+
+    def fake_run(command, *, check=True, capture=False):
+        captured["command"] = command
+        return module.subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(module, "run", fake_run)
+
+    module.start_validator(
+        tmp_path,
+        image="besu:test",
+        index=4,
+        rpc_port=30004,
+        chain_id=42424241,
+        docker_subnet="172.28.241.0/24",
+        container_data_path="/smoke/validator-4/data-deadbeef",
+    )
+
+    command = captured["command"]
+    assert "--data-path=/smoke/validator-4/data-deadbeef" in command
+    assert "--data-path=/smoke/validator-4/data" not in command
+
+
 def test_deploy_command_delegates_to_dev_chain_reset_external_publication(tmp_path: Path, monkeypatch) -> None:
     module = _load_smoke_module()
     captured: dict[str, list[str]] = {}
@@ -153,6 +220,7 @@ def test_deploy_command_delegates_to_dev_chain_reset_external_publication(tmp_pa
     assert command[command.index("--output-dir") + 1].endswith("runtime/qbft/deployments")
     assert "--deployment-output-dir" in command
     assert command[command.index("--deployment-output-dir") + 1].endswith("runtime/deployments")
+    assert "--generate-offices" in command
 
 
 def test_deploy_command_refuses_old_unfunded_qbft_genesis(tmp_path: Path, monkeypatch, capsys) -> None:

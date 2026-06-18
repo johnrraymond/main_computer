@@ -219,6 +219,11 @@ def test_start_path_resets_and_starts_dev_hub_by_default() -> None:
     assert '"--network", [string]$endpoint.network' in helper
     assert '"--chain-rpc-url", [string]$endpoint.chain_rpc_url' in helper
     assert '"--chain-id", [string]$endpoint.chain_id' in helper
+    assert '"--bridge-backend", [string]$bridgeBackend' in helper
+    assert '"--dev-chain-deployment-path", [string]$devChainDeploymentPath' in helper
+    assert 'MAIN_COMPUTER_HUB_BRIDGE_BACKEND" "dev-chain"' in helper
+    assert 'runtime\\deployments\\' in helper
+    assert 'MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH' in helper
     assert '"-noverbose"' in helper
     assert 'Set-Content -LiteralPath $pidPath -Value ([string]$process.Id) -Encoding ASCII' in helper
 

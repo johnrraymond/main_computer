@@ -78,6 +78,8 @@ class HubNetworkRegistryTests(unittest.TestCase):
         self.assertEqual(config.hub_root, Path("runtime/hub/mainnet"))
         self.assertEqual(config.chain_rpc_url, "https://mainnet-rpc.greatlibrary.io")
         self.assertEqual(config.chain_id, 42424240)
+        self.assertEqual(config.hub_bridge_backend, "dev-chain")
+        self.assertEqual(config.hub_dev_chain_deployment_path, Path("runtime/deployments/mainnet/latest.json"))
 
     def test_test_network_selects_local_qbft_rpc_node_and_separate_hub_port(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
@@ -92,6 +94,8 @@ class HubNetworkRegistryTests(unittest.TestCase):
         self.assertEqual(config.hub_root, Path("runtime/hub/test"))
         self.assertEqual(config.chain_rpc_url, "http://127.0.0.1:30010")
         self.assertEqual(config.chain_id, 42424241)
+        self.assertEqual(config.hub_bridge_backend, "dev-chain")
+        self.assertEqual(config.hub_dev_chain_deployment_path, Path("runtime/deployments/test/latest.json"))
 
     def test_testnet_network_uses_committed_remote_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -128,6 +132,10 @@ class HubNetworkRegistryTests(unittest.TestCase):
                     "http://127.0.0.1:39999",
                     "--chain-id",
                     "0x2a",
+                    "--bridge-backend",
+                    "mock-chain",
+                    "--dev-chain-deployment-path",
+                    "runtime/deployments/custom/latest.json",
                 )
             )
 
@@ -138,6 +146,8 @@ class HubNetworkRegistryTests(unittest.TestCase):
         self.assertEqual(config.hub_root, Path("runtime/hub/test-alt"))
         self.assertEqual(config.chain_rpc_url, "http://127.0.0.1:39999")
         self.assertEqual(config.chain_id, 42)
+        self.assertEqual(config.hub_bridge_backend, "mock-chain")
+        self.assertEqual(config.hub_dev_chain_deployment_path, Path("runtime/deployments/custom/latest.json"))
 
     def test_hub_url_override_sets_public_url_without_changing_bind_address(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
@@ -252,7 +262,14 @@ class HubNetworkRegistryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             with patch.dict(os.environ, {}, clear=True):
                 config = _config_from_args(
-                    _hub_args("--network", "test", "--hub-runtime-dir", str(Path(tempdir) / "hub-test"))
+                    _hub_args(
+                        "--network",
+                        "test",
+                        "--hub-runtime-dir",
+                        str(Path(tempdir) / "hub-test"),
+                        "--bridge-backend",
+                        "mock-chain",
+                    )
                 )
 
             server = HubHttpServer(("127.0.0.1", 0), config, verbose=False)
