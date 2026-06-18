@@ -197,24 +197,22 @@ $env:MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"
 python -m main_computer.cli hub --network dev
 ```
 
-For the local QBFT testnet path, start/deploy the smoke lab first and use the
-test profile. The smoke lab uses a London/EIP-1559 + Shanghai/PUSH0 genesis; deployment preflight
-fails if the external chain does not expose a real `baseFeePerGas` and rejects pre-Shanghai chains that cannot execute `PUSH0` bytecode.
+For the local QBFT test path, deploy the Coolify-managed `test` seed and use
+the test Hub profile. The local Coolify helper owns the dashboard/API token file
+under `runtime/coolify-local-docker`, while the QBFT deployer publishes
+`runtime/deployments/test/latest.json`.
 
 ```powershell
-python .\tools\smoke_besu_qbft_one_validator.py down
-python .\tools\smoke_besu_qbft_one_validator.py up --deploy-contracts
+python .\tools\coolify_qbft_network.py apply test --all
 $env:MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"
 python -m main_computer.cli hub --network test
 ```
 
-Equivalent split form:
+The lower-level smoke harness is still useful for proving raw Besu/QBFT mechanics
+without Coolify:
 
 ```powershell
-python .\tools\smoke_besu_qbft_one_validator.py up
-python .\tools\smoke_besu_qbft_one_validator.py deploy
-$env:MAIN_COMPUTER_HUB_ALLOW_INSECURE_DEV_NETWORK = "1"
-python -m main_computer.cli hub --network test
+python .\tools\smoke_besu_qbft_one_validator.py restart --deploy-contracts --deployment-environment test --docker-subnet 10.241.0.0/24
 ```
 
 The dev Hub defaults to `http://127.0.0.1:8770`; the test Hub defaults to

@@ -759,3 +759,334 @@ def test_apply_defaults_wait_indefinitely_for_rpc_and_contract_deploy() -> None:
     assert args.rpc_timeout_s == 0.0
     assert args.deploy_contracts_timeout_s == 0.0
 
+
+
+def test_local_test_seed_targets_local_coolify_and_test_manifest() -> None:
+    module = _load_module()
+
+    plan = module.build_plan("test")
+
+    assert plan.environment == "test"
+    assert plan.chain_id == 42424241
+    assert plan.compose_project == "main-computer-qbft-test"
+    assert plan.docker_network == "mc-qbft-test-network"
+    assert plan.docker_subnet == "10.241.0.0/24"
+    assert plan.hosts[0].coolify_url == "http://127.0.0.1:8000"
+    assert module.rpc_target_service(plan).rpc_url_on_host == "http://127.0.0.1:30010"
+    assert len([service for service in plan.services if service.role == "validator"]) == 4
+    assert len([service for service in plan.services if service.role == "rpc"]) == 1
+
+
+def test_local_test_subnet_repair_moves_static_ips_and_metadata_when_default_overlaps(monkeypatch) -> None:
+    module = _load_module()
+    plan = module.build_plan("test")
+    args = module.parse_args(["apply", "test", "--all", "--quiet"])
+
+    monkeypatch.setattr(
+        module,
+        "docker_network_ipv4_subnets",
+        lambda: [module.ipaddress.ip_network("10.241.0.0/24")],
+    )
+
+    repaired, result = module.prepare_local_qbft_subnet(plan, args)
+    compose = module.render_compose_for_host(repaired, "local-coolify")
+
+    assert result["ok"] is True
+    assert result["changed"] is True
+    assert result["source"] == "auto-repair"
+    assert result["previous_subnet"] == "10.241.0.0/24"
+    assert repaired.docker_subnet == "10.242.0.0/24"
+    assert {service.container_ip for service in repaired.services} == {
+        "10.242.0.11",
+        "10.242.0.12",
+        "10.242.0.13",
+        "10.242.0.14",
+        "10.242.0.20",
+    }
+    assert "subnet: 10.242.0.0/24" in compose
+    assert "\"docker_subnet\": \"10.242.0.0/24\"" in compose
+    assert "grep -q '\"docker_subnet\": \"10.242.0.0/24\"'" in compose
+
+
+def test_local_test_subnet_override_reports_overlap(monkeypatch) -> None:
+    module = _load_module()
+    plan = module.build_plan("test")
+    args = module.parse_args(["apply", "test", "--all", "--quiet", "--docker-subnet", "172.30.241.0/24"])
+
+    monkeypatch.setattr(
+        module,
+        "docker_network_ipv4_subnets",
+        lambda: [module.ipaddress.ip_network("172.30.0.0/16")],
+    )
+
+    repaired, result = module.prepare_local_qbft_subnet(plan, args)
+
+    assert repaired.docker_subnet == "172.30.241.0/24"
+    assert result["ok"] is False
+    assert result["requested_subnet"] == "172.30.241.0/24"
+    assert result["overlaps"] == ["172.30.0.0/16"]
+
+
+def test_local_test_apply_dry_run_uses_local_coolify_defaults_without_token_env() -> None:
+    module = _load_module()
+    plan = module.build_plan("test")
+    args = module.parse_args(["apply", "test", "--all", "--dry-run", "--quiet"])
+
+    result = module.apply_network(plan, args)
+
+    assert result["ok"] is True
+    assert result["dry_run"] is True
+    sync = next(phase["result"] for phase in result["phases"] if phase["phase"] == "coolify-sync")
+    assert sync["service_name"] == "main-computer-qbft-test"
+    assert sync["local_coolify"]["coolify_url"] == "http://127.0.0.1:8000"
+    assert sync["local_coolify"]["coolify_environment"] == "production"
+    assert sync["local_coolify"]["foundry_docker_network"] == "mc-qbft-test-network"
+    assert getattr(args, "coolify_token_env") == ""
+    assert str(getattr(args, "coolify_token_file")).endswith("runtime/coolify-local-docker/api-token.txt")
+
+
+def test_local_test_deploy_contracts_dry_run_uses_coolify_qbft_network_from_foundry() -> None:
+    module = _load_module()
+    plan = module.build_plan("test")
+    args = module.parse_args(["deploy-contracts", "test", "--dry-run", "--quiet"])
+
+    result = module.deploy_contracts(plan, args)
+    command = result["command"]
+
+    assert result["ok"] is True
+    assert result["rpc_url"] == "http://127.0.0.1:30010"
+    assert result["container_rpc_url"] == "http://mc-qbft-rpc:8545"
+    assert command[command.index("--environment") + 1] == "test"
+    assert command[command.index("--source-kind") + 1] == "coolify-qbft-test-deploy"
+    assert command[command.index("--host-rpc-url") + 1] == "http://127.0.0.1:30010"
+    assert command[command.index("--container-rpc-url") + 1] == "http://mc-qbft-rpc:8545"
+    assert command[command.index("--external-docker-network") + 1] == "mc-qbft-test-network"
+    assert command[command.index("--deployment-output-dir") + 1] == "runtime/deployments"
+
+
+def test_local_test_context_bootstraps_repo_local_coolify_contract(monkeypatch, tmp_path: Path) -> None:
+    module = _load_module()
+    plan = module.build_plan("test")
+    args = module.parse_args(["coolify-sync", "test", "--quiet"])
+
+    token_path = tmp_path / "runtime" / "coolify-local-docker" / "api-token.txt"
+    token_path.parent.mkdir(parents=True)
+    token_path.write_text("local-token\n", encoding="utf-8")
+
+    class FakeLocalCoolify:
+        LOCAL_PROJECT_ENVIRONMENT = "production"
+
+        def env_file(self, root: Path) -> Path:
+            return tmp_path / ".env"
+
+        def write_initial_state(self, root: Path):
+            (tmp_path / ".env").write_text("ok=1\n", encoding="utf-8")
+            return tmp_path / ".env", []
+
+        def api_token_file(self, root: Path) -> Path:
+            return token_path
+
+        def ensure_infra_status(self, root: Path):
+            return True, "infra ready"
+
+        def ensure_api_token(self, root: Path):
+            return True, "token ready", "local-token"
+
+        def local_deploy_target_from_db(self, root: Path):
+            return True, "target ready", {
+                "server_uuid": "server-local",
+                "destination_uuid": "destination-local",
+            }
+
+        def find_local_project_uuid_via_api(self, root: Path, token: str):
+            assert token == "local-token"
+            return True, "project ready", "project-local"
+
+        def ensure_project_environment_via_api_or_db(self, root: Path, token: str, project_uuid: str):
+            assert project_uuid == "project-local"
+            return True, "environment ready"
+
+    monkeypatch.setattr(module, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "load_local_coolify_helper", lambda root: FakeLocalCoolify())
+
+    context = module.ensure_local_coolify_context(plan, args)
+
+    assert context["infra"] == "infra ready"
+    assert args.coolify_url == "http://127.0.0.1:8000"
+    assert args.coolify_token_env == ""
+    assert args.coolify_token_file == str(token_path.resolve())
+    assert args.coolify_project_uuid == "project-local"
+    assert args.coolify_server_uuid == "server-local"
+    assert args.coolify_destination_uuid == "destination-local"
+    assert args.coolify_environment == "production"
+
+
+
+
+def test_local_test_context_hands_helper_token_to_coolify_client_without_env(monkeypatch, tmp_path: Path) -> None:
+    module = _load_module()
+    plan = module.build_plan("test")
+    args = module.parse_args(["coolify-check", "test", "--quiet"])
+
+    token_path = tmp_path / "runtime" / "startup-coolify" / "api-token.txt"
+
+    class FakeLocalCoolify:
+        LOCAL_PROJECT_ENVIRONMENT = "production"
+        _RUNTIME_CONFIG: dict[str, object] = {}
+
+        def api_token_file(self, root: Path) -> Path:
+            return token_path
+
+        def dashboard_url(self, root: Path) -> str:
+            return "http://127.0.0.1:8123"
+
+        def ensure_infra_status(self, root: Path):
+            return True, "startup local Coolify infra ready"
+
+        def ensure_api_token(self, root: Path):
+            assert not token_path.exists()
+            return True, "startup helper returned API token", "local-helper-token"
+
+        def local_deploy_target_from_db(self, root: Path):
+            return True, "startup target ready", {
+                "server_uuid": "server-startup",
+                "destination_uuid": "destination-startup",
+            }
+
+        def find_local_project_uuid_via_api(self, root: Path, token: str):
+            assert token == "local-helper-token"
+            return True, "startup project ready", "project-startup"
+
+        def ensure_project_environment_via_api_or_db(self, root: Path, token: str, project_uuid: str):
+            return True, "startup environment ready"
+
+    monkeypatch.delenv(module.DEFAULT_COOLIFY_TOKEN_ENV, raising=False)
+    monkeypatch.setattr(module, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "load_local_coolify_helper", lambda root: FakeLocalCoolify())
+
+    context = module.ensure_local_coolify_context(plan, args)
+    token, token_source = module.resolve_coolify_token(args)
+
+    assert context["token"] == "startup helper returned API token"
+    assert token == "local-helper-token"
+    assert token_source.startswith("local-helper:")
+    assert args.coolify_token_env == ""
+    assert args.coolify_token_file == str(token_path.resolve())
+
+def test_local_test_context_reuses_startup_managed_local_coolify_runtime(monkeypatch, tmp_path: Path) -> None:
+    module = _load_module()
+    plan = module.build_plan("test")
+    args = module.parse_args(["coolify-sync", "test", "--quiet"])
+
+    applications_env = tmp_path / "runtime" / "applications_service" / "applications.env"
+    applications_env.parent.mkdir(parents=True)
+    applications_env.write_text(
+        "\n".join(
+            [
+                "COOLIFY_COMPOSE_PROJECT=main-computer-coolify-startup",
+                "COOLIFY_LOCAL_STATE=runtime/startup-coolify",
+                "APP_PORT=8123",
+                "SOKETI_PORT=17123",
+                "SOKETI_TERMINAL_PORT=17223",
+                "COOLIFY_NETWORK_NAME=main-computer-coolify-startup_default",
+                "COOLIFY_CONTAINER_NAME=mc-coolify-startup",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class FakeLocalCoolify:
+        LOCAL_PROJECT_ENVIRONMENT = "production"
+        _RUNTIME_CONFIG: dict[str, object] = {}
+
+        def api_token_file(self, root: Path) -> Path:
+            state_dir = Path(str(self._RUNTIME_CONFIG.get("state_dir") or "runtime/coolify-local-docker"))
+            if not state_dir.is_absolute():
+                state_dir = root / state_dir
+            return state_dir / "api-token.txt"
+
+        def dashboard_url(self, root: Path) -> str:
+            return f"http://127.0.0.1:{self._RUNTIME_CONFIG.get('app_port')}"
+
+        def ensure_infra_status(self, root: Path):
+            return True, "startup local Coolify infra ready"
+
+        def ensure_api_token(self, root: Path):
+            return True, "startup token ready", "local-token"
+
+        def local_deploy_target_from_db(self, root: Path):
+            return True, "startup target ready", {
+                "server_uuid": "server-startup",
+                "destination_uuid": "destination-startup",
+            }
+
+        def find_local_project_uuid_via_api(self, root: Path, token: str):
+            return True, "startup project ready", "project-startup"
+
+        def ensure_project_environment_via_api_or_db(self, root: Path, token: str, project_uuid: str):
+            return True, "startup environment ready"
+
+    fake = FakeLocalCoolify()
+    monkeypatch.setattr(module, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "load_local_coolify_helper", lambda root: fake)
+
+    context = module.ensure_local_coolify_context(plan, args)
+
+    assert fake._RUNTIME_CONFIG["project_name"] == "main-computer-coolify-startup"
+    assert fake._RUNTIME_CONFIG["state_dir"] == "runtime/startup-coolify"
+    assert args.coolify_url == "http://127.0.0.1:8123"
+    assert args.coolify_token_file == str((tmp_path / "runtime" / "startup-coolify" / "api-token.txt").resolve())
+    assert args.coolify_project_uuid == "project-startup"
+    assert args.coolify_server_uuid == "server-startup"
+    assert args.coolify_destination_uuid == "destination-startup"
+    assert context["applications_runtime"]["app_port"] == "8123"
+    assert context["infra"] == "startup local Coolify infra ready"
+
+
+def test_local_test_context_does_not_start_fallback_coolify_stack_when_startup_stack_is_down(monkeypatch, tmp_path: Path) -> None:
+    module = _load_module()
+    plan = module.build_plan("test")
+    args = module.parse_args(["coolify-sync", "test", "--quiet"])
+
+    applications_env = tmp_path / "runtime" / "applications_service" / "applications.env"
+    applications_env.parent.mkdir(parents=True)
+    applications_env.write_text(
+        "COOLIFY_COMPOSE_PROJECT=main-computer-coolify-startup\n"
+        "COOLIFY_LOCAL_STATE=runtime/startup-coolify\n"
+        "APP_PORT=8123\n",
+        encoding="utf-8",
+    )
+
+    class FakeLocalCoolify:
+        _RUNTIME_CONFIG: dict[str, object] = {}
+        up_called = False
+
+        def api_token_file(self, root: Path) -> Path:
+            return root / "runtime" / "startup-coolify" / "api-token.txt"
+
+        def dashboard_url(self, root: Path) -> str:
+            return "http://127.0.0.1:8123"
+
+        def ensure_infra_status(self, root: Path):
+            return False, "service \"coolify\" is not running"
+
+        def up(self, root: Path, *, force_init: bool = False) -> int:
+            self.up_called = True
+            raise AssertionError("QBFT local test deploy must not start a second fallback local Coolify stack")
+
+    fake = FakeLocalCoolify()
+    monkeypatch.setattr(module, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "load_local_coolify_helper", lambda root: fake)
+
+    try:
+        module.ensure_local_coolify_context(plan, args)
+    except module.CoolifyError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("missing startup-managed local Coolify should be reported as a blocking error")
+
+    assert fake.up_called is False
+    assert "startup-managed Coolify stack" in message
+    assert "dashboard=http://127.0.0.1:8123" in message
+    assert "service \"coolify\" is not running" in message

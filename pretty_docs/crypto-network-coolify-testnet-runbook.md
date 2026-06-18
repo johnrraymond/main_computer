@@ -88,11 +88,18 @@ The first planner actions should be safe/read-only:
 
 ```powershell
 python .\tools\coolify_qbft_network.py list
+python .\tools\coolify_qbft_network.py validate test
+python .\tools\coolify_qbft_network.py plan test
 python .\tools\coolify_qbft_network.py validate testnet
 python .\tools\coolify_qbft_network.py plan testnet
 python .\tools\coolify_qbft_network.py compose testnet --host testnet-a
 python .\tools\coolify_qbft_network.py write testnet --out runtime\coolify-qbft\testnet
 ```
+
+`test` is the local Coolify-managed QBFT seed. It follows the Website Builder
+local-Coolify bootstrap/token-file contract and publishes
+`runtime/deployments/test/latest.json`. `testnet` remains the hosted Coolify
+rehearsal seed.
 
 The generated output is the handoff into Coolify Raw Docker Compose:
 
