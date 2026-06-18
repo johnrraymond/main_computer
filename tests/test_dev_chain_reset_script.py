@@ -144,6 +144,38 @@ def test_dry_run_writes_soft_chroot_outputs(tmp_path: Path, monkeypatch) -> None
     assert "mnemonic" not in json.dumps(manifest)
 
 
+
+def test_dry_run_writes_committed_public_contract_config(tmp_path: Path, monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+    monkeypatch.setattr(reset, "repo_root", lambda: tmp_path)
+    deploy_root = tmp_path / "deployments"
+
+    code = reset.main([
+        "--dry-run",
+        "--run-id",
+        "unit-contract-config",
+        "--deployment-output-dir",
+        str(deploy_root),
+    ])
+
+    assert code == 0
+    contract_config = json.loads((tmp_path / "main_computer" / "config" / "dev_contracts.json").read_text(encoding="utf-8"))
+    # Dry-run previews do not have actual deployed addresses yet.  The public
+    # config may be empty, but it must never contain chain/RPC/Coolify/runtime
+    # metadata.
+    assert contract_config == {}
+    forbidden = json.dumps(contract_config)
+    assert "schema" not in contract_config
+    assert "network" not in contract_config
+    assert "chain_id" not in contract_config
+    assert "chain_rpc_url" not in contract_config
+    assert "target" not in forbidden
+    assert "transaction_hash" not in forbidden
+    assert "constructor_args" not in forbidden
+    assert "private_key" not in forbidden
+    assert "wallet_path" not in forbidden
+    assert "mnemonic" not in forbidden
+
 def test_hub_admin_wallet_is_created_and_reused(tmp_path: Path, monkeypatch) -> None:
     reset = load_dev_chain_reset()
     monkeypatch.setattr(reset, "repo_root", lambda: tmp_path)

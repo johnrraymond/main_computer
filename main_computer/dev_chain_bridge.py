@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from main_computer.contract_config import get_contract_record, load_contract_config
+
 
 FOUNDRY_IMAGE = "ghcr.io/foundry-rs/foundry:latest"
 HUB_CREDIT_BRIDGE_ESCROW_KEY = "hub_credit_bridge_escrow"
@@ -119,25 +121,53 @@ class DevChainBridgeAdapter:
         *,
         repo_root: Path,
         deployment_path: Path,
+        contracts_path: Path | None = None,
+        network_key: str = "dev",
         command_runner: CommandRunner | None = None,
         status: StatusCallback | None = None,
     ) -> "DevChainBridgeAdapter":
         deployment = _load_json(deployment_path)
-        chain = deployment.get("chain") if isinstance(deployment.get("chain"), dict) else {}
-        contracts = deployment.get("contracts") if isinstance(deployment.get("contracts"), dict) else {}
-        if not contracts:
-            contracts = deployment.get("deployments") if isinstance(deployment.get("deployments"), dict) else {}
+        deployment_chain = deployment.get("chain") if isinstance(deployment.get("chain"), dict) else {}
 
-        rpc_url = str(chain.get("container_rpc_url") or chain.get("rpc_url") or chain.get("host_rpc_url") or "").strip()
-        network_name = str(chain.get("network") or "").strip() or None
-        escrow = contracts.get(HUB_CREDIT_BRIDGE_ESCROW_KEY)
-        if not isinstance(escrow, dict):
-            raise DevChainBridgeError(f"deployment is missing {HUB_CREDIT_BRIDGE_ESCROW_KEY}: {deployment_path}")
+        contract_payload: dict[str, Any] | None = None
+        contract_source = deployment_path
+        if contracts_path is not None:
+            loaded = load_contract_config(network_key, repo_root=repo_root, path=contracts_path)
+            if loaded is not None:
+                contract_source, contract_payload = loaded
+        if contract_payload is None:
+            contract_payload = deployment
+
+        contract_chain = contract_payload.get("chain") if isinstance(contract_payload.get("chain"), dict) else {}
+        escrow = get_contract_record(contract_payload, HUB_CREDIT_BRIDGE_ESCROW_KEY)
+        if not escrow:
+            escrow = get_contract_record(deployment, HUB_CREDIT_BRIDGE_ESCROW_KEY)
+            contract_source = deployment_path
+        if not isinstance(escrow, dict) or not escrow:
+            raise DevChainBridgeError(f"contract config is missing {HUB_CREDIT_BRIDGE_ESCROW_KEY}: {contract_source}")
         escrow_address = str(escrow.get("address") or "").strip()
         if not _is_address(escrow_address):
-            raise DevChainBridgeError(f"invalid HubCreditBridgeEscrow address in {deployment_path}: {escrow_address!r}")
+            raise DevChainBridgeError(f"invalid HubCreditBridgeEscrow address in {contract_source}: {escrow_address!r}")
+
+        rpc_url = str(
+            contract_payload.get("chain_rpc_url")
+            or contract_chain.get("container_rpc_url")
+            or contract_chain.get("rpc_url")
+            or contract_chain.get("host_rpc_url")
+            or deployment_chain.get("container_rpc_url")
+            or deployment_chain.get("rpc_url")
+            or deployment_chain.get("host_rpc_url")
+            or ""
+        ).strip()
+        network_name = str(
+            contract_payload.get("network")
+            or contract_chain.get("network")
+            or deployment_chain.get("network")
+            or network_key
+            or ""
+        ).strip() or None
         if not rpc_url:
-            raise DevChainBridgeError(f"deployment is missing a dev-chain RPC URL: {deployment_path}")
+            raise DevChainBridgeError(f"contract config is missing a dev-chain RPC URL: {contract_source}")
 
         requester_wallet = _load_wallet_from_record(
             repo_root=repo_root,
@@ -169,6 +199,7 @@ class DevChainBridgeAdapter:
             escrow_address=escrow_address,
             rpc_url=rpc_url,
             network_name=network_name,
+            contract_source=str(contract_source),
             requester_wallet_address=requester_wallet.address,
             bridge_controller_address=bridge_controller_wallet.address,
         )

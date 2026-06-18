@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from main_computer.contract_config import get_contract_address, load_contract_config
+
 
 DEFAULT_PATCH_LEVEL = "0.1.0"
 DEFAULT_OLLAMA_MODEL = "gemma4:26b"
@@ -145,6 +147,7 @@ class MainComputerConfig:
     hub_credits_per_request: int = 1
     hub_bridge_backend: str = DEFAULT_HUB_BRIDGE_BACKEND
     hub_dev_chain_deployment_path: Path | None = None
+    hub_contracts_path: Path | None = None
     hub_root: Path = DEFAULT_HUB_ROOT
     hub_network: str = DEFAULT_HUB_NETWORK
     hub_network_display_name: str = "Main Computer Local Devnet"
@@ -263,6 +266,31 @@ class MainComputerConfig:
         )
         dev_chain_run_id, _dev_chain_run_id_source = _env_text("MAIN_COMPUTER_DEV_CHAIN_RUN_ID")
         dev_chain_offices = _dev_chain_offices_from_env()
+        hub_network = os.environ.get("MAIN_COMPUTER_HUB_NETWORK", DEFAULT_HUB_NETWORK).strip() or DEFAULT_HUB_NETWORK
+        hub_contracts_path = (
+            Path(os.environ["MAIN_COMPUTER_HUB_CONTRACTS_PATH"])
+            if os.environ.get("MAIN_COMPUTER_HUB_CONTRACTS_PATH")
+            else None
+        )
+        contract_payload = None
+        contract_config_source = ""
+        try:
+            loaded_contracts = load_contract_config(hub_network, path=hub_contracts_path)
+        except Exception:
+            loaded_contracts = None
+        if loaded_contracts is not None:
+            loaded_path, contract_payload = loaded_contracts
+            contract_config_source = str(loaded_path)
+        if xlag_contract_address is None and contract_payload is not None:
+            config_xlag = get_contract_address(contract_payload, "xlag-bridge-reserve")
+            if config_xlag:
+                xlag_contract_address = config_xlag
+                xlag_contract_address_source = contract_config_source
+        if alpha_beta_lockout_contract_address is None and contract_payload is not None:
+            config_alpha = get_contract_address(contract_payload, "alpha-beta-lockout")
+            if config_alpha:
+                alpha_beta_lockout_contract_address = config_alpha
+                alpha_beta_lockout_contract_address_source = contract_config_source
 
         onlyoffice_mode = (
             os.environ.get("MAIN_COMPUTER_ONLYOFFICE_MODE", DEFAULT_ONLYOFFICE_MODE).strip().lower()
@@ -315,8 +343,9 @@ class MainComputerConfig:
             hub_dev_chain_deployment_path=Path(os.environ["MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH"])
             if os.environ.get("MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH")
             else None,
+            hub_contracts_path=hub_contracts_path,
             hub_root=Path(os.environ.get("MAIN_COMPUTER_HUB_ROOT", str(DEFAULT_HUB_ROOT))),
-            hub_network=os.environ.get("MAIN_COMPUTER_HUB_NETWORK", DEFAULT_HUB_NETWORK).strip() or DEFAULT_HUB_NETWORK,
+            hub_network=hub_network,
             hub_network_display_name=os.environ.get("MAIN_COMPUTER_HUB_NETWORK_DISPLAY_NAME", "Main Computer Local Devnet").strip() or "Main Computer Local Devnet",
             hub_network_kind=os.environ.get("MAIN_COMPUTER_HUB_NETWORK_KIND", DEFAULT_HUB_NETWORK_KIND).strip() or DEFAULT_HUB_NETWORK_KIND,
             hub_network_config_path=Path(os.environ["MAIN_COMPUTER_HUB_NETWORKS_FILE"])

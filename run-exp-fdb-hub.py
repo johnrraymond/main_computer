@@ -137,6 +137,10 @@ def default_deployment_path(network: str) -> str:
     return f"/app/runtime/deployments/{network}/latest.json"
 
 
+def default_contracts_path(network: str) -> str:
+    return f"/app/main_computer/config/{network}_contracts.json"
+
+
 def build_exp_fdb_hub_command(
     args: argparse.Namespace,
     *,
@@ -212,6 +216,16 @@ def build_exp_fdb_hub_command(
                     )
                     or default_deployment_path(profile.network_key)
                 ).strip(),
+                "--contracts-path",
+                str(
+                    args.contracts_path
+                    or first_env(
+                        env,
+                        "MAIN_COMPUTER_HUB_CONTRACTS_PATH",
+                        "MAIN_COMPUTER_CONTRACTS_PATH",
+                    )
+                    or default_contracts_path(profile.network_key)
+                ).strip(),
             ]
         )
     chain_id = str(args.chain_id or first_env(env, "MAIN_COMPUTER_HUB_CHAIN_ID", "MAIN_COMPUTER_CHAIN_ID") or profile.chain_id or "").strip()
@@ -240,7 +254,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cluster-file", default="", help="FoundationDB cluster file override.")
     parser.add_argument("--ns", "--namespace", dest="namespace", default="", help="FoundationDB namespace override.")
     parser.add_argument("--backend", "--bridge-backend", dest="bridge_backend", default="", help="Bridge backend override.")
-    parser.add_argument("--dev-chain-deployment-path", default="", help="Contract deployment manifest path override.")
+    parser.add_argument("--dev-chain-deployment-path", default="", help="Private deployment manifest path override for signing wallet paths.")
+    parser.add_argument("--contracts-path", default="", help="Public contract discovery config path override.")
     parser.add_argument("--chain-id", default="", help="Chain id override.")
     parser.add_argument("--chain-rpc-url", default="", help="Chain RPC URL override.")
     parser.add_argument("--print-command", action="store_true", help="Print the resolved exp-fDB Hub command instead of execing it.")
