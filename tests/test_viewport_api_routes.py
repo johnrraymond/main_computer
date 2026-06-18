@@ -624,14 +624,108 @@ class ViewportApiRouteTests(unittest.TestCase):
         self.assertNotIn("BESU+QBFT is down", second["summary"])
 
 
+    def test_control_panel_rpc_probe_retries_localhost_on_page_load(self) -> None:
+        from main_computer import viewport_route_dispatch as dispatch
 
-    def test_graphical_status_refresh_ignores_overlapping_or_stale_network_polls(self) -> None:
-        self.assertIn("statusRefreshInFlight", GRAPHICAL_INDEX_HTML)
-        self.assertIn("latestRenderedStatusSeq", GRAPHICAL_INDEX_HTML)
-        self.assertIn("stabilizeNetworksForRender", GRAPHICAL_INDEX_HTML)
-        self.assertIn("networkIsAmbiguousLocalDown", GRAPHICAL_INDEX_HTML)
-        self.assertIn("client_stabilized", GRAPHICAL_INDEX_HTML)
-        self.assertIn("holding recent successful refresh", GRAPHICAL_INDEX_HTML)
+        with (
+            patch.object(
+                dispatch,
+                "_control_panel_connect",
+                side_effect=[
+                    {"ok": False, "host": "127.0.0.1", "port": 30010, "error": "first paint refused"},
+                    {"ok": True, "host": "127.0.0.1", "port": 30010, "elapsed_ms": 1.2},
+                ],
+            ),
+            patch.object(dispatch.time, "sleep", return_value=None),
+        ):
+            probe = dispatch._control_panel_rpc_probe("http://127.0.0.1:30010", attempts=3)
+
+        self.assertTrue(probe["ok"])
+        self.assertEqual(probe["attempt"], 2)
+        self.assertEqual(probe["attempts"], 3)
+        self.assertEqual(probe["retries"], 1)
+        self.assertIn("previous_errors", probe)
+
+
+    def test_control_panel_local_test_retries_rpc_before_first_gray_render(self) -> None:
+        from types import SimpleNamespace
+
+        from main_computer import viewport_route_dispatch as dispatch
+
+        class FakeProfile:
+            network_key = "test"
+            display_name = "Main Computer Local QBFT Test"
+            kind = "test"
+            chain_id = 42424241
+            chain_rpc_url = "http://127.0.0.1:30010"
+            hub_bind_host = "127.0.0.1"
+            hub_bind_port = 8780
+            hub_public_url = "http://127.0.0.1:8780"
+            hub_url = "http://127.0.0.1:8780"
+            deployment_manifest_path = "runtime/deployments/test/latest.json"
+
+            def as_status_payload(self) -> dict[str, object]:
+                return {
+                    "network_key": self.network_key,
+                    "display_name": self.display_name,
+                    "kind": self.kind,
+                    "chain_id": self.chain_id,
+                    "chain_rpc_url": self.chain_rpc_url,
+                    "hub_bind_host": self.hub_bind_host,
+                    "hub_bind_port": self.hub_bind_port,
+                    "hub_public_url": self.hub_public_url,
+                    "hub_url": self.hub_url,
+                    "deployment_manifest_path": self.deployment_manifest_path,
+                }
+
+        registry = SimpleNamespace(
+            default_network="mainnet",
+            networks={"test": FakeProfile()},
+            source_path=Path("main_computer/config/hub_networks.json"),
+        )
+        contracts = {
+            "ok": True,
+            "source": "deployment-manifest",
+            "contract_addresses": {
+                "alpha_beta_lockout": "0x1111111111111111111111111111111111111111",
+                "xlag_bridge_reserve": "0x2222222222222222222222222222222222222222",
+                "hub_credit_bridge_escrow": "0x3333333333333333333333333333333333333333",
+            },
+            "count": 3,
+            "path": "runtime/deployments/test/latest.json",
+            "error": "",
+            "candidates": [],
+            "authority_status": "default-dev-authority",
+            "authority_warning": "",
+            "authority_default_offices": [],
+            "offices": [],
+        }
+
+        def fake_rpc_probe(_url: str, *, attempts: int = 1) -> dict[str, object]:
+            if attempts == 1:
+                return {"ok": False, "port": 30010, "attempts": 1, "error": "first load refused"}
+            return {"ok": True, "port": 30010, "attempts": attempts, "attempt": 2, "retries": 1}
+
+        with (
+            patch.object(dispatch, "load_hub_network_registry", return_value=registry),
+            patch.object(dispatch, "_control_panel_connect", return_value={"ok": False, "error": "hub closed"}),
+            patch.object(dispatch, "_control_panel_rpc_probe", side_effect=fake_rpc_probe),
+            patch.object(dispatch, "_control_panel_deployment_contracts", return_value=contracts),
+        ):
+            local_test = dispatch._control_panel_network_status_cards(Path.cwd())["networks"][0]
+
+        self.assertEqual(local_test["severity"], "yellow")
+        self.assertEqual(local_test["status_text"], "chain running")
+        self.assertTrue(local_test["rpc_reachable"])
+        self.assertTrue(local_test["chain_reachable"])
+        self.assertEqual(local_test["rpc_probe"]["attempts"], 3)
+        self.assertEqual(local_test["rpc_probe"]["initial_probe"]["error"], "first load refused")
+
+
+    def test_graphical_static_network_placeholders_do_not_show_gray_down_on_first_paint(self) -> None:
+        self.assertIn('<h3>TEST</h3><span class="badge degraded">checking</span>', GRAPHICAL_INDEX_HTML)
+        self.assertNotIn('<h3>TEST</h3><span class="badge unknown">loading</span>', GRAPHICAL_INDEX_HTML)
+
 
 
 if __name__ == "__main__":
