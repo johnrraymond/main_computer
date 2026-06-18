@@ -862,6 +862,7 @@ def test_local_test_deploy_contracts_dry_run_uses_coolify_qbft_network_from_foun
     assert command[command.index("--container-rpc-url") + 1] == "http://mc-qbft-rpc:8545"
     assert command[command.index("--external-docker-network") + 1] == "mc-qbft-test-network"
     assert command[command.index("--deployment-output-dir") + 1] == "runtime/deployments"
+    assert "--generate-offices" in command
 
 
 def test_local_test_context_bootstraps_repo_local_coolify_contract(monkeypatch, tmp_path: Path) -> None:

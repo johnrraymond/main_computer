@@ -76,6 +76,8 @@ def _config_from_args(args: argparse.Namespace) -> MainComputerConfig:
         hub_worker_node_id=getattr(args, "hub_worker_node_id", None) or base.hub_worker_node_id,
         hub_worker_endpoint=getattr(args, "hub_worker_endpoint", None) or base.hub_worker_endpoint,
         hub_credits_per_request=getattr(args, "hub_credits_per_request", None) if getattr(args, "hub_credits_per_request", None) is not None else base.hub_credits_per_request,
+        hub_bridge_backend=str(getattr(args, "bridge_backend", None) or base.hub_bridge_backend).strip().lower() or base.hub_bridge_backend,
+        hub_dev_chain_deployment_path=Path(getattr(args, "dev_chain_deployment_path")) if getattr(args, "dev_chain_deployment_path", None) else base.hub_dev_chain_deployment_path,
         hub_root=getattr(args, "hub_root", None) or base.hub_root,
         hub_network=base.hub_network,
         hub_network_display_name=base.hub_network_display_name,
@@ -162,6 +164,10 @@ def _config_from_args(args: argparse.Namespace) -> MainComputerConfig:
     profile.validate_runnable()
 
     source = f"hub-network:{profile.network_key}"
+    bridge_backend = str(config.hub_bridge_backend or "dev-chain").strip().lower() or "dev-chain"
+    dev_chain_deployment_path = config.hub_dev_chain_deployment_path
+    if dev_chain_deployment_path is None and bridge_backend not in {"mock", "mock-chain", "mock-chain-lite"}:
+        dev_chain_deployment_path = profile.deployment_manifest_path
     return replace(
         config,
         hub_network=profile.network_key,
@@ -172,6 +178,8 @@ def _config_from_args(args: argparse.Namespace) -> MainComputerConfig:
         hub_bind_port=profile.hub_bind_port,
         hub_root=profile.hub_runtime_dir,
         hub_url=profile.hub_url,
+        hub_bridge_backend=bridge_backend,
+        hub_dev_chain_deployment_path=dev_chain_deployment_path,
         energy_chain_rpc_url=profile.chain_rpc_url,
         energy_chain_id=profile.chain_id,
         energy_chain_rpc_url_source=source,
@@ -462,6 +470,16 @@ def build_parser() -> argparse.ArgumentParser:
     hub.add_argument("--hub-runtime-dir", type=Path, help="Hub runtime root override. Alias for the profile hub_runtime_dir.")
     hub.add_argument("--chain-rpc-url", help="Chain RPC URL override for the selected network.")
     hub.add_argument("--chain-id", help="Chain id override for the selected network. Accepts decimal or 0x-prefixed hex.")
+    hub.add_argument(
+        "--bridge-backend",
+        choices=["dev-chain", "credit-bridge-contract", "mock-chain"],
+        help="Hub bridge backend. Defaults to dev-chain/contract mode; use mock-chain only for explicit lab/fake-chain runs.",
+    )
+    hub.add_argument(
+        "--dev-chain-deployment-path",
+        type=Path,
+        help="Deployment metadata JSON used by the dev-chain/contract bridge backend. Defaults to the selected network manifest.",
+    )
     hub.add_argument(
         "-noverbose",
         "--noverbose",

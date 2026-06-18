@@ -1051,6 +1051,16 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_URL", [string]$endpoint.hub_url, "Process")
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL", [string]$endpoint.chain_rpc_url, "Process")
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_ENERGY_CHAIN_ID", [string]$endpoint.chain_id, "Process")
+  $bridgeBackend = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_BRIDGE_BACKEND" "dev-chain"
+  if ([string]::IsNullOrWhiteSpace($bridgeBackend)) {
+    $bridgeBackend = "dev-chain"
+  }
+  $devChainDeploymentPath = Get-LaunchEnvironmentValue `
+    $LaunchContext `
+    "MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH" `
+    (Join-Path $RootPath ("runtime\deployments\" + [string]$endpoint.network + "\latest.json"))
+  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_BRIDGE_BACKEND", [string]$bridgeBackend, "Process")
+  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH", [string]$devChainDeploymentPath, "Process")
 
   $hubRuntime = Join-Path $RootPath ("runtime\hub\" + [string]$endpoint.network)
   Ensure-Directory $hubRuntime
@@ -1066,6 +1076,8 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
     "--network", [string]$endpoint.network,
     "--chain-rpc-url", [string]$endpoint.chain_rpc_url,
     "--chain-id", [string]$endpoint.chain_id,
+    "--bridge-backend", [string]$bridgeBackend,
+    "--dev-chain-deployment-path", [string]$devChainDeploymentPath,
     "-noverbose"
   )
   $argString = Join-CommandLine $arguments
