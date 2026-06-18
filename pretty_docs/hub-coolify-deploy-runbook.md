@@ -78,11 +78,10 @@ or pass:
 --local-coolify-state-dir C:\path\to\coolify-local-docker
 ```
 
-Then render the Hub plan:
+Then render the Hub plan. Local `test` does not require `--git-repo` because it stages your local working tree directly into the Coolify service workspace:
 
 ```powershell
-python .\tools\coolify_hub_service.py plan test `
-  --git-repo $GitRepo
+python .\tools\coolify_hub_service.py plan test
 ```
 
 The local test plan should include a Coolify **service** payload, not an
@@ -140,10 +139,14 @@ Apply to the local Coolify target:
 
 ```powershell
 python .\tools\coolify_hub_service.py apply test `
-  --git-repo $GitRepo `
   --hub-health-check warn `
   --rpc-check warn
 ```
+
+No Git commit is required for `apply test`. The deployer copies the current
+working-tree files from the repository root into the staged `hub-src` context
+before triggering Coolify deploy. Use `--local-source-dir` or
+`MAIN_COMPUTER_HUB_TEST_SOURCE_DIR` only when staging from a different checkout.
 
 For `apply test`, the deployer reads the same local token style used by Website
 Builder: `MAIN_COMPUTER_COOLIFY_LOCAL_TOKEN`, `MAIN_COMPUTER_COOLIFY_LOCAL_TOKEN_FILE`,
@@ -161,7 +164,10 @@ Override these only when the local surface is not discoverable:
 --applications-service-env-file
 --hub-chain-rpc-url
 --local-hub-runtime-host-dir
+--local-source-dir
 ```
+
+For `testnet` and `mainnet`, `--git-repo` is still required because those are remote application deploys that build from Git.
 
 The `test` profile keeps the operator-facing RPC URL as `http://127.0.0.1:30010`
 for preflight checks, but passes `http://host.docker.internal:30010` to the Hub
@@ -170,31 +176,38 @@ container-to-host route, pass `--hub-chain-rpc-url`.
 
 ## FoundationDB requirement
 
-The hosted Hub requires a running FoundationDB cluster outside of the Hub
-process. The deployer intentionally passes `--no-fdb-autostart`; the hosted
-container must not start a smoke-only local FDB instance.
+The hosted Hub requires FoundationDB. The deployer intentionally passes
+`--no-fdb-autostart`; the Hub process itself must not start a smoke-only FDB
+instance.
 
-For the local `test` target, put the cluster file in the bind-mounted runtime
-directory so the container can see it:
-
-```text
-runtime/hub/test-exp-fdb/fdb.cluster
-```
-
-Inside the Hub container this appears as:
+For the local `test` target, the Coolify service now owns a one-node
+FoundationDB sidecar named `main-computer-test-hub-fdb`. The Hub bootstrap
+command writes this sidecar-facing cluster file before starting the Hub:
 
 ```text
 /srv/main-computer/hub/test-exp-fdb/fdb.cluster
 ```
 
-Before applying, make sure the Coolify application can read the cluster file at
-the container path passed to `--fdb-cluster-file`. A common mounted path is:
+with contents:
+
+```text
+docker:docker@main-computer-test-hub-fdb:4550
+```
+
+Then it runs `fdbcli` until the sidecar accepts `status`, configuring
+`single memory` if needed. You do not need to manually create
+`runtime/hub/test-exp-fdb/fdb.cluster` for `apply test`.
+
+For `testnet` and `mainnet`, FoundationDB remains external to the Hub
+application. Before applying, make sure the Coolify application can read the
+cluster file at the container path passed to `--fdb-cluster-file`. A common
+mounted path is:
 
 ```text
 /data/main-computer/fdb/fdb.cluster
 ```
 
-If `--fdb-cluster-file` is omitted, the deployer defaults to:
+If `--fdb-cluster-file` is omitted, the remote deployer defaults to:
 
 ```text
 /data/main-computer/hub/<network>-exp-fdb/fdb.cluster
