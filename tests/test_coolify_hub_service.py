@@ -53,6 +53,7 @@ def _args(**overrides):
         "local_coolify_token_file": "",
         "local_coolify_state_dir": "",
         "applications_service_env_file": "",
+        "local_hub_runtime_host_dir": "",
         "hub_chain_rpc_url": "",
     }
     defaults.update(overrides)
@@ -233,7 +234,12 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(plan["service_payload"]["docker_compose_raw"], "<base64>")
         compose = plan["docker_compose"]
         self.assertIn("dockerfile: \"Dockerfile.hub.exp-fdb\"", compose)
-        self.assertIn("context: \"https://github.com/example/main_computer.git#main\"", compose)
+        self.assertIn("context: \"./hub-src\"", compose)
+        self.assertNotIn("https://github.com/example/main_computer.git#main", compose)
+        self.assertIn("image: \"main-computer-test-hub:local\"", compose)
+        self.assertIn("pull_policy: build", compose)
+        self.assertIn("/srv/main-computer/hub/test-exp-fdb", compose)
+        self.assertEqual(plan["local_build_context"]["compose_context"], "./hub-src")
         self.assertIn("\"127.0.0.1:8780:8780\"", compose)
         self.assertIn("host.docker.internal:host-gateway", compose)
 

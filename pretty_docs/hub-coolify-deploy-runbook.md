@@ -105,10 +105,36 @@ operator RPC check:  http://127.0.0.1:30010
 Hub container RPC:   http://host.docker.internal:30010
 ```
 
-The rendered local Compose service builds from the provided Git repository and
-branch, publishes `127.0.0.1:8780:8780`, adds `host.docker.internal:host-gateway`,
-and mounts the named `test_exp_fdb_hub_state` volume at
-`/srv/main-computer/hub/test-exp-fdb`.
+The rendered local Compose service deliberately does **not** build from the
+remote Git URL. Local Coolify deploys raw Docker Compose resources from
+`/data/coolify/services/<uuid>`, so the deployer stages a relative build context
+there before triggering `/deploy`:
+
+```text
+/data/coolify/services/<service-uuid>/hub-src
+```
+
+The Compose uses:
+
+```yaml
+build:
+  context: "./hub-src"
+  dockerfile: "Dockerfile.hub.exp-fdb"
+```
+
+This mirrors the Website Builder local publish path and avoids Docker Compose
+misreading a remote Git context as a giant Dockerfile.
+
+The service publishes `127.0.0.1:8780:8780`, adds
+`host.docker.internal:host-gateway`, and bind-mounts the local runtime directory
+into `/srv/main-computer/hub/test-exp-fdb`. By default the host runtime directory is:
+
+```text
+runtime/hub/test-exp-fdb
+```
+
+Set `MAIN_COMPUTER_HUB_TEST_RUNTIME_HOST_DIR` or pass
+`--local-hub-runtime-host-dir` to use a different host directory.
 
 Apply to the local Coolify target:
 
@@ -134,6 +160,7 @@ Override these only when the local surface is not discoverable:
 --local-coolify-token-file
 --applications-service-env-file
 --hub-chain-rpc-url
+--local-hub-runtime-host-dir
 ```
 
 The `test` profile keeps the operator-facing RPC URL as `http://127.0.0.1:30010`
@@ -146,6 +173,19 @@ container-to-host route, pass `--hub-chain-rpc-url`.
 The hosted Hub requires a running FoundationDB cluster outside of the Hub
 process. The deployer intentionally passes `--no-fdb-autostart`; the hosted
 container must not start a smoke-only local FDB instance.
+
+For the local `test` target, put the cluster file in the bind-mounted runtime
+directory so the container can see it:
+
+```text
+runtime/hub/test-exp-fdb/fdb.cluster
+```
+
+Inside the Hub container this appears as:
+
+```text
+/srv/main-computer/hub/test-exp-fdb/fdb.cluster
+```
 
 Before applying, make sure the Coolify application can read the cluster file at
 the container path passed to `--fdb-cluster-file`. A common mounted path is:
