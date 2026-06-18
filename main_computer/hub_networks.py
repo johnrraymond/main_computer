@@ -6,6 +6,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from main_computer.contract_config import contract_address_map, load_contract_config
+
 
 DEFAULT_HUB_NETWORKS_PATH = Path(__file__).with_name("config") / "hub_networks.json"
 
@@ -264,6 +266,21 @@ def resolve_hub_networks_path(path: str | Path | None = None) -> Path:
     return DEFAULT_HUB_NETWORKS_PATH
 
 
+def _contract_addresses_for_network(network_key: str, *, registry_path: Path) -> dict[str, str]:
+    contract_path = registry_path.with_name(f"{network_key}_contracts.json")
+    try:
+        loaded = load_contract_config(network_key, path=contract_path)
+    except Exception:
+        # Bad contract configs should surface when they are loaded explicitly by
+        # contract-aware code. Keep the network registry usable for non-chain
+        # tooling that only needs URLs/ports.
+        return {}
+    if loaded is None:
+        return {}
+    _path, payload = loaded
+    return contract_address_map(payload)
+
+
 def load_hub_network_registry(path: str | Path | None = None) -> HubNetworkRegistry:
     resolved_path = resolve_hub_networks_path(path)
     try:
@@ -286,7 +303,11 @@ def load_hub_network_registry(path: str | Path | None = None) -> HubNetworkRegis
         clean_key = str(key).strip()
         if not clean_key:
             raise HubNetworkConfigError("Hub network keys must not be empty.")
-        networks[clean_key] = HubNetworkProfile.from_mapping(clean_key, payload, source_path=resolved_path)
+        profile = HubNetworkProfile.from_mapping(clean_key, payload, source_path=resolved_path)
+        contract_addresses = _contract_addresses_for_network(clean_key, registry_path=resolved_path)
+        if contract_addresses:
+            profile = replace(profile, contracts={**profile.contracts, **contract_addresses})
+        networks[clean_key] = profile
     if default_network not in networks:
         raise HubNetworkConfigError(f"Hub network default_network {default_network!r} is not defined in networks.")
     return HubNetworkRegistry(version=version, default_network=default_network, networks=networks, source_path=resolved_path)

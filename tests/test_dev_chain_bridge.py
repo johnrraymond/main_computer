@@ -114,3 +114,46 @@ def test_dev_chain_bridge_adapter_records_deposit_and_payout_with_redacted_comma
     assert payout.to_dict()["transaction_hashes"] == ["0x" + "3".zfill(64)]
     assert deposit.to_dict()["transactions"][0]["command"][deposit.to_dict()["transactions"][0]["command"].index("--private-key") + 1] == "<redacted>"
     assert payout.to_dict()["transactions"][0]["command"][payout.to_dict()["transactions"][0]["command"].index("--private-key") + 1] == "<redacted>"
+
+
+def test_dev_chain_bridge_adapter_prefers_public_contract_config_for_contract_address(tmp_path: Path) -> None:
+    requester = "0x1111111111111111111111111111111111111111"
+    controller = "0x2222222222222222222222222222222222222222"
+    deployment_escrow = "0x3333333333333333333333333333333333333333"
+    config_escrow = "0x4444444444444444444444444444444444444444"
+    requester_wallet = tmp_path / "runtime" / "deployments" / "testnet" / "smoke-client-wallet.json"
+    controller_wallet = tmp_path / "runtime" / "deployments" / "testnet" / "hub-admin-wallet.json"
+    _write_wallet(requester_wallet, address=requester, private_key="0x" + "1" * 64)
+    _write_wallet(controller_wallet, address=controller, private_key="0x" + "2" * 64)
+
+    deployment_path = tmp_path / "runtime" / "deployments" / "testnet" / "latest.json"
+    deployment_path.parent.mkdir(parents=True, exist_ok=True)
+    deployment_path.write_text(
+        json.dumps(
+            {
+                "environment": "testnet",
+                "chain": {"rpc_url": "http://deployment-rpc", "chain_id": 42424241},
+                "contracts": {"hub_credit_bridge_escrow": {"address": deployment_escrow}},
+                "smoke_client": {"address": requester, "wallet_path": str(requester_wallet)},
+                "hub_admin": {"address": controller, "wallet_path": str(controller_wallet)},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    contracts_path = tmp_path / "main_computer" / "config" / "testnet_contracts.json"
+    contracts_path.parent.mkdir(parents=True, exist_ok=True)
+    contracts_path.write_text(json.dumps({"hub_credit_bridge_escrow": config_escrow}) + "\n", encoding="utf-8")
+
+    adapter = DevChainBridgeAdapter.from_deployment(
+        repo_root=tmp_path,
+        deployment_path=deployment_path,
+        contracts_path=contracts_path,
+        network_key="testnet",
+        command_runner=lambda command: subprocess.CompletedProcess(command, 0, stdout="0x" + "a" * 64, stderr=""),
+    )
+
+    assert adapter.escrow_address == config_escrow
+    assert adapter.rpc_url == "http://deployment-rpc"
+
+

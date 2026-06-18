@@ -292,6 +292,43 @@ class HubNetworkRegistryTests(unittest.TestCase):
         self.assertEqual(status["network"]["hub_port"], 8780)
         self.assertTrue(status["network"]["hub_runtime_dir"].endswith("hub-test"))
 
+    def test_registry_loads_public_contract_config_next_to_network_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_dir = root / "main_computer" / "config"
+            config_dir.mkdir(parents=True)
+            networks = {
+                "version": 2,
+                "default_network": "testnet",
+                "networks": {
+                    "testnet": {
+                        "display_name": "Unit Testnet",
+                        "kind": "testnet",
+                        "chain_id": 42424241,
+                        "chain_rpc_url": "https://rpc.example.test",
+                        "hub_bind_host": "0.0.0.0",
+                        "hub_bind_port": 8785,
+                        "hub_public_url": "https://hub.example.test",
+                        "hub_runtime_dir": "runtime/hub/testnet",
+                    }
+                },
+            }
+            (config_dir / "hub_networks.json").write_text(json.dumps(networks), encoding="utf-8")
+            (config_dir / "testnet_contracts.json").write_text(
+                json.dumps(
+                    {
+                        "hub_credit_bridge_escrow": "0x3333333333333333333333333333333333333333",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            registry = load_hub_network_registry(config_dir / "hub_networks.json")
+
+            self.assertEqual(
+                registry.get("testnet").contracts["hub_credit_bridge_escrow"],
+                "0x3333333333333333333333333333333333333333",
+            )
 
 if __name__ == "__main__":
     unittest.main()
