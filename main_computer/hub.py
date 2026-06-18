@@ -1444,6 +1444,8 @@ class HubHttpServer(ThreadingHTTPServer):
             backend_name=config.hub_bridge_backend,
             repo_root=Path.cwd().resolve(),
             dev_chain_deployment_path=config.hub_dev_chain_deployment_path,
+            contracts_path=config.hub_contracts_path,
+            network_key=config.hub_network,
         )
         self.multisession_key_store_path = hub_root / "compute_credits" / "multisession_keys.json"
         self.multisession_key_store = None

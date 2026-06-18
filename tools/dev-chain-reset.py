@@ -39,6 +39,7 @@ def ensure_repo_root_on_sys_path() -> Path:
 
 ensure_repo_root_on_sys_path()
 
+from main_computer.contract_config import write_contract_config
 from main_computer.prod_lock import require_unlocked_production_state
 
 
@@ -2202,9 +2203,11 @@ def write_outputs(args: argparse.Namespace, rid: str, payload: dict) -> None:
     env_latest_json = env_base / "latest.json"
     env_deploy_json.write_text(public_json, encoding="utf-8")
     env_latest_json.write_text(public_json, encoding="utf-8")
+    contracts_json = write_contract_config(public_payload, repo_root=root)
 
     log(f"Wrote {env_deploy_json}")
     log(f"Wrote {env_latest_json}")
+    log(f"Wrote {contracts_json}")
 
 
 

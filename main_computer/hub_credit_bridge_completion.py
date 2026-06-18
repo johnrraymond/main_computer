@@ -9,6 +9,7 @@ from typing import Any
 from urllib.request import Request, urlopen
 
 from main_computer.config import MainComputerConfig
+from main_computer.contract_config import get_contract_record, load_contract_config
 from main_computer.hub_credit_indexer import wallet_account_id
 from main_computer.hub_credit_ledger import HubCreditLedger
 from main_computer.hub_credit_models import normalize_address, positive_int
@@ -51,6 +52,7 @@ class BridgeDeployment:
     hub_admin_address: str
     hub_admin_wallet_path: Path
     deployment_manifest_path: Path
+    contracts_path: Path | None = None
 
     def as_public_dict(self) -> dict[str, Any]:
         return {
@@ -61,6 +63,7 @@ class BridgeDeployment:
             "hub_admin_address": self.hub_admin_address,
             "hub_admin_wallet_path": str(self.hub_admin_wallet_path),
             "deployment_manifest_path": str(self.deployment_manifest_path),
+            "contracts_path": str(self.contracts_path) if self.contracts_path else None,
         }
 
 
@@ -319,25 +322,16 @@ def _repo_root_for_deployment_manifest(path: Path) -> Path:
     return parent.parent.parent
 
 
-def _candidate_deployment_manifest_paths(config: MainComputerConfig | None) -> list[Path]:
-    candidates: list[Path] = []
-    env_path = os.environ.get("MAIN_COMPUTER_DEPLOYMENT_MANIFEST_PATH")
-    if env_path:
-        candidates.append(Path(env_path))
+def _selected_network(config: MainComputerConfig | None) -> str:
+    return str(
+        os.environ.get("MAIN_COMPUTER_HUB_NETWORK")
+        or os.environ.get("MAIN_COMPUTER_NETWORK")
+        or (config.hub_network if config is not None else "")
+        or "dev"
+    ).strip() or "dev"
 
-    cwd = Path.cwd().resolve()
-    for root in [cwd, *cwd.parents]:
-        candidates.append(root / "runtime" / "deployments" / "dev" / "latest.json")
 
-    if config is not None:
-        for raw in [config.hub_root, config.workspace]:
-            try:
-                base = Path(raw).resolve()
-            except Exception:
-                continue
-            for root in [base, *base.parents]:
-                candidates.append(root / "runtime" / "deployments" / "dev" / "latest.json")
-
+def _dedupe_paths(candidates: list[Path]) -> list[Path]:
     unique: list[Path] = []
     seen: set[str] = set()
     for path in candidates:
@@ -348,37 +342,137 @@ def _candidate_deployment_manifest_paths(config: MainComputerConfig | None) -> l
     return unique
 
 
+def _candidate_contract_config_paths(config: MainComputerConfig | None) -> list[Path]:
+    network = _selected_network(config)
+    candidates: list[Path] = []
+    env_path = os.environ.get("MAIN_COMPUTER_HUB_CONTRACTS_PATH") or os.environ.get("MAIN_COMPUTER_CONTRACTS_PATH")
+    if env_path:
+        candidates.append(Path(env_path))
+    if config is not None and config.hub_contracts_path is not None:
+        candidates.append(config.hub_contracts_path)
+
+    cwd = Path.cwd().resolve()
+    for root in [cwd, *cwd.parents]:
+        candidates.append(root / "main_computer" / "config" / f"{network}_contracts.json")
+
+    if config is not None:
+        for raw in [config.hub_root, config.workspace]:
+            try:
+                base = Path(raw).resolve()
+            except Exception:
+                continue
+            for root in [base, *base.parents]:
+                candidates.append(root / "main_computer" / "config" / f"{network}_contracts.json")
+
+    return _dedupe_paths(candidates)
+
+
+def _candidate_deployment_manifest_paths(config: MainComputerConfig | None) -> list[Path]:
+    network = _selected_network(config)
+    candidates: list[Path] = []
+    env_path = os.environ.get("MAIN_COMPUTER_DEPLOYMENT_MANIFEST_PATH")
+    if env_path:
+        candidates.append(Path(env_path))
+    if config is not None and config.hub_dev_chain_deployment_path is not None:
+        candidates.append(config.hub_dev_chain_deployment_path)
+
+    cwd = Path.cwd().resolve()
+    for root in [cwd, *cwd.parents]:
+        candidates.append(root / "runtime" / "deployments" / network / "latest.json")
+        if network != "dev":
+            candidates.append(root / "runtime" / "deployments" / "dev" / "latest.json")
+
+    if config is not None:
+        for raw in [config.hub_root, config.workspace]:
+            try:
+                base = Path(raw).resolve()
+            except Exception:
+                continue
+            for root in [base, *base.parents]:
+                candidates.append(root / "runtime" / "deployments" / network / "latest.json")
+                if network != "dev":
+                    candidates.append(root / "runtime" / "deployments" / "dev" / "latest.json")
+
+    return _dedupe_paths(candidates)
+
+
+def _load_json_object(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"JSON root is not an object: {path}")
+    return payload
+
+
+def _first_existing_contract_config(config: MainComputerConfig | None) -> tuple[Path, dict[str, Any]] | None:
+    network = _selected_network(config)
+    last_error = ""
+    for path in _candidate_contract_config_paths(config):
+        try:
+            if not path.exists():
+                continue
+            loaded = load_contract_config(network, path=path)
+            if loaded is not None:
+                return loaded
+        except Exception as exc:
+            last_error = f"{path}: {exc}"
+            continue
+    if last_error:
+        raise FileNotFoundError(f"Could not load a usable contract config. Last error: {last_error}")
+    return None
+
+
 def load_bridge_deployment(config: MainComputerConfig | None = None, *, deployment_manifest_path: Path | None = None) -> BridgeDeployment:
+    contract_loaded = _first_existing_contract_config(config)
+    contract_path: Path | None = None
+    contract_payload: dict[str, Any] | None = None
+    if contract_loaded is not None:
+        contract_path, contract_payload = contract_loaded
+
     paths = [Path(deployment_manifest_path)] if deployment_manifest_path else _candidate_deployment_manifest_paths(config)
     last_error = ""
     for path in paths:
         try:
             if not path.exists():
                 continue
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                continue
-            contracts = payload.get("contracts") if isinstance(payload.get("contracts"), dict) else {}
-            escrow = contracts.get("hub_credit_bridge_escrow") if isinstance(contracts.get("hub_credit_bridge_escrow"), dict) else {}
+            payload = _load_json_object(path)
+            contract_source = contract_payload if contract_payload is not None else payload
+            escrow = get_contract_record(contract_source, "hub_credit_bridge_escrow")
+            if not escrow:
+                escrow = get_contract_record(payload, "hub_credit_bridge_escrow")
             hub_admin = payload.get("hub_admin") if isinstance(payload.get("hub_admin"), dict) else {}
             chain = payload.get("chain") if isinstance(payload.get("chain"), dict) else {}
+
             contract_address = normalize_evm_address(escrow.get("address"), field_name="contracts.hub_credit_bridge_escrow.address")
             controller = normalize_evm_address(
                 escrow.get("bridge_controller_address") or hub_admin.get("address"),
                 field_name="contracts.hub_credit_bridge_escrow.bridge_controller_address",
             )
-            admin_address = normalize_evm_address(hub_admin.get("address") or controller, field_name="hub_admin.address")
-            wallet_raw = str(hub_admin.get("wallet_path") or "").strip()
+            admin_address = normalize_evm_address(
+                os.environ.get("MAIN_COMPUTER_HUB_ADMIN_ADDRESS") or hub_admin.get("address") or controller,
+                field_name="hub_admin.address",
+            )
+            wallet_raw = str(
+                os.environ.get("MAIN_COMPUTER_HUB_ADMIN_WALLET_PATH")
+                or os.environ.get("MAIN_COMPUTER_BRIDGE_CONTROLLER_WALLET_PATH")
+                or hub_admin.get("wallet_path")
+                or ""
+            ).strip()
             if not wallet_raw:
                 raise ValueError("hub_admin.wallet_path is missing.")
             repo_root = _repo_root_for_deployment_manifest(path)
             wallet_path = Path(wallet_raw)
             if not wallet_path.is_absolute():
                 wallet_path = repo_root / wallet_path
-            chain_id = positive_int(escrow.get("chain_id") or chain.get("chain_id") or (config.energy_chain_id if config else 0))
+            chain_id = positive_int(escrow.get("chain_id") or contract_source.get("chain_id") or chain.get("chain_id") or (config.energy_chain_id if config else 0))
             if chain_id <= 0:
                 raise ValueError("deployment chain id is missing.")
-            rpc_url = str(chain.get("rpc_url") or chain.get("host_rpc_url") or (config.energy_chain_rpc_url if config else "") or "").strip()
+            rpc_url = str(
+                contract_source.get("chain_rpc_url")
+                or chain.get("rpc_url")
+                or chain.get("host_rpc_url")
+                or (config.energy_chain_rpc_url if config else "")
+                or ""
+            ).strip()
             if not rpc_url:
                 raise ValueError("deployment RPC URL is missing.")
             return BridgeDeployment(
@@ -389,12 +483,17 @@ def load_bridge_deployment(config: MainComputerConfig | None = None, *, deployme
                 hub_admin_address=admin_address,
                 hub_admin_wallet_path=wallet_path,
                 deployment_manifest_path=path,
+                contracts_path=contract_path,
             )
         except Exception as exc:
             last_error = f"{path}: {exc}"
             continue
     detail = f" Last error: {last_error}" if last_error else ""
-    raise FileNotFoundError("Could not find a usable runtime/deployments/dev/latest.json with hub_credit_bridge_escrow metadata." + detail)
+    raise FileNotFoundError(
+        "Could not find a usable private deployment manifest with hub_admin wallet metadata. "
+        "Contract addresses are loaded from main_computer/config/<network>_contracts.json when present."
+        + detail
+    )
 
 
 def load_hub_admin_private_key(deployment: BridgeDeployment) -> str:
