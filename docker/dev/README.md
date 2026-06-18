@@ -37,22 +37,16 @@ python -m main_computer.cli hub --network dev
 ```
 
 The local QBFT test profile listens on `127.0.0.1:8780` and talks to the
-non-validator RPC node at `http://127.0.0.1:30010` after the smoke lab has
-published `runtime/deployments/dev/latest.json`. The smoke lab uses London/EIP-1559
-from genesis and does not deploy through legacy transactions or older-EVM compiler downgrades:
+non-validator RPC node at `http://127.0.0.1:30010` after the local Coolify QBFT
+deployer has published `runtime/deployments/test/latest.json`:
 
 ```powershell
-python .\tools\smoke_besu_qbft_one_validator.py up --deploy-contracts
+python .\tools\coolify_qbft_network.py apply test --all
 python -m main_computer.cli hub --network test
 ```
 
-Equivalent split form:
-
-```powershell
-python .\tools\smoke_besu_qbft_one_validator.py up
-python .\tools\smoke_besu_qbft_one_validator.py deploy
-python -m main_computer.cli hub --network test
-```
+The lower-level smoke harness remains available for raw Besu/QBFT diagnosis when
+Coolify itself is not part of the test.
 
 Override the Hub bind port only when running extra instances:
 

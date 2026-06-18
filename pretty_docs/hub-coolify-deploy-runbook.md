@@ -1,48 +1,35 @@
 # Hub Coolify Deployment Runbook
 
-This runbook explains how to deploy the public Main Computer Hub service with
+This runbook explains how to deploy the hosted Main Computer Hub service with
 `tools/coolify_hub_service.py`.
 
-Use it for the hosted `testnet` and `mainnet` Hub services. Local developer Hub
-startup remains documented in the root `README.md`.
-
-## Deployment choices
-
-There are two Hub implementations:
-
-```text
-regular   The normal Hub served by `python -m main_computer.cli hub`.
-exp-fdb   The experimental FoundationDB-backed Hub served by `exp-fdb-hub.py`.
-```
-
-The regular Hub is the default and keeps the existing public service name:
-
-```text
-main-computer-<network>-hub
-```
-
-The experimental Hub is side-by-side by default so it does not overwrite the
-regular Hub during testing:
-
-```text
-main-computer-<network>-exp-fdb-hub
-```
-
-Only pass `--replace-regular-hub` when you intentionally want the experimental
-Hub to update the regular public service name.
+The hosted Hub now uses the experimental FoundationDB-backed Hub implementation
+served by `exp-fdb-hub.py`. The legacy non-FDB Hub Dockerfiles have been removed;
+Coolify should use `/Dockerfile.hub.exp-fdb` for both `testnet` and `mainnet`.
 
 ## Inputs the deployer needs
 
 Run all commands from the repository root.
 
-The deployer reads the hosted network profile from
-`main_computer/config/hub_networks.json`. The remote networks currently exposed
-by the tool are:
+The deployer reads hosted network settings from
+`main_computer/config/hub_networks.json`. The networks currently exposed by the
+tool are:
 
 ```text
-testnet   https://testnet-hub.greatlibrary.io   port 8785   chain 42424241
-mainnet   https://mainnet-hub.greatlibrary.io   port 8790   chain 42424240
+test      local Coolify + local QBFT rehearsal       port 8780   chain 42424241
+testnet   https://testnet-hub.greatlibrary.io        port 8785   chain 42424241
+mainnet   https://mainnet-hub.greatlibrary.io        port 8790   chain 42424240
 ```
+
+`test` is intentionally local-Coolify-facing. It uses the same local Coolify
+surface as the Website Builder/local-prod smoke and the local Besu/QBFT rehearsal.
+When the Website Builder has already published through local Coolify, do not
+start a second local Coolify stack. The Hub deployer discovers that existing
+target from `MAIN_COMPUTER_COOLIFY_*` environment variables or from
+`runtime/applications_service/applications.env` (`COOLIFY_LOCAL_STATE` and
+`APP_PORT`). It falls back to `runtime/coolify-local-docker/api-token.txt` only
+for repo-local smoke setups. The default project is `Main Computer Local Smoke`,
+environment `production`, and server target `localhost`.
 
 For `apply`, provide Coolify access and placement information. `plan` can render
 the payload without a token, but `apply` needs a token.
@@ -68,65 +55,114 @@ You can use UUID flags instead of names when the Coolify IDs are known:
 --coolify-application-uuid
 ```
 
-## Deploy the regular Hub
+## Local `test` target
 
-First render the plan. This does not call Coolify:
+Use this before `testnet` or `mainnet` when you want the Hub to land on the same
+local Coolify target surface as the local Besu/QBFT rehearsal.
+
+First make sure the local Coolify surface already works. If Website Builder can
+publish to local Coolify, this prerequisite is already satisfied. Do **not** run
+`coolify-local-docker.py up` again just to deploy the Hub; that can collide with
+the already-running local Coolify port.
+
+If you are not running through the Website Builder/app launcher environment,
+point the Hub deployer at the same local state explicitly:
 
 ```powershell
-python .\tools\coolify_hub_service.py plan mainnet `
-  --git-repo $GitRepo
+$env:MAIN_COMPUTER_COOLIFY_STATE_DIR = "C:\path\to\coolify-local-docker"
 ```
 
-The regular mainnet plan should include:
+or pass:
 
 ```text
-name:                main-computer-mainnet-hub
-dockerfile_location: /Dockerfile.hub.mainnet
-start_command:       --network mainnet --host 0.0.0.0 --port 8790 --hub-runtime-dir /data/main-computer/hub/mainnet
-health_check_path:   /api/hub/status
+--local-coolify-state-dir C:\path\to\coolify-local-docker
 ```
 
-Apply the regular Hub to Coolify:
+Then render the Hub plan:
 
 ```powershell
-python .\tools\coolify_hub_service.py apply mainnet `
-  --coolify-url $CoolifyUrl `
-  --coolify-project-name $ProjectName `
-  --coolify-environment-name $EnvironmentName `
-  --coolify-server-name $ServerName `
+python .\tools\coolify_hub_service.py plan test `
   --git-repo $GitRepo
 ```
 
-For testnet, change the network argument:
+The local test plan should include a Coolify **service** payload, not an
+`applications/public` payload. Local Coolify has already proven this raw
+Docker Compose service path through the Besu/QBFT rehearsal, so `apply test`
+uses the same target surface and avoids the application-create path that can
+500 in local Coolify builds.
 
-```powershell
-python .\tools\coolify_hub_service.py apply testnet `
-  --coolify-url $CoolifyUrl `
-  --coolify-project-name $ProjectName `
-  --coolify-environment-name "testnet" `
-  --coolify-server-name $ServerName `
-  --git-repo $GitRepo
+```text
+resource kind:       service
+name:                main-computer-test-hub
+dockerfile:          Dockerfile.hub.exp-fdb
+coolify_url:         http://127.0.0.1:8000
+environment_name:    production
+runtime_dir:         /srv/main-computer/hub/test-exp-fdb
+cluster_file:        /srv/main-computer/hub/test-exp-fdb/fdb.cluster
+namespace:           main-computer-test-exp-fdb
+hub public URL:      http://127.0.0.1:8780
+operator RPC check:  http://127.0.0.1:30010
+Hub container RPC:   http://host.docker.internal:30010
 ```
 
-The apply command creates or updates the Coolify application, ensures the Hub
-state volume is present unless `--no-create-storage` is passed, triggers a
-deploy unless `--no-deploy` is passed, and checks `/api/hub/status` unless
-`--no-wait-hub` or `--hub-health-check skip` is passed.
+The rendered local Compose service builds from the provided Git repository and
+branch, publishes `127.0.0.1:8780:8780`, adds `host.docker.internal:host-gateway`,
+and mounts the named `test_exp_fdb_hub_state` volume at
+`/srv/main-computer/hub/test-exp-fdb`.
 
-## Deploy the experimental FoundationDB Hub side-by-side
+Apply to the local Coolify target:
 
-The experimental Hub requires a running FoundationDB cluster outside of the Hub
+```powershell
+python .\tools\coolify_hub_service.py apply test `
+  --git-repo $GitRepo `
+  --hub-health-check warn `
+  --rpc-check warn
+```
+
+For `apply test`, the deployer reads the same local token style used by Website
+Builder: `MAIN_COMPUTER_COOLIFY_LOCAL_TOKEN`, `MAIN_COMPUTER_COOLIFY_LOCAL_TOKEN_FILE`,
+or `<local-coolify-state-dir>/api-token.txt`. The token file may be either a raw
+token or the generated key/value format containing `token=...` and `dashboard=...`.
+Override these only when the local surface is not discoverable:
+
+```text
+--coolify-url
+--coolify-project-name
+--coolify-environment-name
+--coolify-server-name
+--local-coolify-state-dir
+--local-coolify-token-file
+--applications-service-env-file
+--hub-chain-rpc-url
+```
+
+The `test` profile keeps the operator-facing RPC URL as `http://127.0.0.1:30010`
+for preflight checks, but passes `http://host.docker.internal:30010` to the Hub
+container by default. If your local Coolify/Docker host needs a different
+container-to-host route, pass `--hub-chain-rpc-url`.
+
+## FoundationDB requirement
+
+The hosted Hub requires a running FoundationDB cluster outside of the Hub
 process. The deployer intentionally passes `--no-fdb-autostart`; the hosted
-container must not start a local smoke-only FDB instance.
+container must not start a smoke-only local FDB instance.
 
-Before applying, make sure the Coolify application will have a valid cluster file
-at the container path passed to `--fdb-cluster-file`. A common mounted path is:
+Before applying, make sure the Coolify application can read the cluster file at
+the container path passed to `--fdb-cluster-file`. A common mounted path is:
 
 ```text
 /data/main-computer/fdb/fdb.cluster
 ```
 
-Render the side-by-side experimental plan:
+If `--fdb-cluster-file` is omitted, the deployer defaults to:
+
+```text
+/data/main-computer/hub/<network>-exp-fdb/fdb.cluster
+```
+
+## Render the plan
+
+Mainnet:
 
 ```powershell
 python .\tools\coolify_hub_service.py plan mainnet `
@@ -136,17 +172,40 @@ python .\tools\coolify_hub_service.py plan mainnet `
   --fdb-namespace main-computer-mainnet-exp-fdb
 ```
 
-The side-by-side experimental mainnet plan should include:
+The mainnet plan should include:
 
 ```text
-name:                main-computer-mainnet-exp-fdb-hub
+name:                main-computer-mainnet-hub
 dockerfile_location: /Dockerfile.hub.exp-fdb
 runtime_dir:         /data/main-computer/hub/mainnet-exp-fdb
 cluster_file:        /data/main-computer/fdb/fdb.cluster
 namespace:           main-computer-mainnet-exp-fdb
+health_check_path:   /api/hub/status
 ```
 
-Apply the side-by-side experimental Hub:
+Testnet:
+
+```powershell
+python .\tools\coolify_hub_service.py plan testnet `
+  --hub-implementation exp-fdb `
+  --git-repo $GitRepo `
+  --fdb-cluster-file /data/main-computer/fdb/fdb.cluster `
+  --fdb-namespace main-computer-testnet-exp-fdb
+```
+
+The testnet plan should use the same Dockerfile and the testnet port/profile:
+
+```text
+name:                main-computer-testnet-hub
+dockerfile_location: /Dockerfile.hub.exp-fdb
+runtime_dir:         /data/main-computer/hub/testnet-exp-fdb
+cluster_file:        /data/main-computer/fdb/fdb.cluster
+namespace:           main-computer-testnet-exp-fdb
+```
+
+## Apply to Coolify
+
+Mainnet:
 
 ```powershell
 python .\tools\coolify_hub_service.py apply mainnet `
@@ -160,9 +219,48 @@ python .\tools\coolify_hub_service.py apply mainnet `
   --fdb-namespace main-computer-mainnet-exp-fdb
 ```
 
-The experimental Dockerfile is `/Dockerfile.hub.exp-fdb`. It installs the
-`foundationdb` Python package and a native `libfdb_c.so` client during image
-build, then starts:
+Testnet:
+
+```powershell
+python .\tools\coolify_hub_service.py apply testnet `
+  --hub-implementation exp-fdb `
+  --coolify-url $CoolifyUrl `
+  --coolify-project-name $ProjectName `
+  --coolify-environment-name "testnet" `
+  --coolify-server-name $ServerName `
+  --git-repo $GitRepo `
+  --fdb-cluster-file /data/main-computer/fdb/fdb.cluster `
+  --fdb-namespace main-computer-testnet-exp-fdb
+```
+
+For `testnet` and `mainnet`, the apply command creates or updates the normal
+public Coolify application name:
+
+```text
+main-computer-<network>-hub
+```
+
+For local `test`, the apply command creates or updates a Coolify Docker Compose
+service with that same stable name instead of using `/api/v1/applications/public`.
+That mirrors the local Besu/QBFT Coolify path and avoids local application-create
+500s.
+
+Hosted application deploys also ensure the Hub state volume is present unless
+`--no-create-storage` is passed. Local `test` service deploys carry their volume
+inside the generated Compose file. Both paths trigger a deploy unless
+`--no-deploy` is passed and check `/api/hub/status` unless `--no-wait-hub` or
+`--hub-health-check skip` is passed.
+
+## Dockerfile
+
+The only hosted Hub Dockerfile is:
+
+```text
+/Dockerfile.hub.exp-fdb
+```
+
+It installs the `foundationdb` Python package and a native `libfdb_c.so` client
+during image build, then starts:
 
 ```text
 python /app/exp-fdb-hub.py
@@ -170,48 +268,6 @@ python /app/exp-fdb-hub.py
 
 The generated Coolify start command adds the hosted network identity, chain ID,
 chain RPC URL, Hub URL, FDB namespace, and `--no-fdb-autostart`.
-
-## Replace the regular Hub with the experimental Hub
-
-Do this only after the side-by-side service has been validated.
-
-Render the replacement plan first:
-
-```powershell
-python .\tools\coolify_hub_service.py plan mainnet `
-  --hub-implementation exp-fdb `
-  --replace-regular-hub `
-  --git-repo $GitRepo `
-  --fdb-cluster-file /data/main-computer/fdb/fdb.cluster `
-  --fdb-namespace main-computer-mainnet-exp-fdb
-```
-
-The replacement plan should use the regular service name with the experimental
-Dockerfile:
-
-```text
-name:                main-computer-mainnet-hub
-dockerfile_location: /Dockerfile.hub.exp-fdb
-```
-
-Apply the replacement:
-
-```powershell
-python .\tools\coolify_hub_service.py apply mainnet `
-  --hub-implementation exp-fdb `
-  --replace-regular-hub `
-  --coolify-url $CoolifyUrl `
-  --coolify-project-name $ProjectName `
-  --coolify-environment-name $EnvironmentName `
-  --coolify-server-name $ServerName `
-  --git-repo $GitRepo `
-  --fdb-cluster-file /data/main-computer/fdb/fdb.cluster `
-  --fdb-namespace main-computer-mainnet-exp-fdb
-```
-
-The experimental Hub advertises the selected hosted network through
-`/api/hub/status`, so a replacement mainnet service reports the mainnet network
-identity even though the storage backend is FoundationDB.
 
 ## Useful safety flags
 
@@ -242,9 +298,7 @@ Invoke-RestMethod https://mainnet-hub.greatlibrary.io/api/hub/status
 Invoke-RestMethod https://testnet-hub.greatlibrary.io/api/hub/status
 ```
 
-For the regular Hub, the status should report the selected network and chain ID.
-
-For the experimental Hub side-by-side or replacement path, also confirm:
+Confirm:
 
 ```text
 the Coolify application uses /Dockerfile.hub.exp-fdb
@@ -252,8 +306,9 @@ the start command contains --cluster-file and --namespace
 the start command contains --no-fdb-autostart
 the mounted FDB cluster file exists inside the container
 the FDB namespace is unique for the environment being tested
+the status network object reports the expected network key and chain ID
 ```
 
-If the experimental Hub cannot read the cluster file or cannot load the native
-FDB client, it should be treated as a deployment/runtime failure rather than as a
-chain or Coolify routing problem.
+If the Hub cannot read the cluster file or cannot load the native FDB client, it
+should be treated as a deployment/runtime failure rather than as a chain or
+Coolify routing problem.

@@ -2,35 +2,44 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+ARG FDB_VERSION=7.4.6
 ARG FDB_PYTHON_VERSION=7.4.6
-ARG FDB_NATIVE_CLIENT_PACKAGE=FoundationDB.Client.Native
-ARG FDB_NATIVE_CLIENT_VERSION=7.4.4
+ARG TARGETARCH
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
-ENV LD_LIBRARY_PATH=/opt/foundationdb/lib
-ENV PATH=/opt/foundationdb/lib:${PATH}
+ENV FDB_API_VERSION=740
+ENV FOUNDATIONDB_CLIENT_LIBRARY_PATH=/usr/lib/libfdb_c.so
+ENV HUB_HEALTH_PORT=8790
+
+LABEL org.opencontainers.image.description="Main Computer experimental FoundationDB Hub using FoundationDB.Client.Native libfdb_c.so"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl wget \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY . /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates wget \
-    && rm -rf /var/lib/apt/lists/* \
-    && python -m pip install --upgrade pip \
-    && python -m pip install --no-cache-dir -e . "foundationdb==${FDB_PYTHON_VERSION}"
-
 RUN set -eux; \
-    FDB_NATIVE_RUNTIME="$(python -c 'import platform; m=platform.machine().lower(); print("linux-arm64" if m in ("aarch64","arm64") else "linux-x64" if m in ("amd64","x86_64") else "")')"; \
-    test -n "$FDB_NATIVE_RUNTIME"; \
-    export FDB_NATIVE_RUNTIME; \
-    wget -O /tmp/fdb-native.nupkg "https://www.nuget.org/api/v2/package/${FDB_NATIVE_CLIENT_PACKAGE}/${FDB_NATIVE_CLIENT_VERSION}"; \
-    python -c "import os, pathlib, zipfile; runtime=os.environ['FDB_NATIVE_RUNTIME']; dest=pathlib.Path('/opt/foundationdb/lib'); suffix=f'runtimes/{runtime}/native/libfdb_c.so'.lower(); zf=zipfile.ZipFile('/tmp/fdb-native.nupkg'); name=next((n for n in zf.namelist() if n.replace('\\\\','/').lower().endswith(suffix)), None); assert name, suffix; dest.mkdir(parents=True, exist_ok=True); (dest/'libfdb_c.so').write_bytes(zf.read(name))"; \
-    rm -f /tmp/fdb-native.nupkg
+    python -m pip install --upgrade pip; \
+    python -m pip install --no-cache-dir -e . "foundationdb==${FDB_PYTHON_VERSION}"; \
+    arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    case "$arch" in \
+      amd64|x86_64) deb_arch="amd64" ;; \
+      arm64|aarch64) deb_arch="arm64" ;; \
+      *) echo "Unsupported FoundationDB client architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/foundationdb-clients.deb \
+      "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/foundationdb-clients_${FDB_VERSION}-1_${deb_arch}.deb"; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends /tmp/foundationdb-clients.deb; \
+    rm -f /tmp/foundationdb-clients.deb; \
+    rm -rf /var/lib/apt/lists/*; \
+    test -e "${FOUNDATIONDB_CLIENT_LIBRARY_PATH}"
 
-EXPOSE 8790
+EXPOSE 8790 8785
 
-ENTRYPOINT ["python", "/app/exp-fdb-hub.py"]
-CMD ["--host", "0.0.0.0", "--port", "8790", "--hub-root", "/data/main-computer/hub/exp-fdb", "--cluster-file", "/data/main-computer/hub/exp-fdb/fdb.cluster", "--namespace", "main-computer-exp-fdb", "--no-fdb-autostart", "--no-activate-cached-native-client"]
+CMD ["python", "/app/exp-fdb-hub.py", "--host", "0.0.0.0", "--port", "8790", "--hub-root", "/data/main-computer/hub/mainnet-exp-fdb", "--cluster-file", "/data/main-computer/hub/mainnet-exp-fdb/fdb.cluster", "--namespace", "main-computer-mainnet-exp-fdb", "--network-key", "mainnet", "--network-display-name", "Main Computer Mainnet", "--network-kind", "mainnet", "--chain-id", "42424240", "--chain-rpc-url", "https://mainnet-rpc.greatlibrary.io", "--no-fdb-autostart", "--no-activate-cached-native-client"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD wget -qO- http://127.0.0.1:8790/api/hub/status >/dev/null || exit 1
+    CMD wget -qO- "http://127.0.0.1:${HUB_HEALTH_PORT}/api/hub/status" >/dev/null || exit 1

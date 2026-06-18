@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import base64
 import copy
+import importlib.util
 import datetime as _dt
 import ipaddress
 import json
@@ -34,7 +35,7 @@ import textwrap
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +64,25 @@ DEFAULT_FUNDED_ACCOUNTS = [
     "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
 ]
 
+LOCAL_COOLIFY_SEEDS = {"test"}
+LOCAL_COOLIFY_DEFAULT_URL = "http://127.0.0.1:8000"
+LOCAL_COOLIFY_TOKEN_RELATIVE_PATH = Path("runtime") / "coolify-local-docker" / "api-token.txt"
+LOCAL_COOLIFY_DEFAULT_ENVIRONMENT = "production"
+LOCAL_COOLIFY_RPC_CONTAINER_URL = f"http://mc-qbft-rpc:{RPC_CONTAINER_PORT}"
+LOCAL_QBFT_SUBNET_CANDIDATES = (
+    "10.241.0.0/24",
+    "10.242.0.0/24",
+    "10.243.0.0/24",
+    "10.244.0.0/24",
+    "10.245.0.0/24",
+    "172.30.241.0/24",
+    "172.31.241.0/24",
+    "192.168.241.0/24",
+    "192.168.242.0/24",
+)
+LOCAL_QBFT_SUBNET_PROBE_TIMEOUT_S = 5.0
+
+
 # Edit this object to add new environments.  It is intentionally a hierarchical
 # fstab-like table:
 #
@@ -73,6 +93,73 @@ DEFAULT_FUNDED_ACCOUNTS = [
 # part of the deployment identity even when two services live on different IPs.
 # This makes generated plans easy to diff, document, and promote.
 NETWORK_SEEDS: dict[str, dict[str, Any]] = {
+    "test": {
+        "description": "Local Coolify-managed QBFT test network with the same four-validator plus RPC shape as the smoke harness.",
+        "environment": "test",
+        "chain_id": 42424241,
+        "compose_project": "main-computer-qbft-test",
+        "docker_network": "mc-qbft-test-network",
+        "docker_subnet": "10.241.0.0/24",
+        "besu_image": DEFAULT_BESU_IMAGE,
+        "runtime_root": "/srv/main-computer/qbft-test/runtime",
+        "public_rpc": False,
+        "topology_policy": {
+            "minimum_validators": 4,
+            "minimum_rpc_nodes": 1,
+            "validator_warning_below": 4,
+            "validator_warning": "Local test topology is below the configured four-validator fault-tolerance target.",
+        },
+        "hosts": {
+            "local-coolify": {
+                "ssh": "root@127.0.0.1",
+                "address": "127.0.0.1",
+                "coolify_url": LOCAL_COOLIFY_DEFAULT_URL,
+                "runtime_root": "/srv/main-computer/qbft-test/runtime",
+            }
+        },
+        "services": [
+            {
+                "id": "validator-1",
+                "role": "validator",
+                "host": "local-coolify",
+                "container_ip": "10.241.0.11",
+                "rpc_host_port": 30001,
+                "p2p_host_port": 30311,
+            },
+            {
+                "id": "validator-2",
+                "role": "validator",
+                "host": "local-coolify",
+                "container_ip": "10.241.0.12",
+                "rpc_host_port": 30002,
+                "p2p_host_port": 30312,
+            },
+            {
+                "id": "validator-3",
+                "role": "validator",
+                "host": "local-coolify",
+                "container_ip": "10.241.0.13",
+                "rpc_host_port": 30003,
+                "p2p_host_port": 30313,
+            },
+            {
+                "id": "validator-4",
+                "role": "validator",
+                "host": "local-coolify",
+                "container_ip": "10.241.0.14",
+                "rpc_host_port": 30004,
+                "p2p_host_port": 30314,
+            },
+            {
+                "id": "rpc-1",
+                "role": "rpc",
+                "host": "local-coolify",
+                "container_ip": "10.241.0.20",
+                "rpc_host_port": 30010,
+                "p2p_host_port": 30320,
+            },
+        ],
+    },
     "testnet": {
         "description": "Single-host QBFT rehearsal network managed by Coolify.",
         "environment": "testnet",
@@ -572,6 +659,194 @@ def build_plan(
     )
 
 
+def normalize_ipv4_subnet(value: object) -> ipaddress.IPv4Network:
+    try:
+        network = ipaddress.ip_network(str(value or "").strip(), strict=False)
+    except ValueError as exc:
+        raise PlanError(f"docker_subnet is invalid: {value!r}") from exc
+    if network.version != 4:
+        raise PlanError(f"docker_subnet must be IPv4: {value!r}")
+    return network
+
+
+def docker_network_ipv4_subnets(*, timeout_s: float = LOCAL_QBFT_SUBNET_PROBE_TIMEOUT_S) -> list[ipaddress.IPv4Network]:
+    """Return Docker bridge/custom IPv4 subnets visible to the host Docker daemon.
+
+    Local ``test`` deployment must not hand Coolify a subnet that Docker already
+    considers occupied.  Coolify accepts the service update asynchronously, so a
+    bad subnet otherwise fails later inside a queued CoolifyTask and leaves the
+    operator waiting on an RPC port that will never open.
+    """
+
+    try:
+        listing = subprocess.run(
+            ["docker", "network", "ls", "-q"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout_s,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if listing.returncode != 0:
+        return []
+
+    network_ids = [line.strip() for line in listing.stdout.splitlines() if line.strip()]
+    if not network_ids:
+        return []
+
+    try:
+        inspected = subprocess.run(
+            ["docker", "network", "inspect", *network_ids],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout_s,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if inspected.returncode != 0:
+        return []
+
+    try:
+        payload = json.loads(inspected.stdout or "[]")
+    except json.JSONDecodeError:
+        return []
+
+    networks: list[ipaddress.IPv4Network] = []
+    for item in payload if isinstance(payload, list) else []:
+        ipam = item.get("IPAM") if isinstance(item, dict) else None
+        configs = ipam.get("Config") if isinstance(ipam, dict) else None
+        if not isinstance(configs, list):
+            continue
+        for config in configs:
+            if not isinstance(config, dict):
+                continue
+            subnet_text = str(config.get("Subnet") or "").strip()
+            if not subnet_text:
+                continue
+            try:
+                network = ipaddress.ip_network(subnet_text, strict=False)
+            except ValueError:
+                continue
+            if network.version == 4:
+                networks.append(network)
+    return networks
+
+
+def choose_non_overlapping_subnet(
+    preferred: ipaddress.IPv4Network,
+    existing: list[ipaddress.IPv4Network],
+    *,
+    candidates: tuple[str, ...] = LOCAL_QBFT_SUBNET_CANDIDATES,
+) -> ipaddress.IPv4Network | None:
+    seen: set[str] = set()
+    candidate_networks: list[ipaddress.IPv4Network] = []
+    for value in (str(preferred), *candidates):
+        try:
+            candidate = normalize_ipv4_subnet(value)
+        except PlanError:
+            continue
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidate_networks.append(candidate)
+
+    for candidate in candidate_networks:
+        if not any(candidate.overlaps(network) for network in existing):
+            return candidate
+    return None
+
+
+def plan_with_docker_subnet(plan: NetworkPlan, docker_subnet: str) -> NetworkPlan:
+    new_subnet = normalize_ipv4_subnet(docker_subnet)
+    old_subnet = normalize_ipv4_subnet(plan.docker_subnet)
+    if str(new_subnet) == str(old_subnet):
+        return plan
+    if new_subnet.num_addresses < 21:
+        raise PlanError(f"docker_subnet must have room for validator/RPC static IP offsets .11-.20: {docker_subnet!r}")
+
+    new_services: list[PlannedService] = []
+    for service in plan.services:
+        old_ip = ipaddress.ip_address(service.container_ip)
+        offset = int(old_ip) - int(old_subnet.network_address)
+        if offset < 0 or offset >= old_subnet.num_addresses:
+            raise PlanError(f"container_ip for {service.id} is not in docker_subnet {plan.docker_subnet}: {service.container_ip}")
+        new_ip = ipaddress.ip_address(int(new_subnet.network_address) + offset)
+        if new_ip not in new_subnet:
+            raise PlanError(f"replacement container_ip for {service.id} would fall outside {docker_subnet!r}")
+        new_services.append(replace(service, container_ip=str(new_ip)))
+
+    return replace(plan, docker_subnet=str(new_subnet), services=tuple(sorted(new_services, key=lambda item: item.id)))
+
+
+def prepare_local_qbft_subnet(plan: NetworkPlan, args: argparse.Namespace) -> tuple[NetworkPlan, dict[str, Any]]:
+    """Repair the local Coolify QBFT subnet before sending compose to Coolify."""
+
+    if not is_local_coolify_plan(plan):
+        return plan, {"ok": True, "skipped": True, "reason": "not-local-coolify"}
+
+    override = str(getattr(args, "docker_subnet", "") or "").strip()
+    existing = docker_network_ipv4_subnets()
+    existing_text = [str(item) for item in existing]
+
+    if override:
+        updated = plan_with_docker_subnet(plan, override)
+        selected = normalize_ipv4_subnet(updated.docker_subnet)
+        overlaps = [str(item) for item in existing if selected.overlaps(item)]
+        if overlaps:
+            return updated, {
+                "ok": False,
+                "requested_subnet": str(selected),
+                "overlaps": overlaps,
+                "existing_subnets": existing_text,
+                "message": f"Requested local QBFT Docker subnet {selected} overlaps existing Docker network subnet(s): {', '.join(overlaps)}",
+            }
+        return updated, {
+            "ok": True,
+            "changed": str(selected) != plan.docker_subnet,
+            "selected_subnet": str(selected),
+            "source": "operator-override",
+            "existing_subnets": existing_text,
+        }
+
+    preferred = normalize_ipv4_subnet(plan.docker_subnet)
+    overlaps = [item for item in existing if preferred.overlaps(item)]
+    if not overlaps:
+        return plan, {
+            "ok": True,
+            "changed": False,
+            "selected_subnet": str(preferred),
+            "source": "seed",
+            "existing_subnets": existing_text,
+        }
+
+    selected = choose_non_overlapping_subnet(preferred, existing)
+    if selected is None:
+        return plan, {
+            "ok": False,
+            "requested_subnet": str(preferred),
+            "overlaps": [str(item) for item in overlaps],
+            "existing_subnets": existing_text,
+            "candidates": list(LOCAL_QBFT_SUBNET_CANDIDATES),
+            "message": "No non-overlapping local QBFT Docker subnet was available from the built-in candidate list.",
+        }
+
+    updated = plan_with_docker_subnet(plan, str(selected))
+    return updated, {
+        "ok": True,
+        "changed": True,
+        "selected_subnet": str(selected),
+        "previous_subnet": str(preferred),
+        "source": "auto-repair",
+        "overlaps": [str(item) for item in overlaps],
+        "existing_subnets": existing_text,
+    }
+
+
 def host_by_id(plan: NetworkPlan) -> dict[str, PlannedHost]:
     return {host.id: host for host in plan.hosts}
 
@@ -693,11 +968,15 @@ def render_bootstrap_shell(plan: NetworkPlan) -> str:
         "if [ -f /smoke/network-metadata.json ] && [ \"${QBFT_RESET_CHAIN:-false}\" != \"true\" ]; then",
         "  EXISTING_QBFT_VALIDATOR_COUNT=$(grep -c '\"id\": \"validator-' /smoke/network-metadata.json || true)",
         "  EXISTING_QBFT_RPC_COUNT=$(grep -c '\"id\": \"rpc-' /smoke/network-metadata.json || true)",
-        "  if grep -q '\"network\": \"" + plan.name + "\"' /smoke/network-metadata.json && [ \"$EXISTING_QBFT_VALIDATOR_COUNT\" = \"$EXPECTED_QBFT_VALIDATOR_COUNT\" ] && [ \"$EXISTING_QBFT_RPC_COUNT\" = \"$EXPECTED_QBFT_RPC_COUNT\" ]; then",
+        "  EXISTING_QBFT_METADATA_MATCH=false",
+        "  if grep -q '\"network\": \"" + plan.name + "\"' /smoke/network-metadata.json && grep -q '\"docker_network\": \"" + plan.docker_network + "\"' /smoke/network-metadata.json && grep -q '\"docker_subnet\": \"" + plan.docker_subnet + "\"' /smoke/network-metadata.json; then",
+        "    EXISTING_QBFT_METADATA_MATCH=true",
+        "  fi",
+        "  if [ \"$EXISTING_QBFT_METADATA_MATCH\" = \"true\" ] && [ \"$EXISTING_QBFT_VALIDATOR_COUNT\" = \"$EXPECTED_QBFT_VALIDATOR_COUNT\" ] && [ \"$EXISTING_QBFT_RPC_COUNT\" = \"$EXPECTED_QBFT_RPC_COUNT\" ]; then",
         "    echo \"Existing QBFT network metadata matches desired topology; reusing persistent genesis/key material.\"",
         "    exit 0",
         "  fi",
-        "  if grep -q '\"network\": \"" + plan.name + "\"' /smoke/network-metadata.json && [ \"$EXISTING_QBFT_VALIDATOR_COUNT\" = \"$EXPECTED_QBFT_VALIDATOR_COUNT\" ] && [ \"$EXISTING_QBFT_RPC_COUNT\" = \"0\" ] && [ \"$EXPECTED_QBFT_RPC_COUNT\" != \"0\" ] && [ -f /smoke/genesis.json ] && [ -f /smoke/static-nodes-all.json ]; then",
+        "  if [ \"$EXISTING_QBFT_METADATA_MATCH\" = \"true\" ] && [ \"$EXISTING_QBFT_VALIDATOR_COUNT\" = \"$EXPECTED_QBFT_VALIDATOR_COUNT\" ] && [ \"$EXISTING_QBFT_RPC_COUNT\" = \"0\" ] && [ \"$EXPECTED_QBFT_RPC_COUNT\" != \"0\" ] && [ -f /smoke/genesis.json ] && [ -f /smoke/static-nodes-all.json ]; then",
         "    echo \"Existing validator topology matches; adding dedicated RPC runtime material without regenerating validator keys.\"",
     ]
     for service in rpc_nodes:
@@ -790,6 +1069,7 @@ def render_bootstrap_shell(plan: NetworkPlan) -> str:
             f"  \"chain_id\": {plan.chain_id},",
             f"  \"compose_project\": \"{plan.compose_project}\",",
             f"  \"docker_network\": \"{plan.docker_network}\",",
+            f"  \"docker_subnet\": \"{plan.docker_subnet}\",",
             "  \"validators\": [",
         ]
     )
@@ -1085,6 +1365,216 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def is_local_coolify_plan(plan: NetworkPlan) -> bool:
+    return plan.name in LOCAL_COOLIFY_SEEDS
+
+
+def set_arg_default(args: argparse.Namespace, name: str, value: object) -> None:
+    current = getattr(args, name, "")
+    if current is None or str(current).strip() == "":
+        setattr(args, name, value)
+
+
+def load_local_coolify_helper(root: Path) -> object:
+    script = root / "tools" / "local-prod" / "coolify-local-docker.py"
+    if not script.exists():
+        raise CoolifyError(f"missing local Coolify helper: {script}")
+    spec = importlib.util.spec_from_file_location("main_computer_local_coolify_docker", script)
+    if spec is None or spec.loader is None:
+        raise CoolifyError(f"failed to load local Coolify helper: {script}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def parse_local_coolify_env_text(text: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def applications_coolify_runtime_config(root: Path) -> dict[str, object]:
+    """Return the startup-managed local Coolify runtime, when present.
+
+    The local QBFT ``test`` deployer should reuse the same local Coolify stack
+    that the applications/Website Builder startup golden path already owns.  It
+    must not spin up a second fallback stack on 127.0.0.1:8000 just because the
+    repo-local helper defaults point there.
+    """
+
+    env_path = root / "runtime" / "applications_service" / "applications.env"
+    if not env_path.is_file():
+        return {}
+    values = parse_local_coolify_env_text(env_path.read_text(encoding="utf-8", errors="replace"))
+    mapping = {
+        "project_name": values.get("COOLIFY_COMPOSE_PROJECT"),
+        "state_dir": values.get("COOLIFY_LOCAL_STATE"),
+        "app_port": values.get("APP_PORT"),
+        "soketi_port": values.get("SOKETI_PORT"),
+        "soketi_terminal_port": values.get("SOKETI_TERMINAL_PORT"),
+        "network_name": values.get("COOLIFY_NETWORK_NAME"),
+        "container_prefix": values.get("COOLIFY_CONTAINER_NAME"),
+    }
+    return {key: value for key, value in mapping.items() if value not in (None, "")}
+
+
+def apply_applications_coolify_runtime(root: Path, adapter: object) -> dict[str, object]:
+    config = applications_coolify_runtime_config(root)
+    if not config:
+        return {}
+    runtime_config = getattr(adapter, "_RUNTIME_CONFIG", None)
+    if isinstance(runtime_config, dict):
+        runtime_config.update(config)
+    setattr(adapter, "_MAIN_COMPUTER_APPLICATIONS_RUNTIME_CONFIG", dict(config))
+    return dict(config)
+
+
+def local_coolify_token_path(root: Path, adapter: object | None = None) -> Path:
+    if adapter is not None:
+        token_file = getattr(adapter, "api_token_file", None)
+        if callable(token_file):
+            try:
+                return Path(token_file(root)).resolve()
+            except Exception:
+                pass
+    return (root / LOCAL_COOLIFY_TOKEN_RELATIVE_PATH).resolve()
+
+
+def configure_local_coolify_defaults(plan: NetworkPlan, args: argparse.Namespace, *, adapter: object | None = None) -> dict[str, Any]:
+    """Bind the local test seed to the repo-local Coolify bootstrap contract.
+
+    Hosted testnet/mainnet still use explicit remote Coolify credentials.  The
+    local ``test`` seed follows the Website Builder Local Server convention:
+    local Coolify lives at 127.0.0.1:8000 and its API token is stored under
+    runtime/coolify-local-docker/api-token.txt.
+    """
+
+    if not is_local_coolify_plan(plan):
+        return {}
+
+    root = repo_root()
+    token_path = local_coolify_token_path(root, adapter)
+    dashboard_url = LOCAL_COOLIFY_DEFAULT_URL
+    if adapter is not None:
+        adapter_dashboard_url = getattr(adapter, "dashboard_url", None)
+        if callable(adapter_dashboard_url):
+            try:
+                dashboard_url = str(adapter_dashboard_url(root) or dashboard_url)
+            except Exception:
+                dashboard_url = LOCAL_COOLIFY_DEFAULT_URL
+    set_arg_default(args, "coolify_url", dashboard_url)
+    set_arg_default(args, "coolify_token_file", str(token_path))
+    if not str(getattr(args, "coolify_token", "") or "").strip() and str(getattr(args, "coolify_token_file", "") or "").strip() == str(token_path):
+        # Prefer the local token-file contract over an unrelated remote token
+        # that may be present in MAIN_COMPUTER_COOLIFY_TOKEN.
+        setattr(args, "coolify_token_env", "")
+    set_arg_default(args, "coolify_environment", LOCAL_COOLIFY_DEFAULT_ENVIRONMENT)
+    set_arg_default(args, "coolify_service_name", plan.compose_project)
+    if str(getattr(args, "foundry_docker_network", "") or "").strip() in {"", "bridge"}:
+        setattr(args, "foundry_docker_network", plan.docker_network)
+    return {
+        "local": True,
+        "coolify_url": str(getattr(args, "coolify_url", "")),
+        "token_file": str(token_path),
+        "coolify_environment": str(getattr(args, "coolify_environment", "")),
+        "coolify_service_name": str(getattr(args, "coolify_service_name", "")),
+        "foundry_docker_network": str(getattr(args, "foundry_docker_network", "")),
+    }
+
+
+def ensure_local_coolify_context(plan: NetworkPlan, args: argparse.Namespace, *, require_infra: bool = True) -> dict[str, Any]:
+    if not is_local_coolify_plan(plan):
+        return {}
+    if bool(getattr(args, "_local_coolify_context_ready", False)):
+        return dict(getattr(args, "_local_coolify_context", {}) or {})
+
+    root = repo_root()
+    adapter = load_local_coolify_helper(root)
+    runtime_config = apply_applications_coolify_runtime(root, adapter)
+    context = configure_local_coolify_defaults(plan, args, adapter=adapter)
+    context["repo_root"] = str(root)
+    if runtime_config:
+        context["applications_runtime"] = runtime_config
+
+    if bool(getattr(args, "dry_run", False)) or not require_infra:
+        setattr(args, "_local_coolify_context_ready", True)
+        setattr(args, "_local_coolify_context", context)
+        return context
+
+    ensure_infra_status = getattr(adapter, "ensure_infra_status", None)
+    if not callable(ensure_infra_status):
+        raise CoolifyError("local Coolify helper does not expose ensure_infra_status(root)")
+
+    infra_ok, infra_detail = ensure_infra_status(root)
+    if not infra_ok:
+        dashboard = str(getattr(args, "coolify_url", "") or "").strip() or LOCAL_COOLIFY_DEFAULT_URL
+        raise CoolifyError(
+            "local Coolify is not ready for QBFT test deployment. "
+            "The local test deployer now reuses the startup-managed Coolify stack instead of starting a second fallback stack. "
+            f"Start/repair the Main Computer local startup golden path, then retry apply test --all. "
+            f"dashboard={dashboard}; detail={infra_detail}"
+        )
+    context["infra"] = infra_detail
+
+    ensure_api_token = getattr(adapter, "ensure_api_token", None)
+    read_api_token = getattr(adapter, "read_api_token", None)
+    if callable(ensure_api_token):
+        token_ok, token_detail, token = ensure_api_token(root)
+    elif callable(read_api_token):
+        token = str(read_api_token(root) or "").strip()
+        token_ok = bool(token)
+        token_detail = "local Coolify API token file is present" if token_ok else "local Coolify API token is missing"
+    else:
+        raise CoolifyError("local Coolify helper does not expose ensure_api_token/read_api_token")
+    token = str(token or "").strip()
+    if not token_ok or not token:
+        raise CoolifyError(token_detail or "local Coolify API token is missing")
+    context["token"] = token_detail
+    # The local Website Builder prepare path uses the token returned by the
+    # startup-managed Coolify helper directly.  Preserve that same proven token
+    # for the later Coolify client construction instead of falling back to the
+    # hosted MAIN_COMPUTER_COOLIFY_TOKEN gate.
+    setattr(args, "_local_coolify_token", token)
+    setattr(args, "_local_coolify_token_source", f"local-helper:{local_coolify_token_path(root, adapter)}")
+
+    target_func = getattr(adapter, "local_deploy_target_from_db", None)
+    if not callable(target_func):
+        raise CoolifyError("local Coolify helper does not expose local_deploy_target_from_db(root)")
+    target_ok, target_detail, target = target_func(root)
+    if not target_ok:
+        raise CoolifyError(target_detail)
+    context["target"] = target_detail
+    if isinstance(target, dict):
+        set_arg_default(args, "coolify_server_uuid", target.get("server_uuid", ""))
+        set_arg_default(args, "coolify_destination_uuid", target.get("destination_uuid", ""))
+
+    find_project = getattr(adapter, "find_local_project_uuid_via_api", None)
+    if not callable(find_project):
+        raise CoolifyError("local Coolify helper does not expose find_local_project_uuid_via_api(root, token)")
+    project_ok, project_detail, project_uuid = find_project(root, str(token))
+    if not project_ok or not project_uuid:
+        raise CoolifyError(project_detail or "local Coolify project is missing")
+    set_arg_default(args, "coolify_project_uuid", project_uuid)
+    context["project"] = project_detail
+
+    ensure_environment = getattr(adapter, "ensure_project_environment_via_api_or_db", None)
+    if callable(ensure_environment):
+        env_ok, env_detail = ensure_environment(root, str(token), project_uuid)
+        if not env_ok:
+            raise CoolifyError(env_detail)
+        context["environment"] = env_detail
+
+    setattr(args, "_local_coolify_context_ready", True)
+    setattr(args, "_local_coolify_context", context)
+    return context
+
+
 def redact_secret(value: str, *, visible: int = 4) -> str:
     text = str(value or "")
     if not text:
@@ -1133,7 +1623,14 @@ def resolve_coolify_token(args: argparse.Namespace) -> tuple[str, str]:
     if token_file:
         path = Path(token_file)
         if path.is_file():
-            return path.read_text(encoding="utf-8").strip(), f"file:{path}"
+            token = path.read_text(encoding="utf-8").strip()
+            if token.startswith("token="):
+                token = token.split("=", 1)[1].strip()
+            if token:
+                return token, f"file:{path}"
+    local_token = str(getattr(args, "_local_coolify_token", "") or "").strip()
+    if local_token:
+        return local_token, str(getattr(args, "_local_coolify_token_source", "") or "local-helper")
     raise CoolifyError(
         "Coolify token is required. Pass --coolify-token, --coolify-token-env, "
         f"or set {DEFAULT_COOLIFY_TOKEN_ENV}."
@@ -1270,6 +1767,8 @@ def coolify_client_from_args(args: argparse.Namespace, plan: NetworkPlan | None 
 
 
 def coolify_check(args: argparse.Namespace, plan: NetworkPlan | None = None) -> dict[str, Any]:
+    if plan is not None:
+        ensure_local_coolify_context(plan, args, require_infra=not bool(getattr(args, "dry_run", False)))
     client, token, token_source = coolify_client_from_args(args, plan)
     operator_log(
         args,
@@ -1573,6 +2072,8 @@ def ensure_coolify_environment(
 
 
 def coolify_discover(args: argparse.Namespace, plan: NetworkPlan | None = None) -> dict[str, Any]:
+    if plan is not None:
+        ensure_local_coolify_context(plan, args, require_infra=not bool(getattr(args, "dry_run", False)))
     client, token, token_source = coolify_client_from_args(args, plan)
     result: dict[str, Any] = {
         "ok": False,
@@ -1811,6 +2312,8 @@ def infer_external_rpc_url(plan: NetworkPlan, args: argparse.Namespace) -> str:
     if explicit:
         return explicit
     rpc_node = rpc_target_service(plan)
+    if is_local_coolify_plan(plan):
+        return rpc_node.rpc_url_on_host
     if rpc_node.rpc_bind_host == "0.0.0.0":
         return rpc_node.rpc_url_on_host
     raise PlanError(
@@ -1959,6 +2462,15 @@ def process_timeout_arg(timeout_s: float | None) -> float | None:
     return timeout
 
 
+def infer_container_rpc_url(plan: NetworkPlan, args: argparse.Namespace, host_rpc_url: str) -> str:
+    explicit = str(getattr(args, "container_rpc_url", "") or "").strip()
+    if explicit:
+        return explicit
+    if is_local_coolify_plan(plan):
+        return LOCAL_COOLIFY_RPC_CONTAINER_URL
+    return host_rpc_url
+
+
 def safe_subprocess_run(command: list[str], *, dry_run: bool = False, timeout_s: float | None = None) -> dict[str, Any]:
     if dry_run:
         return {"ok": True, "dry_run": True, "command": command}
@@ -1984,13 +2496,23 @@ def safe_subprocess_run(command: list[str], *, dry_run: bool = False, timeout_s:
     }
 
 
+def deployment_source_kind(plan: NetworkPlan, args: argparse.Namespace) -> str:
+    explicit = str(getattr(args, "deployment_source_kind", "") or "").strip()
+    if explicit:
+        return explicit
+    return f"coolify-qbft-{plan.environment}-deploy"
+
+
 def deploy_contracts(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
+    configure_local_coolify_defaults(plan, args)
     rpc_url = infer_external_rpc_url(plan, args)
-    operator_log(args, "deploy-contracts start", rpc_url=rpc_url)
+    container_rpc_url = infer_container_rpc_url(plan, args, rpc_url)
+    operator_log(args, "deploy-contracts start", rpc_url=rpc_url, container_rpc_url=container_rpc_url)
     run_id = str(getattr(args, "deployment_run_id", "") or f"coolify-qbft-{plan.name}-{_dt.datetime.now(_dt.timezone.utc).strftime('%Y%m%d%H%M%S')}")
     deployment_output = str(getattr(args, "deployment_output_dir", "") or (Path("runtime") / "deployments"))
     project_name = str(getattr(args, "deployment_project_name", "") or plan.compose_project)
     environment = str(getattr(args, "deployment_environment", "") or plan.environment)
+    source_kind = deployment_source_kind(plan, args)
     command = [
         sys.executable,
         str(repo_root() / "tools" / "dev-chain-reset.py"),
@@ -2003,13 +2525,13 @@ def deploy_contracts(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, A
         "--environment",
         environment,
         "--source-kind",
-        DEFAULT_DEPLOYMENT_SOURCE_KIND,
+        source_kind,
         "--chain-id",
         str(plan.chain_id),
         "--host-rpc-url",
         rpc_url,
         "--container-rpc-url",
-        rpc_url,
+        container_rpc_url,
         "--wait-timeout-s",
         str(float(getattr(args, "rpc_timeout_s", DEFAULT_RPC_WAIT_TIMEOUT_S))),
         "--deploy-timeout-s",
@@ -2029,12 +2551,13 @@ def deploy_contracts(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, A
         dry_run=bool(getattr(args, "dry_run", False)),
         timeout_s=float(getattr(args, "deploy_contracts_timeout_s", DEFAULT_DEPLOY_CONTRACTS_TIMEOUT_S)),
     )
-    result.update({"rpc_url": rpc_url, "run_id": run_id, "deployment_output_dir": deployment_output})
+    result.update({"rpc_url": rpc_url, "container_rpc_url": container_rpc_url, "run_id": run_id, "deployment_output_dir": deployment_output})
     operator_log(args, "deploy-contracts result", ok=result.get("ok"), returncode=result.get("returncode", "dry-run"))
     return result
 
 
 def coolify_sync(plan: NetworkPlan, args: argparse.Namespace, *, deploy: bool = False) -> dict[str, Any]:
+    local_context = ensure_local_coolify_context(plan, args, require_infra=not bool(getattr(args, "dry_run", False)))
     host_id = str(getattr(args, "host", "") or single_host_id(plan))
     operator_log(args, "coolify-sync render-compose start", network=plan.name, host=host_id)
     compose = render_compose_for_host(
@@ -2066,6 +2589,7 @@ def coolify_sync(plan: NetworkPlan, args: argparse.Namespace, *, deploy: bool = 
             "service_uuid": service_uuid,
             "compose": compose,
             "compose_base64_bytes": len(compose_b64),
+            **({"local_coolify": local_context} if local_context else {}),
         }
 
     client, token, token_source = coolify_client_from_args(args, plan)
@@ -2289,10 +2813,12 @@ def coolify_sync(plan: NetworkPlan, args: argparse.Namespace, *, deploy: bool = 
         "deploy_result": deploy_result,
         "context": result_context,
         "tried": tried,
+        **({"local_coolify": local_context} if local_context else {}),
     }
 
 
 def apply_network(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
+    configure_local_coolify_defaults(plan, args)
     if len({service.host for service in plan.services}) > 1:
         raise PlanError("apply currently supports single-host plans. Split-host deployment needs explicit shared genesis/key distribution.")
     operator_log(args, "apply start", network=plan.name, all=bool(getattr(args, "all", False)), dry_run=bool(getattr(args, "dry_run", False)))
@@ -2307,6 +2833,26 @@ def apply_network(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]
         operator_log(args, "apply phase result", phase="coolify-check", ok=check_result.get("ok"), status=check_result.get("status"))
         if not check_result.get("ok"):
             return {"ok": False, "network": plan.name, "phases": phases}
+
+    if is_local_coolify_plan(plan):
+        operator_log(args, "apply phase start", phase="local-qbft-subnet")
+        if bool(getattr(args, "dry_run", False)):
+            subnet_result = {"ok": True, "dry_run": True, "selected_subnet": plan.docker_subnet, "source": "dry-run"}
+        else:
+            plan, subnet_result = prepare_local_qbft_subnet(plan, args)
+        phases.append({"phase": "local-qbft-subnet", "result": subnet_result})
+        operator_log(
+            args,
+            "apply phase result",
+            phase="local-qbft-subnet",
+            ok=subnet_result.get("ok"),
+            selected_subnet=subnet_result.get("selected_subnet") or subnet_result.get("requested_subnet"),
+            changed=subnet_result.get("changed"),
+            source=subnet_result.get("source"),
+        )
+        if not subnet_result.get("ok"):
+            return {"ok": False, "network": plan.name, "phases": phases}
+
     operator_log(args, "apply phase start", phase="coolify-sync")
     sync_result = coolify_sync(plan, args, deploy=not bool(getattr(args, "no_deploy", False)))
     phases.append({"phase": "coolify-sync", "result": sync_result})
@@ -2393,6 +2939,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-deploy", action="store_true", help="For coolify-sync/apply, update the service but do not trigger a deployment.")
 
     parser.add_argument("--rpc-url", default="", help="Externally reachable non-validator RPC URL. Inferred from --public-rpc when possible.")
+    parser.add_argument("--container-rpc-url", default="", help="RPC URL reachable from the Foundry deployment container. Local Coolify test defaults to http://mc-qbft-rpc:8545.")
     parser.add_argument("--rpc-timeout-s", type=float, default=DEFAULT_RPC_WAIT_TIMEOUT_S)
     parser.add_argument("--rpc-poll-interval-s", type=float, default=DEFAULT_RPC_POLL_INTERVAL_S)
     parser.add_argument(
@@ -2413,8 +2960,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--deployment-run-id", default="", help="Override the contract deployment run id.")
     parser.add_argument("--deployment-project-name", default="", help="Override contract deployment project name.")
     parser.add_argument("--deployment-environment", default="", help="Override contract deployment environment.")
+    parser.add_argument("--deployment-source-kind", default="", help="Override the source.kind recorded in the deployment manifest.")
     parser.add_argument("--deployment-output-dir", default="", help="Override runtime deployment output directory.")
     parser.add_argument("--foundry-image", default=DEFAULT_FOUNDRY_IMAGE)
+    parser.add_argument("--docker-subnet", default="", help="Override the local test QBFT Docker subnet before rendering Coolify compose.")
     parser.add_argument("--foundry-docker-network", default="bridge", help="Docker network for local Foundry container; bridge works for public RPC URLs.")
     parser.add_argument("--deploy-contracts-timeout-s", type=float, default=DEFAULT_DEPLOY_CONTRACTS_TIMEOUT_S)
     parser.add_argument("--quiet", action="store_true", help="Suppress operator progress logs; final JSON is still printed.")

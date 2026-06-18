@@ -36,17 +36,24 @@ def _args(**overrides):
         "github_app_uuid": "",
         "deploy_key_uuid": "",
         "hub_runtime_dir": "",
-        "hub_implementation": coolify_hub_service.HUB_IMPLEMENTATION_REGULAR,
+        "hub_implementation": coolify_hub_service.HUB_IMPLEMENTATION_EXP_FDB,
         "replace_regular_hub": False,
         "fdb_cluster_file": "",
         "fdb_namespace": "",
         "coolify_application_name": "",
+        "coolify_application_uuid": "",
         "rpc_check": "auto",
         "rpc_user_agent": coolify_hub_service.DEFAULT_JSON_RPC_USER_AGENT,
         "skip_rpc_check": False,
         "hub_health_check": "auto",
         "no_wait_hub": False,
         "hub_status_user_agent": coolify_hub_service.DEFAULT_JSON_RPC_USER_AGENT,
+        "network": "mainnet",
+        "network_config": None,
+        "local_coolify_token_file": "",
+        "local_coolify_state_dir": "",
+        "applications_service_env_file": "",
+        "hub_chain_rpc_url": "",
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -101,20 +108,20 @@ class CoolifyHubServiceTests(unittest.TestCase):
             profile,
             args,
             service_name="main-computer-mainnet-hub",
-            runtime_dir="/data/main-computer/hub/mainnet",
+            runtime_dir="/data/main-computer/hub/mainnet-exp-fdb",
         )
 
         self.assertEqual(payload["name"], "main-computer-mainnet-hub")
         self.assertEqual(payload["git_repository"], "https://github.com/example/main_computer.git")
         self.assertEqual(payload["git_branch"], "main")
         self.assertEqual(payload["build_pack"], "dockerfile")
-        self.assertEqual(payload["dockerfile_location"], "/Dockerfile.hub.mainnet")
+        self.assertEqual(payload["dockerfile_location"], "/Dockerfile.hub.exp-fdb")
         self.assertEqual(payload["ports_exposes"], "8790")
         self.assertEqual(payload["domains"], "https://mainnet-hub.greatlibrary.io:8790")
         self.assertNotIn("urls", payload)
         self.assertEqual(
             payload["start_command"],
-            "--network mainnet --host 0.0.0.0 --port 8790 --hub-runtime-dir /data/main-computer/hub/mainnet",
+            "python /app/exp-fdb-hub.py --host 0.0.0.0 --port 8790 --hub-url https://mainnet-hub.greatlibrary.io --hub-root /data/main-computer/hub/mainnet-exp-fdb --cluster-file /data/main-computer/hub/mainnet-exp-fdb/fdb.cluster --namespace main-computer-mainnet-exp-fdb --network-key mainnet --network-display-name Main-Computer-Mainnet --network-kind mainnet --no-fdb-autostart --no-activate-cached-native-client --chain-id 42424240 --chain-rpc-url https://mainnet-rpc.greatlibrary.io",
         )
         self.assertTrue(payload["health_check_enabled"])
         self.assertEqual(payload["health_check_path"], "/api/hub/status")
@@ -123,7 +130,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
 
     def test_explicit_dockerfile_location_override_is_respected(self) -> None:
         profile = coolify_hub_service.load_hub_network_registry().get("testnet")
-        args = _args(dockerfile_location="/Dockerfile.hub")
+        args = _args(dockerfile_location="/Dockerfile.custom")
         payload = coolify_hub_service.application_payload(
             profile,
             args,
@@ -131,7 +138,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
             runtime_dir="/data/main-computer/hub/testnet",
         )
 
-        self.assertEqual(payload["dockerfile_location"], "/Dockerfile.hub")
+        self.assertEqual(payload["dockerfile_location"], "/Dockerfile.custom")
 
     def test_update_payload_does_not_try_to_move_application_between_contexts(self) -> None:
         profile = coolify_hub_service.load_hub_network_registry().get("testnet")
@@ -154,12 +161,12 @@ class CoolifyHubServiceTests(unittest.TestCase):
 
     def test_storage_payload_is_persistent_and_network_scoped(self) -> None:
         profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
-        payload = coolify_hub_service.storage_payload(profile, runtime_dir="/data/main-computer/hub/mainnet")
+        payload = coolify_hub_service.storage_payload(profile, runtime_dir="/data/main-computer/hub/mainnet-exp-fdb")
 
         self.assertEqual(payload["type"], "persistent")
-        self.assertEqual(payload["name"], "mainnet_hub_state")
-        self.assertEqual(payload["mount_path"], "/data/main-computer/hub/mainnet")
-        self.assertEqual(payload["host_path"], "/data/main-computer/hub/mainnet")
+        self.assertEqual(payload["name"], "mainnet_exp_fdb_hub_state")
+        self.assertEqual(payload["mount_path"], "/data/main-computer/hub/mainnet-exp-fdb")
+        self.assertEqual(payload["host_path"], "/data/main-computer/hub/mainnet-exp-fdb")
 
     def test_select_by_exact_name_refuses_duplicate_names(self) -> None:
         items = [
@@ -178,20 +185,127 @@ class CoolifyHubServiceTests(unittest.TestCase):
         plan = coolify_hub_service.plan_result(profile, args)
 
         self.assertEqual(plan["service_name"], "main-computer-testnet-hub")
-        self.assertEqual(plan["runtime_dir"], "/data/main-computer/hub/testnet")
-        self.assertEqual(plan["volume_name"], "testnet_hub_state")
+        self.assertEqual(plan["runtime_dir"], "/data/main-computer/hub/testnet-exp-fdb")
+        self.assertEqual(plan["volume_name"], "testnet_exp_fdb_hub_state")
         self.assertEqual(plan["chain_id"], 42424241)
         self.assertEqual(plan["public_url"], "https://testnet-hub.greatlibrary.io")
-        self.assertEqual(plan["application_payload"]["dockerfile_location"], "/Dockerfile.hub.testnet")
+        self.assertEqual(plan["application_payload"]["dockerfile_location"], "/Dockerfile.hub.exp-fdb")
         self.assertNotIn("urls", plan["application_payload"])
 
-    def test_exp_fdb_plan_uses_side_by_side_service_and_fdb_startup(self) -> None:
+    def test_apply_test_profile_targets_local_coolify_surface(self) -> None:
+        args = _args(
+            network="test",
+            coolify_url="",
+            coolify_project_uuid="",
+            coolify_project_name="",
+            coolify_environment_name="",
+            coolify_server_uuid="",
+            coolify_server_name="",
+            hub_runtime_dir="",
+        )
+
+        profile = coolify_hub_service.load_profile(args)
+        plan = coolify_hub_service.plan_result(profile, args)
+
+        self.assertEqual(profile.network_key, "test")
+        self.assertEqual(profile.kind, "test")
+        self.assertEqual(profile.hub_bind_host, "0.0.0.0")
+        self.assertEqual(args.coolify_url, "http://127.0.0.1:8000")
+        self.assertEqual(args.coolify_project_name, "Main Computer Local Smoke")
+        self.assertEqual(args.coolify_environment_name, "production")
+        self.assertEqual(args.coolify_server_name, "localhost")
+        self.assertEqual(plan["service_name"], "main-computer-test-hub")
+        self.assertEqual(plan["runtime_dir"], "/srv/main-computer/hub/test-exp-fdb")
+        self.assertEqual(plan["fdb_cluster_file"], "/srv/main-computer/hub/test-exp-fdb/fdb.cluster")
+        self.assertEqual(plan["fdb_namespace"], "main-computer-test-exp-fdb")
+        self.assertEqual(plan["chain_rpc_url"], "http://127.0.0.1:30010")
+        self.assertEqual(plan["hub_chain_rpc_url"], "http://host.docker.internal:30010")
+        payload = plan["application_payload"]
+        self.assertEqual(payload["ports_exposes"], "8780")
+        self.assertEqual(payload["domains"], "http://127.0.0.1:8780")
+        self.assertIn("python /app/exp-fdb-hub.py", payload["start_command"])
+        self.assertIn("--host 0.0.0.0", payload["start_command"])
+        self.assertIn("--port 8780", payload["start_command"])
+        self.assertIn("--cluster-file /srv/main-computer/hub/test-exp-fdb/fdb.cluster", payload["start_command"])
+        self.assertIn("--chain-rpc-url http://host.docker.internal:30010", payload["start_command"])
+        self.assertEqual(plan["coolify_resource_kind"], "service")
+        self.assertEqual(plan["service_payload"]["name"], "main-computer-test-hub")
+        self.assertEqual(plan["service_payload"]["docker_compose_raw"], "<base64>")
+        compose = plan["docker_compose"]
+        self.assertIn("dockerfile: \"Dockerfile.hub.exp-fdb\"", compose)
+        self.assertIn("context: \"https://github.com/example/main_computer.git#main\"", compose)
+        self.assertIn("\"127.0.0.1:8780:8780\"", compose)
+        self.assertIn("host.docker.internal:host-gateway", compose)
+
+    def test_local_test_token_file_is_used_when_operator_env_token_is_missing(self) -> None:
+        with self.subTest("local token fallback"):
+            import tempfile
+
+            with tempfile.TemporaryDirectory() as tmp:
+                token_file = Path(tmp) / "api-token.txt"
+                token_file.write_text(
+                    "# Main Computer local Coolify API token\n"
+                    "dashboard=http://127.0.0.1:27066\n"
+                    "token=123|local-token\n",
+                    encoding="utf-8",
+                )
+                args = _args(
+                    network="test",
+                    coolify_url="",
+                    coolify_token="",
+                    coolify_token_env="MAIN_COMPUTER_TEST_MISSING_TOKEN_ENV",
+                    coolify_token_file="",
+                    local_coolify_token_file=str(token_file),
+                )
+
+                token, source = coolify_hub_service.resolve_token(args)
+
+                self.assertEqual(token, "123|local-token")
+                self.assertTrue(source.startswith("local-file:"))
+                self.assertEqual(coolify_hub_service.local_coolify_url(args), "http://127.0.0.1:27066")
+
+    def test_local_test_prefers_applications_service_local_coolify_state(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            state_dir = tmp_path / "install-scoped" / "coolify-local-docker"
+            state_dir.mkdir(parents=True)
+            (state_dir / "api-token.txt").write_text("token=derived-token\n", encoding="utf-8")
+            app_env = tmp_path / "applications.env"
+            app_env.write_text(
+                f"COOLIFY_LOCAL_STATE={state_dir}\n"
+                "APP_PORT=27066\n",
+                encoding="utf-8",
+            )
+            repo_state = tmp_path / "repo-runtime" / "coolify-local-docker"
+            repo_state.mkdir(parents=True)
+            (repo_state / "api-token.txt").write_text("token=stale-repo-token\n", encoding="utf-8")
+
+            args = _args(
+                network="test",
+                coolify_url="",
+                coolify_token="",
+                coolify_token_env="MAIN_COMPUTER_TEST_MISSING_TOKEN_ENV",
+                coolify_token_file="",
+                local_coolify_state_dir="",
+                local_coolify_token_file="",
+                applications_service_env_file=str(app_env),
+            )
+
+            token, source = coolify_hub_service.resolve_token(args)
+
+            self.assertEqual(token, "derived-token")
+            self.assertIn("install-scoped", source)
+            self.assertEqual(coolify_hub_service.local_coolify_url(args), "http://127.0.0.1:27066")
+
+    def test_exp_fdb_plan_uses_public_service_name_and_fdb_startup(self) -> None:
         profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
         args = _args(hub_implementation=coolify_hub_service.HUB_IMPLEMENTATION_EXP_FDB)
         plan = coolify_hub_service.plan_result(profile, args)
 
         self.assertEqual(plan["hub_implementation"], "exp-fdb")
-        self.assertEqual(plan["service_name"], "main-computer-mainnet-exp-fdb-hub")
+        self.assertEqual(plan["service_name"], "main-computer-mainnet-hub")
         self.assertEqual(plan["runtime_dir"], "/data/main-computer/hub/mainnet-exp-fdb")
         self.assertEqual(plan["volume_name"], "mainnet_exp_fdb_hub_state")
         self.assertEqual(plan["fdb_cluster_file"], "/data/main-computer/hub/mainnet-exp-fdb/fdb.cluster")
@@ -208,7 +322,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertIn("--chain-rpc-url https://mainnet-rpc.greatlibrary.io", payload["start_command"])
         self.assertIn("--no-fdb-autostart", payload["start_command"])
 
-    def test_exp_fdb_can_explicitly_replace_regular_hub_service_name(self) -> None:
+    def test_replace_regular_hub_flag_is_deprecated_noop_for_exp_fdb(self) -> None:
         profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
         args = _args(
             hub_implementation=coolify_hub_service.HUB_IMPLEMENTATION_EXP_FDB,
@@ -225,14 +339,13 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertIn("--cluster-file /data/main-computer/fdb/fdb.cluster", plan["application_payload"]["start_command"])
         self.assertIn("--namespace main-computer-mainnet-cutover", plan["application_payload"]["start_command"])
 
-    def test_replace_regular_hub_requires_exp_fdb_implementation(self) -> None:
-        profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
-        args = _args(replace_regular_hub=True)
+    def test_regular_hub_implementation_is_deprecated(self) -> None:
+        args = _args(hub_implementation=coolify_hub_service.HUB_IMPLEMENTATION_REGULAR)
 
         with self.assertRaises(coolify_hub_service.CoolifyHubDeployError) as ctx:
-            coolify_hub_service.validate_hub_deploy_args(profile, args)
+            coolify_hub_service.hub_implementation(args)
 
-        self.assertIn("--hub-implementation exp-fdb", str(ctx.exception))
+        self.assertIn("regular Hub implementation has been deprecated", str(ctx.exception))
 
     def test_resolve_context_creates_missing_hub_environment(self) -> None:
         profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
@@ -358,6 +471,52 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertIn("Multiple Coolify servers were returned", str(ctx.exception))
         self.assertIn("--coolify-server-uuid", str(ctx.exception))
 
+    def test_local_test_apply_uses_services_endpoint_not_applications_public(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("test")
+        args = _args(
+            network="test",
+            coolify_project_uuid="project-uuid",
+            coolify_server_uuid="server-uuid",
+            coolify_environment_name="production",
+            coolify_environment_uuid="env-uuid",
+            git_repo="https://github.com/example/main_computer.git",
+        )
+        profile = coolify_hub_service.coolify_deploy_profile(profile, args)
+        client = RouteCoolifyClient(
+            {
+                ("GET", "/api/v1/services"): [
+                    {"services": []}
+                ],
+                ("POST", "/api/v1/services"): [
+                    {"uuid": "service-uuid", "name": "main-computer-test-hub"}
+                ],
+            }
+        )
+        tried: list[dict[str, object]] = []
+
+        service_uuid, action, existing = coolify_hub_service.sync_local_test_service(
+            client,
+            profile,
+            args,
+            service_name="main-computer-test-hub",
+            runtime_dir="/srv/main-computer/hub/test-exp-fdb",
+            tried=tried,
+        )
+
+        self.assertEqual(service_uuid, "service-uuid")
+        self.assertEqual(action, "created")
+        self.assertEqual(existing["source"], "missing")
+        self.assertFalse(any("/api/v1/applications/public" in request[1] for request in client.requests))
+        post = next(request for request in client.requests if request[0] == "POST")
+        self.assertEqual(post[1], "/api/v1/services")
+        payload = post[2]
+        self.assertEqual(payload["server_uuid"], "server-uuid")
+        self.assertEqual(payload["project_uuid"], "project-uuid")
+        self.assertEqual(payload["environment_uuid"], "env-uuid")
+        self.assertIn("docker_compose_raw", payload)
+        self.assertNotIn("start_command", payload)
+
+
     def test_testnet_check_modes_warn_by_default(self) -> None:
         profile = coolify_hub_service.load_hub_network_registry().get("testnet")
         args = _args(rpc_check="auto", hub_health_check="auto")
@@ -380,24 +539,20 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(coolify_hub_service.hub_health_check_mode(profile, args), "skip")
 
 
-    def test_network_dockerfiles_have_matching_safe_defaults_and_healthcheck_client(self) -> None:
-        testnet_dockerfile = (REPO_ROOT / "Dockerfile.hub.testnet").read_text(encoding="utf-8")
-        mainnet_dockerfile = (REPO_ROOT / "Dockerfile.hub.mainnet").read_text(encoding="utf-8")
+    def test_exp_fdb_dockerfile_has_safe_defaults_and_healthcheck_client(self) -> None:
+        self.assertFalse((REPO_ROOT / "Dockerfile.hub").exists())
+        self.assertFalse((REPO_ROOT / "Dockerfile.hub.mainnet").exists())
+        self.assertFalse((REPO_ROOT / "Dockerfile.hub.testnet").exists())
+
         exp_fdb_dockerfile = (REPO_ROOT / "Dockerfile.hub.exp-fdb").read_text(encoding="utf-8")
 
-        self.assertIn("curl wget", testnet_dockerfile)
-        self.assertIn("--network\", \"testnet", testnet_dockerfile)
-        self.assertIn("--port\", \"8785", testnet_dockerfile)
-        self.assertIn("/data/main-computer/hub/testnet", testnet_dockerfile)
-        self.assertIn("curl wget", mainnet_dockerfile)
-        self.assertIn("--network\", \"mainnet", mainnet_dockerfile)
-        self.assertIn("--port\", \"8790", mainnet_dockerfile)
-        self.assertIn("/data/main-computer/hub/mainnet", mainnet_dockerfile)
-
+        self.assertIn("curl wget", exp_fdb_dockerfile)
         self.assertIn("FoundationDB.Client.Native", exp_fdb_dockerfile)
         self.assertIn("foundationdb==${FDB_PYTHON_VERSION}", exp_fdb_dockerfile)
         self.assertIn("libfdb_c.so", exp_fdb_dockerfile)
-        self.assertIn('ENTRYPOINT ["python", "/app/exp-fdb-hub.py"]', exp_fdb_dockerfile)
+        self.assertIn('CMD ["python", "/app/exp-fdb-hub.py"', exp_fdb_dockerfile)
+        self.assertNotIn('ENTRYPOINT ["python", "/app/exp-fdb-hub.py"]', exp_fdb_dockerfile)
+        self.assertIn("EXPOSE 8790 8785", exp_fdb_dockerfile)
         self.assertIn("--no-fdb-autostart", exp_fdb_dockerfile)
         self.assertIn("--no-activate-cached-native-client", exp_fdb_dockerfile)
         self.assertIn("/api/hub/status", exp_fdb_dockerfile)
@@ -492,19 +647,23 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(request.get_header("User-agent"), "UnitTestHubAgent/2.0")
 
 
-    def test_hub_coolify_runbook_documents_regular_and_exp_fdb_deploys(self) -> None:
+    def test_hub_coolify_runbook_documents_exp_fdb_only_deploys(self) -> None:
         runbook = REPO_ROOT / "pretty_docs" / "hub-coolify-deploy-runbook.md"
 
         text = runbook.read_text(encoding="utf-8")
 
+        self.assertIn("coolify_hub_service.py plan test", text)
+        self.assertIn("coolify_hub_service.py apply test", text)
+        self.assertIn("main-computer-test-hub", text)
+        self.assertIn("runtime/coolify-local-docker/api-token.txt", text)
         self.assertIn("coolify_hub_service.py plan mainnet", text)
         self.assertIn("coolify_hub_service.py apply mainnet", text)
         self.assertIn("--hub-implementation exp-fdb", text)
-        self.assertIn("--replace-regular-hub", text)
         self.assertIn("--fdb-cluster-file /data/main-computer/fdb/fdb.cluster", text)
         self.assertIn("/Dockerfile.hub.exp-fdb", text)
-        self.assertIn("main-computer-mainnet-exp-fdb-hub", text)
         self.assertIn("main-computer-mainnet-hub", text)
+        self.assertNotIn("Dockerfile.hub.mainnet", text)
+        self.assertNotIn("Dockerfile.hub.testnet", text)
 
 
 

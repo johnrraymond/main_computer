@@ -78,29 +78,26 @@ python .\tools\dev-chain-diagnosis.py --state .\runtime\deployments\dev\latest.j
 
 This generates local runtime files such as `runtime/deployments/dev/latest.json`, `runtime/dev-chain/latest.json`, `runtime/dev-chain/latest.env`, and `runtime/deployments/hub-admin-wallet.json`. They are machine-local state and should stay out of Git.
 
-To publish the same app-facing deployment runtime from the local QBFT testnet
-instead of Anvil, restart the QBFT lab with the current London/EIP-1559 + Shanghai/PUSH0 genesis,
-deploy the contracts through its non-validator RPC node, then start the Hub with
-the test profile:
+To publish the same app-facing deployment runtime from the local QBFT test
+network instead of Anvil, use the local Coolify-managed `test` seed. This is the
+normal local QBFT deploy path; it reuses the Website Builder local-Coolify token
+file/bootstrap contract and publishes the network-scoped manifest:
 
 ```powershell
-python .\tools\smoke_besu_qbft_one_validator.py down
-python .\tools\smoke_besu_qbft_one_validator.py up --deploy-contracts
+python .\tools\coolify_qbft_network.py apply test --all
 python -m main_computer.cli hub --network test
 ```
 
-Equivalent split form:
+The lower-level Besu/QBFT smoke harness remains available when you need to prove
+the raw four-validator backend without Coolify:
 
 ```powershell
-python .\tools\smoke_besu_qbft_one_validator.py up
-python .\tools\smoke_besu_qbft_one_validator.py deploy
-python -m main_computer.cli hub --network test
+python .\tools\smoke_besu_qbft_one_validator.py restart --deploy-contracts --deployment-environment test --docker-subnet 10.241.0.0/24
 ```
 
-The testnet deployment writes `runtime/deployments/dev/latest.json` with
-`environment=test`, chain id `42424241`, and RPC URL `http://127.0.0.1:30010`,
-so the existing golden runtime lookup can consume it without a separate testnet
-code path.
+The local Coolify test deployment writes `runtime/deployments/test/latest.json`
+with `environment=test`, chain id `42424241`, and RPC URL
+`http://127.0.0.1:30010`.
 
 
 Each dev/test deployment also publishes a chain-funded smoke client wallet in the

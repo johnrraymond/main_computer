@@ -10,15 +10,17 @@ updating the Coolify application.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
+import re
 import socket
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -34,17 +36,26 @@ DEFAULT_TOKEN_ENV = "MAIN_COMPUTER_COOLIFY_TOKEN"
 DEFAULT_TIMEOUT_S = 25.0
 DEFAULT_RETRIES = 1
 DEFAULT_RETRY_SLEEP_S = 2.0
-DEFAULT_DOCKERFILE_LOCATION = "/Dockerfile.hub"
-DEFAULT_EXP_FDB_DOCKERFILE_LOCATION = "/Dockerfile.hub.exp-fdb"
+DEFAULT_DOCKERFILE_LOCATION = "/Dockerfile.hub.exp-fdb"
+DEFAULT_EXP_FDB_DOCKERFILE_LOCATION = DEFAULT_DOCKERFILE_LOCATION
 DEFAULT_BASE_DIRECTORY = "/"
 DEFAULT_HEALTH_PATH = "/api/hub/status"
 DEFAULT_JSON_RPC_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "MainComputerHubDeployer/1.0"
 )
+DEFAULT_LOCAL_TEST_NETWORK = "test"
+DEFAULT_LOCAL_COOLIFY_URL = "http://127.0.0.1:8000"
+DEFAULT_LOCAL_COOLIFY_PROJECT_NAME = "Main Computer Local Smoke"
+DEFAULT_LOCAL_COOLIFY_ENVIRONMENT_NAME = "production"
+DEFAULT_LOCAL_COOLIFY_SERVER_NAME = "localhost"
+DEFAULT_LOCAL_TEST_HUB_RUNTIME_DIR = "/srv/main-computer/hub/test-exp-fdb"
+DEFAULT_LOCAL_TEST_CONTAINER_RPC_URL = "http://host.docker.internal:30010"
+DEFAULT_LOCAL_COOLIFY_TOKEN_FILE = REPO_ROOT / "runtime" / "coolify-local-docker" / "api-token.txt"
+DEFAULT_APPLICATIONS_SERVICE_ENV_FILE = REPO_ROOT / "runtime" / "applications_service" / "applications.env"
 HUB_IMPLEMENTATION_REGULAR = "regular"
 HUB_IMPLEMENTATION_EXP_FDB = "exp-fdb"
-HUB_IMPLEMENTATION_CHOICES = (HUB_IMPLEMENTATION_REGULAR, HUB_IMPLEMENTATION_EXP_FDB)
+HUB_IMPLEMENTATION_CHOICES = (HUB_IMPLEMENTATION_EXP_FDB,)
 
 
 class CoolifyHubDeployError(RuntimeError):
@@ -209,29 +220,147 @@ def item_summary(item: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+
+def parse_key_value_text(raw: object) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in str(raw or "").splitlines():
+        clean = line.strip()
+        if not clean or clean.startswith("#") or "=" not in clean:
+            continue
+        key, value = clean.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def read_key_value_file(path: Path) -> dict[str, str]:
+    try:
+        return parse_key_value_text(path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return {}
+
+
+def read_token_text(raw: object) -> str:
+    text = str(raw or "").strip()
+    values = parse_key_value_text(text)
+    if values.get("token"):
+        return values["token"].strip()
+    if text and "\n" not in text and "=" not in text and not text.lstrip().startswith("#"):
+        return text
+    return ""
+
+
+def read_token_file(path: Path) -> str:
+    try:
+        return read_token_text(path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return ""
+
+
+def applications_service_env_file(args: argparse.Namespace | None = None) -> Path:
+    explicit = str(getattr(args, "applications_service_env_file", "") or "").strip()
+    if explicit:
+        path = Path(explicit)
+        return path if path.is_absolute() else REPO_ROOT / path
+    env_path = str(os.environ.get("MAIN_COMPUTER_APPLICATIONS_ENV_FILE") or "").strip()
+    if env_path:
+        path = Path(env_path)
+        return path if path.is_absolute() else REPO_ROOT / path
+    return DEFAULT_APPLICATIONS_SERVICE_ENV_FILE
+
+
+def applications_service_env_values(args: argparse.Namespace | None = None) -> dict[str, str]:
+    return read_key_value_file(applications_service_env_file(args))
+
+
+def local_coolify_state_dir(args: argparse.Namespace | None = None) -> Path:
+    explicit = str(getattr(args, "local_coolify_state_dir", "") or "").strip()
+    if explicit:
+        path = Path(explicit)
+        return path if path.is_absolute() else REPO_ROOT / path
+    env_dir = str(os.environ.get("MAIN_COMPUTER_COOLIFY_STATE_DIR") or "").strip()
+    if env_dir:
+        path = Path(env_dir)
+        return path if path.is_absolute() else REPO_ROOT / path
+    app_env = applications_service_env_values(args)
+    app_state = str(app_env.get("COOLIFY_LOCAL_STATE") or "").strip()
+    if app_state:
+        path = Path(app_state)
+        return path if path.is_absolute() else REPO_ROOT / path
+    return REPO_ROOT / "runtime" / "coolify-local-docker"
+
+
+def local_coolify_token_file(args: argparse.Namespace | None = None) -> Path:
+    explicit = str(getattr(args, "local_coolify_token_file", "") or "").strip()
+    if explicit:
+        path = Path(explicit)
+        return path if path.is_absolute() else REPO_ROOT / path
+    env_file = str(os.environ.get("MAIN_COMPUTER_COOLIFY_LOCAL_TOKEN_FILE") or "").strip()
+    if env_file:
+        path = Path(env_file)
+        return path if path.is_absolute() else REPO_ROOT / path
+    return local_coolify_state_dir(args) / "api-token.txt"
+
+
+def local_coolify_url(args: argparse.Namespace | None = None) -> str:
+    explicit = str(getattr(args, "coolify_url", "") or "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    env_url = str(os.environ.get("MAIN_COMPUTER_COOLIFY_LOCAL_URL") or "").strip()
+    if env_url:
+        return env_url.rstrip("/")
+    token_values = read_key_value_file(local_coolify_token_file(args))
+    dashboard = str(token_values.get("dashboard") or "").strip()
+    if dashboard:
+        return dashboard.rstrip("/")
+    app_env = applications_service_env_values(args)
+    app_port = str(app_env.get("APP_PORT") or "").strip()
+    if app_port:
+        return f"http://127.0.0.1:{app_port}"
+    return DEFAULT_LOCAL_COOLIFY_URL
+
+
 def resolve_token(args: argparse.Namespace) -> tuple[str, str]:
     explicit = str(getattr(args, "coolify_token", "") or "").strip()
     if explicit:
         return explicit, "--coolify-token"
+
+    if is_local_test_args(args):
+        local_env = str(os.environ.get("MAIN_COMPUTER_COOLIFY_LOCAL_TOKEN") or "").strip()
+        if local_env:
+            return local_env, "env:MAIN_COMPUTER_COOLIFY_LOCAL_TOKEN"
+
     env_name = str(getattr(args, "coolify_token_env", "") or DEFAULT_TOKEN_ENV).strip()
     if env_name:
         value = os.environ.get(env_name)
         if value and value.strip():
             return value.strip(), f"env:{env_name}"
+
     token_file = str(getattr(args, "coolify_token_file", "") or "").strip()
     if token_file:
-        value = Path(token_file).read_text(encoding="utf-8").strip()
+        path = Path(token_file)
+        if not path.is_absolute():
+            path = REPO_ROOT / path
+        value = read_token_file(path)
         if value:
-            return value, f"file:{token_file}"
-    raise CoolifyHubDeployError(
-        f"Coolify token is required. Set {env_name or DEFAULT_TOKEN_ENV} or pass --coolify-token-file."
-    )
+            return value, f"file:{path}"
 
+    if is_local_test_args(args):
+        local_path = local_coolify_token_file(args)
+        value = read_token_file(local_path)
+        if value:
+            return value, f"local-file:{local_path}"
+
+    raise CoolifyHubDeployError(
+        f"Coolify token is required. Set {env_name or DEFAULT_TOKEN_ENV}, pass --coolify-token-file, "
+        "or use an existing Website Builder/local Coolify state via MAIN_COMPUTER_COOLIFY_STATE_DIR "
+        "or runtime/applications_service/applications.env before `apply test`."
+    )
 
 def client_from_args(args: argparse.Namespace) -> CoolifyClient:
     token, _source = resolve_token(args)
+    coolify_url = local_coolify_url(args) if is_local_test_args(args) else args.coolify_url
     return CoolifyClient(
-        args.coolify_url,
+        coolify_url,
         token,
         timeout_s=args.coolify_timeout_s,
         retries=args.coolify_retries,
@@ -281,7 +410,41 @@ def verify_rpc(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[str
     return {"ok": True, "rpc_url": profile.chain_rpc_url, "chain_id": chain_id, "block_number": block_number}
 
 
-def validate_remote_profile(profile: HubNetworkProfile) -> None:
+def is_local_test_profile(profile: HubNetworkProfile | None) -> bool:
+    return bool(profile is not None and profile.network_key == DEFAULT_LOCAL_TEST_NETWORK and profile.kind == "test")
+
+
+def is_local_test_args(args: argparse.Namespace | None) -> bool:
+    return str(getattr(args, "network", "") or "").strip().lower() == DEFAULT_LOCAL_TEST_NETWORK
+
+
+def apply_local_test_defaults(args: argparse.Namespace, profile: HubNetworkProfile) -> None:
+    if not is_local_test_profile(profile):
+        return
+    if not str(getattr(args, "coolify_url", "") or "").strip():
+        args.coolify_url = local_coolify_url(args)
+    if not str(getattr(args, "coolify_project_name", "") or "").strip() and not str(getattr(args, "coolify_project_uuid", "") or "").strip():
+        args.coolify_project_name = str(os.environ.get("MAIN_COMPUTER_COOLIFY_LOCAL_PROJECT") or DEFAULT_LOCAL_COOLIFY_PROJECT_NAME)
+    if not str(getattr(args, "coolify_environment_name", "") or "").strip() and not str(getattr(args, "coolify_environment_uuid", "") or "").strip():
+        args.coolify_environment_name = str(os.environ.get("MAIN_COMPUTER_COOLIFY_LOCAL_ENVIRONMENT") or DEFAULT_LOCAL_COOLIFY_ENVIRONMENT_NAME)
+    if not str(getattr(args, "coolify_server_name", "") or "").strip() and not str(getattr(args, "coolify_server_uuid", "") or "").strip():
+        args.coolify_server_name = str(os.environ.get("MAIN_COMPUTER_COOLIFY_LOCAL_SERVER") or DEFAULT_LOCAL_COOLIFY_SERVER_NAME)
+    if not str(getattr(args, "hub_runtime_dir", "") or "").strip():
+        args.hub_runtime_dir = str(os.environ.get("MAIN_COMPUTER_HUB_TEST_RUNTIME_DIR") or DEFAULT_LOCAL_TEST_HUB_RUNTIME_DIR)
+
+
+def coolify_deploy_profile(profile: HubNetworkProfile, args: argparse.Namespace) -> HubNetworkProfile:
+    apply_local_test_defaults(args, profile)
+    if is_local_test_profile(profile):
+        # Local ``test`` is operator-facing localhost in hub_networks.json, but a
+        # Coolify container must bind on all interfaces.  Keep the public Hub URL
+        # and RPC check URL local to the operator, only changing the in-container
+        # bind host.
+        return replace(profile, hub_bind_host="0.0.0.0")
+    return profile
+
+
+def validate_coolify_profile(profile: HubNetworkProfile) -> None:
     missing: list[str] = []
     if profile.chain_id is None:
         missing.append("chain_id")
@@ -293,39 +456,37 @@ def validate_remote_profile(profile: HubNetworkProfile) -> None:
         missing.append("hub_bind_port")
     if missing:
         raise CoolifyHubDeployError(
-            f"Hub network {profile.network_key!r} is not remotely deployable until these fields are set: "
+            f"Hub network {profile.network_key!r} is not deployable until these fields are set: "
             + ", ".join(missing)
         )
-    if profile.kind not in {"testnet", "mainnet"}:
+    if profile.kind not in {"test", "testnet", "mainnet"}:
         raise CoolifyHubDeployError(
-            f"Refusing to deploy non-remote Hub network {profile.network_key!r} with kind {profile.kind!r}."
+            f"Refusing to deploy unsupported Hub network {profile.network_key!r} with kind {profile.kind!r}."
         )
     if profile.hub_bind_host != "0.0.0.0":
         raise CoolifyHubDeployError(
-            f"Remote Hub network {profile.network_key!r} must bind inside the container on 0.0.0.0, got {profile.hub_bind_host!r}."
+            f"Coolify Hub network {profile.network_key!r} must bind inside the container on 0.0.0.0, got {profile.hub_bind_host!r}."
         )
 
 
 def validate_hub_deploy_args(profile: HubNetworkProfile, args: argparse.Namespace) -> None:
     implementation = hub_implementation(args)
-    if getattr(args, "replace_regular_hub", False) and implementation != HUB_IMPLEMENTATION_EXP_FDB:
-        raise CoolifyHubDeployError("--replace-regular-hub is only valid with --hub-implementation exp-fdb.")
-
-    if implementation == HUB_IMPLEMENTATION_EXP_FDB:
-        namespace = exp_fdb_namespace(profile, args)
-        if not namespace.strip():
-            raise CoolifyHubDeployError("Experimental FDB Hub namespace must not be empty.")
-        runtime_dir = str(
-            getattr(args, "hub_runtime_dir", "")
-            or hub_state_mount_path(profile.network_key, implementation=implementation)
-        )
-        cluster_file = exp_fdb_cluster_file_path(profile, args, runtime_dir=runtime_dir)
-        if not cluster_file.strip():
-            raise CoolifyHubDeployError("Experimental FDB Hub cluster file path must not be empty.")
+    namespace = exp_fdb_namespace(profile, args)
+    if not namespace.strip():
+        raise CoolifyHubDeployError("Experimental FDB Hub namespace must not be empty.")
+    runtime_dir = str(
+        getattr(args, "hub_runtime_dir", "")
+        or hub_state_mount_path(profile.network_key, implementation=implementation)
+    )
+    cluster_file = exp_fdb_cluster_file_path(profile, args, runtime_dir=runtime_dir)
+    if not cluster_file.strip():
+        raise CoolifyHubDeployError("Experimental FDB Hub cluster file path must not be empty.")
 
 
 def hub_implementation(args: argparse.Namespace | None) -> str:
-    value = str(getattr(args, "hub_implementation", HUB_IMPLEMENTATION_REGULAR) or HUB_IMPLEMENTATION_REGULAR).strip().lower()
+    value = str(getattr(args, "hub_implementation", HUB_IMPLEMENTATION_EXP_FDB) or HUB_IMPLEMENTATION_EXP_FDB).strip().lower()
+    if value == HUB_IMPLEMENTATION_REGULAR:
+        raise CoolifyHubDeployError("The regular Hub implementation has been deprecated; use exp-fdb.")
     if value not in HUB_IMPLEMENTATION_CHOICES:
         raise CoolifyHubDeployError(
             f"Unknown Hub implementation {value!r}; expected one of {', '.join(HUB_IMPLEMENTATION_CHOICES)}."
@@ -340,31 +501,35 @@ def is_exp_fdb_hub(args: argparse.Namespace | None) -> bool:
 def hub_service_name(
     network: str,
     *,
-    implementation: str = HUB_IMPLEMENTATION_REGULAR,
+    implementation: str = HUB_IMPLEMENTATION_EXP_FDB,
     replace_regular_hub: bool = False,
 ) -> str:
-    if implementation == HUB_IMPLEMENTATION_EXP_FDB and not replace_regular_hub:
-        return f"main-computer-{network}-exp-fdb-hub"
+    # The FDB-backed Hub is now the only hosted Hub implementation.  Keep the
+    # public Coolify application name stable instead of using the old
+    # side-by-side experimental service name.
     return f"main-computer-{network}-hub"
 
 
-def hub_state_mount_path(network: str, *, implementation: str = HUB_IMPLEMENTATION_REGULAR) -> str:
-    if implementation == HUB_IMPLEMENTATION_EXP_FDB:
-        return f"/data/main-computer/hub/{network}-exp-fdb"
-    return f"/data/main-computer/hub/{network}"
+def hub_state_mount_path(network: str, *, implementation: str = HUB_IMPLEMENTATION_EXP_FDB) -> str:
+    if str(network or "").strip().lower() == DEFAULT_LOCAL_TEST_NETWORK:
+        return DEFAULT_LOCAL_TEST_HUB_RUNTIME_DIR
+    return f"/data/main-computer/hub/{network}-exp-fdb"
 
 
-def hub_volume_name(network: str, *, implementation: str = HUB_IMPLEMENTATION_REGULAR) -> str:
-    if implementation == HUB_IMPLEMENTATION_EXP_FDB:
-        return f"{network}_exp_fdb_hub_state"
-    return f"{network}_hub_state"
+def hub_volume_name(network: str, *, implementation: str = HUB_IMPLEMENTATION_EXP_FDB) -> str:
+    return f"{network}_exp_fdb_hub_state"
+
+
+def container_posix_path(value: str) -> str:
+    return str(value or "").replace("\\", "/")
 
 
 def exp_fdb_cluster_file_path(profile: HubNetworkProfile, args: argparse.Namespace, *, runtime_dir: str) -> str:
     explicit = str(getattr(args, "fdb_cluster_file", "") or "").strip()
     if explicit:
-        return explicit
-    return str(Path(runtime_dir) / "fdb.cluster")
+        return container_posix_path(explicit)
+    clean_runtime_dir = container_posix_path(runtime_dir).rstrip("/")
+    return f"{clean_runtime_dir}/fdb.cluster"
 
 
 def exp_fdb_namespace(profile: HubNetworkProfile, args: argparse.Namespace) -> str:
@@ -374,64 +539,64 @@ def exp_fdb_namespace(profile: HubNetworkProfile, args: argparse.Namespace) -> s
     return f"main-computer-{profile.network_key}-exp-fdb"
 
 
+def hub_chain_rpc_url(profile: HubNetworkProfile, args: argparse.Namespace) -> str:
+    explicit = str(getattr(args, "hub_chain_rpc_url", "") or "").strip()
+    if explicit:
+        return explicit
+    if is_local_test_profile(profile):
+        return str(os.environ.get("MAIN_COMPUTER_HUB_TEST_CONTAINER_RPC_URL") or DEFAULT_LOCAL_TEST_CONTAINER_RPC_URL)
+    return str(profile.chain_rpc_url or "")
+
+
+def command_token(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    # Coolify's application start_command validator rejects shell quoting in some
+    # local builds.  Keep command tokens single-word and shell-neutral.
+    return re.sub(r"[^A-Za-z0-9_./:=@+,%#-]+", "-", text).strip() or "value"
+
+
+def hub_command_parts(profile: HubNetworkProfile, runtime_dir: str, args: argparse.Namespace) -> list[str]:
+    parts = [
+        "python",
+        "/app/exp-fdb-hub.py",
+        "--host",
+        profile.hub_bind_host,
+        "--port",
+        str(profile.hub_bind_port),
+        "--hub-url",
+        profile.hub_url,
+        "--hub-root",
+        container_posix_path(runtime_dir),
+        "--cluster-file",
+        exp_fdb_cluster_file_path(profile, args, runtime_dir=runtime_dir),
+        "--namespace",
+        exp_fdb_namespace(profile, args),
+        "--network-key",
+        profile.network_key,
+        "--network-display-name",
+        command_token(profile.display_name),
+        "--network-kind",
+        profile.kind,
+        "--no-fdb-autostart",
+        "--no-activate-cached-native-client",
+    ]
+    if profile.chain_id is not None:
+        parts.extend(["--chain-id", str(profile.chain_id)])
+    runtime_chain_rpc_url = hub_chain_rpc_url(profile, args)
+    if runtime_chain_rpc_url:
+        parts.extend(["--chain-rpc-url", runtime_chain_rpc_url])
+    return parts
+
+
 def hub_start_command(profile: HubNetworkProfile, runtime_dir: str, args: argparse.Namespace | None = None) -> str:
-    if is_exp_fdb_hub(args):
-        assert args is not None
-        parts = [
-            "--host",
-            shell_word(profile.hub_bind_host),
-            "--port",
-            shell_word(str(profile.hub_bind_port)),
-            "--hub-url",
-            shell_word(profile.hub_url),
-            "--hub-root",
-            shell_word(runtime_dir),
-            "--cluster-file",
-            shell_word(exp_fdb_cluster_file_path(profile, args, runtime_dir=runtime_dir)),
-            "--namespace",
-            shell_word(exp_fdb_namespace(profile, args)),
-            "--network-key",
-            shell_word(profile.network_key),
-            "--network-display-name",
-            shell_word(profile.display_name),
-            "--network-kind",
-            shell_word(profile.kind),
-            "--no-fdb-autostart",
-            "--no-activate-cached-native-client",
-        ]
-        if profile.chain_id is not None:
-            parts.extend(["--chain-id", shell_word(str(profile.chain_id))])
-        if profile.chain_rpc_url:
-            parts.extend(["--chain-rpc-url", shell_word(profile.chain_rpc_url)])
-        return " ".join(parts)
-
-    return " ".join(
-        [
-            "--network",
-            shell_word(profile.network_key),
-            "--host",
-            shell_word(profile.hub_bind_host),
-            "--port",
-            shell_word(str(profile.hub_bind_port)),
-            "--hub-runtime-dir",
-            shell_word(runtime_dir),
-        ]
-    )
-
-
-def shell_word(value: str) -> str:
-    text = str(value)
-    if not text or any(ch.isspace() for ch in text):
-        return json.dumps(text)
-    return text
+    assert args is not None
+    return " ".join(command_token(part) for part in hub_command_parts(profile, runtime_dir, args))
 
 
 def default_dockerfile_location(profile: HubNetworkProfile, args: argparse.Namespace | None = None) -> str:
-    if is_exp_fdb_hub(args):
-        return DEFAULT_EXP_FDB_DOCKERFILE_LOCATION
-    if profile.network_key in {"testnet", "mainnet"}:
-        return f"/Dockerfile.hub.{profile.network_key}"
-    return DEFAULT_DOCKERFILE_LOCATION
+    return DEFAULT_EXP_FDB_DOCKERFILE_LOCATION
 
 
 def effective_dockerfile_location(profile: HubNetworkProfile, args: argparse.Namespace) -> str:
@@ -467,9 +632,7 @@ def application_payload(
     service_name: str,
     runtime_dir: str,
 ) -> dict[str, Any]:
-    description = f"Main Computer {profile.network_key} Hub"
-    if is_exp_fdb_hub(args):
-        description = f"Main Computer {profile.network_key} experimental FDB Hub"
+    description = f"Main Computer {profile.network_key} experimental FDB Hub"
 
     payload: dict[str, Any] = {
         "name": service_name,
@@ -516,9 +679,83 @@ def storage_payload(profile: HubNetworkProfile, *, runtime_dir: str, args: argpa
     return {
         "type": "persistent",
         "name": hub_volume_name(profile.network_key, implementation=implementation),
-        "mount_path": runtime_dir,
-        "host_path": runtime_dir,
+        "mount_path": container_posix_path(runtime_dir),
+        "host_path": container_posix_path(runtime_dir),
     }
+
+
+def yaml_quote(value: object) -> str:
+    return json.dumps(str(value))
+
+
+def docker_compose_build_context(args: argparse.Namespace) -> str:
+    repo = str(getattr(args, "git_repo", "") or "").strip()
+    if not repo:
+        raise CoolifyHubDeployError("--git-repo is required for local Coolify service-compose Hub deploys.")
+    branch = str(getattr(args, "git_branch", "") or "main").strip() or "main"
+    if "#" in repo:
+        return repo
+    return f"{repo}#{branch}"
+
+
+def render_local_test_hub_compose(profile: HubNetworkProfile, args: argparse.Namespace, *, service_name: str, runtime_dir: str) -> str:
+    runtime_dir = container_posix_path(runtime_dir).rstrip("/")
+    volume_name = hub_volume_name(profile.network_key, implementation=hub_implementation(args))
+    command_parts = hub_command_parts(profile, runtime_dir, args)
+    build_context = docker_compose_build_context(args)
+    dockerfile = effective_dockerfile_location(profile, args).lstrip("/") or "Dockerfile.hub.exp-fdb"
+    service_key = service_name.replace("_", "-")
+    lines: list[str] = [
+        f"name: {service_name}",
+        "",
+        "services:",
+        f"  {service_key}:",
+        "    build:",
+        f"      context: {yaml_quote(build_context)}",
+        f"      dockerfile: {yaml_quote(dockerfile)}",
+        "    restart: unless-stopped",
+        "    ports:",
+        f"      - {yaml_quote(f'127.0.0.1:{profile.hub_bind_port}:{profile.hub_bind_port}')}",
+        "    environment:",
+        f"      HUB_HEALTH_PORT: {yaml_quote(str(profile.hub_bind_port))}",
+        "    extra_hosts:",
+        "      - host.docker.internal:host-gateway",
+        "    volumes:",
+        f"      - {yaml_quote(f'{volume_name}:{runtime_dir}')}",
+        "    command:",
+    ]
+    lines.extend(f"      - {yaml_quote(part)}" for part in command_parts)
+    lines.extend(
+        [
+            "",
+            "volumes:",
+            f"  {volume_name}:",
+            f"    name: {volume_name}",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def base64_text(value: str) -> str:
+    return base64.b64encode(value.encode("utf-8")).decode("ascii")
+
+
+def local_test_service_payload(profile: HubNetworkProfile, args: argparse.Namespace, *, service_name: str, runtime_dir: str) -> dict[str, Any]:
+    compose = render_local_test_hub_compose(profile, args, service_name=service_name, runtime_dir=runtime_dir)
+    payload: dict[str, Any] = {
+        "server_uuid": args.coolify_server_uuid,
+        "project_uuid": args.coolify_project_uuid,
+        "environment_name": args.coolify_environment_name,
+        "environment_uuid": args.coolify_environment_uuid,
+        "name": service_name,
+        "description": f"Main Computer {profile.network_key} experimental FDB Hub local service",
+        "docker_compose_raw": base64_text(compose),
+        "instant_deploy": False,
+    }
+    if args.coolify_destination_uuid:
+        payload["destination_uuid"] = args.coolify_destination_uuid
+    return {key: value for key, value in payload.items() if value not in (None, "")}
 
 
 def storage_matches(item: dict[str, Any], *, name: str, mount_path: str) -> bool:
@@ -799,6 +1036,112 @@ def resolve_coolify_context(client: CoolifyClient, profile: HubNetworkProfile, a
     }
 
 
+def service_uuid_from_body(body: Any) -> str:
+    if isinstance(body, dict):
+        for key in ("uuid", "service_uuid", "id"):
+            value = str(body.get(key) or "").strip()
+            if value:
+                return value
+        service = body.get("service")
+        if isinstance(service, dict):
+            return service_uuid_from_body(service)
+    return ""
+
+
+def list_services(client: CoolifyClient) -> tuple[CoolifyResponse, list[dict[str, Any]]]:
+    response = client.request("GET", "/api/v1/services")
+    return response, body_items(response.body, "services")
+
+
+def find_service(client: CoolifyClient, *, service_name: str, explicit_uuid: str, tried: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
+    clean_explicit = str(explicit_uuid or "").strip()
+    if clean_explicit:
+        return clean_explicit, {"source": "explicit_uuid", "uuid": clean_explicit}
+    response, services = list_services(client)
+    tried.append({"operation": "list-services", "response": response_to_dict(response), "count": len(services)})
+    if not response.ok:
+        return "", {"source": "api_error", "response": response_to_dict(response)}
+    uuid, matches = select_by_exact_name(services, service_name)
+    if uuid:
+        return uuid, {"source": "name", "uuid": uuid, "matches": [item_summary(item) for item in matches]}
+    if len(matches) > 1:
+        raise CoolifyHubDeployError(
+            f"Multiple Coolify services named {service_name!r} already exist; pass --coolify-application-uuid."
+        )
+    return "", {"source": "missing", "matches": []}
+
+
+def create_local_test_service(client: CoolifyClient, profile: HubNetworkProfile, args: argparse.Namespace, *, service_name: str, runtime_dir: str, tried: list[dict[str, Any]]) -> str:
+    payload = local_test_service_payload(profile, args, service_name=service_name, runtime_dir=runtime_dir)
+    response = client.request("POST", "/api/v1/services", payload)
+    tried.append(
+        {
+            "operation": "create-service",
+            "path": "/api/v1/services",
+            "payload_keys": sorted(payload),
+            "docker_compose_raw_encoding": "base64",
+            "response": response_to_dict(response),
+        }
+    )
+    if not response.ok:
+        raise CoolifyHubDeployError(f"Coolify service create failed with HTTP {response.status}: {response.body}")
+    uuid = service_uuid_from_body(response.body)
+    if not uuid:
+        raise CoolifyHubDeployError(f"Coolify service create succeeded but no UUID was returned: {response.body}")
+    return uuid
+
+
+def update_local_test_service(client: CoolifyClient, profile: HubNetworkProfile, args: argparse.Namespace, *, service_uuid: str, service_name: str, runtime_dir: str, tried: list[dict[str, Any]]) -> None:
+    compose = render_local_test_hub_compose(profile, args, service_name=service_name, runtime_dir=runtime_dir)
+    update_payloads = [
+        {"docker_compose_raw": base64_text(compose), "name": service_name},
+        {"docker_compose_raw": base64_text(compose)},
+        {"docker_compose": compose, "name": service_name},
+        {"compose": compose, "name": service_name},
+    ]
+    update_paths = [f"/api/v1/services/{urllib.parse.quote(service_uuid)}", f"/api/v1/services/{urllib.parse.quote(service_uuid)}/compose"]
+    for path in update_paths:
+        for payload in update_payloads:
+            response = client.request("PATCH", path, payload)
+            tried.append({"operation": "update-service", "method": "PATCH", "path": path, "payload_keys": sorted(payload), "response": response_to_dict(response)})
+            if response.ok:
+                return
+            if response.status == 405:
+                response = client.request("PUT", path, payload)
+                tried.append({"operation": "update-service", "method": "PUT", "path": path, "payload_keys": sorted(payload), "response": response_to_dict(response)})
+                if response.ok:
+                    return
+            if response.status not in {400, 404, 405, 422}:
+                raise CoolifyHubDeployError(f"Coolify service update failed with HTTP {response.status}: {response.body}")
+    raise CoolifyHubDeployError("Coolify service update failed on all known endpoints.")
+
+
+def trigger_deploy_service(client: CoolifyClient, *, service_uuid: str, force: bool, tried: list[dict[str, Any]]) -> dict[str, Any]:
+    query = urllib.parse.urlencode({"uuid": service_uuid, "force": "true" if force else "false"})
+    paths = [
+        f"/api/v1/deploy?{query}",
+        f"/api/v1/services/{urllib.parse.quote(service_uuid)}/start",
+        f"/api/v1/services/{urllib.parse.quote(service_uuid)}/restart",
+        f"/api/v1/services/{urllib.parse.quote(service_uuid)}/deploy",
+    ]
+    for path in paths:
+        method = "GET" if path.startswith("/api/v1/deploy?") else "POST"
+        response = client.request(method, path)
+        tried.append({"operation": "deploy-service", "method": method, "path": path, "response": response_to_dict(response)})
+        if response.ok:
+            return response_to_dict(response)
+    raise CoolifyHubDeployError("Coolify service deploy failed on all known endpoints.")
+
+
+def sync_local_test_service(client: CoolifyClient, profile: HubNetworkProfile, args: argparse.Namespace, *, service_name: str, runtime_dir: str, tried: list[dict[str, Any]]) -> tuple[str, str, dict[str, Any]]:
+    service_uuid, existing = find_service(client, service_name=service_name, explicit_uuid=args.coolify_application_uuid, tried=tried)
+    if service_uuid:
+        update_local_test_service(client, profile, args, service_uuid=service_uuid, service_name=service_name, runtime_dir=runtime_dir, tried=tried)
+        return service_uuid, "updated", existing
+    service_uuid = create_local_test_service(client, profile, args, service_name=service_name, runtime_dir=runtime_dir, tried=tried)
+    return service_uuid, "created", existing
+
+
 def find_application(client: CoolifyClient, *, service_name: str, explicit_uuid: str, tried: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
     if explicit_uuid:
         return explicit_uuid, {"source": "explicit_uuid", "uuid": explicit_uuid}
@@ -937,8 +1280,9 @@ def wait_for_hub(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[s
 
 def load_profile(args: argparse.Namespace) -> HubNetworkProfile:
     registry = load_hub_network_registry(args.network_config)
-    profile = registry.get(args.network)
-    validate_remote_profile(profile)
+    raw_profile = registry.get(args.network)
+    profile = coolify_deploy_profile(raw_profile, args)
+    validate_coolify_profile(profile)
     validate_hub_deploy_args(profile, args)
     return profile
 
@@ -959,6 +1303,7 @@ def plan_result(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[st
         "volume_name": hub_volume_name(profile.network_key, implementation=implementation),
         "public_url": profile.hub_url,
         "chain_rpc_url": profile.chain_rpc_url,
+        "hub_chain_rpc_url": hub_chain_rpc_url(profile, args),
         "chain_id": profile.chain_id,
         "application_payload": application_payload(profile, args, service_name=service_name, runtime_dir=runtime_dir),
         "storage_payload": storage_payload(profile, runtime_dir=runtime_dir, args=args),
@@ -971,6 +1316,16 @@ def plan_result(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[st
             "Experimental FDB Hub deploys with --no-fdb-autostart; mount a valid FoundationDB cluster file "
             f"at {result['fdb_cluster_file']!r} before applying or starting the application."
         )
+        if is_local_test_profile(profile):
+            compose = render_local_test_hub_compose(profile, args, service_name=service_name, runtime_dir=runtime_dir)
+            service_payload = local_test_service_payload(profile, args, service_name=service_name, runtime_dir=runtime_dir)
+            result["coolify_resource_kind"] = "service"
+            result["service_payload"] = {
+                **{key: value for key, value in service_payload.items() if key != "docker_compose_raw"},
+                "docker_compose_raw": "<base64>",
+                "docker_compose_raw_bytes": len(service_payload.get("docker_compose_raw", "")),
+            }
+            result["docker_compose"] = compose
     return result
 
 
@@ -1031,33 +1386,63 @@ def apply(args: argparse.Namespace) -> dict[str, Any]:
     context = resolve_coolify_context(client, profile, args, tried)
     phases.append({"phase": "coolify-context", "result": context})
 
-    application_uuid, existing = find_application(client, service_name=plan["service_name"], explicit_uuid=args.coolify_application_uuid, tried=tried)
-    if application_uuid:
-        update_application(client, profile, args, application_uuid=application_uuid, service_name=plan["service_name"], runtime_dir=plan["runtime_dir"], tried=tried)
-        application_action = "updated"
-    else:
-        application_uuid = create_application(client, profile, args, service_name=plan["service_name"], runtime_dir=plan["runtime_dir"], tried=tried)
-        application_action = "created"
-
-    storage = ensure_storage(client, profile, args, application_uuid=application_uuid, runtime_dir=plan["runtime_dir"], tried=tried)
-    phases.append(
-        {
-            "phase": "coolify-application",
-            "result": {
-                "ok": True,
-                "application_uuid": application_uuid,
-                "application_action": application_action,
-                "existing": existing,
-                "storage": storage,
-                "tried": tried,
-            },
-        }
-    )
-
+    application_uuid = ""
+    application_action = ""
     deploy_result: dict[str, Any] | None = None
-    if not args.no_deploy:
-        deploy_result = trigger_deploy(client, application_uuid=application_uuid, force=args.force_deploy, tried=tried)
-        phases.append({"phase": "deploy", "result": deploy_result})
+
+    if is_local_test_profile(profile):
+        service_uuid, service_action, existing = sync_local_test_service(
+            client,
+            profile,
+            args,
+            service_name=plan["service_name"],
+            runtime_dir=plan["runtime_dir"],
+            tried=tried,
+        )
+        application_uuid = service_uuid
+        application_action = service_action
+        phases.append(
+            {
+                "phase": "coolify-service",
+                "result": {
+                    "ok": True,
+                    "service_uuid": service_uuid,
+                    "service_action": service_action,
+                    "existing": existing,
+                    "tried": tried,
+                },
+            }
+        )
+        if not args.no_deploy:
+            deploy_result = trigger_deploy_service(client, service_uuid=service_uuid, force=args.force_deploy, tried=tried)
+            phases.append({"phase": "deploy", "result": deploy_result})
+    else:
+        application_uuid, existing = find_application(client, service_name=plan["service_name"], explicit_uuid=args.coolify_application_uuid, tried=tried)
+        if application_uuid:
+            update_application(client, profile, args, application_uuid=application_uuid, service_name=plan["service_name"], runtime_dir=plan["runtime_dir"], tried=tried)
+            application_action = "updated"
+        else:
+            application_uuid = create_application(client, profile, args, service_name=plan["service_name"], runtime_dir=plan["runtime_dir"], tried=tried)
+            application_action = "created"
+
+        storage = ensure_storage(client, profile, args, application_uuid=application_uuid, runtime_dir=plan["runtime_dir"], tried=tried)
+        phases.append(
+            {
+                "phase": "coolify-application",
+                "result": {
+                    "ok": True,
+                    "application_uuid": application_uuid,
+                    "application_action": application_action,
+                    "existing": existing,
+                    "storage": storage,
+                    "tried": tried,
+                },
+            }
+        )
+
+        if not args.no_deploy:
+            deploy_result = trigger_deploy(client, application_uuid=application_uuid, force=args.force_deploy, tried=tried)
+            phases.append({"phase": "deploy", "result": deploy_result})
 
     hub_mode = hub_health_check_mode(profile, args)
     if hub_mode != "skip" and not args.no_deploy:
@@ -1078,6 +1463,7 @@ def apply(args: argparse.Namespace) -> dict[str, Any]:
         "network": profile.network_key,
         "application_uuid": application_uuid,
         "application_action": application_action,
+        "coolify_resource_kind": "service" if is_local_test_profile(profile) else "application",
         "deployed": deploy_result is not None,
         "plan": plan,
         "warnings": warnings,
@@ -1088,22 +1474,22 @@ def apply(args: argparse.Namespace) -> dict[str, Any]:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Deploy Main Computer Hub applications into Coolify.")
     parser.add_argument("action", choices=["plan", "apply"], help="Use plan for local payload rendering or apply for Coolify create/update.")
-    parser.add_argument("network", choices=["testnet", "mainnet"], help="Remote Hub network to deploy.")
+    parser.add_argument("network", choices=["test", "testnet", "mainnet"], help="Hub network to deploy. `test` targets the local Coolify/Besu-QBFT surface.")
 
     parser.add_argument("--network-config", type=Path, default=None, help="Path to hub_networks.json.")
     parser.add_argument("--hub-runtime-dir", default="", help="Container path for persistent Hub runtime state.")
     parser.add_argument(
         "--hub-implementation",
         choices=HUB_IMPLEMENTATION_CHOICES,
-        default=HUB_IMPLEMENTATION_REGULAR,
-        help="Hub implementation to deploy. regular preserves the existing Dockerfile/CLI Hub; exp-fdb deploys exp-fdb-hub.py.",
+        default=HUB_IMPLEMENTATION_EXP_FDB,
+        help="Hub implementation to deploy. exp-fdb is the only supported hosted Hub implementation.",
     )
     parser.add_argument(
         "--replace-regular-hub",
         action="store_true",
         help=(
-            "With --hub-implementation exp-fdb, update the normal main-computer-<network>-hub Coolify application "
-            "instead of creating the side-by-side main-computer-<network>-exp-fdb-hub application."
+            "Deprecated no-op. The exp-FDB Hub now always uses the normal "
+            "main-computer-<network>-hub Coolify application name."
         ),
     )
     parser.add_argument(
@@ -1124,6 +1510,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--coolify-token", default="", help="Coolify bearer token. Prefer --coolify-token-env.")
     parser.add_argument("--coolify-token-env", default=DEFAULT_TOKEN_ENV, help="Environment variable containing the Coolify token.")
     parser.add_argument("--coolify-token-file", default="", help="File containing the Coolify token.")
+    parser.add_argument(
+        "--local-coolify-token-file",
+        default="",
+        help=(
+            "Local Coolify token file for `apply test`. Defaults to MAIN_COMPUTER_COOLIFY_LOCAL_TOKEN_FILE, "
+            "then <local-coolify-state-dir>/api-token.txt."
+        ),
+    )
+    parser.add_argument(
+        "--local-coolify-state-dir",
+        default="",
+        help=(
+            "Existing local Coolify state dir for `apply test`. Defaults to MAIN_COMPUTER_COOLIFY_STATE_DIR, "
+            "then COOLIFY_LOCAL_STATE from runtime/applications_service/applications.env, then runtime/coolify-local-docker."
+        ),
+    )
+    parser.add_argument(
+        "--applications-service-env-file",
+        default="",
+        help="Applications service env file used to discover the Website Builder/local Coolify target for `apply test`.",
+    )
     parser.add_argument("--coolify-timeout-s", type=float, default=DEFAULT_TIMEOUT_S)
     parser.add_argument("--coolify-retries", type=int, default=DEFAULT_RETRIES)
     parser.add_argument("--coolify-retry-sleep-s", type=float, default=DEFAULT_RETRY_SLEEP_S)
@@ -1153,8 +1560,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--github-app-uuid", default="", help="Use private GitHub App create endpoint.")
     parser.add_argument("--deploy-key-uuid", default="", help="Use private deploy-key create endpoint.")
     parser.add_argument("--base-directory", default=DEFAULT_BASE_DIRECTORY)
-    parser.add_argument("--dockerfile-location", default="", help="Dockerfile path. Defaults to /Dockerfile.hub.<network> for mainnet/testnet.")
+    parser.add_argument("--dockerfile-location", default="", help="Dockerfile path. Defaults to /Dockerfile.hub.exp-fdb.")
     parser.add_argument("--health-path", default=DEFAULT_HEALTH_PATH)
+    parser.add_argument(
+        "--hub-chain-rpc-url",
+        default="",
+        help=(
+            "Override the chain RPC URL passed to the Hub container. "
+            "For local `test`, defaults to http://host.docker.internal:30010 while the operator RPC check still uses the test profile URL."
+        ),
+    )
 
     parser.add_argument("--rpc-timeout-s", type=float, default=8.0)
     parser.add_argument(
