@@ -169,16 +169,76 @@ def _runtime_int(name: str, env_name: str, fallback: int) -> int:
     return fallback
 
 
+def _runtime_int_override(name: str, env_name: str) -> int | None:
+    raw = _runtime_override(name, env_name)
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    if 1 <= value <= 65535:
+        return value
+    return None
+
+
+def _existing_env_int(root: Path | None, key: str) -> int | None:
+    if root is None:
+        return None
+    try:
+        values = env_values_from_file(root)
+    except Exception:
+        return None
+    raw = str(values.get(key, "") or "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    if 1 <= value <= 65535:
+        return value
+    return None
+
+
+def _default_scoped_port(root: Path | None, *, key: str, name: str, env_name: str, fallback: int) -> int:
+    override = _runtime_int_override(name, env_name)
+    if override is not None:
+        return override
+    existing = _existing_env_int(root, key)
+    if existing is not None:
+        return existing
+    return fallback
+
+
 def default_app_port(root: Path | None = None) -> int:
-    return _runtime_int("app_port", "MAIN_COMPUTER_COOLIFY_APP_PORT", DEFAULT_APP_PORT)
+    return _default_scoped_port(
+        root,
+        key="APP_PORT",
+        name="app_port",
+        env_name="MAIN_COMPUTER_COOLIFY_APP_PORT",
+        fallback=DEFAULT_APP_PORT,
+    )
 
 
 def default_soketi_port(root: Path | None = None) -> int:
-    return _runtime_int("soketi_port", "MAIN_COMPUTER_COOLIFY_SOKETI_PORT", 6001)
+    return _default_scoped_port(
+        root,
+        key="SOKETI_PORT",
+        name="soketi_port",
+        env_name="MAIN_COMPUTER_COOLIFY_SOKETI_PORT",
+        fallback=6001,
+    )
 
 
 def default_soketi_terminal_port(root: Path | None = None) -> int:
-    return _runtime_int("soketi_terminal_port", "MAIN_COMPUTER_COOLIFY_SOKETI_TERMINAL_PORT", 6002)
+    return _default_scoped_port(
+        root,
+        key="SOKETI_TERMINAL_PORT",
+        name="soketi_terminal_port",
+        env_name="MAIN_COMPUTER_COOLIFY_SOKETI_TERMINAL_PORT",
+        fallback=6002,
+    )
 
 
 def coolify_project_name(root: Path | None = None) -> str:
@@ -455,6 +515,106 @@ def ensure_env_contract(root: Path) -> list[str]:
         target_env.write_text(after, encoding="utf-8")
     write_credentials(root, parse_env_values(after))
     return changed
+
+
+def host_port_available(port: int, *, host: str = "127.0.0.1") -> bool:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as handle:
+            handle.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            handle.bind((host, int(port)))
+        return True
+    except OSError:
+        return False
+
+
+def _explicit_runtime_port_configured(name: str, env_name: str) -> bool:
+    return _runtime_int_override(name, env_name) is not None
+
+
+def _first_available_host_port(start: int, *, reserved: set[int]) -> int:
+    candidates = [*range(start, min(start + 400, 65536)), *range(49152, 65536)]
+    for candidate in candidates:
+        if candidate in reserved:
+            continue
+        if host_port_available(candidate):
+            return candidate
+    raise SmokeError(f"could not find an available host TCP port starting at {start}")
+
+
+def _upsert_plain_env_values(text: str, replacements: dict[str, str]) -> str:
+    seen: set[str] = set()
+    output: list[str] = []
+    for line in text.splitlines():
+        if "=" not in line or line.lstrip().startswith("#"):
+            output.append(line)
+            continue
+        key, _value = line.split("=", 1)
+        if key in replacements:
+            output.append(f"{key}={replacements[key]}")
+            seen.add(key)
+            continue
+        output.append(line)
+
+    for key, value in replacements.items():
+        if key not in seen:
+            output.append(f"{key}={value}")
+    return "\n".join(output).rstrip() + "\n"
+
+
+def repair_busy_realtime_host_ports(root: Path) -> list[str]:
+    """Move local Coolify realtime host ports when the default host ports collide.
+
+    The Coolify API/dashboard port stays stable because local publisher clients
+    use it directly.  Soketi/realtime ports are only an implementation detail of
+    the local Coolify stack, so they can safely move when another container or
+    process already owns 127.0.0.1:6001/6002.
+    """
+
+    target_env = env_file(root)
+    if not target_env.exists():
+        return []
+
+    text = target_env.read_text(encoding="utf-8")
+    values = parse_env_values(text)
+    replacements: dict[str, str] = {}
+    repairs: list[str] = []
+
+    reserved = {env_app_port(values, root=root)}
+    port_specs = [
+        ("SOKETI_PORT", "soketi_port", "MAIN_COMPUTER_COOLIFY_SOKETI_PORT", DEFAULT_SOKETI_PORT_BASE),
+        (
+            "SOKETI_TERMINAL_PORT",
+            "soketi_terminal_port",
+            "MAIN_COMPUTER_COOLIFY_SOKETI_TERMINAL_PORT",
+            DEFAULT_SOKETI_TERMINAL_PORT_BASE,
+        ),
+    ]
+
+    for key, runtime_name, env_name, fallback_start in port_specs:
+        if _explicit_runtime_port_configured(runtime_name, env_name):
+            current = int(values.get(key, fallback_start))
+            reserved.add(current)
+            continue
+
+        try:
+            current = int(values.get(key, fallback_start))
+        except ValueError:
+            current = fallback_start
+
+        if current not in reserved and host_port_available(current):
+            reserved.add(current)
+            continue
+
+        replacement = _first_available_host_port(fallback_start, reserved=reserved)
+        replacements[key] = str(replacement)
+        repairs.append(f"{key} {current}->{replacement}")
+        reserved.add(replacement)
+
+    if replacements:
+        target_env.write_text(_upsert_plain_env_values(text, replacements), encoding="utf-8")
+        write_credentials(root, env_values_from_file(root))
+
+    return repairs
 
 
 def env_contract_mismatches(root: Path) -> list[str]:
@@ -4744,9 +4904,12 @@ def docker_compose_up_with_stale_container_retry(root: Path, args: list[str]) ->
 
 def up(root: Path, *, force_init: bool = False) -> int:
     _, changed = write_initial_state(root, force=force_init)
+    port_repairs = repair_busy_realtime_host_ports(root)
     print("Starting local Docker Coolify smoke stack...")
     print(f"compose project: {coolify_project_name(root)}")
     print(f"dashboard: {dashboard_url(root)}")
+    if port_repairs:
+        print(f"repaired local Coolify realtime host port collisions before start: {', '.join(port_repairs)}")
     if changed:
         print(f"repaired generated .env keys before start: {', '.join(changed)}")
         docker_compose_up_with_stale_container_retry(root, ["up", "-d", "--build", "--force-recreate"])

@@ -460,5 +460,85 @@ class ViewportApiRouteTests(unittest.TestCase):
             thread.join(timeout=5)
 
 
+    def test_control_panel_local_test_rpc_and_manifest_are_not_reported_as_qbft_down(self) -> None:
+        from types import SimpleNamespace
+
+        from main_computer import viewport_route_dispatch as dispatch
+
+        class FakeProfile:
+            network_key = "test"
+            display_name = "Main Computer Local QBFT Test"
+            kind = "test"
+            chain_id = 42424241
+            chain_rpc_url = "http://127.0.0.1:30010"
+            hub_bind_host = "127.0.0.1"
+            hub_bind_port = 8780
+            hub_public_url = "http://127.0.0.1:8780"
+            hub_url = "http://127.0.0.1:8780"
+
+            def as_status_payload(self) -> dict[str, object]:
+                return {
+                    "network_key": self.network_key,
+                    "display_name": self.display_name,
+                    "kind": self.kind,
+                    "chain_id": self.chain_id,
+                    "chain_rpc_url": self.chain_rpc_url,
+                    "hub_bind_host": self.hub_bind_host,
+                    "hub_bind_port": self.hub_bind_port,
+                    "hub_public_url": self.hub_public_url,
+                    "hub_url": self.hub_url,
+                    "deployment_manifest_path": "runtime/deployments/test/latest.json",
+                }
+
+        registry = SimpleNamespace(
+            default_network="mainnet",
+            networks={"test": FakeProfile()},
+            source_path=Path("main_computer/config/hub_networks.json"),
+        )
+        contracts = {
+            "ok": True,
+            "source": "deployment-manifest",
+            "contract_addresses": {
+                "alpha_beta_lockout": "0x1111111111111111111111111111111111111111",
+                "xlag_bridge_reserve": "0x2222222222222222222222222222222222222222",
+                "hub_credit_bridge_escrow": "0x3333333333333333333333333333333333333333",
+            },
+            "count": 3,
+            "path": "runtime/deployments/test/latest.json",
+            "error": "",
+            "candidates": [],
+            "authority_status": "default-dev-authority",
+            "authority_warning": "test is using default Anvil office identities for local validation.",
+            "authority_default_offices": [],
+            "offices": [],
+        }
+
+        with (
+            patch.object(dispatch, "load_hub_network_registry", return_value=registry),
+            patch.object(dispatch, "_control_panel_connect", return_value={"ok": False, "error": "closed"}),
+            patch.object(dispatch, "_control_panel_rpc_probe", return_value={"ok": True, "port": 30010}),
+            patch.object(dispatch, "_control_panel_deployment_contracts", return_value=contracts),
+        ):
+            topology = dispatch._control_panel_network_status_cards(Path.cwd())
+            local_test = topology["networks"][0]
+
+        self.assertTrue(local_test["rpc_reachable"])
+        self.assertTrue(local_test["chain_reachable"])
+        self.assertEqual(local_test["state"], "degraded")
+        self.assertEqual(local_test["severity"], "yellow")
+        self.assertEqual(local_test["status_text"], "chain running")
+        self.assertEqual(
+            local_test["summary"],
+            "Local BESU+QBFT is running; hub not running at http://127.0.0.1:8780",
+        )
+        self.assertNotIn("BESU+QBFT is down", local_test["summary"])
+
+        energy_service = dispatch._control_panel_energy_credits_service(topology)
+        self.assertEqual(energy_service["state"], "degraded")
+        self.assertEqual(energy_service["severity"], "yellow")
+        self.assertIn("non-mainnet activity is reachable on test", energy_service["summary"])
+
+
+
 if __name__ == "__main__":
     unittest.main()
