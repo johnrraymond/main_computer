@@ -625,5 +625,14 @@ class ViewportApiRouteTests(unittest.TestCase):
 
 
 
+    def test_graphical_status_refresh_ignores_overlapping_or_stale_network_polls(self) -> None:
+        self.assertIn("statusRefreshInFlight", GRAPHICAL_INDEX_HTML)
+        self.assertIn("latestRenderedStatusSeq", GRAPHICAL_INDEX_HTML)
+        self.assertIn("stabilizeNetworksForRender", GRAPHICAL_INDEX_HTML)
+        self.assertIn("networkIsAmbiguousLocalDown", GRAPHICAL_INDEX_HTML)
+        self.assertIn("client_stabilized", GRAPHICAL_INDEX_HTML)
+        self.assertIn("holding recent successful refresh", GRAPHICAL_INDEX_HTML)
+
+
 if __name__ == "__main__":
     unittest.main()
