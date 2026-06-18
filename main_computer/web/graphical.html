@@ -1483,10 +1483,10 @@
           </div>
           <div class="panel-body">
             <div id="network-grid" class="service-grid network-grid">
-              <article class="service-card network-card shell-gray"><h3>MAINNET</h3><span class="badge unknown">loading</span><p>Energy Credits mainnet</p></article>
-              <article class="service-card network-card shell-gray"><h3>TESTNET</h3><span class="badge unknown">loading</span><p>Energy Credits testnet</p></article>
-              <article class="service-card network-card shell-gray"><h3>TEST</h3><span class="badge unknown">loading</span><p>Energy Credits local test</p></article>
-              <article class="service-card network-card shell-gray"><h3>DEV</h3><span class="badge unknown">loading</span><p>Energy Credits local dev</p></article>
+              <article class="service-card network-card shell-gold"><h3>MAINNET</h3><span class="badge degraded">checking</span><p>Energy Credits mainnet</p></article>
+              <article class="service-card network-card shell-gold"><h3>TESTNET</h3><span class="badge degraded">checking</span><p>Energy Credits testnet</p></article>
+              <article class="service-card network-card shell-gold"><h3>TEST</h3><span class="badge degraded">checking</span><p>Energy Credits local test</p></article>
+              <article class="service-card network-card shell-gold"><h3>DEV</h3><span class="badge degraded">checking</span><p>Energy Credits local dev</p></article>
             </div>
           </div>
         </section>
@@ -2430,6 +2430,20 @@
       }
     }
 
+    function readBootstrapStatus() {
+      const bootstrap = byId("control-panel-bootstrap");
+      if (!bootstrap) return null;
+      const raw = bootstrap.textContent || "";
+      if (!raw.trim()) return null;
+      try {
+        const payload = JSON.parse(raw);
+        return payload && typeof payload === "object" ? payload : null;
+      } catch (error) {
+        console.warn("Failed to parse control panel bootstrap payload", error);
+        return null;
+      }
+    }
+
     byId("level-1-telemetry-button").addEventListener("click", () => openTelemetryDialog({autoRun: true}));
     byId("level-4-diagnostic-button").addEventListener("click", () => openDiagnosticsDialog({autoRun: true, mode: "level4"}));
     byId("level-5-diagnostics-button").addEventListener("click", () => openDiagnosticsDialog({autoRun: true, mode: "level5"}));
@@ -2456,6 +2470,10 @@
       if (byId("hard-halt-overlay").classList.contains("open")) closeHardHaltDialog();
     });
     byId("refresh-button").addEventListener("click", refreshStatus);
+    const bootstrapStatus = readBootstrapStatus();
+    if (bootstrapStatus && bootstrapStatus.ok) {
+      render(bootstrapStatus);
+    }
     refreshStatus();
     state.timer = setInterval(refreshStatus, 5000);
   </script>

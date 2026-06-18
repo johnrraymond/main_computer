@@ -946,13 +946,31 @@ def _control_panel_network_state(network_key: str, hub_reachable: bool) -> tuple
     return "unknown", "gray", "unknown"
 
 
-def _control_panel_rpc_probe(raw_url: str | None) -> dict[str, object] | None:
+def _control_panel_rpc_probe(raw_url: str | None, *, attempts: int = 1) -> dict[str, object] | None:
     host, port = _control_panel_endpoint_parts(raw_url)
     if not host or port is None:
         return None
     local_hosts = {"127.0.0.1", "localhost", "::1"}
-    timeout_s = 0.75 if str(host).lower() in local_hosts else 0.35
-    return _control_panel_connect(host, port, timeout_s=timeout_s)
+    is_local = str(host).lower() in local_hosts
+    attempts = max(1, int(attempts or 1))
+    timeout_s = 0.75 if is_local else 0.35
+    probes: list[dict[str, object]] = []
+    for attempt in range(1, attempts + 1):
+        probe = _control_panel_connect(host, port, timeout_s=timeout_s)
+        probe["attempt"] = attempt
+        probe["attempts"] = attempts
+        probes.append(probe)
+        if probe.get("ok"):
+            if attempt > 1:
+                probe["retries"] = attempt - 1
+                probe["previous_errors"] = probes[:-1]
+            return probe
+        if attempt < attempts:
+            time.sleep(0.08)
+    result = dict(probes[-1])
+    result["attempts"] = attempts
+    result["errors"] = probes
+    return result
 
 
 def _control_panel_repo_root_from_profile(profile: object) -> Path:
@@ -1170,6 +1188,12 @@ def _control_panel_network_status_cards(runtime_root: Path | None = None) -> dic
         deployment_contracts = _control_panel_deployment_contracts(profile, runtime_root)
         contracts_known = bool(deployment_contracts.get("ok"))
         recent_chain_ok = _control_panel_recent_local_chain_ok(local_chain_cache_key) if key in {"test", "dev"} else None
+        if key in {"test", "dev"} and contracts_known and rpc_reachable is False and not recent_chain_ok:
+            retry_probe = _control_panel_rpc_probe(profile.chain_rpc_url, attempts=3)
+            if isinstance(retry_probe, dict):
+                retry_probe["initial_probe"] = rpc_probe
+                rpc_probe = retry_probe
+                rpc_reachable = rpc_probe.get("ok")
         if key in {"test", "dev"} and bool(rpc_reachable):
             _control_panel_record_local_chain_ok(local_chain_cache_key, rpc_probe)
         elif key in {"test", "dev"} and contracts_known and recent_chain_ok:
@@ -1578,6 +1602,7 @@ def _control_panel_status(self) -> dict[str, object]:
         },
         "activity": activity_snapshot,
     }
+
 
 
 def _control_panel_sse_write(self, event: str, data: dict[str, object]) -> bool:
