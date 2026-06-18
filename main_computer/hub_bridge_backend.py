@@ -56,11 +56,15 @@ class DevChainHubBridgeBackend:
         *,
         repo_root: Path,
         deployment_path: Path,
+        contracts_path: Path | None = None,
+        network_key: str = "dev",
     ) -> "DevChainHubBridgeBackend":
         try:
             adapter = DevChainBridgeAdapter.from_deployment(
                 repo_root=repo_root,
                 deployment_path=deployment_path,
+                contracts_path=contracts_path,
+                network_key=network_key,
             )
         except DevChainBridgeError as exc:
             raise HubBridgeBackendError(str(exc)) from exc
@@ -123,6 +127,8 @@ def build_hub_bridge_backend(
     backend_name: str,
     repo_root: Path,
     dev_chain_deployment_path: Path | None,
+    contracts_path: Path | None = None,
+    network_key: str = "dev",
 ) -> HubBridgeBackend:
     clean = str(backend_name or "dev-chain").strip().lower()
     if clean in {"mock", "mock-chain", "mock-chain-lite"}:
@@ -133,7 +139,15 @@ def build_hub_bridge_backend(
         deployment_path = dev_chain_deployment_path
         if not deployment_path.is_absolute():
             deployment_path = repo_root / deployment_path
-        return DevChainHubBridgeBackend.from_deployment(repo_root=repo_root, deployment_path=deployment_path)
+        resolved_contracts_path = contracts_path
+        if resolved_contracts_path is not None and not resolved_contracts_path.is_absolute():
+            resolved_contracts_path = repo_root / resolved_contracts_path
+        return DevChainHubBridgeBackend.from_deployment(
+            repo_root=repo_root,
+            deployment_path=deployment_path,
+            contracts_path=resolved_contracts_path,
+            network_key=network_key,
+        )
     raise HubBridgeBackendError(
         f"unknown Hub bridge backend {backend_name!r}; expected dev-chain/credit-bridge-contract or mock-chain."
     )

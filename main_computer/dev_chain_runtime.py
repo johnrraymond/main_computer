@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from main_computer.config import MainComputerConfig
+from main_computer.contract_config import contract_config_path
 
 
 DEV_DEPLOYMENT_LATEST_PATH = Path("runtime") / "deployments" / "dev" / "latest.json"
@@ -23,6 +24,15 @@ def apply_dev_chain_runtime_config(config: MainComputerConfig, runtime_root: Pat
     publication without signing material. Fall back to the legacy dev-chain
     latest.json only when the production-shaped publication is absent.
     """
+
+    contracts_path = contract_config_path(config.hub_network or "dev", repo_root=runtime_root)
+    if contracts_path.exists():
+        return _apply_runtime_file(
+            config,
+            contracts_path,
+            source="contract-config",
+            invalid_message="contract config must contain a JSON object",
+        )
 
     deployment_path = runtime_root / DEV_DEPLOYMENT_LATEST_PATH
     if deployment_path.exists():

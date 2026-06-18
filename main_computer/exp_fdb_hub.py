@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Sequence
 
 from main_computer.config import DEFAULT_HUB_BRIDGE_BACKEND, MainComputerConfig
+from main_computer.contract_config import contract_config_path
 from main_computer.exp_fdb_credit_ledger import ExperimentalFoundationDbConfig, ExperimentalFoundationDbCreditLedger
 from main_computer.exp_fdb_hub_state import (
     ExperimentalFoundationDbEnergyCreditLedger,
@@ -147,6 +148,10 @@ def _default_dev_chain_deployment_path(*, repo_root: Path, network_key: str) -> 
     return repo_root / "runtime" / "deployments" / clean_network / "latest.json"
 
 
+def _default_contracts_path(*, repo_root: Path, network_key: str) -> Path:
+    return contract_config_path(str(network_key or "dev").strip() or "dev", repo_root=repo_root)
+
+
 def _hub_bridge_backend_from_args(args: argparse.Namespace, base: MainComputerConfig) -> str:
     return str(args.bridge_backend or base.hub_bridge_backend or DEFAULT_HUB_BRIDGE_BACKEND).strip().lower() or DEFAULT_HUB_BRIDGE_BACKEND
 
@@ -165,6 +170,11 @@ def build_experimental_config(args: argparse.Namespace, *, port: int) -> tuple[M
         dev_chain_deployment_path = _default_dev_chain_deployment_path(repo_root=repo_root, network_key=network_key)
     if dev_chain_deployment_path is not None and not dev_chain_deployment_path.is_absolute():
         dev_chain_deployment_path = repo_root / dev_chain_deployment_path
+    contracts_path = Path(args.contracts_path) if getattr(args, "contracts_path", None) else base.hub_contracts_path
+    if contracts_path is None and bridge_backend not in {"mock", "mock-chain", "mock-chain-lite"}:
+        contracts_path = _default_contracts_path(repo_root=repo_root, network_key=network_key)
+    if contracts_path is not None and not contracts_path.is_absolute():
+        contracts_path = repo_root / contracts_path
     ring_config_path = Path(args.ring_config_path) if getattr(args, "ring_config_path", None) else base.hub_ring_config_path
     if ring_config_path is not None and not ring_config_path.is_absolute():
         ring_config_path = repo_root / ring_config_path
@@ -191,6 +201,7 @@ def build_experimental_config(args: argparse.Namespace, *, port: int) -> tuple[M
         hub_allow_insecure_dev_network=True,
         hub_bridge_backend=bridge_backend,
         hub_dev_chain_deployment_path=dev_chain_deployment_path,
+        hub_contracts_path=contracts_path,
         hub_ring_config_path=ring_config_path,
         chain_id=chain_id,
         chain_id_source="arg" if chain_id_arg is not None else base.chain_id_source,
@@ -557,7 +568,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hub-root", type=Path, default=DEFAULT_EXP_FDB_HUB_ROOT, help="Separate runtime root for the experimental hub.")
     parser.add_argument("--cluster-file", type=Path, default=DEFAULT_EXP_FDB_CLUSTER_FILE, help="FoundationDB cluster file written by the FDB smoke.")
     parser.add_argument("--bridge-backend", choices=["mock-chain", "dev-chain", "credit-bridge-contract"], default=None, help="Hub bridge backend for bridge confirm endpoints. Defaults to dev-chain/contract-backed mode; use mock-chain only for explicit labs.")
-    parser.add_argument("--dev-chain-deployment-path", type=Path, default=None, help="Deployment metadata JSON used by the dev-chain/contract bridge backend. Defaults to runtime/deployments/<network-key>/latest.json when contract mode is selected.")
+    parser.add_argument("--dev-chain-deployment-path", type=Path, default=None, help="Private deployment metadata JSON used for bridge signing wallet paths. Defaults to runtime/deployments/<network-key>/latest.json when contract mode is selected.")
+    parser.add_argument("--contracts-path", type=Path, default=None, help="Public contract discovery JSON. Defaults to main_computer/config/<network-key>_contracts.json when contract mode is selected.")
     parser.add_argument("--ring-config-path", type=Path, default=None, help="JSON ring admission config path. Bad explicit configs fail startup.")
     parser.add_argument("--namespace", default=DEFAULT_EXP_FDB_NAMESPACE, help="FDB tuple namespace for this experiment.")
     parser.add_argument("--api-version", type=int, default=740, help="FoundationDB API version to request.")
