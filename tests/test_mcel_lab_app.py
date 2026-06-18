@@ -39,6 +39,7 @@ def test_mcel_lab_is_registered_as_separate_application() -> None:
     assert "<!-- @include applications/scripts/task-manager-mcel.js -->" in html
     assert "<!-- @include applications/scripts/mcel-supercut.js -->" in html
     assert "<!-- @include applications/scripts/git-tools-mcel.js -->" in html
+    assert "<!-- @include applications/scripts/terminal-mcel.js -->" in html
     assert "<!-- @include applications/scripts/mcel-lab.js -->" in html
     assert (
         html.index("mcel-contract.js")
@@ -62,6 +63,7 @@ def test_mcel_lab_is_registered_as_separate_application() -> None:
         < html.index("task-manager-mcel.js")
         < html.index("mcel-supercut.js")
         < html.index("git-tools-mcel.js")
+        < html.index("terminal-mcel.js")
         < html.index("mcel-lab.js")
     )
     assert "<!-- @include applications/scripts/dom-bindings/mcel-lab.js -->" in dom_bindings
@@ -149,7 +151,7 @@ def test_mcel_lab_mounts_git_tools_as_busy_canonical_specimen() -> None:
 
     assert "<!-- @include applications/scripts/mcel-supercut.js -->" in html
     assert "<!-- @include applications/scripts/git-tools-mcel.js -->" in html
-    assert html.index("git-tools.js") < html.index("mcel-supercut.js") < html.index("git-tools-mcel.js") < html.index("mcel-lab.js")
+    assert html.index("git-tools.js") < html.index("mcel-supercut.js") < html.index("git-tools-mcel.js") < html.index("terminal-mcel.js") < html.index("mcel-lab.js")
     assert 'value="git-tools"' in app
     assert 'data-route="/applications/git-tools?mcel_lab_specimen=git-tools"' in app
     assert 'data-root="#git-tools-app"' in app
@@ -179,6 +181,59 @@ def test_mcel_lab_mounts_git_tools_as_busy_canonical_specimen() -> None:
 
 
 
+
+
+def test_mcel_lab_mounts_terminal_as_first_class_mcel_terminal_specimen() -> None:
+    html = (ROOT / "main_computer" / "web" / "applications.html").read_text(encoding="utf-8")
+    lab = (WEB_APP / "scripts" / "mcel-lab.js").read_text(encoding="utf-8")
+    planner = (WEB_APP / "scripts" / "mcel-specimen-planner.js").read_text(encoding="utf-8")
+    adapter = (WEB_APP / "scripts" / "terminal-mcel.js").read_text(encoding="utf-8")
+    terminal_html = (WEB_APP / "apps" / "terminal.html").read_text(encoding="utf-8")
+    elements = (WEB_APP / "scripts" / "mcel-elements-core.js").read_text(encoding="utf-8")
+    toolkit = (WEB_APP / "scripts" / "mcel-toolkit-core.js").read_text(encoding="utf-8")
+    concern = (WEB_APP / "scripts" / "mcel-concern-core.js").read_text(encoding="utf-8")
+
+    assert "<!-- @include applications/scripts/terminal-mcel.js -->" in html
+    assert html.index("git-tools-mcel.js") < html.index("terminal-mcel.js") < html.index("mcel-specimen-planner.js") < html.index("mcel-lab.js")
+
+    assert 'if (specimen?.app === "terminal") return window.TerminalMcel || null;' in lab
+    assert "data-mcel-terminal-object" in lab
+    assert "data-mcel-command-policy" in lab
+
+    assert "global.TerminalMcel" in adapter
+    assert "TERMINAL_SESSION_CONTRACT" in adapter
+    assert "applyTerminalMcelSemantics" in adapter
+    assert "applyCanonicalMcelSemantics: applyTerminalMcelSemantics" in adapter
+    assert "runTerminalSupercutTranslation" in adapter
+    assert "terminal-is-one-semantic-object-not-loose-text-lines" in adapter
+
+    assert 'adapter: "TerminalMcel"' in planner
+    assert 'mcelElementId: "element.compute.terminal"' in planner
+    assert 'contract: "pattern.terminal-session"' in planner
+    assert 'concern: "concern.terminal-session"' in planner
+
+    assert "data-mcel-element-id=\"element.compute.terminal\"" in terminal_html
+    assert "data-mcel-contract=\"pattern.terminal-session\"" in terminal_html
+    assert "data-mcel-terminal-object=\"true\"" in terminal_html
+    assert "data-mcel-command-policy=\"stage-only-until-user-enter\"" in terminal_html
+    assert "data-mcel-terminal-viewport=\"xterm\"" in terminal_html
+
+    assert 'def("element.compute.terminal"' in elements
+    assert 'def("element.compute.terminal-controller"' in elements
+    assert 'def("element.compute.terminal-session-model"' in elements
+    assert 'def("element.compute.terminal-view"' in elements
+    assert '"no-command-execution"' in elements
+
+    assert 'id: "layout.terminal-viewport"' in toolkit
+    assert 'id: "controller.terminal-session"' in toolkit
+    assert 'id: "pattern.terminal-session"' in toolkit
+    assert "terminalSession" in toolkit
+
+    assert 'id: "concern.terminal-session"' in concern
+    assert '"concern.terminal-session": [' in concern
+    assert 'pathIncludes: ["terminal.html", "terminal.js"]' in concern
+    assert "Terminal code defines cwd" in concern
+
 def test_mcel_lab_adds_supercut_html_translation_module_for_git_tools() -> None:
     html = (ROOT / "main_computer" / "web" / "applications.html").read_text(encoding="utf-8")
     app = (WEB_APP / "apps" / "mcel-lab.html").read_text(encoding="utf-8")
@@ -187,7 +242,7 @@ def test_mcel_lab_adds_supercut_html_translation_module_for_git_tools() -> None:
     supercut = (WEB_APP / "scripts" / "mcel-supercut.js").read_text(encoding="utf-8")
 
     assert "<!-- @include applications/scripts/mcel-supercut.js -->" in html
-    assert html.index("task-manager-mcel.js") < html.index("mcel-supercut.js") < html.index("git-tools-mcel.js")
+    assert html.index("task-manager-mcel.js") < html.index("mcel-supercut.js") < html.index("git-tools-mcel.js") < html.index("terminal-mcel.js")
     assert "MCEL Supercut" in app
     assert "mcel-supercut component contracts" in app
 
@@ -1606,6 +1661,9 @@ def test_mcel_lab_adds_purpose_aware_specimen_planner() -> None:
     assert "git-tools-domain" in planner
     assert "spreadsheet-domain" in planner
     assert "terminal-domain" in planner
+    assert 'adapter: "TerminalMcel"' in planner
+    assert 'mcelElementId: "element.compute.terminal"' in planner
+    assert 'contract: "pattern.terminal-session"' in planner
     assert "email-domain" in planner
     assert "wallet-domain" in planner
     assert "code-editor-domain" in planner
@@ -1661,6 +1719,7 @@ def test_mcel_lab_turns_on_planner_specimens_in_dropdown() -> None:
     assert "planner-read-only" in planner
     assert "canonicalOptions" in planner
     assert 'if (specimen?.app === "task-manager") return window.TaskManagerMcel || null;' in lab
+    assert 'if (specimen?.app === "terminal") return window.TerminalMcel || null;' in lab
     assert "createGenericAdapter?.(plan)" in lab
     assert "requiredIdsFor?.(plan)" in lab
     assert "dangerousSelectorsFor?.(plan)" in lab

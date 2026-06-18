@@ -118,6 +118,20 @@
             view: ["tablist", "tabs", "tabpanel surfaces", "active/hidden state"],
             contract: "pattern.tabbed-workspace"
           }
+        },
+        {
+          id: "concern.terminal-session",
+          label: "Terminal session",
+          family: "compute",
+          ownerApp: "terminal",
+          canonicalSurfaceId: "terminal.session",
+          purpose: "User interacts with a shell terminal as one semantic object: cwd, prompt/input, scrollback, output, AI staging, and command execution boundary must stay explicit.",
+          mvcSplit: {
+            model: ["cwd", "timeout", "prompt/input buffer", "history", "stdout/stderr scrollback", "exit status"],
+            controller: ["stage command", "handle typed input", "separate AI suggestion from execution", "submit run request", "clear or interrupt"],
+            view: ["xterm viewport", "prompt/input line", "scrollback output", "analysis panel", "command staging controls"],
+            contract: "pattern.terminal-session"
+          }
         }
       ];
 
@@ -196,6 +210,13 @@
           "control.tab",
           "controller.tab-state",
           "pattern.tabbed-workspace"
+        ],
+        "concern.terminal-session": [
+          "controller.safety-gate",
+          "controller.terminal-session",
+          "layout.terminal-viewport",
+          "layout.status-bar",
+          "pattern.terminal-session"
         ]
       };
 
@@ -392,6 +413,36 @@
           ],
           contractGap: "minor",
           missingContractReason: "Operational process state is table-like and command-bearing; detector should keep it out of one-off status rows."
+        },
+        {
+          concernId: "concern.terminal-session",
+          ownerApp: "terminal",
+          canonicalSurfaceId: "terminal.session",
+          pathIncludes: ["terminal.html", "terminal.js"],
+          requiredTokenScore: 5,
+          tokens: [
+            "terminalXterm",
+            "initXtermTerminal",
+            "handleXtermData",
+            "runTerminalCommand",
+            "terminalBuffer",
+            "writePrompt",
+            "terminalCwd",
+            "terminalTimeout",
+            "terminal-ai-prompt",
+            "terminal-xterm",
+            "/api/applications/terminal/run"
+          ],
+          linePatterns: [
+            {pattern: /terminalXterm|initXtermTerminal|terminal-xterm|xterm/i, role: "view", label: "terminal viewport"},
+            {pattern: /terminalBuffer|writePrompt|terminalCwd|terminalTimeout|cwd|timeout/i, role: "model", label: "terminal session state"},
+            {pattern: /handleXtermData|stageTerminalCommand|terminal-ai-suggest|copyCommand/i, role: "controller", label: "command staging controller"},
+            {pattern: /runTerminalCommand|\/api\/applications\/terminal\/run|fetch\(/, role: "controller", label: "command execution boundary"},
+            {pattern: /Enter|\r|no-command-execution|command execution/i, role: "safety", label: "explicit run boundary"},
+            {pattern: /terminal-analysis|stderr|stdout|exit_code|duration/i, role: "view", label: "terminal output and analysis feed"}
+          ],
+          contractGap: "major",
+          missingContractReason: "Terminal code defines cwd, timeout, prompt/input, xterm scrollback, AI command staging, and a run endpoint. Concern awareness should route that mounted app to element.compute.terminal/pattern.terminal-session instead of the generic planner region adapter."
         },
         {
           concernId: "concern.tabbed-workspace",
@@ -677,6 +728,38 @@
             `
           },
           {
+            path: "main_computer/web/applications/apps/terminal.html",
+            text: `
+              <div id="terminal-app" data-mcel-app="terminal">
+                <div class="terminal-analysis-panel" id="terminal-analysis">No terminal failure yet.</div>
+                <label>working directory<input id="terminal-cwd" value="."></label>
+                <label>timeout seconds<input id="terminal-timeout" type="number"></label>
+                <textarea id="terminal-ai-prompt"></textarea>
+                <button id="terminal-ai-suggest">Suggest command</button>
+                <div id="terminal-xterm"></div>
+              </div>
+            `
+          },
+          {
+            path: "main_computer/web/applications/scripts/terminal.js",
+            text: `
+              let terminalXterm = null;
+              let terminalBuffer = "";
+              const terminalCwd = document.getElementById("terminal-cwd");
+              const terminalTimeout = document.getElementById("terminal-timeout");
+              function initXtermTerminal() { terminalXterm = new Terminal(); writePrompt(); }
+              function writePrompt() { terminalXterm.write("$ "); }
+              function handleXtermData(data) { if (data === "\r") runTerminalCommand(terminalBuffer); }
+              function stageTerminalCommand(command) { terminalBuffer = command; }
+              async function runTerminalCommand(command) {
+                const response = await fetch("/api/applications/terminal/run", {method: "POST", body: JSON.stringify({command, cwd: terminalCwd.value, timeout: terminalTimeout.value})});
+                const result = await response.json();
+                terminalXterm.write(result.stdout || result.stderr || "");
+                document.getElementById("terminal-analysis").textContent = String(result.exit_code) + " " + String(result.duration);
+              }
+            `
+          },
+          {
             path: "main_computer/web/applications/apps/task-manager.html",
             text: `
               <div class="task-pane task-notebook" data-widget-label="Task Data Notebook">
@@ -705,6 +788,7 @@
           deployPreflightDetected: report.concerns.some((concern) => concern.id === "concern.deploy-preflight"),
           executionCellDetected: report.concerns.some((concern) => concern.id === "concern.execution-cell"),
           tabbedWorkspaceDetected: report.concerns.some((concern) => concern.id === "concern.tabbed-workspace"),
+          terminalSessionDetected: report.concerns.some((concern) => concern.id === "concern.terminal-session"),
           canDriveMcelContracts: report.canDriveMcelContracts,
           highPriorityConcerns: report.highPriorityConcerns
         };
