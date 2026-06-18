@@ -237,6 +237,46 @@ def test_local_docker_python_script_preserves_valid_existing_root_credentials(tm
     assert "ROOT_USER_PASSWORD=Keep-This-Root-Secret1!" in repaired
 
 
+def test_local_docker_repairs_busy_soketi_host_port_and_preserves_it(monkeypatch, tmp_path: Path) -> None:
+    module = load_local_docker_module()
+    state_source = module.env_file(tmp_path).parent
+    state_source.mkdir(parents=True)
+    module.env_file(tmp_path).write_text(
+        "\n".join(
+            [
+                "APP_PORT=8000",
+                "SOKETI_PORT=6001",
+                "SOKETI_TERMINAL_PORT=6002",
+                "DB_HOST=postgres",
+                "DB_PORT=5432",
+                "REDIS_HOST=redis",
+                "REDIS_PORT=6379",
+                "LATEST_REALTIME_VERSION=1.4-16-debian",
+                "ROOT_USERNAME=maincomputer",
+                "ROOT_USER_EMAIL=owner@example.com",
+                "ROOT_USER_PASSWORD=Keep-This-Root-Secret1!",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(module, "host_port_available", lambda port, *, host="127.0.0.1": int(port) not in {6001})
+
+    repairs = module.repair_busy_realtime_host_ports(tmp_path)
+    repaired_values = module.env_values_from_file(tmp_path)
+
+    assert repairs == ["SOKETI_PORT 6001->17100"]
+    assert repaired_values["SOKETI_PORT"] == "17100"
+    assert repaired_values["SOKETI_TERMINAL_PORT"] == "6002"
+
+    changed = module.ensure_env_contract(tmp_path)
+    preserved_values = module.env_values_from_file(tmp_path)
+
+    assert "SOKETI_PORT" not in changed
+    assert preserved_values["SOKETI_PORT"] == "17100"
+
+
 def test_local_docker_python_script_generates_complex_root_password() -> None:
     module = load_local_docker_module()
 

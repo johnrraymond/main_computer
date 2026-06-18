@@ -1124,14 +1124,29 @@ def _control_panel_network_status_cards(runtime_root: Path | None = None) -> dic
         rpc_reachable = rpc_probe.get("ok") if isinstance(rpc_probe, dict) else None
         deployment_contracts = _control_panel_deployment_contracts(profile, runtime_root)
         contracts_known = bool(deployment_contracts.get("ok"))
+        chain_reachable = bool(rpc_reachable and contracts_known)
         authority_status = str(deployment_contracts.get("authority_status") or "unknown")
         authority_warning = str(deployment_contracts.get("authority_warning") or "")
         authority_unsafe = authority_status == "unsafe"
+        local_chain_label = "Local BESU+QBFT" if key == "test" else "Blockchain / Anvil"
         if key in {"test", "dev"} and rpc_reachable is False:
             state = "disabled"
             severity = "gray"
             status_text = "not running"
             summary = _control_panel_network_down_summary(key, hub_endpoint)
+        elif key in {"test", "dev"} and rpc_reachable is True and not hub_reachable:
+            state = "degraded"
+            severity = "yellow"
+            if contracts_known:
+                status_text = "chain running"
+                summary = f"{local_chain_label} is running; hub not running at {hub_endpoint}"
+            else:
+                status_text = "rpc reachable"
+                contract_error = str(deployment_contracts.get("error") or "").strip()
+                if contract_error:
+                    summary = f"{local_chain_label} RPC is reachable; contracts unknown: {contract_error}"
+                else:
+                    summary = f"{local_chain_label} RPC is reachable; hub not running at {hub_endpoint}"
         elif hub_reachable:
             if hub_network:
                 reported_key = hub_network.get("network_key") or "unknown"
@@ -1164,6 +1179,7 @@ def _control_panel_network_status_cards(runtime_root: Path | None = None) -> dic
                 "reported_network": hub_network,
                 "rpc_probe": rpc_probe,
                 "rpc_reachable": rpc_reachable,
+                "chain_reachable": chain_reachable,
                 "contracts": deployment_contracts.get("contract_addresses") or {},
                 "contracts_status": "known" if contracts_known else "unknown",
                 "contracts_count": deployment_contracts.get("count", 0),
@@ -1203,7 +1219,7 @@ def _control_panel_energy_credits_service(network_topology: dict[str, object]) -
         return str(network.get("network_key") or "").lower()
 
     def network_reachable(network: dict[str, object]) -> bool:
-        return bool(network.get("hub_reachable"))
+        return bool(network.get("hub_reachable") or network.get("chain_reachable"))
 
     def network_authority_unsafe(network: dict[str, object]) -> bool:
         return (
