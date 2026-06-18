@@ -640,8 +640,34 @@ def hub_command_parts(profile: HubNetworkProfile, runtime_dir: str, args: argpar
 
 
 def hub_start_command(profile: HubNetworkProfile, runtime_dir: str, args: argparse.Namespace | None = None) -> str:
+    """Return the full exp-FDB Hub command for diagnostics/local compose bootstrap."""
+
     assert args is not None
     return " ".join(command_token(part) for part in hub_command_parts(profile, runtime_dir, args))
+
+
+def hub_launcher_start_command(profile: HubNetworkProfile, runtime_dir: str, args: argparse.Namespace | None = None) -> str:
+    """Return the short Coolify Application start command.
+
+    Coolify stores application start_command in a narrow database column and
+    some Dockerfile application paths may still run the image CMD.  Keep this
+    value short and let /app/run-exp-fdb-hub.py reconstruct the full command
+    from the selected network and runtime environment.
+    """
+
+    del runtime_dir
+    assert args is not None
+    return " ".join(
+        command_token(part)
+        for part in [
+            "python",
+            "/app/run-exp-fdb-hub.py",
+            "--network",
+            profile.network_key,
+            "--port",
+            str(profile.hub_bind_port),
+        ]
+    )
 
 
 def default_dockerfile_location(profile: HubNetworkProfile, args: argparse.Namespace | None = None) -> str:
@@ -696,7 +722,7 @@ def application_payload(
         "dockerfile_location": effective_dockerfile_location(profile, args),
         "ports_exposes": str(profile.hub_bind_port),
         "domains": coolify_domain_with_backend_port(profile),
-        "start_command": hub_start_command(profile, runtime_dir, args),
+        "start_command": hub_launcher_start_command(profile, runtime_dir, args),
         "health_check_enabled": True,
         "health_check_path": args.health_path,
         "instant_deploy": False,
@@ -1259,6 +1285,7 @@ def hub_build_context_sources(args: argparse.Namespace | None = None) -> tuple[P
         source_root / "pyproject.toml",
         source_root / "requirements.txt",
         source_root / "exp-fdb-hub.py",
+        source_root / "run-exp-fdb-hub.py",
     ]
     dirs = [
         source_root / "main_computer",
@@ -1387,8 +1414,9 @@ def stage_local_test_hub_build_context(args: argparse.Namespace, *, service_uuid
             "test -f Dockerfile.hub.exp-fdb",
             "test -f pyproject.toml",
             "test -f exp-fdb-hub.py",
+            "test -f run-exp-fdb-hub.py",
             "test -d main_computer",
-            "sha256sum Dockerfile.hub.exp-fdb pyproject.toml exp-fdb-hub.py",
+            "sha256sum Dockerfile.hub.exp-fdb pyproject.toml exp-fdb-hub.py run-exp-fdb-hub.py",
         ]
     )
     verify = run_local_command(["docker", "exec", "--user", "root", container, "sh", "-lc", verify_script], timeout_s=30.0)
@@ -1410,6 +1438,7 @@ def stage_local_test_hub_build_context(args: argparse.Namespace, *, service_uuid
         "Dockerfile.hub.exp-fdb": sha256_file(source_root / "Dockerfile.hub.exp-fdb"),
         "pyproject.toml": sha256_file(source_root / "pyproject.toml"),
         "exp-fdb-hub.py": sha256_file(source_root / "exp-fdb-hub.py"),
+        "run-exp-fdb-hub.py": sha256_file(source_root / "run-exp-fdb-hub.py"),
     }
     staged: dict[str, str] = {}
     for line in verify.stdout.splitlines():
@@ -1660,7 +1689,7 @@ def hub_status_request(status_url: str, *, user_agent: str = DEFAULT_JSON_RPC_US
 def wait_for_hub(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[str, Any]:
     if args.hub_wait_timeout_s <= 0:
         return {"ok": True, "skipped": True, "reason": "hub_wait_timeout_s <= 0"}
-    status_url = profile.hub_url.rstrip("/") + args.health_path
+    status_url = coolify_domain_with_backend_port(profile).rstrip("/") + args.health_path
     deadline = time.monotonic() + args.hub_wait_timeout_s
     last_error: object = None
     user_agent = str(getattr(args, "hub_status_user_agent", DEFAULT_JSON_RPC_USER_AGENT) or "").strip()
@@ -1714,6 +1743,7 @@ def plan_result(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[st
         "bridge_backend": hub_bridge_backend(args),
         "dev_chain_deployment_path": dev_chain_deployment_path(profile, args),
         "application_payload": application_payload(profile, args, service_name=service_name, runtime_dir=runtime_dir),
+        "hub_start_command": hub_start_command(profile, runtime_dir, args),
         "storage_payload": storage_payload(profile, runtime_dir=runtime_dir, args=args),
     }
     if implementation == HUB_IMPLEMENTATION_EXP_FDB:
