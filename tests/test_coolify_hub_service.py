@@ -16,6 +16,13 @@ coolify_hub_service = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = coolify_hub_service
 spec.loader.exec_module(coolify_hub_service)
 
+LAUNCHER_PATH = REPO_ROOT / "run-exp-fdb-hub.py"
+launcher_spec = importlib.util.spec_from_file_location("run_exp_fdb_hub", LAUNCHER_PATH)
+assert launcher_spec is not None and launcher_spec.loader is not None
+run_exp_fdb_hub = importlib.util.module_from_spec(launcher_spec)
+sys.modules[launcher_spec.name] = run_exp_fdb_hub
+launcher_spec.loader.exec_module(run_exp_fdb_hub)
+
 
 def _args(**overrides):
     defaults = {
@@ -125,8 +132,9 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertNotIn("urls", payload)
         self.assertEqual(
             payload["start_command"],
-            "python /app/exp-fdb-hub.py --host 0.0.0.0 --port 8790 --hub-url https://mainnet-hub.greatlibrary.io --hub-root /data/main-computer/hub/mainnet-exp-fdb --cluster-file /data/main-computer/hub/mainnet-exp-fdb/fdb.cluster --namespace main-computer-mainnet-exp-fdb --network-key mainnet --network-display-name Main-Computer-Mainnet --network-kind mainnet --no-fdb-autostart --no-activate-cached-native-client --bridge-backend dev-chain --dev-chain-deployment-path /app/runtime/deployments/mainnet/latest.json --chain-id 42424240 --chain-rpc-url https://mainnet-rpc.greatlibrary.io",
+            "python /app/run-exp-fdb-hub.py --network mainnet --port 8790",
         )
+        self.assertLessEqual(len(payload["start_command"]), 255)
         self.assertTrue(payload["health_check_enabled"])
         self.assertEqual(payload["health_check_path"], "/api/hub/status")
 
@@ -229,11 +237,8 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertNotIn("git_repository", payload)
         self.assertEqual(payload["ports_exposes"], "8780")
         self.assertEqual(payload["domains"], "http://127.0.0.1:8780")
-        self.assertIn("python /app/exp-fdb-hub.py", payload["start_command"])
-        self.assertIn("--host 0.0.0.0", payload["start_command"])
-        self.assertIn("--port 8780", payload["start_command"])
-        self.assertIn("--cluster-file /srv/main-computer/hub/test-exp-fdb/fdb.cluster", payload["start_command"])
-        self.assertIn("--chain-rpc-url http://host.docker.internal:30010", payload["start_command"])
+        self.assertEqual(payload["start_command"], "python /app/run-exp-fdb-hub.py --network test --port 8780")
+        self.assertLessEqual(len(payload["start_command"]), 255)
         self.assertEqual(plan["coolify_resource_kind"], "service")
         self.assertEqual(plan["service_payload"]["name"], "main-computer-test-hub")
         self.assertEqual(plan["service_payload"]["docker_compose_raw"], "<base64>")
@@ -273,9 +278,10 @@ class CoolifyHubServiceTests(unittest.TestCase):
         profile = coolify_hub_service.load_hub_network_registry().get("test")
         args = _args(network="test", bridge_backend="mock-chain", git_repo="")
         plan = coolify_hub_service.plan_result(profile, args)
-        command = plan["application_payload"]["start_command"]
+        command = plan["hub_start_command"]
 
         self.assertEqual(plan["bridge_backend"], "mock-chain")
+        self.assertEqual(plan["application_payload"]["start_command"], "python /app/run-exp-fdb-hub.py --network test --port 8780")
         self.assertIn("--bridge-backend mock-chain", command)
         self.assertNotIn("--dev-chain-deployment-path", command)
         self.assertIn("--bridge-backend", plan["docker_compose"])
@@ -290,6 +296,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
             (source / "pyproject.toml").write_text("[project]\nname='x'\nversion='0'\n", encoding="utf-8")
             (source / "requirements.txt").write_text("", encoding="utf-8")
             (source / "exp-fdb-hub.py").write_text("print('local edit')\n", encoding="utf-8")
+            (source / "run-exp-fdb-hub.py").write_text("print('launcher')\n", encoding="utf-8")
             (source / "main_computer").mkdir()
             (source / "main_computer" / "__init__.py").write_text("", encoding="utf-8")
 
@@ -302,6 +309,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
                 "pyproject.toml",
                 "requirements.txt",
                 "exp-fdb-hub.py",
+                "run-exp-fdb-hub.py",
             ])
             self.assertEqual([path.name for path in dirs], ["main_computer"])
 
@@ -391,13 +399,16 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(payload["dockerfile_location"], "/Dockerfile.hub.exp-fdb")
         self.assertEqual(payload["ports_exposes"], "8790")
         self.assertEqual(payload["domains"], "https://mainnet-hub.greatlibrary.io:8790")
-        self.assertIn("--hub-root /data/main-computer/hub/mainnet-exp-fdb", payload["start_command"])
-        self.assertIn("--cluster-file /data/main-computer/hub/mainnet-exp-fdb/fdb.cluster", payload["start_command"])
-        self.assertIn("--namespace main-computer-mainnet-exp-fdb", payload["start_command"])
-        self.assertIn("--network-key mainnet", payload["start_command"])
-        self.assertIn("--chain-id 42424240", payload["start_command"])
-        self.assertIn("--chain-rpc-url https://mainnet-rpc.greatlibrary.io", payload["start_command"])
-        self.assertIn("--no-fdb-autostart", payload["start_command"])
+        self.assertEqual(payload["start_command"], "python /app/run-exp-fdb-hub.py --network mainnet --port 8790")
+        self.assertLessEqual(len(payload["start_command"]), 255)
+        command = plan["hub_start_command"]
+        self.assertIn("--hub-root /data/main-computer/hub/mainnet-exp-fdb", command)
+        self.assertIn("--cluster-file /data/main-computer/hub/mainnet-exp-fdb/fdb.cluster", command)
+        self.assertIn("--namespace main-computer-mainnet-exp-fdb", command)
+        self.assertIn("--network-key mainnet", command)
+        self.assertIn("--chain-id 42424240", command)
+        self.assertIn("--chain-rpc-url https://mainnet-rpc.greatlibrary.io", command)
+        self.assertIn("--no-fdb-autostart", command)
 
     def test_replace_regular_hub_flag_is_deprecated_noop_for_exp_fdb(self) -> None:
         profile = coolify_hub_service.load_hub_network_registry().get("mainnet")
@@ -413,8 +424,8 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertTrue(plan["replace_regular_hub"])
         self.assertEqual(plan["fdb_cluster_file"], "/data/main-computer/fdb/fdb.cluster")
         self.assertEqual(plan["fdb_namespace"], "main-computer-mainnet-cutover")
-        self.assertIn("--cluster-file /data/main-computer/fdb/fdb.cluster", plan["application_payload"]["start_command"])
-        self.assertIn("--namespace main-computer-mainnet-cutover", plan["application_payload"]["start_command"])
+        self.assertIn("--cluster-file /data/main-computer/fdb/fdb.cluster", plan["hub_start_command"])
+        self.assertIn("--namespace main-computer-mainnet-cutover", plan["hub_start_command"])
 
     def test_regular_hub_implementation_is_deprecated(self) -> None:
         args = _args(hub_implementation=coolify_hub_service.HUB_IMPLEMENTATION_REGULAR)
@@ -627,15 +638,12 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertIn("FoundationDB.Client.Native", exp_fdb_dockerfile)
         self.assertIn("foundationdb==${FDB_PYTHON_VERSION}", exp_fdb_dockerfile)
         self.assertIn("libfdb_c.so", exp_fdb_dockerfile)
-        self.assertIn('CMD ["python", "/app/exp-fdb-hub.py"', exp_fdb_dockerfile)
+        self.assertIn('CMD ["python", "/app/run-exp-fdb-hub.py"]', exp_fdb_dockerfile)
+        self.assertNotIn('CMD ["python", "/app/exp-fdb-hub.py"', exp_fdb_dockerfile)
         self.assertNotIn('ENTRYPOINT ["python", "/app/exp-fdb-hub.py"]', exp_fdb_dockerfile)
         self.assertIn("EXPOSE 8790 8785", exp_fdb_dockerfile)
-        self.assertIn("--bridge-backend", exp_fdb_dockerfile)
-        self.assertIn("dev-chain", exp_fdb_dockerfile)
-        self.assertIn("--dev-chain-deployment-path", exp_fdb_dockerfile)
-        self.assertIn("/app/runtime/deployments/mainnet/latest.json", exp_fdb_dockerfile)
-        self.assertIn("--no-fdb-autostart", exp_fdb_dockerfile)
-        self.assertIn("--no-activate-cached-native-client", exp_fdb_dockerfile)
+        self.assertNotIn("/data/main-computer/hub/mainnet-exp-fdb/fdb.cluster", exp_fdb_dockerfile)
+        self.assertIn("${HUB_HEALTH_PORT:-${PORT:-8790}}", exp_fdb_dockerfile)
         self.assertIn("/api/hub/status", exp_fdb_dockerfile)
 
 
@@ -723,10 +731,30 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(captured["timeout"], 2.5)
         request = captured["request"]
-        self.assertEqual(request.full_url, "https://mainnet-hub.greatlibrary.io/api/hub/status")
+        self.assertEqual(request.full_url, "https://mainnet-hub.greatlibrary.io:8790/api/hub/status")
         self.assertEqual(request.get_header("Accept"), "application/json")
         self.assertEqual(request.get_header("User-agent"), "UnitTestHubAgent/2.0")
 
+
+    def test_runtime_launcher_infers_testnet_from_coolify_port(self) -> None:
+        args = run_exp_fdb_hub.parse_args([])
+        command = run_exp_fdb_hub.build_exp_fdb_hub_command(args, environ={"PORT": "8785"})
+
+        self.assertIn("--network-key", command)
+        self.assertEqual(command[command.index("--network-key") + 1], "testnet")
+        self.assertEqual(command[command.index("--port") + 1], "8785")
+        self.assertEqual(command[command.index("--hub-root") + 1], "/data/main-computer/hub/testnet-exp-fdb")
+        self.assertEqual(command[command.index("--cluster-file") + 1], "/data/main-computer/hub/testnet-exp-fdb/fdb.cluster")
+        self.assertEqual(command[command.index("--namespace") + 1], "main-computer-testnet-exp-fdb")
+        self.assertEqual(command[command.index("--dev-chain-deployment-path") + 1], "/app/runtime/deployments/testnet/latest.json")
+
+    def test_runtime_launcher_cli_network_overrides_port_inference(self) -> None:
+        args = run_exp_fdb_hub.parse_args(["--network", "mainnet"])
+        command = run_exp_fdb_hub.build_exp_fdb_hub_command(args, environ={"PORT": "8785"})
+
+        self.assertEqual(command[command.index("--network-key") + 1], "mainnet")
+        self.assertEqual(command[command.index("--port") + 1], "8785")
+        self.assertEqual(command[command.index("--hub-root") + 1], "/data/main-computer/hub/mainnet-exp-fdb")
 
     def test_hub_coolify_runbook_documents_exp_fdb_only_deploys(self) -> None:
         runbook = REPO_ROOT / "pretty_docs" / "hub-coolify-deploy-runbook.md"
