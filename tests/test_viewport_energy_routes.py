@@ -23,6 +23,8 @@ from main_computer.governance import bridge_governance_status
 from main_computer.models import ChatMessage, ChatResponse
 from main_computer.revision import DebugAssetRevisionControl, RevisionControl
 from main_computer.viewport import APPLICATIONS_INDEX_HTML, DEBUG_GRAPHICAL_INDEX_HTML, DEBUG_TEXT_INDEX_HTML, ENERGY_INDEX_HTML, GRAPHICAL_INDEX_HTML, REVISION_INDEX_HTML, TEXT_INDEX_HTML, ViewportHandler, ViewportServer, _application_route_target, serve
+from main_computer.viewport_routes_energy import ViewportEnergyRoutesMixin
+import main_computer.viewport_routes_energy as viewport_routes_energy
 from main_computer.xlag_contract import xlag_contract_status
 
 
@@ -266,6 +268,41 @@ class ViewportEnergyRouteTests(unittest.TestCase):
                     thread.join(timeout=5)
                 os.chdir(old_cwd)
 
+
+    def test_energy_rpc_call_uses_main_computer_json_rpc_headers(self) -> None:
+        captured: dict[str, object] = {}
+
+        class _Response:
+            def __enter__(self) -> "_Response":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return b'{"jsonrpc":"2.0","id":1,"result":"0x28757b1"}'
+
+        def fake_urlopen(request: Request, timeout: float = 0.0) -> _Response:
+            captured["request"] = request
+            captured["timeout"] = timeout
+            return _Response()
+
+        with patch.object(viewport_routes_energy, "urlopen", fake_urlopen):
+            result = ViewportEnergyRoutesMixin()._energy_rpc_call(
+                "https://testnet-rpc.greatlibrary.io",
+                "eth_chainId",
+                timeout_s=3.5,
+            )
+
+        self.assertEqual("0x28757b1", result)
+        request = captured["request"]
+        self.assertIsInstance(request, Request)
+        self.assertEqual("POST", request.get_method())
+        self.assertEqual("https://testnet-rpc.greatlibrary.io", request.full_url)
+        self.assertEqual("application/json", request.get_header("Content-type"))
+        self.assertEqual("application/json", request.get_header("Accept"))
+        self.assertEqual("MainComputerEnergy/1.0", request.get_header("User-agent"))
+        self.assertEqual(3.5, captured["timeout"])
 
     def test_energy_components_have_widget_metadata_layer(self) -> None:
         parser = _EnergyComponentMetadataParser()

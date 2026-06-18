@@ -57,6 +57,7 @@
         {id: "layout.inspector-pane", elementId: "element.toolkit.inspector-pane", layer: "layout", label: "Inspector pane", contract: "Selected item metadata is read-only or edit-capable by explicit policy.", states: ["empty", "single-selected", "multi-selected", "blocked", "dirty"], supports: ["selected-detail", "properties", "policy-proof"]},
         {id: "layout.preview-pane", elementId: "element.toolkit.preview-pane", layer: "layout", label: "Preview pane", contract: "Preview content is coupled to selection and isolates unsafe rendering.", states: ["empty", "loading", "preview", "unsupported", "error"], supports: ["preview", "inspect", "read-only-boundary"]},
         {id: "layout.status-bar", elementId: "element.toolkit.status-bar", layer: "layout", label: "Status bar", contract: "Summary state, selection count, filter count, and last action are visible.", states: ["idle", "success", "warning", "error", "busy"], supports: ["feedback", "selected-output-count", "last-action"]},
+        {id: "layout.terminal-viewport", elementId: "element.compute.terminal-view", layer: "layout", label: "Terminal viewport", contract: "Prompt, input buffer, stdout/stderr scrollback, and analysis output render as one owned terminal view.", states: ["ready", "typing", "running", "scrolled", "failed"], supports: ["terminal-session", "owned-terminal-scrollback", "prompt-input-output-split"]},
         {id: "layout.tabbed-workspace", elementId: "element.toolkit.tabbed-workspace", layer: "layout", label: "Tabbed workspace", contract: "Notebook shell where a tab strip selects sibling panels while preserving panel model truth.", states: ["active-tab", "inactive-panels-hidden", "route-synced", "keyboard-focus"], supports: ["single-select-tabs", "panel-switching", "route-sync", "preserve-panel-state", "keyboard-navigation"]},
         {id: "layout.tab-list", elementId: "element.toolkit.tab-list", layer: "layout", label: "Tab list", contract: "Tab strip advertises its orientation, active tab, and panel mapping instead of acting as generic navigation.", states: ["horizontal", "wrapped", "focused", "overflow"], supports: ["single-select-tabs", "roving-tabindex", "a11y-state"]},
 
@@ -65,12 +66,14 @@
         {id: "controller.column-sizing", elementId: "element.toolkit.column-sizing-controller", layer: "controller", label: "Column sizing controller", contract: "Widths are bounded view state with presets, drag, keyboard, and reset behavior.", states: ["default", "compact", "wide-path", "custom", "reset"], supports: ["resizable-columns", "min-max", "keyboard-resize"]},
         {id: "controller.sort-filter", elementId: "element.toolkit.sort-filter-controller", layer: "controller", label: "Sort/filter controller", contract: "Typed fields define legal comparators, predicates, and empty-state text.", states: ["unsorted", "sorted", "filtered", "empty-filter", "invalid-filter"], supports: ["field-sort", "facet-filter", "search"]},
         {id: "controller.safety-gate", elementId: "element.toolkit.safety-controller", layer: "controller", label: "Safety gate controller", contract: "Dangerous actions require preconditions, preview, and policy proof.", states: ["allowed", "blocked", "requires-preview", "requires-confirmation"], supports: ["no-click", "no-submit", "no-command-execution"]},
+        {id: "controller.terminal-session", elementId: "element.compute.terminal-controller", layer: "controller", label: "Terminal session controller", contract: "Stages commands, routes AI suggestions to input only, and treats Enter/run as an explicit command-execution boundary.", states: ["idle", "input-staged", "suggesting", "requires-user-enter", "running", "blocked"], supports: ["terminal-session", "no-command-execution", "stage-only-until-user-enter"]},
         {id: "controller.view-resolver", elementId: "element.toolkit.view-resolver", layer: "controller", label: "View resolver", contract: "Functional need plus contract requirements determine eligible visualizations.", states: ["resolved", "manual-override", "rejected", "needs-more-data"], supports: ["need-to-view", "capability-match", "explainability"]},
         {id: "controller.tab-state", elementId: "element.toolkit.tab-controller", layer: "controller", label: "Tab state controller", contract: "Owns activeTabId, legal tab ids, route synchronization, and keyboard movement without executing commands.", states: ["active", "fallback-default", "route-synced", "keyboard-moving"], supports: ["single-select-tabs", "panel-switching", "route-sync", "keyboard-navigation"]},
 
         {id: "pattern.file-basket", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "File basket", contract: "Choose exact files for an operation with hierarchy shortcuts, typed metadata, and blocked rows.", states: ["collecting", "reviewing", "ready", "blocked-present"], supports: ["hierarchical-explicit-files", "selected-output-proof", "safety-gate"]},
         {id: "pattern.file-picker", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "File picker", contract: "Select one or many resources under read/mutation boundaries.", states: ["browse", "search", "selected", "invalid"], supports: ["path-navigation", "preview", "selection"]},
         {id: "pattern.resource-browser", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "Resource browser", contract: "Find, inspect, compare, preview, and act on resources by intent.", states: ["find", "browse", "compare", "inspect", "preview"], supports: ["intent-to-view", "details-pane", "column-browser"]},
+        {id: "pattern.terminal-session", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "Terminal session", contract: "A shell terminal is one semantic object with explicit model/controller/view split and no-command-execution proof during MCEL enrichment.", states: ["ready", "input-staged", "suggesting", "running", "complete", "failed"], supports: ["element.compute.terminal", "controller.terminal-session", "layout.terminal-viewport", "no-command-execution"]},
         {id: "pattern.diff-selector", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "Diff selector", contract: "Review changed units and choose what enters a patch/commit.", states: ["unreviewed", "selected", "excluded", "conflict"], supports: ["diffstat", "risk", "explicit-output"]},
         {id: "pattern.process-table", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "Process table", contract: "Observe runtime processes while destructive actions are gated.", states: ["running", "stopped", "busy", "blocked"], supports: ["operational-scan", "status", "no-click-actions"]},
         {id: "pattern.tabbed-workspace", elementId: "element.toolkit.contract-pattern", layer: "contract", label: "Tabbed workspace", contract: "Switch between sibling workspace panels through declared tab state, active panel mapping, and optional route sync.", states: ["active-tab", "route-synced", "keyboard-ready", "panel-state-preserved"], supports: ["single-select-tabs", "panel-switching", "route-sync", "preserve-panel-state", "keyboard-navigation"]},
@@ -114,6 +117,13 @@
           capabilities: ["hierarchy", "path-context", "preview", "inspector", "keyboard-navigation", "selected-output-proof"],
           primitiveIds: ["collection.column-browser", "layout.inspector-pane", "layout.preview-pane", "cell.path", "controller.selection"],
           bestFor: ["navigate-depth", "inspect", "resource-browser"]
+        },
+        {
+          id: "terminal-session-surface",
+          label: "Terminal session surface",
+          capabilities: ["terminal-model", "terminal-controller", "terminal-viewport", "prompt-input-output-split", "owned-terminal-scrollback", "no-command-execution"],
+          primitiveIds: ["layout.terminal-viewport", "controller.terminal-session", "controller.safety-gate"],
+          bestFor: ["terminal-session", "command-staging", "shell-output-review"]
         },
         {
           id: "compact-audit-list",
@@ -164,6 +174,17 @@
           mustReject: ["card-only"],
           selection: "row-action-policy",
           safety: ["kill/terminate require no-click proof"]
+        },
+        terminalSession: {
+          id: "terminal-session",
+          label: "Terminal session contract",
+          intent: "Represent a shell terminal as a single semantic MCEL object with owned state, output feeds, and explicit command execution boundaries.",
+          requires: ["terminal-model", "terminal-controller", "terminal-viewport", "prompt-input-output-split", "no-command-execution"],
+          fields: ["cwd", "timeout", "prompt", "inputBuffer", "stdout", "stderr", "exitCode", "duration", "suggestion"],
+          requiredPrimitives: ["layout.terminal-viewport", "controller.terminal-session", "controller.safety-gate", "pattern.terminal-session"],
+          mustReject: ["generic-mounted-region", "loose-text-lines", "run-button-without-policy"],
+          selection: "terminal-session-state",
+          safety: ["MCEL proof does not run commands", "AI suggestions stage commands only", "Enter/run boundaries are marked as command execution"]
         },
         tabbedWorkspace: {
           id: "tabbed-workspace",

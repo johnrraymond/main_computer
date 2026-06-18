@@ -1,4 +1,4 @@
-<div class="terminal-app mc-app" id="terminal-app" aria-label="Terminal">
+<div class="terminal-app mc-app" id="terminal-app" aria-label="Terminal" data-mcel-app="terminal" data-mcel-element-id="element.compute.terminal" data-mcel-contract="pattern.terminal-session" data-mcel-concern="concern.terminal-session" data-mcel-kind="terminal-session" data-mcel-terminal-object="true" data-mcel-command-policy="stage-only-until-user-enter">
             <div class="terminal-analysis-panel mc-panel mc-sidebar app-widget" data-widget-label="Terminal Analysis" aria-label="Terminal analysis">
               <div class="mc-panel-header">
                 <strong>Terminal Analysis</strong>
@@ -18,7 +18,7 @@
                 <button type="button" id="terminal-ai-suggest">Stage Command</button>
                 <div class="terminal-ai-status" id="terminal-ai-status">Ask AI for a command. The command will be placed on the terminal line; it will not run until you press Enter.</div>
               </div>
-              <div class="terminal-xterm mc-fill" id="terminal-xterm" aria-label="xterm.js terminal"></div>
+              <div class="terminal-xterm mc-fill" id="terminal-xterm" aria-label="xterm.js terminal" role="log" data-mcel-terminal-role="terminal-viewport" data-mcel-element-id="element.compute.terminal-view" data-mcel-terminal-viewport="xterm"></div>
               <div class="terminal-hint">Enter runs. Up and Down recall command history. Ctrl+L clears the terminal. Ctrl+C clears the current input.</div>
             </div>
           </div>

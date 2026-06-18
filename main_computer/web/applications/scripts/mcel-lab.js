@@ -3718,6 +3718,7 @@
     function mcelCanonicalAppAdapter(specimen = selectedMcelCanonicalAppSpecimen()) {
       if (specimen?.app === "git-tools") return window.GitToolsMcel || null;
       if (specimen?.app === "task-manager") return window.TaskManagerMcel || null;
+      if (specimen?.app === "terminal") return window.TerminalMcel || null;
       const planner = window.McelSpecimenPlanner || null;
       const plan = mcelCanonicalAppPlannerPlan(specimen);
       return planner?.createGenericAdapter?.(plan) || null;
@@ -4352,7 +4353,7 @@
         Array.from(doc.querySelectorAll?.(selector) || []).forEach((node) => node.remove());
       });
 
-      Array.from(doc.querySelectorAll?.("[data-mcel-lens-role], [data-mcel-action-risk], [data-mcel-risk], [data-mcel-lens-label], [data-mcel-lens-kind], [data-mcel-mutates], [data-mcel-action-label], [data-mcel-enriched], [data-mcel-enrichment-source], [data-mcel-enrichment-selector], [data-mcel-role], [data-mcel-kind], [data-mcel-fit], [data-mcel-fit-context], [data-mcel-layout], [data-mcel-layout-policy], [data-mcel-layout-region], [data-mcel-region], [data-mcel-region-kind], [data-mcel-width-policy], [data-mcel-control-role], [data-mcel-control-priority], [data-mcel-action-role], [data-mcel-supercut-contract], [data-mcel-supercut-proof-policy], [data-mcel-supercut-rewrite-tag]") || []).forEach((element) => {
+      Array.from(doc.querySelectorAll?.("[data-mcel-lens-role], [data-mcel-action-risk], [data-mcel-risk], [data-mcel-lens-label], [data-mcel-lens-kind], [data-mcel-mutates], [data-mcel-action-label], [data-mcel-enriched], [data-mcel-enrichment-source], [data-mcel-enrichment-selector], [data-mcel-role], [data-mcel-kind], [data-mcel-fit], [data-mcel-fit-context], [data-mcel-layout], [data-mcel-layout-policy], [data-mcel-layout-region], [data-mcel-region], [data-mcel-region-kind], [data-mcel-width-policy], [data-mcel-control-role], [data-mcel-control-priority], [data-mcel-action-role], [data-mcel-element-id], [data-mcel-contract], [data-mcel-concern], [data-mcel-terminal-object], [data-mcel-terminal-session], [data-mcel-terminal-role], [data-mcel-terminal-proof-policy], [data-mcel-command-policy], [data-mcel-terminal-state-field], [data-mcel-terminal-viewport], [data-mcel-supercut-contract], [data-mcel-supercut-proof-policy], [data-mcel-supercut-rewrite-tag]") || []).forEach((element) => {
         element.removeAttribute("data-mcel-lens-role");
         element.removeAttribute("data-mcel-action-risk");
         element.removeAttribute("data-mcel-risk");
@@ -4376,6 +4377,16 @@
         element.removeAttribute("data-mcel-control-role");
         element.removeAttribute("data-mcel-control-priority");
         element.removeAttribute("data-mcel-action-role");
+        element.removeAttribute("data-mcel-element-id");
+        element.removeAttribute("data-mcel-contract");
+        element.removeAttribute("data-mcel-concern");
+        element.removeAttribute("data-mcel-terminal-object");
+        element.removeAttribute("data-mcel-terminal-session");
+        element.removeAttribute("data-mcel-terminal-role");
+        element.removeAttribute("data-mcel-terminal-proof-policy");
+        element.removeAttribute("data-mcel-command-policy");
+        element.removeAttribute("data-mcel-terminal-state-field");
+        element.removeAttribute("data-mcel-terminal-viewport");
         element.removeAttribute("data-mcel-supercut-contract");
         element.removeAttribute("data-mcel-supercut-proof-policy");
         element.removeAttribute("data-mcel-supercut-rewrite-tag");
@@ -4393,6 +4404,15 @@
         root.removeAttribute("data-mcel-app");
         root.removeAttribute("data-mcel-enrichment-state");
         root.removeAttribute("data-mcel-proof-surface");
+        root.removeAttribute("data-mcel-element-id");
+        root.removeAttribute("data-mcel-contract");
+        root.removeAttribute("data-mcel-concern");
+        root.removeAttribute("data-mcel-kind");
+        root.removeAttribute("data-mcel-terminal-object");
+        root.removeAttribute("data-mcel-terminal-session");
+        root.removeAttribute("data-mcel-terminal-role");
+        root.removeAttribute("data-mcel-terminal-proof-policy");
+        root.removeAttribute("data-mcel-command-policy");
         root.removeAttribute("aria-description");
       }
 
