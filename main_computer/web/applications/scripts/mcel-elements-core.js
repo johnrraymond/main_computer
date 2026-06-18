@@ -135,6 +135,52 @@
           supersedes: ["slimed one-off DOM view", "view that invents business rules"]
         }),
 
+        def("element.compute.terminal", "Terminal", "compute", "terminal-session", "First-class semantic shell object that owns cwd, prompt/input, scrollback, output feeds, and the command execution boundary instead of treating the terminal as loose text nodes.", {
+          htmlTag: "mcel-terminal",
+          allowedChildren: ["element.compute.terminal-session-model", "element.compute.terminal-controller", "element.compute.terminal-view", "element.core.status-feed"],
+          riskPolicy: noCommand,
+          proofPolicy: "no-command-execution",
+          commandPolicy: "stage-only-until-user-enter",
+          scrollPolicy: "owned-terminal-scrollback",
+          stateModel: {required: ["cwd", "prompt", "inputBuffer", "scrollback", "executionBoundary"], optional: ["shell", "history", "timeoutSeconds", "busy", "exitStatus", "lastCommand"]},
+          interactionModel: {typeText: "stage-input", pasteCommand: "stage-input", pressEnter: "no-command-execution", sendCtrlC: "safe-interrupt", ownsTruth: true},
+          accessibility: {role: "terminal", liveRegion: "polite log"},
+          dataModel: {fieldTypes: ["cwd", "command", "stdout", "stderr", "exit-code", "duration", "prompt"], identity: "terminal session"},
+          decoderHints: ["terminal", "xterm", "shell", "prompt", "cwd", "stdout", "stderr", "command", "scrollback"],
+          supersedes: ["xterm div plus text lines", "black rectangle with glyphs", "generic mounted app region"]
+        }),
+        def("element.compute.terminal-session-model", "Terminal Session Model", "compute", "terminal-session-model", "Model element for terminal state: cwd, timeout, prompt/input buffer, history, scrollback, exit status, and output streams.", {
+          htmlTag: "mcel-terminal-model",
+          riskPolicy: analysis,
+          proofPolicy: "inspect-only",
+          stateModel: {required: ["cwd", "timeoutSeconds", "inputBuffer", "scrollback"], optional: ["prompt", "shell", "history", "lastExitCode", "lastDuration"]},
+          dataModel: {fieldTypes: ["cwd", "timeout", "input-buffer", "history", "stdout", "stderr", "exit-code"], identity: "terminal runtime state"},
+          interactionModel: {mutatesDom: false, ownsTruth: true},
+          decoderHints: ["terminal state", "cwd", "timeout", "buffer", "prompt", "history", "scrollback"],
+          supersedes: ["hidden globals", "anonymous local state", "text-only terminal memory"]
+        }),
+        def("element.compute.terminal-controller", "Terminal Controller", "compute", "terminal-controller", "Controller boundary that stages input, separates AI suggestion from execution, and makes every command-running affordance explicit.", {
+          htmlTag: "mcel-terminal-controller",
+          riskPolicy: noCommand,
+          proofPolicy: "no-command-execution",
+          actionPolicy: {stageCommand: "inspect-only", suggestCommand: "inspect-only", runCommand: "requires-user-enter", pasteCommand: "stage-only", clear: "safe"},
+          stateModel: {required: ["executionBoundary", "commandPolicy"], optional: ["suggestionSource", "interruptState", "disabledReason"]},
+          interactionModel: {input: "user keystrokes and staged commands", output: "validated terminal state transition", ownsTruth: true},
+          decoderHints: ["run command", "Enter", "paste", "AI suggest", "copy command", "clear terminal"],
+          supersedes: ["raw click handler", "generic button action", "unlabeled command execution"]
+        }),
+        def("element.compute.terminal-view", "Terminal View", "compute", "terminal-view", "Read-only xterm/scrollback surface with prompt and output feeds linked back to the terminal session model.", {
+          htmlTag: "mcel-terminal-view",
+          riskPolicy: safe,
+          proofPolicy: "inspect-only",
+          scrollPolicy: "owned-terminal-scrollback",
+          stateModel: {required: ["visibleRows", "scrollback", "prompt"], optional: ["selection", "analysisPanel", "lastFailure"]},
+          interactionModel: {renders: "terminal session model", emits: "controller keystroke commands", rejects: "business logic"},
+          accessibility: {role: "log", ownsInteractiveInput: true},
+          decoderHints: ["xterm", "terminal output", "prompt", "scrollback", "stdout", "stderr"],
+          supersedes: ["generic div", "loose line list", "black rectangle"]
+        }),
+
                 def("element.toolkit.foundation-token", "Toolkit Foundation Token", "toolkit", "foundation-token", "Shared MCEL primitive for density, focus, hit target, state, overflow, motion, and contrast rules.", {
           htmlTag: "mcel-toolkit-token",
           riskPolicy: inspectOnly,

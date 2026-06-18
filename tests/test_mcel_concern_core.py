@@ -20,6 +20,8 @@ def _run_concern_detector_on_project() -> dict:
         SCRIPTS / "website-builder.js",
         SCRIPTS / "chat-console.js",
         SCRIPTS / "worker.js",
+        SCRIPTS / "terminal.js",
+        WEB_APP / "apps" / "terminal.html",
     ]
     node_script = f"""
 const fs = require("fs");
@@ -59,6 +61,9 @@ def test_mcel_concern_core_is_loaded_before_lab_acid_test() -> None:
     assert "concern.resource-browser" in core
     assert "concern.deploy-preflight" in core
     assert "concern.execution-cell" in core
+    assert "concern.terminal-session" in core
+    assert "pattern.terminal-session" in core
+    assert "controller.terminal-session" in core
 
     assert "element.concern.catalog" in elements
     assert "element.concern.detector" in elements
@@ -87,9 +92,9 @@ def test_mcel_concern_detector_finds_real_project_concerns() -> None:
     ids = {concern["id"] for concern in report["concerns"]}
 
     assert report["projectId"] == "main_computer_test.real"
-    assert report["analyzedFileCount"] == 7
-    assert report["detectedConcernCount"] >= 6
-    assert report["severeContractGapCount"] >= 3
+    assert report["analyzedFileCount"] == 9
+    assert report["detectedConcernCount"] >= 7
+    assert report["severeContractGapCount"] >= 4
     assert report["canDriveMcelContracts"] is True
 
     assert "concern.file-basket" in ids
@@ -98,6 +103,7 @@ def test_mcel_concern_detector_finds_real_project_concerns() -> None:
     assert "concern.change-review-list" in ids
     assert "concern.execution-cell" in ids
     assert "concern.output-renderer" in ids
+    assert "concern.terminal-session" in ids
 
 
 def test_mcel_concern_detector_maps_file_basket_to_mvc_contract_and_toolkit() -> None:
@@ -126,6 +132,36 @@ def test_mcel_concern_detector_maps_file_basket_to_mvc_contract_and_toolkit() ->
     assert "collection.treegrid" in toolkit
 
 
+
+
+def test_mcel_concern_detector_maps_terminal_to_first_class_terminal_contract() -> None:
+    report = _run_concern_detector_on_project()
+    terminal = next(
+        concern
+        for concern in report["concerns"]
+        if concern["id"] == "concern.terminal-session" and concern["file"].endswith("terminal.js")
+    )
+
+    assert terminal["contractGap"] == "major"
+    assert terminal["recommendedContract"] == "pattern.terminal-session"
+    assert terminal["boundaryHealth"] == "visible-boundary"
+    assert "model" in terminal["roles"]
+    assert "controller" in terminal["roles"]
+    assert "view" in terminal["roles"]
+    assert "safety" in terminal["roles"]
+
+    labels = {item["label"] for item in terminal["ranges"]}
+    assert "terminal viewport" in labels
+    assert "terminal session state" in labels
+    assert "command staging controller" in labels
+    assert "command execution boundary" in labels
+
+    toolkit = set(terminal["recommendedToolkit"])
+    assert "controller.terminal-session" in toolkit
+    assert "layout.terminal-viewport" in toolkit
+    assert "controller.safety-gate" in toolkit
+    assert "pattern.terminal-session" in toolkit
+
 def test_mcel_concern_detector_flags_project_contract_gaps_with_line_ranges() -> None:
     report = _run_concern_detector_on_project()
     major = [
@@ -135,7 +171,7 @@ def test_mcel_concern_detector_flags_project_contract_gaps_with_line_ranges() ->
 
     assert major
     for concern in major:
-        assert concern["file"].endswith((".js",))
+        assert concern["file"].endswith((".js", ".html"))
         assert concern["confidence"] >= 0.6
         assert concern["missingContractReason"]
         assert concern["ranges"], concern["id"]
