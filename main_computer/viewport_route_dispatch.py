@@ -844,6 +844,48 @@ def _handle_control_panel_level4_diagnostic(self) -> None:
 
 _CONTROL_PANEL_NETWORK_ORDER = ("mainnet", "testnet", "test", "dev")
 _CONTROL_PANEL_ANVIL_DEFAULT_OFFICES = ANVIL_DEFAULT_OFFICES
+_CONTROL_PANEL_LOCAL_CHAIN_RECENT_OK_TTL_S = 45.0
+_CONTROL_PANEL_LOCAL_CHAIN_RECENT_OK: dict[str, dict[str, object]] = {}
+
+
+def _control_panel_reset_network_status_cache_for_tests() -> None:
+    _CONTROL_PANEL_LOCAL_CHAIN_RECENT_OK.clear()
+
+
+def _control_panel_local_chain_cache_key(profile: object, network_key: str) -> str:
+    return "|".join(
+        [
+            str(network_key or ""),
+            str(getattr(profile, "chain_rpc_url", "") or ""),
+            str(getattr(profile, "chain_id", "") or ""),
+            str(getattr(profile, "deployment_manifest_path", "") or ""),
+        ]
+    )
+
+
+def _control_panel_record_local_chain_ok(cache_key: str, rpc_probe: object) -> None:
+    _CONTROL_PANEL_LOCAL_CHAIN_RECENT_OK[cache_key] = {
+        "monotonic": time.monotonic(),
+        "rpc_probe": dict(rpc_probe) if isinstance(rpc_probe, dict) else {},
+    }
+
+
+def _control_panel_recent_local_chain_ok(cache_key: str, *, ttl_s: float = _CONTROL_PANEL_LOCAL_CHAIN_RECENT_OK_TTL_S) -> dict[str, object] | None:
+    cached = _CONTROL_PANEL_LOCAL_CHAIN_RECENT_OK.get(cache_key)
+    if not isinstance(cached, dict):
+        return None
+    try:
+        age_s = time.monotonic() - float(cached.get("monotonic", 0.0))
+    except (TypeError, ValueError):
+        _CONTROL_PANEL_LOCAL_CHAIN_RECENT_OK.pop(cache_key, None)
+        return None
+    if age_s > ttl_s:
+        _CONTROL_PANEL_LOCAL_CHAIN_RECENT_OK.pop(cache_key, None)
+        return None
+    result = dict(cached)
+    result["age_s"] = round(age_s, 3)
+    result["ttl_s"] = ttl_s
+    return result
 
 
 def _control_panel_endpoint_parts(raw_url: str | None) -> tuple[str, int | None]:
@@ -908,7 +950,9 @@ def _control_panel_rpc_probe(raw_url: str | None) -> dict[str, object] | None:
     host, port = _control_panel_endpoint_parts(raw_url)
     if not host or port is None:
         return None
-    return _control_panel_connect(host, port, timeout_s=0.18)
+    local_hosts = {"127.0.0.1", "localhost", "::1"}
+    timeout_s = 0.75 if str(host).lower() in local_hosts else 0.35
+    return _control_panel_connect(host, port, timeout_s=timeout_s)
 
 
 def _control_panel_repo_root_from_profile(profile: object) -> Path:
@@ -1092,6 +1136,7 @@ def _control_panel_network_status_cards(runtime_root: Path | None = None) -> dic
         profile = registry.networks[key]
         hub_url = profile.hub_url.rstrip("/")
         hub_endpoint = hub_url
+        local_chain_cache_key = _control_panel_local_chain_cache_key(profile, key)
         hub_host, hub_port = _control_panel_endpoint_parts(hub_url)
         if hub_host and hub_port is not None:
             hub_tcp_probe = _control_panel_connect(hub_host, hub_port, timeout_s=0.18)
@@ -1124,6 +1169,24 @@ def _control_panel_network_status_cards(runtime_root: Path | None = None) -> dic
         rpc_reachable = rpc_probe.get("ok") if isinstance(rpc_probe, dict) else None
         deployment_contracts = _control_panel_deployment_contracts(profile, runtime_root)
         contracts_known = bool(deployment_contracts.get("ok"))
+        recent_chain_ok = _control_panel_recent_local_chain_ok(local_chain_cache_key) if key in {"test", "dev"} else None
+        if key in {"test", "dev"} and bool(rpc_reachable):
+            _control_panel_record_local_chain_ok(local_chain_cache_key, rpc_probe)
+        elif key in {"test", "dev"} and contracts_known and recent_chain_ok:
+            fresh_rpc_probe = dict(rpc_probe) if isinstance(rpc_probe, dict) else {"ok": False, "error": "RPC probe was unavailable"}
+            rpc_probe = {
+                "ok": True,
+                "cached_ok": True,
+                "source": "recent-success",
+                "recent_success_age_s": recent_chain_ok.get("age_s"),
+                "recent_success_ttl_s": recent_chain_ok.get("ttl_s"),
+                "fresh_probe": fresh_rpc_probe,
+                "error": (
+                    "using recent successful local chain probe to avoid transient /graphical demotion; "
+                    f"fresh probe failed: {fresh_rpc_probe.get('error') or 'not ok'}"
+                ),
+            }
+            rpc_reachable = True
         chain_reachable = bool(rpc_reachable and contracts_known)
         authority_status = str(deployment_contracts.get("authority_status") or "unknown")
         authority_warning = str(deployment_contracts.get("authority_warning") or "")

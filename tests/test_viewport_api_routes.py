@@ -539,6 +539,91 @@ class ViewportApiRouteTests(unittest.TestCase):
         self.assertIn("non-mainnet activity is reachable on test", energy_service["summary"])
 
 
+    def test_control_panel_local_test_keeps_recent_chain_ok_when_next_probe_flaps(self) -> None:
+        from types import SimpleNamespace
+
+        from main_computer import viewport_route_dispatch as dispatch
+
+        class FakeProfile:
+            network_key = "test"
+            display_name = "Main Computer Local QBFT Test"
+            kind = "test"
+            chain_id = 42424241
+            chain_rpc_url = "http://127.0.0.1:30010"
+            hub_bind_host = "127.0.0.1"
+            hub_bind_port = 8780
+            hub_public_url = "http://127.0.0.1:8780"
+            hub_url = "http://127.0.0.1:8780"
+            deployment_manifest_path = "runtime/deployments/test/latest.json"
+
+            def as_status_payload(self) -> dict[str, object]:
+                return {
+                    "network_key": self.network_key,
+                    "display_name": self.display_name,
+                    "kind": self.kind,
+                    "chain_id": self.chain_id,
+                    "chain_rpc_url": self.chain_rpc_url,
+                    "hub_bind_host": self.hub_bind_host,
+                    "hub_bind_port": self.hub_bind_port,
+                    "hub_public_url": self.hub_public_url,
+                    "hub_url": self.hub_url,
+                    "deployment_manifest_path": self.deployment_manifest_path,
+                }
+
+        registry = SimpleNamespace(
+            default_network="mainnet",
+            networks={"test": FakeProfile()},
+            source_path=Path("main_computer/config/hub_networks.json"),
+        )
+        contracts = {
+            "ok": True,
+            "source": "deployment-manifest",
+            "contract_addresses": {
+                "alpha_beta_lockout": "0x1111111111111111111111111111111111111111",
+                "xlag_bridge_reserve": "0x2222222222222222222222222222222222222222",
+                "hub_credit_bridge_escrow": "0x3333333333333333333333333333333333333333",
+            },
+            "count": 3,
+            "path": "runtime/deployments/test/latest.json",
+            "error": "",
+            "candidates": [],
+            "authority_status": "default-dev-authority",
+            "authority_warning": "",
+            "authority_default_offices": [],
+            "offices": [],
+        }
+
+        dispatch._control_panel_reset_network_status_cache_for_tests()
+        try:
+            with (
+                patch.object(dispatch, "load_hub_network_registry", return_value=registry),
+                patch.object(dispatch, "_control_panel_connect", return_value={"ok": False, "error": "hub closed"}),
+                patch.object(
+                    dispatch,
+                    "_control_panel_rpc_probe",
+                    side_effect=[
+                        {"ok": True, "port": 30010, "elapsed_ms": 1.0},
+                        {"ok": False, "port": 30010, "error": "transient refused"},
+                    ],
+                ),
+                patch.object(dispatch, "_control_panel_deployment_contracts", return_value=contracts),
+            ):
+                first = dispatch._control_panel_network_status_cards(Path.cwd())["networks"][0]
+                second = dispatch._control_panel_network_status_cards(Path.cwd())["networks"][0]
+        finally:
+            dispatch._control_panel_reset_network_status_cache_for_tests()
+
+        self.assertEqual(first["severity"], "yellow")
+        self.assertEqual(first["status_text"], "chain running")
+        self.assertEqual(second["severity"], "yellow")
+        self.assertEqual(second["status_text"], "chain running")
+        self.assertTrue(second["rpc_reachable"])
+        self.assertTrue(second["chain_reachable"])
+        self.assertEqual(second["rpc_probe"]["source"], "recent-success")
+        self.assertTrue(second["rpc_probe"]["cached_ok"])
+        self.assertNotIn("BESU+QBFT is down", second["summary"])
+
+
 
 if __name__ == "__main__":
     unittest.main()
