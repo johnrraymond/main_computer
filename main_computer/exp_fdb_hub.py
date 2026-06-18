@@ -10,7 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Sequence
 
-from main_computer.config import MainComputerConfig
+from main_computer.config import DEFAULT_HUB_BRIDGE_BACKEND, MainComputerConfig
 from main_computer.exp_fdb_credit_ledger import ExperimentalFoundationDbConfig, ExperimentalFoundationDbCreditLedger
 from main_computer.exp_fdb_hub_state import (
     ExperimentalFoundationDbEnergyCreditLedger,
@@ -140,6 +140,16 @@ class ExperimentalFoundationDbHubHttpServer(HubHttpServer):
         )
 
 
+
+
+def _default_dev_chain_deployment_path(*, repo_root: Path, network_key: str) -> Path:
+    clean_network = str(network_key or "dev").strip() or "dev"
+    return repo_root / "runtime" / "deployments" / clean_network / "latest.json"
+
+
+def _hub_bridge_backend_from_args(args: argparse.Namespace, base: MainComputerConfig) -> str:
+    return str(args.bridge_backend or base.hub_bridge_backend or DEFAULT_HUB_BRIDGE_BACKEND).strip().lower() or DEFAULT_HUB_BRIDGE_BACKEND
+
 def build_experimental_config(args: argparse.Namespace, *, port: int) -> tuple[MainComputerConfig, ExperimentalFoundationDbConfig]:
     base = MainComputerConfig.from_env()
     repo_root = _repo_root_from_args(args)
@@ -148,14 +158,17 @@ def build_experimental_config(args: argparse.Namespace, *, port: int) -> tuple[M
         hub_root = repo_root / hub_root
 
     hub_url = args.hub_url or f"http://{args.host}:{port}"
+    network_key = str(getattr(args, "network_key", "exp-fdb") or "exp-fdb").strip() or "exp-fdb"
+    bridge_backend = _hub_bridge_backend_from_args(args, base)
     dev_chain_deployment_path = Path(args.dev_chain_deployment_path) if args.dev_chain_deployment_path else base.hub_dev_chain_deployment_path
+    if dev_chain_deployment_path is None and bridge_backend not in {"mock", "mock-chain", "mock-chain-lite"}:
+        dev_chain_deployment_path = _default_dev_chain_deployment_path(repo_root=repo_root, network_key=network_key)
     if dev_chain_deployment_path is not None and not dev_chain_deployment_path.is_absolute():
         dev_chain_deployment_path = repo_root / dev_chain_deployment_path
     ring_config_path = Path(args.ring_config_path) if getattr(args, "ring_config_path", None) else base.hub_ring_config_path
     if ring_config_path is not None and not ring_config_path.is_absolute():
         ring_config_path = repo_root / ring_config_path
 
-    network_key = str(getattr(args, "network_key", "exp-fdb") or "exp-fdb").strip() or "exp-fdb"
     network_display_name = (
         str(getattr(args, "network_display_name", "Experimental FDB Hub") or "Experimental FDB Hub").strip()
         or "Experimental FDB Hub"
@@ -176,7 +189,7 @@ def build_experimental_config(args: argparse.Namespace, *, port: int) -> tuple[M
         hub_network_display_name=network_display_name,
         hub_network_kind=network_kind,
         hub_allow_insecure_dev_network=True,
-        hub_bridge_backend=str(args.bridge_backend or base.hub_bridge_backend or "mock-chain").strip().lower() or "mock-chain",
+        hub_bridge_backend=bridge_backend,
         hub_dev_chain_deployment_path=dev_chain_deployment_path,
         hub_ring_config_path=ring_config_path,
         chain_id=chain_id,
@@ -543,8 +556,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chain-rpc-url", default="", help="Chain RPC URL advertised by /api/hub/status. Defaults to MAIN_COMPUTER_CHAIN_RPC_URL/base config.")
     parser.add_argument("--hub-root", type=Path, default=DEFAULT_EXP_FDB_HUB_ROOT, help="Separate runtime root for the experimental hub.")
     parser.add_argument("--cluster-file", type=Path, default=DEFAULT_EXP_FDB_CLUSTER_FILE, help="FoundationDB cluster file written by the FDB smoke.")
-    parser.add_argument("--bridge-backend", choices=["mock-chain", "dev-chain"], default=None, help="Hub bridge backend for bridge confirm endpoints. Defaults to env/default mock-chain.")
-    parser.add_argument("--dev-chain-deployment-path", type=Path, default=None, help="Deployment metadata JSON used when --bridge-backend dev-chain is selected.")
+    parser.add_argument("--bridge-backend", choices=["mock-chain", "dev-chain", "credit-bridge-contract"], default=None, help="Hub bridge backend for bridge confirm endpoints. Defaults to dev-chain/contract-backed mode; use mock-chain only for explicit labs.")
+    parser.add_argument("--dev-chain-deployment-path", type=Path, default=None, help="Deployment metadata JSON used by the dev-chain/contract bridge backend. Defaults to runtime/deployments/<network-key>/latest.json when contract mode is selected.")
     parser.add_argument("--ring-config-path", type=Path, default=None, help="JSON ring admission config path. Bad explicit configs fail startup.")
     parser.add_argument("--namespace", default=DEFAULT_EXP_FDB_NAMESPACE, help="FDB tuple namespace for this experiment.")
     parser.add_argument("--api-version", type=int, default=740, help="FoundationDB API version to request.")

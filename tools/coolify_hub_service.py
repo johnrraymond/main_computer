@@ -62,6 +62,9 @@ DEFAULT_LOCAL_TEST_FDB_IMAGE = "foundationdb/foundationdb:7.4.6"
 DEFAULT_LOCAL_TEST_FDB_PORT = 4550
 DEFAULT_LOCAL_TEST_FDB_CLUSTER_CONTENTS = f"docker:docker@{DEFAULT_LOCAL_TEST_FDB_SERVICE_KEY}:{DEFAULT_LOCAL_TEST_FDB_PORT}"
 DEFAULT_LOCAL_TEST_SOURCE_DIR = REPO_ROOT
+DEFAULT_HUB_BRIDGE_BACKEND = "dev-chain"
+DEFAULT_LOCAL_TEST_DEPLOYMENTS_CONTAINER_DIR = "/app/runtime/deployments"
+DEFAULT_LOCAL_TEST_DEV_CHAIN_DEPLOYMENT_CONTAINER_PATH = f"{DEFAULT_LOCAL_TEST_DEPLOYMENTS_CONTAINER_DIR}/test/latest.json"
 DEFAULT_LOCAL_TEST_RUNTIME_HOST_DIR = REPO_ROOT / "runtime" / "hub" / "test-exp-fdb"
 DEFAULT_LOCAL_COOLIFY_TOKEN_FILE = REPO_ROOT / "runtime" / "coolify-local-docker" / "api-token.txt"
 DEFAULT_APPLICATIONS_SERVICE_ENV_FILE = REPO_ROOT / "runtime" / "applications_service" / "applications.env"
@@ -562,6 +565,34 @@ def hub_chain_rpc_url(profile: HubNetworkProfile, args: argparse.Namespace) -> s
     return str(profile.chain_rpc_url or "")
 
 
+
+def hub_bridge_backend(args: argparse.Namespace | None = None) -> str:
+    explicit = str(getattr(args, "bridge_backend", "") or "").strip().lower()
+    if explicit:
+        return explicit
+    env_value = str(os.environ.get("MAIN_COMPUTER_HUB_BRIDGE_BACKEND") or "").strip().lower()
+    return env_value or DEFAULT_HUB_BRIDGE_BACKEND
+
+
+def dev_chain_deployment_path(profile: HubNetworkProfile, args: argparse.Namespace, *, container_path: bool = True) -> str:
+    explicit = str(getattr(args, "dev_chain_deployment_path", "") or "").strip()
+    if explicit:
+        if container_path:
+            return container_posix_path(explicit)
+        return explicit
+    if is_local_test_profile(profile) and container_path:
+        return DEFAULT_LOCAL_TEST_DEV_CHAIN_DEPLOYMENT_CONTAINER_PATH
+    return f"/app/runtime/deployments/{profile.network_key}/latest.json"
+
+
+def local_test_deployments_host_dir(args: argparse.Namespace | None = None) -> Path:
+    source_root = local_test_source_dir(args)
+    return source_root / "runtime" / "deployments"
+
+
+def local_test_deployments_bind_source(args: argparse.Namespace | None = None) -> str:
+    return docker_desktop_host_bind_source(local_test_deployments_host_dir(args))
+
 def command_token(value: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -595,7 +626,11 @@ def hub_command_parts(profile: HubNetworkProfile, runtime_dir: str, args: argpar
         profile.kind,
         "--no-fdb-autostart",
         "--no-activate-cached-native-client",
+        "--bridge-backend",
+        hub_bridge_backend(args),
     ]
+    if hub_bridge_backend(args) not in {"mock", "mock-chain", "mock-chain-lite"}:
+        parts.extend(["--dev-chain-deployment-path", dev_chain_deployment_path(profile, args)])
     if profile.chain_id is not None:
         parts.extend(["--chain-id", str(profile.chain_id)])
     runtime_chain_rpc_url = hub_chain_rpc_url(profile, args)
@@ -808,6 +843,7 @@ def render_local_test_hub_compose(profile: HubNetworkProfile, args: argparse.Nam
     service_key = service_name.replace("_", "-")
     fdb_service_key = DEFAULT_LOCAL_TEST_FDB_SERVICE_KEY
     runtime_bind = f"{local_test_runtime_bind_source(args)}:{runtime_dir}"
+    deployments_bind = f"{local_test_deployments_bind_source(args)}:{DEFAULT_LOCAL_TEST_DEPLOYMENTS_CONTAINER_DIR}:ro"
     image = f"{service_name}:local"
     bootstrap_script = local_test_hub_bootstrap_script(profile, args, runtime_dir=runtime_dir)
     lines: list[str] = [
@@ -843,6 +879,7 @@ def render_local_test_hub_compose(profile: HubNetworkProfile, args: argparse.Nam
         "      - host.docker.internal:host-gateway",
         "    volumes:",
         f"      - {yaml_quote(runtime_bind)}",
+        f"      - {yaml_quote(deployments_bind)}",
         "    command:",
         "      - \"sh\"",
         "      - \"-lc\"",
@@ -1395,17 +1432,25 @@ def ensure_local_test_runtime_host_dir(args: argparse.Namespace) -> dict[str, An
     host_dir = local_test_runtime_host_dir(args)
     host_dir.mkdir(parents=True, exist_ok=True)
     cluster_file = host_dir / "fdb.cluster"
+    profile = coolify_deploy_profile(load_profile(args), args)
+    deployments_dir = local_test_deployments_host_dir(args)
+    local_manifest = deployments_dir / profile.network_key / "latest.json"
     return {
         "ok": True,
         "host_dir": str(host_dir),
         "bind_source": local_test_runtime_bind_source(args),
         "container_cluster_file": exp_fdb_cluster_file_path(
-            coolify_deploy_profile(load_profile(args), args),
+            profile,
             args,
             runtime_dir=str(getattr(args, "hub_runtime_dir", "") or DEFAULT_LOCAL_TEST_HUB_RUNTIME_DIR),
         ),
         "cluster_file_present": cluster_file.is_file(),
         "cluster_file": str(cluster_file),
+        "deployments_host_dir": str(deployments_dir),
+        "deployments_bind_source": local_test_deployments_bind_source(args),
+        "dev_chain_deployment_path": dev_chain_deployment_path(profile, args),
+        "dev_chain_deployment_file": str(local_manifest),
+        "dev_chain_deployment_file_present": local_manifest.is_file(),
     }
 
 
@@ -1666,6 +1711,8 @@ def plan_result(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[st
         "chain_rpc_url": profile.chain_rpc_url,
         "hub_chain_rpc_url": hub_chain_rpc_url(profile, args),
         "chain_id": profile.chain_id,
+        "bridge_backend": hub_bridge_backend(args),
+        "dev_chain_deployment_path": dev_chain_deployment_path(profile, args),
         "application_payload": application_payload(profile, args, service_name=service_name, runtime_dir=runtime_dir),
         "storage_payload": storage_payload(profile, runtime_dir=runtime_dir, args=args),
     }
@@ -1713,6 +1760,12 @@ def plan_result(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[st
                 "host_dir": str(local_test_runtime_host_dir(args)),
                 "bind_source": local_test_runtime_bind_source(args),
                 "container_dir": runtime_dir,
+            }
+            result["local_deployments_bind"] = {
+                "host_dir": str(local_test_deployments_host_dir(args)),
+                "bind_source": local_test_deployments_bind_source(args),
+                "container_dir": DEFAULT_LOCAL_TEST_DEPLOYMENTS_CONTAINER_DIR,
+                "deployment_path": dev_chain_deployment_path(profile, args),
             }
     return result
 
@@ -1979,6 +2032,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Override the chain RPC URL passed to the Hub container. "
             "For local `test`, defaults to http://host.docker.internal:30010 while the operator RPC check still uses the test profile URL."
+        ),
+    )
+    parser.add_argument(
+        "--bridge-backend",
+        choices=["dev-chain", "credit-bridge-contract", "mock-chain"],
+        default="",
+        help="Hub bridge backend. Defaults to dev-chain/contract mode; use mock-chain only for explicit lab/fake-chain runs.",
+    )
+    parser.add_argument(
+        "--dev-chain-deployment-path",
+        default="",
+        help=(
+            "Container path to the contract deployment metadata used by dev-chain bridge mode. "
+            "Defaults to /app/runtime/deployments/<network>/latest.json; local `test` bind-mounts runtime/deployments there."
         ),
     )
 

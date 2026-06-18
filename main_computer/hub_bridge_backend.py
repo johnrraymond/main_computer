@@ -15,8 +15,8 @@ class HubBridgeBackendError(RuntimeError):
 class HubBridgeBackend(Protocol):
     """Hub-side bridge backend used by bridge confirm endpoints.
 
-    The mock-chain ledger remains the permanent fake backend.  The dev-chain
-    backend records real HubCreditBridgeEscrow movements before the Hub/FDB
+    The dev-chain backend is the default contract-backed path.  The mock-chain
+    backend remains the explicit fake/lab backend.  The dev-chain backend records real HubCreditBridgeEscrow movements before the Hub/FDB
     ledger marks a deposit or payout confirmed.
     """
 
@@ -124,17 +124,19 @@ def build_hub_bridge_backend(
     repo_root: Path,
     dev_chain_deployment_path: Path | None,
 ) -> HubBridgeBackend:
-    clean = str(backend_name or "mock-chain").strip().lower()
-    if clean in {"", "mock", "mock-chain", "mock-chain-lite"}:
+    clean = str(backend_name or "dev-chain").strip().lower()
+    if clean in {"mock", "mock-chain", "mock-chain-lite"}:
         return MockChainHubBridgeBackend()
-    if clean in {"dev", "dev-chain", "devchain"}:
+    if clean in {"", "dev", "dev-chain", "devchain", "contract", "contract-chain", "credit-bridge-contract", "evm-contract", "real-chain"}:
         if dev_chain_deployment_path is None:
             raise HubBridgeBackendError("dev-chain bridge backend requires a dev-chain deployment path.")
         deployment_path = dev_chain_deployment_path
         if not deployment_path.is_absolute():
             deployment_path = repo_root / deployment_path
         return DevChainHubBridgeBackend.from_deployment(repo_root=repo_root, deployment_path=deployment_path)
-    raise HubBridgeBackendError(f"unknown Hub bridge backend {backend_name!r}; expected mock-chain or dev-chain.")
+    raise HubBridgeBackendError(
+        f"unknown Hub bridge backend {backend_name!r}; expected dev-chain/credit-bridge-contract or mock-chain."
+    )
 
 
 def _movement_metadata(backend_name: str, movement: DevChainBridgeMovement, *, operation: str) -> dict[str, Any]:

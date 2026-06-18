@@ -102,7 +102,20 @@ namespace:           main-computer-test-exp-fdb
 hub public URL:      http://127.0.0.1:8780
 operator RPC check:  http://127.0.0.1:30010
 Hub container RPC:   http://host.docker.internal:30010
+bridge backend:      dev-chain
+deployment manifest: /app/runtime/deployments/test/latest.json
 ```
+
+Hub deploys default to the real dev-chain/contract bridge backend. Mock-chain is
+only for explicit lab/fake-chain runs:
+
+```text
+--bridge-backend mock-chain
+```
+
+The local `test` service bind-mounts `runtime/deployments` read-only into
+`/app/runtime/deployments`, so the default test deployment manifest and any
+generated local wallet files stay outside the image but are visible to the Hub.
 
 The rendered local Compose service deliberately does **not** build from the
 remote Git URL. Local Coolify deploys raw Docker Compose resources from
@@ -163,6 +176,8 @@ Override these only when the local surface is not discoverable:
 --local-coolify-token-file
 --applications-service-env-file
 --hub-chain-rpc-url
+--bridge-backend
+--dev-chain-deployment-path
 --local-hub-runtime-host-dir
 --local-source-dir
 ```
