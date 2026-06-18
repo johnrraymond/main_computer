@@ -12,6 +12,7 @@ from main_computer.hub_networks import HubNetworkConfigError, load_hub_network_r
 
 class ViewportEnergyRoutesMixin:
 
+    _ENERGY_RPC_USER_AGENT = "MainComputerEnergy/1.0"
     _ENERGY_NETWORK_ORDER = ("mainnet", "testnet", "test", "dev")
     _ENERGY_EXPECTED_CONTRACTS = (
         ("alpha-beta-lockout", "AlphaBetaLockout"),
@@ -45,7 +46,11 @@ class ViewportEnergyRoutesMixin:
         request = Request(
             str(rpc_url),
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": self._ENERGY_RPC_USER_AGENT,
+            },
             method="POST",
         )
         with urlopen(request, timeout=timeout_s) as response:
