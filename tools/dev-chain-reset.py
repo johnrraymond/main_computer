@@ -54,6 +54,8 @@ HUB_ADMIN_WALLET_SCHEMA = "main-computer.hub-admin-wallet.v1"
 HUB_ADMIN_WALLET_FILENAME = "hub-admin-wallet.json"
 SMOKE_CLIENT_WALLET_SCHEMA = "main-computer.smoke-client-wallet.v1"
 SMOKE_CLIENT_WALLET_FILENAME = "smoke-client-wallet.json"
+OFFICE_WALLETS_SCHEMA = "main-computer.dev-chain-office-wallets.v1"
+OFFICE_WALLETS_FILENAME = "office-wallets"
 NODE_WALLETS_SCHEMA = "main-computer.dev-chain-node-wallets.v1"
 NODE_WALLETS_FILENAME = "node-wallets"
 PAYOUT_ADMIN_WALLETS_SCHEMA = "main-computer.dev-chain-payout-admin-wallets.v1"
@@ -66,6 +68,7 @@ DEFAULT_HUB_ADMIN_FUNDING_WEI = "10000000000000000000"
 DEFAULT_SMOKE_CLIENT_FUNDING_WEI = "5000000000000000000"
 DEFAULT_NODE_WALLET_FUNDING_WEI = "1000000000000000000"
 DEFAULT_PAYOUT_ADMIN_FUNDING_WEI = "2000000000000000000"
+DEFAULT_OFFICE_FUNDING_WEI = "2000000000000000000"
 DEFAULT_PRIVATE_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 DEFAULT_DEPLOYER_ADDRESS = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 # Constructor returns 32 zero bytes using PUSH0 (0x5f), so eth_estimateGas fails on pre-Shanghai chains.
@@ -127,7 +130,7 @@ class GeneratedDevWallet:
     wallet_id: str
     role: str
     address: str
-    private_key: str
+    private_key: str | None
     source: str = "generated-local-dev"
 
 
@@ -240,6 +243,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--offices", default=None, help="Comma-separated list of exactly four office addresses.")
+    parser.add_argument(
+        "--generate-offices",
+        action="store_true",
+        help=(
+            "Generate/load four local Ring 0 office wallets for this deployment environment and use those "
+            "addresses for the authority constructor args instead of the default Anvil office identities."
+        ),
+    )
     parser.add_argument("--accounts", type=int, default=4, help="Anvil account pool size. Must be greater than one.")
     parser.add_argument("--balance", default="10000", help="Initial Anvil balance per account.")
     parser.add_argument("--mnemonic", default=DEFAULT_MNEMONIC)
@@ -259,6 +270,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--smoke-client-funding-wei",
         default=DEFAULT_SMOKE_CLIENT_FUNDING_WEI,
         help="Native wei sent from the deployer to the chain-scoped smoke client wallet for Hub client testing.",
+    )
+    parser.add_argument(
+        "--office-funding-wei",
+        default=DEFAULT_OFFICE_FUNDING_WEI,
+        help="Native wei sent from the deployer to each generated Ring 0 office wallet.",
     )
     parser.add_argument(
         "--skip-smoke-client-wallet",
@@ -357,6 +373,31 @@ def parse_offices(value: str | None) -> list[str]:
     return offices
 
 
+def default_office_title(index: int) -> str:
+    if 0 <= index < len(DEFAULT_OFFICE_KEYS):
+        return str(DEFAULT_OFFICE_KEYS[index].get("title") or f"Office {index}")
+    return f"Office {index}"
+
+
+def generated_office_wallets(args: argparse.Namespace) -> list[GeneratedDevWallet] | None:
+    wallets = getattr(args, "_generated_office_wallets", None)
+    if wallets is None:
+        return None
+    return list(wallets)
+
+
+def office_addresses(args: argparse.Namespace) -> list[str]:
+    wallets = generated_office_wallets(args)
+    if wallets is not None:
+        addresses = [wallet.address for wallet in wallets]
+        if len(addresses) != 4:
+            raise ValueError("generated office wallets must contain exactly four addresses")
+        return addresses
+    if getattr(args, "generate_offices", False) and (args.offices is None or not str(args.offices).strip()):
+        raise RuntimeError("generated office wallets must be resolved before building deployment specs")
+    return parse_offices(args.offices)
+
+
 def office_arg(offices: list[str]) -> str:
     return "[" + ",".join(offices) + "]"
 
@@ -370,7 +411,7 @@ def hub_admin_required(args: argparse.Namespace) -> bool:
 
 
 def deployment_specs(args: argparse.Namespace, hub_admin_address: str | None = None) -> list[DeploymentSpec]:
-    offices = parse_offices(args.offices)
+    offices = office_addresses(args)
     office_constructor_arg = office_arg(offices)
     selected = selected_deployments(args)
     bridge_controller_address = hub_admin_address or HUB_ADMIN_PREVIEW_ADDRESS
@@ -936,10 +977,17 @@ def generated_wallets_filename(kind: str, chain_id: int) -> str:
 
 def generated_wallets_path(args: argparse.Namespace, root: Path, rid: str, *, kind: str) -> Path:
     env_name = validate_environment_name(args.environment)
-    return deployment_output_root(args, root) / env_name / "runs" / rid / generated_wallets_filename(kind, args.chain_id)
+    base = deployment_output_root(args, root) / env_name
+    if kind == OFFICE_WALLETS_FILENAME:
+        if getattr(args, "run_scoped_wallets", False):
+            base = base / "runs" / rid
+        return base / generated_wallets_filename(kind, args.chain_id)
+    return base / "runs" / rid / generated_wallets_filename(kind, args.chain_id)
 
 
 def generated_wallet_manifest_schema(kind: str) -> str:
+    if kind == OFFICE_WALLETS_FILENAME:
+        return OFFICE_WALLETS_SCHEMA
     if kind == NODE_WALLETS_FILENAME:
         return NODE_WALLETS_SCHEMA
     if kind == PAYOUT_ADMIN_WALLETS_FILENAME:
@@ -954,6 +1002,7 @@ def create_generated_dev_wallets(
     kind: str,
     role: str,
     count: int,
+    source: str = "generated-local-dev",
 ) -> list[GeneratedDevWallet]:
     total = max(0, int(count or 0))
     setup_log(f"creating {total} run-scoped {role} wallet(s) for manifest kind={kind}")
@@ -974,6 +1023,7 @@ def create_generated_dev_wallets(
                 role=role,
                 address=address,
                 private_key=private_key,
+                source=source,
             )
         )
     setup_log(f"created {len(wallets)} run-scoped {role} wallet(s)")
@@ -1024,6 +1074,7 @@ def resolve_generated_wallets(
     role: str,
     count: int,
     create_missing: bool,
+    source: str = "generated-local-dev",
 ) -> tuple[Path, list[GeneratedDevWallet]]:
     path = generated_wallets_path(args, root, rid, kind=kind)
     if path.exists():
@@ -1048,7 +1099,7 @@ def resolve_generated_wallets(
                     role=str(item.get("role") or role),
                     address=str(address),
                     private_key=str(private_key),
-                    source=str(item.get("source") or "generated-local-dev"),
+                    source=str(item.get("source") or source),
                 )
             )
         log(f"Loaded {len(wallets)} {role} wallet(s): {metadata_path(path, root)}")
@@ -1058,7 +1109,7 @@ def resolve_generated_wallets(
         setup_log(f"no {role} wallets requested or creation disabled count={int(count or 0)}")
         return path, []
     setup_log(f"creating missing {role} wallet manifest path={path} count={int(count or 0)}")
-    wallets = create_generated_dev_wallets(args, root, kind=kind, role=role, count=count)
+    wallets = create_generated_dev_wallets(args, root, kind=kind, role=role, count=count, source=source)
     write_generated_wallet_manifest(
         path,
         schema=generated_wallet_manifest_schema(kind),
@@ -1067,6 +1118,70 @@ def resolve_generated_wallets(
         wallets=wallets,
     )
     log(f"Created {len(wallets)} {role} wallet(s): {metadata_path(path, root)}")
+    return path, wallets
+
+
+def preview_office_wallets() -> list[GeneratedDevWallet]:
+    return [
+        GeneratedDevWallet(
+            wallet_id=f"office-{index + 1:04d}",
+            role="office",
+            address=f"0x{0x0F000 + index:040x}",
+            private_key=None,
+            source="dry-run-preview",
+        )
+        for index in range(4)
+    ]
+
+
+def validate_resolved_office_wallets(path: Path, wallets: list[GeneratedDevWallet]) -> None:
+    if len(wallets) != 4:
+        raise ValueError(f"office wallet manifest must contain exactly four wallets: {path}")
+    default_addresses = {str(item["address"]).lower() for item in DEFAULT_OFFICE_KEYS}
+    seen: set[str] = set()
+    for wallet in wallets:
+        if not is_address(wallet.address):
+            raise ValueError(f"invalid office wallet address in {path}: {wallet.address!r}")
+        lowered = wallet.address.lower()
+        if lowered in seen:
+            raise ValueError(f"duplicate office wallet address in {path}: {wallet.address}")
+        if lowered in default_addresses:
+            raise ValueError(f"office wallet manifest still contains a default Anvil office address: {wallet.address}")
+        seen.add(lowered)
+
+
+def attach_resolved_office_wallets(args: argparse.Namespace, path: Path, wallets: list[GeneratedDevWallet]) -> None:
+    setattr(args, "_generated_office_wallets_path", path)
+    setattr(args, "_generated_office_wallets", list(wallets))
+    args.offices = ",".join(wallet.address for wallet in wallets)
+
+
+def resolve_office_wallets(
+    args: argparse.Namespace,
+    root: Path,
+    *,
+    create_missing: bool,
+    rid: str,
+) -> tuple[Path | None, list[GeneratedDevWallet]]:
+    if not getattr(args, "generate_offices", False):
+        return None, []
+    path = generated_wallets_path(args, root, rid, kind=OFFICE_WALLETS_FILENAME)
+    if not create_missing and not path.exists():
+        wallets = preview_office_wallets()
+        attach_resolved_office_wallets(args, path, wallets)
+        return path, wallets
+    path, wallets = resolve_generated_wallets(
+        args,
+        root,
+        rid,
+        kind=OFFICE_WALLETS_FILENAME,
+        role="office",
+        count=4,
+        create_missing=create_missing,
+        source="generated-local-qbft-office",
+    )
+    validate_resolved_office_wallets(path, wallets)
+    attach_resolved_office_wallets(args, path, wallets)
     return path, wallets
 
 
@@ -1659,16 +1774,37 @@ def output_root(args: argparse.Namespace, root: Path) -> Path:
     return args.output_dir if args.output_dir is not None else root / "runtime" / "dev-chain"
 
 
-def office_records(args: argparse.Namespace) -> list[dict[str, str | None]]:
+def office_records(args: argparse.Namespace) -> list[dict[str, object]]:
+    wallets = generated_office_wallets(args)
+    if wallets is not None:
+        path = getattr(args, "_generated_office_wallets_path", None)
+        wallet_path = metadata_path(path, repo_root()) if isinstance(path, Path) else None
+        records: list[dict[str, object]] = []
+        for index, wallet in enumerate(wallets):
+            record: dict[str, object] = {
+                "office": f"O{index}",
+                "title": default_office_title(index),
+                "address": wallet.address,
+                "wallet_id": wallet.wallet_id,
+                "source": wallet.source,
+                "funding_wei": str(args.office_funding_wei),
+            }
+            if wallet_path:
+                record["wallet_path"] = wallet_path
+            if wallet.private_key:
+                record["private_key"] = wallet.private_key
+            records.append(record)
+        return records
+
     offices = parse_offices(args.offices)
-    records: list[dict[str, str | None]] = []
+    records = []
     default_by_address = {item["address"].lower(): item for item in DEFAULT_OFFICE_KEYS}
     for index, address in enumerate(offices):
         known = default_by_address.get(address.lower(), {})
         records.append(
             {
                 "office": f"O{index}",
-                "title": str(known.get("title") or f"Office {index}"),
+                "title": str(known.get("title") or default_office_title(index)),
                 "address": address,
                 "private_key": known.get("private_key") if args.offices is None else None,
             }
@@ -1791,13 +1927,15 @@ def public_office_records(offices: list | tuple) -> list[dict]:
     for index, value in enumerate(offices):
         if not isinstance(value, dict):
             continue
-        records.append(
-            {
-                "office": value.get("office") or f"O{index}",
-                "title": value.get("title"),
-                "address": value.get("address"),
-            }
-        )
+        record = {
+            "office": value.get("office") or f"O{index}",
+            "title": value.get("title"),
+            "address": value.get("address"),
+        }
+        for optional_key in ("wallet_id", "wallet_path", "source", "funding_wei"):
+            if value.get(optional_key):
+                record[optional_key] = value.get(optional_key)
+        records.append(record)
     return records
 
 
@@ -1939,6 +2077,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--node-wallet-funding-wei must be greater than zero when node wallets are generated")
     if int(getattr(args, "payout_admin_wallet_count", 0) or 0) > 0 and int(str(args.payout_admin_funding_wei), 0) <= 0:
         raise ValueError("--payout-admin-funding-wei must be greater than zero when payout admin wallets are generated")
+    if getattr(args, "generate_offices", False) and str(args.offices or "").strip():
+        raise ValueError("--generate-offices cannot be combined with explicit --offices")
+    if getattr(args, "generate_offices", False) and int(str(args.office_funding_wei), 0) <= 0:
+        raise ValueError("--office-funding-wei must be greater than zero when office wallets are generated")
     parse_offices(args.offices)
     validate_environment_name(args.environment)
     host_rpc_endpoint(args.host_rpc_url)
@@ -1958,10 +2100,12 @@ def print_plan(
     rid: str,
     hub_admin: HubAdminWallet | None = None,
     smoke_client: SmokeClientWallet | None = None,
+    office_wallets: list[GeneratedDevWallet] | None = None,
     node_wallets: list[GeneratedDevWallet] | None = None,
     payout_admin_wallets: list[GeneratedDevWallet] | None = None,
 ) -> None:
     root = repo_root()
+    office_wallets = list(office_wallets or [])
     node_wallets = list(node_wallets or [])
     payout_admin_wallets = list(payout_admin_wallets or [])
     run_dir = output_root(args, root) / "runs" / rid
@@ -1982,6 +2126,12 @@ def print_plan(
     if smoke_client is not None:
         log(f"Smoke client wallet: {metadata_path(smoke_client.path, root)}")
         log(f"Smoke client address: {smoke_client.address}")
+    if office_wallets:
+        office_path = getattr(args, "_generated_office_wallets_path", None)
+        if isinstance(office_path, Path):
+            log(f"Ring 0 office wallets: {metadata_path(office_path, root)}")
+        log(f"Generated Ring 0 office wallets: {len(office_wallets)}")
+        log(f"First Ring 0 office address: {office_wallets[0].address}")
     if node_wallets:
         log(f"Generated node wallets: {len(node_wallets)}")
         log(f"First node wallet: {node_wallets[0].address}")
@@ -2001,6 +2151,8 @@ def print_plan(
             log("$ " + display_command(hub_admin_fund_command(args, rid, hub_admin, root)))
         if smoke_client is not None:
             log("$ " + display_command(smoke_client_fund_command(args, rid, smoke_client, root)))
+        for wallet in office_wallets:
+            log("$ " + display_command(generated_wallet_fund_command(args, rid, wallet, root, funding_wei=args.office_funding_wei)))
         for wallet in node_wallets:
             log("$ " + display_command(generated_wallet_fund_command(args, rid, wallet, root, funding_wei=args.node_wallet_funding_wei)))
         for wallet in payout_admin_wallets:
@@ -2077,6 +2229,9 @@ def main(argv: list[str] | None = None) -> int:
             setup_log(f"selected host RPC URL {args.host_rpc_url}")
 
         create_admin_wallet = bool(args.yes and not args.dry_run)
+        create_office_wallets = bool(create_admin_wallet and not args.no_deploy)
+        setup_log("resolving Ring 0 office wallets")
+        office_wallets_path, office_wallets = resolve_office_wallets(args, root, create_missing=create_office_wallets, rid=rid)
         setup_log("resolving run-scoped Hub admin wallet")
         hub_admin = resolve_hub_admin_wallet(args, root, create_missing=create_admin_wallet, rid=rid)
         setup_log("resolving run-scoped requester/smoke-client wallet")
@@ -2101,10 +2256,11 @@ def main(argv: list[str] | None = None) -> int:
             count=args.payout_admin_wallet_count,
             create_missing=create_admin_wallet,
         )
-        print_plan(args, rid, hub_admin, smoke_client, node_wallets, payout_admin_wallets)
+        print_plan(args, rid, hub_admin, smoke_client, office_wallets, node_wallets, payout_admin_wallets)
         setup_log(
             "plan ready: "
-            f"node_wallets={len(node_wallets)} payout_admin_wallets={len(payout_admin_wallets)} "
+            f"office_wallets={len(office_wallets)} node_wallets={len(node_wallets)} "
+            f"payout_admin_wallets={len(payout_admin_wallets)} "
             f"external_chain={bool(getattr(args, 'external_chain', False))} no_deploy={bool(args.no_deploy)}"
         )
 
@@ -2159,6 +2315,14 @@ def main(argv: list[str] | None = None) -> int:
             setup_log("funding hub admin and smoke requester wallets")
             fund_hub_admin_wallet(args, rid, hub_admin, root)
             fund_smoke_client_wallet(args, rid, smoke_client, root)
+            fund_generated_wallets(
+                args,
+                rid,
+                office_wallets,
+                root,
+                funding_wei=args.office_funding_wei,
+                label="Ring 0 office",
+            )
             fund_generated_wallets(
                 args,
                 rid,
