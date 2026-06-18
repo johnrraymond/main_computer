@@ -259,7 +259,21 @@ code, the per-network funded smoke wallet, and a real paid worker/credit/claim
 flow through the Hub API. This is the first complete local proof that dev and
 test can use the same golden pathway.
 
-Remote testnet version:
+Current low-resource remote testnet bring-up version:
+
+```text
+validator-1 + operator RPC  ->  http://<TESTNET_MACHINE_IP>:30010
+      |
+      v
+Hub server / Hub site / operator tools
+```
+
+The current test machine is too small for four Besu services plus a dedicated
+RPC sidecar, so the default `testnet` Coolify seed intentionally deploys one
+Besu/QBFT validator that also serves the operator RPC port. This proves the
+Hub/RPC/contract path but is not fault-tolerant.
+
+Promoted remote testnet target, once the host capacity exists:
 
 ```text
 validator host 1
@@ -274,8 +288,8 @@ testnet RPC host
 Hub server / Hub site / operator tools
 ```
 
-The remote testnet should use the same basic topology as the eventual mainnet,
-but with testnet economics, test keys, and lower operational stakes.
+The promoted remote testnet should use the same basic topology as the eventual
+mainnet, but with testnet economics, test keys, and lower operational stakes.
 
 ## The mainnet we are aiming for
 

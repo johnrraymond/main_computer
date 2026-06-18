@@ -65,6 +65,7 @@ DEFAULT_FUNDED_ACCOUNTS = [
 ]
 
 LOCAL_COOLIFY_SEEDS = {"test"}
+DEFAULT_GENERATED_OFFICE_ENVIRONMENTS = {"test", "testnet"}
 LOCAL_COOLIFY_DEFAULT_URL = "http://127.0.0.1:8000"
 LOCAL_COOLIFY_TOKEN_RELATIVE_PATH = Path("runtime") / "coolify-local-docker" / "api-token.txt"
 LOCAL_COOLIFY_DEFAULT_ENVIRONMENT = "production"
@@ -161,7 +162,7 @@ NETWORK_SEEDS: dict[str, dict[str, Any]] = {
         ],
     },
     "testnet": {
-        "description": "Single-host QBFT rehearsal network managed by Coolify.",
+        "description": "Low-resource single-Besu QBFT rehearsal network managed by Coolify.",
         "environment": "testnet",
         "chain_id": 42424241,
         "compose_project": "main-computer-qbft-testnet",
@@ -171,10 +172,13 @@ NETWORK_SEEDS: dict[str, dict[str, Any]] = {
         "runtime_root": "/srv/main-computer/qbft-testnet/runtime",
         "public_rpc": False,
         "topology_policy": {
-            "minimum_validators": 4,
-            "minimum_rpc_nodes": 1,
+            "minimum_validators": 1,
+            "minimum_rpc_nodes": 0,
             "validator_warning_below": 4,
-            "validator_warning": "Testnet topology is below the configured four-validator fault-tolerance target.",
+            "validator_warning": (
+                "Remote testnet is in single-Besu bring-up mode for the current test machine; "
+                "it proves the Hub/RPC/contract path but is not fault-tolerant."
+            ),
         },
         "hosts": {
             "testnet-a": {
@@ -190,42 +194,10 @@ NETWORK_SEEDS: dict[str, dict[str, Any]] = {
                 "role": "validator",
                 "host": "testnet-a",
                 "container_ip": "172.28.241.11",
-                # Keep validator RPC private; the dedicated rpc-1 service below
-                # owns the public operator RPC port when --public-rpc is used.
-                "rpc_host_port": 30001,
-                "p2p_host_port": 30311,
-            },
-            {
-                "id": "validator-2",
-                "role": "validator",
-                "host": "testnet-a",
-                "container_ip": "172.28.241.12",
-                "rpc_host_port": 30002,
-                "p2p_host_port": 30312,
-            },
-            {
-                "id": "validator-3",
-                "role": "validator",
-                "host": "testnet-a",
-                "container_ip": "172.28.241.13",
-                "rpc_host_port": 30003,
-                "p2p_host_port": 30313,
-            },
-            {
-                "id": "validator-4",
-                "role": "validator",
-                "host": "testnet-a",
-                "container_ip": "172.28.241.14",
-                "rpc_host_port": 30004,
-                "p2p_host_port": 30314,
-            },
-            {
-                "id": "rpc-1",
-                "role": "rpc",
-                "host": "testnet-a",
-                "container_ip": "172.28.241.20",
+                # The low-resource remote testnet intentionally has no dedicated
+                # RPC sidecar; validator-1 owns the operator RPC port.
                 "rpc_host_port": 30010,
-                "p2p_host_port": 30320,
+                "p2p_host_port": 30311,
             },
         ],
     },
@@ -1369,16 +1341,6 @@ def is_local_coolify_plan(plan: NetworkPlan) -> bool:
     return plan.name in LOCAL_COOLIFY_SEEDS
 
 
-def should_generate_offices_for_contract_deploy(plan: NetworkPlan, args: argparse.Namespace) -> bool:
-    if bool(getattr(args, "generate_offices", False)) and bool(getattr(args, "no_generate_offices", False)):
-        raise PlanError("--generate-offices and --no-generate-offices cannot be combined")
-    if bool(getattr(args, "generate_offices", False)):
-        return True
-    if bool(getattr(args, "no_generate_offices", False)):
-        return False
-    return str(plan.environment or "").strip().lower() != "mainnet"
-
-
 def set_arg_default(args: argparse.Namespace, name: str, value: object) -> None:
     current = getattr(args, name, "")
     if current is None or str(current).strip() == "":
@@ -2513,6 +2475,18 @@ def deployment_source_kind(plan: NetworkPlan, args: argparse.Namespace) -> str:
     return f"coolify-qbft-{plan.environment}-deploy"
 
 
+def should_generate_offices_for_deployment(plan: NetworkPlan, args: argparse.Namespace) -> bool:
+    explicit_yes = bool(getattr(args, "generate_offices", False))
+    explicit_no = bool(getattr(args, "no_generate_offices", False))
+    if explicit_yes and explicit_no:
+        raise PlanError("--generate-offices and --no-generate-offices cannot be combined")
+    if explicit_yes:
+        return True
+    if explicit_no:
+        return False
+    return plan.environment in DEFAULT_GENERATED_OFFICE_ENVIRONMENTS
+
+
 def deploy_contracts(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, Any]:
     configure_local_coolify_defaults(plan, args)
     rpc_url = infer_external_rpc_url(plan, args)
@@ -2555,7 +2529,7 @@ def deploy_contracts(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, A
         "--foundry-image",
         str(getattr(args, "foundry_image", "") or DEFAULT_FOUNDRY_IMAGE),
     ]
-    if should_generate_offices_for_contract_deploy(plan, args):
+    if should_generate_offices_for_deployment(plan, args):
         command.append("--generate-offices")
     operator_log(args, "deploy-contracts command", command=" ".join(command))
     result = safe_subprocess_run(
@@ -2976,12 +2950,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--generate-offices",
         action="store_true",
-        help="Force generated Ring 0 office wallets during contract deployment. Default for non-mainnet networks.",
+        help=(
+            "Generate/load non-default Ring 0 office wallets for this contract deployment. "
+            "Defaults on for test/testnet and off for mainnet unless explicitly requested."
+        ),
     )
     parser.add_argument(
         "--no-generate-offices",
         action="store_true",
-        help="Do not generate Ring 0 office wallets during contract deployment. Intended for explicit mainnet/operator authority flows.",
+        help="Do not generate Ring 0 office wallets; use explicit --offices or dev-chain-reset defaults instead.",
     )
     parser.add_argument("--deployment-output-dir", default="", help="Override runtime deployment output directory.")
     parser.add_argument("--foundry-image", default=DEFAULT_FOUNDRY_IMAGE)
@@ -3023,8 +3000,9 @@ def render_operator_runbook() -> str:
 
         Recommended server size
         -----------------------
-        Minimum for Coolify plus the default four-validator testnet and one dedicated RPC node: 4 vCPU, 8 GB RAM.
-        The mainnet seed is intentionally lighter for bring-up: one validator plus one dedicated RPC node on its own box.
+        Current remote testnet default: one Besu/QBFT validator that also serves the operator RPC port.
+        This low-resource shape is intentional until the test machine can handle the four-validator plus RPC target.
+        The mainnet seed still requires explicit acknowledgement and currently uses one validator plus one dedicated RPC node.
         Smaller 2 vCPU / 4 GB boxes may work for short rehearsals, but tiny 1-2 GB boxes can publish Docker ports
         while Besu is still starved or unhealthy.
 
@@ -3127,8 +3105,7 @@ def render_operator_runbook() -> str:
             0x28757b1
 
         Contract deployment now publishes this Coolify surface as the first-class
-        testnet environment, not the local loopback test environment, and generates
-        non-default Ring 0 office wallets by default for test/testnet deployments:
+        testnet environment, not the local loopback test environment:
 
             runtime/deployments/testnet/latest.json
 
