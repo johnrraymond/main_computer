@@ -43,7 +43,7 @@ def test_windows_bootstrapper_composes_existing_wsl_and_onlyoffice_controls() ->
     assert "ONLYOFFICE" in script
     assert "ONLYOFFICE auto mode will use Docker" in script
     assert "DefaultOnlyOfficePort" in script
-    assert "main-computer-onlyoffice-$Key" in script
+    assert 'OnlyOfficeProjectName = "main-computer-onlyoffice"' in script
 
 
 def test_windows_bootstrapper_verifies_app_executor_route_smoke() -> None:
@@ -361,13 +361,13 @@ def test_windows_bootstrapper_repairs_stale_wsl_executor_entrypoint_contract() -
 
 
 
-def test_windows_bootstrapper_uses_fixed_onlyoffice_lane_ports_and_projects() -> None:
+def test_windows_bootstrapper_uses_shared_onlyoffice_port_and_project() -> None:
     script = (ROOT / "bootstrap-main-computer-windows.ps1").read_text(encoding="utf-8")
 
-    assert "-DefaultOnlyOfficePort 18085" in script
-    assert "-DefaultOnlyOfficePort 28085" in script
-    assert "-DefaultOnlyOfficePort 38085" in script
-    assert "ONLYOFFICE lane" in script
+    assert script.count("-DefaultOnlyOfficePort 18085") >= 3
+    assert "-DefaultOnlyOfficePort 28085" not in script
+    assert "-DefaultOnlyOfficePort 38085" not in script
+    assert "ONLYOFFICE shared service" in script
     assert "ProjectName = $ModeProfile.OnlyOfficeProjectName" in script
     assert "http://host.docker.internal:$Port" in script
     assert "unleashed_onlyoffice = $unleashedProfile.DefaultOnlyOfficePort" in script
@@ -392,14 +392,14 @@ def test_installed_runner_has_fast_mode_environment_check_and_shared_gitea_polic
         assert "Ensure-SharedGiteaInstalledIfMissing" in source
         assert "installer/start path will not recreate it" in source
         assert "ps -a -q gitea" in source
-        assert "ONLYOFFICE for mode" in source
+        assert "ONLYOFFICE shared service" in source
         assert "Local Coolify for mode" in source
         assert "WSL distro for mode" in source
         assert "Ollama shared service" in source
 
     assert "__LOCAL_COOLIFY_ENABLED__" in script
-    assert "SharedDependencies = @(\"Ollama\", \"Gitea\", \"Windows host services\", \"WSL host feature\")" in script
-    assert '"shared_dependencies": ["Ollama", "Gitea", "Windows host services", "WSL host feature"]' in cli
+    assert "SharedDependencies = @(\"Ollama\", \"Gitea\", \"ONLYOFFICE\", \"Windows host services\", \"WSL host feature\")" in script
+    assert '"shared_dependencies": ["Ollama", "Gitea", "ONLYOFFICE", "Windows host services", "WSL host feature"]' in cli
     assert "check_command" in cli
     assert "$env:MC_CHECK" in cli
 
@@ -421,10 +421,10 @@ def test_dev_checkout_runner_mirrors_installed_runner_without_install_root() -> 
     assert "Ensure-SharedGiteaInstalledIfMissing" in runner
     assert "installer/start path will not recreate it" in runner
     assert "ps -a -q gitea" in runner
-    assert "ONLYOFFICE for mode" in runner
+    assert "ONLYOFFICE shared service" in runner
     assert "Local Coolify for mode" in runner
     assert "WSL distro for mode" in runner
-    assert "main-computer-onlyoffice-$Key" in runner
+    assert 'OnlyOfficeProject = "main-computer-onlyoffice"' in runner
     assert '$localPlatformProject = "main-computer-local-platform-$modeSegment"' in runner
     assert "MainComputer-$instanceName-$DistributionSuffix" in runner
     assert "dev-control.ps1" in runner
@@ -1146,13 +1146,17 @@ def test_python_bootstrap_starts_install_scoped_services_and_prints_urls() -> No
     assert '"coolify_state_root": state_root / "coolify-local-docker"' in cli
 
 
-def test_python_bootstrapper_writes_mode_scoped_template_ports_and_projects() -> None:
+def test_python_bootstrapper_writes_mode_scoped_template_ports_and_shared_onlyoffice() -> None:
     cli = (ROOT / "main_computer" / "bootstrap" / "cli.py").read_text(encoding="utf-8")
 
     assert '"instance_name": instance_name' in cli
     assert '"install_tree_id": safe_name(install_root.name).replace("_", "-")' in cli
     assert '"dev_compose_project": _mode_scoped_dev_compose_project(instance_name, key)' in cli
     assert '"local_server_project": _mode_scoped_local_platform_project(instance_name, key)' in cli
+    assert '"onlyoffice_project": "main-computer-onlyoffice"' in cli
+    assert '"onlyoffice_project": f"main-computer-onlyoffice-{key}"' not in cli
+    assert 'shared_onlyoffice_port = args.onlyoffice_port if args.onlyoffice_port is not None else 18085' in cli
+    assert 'env["MAIN_COMPUTER_ONLYOFFICE_CONTAINER_NAME"] = "main-computer-onlyoffice-documentserver"' in cli
     assert '"docker_viewport_port": defaults["docker_viewport_port"]' in cli
     assert '"hub_port": defaults["hub_port"]' in cli
     assert '"ethereum_rpc_port": defaults["ethereum_rpc_port"]' in cli
