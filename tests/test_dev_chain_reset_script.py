@@ -423,6 +423,62 @@ def test_parse_offices_requires_four_addresses() -> None:
         raise AssertionError("expected invalid office list to fail")
 
 
+def test_generated_office_wallets_are_created_reused_and_used_for_constructor_args(tmp_path: Path, monkeypatch) -> None:
+    reset = load_dev_chain_reset()
+    monkeypatch.setattr(reset, "repo_root", lambda: tmp_path)
+    generated_addresses = iter(
+        [
+            "0x1111111111111111111111111111111111111111",
+            "0x2222222222222222222222222222222222222222",
+            "0x3333333333333333333333333333333333333333",
+            "0x4444444444444444444444444444444444444444",
+        ]
+    )
+    monkeypatch.setattr(reset, "derive_address_for_private_key", lambda args, root, private_key: next(generated_addresses))
+    deploy_root = tmp_path / "deployments"
+    parser = reset.build_parser()
+    args = parser.parse_args(
+        [
+            "--yes",
+            "--run-id",
+            "unit-offices",
+            "--environment",
+            "test",
+            "--chain-id",
+            "42424241",
+            "--deployment-output-dir",
+            str(deploy_root),
+            "--generate-offices",
+        ]
+    )
+
+    reset.validate_args(args)
+    office_path, offices = reset.resolve_office_wallets(args, tmp_path, create_missing=True, rid="unit-offices")
+    second_path, second_offices = reset.resolve_office_wallets(args, tmp_path, create_missing=True, rid="unit-offices")
+    specs = reset.deployment_specs(args)
+    private_payload = reset.deploy_payload(args=args, rid="unit-offices", dry_run=False, deployments=reset.planned_deployments(args))
+    public_payload = reset.public_deployment_payload(private_payload)
+
+    assert office_path == deploy_root / "test" / "office-wallets-42424241.json"
+    assert second_path == office_path
+    assert [wallet.address for wallet in second_offices] == [wallet.address for wallet in offices]
+    assert len(offices) == 4
+    assert specs[0].constructor_args == [
+        "[0x1111111111111111111111111111111111111111,0x2222222222222222222222222222222222222222,0x3333333333333333333333333333333333333333,0x4444444444444444444444444444444444444444]"
+    ]
+    assert private_payload["offices"][0]["title"] == "Captain"
+    assert private_payload["offices"][0]["wallet_path"] == "deployments/test/office-wallets-42424241.json"
+    assert private_payload["offices"][0]["source"] == "generated-local-qbft-office"
+    assert "private_key" in private_payload["offices"][0]
+    assert public_payload["offices"][0]["address"] == "0x1111111111111111111111111111111111111111"
+    assert public_payload["offices"][0]["wallet_path"] == "deployments/test/office-wallets-42424241.json"
+    assert "private_key" not in json.dumps(public_payload)
+    assert all(
+        office["address"].lower() not in {item["address"].lower() for item in reset.DEFAULT_OFFICE_KEYS}
+        for office in public_payload["offices"]
+    )
+
+
 def test_reset_refuses_to_write_when_prod_lock_exists(tmp_path: Path, monkeypatch) -> None:
     reset = load_dev_chain_reset()
     monkeypatch.setattr(reset, "repo_root", lambda: tmp_path)

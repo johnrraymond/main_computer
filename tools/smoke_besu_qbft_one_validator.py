@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import hashlib
 import ipaddress
 import json
 import shutil
@@ -314,6 +315,43 @@ def remove_path(path: Path) -> None:
         path.unlink()
 
 
+def file_fingerprint(path: Path, *, length: int = 16) -> str:
+    """Return a short stable fingerprint for generated runtime file names."""
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return digest[:length]
+
+
+def genesis_scoped_data_dir(node_dir: Path, genesis: Path) -> Path:
+    """Return a fresh Besu data path scoped to the exact generated genesis.
+
+    The QBFT genesis is regenerated when the smoke lab starts. Besu persists the
+    genesis block in its RocksDB data directory and refuses to start when a new
+    genesis is paired with an old database. Use a genesis-scoped data directory
+    so a stale stable ``data`` directory cannot poison a regenerated lab.
+    """
+    return node_dir / f"data-{file_fingerprint(genesis)}"
+
+
+def container_path_for_runtime_child(runtime_dir: Path, child: Path) -> str:
+    relative = child.resolve().relative_to(runtime_dir.resolve()).as_posix()
+    return f"/smoke/{relative}"
+
+
+def write_active_data_dir_marker(node_dir: Path, data_dir: Path) -> None:
+    (node_dir / "active-data-dir.txt").write_text(data_dir.name + "\n", encoding="utf-8")
+
+
+def active_container_data_path(runtime_dir: Path, node_name: str) -> str:
+    node_dir = runtime_dir / node_name
+    marker = node_dir / "active-data-dir.txt"
+    if not marker.exists():
+        raise RuntimeError(f"Missing active Besu data-dir marker: {marker}")
+    data_dir_name = marker.read_text(encoding="utf-8").strip()
+    if not data_dir_name or "/" in data_dir_name or "\\" in data_dir_name or data_dir_name in {".", ".."}:
+        raise RuntimeError(f"Invalid active Besu data-dir marker in {marker}: {data_dir_name!r}")
+    return container_path_for_runtime_child(runtime_dir, node_dir / data_dir_name)
+
+
 def prepare_runtime(runtime_dir: Path) -> None:
     runtime_dir.mkdir(parents=True, exist_ok=True)
 
@@ -416,14 +454,17 @@ def install_validator_files(
             f"found {len(key_dirs)}"
         )
 
-    shutil.copy2(genesis, runtime_dir / "genesis.json")
+    runtime_genesis = runtime_dir / "genesis.json"
+    shutil.copy2(genesis, runtime_genesis)
 
     ips = validator_ips(docker_subnet)
     validators: list[dict[str, str]] = []
     for index, (key_dir, ip_address) in enumerate(zip(key_dirs, ips), start=1):
         validator_dir = runtime_dir / f"validator-{index}"
-        data_dir = validator_dir / "data"
-        data_dir.mkdir(parents=True, exist_ok=True)
+        validator_dir.mkdir(parents=True, exist_ok=True)
+        data_dir = genesis_scoped_data_dir(validator_dir, runtime_genesis)
+        remove_path(data_dir)
+        data_dir.mkdir(parents=True, exist_ok=False)
 
         private_key = key_dir / "key"
         public_key = key_dir / "key.pub"
@@ -434,16 +475,20 @@ def install_validator_files(
 
         shutil.copy2(private_key, data_dir / "key")
         shutil.copy2(public_key, data_dir / "key.pub")
+        write_active_data_dir_marker(validator_dir, data_dir)
 
         address = key_dir.name.lower()
         node_public_key = normalize_node_public_key(public_key.read_text(encoding="utf-8"), source=public_key)
         container = validator_container(index)
+        container_data_path = container_path_for_runtime_child(runtime_dir, data_dir)
         validators.append(
             {
                 "index": str(index),
                 "address": address,
                 "container": container,
                 "ip_address": ip_address,
+                "data_dir": data_dir.relative_to(runtime_dir).as_posix(),
+                "container_data_path": container_data_path,
                 "enode": f"enode://{node_public_key}@{ip_address}:{P2P_PORT}",
             }
         )
@@ -473,9 +518,17 @@ def install_rpc_node_files(runtime_dir: Path, *, validators: list[dict[str, str]
     a regular peer and exposes the stable RPC endpoint that hub/dev tooling
     should use.
     """
+    runtime_genesis = runtime_dir / "genesis.json"
+    if not runtime_genesis.exists():
+        raise RuntimeError(f"Missing runtime genesis file before creating RPC node data dir: {runtime_genesis}")
+
     rpc_node_dir = runtime_dir / "rpc-node"
-    data_dir = rpc_node_dir / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
+    rpc_node_dir.mkdir(parents=True, exist_ok=True)
+    data_dir = genesis_scoped_data_dir(rpc_node_dir, runtime_genesis)
+    remove_path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=False)
+    write_active_data_dir_marker(rpc_node_dir, data_dir)
+
     static_nodes = [validator["enode"] for validator in validators]
     (rpc_node_dir / "static-nodes.json").write_text(
         json.dumps(static_nodes, indent=2) + "\n",
@@ -491,6 +544,7 @@ def start_validator(
     rpc_port: int,
     chain_id: int,
     docker_subnet: str,
+    container_data_path: str,
 ) -> None:
     container = validator_container(index)
     ip_address = validator_ips(docker_subnet)[index - 1]
@@ -510,7 +564,7 @@ def start_validator(
             "-v",
             f"{runtime_dir.resolve()}:/smoke",
             image,
-            f"--data-path=/smoke/validator-{index}/data",
+            f"--data-path={container_data_path}",
             "--genesis-file=/smoke/genesis.json",
             f"--network-id={chain_id}",
             "--rpc-http-enabled=true",
@@ -537,6 +591,7 @@ def start_rpc_node(
     rpc_port: int,
     chain_id: int,
     docker_subnet: str,
+    container_data_path: str,
 ) -> None:
     ip_address = rpc_node_ip(docker_subnet)
     run(
@@ -555,7 +610,7 @@ def start_rpc_node(
             "-v",
             f"{runtime_dir.resolve()}:/smoke",
             image,
-            "--data-path=/smoke/rpc-node/data",
+            f"--data-path={container_data_path}",
             "--genesis-file=/smoke/genesis.json",
             f"--network-id={chain_id}",
             "--rpc-http-enabled=true",
@@ -903,6 +958,7 @@ def deployment_command(args: argparse.Namespace, *, runtime_dir: Path, public_rp
         str(resolve_deployment_output_dir(args)),
         "--foundry-image",
         args.foundry_image,
+        "--generate-offices",
         "--private-key",
         args.private_key,
         "--hub-admin-funding-wei",
@@ -1032,6 +1088,7 @@ def start_lab(args: argparse.Namespace, *, cleanup_on_failure: bool = False) -> 
                 rpc_port=rpc_port,
                 chain_id=args.chain_id,
                 docker_subnet=args.docker_subnet,
+                container_data_path=validators[index - 1]["container_data_path"],
             )
             started.append(validator_container(index))
 
@@ -1052,6 +1109,7 @@ def start_lab(args: argparse.Namespace, *, cleanup_on_failure: bool = False) -> 
             rpc_port=public_rpc_port,
             chain_id=args.chain_id,
             docker_subnet=args.docker_subnet,
+            container_data_path=active_container_data_path(runtime_dir, "rpc-node"),
         )
         started.append(RPC_NODE_CONTAINER)
         wait_for_rpc(public_rpc_url, timeout_seconds=args.timeout_seconds)

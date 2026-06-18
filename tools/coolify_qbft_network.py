@@ -2545,6 +2545,8 @@ def deploy_contracts(plan: NetworkPlan, args: argparse.Namespace) -> dict[str, A
         "--foundry-image",
         str(getattr(args, "foundry_image", "") or DEFAULT_FOUNDRY_IMAGE),
     ]
+    if is_local_coolify_plan(plan):
+        command.append("--generate-offices")
     operator_log(args, "deploy-contracts command", command=" ".join(command))
     result = safe_subprocess_run(
         command,
