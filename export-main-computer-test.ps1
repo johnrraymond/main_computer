@@ -622,6 +622,7 @@ $exportItems = @(
   "docker-compose.gitea.yml",
   "Dockerfile.hub.exp-fdb",
   "run-exp-fdb-hub.py",
+  ".githooks",
   "docker",
   "deploy/local-platform",
   "deploy/coolify/local-docker",

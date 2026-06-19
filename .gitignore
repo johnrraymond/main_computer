@@ -1,3 +1,6 @@
+# Local secrets
+local.secrets
+
 # Aider / local AI session artifacts
 .aider*
 !.aiderignore
