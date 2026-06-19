@@ -304,13 +304,12 @@
       "project": "johnrraymond"
     },
     "remote_prod": {
-      "accepted_at": "2026-06-09T21:39:15+00:00",
+      "accepted_at": "2026-06-18T23:43:12+00:00",
       "controller_id": "",
       "domain": "https://johnrraymond.greatlibrary.io/",
       "environment": "production",
       "project": "johnrraymond",
       "publish_mode": "scp",
-      "remote_host": "root@144.126.212.9",
       "remote_root": "/srv/main-computer/sites",
       "site_slug": "johnrraymond",
       "source_path": "runtime/websites/johnrraymond",
@@ -346,5 +345,5 @@
     "kind": "host_runtime_site",
     "path": "runtime/websites/johnrraymond"
   },
-  "updated_at": "2026-06-11T01:07:10+00:00"
+  "updated_at": "2026-06-18T23:43:14+00:00"
 }
