@@ -37,6 +37,16 @@ def first_env(environ: Mapping[str, str], *names: str) -> str:
     return ""
 
 
+def env_flag(environ: Mapping[str, str], *names: str) -> bool:
+    for name in names:
+        value = str(environ.get(name) or "").strip().lower()
+        if value in {"1", "true", "yes", "on"}:
+            return True
+        if value in {"0", "false", "no", "off"}:
+            return False
+    return False
+
+
 def parse_optional_port(value: object) -> int | None:
     text = str(value or "").strip()
     if not text:
@@ -204,18 +214,28 @@ def build_exp_fdb_hub_command(
     ]
 
     if bridge_backend.lower() not in MOCK_BRIDGE_BACKENDS:
+        allow_missing_bridge_signer = args.allow_missing_bridge_signer or env_flag(
+            env,
+            "MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER",
+            "MAIN_COMPUTER_ALLOW_MISSING_BRIDGE_SIGNER",
+        )
+        dev_chain_deployment_path = str(
+            args.dev_chain_deployment_path
+            or first_env(
+                env,
+                "MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH",
+                "MAIN_COMPUTER_DEV_CHAIN_DEPLOYMENT_PATH",
+            )
+        ).strip()
+        if dev_chain_deployment_path or not allow_missing_bridge_signer:
+            command.extend(
+                [
+                    "--dev-chain-deployment-path",
+                    dev_chain_deployment_path or default_deployment_path(profile.network_key),
+                ]
+            )
         command.extend(
             [
-                "--dev-chain-deployment-path",
-                str(
-                    args.dev_chain_deployment_path
-                    or first_env(
-                        env,
-                        "MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH",
-                        "MAIN_COMPUTER_DEV_CHAIN_DEPLOYMENT_PATH",
-                    )
-                    or default_deployment_path(profile.network_key)
-                ).strip(),
                 "--contracts-path",
                 str(
                     args.contracts_path
@@ -228,6 +248,8 @@ def build_exp_fdb_hub_command(
                 ).strip(),
             ]
         )
+        if allow_missing_bridge_signer:
+            command.append("--allow-missing-bridge-signer")
     chain_id = str(args.chain_id or first_env(env, "MAIN_COMPUTER_HUB_CHAIN_ID", "MAIN_COMPUTER_CHAIN_ID") or profile.chain_id or "").strip()
     if chain_id:
         command.extend(["--chain-id", chain_id])
@@ -256,6 +278,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--backend", "--bridge-backend", dest="bridge_backend", default="", help="Bridge backend override.")
     parser.add_argument("--dev-chain-deployment-path", default="", help="Private deployment manifest path override for signing wallet paths.")
     parser.add_argument("--contracts-path", default="", help="Public contract discovery config path override.")
+    parser.add_argument(
+        "--allow-missing-bridge-signer",
+        action="store_true",
+        help="Allow startup from public contract config without mounted private bridge signer metadata.",
+    )
     parser.add_argument("--chain-id", default="", help="Chain id override.")
     parser.add_argument("--chain-rpc-url", default="", help="Chain RPC URL override.")
     parser.add_argument("--print-command", action="store_true", help="Print the resolved exp-fDB Hub command instead of execing it.")

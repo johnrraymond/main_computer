@@ -4,8 +4,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from main_computer.contract_config import get_contract_record, load_contract_config
 from main_computer.credit_units import credit_wei_to_whole_credits_floor
-from main_computer.dev_chain_bridge import DevChainBridgeAdapter, DevChainBridgeError, DevChainBridgeMovement
+from main_computer.dev_chain_bridge import (
+    HUB_CREDIT_BRIDGE_ESCROW_KEY,
+    DevChainBridgeAdapter,
+    DevChainBridgeError,
+    DevChainBridgeMovement,
+)
 
 
 class HubBridgeBackendError(RuntimeError):
@@ -40,6 +46,43 @@ class MockChainHubBridgeBackend:
 
     def payout_confirmation_metadata(self, payout: dict[str, Any]) -> dict[str, Any]:
         return {"bridge_backend": self.name}
+
+
+@dataclass(frozen=True)
+class ContractOnlyHubBridgeBackend:
+    """Contract-aware backend used when signer/private deployment files are absent.
+
+    Remote testnet images contain public contract-address config, but should not
+    require private wallet files just to boot and report Hub health.  Write-side
+    bridge operations still fail closed until signer material is configured.
+    """
+
+    escrow_address: str
+    contracts_path: Path
+    network_key: str
+    missing_deployment_path: Path | None = None
+    name: str = "dev-chain"
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "backend": self.name,
+            "mode": "contract-address-only",
+            "escrow_address": self.escrow_address,
+            "contract_address_source": str(self.contracts_path),
+            "contracts_path": str(self.contracts_path),
+            "network_key": self.network_key,
+            "signer_configured": False,
+            "bridge_controller_address": None,
+            "requester_wallet_address": None,
+            "missing_deployment_path": str(self.missing_deployment_path) if self.missing_deployment_path else None,
+            "write_operations_enabled": False,
+        }
+
+    def deposit_confirmation_metadata(self, deposit: dict[str, Any]) -> dict[str, Any]:
+        raise HubBridgeBackendError(_missing_bridge_signer_message(self.network_key, self.contracts_path))
+
+    def payout_confirmation_metadata(self, payout: dict[str, Any]) -> dict[str, Any]:
+        raise HubBridgeBackendError(_missing_bridge_signer_message(self.network_key, self.contracts_path))
 
 
 class DevChainHubBridgeBackend:
@@ -134,22 +177,76 @@ def build_hub_bridge_backend(
     if clean in {"mock", "mock-chain", "mock-chain-lite"}:
         return MockChainHubBridgeBackend()
     if clean in {"", "dev", "dev-chain", "devchain", "contract", "contract-chain", "credit-bridge-contract", "evm-contract", "real-chain"}:
-        if dev_chain_deployment_path is None:
-            raise HubBridgeBackendError("dev-chain bridge backend requires a dev-chain deployment path.")
-        deployment_path = dev_chain_deployment_path
-        if not deployment_path.is_absolute():
-            deployment_path = repo_root / deployment_path
-        resolved_contracts_path = contracts_path
-        if resolved_contracts_path is not None and not resolved_contracts_path.is_absolute():
-            resolved_contracts_path = repo_root / resolved_contracts_path
-        return DevChainHubBridgeBackend.from_deployment(
+        deployment_path = _resolve_optional_repo_path(repo_root, dev_chain_deployment_path)
+        resolved_contracts_path = _resolve_optional_repo_path(repo_root, contracts_path)
+
+        if deployment_path is not None and deployment_path.exists():
+            return DevChainHubBridgeBackend.from_deployment(
+                repo_root=repo_root,
+                deployment_path=deployment_path,
+                contracts_path=resolved_contracts_path,
+                network_key=network_key,
+            )
+
+        contract_only = _contract_only_backend_from_contracts(
             repo_root=repo_root,
-            deployment_path=deployment_path,
             contracts_path=resolved_contracts_path,
             network_key=network_key,
+            missing_deployment_path=deployment_path,
         )
+        if contract_only is not None:
+            return contract_only
+
+        if deployment_path is None:
+            raise HubBridgeBackendError(
+                "dev-chain bridge backend requires either a private dev-chain deployment path "
+                "or a public contracts_path containing hub_credit_bridge_escrow."
+            )
+        raise HubBridgeBackendError(f"missing dev-chain deployment file: {deployment_path}")
     raise HubBridgeBackendError(
         f"unknown Hub bridge backend {backend_name!r}; expected dev-chain/credit-bridge-contract or mock-chain."
+    )
+
+
+def _resolve_optional_repo_path(repo_root: Path, path: Path | None) -> Path | None:
+    if path is None:
+        return None
+    resolved = Path(path)
+    return resolved if resolved.is_absolute() else repo_root / resolved
+
+
+def _contract_only_backend_from_contracts(
+    *,
+    repo_root: Path,
+    contracts_path: Path | None,
+    network_key: str,
+    missing_deployment_path: Path | None,
+) -> ContractOnlyHubBridgeBackend | None:
+    if contracts_path is None:
+        return None
+    try:
+        loaded = load_contract_config(network_key, repo_root=repo_root, path=contracts_path)
+    except Exception as exc:
+        raise HubBridgeBackendError(f"could not load public contract config {contracts_path}: {exc}") from exc
+    if loaded is None:
+        return None
+    source_path, payload = loaded
+    escrow = get_contract_record(payload, HUB_CREDIT_BRIDGE_ESCROW_KEY)
+    escrow_address = str(escrow.get("address") or "").strip()
+    if not escrow_address:
+        raise HubBridgeBackendError(f"contract config is missing {HUB_CREDIT_BRIDGE_ESCROW_KEY}: {source_path}")
+    return ContractOnlyHubBridgeBackend(
+        escrow_address=escrow_address,
+        contracts_path=source_path,
+        network_key=str(network_key or "dev").strip() or "dev",
+        missing_deployment_path=missing_deployment_path,
+    )
+
+
+def _missing_bridge_signer_message(network_key: str, contracts_path: Path) -> str:
+    return (
+        f"bridge signer is not configured for {network_key}; "
+        f"loaded public contract addresses from {contracts_path}, but private signer wallet metadata is absent."
     )
 
 

@@ -137,6 +137,7 @@
       const isSpreadsheet = normalizedApp === "spreadsheet";
       const isOnlyOffice = normalizedApp === "onlyoffice";
       const isTaskManager = normalizedApp === "task-manager";
+      const isConductor = normalizedApp === "conductor";
       const isTerminal = normalizedApp === "terminal";
       const isChatConsole = normalizedApp === "chat-console";
       const isAiControl = normalizedApp === "ai-control";
@@ -169,6 +170,7 @@
       spreadsheetApp.style.display = isSpreadsheet ? "grid" : "none";
       if (onlyofficeApp) onlyofficeApp.style.display = isOnlyOffice ? "grid" : "none";
       taskManagerApp.style.display = isTaskManager ? "grid" : "none";
+      if (conductorApp) conductorApp.style.display = isConductor ? "grid" : "none";
       terminalApp.style.display = isTerminal ? "grid" : "none";
       chatConsoleApp.style.display = isChatConsole ? "grid" : "none";
       if (aiControlApp) aiControlApp.style.display = isAiControl ? "grid" : "none";
@@ -181,7 +183,7 @@
       if (mcelLabApp) mcelLabApp.style.display = isMcelLab ? "grid" : "none";
       if (workerApp) workerApp.style.display = isWorker ? "grid" : "none";
       if (walletApp) walletApp.style.display = isWallet ? "grid" : "none";
-      stubMessage.style.display = isDesktop || isWebgl || isCalculator || isDocument || isSpreadsheet || isOnlyOffice || isTaskManager || isTerminal || isChatConsole || isAiControl || isEmail || isGitTools || isCodeEditor || isFileExplorer || isGameEditor || isWebsiteBuilder || isMcelLab || isWorker || isWallet ? "none" : "grid";
+      stubMessage.style.display = isDesktop || isWebgl || isCalculator || isDocument || isSpreadsheet || isOnlyOffice || isTaskManager || isConductor || isTerminal || isChatConsole || isAiControl || isEmail || isGitTools || isCodeEditor || isFileExplorer || isGameEditor || isWebsiteBuilder || isMcelLab || isWorker || isWallet ? "none" : "grid";
       demoControls.style.display = isWebgl ? "grid" : "none";
       layoutDesktopIcons(normalizedApp);
       if (isDesktop) {
@@ -225,6 +227,10 @@
         setTaskNotebookTab(taskNotebookTabFromPath(window.location.pathname), {syncRoute: false});
         initTaskManagerApp();
         taskQuery.focus();
+      } else if (isConductor) {
+        running = false;
+        glStatus.textContent = "conductor ready";
+        initConductorApp();
       } else if (isTerminal) {
         running = false;
         glStatus.textContent = "terminal ready";

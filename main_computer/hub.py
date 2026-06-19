@@ -1446,6 +1446,8 @@ class HubHttpServer(ThreadingHTTPServer):
             dev_chain_deployment_path=config.hub_dev_chain_deployment_path,
             contracts_path=config.hub_contracts_path,
             network_key=config.hub_network,
+            chain_rpc_url=config.chain_rpc_url,
+            allow_missing_bridge_signer=config.hub_allow_missing_bridge_signer,
         )
         self.multisession_key_store_path = hub_root / "compute_credits" / "multisession_keys.json"
         self.multisession_key_store = None

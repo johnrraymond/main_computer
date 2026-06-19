@@ -4,7 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from main_computer.hub_bridge_backend import DevChainHubBridgeBackend, MockChainHubBridgeBackend
+from main_computer.hub_bridge_backend import DevChainHubBridgeBackend, HubBridgeBackendError, MockChainHubBridgeBackend, build_hub_bridge_backend
 
 
 def _write_wallet(path: Path, *, address: str, private_key: str) -> None:
@@ -99,3 +99,42 @@ def test_dev_chain_hub_bridge_backend_records_deposit_and_payout_metadata(tmp_pa
     assert deposit_metadata["dev_chain"]["transaction_hashes"] == ["0x" + "1".zfill(64), "0x" + "2".zfill(64)]
     assert payout_metadata["dev_chain"]["transaction_hashes"] == ["0x" + "3".zfill(64)]
     assert payout_metadata["dev_chain"]["movement"]["amount_units"] == 2
+
+
+def test_public_contract_config_allows_signer_disabled_startup_without_private_deployment(tmp_path: Path) -> None:
+    contracts_path = tmp_path / "main_computer" / "config" / "testnet_contracts.json"
+    contracts_path.parent.mkdir(parents=True, exist_ok=True)
+    contracts_path.write_text(
+        json.dumps({"hub_credit_bridge_escrow": "0x5555555555555555555555555555555555555555"}) + "\n",
+        encoding="utf-8",
+    )
+    missing_deployment_path = tmp_path / "runtime" / "deployments" / "testnet" / "latest.json"
+
+    backend = build_hub_bridge_backend(
+        backend_name="dev-chain",
+        repo_root=tmp_path,
+        dev_chain_deployment_path=missing_deployment_path,
+        contracts_path=contracts_path,
+        network_key="testnet",
+    )
+
+    status = backend.status()  # type: ignore[attr-defined]
+    assert status["backend"] == "dev-chain"
+    assert status["mode"] == "contract-address-only"
+    assert status["escrow_address"] == "0x5555555555555555555555555555555555555555"
+    assert status["signer_configured"] is False
+    assert status["write_operations_enabled"] is False
+    assert status["missing_deployment_path"] == str(missing_deployment_path)
+
+    try:
+        backend.deposit_confirmation_metadata(
+            {
+                "deposit_id": "dep-no-signer",
+                "wallet_address": "0x1111111111111111111111111111111111111111",
+                "credits": 1,
+            }
+        )
+    except HubBridgeBackendError as exc:
+        assert "bridge signer is not configured for testnet" in str(exc)
+    else:
+        raise AssertionError("signer-disabled contract backend should fail bridge writes closed")

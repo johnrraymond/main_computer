@@ -44,6 +44,38 @@ def test_exp_fdb_hub_entrypoint_is_manual_and_declares_fdb_options() -> None:
 
 
 
+
+def test_exp_fdb_hub_unsigned_contract_startup_does_not_default_private_deployment_path(tmp_path, monkeypatch) -> None:
+    from main_computer.exp_fdb_hub import build_experimental_config, build_parser
+
+    monkeypatch.delenv("MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH", raising=False)
+    monkeypatch.delenv("MAIN_COMPUTER_DEV_CHAIN_DEPLOYMENT_PATH", raising=False)
+    monkeypatch.delenv("MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER", raising=False)
+    contracts_path = tmp_path / "main_computer" / "config" / "testnet_contracts.json"
+    contracts_path.parent.mkdir(parents=True, exist_ok=True)
+    contracts_path.write_text('{"hub_credit_bridge_escrow": "0x4444444444444444444444444444444444444444"}\n', encoding="utf-8")
+
+    args = build_parser().parse_args(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--network-key",
+            "testnet",
+            "--bridge-backend",
+            "dev-chain",
+            "--contracts-path",
+            str(contracts_path),
+            "--allow-missing-bridge-signer",
+        ]
+    )
+
+    config, _fdb_config = build_experimental_config(args, port=8785)
+
+    assert config.hub_allow_missing_bridge_signer is True
+    assert config.hub_contracts_path == contracts_path
+    assert config.hub_dev_chain_deployment_path is None
+
+
 def test_exp_fdb_hub_access_logs_are_opt_in_by_default(monkeypatch, capsys) -> None:
     from main_computer.exp_fdb_hub import ExperimentalFoundationDbHubServerHandler
 

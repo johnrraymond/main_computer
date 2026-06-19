@@ -99,8 +99,8 @@ class DevChainBridgeAdapter:
         rpc_url: str,
         network_name: str | None,
         escrow_address: str,
-        requester_wallet: DevChainWallet,
-        bridge_controller_wallet: DevChainWallet,
+        requester_wallet: DevChainWallet | None,
+        bridge_controller_wallet: DevChainWallet | None,
         foundry_image: str = FOUNDRY_IMAGE,
         command_runner: CommandRunner | None = None,
         status: StatusCallback | None = None,
@@ -120,23 +120,36 @@ class DevChainBridgeAdapter:
         cls,
         *,
         repo_root: Path,
-        deployment_path: Path,
+        deployment_path: Path | None,
         contracts_path: Path | None = None,
         network_key: str = "dev",
+        fallback_rpc_url: str | None = None,
+        allow_missing_signer: bool = False,
         command_runner: CommandRunner | None = None,
         status: StatusCallback | None = None,
     ) -> "DevChainBridgeAdapter":
-        deployment = _load_json(deployment_path)
+        deployment: dict[str, Any] = {}
+        deployment_source = deployment_path
+        if deployment_path is not None and deployment_path.exists():
+            deployment = _load_json(deployment_path)
+        elif contracts_path is None:
+            missing_path = deployment_path if deployment_path is not None else Path("<missing>")
+            raise DevChainBridgeError(f"missing dev-chain deployment file: {missing_path}")
+        elif not allow_missing_signer:
+            missing_path = deployment_path if deployment_path is not None else Path("<missing>")
+            raise DevChainBridgeError(f"missing dev-chain deployment file: {missing_path}")
         deployment_chain = deployment.get("chain") if isinstance(deployment.get("chain"), dict) else {}
 
         contract_payload: dict[str, Any] | None = None
-        contract_source = deployment_path
+        contract_source: Path | None = deployment_source
         if contracts_path is not None:
             loaded = load_contract_config(network_key, repo_root=repo_root, path=contracts_path)
             if loaded is not None:
                 contract_source, contract_payload = loaded
         if contract_payload is None:
             contract_payload = deployment
+        if contract_source is None:
+            contract_source = contracts_path or Path("<contracts>")
 
         contract_chain = contract_payload.get("chain") if isinstance(contract_payload.get("chain"), dict) else {}
         escrow = get_contract_record(contract_payload, HUB_CREDIT_BRIDGE_ESCROW_KEY)
@@ -157,6 +170,7 @@ class DevChainBridgeAdapter:
             or deployment_chain.get("container_rpc_url")
             or deployment_chain.get("rpc_url")
             or deployment_chain.get("host_rpc_url")
+            or fallback_rpc_url
             or ""
         ).strip()
         network_name = str(
@@ -175,6 +189,7 @@ class DevChainBridgeAdapter:
             deployment=deployment,
             key="smoke_client",
             role="requester",
+            required=not allow_missing_signer,
         )
         bridge_controller_wallet = _load_wallet_from_record(
             repo_root=repo_root,
@@ -182,7 +197,9 @@ class DevChainBridgeAdapter:
             deployment=deployment,
             key="hub_admin",
             role="bridge-controller",
+            required=not allow_missing_signer,
         )
+        signer_configured = requester_wallet is not None and bridge_controller_wallet is not None
 
         adapter = cls(
             repo_root=repo_root,
@@ -200,8 +217,9 @@ class DevChainBridgeAdapter:
             rpc_url=rpc_url,
             network_name=network_name,
             contract_source=str(contract_source),
-            requester_wallet_address=requester_wallet.address,
-            bridge_controller_address=bridge_controller_wallet.address,
+            signer_configured=signer_configured,
+            requester_wallet_address=requester_wallet.address if requester_wallet is not None else "",
+            bridge_controller_address=bridge_controller_wallet.address if bridge_controller_wallet is not None else "",
         )
         return adapter
 
@@ -222,9 +240,11 @@ class DevChainBridgeAdapter:
             account_wallet_address=account_wallet_address,
             amount_units=amount,
         )
+        requester_wallet = self._require_wallet(self.requester_wallet, role="requester")
+        bridge_controller_wallet = self._require_wallet(self.bridge_controller_wallet, role="bridge-controller")
         deposit_tx = self._send(
             action="depositFor",
-            wallet=self.requester_wallet,
+            wallet=requester_wallet,
             function_signature="depositFor(address,uint256,bytes32,string)",
             function_args=[account_wallet_address, str(amount), contract_id, memo],
             external_id=deposit_id,
@@ -234,7 +254,7 @@ class DevChainBridgeAdapter:
         )
         complete_tx = self._send(
             action="completeDeposit",
-            wallet=self.bridge_controller_wallet,
+            wallet=bridge_controller_wallet,
             function_signature="completeDeposit(bytes32)",
             function_args=[contract_id],
             external_id=deposit_id,
@@ -274,9 +294,10 @@ class DevChainBridgeAdapter:
             worker_wallet_address=worker_wallet_address,
             amount_units=amount,
         )
+        bridge_controller_wallet = self._require_wallet(self.bridge_controller_wallet, role="bridge-controller")
         release_tx = self._send(
             action="releaseWithdrawal",
-            wallet=self.bridge_controller_wallet,
+            wallet=bridge_controller_wallet,
             function_signature="releaseWithdrawal(address,address,uint256,bytes32,string)",
             function_args=[
                 source_account_wallet_address,
@@ -302,6 +323,15 @@ class DevChainBridgeAdapter:
             transaction_hashes=",".join(movement.to_dict()["transaction_hashes"]),
         )
         return movement
+
+    @property
+    def signer_configured(self) -> bool:
+        return self.requester_wallet is not None and self.bridge_controller_wallet is not None
+
+    def _require_wallet(self, wallet: DevChainWallet | None, *, role: str) -> DevChainWallet:
+        if wallet is None:
+            raise DevChainBridgeError(f"dev-chain bridge signer is not configured for {role}.")
+        return wallet
 
     def _send(
         self,
@@ -424,13 +454,16 @@ def _load_json(path: Path) -> dict[str, Any]:
 def _load_wallet_from_record(
     *,
     repo_root: Path,
-    deployment_path: Path,
+    deployment_path: Path | None,
     deployment: dict[str, Any],
     key: str,
     role: str,
-) -> DevChainWallet:
+    required: bool = True,
+) -> DevChainWallet | None:
     record = deployment.get(key)
     if not isinstance(record, dict):
+        if not required:
+            return None
         raise DevChainBridgeError(f"deployment is missing {key} wallet metadata: {deployment_path}")
     address = str(record.get("address") or "").strip()
     wallet_path_text = str(record.get("wallet_path") or "").strip()
@@ -454,14 +487,15 @@ def _load_wallet_from_record(
     return DevChainWallet(address=address, private_key=private_key, wallet_path=wallet_path, role=role)
 
 
-def _resolve_runtime_path(*, repo_root: Path, deployment_path: Path, path_text: str) -> Path:
+def _resolve_runtime_path(*, repo_root: Path, deployment_path: Path | None, path_text: str) -> Path:
     raw = Path(path_text)
     candidates: list[Path] = []
     if raw.is_absolute():
         candidates.append(raw)
     else:
         candidates.append(repo_root / raw)
-        candidates.append(deployment_path.parent / raw)
+        if deployment_path is not None:
+            candidates.append(deployment_path.parent / raw)
         if raw.parts and raw.parts[0] != "runtime":
             candidates.append(repo_root / "runtime" / raw)
     for candidate in candidates:

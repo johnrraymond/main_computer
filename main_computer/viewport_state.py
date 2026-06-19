@@ -210,6 +210,7 @@ APPLICATION_ROUTE_NAMES = {
     "spreadsheet",
     "onlyoffice",
     "task-manager",
+    "conductor",
     "terminal",
     "chat-console",
     "ai-control",

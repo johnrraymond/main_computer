@@ -1,0 +1,144 @@
+.conductor-app {
+  display: none;
+  gap: 1rem;
+  grid-template-columns: minmax(280px, 0.8fr) minmax(360px, 1.4fr);
+  min-height: 100%;
+}
+
+.conductor-sidebar,
+.conductor-main {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+}
+
+.conductor-card {
+  border: 1px solid var(--panel-border, rgba(255,255,255,0.18));
+  border-radius: 0.75rem;
+  background: var(--panel-bg, rgba(255,255,255,0.06));
+  padding: 1rem;
+}
+
+.conductor-card strong {
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+.conductor-form {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.conductor-form label {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+}
+
+.conductor-form input,
+.conductor-form select,
+.conductor-form textarea {
+  width: 100%;
+}
+
+.conductor-form textarea {
+  min-height: 14rem;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.conductor-confirm {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+
+.conductor-confirm input {
+  width: auto;
+}
+
+.conductor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.conductor-output,
+.conductor-list {
+  max-height: 22rem;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.conductor-item {
+  border-top: 1px solid var(--panel-border, rgba(255,255,255,0.16));
+  padding: 0.65rem 0;
+}
+
+.conductor-item:first-child {
+  border-top: 0;
+}
+
+.conductor-item code {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.conductor-empty {
+  opacity: 0.75;
+}
+
+.conductor-help {
+  margin-top: -0.2rem;
+  opacity: 0.78;
+}
+
+.conductor-script-controls {
+  display: grid;
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+}
+
+.conductor-script-controls label {
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.9rem;
+}
+
+.conductor-script-controls input,
+.conductor-script-controls select {
+  width: 100%;
+}
+
+.conductor-script-list {
+  max-height: 28rem;
+}
+
+.conductor-script-item span {
+  display: block;
+  opacity: 0.8;
+}
+
+.conductor-script-item p {
+  margin: 0.35rem 0 0;
+}
+
+
+.conductor-script-examples {
+  display: grid;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+
+.conductor-script-example {
+  border-left: 2px solid var(--panel-border, rgba(255,255,255,0.18));
+  padding-left: 0.5rem;
+}
+
+.conductor-script-example span {
+  display: block;
+  font-size: 0.82rem;
+  opacity: 0.75;
+}
+
+.conductor-script-example code {
+  margin-top: 0.15rem;
+}

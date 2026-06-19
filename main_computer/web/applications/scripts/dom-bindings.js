@@ -4,6 +4,7 @@
     <!-- @include applications/scripts/dom-bindings/spreadsheet.js -->
     <!-- @include applications/scripts/dom-bindings/onlyoffice.js -->
     <!-- @include applications/scripts/dom-bindings/task-manager.js -->
+    <!-- @include applications/scripts/dom-bindings/conductor.js -->
     <!-- @include applications/scripts/dom-bindings/terminal.js -->
     <!-- @include applications/scripts/dom-bindings/chat-console.js -->
     <!-- @include applications/scripts/dom-bindings/ai-control.js -->

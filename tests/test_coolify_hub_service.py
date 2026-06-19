@@ -65,6 +65,8 @@ def _args(**overrides):
         "hub_chain_rpc_url": "",
         "bridge_backend": "",
         "dev_chain_deployment_path": "",
+        "contracts_path": "",
+        "allow_missing_bridge_signer": False,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -632,7 +634,6 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertIn("docker_compose_raw", payload)
         self.assertNotIn("start_command", payload)
 
-
     def test_testnet_exp_fdb_sync_uses_services_endpoint_not_applications_public(self) -> None:
         profile = coolify_hub_service.load_hub_network_registry().get("testnet")
         args = _args(
@@ -676,6 +677,17 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(payload["environment_uuid"], "env-uuid")
         self.assertIn("docker_compose_raw", payload)
         self.assertNotIn("start_command", payload)
+        compose = coolify_hub_service.render_fdb_sidecar_hub_compose(
+            profile,
+            args,
+            service_name="main-computer-testnet-hub",
+            runtime_dir="/data/main-computer/hub/testnet-exp-fdb",
+        )
+        self.assertIn("MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER: \"true\"", compose)
+        self.assertIn("MAIN_COMPUTER_HUB_CONTRACTS_PATH: \"/app/main_computer/config/testnet_contracts.json\"", compose)
+        self.assertIn("--allow-missing-bridge-signer", compose)
+        self.assertIn("--contracts-path /app/main_computer/config/testnet_contracts.json", compose)
+        self.assertNotIn("--dev-chain-deployment-path /app/runtime/deployments/testnet/latest.json", compose)
 
     def test_testnet_check_modes_warn_by_default(self) -> None:
         profile = coolify_hub_service.load_hub_network_registry().get("testnet")
@@ -819,6 +831,36 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(command[command.index("--cluster-file") + 1], "/data/main-computer/hub/testnet-exp-fdb/fdb.cluster")
         self.assertEqual(command[command.index("--namespace") + 1], "main-computer-testnet-exp-fdb")
         self.assertEqual(command[command.index("--dev-chain-deployment-path") + 1], "/app/runtime/deployments/testnet/latest.json")
+        self.assertEqual(command[command.index("--contracts-path") + 1], "/app/main_computer/config/testnet_contracts.json")
+
+    def test_runtime_launcher_can_enable_unsigned_contract_startup_from_env(self) -> None:
+        args = run_exp_fdb_hub.parse_args([])
+        command = run_exp_fdb_hub.build_exp_fdb_hub_command(
+            args,
+            environ={
+                "PORT": "8785",
+                "MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER": "true",
+            },
+        )
+
+        self.assertIn("--allow-missing-bridge-signer", command)
+        self.assertEqual(command[command.index("--contracts-path") + 1], "/app/main_computer/config/testnet_contracts.json")
+        self.assertNotIn("--dev-chain-deployment-path", command)
+        self.assertFalse(any(part.endswith("/runtime/deployments/testnet/latest.json") for part in command))
+
+    def test_runtime_launcher_preserves_explicit_signer_manifest_when_unsigned_startup_is_enabled(self) -> None:
+        args = run_exp_fdb_hub.parse_args(["--dev-chain-deployment-path", "/secrets/testnet-deployment.json"])
+        command = run_exp_fdb_hub.build_exp_fdb_hub_command(
+            args,
+            environ={
+                "PORT": "8785",
+                "MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER": "true",
+            },
+        )
+
+        self.assertIn("--allow-missing-bridge-signer", command)
+        self.assertEqual(command[command.index("--dev-chain-deployment-path") + 1], "/secrets/testnet-deployment.json")
+        self.assertEqual(command[command.index("--contracts-path") + 1], "/app/main_computer/config/testnet_contracts.json")
 
     def test_runtime_launcher_cli_network_overrides_port_inference(self) -> None:
         args = run_exp_fdb_hub.parse_args(["--network", "mainnet"])

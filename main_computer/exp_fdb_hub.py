@@ -165,8 +165,13 @@ def build_experimental_config(args: argparse.Namespace, *, port: int) -> tuple[M
     hub_url = args.hub_url or f"http://{args.host}:{port}"
     network_key = str(getattr(args, "network_key", "exp-fdb") or "exp-fdb").strip() or "exp-fdb"
     bridge_backend = _hub_bridge_backend_from_args(args, base)
+    allow_missing_bridge_signer = bool(getattr(args, "allow_missing_bridge_signer", False)) or base.hub_allow_missing_bridge_signer
     dev_chain_deployment_path = Path(args.dev_chain_deployment_path) if args.dev_chain_deployment_path else base.hub_dev_chain_deployment_path
-    if dev_chain_deployment_path is None and bridge_backend not in {"mock", "mock-chain", "mock-chain-lite"}:
+    if (
+        dev_chain_deployment_path is None
+        and bridge_backend not in {"mock", "mock-chain", "mock-chain-lite"}
+        and not allow_missing_bridge_signer
+    ):
         dev_chain_deployment_path = _default_dev_chain_deployment_path(repo_root=repo_root, network_key=network_key)
     if dev_chain_deployment_path is not None and not dev_chain_deployment_path.is_absolute():
         dev_chain_deployment_path = repo_root / dev_chain_deployment_path
@@ -202,6 +207,7 @@ def build_experimental_config(args: argparse.Namespace, *, port: int) -> tuple[M
         hub_bridge_backend=bridge_backend,
         hub_dev_chain_deployment_path=dev_chain_deployment_path,
         hub_contracts_path=contracts_path,
+        hub_allow_missing_bridge_signer=allow_missing_bridge_signer,
         hub_ring_config_path=ring_config_path,
         chain_id=chain_id,
         chain_id_source="arg" if chain_id_arg is not None else base.chain_id_source,
@@ -568,8 +574,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hub-root", type=Path, default=DEFAULT_EXP_FDB_HUB_ROOT, help="Separate runtime root for the experimental hub.")
     parser.add_argument("--cluster-file", type=Path, default=DEFAULT_EXP_FDB_CLUSTER_FILE, help="FoundationDB cluster file written by the FDB smoke.")
     parser.add_argument("--bridge-backend", choices=["mock-chain", "dev-chain", "credit-bridge-contract"], default=None, help="Hub bridge backend for bridge confirm endpoints. Defaults to dev-chain/contract-backed mode; use mock-chain only for explicit labs.")
-    parser.add_argument("--dev-chain-deployment-path", type=Path, default=None, help="Private deployment metadata JSON used for bridge signing wallet paths. Defaults to runtime/deployments/<network-key>/latest.json when contract mode is selected.")
+    parser.add_argument("--dev-chain-deployment-path", type=Path, default=None, help="Private deployment metadata JSON used for bridge signing wallet paths. Defaults to runtime/deployments/<network-key>/latest.json in contract mode unless signer-disabled startup is allowed.")
     parser.add_argument("--contracts-path", type=Path, default=None, help="Public contract discovery JSON. Defaults to main_computer/config/<network-key>_contracts.json when contract mode is selected.")
+    parser.add_argument(
+        "--allow-missing-bridge-signer",
+        action="store_true",
+        help="Allow contract-aware Hub startup from public contract config when private bridge signer metadata is not mounted.",
+    )
     parser.add_argument("--ring-config-path", type=Path, default=None, help="JSON ring admission config path. Bad explicit configs fail startup.")
     parser.add_argument("--namespace", default=DEFAULT_EXP_FDB_NAMESPACE, help="FDB tuple namespace for this experiment.")
     parser.add_argument("--api-version", type=int, default=740, help="FoundationDB API version to request.")

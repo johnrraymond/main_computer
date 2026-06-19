@@ -12,6 +12,7 @@ from main_computer.viewport_routes_applications import ViewportApplicationRoutes
 from main_computer.viewport_routes_aider import ViewportAiderRoutesMixin
 from main_computer.viewport_routes_calculator import ViewportCalculatorRoutesMixin
 from main_computer.viewport_routes_chat_console import ViewportChatConsoleRoutesMixin
+from main_computer.viewport_routes_conductor import ViewportConductorRoutesMixin
 from main_computer.viewport_routes_component_docs import ViewportComponentDocsRoutesMixin
 from main_computer.viewport_routes_debug import ViewportDebugRoutesMixin
 from main_computer.viewport_routes_docs import ViewportDocsRoutesMixin
@@ -28,6 +29,7 @@ from main_computer.viewport_routes_task import ViewportTaskRoutesMixin
 from main_computer.viewport_routes_terminal import ViewportTerminalRoutesMixin
 from main_computer.activity import ActivityBus
 from main_computer.chat_ai_subprocess import ChatAISubprocessManager
+from main_computer.conductor import ConductorService
 from main_computer.dev_chain_runtime import apply_dev_chain_runtime_config
 from main_computer.executor_backend import create_executor_backend
 from main_computer.mounted_windows_paths import build_mounted_windows_path_resolver
@@ -104,6 +106,7 @@ class ViewportServer(ThreadingHTTPServer):
             expected_chain_id_source=config.energy_chain_id_source,
         )
         self.task_manager = TaskManagerService(self.debug_root, default_port=int(self.server_port), control_root=self.control_root)
+        self.conductor = ConductorService(self.debug_root)
         self.git_tools = GitToolsService(self.debug_root)
         self.revisions = RevisionControl(self.debug_root, self.debug_root / "revision_control")
         self.debug_asset_revisions = DebugAssetRevisionControl(
@@ -151,6 +154,7 @@ class ViewportHandler(
     ViewportAiderRoutesMixin,
     ViewportCalculatorRoutesMixin,
     ViewportChatConsoleRoutesMixin,
+    ViewportConductorRoutesMixin,
     ViewportComponentDocsRoutesMixin,
     ViewportDebugRoutesMixin,
     ViewportDocsRoutesMixin,

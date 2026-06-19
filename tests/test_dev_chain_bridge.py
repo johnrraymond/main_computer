@@ -4,7 +4,9 @@ import json
 import subprocess
 from pathlib import Path
 
-from main_computer.dev_chain_bridge import DevChainBridgeAdapter, bytes32_from_text
+import pytest
+
+from main_computer.dev_chain_bridge import DevChainBridgeAdapter, DevChainBridgeError, bytes32_from_text
 
 
 def _write_wallet(path: Path, *, address: str, private_key: str) -> None:
@@ -157,3 +159,29 @@ def test_dev_chain_bridge_adapter_prefers_public_contract_config_for_contract_ad
     assert adapter.rpc_url == "http://deployment-rpc"
 
 
+def test_dev_chain_bridge_adapter_can_start_unsigned_from_public_contract_config(tmp_path: Path) -> None:
+    escrow = "0x4444444444444444444444444444444444444444"
+    contracts_path = tmp_path / "main_computer" / "config" / "testnet_contracts.json"
+    contracts_path.parent.mkdir(parents=True, exist_ok=True)
+    contracts_path.write_text(json.dumps({"hub_credit_bridge_escrow": escrow}) + "\n", encoding="utf-8")
+
+    adapter = DevChainBridgeAdapter.from_deployment(
+        repo_root=tmp_path,
+        deployment_path=tmp_path / "runtime" / "deployments" / "testnet" / "latest.json",
+        contracts_path=contracts_path,
+        network_key="testnet",
+        fallback_rpc_url="https://testnet-rpc.example.invalid",
+        allow_missing_signer=True,
+        command_runner=lambda command: subprocess.CompletedProcess(command, 0, stdout="0x" + "a" * 64, stderr=""),
+    )
+
+    assert adapter.escrow_address == escrow
+    assert adapter.rpc_url == "https://testnet-rpc.example.invalid"
+    assert adapter.signer_configured is False
+    with pytest.raises(DevChainBridgeError, match="signer is not configured"):
+        adapter.record_requester_deposit(
+            account_wallet_address="0x1111111111111111111111111111111111111111",
+            amount_units=1,
+            deposit_id="dep-unsigned",
+            memo="unsigned",
+        )

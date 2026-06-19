@@ -8,6 +8,7 @@ from pathlib import Path
 
 from main_computer.catalog import ProjectCatalog
 from main_computer.config import MainComputerConfig
+from main_computer.conductor import ConductorService
 from main_computer.diagnostics import LEVELS as DIAGNOSTIC_LEVELS
 from main_computer.diagnostics import run_from_args as run_diagnostics_from_args
 from main_computer.harness import run_from_args as run_harness_from_args
@@ -341,6 +342,42 @@ def cmd_recurrent_thinking(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def _payload_from_args(args: argparse.Namespace) -> dict[str, object]:
+    if getattr(args, "payload_json", None):
+        data = json.loads(args.payload_json)
+        if not isinstance(data, dict):
+            raise ValueError("--payload-json must decode to an object.")
+        return data
+    if getattr(args, "payload_file", None):
+        data = json.loads(Path(args.payload_file).read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("--payload-file must contain a JSON object.")
+        return data
+    return {}
+
+
+def cmd_conductor(args: argparse.Namespace) -> int:
+    root = Path(getattr(args, "repo_root", None) or Path.cwd()).resolve()
+    conductor = ConductorService(root)
+    command = str(args.conductor_command or "status")
+    if command == "status":
+        result = conductor.status()
+    elif command == "submit":
+        result = conductor.submit(
+            action=args.action,
+            payload=_payload_from_args(args),
+            run_at=args.run_at,
+            confirm=bool(args.confirm),
+            note=args.note or "",
+        )
+    elif command == "run-due":
+        result = conductor.run_due(now=args.now, limit=args.limit)
+    else:
+        raise ValueError(f"Unsupported conductor command: {command}")
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0 if result.get("ok") else 1
+
 def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--workspace", help="Workspace root to scan.")
     parser.add_argument("--provider", choices=["ollama", "openai", "hub"], help="LLM provider.")
@@ -602,6 +639,31 @@ def build_parser() -> argparse.ArgumentParser:
     recurrent.add_argument("--top", type=int, default=50, help="Maximum number of recurrent ideas to emit.")
     recurrent.add_argument("--max-file-bytes", type=int, default=1_500_000, help="Skip files larger than this many bytes.")
     recurrent.set_defaults(func=cmd_recurrent_thinking)
+
+
+    conductor = sub.add_parser(
+        "conductor",
+        help="Plan, schedule, and run local subprocess-backed conductor actions.",
+    )
+    conductor.add_argument("--repo-root", type=Path, default=Path.cwd(), help="Repository/runtime root. Defaults to the current directory.")
+    conductor_sub = conductor.add_subparsers(dest="conductor_command", required=True)
+
+    conductor_status = conductor_sub.add_parser("status", help="Show conductor state, scheduled jobs, and public key/DNS records.")
+    conductor_status.set_defaults(func=cmd_conductor)
+
+    conductor_submit = conductor_sub.add_parser("submit", help="Submit a conductor action now or schedule it for later.")
+    conductor_submit.add_argument("--action", required=True, help="Action id, for example dns.record.upsert or local.secret.generate.")
+    conductor_submit.add_argument("--payload-json", default="", help="JSON object payload for the action.")
+    conductor_submit.add_argument("--payload-file", type=Path, help="Path to a JSON object payload file.")
+    conductor_submit.add_argument("--run-at", default="", help="Optional ISO datetime. Future values schedule the action.")
+    conductor_submit.add_argument("--confirm", action="store_true", help="Apply the side effect. Omit for dry-run/planning.")
+    conductor_submit.add_argument("--note", default="", help="Operator note recorded with the job.")
+    conductor_submit.set_defaults(func=cmd_conductor)
+
+    conductor_due = conductor_sub.add_parser("run-due", help="Run due scheduled conductor jobs.")
+    conductor_due.add_argument("--now", default="", help="Optional ISO datetime used for due-job testing.")
+    conductor_due.add_argument("--limit", type=int, default=10, help="Maximum due jobs to run.")
+    conductor_due.set_defaults(func=cmd_conductor)
 
     return parser
 

@@ -1,0 +1,89 @@
+<div class="conductor-app" id="conductor-app" aria-label="Conductor">
+  <section class="conductor-sidebar">
+    <div class="conductor-card" data-widget-label="Conductor Status">
+      <strong>Conductor</strong>
+      <p id="conductor-status">Conductor ready.</p>
+      <div class="conductor-counts" id="conductor-counts">No state loaded yet.</div>
+      <div class="conductor-actions">
+        <button type="button" id="conductor-refresh">Refresh</button>
+        <button type="button" id="conductor-run-due">Run Due</button>
+      </div>
+    </div>
+    <form class="conductor-card conductor-form" id="conductor-action-form" data-widget-label="Conductor Action Form">
+      <strong>Action</strong>
+      <label>action
+        <select id="conductor-action">
+          <option value="dns.record.plan">DNS record plan</option>
+          <option value="dns.record.upsert">DNS record upsert</option>
+          <option value="local.secret.generate">Generate local secret</option>
+          <option value="script.run">Run catalog script</option>
+          <option value="ssl.key.generate">Generate SSL key/cert</option>
+        </select>
+      </label>
+      <label>run at
+        <input id="conductor-run-at" type="datetime-local">
+      </label>
+      <label>note
+        <input id="conductor-note" placeholder="operator note">
+      </label>
+      <label class="conductor-confirm">
+        <input id="conductor-confirm" type="checkbox">
+        confirmed side effect
+      </label>
+      <label>payload JSON
+        <textarea id="conductor-payload" spellcheck="false">{
+  "zone": "example.test",
+  "record_name": "worker",
+  "record_type": "A",
+  "record_value": "127.0.0.1",
+  "ttl": 300,
+  "provider_mode": "self-hosted"
+}</textarea>
+      </label>
+      <div class="conductor-actions">
+        <button type="submit" id="conductor-submit">Plan / Submit</button>
+        <button type="button" id="conductor-fill-dns">DNS</button>
+        <button type="button" id="conductor-fill-secret">Secret</button>
+        <button type="button" id="conductor-fill-script">Script</button>
+        <button type="button" id="conductor-fill-ssl">SSL</button>
+      </div>
+    </form>
+  </section>
+  <section class="conductor-main">
+    <div class="conductor-card" data-widget-label="Conductor Result">
+      <strong>Result</strong>
+      <pre class="conductor-output" id="conductor-result">Submit a dry-run plan or confirmed action to see worker output.</pre>
+    </div>
+    <div class="conductor-card conductor-script-card" data-widget-label="Conductor Script Catalog">
+      <strong>Script catalog</strong>
+      <p class="conductor-help">Discovered repo scripts can be planned, confirmed, or scheduled through the conductor worker.</p>
+      <div class="conductor-script-controls">
+        <label>area of interest
+          <select id="conductor-script-area"></select>
+        </label>
+        <label>search scripts/docs
+          <input id="conductor-script-search" placeholder="filter by path, docs, command, risk">
+        </label>
+        <label>script
+          <select id="conductor-script-select"></select>
+        </label>
+        <label>args
+          <input id="conductor-script-args" placeholder="optional shell-style args">
+        </label>
+        <label>timeout seconds
+          <input id="conductor-script-timeout" type="number" min="1" max="3600" value="60">
+        </label>
+        <button type="button" id="conductor-fill-selected-script">Use Selected Script</button>
+      </div>
+      <div class="conductor-list conductor-script-list" id="conductor-scripts"><div class="conductor-empty">No script catalog loaded.</div></div>
+    </div>
+    <div class="conductor-card" data-widget-label="Conductor Jobs">
+      <strong>Jobs</strong>
+      <div class="conductor-list" id="conductor-jobs"><div class="conductor-empty">No conductor jobs loaded.</div></div>
+    </div>
+    <div class="conductor-card" data-widget-label="Conductor DNS and Keys">
+      <strong>Desired DNS + Generated Keys</strong>
+      <div class="conductor-list" id="conductor-records"><div class="conductor-empty">No DNS or key records loaded.</div></div>
+    </div>
+  </section>
+</div>

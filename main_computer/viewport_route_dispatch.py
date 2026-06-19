@@ -1905,6 +1905,9 @@ def dispatch_get(self) -> None:
         self.server.signal("api-control-panel-status")
         self._send_json(_control_panel_status(self))
         return
+    if route_path == "/api/applications/conductor/status":
+        self._handle_conductor_status()
+        return
     if route_path == "/api/activity/meta-model":
         self.server.signal("api-activity-meta-model")
         self._send_json({"ok": True, "meta_model": self.server.activity.meta_model(self.server)})
@@ -2180,6 +2183,12 @@ def dispatch_post(self) -> None:
         return
     if self.path == "/api/applications/chat-console/attachments":
         self._handle_chat_console_attachment_upload()
+        return
+    if route_path == "/api/applications/conductor/action":
+        self._handle_conductor_action()
+        return
+    if route_path == "/api/applications/conductor/run-due":
+        self._handle_conductor_run_due()
         return
     if self.path == "/api/applications/task/overview":
         self._handle_task_overview()

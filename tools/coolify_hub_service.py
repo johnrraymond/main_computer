@@ -608,6 +608,13 @@ def dev_chain_deployment_path(profile: HubNetworkProfile, args: argparse.Namespa
     return f"/app/runtime/deployments/{profile.network_key}/latest.json"
 
 
+def contracts_path(profile: HubNetworkProfile, args: argparse.Namespace, *, container_path: bool = True) -> str:
+    explicit = str(getattr(args, "contracts_path", "") or "").strip()
+    if explicit:
+        return container_posix_path(explicit) if container_path else explicit
+    return f"/app/main_computer/config/{profile.network_key}_contracts.json"
+
+
 def local_test_deployments_host_dir(args: argparse.Namespace | None = None) -> Path:
     source_root = local_test_source_dir(args)
     return source_root / "runtime" / "deployments"
@@ -654,6 +661,7 @@ def hub_command_parts(profile: HubNetworkProfile, runtime_dir: str, args: argpar
     ]
     if hub_bridge_backend(args) not in {"mock", "mock-chain", "mock-chain-lite"}:
         parts.extend(["--dev-chain-deployment-path", dev_chain_deployment_path(profile, args)])
+        parts.extend(["--contracts-path", contracts_path(profile, args)])
     if profile.chain_id is not None:
         parts.extend(["--chain-id", str(profile.chain_id)])
     runtime_chain_rpc_url = hub_chain_rpc_url(profile, args)
@@ -1043,6 +1051,7 @@ def render_remote_fdb_sidecar_hub_compose(profile: HubNetworkProfile, args: argp
         f"      HUB_HEALTH_PORT: {yaml_quote(str(profile.hub_bind_port))}",
         f"      PORT: {yaml_quote(str(profile.hub_bind_port))}",
         f"      MAIN_COMPUTER_HUB_NETWORK: {yaml_quote(profile.network_key)}",
+        f"      MAIN_COMPUTER_HUB_CONTRACTS_PATH: {yaml_quote(contracts_path(profile, args))}",
         f"      MAIN_COMPUTER_HUB_ROOT: {yaml_quote(runtime_dir)}",
         f"      MAIN_COMPUTER_HUB_FDB_NAMESPACE: {yaml_quote(exp_fdb_namespace(profile, args))}",
         f"      FDB_CLUSTER_FILE_CONTENTS: {yaml_quote(cluster_contents)}",
@@ -1928,6 +1937,7 @@ def plan_result(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[st
         "chain_id": profile.chain_id,
         "bridge_backend": hub_bridge_backend(args),
         "dev_chain_deployment_path": dev_chain_deployment_path(profile, args),
+        "contracts_path": contracts_path(profile, args),
         "application_payload": application_payload(profile, args, service_name=service_name, runtime_dir=runtime_dir),
         "hub_start_command": hub_start_command(profile, runtime_dir, args),
         "storage_payload": storage_payload(profile, runtime_dir=runtime_dir, args=args),
@@ -2287,8 +2297,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--dev-chain-deployment-path",
         default="",
         help=(
-            "Container path to the contract deployment metadata used by dev-chain bridge mode. "
+            "Container path to the private deployment metadata used by dev-chain signing mode. "
             "Defaults to /app/runtime/deployments/<network>/latest.json; local `test` bind-mounts runtime/deployments there."
+        ),
+    )
+    parser.add_argument(
+        "--contracts-path",
+        default="",
+        help=(
+            "Container path to public contract-address config. Defaults to "
+            "/app/main_computer/config/<network>_contracts.json."
         ),
     )
 
