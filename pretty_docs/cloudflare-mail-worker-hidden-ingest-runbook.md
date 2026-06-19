@@ -191,7 +191,7 @@ python tools/cloudflare_mail_worker.py prepare `
   --domain greatlibrary.io `
   --ingest-host mail-ingest.greatlibrary.io `
   --worker-name greatlibrary-mail-ingest `
-  --coolify-url http://144.126.212.9:8000/projects `
+  --coolify-url http://remote-host:8000/projects `
   --coolify-service-name greatlibrary-mail-ingest `
   --forward-local johnrraymond `
   --forward-to johnrraymondesq@gmail.com `
@@ -249,13 +249,13 @@ python tools/cloudflare_mail_worker.py coolify-apply `
 The deployer accepts Coolify UI URLs such as:
 
 ```text
-http://144.126.212.9:8000/projects
+http://remost-host:8000/projects
 ```
 
 and normalizes them to the API base:
 
 ```text
-http://144.126.212.9:8000
+http://remote-host:8000
 ```
 
 ### Coolify selector options

@@ -24,12 +24,12 @@ def _load_module():
 def test_plan_normalizes_coolify_ui_url_and_defaults_to_mail_ingest_host() -> None:
     module = _load_module()
 
-    plan = module.build_plan(domain="greatlibrary.io", coolify_url="http://144.126.212.9:8000/projects")
+    plan = module.build_plan(domain="greatlibrary.io", coolify_url="http://remote-host:8000/projects")
 
     assert plan.domain == "greatlibrary.io"
     assert plan.ingest_host == "mail-ingest.greatlibrary.io"
     assert plan.ingest_url == "https://mail-ingest.greatlibrary.io/inbound/cloudflare-email"
-    assert plan.coolify_url == "http://144.126.212.9:8000"
+    assert plan.coolify_url == "http://remote-host:8000"
     assert plan.worker_name == "greatlibrary.io-mail-worker"
     assert plan.catch_all is True
     assert any("Cloudflare Email Routing" in warning for warning in plan.warnings)
@@ -127,7 +127,7 @@ def test_parse_args_exposes_coolify_deployer_options() -> None:
     args = module.parse_args([
         "apply",
         "--domain", "greatlibrary.io",
-        "--coolify-url", "http://144.126.212.9:8000/projects",
+        "--coolify-url", "http://remote-host:8000/projects",
         "--coolify-token-env", "MAIN_COMPUTER_COOLIFY_TOKEN",
         "--coolify-project-name", "Default",
         "--coolify-server-name", "main-server",
@@ -151,7 +151,7 @@ def test_coolify_dry_run_sync_uses_normalized_url_and_service_name() -> None:
     args = module.parse_args([
         "coolify-sync",
         "--domain", "greatlibrary.io",
-        "--coolify-url", "http://144.126.212.9:8000/projects",
+        "--coolify-url", "http://remote-host:8000/projects",
         "--coolify-service-name", "greatlibrary-mail-ingest",
         "--coolify-environment", "mail",
         "--dry-run",
@@ -162,7 +162,7 @@ def test_coolify_dry_run_sync_uses_normalized_url_and_service_name() -> None:
     assert result["ok"] is True
     assert result["dry_run"] is True
     assert result["service_name"] == "greatlibrary-mail-ingest"
-    assert result["coolify_url"] == "http://144.126.212.9:8000"
+    assert result["coolify_url"] == "http://remote-host:8000"
     assert result["coolify_environment"] == "mail"
     assert "docker_compose_raw" not in result
     assert "MAIL_INGEST_SECRET" in result["compose"]
@@ -176,7 +176,7 @@ def test_prepare_creates_contract_secret_and_manual_cloudflare_artifacts(tmp_pat
         "--domain", "greatlibrary.io",
         "--ingest-host", "mail-ingest.greatlibrary.io",
         "--worker-name", "greatlibrary-mail-ingest",
-        "--coolify-url", "http://144.126.212.9:8000/projects",
+        "--coolify-url", "http://remote-host:8000/projects",
         "--forward-local", "johnrraymond",
         "--forward-to", "johnrraymond@gmail.com",
         "--drop-local", "info",
@@ -265,7 +265,7 @@ def test_contract_round_trip_reconstructs_plan_and_secret(tmp_path: Path) -> Non
         ingest_host="mail-ingest.greatlibrary.io",
         worker_name="greatlibrary-mail-ingest",
         service_name="greatlibrary-mail-ingest",
-        coolify_url="http://144.126.212.9:8000/projects",
+        coolify_url="http://remote-host:8000/projects",
     )
     routing = module.build_routing_contract(
         domain=plan.domain,
@@ -285,7 +285,7 @@ def test_contract_round_trip_reconstructs_plan_and_secret(tmp_path: Path) -> Non
     assert reconstructed.ingest_host == "mail-ingest.greatlibrary.io"
     assert reconstructed.worker_name == "greatlibrary-mail-ingest"
     assert reconstructed.service_name == "greatlibrary-mail-ingest"
-    assert reconstructed.coolify_url == "http://144.126.212.9:8000"
+    assert reconstructed.coolify_url == "http://remote-host:8000"
     assert secret == "stage-two-test-secret-value"
     assert source == "contract:secrets/mail_ingest_secret"
     assert secret_path == tmp_path / "secrets" / "mail_ingest_secret"
@@ -298,7 +298,7 @@ def test_coolify_apply_from_contract_dry_run_injects_and_redacts_secret(tmp_path
         ingest_host="mail-ingest.greatlibrary.io",
         worker_name="greatlibrary-mail-ingest",
         service_name="greatlibrary-mail-ingest",
-        coolify_url="http://144.126.212.9:8000/projects",
+        coolify_url="http://remote-host:8000/projects",
     )
     routing = module.build_routing_contract(
         domain=plan.domain,
@@ -330,7 +330,7 @@ def test_coolify_apply_from_contract_dry_run_injects_and_redacts_secret(tmp_path
     assert "<redacted:MAIL_INGEST_SECRET>" in sync_result["compose"]
     assert "MAIL_INGEST_SECRET:" in sync_result["compose"]
     assert "Host(`mail-ingest.greatlibrary.io`)" in sync_result["compose"]
-    assert sync_result["coolify_url"] == "http://144.126.212.9:8000"
+    assert sync_result["coolify_url"] == "http://remote-host:8000"
 
 
 def test_coolify_apply_action_can_parse_without_domain(tmp_path: Path) -> None:
@@ -359,7 +359,7 @@ def test_cloudflare_guide_from_contract_redacts_secret_by_default(tmp_path: Path
         ingest_host="mail-ingest.greatlibrary.io",
         worker_name="greatlibrary-mail-ingest",
         service_name="greatlibrary-mail-ingest",
-        coolify_url="http://144.126.212.9:8000/projects",
+        coolify_url="http://remote-host:8000/projects",
     )
     routing = module.build_routing_contract(
         domain=plan.domain,

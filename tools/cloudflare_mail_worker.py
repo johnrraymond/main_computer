@@ -1549,7 +1549,7 @@ def sh(value: str) -> str:
 
 
 def render_commands(plan: CloudflareMailWorkerPlan) -> str:
-    coolify = plan.coolify_url or "http://144.126.212.9:8000"
+    coolify = plan.coolify_url or "http://remote-host:8000"
     contract_path = f"runtime/cloudflare-mail-worker/{plan.domain}/mail-worker-contract.json"
     return textwrap.dedent(
         f"""\
@@ -2096,7 +2096,7 @@ def render_docs() -> str:
               --domain greatlibrary.io \\
               --ingest-host mail-ingest.greatlibrary.io \\
               --worker-name greatlibrary-mail-ingest \\
-              --coolify-url http://144.126.212.9:8000/projects \\
+              --coolify-url http://remote-host:8000/projects \\
               --coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN \\
               --coolify-environment mail \\
               --coolify-service-name greatlibrary-mail-ingest \\
@@ -2115,7 +2115,7 @@ def render_docs() -> str:
 
             python tools/cloudflare_mail_worker.py coolify-discover \\
               --domain greatlibrary.io \\
-              --coolify-url http://144.126.212.9:8000/projects \\
+              --coolify-url http://remote-host:8000/projects \\
               --coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN
 
         Dry-run and apply the Coolify raw Compose service:
@@ -2123,7 +2123,7 @@ def render_docs() -> str:
             python tools/cloudflare_mail_worker.py apply \\
               --domain greatlibrary.io \\
               --ingest-host mail-ingest.greatlibrary.io \\
-              --coolify-url http://144.126.212.9:8000/projects \\
+              --coolify-url http://remote-host:8000/projects \\
               --coolify-token-env MAIN_COMPUTER_COOLIFY_TOKEN \\
               --coolify-project-name Default \\
               --coolify-server-name main-server \\
