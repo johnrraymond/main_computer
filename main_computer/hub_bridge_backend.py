@@ -76,8 +76,11 @@ class ContractOnlyHubBridgeBackend:
             "signer_configured": False,
             "bridge_controller_address": None,
             "requester_wallet_address": None,
+            "smoke_client_wallet_address": None,
+            "smoke_bridge_enabled": False,
             "missing_deployment_path": str(self.missing_deployment_path) if self.missing_deployment_path else None,
             "write_operations_enabled": False,
+            "signer_disabled_reason": "missing bridge signer",
         }
 
     def deposit_confirmation_metadata(self, deposit: dict[str, Any]) -> dict[str, Any]:
@@ -88,7 +91,12 @@ class ContractOnlyHubBridgeBackend:
 
 
 class DevChainHubBridgeBackend:
-    """Hub-owned dev-chain backend for HubCreditBridgeEscrow movements."""
+    """Explicit admin-only smoke backend for HubCreditBridgeEscrow movements.
+
+    This path can load the deployment manifest's smoke_client wallet and may
+    fabricate requester deposits for smoke tests.  Normal deployed
+    requester/worker paths must not select this backend by default.
+    """
 
     name = "dev-chain"
 
@@ -130,9 +138,14 @@ class DevChainHubBridgeBackend:
     def status(self) -> dict[str, Any]:
         return {
             "backend": self.name,
+            "mode": "smoke-bridge",
             "escrow_address": self.escrow_address,
+            "signer_configured": self.adapter.signer_configured,
             "bridge_controller_address": self.bridge_controller_address,
             "requester_wallet_address": self.requester_wallet_address,
+            "smoke_client_wallet_address": self.requester_wallet_address,
+            "smoke_bridge_enabled": True,
+            "write_operations_enabled": self.adapter.signer_configured,
         }
 
     def deposit_confirmation_metadata(self, deposit: dict[str, Any]) -> dict[str, Any]:
@@ -176,6 +189,7 @@ def build_hub_bridge_backend(
     network_key: str = "dev",
     chain_rpc_url: str | None = None,
     allow_missing_bridge_signer: bool = False,
+    enable_smoke_bridge: bool = False,
 ) -> HubBridgeBackend:
     clean = str(backend_name or "dev-chain").strip().lower()
     if clean in {"mock", "mock-chain", "mock-chain-lite"}:
@@ -185,11 +199,27 @@ def build_hub_bridge_backend(
         resolved_contracts_path = _resolve_optional_repo_path(repo_root, contracts_path)
 
         if deployment_path is not None and deployment_path.exists():
-            return DevChainHubBridgeBackend.from_deployment(
-                repo_root=repo_root,
-                deployment_path=deployment_path,
-                contracts_path=resolved_contracts_path,
-                network_key=network_key,
+            if enable_smoke_bridge:
+                return DevChainHubBridgeBackend.from_deployment(
+                    repo_root=repo_root,
+                    deployment_path=deployment_path,
+                    contracts_path=resolved_contracts_path,
+                    network_key=network_key,
+                )
+            if resolved_contracts_path is not None and allow_missing_bridge_signer:
+                contract_only = _contract_only_backend_from_contracts(
+                    repo_root=repo_root,
+                    contracts_path=resolved_contracts_path,
+                    network_key=network_key,
+                    missing_deployment_path=None,
+                    chain_rpc_url=chain_rpc_url,
+                )
+                if contract_only is not None:
+                    return contract_only
+            raise HubBridgeBackendError(
+                f"private dev-chain deployment manifest was found at {deployment_path}, but smoke bridge mode is not enabled. "
+                "Normal deployed Hub paths must not load smoke_client wallet metadata. "
+                "Use --enable-smoke-bridge only for explicit admin smoke tests, or configure a non-smoke bridge signer profile when signed bridge writes are implemented."
             )
 
         if resolved_contracts_path is not None:

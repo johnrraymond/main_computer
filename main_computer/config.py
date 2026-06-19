@@ -149,6 +149,7 @@ class MainComputerConfig:
     hub_dev_chain_deployment_path: Path | None = None
     hub_contracts_path: Path | None = None
     hub_allow_missing_bridge_signer: bool = False
+    hub_enable_smoke_bridge: bool = False
     hub_root: Path = DEFAULT_HUB_ROOT
     hub_network: str = DEFAULT_HUB_NETWORK
     hub_network_display_name: str = "Main Computer Local Devnet"
@@ -346,6 +347,7 @@ class MainComputerConfig:
             else None,
             hub_contracts_path=hub_contracts_path,
             hub_allow_missing_bridge_signer=env_flag("MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER", False),
+            hub_enable_smoke_bridge=env_flag("MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE", False),
             hub_root=Path(os.environ.get("MAIN_COMPUTER_HUB_ROOT", str(DEFAULT_HUB_ROOT))),
             hub_network=hub_network,
             hub_network_display_name=os.environ.get("MAIN_COMPUTER_HUB_NETWORK_DISPLAY_NAME", "Main Computer Local Devnet").strip() or "Main Computer Local Devnet",

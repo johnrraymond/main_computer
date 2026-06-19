@@ -127,6 +127,8 @@ def test_public_contract_config_allows_signer_disabled_startup_without_private_d
     assert status["network_key"] == "testnet"
     assert status["chain_rpc_url"] == "https://testnet-rpc.greatlibrary.io"
     assert status["signer_configured"] is False
+    assert status["smoke_bridge_enabled"] is False
+    assert status["smoke_client_wallet_address"] is None
     assert status["write_operations_enabled"] is False
     assert status["missing_deployment_path"] == str(missing_deployment_path)
 
@@ -169,3 +171,76 @@ def test_public_contract_config_requires_explicit_missing_signer_allowance(tmp_p
     else:
         raise AssertionError("public contract fallback should require allow_missing_bridge_signer=True")
 
+
+
+def test_private_deployment_manifest_does_not_enable_smoke_bridge_by_default(tmp_path: Path) -> None:
+    deployment_path, addresses = _write_deployment(tmp_path)
+    contracts_path = tmp_path / "main_computer" / "config" / "testnet_contracts.json"
+    contracts_path.parent.mkdir(parents=True, exist_ok=True)
+    contracts_path.write_text(
+        json.dumps({"hub_credit_bridge_escrow": addresses["escrow"]}) + "\n",
+        encoding="utf-8",
+    )
+
+    backend = build_hub_bridge_backend(
+        backend_name="dev-chain",
+        repo_root=tmp_path,
+        dev_chain_deployment_path=deployment_path,
+        contracts_path=contracts_path,
+        network_key="testnet",
+        chain_rpc_url="https://testnet-rpc.greatlibrary.io",
+        allow_missing_bridge_signer=True,
+    )
+
+    status = backend.status()  # type: ignore[attr-defined]
+    assert status["mode"] == "contract-address-only"
+    assert status["smoke_bridge_enabled"] is False
+    assert status["smoke_client_wallet_address"] is None
+    assert status["write_operations_enabled"] is False
+    assert status["missing_deployment_path"] is None
+
+
+def test_private_deployment_manifest_requires_explicit_smoke_bridge_or_signer_profile(tmp_path: Path) -> None:
+    deployment_path, addresses = _write_deployment(tmp_path)
+    contracts_path = tmp_path / "main_computer" / "config" / "testnet_contracts.json"
+    contracts_path.parent.mkdir(parents=True, exist_ok=True)
+    contracts_path.write_text(
+        json.dumps({"hub_credit_bridge_escrow": addresses["escrow"]}) + "\n",
+        encoding="utf-8",
+    )
+
+    try:
+        build_hub_bridge_backend(
+            backend_name="dev-chain",
+            repo_root=tmp_path,
+            dev_chain_deployment_path=deployment_path,
+            contracts_path=contracts_path,
+            network_key="testnet",
+            allow_missing_bridge_signer=False,
+        )
+    except HubBridgeBackendError as exc:
+        message = str(exc)
+        assert "smoke bridge mode is not enabled" in message
+        assert "smoke_client wallet metadata" in message
+    else:
+        raise AssertionError("private smoke deployment manifests should not be selected by default")
+
+
+def test_private_deployment_manifest_can_enable_explicit_smoke_bridge(tmp_path: Path) -> None:
+    deployment_path, addresses = _write_deployment(tmp_path)
+
+    backend = build_hub_bridge_backend(
+        backend_name="dev-chain",
+        repo_root=tmp_path,
+        dev_chain_deployment_path=deployment_path,
+        network_key="dev",
+        enable_smoke_bridge=True,
+    )
+
+    status = backend.status()  # type: ignore[attr-defined]
+    assert status["mode"] == "smoke-bridge"
+    assert status["smoke_bridge_enabled"] is True
+    assert status["signer_configured"] is True
+    assert status["smoke_client_wallet_address"] == addresses["requester"]
+    assert status["bridge_controller_address"] == addresses["controller"]
+    assert status["write_operations_enabled"] is True

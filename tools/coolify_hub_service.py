@@ -613,6 +613,25 @@ def hub_allow_missing_bridge_signer(profile: HubNetworkProfile, args: argparse.N
     return profile.network_key == "testnet" or profile.kind == "testnet"
 
 
+def hub_enable_smoke_bridge(args: argparse.Namespace | None = None) -> bool:
+    """Return whether admin-only smoke bridge wallet paths may be loaded.
+
+    This is intentionally never inferred from testnet/mainnet profile defaults.
+    Normal deployed user/requester/worker paths must not depend on smoke_client.
+    """
+
+    if hub_bridge_backend(args) in {"mock", "mock-chain", "mock-chain-lite"}:
+        return False
+    if bool(getattr(args, "enable_smoke_bridge", False)):
+        return True
+    return str(os.environ.get("MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def dev_chain_deployment_path(profile: HubNetworkProfile, args: argparse.Namespace, *, container_path: bool = True) -> str:
     explicit = str(getattr(args, "dev_chain_deployment_path", "") or "").strip()
     if explicit:
@@ -683,6 +702,8 @@ def hub_command_parts(profile: HubNetworkProfile, runtime_dir: str, args: argpar
         parts.extend(["--contracts-path", contracts_path(profile, args)])
         if allow_missing_bridge_signer:
             parts.append("--allow-missing-bridge-signer")
+        if hub_enable_smoke_bridge(args):
+            parts.append("--enable-smoke-bridge")
     if profile.chain_id is not None:
         parts.extend(["--chain-id", str(profile.chain_id)])
     runtime_chain_rpc_url = hub_chain_rpc_url(profile, args)
@@ -1076,6 +1097,11 @@ def render_remote_fdb_sidecar_hub_compose(profile: HubNetworkProfile, args: argp
         *(
             [f"      MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER: {yaml_quote('true')}"]
             if hub_allow_missing_bridge_signer(profile, args)
+            else []
+        ),
+        *(
+            [f"      MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE: {yaml_quote('true')}"]
+            if hub_enable_smoke_bridge(args)
             else []
         ),
         f"      MAIN_COMPUTER_HUB_ROOT: {yaml_quote(runtime_dir)}",
@@ -2341,6 +2367,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Allow public-contract Hub startup without a private dev-chain signer manifest. "
             "Bridge write operations remain disabled until signer metadata is configured."
+        ),
+    )
+    parser.add_argument(
+        "--enable-smoke-bridge",
+        action="store_true",
+        help=(
+            "Enable explicit admin-only smoke bridge mode. This may load smoke_client wallet metadata "
+            "from a private deployment manifest and must not be used for normal testnet/mainnet traffic."
         ),
     )
 

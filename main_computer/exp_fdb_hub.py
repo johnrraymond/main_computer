@@ -166,6 +166,7 @@ def build_experimental_config(args: argparse.Namespace, *, port: int) -> tuple[M
     network_key = str(getattr(args, "network_key", "exp-fdb") or "exp-fdb").strip() or "exp-fdb"
     bridge_backend = _hub_bridge_backend_from_args(args, base)
     allow_missing_bridge_signer = bool(getattr(args, "allow_missing_bridge_signer", False)) or base.hub_allow_missing_bridge_signer
+    enable_smoke_bridge = bool(getattr(args, "enable_smoke_bridge", False)) or base.hub_enable_smoke_bridge
     dev_chain_deployment_path = Path(args.dev_chain_deployment_path) if args.dev_chain_deployment_path else base.hub_dev_chain_deployment_path
     if (
         dev_chain_deployment_path is None
@@ -208,6 +209,7 @@ def build_experimental_config(args: argparse.Namespace, *, port: int) -> tuple[M
         hub_dev_chain_deployment_path=dev_chain_deployment_path,
         hub_contracts_path=contracts_path,
         hub_allow_missing_bridge_signer=allow_missing_bridge_signer,
+        hub_enable_smoke_bridge=enable_smoke_bridge,
         hub_ring_config_path=ring_config_path,
         chain_id=chain_id,
         chain_id_source="arg" if chain_id_arg is not None else base.chain_id_source,
@@ -580,6 +582,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-missing-bridge-signer",
         action="store_true",
         help="Allow contract-aware Hub startup from public contract config when private bridge signer metadata is not mounted.",
+    )
+    parser.add_argument(
+        "--enable-smoke-bridge",
+        action="store_true",
+        help="Enable explicit admin-only smoke bridge mode that may load smoke_client wallet metadata from a private deployment manifest.",
     )
     parser.add_argument("--ring-config-path", type=Path, default=None, help="JSON ring admission config path. Bad explicit configs fail startup.")
     parser.add_argument("--namespace", default=DEFAULT_EXP_FDB_NAMESPACE, help="FDB tuple namespace for this experiment.")

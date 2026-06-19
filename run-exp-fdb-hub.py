@@ -219,6 +219,11 @@ def build_exp_fdb_hub_command(
             "MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER",
             "MAIN_COMPUTER_ALLOW_MISSING_BRIDGE_SIGNER",
         )
+        enable_smoke_bridge = args.enable_smoke_bridge or env_flag(
+            env,
+            "MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE",
+            "MAIN_COMPUTER_ENABLE_SMOKE_BRIDGE",
+        )
         dev_chain_deployment_path = str(
             args.dev_chain_deployment_path
             or first_env(
@@ -250,6 +255,8 @@ def build_exp_fdb_hub_command(
         )
         if allow_missing_bridge_signer:
             command.append("--allow-missing-bridge-signer")
+        if enable_smoke_bridge:
+            command.append("--enable-smoke-bridge")
     chain_id = str(args.chain_id or first_env(env, "MAIN_COMPUTER_HUB_CHAIN_ID", "MAIN_COMPUTER_CHAIN_ID") or profile.chain_id or "").strip()
     if chain_id:
         command.extend(["--chain-id", chain_id])
@@ -282,6 +289,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--allow-missing-bridge-signer",
         action="store_true",
         help="Allow startup from public contract config without mounted private bridge signer metadata.",
+    )
+    parser.add_argument(
+        "--enable-smoke-bridge",
+        action="store_true",
+        help="Enable explicit admin-only smoke bridge mode that may load smoke_client wallet metadata.",
     )
     parser.add_argument("--chain-id", default="", help="Chain id override.")
     parser.add_argument("--chain-rpc-url", default="", help="Chain RPC URL override.")

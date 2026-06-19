@@ -67,6 +67,7 @@ def _args(**overrides):
         "dev_chain_deployment_path": "",
         "contracts_path": "",
         "allow_missing_bridge_signer": False,
+        "enable_smoke_bridge": False,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -687,6 +688,8 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertIn("MAIN_COMPUTER_HUB_CONTRACTS_PATH: \"/app/main_computer/config/testnet_contracts.json\"", compose)
         self.assertIn("--allow-missing-bridge-signer", compose)
         self.assertIn("--contracts-path /app/main_computer/config/testnet_contracts.json", compose)
+        self.assertNotIn("--enable-smoke-bridge", compose)
+        self.assertNotIn("MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE", compose)
         self.assertNotIn("--dev-chain-deployment-path /app/runtime/deployments/testnet/latest.json", compose)
 
     def test_testnet_check_modes_warn_by_default(self) -> None:
@@ -845,6 +848,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
 
         self.assertIn("--allow-missing-bridge-signer", command)
         self.assertEqual(command[command.index("--contracts-path") + 1], "/app/main_computer/config/testnet_contracts.json")
+        self.assertNotIn("--enable-smoke-bridge", command)
         self.assertNotIn("--dev-chain-deployment-path", command)
         self.assertFalse(any(part.endswith("/runtime/deployments/testnet/latest.json") for part in command))
 
@@ -861,6 +865,34 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertIn("--allow-missing-bridge-signer", command)
         self.assertEqual(command[command.index("--dev-chain-deployment-path") + 1], "/secrets/testnet-deployment.json")
         self.assertEqual(command[command.index("--contracts-path") + 1], "/app/main_computer/config/testnet_contracts.json")
+
+
+    def test_runtime_launcher_can_enable_explicit_smoke_bridge_from_env(self) -> None:
+        args = run_exp_fdb_hub.parse_args([])
+        command = run_exp_fdb_hub.build_exp_fdb_hub_command(
+            args,
+            environ={
+                "PORT": "8785",
+                "MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER": "true",
+                "MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE": "true",
+            },
+        )
+
+        self.assertIn("--allow-missing-bridge-signer", command)
+        self.assertIn("--enable-smoke-bridge", command)
+
+    def test_coolify_testnet_smoke_bridge_is_explicit_opt_in(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("testnet")
+        args = _args(enable_smoke_bridge=True)
+        compose = coolify_hub_service.render_fdb_sidecar_hub_compose(
+            profile,
+            args,
+            service_name="main-computer-testnet-hub",
+            runtime_dir="/data/main-computer/hub/testnet-exp-fdb",
+        )
+
+        self.assertIn("MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE: \"true\"", compose)
+        self.assertIn("--enable-smoke-bridge", compose)
 
     def test_runtime_launcher_cli_network_overrides_port_inference(self) -> None:
         args = run_exp_fdb_hub.parse_args(["--network", "mainnet"])

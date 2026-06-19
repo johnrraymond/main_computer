@@ -72,8 +72,44 @@ def test_exp_fdb_hub_unsigned_contract_startup_does_not_default_private_deployme
     config, _fdb_config = build_experimental_config(args, port=8785)
 
     assert config.hub_allow_missing_bridge_signer is True
+    assert config.hub_enable_smoke_bridge is False
     assert config.hub_contracts_path == contracts_path
     assert config.hub_dev_chain_deployment_path is None
+
+
+def test_exp_fdb_hub_smoke_bridge_requires_explicit_flag(tmp_path, monkeypatch) -> None:
+    from main_computer.exp_fdb_hub import build_experimental_config, build_parser
+
+    monkeypatch.delenv("MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE", raising=False)
+    args = build_parser().parse_args(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--network-key",
+            "testnet",
+            "--bridge-backend",
+            "dev-chain",
+            "--allow-missing-bridge-signer",
+        ]
+    )
+
+    config, _fdb_config = build_experimental_config(args, port=8785)
+    assert config.hub_enable_smoke_bridge is False
+
+    smoke_args = build_parser().parse_args(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--network-key",
+            "testnet",
+            "--bridge-backend",
+            "dev-chain",
+            "--allow-missing-bridge-signer",
+            "--enable-smoke-bridge",
+        ]
+    )
+    smoke_config, _smoke_fdb_config = build_experimental_config(smoke_args, port=8785)
+    assert smoke_config.hub_enable_smoke_bridge is True
 
 
 def test_exp_fdb_hub_access_logs_are_opt_in_by_default(monkeypatch, capsys) -> None:
