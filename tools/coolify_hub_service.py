@@ -61,6 +61,7 @@ DEFAULT_LOCAL_TEST_FDB_SERVICE_KEY = "main-computer-test-hub-fdb"
 DEFAULT_LOCAL_TEST_FDB_IMAGE = "foundationdb/foundationdb:7.4.6"
 DEFAULT_LOCAL_TEST_FDB_PORT = 4550
 DEFAULT_LOCAL_TEST_FDB_CLUSTER_CONTENTS = f"docker:docker@{DEFAULT_LOCAL_TEST_FDB_SERVICE_KEY}:{DEFAULT_LOCAL_TEST_FDB_PORT}"
+DEFAULT_REMOTE_SIDECAR_FDB_NETWORKS = {"testnet"}
 DEFAULT_LOCAL_TEST_SOURCE_DIR = REPO_ROOT
 DEFAULT_HUB_BRIDGE_BACKEND = "dev-chain"
 DEFAULT_LOCAL_TEST_DEPLOYMENTS_CONTAINER_DIR = "/app/runtime/deployments"
@@ -427,6 +428,28 @@ def verify_rpc(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[str
 
 def is_local_test_profile(profile: HubNetworkProfile | None) -> bool:
     return bool(profile is not None and profile.network_key == DEFAULT_LOCAL_TEST_NETWORK and profile.kind == "test")
+
+
+def uses_fdb_sidecar_service(profile: HubNetworkProfile | None, args: argparse.Namespace | None = None) -> bool:
+    """Return true when Coolify should manage Hub and FDB in one service stack.
+
+    Local ``test`` already uses this shape so uncommitted sources can be staged
+    into a raw Docker Compose service. Remote ``testnet`` uses the same FDB
+    sidecar pattern because a Dockerfile Application can only start the Hub
+    container; it cannot create the required FoundationDB coordinator or the
+    sidecar-facing fdb.cluster file.
+    """
+
+    if profile is None:
+        return False
+    implementation = hub_implementation(args) if args is not None else HUB_IMPLEMENTATION_EXP_FDB
+    if implementation != HUB_IMPLEMENTATION_EXP_FDB:
+        return False
+    return is_local_test_profile(profile) or str(profile.network_key).strip().lower() in DEFAULT_REMOTE_SIDECAR_FDB_NETWORKS
+
+
+def is_remote_fdb_sidecar_profile(profile: HubNetworkProfile | None, args: argparse.Namespace | None = None) -> bool:
+    return bool(uses_fdb_sidecar_service(profile, args) and not is_local_test_profile(profile))
 
 
 def is_local_test_args(args: argparse.Namespace | None) -> bool:
@@ -825,32 +848,72 @@ def docker_compose_build_context(args: argparse.Namespace) -> str:
 
 
 
+def remote_git_build_context(args: argparse.Namespace) -> str:
+    """Return a Docker Compose Git build context for remote Coolify services."""
+
+    repo = str(getattr(args, "git_repo", "") or "").strip()
+    if not repo:
+        raise CoolifyHubDeployError("--git-repo is required for remote exp-FDB service deploys.")
+    if repo.startswith("https://github.com/") and not repo.endswith(".git"):
+        repo = f"{repo}.git"
+    ref = str(getattr(args, "git_commit_sha", "") or getattr(args, "git_branch", "") or "main").strip() or "main"
+    base_dir = str(getattr(args, "base_directory", "") or "").strip()
+    if base_dir in {"", "/"}:
+        suffix = ref
+    else:
+        suffix = f"{ref}:{base_dir.strip('/')}"
+    return f"{repo}#{suffix}"
+
+
+def remote_runtime_bind_source(runtime_dir: str) -> str:
+    # Remote Coolify runs on a Linux Docker host. Use the same absolute path on
+    # host and container so the operator's --fdb-cluster-file path is also the
+    # path where the bootstrap writes fdb.cluster.
+    return container_posix_path(runtime_dir).rstrip("/")
+
+
+def fdb_sidecar_service_key(profile: HubNetworkProfile, *, service_name: str) -> str:
+    if is_local_test_profile(profile):
+        return DEFAULT_LOCAL_TEST_FDB_SERVICE_KEY
+    return f"{service_name.replace('_', '-')}-fdb"
+
+
+def fdb_sidecar_cluster_contents(profile: HubNetworkProfile, *, service_name: str) -> str:
+    return f"docker:docker@{fdb_sidecar_service_key(profile, service_name=service_name)}:{DEFAULT_LOCAL_TEST_FDB_PORT}"
+
+
 def local_test_fdb_cluster_contents() -> str:
     return DEFAULT_LOCAL_TEST_FDB_CLUSTER_CONTENTS
 
 
-def local_test_hub_bootstrap_script(profile: HubNetworkProfile, args: argparse.Namespace, *, runtime_dir: str) -> str:
-    """Return the shell wrapper used by the local Coolify test Hub service.
+def hub_fdb_bootstrap_script(
+    profile: HubNetworkProfile,
+    args: argparse.Namespace,
+    *,
+    service_name: str,
+    runtime_dir: str,
+) -> str:
+    """Return the shell wrapper that seeds FDB and execs the Hub.
 
-    The local Coolify service owns a short-lived FoundationDB sidecar.  The Hub
-    container writes the sidecar-facing cluster file into its runtime mount,
-    waits until the sidecar accepts `fdbcli status`, then execs the real Hub.
+    The wrapper is intentionally idempotent. It writes the cluster file that the
+    Hub is configured to read, asks FDB to configure a single in-memory database
+    until the coordinator is accepting commands, then execs the Hub process.
     """
 
     cluster_file = exp_fdb_cluster_file_path(profile, args, runtime_dir=runtime_dir)
-    cluster_contents = local_test_fdb_cluster_contents()
+    cluster_contents = fdb_sidecar_cluster_contents(profile, service_name=service_name)
     command = " ".join(command_token(part) for part in hub_command_parts(profile, runtime_dir, args))
     return "\n".join(
         [
             "set -eu",
             f"mkdir -p {sh_quote(runtime_dir)}",
             f"printf '%s\\n' {sh_quote(cluster_contents)} > {sh_quote(cluster_file)}",
-            "for attempt in $(seq 1 60); do",
+            "for attempt in $(seq 1 90); do",
             f"  fdbcli -C {sh_quote(cluster_file)} --exec 'configure new single memory' --timeout 10 >/tmp/main-computer-fdb-configure.log 2>&1 || true",
             f"  if fdbcli -C {sh_quote(cluster_file)} --exec 'status' --timeout 10 >/tmp/main-computer-fdb-status.log 2>&1; then",
             "    break",
             "  fi",
-            "  if [ \"$attempt\" = \"60\" ]; then",
+            "  if [ \"$attempt\" = \"90\" ]; then",
             "    cat /tmp/main-computer-fdb-configure.log >&2 || true",
             "    cat /tmp/main-computer-fdb-status.log >&2 || true",
             "    exit 1",
@@ -859,6 +922,17 @@ def local_test_hub_bootstrap_script(profile: HubNetworkProfile, args: argparse.N
             "done",
             f"exec {command}",
         ]
+    )
+
+
+def local_test_hub_bootstrap_script(profile: HubNetworkProfile, args: argparse.Namespace, *, runtime_dir: str) -> str:
+    """Return the shell wrapper used by the local Coolify test Hub service."""
+
+    return hub_fdb_bootstrap_script(
+        profile,
+        args,
+        service_name=hub_service_name(profile.network_key, implementation=hub_implementation(args)),
+        runtime_dir=runtime_dir,
     )
 
 
@@ -915,25 +989,126 @@ def render_local_test_hub_compose(profile: HubNetworkProfile, args: argparse.Nam
     return "\n".join(lines)
 
 
+def render_remote_fdb_sidecar_hub_compose(profile: HubNetworkProfile, args: argparse.Namespace, *, service_name: str, runtime_dir: str) -> str:
+    """Render the remote testnet Hub+FDB service stack.
+
+    Unlike a Coolify Dockerfile Application, this raw Compose service owns both
+    the Hub container and the FDB sidecar. That lets the same operator command
+    create the FDB coordinator, write fdb.cluster, and start the Hub.
+    """
+
+    runtime_dir = container_posix_path(runtime_dir).rstrip("/")
+    build_context = remote_git_build_context(args)
+    dockerfile = effective_dockerfile_location(profile, args).lstrip("/") or "Dockerfile.hub.exp-fdb"
+    service_key = service_name.replace("_", "-")
+    fdb_service_key = fdb_sidecar_service_key(profile, service_name=service_name)
+    cluster_contents = fdb_sidecar_cluster_contents(profile, service_name=service_name)
+    runtime_bind = f"{remote_runtime_bind_source(runtime_dir)}:{runtime_dir}"
+    image = f"{service_name}:remote"
+    bootstrap_script = hub_fdb_bootstrap_script(profile, args, service_name=service_name, runtime_dir=runtime_dir)
+    host = ""
+    try:
+        parsed = urllib.parse.urlsplit(profile.hub_url)
+        host = str(parsed.hostname or "").strip()
+    except ValueError:
+        host = ""
+    router_id = re.sub(r"[^A-Za-z0-9_-]+", "-", service_key).strip("-") or "main-computer-hub"
+    lines: list[str] = [
+        f"name: {service_name}",
+        "",
+        "services:",
+        f"  {fdb_service_key}:",
+        f"    image: {yaml_quote(DEFAULT_LOCAL_TEST_FDB_IMAGE)}",
+        "    restart: unless-stopped",
+        "    environment:",
+        f"      FDB_PORT: {yaml_quote(str(DEFAULT_LOCAL_TEST_FDB_PORT))}",
+        f"      FDB_COORDINATOR_PORT: {yaml_quote(str(DEFAULT_LOCAL_TEST_FDB_PORT))}",
+        "      FDB_NETWORKING_MODE: \"container\"",
+        f"      FDB_CLUSTER_FILE_CONTENTS: {yaml_quote(cluster_contents)}",
+        "    expose:",
+        f"      - {yaml_quote(str(DEFAULT_LOCAL_TEST_FDB_PORT))}",
+        "",
+        f"  {service_key}:",
+        "    build:",
+        f"      context: {yaml_quote(build_context)}",
+        f"      dockerfile: {yaml_quote(dockerfile)}",
+        f"    image: {yaml_quote(image)}",
+        "    pull_policy: build",
+        "    restart: unless-stopped",
+        "    depends_on:",
+        f"      - {fdb_service_key}",
+        "    expose:",
+        f"      - {yaml_quote(str(profile.hub_bind_port))}",
+        "    environment:",
+        f"      HUB_HEALTH_PORT: {yaml_quote(str(profile.hub_bind_port))}",
+        f"      PORT: {yaml_quote(str(profile.hub_bind_port))}",
+        f"      MAIN_COMPUTER_HUB_NETWORK: {yaml_quote(profile.network_key)}",
+        f"      MAIN_COMPUTER_HUB_ROOT: {yaml_quote(runtime_dir)}",
+        f"      MAIN_COMPUTER_HUB_FDB_NAMESPACE: {yaml_quote(exp_fdb_namespace(profile, args))}",
+        f"      FDB_CLUSTER_FILE_CONTENTS: {yaml_quote(cluster_contents)}",
+        "    volumes:",
+        f"      - {yaml_quote(runtime_bind)}",
+    ]
+    if host:
+        lines.extend(
+            [
+                "    labels:",
+                "      - \"traefik.enable=true\"",
+                f"      - {yaml_quote(f'traefik.http.routers.{router_id}.rule=Host(`{host}`)')}",
+                f"      - {yaml_quote(f'traefik.http.routers.{router_id}.entryPoints=https')}",
+                f"      - {yaml_quote(f'traefik.http.routers.{router_id}.tls=true')}",
+                f"      - {yaml_quote(f'traefik.http.routers.{router_id}.tls.certresolver=letsencrypt')}",
+                f"      - {yaml_quote(f'traefik.http.services.{router_id}.loadbalancer.server.port={profile.hub_bind_port}')}",
+            ]
+        )
+    lines.extend(
+        [
+            "    command:",
+            "      - \"sh\"",
+            "      - \"-lc\"",
+            f"      - {yaml_quote(bootstrap_script)}",
+            "    healthcheck:",
+            f'      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:{profile.hub_bind_port}{args.health_path} >/dev/null || exit 1"]',
+            "      interval: 30s",
+            "      timeout: 5s",
+            "      start_period: 20s",
+            "      retries: 3",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+
 def base64_text(value: str) -> str:
     return base64.b64encode(value.encode("utf-8")).decode("ascii")
 
 
-def local_test_service_payload(profile: HubNetworkProfile, args: argparse.Namespace, *, service_name: str, runtime_dir: str) -> dict[str, Any]:
-    compose = render_local_test_hub_compose(profile, args, service_name=service_name, runtime_dir=runtime_dir)
+def render_fdb_sidecar_hub_compose(profile: HubNetworkProfile, args: argparse.Namespace, *, service_name: str, runtime_dir: str) -> str:
+    if is_local_test_profile(profile):
+        return render_local_test_hub_compose(profile, args, service_name=service_name, runtime_dir=runtime_dir)
+    return render_remote_fdb_sidecar_hub_compose(profile, args, service_name=service_name, runtime_dir=runtime_dir)
+
+
+def fdb_sidecar_service_payload(profile: HubNetworkProfile, args: argparse.Namespace, *, service_name: str, runtime_dir: str) -> dict[str, Any]:
+    compose = render_fdb_sidecar_hub_compose(profile, args, service_name=service_name, runtime_dir=runtime_dir)
     payload: dict[str, Any] = {
         "server_uuid": args.coolify_server_uuid,
         "project_uuid": args.coolify_project_uuid,
         "environment_name": args.coolify_environment_name,
         "environment_uuid": args.coolify_environment_uuid,
         "name": service_name,
-        "description": f"Main Computer {profile.network_key} experimental FDB Hub local service",
+        "description": f"Main Computer {profile.network_key} experimental FDB Hub service",
         "docker_compose_raw": base64_text(compose),
         "instant_deploy": False,
     }
     if args.coolify_destination_uuid:
         payload["destination_uuid"] = args.coolify_destination_uuid
     return {key: value for key, value in payload.items() if value not in (None, "")}
+
+
+def local_test_service_payload(profile: HubNetworkProfile, args: argparse.Namespace, *, service_name: str, runtime_dir: str) -> dict[str, Any]:
+    return fdb_sidecar_service_payload(profile, args, service_name=service_name, runtime_dir=runtime_dir)
 
 
 def storage_matches(item: dict[str, Any], *, name: str, mount_path: str) -> bool:
@@ -1527,7 +1702,7 @@ def create_local_test_service(client: CoolifyClient, profile: HubNetworkProfile,
 
 
 def update_local_test_service(client: CoolifyClient, profile: HubNetworkProfile, args: argparse.Namespace, *, service_uuid: str, service_name: str, runtime_dir: str, tried: list[dict[str, Any]]) -> None:
-    compose = render_local_test_hub_compose(profile, args, service_name=service_name, runtime_dir=runtime_dir)
+    compose = render_fdb_sidecar_hub_compose(profile, args, service_name=service_name, runtime_dir=runtime_dir)
     update_payloads = [
         {"docker_compose_raw": base64_text(compose), "name": service_name},
         {"docker_compose_raw": base64_text(compose)},
@@ -1575,6 +1750,17 @@ def sync_local_test_service(client: CoolifyClient, profile: HubNetworkProfile, a
         return service_uuid, "updated", existing
     service_uuid = create_local_test_service(client, profile, args, service_name=service_name, runtime_dir=runtime_dir, tried=tried)
     return service_uuid, "created", existing
+
+
+def sync_fdb_sidecar_service(client: CoolifyClient, profile: HubNetworkProfile, args: argparse.Namespace, *, service_name: str, runtime_dir: str, tried: list[dict[str, Any]]) -> tuple[str, str, dict[str, Any]]:
+    return sync_local_test_service(
+        client,
+        profile,
+        args,
+        service_name=service_name,
+        runtime_dir=runtime_dir,
+        tried=tried,
+    )
 
 
 def find_application(client: CoolifyClient, *, service_name: str, explicit_uuid: str, tried: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
@@ -1754,21 +1940,21 @@ def plan_result(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[st
             "Experimental FDB Hub deploys with --no-fdb-autostart; mount a valid FoundationDB cluster file "
             f"at {result['fdb_cluster_file']!r} before applying or starting the application."
         )
-        if is_local_test_profile(profile):
+        if uses_fdb_sidecar_service(profile, args):
             result["operator_note"] = (
-                "Local test deploy starts a FoundationDB sidecar in the same Coolify service, writes "
-                f"{result['fdb_cluster_file']!r} at container startup, configures single-memory FDB if needed, "
-                "then starts the Hub. No manual fdb.cluster seed file or Git commit is required."
+                f"{profile.network_key} exp-FDB deploy starts a FoundationDB sidecar in the same Coolify service, "
+                f"writes {result['fdb_cluster_file']!r} at container startup, configures single-memory FDB if needed, "
+                "then starts the Hub. No manual fdb.cluster seed file is required."
             )
-            result["local_fdb"] = {
-                "service": DEFAULT_LOCAL_TEST_FDB_SERVICE_KEY,
+            result["sidecar_fdb"] = {
+                "service": fdb_sidecar_service_key(profile, service_name=service_name),
                 "image": DEFAULT_LOCAL_TEST_FDB_IMAGE,
                 "port": DEFAULT_LOCAL_TEST_FDB_PORT,
-                "cluster_contents": local_test_fdb_cluster_contents(),
+                "cluster_contents": fdb_sidecar_cluster_contents(profile, service_name=service_name),
                 "cluster_file_written_by": "Hub container bootstrap command",
             }
-            compose = render_local_test_hub_compose(profile, args, service_name=service_name, runtime_dir=runtime_dir)
-            service_payload = local_test_service_payload(profile, args, service_name=service_name, runtime_dir=runtime_dir)
+            compose = render_fdb_sidecar_hub_compose(profile, args, service_name=service_name, runtime_dir=runtime_dir)
+            service_payload = fdb_sidecar_service_payload(profile, args, service_name=service_name, runtime_dir=runtime_dir)
             result["coolify_resource_kind"] = "service"
             result["service_payload"] = {
                 **{key: value for key, value in service_payload.items() if key != "docker_compose_raw"},
@@ -1776,27 +1962,40 @@ def plan_result(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[st
                 "docker_compose_raw_bytes": len(service_payload.get("docker_compose_raw", "")),
             }
             result["docker_compose"] = compose
-            source_root, source_files, source_dirs = hub_build_context_sources(args)
-            result["local_build_context"] = {
-                "compose_context": docker_compose_build_context(args),
-                "staged_service_path": f"/data/coolify/services/<service-uuid>/{DEFAULT_LOCAL_TEST_BUILD_CONTEXT_DIRNAME}",
-                "source_root": str(source_root),
-                "source_files": [relative_to_source(path, source_root) for path in source_files if path.exists()],
-                "source_dirs": [relative_to_source(path, source_root) + "/" for path in source_dirs if path.exists()],
-                "commit_required": False,
-                "note": "Local test deploy stages this source tree into the Coolify service workspace before deploy.",
-            }
-            result["local_runtime_bind"] = {
-                "host_dir": str(local_test_runtime_host_dir(args)),
-                "bind_source": local_test_runtime_bind_source(args),
-                "container_dir": runtime_dir,
-            }
-            result["local_deployments_bind"] = {
-                "host_dir": str(local_test_deployments_host_dir(args)),
-                "bind_source": local_test_deployments_bind_source(args),
-                "container_dir": DEFAULT_LOCAL_TEST_DEPLOYMENTS_CONTAINER_DIR,
-                "deployment_path": dev_chain_deployment_path(profile, args),
-            }
+            if is_local_test_profile(profile):
+                result["local_fdb"] = result["sidecar_fdb"]
+                source_root, source_files, source_dirs = hub_build_context_sources(args)
+                result["local_build_context"] = {
+                    "compose_context": docker_compose_build_context(args),
+                    "staged_service_path": f"/data/coolify/services/<service-uuid>/{DEFAULT_LOCAL_TEST_BUILD_CONTEXT_DIRNAME}",
+                    "source_root": str(source_root),
+                    "source_files": [relative_to_source(path, source_root) for path in source_files if path.exists()],
+                    "source_dirs": [relative_to_source(path, source_root) + "/" for path in source_dirs if path.exists()],
+                    "commit_required": False,
+                    "note": "Local test deploy stages this source tree into the Coolify service workspace before deploy.",
+                }
+                result["local_runtime_bind"] = {
+                    "host_dir": str(local_test_runtime_host_dir(args)),
+                    "bind_source": local_test_runtime_bind_source(args),
+                    "container_dir": runtime_dir,
+                }
+                result["local_deployments_bind"] = {
+                    "host_dir": str(local_test_deployments_host_dir(args)),
+                    "bind_source": local_test_deployments_bind_source(args),
+                    "container_dir": DEFAULT_LOCAL_TEST_DEPLOYMENTS_CONTAINER_DIR,
+                    "deployment_path": dev_chain_deployment_path(profile, args),
+                }
+            else:
+                result["remote_build_context"] = {
+                    "compose_context": remote_git_build_context(args),
+                    "commit_required": True,
+                    "note": "Remote testnet service builds from the configured Git repository/branch.",
+                }
+                result["remote_runtime_bind"] = {
+                    "host_dir": remote_runtime_bind_source(runtime_dir),
+                    "container_dir": runtime_dir,
+                    "cluster_file": result["fdb_cluster_file"],
+                }
     return result
 
 
@@ -1861,8 +2060,8 @@ def apply(args: argparse.Namespace) -> dict[str, Any]:
     application_action = ""
     deploy_result: dict[str, Any] | None = None
 
-    if is_local_test_profile(profile):
-        service_uuid, service_action, existing = sync_local_test_service(
+    if uses_fdb_sidecar_service(profile, args):
+        service_uuid, service_action, existing = sync_fdb_sidecar_service(
             client,
             profile,
             args,
@@ -1872,25 +2071,39 @@ def apply(args: argparse.Namespace) -> dict[str, Any]:
         )
         application_uuid = service_uuid
         application_action = service_action
-        phases.append(
-            {
-                "phase": "coolify-service",
-                "result": {
-                    "ok": True,
-                    "service_uuid": service_uuid,
-                    "service_action": service_action,
-                    "existing": existing,
-                    "tried": tried,
-                },
-            }
-        )
-        runtime_host = ensure_local_test_runtime_host_dir(args)
-        phases.append({"phase": "local-runtime-host-dir", "result": runtime_host})
-        staging = stage_local_test_hub_build_context(args, service_uuid=service_uuid)
-        phases.append({"phase": "stage-local-build-context", "result": staging})
-        if not staging.get("ok"):
-            issues = "; ".join(str(item) for item in staging.get("issues", []) if str(item).strip())
-            raise CoolifyHubDeployError("Could not stage local Hub build context before deploy: " + (issues or "unknown staging failure"))
+        result_payload: dict[str, Any] = {
+            "ok": True,
+            "service_uuid": service_uuid,
+            "service_action": service_action,
+            "existing": existing,
+            "sidecar_fdb": plan.get("sidecar_fdb", {}),
+            "tried": tried,
+        }
+        if is_remote_fdb_sidecar_profile(profile, args):
+            _, legacy_application = find_application(client, service_name=plan["service_name"], explicit_uuid="", tried=tried)
+            if legacy_application.get("source") != "missing":
+                legacy_warning = {
+                    "phase": "legacy-application",
+                    "mode": "warn",
+                    "ok": False,
+                    "message": (
+                        "An existing Coolify Application with this Hub name was found, but "
+                        "remote exp-FDB now deploys as a Coolify Service with an FDB sidecar. "
+                        "Stop/delete the old Application after the Service is healthy."
+                    ),
+                    "legacy_application": legacy_application,
+                }
+                warnings.append(legacy_warning)
+                result_payload["legacy_application_warning"] = legacy_warning
+        phases.append({"phase": "coolify-service", "result": result_payload})
+        if is_local_test_profile(profile):
+            runtime_host = ensure_local_test_runtime_host_dir(args)
+            phases.append({"phase": "local-runtime-host-dir", "result": runtime_host})
+            staging = stage_local_test_hub_build_context(args, service_uuid=service_uuid)
+            phases.append({"phase": "stage-local-build-context", "result": staging})
+            if not staging.get("ok"):
+                issues = "; ".join(str(item) for item in staging.get("issues", []) if str(item).strip())
+                raise CoolifyHubDeployError("Could not stage local Hub build context before deploy: " + (issues or "unknown staging failure"))
         if not args.no_deploy:
             deploy_result = trigger_deploy_service(client, service_uuid=service_uuid, force=args.force_deploy, tried=tried)
             phases.append({"phase": "deploy", "result": deploy_result})
@@ -1941,7 +2154,7 @@ def apply(args: argparse.Namespace) -> dict[str, Any]:
         "network": profile.network_key,
         "application_uuid": application_uuid,
         "application_action": application_action,
-        "coolify_resource_kind": "service" if is_local_test_profile(profile) else "application",
+        "coolify_resource_kind": "service" if uses_fdb_sidecar_service(profile, args) else "application",
         "deployed": deploy_result is not None,
         "plan": plan,
         "warnings": warnings,

@@ -204,6 +204,34 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertEqual(plan["application_payload"]["dockerfile_location"], "/Dockerfile.hub.exp-fdb")
         self.assertNotIn("urls", plan["application_payload"])
 
+    def test_testnet_exp_fdb_plan_uses_remote_service_with_fdb_sidecar(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("testnet")
+        args = _args(
+            network="testnet",
+            coolify_environment_name="testnet-hub",
+            git_repo="https://github.com/johnrraymond/main_computer",
+            fdb_cluster_file="/data/main-computer/hub/testnet-exp-fdb/fdb.cluster",
+            fdb_namespace="main-computer-testnet-exp-fdb",
+        )
+        plan = coolify_hub_service.plan_result(profile, args)
+
+        self.assertEqual(plan["coolify_resource_kind"], "service")
+        self.assertEqual(plan["sidecar_fdb"]["service"], "main-computer-testnet-hub-fdb")
+        self.assertEqual(plan["sidecar_fdb"]["cluster_contents"], "docker:docker@main-computer-testnet-hub-fdb:4550")
+        self.assertEqual(plan["remote_build_context"]["compose_context"], "https://github.com/johnrraymond/main_computer.git#main")
+        self.assertTrue(plan["remote_build_context"]["commit_required"])
+        compose = plan["docker_compose"]
+        self.assertIn("main-computer-testnet-hub-fdb", compose)
+        self.assertIn("foundationdb/foundationdb:7.4.6", compose)
+        self.assertIn("FDB_CLUSTER_FILE_CONTENTS: \"docker:docker@main-computer-testnet-hub-fdb:4550\"", compose)
+        self.assertIn("printf", compose)
+        self.assertIn("docker:docker@main-computer-testnet-hub-fdb:4550 > /data/main-computer/hub/testnet-exp-fdb/fdb.cluster", compose)
+        self.assertIn("configure new single memory", compose)
+        self.assertIn("context: \"https://github.com/johnrraymond/main_computer.git#main\"", compose)
+        self.assertIn("MAIN_COMPUTER_HUB_NETWORK: \"testnet\"", compose)
+        self.assertIn("traefik.http.services.main-computer-testnet-hub.loadbalancer.server.port=8785", compose)
+        self.assertIn("No manual fdb.cluster seed file", plan["operator_note"])
+
     def test_apply_test_profile_targets_local_coolify_surface(self) -> None:
         args = _args(
             network="test",
@@ -604,6 +632,50 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertIn("docker_compose_raw", payload)
         self.assertNotIn("start_command", payload)
 
+
+    def test_testnet_exp_fdb_sync_uses_services_endpoint_not_applications_public(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("testnet")
+        args = _args(
+            network="testnet",
+            coolify_project_uuid="project-uuid",
+            coolify_server_uuid="server-uuid",
+            coolify_environment_name="testnet-hub",
+            coolify_environment_uuid="env-uuid",
+            git_repo="https://github.com/johnrraymond/main_computer",
+        )
+        client = RouteCoolifyClient(
+            {
+                ("GET", "/api/v1/services"): [
+                    {"services": []}
+                ],
+                ("POST", "/api/v1/services"): [
+                    {"uuid": "service-uuid", "name": "main-computer-testnet-hub"}
+                ],
+            }
+        )
+        tried: list[dict[str, object]] = []
+
+        service_uuid, action, existing = coolify_hub_service.sync_fdb_sidecar_service(
+            client,
+            profile,
+            args,
+            service_name="main-computer-testnet-hub",
+            runtime_dir="/data/main-computer/hub/testnet-exp-fdb",
+            tried=tried,
+        )
+
+        self.assertEqual(service_uuid, "service-uuid")
+        self.assertEqual(action, "created")
+        self.assertEqual(existing["source"], "missing")
+        self.assertFalse(any("/api/v1/applications/public" in request[1] for request in client.requests))
+        post = next(request for request in client.requests if request[0] == "POST")
+        self.assertEqual(post[1], "/api/v1/services")
+        payload = post[2]
+        self.assertEqual(payload["server_uuid"], "server-uuid")
+        self.assertEqual(payload["project_uuid"], "project-uuid")
+        self.assertEqual(payload["environment_uuid"], "env-uuid")
+        self.assertIn("docker_compose_raw", payload)
+        self.assertNotIn("start_command", payload)
 
     def test_testnet_check_modes_warn_by_default(self) -> None:
         profile = coolify_hub_service.load_hub_network_registry().get("testnet")
