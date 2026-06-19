@@ -243,3 +243,6 @@ runtime/websites/*/.main-computer/local-platform/docker-compose.yml
 
 # Don't need these smoke outputs in git.
 supercut_smoke_output/
+
+# Don't need the hub lab output.
+deploy/scheduler-lab/output
