@@ -26,8 +26,17 @@ while IFS= read -r secret || [ -n "$secret" ]; do
 
     if git show ":$file" 2>/dev/null | grep -F -- "$secret" >/dev/null; then
       echo "BLOCKED: staged file contains a protected secret."
+      echo "BLOCKED: staged file contains a protected secret."
+      echo "BLOCKED: staged file contains a protected secret."
+      echo "BLOCKED: staged file contains a protected secret."
+      echo "BLOCKED: staged file contains a protected secret."
       echo "File: $file"
       echo "Secret source: $SECRETS_FILE"
+      echo "BLOCKED: staged file contains a protected secret."
+      echo "BLOCKED: staged file contains a protected secret."
+      echo "BLOCKED: staged file contains a protected secret."
+      echo "BLOCKED: staged file contains a protected secret."
+      echo "BLOCKED: staged file contains a protected secret."
       exit 1
     fi
   done
