@@ -451,7 +451,7 @@
       const mode = String(remote.publish_mode || (remote.use_local_server ? "local_server" : "scp")).trim() || "scp";
       const hasBaseCommand = Boolean(site?.id && remote.accepted_at && remote.site_slug && remote.source_path && remote.remote_root);
       if (!hasBaseCommand) return null;
-      if (mode !== "local_server" && !remote.remote_host) return null;
+      if (mode !== "local_server" && !remote.remote_host && !remote.ssh_password_file) return null;
       return {...remote, publish_mode: mode, use_local_server: mode === "local_server"};
     }
 
@@ -598,6 +598,7 @@
         site_slug: websiteBuilderPublishingSiteSlug?.value || remote.site_slug || "",
         source_path: websiteBuilderPublishingSourcePath?.value || remote.source_path || "",
         remote_host: websiteBuilderPublishingSshHost?.value || "",
+        remote_host_stored: Boolean(remote.accepted_at && remote.ssh_password_file && !remote.remote_host),
         ssh_password: websiteBuilderPublishingSshPassword?.value || "",
         ssh_password_file: remote.ssh_password_file || "",
         remote_root: websiteBuilderPublishingRemoteRoot?.value || remote.remote_root || websiteBuilderDefaultRemoteRoot,
@@ -707,7 +708,7 @@
         && String(visibleSetup.remote_root || "").trim()
       );
       if (!baseReady) return false;
-      if (!useLocal && !String(visibleSetup.remote_host || "").trim()) return false;
+      if (!useLocal && !String(visibleSetup.remote_host || "").trim() && !visibleSetup.remote_host_stored) return false;
       if (!websiteBuilderPublishingRequiresDirectus(site)) return true;
       return websiteBuilderDirectusUrlLooksValid(visibleSetup.publish_directus_url);
     }
@@ -718,6 +719,7 @@
         site_slug: String(visibleSetup.site_slug || "").trim(),
         source_path: String(visibleSetup.source_path || "").trim(),
         remote_host: String(visibleSetup.remote_host || "").trim(),
+        remote_host_stored: Boolean(visibleSetup.remote_host_stored),
         remote_root: String(visibleSetup.remote_root || "").trim(),
         ssh_password: String(visibleSetup.ssh_password || ""),
         ssh_password_file: String(visibleSetup.ssh_password_file || "").trim(),
@@ -753,6 +755,7 @@
         site_slug: remote.site_slug || remote.project || site?.id || "",
         source_path: remote.source_path || (site?.id ? `runtime/websites/${site.id}` : ""),
         remote_host: remote.remote_host || "",
+        remote_host_stored: Boolean(!remote.remote_host && remote.ssh_password_file),
         ssh_password: "",
         ssh_password_file: remote.ssh_password_file || (site?.id ? `runtime/websites/${site.id}/ssh_password.local` : ""),
         remote_root: remote.remote_root || websiteBuilderDefaultRemoteRoot,
@@ -790,7 +793,10 @@
       if (visibleSetup.use_local_server || visibleSetup.publish_mode === "local_server") {
         return ["python", "deploy\\coolify\\push_site_local.py", slug, "--source", source, "--remote-root", remoteRoot];
       }
-      const host = String(visibleSetup.remote_host || "root@publish.greatlibrary.io").trim() || "root@publish.greatlibrary.io";
+      const storedHostLabel = visibleSetup.remote_host_stored
+        ? `<stored in ${String(visibleSetup.ssh_password_file || "ssh_password.local").trim() || "ssh_password.local"}>`
+        : "";
+      const host = String(visibleSetup.remote_host || storedHostLabel || "root@publish.greatlibrary.io").trim() || "root@publish.greatlibrary.io";
       return ["python", "deploy\\coolify\\push_site_scp.py", slug, "--source", source, "--host", host, "--remote-root", remoteRoot];
     }
 
@@ -830,7 +836,9 @@
         implementation_details: {
           route: "remote_prod",
           controller_id: useLocal ? "local_server" : "scp",
-          server_target: useLocal ? "local server command" : remoteHost,
+          server_target: useLocal
+            ? "local server command"
+            : (remoteHost || (visibleSetup.remote_host_stored ? `stored in ${String(visibleSetup.ssh_password_file || "ssh_password.local").trim() || "ssh_password.local"}` : "")),
           deployment_destination: `${remoteRoot.replace(/\/+$/, "")}/${siteSlug}`,
           command: websiteBuilderPublishingCommandPreview(visibleSetup),
           compose: websiteBuilderRemoteCoolifyCompose(visibleSetup)
@@ -950,6 +958,7 @@
             site_slug: site?.id || "",
             source_path: site?.repo_relative_path || (site?.id ? `runtime/websites/${site.id}` : ""),
             remote_host: "",
+            remote_host_stored: false,
             ssh_password: "",
             ssh_password_file: site?.id ? `runtime/websites/${site.id}/ssh_password.local` : "",
             remote_root: websiteBuilderDefaultRemoteRoot,
@@ -992,9 +1001,12 @@
       if (websiteBuilderInspectorRemoteTarget) {
         const remote = targets.remote_prod;
         const mode = remote.use_local_server || remote.publish_mode === "local_server" ? "Local Server command" : "SCP command";
+        const storedHostLabel = remote.accepted_at && remote.ssh_password_file && !remote.remote_host
+          ? `stored in ${remote.ssh_password_file}`
+          : "";
         const destination = remote.use_local_server || remote.publish_mode === "local_server"
           ? remote.remote_root
-          : [remote.remote_host, remote.remote_root].filter(Boolean).join(":");
+          : [remote.remote_host || storedHostLabel, remote.remote_root].filter(Boolean).join(":");
         const domain = remote.domain ? ` · ${remote.domain}` : "";
         websiteBuilderInspectorRemoteTarget.textContent = remote.accepted_at
           ? `${mode}${destination ? ` · ${destination}` : ""}${domain}`

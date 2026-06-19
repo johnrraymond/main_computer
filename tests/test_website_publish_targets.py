@@ -85,11 +85,17 @@ def test_site_saves_scp_publish_command_config_without_conflating_slug_and_sourc
     assert remote["site_slug"] == "johnrraymond"
     assert remote["project"] == "johnrraymond"
     assert remote["source_path"] == "runtime/websites/hub-site"
-    assert remote["remote_host"] == "root@publish.greatlibrary.io"
+    assert remote["remote_host"] == ""
     assert remote["remote_root"] == "/srv/main-computer/sites"
     assert remote["ssh_password_file"] == "runtime/websites/hub-site/ssh_password.local"
     assert "ssh_password" not in remote
-    assert (tmp_path / "runtime" / "websites" / "hub-site" / "ssh_password.local").read_text(encoding="utf-8") == "secret-password"
+    raw_manifest = json.loads((tmp_path / "runtime" / "websites" / "hub-site" / "site.json").read_text(encoding="utf-8"))
+    assert "remote_host" not in raw_manifest["publish_targets"]["remote_prod"]
+    local_secret = json.loads((tmp_path / "runtime" / "websites" / "hub-site" / "ssh_password.local").read_text(encoding="utf-8"))
+    assert local_secret == {
+        "remote_host": "root@publish.greatlibrary.io",
+        "ssh_password": "secret-password",
+    }
 
 
 

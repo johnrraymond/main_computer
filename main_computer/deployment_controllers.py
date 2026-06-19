@@ -311,7 +311,9 @@ def site_publish_targets(site: dict[str, Any] | None, repo_root: Path) -> dict[s
             "use_local_server": bool(remote_prod.get("use_local_server") or str(remote_prod.get("publish_mode") or "").strip().lower() == "local_server"),
             "site_slug": str(remote_prod.get("site_slug") or remote_prod.get("project") or site_id),
             "source_path": str(remote_prod.get("source_path") or (f"runtime/websites/{site_id}" if site_id else "")),
-            "remote_host": str(remote_prod.get("remote_host") or ""),
+            # Keep the SSH target out of public site.json-derived payloads.  The
+            # publish path resolves it from the local ssh_password.local file.
+            "remote_host": "",
             "remote_root": str(remote_prod.get("remote_root") or "/srv/main-computer/sites"),
             "ssh_password_file": str(remote_prod.get("ssh_password_file") or (f"runtime/websites/{site_id}/ssh_password.local" if site_id else "")),
             "resource_uuid": str(remote_prod.get("resource_uuid") or ""),

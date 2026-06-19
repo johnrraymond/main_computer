@@ -3661,29 +3661,107 @@ def validate_publish_ssh_password_file(repo_root: Path, value: object) -> str:
     return rel_path.as_posix()
 
 
-def write_publish_ssh_password(repo_root: Path, password_file: object, password: object) -> None:
-    text = str(password or "")
-    if not text:
-        return
+def _parse_publish_ssh_secret(text: str) -> dict[str, str]:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return {}
+
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        secret: dict[str, str] = {}
+        host = str(payload.get("remote_host") or payload.get("ssh_host") or payload.get("host") or "").strip()
+        password = str(payload.get("ssh_password") or payload.get("password") or "").strip()
+        if host:
+            secret["remote_host"] = host
+        if password:
+            secret["ssh_password"] = password
+        return secret
+
+    if "=" in stripped:
+        secret = {}
+        for line in stripped.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            normalized_key = key.strip().lower().replace("-", "_")
+            value = value.strip()
+            if normalized_key in {"remote_host", "ssh_host", "host"} and value:
+                secret["remote_host"] = value
+            elif normalized_key in {"ssh_password", "password"} and value:
+                secret["ssh_password"] = value
+        if secret:
+            return secret
+
+    return {"ssh_password": stripped}
+
+
+def _read_publish_ssh_secret(repo_root: Path, password_file: object) -> dict[str, str]:
+    raw = str(password_file or "").strip()
+    if not raw:
+        return {}
+    rel_path = validate_publish_ssh_password_file(repo_root, raw)
+    target = repo_root / rel_path
+    if not target.is_file():
+        return {}
+    return _parse_publish_ssh_secret(target.read_text(encoding="utf-8"))
+
+
+def _write_publish_ssh_secret(
+    repo_root: Path,
+    password_file: object,
+    *,
+    password: object | None = None,
+    remote_host: object | None = None,
+) -> None:
     rel_path = validate_publish_ssh_password_file(repo_root, password_file)
+    secret = _read_publish_ssh_secret(repo_root, rel_path)
+
+    if password is not None:
+        password_text = str(password or "").strip()
+        if password_text:
+            secret["ssh_password"] = password_text
+        else:
+            secret.pop("ssh_password", None)
+
+    if remote_host is not None:
+        host_text = str(remote_host or "").strip()
+        if host_text:
+            secret["remote_host"] = validate_remote_publish_host(host_text)
+        else:
+            secret.pop("remote_host", None)
+
+    if not secret:
+        return
+
     target = repo_root / rel_path
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(text, encoding="utf-8")
+    target.write_text(json.dumps(secret, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     try:
         target.chmod(0o600)
     except OSError:
         pass
 
 
+def write_publish_ssh_password(repo_root: Path, password_file: object, password: object) -> None:
+    if str(password or ""):
+        _write_publish_ssh_secret(repo_root, password_file, password=password)
+
+
+def write_publish_ssh_host(repo_root: Path, password_file: object, remote_host: object) -> None:
+    _write_publish_ssh_secret(repo_root, password_file, remote_host=remote_host)
+
+
 def read_publish_ssh_password(repo_root: Path, password_file: object) -> str:
-    raw = str(password_file or "").strip()
-    if not raw:
-        return ""
-    rel_path = validate_publish_ssh_password_file(repo_root, raw)
-    target = repo_root / rel_path
-    if not target.is_file():
-        return ""
-    return target.read_text(encoding="utf-8").strip()
+    return _read_publish_ssh_secret(repo_root, password_file).get("ssh_password", "")
+
+
+def read_publish_ssh_host(repo_root: Path, password_file: object) -> str:
+    host = _read_publish_ssh_secret(repo_root, password_file).get("remote_host", "")
+    return validate_remote_publish_host(host) if host else ""
 
 def save_website_publish_target(
     repo_root: Path,
@@ -3754,20 +3832,24 @@ def save_website_publish_target(
             updated["project"] = updated["site_slug"]
     if source_path is not None:
         updated["source_path"] = validate_publish_source_path(repo_root, source_path)
-    if remote_host is not None:
-        updated["remote_host"] = str(remote_host or "").strip()
     if remote_root is not None:
         updated["remote_root"] = validate_remote_publish_root(remote_root)
     if lane_key == "remote_prod":
         updated.pop("ssh_password", None)
+        updated.pop("remote_host", None)
         default_password_file = default_publish_ssh_password_file(repo_root, project_model.path)
         requested_password_file = str(ssh_password_file or "").strip() if ssh_password_file is not None else ""
         password_file = requested_password_file or updated.get("ssh_password_file") or default_password_file
         updated["ssh_password_file"] = validate_publish_ssh_password_file(repo_root, password_file)
+        if remote_host is not None:
+            write_publish_ssh_host(repo_root, updated["ssh_password_file"], remote_host)
         if ssh_password is not None and str(ssh_password or ""):
             write_publish_ssh_password(repo_root, updated["ssh_password_file"], ssh_password)
-    elif ssh_password is not None:
-        updated.pop("ssh_password", None)
+    else:
+        if remote_host is not None:
+            updated["remote_host"] = str(remote_host or "").strip()
+        if ssh_password is not None:
+            updated.pop("ssh_password", None)
     for key, value in {
         "resource_uuid": resource_uuid,
         "service_uuid": service_uuid,
@@ -3916,6 +3998,8 @@ def remote_publish_compose_yaml(
 def accepted_remote_publish_target(repo_root: Path, project: WebsiteProject) -> dict[str, str]:
     payload = dict(project.manifest)
     payload["id"] = project.id
+    raw_targets = payload.get("publish_targets") if isinstance(payload.get("publish_targets"), dict) else {}
+    raw_remote = raw_targets.get("remote_prod") if isinstance(raw_targets.get("remote_prod"), dict) else {}
     remote = dict(site_publish_targets(payload, repo_root)["remote_prod"])
     if not remote.get("accepted_at"):
         raise WebsiteProjectError("Accept publishing setup before publishing.")
@@ -3928,7 +4012,10 @@ def accepted_remote_publish_target(repo_root: Path, project: WebsiteProject) -> 
     remote["source_path"] = remote_publish_source_path(repo_root, remote, project.id)
     remote["remote_root"] = validate_remote_publish_root(remote.get("remote_root") or DEFAULT_REMOTE_PUBLISH_ROOT)
 
-    remote_host = str(remote.get("remote_host") or "").strip()
+    password_file = str(remote.get("ssh_password_file") or "").strip()
+    secret_host = read_publish_ssh_host(repo_root, password_file)
+    legacy_manifest_host = str(raw_remote.get("remote_host") or "").strip()
+    remote_host = secret_host or legacy_manifest_host
     if mode == "scp" and remote_host:
         remote_host = validate_remote_publish_host(remote_host)
     remote["remote_host"] = remote_host
