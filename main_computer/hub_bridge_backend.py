@@ -61,6 +61,7 @@ class ContractOnlyHubBridgeBackend:
     contracts_path: Path
     network_key: str
     missing_deployment_path: Path | None = None
+    chain_rpc_url: str | None = None
     name: str = "dev-chain"
 
     def status(self) -> dict[str, Any]:
@@ -71,6 +72,7 @@ class ContractOnlyHubBridgeBackend:
             "contract_address_source": str(self.contracts_path),
             "contracts_path": str(self.contracts_path),
             "network_key": self.network_key,
+            "chain_rpc_url": self.chain_rpc_url,
             "signer_configured": False,
             "bridge_controller_address": None,
             "requester_wallet_address": None,
@@ -172,6 +174,8 @@ def build_hub_bridge_backend(
     dev_chain_deployment_path: Path | None,
     contracts_path: Path | None = None,
     network_key: str = "dev",
+    chain_rpc_url: str | None = None,
+    allow_missing_bridge_signer: bool = False,
 ) -> HubBridgeBackend:
     clean = str(backend_name or "dev-chain").strip().lower()
     if clean in {"mock", "mock-chain", "mock-chain-lite"}:
@@ -188,19 +192,32 @@ def build_hub_bridge_backend(
                 network_key=network_key,
             )
 
-        contract_only = _contract_only_backend_from_contracts(
-            repo_root=repo_root,
-            contracts_path=resolved_contracts_path,
-            network_key=network_key,
-            missing_deployment_path=deployment_path,
-        )
-        if contract_only is not None:
-            return contract_only
+        if resolved_contracts_path is not None:
+            if not allow_missing_bridge_signer:
+                if deployment_path is None:
+                    raise HubBridgeBackendError(
+                        "dev-chain bridge backend has a public contracts_path but no private signer deployment path; "
+                        "set allow_missing_bridge_signer only for read/status-only public contract startup."
+                    )
+                raise HubBridgeBackendError(
+                    f"missing dev-chain deployment file: {deployment_path}; "
+                    "set allow_missing_bridge_signer only for read/status-only public contract startup."
+                )
+
+            contract_only = _contract_only_backend_from_contracts(
+                repo_root=repo_root,
+                contracts_path=resolved_contracts_path,
+                network_key=network_key,
+                missing_deployment_path=deployment_path,
+                chain_rpc_url=chain_rpc_url,
+            )
+            if contract_only is not None:
+                return contract_only
 
         if deployment_path is None:
             raise HubBridgeBackendError(
-                "dev-chain bridge backend requires either a private dev-chain deployment path "
-                "or a public contracts_path containing hub_credit_bridge_escrow."
+                "dev-chain bridge backend requires a private dev-chain deployment path "
+                "or an explicit public contracts_path with allow_missing_bridge_signer enabled."
             )
         raise HubBridgeBackendError(f"missing dev-chain deployment file: {deployment_path}")
     raise HubBridgeBackendError(
@@ -221,6 +238,7 @@ def _contract_only_backend_from_contracts(
     contracts_path: Path | None,
     network_key: str,
     missing_deployment_path: Path | None,
+    chain_rpc_url: str | None = None,
 ) -> ContractOnlyHubBridgeBackend | None:
     if contracts_path is None:
         return None
@@ -240,6 +258,7 @@ def _contract_only_backend_from_contracts(
         contracts_path=source_path,
         network_key=str(network_key or "dev").strip() or "dev",
         missing_deployment_path=missing_deployment_path,
+        chain_rpc_url=str(chain_rpc_url or "").strip() or None,
     )
 
 

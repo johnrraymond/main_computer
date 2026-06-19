@@ -116,12 +116,16 @@ def test_public_contract_config_allows_signer_disabled_startup_without_private_d
         dev_chain_deployment_path=missing_deployment_path,
         contracts_path=contracts_path,
         network_key="testnet",
+        chain_rpc_url="https://testnet-rpc.greatlibrary.io",
+        allow_missing_bridge_signer=True,
     )
 
     status = backend.status()  # type: ignore[attr-defined]
     assert status["backend"] == "dev-chain"
     assert status["mode"] == "contract-address-only"
     assert status["escrow_address"] == "0x5555555555555555555555555555555555555555"
+    assert status["network_key"] == "testnet"
+    assert status["chain_rpc_url"] == "https://testnet-rpc.greatlibrary.io"
     assert status["signer_configured"] is False
     assert status["write_operations_enabled"] is False
     assert status["missing_deployment_path"] == str(missing_deployment_path)
@@ -138,3 +142,30 @@ def test_public_contract_config_allows_signer_disabled_startup_without_private_d
         assert "bridge signer is not configured for testnet" in str(exc)
     else:
         raise AssertionError("signer-disabled contract backend should fail bridge writes closed")
+
+def test_public_contract_config_requires_explicit_missing_signer_allowance(tmp_path: Path) -> None:
+    contracts_path = tmp_path / "main_computer" / "config" / "testnet_contracts.json"
+    contracts_path.parent.mkdir(parents=True, exist_ok=True)
+    contracts_path.write_text(
+        json.dumps({"hub_credit_bridge_escrow": "0x5555555555555555555555555555555555555555"}) + "\n",
+        encoding="utf-8",
+    )
+    missing_deployment_path = tmp_path / "runtime" / "deployments" / "testnet" / "latest.json"
+
+    try:
+        build_hub_bridge_backend(
+            backend_name="dev-chain",
+            repo_root=tmp_path,
+            dev_chain_deployment_path=missing_deployment_path,
+            contracts_path=contracts_path,
+            network_key="testnet",
+            chain_rpc_url="https://testnet-rpc.greatlibrary.io",
+            allow_missing_bridge_signer=False,
+        )
+    except HubBridgeBackendError as exc:
+        message = str(exc)
+        assert "missing dev-chain deployment file" in message
+        assert "allow_missing_bridge_signer" in message
+    else:
+        raise AssertionError("public contract fallback should require allow_missing_bridge_signer=True")
+

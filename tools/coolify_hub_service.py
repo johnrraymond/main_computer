@@ -597,6 +597,22 @@ def hub_bridge_backend(args: argparse.Namespace | None = None) -> str:
     return env_value or DEFAULT_HUB_BRIDGE_BACKEND
 
 
+def hub_allow_missing_bridge_signer(profile: HubNetworkProfile, args: argparse.Namespace | None = None) -> bool:
+    """Return whether this Hub should boot with public contracts but no private signer manifest."""
+
+    if hub_bridge_backend(args) in {"mock", "mock-chain", "mock-chain-lite"}:
+        return False
+    if bool(getattr(args, "allow_missing_bridge_signer", False)):
+        return True
+    if str(os.environ.get("MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+
+    # Public remote testnet deployments intentionally carry only contract
+    # addresses in the image.  They should expose health/status without private
+    # admin wallet metadata, while bridge write paths stay disabled in the Hub.
+    return profile.network_key == "testnet" or profile.kind == "testnet"
+
+
 def dev_chain_deployment_path(profile: HubNetworkProfile, args: argparse.Namespace, *, container_path: bool = True) -> str:
     explicit = str(getattr(args, "dev_chain_deployment_path", "") or "").strip()
     if explicit:
@@ -660,8 +676,13 @@ def hub_command_parts(profile: HubNetworkProfile, runtime_dir: str, args: argpar
         hub_bridge_backend(args),
     ]
     if hub_bridge_backend(args) not in {"mock", "mock-chain", "mock-chain-lite"}:
-        parts.extend(["--dev-chain-deployment-path", dev_chain_deployment_path(profile, args)])
+        allow_missing_bridge_signer = hub_allow_missing_bridge_signer(profile, args)
+        explicit_deployment_path = str(getattr(args, "dev_chain_deployment_path", "") or "").strip()
+        if explicit_deployment_path or not allow_missing_bridge_signer:
+            parts.extend(["--dev-chain-deployment-path", dev_chain_deployment_path(profile, args)])
         parts.extend(["--contracts-path", contracts_path(profile, args)])
+        if allow_missing_bridge_signer:
+            parts.append("--allow-missing-bridge-signer")
     if profile.chain_id is not None:
         parts.extend(["--chain-id", str(profile.chain_id)])
     runtime_chain_rpc_url = hub_chain_rpc_url(profile, args)
@@ -1052,6 +1073,11 @@ def render_remote_fdb_sidecar_hub_compose(profile: HubNetworkProfile, args: argp
         f"      PORT: {yaml_quote(str(profile.hub_bind_port))}",
         f"      MAIN_COMPUTER_HUB_NETWORK: {yaml_quote(profile.network_key)}",
         f"      MAIN_COMPUTER_HUB_CONTRACTS_PATH: {yaml_quote(contracts_path(profile, args))}",
+        *(
+            [f"      MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER: {yaml_quote('true')}"]
+            if hub_allow_missing_bridge_signer(profile, args)
+            else []
+        ),
         f"      MAIN_COMPUTER_HUB_ROOT: {yaml_quote(runtime_dir)}",
         f"      MAIN_COMPUTER_HUB_FDB_NAMESPACE: {yaml_quote(exp_fdb_namespace(profile, args))}",
         f"      FDB_CLUSTER_FILE_CONTENTS: {yaml_quote(cluster_contents)}",
@@ -2307,6 +2333,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Container path to public contract-address config. Defaults to "
             "/app/main_computer/config/<network>_contracts.json."
+        ),
+    )
+    parser.add_argument(
+        "--allow-missing-bridge-signer",
+        action="store_true",
+        help=(
+            "Allow public-contract Hub startup without a private dev-chain signer manifest. "
+            "Bridge write operations remain disabled until signer metadata is configured."
         ),
     )
 
