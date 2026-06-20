@@ -1425,6 +1425,18 @@ class HubHttpServer(ThreadingHTTPServer):
         )
         self.worker_route_in_flight_lock = threading.Lock()
         self.worker_route_in_flight = 0
+        self.ring_admission_audit_diag_lock = threading.Lock()
+        self.ring_admission_audit_write_failure_count = 0
+        self.ring_admission_audit_write_failure_suppressed_count = 0
+        self.ring_admission_audit_last_write_failure: dict[str, Any] | None = None
+        self.ring_admission_audit_last_log_monotonic = 0.0
+        try:
+            self.ring_admission_audit_log_interval_seconds = max(
+                0.0,
+                float(os.environ.get("HUB_RING_ADMISSION_AUDIT_LOG_INTERVAL_SECONDS", "30")),
+            )
+        except ValueError:
+            self.ring_admission_audit_log_interval_seconds = 30.0
         hub_root = config.hub_root
         if not hub_root.is_absolute():
             hub_root = Path.cwd().resolve() / hub_root
@@ -1461,6 +1473,76 @@ class HubHttpServer(ThreadingHTTPServer):
             credit_ledger=self.credit_ledger,
             default_credits_per_request=config.hub_credits_per_request,
         )
+
+
+    def note_ring_admission_audit_write_failure(self, event: dict[str, Any], exc: BaseException) -> None:
+        """Record and rate-limit ring-admission audit side-write failures.
+
+        Ring admission itself is still handled by the caller.  The audit write is
+        best-effort, but failures must be diagnosable and visible in status.
+        """
+        clean_event = event if isinstance(event, dict) else {}
+        detail: dict[str, Any] = {
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "node_id": str(clean_event.get("node_id") or ""),
+            "worker_instance_id": str(clean_event.get("worker_instance_id") or ""),
+            "wallet_address": str(clean_event.get("wallet_address") or ""),
+            "requested_ring": clean_event.get("requested_ring"),
+            "minimum_allowed_ring": clean_event.get("minimum_allowed_ring"),
+            "fallback_ring": clean_event.get("fallback_ring"),
+            "ring_config_hash": str(clean_event.get("ring_config_hash") or ""),
+            "failure_count": 0,
+            "suppressed_since_last_log": 0,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        now = time.monotonic()
+        should_log = False
+        suppressed_since_last = 0
+        with self.ring_admission_audit_diag_lock:
+            self.ring_admission_audit_write_failure_count += 1
+            detail["failure_count"] = self.ring_admission_audit_write_failure_count
+            interval = self.ring_admission_audit_log_interval_seconds
+            should_log = bool(self.verbose) and (
+                self.ring_admission_audit_last_log_monotonic <= 0.0
+                or interval <= 0.0
+                or now - self.ring_admission_audit_last_log_monotonic >= interval
+            )
+            if should_log:
+                suppressed_since_last = self.ring_admission_audit_write_failure_suppressed_count
+                self.ring_admission_audit_write_failure_suppressed_count = 0
+                self.ring_admission_audit_last_log_monotonic = now
+            else:
+                self.ring_admission_audit_write_failure_suppressed_count += 1
+            detail["suppressed_since_last_log"] = suppressed_since_last
+            self.ring_admission_audit_last_write_failure = dict(detail)
+
+        if should_log:
+            context = " ".join(
+                [
+                    f"error_type={detail['error_type']}",
+                    f"error={detail['error']!r}",
+                    f"node_id={detail['node_id']!r}",
+                    f"worker_instance_id={detail['worker_instance_id']!r}",
+                    f"wallet_address={detail['wallet_address']!r}",
+                    f"requested_ring={detail['requested_ring']!r}",
+                    f"minimum_allowed_ring={detail['minimum_allowed_ring']!r}",
+                    f"fallback_ring={detail['fallback_ring']!r}",
+                    f"failure_count={detail['failure_count']}",
+                    f"suppressed_since_last_log={suppressed_since_last}",
+                ]
+            )
+            print(f"hub ring admission audit write failed: {context}", file=sys.stderr, flush=True)
+
+    def ring_admission_audit_diagnostics(self) -> dict[str, Any]:
+        with self.ring_admission_audit_diag_lock:
+            return {
+                "write_failure_count": self.ring_admission_audit_write_failure_count,
+                "suppressed_write_failure_count": self.ring_admission_audit_write_failure_suppressed_count,
+                "last_write_failure": dict(self.ring_admission_audit_last_write_failure)
+                if self.ring_admission_audit_last_write_failure
+                else None,
+            }
 
 
 class HubServerHandler(_JsonHandler):
@@ -1684,25 +1766,23 @@ class HubServerHandler(_JsonHandler):
         error: str,
         message: str,
     ) -> None:
+        event = {
+            "event_type": "ring_admission_rejected",
+            "wallet_address": wallet_address,
+            "node_id": _clean_node_id(node_id, default=node_id),
+            "worker_instance_id": _clean_node_id(worker_instance_id, default="") if worker_instance_id else "",
+            "requested_ring": int(requested_ring),
+            "minimum_allowed_ring": int(minimum_allowed_ring),
+            "allowed_min_ring": int(minimum_allowed_ring),
+            "fallback_ring": int(fallback_ring) if fallback_ring is not None else None,
+            "error": str(error or "ring_not_allowed"),
+            "message": str(message or ""),
+            "ring_config_hash": self.server.ring_admission_config.config_hash(),
+        }
         try:
-            self.server.registry.record_ring_admission_rejection(
-                {
-                    "event_type": "ring_admission_rejected",
-                    "wallet_address": wallet_address,
-                    "node_id": _clean_node_id(node_id, default=node_id),
-                    "worker_instance_id": _clean_node_id(worker_instance_id, default="") if worker_instance_id else "",
-                    "requested_ring": int(requested_ring),
-                    "minimum_allowed_ring": int(minimum_allowed_ring),
-                    "allowed_min_ring": int(minimum_allowed_ring),
-                    "fallback_ring": int(fallback_ring) if fallback_ring is not None else None,
-                    "error": str(error or "ring_not_allowed"),
-                    "message": str(message or ""),
-                    "ring_config_hash": self.server.ring_admission_config.config_hash(),
-                }
-            )
-        except Exception:
-            if self.server.verbose:
-                print("hub ring admission audit write failed", file=sys.stderr, flush=True)
+            self.server.registry.record_ring_admission_rejection(event)
+        except Exception as exc:
+            self.server.note_ring_admission_audit_write_failure(event, exc)
 
     def _evaluate_ring_registration(
         self,
@@ -2808,6 +2888,12 @@ class HubServerHandler(_JsonHandler):
             status["bridge_backend"] = bridge_backend_status
             status.update(self.server.ring_admission_config.public_status())
             status["ring_admission_rejection_audit_count"] = self.server.registry.ring_admission_audit_count()
+            ring_audit_diag = self.server.ring_admission_audit_diagnostics()
+            status["ring_admission_rejection_audit_write_failure_count"] = ring_audit_diag["write_failure_count"]
+            status["ring_admission_rejection_audit_write_failure_suppressed_since_last_log"] = ring_audit_diag[
+                "suppressed_write_failure_count"
+            ]
+            status["ring_admission_rejection_audit_last_write_failure"] = ring_audit_diag["last_write_failure"]
             status["security"] = {
                 "high_security_default": self.server.config.hub_high_security,
                 "hub_blind_envelopes": self.server.config.hub_high_security,

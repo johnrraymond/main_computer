@@ -184,6 +184,27 @@ class ExperimentalFoundationDbRegistry(HubRegistry):
         self._lock = threading.Lock()
         self.backend = "foundationdb"
 
+    def _clear_range(self, tr: Any, *parts: Any) -> None:
+        key_range = self.state.range_for(*parts)
+        tr.clear_range(key_range.start, key_range.stop)
+
+    def _write_dict(self, tr: Any, payload: dict[str, Any], *parts: Any) -> None:
+        tr[self.state.pack(*parts)] = _json_dumps(payload)
+
+    def _list_dicts(self, tr: Any, *parts: Any, limit: int | None = None, reverse: bool = False) -> list[dict[str, Any]]:
+        key_range = self.state.range_for(*parts)
+        kwargs: dict[str, Any] = {}
+        if limit is not None:
+            kwargs["limit"] = max(1, int(limit))
+        if reverse:
+            kwargs["reverse"] = True
+        result: list[dict[str, Any]] = []
+        for item in tr.get_range(key_range.start, key_range.stop, **kwargs):
+            payload = json.loads(bytes(item.value).decode("utf-8"))
+            if isinstance(payload, dict):
+                result.append(payload)
+        return result
+
     def _worker_key(self, node_id: str) -> bytes:
         return self.state.pack("worker", node_id)
 

@@ -59,6 +59,7 @@ class HubServerTests(unittest.TestCase):
             model="fake-model",
             hub_root=Path(directory) / "hub-runtime",
             hub_credits_per_request=2,
+            hub_bridge_backend="mock",
             hub_ring_config_path=ring_config_path,
         )
 
@@ -278,6 +279,70 @@ class HubServerTests(unittest.TestCase):
                 hub.shutdown()
                 hub.server_close()
                 hub_thread.join(timeout=2)
+
+
+    def test_ring_admission_audit_write_failure_reports_exception_and_rate_limits(self) -> None:
+        wallet = "0x0000000000000000000000000000000000000006"
+        with tempfile.TemporaryDirectory() as hub_tmp:
+            ring_config_path = self._ring_config_path(hub_tmp, {"default_min_ring": 3})
+            hub = HubHttpServer(
+                ("127.0.0.1", 0),
+                self._hub_config_for_ring_tests(hub_tmp, ring_config_path=ring_config_path),
+                verbose=True,
+            )
+            hub.ring_admission_audit_log_interval_seconds = 3600.0
+            hub_thread = self._start_server(hub)
+            stderr = io.StringIO()
+            try:
+                hub_base = f"http://127.0.0.1:{hub.server_port}"
+                with patch.object(
+                    hub.registry,
+                    "record_ring_admission_rejection",
+                    side_effect=RuntimeError("synthetic audit write boom"),
+                ):
+                    with patch("sys.stderr", stderr):
+                        for index in range(2):
+                            request = Request(
+                                f"{hub_base}/api/hub/v1/workers/register",
+                                data=json.dumps(
+                                    {
+                                        "node_id": f"ring1-worker-{index}",
+                                        "endpoint": f"http://127.0.0.1:1/ring1-worker-{index}",
+                                        "model": "fake-model",
+                                        "wallet_address": wallet,
+                                        "requested_ring": 1,
+                                        "credits_per_request": 2,
+                                    }
+                                ).encode("utf-8"),
+                                headers={"Content-Type": "application/json"},
+                                method="POST",
+                            )
+                            with self.assertRaises(HTTPError) as raised:
+                                urlopen(request, timeout=5)
+                            self.assertEqual(raised.exception.code, 403)
+
+                log_output = stderr.getvalue()
+                self.assertEqual(log_output.count("hub ring admission audit write failed:"), 1)
+                self.assertIn("RuntimeError", log_output)
+                self.assertIn("synthetic audit write boom", log_output)
+                self.assertIn("ring1-worker-0", log_output)
+
+                self.assertEqual(hub.registry.ring_admission_audit_count(), 0)
+                status = self._get_json(f"{hub_base}/api/hub/v1/status")
+                self.assertEqual(status["ring_admission_rejection_audit_count"], 0)
+                self.assertEqual(status["ring_admission_rejection_audit_write_failure_count"], 2)
+                self.assertEqual(status["ring_admission_rejection_audit_write_failure_suppressed_since_last_log"], 1)
+                last_failure = status["ring_admission_rejection_audit_last_write_failure"]
+                self.assertEqual(last_failure["error_type"], "RuntimeError")
+                self.assertEqual(last_failure["error"], "synthetic audit write boom")
+                self.assertEqual(last_failure["node_id"], "ring1-worker-1")
+                self.assertEqual(last_failure["requested_ring"], 1)
+                self.assertEqual(last_failure["minimum_allowed_ring"], 3)
+            finally:
+                hub.shutdown()
+                hub.server_close()
+                hub_thread.join(timeout=2)
+
 
     def test_worker_route_diagnostics_log_register_stages(self) -> None:
         with tempfile.TemporaryDirectory() as hub_tmp:
