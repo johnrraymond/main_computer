@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
 import threading
 import time
+import uuid
 from dataclasses import replace
 from pathlib import Path
 from typing import Sequence
@@ -515,6 +517,88 @@ def launch_scheduler_lab_docker(args: argparse.Namespace, *, hub_base_urls: Sequ
     return subprocess.Popen(command, cwd=str(repo_root), env=env)
 
 
+
+def _payout_lab_namespace_from_args(args: argparse.Namespace, *, run_id: str) -> str:
+    explicit_namespace = str(getattr(args, "payout_lab_namespace", "") or "").strip()
+    if explicit_namespace:
+        return explicit_namespace
+    base_namespace = str(getattr(args, "namespace", "") or DEFAULT_EXP_FDB_NAMESPACE).strip() or DEFAULT_EXP_FDB_NAMESPACE
+    suffix = run_id
+    if suffix.startswith("payout-lab-"):
+        suffix = suffix[len("payout-lab-") :]
+    return f"{base_namespace}-payout-lab-{suffix}"
+
+
+def _payout_lab_output_dir_from_args(args: argparse.Namespace, *, repo_root: Path) -> Path:
+    output_dir = Path(getattr(args, "payout_lab_output_dir", None) or Path(args.docker_output_dir or DEFAULT_EXP_FDB_DOCKER_OUTPUT_DIR) / "payout-lab")
+    if not output_dir.is_absolute():
+        output_dir = repo_root / output_dir
+    return output_dir.resolve()
+
+
+def run_payout_lab_phase(args: argparse.Namespace, *, runner: object | None = None) -> int:
+    """Run the optional mock payout settlement smoke lab after the Hub is live.
+
+    This phase is intentionally opt-in.  It reuses the configured FoundationDB
+    cluster and credit ledger implementation, but defaults to an isolated
+    payout-lab namespace so scheduler-lab and normal Hub state are not polluted.
+    The chain/relayer side remains mocked here; real bridge settlement is a
+    later, explicit integration step.
+    """
+
+    from tools.payout_lab.run_payout_lab import PayoutLabConfig, run_payout_lab
+
+    repo_root = _repo_root_from_args(args)
+    cluster_file = _cluster_file_from_args(args, repo_root=repo_root)
+    run_id = str(getattr(args, "payout_lab_run_id", "") or f"payout-lab-{uuid.uuid4().hex[:12]}")
+    namespace = _payout_lab_namespace_from_args(args, run_id=run_id)
+    output_dir = _payout_lab_output_dir_from_args(args, repo_root=repo_root)
+    summary_dir = output_dir / run_id
+    summary_dir.mkdir(parents=True, exist_ok=True)
+
+    config = PayoutLabConfig(
+        backend=str(args.payout_lab_backend),
+        wallets=int(args.payout_lab_wallets),
+        starting_credits=int(args.payout_lab_starting_credits),
+        requests=int(args.payout_lab_requests),
+        concurrency=int(args.payout_lab_concurrency),
+        settlement_workers=int(args.payout_lab_settlement_workers),
+        max_payout_credits=int(args.payout_lab_max_payout_credits),
+        duplicate_rate=float(args.payout_lab_duplicate_rate),
+        failure_rate=float(args.payout_lab_failure_rate),
+        after_broadcast_crash_rate=float(args.payout_lab_after_broadcast_crash_rate),
+        lease_seconds=float(args.payout_lab_lease_seconds),
+        settle_timeout_seconds=float(args.payout_lab_settle_timeout_seconds),
+        seed=int(args.payout_lab_seed),
+        run_id=run_id,
+        cluster_file=cluster_file,
+        namespace=namespace,
+        repo_root=repo_root,
+        fdb_api_version=int(args.api_version),
+    )
+
+    print("Starting optional payout settlement smoke lab.")
+    print(f"Payout lab backend: {config.backend}")
+    print(f"Payout lab run id: {config.run_id}")
+    print(f"Payout lab FDB namespace: {config.namespace}")
+    print(f"Payout lab wallets: {config.wallets}")
+    print(f"Payout lab requests: {config.requests}")
+    print(f"Payout lab concurrency: {config.concurrency}")
+    print(f"Payout lab settlement workers: {config.settlement_workers}")
+    print(f"Payout lab output dir: {summary_dir}")
+
+    active_runner = runner if runner is not None else run_payout_lab
+    summary = active_runner(config)  # type: ignore[misc]
+    payload = summary.as_dict()
+    print("Payout lab summary:")
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    summary_path = summary_dir / "summary.json"
+    summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(f"Payout lab summary written: {summary_path}")
+    return 0 if bool(getattr(summary, "ok", False)) else 1
+
+
+
 def serve_exp_fdb_hubs(args: argparse.Namespace) -> int:
     live_ports = parse_ports(args.ports if args.ports else args.port, default=DEFAULT_EXP_FDB_HUB_PORT)
     ensure_foundationdb_smoke_loaded(args)
@@ -531,7 +615,10 @@ def serve_exp_fdb_hubs(args: argparse.Namespace) -> int:
             hub_urls = docker_hub_base_urls(args, live_ports)
             docker_process = launch_scheduler_lab_docker(args, hub_base_urls=hub_urls)
             return_code = docker_process.wait()
-            return int(return_code)
+            if int(return_code) != 0:
+                return int(return_code)
+        if args.payout_lab:
+            return run_payout_lab_phase(args)
         try:
             while True:
                 time.sleep(3600)
@@ -644,6 +731,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--docker-output-dir", type=Path, default=DEFAULT_EXP_FDB_DOCKER_OUTPUT_DIR, help="Repository-relative output directory for scheduler lab events.")
     parser.add_argument("--no-docker-build", action="store_true", help="Do not pass --build to docker compose up.")
     parser.add_argument(
+        "--payout-lab",
+        action="store_true",
+        help="After the experimental Hub starts, run the optional mock payout settlement smoke lab.",
+    )
+    parser.add_argument("--payout-lab-backend", choices=["memory", "fdb"], default="fdb", help="Payout lab backend. fdb reuses the configured local FDB cluster in an isolated namespace.")
+    parser.add_argument("--payout-lab-wallets", type=int, default=8, help="Number of synthetic payout lab wallets/accounts to seed.")
+    parser.add_argument("--payout-lab-starting-credits", type=int, default=100, help="Initial whole-credit balance per payout lab account.")
+    parser.add_argument("--payout-lab-requests", type=int, default=200, help="Concurrent payout request attempts for the payout lab.")
+    parser.add_argument("--payout-lab-concurrency", type=int, default=32, help="Concurrent client request workers for the payout lab.")
+    parser.add_argument("--payout-lab-settlement-workers", type=int, default=4, help="Mock backend settlement worker count for the payout lab.")
+    parser.add_argument("--payout-lab-max-payout-credits", type=int, default=10, help="Maximum whole-credit amount per generated payout request.")
+    parser.add_argument("--payout-lab-duplicate-rate", type=float, default=0.10, help="Fraction of generated payout requests that reuse a prior idempotency key.")
+    parser.add_argument("--payout-lab-failure-rate", type=float, default=0.15, help="Deterministic mock failure rate before broadcast.")
+    parser.add_argument("--payout-lab-after-broadcast-crash-rate", type=float, default=0.10, help="Deterministic mock crash rate after broadcast but before local settlement.")
+    parser.add_argument("--payout-lab-lease-seconds", type=float, default=0.10, help="Short per-payout mock settlement claim lease.")
+    parser.add_argument("--payout-lab-settle-timeout-seconds", type=float, default=60.0, help="Seconds to keep mock settlement workers draining accepted payouts.")
+    parser.add_argument("--payout-lab-seed", type=int, default=1337, help="Deterministic payout lab request generation seed.")
+    parser.add_argument("--payout-lab-run-id", default="", help="Optional explicit payout lab run id. Defaults to a generated payout-lab-* id.")
+    parser.add_argument("--payout-lab-namespace", default="", help="Optional explicit payout lab FDB namespace. Defaults to an isolated namespace derived from --namespace and run id.")
+    parser.add_argument("--payout-lab-output-dir", type=Path, default=None, help="Optional payout lab summary output directory. Defaults under --docker-output-dir/payout-lab.")
+    parser.add_argument(
         "--no-fdb-autostart",
         action="store_true",
         help=(
@@ -693,6 +801,30 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--fdb-port must be 1..65535")
     if args.fdb_docker_start_timeout <= 0:
         raise SystemExit("--fdb-docker-start-timeout must be > 0")
+    if args.payout_lab:
+        if args.payout_lab_wallets <= 0:
+            raise SystemExit("--payout-lab-wallets must be > 0")
+        if args.payout_lab_starting_credits < 0:
+            raise SystemExit("--payout-lab-starting-credits must be >= 0")
+        if args.payout_lab_requests < 0:
+            raise SystemExit("--payout-lab-requests must be >= 0")
+        if args.payout_lab_concurrency <= 0:
+            raise SystemExit("--payout-lab-concurrency must be > 0")
+        if args.payout_lab_settlement_workers <= 0:
+            raise SystemExit("--payout-lab-settlement-workers must be > 0")
+        if args.payout_lab_max_payout_credits <= 0:
+            raise SystemExit("--payout-lab-max-payout-credits must be > 0")
+        for flag, value in [
+            ("--payout-lab-duplicate-rate", args.payout_lab_duplicate_rate),
+            ("--payout-lab-failure-rate", args.payout_lab_failure_rate),
+            ("--payout-lab-after-broadcast-crash-rate", args.payout_lab_after_broadcast_crash_rate),
+        ]:
+            if value < 0 or value > 1:
+                raise SystemExit(f"{flag} must be between 0 and 1")
+        if args.payout_lab_lease_seconds <= 0:
+            raise SystemExit("--payout-lab-lease-seconds must be > 0")
+        if args.payout_lab_settle_timeout_seconds <= 0:
+            raise SystemExit("--payout-lab-settle-timeout-seconds must be > 0")
     if args.request_startup_mode == "auto":
         args.request_startup_mode = "surge" if args.funded > 0 else "natural"
     return serve_exp_fdb_hubs(args)

@@ -20,6 +20,10 @@ def test_exp_fdb_hub_entrypoint_is_manual_and_declares_fdb_options() -> None:
     assert "--reuse-container" in module
     assert "-ports" in module
     assert "--docker" in module
+    assert "--payout-lab" in module
+    assert "--payout-lab-wallets" in module
+    assert "--payout-lab-failure-rate" in module
+    assert "Starting optional payout settlement smoke lab." in module
     assert "--docker-compose-file" in module
     assert "--docker-ports" in module
     assert "--nodes" in module
@@ -240,3 +244,68 @@ def test_exp_fdb_hub_launcher_allows_worker_lab_to_derive_duration_and_forced_al
     out = capsys.readouterr().out
     assert "Scheduler lab duration seconds: derived by worker-lab from worktime/default minimum" in out
     assert "Scheduler lab forced-alive grace seconds: derived from resolved worker-lab observation duration" in out
+
+
+
+def test_exp_fdb_hub_optional_payout_lab_phase_uses_isolated_namespace(tmp_path, capsys) -> None:
+    from main_computer.exp_fdb_hub import build_parser, run_payout_lab_phase
+
+    args = build_parser().parse_args(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--cluster-file",
+            ".foundationdb/docker.cluster",
+            "--namespace",
+            "exp-fdb-test",
+            "--payout-lab",
+            "--payout-lab-backend",
+            "memory",
+            "--payout-lab-wallets",
+            "3",
+            "--payout-lab-starting-credits",
+            "25",
+            "--payout-lab-requests",
+            "17",
+            "--payout-lab-concurrency",
+            "5",
+            "--payout-lab-settlement-workers",
+            "2",
+            "--payout-lab-run-id",
+            "payout-lab-pytest",
+            "--payout-lab-output-dir",
+            str(tmp_path / "payout-output"),
+        ]
+    )
+
+    seen = {}
+
+    class FakeSummary:
+        ok = True
+
+        def as_dict(self) -> dict[str, object]:
+            return {"ok": True, "run_id": "payout-lab-pytest", "errors": []}
+
+    def fake_runner(config: object) -> FakeSummary:
+        seen["backend"] = getattr(config, "backend")
+        seen["wallets"] = getattr(config, "wallets")
+        seen["requests"] = getattr(config, "requests")
+        seen["namespace"] = getattr(config, "namespace")
+        seen["repo_root"] = getattr(config, "repo_root")
+        return FakeSummary()
+
+    assert run_payout_lab_phase(args, runner=fake_runner) == 0
+
+    assert seen == {
+        "backend": "memory",
+        "wallets": 3,
+        "requests": 17,
+        "namespace": "exp-fdb-test-payout-lab-pytest",
+        "repo_root": tmp_path,
+    }
+    summary_path = tmp_path / "payout-output" / "payout-lab-pytest" / "summary.json"
+    assert summary_path.exists()
+    assert '"ok": true' in summary_path.read_text(encoding="utf-8")
+    stdout = capsys.readouterr().out
+    assert "Starting optional payout settlement smoke lab." in stdout
+    assert "Payout lab summary written:" in stdout
