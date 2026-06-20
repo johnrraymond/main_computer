@@ -73,6 +73,9 @@ def test_conductor_ui_has_schedule_dns_ssl_and_key_surfaces() -> None:
     assert "function conductorFilteredScripts" in js
     assert "function conductorScriptId" in js
     assert 'conductorScriptSelect?.addEventListener("change", refreshConductorScriptsFromCache)' in js
+    assert "const detailScripts = selectedScript ? [selectedScript] : [];" in js
+    assert "ordered.slice(0, 80)" not in js
+    assert "conductorScripts.scrollTop = 0;" in js
     assert "conductor-script-selected" in js
     assert 'aria-current="true"' in js
     assert "function renderConductorSuggestedInvocations" in js

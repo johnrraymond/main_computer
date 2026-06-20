@@ -6,9 +6,6 @@
     const gitProjectNextStep = document.querySelector("#git-project-next-step");
     const gitProjectPath = document.querySelector("#git-project-path");
     const gitProjectAdd = document.querySelector("#git-project-add");
-    const gitProjectRescan = document.querySelector("#git-project-rescan");
-    const gitProjectLock = document.querySelector("#git-project-lock");
-    const gitProjectUnlock = document.querySelector("#git-project-unlock");
     const gitProjectList = document.querySelector("#git-project-list");
     const gitProjectArchiveList = document.querySelector("#git-project-archive-list");
     const gitProjectWizardPlan = document.querySelector("#git-project-wizard-plan");

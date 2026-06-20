@@ -44,9 +44,6 @@ context.window = context;
   "gitStatusRefresh",
   "gitPatchesRefresh",
   "gitProjectAdd",
-  "gitProjectRescan",
-  "gitProjectLock",
-  "gitProjectUnlock",
   "gitPatchPreview",
   "gitPatchDryRun",
   "gitDryRunRefresh",
@@ -212,6 +209,10 @@ def test_git_tools_entrypoint_exports_compatibility_init_and_binds_controls() ->
     bound = {(call["name"], call["eventName"]) for call in report["calls"]}
     assert ("gitStatusRefresh", "click") in bound
     assert ("gitPatchesRefresh", "click") in bound
+    assert ("gitProjectAdd", "click") in bound
+    assert ("gitProjectRescan", "click") not in bound
+    assert ("gitProjectLock", "click") not in bound
+    assert ("gitProjectUnlock", "click") not in bound
     assert ("gitPatchPreview", "click") in bound
     assert ("gitPatchDryRun", "click") in bound
     assert ("gitDryRunRefresh", "click") in bound

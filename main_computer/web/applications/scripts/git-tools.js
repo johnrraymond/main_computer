@@ -46,9 +46,6 @@
     bindGitToolsControl(gitStatusRefresh, "click", refreshGitStatus);
     bindGitToolsControl(gitPatchesRefresh, "click", refreshGitPatches);
     bindGitToolsControl(gitProjectAdd, "click", addGitProjectFromInput);
-    bindGitToolsControl(gitProjectRescan, "click", inspectSelectedGitProject);
-    bindGitToolsControl(gitProjectLock, "click", () => setSelectedGitProjectLock(true));
-    bindGitToolsControl(gitProjectUnlock, "click", () => setSelectedGitProjectLock(false));
     bindGitToolsControl(gitPatchPreview, "click", previewGitPatch);
     bindGitToolsControl(gitPatchDryRun, "click", runGitPatchDryRun);
     bindGitToolsControl(gitDryRunRefresh, "click", loadGitDryRun);

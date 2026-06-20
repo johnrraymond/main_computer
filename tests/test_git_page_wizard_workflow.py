@@ -124,6 +124,7 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             'class="git-project-roster"',
             "Current Projects",
             "git_dirty.py plan",
+            'class="git-project-add-section"',
             'id="git-project-path"',
             'id="git-project-list"',
             'id="git-project-archive-list"',
@@ -213,6 +214,19 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         for snippet in expected_snippets:
             with self.subTest(snippet=snippet):
                 self.assertIn(snippet, APPLICATIONS_INDEX_HTML)
+        project_main_match = re.search(
+            r'<div class="git-project-main"[^>]*>.*?<div class="git-project-wizard-plan"',
+            GIT_TOOLS_APP_HTML,
+            re.S,
+        )
+        self.assertIsNotNone(project_main_match)
+        project_main_html = project_main_match.group(0) if project_main_match else ""
+        self.assertNotIn('id="git-project-path"', project_main_html)
+        self.assertNotIn('id="git-project-add"', project_main_html)
+        self.assertNotIn('id="git-project-rescan"', GIT_TOOLS_APP_HTML)
+        self.assertNotIn('id="git-project-lock"', GIT_TOOLS_APP_HTML)
+        self.assertNotIn('id="git-project-unlock"', GIT_TOOLS_APP_HTML)
+        self.assertIn('class="git-project-add-section"', GIT_TOOLS_APP_HTML)
         hidden_generated_groups = (
             'renderStepGroup("Immediate attention"',
             'renderStepGroup("Satisfied prerequisites"',
@@ -245,6 +259,7 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         self.assertNotIn(".git-project-header", GIT_TOOLS_CSS)
         self.assertIn("grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);", GIT_TOOLS_CSS)
         self.assertIn(".git-project-roster", GIT_TOOLS_CSS)
+        self.assertIn(".git-project-add-section", GIT_TOOLS_CSS)
         self.assertIn(".git-project-next-step", GIT_TOOLS_CSS)
         self.assertIn(".git-project-wizard-section", GIT_TOOLS_CSS)
         self.assertIn(".git-project-wizard-empty", GIT_TOOLS_CSS)
@@ -767,6 +782,7 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             "Pick a project on the right.",
             "prioritized workflow queue here",
             "The Main Computer project is VIP",
+            "add a project path below",
             'class="git-project-header"',
         )
         for snippet in removed_snippets:

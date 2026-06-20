@@ -565,6 +565,197 @@ def _payout_lab_output_dir_from_args(args: argparse.Namespace, *, repo_root: Pat
     return output_dir.resolve()
 
 
+
+def _record_scheduler_lab_run_id(record: object) -> str:
+    payload = getattr(record, "request_payload", {})
+    metadata = dict(payload.get("metadata", {}) if isinstance(payload, dict) and isinstance(payload.get("metadata"), dict) else {})
+    return str(metadata.get("scheduler_lab_run_id", "") or "").strip()
+
+
+def _wait_for_scheduler_lab_activity(args: argparse.Namespace, *, hub_server: object | None) -> bool:
+    run_id = str(getattr(args, "scheduler_lab_run_id", "") or "").strip()
+    if not run_id or hub_server is None:
+        return False
+    request_store = getattr(hub_server, "request_store", None)
+    if request_store is None or not hasattr(request_store, "list"):
+        return False
+
+    deadline = time.time() + max(0.0, float(getattr(args, "payout_lab_source_wait_seconds", 0.0) or 0.0))
+    poll_seconds = max(0.05, float(getattr(args, "payout_lab_source_poll_seconds", 0.25) or 0.25))
+    while True:
+        try:
+            records = request_store.list(limit=500)
+        except Exception:
+            records = []
+        for record in records:
+            if _record_scheduler_lab_run_id(record) == run_id:
+                return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(poll_seconds)
+
+
+def _require_probe_response(label: str, response: object) -> dict[str, object]:
+    status = int(getattr(response, "status", 0) or 0)
+    payload = getattr(response, "payload", {})
+    ok = bool(getattr(response, "ok", False))
+    if not ok:
+        raise RuntimeError(f"payout e2e probe {label} failed: status={status} payload={payload!r}")
+    return dict(payload or {}) if isinstance(payload, dict) else {}
+
+
+def _run_payout_worker_earning_e2e_probe(args: argparse.Namespace) -> None:
+    """Create one current-run worker earning through normal Hub HTTP routes.
+
+    The scheduler lab is intentionally stochastic, so this deterministic probe is
+    the end-to-end proof point: paid requester account -> worker-pull request ->
+    worker lease -> worker result -> FDB WorkerEarning tagged with the current
+    scheduler run id.  The payout lab then drains that WorkerEarning through the
+    backend payout/settlement path.
+    """
+
+    from tools.scheduler_lab.hub_client import HubClient
+
+    run_id = str(getattr(args, "scheduler_lab_run_id", "") or "").strip()
+    if not run_id:
+        raise RuntimeError("payout e2e probe requires scheduler_lab_run_id")
+    hub_base_url = str(getattr(args, "payout_lab_hub_base_url", "") or "").strip().rstrip("/")
+    if not hub_base_url:
+        raise RuntimeError("payout e2e probe requires payout_lab_hub_base_url")
+
+    suffix = "".join(ch if ch.isalnum() else "-" for ch in run_id)[-24:] or uuid.uuid4().hex[:12]
+    worker_node_id = f"payout-e2e-worker-{suffix}"
+    requester_node_id = f"payout-e2e-requester-{suffix}"
+    account_id = f"payout-e2e-account-{suffix}"
+
+    worker_node = {
+        "node_id": worker_node_id,
+        "kind": "worker",
+        "model": "mock-ai-model-phase9",
+        "models_json": json.dumps(["mock-ai-model-phase9"]),
+        "min_accepted_credits": 1,
+        "offered_credits": 2,
+        "max_concurrency": 1,
+        "network": str(getattr(args, "network_key", "dev") or "dev"),
+        "ring": 3,
+        "cohort": "payout-e2e",
+        "tags": "payout-e2e,end-to-end",
+    }
+    requester_node = {
+        "node_id": requester_node_id,
+        "kind": "requester",
+        "model": "mock-ai-model-phase9",
+        "models_json": json.dumps(["mock-ai-model-phase9"]),
+        "offered_credits": 2,
+        "account_id": account_id,
+        "network": str(getattr(args, "network_key", "dev") or "dev"),
+        "ring": 3,
+        "cohort": "payout-e2e",
+        "tags": "payout-e2e,end-to-end",
+    }
+
+    client = HubClient(
+        hub_base_url,
+        timeout_seconds=max(1.0, float(getattr(args, "http_timeout_seconds", 5.0) or 5.0)),
+        retries=1,
+    )
+    try:
+        print("Payout e2e probe: issuing requester credits through Hub HTTP.")
+        _require_probe_response(
+            "issue credits",
+            client.issue_credits(
+                account_id=account_id,
+                credits=5,
+                memo=f"payout e2e probe funding {run_id}",
+                metadata={
+                    "payout_e2e_probe": True,
+                    "scheduler_lab": True,
+                    "scheduler_lab_run_id": run_id,
+                },
+            ),
+        )
+
+        print("Payout e2e probe: registering deterministic worker through Hub HTTP.")
+        _require_probe_response("register worker", client.register_worker(worker_node))
+
+        print("Payout e2e probe: submitting worker-pull request through Hub HTTP.")
+        request_payload = _require_probe_response(
+            "submit request",
+            client.submit_request(
+                requester_node,
+                request_index=1,
+                request_mode="worker_pull_v0",
+                account_id_prefix="payout-e2e-account",
+                prompt=f"payout e2e probe request for {run_id}",
+                scheduler_lab_run_id=run_id,
+            ),
+        )
+        request = dict(request_payload.get("request", {}) if isinstance(request_payload.get("request"), dict) else {})
+        request_id = str(request.get("request_id", "") or "")
+        if not request_id:
+            raise RuntimeError(f"payout e2e probe submit request did not return request_id: {request_payload!r}")
+
+        lease: dict[str, object] | None = None
+        deadline = time.time() + min(30.0, max(5.0, float(getattr(args, "payout_lab_source_wait_seconds", 30.0) or 30.0)))
+        while time.time() < deadline:
+            poll_payload = _require_probe_response(
+                "poll worker",
+                client.poll_worker(worker_node, lease_seconds=float(getattr(args, "lease_seconds", 180.0) or 180.0)),
+            )
+            candidate = poll_payload.get("lease")
+            if isinstance(candidate, dict):
+                lease = dict(candidate)
+                break
+            time.sleep(max(0.05, float(getattr(args, "payout_lab_source_poll_seconds", 0.25) or 0.25)))
+        if lease is None:
+            raise RuntimeError(f"payout e2e probe worker did not receive a lease for request {request_id}")
+
+        print("Payout e2e probe: submitting deterministic worker result through Hub HTTP.")
+        _require_probe_response(
+            "submit worker result",
+            client.submit_worker_result(
+                worker_node,
+                lease,
+                {
+                    "status": "success",
+                    "content": f"payout e2e probe result for {request_id}",
+                    "provider": "scheduler-lab",
+                    "model": "mock-ai-model-phase9",
+                    "metadata": {
+                        "payout_e2e_probe": True,
+                        "scheduler_lab": True,
+                        "scheduler_lab_run_id": run_id,
+                        "worker_node_id": worker_node_id,
+                        "lease_id": lease.get("lease_id"),
+                    },
+                },
+            ),
+        )
+        print(f"Payout e2e probe: worker earning created for run {run_id}.")
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
+def _prepare_hub_earned_payout_source(args: argparse.Namespace) -> None:
+    if str(getattr(args, "payout_lab_source", "seeded") or "seeded") != "hub-earned-credits":
+        return
+
+    hub_server = getattr(args, "payout_lab_hub_server", None)
+    if hub_server is not None:
+        print("Payout e2e probe: waiting for current scheduler-lab activity.")
+        if not _wait_for_scheduler_lab_activity(args, hub_server=hub_server):
+            raise RuntimeError(
+                "payout e2e probe did not observe current scheduler-lab request activity "
+                f"for run {getattr(args, 'scheduler_lab_run_id', '')!r}"
+            )
+
+    _run_payout_worker_earning_e2e_probe(args)
+
+
+
 def run_payout_lab_phase(args: argparse.Namespace, *, runner: object | None = None) -> int:
     """Run the optional mock payout settlement smoke lab after the Hub is live.
 
@@ -625,6 +816,9 @@ def run_payout_lab_phase(args: argparse.Namespace, *, runner: object | None = No
         print(f"Payout lab source minimum accounts: {int(config.source_min_accounts)}")
         print(f"Payout lab source scheduler run id: {config.source_scheduler_run_id or '(not set)'}")
     print(f"Payout lab output dir: {summary_dir}")
+
+    if config.source == "hub-earned-credits" and runner is None:
+        _prepare_hub_earned_payout_source(args)
 
     active_runner = runner if runner is not None else run_payout_lab
     summary = active_runner(config)  # type: ignore[misc]
@@ -688,6 +882,8 @@ def serve_exp_fdb_hubs(args: argparse.Namespace) -> int:
             hub_urls = docker_hub_base_urls(args, live_ports)
             docker_process = launch_scheduler_lab_docker(args, hub_base_urls=hub_urls)
             if args.payout_lab:
+                setattr(args, "payout_lab_hub_base_url", f"http://127.0.0.1:{live_ports[0]}")
+                setattr(args, "payout_lab_hub_server", servers[0])
                 print("Starting optional payout settlement smoke lab concurrently with scheduler lab.")
                 payout_thread, payout_result = _run_payout_lab_phase_in_thread(args)
             return_code = docker_process.wait()

@@ -206,12 +206,17 @@ function renderConductorScripts(scripts) {
   if (!conductorScripts) return;
   if (!filtered.length) {
     conductorScripts.innerHTML = '<div class="conductor-empty">No conductor-runnable scripts match this area/search.</div>';
+    conductorScripts.scrollTop = 0;
     return;
   }
-  const ordered = selectedScript
-    ? [selectedScript, ...filtered.filter((script) => conductorScriptId(script) !== selectedId)]
-    : filtered;
-  conductorScripts.innerHTML = ordered.slice(0, 80).map((script) => renderConductorScriptItem(script, selectedId)).join("");
+  const detailScripts = selectedScript ? [selectedScript] : [];
+  if (!detailScripts.length) {
+    conductorScripts.innerHTML = '<div class="conductor-empty">Choose a script to inspect its catalog details.</div>';
+    conductorScripts.scrollTop = 0;
+    return;
+  }
+  conductorScripts.innerHTML = detailScripts.map((script) => renderConductorScriptItem(script, selectedId)).join("");
+  conductorScripts.scrollTop = 0;
 }
 
 function conductorSelectedScript() {

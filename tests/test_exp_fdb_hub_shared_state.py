@@ -94,6 +94,17 @@ def test_bridge_audit_records_work_and_payout_failure_recovery_events() -> None:
 
 
 
+def test_fdb_hold_audit_uses_account_owner_address_not_undefined_owner_wallet() -> None:
+    ledger_module = (_repo() / "main_computer" / "exp_fdb_credit_ledger.py").read_text(encoding="utf-8")
+    hold_section = ledger_module[
+        ledger_module.find("def create_hold_credit_wei"):ledger_module.find("def release_hold")
+    ]
+
+    assert 'event_type="hub.hold.created"' in hold_section
+    assert "wallet_address=account.owner_address" in hold_section
+    assert "wallet_address=owner_wallet" not in hold_section
+
+
 def test_fdb_registry_ring_admission_audit_writes_to_shared_namespace(tmp_path) -> None:
     from main_computer.exp_fdb_hub_state import ExperimentalFoundationDbRegistry
 

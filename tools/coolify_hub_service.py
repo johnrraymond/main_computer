@@ -773,6 +773,18 @@ def coolify_domain_with_backend_port(profile: HubNetworkProfile) -> str:
     return urllib.parse.urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
 
 
+def hub_public_status_url(profile: HubNetworkProfile, args: argparse.Namespace) -> str:
+    """Return the externally reachable Hub status URL.
+
+    Coolify application domain payloads include the backend container port so the
+    reverse proxy can target the right upstream. The public readiness probe must
+    use the browser-facing Hub URL instead; probing ``https://host:<backend-port>``
+    times out when that backend port is only exposed inside the Coolify network.
+    """
+
+    return str(profile.hub_url or "").strip().rstrip("/") + str(args.health_path or DEFAULT_HEALTH_PATH)
+
+
 def application_payload(
     profile: HubNetworkProfile,
     args: argparse.Namespace,
@@ -1936,7 +1948,7 @@ def hub_status_request(status_url: str, *, user_agent: str = DEFAULT_JSON_RPC_US
 def wait_for_hub(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[str, Any]:
     if args.hub_wait_timeout_s <= 0:
         return {"ok": True, "skipped": True, "reason": "hub_wait_timeout_s <= 0"}
-    status_url = coolify_domain_with_backend_port(profile).rstrip("/") + args.health_path
+    status_url = hub_public_status_url(profile, args)
     deadline = time.monotonic() + args.hub_wait_timeout_s
     last_error: object = None
     user_agent = str(getattr(args, "hub_status_user_agent", DEFAULT_JSON_RPC_USER_AGENT) or "").strip()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -141,7 +142,55 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertTrue(payload["health_check_enabled"])
         self.assertEqual(payload["health_check_path"], "/api/hub/status")
 
+    def test_wait_for_hub_uses_public_url_without_backend_port(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("testnet")
+        args = _args(
+            network="testnet",
+            hub_wait_timeout_s=0.2,
+            hub_wait_poll_s=0.0,
+            hub_status_timeout_s=0.2,
+        )
+        captured: list[str] = []
 
+        class FakeHubStatusResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "network": {
+                            "network_key": "testnet",
+                            "chain_id": 42424241,
+                        }
+                    }
+                ).encode("utf-8")
+
+        original_urlopen = coolify_hub_service.urllib.request.urlopen
+
+        def fake_urlopen(request, timeout=0):
+            del timeout
+            captured.append(request.full_url)
+            return FakeHubStatusResponse()
+
+        coolify_hub_service.urllib.request.urlopen = fake_urlopen
+        try:
+            result = coolify_hub_service.wait_for_hub(profile, args)
+        finally:
+            coolify_hub_service.urllib.request.urlopen = original_urlopen
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            captured,
+            ["https://testnet-hub.greatlibrary.io/api/hub/status"],
+        )
+        self.assertEqual(
+            coolify_hub_service.coolify_domain_with_backend_port(profile),
+            "https://testnet-hub.greatlibrary.io:8785",
+        )
 
     def test_explicit_dockerfile_location_override_is_respected(self) -> None:
         profile = coolify_hub_service.load_hub_network_registry().get("testnet")
@@ -818,7 +867,7 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(captured["timeout"], 2.5)
         request = captured["request"]
-        self.assertEqual(request.full_url, "https://mainnet-hub.greatlibrary.io:8790/api/hub/status")
+        self.assertEqual(request.full_url, "https://mainnet-hub.greatlibrary.io/api/hub/status")
         self.assertEqual(request.get_header("Accept"), "application/json")
         self.assertEqual(request.get_header("User-agent"), "UnitTestHubAgent/2.0")
 

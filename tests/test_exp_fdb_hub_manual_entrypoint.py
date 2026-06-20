@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 def test_exp_fdb_hub_entrypoint_is_manual_and_declares_fdb_options() -> None:
     repo = Path(__file__).resolve().parents[1]
@@ -485,3 +487,77 @@ def test_exp_fdb_hub_runs_optional_payout_lab_concurrently_with_docker(tmp_path,
     assert "docker_wait_entered" in events
     assert events.index("payout_started") < events.index("docker_wait_returning")
     assert "payout_finished" in events
+
+
+def test_exp_fdb_hub_hub_earned_source_runs_probe_after_scheduler_activity(tmp_path, monkeypatch) -> None:
+    from main_computer.exp_fdb_hub import build_parser, _prepare_hub_earned_payout_source
+
+    class Record:
+        request_payload = {"metadata": {"scheduler_lab_run_id": "scheduler-e2e-pytest"}}
+
+    class RequestStore:
+        def list(self, *, limit: int = 500):
+            return [Record()]
+
+    class Server:
+        request_store = RequestStore()
+
+    args = build_parser().parse_args(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--payout-lab",
+            "--payout-lab-source",
+            "hub-earned-credits",
+            "--payout-lab-source-wait-seconds",
+            "0",
+        ]
+    )
+    args.scheduler_lab_run_id = "scheduler-e2e-pytest"
+    args.payout_lab_hub_server = Server()
+    args.payout_lab_hub_base_url = "http://127.0.0.1:18870"
+
+    calls: list[str] = []
+
+    def fake_probe(probe_args: object) -> None:
+        calls.append(getattr(probe_args, "scheduler_lab_run_id"))
+
+    monkeypatch.setattr("main_computer.exp_fdb_hub._run_payout_worker_earning_e2e_probe", fake_probe)
+
+    _prepare_hub_earned_payout_source(args)
+
+    assert calls == ["scheduler-e2e-pytest"]
+
+
+def test_exp_fdb_hub_hub_earned_source_requires_current_scheduler_activity(tmp_path, monkeypatch) -> None:
+    from main_computer.exp_fdb_hub import build_parser, _prepare_hub_earned_payout_source
+
+    class RequestStore:
+        def list(self, *, limit: int = 500):
+            return []
+
+    class Server:
+        request_store = RequestStore()
+
+    args = build_parser().parse_args(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--payout-lab",
+            "--payout-lab-source",
+            "hub-earned-credits",
+            "--payout-lab-source-wait-seconds",
+            "0",
+        ]
+    )
+    args.scheduler_lab_run_id = "scheduler-e2e-pytest"
+    args.payout_lab_hub_server = Server()
+    args.payout_lab_hub_base_url = "http://127.0.0.1:18870"
+
+    monkeypatch.setattr(
+        "main_computer.exp_fdb_hub._run_payout_worker_earning_e2e_probe",
+        lambda probe_args: (_ for _ in ()).throw(AssertionError("probe should not run without scheduler activity")),
+    )
+
+    with pytest.raises(RuntimeError, match="current scheduler-lab request activity"):
+        _prepare_hub_earned_payout_source(args)

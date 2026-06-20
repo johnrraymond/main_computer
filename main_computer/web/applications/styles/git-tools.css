@@ -791,16 +791,27 @@
   gap: 8px;
 }
 
+.git-project-add-section,
 .git-project-archived-section {
   border-top: 1px solid var(--line);
   padding-top: 8px;
 }
 
+.git-project-add-section summary,
 .git-project-archived-section summary {
   color: var(--gold);
   cursor: pointer;
   font-weight: 800;
   text-transform: uppercase;
+}
+
+.git-project-add-section .git-project-add-row {
+  grid-template-columns: 1fr;
+  margin-top: 8px;
+}
+
+.git-project-add-section .git-tools-actions {
+  justify-content: flex-start;
 }
 
 .git-project-row {

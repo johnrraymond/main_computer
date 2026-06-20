@@ -66,9 +66,6 @@
 
       const ACTION_LENS = [
         {selector: "#git-project-add", risk: "safe", role: "project-add", label: "add local project reference"},
-        {selector: "#git-project-rescan", risk: "safe", role: "project-rescan", label: "rescan selected project"},
-        {selector: "#git-project-lock", risk: "operational", role: "project-lock", label: "lock selected project"},
-        {selector: "#git-project-unlock", risk: "operational", role: "project-unlock", label: "unlock selected project"},
         {selector: "#git-server-open", risk: "external-navigation", role: "open-git-server", label: "open Gitea browser tab"},
         {selector: "#git-server-status-refresh", risk: "safe", role: "refresh-git-server", label: "refresh Git server status"},
         {selector: "#git-server-start", risk: "operational", role: "start-git-server", label: "start local Git server"},

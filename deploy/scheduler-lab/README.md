@@ -42,6 +42,109 @@ python exp-fdb-hub.py \
   --namespace main-computer-exp-fdb
 ```
 
+## Run the integrated Hub-earned payout e2e smoke
+
+Use this mode when the goal is to prove the real Hub payout lifecycle while the
+Docker scheduler lab is active:
+
+```text
+Hub HTTP requester credits
+  -> worker-pull request
+  -> worker lease and result submission
+  -> current-run WorkerEarning in FDB
+  -> payout request
+  -> mock backend settlement
+```
+
+This is intentionally different from the standalone seeded payout stress lab.
+`--payout-lab-source hub-earned-credits` means the payout lab must consume
+current-run `WorkerEarning` records created through normal Hub HTTP routes. It
+must not drain stale balances, seed synthetic balances, or pass before a
+current-run worker earning has settled.
+
+Prerequisites:
+
+```text
+local FoundationDB container is running and .foundationdb/docker.cluster exists
+local dev chain / Anvil RPC is listening on http://127.0.0.1:18545
+runtime/deployments/dev/latest.json exists for the dev-chain deployment
+main_computer/config/dev_contracts.json points at the dev contracts
+```
+
+From the repository root, run the integrated smoke with the local dev Hub port
+instead of the default/manual port:
+
+```powershell
+python exp-fdb-hub.py `
+  --host 0.0.0.0 `
+  --port 18870 `
+  --cluster-file .foundationdb/docker.cluster `
+  --namespace main-computer-exp-fdb-local-dev-smoke `
+  --network-key dev `
+  --network-display-name "Main Computer Local Dev" `
+  --network-kind dev `
+  --bridge-backend dev-chain `
+  --dev-chain-deployment-path runtime/deployments/dev/latest.json `
+  --contracts-path main_computer/config/dev_contracts.json `
+  --enable-smoke-bridge `
+  --chain-id 42424242 `
+  --chain-rpc-url http://127.0.0.1:18545 `
+  --docker `
+  --docker-role all `
+  --nodes 12 `
+  --docker-workers 8 `
+  --docker-requesters 4 `
+  --docker-duration-seconds 30 `
+  --lab-execution process `
+  --http-timeout-seconds 5 `
+  --b2bfailures 0 `
+  --payout-lab `
+  --payout-lab-source hub-earned-credits `
+  --payout-lab-source-wait-seconds 90 `
+  --payout-lab-source-min-accounts 1 `
+  --payout-lab-wallets 800 `
+  --payout-lab-requests 200 `
+  --payout-lab-concurrency 32 `
+  --payout-lab-settlement-workers 4 `
+  --payout-lab-failure-rate 0.15 `
+  --payout-lab-after-broadcast-crash-rate 0.10
+```
+
+In `hub-earned-credits` mode, `--payout-lab-requests 200` is an upper cap. The
+deterministic probe should create one current-run worker earning, so a successful
+short smoke normally reports `request_count: 1` and `source_account_count: 1`.
+
+Expected probe log lines:
+
+```text
+Payout e2e probe: issuing requester credits through Hub HTTP.
+Payout e2e probe: registering deterministic worker through Hub HTTP.
+Payout e2e probe: submitting worker-pull request through Hub HTTP.
+Payout e2e probe: submitting deterministic worker result through Hub HTTP.
+Payout e2e probe: worker earning created for run scheduler-e2e-...
+```
+
+Expected payout summary fields:
+
+```json
+{
+  "ok": true,
+  "source": "hub-earned-credits",
+  "source_account_count": 1,
+  "request_count": 1,
+  "rejected_count": 0,
+  "lost_payout_count": 0,
+  "duplicate_chain_settlement_count": 0,
+  "pending_credit_wei": "0",
+  "wallet_lock_count": 0
+}
+```
+
+Also confirm that `settled_credit_wei` equals `accepted_credit_wei`. That proves
+the current-run Hub worker earning was accepted for payout and fully settled by
+the mock backend.
+
+
 ## Run the worker/requester lab container
 
 ```bash

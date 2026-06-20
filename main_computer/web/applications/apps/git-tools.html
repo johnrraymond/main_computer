@@ -7,16 +7,7 @@
                     <div class="git-project-main" data-mc-component-id="git-tools.projects.main" data-mc-component-kind="panel" data-mc-component-label="Selected Project Workflow" data-mc-component-owner="git-tools.projects.layout" data-mc-feature-id="git-tools.feature.projects">
                       <div class="git-project-next-step" id="git-project-next-step" data-mc-component-id="git-tools.projects.next-step" data-mc-component-kind="status" data-mc-component-label="Next Git Project Step" data-mc-component-owner="git-tools.projects.main" data-mc-feature-id="git-tools.feature.projects">
                         <strong>Next step</strong>
-                        <span>Select a project from Current Projects, or add a project path below.</span>
-                      </div>
-                      <div class="git-project-add-row" data-mc-component-id="git-tools.projects.add-row" data-mc-component-kind="toolbar" data-mc-component-label="Add Git Project" data-mc-component-owner="git-tools.projects.main" data-mc-feature-id="git-tools.feature.projects">
-                        <label data-mc-component-id="git-tools.projects.path-field" data-mc-component-kind="input" data-mc-component-label="Project Path Field" data-mc-component-owner="git-tools.projects.add-row" data-mc-feature-id="git-tools.feature.projects">project path<input id="git-project-path" placeholder="C:\\path\\to\\project" data-mc-component-id="git-tools.projects.path" data-mc-component-kind="input" data-mc-component-label="Project Path" data-mc-component-owner="git-tools.projects.path-field" data-mc-feature-id="git-tools.feature.projects"></label>
-                        <div class="git-tools-actions" data-mc-component-id="git-tools.projects.actions" data-mc-component-kind="toolbar" data-mc-component-label="Project Actions" data-mc-component-owner="git-tools.projects.add-row" data-mc-feature-id="git-tools.feature.projects">
-                          <button type="button" id="git-project-add" data-mc-component-id="git-tools.projects.add" data-mc-component-kind="action" data-mc-component-label="Add Project" data-mc-component-owner="git-tools.projects.actions" data-mc-feature-id="git-tools.feature.projects">Add Project</button>
-                          <button type="button" id="git-project-rescan" data-mc-component-id="git-tools.projects.rescan" data-mc-component-kind="action" data-mc-component-label="Rescan Selected Project" data-mc-component-owner="git-tools.projects.actions" data-mc-feature-id="git-tools.feature.projects">Rescan Selected</button>
-                          <button type="button" id="git-project-lock" data-mc-component-id="git-tools.projects.lock" data-mc-component-kind="action" data-mc-component-label="Lock Project" data-mc-component-owner="git-tools.projects.actions" data-mc-feature-id="git-tools.feature.projects">Lock</button>
-                          <button type="button" id="git-project-unlock" data-mc-component-id="git-tools.projects.unlock" data-mc-component-kind="action" data-mc-component-label="Unlock Project" data-mc-component-owner="git-tools.projects.actions" data-mc-feature-id="git-tools.feature.projects">Unlock</button>
-                        </div>
+                        <span>Select a project from Current Projects.</span>
                       </div>
                       <div class="git-project-wizard-plan" id="git-project-wizard-plan" data-mc-component-id="git-tools.projects.wizard-plan" data-mc-component-kind="output" data-mc-component-label="Project Wizard Plan" data-mc-component-owner="git-tools.projects.main" data-mc-feature-id="git-tools.feature.projects">Wizard plan will appear after inspection.</div>
                     </div>
@@ -24,6 +15,15 @@
                       <h3>Current Projects</h3>
                       <p class="git-tools-intro">The selected project is highlighted. Use Inspect to refresh the report without changing selection.</p>
                       <div id="git-project-list" class="git-project-list" data-mc-component-id="git-tools.projects.active-list" data-mc-component-kind="list" data-mc-component-label="Active Projects" data-mc-component-owner="git-tools.projects.roster" data-mc-feature-id="git-tools.feature.projects">Loading projects...</div>
+                      <details class="git-project-add-section" data-mc-component-id="git-tools.projects.add-section" data-mc-component-kind="panel" data-mc-component-label="Add Git Project Section" data-mc-component-owner="git-tools.projects.roster" data-mc-feature-id="git-tools.feature.projects">
+                        <summary>Add Project</summary>
+                        <div class="git-project-add-row" data-mc-component-id="git-tools.projects.add-row" data-mc-component-kind="toolbar" data-mc-component-label="Add Git Project" data-mc-component-owner="git-tools.projects.add-section" data-mc-feature-id="git-tools.feature.projects">
+                          <label data-mc-component-id="git-tools.projects.path-field" data-mc-component-kind="input" data-mc-component-label="Project Path Field" data-mc-component-owner="git-tools.projects.add-row" data-mc-feature-id="git-tools.feature.projects">project path<input id="git-project-path" placeholder="C:\\path\\to\\project" data-mc-component-id="git-tools.projects.path" data-mc-component-kind="input" data-mc-component-label="Project Path" data-mc-component-owner="git-tools.projects.path-field" data-mc-feature-id="git-tools.feature.projects"></label>
+                          <div class="git-tools-actions" data-mc-component-id="git-tools.projects.add-actions" data-mc-component-kind="toolbar" data-mc-component-label="Add Project Actions" data-mc-component-owner="git-tools.projects.add-row" data-mc-feature-id="git-tools.feature.projects">
+                            <button type="button" id="git-project-add" data-mc-component-id="git-tools.projects.add" data-mc-component-kind="action" data-mc-component-label="Add Project" data-mc-component-owner="git-tools.projects.add-actions" data-mc-feature-id="git-tools.feature.projects">Add Project</button>
+                          </div>
+                        </div>
+                      </details>
                       <details class="git-project-archived-section">
                         <summary>Archived Projects</summary>
                         <div id="git-project-archive-list" class="git-project-list" data-mc-component-id="git-tools.projects.archive-list" data-mc-component-kind="list" data-mc-component-label="Archived Projects" data-mc-component-owner="git-tools.projects.roster" data-mc-feature-id="git-tools.feature.projects">No archived projects.</div>

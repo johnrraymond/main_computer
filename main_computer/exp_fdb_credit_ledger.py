@@ -526,7 +526,7 @@ class ExperimentalFoundationDbCreditLedger:
             self._write_audit_event(
                 tr,
                 event_type="hub.hold.created",
-                wallet_address=owner_wallet,
+                wallet_address=account.owner_address,
                 account_id=account.account_id,
                 amount_wei=clean_wei,
                 reference_id=proposed.hold_id,
