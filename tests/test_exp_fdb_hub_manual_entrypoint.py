@@ -24,6 +24,7 @@ def test_exp_fdb_hub_entrypoint_is_manual_and_declares_fdb_options() -> None:
     assert "--payout-lab-wallets" in module
     assert "--payout-lab-failure-rate" in module
     assert "Starting optional payout settlement smoke lab." in module
+    assert "concurrently with scheduler lab" in module
     assert "--docker-compose-file" in module
     assert "--docker-ports" in module
     assert "--nodes" in module
@@ -309,3 +310,80 @@ def test_exp_fdb_hub_optional_payout_lab_phase_uses_isolated_namespace(tmp_path,
     stdout = capsys.readouterr().out
     assert "Starting optional payout settlement smoke lab." in stdout
     assert "Payout lab summary written:" in stdout
+
+
+def test_exp_fdb_hub_runs_optional_payout_lab_concurrently_with_docker(tmp_path, monkeypatch) -> None:
+    import threading
+
+    from main_computer.exp_fdb_hub import build_parser, serve_exp_fdb_hubs
+
+    events: list[str] = []
+    payout_started = threading.Event()
+    docker_wait_entered = threading.Event()
+    allow_payout_finish = threading.Event()
+
+    class DummyServer:
+        server_port = 18870
+
+        def serve_forever(self) -> None:
+            events.append("hub_started")
+
+        def shutdown(self) -> None:
+            events.append("hub_shutdown")
+
+        def server_close(self) -> None:
+            events.append("hub_closed")
+
+    class DummyDockerProcess:
+        def __init__(self) -> None:
+            self._return_code: int | None = None
+
+        def wait(self, timeout: float | None = None) -> int:
+            events.append("docker_wait_entered")
+            docker_wait_entered.set()
+            assert payout_started.wait(2), "payout lab should start before scheduler docker wait completes"
+            events.append("docker_wait_returning")
+            allow_payout_finish.set()
+            self._return_code = 0
+            return 0
+
+        def poll(self) -> int | None:
+            return self._return_code
+
+        def terminate(self) -> None:
+            events.append("docker_terminate")
+
+        def kill(self) -> None:
+            events.append("docker_kill")
+
+    def fake_payout_phase(args: object) -> int:
+        events.append("payout_started")
+        payout_started.set()
+        assert docker_wait_entered.wait(2), "payout lab should overlap docker wait"
+        assert allow_payout_finish.wait(2), "test should let payout lab finish after overlap is observed"
+        events.append("payout_finished")
+        return 0
+
+    monkeypatch.setattr("main_computer.exp_fdb_hub.ensure_foundationdb_smoke_loaded", lambda args: None)
+    monkeypatch.setattr("main_computer.exp_fdb_hub.create_exp_fdb_hub_server", lambda args, *, port: DummyServer())
+    monkeypatch.setattr("main_computer.exp_fdb_hub.launch_scheduler_lab_docker", lambda args, *, hub_base_urls: DummyDockerProcess())
+    monkeypatch.setattr("main_computer.exp_fdb_hub.run_payout_lab_phase", fake_payout_phase)
+
+    args = build_parser().parse_args(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--port",
+            "18870",
+            "--docker",
+            "--payout-lab",
+            "--payout-lab-backend",
+            "memory",
+        ]
+    )
+
+    assert serve_exp_fdb_hubs(args) == 0
+    assert "payout_started" in events
+    assert "docker_wait_entered" in events
+    assert events.index("payout_started") < events.index("docker_wait_returning")
+    assert "payout_finished" in events

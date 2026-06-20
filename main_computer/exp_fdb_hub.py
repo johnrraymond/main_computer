@@ -599,12 +599,45 @@ def run_payout_lab_phase(args: argparse.Namespace, *, runner: object | None = No
 
 
 
+def _run_payout_lab_phase_in_thread(
+    args: argparse.Namespace,
+) -> tuple[threading.Thread, dict[str, object]]:
+    """Start the optional payout lab in a host thread while the scheduler lab runs.
+
+    The payout lab is intentionally host-side: it reuses the same FDB cluster
+    file and real ledger implementation, while the settlement/chain side remains
+    mocked.  Running it concurrently with the scheduler Docker lab makes the
+    combined smoke exercise shared FDB pressure at the same time instead of
+    merely proving two independent sequential phases.
+    """
+
+    result: dict[str, object] = {"return_code": None, "exception": None}
+
+    def _target() -> None:
+        try:
+            result["return_code"] = int(run_payout_lab_phase(args))
+        except Exception as exc:  # pragma: no cover - defensive, exercised by real lab failures.
+            result["return_code"] = 1
+            result["exception"] = exc
+            print(
+                f"Optional payout settlement smoke lab failed before producing a clean summary: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    thread = threading.Thread(target=_target, name="exp-fdb-payout-lab", daemon=False)
+    thread.start()
+    return thread, result
+
+
 def serve_exp_fdb_hubs(args: argparse.Namespace) -> int:
     live_ports = parse_ports(args.ports if args.ports else args.port, default=DEFAULT_EXP_FDB_HUB_PORT)
     ensure_foundationdb_smoke_loaded(args)
     servers = [create_exp_fdb_hub_server(args, port=port) for port in live_ports]
     threads: list[threading.Thread] = []
     docker_process: subprocess.Popen[bytes] | None = None
+    payout_thread: threading.Thread | None = None
+    payout_result: dict[str, object] | None = None
     try:
         for server in servers:
             thread = threading.Thread(target=server.serve_forever, name=f"exp-fdb-hub-{server.server_port}", daemon=True)
@@ -614,9 +647,17 @@ def serve_exp_fdb_hubs(args: argparse.Namespace) -> int:
         if args.docker:
             hub_urls = docker_hub_base_urls(args, live_ports)
             docker_process = launch_scheduler_lab_docker(args, hub_base_urls=hub_urls)
+            if args.payout_lab:
+                print("Starting optional payout settlement smoke lab concurrently with scheduler lab.")
+                payout_thread, payout_result = _run_payout_lab_phase_in_thread(args)
             return_code = docker_process.wait()
+            if payout_thread is not None:
+                payout_thread.join()
             if int(return_code) != 0:
                 return int(return_code)
+            if payout_result is not None:
+                return int(payout_result.get("return_code") or 0)
+            return 0
         if args.payout_lab:
             return run_payout_lab_phase(args)
         try:
@@ -632,6 +673,8 @@ def serve_exp_fdb_hubs(args: argparse.Namespace) -> int:
                 docker_process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 docker_process.kill()
+        if payout_thread is not None and payout_thread.is_alive():
+            payout_thread.join(timeout=5)
         for server in servers:
             server.shutdown()
         for thread in threads:
