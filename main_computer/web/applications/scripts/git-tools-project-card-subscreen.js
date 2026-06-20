@@ -11,7 +11,6 @@ function gitProjectCommitWorkbenchHtml(step = {}) {
   return `<div class="git-project-commit-workbench" data-git-commit-workbench data-git-commit-repo="${escapeHtml(runtime.repo || ".")}">
     ${gitProjectCommitHeaderHtml(review)}
     <div class="git-project-commit-body">
-      ${gitProjectCommitStepsHtml(review)}
       ${gitProjectCommitCenterHtml(step, "file_basket")}
       ${gitProjectCommitBasketHtml(review)}
     </div>

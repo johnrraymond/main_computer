@@ -69,6 +69,9 @@ DEFAULT_LOCAL_TEST_DEV_CHAIN_DEPLOYMENT_CONTAINER_PATH = f"{DEFAULT_LOCAL_TEST_D
 DEFAULT_LOCAL_TEST_RUNTIME_HOST_DIR = REPO_ROOT / "runtime" / "hub" / "test-exp-fdb"
 DEFAULT_LOCAL_COOLIFY_TOKEN_FILE = REPO_ROOT / "runtime" / "coolify-local-docker" / "api-token.txt"
 DEFAULT_APPLICATIONS_SERVICE_ENV_FILE = REPO_ROOT / "runtime" / "applications_service" / "applications.env"
+DEFAULT_BRIDGE_SIGNER_ENV_KEY = "MAIN_COMPUTER_BRIDGE_SIGNER_BUNDLE_B64"
+DEFAULT_BRIDGE_SIGNER_RELATIVE_PATH = "private/bridge-signer/bridge-signer-bundle.json"
+BRIDGE_SIGNER_SCHEMA = "main-computer.bridge-signer.v1"
 HUB_IMPLEMENTATION_REGULAR = "regular"
 HUB_IMPLEMENTATION_EXP_FDB = "exp-fdb"
 HUB_IMPLEMENTATION_CHOICES = (HUB_IMPLEMENTATION_EXP_FDB,)
@@ -521,6 +524,8 @@ def validate_hub_deploy_args(profile: HubNetworkProfile, args: argparse.Namespac
     cluster_file = exp_fdb_cluster_file_path(profile, args, runtime_dir=runtime_dir)
     if not cluster_file.strip():
         raise CoolifyHubDeployError("Experimental FDB Hub cluster file path must not be empty.")
+    if hub_enable_bridge_writes(args) and hub_enable_smoke_bridge(args):
+        raise CoolifyHubDeployError("--enable-bridge-writes and --enable-smoke-bridge are mutually exclusive.")
 
 
 def hub_implementation(args: argparse.Namespace | None) -> str:
@@ -564,6 +569,21 @@ def container_posix_path(value: str) -> str:
     return str(value or "").replace("\\", "/")
 
 
+def container_posix_dirname(value: str) -> str:
+    """Return the parent directory of a Linux/container path.
+
+    The deployer runs on Windows for the operator, but these paths are consumed
+    inside Linux containers.  Do not use pathlib.Path here because it treats
+    ``/data/foo/bar`` differently depending on the host OS.
+    """
+
+    clean = container_posix_path(value).rstrip("/")
+    if not clean:
+        return "."
+    parent = clean.rsplit("/", 1)[0] if "/" in clean else "."
+    return parent or "/"
+
+
 def exp_fdb_cluster_file_path(profile: HubNetworkProfile, args: argparse.Namespace, *, runtime_dir: str) -> str:
     explicit = str(getattr(args, "fdb_cluster_file", "") or "").strip()
     if explicit:
@@ -601,6 +621,8 @@ def hub_allow_missing_bridge_signer(profile: HubNetworkProfile, args: argparse.N
     """Return whether this Hub should boot with public contracts but no private signer manifest."""
 
     if hub_bridge_backend(args) in {"mock", "mock-chain", "mock-chain-lite"}:
+        return False
+    if hub_enable_bridge_writes(args):
         return False
     if bool(getattr(args, "allow_missing_bridge_signer", False)):
         return True
@@ -650,6 +672,211 @@ def contracts_path(profile: HubNetworkProfile, args: argparse.Namespace, *, cont
     return f"/app/main_computer/config/{profile.network_key}_contracts.json"
 
 
+
+def hub_enable_bridge_writes(args: argparse.Namespace | None = None) -> bool:
+    """Return whether the remote Hub should require a non-smoke bridge signer bundle."""
+
+    if hub_bridge_backend(args) in {"mock", "mock-chain", "mock-chain-lite"}:
+        return False
+    if bool(getattr(args, "enable_bridge_writes", False)):
+        return True
+    return str(os.environ.get("MAIN_COMPUTER_HUB_ENABLE_BRIDGE_WRITES") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def bridge_signer_sync_requested(args: argparse.Namespace | None = None) -> bool:
+    """Return whether the standard deploy path should push signer material through Coolify."""
+
+    if hub_bridge_backend(args) in {"mock", "mock-chain", "mock-chain-lite"}:
+        return False
+    return bool(getattr(args, "sync_bridge_signer", False)) or hub_enable_bridge_writes(args)
+
+
+def bridge_signer_env_key(args: argparse.Namespace | None = None) -> str:
+    explicit = str(getattr(args, "bridge_signer_env_key", "") or "").strip()
+    return explicit or DEFAULT_BRIDGE_SIGNER_ENV_KEY
+
+
+def bridge_signer_remote_path(profile: HubNetworkProfile, args: argparse.Namespace, *, runtime_dir: str) -> str:
+    explicit = str(getattr(args, "bridge_signer_remote_path", "") or "").strip()
+    if explicit:
+        return container_posix_path(explicit)
+    return container_posix_path(f"{runtime_dir.rstrip('/')}/{DEFAULT_BRIDGE_SIGNER_RELATIVE_PATH}")
+
+
+def bridge_signer_plan(profile: HubNetworkProfile, args: argparse.Namespace, *, runtime_dir: str) -> dict[str, Any]:
+    return {
+        "sync_requested": bridge_signer_sync_requested(args),
+        "bridge_writes_enabled": hub_enable_bridge_writes(args),
+        "env_key": bridge_signer_env_key(args),
+        "remote_path": bridge_signer_remote_path(profile, args, runtime_dir=runtime_dir),
+        "source_manifest": str(bridge_signer_source_manifest_path(profile, args)),
+        "wallet_source": str(getattr(args, "bridge_controller_wallet_path", "") or ""),
+    }
+
+
+def bridge_signer_source_manifest_path(profile: HubNetworkProfile, args: argparse.Namespace) -> Path:
+    explicit = str(getattr(args, "bridge_signer_source_manifest", "") or "").strip()
+    path = Path(explicit) if explicit else REPO_ROOT / "runtime" / "deployments" / profile.network_key / "latest.json"
+    return path if path.is_absolute() else REPO_ROOT / path
+
+
+def _looks_like_address(value: object) -> bool:
+    return bool(re.fullmatch(r"0x[0-9a-fA-F]{40}", str(value or "").strip()))
+
+
+def _looks_like_private_key(value: object) -> bool:
+    return bool(re.fullmatch(r"0x[0-9a-fA-F]{64}", str(value or "").strip()))
+
+
+def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise CoolifyHubDeployError(f"missing {label}: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise CoolifyHubDeployError(f"invalid {label} JSON: {path}") from exc
+    if not isinstance(payload, dict):
+        raise CoolifyHubDeployError(f"{label} JSON must be an object: {path}")
+    return payload
+
+
+def _resolve_local_runtime_path(path_text: str, *, manifest_path: Path) -> Path:
+    raw = Path(str(path_text or "").strip())
+    if raw.is_absolute():
+        return raw
+    candidates = [
+        REPO_ROOT / raw,
+        manifest_path.parent / raw,
+    ]
+    if raw.parts and raw.parts[0] != "runtime":
+        candidates.append(REPO_ROOT / "runtime" / raw)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+def _contract_record_from_payload(payload: dict[str, Any], key: str) -> dict[str, Any]:
+    contracts = payload.get("contracts") if isinstance(payload.get("contracts"), dict) else {}
+    raw = contracts.get(key) if isinstance(contracts, dict) else None
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str):
+        return {"address": raw}
+    raw = payload.get(key)
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str):
+        return {"address": raw}
+    return {}
+
+
+def _build_bridge_signer_bundle_payload(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[str, Any]:
+    manifest_path = bridge_signer_source_manifest_path(profile, args)
+    manifest = _load_json_object(manifest_path, label="bridge signer source manifest")
+
+    hub_admin = manifest.get("hub_admin")
+    if not isinstance(hub_admin, dict):
+        raise CoolifyHubDeployError(f"bridge signer source manifest is missing hub_admin metadata: {manifest_path}")
+    controller_address = str(hub_admin.get("address") or "").strip()
+    if not _looks_like_address(controller_address):
+        raise CoolifyHubDeployError(f"invalid hub_admin.address in bridge signer source manifest: {controller_address!r}")
+
+    explicit_wallet = str(getattr(args, "bridge_controller_wallet_path", "") or "").strip()
+    wallet_path_text = explicit_wallet or str(hub_admin.get("wallet_path") or "").strip()
+    if not wallet_path_text:
+        raise CoolifyHubDeployError(f"bridge signer source manifest is missing hub_admin.wallet_path: {manifest_path}")
+    wallet_path = _resolve_local_runtime_path(wallet_path_text, manifest_path=manifest_path)
+    wallet = _load_json_object(wallet_path, label="bridge controller wallet")
+    wallet_address = str(wallet.get("address") or "").strip()
+    private_key = str(wallet.get("private_key") or "").strip()
+    if not _looks_like_address(wallet_address):
+        raise CoolifyHubDeployError(f"bridge controller wallet file does not contain a valid address: {wallet_path}")
+    if wallet_address.lower() != controller_address.lower():
+        raise CoolifyHubDeployError(
+            f"bridge controller wallet address does not match hub_admin.address: {wallet_address} != {controller_address}"
+        )
+    if not _looks_like_private_key(private_key):
+        raise CoolifyHubDeployError(f"bridge controller wallet file does not contain a valid private_key: {wallet_path}")
+
+    chain = manifest.get("chain") if isinstance(manifest.get("chain"), dict) else {}
+    escrow = _contract_record_from_payload(manifest, "hub_credit_bridge_escrow")
+    escrow_address = str(escrow.get("address") or "").strip()
+    if not _looks_like_address(escrow_address):
+        raise CoolifyHubDeployError(f"bridge signer source manifest is missing hub_credit_bridge_escrow.address: {manifest_path}")
+    contract_controller = str(escrow.get("bridge_controller_address") or "").strip()
+    if contract_controller and contract_controller.lower() != controller_address.lower():
+        raise CoolifyHubDeployError(
+            f"hub_admin.address does not match hub_credit_bridge_escrow.bridge_controller_address: {controller_address} != {contract_controller}"
+        )
+
+    chain_id = profile.chain_id
+    raw_chain_id = escrow.get("chain_id") or chain.get("chain_id")
+    if chain_id is None and raw_chain_id not in (None, ""):
+        try:
+            chain_id = int(raw_chain_id, 0) if isinstance(raw_chain_id, str) else int(raw_chain_id)
+        except (TypeError, ValueError) as exc:
+            raise CoolifyHubDeployError(f"invalid chain id in bridge signer source manifest: {raw_chain_id!r}") from exc
+    chain_rpc_url = hub_chain_rpc_url(profile, args) or str(
+        manifest.get("chain_rpc_url")
+        or chain.get("rpc_url")
+        or chain.get("host_rpc_url")
+        or chain.get("container_rpc_url")
+        or ""
+    ).strip()
+    if not chain_rpc_url:
+        raise CoolifyHubDeployError("bridge signer bundle requires a chain RPC URL.")
+
+    return {
+        "schema": BRIDGE_SIGNER_SCHEMA,
+        "network": profile.network_key,
+        "chain_id": chain_id,
+        "chain_rpc_url": chain_rpc_url,
+        "contracts": {
+            "hub_credit_bridge_escrow": {
+                "address": escrow_address,
+                "bridge_controller_address": controller_address,
+            }
+        },
+        "bridge_controller": {
+            "address": controller_address,
+            "private_key": private_key,
+        },
+        "source": {
+            "manifest_path": str(manifest_path),
+            "wallet_path": str(wallet_path),
+            "run_id": str(manifest.get("run_id") or ""),
+            "schema": str(manifest.get("schema") or ""),
+        },
+    }
+
+
+def build_bridge_signer_bundle(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[str, Any]:
+    """Build a private bridge signer bundle and a redacted summary for Coolify env sync."""
+
+    bundle = _build_bridge_signer_bundle_payload(profile, args)
+    raw = json.dumps(bundle, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = base64.b64encode(raw).decode("ascii")
+    return {
+        "ok": True,
+        "env_key": bridge_signer_env_key(args),
+        "bundle_b64": encoded,
+        "bundle_sha256": hashlib.sha256(raw).hexdigest(),
+        "bundle_bytes": len(raw),
+        "source_manifest": bundle["source"]["manifest_path"],
+        "wallet_path": bundle["source"]["wallet_path"],
+        "network": bundle["network"],
+        "chain_id": bundle["chain_id"],
+        "escrow_address": bundle["contracts"]["hub_credit_bridge_escrow"]["address"],
+        "bridge_controller_address": bundle["bridge_controller"]["address"],
+    }
+
+
 def local_test_deployments_host_dir(args: argparse.Namespace | None = None) -> Path:
     source_root = local_test_source_dir(args)
     return source_root / "runtime" / "deployments"
@@ -697,7 +924,9 @@ def hub_command_parts(profile: HubNetworkProfile, runtime_dir: str, args: argpar
     if hub_bridge_backend(args) not in {"mock", "mock-chain", "mock-chain-lite"}:
         allow_missing_bridge_signer = hub_allow_missing_bridge_signer(profile, args)
         explicit_deployment_path = str(getattr(args, "dev_chain_deployment_path", "") or "").strip()
-        if explicit_deployment_path or not allow_missing_bridge_signer:
+        if hub_enable_bridge_writes(args):
+            parts.extend(["--dev-chain-deployment-path", bridge_signer_remote_path(profile, args, runtime_dir=runtime_dir)])
+        elif explicit_deployment_path or not allow_missing_bridge_signer:
             parts.extend(["--dev-chain-deployment-path", dev_chain_deployment_path(profile, args)])
         parts.extend(["--contracts-path", contracts_path(profile, args)])
         if allow_missing_bridge_signer:
@@ -965,11 +1194,35 @@ def hub_fdb_bootstrap_script(
     cluster_file = exp_fdb_cluster_file_path(profile, args, runtime_dir=runtime_dir)
     cluster_contents = fdb_sidecar_cluster_contents(profile, service_name=service_name)
     command = " ".join(command_token(part) for part in hub_command_parts(profile, runtime_dir, args))
+    pre_start_lines: list[str] = []
+    if hub_enable_bridge_writes(args):
+        signer_path = bridge_signer_remote_path(profile, args, runtime_dir=runtime_dir)
+        signer_dir = container_posix_dirname(signer_path)
+        signer_env = bridge_signer_env_key(args)
+        pre_start_lines.extend(
+            [
+                f"mkdir -p {sh_quote(signer_dir)}",
+                f"if [ -z \"${{{signer_env}:-}}\" ]; then echo 'missing required bridge signer bundle env {signer_env}' >&2; exit 1; fi",
+                "python - <<'PY'",
+                "import sys",
+                "from main_computer import hub_bridge_backend",
+                "if not hasattr(hub_bridge_backend, 'BridgeSignerHubBridgeBackend'):",
+                "    sys.stderr.write('remote image is missing non-smoke bridge-signer backend support; commit and push the bridge-signer patch to the configured Git branch before deploying with --enable-bridge-writes\\n')",
+                "    raise SystemExit(1)",
+                "PY",
+                "umask 077",
+                f"printf '%s' \"${{{signer_env}}}\" | base64 -d > {sh_quote(signer_path)}.tmp",
+                f"mv {sh_quote(signer_path)}.tmp {sh_quote(signer_path)}",
+                f"chmod 600 {sh_quote(signer_path)}",
+                f"unset {signer_env}",
+            ]
+        )
     return "\n".join(
         [
             "set -eu",
             f"mkdir -p {sh_quote(runtime_dir)}",
             f"printf '%s\\n' {sh_quote(cluster_contents)} > {sh_quote(cluster_file)}",
+            *pre_start_lines,
             "for attempt in $(seq 1 90); do",
             f"  fdbcli -C {sh_quote(cluster_file)} --exec 'configure new single memory' --timeout 10 >/tmp/main-computer-fdb-configure.log 2>&1 || true",
             f"  if fdbcli -C {sh_quote(cluster_file)} --exec 'status' --timeout 10 >/tmp/main-computer-fdb-status.log 2>&1; then",
@@ -1114,6 +1367,14 @@ def render_remote_fdb_sidecar_hub_compose(profile: HubNetworkProfile, args: argp
         *(
             [f"      MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE: {yaml_quote('true')}"]
             if hub_enable_smoke_bridge(args)
+            else []
+        ),
+        *(
+            [
+                f"      MAIN_COMPUTER_HUB_ENABLE_BRIDGE_WRITES: {yaml_quote('true')}",
+                f"      {bridge_signer_env_key(args)}: ${{{bridge_signer_env_key(args)}:?missing bridge signer bundle}}",
+            ]
+            if hub_enable_bridge_writes(args)
             else []
         ),
         f"      MAIN_COMPUTER_HUB_ROOT: {yaml_quote(runtime_dir)}",
@@ -1836,6 +2097,194 @@ def sync_fdb_sidecar_service(client: CoolifyClient, profile: HubNetworkProfile, 
     )
 
 
+
+def _redact_sensitive_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            if str(key).lower() in {"value", "private_key", "bundle_b64", "secret"}:
+                redacted[key] = "<redacted>"
+            else:
+                redacted[key] = _redact_sensitive_payload(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_sensitive_payload(item) for item in value]
+    return value
+
+
+def redacted_response_to_dict(response: CoolifyResponse) -> dict[str, Any]:
+    payload = response_to_dict(response)
+    payload["body"] = _redact_sensitive_payload(payload.get("body"))
+    return payload
+
+
+def _env_item_key(item: dict[str, Any]) -> str:
+    for key in ("key", "name", "variable"):
+        text = str(item.get(key) or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _env_item_uuid(item: dict[str, Any]) -> str:
+    return str(item.get("uuid") or item.get("id") or "").strip()
+
+
+def list_service_envs(client: CoolifyClient, *, service_uuid: str, tried: list[dict[str, Any]]) -> tuple[CoolifyResponse, list[dict[str, Any]]]:
+    path = f"/api/v1/services/{urllib.parse.quote(service_uuid)}/envs"
+    response = client.request("GET", path)
+    items = body_items(response.body, "envs", "environment_variables", "variables")
+    tried.append({"operation": "list-service-envs", "path": path, "response": redacted_response_to_dict(response), "count": len(items)})
+    return response, items
+
+
+def sync_service_env_var(
+    client: CoolifyClient,
+    *,
+    service_uuid: str,
+    key: str,
+    value: str,
+    tried: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Create or update a Coolify Service runtime env variable without leaking its value to diagnostics."""
+
+    clean_key = str(key or "").strip()
+    if not clean_key:
+        raise CoolifyHubDeployError("bridge signer env key must not be empty.")
+    list_response, env_items = list_service_envs(client, service_uuid=service_uuid, tried=tried)
+    existing_uuid = ""
+    for item in env_items:
+        if _env_item_key(item) == clean_key:
+            existing_uuid = _env_item_uuid(item)
+            break
+
+    base_payloads = [
+        {
+            "key": clean_key,
+            "value": value,
+            "is_build_time": False,
+            "is_runtime": True,
+            "is_literal": True,
+            "is_multiline": False,
+        },
+        {
+            "key": clean_key,
+            "value": value,
+            "is_build_time": False,
+            "is_preview": False,
+            "is_literal": True,
+            "is_multiline": False,
+        },
+        {"key": clean_key, "value": value},
+    ]
+    value_hash = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    value_bytes = len(value.encode("utf-8"))
+
+    def try_update_env(update_paths: list[str], *, reason: str) -> dict[str, Any] | None:
+        seen_paths: set[str] = set()
+        for path in update_paths:
+            if not path or path in seen_paths:
+                continue
+            seen_paths.add(path)
+            for payload in base_payloads:
+                response = client.request("PATCH", path, payload)
+                tried.append(
+                    {
+                        "operation": "update-service-env",
+                        "reason": reason,
+                        "method": "PATCH",
+                        "path": path,
+                        "payload_keys": sorted(payload),
+                        "response": redacted_response_to_dict(response),
+                    }
+                )
+                if response.ok:
+                    return {"ok": True, "action": "updated", "env_key": clean_key, "value_sha256": value_hash, "value_bytes": value_bytes}
+                if response.status == 405:
+                    response = client.request("PUT", path, payload)
+                    tried.append(
+                        {
+                            "operation": "update-service-env",
+                            "reason": reason,
+                            "method": "PUT",
+                            "path": path,
+                            "payload_keys": sorted(payload),
+                            "response": redacted_response_to_dict(response),
+                        }
+                    )
+                    if response.ok:
+                        return {"ok": True, "action": "updated", "env_key": clean_key, "value_sha256": value_hash, "value_bytes": value_bytes}
+                if response.status not in {400, 404, 405, 422}:
+                    raise CoolifyHubDeployError(f"Coolify service env update failed with HTTP {response.status}: {response.body}")
+        return None
+
+    create_path = f"/api/v1/services/{urllib.parse.quote(service_uuid)}/envs"
+    key_update_path = f"{create_path}/{urllib.parse.quote(clean_key)}"
+    if list_response.ok and existing_uuid:
+        uuid_update_path = f"{create_path}/{urllib.parse.quote(existing_uuid)}"
+        result = try_update_env([uuid_update_path, key_update_path, create_path], reason="listed-existing-env")
+        if result is not None:
+            return result
+
+    saw_conflict = False
+    for payload in base_payloads:
+        response = client.request("POST", create_path, payload)
+        tried.append(
+            {
+                "operation": "create-service-env",
+                "method": "POST",
+                "path": create_path,
+                "payload_keys": sorted(payload),
+                "response": redacted_response_to_dict(response),
+            }
+        )
+        if response.ok:
+            return {"ok": True, "action": "created", "env_key": clean_key, "value_sha256": value_hash, "value_bytes": value_bytes}
+        if response.status == 409:
+            saw_conflict = True
+            result = try_update_env([key_update_path, create_path], reason="create-conflict")
+            if result is not None:
+                return result
+            continue
+        if response.status not in {400, 404, 405, 422}:
+            raise CoolifyHubDeployError(f"Coolify service env create failed with HTTP {response.status}: {response.body}")
+
+    if saw_conflict:
+        raise CoolifyHubDeployError("Coolify service env exists, but update failed on all known endpoints.")
+    raise CoolifyHubDeployError("Coolify service env sync failed on all known endpoints.")
+
+
+def sync_bridge_signer_env(
+    client: CoolifyClient,
+    profile: HubNetworkProfile,
+    args: argparse.Namespace,
+    *,
+    service_uuid: str,
+    tried: list[dict[str, Any]],
+) -> dict[str, Any]:
+    bundle = build_bridge_signer_bundle(profile, args)
+    sync = sync_service_env_var(
+        client,
+        service_uuid=service_uuid,
+        key=bundle["env_key"],
+        value=bundle["bundle_b64"],
+        tried=tried,
+    )
+    return {
+        "ok": True,
+        "env_key": bundle["env_key"],
+        "action": sync["action"],
+        "bundle_sha256": bundle["bundle_sha256"],
+        "bundle_bytes": bundle["bundle_bytes"],
+        "source_manifest": bundle["source_manifest"],
+        "wallet_path": bundle["wallet_path"],
+        "escrow_address": bundle["escrow_address"],
+        "bridge_controller_address": bundle["bridge_controller_address"],
+        "coolify_env_value_sha256": sync["value_sha256"],
+        "coolify_env_value_bytes": sync["value_bytes"],
+    }
+
+
 def find_application(client: CoolifyClient, *, service_name: str, explicit_uuid: str, tried: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
     if explicit_uuid:
         return explicit_uuid, {"source": "explicit_uuid", "uuid": explicit_uuid}
@@ -2000,8 +2449,13 @@ def plan_result(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[st
         "hub_chain_rpc_url": hub_chain_rpc_url(profile, args),
         "chain_id": profile.chain_id,
         "bridge_backend": hub_bridge_backend(args),
-        "dev_chain_deployment_path": dev_chain_deployment_path(profile, args),
+        "dev_chain_deployment_path": (
+            bridge_signer_remote_path(profile, args, runtime_dir=runtime_dir)
+            if hub_enable_bridge_writes(args)
+            else dev_chain_deployment_path(profile, args)
+        ),
         "contracts_path": contracts_path(profile, args),
+        "bridge_signer": bridge_signer_plan(profile, args, runtime_dir=runtime_dir),
         "application_payload": application_payload(profile, args, service_name=service_name, runtime_dir=runtime_dir),
         "hub_start_command": hub_start_command(profile, runtime_dir, args),
         "storage_payload": storage_payload(profile, runtime_dir=runtime_dir, args=args),
@@ -2170,6 +2624,22 @@ def apply(args: argparse.Namespace) -> dict[str, Any]:
                 warnings.append(legacy_warning)
                 result_payload["legacy_application_warning"] = legacy_warning
         phases.append({"phase": "coolify-service", "result": result_payload})
+        if bridge_signer_sync_requested(args):
+            if not is_remote_fdb_sidecar_profile(profile, args):
+                signer_sync_result = {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "bridge signer sync is only required for remote FDB sidecar services",
+                }
+            else:
+                signer_sync_result = sync_bridge_signer_env(
+                    client,
+                    profile,
+                    args,
+                    service_uuid=service_uuid,
+                    tried=tried,
+                )
+            phases.append({"phase": "sync-bridge-signer", "result": signer_sync_result})
         if is_local_test_profile(profile):
             runtime_host = ensure_local_test_runtime_host_dir(args)
             phases.append({"phase": "local-runtime-host-dir", "result": runtime_host})
@@ -2387,6 +2857,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Enable explicit admin-only smoke bridge mode. This may load smoke_client wallet metadata "
             "from a private deployment manifest and must not be used for normal testnet/mainnet traffic."
+        ),
+    )
+    parser.add_argument(
+        "--enable-bridge-writes",
+        action="store_true",
+        help=(
+            "Enable the non-smoke bridge signer path. The deployer syncs the bridge controller signer "
+            "through Coolify service environment variables and the Hub fails closed if the signer is absent."
+        ),
+    )
+    parser.add_argument(
+        "--sync-bridge-signer",
+        action="store_true",
+        help=(
+            "Sync bridge controller signer material to the Coolify service env store without enabling smoke mode. "
+            "This is implied by --enable-bridge-writes."
+        ),
+    )
+    parser.add_argument(
+        "--bridge-signer-source-manifest",
+        default="",
+        help="Local private deployment manifest used to build the bridge signer bundle. Defaults to runtime/deployments/<network>/latest.json.",
+    )
+    parser.add_argument(
+        "--bridge-controller-wallet-path",
+        default="",
+        help="Local bridge controller wallet JSON override. Defaults to hub_admin.wallet_path in the source manifest.",
+    )
+    parser.add_argument(
+        "--bridge-signer-env-key",
+        default="",
+        help=f"Coolify Service env variable name used for the base64 signer bundle. Defaults to {DEFAULT_BRIDGE_SIGNER_ENV_KEY}.",
+    )
+    parser.add_argument(
+        "--bridge-signer-remote-path",
+        default="",
+        help=(
+            "Container path where the Hub bootstrap decodes the signer bundle. "
+            f"Defaults to <hub-runtime-dir>/{DEFAULT_BRIDGE_SIGNER_RELATIVE_PATH}."
         ),
     )
 

@@ -1237,7 +1237,6 @@
 .git-project-gitignore-success,
 .git-project-gitignore-suggestions,
 .git-project-gitignore-file-panel,
-.git-project-commit-left,
 .git-project-commit-center,
 .git-project-commit-right,
 .git-project-commit-panel,
@@ -1422,7 +1421,7 @@
 
 .git-project-commit-body {
   display: grid;
-  grid-template-columns: minmax(280px, 0.5fr) minmax(420px, 0.65fr) minmax(820px, 2fr);
+  grid-template-columns: minmax(420px, 0.75fr) minmax(820px, 2fr);
   gap: 10px;
   align-items: stretch;
   min-width: 0;
@@ -1439,8 +1438,7 @@
   min-height: 0;
 }
 
-.git-project-commit-center,
-.git-project-commit-left {
+.git-project-commit-center {
   align-content: start;
 }
 
@@ -1585,76 +1583,6 @@
   max-height: 38px;
   padding: 7px 10px;
   font-size: 12px;
-}
-
-.git-project-commit-upstream-gates {
-  display: grid;
-  gap: 6px;
-  margin: 0 0 12px;
-  padding: 0 0 10px;
-}
-
-.git-project-commit-upstream-gates > strong,
-.git-project-commit-upstream-gates > span {
-  color: var(--gold);
-  font-size: 10px;
-  font-weight: 900;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-}
-
-.git-project-commit-upstream-gates > span {
-  color: var(--muted);
-  margin-top: 2px;
-}
-
-.git-project-commit-upstream-gate {
-  display: grid;
-  gap: 3px;
-  border: 1px solid rgba(255, 130, 92, 0.45);
-  border-radius: 10px;
-  background: rgba(255, 82, 61, 0.08);
-  padding: 9px 10px;
-}
-
-.git-project-commit-upstream-gate strong {
-  color: var(--gold);
-  font-size: 11px;
-  font-weight: 900;
-  line-height: 1.2;
-  text-transform: uppercase;
-}
-
-.git-project-commit-upstream-gate span {
-  color: var(--text);
-  font-size: 10px;
-  font-weight: 800;
-  line-height: 1.2;
-  text-transform: uppercase;
-}
-
-.git-project-commit-upstream-gate small {
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.25;
-  overflow-wrap: anywhere;
-}
-
-.git-project-commit-upstream-gate.is-passed {
-  border-color: rgba(117, 255, 188, 0.38);
-  background: rgba(39, 132, 82, 0.12);
-}
-
-.git-project-commit-upstream-gate.is-needs-review,
-.git-project-commit-upstream-gate.is-review {
-  border-color: rgba(255, 216, 79, 0.35);
-  background: rgba(255, 216, 79, 0.08);
-}
-
-.git-project-commit-step-break {
-  border-top: 1px solid rgba(255, 213, 91, 0.28);
-  height: 0;
-  margin: 4px 0 0;
 }
 
 .git-project-commit-right > .git-project-commit-panel[data-git-commit-panel="repo_identity"] {
@@ -1893,26 +1821,6 @@
   overflow-wrap: anywhere;
 }
 
-.git-project-commit-steps {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding-left: 18px;
-}
-
-.git-project-commit-steps li {
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 8px;
-  background: rgba(255,255,255,0.03);
-  padding: 7px;
-}
-
-.git-project-commit-steps li span {
-  display: block;
-  color: var(--muted);
-  font-size: 12px;
-  margin-top: 3px;
-}
 
 .git-project-commit-file-list {
   display: grid;
@@ -1959,72 +1867,11 @@
   background: rgba(255,255,255,0.025);
 }
 
-.git-project-commit-steps {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
 
-.git-project-commit-steps li {
-  min-width: 0;
-}
 
-.git-project-commit-steps button {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 8px;
-  width: 100%;
-  min-width: 0;
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 10px;
-  background: rgba(255,255,255,0.03);
-  color: var(--text);
-  padding: 8px;
-  text-align: left;
-}
 
-.git-project-commit-steps li.is-ready button {
-  border-color: rgba(117, 255, 188, 0.28);
-}
 
-.git-project-commit-steps li.needs-review button {
-  border-color: rgba(255, 206, 77, 0.28);
-}
 
-.git-project-commit-steps li.is-locked button {
-  border-color: rgba(255, 143, 112, 0.28);
-}
-
-.git-project-commit-step-mark {
-  display: inline-grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: #010201;
-  color: var(--gold);
-  font-size: 12px;
-  font-weight: 900;
-}
-
-.git-project-commit-steps strong {
-  display: block;
-  color: var(--cyan);
-  font-size: 12px;
-  text-transform: uppercase;
-}
-
-.git-project-commit-steps small {
-  display: block;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.35;
-  margin-top: 2px;
-  overflow-wrap: anywhere;
-}
 
 
 .git-project-commit-gate-summary,
@@ -2573,21 +2420,6 @@
   }
 }
 
-
-/* Commit workbench clarity pass: review selected files before staging. */
-.git-project-commit-steps button {
-  cursor: pointer;
-}
-
-.git-project-commit-steps button:hover,
-.git-project-commit-steps li.is-active button {
-  border-color: var(--gold);
-  background: rgba(255, 206, 77, 0.07);
-}
-
-.git-project-commit-steps li.is-active button {
-  box-shadow: inset 3px 0 0 var(--gold);
-}
 
 .git-project-commit-review-status {
   border: 1px solid rgba(255,255,255,0.14);

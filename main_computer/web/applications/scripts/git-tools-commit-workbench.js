@@ -236,54 +236,6 @@ function gitProjectCommitConfigStripHtml(review = {}) {
   </section>`;
 }
 
-function gitProjectCommitGateStepCardHtml(gate = {}, key = "") {
-  const state = String(gate.state || "unknown").toLowerCase();
-  const tone = state.replace(/[^a-z0-9_-]+/g, "-") || "unknown";
-  const label = key === "gitignore" ? ".gitignore gate" : key === "secrets_filter" ? "Secrets / Filter gate" : `${gate.label || "Gate"} gate`;
-  return `<article class="git-project-commit-upstream-gate is-${escapeHtml(tone)}" data-git-commit-upstream-gate="${escapeHtml(key || gate.key || "gate")}">
-    <strong>${escapeHtml(label)}</strong>
-    <span>${escapeHtml(state || "unknown")}</span>
-    <small>${escapeHtml(gate.summary || "")}</small>
-  </article>`;
-}
-
-function gitProjectCommitStepsHtml(review = {}) {
-  const ready = gitProjectCommitReadySummary(review);
-  const gates = gitProjectCommitGateSummary(review);
-  const groups = gitProjectCommitGroups(review);
-  const identityReady = Boolean(gitProjectCommitIdentity(review).ready) || (
-    gitProjectCommitFieldValue(review, "git_user_name").trim() && gitProjectCommitFieldValue(review, "git_user_email").includes("@")
-  );
-  const steps = [
-    {id: "repo_branch", label: "Repo / Branch", mark: ready.headState === "unknown" ? "!" : "✓", detail: `HEAD ${ready.headState} · ${ready.branch}`},
-    {id: "identity", label: "Identity", mark: identityReady ? "✓" : "!", detail: `Source: ${ready.identitySource}`},
-    {id: "file_basket", label: "File basket", mark: groups.selected_by_default.length ? "✓" : "!", detail: `${groups.selected_by_default.length} selected · ${groups.review_before_selecting.length} review`},
-    {id: "stage_preview", label: "Review selected files", mark: "!", detail: "Confirm before staging"},
-    {id: "create_commit", label: "Create commit", mark: ready.ready ? "✓" : "🔒", detail: ready.reasons.length ? ready.reasons.join(" · ") : "Commit only when ready"},
-  ];
-  return `<section class="git-project-commit-left">
-    <div class="git-project-subscreen-panel-head">
-      <strong>Commit steps</strong>
-      <span>final local workbench</span>
-    </div>
-    <div class="git-project-commit-upstream-gates">
-      <strong>Upstream gates</strong>
-      ${gitProjectCommitGateStepCardHtml(gates.gitignore, "gitignore")}
-      ${gitProjectCommitGateStepCardHtml(gates.secrets_filter, "secrets_filter")}
-      <div class="git-project-commit-step-break" aria-hidden="true"></div>
-      <span>Commit workflow</span>
-    </div>
-    <ol class="git-project-commit-steps">
-      ${steps.map((step) => `<li data-git-commit-step="${escapeHtml(step.id)}" class="${step.mark === "✓" ? "is-ready" : step.mark === "🔒" ? "is-locked" : "needs-review"}">
-        <button type="button" data-git-commit-step-button="${escapeHtml(step.id)}">
-          <span class="git-project-commit-step-mark" data-git-commit-step-mark="${escapeHtml(step.id)}">${escapeHtml(step.mark)}</span>
-          <span><strong>${escapeHtml(step.label)}</strong><small data-git-commit-step-detail="${escapeHtml(step.id)}">${escapeHtml(step.detail)}</small></span>
-        </button>
-      </li>`).join("")}
-    </ol>
-  </section>`;
-}
-
 function gitProjectCommitGateSummaryHtml(review = {}) {
   const gates = gitProjectCommitGateSummary(review);
   return `<section class="git-project-commit-panel git-project-commit-gate-summary" data-git-commit-panel="gate_summary">
@@ -926,19 +878,6 @@ function gitProjectCommitDeveloperCommandPreview(paths = []) {
   ].join("\n");
 }
 
-function gitProjectCommitSetStepState(workbench, stepId = "", mark = "!", detail = "") {
-  const step = workbench?.querySelector?.(`[data-git-commit-step="${CSS.escape(stepId)}"]`);
-  const markNode = workbench?.querySelector?.(`[data-git-commit-step-mark="${CSS.escape(stepId)}"]`);
-  const detailNode = workbench?.querySelector?.(`[data-git-commit-step-detail="${CSS.escape(stepId)}"]`);
-  if (step) {
-    step.classList.toggle("is-ready", mark === "✓");
-    step.classList.toggle("is-locked", mark === "🔒");
-    step.classList.toggle("needs-review", mark !== "✓" && mark !== "🔒");
-  }
-  if (markNode) markNode.textContent = mark;
-  if (detailNode) detailNode.textContent = detail;
-}
-
 function gitProjectCommitUpdateReviewStatus(workbench, paths = []) {
   const state = gitProjectCommitSelectedReadiness(workbench, paths);
   const {stats} = state;
@@ -987,9 +926,6 @@ function gitProjectCommitUpdateReviewStatus(workbench, paths = []) {
   const preview = workbench.querySelector("[data-git-commit-dev-preview]");
   if (preview) preview.textContent = gitProjectCommitDeveloperCommandPreview(paths);
   if (diagnostics) diagnostics.hidden = false;
-
-  const fileBasketDetail = workbench.querySelector("[data-git-commit-step-detail='file_basket']");
-  if (fileBasketDetail) fileBasketDetail.textContent = `${stats.selected} selected · ${stats.review} review`;
 }
 
 function gitProjectCommitUpdateFinalReadiness(workbench, paths = []) {
@@ -1015,18 +951,6 @@ function gitProjectCommitUpdateFinalReadiness(workbench, paths = []) {
       : `Commit preview is blocked: ${state.reasons.join(" · ")}`;
   }
 
-  gitProjectCommitSetStepState(
-    workbench,
-    "stage_preview",
-    state.ready ? "✓" : (paths.length ? "!" : "🔒"),
-    state.ready ? "Selected-file warning gate satisfied" : (paths.length ? state.reasons.join(" · ") : "Choose files before staging")
-  );
-  gitProjectCommitSetStepState(
-    workbench,
-    "create_commit",
-    state.ready ? "✓" : "🔒",
-    state.ready ? "Open dry-run commit preview" : state.summary
-  );
 
   gitProjectCommitUpdateExecutionPane(workbench, paths, state);
 }
@@ -1130,8 +1054,6 @@ function gitProjectCommitRefreshWorkbenchFromReview(workbench, step = {}) {
   const body = workbench.querySelector(".git-project-commit-body");
   if (!body) return gitProjectCommitReviewCandidatePaths(review);
 
-  const left = body.querySelector(".git-project-commit-left");
-  if (left) left.outerHTML = gitProjectCommitStepsHtml(review);
 
   const fileBasketPanel = body.querySelector("[data-git-commit-panel='file_basket']");
   if (fileBasketPanel) fileBasketPanel.outerHTML = gitProjectCommitBasketControlsHtml(review);
@@ -1554,47 +1476,6 @@ function gitProjectCommitUpdateSelectedPreview(workbench, paths = null) {
   gitProjectCommitUpdateFinalReadiness(workbench, adapterReport.selectedPaths);
 }
 
-function gitProjectCommitStepTarget(workbench, stepId = "") {
-  const selectorByStep = {
-    repo_branch: "[data-git-commit-panel='repo_identity']",
-    identity: "[data-git-commit-panel='repo_identity']",
-    file_basket: "[data-git-commit-panel='file_basket']",
-    stage_preview: "[data-git-commit-panel='stage_preview']",
-    create_commit: "[data-git-commit-panel='create_commit']",
-  };
-  return workbench?.querySelector?.(selectorByStep[stepId] || `[data-git-commit-panel="${CSS.escape(stepId)}"]`);
-}
-
-function gitProjectCommitActivateStep(workbench, stepId = "") {
-  workbench?.querySelectorAll?.("[data-git-commit-step]").forEach((step) => {
-    step.classList.toggle("is-active", step.dataset.gitCommitStep === stepId);
-  });
-  const target = gitProjectCommitStepTarget(workbench, stepId);
-  if (!target) return;
-  target.scrollIntoView({behavior: "smooth", block: "center", inline: "nearest"});
-  target.classList.remove("is-step-target");
-  void target.offsetWidth;
-  target.classList.add("is-step-target");
-}
-
-function gitProjectWireCommitStepNavigation(workbench) {
-  if (!workbench || workbench.dataset.gitCommitStepNavigationReady === "true") return;
-  workbench.dataset.gitCommitStepNavigationReady = "true";
-  workbench.addEventListener("click", (event) => {
-    const button = event.target?.closest?.("[data-git-commit-step-button]");
-    if (!button || !workbench.contains(button)) return;
-    event.preventDefault();
-    gitProjectCommitActivateStep(workbench, button.dataset.gitCommitStepButton || "");
-  });
-  workbench.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    const button = event.target?.closest?.("[data-git-commit-step-button]");
-    if (!button || !workbench.contains(button)) return;
-    event.preventDefault();
-    gitProjectCommitActivateStep(workbench, button.dataset.gitCommitStepButton || "");
-  });
-}
-
 function gitProjectCommitSizeWunderbaum(element) {
   if (!element) return;
   const applyToViewport = () => {
@@ -1765,7 +1646,6 @@ function gitProjectInitializeCommitWunderbaum(workbench) {
 function gitProjectInitializeCommitWorkbenches(container) {
   container?.querySelectorAll?.("[data-git-commit-workbench]").forEach((workbench) => {
     if (workbench.closest("[hidden]")) return;
-    gitProjectWireCommitStepNavigation(workbench);
     gitProjectWireCommitExecution(workbench);
     gitProjectCommitUpdateSelectedPreview(workbench);
     if (!gitProjectCommitInitializeContractTreegrid(workbench)) {
@@ -1800,8 +1680,6 @@ function gitProjectInitializeCommitWorkbenches(container) {
     gitProjectCommitFieldHtml,
     gitProjectCommitHeaderHtml,
     gitProjectCommitConfigStripHtml,
-    gitProjectCommitGateStepCardHtml,
-    gitProjectCommitStepsHtml,
     gitProjectCommitGateSummaryHtml,
     gitProjectCommitSecuritySecretsPaneHtml,
     gitProjectCommitRepoIdentityHtml,
@@ -1869,7 +1747,6 @@ function gitProjectInitializeCommitWorkbenches(container) {
     gitProjectCommitSelectedReadiness,
     gitProjectCommitSelectedPreviewText,
     gitProjectCommitDeveloperCommandPreview,
-    gitProjectCommitSetStepState,
     gitProjectCommitUpdateReviewStatus,
     gitProjectCommitUpdateFinalReadiness,
     gitProjectCommitRenderExecutionFiles,
@@ -1894,9 +1771,6 @@ function gitProjectInitializeCommitWorkbenches(container) {
     gitProjectCommitRunExecution,
     gitProjectWireCommitExecution,
     gitProjectCommitUpdateSelectedPreview,
-    gitProjectCommitStepTarget,
-    gitProjectCommitActivateStep,
-    gitProjectWireCommitStepNavigation,
     gitProjectCommitSizeWunderbaum,
     gitProjectCommitNotifyWunderbaumViewport,
     gitProjectCommitScrollWunderbaumTop,
@@ -1930,8 +1804,6 @@ function gitProjectInitializeCommitWorkbenches(container) {
     gitProjectCommitFieldHtml,
     gitProjectCommitHeaderHtml,
     gitProjectCommitConfigStripHtml,
-    gitProjectCommitGateStepCardHtml,
-    gitProjectCommitStepsHtml,
     gitProjectCommitGateSummaryHtml,
     gitProjectCommitSecuritySecretsPaneHtml,
     gitProjectCommitRepoIdentityHtml,
@@ -1999,7 +1871,6 @@ function gitProjectInitializeCommitWorkbenches(container) {
     gitProjectCommitSelectedReadiness,
     gitProjectCommitSelectedPreviewText,
     gitProjectCommitDeveloperCommandPreview,
-    gitProjectCommitSetStepState,
     gitProjectCommitUpdateReviewStatus,
     gitProjectCommitUpdateFinalReadiness,
     gitProjectCommitRenderExecutionFiles,
@@ -2024,9 +1895,6 @@ function gitProjectInitializeCommitWorkbenches(container) {
     gitProjectCommitRunExecution,
     gitProjectWireCommitExecution,
     gitProjectCommitUpdateSelectedPreview,
-    gitProjectCommitStepTarget,
-    gitProjectCommitActivateStep,
-    gitProjectWireCommitStepNavigation,
     gitProjectCommitSizeWunderbaum,
     gitProjectCommitNotifyWunderbaumViewport,
     gitProjectCommitScrollWunderbaumTop,

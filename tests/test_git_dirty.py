@@ -580,12 +580,7 @@ class GitDirtyPlannerTests(unittest.TestCase):
             for item in group
         }
         self.assertIn("app.py", review_paths)
-        self.assertEqual(card["left_pane"]["title"], "COMMIT STEPS")
-        self.assertEqual(card["left_pane"]["steps"][0]["label"], "Repo / Branch")
-        self.assertEqual(card["left_pane"]["steps"][2]["label"], "Gate summary")
-        self.assertNotIn("Privacy scan", {step["label"] for step in card["left_pane"]["steps"]})
-        self.assertEqual(card["left_pane"]["steps"][-1]["label"], "Create commit")
-        self.assertTrue(card["left_pane"]["steps"][-1]["locked"])
+        self.assertNotIn("left_pane", card)
         self.assertEqual(card["center_pane"]["title"], "SELECTED WORK AREA")
         self.assertEqual(card["center_pane"]["selected_step"], "gate_summary")
         self.assertIn("repo_branch", card["center_pane"]["panels"])

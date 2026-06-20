@@ -90,6 +90,91 @@ class ContractOnlyHubBridgeBackend:
         raise HubBridgeBackendError(_missing_bridge_signer_message(self.network_key, self.contracts_path))
 
 
+
+class BridgeSignerHubBridgeBackend:
+    """Non-smoke bridge signer backend for real testnet payout writes.
+
+    This mode loads only the bridge controller signer.  It deliberately does not
+    load smoke_client metadata or fabricate requester deposits.  Deposit
+    confirmation remains fail-closed until the chain-indexed deposit path can
+    verify an already-submitted deposit without requester private keys.
+    """
+
+    name = "dev-chain"
+
+    def __init__(self, adapter: DevChainBridgeAdapter) -> None:
+        self.adapter = adapter
+
+    @classmethod
+    def from_signer_bundle(
+        cls,
+        *,
+        repo_root: Path,
+        signer_path: Path,
+        contracts_path: Path | None = None,
+        network_key: str = "dev",
+    ) -> "BridgeSignerHubBridgeBackend":
+        try:
+            adapter = DevChainBridgeAdapter.from_bridge_signer_bundle(
+                repo_root=repo_root,
+                signer_path=signer_path,
+                contracts_path=contracts_path,
+                network_key=network_key,
+            )
+        except DevChainBridgeError as exc:
+            raise HubBridgeBackendError(str(exc)) from exc
+        return cls(adapter)
+
+    @property
+    def escrow_address(self) -> str:
+        return self.adapter.escrow_address
+
+    @property
+    def bridge_controller_address(self) -> str:
+        wallet = self.adapter.bridge_controller_wallet
+        return wallet.address if wallet is not None else ""
+
+    @property
+    def signer_configured(self) -> bool:
+        return bool(self.adapter.bridge_controller_wallet)
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "backend": self.name,
+            "mode": "bridge-signer",
+            "escrow_address": self.escrow_address,
+            "signer_configured": self.signer_configured,
+            "bridge_controller_address": self.bridge_controller_address or None,
+            "requester_wallet_address": None,
+            "smoke_client_wallet_address": None,
+            "smoke_bridge_enabled": False,
+            "write_operations_enabled": self.signer_configured,
+        }
+
+    def deposit_confirmation_metadata(self, deposit: dict[str, Any]) -> dict[str, Any]:
+        raise HubBridgeBackendError(
+            "bridge-signer mode does not load requester private keys; deposit confirmation requires "
+            "chain-indexed deposit verification before the Hub can mark the deposit confirmed."
+        )
+
+    def payout_confirmation_metadata(self, payout: dict[str, Any]) -> dict[str, Any]:
+        payout_id = _required_text(payout, "payout_id")
+        worker_wallet_address = _required_text(payout, "wallet_address")
+        source_account_wallet_address = _source_account_wallet_address_from_payout(payout)
+        amount_units = _amount_units_from_bridge_payload(payout)
+        try:
+            movement = self.adapter.record_worker_payout(
+                source_account_wallet_address=source_account_wallet_address,
+                worker_wallet_address=worker_wallet_address,
+                amount_units=amount_units,
+                payout_id=payout_id,
+                memo=f"hub bridge-signer payout {payout_id}",
+            )
+        except DevChainBridgeError as exc:
+            raise HubBridgeBackendError(str(exc)) from exc
+        return _movement_metadata(self.name, movement, operation="payout_confirmation")
+
+
 class DevChainHubBridgeBackend:
     """Explicit admin-only smoke backend for HubCreditBridgeEscrow movements.
 
@@ -206,21 +291,29 @@ def build_hub_bridge_backend(
                     contracts_path=resolved_contracts_path,
                     network_key=network_key,
                 )
-            if resolved_contracts_path is not None and allow_missing_bridge_signer:
-                contract_only = _contract_only_backend_from_contracts(
+            try:
+                return BridgeSignerHubBridgeBackend.from_signer_bundle(
                     repo_root=repo_root,
+                    signer_path=deployment_path,
                     contracts_path=resolved_contracts_path,
                     network_key=network_key,
-                    missing_deployment_path=None,
-                    chain_rpc_url=chain_rpc_url,
                 )
-                if contract_only is not None:
-                    return contract_only
-            raise HubBridgeBackendError(
-                f"private dev-chain deployment manifest was found at {deployment_path}, but smoke bridge mode is not enabled. "
-                "Normal deployed Hub paths must not load smoke_client wallet metadata. "
-                "Use --enable-smoke-bridge only for explicit admin smoke tests, or configure a non-smoke bridge signer profile when signed bridge writes are implemented."
-            )
+            except HubBridgeBackendError as signer_exc:
+                if resolved_contracts_path is not None and allow_missing_bridge_signer:
+                    contract_only = _contract_only_backend_from_contracts(
+                        repo_root=repo_root,
+                        contracts_path=resolved_contracts_path,
+                        network_key=network_key,
+                        missing_deployment_path=None,
+                        chain_rpc_url=chain_rpc_url,
+                    )
+                    if contract_only is not None:
+                        return contract_only
+                raise HubBridgeBackendError(
+                    f"private dev-chain deployment manifest was found at {deployment_path}, but it is not a non-smoke bridge signer bundle. "
+                    "Normal deployed Hub paths must not load smoke_client wallet metadata. "
+                    "Use --enable-smoke-bridge only for explicit admin smoke tests, or deploy a main-computer.bridge-signer.v1 bundle."
+                ) from signer_exc
 
         if resolved_contracts_path is not None:
             if not allow_missing_bridge_signer:
@@ -296,6 +389,29 @@ def _missing_bridge_signer_message(network_key: str, contracts_path: Path) -> st
     return (
         f"bridge signer is not configured for {network_key}; "
         f"loaded public contract addresses from {contracts_path}, but private signer wallet metadata is absent."
+    )
+
+
+
+def _source_account_wallet_address_from_payout(payout: dict[str, Any]) -> str:
+    metadata = payout.get("metadata") if isinstance(payout.get("metadata"), dict) else {}
+    for payload in (payout, metadata):
+        for field in (
+            "source_account_wallet_address",
+            "source_wallet_address",
+            "account_wallet_address",
+            "requester_wallet_address",
+            "payer_wallet_address",
+        ):
+            value = str(payload.get(field) or "").strip()
+            if value:
+                return value
+    if str(payout.get("account_id") or "").strip():
+        wallet = str(payout.get("wallet_address") or "").strip()
+        if wallet:
+            return wallet
+    raise HubBridgeBackendError(
+        "bridge payout is missing source_account_wallet_address metadata required by non-smoke bridge-signer mode."
     )
 
 

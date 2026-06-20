@@ -2493,35 +2493,6 @@ def commit_card_gate_index(commit_review: dict[str, Any]) -> dict[str, dict[str,
     return {str(gate.get("id") or ""): gate for gate in commit_review.get("gates") or []}
 
 
-def commit_card_step(
-    order: int,
-    step_id: str,
-    label: str,
-    gate: dict[str, Any] | None,
-    *,
-    selected: bool = False,
-    locked: bool = False,
-    required: bool = True,
-    why: str = "",
-) -> dict[str, Any]:
-    ready = bool(gate.get("ready")) if gate is not None else False
-    mark = "✓" if ready else "!"
-    if locked:
-        mark = "🔒" if not ready else "✓"
-    return {
-        "order": order,
-        "id": step_id,
-        "label": label,
-        "ready": ready,
-        "required": bool(gate.get("required", required)) if gate is not None else required,
-        "locked": locked,
-        "mark": mark,
-        "selected": selected,
-        "center_panel": step_id,
-        "why": why,
-    }
-
-
 def commit_card_fast_sanity_contract() -> dict[str, Any]:
     return {
         "cost": "client_only",
@@ -2663,6 +2634,7 @@ def commit_card_payload(commit_review: dict[str, Any]) -> dict[str, Any]:
     commit_message = str(commit_review.get("commit_message") or DEFAULT_COMMIT_MESSAGE)
     identity_scope = commit_identity_scope_value(identity)
     privacy_summary = dict((commit_review.get("privacy_scan") or {}).get("summary") or {})
+    secrets_blocked = bool(privacy_summary.get("requires_user_scan")) or bool(privacy_summary.get("blocking", 0)) or bool(blocked)
     security_rules = dict(commit_review.get("security_rules") or (commit_review.get("privacy_scan") or {}).get("security_rules") or {})
     gates = commit_card_gate_index(commit_review)
 
@@ -2711,23 +2683,6 @@ def commit_card_payload(commit_review: dict[str, Any]) -> dict[str, Any]:
             ],
         ),
     }
-
-    secrets_blocked = bool(security_scan_pending := privacy_summary.get("requires_user_scan")) or bool(privacy_summary.get("blocking", 0)) or bool(blocked)
-    gate_summary_ready = not gitignore_blocked and not secrets_blocked
-    gate_summary_text = (
-        ".gitignore and Secrets / Filter gates are passing."
-        if gate_summary_ready
-        else "Review upstream .gitignore or Secrets / Filter gates before staging."
-    )
-
-    left_steps = [
-        commit_card_step(1, "repo_branch", "Repo / Branch", gates.get("repo_head"), selected=True, why=f"HEAD is {status_strip['head']}; branch is {branch}."),
-        commit_card_step(2, "identity", "Identity", gates.get("commit_identity"), why=f"Ready from {source} config." if identity.get("ready") else "Git commit identity is missing or incomplete."),
-        commit_card_step(3, "gate_summary", "Gate summary", {"ready": gate_summary_ready, "required": True}, why=gate_summary_text),
-        commit_card_step(4, "file_basket", "File basket", gates.get("file_basket"), why=f"{len(selected_paths)} files selected by default."),
-        commit_card_step(5, "stage_preview", "Stage preview", gates.get("stage_preview"), why="Stage selected files and review the cached diff/stat before committing."),
-        commit_card_step(6, "create_commit", "Create commit", {"ready": bool(commit_review.get("commit_ready")), "required": True}, locked=not bool(commit_review.get("commit_ready")), why="Locked until required checks pass." if not commit_review.get("commit_ready") else "Ready to create a local commit."),
-    ]
 
     center_panels = {
         "repo_branch": {
@@ -2872,10 +2827,6 @@ def commit_card_payload(commit_review: dict[str, Any]) -> dict[str, Any]:
             "fields": config_fields,
         },
         "editable_state": editable_state,
-        "left_pane": {
-            "title": "COMMIT STEPS",
-            "steps": left_steps,
-        },
         "center_pane": {
             "title": "SELECTED WORK AREA",
             "selected_step": "gate_summary",

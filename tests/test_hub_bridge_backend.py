@@ -4,7 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from main_computer.hub_bridge_backend import DevChainHubBridgeBackend, HubBridgeBackendError, MockChainHubBridgeBackend, build_hub_bridge_backend
+from main_computer.hub_bridge_backend import BridgeSignerHubBridgeBackend, DevChainHubBridgeBackend, HubBridgeBackendError, MockChainHubBridgeBackend, build_hub_bridge_backend
 
 
 def _write_wallet(path: Path, *, address: str, private_key: str) -> None:
@@ -220,8 +220,9 @@ def test_private_deployment_manifest_requires_explicit_smoke_bridge_or_signer_pr
         )
     except HubBridgeBackendError as exc:
         message = str(exc)
-        assert "smoke bridge mode is not enabled" in message
+        assert "not a non-smoke bridge signer bundle" in message
         assert "smoke_client wallet metadata" in message
+        assert "main-computer.bridge-signer.v1" in message
     else:
         raise AssertionError("private smoke deployment manifests should not be selected by default")
 
@@ -244,3 +245,120 @@ def test_private_deployment_manifest_can_enable_explicit_smoke_bridge(tmp_path: 
     assert status["smoke_client_wallet_address"] == addresses["requester"]
     assert status["bridge_controller_address"] == addresses["controller"]
     assert status["write_operations_enabled"] is True
+
+
+def test_bridge_signer_bundle_enables_non_smoke_payout_without_smoke_client(tmp_path: Path) -> None:
+    signer_path = tmp_path / "bridge-signer-bundle.json"
+    signer_path.write_text(
+        json.dumps(
+            {
+                "schema": "main-computer.bridge-signer.v1",
+                "network": "testnet",
+                "chain_rpc_url": "https://testnet-rpc.greatlibrary.io",
+                "contracts": {
+                    "hub_credit_bridge_escrow": {
+                        "address": "0x4444444444444444444444444444444444444444",
+                        "bridge_controller_address": "0x2222222222222222222222222222222222222222",
+                    }
+                },
+                "bridge_controller": {
+                    "address": "0x2222222222222222222222222222222222222222",
+                    "private_key": "0x" + "2" * 64,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    commands: list[list[str]] = []
+
+    def fake_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"transactionHash": "0x" + f"{len(commands):064x}"}) + "\n",
+            stderr="",
+        )
+
+    backend = build_hub_bridge_backend(
+        backend_name="dev-chain",
+        repo_root=tmp_path,
+        dev_chain_deployment_path=signer_path,
+        contracts_path=None,
+        network_key="testnet",
+        allow_missing_bridge_signer=False,
+    )
+    assert isinstance(backend, BridgeSignerHubBridgeBackend)
+    backend.adapter.command_runner = fake_runner  # type: ignore[misc]
+
+    status = backend.status()
+    assert status["mode"] == "bridge-signer"
+    assert status["smoke_bridge_enabled"] is False
+    assert status["smoke_client_wallet_address"] is None
+    assert status["signer_configured"] is True
+    assert status["write_operations_enabled"] is True
+
+    metadata = backend.payout_confirmation_metadata(
+        {
+            "payout_id": "bpayout-unit",
+            "wallet_address": "0x3333333333333333333333333333333333333333",
+            "credits": 2,
+            "metadata": {
+                "source_account_wallet_address": "0x1111111111111111111111111111111111111111",
+            },
+        }
+    )
+
+    assert len(commands) == 1
+    assert "--private-key" in commands[0]
+    assert metadata["bridge_backend"] == "dev-chain"
+    assert metadata["bridge_backend_operation"] == "payout_confirmation"
+    assert metadata["dev_chain"]["transaction_hashes"] == ["0x" + "1".zfill(64)]
+    assert metadata["dev_chain"]["movement"]["transactions"][0]["command"].count("<redacted>") == 1
+
+
+def test_bridge_signer_bundle_fails_deposit_confirmation_closed(tmp_path: Path) -> None:
+    signer_path = tmp_path / "bridge-signer-bundle.json"
+    signer_path.write_text(
+        json.dumps(
+            {
+                "schema": "main-computer.bridge-signer.v1",
+                "network": "testnet",
+                "chain_rpc_url": "https://testnet-rpc.greatlibrary.io",
+                "contracts": {
+                    "hub_credit_bridge_escrow": {
+                        "address": "0x4444444444444444444444444444444444444444",
+                        "bridge_controller_address": "0x2222222222222222222222222222222222222222",
+                    }
+                },
+                "bridge_controller": {
+                    "address": "0x2222222222222222222222222222222222222222",
+                    "private_key": "0x" + "2" * 64,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    backend = build_hub_bridge_backend(
+        backend_name="dev-chain",
+        repo_root=tmp_path,
+        dev_chain_deployment_path=signer_path,
+        contracts_path=None,
+        network_key="testnet",
+        allow_missing_bridge_signer=False,
+    )
+
+    try:
+        backend.deposit_confirmation_metadata(
+            {
+                "deposit_id": "dep",
+                "wallet_address": "0x1111111111111111111111111111111111111111",
+                "credits": 1,
+            }
+        )
+    except HubBridgeBackendError as exc:
+        assert "does not load requester private keys" in str(exc)
+    else:
+        raise AssertionError("bridge-signer mode should not fabricate deposits without requester signer")
+

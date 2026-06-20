@@ -223,6 +223,101 @@ class DevChainBridgeAdapter:
         )
         return adapter
 
+    @classmethod
+    def from_bridge_signer_bundle(
+        cls,
+        *,
+        repo_root: Path,
+        signer_path: Path,
+        contracts_path: Path | None = None,
+        network_key: str = "dev",
+        fallback_rpc_url: str | None = None,
+        command_runner: CommandRunner | None = None,
+        status: StatusCallback | None = None,
+    ) -> "DevChainBridgeAdapter":
+        bundle = _load_json(signer_path)
+        schema = str(bundle.get("schema") or "").strip()
+        if schema != "main-computer.bridge-signer.v1":
+            raise DevChainBridgeError(f"unsupported bridge signer bundle schema in {signer_path}: {schema!r}")
+
+        contract_payload: dict[str, Any] | None = None
+        contract_source: Path | None = signer_path
+        if contracts_path is not None:
+            loaded = load_contract_config(network_key, repo_root=repo_root, path=contracts_path)
+            if loaded is not None:
+                contract_source, contract_payload = loaded
+        if contract_payload is None:
+            contract_payload = bundle
+
+        contract_chain = contract_payload.get("chain") if isinstance(contract_payload.get("chain"), dict) else {}
+        bundle_chain = bundle.get("chain") if isinstance(bundle.get("chain"), dict) else {}
+        escrow = get_contract_record(contract_payload, HUB_CREDIT_BRIDGE_ESCROW_KEY)
+        if not escrow:
+            escrow = get_contract_record(bundle, HUB_CREDIT_BRIDGE_ESCROW_KEY)
+            contract_source = signer_path
+        if not isinstance(escrow, dict) or not escrow:
+            raise DevChainBridgeError(f"contract config is missing {HUB_CREDIT_BRIDGE_ESCROW_KEY}: {contract_source}")
+        escrow_address = str(escrow.get("address") or "").strip()
+        if not _is_address(escrow_address):
+            raise DevChainBridgeError(f"invalid HubCreditBridgeEscrow address in {contract_source}: {escrow_address!r}")
+
+        rpc_url = str(
+            bundle.get("chain_rpc_url")
+            or contract_payload.get("chain_rpc_url")
+            or contract_chain.get("container_rpc_url")
+            or contract_chain.get("rpc_url")
+            or contract_chain.get("host_rpc_url")
+            or bundle_chain.get("container_rpc_url")
+            or bundle_chain.get("rpc_url")
+            or bundle_chain.get("host_rpc_url")
+            or fallback_rpc_url
+            or ""
+        ).strip()
+        if not rpc_url:
+            raise DevChainBridgeError(f"bridge signer bundle is missing a chain RPC URL: {signer_path}")
+        network_name = str(
+            bundle.get("network")
+            or contract_payload.get("network")
+            or contract_chain.get("network")
+            or bundle_chain.get("network")
+            or network_key
+            or ""
+        ).strip() or None
+
+        bridge_controller_wallet = _load_wallet_from_bridge_signer_bundle(
+            repo_root=repo_root,
+            signer_path=signer_path,
+            bundle=bundle,
+            key="bridge_controller",
+            role="bridge-controller",
+        )
+        contract_controller = str(escrow.get("bridge_controller_address") or "").strip()
+        if contract_controller and contract_controller.lower() != bridge_controller_wallet.address.lower():
+            raise DevChainBridgeError(
+                f"bridge controller wallet does not match contract controller: {bridge_controller_wallet.address} != {contract_controller}"
+            )
+
+        adapter = cls(
+            repo_root=repo_root,
+            rpc_url=rpc_url,
+            network_name=network_name,
+            escrow_address=escrow_address,
+            requester_wallet=None,
+            bridge_controller_wallet=bridge_controller_wallet,
+            command_runner=command_runner,
+            status=status,
+        )
+        adapter._emit(
+            "dev_chain_bridge_signer_adapter_ready",
+            escrow_address=escrow_address,
+            rpc_url=rpc_url,
+            network_name=network_name,
+            contract_source=str(contract_source),
+            signer_configured=True,
+            bridge_controller_address=bridge_controller_wallet.address,
+        )
+        return adapter
+
     def record_requester_deposit(
         self,
         *,
@@ -484,6 +579,41 @@ def _load_wallet_from_record(
         raise DevChainBridgeError(
             f"{role} wallet file address does not match deployment metadata: {wallet_address} != {address}"
         )
+    return DevChainWallet(address=address, private_key=private_key, wallet_path=wallet_path, role=role)
+
+
+def _load_wallet_from_bridge_signer_bundle(
+    *,
+    repo_root: Path,
+    signer_path: Path,
+    bundle: dict[str, Any],
+    key: str,
+    role: str,
+) -> DevChainWallet:
+    record = bundle.get(key)
+    if not isinstance(record, dict):
+        raise DevChainBridgeError(f"bridge signer bundle is missing {key} wallet metadata: {signer_path}")
+    address = str(record.get("address") or "").strip()
+    if not _is_address(address):
+        raise DevChainBridgeError(f"invalid {key} wallet address in bridge signer bundle {signer_path}: {address!r}")
+
+    private_key = str(record.get("private_key") or "").strip()
+    wallet_path = signer_path
+    if not private_key:
+        wallet_path_text = str(record.get("wallet_path") or "").strip()
+        if not wallet_path_text:
+            raise DevChainBridgeError(f"bridge signer bundle is missing {key}.private_key or {key}.wallet_path: {signer_path}")
+        wallet_path = _resolve_runtime_path(repo_root=repo_root, deployment_path=signer_path, path_text=wallet_path_text)
+        wallet_payload = _load_json(wallet_path)
+        private_key = str(wallet_payload.get("private_key") or "").strip()
+        wallet_address = str(wallet_payload.get("address") or "").strip()
+        if wallet_address.lower() != address.lower():
+            raise DevChainBridgeError(
+                f"{role} wallet file address does not match bridge signer bundle: {wallet_address} != {address}"
+            )
+
+    if not _is_private_key(private_key):
+        raise DevChainBridgeError(f"{role} wallet metadata does not contain a valid private_key: {wallet_path}")
     return DevChainWallet(address=address, private_key=private_key, wallet_path=wallet_path, role=role)
 
 

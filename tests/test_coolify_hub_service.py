@@ -69,6 +69,12 @@ def _args(**overrides):
         "contracts_path": "",
         "allow_missing_bridge_signer": False,
         "enable_smoke_bridge": False,
+        "enable_bridge_writes": False,
+        "sync_bridge_signer": False,
+        "bridge_signer_source_manifest": "",
+        "bridge_controller_wallet_path": "",
+        "bridge_signer_env_key": "",
+        "bridge_signer_remote_path": "",
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -942,6 +948,162 @@ class CoolifyHubServiceTests(unittest.TestCase):
 
         self.assertIn("MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE: \"true\"", compose)
         self.assertIn("--enable-smoke-bridge", compose)
+
+    def test_coolify_testnet_bridge_writes_use_signer_bundle_env_not_smoke(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("testnet")
+        args = _args(enable_bridge_writes=True)
+        compose = coolify_hub_service.render_fdb_sidecar_hub_compose(
+            profile,
+            args,
+            service_name="main-computer-testnet-hub",
+            runtime_dir="/data/main-computer/hub/testnet-exp-fdb",
+        )
+
+        self.assertIn("MAIN_COMPUTER_HUB_ENABLE_BRIDGE_WRITES: \"true\"", compose)
+        self.assertIn("MAIN_COMPUTER_BRIDGE_SIGNER_BUNDLE_B64: ${MAIN_COMPUTER_BRIDGE_SIGNER_BUNDLE_B64:?missing bridge signer bundle}", compose)
+        self.assertIn("mkdir -p /data/main-computer/hub/testnet-exp-fdb/private/bridge-signer", compose)
+        self.assertIn("remote image is missing non-smoke bridge-signer backend support", compose)
+        self.assertIn("base64 -d > /data/main-computer/hub/testnet-exp-fdb/private/bridge-signer/bridge-signer-bundle.json.tmp", compose)
+        self.assertIn("--dev-chain-deployment-path", compose)
+        self.assertIn("/data/main-computer/hub/testnet-exp-fdb/private/bridge-signer/bridge-signer-bundle.json", compose)
+        self.assertNotIn("--allow-missing-bridge-signer", compose)
+        self.assertNotIn("--enable-smoke-bridge", compose)
+        self.assertNotIn("MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE", compose)
+
+    def test_container_posix_dirname_treats_remote_paths_as_linux_paths(self) -> None:
+        self.assertEqual(
+            coolify_hub_service.container_posix_dirname(
+                "/data/main-computer/hub/testnet-exp-fdb/private/bridge-signer/bridge-signer-bundle.json"
+            ),
+            "/data/main-computer/hub/testnet-exp-fdb/private/bridge-signer",
+        )
+        self.assertEqual(
+            coolify_hub_service.container_posix_dirname(
+                r"\data\main-computer\hub\testnet-exp-fdb\private\bridge-signer\bridge-signer-bundle.json"
+            ),
+            "/data/main-computer/hub/testnet-exp-fdb/private/bridge-signer",
+        )
+
+    def test_build_bridge_signer_bundle_uses_hub_admin_only(self) -> None:
+        profile = coolify_hub_service.load_hub_network_registry().get("testnet")
+        temp_dir = self.enterContext(__import__("tempfile").TemporaryDirectory())
+        base = Path(temp_dir)
+        wallet_path = base / "hub-admin-wallet.json"
+        wallet_path.write_text(
+            json.dumps(
+                {
+                    "address": "0x1D23F92c6AcF4c47A26aB48Fd3F3075AD619Baf6",
+                    "private_key": "0x" + "1" * 64,
+                }
+            ),
+            encoding="utf-8",
+        )
+        manifest_path = base / "latest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "chain": {"chain_id": 42424241, "rpc_url": "http://rpc.internal:8545"},
+                    "contracts": {
+                        "hub_credit_bridge_escrow": {
+                            "address": "0x2279B7A0a67DB372996a5FaB50D91eAA73d2eBe6",
+                            "bridge_controller_address": "0x1D23F92c6AcF4c47A26aB48Fd3F3075AD619Baf6",
+                            "chain_id": 42424241,
+                        }
+                    },
+                    "hub_admin": {
+                        "address": "0x1D23F92c6AcF4c47A26aB48Fd3F3075AD619Baf6",
+                        "wallet_path": str(wallet_path),
+                    },
+                    "smoke_client": {
+                        "address": "0x161891A95c99966416492baF3f31Ff2cff93ac4C",
+                        "wallet_path": "should-not-be-read.json",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        args = _args(
+            network="testnet",
+            bridge_signer_source_manifest=str(manifest_path),
+            hub_chain_rpc_url="https://testnet-rpc.greatlibrary.io",
+        )
+
+        bundle = coolify_hub_service.build_bridge_signer_bundle(profile, args)
+        decoded = json.loads(__import__("base64").b64decode(bundle["bundle_b64"]).decode("utf-8"))
+
+        self.assertEqual(decoded["schema"], "main-computer.bridge-signer.v1")
+        self.assertIn("bridge_controller", decoded)
+        self.assertEqual(decoded["bridge_controller"]["address"], "0x1D23F92c6AcF4c47A26aB48Fd3F3075AD619Baf6")
+        self.assertNotIn("smoke_client", decoded)
+        self.assertEqual(decoded["chain_rpc_url"], "https://testnet-rpc.greatlibrary.io")
+        self.assertEqual(bundle["bridge_controller_address"], "0x1D23F92c6AcF4c47A26aB48Fd3F3075AD619Baf6")
+        self.assertNotIn("private_key", json.dumps({k: v for k, v in bundle.items() if k != "bundle_b64"}))
+
+    def test_sync_service_env_var_uses_service_env_endpoint_and_redacts_value(self) -> None:
+        secret_value = "not-a-real-secret"
+        client = RouteCoolifyClient(
+            {
+                ("GET", "/api/v1/services/service-uuid/envs"): [
+                    {"envs": []}
+                ],
+                ("POST", "/api/v1/services/service-uuid/envs"): [
+                    {"uuid": "env-uuid", "key": "MAIN_COMPUTER_BRIDGE_SIGNER_BUNDLE_B64", "value": secret_value}
+                ],
+            }
+        )
+        tried: list[dict[str, object]] = []
+
+        result = coolify_hub_service.sync_service_env_var(
+            client,
+            service_uuid="service-uuid",
+            key="MAIN_COMPUTER_BRIDGE_SIGNER_BUNDLE_B64",
+            value=secret_value,
+            tried=tried,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["action"], "created")
+        self.assertIn(("GET", "/api/v1/services/service-uuid/envs", None), client.requests)
+        post = next(request for request in client.requests if request[0] == "POST")
+        self.assertEqual(post[1], "/api/v1/services/service-uuid/envs")
+        self.assertEqual(post[2]["value"], secret_value)
+        self.assertNotIn(secret_value, json.dumps(tried))
+        self.assertIn("<redacted>", json.dumps(tried))
+
+    def test_sync_service_env_var_patches_after_create_conflict(self) -> None:
+        secret_value = "rotated-secret"
+        client = RouteCoolifyClient(
+            {
+                ("GET", "/api/v1/services/service-uuid/envs"): [
+                    {"envs": []}
+                ],
+                ("POST", "/api/v1/services/service-uuid/envs"): [
+                    {"_status": 409, "message": "Environment variable already exists. Use PATCH request to update it."}
+                ],
+                ("PATCH", "/api/v1/services/service-uuid/envs/MAIN_COMPUTER_BRIDGE_SIGNER_BUNDLE_B64"): [
+                    {"_status": 404, "message": "not found"}
+                ],
+                ("PATCH", "/api/v1/services/service-uuid/envs"): [
+                    {"uuid": "env-uuid", "key": "MAIN_COMPUTER_BRIDGE_SIGNER_BUNDLE_B64", "value": secret_value}
+                ],
+            }
+        )
+        tried: list[dict[str, object]] = []
+
+        result = coolify_hub_service.sync_service_env_var(
+            client,
+            service_uuid="service-uuid",
+            key="MAIN_COMPUTER_BRIDGE_SIGNER_BUNDLE_B64",
+            value=secret_value,
+            tried=tried,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["action"], "updated")
+        self.assertTrue(any(method == "POST" and path == "/api/v1/services/service-uuid/envs" for method, path, _ in client.requests))
+        self.assertTrue(any(method == "PATCH" and path == "/api/v1/services/service-uuid/envs" for method, path, _ in client.requests))
+        self.assertNotIn(secret_value, json.dumps(tried))
+        self.assertIn("<redacted>", json.dumps(tried))
 
     def test_runtime_launcher_cli_network_overrides_port_inference(self) -> None:
         args = run_exp_fdb_hub.parse_args(["--network", "mainnet"])
