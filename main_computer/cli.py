@@ -79,6 +79,9 @@ def _config_from_args(args: argparse.Namespace) -> MainComputerConfig:
         hub_credits_per_request=getattr(args, "hub_credits_per_request", None) if getattr(args, "hub_credits_per_request", None) is not None else base.hub_credits_per_request,
         hub_bridge_backend=str(getattr(args, "bridge_backend", None) or base.hub_bridge_backend).strip().lower() or base.hub_bridge_backend,
         hub_dev_chain_deployment_path=Path(getattr(args, "dev_chain_deployment_path")) if getattr(args, "dev_chain_deployment_path", None) else base.hub_dev_chain_deployment_path,
+        hub_contracts_path=Path(getattr(args, "contracts_path")) if getattr(args, "contracts_path", None) else base.hub_contracts_path,
+        hub_allow_missing_bridge_signer=bool(getattr(args, "allow_missing_bridge_signer", False) or base.hub_allow_missing_bridge_signer),
+        hub_enable_smoke_bridge=bool(getattr(args, "enable_smoke_bridge", False) or base.hub_enable_smoke_bridge),
         hub_root=getattr(args, "hub_root", None) or base.hub_root,
         hub_network=base.hub_network,
         hub_network_display_name=base.hub_network_display_name,
@@ -516,6 +519,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--dev-chain-deployment-path",
         type=Path,
         help="Deployment metadata JSON used by the dev-chain/contract bridge backend. Defaults to the selected network manifest.",
+    )
+    hub.add_argument(
+        "--contracts-path",
+        type=Path,
+        help="Public contract config JSON used for contract-address-only Hub startup.",
+    )
+    hub.add_argument(
+        "--allow-missing-bridge-signer",
+        action="store_true",
+        help="Allow read/status-only contract-address startup without private bridge signer metadata.",
+    )
+    hub.add_argument(
+        "--enable-smoke-bridge",
+        action="store_true",
+        help="Explicitly enable the admin-only smoke bridge path that may load smoke_client wallet metadata.",
     )
     hub.add_argument(
         "-noverbose",

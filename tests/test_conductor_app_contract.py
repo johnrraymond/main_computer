@@ -70,9 +70,14 @@ def test_conductor_ui_has_schedule_dns_ssl_and_key_surfaces() -> None:
     assert "function renderConductorScriptAreas" in js
     assert "function renderConductorScripts" in js
     assert "function conductorFilteredScripts" in js
+    assert "function conductorScriptBadge" in js
+    assert 'class="conductor-script-badges"' in js
+    assert 'class="conductor-command-template"' in js
     assert ".conductor-app" in css
     assert ".conductor-script-examples" in css
     assert ".conductor-script-list" in css
+    assert ".conductor-script-badge" in css
+    assert ".conductor-command-template" in css
 
 
 def test_conductor_backend_routes_and_cli_are_registered() -> None:

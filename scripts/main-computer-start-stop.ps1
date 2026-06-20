@@ -1051,6 +1051,8 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_URL", [string]$endpoint.hub_url, "Process")
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_ENERGY_CHAIN_RPC_URL", [string]$endpoint.chain_rpc_url, "Process")
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_ENERGY_CHAIN_ID", [string]$endpoint.chain_id, "Process")
+  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE", "0", "Process")
+  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_ALLOW_MISSING_BRIDGE_SIGNER", "1", "Process")
   $bridgeBackend = Get-LaunchEnvironmentValue $LaunchContext "MAIN_COMPUTER_HUB_BRIDGE_BACKEND" "dev-chain"
   if ([string]::IsNullOrWhiteSpace($bridgeBackend)) {
     $bridgeBackend = "dev-chain"
@@ -1059,8 +1061,13 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
     $LaunchContext `
     "MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH" `
     (Join-Path $RootPath ("runtime\deployments\" + [string]$endpoint.network + "\latest.json"))
+  $contractsPath = Get-LaunchEnvironmentValue `
+    $LaunchContext `
+    "MAIN_COMPUTER_HUB_CONTRACTS_PATH" `
+    (Join-Path $RootPath ("main_computer\config\" + [string]$endpoint.network + "_contracts.json"))
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_BRIDGE_BACKEND", [string]$bridgeBackend, "Process")
   [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_DEV_CHAIN_DEPLOYMENT_PATH", [string]$devChainDeploymentPath, "Process")
+  [Environment]::SetEnvironmentVariable("MAIN_COMPUTER_HUB_CONTRACTS_PATH", [string]$contractsPath, "Process")
 
   $hubRuntime = Join-Path $RootPath ("runtime\hub\" + [string]$endpoint.network)
   Ensure-Directory $hubRuntime
@@ -1078,6 +1085,8 @@ function Start-MainComputerDevHubFresh([string]$RootPath, [object]$LaunchContext
     "--chain-id", [string]$endpoint.chain_id,
     "--bridge-backend", [string]$bridgeBackend,
     "--dev-chain-deployment-path", [string]$devChainDeploymentPath,
+    "--contracts-path", [string]$contractsPath,
+    "--allow-missing-bridge-signer",
     "-noverbose"
   )
   $argString = Join-CommandLine $arguments

@@ -119,13 +119,19 @@ function conductorFilteredScripts(scripts) {
 function renderConductorScriptExamples(script) {
   const examples = conductorArray(script.call_conventions).slice(0, 4);
   if (!examples.length) {
-    return '<p class="conductor-help">No documented calling convention found yet; use the command template above with explicit args.</p>';
+    return '<p class="conductor-script-note">No documented calling convention found yet. Use the command template with explicit args.</p>';
   }
   const rows = examples.map((item) => {
     const doc = item.line ? `${item.doc}:${item.line}` : item.doc;
-    return `<div class="conductor-script-example"><span>${escapeHtml(doc || "docs")}</span><code>${escapeHtml(item.command || "")}</code></div>`;
+    return `<li class="conductor-script-example"><span class="conductor-script-doc-source">${escapeHtml(doc || "docs")}</span><code class="conductor-script-doc-command">${escapeHtml(item.command || "")}</code></li>`;
   }).join("");
-  return `<div class="conductor-script-examples">${rows}</div>`;
+  return `<ul class="conductor-script-examples" aria-label="Documented calling conventions">${rows}</ul>`;
+}
+
+function conductorScriptBadge(value, className = "") {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return `<span class="conductor-script-badge ${className}">${escapeHtml(text)}</span>`;
 }
 
 function renderConductorScripts(scripts) {
@@ -143,12 +149,19 @@ function renderConductorScripts(scripts) {
     return;
   }
   conductorScripts.innerHTML = filtered.slice(0, 80).map((script) => {
-    const markers = conductorArray(script.markers).join(", ");
+    const markers = conductorArray(script.markers).filter(Boolean);
     const command = conductorArray(script.command_template).join(" ");
-    const description = script.description ? `<p>${escapeHtml(script.description)}</p>` : "";
-    const areas = conductorArray(script.areas).join(", ");
+    const description = script.description ? `<p class="conductor-script-description">${escapeHtml(script.description)}</p>` : "";
+    const areas = conductorArray(script.areas).filter(Boolean);
     const docCount = conductorArray(script.call_conventions).length;
-    return `<div class="conductor-item conductor-script-item"><strong>${escapeHtml(script.id || "")}</strong><span>${escapeHtml(script.kind || "")} · ${escapeHtml(script.risk || "")} · ${escapeHtml(markers)}</span><span>areas: ${escapeHtml(areas || "developer-tools")} · doc commands: ${escapeHtml(docCount)}</span><code>${escapeHtml(command)}</code>${description}${renderConductorScriptExamples(script)}</div>`;
+    const badges = [
+      conductorScriptBadge(script.kind),
+      conductorScriptBadge(script.risk, `conductor-risk-${script.risk || "unknown"}`),
+      conductorScriptBadge(`${docCount} doc command${docCount === 1 ? "" : "s"}`),
+      ...areas.slice(0, 5).map((area) => conductorScriptBadge(area, "conductor-area-badge")),
+      ...markers.slice(0, 4).map((marker) => conductorScriptBadge(marker, "conductor-marker-badge"))
+    ].join("");
+    return `<article class="conductor-item conductor-script-item"><header class="conductor-script-header"><strong class="conductor-script-title">${escapeHtml(script.id || "")}</strong></header><div class="conductor-script-badges">${badges}</div><code class="conductor-command-template">${escapeHtml(command)}</code>${description}${renderConductorScriptExamples(script)}</article>`;
   }).join("");
 }
 

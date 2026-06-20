@@ -651,6 +651,49 @@ def write_host_cluster_file(path: Path, *, port: int) -> str:
     return cluster_contents
 
 
+def _foundationdb_status_is_configured(status_output: str) -> bool:
+    """Return True when fdbcli status describes a usable configured database.
+
+    FoundationDB CLI output varies across versions and platforms.  Some healthy
+    7.4.x Docker status output does not include the older "Database available."
+    phrase, so accept the structured healthy status sections as well.
+    """
+
+    normalized = " ".join(str(status_output or "").lower().split())
+    if not normalized:
+        return False
+
+    unavailable_markers = (
+        "database unavailable",
+        "the database is unavailable",
+        "unable to locate any services",
+        "no coordinators",
+        "could not communicate with a cluster",
+    )
+    if any(marker in normalized for marker in unavailable_markers):
+        return False
+
+    if "database available" in normalized or "the database is available" in normalized:
+        return True
+
+    has_configured_sections = all(
+        marker in normalized
+        for marker in (
+            "configuration:",
+            "cluster:",
+            "data:",
+            "workload:",
+        )
+    )
+    return (
+        has_configured_sections
+        and "replication health" in normalized
+        and "healthy" in normalized
+        and "foundationdb processes" in normalized
+        and "coordinators" in normalized
+    )
+
+
 def start_foundationdb_container(args: argparse.Namespace) -> DockerFDBRuntime:
     docker_path = shutil.which(args.docker_command)
     if docker_path is None:
@@ -743,11 +786,14 @@ def configure_foundationdb_container(args: argparse.Namespace, name: str) -> Non
         if result.returncode == 0:
             print("FoundationDB Docker cluster is configured.")
             return
+        if _foundationdb_status_is_configured(output):
+            print("FoundationDB Docker cluster is already configured.")
+            return
         last_error = output
 
         status = run_process(status_command, check=False, timeout=15)
         status_output = "\n".join(part for part in (status.stdout, status.stderr) if part).strip()
-        if status.returncode == 0 and "Database available." in status_output:
+        if status.returncode == 0 and _foundationdb_status_is_configured(status_output):
             print("FoundationDB Docker cluster is already configured.")
             return
         if status_output:

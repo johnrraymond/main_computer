@@ -149,6 +149,25 @@ class HubNetworkRegistryTests(unittest.TestCase):
         self.assertEqual(config.hub_bridge_backend, "mock-chain")
         self.assertEqual(config.hub_dev_chain_deployment_path, Path("runtime/deployments/custom/latest.json"))
 
+    def test_hub_cli_accepts_contract_only_bridge_flags(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            config = _config_from_args(
+                _hub_args(
+                    "--network",
+                    "dev",
+                    "--bridge-backend",
+                    "dev-chain",
+                    "--contracts-path",
+                    "main_computer/config/dev_contracts.json",
+                    "--allow-missing-bridge-signer",
+                )
+            )
+
+        self.assertEqual(config.hub_bridge_backend, "dev-chain")
+        self.assertEqual(config.hub_contracts_path, Path("main_computer/config/dev_contracts.json"))
+        self.assertTrue(config.hub_allow_missing_bridge_signer)
+        self.assertFalse(config.hub_enable_smoke_bridge)
+
     def test_hub_url_override_sets_public_url_without_changing_bind_address(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             config = _config_from_args(
