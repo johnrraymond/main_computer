@@ -87,6 +87,8 @@ function renderConductorScriptAreas(areas) {
 
 function conductorScriptSearchText(script) {
   const callConventions = conductorArray(script.call_conventions).map((item) => `${item.doc || ""} ${item.command || ""}`).join(" ");
+  const suggested = conductorArray(script.suggested_invocations).map((item) => `${item.label || ""} ${item.command || ""} ${conductorArray(item.args).join(" ")}`).join(" ");
+  const quarantine = script.quarantine ? `${script.quarantine.safety || ""} ${script.quarantine.notes || ""}` : "";
   return [
     script.id,
     script.path,
@@ -99,7 +101,9 @@ function conductorScriptSearchText(script) {
     conductorArray(script.areas).join(" "),
     conductorArray(script.doc_sources).join(" "),
     conductorArray(script.markers).join(" "),
-    callConventions
+    callConventions,
+    suggested,
+    quarantine
   ].join(" ").toLowerCase();
 }
 
@@ -126,6 +130,25 @@ function renderConductorScriptExamples(script) {
     return `<li class="conductor-script-example"><span class="conductor-script-doc-source">${escapeHtml(doc || "docs")}</span><code class="conductor-script-doc-command">${escapeHtml(item.command || "")}</code></li>`;
   }).join("");
   return `<ul class="conductor-script-examples" aria-label="Documented calling conventions">${rows}</ul>`;
+}
+
+function renderConductorSuggestedInvocations(script) {
+  const suggestions = conductorArray(script.suggested_invocations).slice(0, 4);
+  if (!suggestions.length) return "";
+  const rows = suggestions.map((item) => {
+    const label = item.label ? `<span class="conductor-script-doc-source">${escapeHtml(item.label)}</span>` : "";
+    const command = item.command || `${conductorArray(script.command_template).join(" ")} ${conductorArray(item.args).join(" ")}`.trim();
+    return `<li class="conductor-script-example conductor-quarantine-example">${label}<code class="conductor-script-doc-command">${escapeHtml(command)}</code></li>`;
+  }).join("");
+  return `<section class="conductor-quarantine-block"><strong>Quarantine-first suggested calls</strong><ul class="conductor-script-examples" aria-label="Quarantine suggested invocations">${rows}</ul></section>`;
+}
+
+function renderConductorQuarantineNote(script) {
+  const quarantine = script.quarantine;
+  if (!quarantine) return "";
+  const safety = quarantine.safety ? `<p>${escapeHtml(quarantine.safety)}</p>` : "";
+  const notes = quarantine.notes ? `<p>${escapeHtml(quarantine.notes)}</p>` : "";
+  return `<section class="conductor-quarantine-note"><strong>Quarantine-safe first pass</strong>${safety}${notes}</section>`;
 }
 
 function conductorScriptBadge(value, className = "") {
@@ -157,21 +180,34 @@ function renderConductorScripts(scripts) {
     const badges = [
       conductorScriptBadge(script.kind),
       conductorScriptBadge(script.risk, `conductor-risk-${script.risk || "unknown"}`),
+      script.quarantine_safe ? conductorScriptBadge("quarantine first-pass", "conductor-quarantine-badge") : "",
       conductorScriptBadge(`${docCount} doc command${docCount === 1 ? "" : "s"}`),
       ...areas.slice(0, 5).map((area) => conductorScriptBadge(area, "conductor-area-badge")),
       ...markers.slice(0, 4).map((marker) => conductorScriptBadge(marker, "conductor-marker-badge"))
     ].join("");
-    return `<article class="conductor-item conductor-script-item"><header class="conductor-script-header"><strong class="conductor-script-title">${escapeHtml(script.id || "")}</strong></header><div class="conductor-script-badges">${badges}</div><code class="conductor-command-template">${escapeHtml(command)}</code>${description}${renderConductorScriptExamples(script)}</article>`;
+    return `<article class="conductor-item conductor-script-item"><header class="conductor-script-header"><strong class="conductor-script-title">${escapeHtml(script.id || "")}</strong></header><div class="conductor-script-badges">${badges}</div><code class="conductor-command-template">${escapeHtml(command)}</code>${description}${renderConductorQuarantineNote(script)}${renderConductorSuggestedInvocations(script)}${renderConductorScriptExamples(script)}</article>`;
   }).join("");
+}
+
+function conductorSelectedScript() {
+  const scriptId = conductorScriptSelect?.value || "";
+  return conductorArray(conductorStatusCache?.scripts).find((script) => script.id === scriptId) || null;
+}
+
+function conductorFirstSuggestedInvocation(script) {
+  return conductorArray(script?.suggested_invocations)[0] || null;
 }
 
 function conductorSelectedScriptPayload() {
   const scriptId = conductorScriptSelect?.value || "main_computer/log_rotator.py";
+  const script = conductorSelectedScript();
+  const suggestion = conductorFirstSuggestedInvocation(script);
   const argsText = conductorScriptArgs?.value || "";
-  const timeoutValue = Number(conductorScriptTimeout?.value || 60);
+  const timeoutValue = Number(conductorScriptTimeout?.value || suggestion?.timeout_s || 60);
+  const args = argsText.trim() ? argsText : conductorArray(suggestion?.args);
   return {
     script: scriptId,
-    args: argsText,
+    args,
     timeout_s: Number.isFinite(timeoutValue) ? timeoutValue : 60
   };
 }

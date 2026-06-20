@@ -70,14 +70,27 @@ def test_conductor_ui_has_schedule_dns_ssl_and_key_surfaces() -> None:
     assert "function renderConductorScriptAreas" in js
     assert "function renderConductorScripts" in js
     assert "function conductorFilteredScripts" in js
+    assert "function renderConductorSuggestedInvocations" in js
+    assert "function renderConductorQuarantineNote" in js
+    assert "function conductorSelectedScriptPayload" in js
     assert "function conductorScriptBadge" in js
     assert 'class="conductor-script-badges"' in js
     assert 'class="conductor-command-template"' in js
     assert ".conductor-app" in css
     assert ".conductor-script-examples" in css
+    assert ".conductor-quarantine-badge" in css
+    assert ".conductor-quarantine-note" in css
     assert ".conductor-script-list" in css
+    assert "conductor-result-card" in html
+    assert html.index('class="conductor-card conductor-result-card"') < html.index('<section class="conductor-main">')
     assert ".conductor-script-badge" in css
     assert ".conductor-command-template" in css
+    assert ".conductor-result-card" in css
+    assert "grid-template-columns: minmax(20rem, clamp(20rem, 36vw, 24rem)) minmax(30rem, 1fr);" in css
+    assert "overflow-x: auto;" in css
+    assert ".conductor-main {\n  min-width: 30rem;" in css
+    assert ".conductor-app *::after" in css
+    assert "box-sizing: border-box;" in css
 
 
 def test_conductor_backend_routes_and_cli_are_registered() -> None:

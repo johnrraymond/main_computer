@@ -277,7 +277,7 @@ class ExperimentalFoundationDbCreditLedger:
                 "wallet_count": len(snapshot.get("mock_chain_wallets", [])),
                 "deposit_count": len(snapshot.get("bridge_deposits", [])),
                 "payout_count": len(snapshot.get("bridge_payouts", [])),
-                "active_wallet_lock_count": sum(1 for lock in snapshot.get("wallet_locks", []) if str(lock.get("status", "active")) == "active"),
+                "active_wallet_lock_count": 0,
                 "audit_event_count": len(snapshot.get("bridge_audit", [])),
                 "chain_available_credit_wei": str(sum(int(wallet.get("available_credit_wei", 0) or 0) for wallet in snapshot.get("mock_chain_wallets", []))),
                 "pending_deposit_credit_wei": str(sum(int(dep.get("credit_wei", 0) or 0) for dep in snapshot.get("bridge_deposits", []) if str(dep.get("status", "")) == "pending")),
@@ -490,11 +490,6 @@ class ExperimentalFoundationDbCreditLedger:
                 return {"idempotent": True, "hold": hold.as_dict(), "account": account.as_dict()}
 
             current = self._account_from_payload(self._read_dict(tr, "account", clean_account), clean_account, now=now)
-            owner_wallet = normalize_address(current.owner_address)
-            if owner_wallet:
-                active_lock = self._read_dict(tr, "wallet_lock", owner_wallet)
-                if isinstance(active_lock, dict) and str(active_lock.get("status", "active")) == "active":
-                    raise ValueError(f"Wallet {owner_wallet} is locked for payout; new holds are blocked.")
             if current.available_credit_wei < clean_wei:
                 raise ValueError(
                     f"Insufficient Compute Credits for account {clean_account}: "
@@ -1064,23 +1059,20 @@ class ExperimentalFoundationDbCreditLedger:
         locks = list(self._snapshot().get("wallet_locks", []))
         if clean_wallet:
             locks = [lock for lock in locks if normalize_address(lock.get("wallet_address", "")) == clean_wallet]
-        active_locks = [lock for lock in locks if str(lock.get("status", "active")) == "active"]
         locks.sort(key=lambda item: str(item.get("created_at", "")), reverse=True)
         return {
             "ok": True,
             "wallet_address": clean_wallet,
-            "locked": bool(active_locks),
-            "active_locks": active_locks,
+            "locked": False,
+            "active_locks": [],
             "locks": locks,
             "lock_count": len(locks),
+            "legacy_wallet_locks_ignored": True,
         }
 
     def is_wallet_locked(self, wallet_address: str) -> bool:
-        clean_wallet = normalize_address(wallet_address)
-        if not clean_wallet:
-            return False
-        payload = self.wallet_lock_status(clean_wallet)
-        return bool(payload.get("locked"))
+        # Payout availability is protected by atomic ledger debits, not by long-lived wallet locks.
+        return False
 
     def mock_chain_mint(
         self,
@@ -1292,10 +1284,7 @@ class ExperimentalFoundationDbCreditLedger:
         def _tx(tr: Any) -> dict[str, Any]:
             existing = self._read_dict(tr, "bridge_payout", payout_id)
             if existing is not None:
-                return {"idempotent": True, "payout": existing, "wallet_lock": self._read_dict(tr, "wallet_lock", clean_wallet)}
-            active_lock = self._read_dict(tr, "wallet_lock", clean_wallet)
-            if isinstance(active_lock, dict) and str(active_lock.get("status", "active")) == "active":
-                raise ValueError(f"Wallet {clean_wallet} is already locked by payout {active_lock.get('payout_id')}.")
+                return {"idempotent": True, "payout": existing}
             selected_earnings: list[WorkerEarning] = []
             amount_wei = requested_wei
             if clean_worker:
@@ -1362,28 +1351,7 @@ class ExperimentalFoundationDbCreditLedger:
                 "failed_at": "",
                 "metadata": dict(metadata or {}),
             }
-            lock = {
-                "wallet_address": clean_wallet,
-                "payout_id": payout_id,
-                "status": "active",
-                "reason": "bridge_payout_pending",
-                "created_at": now,
-                "released_at": "",
-                "metadata": {"account_id": clean_account, "worker_node_id": clean_worker},
-            }
             self._write_dict(tr, "bridge_payout", payout_id, payout)
-            self._write_dict(tr, "wallet_lock", clean_wallet, lock)
-            self._write_audit_event(
-                tr,
-                event_type="bridge.wallet.locked",
-                wallet_address=clean_wallet,
-                account_id=clean_account,
-                worker_node_id=clean_worker,
-                amount_wei=amount_wei,
-                reference_id=payout_id,
-                metadata={"reason": "bridge_payout_pending", **dict(metadata or {})},
-                now=now,
-            )
             event = self._write_audit_event(
                 tr,
                 event_type="bridge.payout.requested",
@@ -1395,7 +1363,7 @@ class ExperimentalFoundationDbCreditLedger:
                 metadata={"earning_ids": payout["earning_ids"], **dict(metadata or {})},
                 now=now,
             )
-            return {"idempotent": False, "payout": payout, "wallet_lock": lock, "audit_event": event}
+            return {"idempotent": False, "payout": payout, "audit_event": event}
 
         return {"ok": True, **_tx(self.db)}
 
@@ -1425,7 +1393,7 @@ class ExperimentalFoundationDbCreditLedger:
             if payload is None:
                 raise KeyError(f"Unknown bridge payout: {clean_payout}")
             if str(payload.get("status", "")) == "confirmed":
-                return {"idempotent": True, "payout": payload, "wallet_lock": self._read_dict(tr, "wallet_lock", normalize_address(payload.get("wallet_address", "")))}
+                return {"idempotent": True, "payout": payload}
             if str(payload.get("status", "")) != "pending":
                 raise ValueError(f"Cannot confirm bridge payout {clean_payout} with status {payload.get('status')}.")
             wallet_address = normalize_address(str(payload.get("wallet_address", "")))
@@ -1449,22 +1417,8 @@ class ExperimentalFoundationDbCreditLedger:
                         created_at=earning.created_at,
                     )
                     self._write_dict(tr, "worker_earning", paid.earning_id, paid.as_private_dict())
-            lock = self._read_dict(tr, "wallet_lock", wallet_address) or {}
-            released_lock = {**lock, "status": "released", "released_at": now}
             self._write_dict(tr, "mock_chain_wallet", wallet_address, wallet)
             self._write_dict(tr, "bridge_payout", clean_payout, payout)
-            self._write_dict(tr, "wallet_lock", wallet_address, released_lock)
-            self._write_audit_event(
-                tr,
-                event_type="bridge.wallet.unlocked",
-                wallet_address=wallet_address,
-                account_id=str(payload.get("account_id", "")),
-                worker_node_id=str(payload.get("worker_node_id", "")),
-                amount_wei=amount_wei,
-                reference_id=clean_payout,
-                metadata={"reason": "bridge_payout_confirmed", **dict(metadata or {})},
-                now=now,
-            )
             tx = HubCreditTransaction(
                 transaction_id=stable_id("ctx", {"type": "withdrawal_released", "payout_id": clean_payout}),
                 account_id=clean_account_id(str(payload.get("account_id") or payload.get("worker_node_id") or wallet_address)),
@@ -1488,7 +1442,7 @@ class ExperimentalFoundationDbCreditLedger:
                 metadata=dict(metadata or {}),
                 now=now,
             )
-            return {"idempotent": False, "payout": payout, "wallet": wallet, "wallet_lock": released_lock, "transaction": tx.as_dict(), "audit_event": event}
+            return {"idempotent": False, "payout": payout, "wallet": wallet, "transaction": tx.as_dict(), "audit_event": event}
 
         result = _tx(self.db)
         return {"ok": True, **result, "ledger": self.status(recent_limit=10)}
@@ -1525,21 +1479,7 @@ class ExperimentalFoundationDbCreditLedger:
                 )
                 self._write_dict(tr, "account", refunded.account_id, refunded.as_dict())
             payout = {**payload, "status": "failed", "failed_at": now, "failure_reason": reason, "metadata": {**dict(payload.get("metadata", {}) or {}), **dict(metadata or {})}}
-            lock = self._read_dict(tr, "wallet_lock", wallet_address) or {}
-            released_lock = {**lock, "status": "released", "released_at": now, "release_reason": "payout_failed"}
             self._write_dict(tr, "bridge_payout", clean_payout, payout)
-            self._write_dict(tr, "wallet_lock", wallet_address, released_lock)
-            self._write_audit_event(
-                tr,
-                event_type="bridge.wallet.unlocked",
-                wallet_address=wallet_address,
-                account_id=account_id,
-                worker_node_id=str(payload.get("worker_node_id", "")),
-                amount_wei=amount_wei,
-                reference_id=clean_payout,
-                metadata={"reason": "bridge_payout_failed", **dict(metadata or {})},
-                now=now,
-            )
             event = self._write_audit_event(
                 tr,
                 event_type="bridge.payout.failed",
@@ -1551,7 +1491,7 @@ class ExperimentalFoundationDbCreditLedger:
                 metadata={"reason": reason, **dict(metadata or {})},
                 now=now,
             )
-            return {"idempotent": False, "payout": payout, "wallet_lock": released_lock, "audit_event": event}
+            return {"idempotent": False, "payout": payout, "audit_event": event}
 
         return {"ok": True, **_tx(self.db)}
 

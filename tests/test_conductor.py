@@ -219,6 +219,28 @@ def test_conductor_status_exposes_area_bank() -> None:
         assert areas["tests-smoke"]["count"] == 1
 
 
+def test_conductor_marks_curated_quarantine_first_pass_scripts() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    catalog = discover_conductor_scripts(repo_root, limit=1000)
+    ids = {script["id"]: script for script in catalog}
+
+    protected = ids["scripts/smoke_protected_mode.py"]
+    assert protected["quarantine_safe"] is True
+    assert "quarantine-first-pass" in protected["areas"]
+    assert protected["primary_area"] == "quarantine-first-pass"
+    invocation = protected["suggested_invocations"][0]
+    assert "--ledger-root" in invocation["args"]
+    assert "runtime/quarantine/protected-mode-ledger" in invocation["args"]
+    assert "--disable-syscall-pressure" in invocation["args"]
+    assert invocation["timeout_s"] == 120
+    assert "scripts/smoke_protected_mode.py" in invocation["command"]
+
+    compose = ids["tools/local-platform/generate-websites-compose.py"]
+    compose_args = compose["suggested_invocations"][0]["args"]
+    assert "--check" in compose_args
+    assert "--no-register-missing" in compose_args
+
+
 def test_conductor_script_catalog_skips_patching_reports() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

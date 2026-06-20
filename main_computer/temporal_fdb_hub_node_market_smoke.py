@@ -855,8 +855,8 @@ def _exercise_failed_payout_recovery(
         f"/api/hub/v1/bridge/wallet-locks?{urlencode({'wallet_address': wallet_address})}",
         timeout=config.http_timeout_seconds,
     )
-    if lock_status.get("locked") is not True:
-        raise NodeMarketSmokeError(f"Failed-payout rehearsal did not lock wallet {wallet_address}: {lock_status}")
+    if lock_status.get("locked") is True:
+        raise NodeMarketSmokeError(f"Failed-payout rehearsal created a long-lived wallet lock {wallet_address}: {lock_status}")
 
     failed = _post_json(
         config.hub_url,
@@ -875,7 +875,7 @@ def _exercise_failed_payout_recovery(
         timeout=config.http_timeout_seconds,
     )
     if final_lock.get("locked") is True:
-        raise NodeMarketSmokeError(f"Failed payout did not unlock wallet {wallet_address}: {final_lock}")
+        raise NodeMarketSmokeError(f"Failed payout left a long-lived wallet lock for {wallet_address}: {final_lock}")
 
     after_chain_available_wei = _mock_chain_wallet_available_wei(config, wallet_address)
     if after_chain_available_wei != before_chain_available_wei:
@@ -889,10 +889,8 @@ def _exercise_failed_payout_recovery(
         label=f"failed payout {payout_id}",
         events=events,
         expected_types={
-            "bridge.wallet.locked",
             "bridge.payout.requested",
             "bridge.payout.failed",
-            "bridge.wallet.unlocked",
         },
     )
     progress.emit(
@@ -905,7 +903,7 @@ def _exercise_failed_payout_recovery(
     return {
         "payout": payout_payload,
         "failed": failed,
-        "wallet_lock_released": True,
+        "no_long_lived_wallet_lock": final_lock.get("locked") is not True,
         "chain_balance_unchanged": True,
         "before_chain_available_wei": str(before_chain_available_wei),
         "after_chain_available_wei": str(after_chain_available_wei),
@@ -957,30 +955,8 @@ def _exercise_worker_payout(
         f"/api/hub/v1/bridge/wallet-locks?{urlencode({'wallet_address': wallet_address})}",
         timeout=config.http_timeout_seconds,
     )
-    if lock_status.get("locked") is not True:
-        raise NodeMarketSmokeError(f"Payout did not lock worker wallet {wallet_address}: {lock_status}")
-    probe_quote = _post_json(
-        config.hub_url,
-        "/api/hub/v1/requests/quote",
-        {
-            "account_id": config.account_id,
-            "client_node_id": config.account_id,
-            "model": config.model,
-            "prompt": "Temporal Hub FDB node-market locked-wallet quote probe",
-            "max_price_credits": config.max_price_credits,
-            "requested_ring": config.requested_ring,
-            "execution_mode": "worker_pull_v0",
-            "pricing_mode": "market_offer_fixed_per_call_v0",
-            "idempotency_key": f"{config.run_id}-locked-wallet-quote-probe",
-        },
-        timeout=config.http_timeout_seconds,
-    )["quote"]
-    selected_offer = probe_quote.get("selected_offer", {}) if isinstance(probe_quote.get("selected_offer"), dict) else {}
-    probe_worker_id = str(selected_offer.get("worker_node_id") or probe_quote.get("selected_worker_node_id") or "")
-    if probe_worker_id == payout_worker_id:
-        raise NodeMarketSmokeError(
-            f"Hub selected locked payout worker {payout_worker_id} during quote probe: {probe_quote}"
-        )
+    if lock_status.get("locked") is True:
+        raise NodeMarketSmokeError(f"Payout created a long-lived worker wallet lock {wallet_address}: {lock_status}")
     confirmed = _post_json(
         config.hub_url,
         "/api/hub/v1/bridge/payouts/confirm",
@@ -996,7 +972,7 @@ def _exercise_worker_payout(
         timeout=config.http_timeout_seconds,
     )
     if final_lock.get("locked") is True:
-        raise NodeMarketSmokeError(f"Payout confirmation did not unlock wallet {wallet_address}: {final_lock}")
+        raise NodeMarketSmokeError(f"Payout confirmation left a long-lived wallet lock {wallet_address}: {final_lock}")
     chain_available = _mock_chain_wallet_available_wei(config, wallet_address)
     if chain_available <= int(failed_recovery.get("after_chain_available_wei", "0") or 0):
         raise NodeMarketSmokeError(
@@ -1009,10 +985,8 @@ def _exercise_worker_payout(
         events=worker_events,
         expected_types={
             "hub.worker.earning.recorded",
-            "bridge.wallet.locked",
             "bridge.payout.requested",
             "bridge.payout.failed",
-            "bridge.wallet.unlocked",
             "bridge.payout.confirmed",
         },
     )
@@ -1029,9 +1003,7 @@ def _exercise_worker_payout(
         "payout": payout_payload,
         "confirmed": confirmed,
         "failed_recovery": failed_recovery,
-        "quote_probe_selected_worker_id": probe_worker_id,
-        "lock_verified": True,
-        "locked_wallet_excluded_from_new_work": probe_worker_id != payout_worker_id,
+        "no_long_lived_wallet_lock": lock_status.get("locked") is not True,
         "audit_event_types": sorted(audit_types),
         "audit_events": worker_events,
     }
@@ -1086,8 +1058,6 @@ def _verify_bridge_audit_readback(
             "bridge.payout.requested",
             "bridge.payout.failed",
             "bridge.payout.confirmed",
-            "bridge.wallet.locked",
-            "bridge.wallet.unlocked",
         },
     )
 
@@ -1582,14 +1552,13 @@ async def run_temporal_fdb_hub_node_market_smoke(config: HubNodeMarketSmokeConfi
             "surprise_payout_rejected_active_work": bool(surprise_payout_rejection.get("rejected")),
             "surprise_payout_rejection_worker_node_id": str(surprise_payout_rejection.get("worker_node_id", "")),
             "surprise_payout_rejection_wallet_address": str(surprise_payout_rejection.get("wallet_address", "")),
-            "payout_lock_verified": bool(worker_payout.get("lock_verified")),
-            "locked_wallet_excluded_from_new_work": bool(worker_payout.get("locked_wallet_excluded_from_new_work")),
+            "worker_payout_no_long_lived_wallet_lock": bool(worker_payout.get("no_long_lived_wallet_lock")),
             "bridge_audit_event_types": sorted(set(worker_payout.get("audit_event_types", []))),
             "failed_worker_payout_id": str(worker_payout.get("failed_recovery", {}).get("payout", {}).get("payout_id", "")),
-            "payout_failure_recovered": bool(worker_payout.get("failed_recovery", {}).get("wallet_lock_released"))
+            "payout_failure_recovered": bool(worker_payout.get("failed_recovery", {}).get("no_long_lived_wallet_lock"))
             and bool(worker_payout.get("failed_recovery", {}).get("chain_balance_unchanged")),
             "failed_payout_chain_balance_unchanged": bool(worker_payout.get("failed_recovery", {}).get("chain_balance_unchanged")),
-            "failed_payout_wallet_unlocked": bool(worker_payout.get("failed_recovery", {}).get("wallet_lock_released")),
+            "failed_payout_no_long_lived_wallet_lock": bool(worker_payout.get("failed_recovery", {}).get("no_long_lived_wallet_lock")),
             "bridge_audit_readback_ok": bool(bridge_audit_readback.get("ok")),
             "bridge_audit_readback": bridge_audit_readback,
             "bridge_reconciliation_ok": bridge_reconciliation_ok,
@@ -1716,8 +1685,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"worker_payout_id: {report.get('worker_payout_id', '')}")
     print(f"worker_payout_wallet_address: {report.get('worker_payout_wallet_address', '')}")
     print(f"surprise_payout_rejected_active_work: {report.get('surprise_payout_rejected_active_work', False)}")
-    print(f"payout_lock_verified: {report.get('payout_lock_verified', False)}")
-    print(f"locked_wallet_excluded_from_new_work: {report.get('locked_wallet_excluded_from_new_work', False)}")
+    print(f"worker_payout_no_long_lived_wallet_lock: {report.get('worker_payout_no_long_lived_wallet_lock', False)}")
     print(f"payout_failure_recovered: {report.get('payout_failure_recovered', False)}")
     print(f"bridge_audit_readback_ok: {report.get('bridge_audit_readback_ok', False)}")
     print(f"bridge_reconciliation_ok: {report.get('bridge_reconciliation_ok', False)}")

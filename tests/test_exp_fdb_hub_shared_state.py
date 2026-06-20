@@ -67,11 +67,17 @@ def test_bridge_payout_requires_quiet_wallet_before_ledger_mutation() -> None:
     assert "surprise_payout_rejected_active_work" in smoke_module
 
 
-def test_bridge_audit_records_wallet_lock_unlock_events() -> None:
+def test_bridge_payout_request_does_not_create_long_lived_wallet_lock() -> None:
     ledger_module = (_repo() / "main_computer" / "exp_fdb_credit_ledger.py").read_text(encoding="utf-8")
+    plex_module = (_repo() / "main_computer" / "hub_plex_service.py").read_text(encoding="utf-8")
 
-    assert 'event_type="bridge.wallet.locked"' in ledger_module
-    assert 'event_type="bridge.wallet.unlocked"' in ledger_module
+    assert 'event_type="bridge.payout.requested"' in ledger_module
+    assert 'event_type="bridge.payout.confirmed"' in ledger_module
+    assert 'event_type="bridge.payout.failed"' in ledger_module
+    assert 'event_type="bridge.wallet.locked"' not in ledger_module
+    assert 'event_type="bridge.wallet.unlocked"' not in ledger_module
+    assert 'self._write_dict(tr, "wallet_lock"' not in ledger_module
+    assert "is_wallet_locked" not in plex_module
 
 
 def test_bridge_audit_records_work_and_payout_failure_recovery_events() -> None:

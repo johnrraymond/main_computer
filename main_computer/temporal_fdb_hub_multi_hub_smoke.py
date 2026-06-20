@@ -622,7 +622,7 @@ def _exercise_cross_hub_payout_lock(
     before_confirm_callback: Any | None = None,
 ) -> dict[str, Any]:
     if not selected_worker_ids:
-        raise NodeMarketSmokeError("Cannot exercise cross-Hub payout lock without a selected worker.")
+        raise NodeMarketSmokeError("Cannot exercise cross-Hub payout journal without a selected worker.")
     config_a = configs["hub_a"]
     config_b = configs["hub_b"]
     payout_worker_id = selected_worker_ids[0]
@@ -647,35 +647,6 @@ def _exercise_cross_hub_payout_lock(
     payout_id = str(payout_payload.get("payout_id", ""))
     if not payout_id:
         raise NodeMarketSmokeError(f"Cross-Hub worker payout did not return payout_id: {payout}")
-
-    lock_status_b = _get_json(
-        config_b.hub_url,
-        f"/api/hub/v1/bridge/wallet-locks?{urlencode({'wallet_address': wallet_address})}",
-        timeout=config_b.http_timeout_seconds,
-    )
-    if lock_status_b.get("locked") is not True:
-        raise NodeMarketSmokeError(f"Hub B did not see payout wallet lock created by Hub A: {lock_status_b}")
-
-    probe_quote = _post_json(
-        config_b.hub_url,
-        "/api/hub/v1/requests/quote",
-        {
-            "account_id": config_a.account_id,
-            "client_node_id": config_a.account_id,
-            "model": config_a.model,
-            "prompt": "Temporal multi-Hub locked-wallet quote probe",
-            "max_price_credits": config_a.max_price_credits,
-            "requested_ring": config_a.requested_ring,
-            "execution_mode": "worker_pull_v0",
-            "pricing_mode": "market_offer_fixed_per_call_v0",
-            "idempotency_key": f"{config_a.run_id}-cross-hub-locked-wallet-quote-probe",
-        },
-        timeout=config_b.http_timeout_seconds,
-    )["quote"]
-    selected_offer = probe_quote.get("selected_offer", {}) if isinstance(probe_quote.get("selected_offer"), dict) else {}
-    probe_worker_id = str(selected_offer.get("worker_node_id") or probe_quote.get("selected_worker_node_id") or "")
-    if probe_worker_id == payout_worker_id:
-        raise NodeMarketSmokeError(f"Hub B selected locked payout worker {payout_worker_id}: {probe_quote}")
 
     confirm_metadata: dict[str, Any] = {
         "run_id": config_a.run_id,
@@ -722,20 +693,17 @@ def _exercise_cross_hub_payout_lock(
         events=events,
         expected_types={
             "hub.worker.earning.recorded",
-            "bridge.wallet.locked",
             "bridge.payout.requested",
-            "bridge.wallet.unlocked",
             "bridge.payout.confirmed",
         },
     )
     progress.emit(
-        "multi_hub_payout_lock_confirmed",
+        "multi_hub_payout_journal_confirmed",
         request_hub="hub_a",
         confirm_hub="hub_b",
         wallet_address=wallet_address,
         worker_node_id=payout_worker_id,
         payout_id=payout_id,
-        quote_probe_selected_worker_id=probe_worker_id,
     )
     return {
         "wallet_address": wallet_address,
@@ -743,9 +711,8 @@ def _exercise_cross_hub_payout_lock(
         "payout": payout_payload,
         "confirmed": confirmed,
         "dev_chain_confirmation": dev_chain_confirmation,
-        "lock_visible_cross_hub": True,
-        "locked_wallet_excluded_cross_hub": probe_worker_id != payout_worker_id,
-        "quote_probe_selected_worker_id": probe_worker_id,
+        "payout_journal_visible_cross_hub": True,
+        "no_long_lived_wallet_lock": True,
         "audit_event_types": sorted(audit_types),
     }
 
@@ -950,8 +917,8 @@ async def run_temporal_fdb_hub_multi_hub_smoke(config: HubMultiHubSmokeConfig) -
             "results_completed_via_both_hubs": route_execution_counts.get("completion_hub_a", 0) > 0 and route_execution_counts.get("completion_hub_b", 0) > 0,
             "cross_hub_result_replay_idempotent": bool(route_execution_counts.get("cross_hub_replay_idempotent")),
             "surprise_payout_rejected_active_work_cross_hub": bool(surprise_payout_rejection.get("rejected")),
-            "payout_lock_visible_cross_hub": bool(payout.get("lock_visible_cross_hub")),
-            "locked_wallet_excluded_cross_hub": bool(payout.get("locked_wallet_excluded_cross_hub")),
+            "payout_journal_visible_cross_hub": bool(payout.get("payout_journal_visible_cross_hub")),
+            "payout_no_long_lived_wallet_lock": bool(payout.get("no_long_lived_wallet_lock")),
             "worker_payout_id": str(payout.get("payout", {}).get("payout_id", "")),
             "worker_payout_wallet_address": str(payout.get("wallet_address", "")),
             "worker_payout_node_id": str(payout.get("worker_node_id", "")),
@@ -972,8 +939,8 @@ async def run_temporal_fdb_hub_multi_hub_smoke(config: HubMultiHubSmokeConfig) -
             "results_completed_via_both_hubs": report["results_completed_via_both_hubs"],
             "cross_hub_result_replay_idempotent": report["cross_hub_result_replay_idempotent"],
             "surprise_payout_rejected_active_work_cross_hub": report["surprise_payout_rejected_active_work_cross_hub"],
-            "payout_lock_visible_cross_hub": report["payout_lock_visible_cross_hub"],
-            "locked_wallet_excluded_cross_hub": report["locked_wallet_excluded_cross_hub"],
+            "payout_journal_visible_cross_hub": report["payout_journal_visible_cross_hub"],
+            "payout_no_long_lived_wallet_lock": report["payout_no_long_lived_wallet_lock"],
             "bridge_audit_readback_ok": report["bridge_audit_readback_ok"],
             "bridge_reconciliation_ok": report["bridge_reconciliation_ok"],
         }
@@ -1102,8 +1069,8 @@ def main(argv: list[str] | None = None) -> int:
         "results_completed_via_both_hubs",
         "cross_hub_result_replay_idempotent",
         "surprise_payout_rejected_active_work_cross_hub",
-        "payout_lock_visible_cross_hub",
-        "locked_wallet_excluded_cross_hub",
+        "payout_journal_visible_cross_hub",
+        "payout_no_long_lived_wallet_lock",
         "hub_a_failover_completed_via_hub_b",
         "bridge_audit_readback_ok",
         "bridge_reconciliation_ok",

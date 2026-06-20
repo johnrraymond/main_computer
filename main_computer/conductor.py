@@ -86,6 +86,11 @@ SCRIPT_AREA_BANK = (
         "description": "Scripts with calling conventions found in repo docs and runbooks.",
     },
     {
+        "id": "quarantine-first-pass",
+        "label": "Quarantine first pass",
+        "description": "Curated scripts that should be safe to try first in an isolated repo/install clone.",
+    },
+    {
         "id": "dns-ssl-web",
         "label": "DNS / SSL / web",
         "description": "Domain, certificate, mail, website, and publishing operations.",
@@ -204,6 +209,131 @@ SCRIPT_AREA_KEYWORDS = {
         "requirements",
         "maintenance",
     ),
+}
+SCRIPT_QUARANTINE_FIRST_PASS: dict[str, dict[str, Any]] = {
+    "tools/git/git_find_used_exts.py": {
+        "safety": "Read-only repository extension inventory. Uses git ls-files when available, then falls back to a worktree walk.",
+        "notes": "Good first catalog sanity check; no service, Docker, network, or runtime mutation expected.",
+        "invocations": [
+            {
+                "label": "Inventory tracked/unignored files",
+                "args": [],
+                "timeout_s": 30,
+            }
+        ],
+    },
+    "tools/diagnose-dev-control-v2.ps1": {
+        "safety": "Host diagnostic that probes process/CIM responsiveness and selected listening ports. It creates and removes a short-lived PowerShell job only.",
+        "notes": "Safe for a quarantine host check; it does not start/stop Main Computer services.",
+        "invocations": [
+            {
+                "label": "Probe process and port diagnostics",
+                "args": [],
+                "timeout_s": 30,
+            }
+        ],
+    },
+    "tools/diagnose-dev-control-v3.ps1": {
+        "safety": "Focused CIM/WMI hang diagnostic. It creates and removes a short-lived PowerShell job only.",
+        "notes": "Useful when the control panel is sluggish; no repo or service mutation expected.",
+        "invocations": [
+            {
+                "label": "Probe CIM/WMI hang behavior",
+                "args": [],
+                "timeout_s": 30,
+            }
+        ],
+    },
+    "scripts/windows/doctor-main-computer-runtime.ps1": {
+        "safety": "Read-only WSL runtime doctor when run against the test profile. It inspects WSL state and reports warnings.",
+        "notes": "Use -Profile test in quarantine; do not use -Profile prod for this first pass.",
+        "invocations": [
+            {
+                "label": "Doctor test WSL runtime",
+                "args": ["-Profile", "test"],
+                "timeout_s": 90,
+            }
+        ],
+    },
+    "tools/local-platform/generate-websites-compose.py": {
+        "safety": "Compose generation check mode. With --check and --no-register-missing it reports stale/missing generated files without writing registrations or compose files.",
+        "notes": "Exit code may be non-zero when generated files are stale; that is diagnostic, not a destructive failure.",
+        "invocations": [
+            {
+                "label": "Check generated website compose files",
+                "args": ["--repo-root", ".", "--check", "--no-register-missing"],
+                "timeout_s": 30,
+            }
+        ],
+    },
+    "tools/build_mcel_runtime.py": {
+        "safety": "Builds the MCEL runtime bundle to an explicit quarantine output path under runtime/quarantine.",
+        "notes": "Writes only the configured output file when used with this invocation.",
+        "invocations": [
+            {
+                "label": "Build MCEL runtime into quarantine output",
+                "args": ["--repo-root", ".", "--output", "runtime/quarantine/mcel-runtime.js"],
+                "timeout_s": 60,
+            }
+        ],
+    },
+    "tools/scheduler_lab/smoke_hub_lab_node_list_builder.py": {
+        "safety": "Offline scheduler-lab fixture generator. Writes a node-grid file to an explicit quarantine path.",
+        "notes": "No hub, Docker, or Temporal service is required for this fixture-building pass.",
+        "invocations": [
+            {
+                "label": "Generate quarantine scheduler-lab node grid",
+                "args": ["runtime/quarantine/scheduler-lab/120-quarantine.jsonl", "--disable-problematic"],
+                "timeout_s": 30,
+            }
+        ],
+    },
+    "scripts/smoke_protected_mode.py": {
+        "safety": "Local protected-mode smoke using an isolated ledger/report path and syscall pressure disabled.",
+        "notes": "This is intentionally not live-chain mode and should not touch shared dev/test/prod ledgers with these args.",
+        "invocations": [
+            {
+                "label": "Run isolated protected-mode ledger smoke",
+                "args": [
+                    "--network", "test",
+                    "--ledger-root", "runtime/quarantine/protected-mode-ledger",
+                    "--report", "runtime/quarantine/reports/protected-mode.json",
+                    "--disable-syscall-pressure",
+                ],
+                "timeout_s": 120,
+            }
+        ],
+    },
+    "scripts/smoke_protected_temporal_flow.py": {
+        "safety": "Direct-activity protected Temporal flow smoke using isolated ledger/event-log/report paths.",
+        "notes": "Direct-activity mode avoids needing a live Temporal worker for the first quarantine pass.",
+        "invocations": [
+            {
+                "label": "Run direct-activity protected flow smoke",
+                "args": [
+                    "--execution-mode", "direct-activity",
+                    "--ledger-root", "runtime/quarantine/protected-temporal-ledger",
+                    "--event-log", "runtime/quarantine/protected-temporal-event-log.jsonl",
+                    "--report", "runtime/quarantine/reports/protected-temporal-flow.json",
+                ],
+                "timeout_s": 120,
+            }
+        ],
+    },
+    "main_computer/local_model_prompt_component_v1.py": {
+        "safety": "Single local-model prompt boundary. Writes traces to an explicit quarantine output directory.",
+        "notes": "Requires a local Ollama-compatible provider; no repo/service install mutation expected.",
+        "invocations": [
+            {
+                "label": "Ask local model for a tiny health response",
+                "args": [
+                    "--prompt", "Reply with OK.",
+                    "--output-dir", "runtime/quarantine/local-model-prompt",
+                ],
+                "timeout_s": 90,
+            }
+        ],
+    },
 }
 
 
@@ -582,7 +712,7 @@ def discover_conductor_scripts(repo_root: Path, *, limit: int = SCRIPT_CATALOG_L
                 if _script_is_candidate(root, candidate):
                     candidates.append(candidate)
 
-    for rel in sorted(doc_refs):
+    for rel in sorted({*doc_refs.keys(), *SCRIPT_QUARANTINE_FIRST_PASS.keys()}):
         path = root / rel
         if path.exists() and path.is_file() and path.suffix.lower() in SCRIPT_FILE_EXTENSIONS:
             candidates.append(path)
@@ -600,7 +730,19 @@ def discover_conductor_scripts(repo_root: Path, *, limit: int = SCRIPT_CATALOG_L
         directory = str(Path(rel).parent).replace("\\", "/")
         call_conventions = doc_refs.get(rel, [])
         doc_sources = sorted({str(item.get("doc") or "") for item in call_conventions if item.get("doc")})
+        command_template = _script_command_template(root, path, kind)
         areas = _script_areas(rel, text, call_conventions)
+        quarantine = _script_quarantine_profile(rel)
+        if quarantine and "quarantine-first-pass" not in areas:
+            areas.insert(0, "quarantine-first-pass")
+        suggested_invocations: list[dict[str, Any]] = []
+        if quarantine:
+            for invocation in quarantine.get("invocations", []) or []:
+                if not isinstance(invocation, dict):
+                    continue
+                item = dict(invocation)
+                item["command"] = _script_quarantine_command(command_template, item)
+                suggested_invocations.append(item)
         scripts.append(
             {
                 "id": rel,
@@ -612,17 +754,21 @@ def discover_conductor_scripts(repo_root: Path, *, limit: int = SCRIPT_CATALOG_L
                 "markers": markers,
                 "risk": _script_risk(rel, text, markers),
                 "description": _script_description(text),
-                "command_template": _script_command_template(root, path, kind),
+                "command_template": command_template,
                 "call_conventions": call_conventions,
                 "doc_sources": doc_sources,
                 "areas": areas,
                 "primary_area": areas[0] if areas else "developer-tools",
+                "quarantine_safe": bool(quarantine),
+                "quarantine": quarantine,
+                "suggested_invocations": suggested_invocations,
                 "args": [],
                 "confirm_required": True,
             }
         )
     scripts.sort(
         key=lambda item: (
+            not bool(item.get("quarantine_safe")),
             item.get("primary_area") != "tests-smoke",
             item["risk"] not in {"read-only", "write"},
             item["directory"],
@@ -875,6 +1021,45 @@ def _script_areas(rel_path: str, text: str, call_conventions: list[dict[str, Any
     if not areas:
         areas.append("developer-tools")
     return areas
+
+
+def _script_quarantine_profile(rel_path: str) -> dict[str, Any] | None:
+    profile = SCRIPT_QUARANTINE_FIRST_PASS.get(rel_path)
+    if not profile:
+        return None
+    invocations: list[dict[str, Any]] = []
+    for item in profile.get("invocations", []) or []:
+        if not isinstance(item, dict):
+            continue
+        args = item.get("args", [])
+        if isinstance(args, str):
+            args = _script_args(args)
+        elif isinstance(args, list):
+            args = [str(value) for value in args]
+        else:
+            args = []
+        invocations.append(
+            {
+                "label": str(item.get("label") or "Quarantine invocation"),
+                "args": args,
+                "timeout_s": _script_timeout(item.get("timeout_s", 60)),
+            }
+        )
+    return {
+        "safe": True,
+        "safety": str(profile.get("safety") or ""),
+        "notes": str(profile.get("notes") or ""),
+        "invocations": invocations,
+    }
+
+
+def _script_quarantine_command(command_template: list[str], invocation: dict[str, Any]) -> str:
+    command = [
+        sys.executable if part == "{python}" else str(part)
+        for part in command_template
+    ]
+    command.extend(str(arg) for arg in invocation.get("args", []) or [])
+    return " ".join(shlex.quote(part) for part in command)
 
 
 def _script_area_bank_with_counts(scripts: list[dict[str, Any]]) -> list[dict[str, Any]]:

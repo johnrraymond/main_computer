@@ -1,8 +1,18 @@
 .conductor-app {
   display: none;
   gap: 1rem;
-  grid-template-columns: minmax(280px, 0.8fr) minmax(360px, 1.4fr);
+  grid-template-columns: minmax(20rem, clamp(20rem, 36vw, 24rem)) minmax(30rem, 1fr);
+  width: 100%;
   min-height: 100%;
+  overflow-x: auto;
+  align-items: start;
+}
+
+.conductor-app,
+.conductor-app *,
+.conductor-app *::before,
+.conductor-app *::after {
+  box-sizing: border-box;
 }
 
 .conductor-sidebar,
@@ -10,6 +20,17 @@
   display: grid;
   gap: 1rem;
   align-content: start;
+  min-width: 0;
+}
+
+.conductor-main {
+  min-width: 30rem;
+}
+
+.conductor-card,
+.conductor-form,
+.conductor-script-controls {
+  min-width: 0;
 }
 
 .conductor-card {
@@ -39,6 +60,8 @@
 .conductor-form select,
 .conductor-form textarea {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .conductor-form textarea {
@@ -109,6 +132,8 @@
 .conductor-script-controls input,
 .conductor-script-controls select {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .conductor-script-list {
@@ -235,4 +260,54 @@
   font-size: 0.78rem;
   line-height: 1.25;
   opacity: 0.7;
+}
+
+
+.conductor-result-card {
+  align-self: end;
+}
+
+.conductor-result-card .conductor-output {
+  max-height: 18rem;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+@media (min-width: 900px) {
+  .conductor-sidebar {
+    grid-template-rows: auto auto minmax(12rem, 1fr);
+  }
+
+  .conductor-sidebar .conductor-result-card {
+    min-height: 0;
+  }
+}
+
+
+.conductor-quarantine-badge {
+  border-color: rgba(255, 204, 85, 0.65);
+  background: rgba(255, 204, 85, 0.12);
+}
+
+.conductor-quarantine-note,
+.conductor-quarantine-block {
+  border: 1px solid rgba(255, 204, 85, 0.24);
+  border-radius: 0.45rem;
+  margin-top: 0.65rem;
+  padding: 0.55rem;
+  background: rgba(255, 204, 85, 0.06);
+}
+
+.conductor-quarantine-note strong,
+.conductor-quarantine-block strong {
+  display: block;
+  margin-bottom: 0.35rem;
+}
+
+.conductor-quarantine-note p {
+  margin: 0.25rem 0;
+}
+
+.conductor-quarantine-example code {
+  border-color: rgba(255, 204, 85, 0.22);
 }

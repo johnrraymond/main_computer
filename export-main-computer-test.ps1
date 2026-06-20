@@ -625,7 +625,7 @@ $exportItems = @(
   ".githooks",
   "docker",
   "deploy/local-platform",
-  "deploy/scheduler-lab/docker-compose.worker-lab.ym",
+  "deploy/scheduler-lab/docker-compose.worker-lab.yml",
   "deploy/scheduler-lab/Dockerfile.simulator",
   "deploy/scheduler-lab/README.md",
   "deploy/coolify/local-docker",

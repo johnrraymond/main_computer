@@ -1932,10 +1932,6 @@ class AIRequestPlexService:
             state = str(worker.get("status", "available") or "available").lower()
             if state not in {"available", "configured"} or bool(worker.get("stale", False)):
                 continue
-            wallet_address = _worker_wallet_address_from_payload(worker)
-            if wallet_address and self.credit_ledger is not None and hasattr(self.credit_ledger, "is_wallet_locked"):
-                if self.credit_ledger.is_wallet_locked(wallet_address):
-                    continue
             offer = market_worker_offer_from_payload(worker)
             if not offer:
                 if self._worker_payload_supports_model(worker, model):
@@ -2556,10 +2552,6 @@ class AIRequestPlexService:
     def _worker_can_run_record(self, worker: Any, record: HubRequestRecord) -> bool:
         desired = str(record.model or "").strip()
         payload = _public_payload(worker)
-        wallet_address = _worker_wallet_address_from_payload(payload)
-        if wallet_address and self.credit_ledger is not None and hasattr(self.credit_ledger, "is_wallet_locked"):
-            if self.credit_ledger.is_wallet_locked(wallet_address):
-                return False
         market_metadata = self._record_market_metadata(record)
         if market_metadata:
             selected_offer = self._record_selected_offer(record)
