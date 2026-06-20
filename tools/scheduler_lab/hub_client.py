@@ -218,6 +218,7 @@ class HubClient:
         request_mode: str,
         account_id_prefix: str,
         prompt: str,
+        scheduler_lab_run_id: str = "",
     ) -> HubHttpResponse:
         offered = _choose_from_distribution(node.get("offered_credits_distribution_json"), node.get("offered_credits"), request_index)
         model = _choose_from_distribution(node.get("model_distribution_json"), node.get("model"), request_index)
@@ -233,6 +234,8 @@ class HubClient:
             "cohort": node.get("cohort", ""),
             "request_index": request_index,
         }
+        if scheduler_lab_run_id:
+            metadata["scheduler_lab_run_id"] = str(scheduler_lab_run_id)
         payload = {
             "messages": [{"role": "user", "content": prompt}],
             "model": model,

@@ -144,48 +144,8 @@ function bindGitProjectCardSubscreen(container) {
   gitProjectInitializeArchiveWorkbenches(container);
 }
 function renderGitProjectInspection(data) {
-  const project = data.project || {};
-  const git = data.git || {};
-  const dirty = data.dirty_plan || {};
-  const summary = dirty.summary || {};
   const wizard = data.wizard || {};
   renderGitProjectNextStep(data);
-  if (gitProjectDashboard) {
-    gitProjectDashboard.innerHTML = `<div class="git-project-report" ${gitProjectMcComponentAttrs("git-tools.projects.dashboard.report", "output", "Prioritized Project Report", "git-tools.projects.dashboard")}>
-      <div class="git-project-report-heading" ${gitProjectMcComponentAttrs("git-tools.projects.report.heading", "status", "Prioritized Project Report Heading", "git-tools.projects.dashboard.report")}>
-        <strong data-mc-component-id="git-tools.projects.report.title" data-mc-component-kind="status" data-mc-component-label="Prioritized Project Report Title" data-mc-component-owner="git-tools.projects.report.heading" data-mc-feature-id="git-tools.feature.projects">Prioritized project report</strong>
-        <span class="git-project-report-copy" data-mc-component-id="git-tools.projects.report.copy" data-mc-component-kind="status" data-mc-component-label="Prioritized Project Report Copy" data-mc-component-owner="git-tools.projects.report.heading" data-mc-feature-id="git-tools.feature.projects">This section is informational. The single wizard activity queue below owns runnable buttons, backend action requests, command previews, status, and history.</span>
-        <code data-mc-component-id="git-tools.projects.report.command" data-mc-component-kind="output" data-mc-component-label="Prioritized Project Report Command" data-mc-component-owner="git-tools.projects.report.heading" data-mc-feature-id="git-tools.feature.projects">python git_dirty.py plan --repo "${escapeHtml(project.path || data.selected_project || ".")}" --json --include-actions</code>
-      </div>
-      <details class="git-project-report-section" ${gitProjectMcComponentAttrs("git-tools.projects.report.raw-details", "panel", "Raw Report Details", "git-tools.projects.dashboard.report")}>
-        <summary data-mc-component-id="git-tools.projects.report.raw-details.summary" data-mc-component-kind="status" data-mc-component-label="Raw Report Details Summary" data-mc-component-owner="git-tools.projects.report.raw-details" data-mc-feature-id="git-tools.feature.projects">Raw report details</summary>
-        <div class="git-project-report-grid" data-mc-component-id="git-tools.projects.report.raw-details.grid" data-mc-component-kind="list" data-mc-component-label="Raw Report Details Grid" data-mc-component-owner="git-tools.projects.report.raw-details" data-mc-feature-id="git-tools.feature.projects">
-          ${renderKeyValue("Selected project", `${project.vip ? "★ " : ""}${project.name || "Selected project"}`)}
-          ${renderKeyValue("Protection", `${project.vip ? "VIP · " : ""}${project.locked ? "Locked" : "Unlocked"}${project.can_archive === false ? " · cannot archive" : ""}`)}
-          ${renderKeyValue("Git root", git.git_root || "not detected")}
-          ${renderKeyValue("Branch", git.branch || "(none)")}
-          ${renderKeyValue("HEAD", git.is_git_repo ? (git.has_head ? "exists" : "missing") : "not applicable")}
-          ${renderKeyValue("Dirty score", `${dirty.dirty_score ?? 0} / 100 (${dirty.level || "unknown"})`)}
-          ${renderKeyValue("Strategy", dirty.recommended_strategy || wizard.strategy || "review")}
-          ${renderKeyValue("Classification", `Source ${summary.source ?? 0} · Generated ${summary.generated ?? 0} · Untracked ${summary.untracked ?? 0}`)}
-        </div>
-      </details>
-      <details class="git-project-report-section" ${gitProjectMcComponentAttrs("git-tools.projects.report.classification", "panel", "Classification Summary", "git-tools.projects.dashboard.report")}>
-        <summary data-mc-component-id="git-tools.projects.report.classification.summary" data-mc-component-kind="status" data-mc-component-label="Classification Summary Toggle" data-mc-component-owner="git-tools.projects.report.classification" data-mc-feature-id="git-tools.feature.projects">Classification summary</summary>
-        <div class="git-project-summary-grid" data-mc-component-id="git-tools.projects.report.classification.grid" data-mc-component-kind="list" data-mc-component-label="Classification Summary Grid" data-mc-component-owner="git-tools.projects.report.classification" data-mc-feature-id="git-tools.feature.projects">${dirtySummaryRows(summary) || "<span>No summary returned.</span>"}</div>
-      </details>
-      <details class="git-project-report-section" ${gitProjectMcComponentAttrs("git-tools.projects.report.plan-metadata", "panel", "Raw Plan Metadata", "git-tools.projects.dashboard.report")}>
-        <summary data-mc-component-id="git-tools.projects.report.plan-metadata.summary" data-mc-component-kind="status" data-mc-component-label="Raw Plan Metadata Toggle" data-mc-component-owner="git-tools.projects.report.plan-metadata" data-mc-feature-id="git-tools.feature.projects">Raw plan metadata</summary>
-        <pre data-mc-component-id="git-tools.projects.report.plan-metadata.output" data-mc-component-kind="output" data-mc-component-label="Raw Plan Metadata Output" data-mc-component-owner="git-tools.projects.report.plan-metadata" data-mc-feature-id="git-tools.feature.projects">${escapeHtml(JSON.stringify({
-          plan_id: dirty.plan_id || wizard.plan_id || "",
-          recommended_strategy: dirty.recommended_strategy || wizard.strategy || "",
-          repo: git.git_root || data.selected_project || "",
-          app_root: data.app_root || "",
-        }, null, 2))}</pre>
-      </details>
-    </div>`;
-    bindGitProjectActionButtons(gitProjectDashboard);
-  }
   renderGitProjectWizard(wizard, data);
 }
 

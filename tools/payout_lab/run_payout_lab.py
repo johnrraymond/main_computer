@@ -19,6 +19,22 @@ from main_computer.hub_credit_models import normalize_address, stable_id, utc_no
 FINAL_SETTLED_STATUS = "settled"
 REQUEST_STATUS = "pending"
 CLAIMABLE_STATUSES = {REQUEST_STATUS, "retryable_failed"}
+PAYOUT_SOURCE_SEEDED = "seeded"
+PAYOUT_SOURCE_HUB_EARNED_CREDITS = "hub-earned-credits"
+PAYOUT_SOURCES = {PAYOUT_SOURCE_SEEDED, PAYOUT_SOURCE_HUB_EARNED_CREDITS}
+
+
+@dataclass(frozen=True)
+class PayoutSourceAccount:
+    account_id: str
+    wallet_address: str
+    available_credit_wei: int
+    worker_node_id: str = ""
+    earning_ids: tuple[str, ...] = ()
+
+    @property
+    def available_credits(self) -> int:
+        return credit_wei_to_whole_credits_floor(self.available_credit_wei)
 
 
 @dataclass(frozen=True)
@@ -27,6 +43,8 @@ class PayoutRequestSpec:
     account_id: str
     credits: int
     idempotency_key: str
+    worker_node_id: str = ""
+    earning_ids: tuple[str, ...] = ()
 
 
 @dataclass
@@ -44,6 +62,9 @@ class PayoutLabSummary:
     ok: bool
     backend: str
     run_id: str
+    source: str
+    source_account_count: int
+    source_credit_wei: int
     wallet_count: int
     request_count: int
     unique_accepted_count: int
@@ -71,6 +92,9 @@ class PayoutLabSummary:
             "ok": self.ok,
             "backend": self.backend,
             "run_id": self.run_id,
+            "source": self.source,
+            "source_account_count": self.source_account_count,
+            "source_credit_wei": str(self.source_credit_wei),
             "wallet_count": self.wallet_count,
             "request_count": self.request_count,
             "unique_accepted_count": self.unique_accepted_count,
@@ -101,6 +125,15 @@ class PayoutLedger(Protocol):
     def seed_account(self, *, account_id: str, wallet_address: str, credits: int, run_id: str) -> None:
         ...
 
+    def discover_hub_source_accounts(
+        self,
+        *,
+        max_accounts: int,
+        minimum_credit_wei: int = 1,
+        source_scheduler_run_id: str = "",
+    ) -> list[PayoutSourceAccount]:
+        ...
+
     def request_payout(self, spec: PayoutRequestSpec, *, run_id: str) -> PayoutRequestResult:
         ...
 
@@ -122,6 +155,10 @@ class PayoutLedger(Protocol):
 
 def _wallet_for_index(index: int) -> str:
     return "0x" + hashlib.sha256(f"payout-lab-wallet-{index}".encode("utf-8")).hexdigest()[:40]
+
+
+def _wallet_for_source_account(account_id: str) -> str:
+    return "0x" + hashlib.sha256(f"payout-lab-source-wallet:{account_id}".encode("utf-8")).hexdigest()[:40]
 
 
 def _payout_amount_wei(payload: dict[str, Any]) -> int:
@@ -160,10 +197,12 @@ class MemoryPayoutLedger:
         self.payouts: dict[str, dict[str, Any]] = {}
         self.wallet_locks: dict[str, dict[str, Any]] = {}
         self.chain_txs: dict[str, dict[str, Any]] = {}
+        self.source_account_ids: set[str] = set()
 
     def seed_account(self, *, account_id: str, wallet_address: str, credits: int, run_id: str) -> None:
         now = utc_now()
         with self._lock:
+            self.source_account_ids.add(account_id)
             self.accounts[account_id] = {
                 "account_id": account_id,
                 "owner_address": normalize_address(wallet_address),
@@ -172,6 +211,33 @@ class MemoryPayoutLedger:
                 "created_at": now,
                 "updated_at": now,
             }
+
+    def discover_hub_source_accounts(
+        self,
+        *,
+        max_accounts: int,
+        minimum_credit_wei: int = 1,
+        source_scheduler_run_id: str = "",
+    ) -> list[PayoutSourceAccount]:
+        with self._lock:
+            candidates: list[PayoutSourceAccount] = []
+            for item in self.accounts.values():
+                metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+                if not bool(metadata.get("scheduler_lab", False)):
+                    continue
+                account_id = str(item.get("account_id", "")).strip()
+                try:
+                    available = int(item.get("available_credit_wei", 0) or 0)
+                except Exception:
+                    continue
+                if not account_id or available < max(1, int(minimum_credit_wei or 1)):
+                    continue
+                wallet = normalize_address(str(item.get("owner_address", "") or "")) or _wallet_for_source_account(account_id)
+                candidates.append(PayoutSourceAccount(account_id=account_id, wallet_address=wallet, available_credit_wei=available))
+            candidates.sort(key=lambda item: (-item.available_credit_wei, item.account_id))
+            selected = candidates[: max(1, int(max_accounts or 1))]
+            self.source_account_ids.update(item.account_id for item in selected)
+            return selected
 
     def request_payout(self, spec: PayoutRequestSpec, *, run_id: str) -> PayoutRequestResult:
         clean_wallet = normalize_address(spec.wallet_address)
@@ -300,7 +366,11 @@ class MemoryPayoutLedger:
     def snapshot(self, *, run_id: str) -> dict[str, Any]:
         with self._lock:
             return {
-                "accounts": [dict(item) for item in self.accounts.values() if str((item.get("metadata") or {}).get("payout_lab_run_id", "")) == run_id],
+                "accounts": [
+                    dict(item)
+                    for item in self.accounts.values()
+                    if not self.source_account_ids or str(item.get("account_id", "")) in self.source_account_ids
+                ],
                 "bridge_payouts": [dict(item) for item in self.payouts.values() if _payout_run_id(item) == run_id],
                 "wallet_locks": [dict(item) for item in self.wallet_locks.values()],
                 "mock_chain_txs": [dict(item) for item in self.chain_txs.values() if str(item.get("run_id", "")) == run_id],
@@ -313,6 +383,7 @@ class FdbPayoutLedger:
     def __init__(self, *, cluster_file: Path, namespace: str, repo_root: Path, api_version: int = 740) -> None:
         from main_computer.exp_fdb_credit_ledger import ExperimentalFoundationDbConfig, ExperimentalFoundationDbCreditLedger
 
+        self.source_account_ids: set[str] = set()
         self.ledger = ExperimentalFoundationDbCreditLedger(
             ExperimentalFoundationDbConfig(
                 cluster_file=cluster_file,
@@ -323,6 +394,7 @@ class FdbPayoutLedger:
         )
 
     def seed_account(self, *, account_id: str, wallet_address: str, credits: int, run_id: str) -> None:
+        self.source_account_ids.add(account_id)
         self.ledger.issue(
             account_id=account_id,
             credits=credits,
@@ -331,15 +403,77 @@ class FdbPayoutLedger:
             metadata={"payout_lab_run_id": run_id},
         )
 
+    def discover_hub_source_accounts(
+        self,
+        *,
+        max_accounts: int,
+        minimum_credit_wei: int = 1,
+        source_scheduler_run_id: str = "",
+    ) -> list[PayoutSourceAccount]:
+        snapshot = self.ledger._snapshot()
+        clean_run_id = str(source_scheduler_run_id or "").strip()
+        minimum = max(1, int(minimum_credit_wei or 1))
+        by_worker: dict[str, dict[str, Any]] = {}
+        for item in snapshot.get("worker_earnings", []):
+            worker_node_id = str(item.get("worker_node_id", "") or "").strip()
+            earning_id = str(item.get("earning_id", "") or "").strip()
+            if not worker_node_id or not earning_id:
+                continue
+            if str(item.get("status", "earned") or "earned") != "earned":
+                continue
+            if clean_run_id and str(item.get("batch_id", "") or "") != clean_run_id:
+                continue
+            try:
+                earned = int(item.get("earned_credit_wei", 0) or 0)
+            except Exception:
+                continue
+            if earned < minimum:
+                continue
+            entry = by_worker.setdefault(
+                worker_node_id,
+                {
+                    "worker_node_id": worker_node_id,
+                    "available_credit_wei": 0,
+                    "earning_ids": [],
+                },
+            )
+            entry["available_credit_wei"] += earned
+            entry["earning_ids"].append(earning_id)
+
+        candidates: list[PayoutSourceAccount] = []
+        for worker_node_id, entry in by_worker.items():
+            available = int(entry.get("available_credit_wei", 0) or 0)
+            if available < minimum:
+                continue
+            wallet = _wallet_for_source_account(worker_node_id)
+            candidates.append(
+                PayoutSourceAccount(
+                    account_id="",
+                    worker_node_id=worker_node_id,
+                    wallet_address=wallet,
+                    available_credit_wei=available,
+                    earning_ids=tuple(str(item) for item in entry.get("earning_ids", []) if str(item)),
+                )
+            )
+        candidates.sort(key=lambda item: (-item.available_credit_wei, item.worker_node_id or item.account_id))
+        selected = candidates[: max(1, int(max_accounts or 1))]
+        self.source_account_ids.update(item.worker_node_id or item.account_id for item in selected)
+        return selected
+
     def request_payout(self, spec: PayoutRequestSpec, *, run_id: str) -> PayoutRequestResult:
         try:
             result = self.ledger.request_bridge_payout(
                 wallet_address=spec.wallet_address,
                 account_id=spec.account_id,
+                worker_node_id=spec.worker_node_id,
+                earning_ids=list(spec.earning_ids),
                 credits=spec.credits,
                 idempotency_key=spec.idempotency_key,
                 memo="payout lab mock request",
-                metadata={"payout_lab_run_id": run_id},
+                metadata={
+                    "payout_lab_run_id": run_id,
+                    "payout_lab_source": "hub-earned-credits" if spec.worker_node_id else "seeded",
+                },
             )
             payout = dict(result.get("payout", {}) or {})
             return PayoutRequestResult(
@@ -477,7 +611,10 @@ class FdbPayoutLedger:
         return {
             "accounts": [
                 item for item in snapshot.get("accounts", [])
-                if str((item.get("metadata") or {}).get("payout_lab_run_id", "")) == run_id
+                if (
+                    str((item.get("metadata") or {}).get("payout_lab_run_id", "")) == run_id
+                    or str(item.get("account_id", "")) in self.source_account_ids
+                )
             ],
             "bridge_payouts": [
                 item for item in snapshot.get("bridge_payouts", [])
@@ -513,6 +650,85 @@ def build_request_specs(
             )
         )
     return specs
+
+
+
+def build_request_specs_from_source_accounts(
+    *,
+    accounts: list[PayoutSourceAccount],
+    request_count: int,
+    max_payout_credits: int,
+    duplicate_rate: float,
+    seed: int,
+) -> list[PayoutRequestSpec]:
+    eligible = [item for item in accounts if item.available_credits > 0]
+    if not eligible:
+        return []
+
+    if any(item.worker_node_id for item in eligible):
+        # End-to-end mode: one deterministic payout request per worker that actually
+        # earned credits during the current scheduler run.  Do not turn this into
+        # the synthetic payout stress harness; the seeded mode already covers
+        # duplicate submissions, random over-requesting, and settlement chaos.
+        specs: list[PayoutRequestSpec] = []
+        for index, account in enumerate(eligible[: max(0, int(request_count))]):
+            specs.append(
+                PayoutRequestSpec(
+                    wallet_address=account.wallet_address,
+                    account_id="",
+                    worker_node_id=account.worker_node_id,
+                    earning_ids=account.earning_ids,
+                    credits=account.available_credits,
+                    idempotency_key=f"payout-lab-e2e-{seed}-{index}-{account.worker_node_id}",
+                )
+            )
+        return specs
+
+    rng = random.Random(seed)
+    specs: list[PayoutRequestSpec] = []
+    for index in range(max(0, int(request_count))):
+        if specs and rng.random() < max(0.0, min(1.0, duplicate_rate)):
+            specs.append(rng.choice(specs))
+            continue
+        account = rng.choice(eligible)
+        maximum = max(1, min(int(max_payout_credits), account.available_credits))
+        amount = rng.randint(1, maximum)
+        specs.append(
+            PayoutRequestSpec(
+                wallet_address=account.wallet_address,
+                account_id=account.account_id,
+                credits=amount,
+                idempotency_key=f"payout-lab-source-{seed}-{index}-{rng.randrange(1_000_000)}",
+            )
+        )
+    return specs
+
+
+def wait_for_hub_source_accounts(
+    *,
+    ledger: PayoutLedger,
+    max_accounts: int,
+    minimum_accounts: int,
+    wait_seconds: float,
+    poll_seconds: float,
+    source_scheduler_run_id: str = "",
+) -> list[PayoutSourceAccount]:
+    deadline = time.time() + max(0.0, float(wait_seconds or 0.0))
+    minimum = max(1, int(minimum_accounts or 1))
+    last_seen: list[PayoutSourceAccount] = []
+    while True:
+        accounts = ledger.discover_hub_source_accounts(
+            max_accounts=max_accounts,
+            minimum_credit_wei=credit_count_to_wei(1),
+            source_scheduler_run_id=source_scheduler_run_id,
+        )
+        if accounts:
+            last_seen = accounts
+        if len(accounts) >= minimum:
+            return accounts
+        if time.time() >= deadline:
+            return last_seen
+        time.sleep(max(0.05, float(poll_seconds or 0.25)))
 
 
 def run_request_phase(
@@ -603,9 +819,11 @@ def summarize(
     *,
     ledger: PayoutLedger,
     run_id: str,
+    source: str,
     wallet_count: int,
     request_count: int,
     seed_credits: int,
+    source_credit_wei: int,
     request_results: list[PayoutRequestResult],
     settlement_counters: dict[str, int],
 ) -> PayoutLabSummary:
@@ -628,7 +846,7 @@ def summarize(
 
     payouts_by_id = {str(item.get("payout_id", "")): item for item in payouts}
     accepted_credit_wei = sum(result.credit_wei for result in accepted_by_id.values())
-    seeded_credit_wei = credit_count_to_wei(int(seed_credits)) * int(wallet_count)
+    seeded_credit_wei = source_credit_wei if source == PAYOUT_SOURCE_HUB_EARNED_CREDITS else credit_count_to_wei(int(seed_credits)) * int(wallet_count)
     settled_credit_wei = sum(_payout_amount_wei(item) for item in payouts if str(item.get("status", "")) == FINAL_SETTLED_STATUS)
     pending_credit_wei = sum(_payout_amount_wei(item) for item in payouts if str(item.get("status", "")) == REQUEST_STATUS)
     retryable_failed_credit_wei = sum(_payout_amount_wei(item) for item in payouts if str(item.get("status", "")) == "retryable_failed")
@@ -636,9 +854,12 @@ def summarize(
     available_credit_wei = sum(int(item.get("available_credit_wei", 0) or 0) for item in accounts)
 
     lost_payout_ids = sorted(set(accepted_by_id) - set(payouts_by_id))
-    overdraw = accepted_credit_wei > seeded_credit_wei
+    overdraw = source == PAYOUT_SOURCE_SEEDED and accepted_credit_wei > seeded_credit_wei
     duplicate_settlements = max(0, len(txs) - len({str(tx.get("payout_id", "")) for tx in txs}))
-    wallet_lock_count = len([item for item in wallet_locks if _payout_run_id(item) in {"", run_id}])
+    if source == PAYOUT_SOURCE_HUB_EARNED_CREDITS:
+        wallet_lock_count = len([item for item in wallet_locks if _payout_run_id(item) == run_id])
+    else:
+        wallet_lock_count = len([item for item in wallet_locks if _payout_run_id(item) in {"", run_id}])
 
     errors: list[str] = []
     if overdraw:
@@ -653,13 +874,20 @@ def summarize(
         errors.append("not every accepted payout reached settled state")
     if settled_credit_wei != accepted_credit_wei:
         errors.append("settled payout credit does not equal unique accepted payout credit")
-    if available_credit_wei + accepted_credit_wei != seeded_credit_wei:
+    if source == PAYOUT_SOURCE_SEEDED and available_credit_wei + accepted_credit_wei != seeded_credit_wei:
         errors.append("available + accepted payout credit does not reconcile to seeded credit")
+    if source == PAYOUT_SOURCE_HUB_EARNED_CREDITS and rejected_count:
+        errors.append(f"end-to-end worker earning payout had rejected request(s): {rejected_count}")
+    if source == PAYOUT_SOURCE_HUB_EARNED_CREDITS and duplicate_response_count:
+        errors.append(f"end-to-end worker earning payout returned duplicate response(s): {duplicate_response_count}")
 
     return PayoutLabSummary(
         ok=not errors,
         backend=ledger.backend_name,
         run_id=run_id,
+        source=source,
+        source_account_count=wallet_count,
+        source_credit_wei=source_credit_wei,
         wallet_count=wallet_count,
         request_count=request_count,
         unique_accepted_count=len(accepted_by_id),
@@ -687,6 +915,7 @@ def summarize(
 @dataclass(frozen=True)
 class PayoutLabConfig:
     backend: str = "memory"
+    source: str = PAYOUT_SOURCE_SEEDED
     wallets: int = 8
     starting_credits: int = 100
     requests: int = 200
@@ -704,11 +933,17 @@ class PayoutLabConfig:
     namespace: str = ""
     repo_root: Path = Path(".")
     fdb_api_version: int = 740
+    source_wait_seconds: float = 30.0
+    source_poll_seconds: float = 0.50
+    source_min_accounts: int = 1
+    source_scheduler_run_id: str = ""
 
 
 def run_payout_lab(config: PayoutLabConfig) -> PayoutLabSummary:
     run_id = config.run_id or f"payout-lab-{uuid.uuid4().hex[:12]}"
-    wallets = [(f"payout-lab-account-{index:04d}", _wallet_for_index(index)) for index in range(max(1, int(config.wallets)))]
+    source = str(config.source or PAYOUT_SOURCE_SEEDED).strip() or PAYOUT_SOURCE_SEEDED
+    if source not in PAYOUT_SOURCES:
+        raise ValueError(f"unsupported payout lab source: {source}")
 
     if config.backend == "fdb":
         namespace = config.namespace or f"main-computer-payout-lab-{run_id}"
@@ -723,32 +958,64 @@ def run_payout_lab(config: PayoutLabConfig) -> PayoutLabSummary:
     else:
         raise ValueError(f"unsupported backend: {config.backend}")
 
-    for account_id, wallet in wallets:
-        ledger.seed_account(account_id=account_id, wallet_address=wallet, credits=config.starting_credits, run_id=run_id)
+    if source == PAYOUT_SOURCE_HUB_EARNED_CREDITS:
+        if config.backend != "fdb":
+            raise ValueError("hub-earned-credits payout source requires --backend fdb")
+        source_accounts = wait_for_hub_source_accounts(
+            ledger=ledger,
+            max_accounts=max(1, int(config.wallets)),
+            minimum_accounts=max(1, int(config.source_min_accounts)),
+            wait_seconds=float(config.source_wait_seconds),
+            poll_seconds=float(config.source_poll_seconds),
+            source_scheduler_run_id=str(config.source_scheduler_run_id or ""),
+        )
+        if len(source_accounts) < max(1, int(config.source_min_accounts)):
+            raise RuntimeError(
+                f"hub-earned-credits source found {len(source_accounts)} eligible scheduler-lab account(s); "
+                f"needed {max(1, int(config.source_min_accounts))}"
+            )
+        wallets = [(item.worker_node_id or item.account_id, item.wallet_address) for item in source_accounts]
+        source_credit_wei = sum(item.available_credit_wei for item in source_accounts)
+        specs = build_request_specs_from_source_accounts(
+            accounts=source_accounts,
+            request_count=config.requests,
+            max_payout_credits=config.max_payout_credits,
+            duplicate_rate=config.duplicate_rate,
+            seed=config.seed,
+        )
+        seed_credits = 0
+    else:
+        wallets = [(f"payout-lab-account-{index:04d}", _wallet_for_index(index)) for index in range(max(1, int(config.wallets)))]
+        source_credit_wei = credit_count_to_wei(int(config.starting_credits)) * len(wallets)
+        for account_id, wallet in wallets:
+            ledger.seed_account(account_id=account_id, wallet_address=wallet, credits=config.starting_credits, run_id=run_id)
+        specs = build_request_specs(
+            wallets=wallets,
+            request_count=config.requests,
+            max_payout_credits=config.max_payout_credits,
+            duplicate_rate=config.duplicate_rate,
+            seed=config.seed,
+        )
+        seed_credits = config.starting_credits
 
-    specs = build_request_specs(
-        wallets=wallets,
-        request_count=config.requests,
-        max_payout_credits=config.max_payout_credits,
-        duplicate_rate=config.duplicate_rate,
-        seed=config.seed,
-    )
     request_results = run_request_phase(ledger=ledger, run_id=run_id, specs=specs, concurrency=config.concurrency)
     settlement_counters = run_settlement_workers(
         ledger=ledger,
         run_id=run_id,
         worker_count=config.settlement_workers,
-        failure_rate=config.failure_rate,
-        after_broadcast_crash_rate=config.after_broadcast_crash_rate,
+        failure_rate=0.0 if source == PAYOUT_SOURCE_HUB_EARNED_CREDITS else config.failure_rate,
+        after_broadcast_crash_rate=0.0 if source == PAYOUT_SOURCE_HUB_EARNED_CREDITS else config.after_broadcast_crash_rate,
         lease_seconds=config.lease_seconds,
         settle_timeout_seconds=config.settle_timeout_seconds,
     )
     return summarize(
         ledger=ledger,
         run_id=run_id,
+        source=source,
         wallet_count=len(wallets),
         request_count=len(specs),
-        seed_credits=config.starting_credits,
+        seed_credits=seed_credits,
+        source_credit_wei=source_credit_wei,
         request_results=request_results,
         settlement_counters=settlement_counters,
     )
@@ -762,6 +1029,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         )
     )
     parser.add_argument("--backend", choices=["memory", "fdb"], default="fdb")
+    parser.add_argument("--source", choices=sorted(PAYOUT_SOURCES), default=PAYOUT_SOURCE_SEEDED)
     parser.add_argument("--wallets", type=int, default=8)
     parser.add_argument("--starting-credits", type=int, default=100)
     parser.add_argument("--requests", type=int, default=200)
@@ -777,6 +1045,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--run-id", default="")
     parser.add_argument("--cluster-file", type=Path, default=Path(".foundationdb/docker.cluster"))
     parser.add_argument("--namespace", default="")
+    parser.add_argument("--source-wait-seconds", type=float, default=30.0)
+    parser.add_argument("--source-poll-seconds", type=float, default=0.50)
+    parser.add_argument("--source-min-accounts", type=int, default=1)
+    parser.add_argument("--source-scheduler-run-id", default="")
     parser.add_argument("--repo-root", type=Path, default=Path("."))
     parser.add_argument("--fdb-api-version", type=int, default=740)
     parser.add_argument("--json", action="store_true", help="Print compact JSON only.")
@@ -788,6 +1060,7 @@ def main(argv: list[str] | None = None) -> int:
     summary = run_payout_lab(
         PayoutLabConfig(
             backend=args.backend,
+            source=args.source,
             wallets=args.wallets,
             starting_credits=args.starting_credits,
             requests=args.requests,
@@ -805,6 +1078,10 @@ def main(argv: list[str] | None = None) -> int:
             namespace=args.namespace,
             repo_root=args.repo_root,
             fdb_api_version=args.fdb_api_version,
+            source_wait_seconds=args.source_wait_seconds,
+            source_poll_seconds=args.source_poll_seconds,
+            source_min_accounts=args.source_min_accounts,
+            source_scheduler_run_id=args.source_scheduler_run_id,
         )
     )
     payload = summary.as_dict()

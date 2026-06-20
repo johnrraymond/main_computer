@@ -323,6 +323,7 @@ def top_up_account_to(
             "node_kind": node.get("kind"),
             "behavior_mode": node.get("behavior_mode"),
             "reason": reason,
+            "scheduler_lab_run_id": sink.run_id,
         },
     )
     if issue.status == 0:
@@ -554,6 +555,7 @@ def submit_request_once_sync(
         request_mode=args.request_mode,
         account_id_prefix=args.account_id_prefix,
         prompt=prompt,
+        scheduler_lab_run_id=sink.run_id,
         _event_fields=request_fields,
     )
     if response.status == 0:
@@ -669,6 +671,7 @@ def execute_lease_sync(
             "worker_node_id": node.get("node_id"),
             "cohort": node.get("cohort"),
             "lease_id": lease.get("lease_id"),
+            "scheduler_lab_run_id": sink.run_id,
         },
     }
     result_fields = {

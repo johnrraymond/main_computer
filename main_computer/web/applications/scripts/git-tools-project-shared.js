@@ -325,7 +325,6 @@ function openGitProjectRepoBoundaryModal(data = gitProjectLastInspection) {
     } catch (error) {
       gitProjectSetRepoBoundaryButtonsDisabled(overlay, false);
       gitProjectRepoBoundaryModalStatus(overlay, error?.message || String(error), "blocking");
-      if (gitProjectDashboard) gitProjectDashboard.textContent = gitToolsOperationErrorText("Repository boundary action failed", error);
       setGitProjectNextStep("Repository boundary action failed", error?.message || String(error), selected || parent || "", "blocking", gitProjectRepoBoundaryActionHtml(data));
     }
   });

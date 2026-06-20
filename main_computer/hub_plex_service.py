@@ -2246,7 +2246,12 @@ class AIRequestPlexService:
         market_metadata = self._record_market_metadata(record)
         selected_offer = self._record_selected_offer(record)
         quote = dict(market_metadata.get("quote", {})) if isinstance(market_metadata.get("quote"), dict) else {}
+        request_payload = dict(record.request_payload or {}) if isinstance(record.request_payload, dict) else {}
+        request_metadata = dict(request_payload.get("metadata") or {}) if isinstance(request_payload.get("metadata"), dict) else {}
         charge_metadata = {"worker_node_id": worker_node_id}
+        scheduler_lab_run_id = str(request_metadata.get("scheduler_lab_run_id", "") or "").strip()
+        if scheduler_lab_run_id:
+            charge_metadata["scheduler_lab_run_id"] = scheduler_lab_run_id
         worker_payload = self.registry.get_worker(worker_node_id) if hasattr(self.registry, "get_worker") else None
         worker_wallet_address = _worker_wallet_address_from_payload(worker_payload) if worker_payload is not None else ""
         if worker_wallet_address:

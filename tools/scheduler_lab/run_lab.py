@@ -461,6 +461,7 @@ async def submit_request_once(
         request_mode=args.request_mode,
         account_id_prefix=args.account_id_prefix,
         prompt=prompt,
+        scheduler_lab_run_id=sink.run_id,
         _event_fields=request_fields,
     )
     if is_insufficient_credit_response(response):
@@ -900,6 +901,7 @@ async def top_up_account_to(
             "reason": reason,
             "desired_credits": desired,
             "observed_available_credits": available,
+            "scheduler_lab_run_id": sink.run_id,
         },
     )
 
@@ -1096,6 +1098,7 @@ async def execute_lease(
             "worker_node_id": node.get("node_id"),
             "cohort": node.get("cohort"),
             "lease_id": lease.get("lease_id"),
+            "scheduler_lab_run_id": sink.run_id,
         },
     }
     result_fields = {

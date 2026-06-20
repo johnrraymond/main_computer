@@ -719,6 +719,7 @@ class ExperimentalFoundationDbCreditLedger:
                     ),
                     earned_credit_wei=clean_charged,
                     status="earned",
+                    batch_id=str((metadata or {}).get("scheduler_lab_run_id", "") or ""),
                     created_at=now,
                 )
 
@@ -1263,6 +1264,7 @@ class ExperimentalFoundationDbCreditLedger:
         wallet_address: str,
         account_id: str = "",
         worker_node_id: str = "",
+        earning_ids: list[str] | None = None,
         credits: int = 0,
         idempotency_key: str = "",
         memo: str = "",
@@ -1276,8 +1278,16 @@ class ExperimentalFoundationDbCreditLedger:
             raise ValueError("wallet_address is required.")
         if not clean_account and not clean_worker:
             raise ValueError("account_id or worker_node_id is required.")
+        requested_earning_ids = [str(item or "").strip() for item in (earning_ids or []) if str(item or "").strip()]
         clean_key = str(idempotency_key or "").strip()
-        payout_id = stable_id("bpayout", {"wallet_address": clean_wallet, "account_id": clean_account, "worker_node_id": clean_worker, "credit_wei": str(requested_wei), "idempotency_key": clean_key})
+        payout_id = stable_id("bpayout", {
+            "wallet_address": clean_wallet,
+            "account_id": clean_account,
+            "worker_node_id": clean_worker,
+            "earning_ids": requested_earning_ids,
+            "credit_wei": str(requested_wei),
+            "idempotency_key": clean_key,
+        })
         now = utc_now()
 
         @self.fdb.transactional
@@ -1291,9 +1301,16 @@ class ExperimentalFoundationDbCreditLedger:
                 earnings = [
                     _earning_from_dict(item)
                     for item in self._list_dicts(tr, "worker_earning")
-                    if str(item.get("worker_node_id", "")) == clean_worker and str(item.get("status", "earned")) == "earned"
+                    if str(item.get("worker_node_id", "")) == clean_worker
+                    and str(item.get("status", "earned")) == "earned"
+                    and (not requested_earning_ids or str(item.get("earning_id", "")) in set(requested_earning_ids))
                 ]
                 earnings.sort(key=lambda item: item.created_at)
+                if requested_earning_ids:
+                    found_ids = {earning.earning_id for earning in earnings}
+                    missing = [earning_id for earning_id in requested_earning_ids if earning_id not in found_ids]
+                    if missing:
+                        raise ValueError(f"Unknown or non-claimable worker earning(s) for {clean_worker}: {', '.join(missing)}")
                 available_wei = sum(earning.earned_credit_wei for earning in earnings)
                 if amount_wei <= 0:
                     amount_wei = available_wei

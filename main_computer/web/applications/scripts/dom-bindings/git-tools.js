@@ -11,7 +11,6 @@
     const gitProjectUnlock = document.querySelector("#git-project-unlock");
     const gitProjectList = document.querySelector("#git-project-list");
     const gitProjectArchiveList = document.querySelector("#git-project-archive-list");
-    const gitProjectDashboard = document.querySelector("#git-project-dashboard");
     const gitProjectWizardPlan = document.querySelector("#git-project-wizard-plan");
     const gitPatchList = document.querySelector("#git-patch-list");
     const gitPatchName = document.querySelector("#git-patch-name");

@@ -521,7 +521,6 @@
   grid-column: 1 / -1;
 }
 
-.git-project-header,
 .git-project-layout,
 .git-project-main,
 .git-project-roster,
@@ -531,14 +530,8 @@
   min-width: 0;
 }
 
-.git-project-header {
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 380px);
-  align-items: start;
-}
-
 .git-project-current,
 .git-project-next-step,
-.git-project-dashboard,
 .git-project-wizard-plan,
 .git-project-roster {
   overflow-wrap: anywhere;
@@ -557,8 +550,7 @@
 }
 
 .git-project-current strong,
-.git-project-next-step strong,
-.git-project-report-heading strong {
+.git-project-next-step strong {
   color: var(--gold);
   text-transform: uppercase;
 }
@@ -872,10 +864,6 @@
   gap: 6px;
 }
 
-.git-project-dashboard {
-  white-space: normal;
-}
-
 .git-project-next-step.tone-blocking,
 .git-project-wizard-section.tone-blocking,
 .git-project-wizard-step.tone-blocking {
@@ -904,38 +892,12 @@
   background: rgba(39, 132, 82, 0.2);
 }
 
-.git-project-report {
-  display: grid;
-  gap: 10px;
-}
-
-.git-project-report-heading {
-  display: grid;
-  gap: 4px;
-}
-
-.git-project-report-copy {
-  color: var(--muted);
-}
-
-.git-project-report-heading code {
-  color: var(--cyan);
-  white-space: pre-wrap;
-}
-
-.git-project-report-grid,
-.git-project-summary-grid,
 .git-project-wizard-list {
   display: grid;
   gap: 8px;
 }
-.git-project-report-grid,
-.git-project-summary-grid {
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-}
 
 .git-project-kv,
-.git-project-report-section,
 .git-project-wizard-step,
 .git-project-wizard-section {
   border: 1px solid var(--line);
@@ -1105,13 +1067,6 @@
   color: var(--text);
 }
 
-.git-project-report-section summary {
-  color: var(--mint);
-  cursor: pointer;
-  font-weight: 800;
-}
-
-.git-project-report-section pre,
 .git-project-wizard-step pre {
   overflow: auto;
   max-height: 240px;
@@ -1150,7 +1105,6 @@
 }
 
 @container (max-width: 980px) {
-  .git-project-header,
   .git-project-layout,
   .git-project-add-row {
     grid-template-columns: 1fr;

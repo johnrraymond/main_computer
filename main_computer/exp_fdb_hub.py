@@ -408,6 +408,25 @@ def create_exp_fdb_hub_server(args: argparse.Namespace, *, port: int) -> Experim
     return server
 
 
+
+def _ensure_scheduler_lab_run_id(args: argparse.Namespace) -> str:
+    existing = str(getattr(args, "scheduler_lab_run_id", "") or "").strip()
+    if existing:
+        return existing
+    run_id = f"scheduler-e2e-{uuid.uuid4().hex[:12]}"
+    setattr(args, "scheduler_lab_run_id", run_id)
+    return run_id
+
+
+def _effective_scheduler_lab_ring(args: argparse.Namespace) -> int | None:
+    explicit = getattr(args, "scheduler_lab_ring", None)
+    if explicit is not None:
+        return int(explicit)
+    if bool(getattr(args, "payout_lab", False)) and str(getattr(args, "payout_lab_source", "seeded") or "seeded") == "hub-earned-credits":
+        return 3
+    return None
+
+
 def launch_scheduler_lab_docker(args: argparse.Namespace, *, hub_base_urls: Sequence[str]) -> subprocess.Popen[bytes]:
     repo_root = _repo_root_from_args(args)
     compose_file = Path(args.docker_compose_file or DEFAULT_EXP_FDB_DOCKER_COMPOSE_FILE)
@@ -433,6 +452,7 @@ def launch_scheduler_lab_docker(args: argparse.Namespace, *, hub_base_urls: Sequ
             "HUB_BASE_URL": str(hub_base_urls[0]).rstrip("/"),
             "LAB_OUTPUT_DIR": container_output,
             "LAB_NODE_LIST": f"{container_output}/{total_nodes}-exp-fdb-nodes.jsonl",
+            "LAB_RUN_ID": _ensure_scheduler_lab_run_id(args),
             "LAB_OUTPUT_DIR_HOST": str(output_dir),
             "GENERATE_NODE_LIST": "1",
             "LAB_ROLE": str(args.docker_role),
@@ -462,6 +482,10 @@ def launch_scheduler_lab_docker(args: argparse.Namespace, *, hub_base_urls: Sequ
         # Same pattern for compose defaults: the worker-lab treats this as
         # "derive from the resolved observation window".
         env["FORCED_ALIVE_SECONDS"] = "duration"
+
+    scheduler_ring = _effective_scheduler_lab_ring(args)
+    if scheduler_ring is not None:
+        env["LAB_RING"] = str(int(scheduler_ring))
 
     if args.docker_workers is not None:
         env["LAB_WORKERS"] = str(args.docker_workers)
@@ -495,6 +519,9 @@ def launch_scheduler_lab_docker(args: argparse.Namespace, *, hub_base_urls: Sequ
     for url in hub_base_urls:
         print(f"  {url}")
     print(f"Scheduler lab nodes: {total_nodes}")
+    print(f"Scheduler lab run id: {_ensure_scheduler_lab_run_id(args)}")
+    if _effective_scheduler_lab_ring(args) is not None:
+        print(f"Scheduler lab ring: {int(_effective_scheduler_lab_ring(args) or 0)}")
     print(f"Scheduler lab assumed already-funded accounts: {args.funded:g}%")
     print(f"Scheduler lab execution mode: {args.lab_execution}")
     print(f"Scheduler lab request startup: {args.request_startup_mode} over {float(args.request_startup_spread_seconds):g}s")
@@ -523,6 +550,8 @@ def _payout_lab_namespace_from_args(args: argparse.Namespace, *, run_id: str) ->
     if explicit_namespace:
         return explicit_namespace
     base_namespace = str(getattr(args, "namespace", "") or DEFAULT_EXP_FDB_NAMESPACE).strip() or DEFAULT_EXP_FDB_NAMESPACE
+    if str(getattr(args, "payout_lab_source", "seeded") or "seeded") == "hub-earned-credits":
+        return base_namespace
     suffix = run_id
     if suffix.startswith("payout-lab-"):
         suffix = suffix[len("payout-lab-") :]
@@ -558,6 +587,7 @@ def run_payout_lab_phase(args: argparse.Namespace, *, runner: object | None = No
 
     config = PayoutLabConfig(
         backend=str(args.payout_lab_backend),
+        source=str(args.payout_lab_source),
         wallets=int(args.payout_lab_wallets),
         starting_credits=int(args.payout_lab_starting_credits),
         requests=int(args.payout_lab_requests),
@@ -575,16 +605,25 @@ def run_payout_lab_phase(args: argparse.Namespace, *, runner: object | None = No
         namespace=namespace,
         repo_root=repo_root,
         fdb_api_version=int(args.api_version),
+        source_wait_seconds=float(args.payout_lab_source_wait_seconds),
+        source_poll_seconds=float(args.payout_lab_source_poll_seconds),
+        source_min_accounts=int(args.payout_lab_source_min_accounts),
+        source_scheduler_run_id=str(getattr(args, "scheduler_lab_run_id", "") or ""),
     )
 
     print("Starting optional payout settlement smoke lab.")
     print(f"Payout lab backend: {config.backend}")
+    print(f"Payout lab source: {config.source}")
     print(f"Payout lab run id: {config.run_id}")
     print(f"Payout lab FDB namespace: {config.namespace}")
     print(f"Payout lab wallets: {config.wallets}")
     print(f"Payout lab requests: {config.requests}")
     print(f"Payout lab concurrency: {config.concurrency}")
     print(f"Payout lab settlement workers: {config.settlement_workers}")
+    if config.source == "hub-earned-credits":
+        print(f"Payout lab source wait seconds: {float(config.source_wait_seconds):g}")
+        print(f"Payout lab source minimum accounts: {int(config.source_min_accounts)}")
+        print(f"Payout lab source scheduler run id: {config.source_scheduler_run_id or '(not set)'}")
     print(f"Payout lab output dir: {summary_dir}")
 
     active_runner = runner if runner is not None else run_payout_lab
@@ -645,6 +684,7 @@ def serve_exp_fdb_hubs(args: argparse.Namespace) -> int:
             threads.append(thread)
         print(f"Experimental FDB hub ports listening: {', '.join(str(port) for port in live_ports)}")
         if args.docker:
+            _ensure_scheduler_lab_run_id(args)
             hub_urls = docker_hub_base_urls(args, live_ports)
             docker_process = launch_scheduler_lab_docker(args, hub_base_urls=hub_urls)
             if args.payout_lab:
@@ -727,6 +767,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--docker-ports", default="", help="Comma-separated ports advertised to Docker workers. May include intentionally dead ports not present in --ports.")
     parser.add_argument("--docker-hub-host", default=DEFAULT_EXP_FDB_DOCKER_HUB_HOST, help="Host name Docker containers use to reach the host exp hubs.")
     parser.add_argument("--docker-role", choices=["all", "workers", "requesters"], default="all", help="Scheduler lab role to run in Docker.")
+    parser.add_argument("--scheduler-lab-ring", type=int, default=None, help="Optional ring value for generated scheduler-lab nodes. Defaults to 3 for hub-earned payout end-to-end mode; otherwise worker-lab default applies.")
+    parser.add_argument("--scheduler-lab-run-id", default="", help=argparse.SUPPRESS)
     parser.add_argument("--docker-total", type=int, default=120, help="Total generated scheduler lab nodes. Kept for compatibility; --nodes is preferred.")
     parser.add_argument("--nodes", type=int, default=None, help="Total generated scheduler lab nodes for Docker experiments, for example --nodes 1000.")
     parser.add_argument("--docker-workers", type=int, default=None, help="Optional worker-capable generated node count.")
@@ -778,7 +820,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="After the experimental Hub starts, run the optional mock payout settlement smoke lab.",
     )
-    parser.add_argument("--payout-lab-backend", choices=["memory", "fdb"], default="fdb", help="Payout lab backend. fdb reuses the configured local FDB cluster in an isolated namespace.")
+    parser.add_argument("--payout-lab-backend", choices=["memory", "fdb"], default="fdb", help="Payout lab backend. fdb reuses the configured local FDB cluster.")
+    parser.add_argument(
+        "--payout-lab-source",
+        choices=["seeded", "hub-earned-credits"],
+        default="seeded",
+        help="Payout lab credit source. seeded keeps the old isolated synthetic namespace; hub-earned-credits consumes scheduler-created account balances from the Hub namespace.",
+    )
     parser.add_argument("--payout-lab-wallets", type=int, default=8, help="Number of synthetic payout lab wallets/accounts to seed.")
     parser.add_argument("--payout-lab-starting-credits", type=int, default=100, help="Initial whole-credit balance per payout lab account.")
     parser.add_argument("--payout-lab-requests", type=int, default=200, help="Concurrent payout request attempts for the payout lab.")
@@ -794,6 +842,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--payout-lab-run-id", default="", help="Optional explicit payout lab run id. Defaults to a generated payout-lab-* id.")
     parser.add_argument("--payout-lab-namespace", default="", help="Optional explicit payout lab FDB namespace. Defaults to an isolated namespace derived from --namespace and run id.")
     parser.add_argument("--payout-lab-output-dir", type=Path, default=None, help="Optional payout lab summary output directory. Defaults under --docker-output-dir/payout-lab.")
+    parser.add_argument("--payout-lab-source-wait-seconds", type=float, default=30.0, help="Seconds to wait for eligible Hub scheduler-created balances when --payout-lab-source=hub-earned-credits.")
+    parser.add_argument("--payout-lab-source-poll-seconds", type=float, default=0.50, help="Polling interval while waiting for Hub scheduler-created payout source balances.")
+    parser.add_argument("--payout-lab-source-min-accounts", type=int, default=1, help="Minimum eligible Hub scheduler-created accounts required for --payout-lab-source=hub-earned-credits.")
     parser.add_argument(
         "--no-fdb-autostart",
         action="store_true",
@@ -845,6 +896,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.fdb_docker_start_timeout <= 0:
         raise SystemExit("--fdb-docker-start-timeout must be > 0")
     if args.payout_lab:
+        if args.payout_lab_source == "hub-earned-credits" and args.payout_lab_backend != "fdb":
+            raise SystemExit("--payout-lab-source=hub-earned-credits requires --payout-lab-backend=fdb")
         if args.payout_lab_wallets <= 0:
             raise SystemExit("--payout-lab-wallets must be > 0")
         if args.payout_lab_starting_credits < 0:
@@ -868,6 +921,12 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("--payout-lab-lease-seconds must be > 0")
         if args.payout_lab_settle_timeout_seconds <= 0:
             raise SystemExit("--payout-lab-settle-timeout-seconds must be > 0")
+        if args.payout_lab_source_wait_seconds < 0:
+            raise SystemExit("--payout-lab-source-wait-seconds must be >= 0")
+        if args.payout_lab_source_poll_seconds <= 0:
+            raise SystemExit("--payout-lab-source-poll-seconds must be > 0")
+        if args.payout_lab_source_min_accounts <= 0:
+            raise SystemExit("--payout-lab-source-min-accounts must be > 0")
     if args.request_startup_mode == "auto":
         args.request_startup_mode = "surge" if args.funded > 0 else "natural"
     return serve_exp_fdb_hubs(args)

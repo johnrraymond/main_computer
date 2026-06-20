@@ -40,7 +40,6 @@ const context = {{
   gitProjectArchiveList: archiveList,
   gitProjectPath: element("gitProjectPath"),
   gitRepoDir: element("gitRepoDir"),
-  gitProjectDashboard: element("gitProjectDashboard"),
   gitConsoleOutput: element("gitConsoleOutput"),
   CSS: {{escape: (value) => String(value).replace(/[^a-zA-Z0-9_-]/g, "_")}},
   Event: function Event(type, _options) {{ this.type = type; }},

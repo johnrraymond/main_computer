@@ -23,6 +23,10 @@ def test_exp_fdb_hub_entrypoint_is_manual_and_declares_fdb_options() -> None:
     assert "--payout-lab" in module
     assert "--payout-lab-wallets" in module
     assert "--payout-lab-failure-rate" in module
+    assert "--payout-lab-source" in module
+    assert "hub-earned-credits" in module
+    assert "--scheduler-lab-ring" in module
+    assert "LAB_RUN_ID" in module
     assert "Starting optional payout settlement smoke lab." in module
     assert "concurrently with scheduler lab" in module
     assert "--docker-compose-file" in module
@@ -154,6 +158,8 @@ def test_exp_fdb_hub_launcher_coordinates_ports_with_docker_lab() -> None:
     assert "docker_hub_base_urls" in module
     assert "HUB_BASE_URLS" in module
     assert "LAB_NODES" in module
+    assert "LAB_RUN_ID" in module
+    assert "LAB_RING" in module
     assert "LAB_WORKTIME" in module
     assert "LAB_FUNDED" in module
     assert "LAB_REQUEST_STARTUP_MODE" in module
@@ -180,6 +186,8 @@ def test_exp_fdb_hub_uses_lightweight_scheduler_lab_docker_stack() -> None:
     assert "worker-lab" in compose
     assert "LAB_OUTPUT_DIR_HOST" in compose
     assert "LAB_NODES" in compose
+    assert "LAB_RUN_ID" in compose
+    assert "LAB_RING" in compose
     assert "LAB_WORKTIME" in compose
     assert "LAB_FUNDED" in compose
     assert "LAB_REQUEST_STARTUP_MODE" in compose
@@ -239,6 +247,7 @@ def test_exp_fdb_hub_launcher_allows_worker_lab_to_derive_duration_and_forced_al
     assert isinstance(process, DummyProcess)
     env = captured["env"]
     assert env["LAB_WORKTIME"] == "50mu,25sigma"
+    assert env["LAB_RUN_ID"].startswith("scheduler-e2e-")
     assert env["LAB_DURATION_SECONDS"] == "auto"
     assert env["FORCED_ALIVE_SECONDS"] == "duration"
 
@@ -289,6 +298,7 @@ def test_exp_fdb_hub_optional_payout_lab_phase_uses_isolated_namespace(tmp_path,
 
     def fake_runner(config: object) -> FakeSummary:
         seen["backend"] = getattr(config, "backend")
+        seen["source"] = getattr(config, "source")
         seen["wallets"] = getattr(config, "wallets")
         seen["requests"] = getattr(config, "requests")
         seen["namespace"] = getattr(config, "namespace")
@@ -299,6 +309,7 @@ def test_exp_fdb_hub_optional_payout_lab_phase_uses_isolated_namespace(tmp_path,
 
     assert seen == {
         "backend": "memory",
+        "source": "seeded",
         "wallets": 3,
         "requests": 17,
         "namespace": "exp-fdb-test-payout-lab-pytest",
@@ -310,6 +321,93 @@ def test_exp_fdb_hub_optional_payout_lab_phase_uses_isolated_namespace(tmp_path,
     stdout = capsys.readouterr().out
     assert "Starting optional payout settlement smoke lab." in stdout
     assert "Payout lab summary written:" in stdout
+
+
+
+
+def test_exp_fdb_hub_payout_lab_can_consume_hub_namespace_source(tmp_path) -> None:
+    from main_computer.exp_fdb_hub import build_parser, run_payout_lab_phase
+
+    args = build_parser().parse_args(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--namespace",
+            "exp-fdb-shared",
+            "--payout-lab",
+            "--payout-lab-source",
+            "hub-earned-credits",
+            "--payout-lab-source-wait-seconds",
+            "7",
+            "--payout-lab-source-min-accounts",
+            "2",
+            "--payout-lab-run-id",
+            "payout-lab-shared",
+        ]
+    )
+
+    seen = {}
+
+    class FakeSummary:
+        ok = True
+
+        def as_dict(self) -> dict[str, object]:
+            return {"ok": True, "run_id": "payout-lab-shared", "errors": []}
+
+    args.scheduler_lab_run_id = "scheduler-e2e-pytest"
+
+    def fake_runner(config: object) -> FakeSummary:
+        seen["source"] = getattr(config, "source")
+        seen["namespace"] = getattr(config, "namespace")
+        seen["source_wait_seconds"] = getattr(config, "source_wait_seconds")
+        seen["source_min_accounts"] = getattr(config, "source_min_accounts")
+        seen["source_scheduler_run_id"] = getattr(config, "source_scheduler_run_id")
+        return FakeSummary()
+
+    assert run_payout_lab_phase(args, runner=fake_runner) == 0
+    assert seen == {
+        "source": "hub-earned-credits",
+        "namespace": "exp-fdb-shared",
+        "source_wait_seconds": 7.0,
+        "source_min_accounts": 2,
+        "source_scheduler_run_id": "scheduler-e2e-pytest",
+    }
+
+
+def test_exp_fdb_hub_hub_earned_payout_mode_tags_scheduler_run_and_ring(tmp_path, monkeypatch) -> None:
+    from main_computer.exp_fdb_hub import build_parser, launch_scheduler_lab_docker
+
+    compose = tmp_path / "compose.yml"
+    compose.write_text("services:\n  worker-lab:\n    image: scratch\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class DummyProcess:
+        pass
+
+    def fake_popen(command, *, cwd=None, env=None):
+        captured["env"] = dict(env or {})
+        return DummyProcess()
+
+    monkeypatch.setattr("main_computer.exp_fdb_hub.subprocess.Popen", fake_popen)
+
+    args = build_parser().parse_args(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--docker-compose-file",
+            str(compose),
+            "--docker-output-dir",
+            str(tmp_path / "out"),
+            "--payout-lab",
+            "--payout-lab-source",
+            "hub-earned-credits",
+        ]
+    )
+
+    launch_scheduler_lab_docker(args, hub_base_urls=["http://host.docker.internal:18870"])
+    env = captured["env"]
+    assert env["LAB_RUN_ID"].startswith("scheduler-e2e-")
+    assert env["LAB_RING"] == "3"
 
 
 def test_exp_fdb_hub_runs_optional_payout_lab_concurrently_with_docker(tmp_path, monkeypatch) -> None:

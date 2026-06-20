@@ -11,6 +11,7 @@ services:
       HUB_BASE_URLS: ${HUB_BASE_URLS:-http://host.docker.internal:8100}
       LAB_OUTPUT_DIR: ${LAB_OUTPUT_DIR:-/lab-output}
       LAB_NODE_LIST: ${LAB_NODE_LIST:-/lab-output/120-exp-fdb-nodes.jsonl}
+      LAB_RUN_ID: ${LAB_RUN_ID:-}
       LAB_OUTPUT_DIR_HOST: ${LAB_OUTPUT_DIR_HOST:-../../runtime/scheduler-lab/exp-fdb}
       GENERATE_NODE_LIST: ${GENERATE_NODE_LIST:-1}
       LAB_ROLE: ${LAB_ROLE:-all}
@@ -20,6 +21,7 @@ services:
       LAB_REQUESTERS: ${LAB_REQUESTERS:-}
       LAB_DURATION_SECONDS: ${LAB_DURATION_SECONDS:-300}
       LAB_WORKTIME: ${LAB_WORKTIME:-}
+      LAB_RING: ${LAB_RING:-2}
       LAB_FUNDED: ${LAB_FUNDED:-0}
       LAB_REQUEST_STARTUP_MODE: ${LAB_REQUEST_STARTUP_MODE:-auto}
       LAB_REQUEST_STARTUP_SPREAD_SECONDS: ${LAB_REQUEST_STARTUP_SPREAD_SECONDS:-3}

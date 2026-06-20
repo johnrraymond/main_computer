@@ -157,36 +157,61 @@ function conductorScriptBadge(value, className = "") {
   return `<span class="conductor-script-badge ${className}">${escapeHtml(text)}</span>`;
 }
 
+function conductorScriptId(script) {
+  return String(script?.id || "");
+}
+
+function renderConductorScriptItem(script, selectedId = "") {
+  const scriptId = conductorScriptId(script);
+  const markers = conductorArray(script.markers).filter(Boolean);
+  const command = conductorArray(script.command_template).join(" ");
+  const description = script.description ? `<p class="conductor-script-description">${escapeHtml(script.description)}</p>` : "";
+  const areas = conductorArray(script.areas).filter(Boolean);
+  const docCount = conductorArray(script.call_conventions).length;
+  const badges = [
+    conductorScriptBadge(script.kind),
+    conductorScriptBadge(script.risk, `conductor-risk-${script.risk || "unknown"}`),
+    script.quarantine_safe ? conductorScriptBadge("quarantine first-pass", "conductor-quarantine-badge") : "",
+    conductorScriptBadge(`${docCount} doc command${docCount === 1 ? "" : "s"}`),
+    ...areas.slice(0, 5).map((area) => conductorScriptBadge(area, "conductor-area-badge")),
+    ...markers.slice(0, 4).map((marker) => conductorScriptBadge(marker, "conductor-marker-badge"))
+  ].join("");
+  const selected = scriptId && scriptId === selectedId;
+  const selectedClass = selected ? " conductor-script-selected" : "";
+  const selectedAttr = selected ? ' aria-current="true"' : "";
+  return `<article class="conductor-item conductor-script-item${selectedClass}"${selectedAttr}><header class="conductor-script-header"><strong class="conductor-script-title">${escapeHtml(scriptId)}</strong></header><div class="conductor-script-badges">${badges}</div><code class="conductor-command-template">${escapeHtml(command)}</code>${description}${renderConductorQuarantineNote(script)}${renderConductorSuggestedInvocations(script)}${renderConductorScriptExamples(script)}</article>`;
+}
+
 function renderConductorScripts(scripts) {
   const filtered = conductorFilteredScripts(scripts);
+  let selectedId = conductorScriptSelect?.value || "";
+  let selectedScript = selectedId ? filtered.find((script) => conductorScriptId(script) === selectedId) : null;
   if (conductorScriptSelect) {
-    conductorScriptSelect.innerHTML = filtered.slice(0, 300).map((script) => {
+    const optionScripts = selectedScript
+      ? [selectedScript, ...filtered.filter((script) => conductorScriptId(script) !== selectedId).slice(0, 299)]
+      : filtered.slice(0, 300);
+    conductorScriptSelect.innerHTML = optionScripts.map((script) => {
+      const scriptId = conductorScriptId(script);
       const risk = script.risk ? ` · ${script.risk}` : "";
       const docs = conductorArray(script.call_conventions).length ? " · docs" : "";
-      return `<option value="${escapeHtml(script.id || "")}">${escapeHtml(script.id || "")}${escapeHtml(risk)}${escapeHtml(docs)}</option>`;
+      return `<option value="${escapeHtml(scriptId)}">${escapeHtml(scriptId)}${escapeHtml(risk)}${escapeHtml(docs)}</option>`;
     }).join("");
+    if (selectedScript) {
+      conductorScriptSelect.value = selectedId;
+    } else {
+      selectedId = conductorScriptSelect.value || conductorScriptId(filtered[0]);
+      selectedScript = selectedId ? filtered.find((script) => conductorScriptId(script) === selectedId) : null;
+    }
   }
   if (!conductorScripts) return;
   if (!filtered.length) {
     conductorScripts.innerHTML = '<div class="conductor-empty">No conductor-runnable scripts match this area/search.</div>';
     return;
   }
-  conductorScripts.innerHTML = filtered.slice(0, 80).map((script) => {
-    const markers = conductorArray(script.markers).filter(Boolean);
-    const command = conductorArray(script.command_template).join(" ");
-    const description = script.description ? `<p class="conductor-script-description">${escapeHtml(script.description)}</p>` : "";
-    const areas = conductorArray(script.areas).filter(Boolean);
-    const docCount = conductorArray(script.call_conventions).length;
-    const badges = [
-      conductorScriptBadge(script.kind),
-      conductorScriptBadge(script.risk, `conductor-risk-${script.risk || "unknown"}`),
-      script.quarantine_safe ? conductorScriptBadge("quarantine first-pass", "conductor-quarantine-badge") : "",
-      conductorScriptBadge(`${docCount} doc command${docCount === 1 ? "" : "s"}`),
-      ...areas.slice(0, 5).map((area) => conductorScriptBadge(area, "conductor-area-badge")),
-      ...markers.slice(0, 4).map((marker) => conductorScriptBadge(marker, "conductor-marker-badge"))
-    ].join("");
-    return `<article class="conductor-item conductor-script-item"><header class="conductor-script-header"><strong class="conductor-script-title">${escapeHtml(script.id || "")}</strong></header><div class="conductor-script-badges">${badges}</div><code class="conductor-command-template">${escapeHtml(command)}</code>${description}${renderConductorQuarantineNote(script)}${renderConductorSuggestedInvocations(script)}${renderConductorScriptExamples(script)}</article>`;
-  }).join("");
+  const ordered = selectedScript
+    ? [selectedScript, ...filtered.filter((script) => conductorScriptId(script) !== selectedId)]
+    : filtered;
+  conductorScripts.innerHTML = ordered.slice(0, 80).map((script) => renderConductorScriptItem(script, selectedId)).join("");
 }
 
 function conductorSelectedScript() {
@@ -325,5 +350,6 @@ function initConductorApp() {
   conductorFillSsl?.addEventListener("click", fillConductorSslPayload);
   conductorScriptArea?.addEventListener("change", refreshConductorScriptsFromCache);
   conductorScriptSearch?.addEventListener("input", refreshConductorScriptsFromCache);
+  conductorScriptSelect?.addEventListener("change", refreshConductorScriptsFromCache);
   refreshConductor().catch((error) => conductorSetStatus(`Conductor error: ${error.message}`));
 }

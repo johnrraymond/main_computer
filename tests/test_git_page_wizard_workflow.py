@@ -127,9 +127,10 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             'id="git-project-path"',
             'id="git-project-list"',
             'id="git-project-archive-list"',
-            'id="git-project-dashboard"',
             'id="git-project-wizard-plan"',
-            "Project Selector",
+            'data-widget-label="Projects"',
+            'data-mc-component-label="Git Projects"',
+            'data-mc-component-label="Git Projects Layout"',
             "VIP project cannot be archived",
             "function loadGitProjects()",
             "function inspectSelectedGitProject(",
@@ -148,7 +149,6 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             "secrets_filter",
             "prepare_commit_snapshot",
             "function bindGitProjectCardSubscreen(",
-            "Prioritized project report",
             "Prioritized workflow queue",
             "Action queue",
             ".gitignore review",
@@ -242,6 +242,7 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         )
         self.assertIn(".git-tools-project-card", GIT_TOOLS_CSS)
         self.assertIn(".git-project-layout", GIT_TOOLS_CSS)
+        self.assertNotIn(".git-project-header", GIT_TOOLS_CSS)
         self.assertIn("grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);", GIT_TOOLS_CSS)
         self.assertIn(".git-project-roster", GIT_TOOLS_CSS)
         self.assertIn(".git-project-next-step", GIT_TOOLS_CSS)
@@ -297,16 +298,13 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
                 self.assertNotIn(snippet, APPLICATIONS_INDEX_HTML)
         self.assertTrue((PROJECT_ROOT / "tools/git/git_tool_fix_project_head.py").exists())
 
-    def test_git_project_generated_report_and_wizard_markup_keeps_mc_metadata(self) -> None:
+    def test_git_project_wizard_markup_keeps_mc_metadata_without_report_pane(self) -> None:
         expected_snippets = (
             "const GIT_PROJECT_MC_FEATURE_ID = \"git-tools.feature.projects\";",
             "function gitProjectMcComponentAttrs(",
             "function gitProjectWizardStepComponentId(step = {}, actionKey = \"\")",
-            'gitProjectMcComponentAttrs("git-tools.projects.dashboard.report", "output", "Prioritized Project Report", "git-tools.projects.dashboard")',
             'gitProjectMcComponentAttrs(`${stepComponentId}.command-runner`, "panel", `${stepLabel} Command Details`, stepComponentId)',
             'data-mc-component-id="${escapeHtml(stepComponentId)}.command-runner.preview"',
-            'data-mc-component-id="git-tools.projects.report.raw-details.summary"',
-            'data-mc-component-id="git-tools.projects.report.plan-metadata.output"',
             'gitProjectMcComponentAttrs("git-tools.projects.wizard.summary", "status", "Prioritized Workflow Queue Summary", "git-tools.projects.wizard-plan")',
             "const groupComponentId = `git-tools.projects.wizard.section.${groupSlug}`;",
             'gitProjectMcComponentAttrs(groupComponentId, "panel", title, "git-tools.projects.wizard.queue")',
@@ -321,6 +319,18 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         for snippet in expected_snippets:
             with self.subTest(snippet=snippet):
                 self.assertIn(snippet, APPLICATIONS_INDEX_HTML)
+
+        removed_report_snippets = (
+            'id="git-project-dashboard"',
+            "Prioritized project report",
+            "git-tools.projects.dashboard.report",
+            "git-tools.projects.report.raw-details",
+            "git-tools.projects.report.plan-metadata",
+            "git-project-report",
+        )
+        for snippet in removed_report_snippets:
+            with self.subTest(removed_report_snippet=snippet):
+                self.assertNotIn(snippet, APPLICATIONS_INDEX_HTML)
 
 
     def test_secrets_filter_card_routes_separately_from_commit_card(self) -> None:
@@ -739,7 +749,7 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         self.assertLess(accordion_index, server_index)
         expected_snippets = (
             'data-git-progressive-ui="true"',
-            "Project Selector",
+            'data-widget-label="Projects"',
             "Current Projects",
             "Git / Gitea workflow",
         )
@@ -753,6 +763,11 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             "Current Git Repository",
             "Ask AI to do Git work",
             "technical patch, shim, console, and dry-run panels",
+            "Project Selector",
+            "Pick a project on the right.",
+            "prioritized workflow queue here",
+            "The Main Computer project is VIP",
+            'class="git-project-header"',
         )
         for snippet in removed_snippets:
             with self.subTest(removed_snippet=snippet):

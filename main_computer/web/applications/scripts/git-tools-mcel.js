@@ -19,7 +19,6 @@
         {selector: "#git-project-selector-panel", role: "project-selector-panel", kind: "panel", fit: "busy-card"},
         {selector: "#git-project-current", role: "current-project-status", kind: "status", fit: "wrap-status"},
         {selector: "#git-project-next-step", role: "next-step-status", kind: "status", fit: "wrap-status"},
-        {selector: "#git-project-dashboard", role: "project-dashboard", kind: "output", fit: "intentional-scroll"},
         {selector: "#git-project-wizard-plan", role: "project-wizard-plan", kind: "output", fit: "intentional-scroll"},
         {selector: "#git-project-list", role: "active-project-list", kind: "list", fit: "bounded-list"},
         {selector: "#git-project-archive-list", role: "archived-project-list", kind: "list", fit: "bounded-list"},

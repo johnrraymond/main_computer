@@ -139,7 +139,6 @@ async function addGitProjectFromInput() {
     await inspectSelectedGitProject();
     await refreshGitStatus();
   } catch (error) {
-    if (gitProjectDashboard) gitProjectDashboard.textContent = gitToolsOperationErrorText("Add project failed", error);
     setGitProjectNextStep("Add project failed", error?.message || String(error), path, "blocking");
   }
 }
@@ -153,7 +152,6 @@ async function setSelectedGitProjectLock(locked) {
     renderGitProjects(data);
     await inspectSelectedGitProject({quiet: true});
   } catch (error) {
-    if (gitProjectDashboard) gitProjectDashboard.textContent = gitToolsOperationErrorText("Project lock update failed", error);
     setGitProjectNextStep("Project lock update failed", error?.message || String(error), project.path || "", "blocking");
   }
 }
@@ -175,7 +173,6 @@ async function inspectSelectedGitProject(options = {}) {
     }
     return data;
   } catch (error) {
-    if (gitProjectDashboard) gitProjectDashboard.textContent = gitToolsOperationErrorText("Project inspection failed", error);
     setGitProjectNextStep("Project inspection failed", error?.message || String(error), projectId || "", "blocking");
     throw error;
   }
