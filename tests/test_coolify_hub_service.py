@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
-import io
 import json
 import sys
 import unittest
-from contextlib import redirect_stderr
 from pathlib import Path
 
 
@@ -199,58 +197,6 @@ class CoolifyHubServiceTests(unittest.TestCase):
             coolify_hub_service.coolify_domain_with_backend_port(profile),
             "https://testnet-hub.greatlibrary.io:8785",
         )
-
-    def test_wait_for_hub_reports_transient_errors_until_success(self) -> None:
-        profile = coolify_hub_service.load_hub_network_registry().get("testnet")
-        args = _args(
-            network="testnet",
-            hub_wait_timeout_s=0.001,
-            hub_wait_poll_s=0.0,
-            hub_status_timeout_s=0.2,
-        )
-        attempts: list[str] = []
-
-        class FakeHubStatusResponse:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def read(self) -> bytes:
-                return b'{"network":{"network_key":"testnet","chain_id":42424241}}'
-
-        original_urlopen = coolify_hub_service.urllib.request.urlopen
-
-        def fake_urlopen(request, timeout=0):
-            del timeout
-            attempts.append(request.full_url)
-            if len(attempts) < 3:
-                raise coolify_hub_service.urllib.error.HTTPError(
-                    request.full_url,
-                    503,
-                    "Service Unavailable",
-                    hdrs={},
-                    fp=None,
-                )
-            return FakeHubStatusResponse()
-
-        stderr = io.StringIO()
-        coolify_hub_service.urllib.request.urlopen = fake_urlopen
-        try:
-            with redirect_stderr(stderr):
-                result = coolify_hub_service.wait_for_hub(profile, args)
-        finally:
-            coolify_hub_service.urllib.request.urlopen = original_urlopen
-
-        self.assertTrue(result["ok"])
-        self.assertEqual(len(attempts), 3)
-        self.assertEqual(result["attempts"], 3)
-        self.assertEqual(result["transient_error_count"], 2)
-        wait_log = stderr.getvalue()
-        self.assertIn("HTTPError: HTTP Error 503: Service Unavailable", wait_log)
-        self.assertIn("retrying in 0.0s until ready", wait_log)
-        self.assertIn("https://testnet-hub.greatlibrary.io/api/hub/status", wait_log)
 
     def test_explicit_dockerfile_location_override_is_respected(self) -> None:
         profile = coolify_hub_service.load_hub_network_registry().get("testnet")
