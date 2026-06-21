@@ -2012,7 +2012,7 @@ class HubServerHandler(_JsonHandler):
             str(worker_payload.get("worker_instance_id") or worker_payload.get("connection_id") or verification["worker_node_id"]),
             default=verification["worker_node_id"],
         )
-        ring_policy = {"0": "operator", "1": "protected", "2": "public", "3": "marketplace"}[assigned_ring]
+        ring_policy = {"0": "operator", "1": "protected", "2": "public", "3": "public-untrusted"}[assigned_ring]
         pricing_policy = f"{ring_policy}-{verification['network']}"
 
         capabilities = dict(worker_payload.get("capabilities", {})) if isinstance(worker_payload.get("capabilities"), dict) else {}

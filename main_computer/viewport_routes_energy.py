@@ -473,16 +473,16 @@ class ViewportEnergyRoutesMixin:
         selected_network = text(settings.get("selectedNetwork", settings.get("selected_network")), "none").lower()
         if selected_network not in {"mainnet", "testnet", "test", "dev", "none"}:
             selected_network = "none"
-        requested_ring = text(settings.get("workerRequestedRing", settings.get("worker_requested_ring")), "2")
-        if requested_ring not in {"0", "1", "2"}:
-            requested_ring = "2"
+        requested_ring = text(settings.get("workerRequestedRing", settings.get("worker_requested_ring")), "3")
+        if requested_ring not in {"0", "1", "2", "3"}:
+            requested_ring = "3"
         connection_status = text(settings.get("workerConnectionStatus", settings.get("worker_connection_status")), "disconnected")
         if connection_status not in {"disconnected", "connecting", "connected", "failed", "stale"}:
             connection_status = "disconnected"
         signed_connection = settings.get("signedWorkerConnection", settings.get("signed_worker_connection"))
         if isinstance(signed_connection, dict):
             signed_assigned_ring = text(signed_connection.get("assigned_ring"), "")
-            if signed_assigned_ring not in {"0", "1", "2"}:
+            if signed_assigned_ring not in {"0", "1", "2", "3"}:
                 signed_assigned_ring = ""
             signed_connection = {
                 "network": text(signed_connection.get("network"), selected_network),
@@ -507,7 +507,7 @@ class ViewportEnergyRoutesMixin:
             signed_connection = {}
 
         assigned_ring = text(settings.get("workerAssignedRing", settings.get("worker_assigned_ring")), "")
-        if assigned_ring not in {"0", "1", "2"}:
+        if assigned_ring not in {"0", "1", "2", "3"}:
             assigned_ring = ""
         cleaned: dict[str, Any] = {
             "selectedNetwork": selected_network,
@@ -631,7 +631,8 @@ class ViewportEnergyRoutesMixin:
         return [
             {"ring": "0", "label": "Ring 0 - Operator", "description": "operator / direct whitelist"},
             {"ring": "1", "label": "Ring 1 - Protected", "description": "protected trusted workers"},
-            {"ring": "2", "label": "Ring 2 - Public", "description": "public/default workers"},
+            {"ring": "2", "label": "Ring 2 - Public", "description": "public workers"},
+            {"ring": "3", "label": "Ring 3 - Public untrusted", "description": "public untrusted workers"},
         ]
 
     def _worker_network_profile_payload(self, profile: Any) -> dict[str, Any]:
@@ -669,16 +670,16 @@ class ViewportEnergyRoutesMixin:
         return key
 
     def _normalize_worker_ring(self, value: Any) -> str:
-        ring = str(value if value is not None else "2").strip()
-        if ring not in {"0", "1", "2"}:
-            raise ValueError("Worker ring must be one of 0, 1, or 2.")
+        ring = str(value if value is not None else "3").strip()
+        if ring not in {"0", "1", "2", "3"}:
+            raise ValueError("Worker ring must be one of 0, 1, 2, or 3.")
         return ring
 
     def _worker_network_session_payload(self, settings: dict[str, Any], *, check_hub: bool = False) -> dict[str, Any]:
         profiles = self._worker_network_profiles_payload()
         profiles_by_key = {str(profile["network"]): profile for profile in profiles}
         selected = self._normalize_worker_network_key(settings.get("selectedNetwork", "none"))
-        requested_ring = self._normalize_worker_ring(settings.get("workerRequestedRing", "2"))
+        requested_ring = self._normalize_worker_ring(settings.get("workerRequestedRing", "3"))
         signed_connection = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
         hub_registration = settings.get("workerHubRegistration") if isinstance(settings.get("workerHubRegistration"), dict) else {}
         worker_pool = settings.get("workerPool") if isinstance(settings.get("workerPool"), dict) else {}
@@ -778,7 +779,7 @@ class ViewportEnergyRoutesMixin:
                 return
             body = self._read_json()
             selected = self._normalize_worker_network_key(body.get("network"))
-            requested_ring = self._normalize_worker_ring(body.get("requested_ring", "2"))
+            requested_ring = self._normalize_worker_ring(body.get("requested_ring", "3"))
             settings = self._load_worker_settings()
             settings["selectedNetwork"] = selected
             settings["workerRequestedRing"] = requested_ring
@@ -830,7 +831,7 @@ class ViewportEnergyRoutesMixin:
                 return
             body = self._read_json()
             selected = self._normalize_worker_network_key(body.get("network"), allow_none=False)
-            requested_ring = self._normalize_worker_ring(body.get("requested_ring", "2"))
+            requested_ring = self._normalize_worker_ring(body.get("requested_ring", "3"))
             wallet_address = self._normalize_worker_wallet_address(body.get("wallet_address"))
             signature = str(body.get("signature") or "").strip()
             message = str(body.get("message") or "").strip()

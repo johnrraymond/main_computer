@@ -43,6 +43,7 @@
     const workerRentalEnabled = document.querySelector("#worker-rental-enabled");
     const workerLockAiModel = document.querySelector("#worker-lock-ai-model");
     const workerRegistrationHub = document.querySelector("#worker-registration-hub");
+    const workerRegistrationHubStatus = document.querySelector("#worker-registration-hub-status");
     const workerRegistrationStatusPill = document.querySelector("#worker-registration-status-pill");
     const workerNodeId = document.querySelector("#worker-node-id");
     const workerEndpoint = document.querySelector("#worker-endpoint");

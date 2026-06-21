@@ -308,6 +308,40 @@
     .worker-field-grid label:not(.worker-checkline) {
       grid-template-columns: minmax(0, 1fr);
     }
+    .worker-seller-hub-status {
+      display: grid;
+      gap: 6px;
+      color: var(--ink);
+      font-weight: 800;
+    }
+    .worker-seller-hub-status span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .worker-seller-hub-status output {
+      min-width: 0;
+      width: 100%;
+      border: 1px solid rgba(246, 199, 91, 0.32);
+      border-radius: 8px;
+      background: rgba(246, 199, 91, 0.06);
+      color: var(--ink);
+      padding: 9px 10px;
+      font: inherit;
+      font-weight: 700;
+    }
+    .worker-disabled-field {
+      opacity: 0.62;
+    }
+    .worker-app input:disabled,
+    .worker-app select:disabled {
+      border-color: rgba(79, 73, 58, 0.78);
+      background: rgba(36, 37, 31, 0.85);
+      color: rgba(232, 226, 191, 0.62);
+      cursor: not-allowed;
+    }
     .worker-field-grid label small {
       margin-top: -4px;
       font-weight: 700;

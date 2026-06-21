@@ -64,33 +64,6 @@
         <small>All four worker targets are visible by default. Only the selected network accepts jobs after wallet signing.</small>
       </div>
 
-      <div class="worker-card worker-connect-order-card" aria-label="Signed worker connection">
-        <h4>Signed Worker Connection</h4>
-        <p class="worker-card-note">Choose a ring, then sign a connection/account-balance order. Network selection handles wallet connection so the selected Hub knows which wallet to credit for completed work.</p>
-        <label>
-          <span>Requested ring</span>
-          <select id="worker-network-ring" autocomplete="off">
-            <option value="0">Ring 0 - Operator / direct whitelist</option>
-            <option value="1">Ring 1 - Protected trusted worker</option>
-            <option value="2" selected>Ring 2 - Public/default worker</option>
-          </select>
-        </label>
-        <dl class="worker-network-status-grid">
-          <div><dt>Wallet</dt><dd id="worker-network-wallet">Not connected</dd></div>
-          <div><dt>Credit wallet</dt><dd id="worker-network-credit-wallet">—</dd></div>
-          <div><dt>Requested ring</dt><dd id="worker-network-requested-ring">Ring 2</dd></div>
-          <div><dt>Assigned ring</dt><dd id="worker-network-assigned-ring">—</dd></div>
-          <div><dt>Signed order</dt><dd id="worker-network-signature-status">Not signed</dd></div>
-          <div><dt>Hub registration</dt><dd id="worker-network-hub-registration">—</dd></div>
-          <div><dt>Worker ID</dt><dd id="worker-network-worker-id">—</dd></div>
-          <div><dt>Pricing policy</dt><dd id="worker-network-pricing-policy">—</dd></div>
-          <div><dt>Worker pool</dt><dd id="worker-network-pool">—</dd></div>
-          <div><dt>Worker runtime</dt><dd id="worker-network-runtime">Inactive</dd></div>
-        </dl>
-        <div class="worker-inline-actions">
-          <button type="button" id="worker-network-sign-order" disabled>Sign Connect Order</button>
-        </div>
-      </div>
     </section>
 
     <div class="worker-workspace mc-app-workspace" aria-label="Worker marketplace configuration">
@@ -106,47 +79,52 @@
           </label>
         </div>
 
+        <div class="worker-card worker-connect-order-card" aria-label="Signed worker connection">
+          <h4>Signed Worker Connection</h4>
+          <p class="worker-card-note">Choose a ring, then sign a connection/account-balance order. Network selection handles wallet connection so the selected Hub knows which wallet to credit for completed work.</p>
+          <label>
+            <span>Requested ring</span>
+            <select id="worker-network-ring" autocomplete="off">
+              <option value="0">Ring 0 - Operator / direct whitelist</option>
+              <option value="1">Ring 1 - Protected trusted worker</option>
+              <option value="2">Ring 2 - Public</option>
+              <option value="3" selected>Ring 3 - Public untrusted</option>
+            </select>
+          </label>
+          <dl class="worker-network-status-grid">
+            <div><dt>Wallet</dt><dd id="worker-network-wallet">Not connected</dd></div>
+            <div><dt>Credit wallet</dt><dd id="worker-network-credit-wallet">—</dd></div>
+            <div><dt>Requested ring</dt><dd id="worker-network-requested-ring">Ring 3 - Public untrusted</dd></div>
+            <div><dt>Assigned ring</dt><dd id="worker-network-assigned-ring">—</dd></div>
+            <div><dt>Signed order</dt><dd id="worker-network-signature-status">Not signed</dd></div>
+            <div><dt>Hub registration</dt><dd id="worker-network-hub-registration">—</dd></div>
+            <div><dt>Worker ID</dt><dd id="worker-network-worker-id">—</dd></div>
+            <div><dt>Pricing policy</dt><dd id="worker-network-pricing-policy">—</dd></div>
+            <div><dt>Worker pool</dt><dd id="worker-network-pool">—</dd></div>
+            <div><dt>Worker runtime</dt><dd id="worker-network-runtime">Inactive</dd></div>
+          </dl>
+          <div class="worker-inline-actions">
+            <button type="button" id="worker-network-sign-order" disabled>Sign Connect Order</button>
+          </div>
+        </div>
+
         <div class="worker-card worker-field-grid worker-primary-offer">
           <h4>How others pay me</h4>
-          <label>
+          <div class="worker-seller-hub-status worker-wide" aria-label="Registration hub status">
             <span>Registration hub</span>
-            <select id="worker-registration-hub" autocomplete="off"></select>
-            <small>Sell-capable hubs from Hub Connections are available here.</small>
-          </label>
-          <label>
-            <span>Worker node id</span>
-            <input id="worker-node-id" type="text" value="local-worker-001" autocomplete="off">
-          </label>
-          <label>
-            <span>Worker callback endpoint</span>
-            <input id="worker-endpoint" type="url" value="http://127.0.0.1:8771" autocomplete="off">
-            <small>Required by the hub registry. Loopback HTTP is allowed for local development.</small>
-          </label>
-          <label>
+            <output id="worker-registration-hub-status" for="worker-network-sign-order">Select a worker connection above.</output>
+            <small>Comes from the Signed Worker Connection above; this hub is not edited here.</small>
+            <input id="worker-registration-hub" type="hidden" value="">
+          </div>
+          <label class="worker-disabled-field">
             <span>Models offered</span>
-            <input id="worker-offer-models" type="text" value="mock-ai-model-phase9" autocomplete="off">
-            <small>Comma-separated model ids this worker can lease through worker_pull_v0.</small>
-          </label>
-          <label>
-            <span>Capability</span>
-            <select id="worker-offer-capability">
-              <option value="chat.completions">chat.completions</option>
-            </select>
+            <input id="worker-offer-models" type="text" value="mock-ai-model-phase9" autocomplete="off" disabled aria-disabled="true">
+            <small>Model selection is fixed until local model discovery is connected.</small>
           </label>
           <label>
             <span>Minimum price per request</span>
             <input id="worker-offer-price" type="number" min="1" step="1" value="5500123">
             <small>compute credits, fixed_per_call_v0</small>
-          </label>
-          <label>
-            <span>Max concurrent jobs</span>
-            <input id="worker-max-concurrency" type="number" min="1" step="1" value="1">
-          </label>
-          <label>
-            <span>Execution mode</span>
-            <select id="worker-execution-mode">
-              <option value="worker_pull_v0">worker_pull_v0</option>
-            </select>
           </label>
         </div>
 

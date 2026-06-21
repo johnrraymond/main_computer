@@ -9,10 +9,12 @@
     const WORKER_STATUS_MESSAGE_MAX_LENGTH = 260;
     const WORKER_NETWORK_ORDER = ["mainnet", "testnet", "test", "dev"];
     const WORKER_NETWORK_NONE = "none";
+    const WORKER_DEFAULT_RING = "3";
     const WORKER_RING_LABELS = {
       "0": "Ring 0 - Operator",
       "1": "Ring 1 - Protected",
-      "2": "Ring 2 - Public"
+      "2": "Ring 2 - Public",
+      "3": "Ring 3 - Public untrusted"
     };
     let workerSettingsLoaded = false;
     let workerHubs = [...workerDefaultHubs];
@@ -20,7 +22,7 @@
     let workerNetworkSession = {
       selected_network: WORKER_NETWORK_NONE,
       connection_status: "disconnected",
-      requested_ring: "2",
+      requested_ring: WORKER_DEFAULT_RING,
       assigned_ring: "",
       worker_id: "",
       pricing_policy: "",
@@ -2813,7 +2815,8 @@
     }
 
     function workerRingLabel(ring = workerNetworkSession.requested_ring) {
-      return WORKER_RING_LABELS[String(ring || "2")] || WORKER_RING_LABELS["2"];
+      const normalized = String(ring || WORKER_DEFAULT_RING);
+      return WORKER_RING_LABELS[normalized] || WORKER_RING_LABELS[WORKER_DEFAULT_RING];
     }
 
     function workerNetworkWalletConnectedToSelected() {
@@ -2932,7 +2935,7 @@
         ...workerNetworkSession,
         selected_network: workerNetworkKey(session.selected_network),
         connection_status: String(session.connection_status || "disconnected"),
-        requested_ring: String(session.requested_ring || "2"),
+        requested_ring: String(session.requested_ring || WORKER_DEFAULT_RING),
         assigned_ring: String(session.assigned_ring || ""),
         worker_id: String(session.worker_id || ""),
         pricing_policy: String(session.pricing_policy || ""),
@@ -3053,6 +3056,7 @@
       if (workerNetworkRing && workerNetworkRing.value !== workerNetworkSession.requested_ring) {
         workerNetworkRing.value = workerNetworkSession.requested_ring;
       }
+      workerRenderRegistrationHubOptions();
     }
 
     async function workerLoadNetworkSessionFromBackend() {
@@ -3072,7 +3076,7 @@
 
     async function workerSelectNetwork(network, {requestedRing = null} = {}) {
       const selected = workerNetworkKey(network);
-      const ring = String(requestedRing || workerNetworkRing?.value || workerNetworkSession.requested_ring || "2");
+      const ring = String(requestedRing || workerNetworkRing?.value || workerNetworkSession.requested_ring || WORKER_DEFAULT_RING);
       workerNetworkSessionInFlight = true;
       workerNetworkSession = {
         ...workerNetworkSession,
@@ -3150,7 +3154,7 @@
         network: selected,
         hub_url: profile?.hub_url || workerNetworkSession.connected_hub_url || "",
         chain_id: String(profile?.chain_id || ""),
-        requested_ring: String(workerNetworkSession.requested_ring || "2"),
+        requested_ring: String(workerNetworkSession.requested_ring || WORKER_DEFAULT_RING),
         wallet_address: walletAddress,
         credit_wallet: walletAddress,
         worker_node_id: workerElementValue(workerNodeId, "local-worker-001"),
@@ -3168,7 +3172,7 @@
       return {
         hub_url: hubUrl,
         network: selected,
-        requested_ring: String(workerNetworkSession.requested_ring || "2"),
+        requested_ring: String(workerNetworkSession.requested_ring || WORKER_DEFAULT_RING),
         wallet_address: normalizedWallet,
         message,
         signature,
@@ -3176,7 +3180,7 @@
           ...offerPayload.worker,
           capabilities: {
             ...(offerPayload.worker.capabilities || {}),
-            requested_ring: String(workerNetworkSession.requested_ring || "2"),
+            requested_ring: String(workerNetworkSession.requested_ring || WORKER_DEFAULT_RING),
             worker_connect_network: selected,
             credit_wallet: normalizedWallet
           }
@@ -3258,34 +3262,50 @@
       return models.length ? [...new Set(models)] : ["mock-ai-model-phase9"];
     }
 
+    function workerNetworkHubUrl() {
+      const selected = workerNetworkKey(workerNetworkSession.selected_network);
+      if (selected === WORKER_NETWORK_NONE) return "";
+      const profile = workerNetworkSession.profile || workerNetworkProfile(selected);
+      return String(workerNetworkSession.connected_hub_url || profile?.hub_url || "").trim();
+    }
+
+    function workerHubDisplayLabel(hubUrl) {
+      const cleanUrl = String(hubUrl || "").trim();
+      if (!cleanUrl) return "";
+      const configured = workerHubs.find((hub) => String(hub?.url || "").trim() === cleanUrl);
+      const selected = workerNetworkKey(workerNetworkSession.selected_network);
+      const networkLabel = selected === WORKER_NETWORK_NONE ? "" : `${workerNetworkDisplayName(selected)} Hub`;
+      const label = configured?.name || networkLabel || "Connected Hub";
+      return `${label} - ${cleanUrl}`;
+    }
+
     function workerSelectedHubUrl() {
-      const selected = workerElementValue(workerRegistrationHub);
-      if (selected) return selected;
-      return workerHubs.find(workerHubCanSell)?.url || "";
+      return workerNetworkHubUrl();
     }
 
     function workerRenderRegistrationHubOptions(selectedUrl = "") {
-      if (!workerRegistrationHub) return;
-      const previous = selectedUrl || workerRegistrationHub.value || "";
-      const sellableHubs = workerHubs.filter((hub) => workerHubCanSell(hub) && String(hub.url || "").trim());
-      workerRegistrationHub.innerHTML = "";
-      if (!sellableHubs.length) {
-        const option = document.createElement("option");
-        option.value = "";
-        option.textContent = "Add a sell-capable hub first";
-        workerRegistrationHub.append(option);
-        workerRegistrationHub.disabled = true;
+      const hubUrl = String(workerNetworkHubUrl() || selectedUrl || workerElementValue(workerRegistrationHub)).trim();
+      if (workerRegistrationHub && "value" in workerRegistrationHub) {
+        workerRegistrationHub.value = hubUrl;
+      }
+      if (!workerRegistrationHubStatus) return;
+      const selected = workerNetworkKey(workerNetworkSession.selected_network);
+      if (!hubUrl || selected === WORKER_NETWORK_NONE) {
+        workerRegistrationHubStatus.textContent = "Select a worker connection above.";
         return;
       }
-      workerRegistrationHub.disabled = false;
-      sellableHubs.forEach((hub) => {
-        const option = document.createElement("option");
-        option.value = String(hub.url || "").trim();
-        option.textContent = `${hub.name || "Hub"} - ${option.value}`;
-        workerRegistrationHub.append(option);
-      });
-      const match = sellableHubs.find((hub) => String(hub.url || "").trim() === previous);
-      workerRegistrationHub.value = match ? previous : String(sellableHubs[0].url || "").trim();
+      const signed = workerNetworkSignedConnection();
+      const signedForSelected = (
+        signed.network === selected
+        && String(signed.requested_ring || "") === String(workerNetworkSession.requested_ring || "")
+        && workerWalletValidAddress(signed.wallet_address || "")
+      );
+      const registrationState = workerNetworkHubRegistered()
+        ? "Accepted"
+        : signedForSelected
+          ? "Signed; hub registration pending"
+          : "Selected; not signed yet";
+      workerRegistrationHubStatus.textContent = `${registrationState}: ${workerHubDisplayLabel(hubUrl)}`;
     }
 
     function workerSetRegistrationStatus(message, kind = "") {
@@ -3372,7 +3392,7 @@
       const models = workerOfferModelsArray();
       return {
         selectedNetwork: workerNetworkKey(workerNetworkSession.selected_network),
-        workerRequestedRing: String(workerNetworkRing?.value || workerNetworkSession.requested_ring || "2"),
+        workerRequestedRing: String(workerNetworkRing?.value || workerNetworkSession.requested_ring || WORKER_DEFAULT_RING),
         workerConnectionStatus: String(workerNetworkSession.connection_status || "disconnected"),
         workerAssignedRing: String(workerNetworkSession.assigned_ring || ""),
         workerRegisteredId: String(workerNetworkSession.worker_id || ""),
@@ -3455,7 +3475,7 @@
         workerNetworkSession = {
           ...workerNetworkSession,
           selected_network: workerNetworkKey(parsed.selectedNetwork),
-          requested_ring: String(parsed.workerRequestedRing || workerNetworkSession.requested_ring || "2"),
+          requested_ring: String(parsed.workerRequestedRing || workerNetworkSession.requested_ring || WORKER_DEFAULT_RING),
           connection_status: String(parsed.workerConnectionStatus || workerNetworkSession.connection_status || "disconnected"),
           assigned_ring: String(parsed.workerAssignedRing || workerNetworkSession.assigned_ring || ""),
           worker_id: String(parsed.workerRegisteredId || workerNetworkSession.worker_id || ""),
@@ -3551,7 +3571,7 @@
       const settings = readWorkerFormSettings();
       const models = workerOfferModelsArray();
       if (!settings.registrationHubUrl) {
-        throw new Error("Choose a sell-capable hub before registering an offer.");
+        throw new Error("Select a worker connection before registering an offer.");
       }
       if (!settings.nodeId) {
         throw new Error("Worker node id is required.");
@@ -3765,7 +3785,7 @@
           const selected = workerNetworkKey(workerNetworkSession.selected_network);
           workerNetworkSession = {
             ...workerNetworkSession,
-            requested_ring: String(workerNetworkRing.value || "2"),
+            requested_ring: String(workerNetworkRing.value || WORKER_DEFAULT_RING),
             signed_connection: {}
           };
           renderWorkerNetworkSurface();

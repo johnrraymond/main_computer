@@ -53,6 +53,30 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     # content to the right and starve the form for width.
     assert html.count("<main") == 0
 
+    seller_section = html[html.index('id="worker-sell-work"') : html.index('id="worker-use-remote-workers"')]
+    network_surface = html[html.index('class="worker-network-surface"') : html.index('id="worker-sell-work"')]
+    assert 'class="worker-card worker-connect-order-card"' in seller_section
+    assert "Signed Worker Connection" in seller_section
+    assert "Signed Worker Connection" not in network_surface
+    assert seller_section.index("Signed Worker Connection") < seller_section.index("How others pay me")
+    assert '<select id="worker-registration-hub"' not in seller_section
+    assert 'id="worker-registration-hub-status"' in seller_section
+    assert 'id="worker-registration-hub" type="hidden"' in seller_section
+    assert 'id="worker-node-id"' not in seller_section
+    assert 'id="worker-endpoint"' not in seller_section
+    assert 'id="worker-offer-capability"' not in seller_section
+    assert 'id="worker-max-concurrency"' not in seller_section
+    assert 'id="worker-execution-mode"' not in seller_section
+    assert 'id="worker-offer-models" type="text" value="mock-ai-model-phase9" autocomplete="off" disabled aria-disabled="true"' in seller_section
+    assert 'id="worker-offer-price" type="number" min="1" step="1" value="5500123"' in seller_section
+
+    assert '<option value="2">Ring 2 - Public</option>' in html
+    assert '<option value="2" selected>Ring 2' not in html
+    assert '<option value="3" selected>Ring 3 - Public untrusted</option>' in html
+    assert '<dd id="worker-network-requested-ring">Ring 3 - Public untrusted</dd>' in html
+    assert 'const WORKER_DEFAULT_RING = "3";' in js
+    assert '"3": "Ring 3 - Public untrusted"' in js
+    assert '"2": "Ring 2 - Public"' in js
     # The layout presents selling first, then buying remote work below it,
     # because a worker must be sell-ready before it can safely use others.
     assert "grid-template-columns: minmax(0, 1fr);" in css
@@ -101,8 +125,14 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     dispatch = VIEWPORT_ROUTES.read_text(encoding="utf-8")
     energy_routes = VIEWPORT_ENERGY_ROUTES.read_text(encoding="utf-8")
 
-    assert 'id="worker-registration-hub"' in html
-    assert 'id="worker-endpoint"' in html
+    assert 'id="worker-registration-hub-status"' in html
+    assert 'id="worker-registration-hub" type="hidden"' in html
+    assert '<select id="worker-registration-hub"' not in html
+    assert 'id="worker-node-id"' not in html
+    assert 'id="worker-endpoint"' not in html
+    assert 'id="worker-offer-capability"' not in html
+    assert 'id="worker-max-concurrency"' not in html
+    assert 'id="worker-execution-mode"' not in html
     assert 'id="worker-register-offer"' in html
     assert 'id="worker-registered-offer-id"' in html
 
@@ -123,7 +153,7 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert "workerLoadMultisessionKeysForWallet" in js
 
     assert "workerRegistrationHub" in bindings
-    assert "workerEndpoint" in bindings
+    assert "workerRegistrationHubStatus" in bindings
     assert "workerRegisterOffer" in bindings
     assert "workerRegisteredOfferId" in bindings
 
@@ -358,6 +388,10 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert '"mainnet", "testnet", "test", "dev"' in energy_routes
     assert '"selectedNetwork": selected_network' in energy_routes
     assert '"workerRequestedRing": requested_ring' in energy_routes
+    assert 'requested_ring = text(settings.get("workerRequestedRing", settings.get("worker_requested_ring")), "3")' in energy_routes
+    assert 'if requested_ring not in {"0", "1", "2", "3"}:' in energy_routes
+    assert '{"ring": "3", "label": "Ring 3 - Public untrusted", "description": "public untrusted workers"}' in energy_routes
+    assert 'raise ValueError("Worker ring must be one of 0, 1, 2, or 3.")' in energy_routes
 
     # Cloudflare rejects bare Python urllib requests to the public Hub with 403/1010.
     # Worker Hub probes must send an explicit worker User-Agent and JSON Accept header.
