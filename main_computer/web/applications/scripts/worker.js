@@ -3291,7 +3291,7 @@
       if (!workerRegistrationHubStatus) return;
       const selected = workerNetworkKey(workerNetworkSession.selected_network);
       if (!hubUrl || selected === WORKER_NETWORK_NONE) {
-        workerRegistrationHubStatus.textContent = "Select a worker connection above.";
+        workerRegistrationHubStatus.textContent = "Select a worker connection below.";
         return;
       }
       const signed = workerNetworkSignedConnection();

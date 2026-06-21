@@ -58,9 +58,10 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert 'class="worker-card worker-connect-order-card"' in seller_section
     assert "Signed Worker Connection" in seller_section
     assert "Signed Worker Connection" not in network_surface
-    assert seller_section.index("Signed Worker Connection") < seller_section.index("How others pay me")
+    assert seller_section.index("How others pay me") < seller_section.index("Signed Worker Connection")
     assert '<select id="worker-registration-hub"' not in seller_section
     assert 'id="worker-registration-hub-status"' in seller_section
+    assert "Comes from the Signed Worker Connection below; this hub is not edited here." in seller_section
     assert 'id="worker-registration-hub" type="hidden"' in seller_section
     assert 'id="worker-node-id"' not in seller_section
     assert 'id="worker-endpoint"' not in seller_section
@@ -137,6 +138,7 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert 'id="worker-registered-offer-id"' in html
 
     assert "buildWorkerOfferRegistrationPayload" in js
+    assert "Select a worker connection below." in js
     assert 'pricing_type: "fixed_per_call_v0"' in js
     assert 'unit: "compute_credit"' in js
     assert 'mode: settings.executionMode' in js

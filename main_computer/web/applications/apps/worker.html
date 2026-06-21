@@ -79,6 +79,26 @@
           </label>
         </div>
 
+        <div class="worker-card worker-field-grid worker-primary-offer">
+          <h4>How others pay me</h4>
+          <div class="worker-seller-hub-status worker-wide" aria-label="Registration hub status">
+            <span>Registration hub</span>
+            <output id="worker-registration-hub-status" for="worker-network-sign-order">Select a worker connection below.</output>
+            <small>Comes from the Signed Worker Connection below; this hub is not edited here.</small>
+            <input id="worker-registration-hub" type="hidden" value="">
+          </div>
+          <label class="worker-disabled-field">
+            <span>Models offered</span>
+            <input id="worker-offer-models" type="text" value="mock-ai-model-phase9" autocomplete="off" disabled aria-disabled="true">
+            <small>Model selection is fixed until local model discovery is connected.</small>
+          </label>
+          <label>
+            <span>Minimum price per request</span>
+            <input id="worker-offer-price" type="number" min="1" step="1" value="5500123">
+            <small>compute credits, fixed_per_call_v0</small>
+          </label>
+        </div>
+
         <div class="worker-card worker-connect-order-card" aria-label="Signed worker connection">
           <h4>Signed Worker Connection</h4>
           <p class="worker-card-note">Choose a ring, then sign a connection/account-balance order. Network selection handles wallet connection so the selected Hub knows which wallet to credit for completed work.</p>
@@ -106,26 +126,6 @@
           <div class="worker-inline-actions">
             <button type="button" id="worker-network-sign-order" disabled>Sign Connect Order</button>
           </div>
-        </div>
-
-        <div class="worker-card worker-field-grid worker-primary-offer">
-          <h4>How others pay me</h4>
-          <div class="worker-seller-hub-status worker-wide" aria-label="Registration hub status">
-            <span>Registration hub</span>
-            <output id="worker-registration-hub-status" for="worker-network-sign-order">Select a worker connection above.</output>
-            <small>Comes from the Signed Worker Connection above; this hub is not edited here.</small>
-            <input id="worker-registration-hub" type="hidden" value="">
-          </div>
-          <label class="worker-disabled-field">
-            <span>Models offered</span>
-            <input id="worker-offer-models" type="text" value="mock-ai-model-phase9" autocomplete="off" disabled aria-disabled="true">
-            <small>Model selection is fixed until local model discovery is connected.</small>
-          </label>
-          <label>
-            <span>Minimum price per request</span>
-            <input id="worker-offer-price" type="number" min="1" step="1" value="5500123">
-            <small>compute credits, fixed_per_call_v0</small>
-          </label>
         </div>
 
         <div class="worker-card worker-contract-summary">
