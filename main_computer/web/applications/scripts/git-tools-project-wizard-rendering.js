@@ -120,34 +120,20 @@ function renderGitProjectWizard(wizard, data = {}) {
       ${cardSubscreen}
     </div>`;
   };
-  const renderStepGroup = (title, tone, items, emptyText, options = {}) => {
-    const groupSlug = gitProjectMcSlug(options.key || title, "section");
-    const groupComponentId = `git-tools.projects.wizard.section.${groupSlug}`;
+  const renderActionQueue = (items, emptyText) => {
+    const groupComponentId = "git-tools.projects.wizard.action-queue";
     const countLabel = items.length ? `${items.length} step${items.length === 1 ? "" : "s"}` : "0 steps";
-    const body = `<div class="git-project-wizard-list" ${gitProjectMcComponentAttrs(`${groupComponentId}.list`, "list", `${title} Items`, groupComponentId)}>
-        ${items.length ? items.map((step, index) => renderStepCard(step, index)).join("") : `<div class="git-project-wizard-empty" ${gitProjectMcComponentAttrs(`${groupComponentId}.empty`, "status", `${title} Empty State`, groupComponentId)}>${escapeHtml(emptyText)}</div>`}
-      </div>`;
-    if (options.collapsed) {
-      return `<details class="git-project-wizard-section tone-${escapeHtml(tone)} ${escapeHtml(options.className || "")}" ${gitProjectMcComponentAttrs(groupComponentId, "panel", title, "git-tools.projects.wizard.queue")}>
-        <summary class="git-project-wizard-section-head" ${gitProjectMcComponentAttrs(`${groupComponentId}.head`, "status", `${title} Summary`, groupComponentId)}>
-          <strong>${escapeHtml(title)}</strong>
-          <span>${countLabel}</span>
-        </summary>
-        ${body}
-      </details>`;
-    }
-    return `<section class="git-project-wizard-section tone-${escapeHtml(tone)} ${escapeHtml(options.className || "")}" ${gitProjectMcComponentAttrs(groupComponentId, "panel", title, "git-tools.projects.wizard.queue")}>
-      <div class="git-project-wizard-section-head" ${gitProjectMcComponentAttrs(`${groupComponentId}.head`, "status", `${title} Summary`, groupComponentId)}>
-        <strong>${escapeHtml(title)}</strong>
+    return [
+      `<div class="git-project-wizard-section-head git-project-action-queue-head" ${gitProjectMcComponentAttrs(`${groupComponentId}.head`, "status", "Action Queue Summary", "git-tools.projects.wizard-plan")}>
+        <strong>Action queue</strong>
         <span>${countLabel}</span>
-      </div>
-      ${body}
-    </section>`;
+      </div>`,
+      `<div class="git-project-wizard-list git-project-action-queue-list" ${gitProjectMcComponentAttrs(`${groupComponentId}.list`, "list", "Action Queue Items", "git-tools.projects.wizard-plan")}>
+        ${items.length ? items.map((step, index) => renderStepCard(step, index)).join("") : `<div class="git-project-wizard-empty" ${gitProjectMcComponentAttrs(`${groupComponentId}.empty`, "status", "Action Queue Empty State", "git-tools.projects.wizard-plan")}>${escapeHtml(emptyText)}</div>`}
+      </div>`,
+    ].join("");
   };
-  gitProjectWizardPlan.innerHTML = [
-    `<div class="git-project-wizard-summary" ${gitProjectMcComponentAttrs("git-tools.projects.wizard.summary", "status", "Prioritized Workflow Queue Summary", "git-tools.projects.wizard-plan")}><strong>Prioritized workflow queue</strong><span>${escapeHtml(wizard.plan_id || "")}</span><span>${escapeHtml(wizard.strategy || "")}</span><span>Dirty ${Number(wizard.dirty_score || 0)}/100</span><span>Showing action queue only</span></div>`,
-    renderStepGroup("Action queue", "actionable", visibleActions, "No workflow actions need review.", {key: "action-queue"}),
-  ].join("");
+  gitProjectWizardPlan.innerHTML = renderActionQueue(visibleActions, "No workflow actions need review.");
   bindGitProjectActionButtons(gitProjectWizardPlan);
   bindGitProjectCardSubscreen(gitProjectWizardPlan);
 }

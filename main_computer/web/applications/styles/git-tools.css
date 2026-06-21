@@ -1090,22 +1090,6 @@
   white-space: normal;
 }
 
-.git-project-wizard-summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  color: var(--mint);
-  font-family: var(--mono);
-  font-size: 12px;
-}
-
-.git-project-wizard-summary span {
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  color: var(--muted);
-  padding: 2px 8px;
-}
 
 .git-project-wizard-section {
   display: grid;
@@ -1129,6 +1113,8 @@
 
 .git-project-wizard-plan {
   position: relative;
+  display: grid;
+  gap: 8px;
 }
 
 .git-project-card-open-button,

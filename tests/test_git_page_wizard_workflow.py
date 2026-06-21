@@ -149,7 +149,6 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             "secrets_filter",
             "prepare_commit_snapshot",
             "function bindGitProjectCardSubscreen(",
-            "Prioritized workflow queue",
             "Action queue",
             ".gitignore review",
             "function gitProjectWizardDisplayActions(actions = [])",
@@ -166,7 +165,9 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             "remove generated untracked files",
             "const visibleActions = gitProjectWizardDisplayActions(remainingActions);",
             "const displayNumber = Number.isFinite(displayIndex) ? displayIndex + 1 : Number(step.order ?? 0) + 1;",
-            'renderStepGroup("Action queue", "actionable", visibleActions, "No workflow actions need review.", {key: "action-queue"})',
+            "const renderActionQueue = (items, emptyText) => {",
+            'gitProjectWizardPlan.innerHTML = renderActionQueue(visibleActions, "No workflow actions need review.");',
+            'items.map((step, index) => renderStepCard(step, index)).join("")',
             "gitignore_path_summary",
             "Command details",
             "Request state",
@@ -333,9 +334,9 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             "function gitProjectWizardStepComponentId(step = {}, actionKey = \"\")",
             'gitProjectMcComponentAttrs(`${stepComponentId}.command-runner`, "panel", `${stepLabel} Command Details`, stepComponentId)',
             'data-mc-component-id="${escapeHtml(stepComponentId)}.command-runner.preview"',
-            'gitProjectMcComponentAttrs("git-tools.projects.wizard.summary", "status", "Prioritized Workflow Queue Summary", "git-tools.projects.wizard-plan")',
-            "const groupComponentId = `git-tools.projects.wizard.section.${groupSlug}`;",
-            'gitProjectMcComponentAttrs(groupComponentId, "panel", title, "git-tools.projects.wizard.queue")',
+            'const groupComponentId = "git-tools.projects.wizard.action-queue";',
+            'gitProjectMcComponentAttrs(`${groupComponentId}.head`, "status", "Action Queue Summary", "git-tools.projects.wizard-plan")',
+            'gitProjectMcComponentAttrs(`${groupComponentId}.list`, "list", "Action Queue Items", "git-tools.projects.wizard-plan")',
             'gitProjectMcComponentAttrs(stepComponentId, "panel", stepLabel, "git-tools.projects.wizard.queue")',
             'gitProjectMcComponentAttrs(`${stepComponentId}.mini-summary`, "status", `${stepLabel} Summary`, stepComponentId)',
             "const listComponentId = `git-tools.projects.${listScope}.list`;",
@@ -654,7 +655,7 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
                 self.assertIn(snippet, GIT_TOOLS_MODULE_JS + GIT_TOOLS_CSS)
 
         render_start = GIT_TOOLS_MODULE_JS.index("const renderStepCard = (step, displayIndex) => {")
-        render_end = GIT_TOOLS_MODULE_JS.index("  const renderStepGroup =", render_start)
+        render_end = GIT_TOOLS_MODULE_JS.index("  const renderActionQueue =", render_start)
         render_step_card = GIT_TOOLS_MODULE_JS[render_start:render_end]
         forbidden_closed_card_snippets = (
             "Command preview",

@@ -30,7 +30,8 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
 
     # The Worker surface owns both marketplace policies, but the labels make it
     # clear which side pays and which side gets paid.
-    assert 'class="worker-pane worker-seller' in html
+    assert '<main class="worker-pane worker-seller' not in html
+    assert '<section class="worker-pane worker-seller' in html
     assert 'class="worker-pane worker-buyer' in html
     assert 'class="worker-pane worker-hubs' in html
     assert "Configure how other hub users pay this machine" in html
@@ -46,6 +47,11 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert "Lowest compatible offer" not in html
     assert "lowest price" not in html.lower()
     assert "future/requester concern" not in html
+
+    # The sell pane must not be a nested <main>: the application shell applies
+    # taskbar-reserved padding to main elements, which would shove the seller
+    # content to the right and starve the form for width.
+    assert html.count("<main") == 0
 
     # The layout presents selling first, then buying remote work below it,
     # because a worker must be sell-ready before it can safely use others.
