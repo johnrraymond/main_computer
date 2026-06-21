@@ -35,6 +35,8 @@ class Level1TelemetryTests(unittest.TestCase):
         self.assertIn("top_processes", report)
         self.assertIn("port_activity", report)
         self.assertIn("port_listeners", report)
+        self.assertIn("user_activity", report)
+        self.assertIn("interactive_user_active", report["summary"])
         self.assertEqual(report["known_ports"]["app"], 8765)
         self.assertIn("known_port_time_wait_count", report["summary"])
         self.assertIn("active_known_port_activity_count", report["summary"])

@@ -41,6 +41,7 @@
     const workerRemoteAskBeforeSpend = document.querySelector("#worker-remote-ask-before-spend");
     const workerRemoteOnlyWhenBusy = document.querySelector("#worker-remote-only-when-busy");
     const workerRentalEnabled = document.querySelector("#worker-rental-enabled");
+    const workerSellerOnlyWhenIdle = document.querySelector("#worker-seller-only-when-idle");
     const workerLockAiModel = document.querySelector("#worker-lock-ai-model");
     const workerRegistrationHub = document.querySelector("#worker-registration-hub");
     const workerRegistrationHubStatus = document.querySelector("#worker-registration-hub-status");

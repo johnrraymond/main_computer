@@ -216,6 +216,7 @@ class DiagnosticRunner:
                     "known_port_time_wait_count": summary.get("known_port_time_wait_count"),
                     "observation_count": summary.get("observation_count"),
                     "operator_summary": report.get("operator_summary", {}),
+                    "user_activity": report.get("user_activity", {}),
                     "warnings": report.get("warnings", []),
                 },
             )

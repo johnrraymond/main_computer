@@ -1200,38 +1200,23 @@ class GitToolsServiceTests(unittest.TestCase):
         self.assertEqual(len(result["stdout"]), payload_size)
         self.assertLess(time.monotonic() - started, 5)
 
-    def test_git_project_registry_defaults_to_mct_without_unlocking_main_project(self) -> None:
+    def test_git_project_registry_uses_main_project_without_auto_mct_worktree(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            with mock.patch.dict(os.environ, {"MAIN_COMPUTER_DEFAULT_MCT_WORKTREE": ""}):
-                service = GitToolsService(Path(temp_dir))
-                projects = service.git_projects()
+            service = GitToolsService(Path(temp_dir))
+            projects = service.git_projects()
             by_id = {item["id"]: item for item in projects["projects"]}
 
-            self.assertEqual(projects["current_project_id"], "default-mct-worktree")
-            self.assertEqual(projects["current_project"]["path"], str(Path.home() / "mct"))
+        self.assertEqual(projects["current_project_id"], "main-computer")
+        self.assertEqual(projects["current_project"]["id"], "main-computer")
+        self.assertNotIn("default-mct-worktree", by_id)
 
-            main = by_id["main-computer"]
-            self.assertTrue(main["vip"])
-            self.assertTrue(main["locked"])
-            self.assertFalse(main["can_archive"])
-
-            mct = by_id["default-mct-worktree"]
-            self.assertFalse(mct["vip"])
-            self.assertFalse(mct["locked"])
-            self.assertTrue(mct["can_archive"])
+        main = by_id["main-computer"]
+        self.assertTrue(main["vip"])
+        self.assertTrue(main["locked"])
+        self.assertFalse(main["can_archive"])
 
         with self.assertRaises(ValueError):
             self.service.archive_git_project(project_id="main-computer")
-
-    def test_git_project_registry_default_mct_worktree_uses_env_override(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            default_worktree = Path(temp_dir) / "custom-mct"
-            with mock.patch.dict(os.environ, {"MAIN_COMPUTER_DEFAULT_MCT_WORKTREE": str(default_worktree)}):
-                service = GitToolsService(Path(temp_dir))
-                projects = service.git_projects()
-
-        self.assertEqual(projects["current_project_id"], "default-mct-worktree")
-        self.assertEqual(projects["current_project"]["path"], str(default_worktree))
 
     def test_git_project_registry_adds_external_project_and_can_archive_restore(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1265,26 +1250,50 @@ class GitToolsServiceTests(unittest.TestCase):
             self.assertTrue(any(item["id"] == project["id"] for item in readded["projects"]))
             self.assertFalse(any(item["id"] == project["id"] for item in readded["archived_projects"]))
 
-    def test_archived_default_mct_worktree_is_not_reinserted_active(self) -> None:
+    def test_git_project_registry_purges_legacy_default_mct_worktree(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            default_worktree = Path(temp_dir) / "mct"
-            with mock.patch.dict(os.environ, {"MAIN_COMPUTER_DEFAULT_MCT_WORKTREE": str(default_worktree)}):
-                service = self._service(Path(temp_dir))
-                initial = service.git_projects()
-                self.assertTrue(any(item["id"] == "default-mct-worktree" for item in initial["projects"]))
+            legacy_worktree = Path(temp_dir) / "mct"
+            service = self._service(Path(temp_dir))
+            self.project_registry_path.write_text(
+                json.dumps(
+                    {
+                        "current_project_id": "default-mct-worktree",
+                        "projects": [
+                            {
+                                "id": "default-mct-worktree",
+                                "name": "mct",
+                                "path": str(legacy_worktree),
+                                "kind": "external",
+                                "vip": False,
+                                "locked": False,
+                                "archived": False,
+                                "can_archive": True,
+                            }
+                        ],
+                        "archived_projects": [
+                            {
+                                "id": "default-mct-worktree",
+                                "name": "mct",
+                                "path": str(legacy_worktree),
+                                "kind": "external",
+                                "vip": False,
+                                "locked": False,
+                                "archived": True,
+                                "can_archive": True,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
 
-                archived = service.archive_git_project(project_id="default-mct-worktree")
-                active_ids = {item["id"] for item in archived["projects"]}
-                archived_ids = {item["id"] for item in archived["archived_projects"]}
-                self.assertNotIn("default-mct-worktree", active_ids)
-                self.assertIn("default-mct-worktree", archived_ids)
-                self.assertEqual(archived["current_project_id"], "main-computer")
+            projects = service.git_projects()
 
-                listed = service.git_projects()
-                listed_active_ids = {item["id"] for item in listed["projects"]}
-                listed_archived_ids = {item["id"] for item in listed["archived_projects"]}
-                self.assertNotIn("default-mct-worktree", listed_active_ids)
-                self.assertIn("default-mct-worktree", listed_archived_ids)
+        active_ids = {item["id"] for item in projects["projects"]}
+        archived_ids = {item["id"] for item in projects["archived_projects"]}
+        self.assertNotIn("default-mct-worktree", active_ids)
+        self.assertNotIn("default-mct-worktree", archived_ids)
+        self.assertEqual(projects["current_project_id"], "main-computer")
 
     def test_commit_job_uses_selected_project_when_payload_repo_is_current_dir(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

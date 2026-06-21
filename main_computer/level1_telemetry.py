@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from main_computer.windows_user_activity import collect_windows_user_activity
+
 try:
     import psutil  # type: ignore
 except Exception:  # pragma: no cover - psutil is optional at runtime
@@ -57,6 +59,7 @@ def collect_level1_telemetry(
     pid_file_rows = _read_pid_files(control_root)
     warnings: list[str] = []
     observations: list[str] = []
+    user_activity = collect_windows_user_activity()
 
     if psutil is None:
         warnings.append("psutil is not installed; process-level telemetry is unavailable.")
@@ -69,6 +72,7 @@ def collect_level1_telemetry(
             pid_file_rows=pid_file_rows,
             warnings=warnings,
             observations=observations,
+            user_activity=user_activity,
         )
 
     pid_sources: dict[int, set[str]] = {}
@@ -163,6 +167,7 @@ def collect_level1_telemetry(
             "psutil": True,
             "process_details": True,
             "connections": True,
+            "windows_user_activity": bool(user_activity.get("supported")),
         },
         "summary": {
             "process_count": len(processes),
@@ -178,8 +183,12 @@ def collect_level1_telemetry(
             "total_rss_human": _human_bytes(total_rss),
             "warning_count": len(warnings),
             "observation_count": len(observations),
+            "interactive_user_active": user_activity.get("active"),
+            "interactive_user_active_session_count": int(user_activity.get("active_session_count") or 0),
+            "interactive_user_connected_session_count": int(user_activity.get("connected_session_count") or 0),
         },
         "known_ports": known_ports,
+        "user_activity": user_activity,
         "pid_files": pid_file_rows,
         "pid_file_health": pid_file_health,
         "operator_summary": operator_summary,
@@ -207,6 +216,7 @@ def _empty_report(
     pid_file_rows: list[dict[str, Any]],
     warnings: list[str],
     observations: list[str],
+    user_activity: dict[str, Any],
 ) -> dict[str, Any]:
     summary = {
         "process_count": 0,
@@ -222,6 +232,9 @@ def _empty_report(
         "total_rss_human": "0 B",
         "warning_count": len(warnings),
         "observation_count": len(observations),
+        "interactive_user_active": user_activity.get("active"),
+        "interactive_user_active_session_count": int(user_activity.get("active_session_count") or 0),
+        "interactive_user_connected_session_count": int(user_activity.get("connected_session_count") or 0),
     }
     return {
         "ok": False,
@@ -234,9 +247,11 @@ def _empty_report(
             "psutil": False,
             "process_details": False,
             "connections": False,
+            "windows_user_activity": bool(user_activity.get("supported")),
         },
         "summary": summary,
         "known_ports": known_ports,
+        "user_activity": user_activity,
         "pid_files": pid_file_rows,
         "pid_file_health": _pid_file_health(pid_file_rows, set()),
         "operator_summary": {

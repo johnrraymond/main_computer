@@ -41,7 +41,8 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert 'id="worker-remote-credits-per-token" type="number" min="0.000001" step="0.001" value="0.001"' in html
     assert "Approximation only: this ceiling is applied to estimated input and output tokens for now." in html
     assert "Approximation only: used with the prompt estimate to compute the maximum remote request budget." in html
-    assert "Show the count to the user, not the workers' private minimum prices." in html
+    assert "Busy-local overflow flow" not in html
+    assert "Show the count to the user, not the workers' private minimum prices." not in html
 
     # Remote overflow is a privacy-preserving availability check, not a lowest-price browser.
     assert "Lowest compatible offer" not in html
@@ -70,6 +71,20 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert 'id="worker-execution-mode"' not in seller_section
     assert 'id="worker-offer-models" type="text" value="mock-ai-model-phase9" autocomplete="off" disabled aria-disabled="true"' in seller_section
     assert 'id="worker-offer-price" type="number" min="1" step="1" value="5500123"' in seller_section
+    assert 'class="worker-card worker-contract-summary"' not in seller_section
+    assert "Seller offer contract this UI registers" not in html
+    assert "deterministic worker-pull test path" not in html
+    assert ".worker-contract-summary" not in css
+    assert 'id="worker-rental-enabled"' in seller_section
+    assert 'Accept paid jobs' in seller_section
+    assert 'id="worker-seller-only-when-idle" checked' in seller_section
+    assert 'Only accept jobs when idle' in seller_section
+    assert seller_section.index('id="worker-rental-enabled"') < seller_section.index('id="worker-seller-only-when-idle"')
+    assert "workerSellerOnlyWhenIdle" in js
+    assert "sellerOnlyWhenIdle" in js
+    assert "rentalOnlyWhenIdle" in js
+    assert 'const workerSellerOnlyWhenIdle = document.querySelector("#worker-seller-only-when-idle");' in bindings
+    assert ".worker-seller-controls" in css
 
     assert '<option value="2">Ring 2 - Public</option>' in html
     assert '<option value="2" selected>Ring 2' not in html
@@ -78,6 +93,9 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert 'const WORKER_DEFAULT_RING = "3";' in js
     assert '"3": "Ring 3 - Public untrusted"' in js
     assert '"2": "Ring 2 - Public"' in js
+    energy_routes = VIEWPORT_ENERGY_ROUTES.read_text(encoding="utf-8")
+    assert "collect_windows_user_activity" in energy_routes
+    assert "Only accept jobs when idle is enabled" in energy_routes
     # The layout presents selling first, then buying remote work below it,
     # because a worker must be sell-ready before it can safely use others.
     assert "grid-template-columns: minmax(0, 1fr);" in css
@@ -93,7 +111,7 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert ".worker-seller > .worker-pane-head" in css
     assert "grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));" in css
     assert ".worker-remote-policy" in css
-    assert ".worker-remote-flow ol" in css
+    assert ".worker-remote-flow" not in css
     assert "container-type: inline-size" in css
     assert "@container (max-width: 1150px)" in css
 

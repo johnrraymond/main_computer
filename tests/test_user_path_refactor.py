@@ -7,7 +7,6 @@ from pathlib import Path
 from unittest import mock
 
 from main_computer.config import MainComputerConfig
-from main_computer.git_tools import GitToolsService
 from main_computer.harness import HarnessCatalog, harness_workspace
 
 
@@ -78,22 +77,6 @@ class UserPathRefactorTests(unittest.TestCase):
             config = MainComputerConfig.from_env()
 
         self.assertEqual(config.workspace, configured)
-
-    def test_git_tools_default_worktree_is_home_derived_and_env_overridable(self) -> None:
-        fake_home = Path("/tmp/main-computer-home")
-        with mock.patch.dict(os.environ, {"MAIN_COMPUTER_DEFAULT_MCT_WORKTREE": ""}):
-            with mock.patch.object(Path, "home", return_value=fake_home):
-                service = GitToolsService(ROOT)
-                default_project = service._default_work_project_record()
-
-        self.assertEqual(default_project["path"], str(fake_home / "mct"))
-
-        configured = Path("/tmp/custom-mct")
-        with mock.patch.dict(os.environ, {"MAIN_COMPUTER_DEFAULT_MCT_WORKTREE": str(configured)}):
-            service = GitToolsService(ROOT)
-            default_project = service._default_work_project_record()
-
-        self.assertEqual(default_project["path"], str(configured))
 
     def test_harness_workspace_is_home_derived_and_env_overridable(self) -> None:
         fake_home = Path("/tmp/main-computer-home")

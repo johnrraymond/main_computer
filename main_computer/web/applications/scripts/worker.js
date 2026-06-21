@@ -3411,6 +3411,8 @@
         remoteOnlyWhenBusy: Boolean(workerRemoteOnlyWhenBusy?.checked),
         sellerEnabled: Boolean(workerRentalEnabled?.checked),
         rentalEnabled: Boolean(workerRentalEnabled?.checked),
+        sellerOnlyWhenIdle: Boolean(workerSellerOnlyWhenIdle?.checked),
+        rentalOnlyWhenIdle: Boolean(workerSellerOnlyWhenIdle?.checked),
         lockAiModel: Boolean(workerLockAiModel?.checked),
         registrationHubUrl: workerSelectedHubUrl(),
         nodeId: workerElementValue(workerNodeId, "local-worker-001"),
@@ -3508,6 +3510,13 @@
           workerRentalEnabled.checked = parsed.rentalEnabled;
         }
       }
+      if (workerSellerOnlyWhenIdle) {
+        if (typeof parsed.sellerOnlyWhenIdle === "boolean") {
+          workerSellerOnlyWhenIdle.checked = parsed.sellerOnlyWhenIdle;
+        } else if (typeof parsed.rentalOnlyWhenIdle === "boolean") {
+          workerSellerOnlyWhenIdle.checked = parsed.rentalOnlyWhenIdle;
+        }
+      }
       if (workerLockAiModel && typeof parsed.lockAiModel === "boolean") {
         workerLockAiModel.checked = parsed.lockAiModel;
       }
@@ -3570,6 +3579,9 @@
     function buildWorkerOfferRegistrationPayload() {
       const settings = readWorkerFormSettings();
       const models = workerOfferModelsArray();
+      if (!settings.sellerEnabled) {
+        throw new Error("Accept paid jobs is off. Enable it before registering a seller offer.");
+      }
       if (!settings.registrationHubUrl) {
         throw new Error("Select a worker connection before registering an offer.");
       }
@@ -3591,6 +3603,11 @@
         mode: settings.executionMode,
         max_concurrency: settings.maxConcurrency
       };
+      const availability = {
+        accept_paid_jobs: settings.sellerEnabled,
+        only_when_idle: settings.sellerOnlyWhenIdle,
+        idle_source: "windows_user_activity_v1"
+      };
       const worker = {
         node_id: settings.nodeId,
         endpoint: settings.endpoint,
@@ -3602,10 +3619,12 @@
         active_requests: 0,
         pricing,
         execution,
+        availability,
         capabilities: {
           capabilities: [settings.capability],
           pricing,
           execution,
+          availability,
           phase12_worker_seller_offer_ui: true
         }
       };
@@ -3854,11 +3873,14 @@
       bindWorkerAutosaveSetting(workerRemoteDailyLimit, "change", ["remoteDailyLimit"]);
       bindWorkerAutosaveSetting(workerRemoteAskBeforeSpend, "change", ["remoteAskBeforeSpend"]);
       bindWorkerAutosaveSetting(workerRemoteOnlyWhenBusy, "change", ["remoteOnlyWhenBusy"]);
+      bindWorkerAutosaveSetting(workerRentalEnabled, "change", ["sellerEnabled", "rentalEnabled"]);
+      bindWorkerAutosaveSetting(workerSellerOnlyWhenIdle, "change", ["sellerOnlyWhenIdle", "rentalOnlyWhenIdle"]);
       if (workerPauseRentals && !workerPauseRentals.dataset.workerBound) {
         workerPauseRentals.dataset.workerBound = "true";
         workerPauseRentals.addEventListener("click", () => {
           if (workerRentalEnabled) workerRentalEnabled.checked = false;
-          if (workerSaveStatus) workerSaveStatus.textContent = "Selling paused locally. Save settings to keep paid jobs off.";
+          saveWorkerSettings({changedFields: ["sellerEnabled", "rentalEnabled"]});
+          if (workerSaveStatus) workerSaveStatus.textContent = "Selling paused locally. Paid jobs are being saved as off.";
         });
       }
       if (workerTestHubs && !workerTestHubs.dataset.workerBound) {

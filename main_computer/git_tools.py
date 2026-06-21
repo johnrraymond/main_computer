@@ -1308,8 +1308,7 @@ class GitToolsService:
         if not any(item.get("id") == record["id"] for item in registry.get("archived_projects", [])):
             registry.setdefault("archived_projects", []).append(record)
         if registry.get("current_project_id") == record.get("id"):
-            fallback = self._find_project_record(registry, project_id="default-mct-worktree")
-            registry["current_project_id"] = fallback["id"] if fallback and fallback.get("id") != record.get("id") else "main-computer"
+            registry["current_project_id"] = "main-computer"
         self._save_git_project_registry(registry)
         return {**self.git_projects(), "project": record}
 
@@ -1408,48 +1407,24 @@ class GitToolsService:
             main = existing
         else:
             projects.insert(0, main)
-        self._ensure_default_work_project_record(registry)
+        self._remove_legacy_default_work_project_record(registry)
         active_ids = {str(item.get("id") or "") for item in registry.get("projects", [])}
         if str(registry.get("current_project_id") or "") not in active_ids:
-            registry["current_project_id"] = "default-mct-worktree" if "default-mct-worktree" in active_ids else main["id"]
+            registry["current_project_id"] = main["id"]
         return main
 
-    def _default_work_project_record(self) -> dict[str, Any]:
-        default_path = Path(os.environ.get("MAIN_COMPUTER_DEFAULT_MCT_WORKTREE") or (Path.home() / "mct"))
-        return {
-            "id": "default-mct-worktree",
-            "name": "mct",
-            "path": str(default_path),
-            "kind": "external",
-            "vip": False,
-            "locked": False,
-            "archived": False,
-            "can_archive": True,
-            "description": "Default editable copy for Git Tools work.",
-        }
+    def _remove_legacy_default_work_project_record(self, registry: dict[str, Any]) -> None:
+        """Drop the old auto-created ``mct`` worktree so it no longer reappears."""
 
-    def _ensure_default_work_project_record(self, registry: dict[str, Any]) -> dict[str, Any]:
-        default = self._default_work_project_record()
-        projects = registry.setdefault("projects", [])
-        archived_default = next(
-            (
-                item
-                for item in registry.setdefault("archived_projects", [])
-                if self._same_project_record_identity(item, default)
-            ),
-            None,
-        )
-        if archived_default:
-            registry["projects"] = self._remove_matching_project_records(projects, default)
-            return archived_default
-        existing = next((item for item in projects if item.get("id") == default["id"]), None)
-        if existing:
-            existing.update({**default, "locked": bool(existing.get("locked", False))})
-            default = existing
-        elif not any(self._same_path_string(str(item.get("path", "")), default["path"]) for item in projects):
-            insert_at = 1 if projects and projects[0].get("id") == "main-computer" else len(projects)
-            projects.insert(insert_at, default)
-        return default
+        legacy_id = "default-mct-worktree"
+        registry["projects"] = [
+            item for item in registry.get("projects", []) if str(item.get("id") or "") != legacy_id
+        ]
+        registry["archived_projects"] = [
+            item for item in registry.get("archived_projects", []) if str(item.get("id") or "") != legacy_id
+        ]
+        if str(registry.get("current_project_id") or "") == legacy_id:
+            registry["current_project_id"] = "main-computer"
 
     def _main_project_record(self) -> dict[str, Any]:
         return {
@@ -1525,14 +1500,11 @@ class GitToolsService:
         return None
 
     def _current_project_record(self, registry: dict[str, Any]) -> dict[str, Any] | None:
-        current_id = str(registry.get("current_project_id") or "default-mct-worktree")
+        current_id = str(registry.get("current_project_id") or "main-computer")
         projects = list(registry.get("projects", []))
         current = next((item for item in projects if item.get("id") == current_id), None)
         if current:
             return current
-        default = next((item for item in projects if item.get("id") == "default-mct-worktree"), None)
-        if default:
-            return default
         main = next((item for item in projects if item.get("id") == "main-computer"), None)
         return main or self._ensure_main_project_record(registry)
 

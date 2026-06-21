@@ -9,6 +9,7 @@ from urllib.request import Request, urlopen
 
 from main_computer.viewport_state import *  # noqa: F401,F403
 from main_computer.hub_networks import HubNetworkConfigError, load_hub_network_registry
+from main_computer.windows_user_activity import collect_windows_user_activity
 
 class ViewportEnergyRoutesMixin:
 
@@ -531,6 +532,14 @@ class ViewportEnergyRoutesMixin:
             "remoteOnlyWhenBusy": boolish(settings.get("remoteOnlyWhenBusy", settings.get("remote_only_when_busy")), False),
             "sellerEnabled": boolish(settings.get("sellerEnabled", settings.get("seller_enabled")), False),
             "rentalEnabled": boolish(settings.get("rentalEnabled", settings.get("rental_enabled")), False),
+            "sellerOnlyWhenIdle": boolish(
+                settings.get("sellerOnlyWhenIdle", settings.get("seller_only_when_idle", settings.get("rentalOnlyWhenIdle", settings.get("rental_only_when_idle")))),
+                True,
+            ),
+            "rentalOnlyWhenIdle": boolish(
+                settings.get("rentalOnlyWhenIdle", settings.get("rental_only_when_idle", settings.get("sellerOnlyWhenIdle", settings.get("seller_only_when_idle")))),
+                True,
+            ),
             "lockAiModel": boolish(settings.get("lockAiModel", settings.get("lock_ai_model")), False),
             "registrationHubUrl": self._clean_hub_url(text(settings.get("registrationHubUrl", settings.get("registration_hub_url")), self.server.config.hub_url), allow_empty=True),
             "nodeId": text(settings.get("nodeId", settings.get("node_id")), "local-worker-001"),
@@ -1620,6 +1629,52 @@ class ViewportEnergyRoutesMixin:
             self.server.signal("api-worker-multisession-key-request-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
+    def _worker_seller_availability_from_payload(self, worker_payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        raw_availability = worker_payload.get("availability")
+        availability = dict(raw_availability) if isinstance(raw_availability, dict) else {}
+        capabilities = worker_payload.get("capabilities") if isinstance(worker_payload.get("capabilities"), dict) else {}
+        if not availability and isinstance(capabilities.get("availability"), dict):
+            availability = dict(capabilities["availability"])
+
+        def boolish(raw: Any, default: bool = False) -> bool:
+            if isinstance(raw, bool):
+                return raw
+            text = str(raw or "").strip().lower()
+            if text in {"1", "true", "yes", "on", "enabled", "enable"}:
+                return True
+            if text in {"0", "false", "no", "off", "disabled", "disable"}:
+                return False
+            return bool(default)
+
+        accept_paid_jobs = boolish(availability.get("accept_paid_jobs", availability.get("seller_enabled", True)), True)
+        only_when_idle = boolish(availability.get("only_when_idle", availability.get("seller_only_when_idle")), False)
+        cleaned = {
+            "accept_paid_jobs": accept_paid_jobs,
+            "only_when_idle": only_when_idle,
+            "idle_source": str(availability.get("idle_source") or "windows_user_activity_v1"),
+        }
+        user_activity: dict[str, Any] | None = None
+        if only_when_idle:
+            user_activity = collect_windows_user_activity()
+            cleaned["last_user_activity"] = user_activity
+            cleaned["idle_verified"] = user_activity.get("active") is False
+        else:
+            cleaned["idle_verified"] = None
+
+        return cleaned, user_activity
+
+    def _enforce_worker_seller_availability(self, availability: dict[str, Any], user_activity: dict[str, Any] | None) -> None:
+        if not bool(availability.get("accept_paid_jobs")):
+            raise ValueError("Accept paid jobs is off; this machine will not register a seller offer.")
+        if not bool(availability.get("only_when_idle")):
+            return
+        active = user_activity.get("active") if isinstance(user_activity, dict) else None
+        if active is True:
+            raise ValueError("Only accept jobs when idle is enabled, but Windows reports an active interactive user session.")
+        if active is not False:
+            reason = str(user_activity.get("reason") or "idle status unavailable") if isinstance(user_activity, dict) else "idle status unavailable"
+            raise ValueError(f"Only accept jobs when idle is enabled, but this machine's idle status could not be verified: {reason}.")
+
     def _worker_registration_payload_from_ui(self, worker_payload: dict[str, Any]) -> dict[str, Any]:
         models = [str(item).strip() for item in worker_payload.get("models", []) if str(item).strip()] if isinstance(worker_payload.get("models"), list) else []
         model = str(worker_payload.get("model") or (models[0] if models else "")).strip()
@@ -1651,6 +1706,9 @@ class ViewportEnergyRoutesMixin:
             "max_concurrency": max_concurrency,
         }
         capabilities["phase12_worker_seller_offer_ui"] = True
+        availability, user_activity = self._worker_seller_availability_from_payload(worker_payload)
+        self._enforce_worker_seller_availability(availability, user_activity)
+        capabilities["availability"] = availability
 
         payload = {
             "node_id": str(worker_payload.get("node_id") or "").strip(),

@@ -35,7 +35,6 @@
     .worker-hub-card span,
     .worker-save-note,
     .worker-drawer summary small,
-    .worker-contract-summary dd,
     .worker-registration-card dd,
     .worker-registration-card p {
       color: var(--muted);
@@ -346,19 +345,16 @@
       margin-top: -4px;
       font-weight: 700;
     }
-    .worker-contract-summary dl,
     .worker-registration-card dl {
       display: grid;
       gap: 8px;
       margin: 0;
     }
-    .worker-contract-summary dl div,
     .worker-registration-card dl div {
       display: grid;
       grid-template-columns: minmax(100px, 0.5fr) minmax(0, 1fr);
       gap: 10px;
     }
-    .worker-contract-summary dt,
     .worker-registration-card dt {
       color: var(--mint);
       font-size: 12px;
@@ -366,7 +362,6 @@
       letter-spacing: 0.04em;
       text-transform: uppercase;
     }
-    .worker-contract-summary dd,
     .worker-registration-card dd {
       margin: 0;
       font-weight: 700;
@@ -483,7 +478,6 @@
       .worker-radio-grid,
       .worker-check-grid,
       .worker-field-grid,
-      .worker-contract-summary dl div,
       .worker-registration-card dl div {
         grid-template-columns: 1fr;
       }
@@ -566,9 +560,15 @@
       gap: 12px;
       min-width: 0;
     }
+    .worker-seller-controls {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+      min-width: min(460px, 100%);
+    }
     .worker-seller > .worker-primary-offer,
     .worker-seller > .worker-drawer,
-    .worker-seller > .worker-contract-summary,
     .worker-seller > .worker-registration-card {
       min-width: 0;
       width: 100%;
@@ -588,29 +588,24 @@
       min-width: 0;
       width: 100%;
     }
-    .worker-contract-summary dl,
     .worker-registration-card dl {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
       gap: 10px;
       margin: 0;
     }
-    .worker-contract-summary dl div,
     .worker-registration-card dl div {
       display: grid;
       grid-template-columns: 1fr;
       gap: 3px;
       min-width: 0;
     }
-    .worker-contract-summary dt,
     .worker-registration-card dt,
-    .worker-contract-summary dd,
     .worker-registration-card dd {
       overflow-wrap: normal;
       word-break: normal;
       white-space: normal;
     }
-    .worker-contract-summary h4,
     .worker-registration-card h4 {
       margin-bottom: 8px;
     }
@@ -633,20 +628,6 @@
     .worker-remote-policy {
       border-color: rgba(115, 214, 255, 0.34);
     }
-    .worker-remote-flow ol {
-      display: grid;
-      gap: 7px;
-      margin: 0;
-      padding-left: 20px;
-      color: var(--muted);
-      font-weight: 700;
-      line-height: 1.35;
-    }
-    .worker-remote-flow li::marker {
-      color: var(--sky);
-      font-weight: 900;
-    }
-
     .worker-bridge-card {
       border-color: rgba(115, 214, 255, 0.34);
       background:
@@ -796,7 +777,8 @@
       .worker-buyer .worker-pane-head {
         grid-template-columns: 1fr;
       }
-      .worker-status-strip {
+      .worker-status-strip,
+      .worker-seller-controls {
         justify-content: flex-start;
       }
       .worker-primary-offer,
@@ -804,7 +786,6 @@
       .worker-radio-grid,
       .worker-check-grid,
       .worker-network-status-grid,
-      .worker-contract-summary dl div,
       .worker-registration-card dl div {
         grid-template-columns: 1fr;
       }

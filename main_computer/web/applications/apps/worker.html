@@ -73,10 +73,16 @@
             <h3>Sell Work</h3>
             <p>Configure how other hub users pay this machine when it accepts leased AI work.</p>
           </div>
-          <label class="worker-switch">
-            <input type="checkbox" id="worker-rental-enabled" checked>
-            <span>Accept paid jobs</span>
-          </label>
+          <div class="worker-seller-controls" aria-label="Sell work availability controls">
+            <label class="worker-switch">
+              <input type="checkbox" id="worker-rental-enabled" checked>
+              <span>Accept paid jobs</span>
+            </label>
+            <label class="worker-switch">
+              <input type="checkbox" id="worker-seller-only-when-idle" checked>
+              <span>Only accept jobs when idle</span>
+            </label>
+          </div>
         </div>
 
         <div class="worker-card worker-field-grid worker-primary-offer">
@@ -126,17 +132,6 @@
           <div class="worker-inline-actions">
             <button type="button" id="worker-network-sign-order" disabled>Sign Connect Order</button>
           </div>
-        </div>
-
-        <div class="worker-card worker-contract-summary">
-          <h4>Seller offer contract this UI registers</h4>
-          <dl>
-            <div><dt>Pricing</dt><dd>fixed_per_call_v0</dd></div>
-            <div><dt>Unit</dt><dd>compute_credit</dd></div>
-            <div><dt>Endpoint</dt><dd>/api/hub/v1/workers/register</dd></div>
-            <div><dt>Completion</dt><dd>charge accepted quote price and create exact WorkerEarning</dd></div>
-          </dl>
-          <small>Register / Update Offer sends this machine's seller terms to the selected hub through the local worker registration proxy. The deterministic worker-pull test path remains the contract source of truth.</small>
         </div>
 
         <div class="worker-card worker-registration-card" aria-label="Worker offer registration result">
@@ -434,16 +429,6 @@
             <input type="checkbox" id="worker-remote-only-when-busy" checked>
             Only offer remote workers after the local AI is busy or unavailable.
           </label>
-        </div>
-
-        <div class="worker-card worker-remote-flow">
-          <h4>Busy-local overflow flow</h4>
-          <ol>
-            <li>Try the local AI first.</li>
-            <li>If local AI is busy, ask the hub for a compatible willing-worker count under this payment policy.</li>
-            <li>Show the count to the user, not the workers' private minimum prices.</li>
-            <li>If the user chooses Use Remote Worker, submit through the hub; if workers disappeared, create no request and hold no credits.</li>
-          </ol>
         </div>
 
         <details class="worker-drawer worker-drawer-muted">
