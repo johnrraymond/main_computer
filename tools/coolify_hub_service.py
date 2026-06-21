@@ -2398,10 +2398,14 @@ def wait_for_hub(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[s
     if args.hub_wait_timeout_s <= 0:
         return {"ok": True, "skipped": True, "reason": "hub_wait_timeout_s <= 0"}
     status_url = hub_public_status_url(profile, args)
-    deadline = time.monotonic() + args.hub_wait_timeout_s
+    started_at = time.monotonic()
+    soft_deadline = started_at + args.hub_wait_timeout_s
     last_error: object = None
+    transient_error_count = 0
+    attempt = 0
     user_agent = str(getattr(args, "hub_status_user_agent", DEFAULT_JSON_RPC_USER_AGENT) or "").strip()
-    while time.monotonic() < deadline:
+    while True:
+        attempt += 1
         try:
             request = hub_status_request(status_url, user_agent=user_agent)
             with urllib.request.urlopen(request, timeout=args.hub_status_timeout_s) as response:
@@ -2411,14 +2415,38 @@ def wait_for_hub(profile: HubNetworkProfile, args: argparse.Namespace) -> dict[s
                 network_key = network.get("network_key") or network.get("network")
                 chain_id = network.get("chain_id")
                 if network_key == profile.network_key and int(chain_id) == int(profile.chain_id or -1):
-                    return {"ok": True, "status_url": status_url, "status": payload}
+                    elapsed_s = time.monotonic() - started_at
+                    return {
+                        "ok": True,
+                        "status_url": status_url,
+                        "status": payload,
+                        "attempts": attempt,
+                        "elapsed_s": round(elapsed_s, 3),
+                        "transient_error_count": transient_error_count,
+                        "last_transient_error": last_error,
+                    }
                 last_error = f"unexpected Hub status network={network_key!r} chain_id={chain_id!r}"
             else:
                 last_error = "Hub status response has no network object"
         except Exception as exc:  # noqa: BLE001
             last_error = f"{type(exc).__name__}: {exc}"
-        time.sleep(args.hub_wait_poll_s)
-    raise CoolifyHubDeployError(f"Hub status did not become ready at {status_url}: {last_error}")
+
+        transient_error_count += 1
+        elapsed_s = time.monotonic() - started_at
+        poll_s = max(0.0, float(args.hub_wait_poll_s))
+        soft_timeout_note = ""
+        if time.monotonic() >= soft_deadline:
+            soft_timeout_note = f" after soft timeout {float(args.hub_wait_timeout_s):.1f}s"
+        print(
+            (
+                f"warning: Hub status is not ready yet{soft_timeout_note}; "
+                f"attempt={attempt} elapsed_s={elapsed_s:.1f} "
+                f"url={status_url} error={last_error!s}; retrying in {poll_s:.1f}s until ready"
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+        time.sleep(poll_s)
 
 
 def load_profile(args: argparse.Namespace) -> HubNetworkProfile:
@@ -2925,7 +2953,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Hub public status check mode. auto warns on testnet and requires on mainnet.",
     )
     parser.add_argument("--no-wait-hub", action="store_true", help="Legacy alias for --hub-health-check skip.")
-    parser.add_argument("--hub-wait-timeout-s", type=float, default=120.0)
+    parser.add_argument(
+        "--hub-wait-timeout-s",
+        type=float,
+        default=120.0,
+        help=(
+            "Soft Hub readiness wait threshold in seconds. The final status check keeps retrying "
+            "and printing transient errors until the public Hub status endpoint succeeds. Use <=0 to skip."
+        ),
+    )
     parser.add_argument("--hub-wait-poll-s", type=float, default=5.0)
     parser.add_argument("--hub-status-timeout-s", type=float, default=8.0)
     parser.add_argument(
