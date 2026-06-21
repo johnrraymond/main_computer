@@ -287,22 +287,46 @@ python .\tools\coolify_hub_service.py apply mainnet `
   --fdb-namespace main-computer-mainnet-exp-fdb
 ```
 
-Testnet:
+Testnet canonical bridge-signer deployment:
 
 ```powershell
 python .\tools\coolify_hub_service.py apply testnet `
   --hub-implementation exp-fdb `
   --coolify-url $CoolifyUrl `
-  --coolify-project-name $ProjectName `
-  --coolify-environment-name "testnet" `
-  --coolify-server-name $ServerName `
-  --git-repo $GitRepo `
-  --fdb-cluster-file /data/main-computer/fdb/fdb.cluster `
-  --fdb-namespace main-computer-testnet-exp-fdb
+  --coolify-project-name "My first project" `
+  --coolify-environment-name "testnet-hub" `
+  --coolify-server-uuid "c11j1nrxs7m2q6of6jmbxoxm" `
+  --git-repo https://github.com/johnrraymond/main_computer `
+  --fdb-cluster-file /data/main-computer/hub/testnet-exp-fdb/fdb.cluster `
+  --fdb-namespace main-computer-testnet-exp-fdb `
+  --force-deploy `
+  --rpc-check warn `
+  --hub-health-check warn `
+  --enable-bridge-writes `
+  --sync-bridge-signer
 ```
 
+That command is the known-good testnet calling convention for the remote
+exp-FDB Hub that owns its FoundationDB sidecar and writes `fdb.cluster` in the
+same persistent host directory mounted by the Hub service:
+
+```text
+/data/main-computer/hub/testnet-exp-fdb
+```
+
+`--enable-bridge-writes` selects the non-smoke `bridge-signer` mode.
+`--sync-bridge-signer` pushes the local bridge controller signer bundle through
+the Coolify service environment path before deploy. Keep both flags together for
+the signed testnet Hub. Do **not** replace this with `--enable-smoke-bridge`;
+the smoke bridge is only for explicit admin smoke tests.
+
+Because the remote service builds from Git, commit and push the matching Hub
+code before using `--force-deploy`. The local deployer can update Coolify
+configuration immediately, but the container image only sees changes that are
+available from the configured Git branch or commit.
+
 For `testnet` and `mainnet`, the apply command creates or updates the normal
-public Coolify application name:
+public Coolify application/service name:
 
 ```text
 main-computer-<network>-hub

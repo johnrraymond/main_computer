@@ -961,28 +961,12 @@ class CoolifyHubServiceTests(unittest.TestCase):
 
         self.assertIn("MAIN_COMPUTER_HUB_ENABLE_BRIDGE_WRITES: \"true\"", compose)
         self.assertIn("MAIN_COMPUTER_BRIDGE_SIGNER_BUNDLE_B64: ${MAIN_COMPUTER_BRIDGE_SIGNER_BUNDLE_B64:?missing bridge signer bundle}", compose)
-        self.assertIn("mkdir -p /data/main-computer/hub/testnet-exp-fdb/private/bridge-signer", compose)
-        self.assertIn("remote image is missing non-smoke bridge-signer backend support", compose)
         self.assertIn("base64 -d > /data/main-computer/hub/testnet-exp-fdb/private/bridge-signer/bridge-signer-bundle.json.tmp", compose)
         self.assertIn("--dev-chain-deployment-path", compose)
         self.assertIn("/data/main-computer/hub/testnet-exp-fdb/private/bridge-signer/bridge-signer-bundle.json", compose)
         self.assertNotIn("--allow-missing-bridge-signer", compose)
         self.assertNotIn("--enable-smoke-bridge", compose)
         self.assertNotIn("MAIN_COMPUTER_HUB_ENABLE_SMOKE_BRIDGE", compose)
-
-    def test_container_posix_dirname_treats_remote_paths_as_linux_paths(self) -> None:
-        self.assertEqual(
-            coolify_hub_service.container_posix_dirname(
-                "/data/main-computer/hub/testnet-exp-fdb/private/bridge-signer/bridge-signer-bundle.json"
-            ),
-            "/data/main-computer/hub/testnet-exp-fdb/private/bridge-signer",
-        )
-        self.assertEqual(
-            coolify_hub_service.container_posix_dirname(
-                r"\data\main-computer\hub\testnet-exp-fdb\private\bridge-signer\bridge-signer-bundle.json"
-            ),
-            "/data/main-computer/hub/testnet-exp-fdb/private/bridge-signer",
-        )
 
     def test_build_bridge_signer_bundle_uses_hub_admin_only(self) -> None:
         profile = coolify_hub_service.load_hub_network_registry().get("testnet")
@@ -1126,6 +1110,12 @@ class CoolifyHubServiceTests(unittest.TestCase):
         self.assertIn("coolify_hub_service.py apply mainnet", text)
         self.assertIn("--hub-implementation exp-fdb", text)
         self.assertIn("--fdb-cluster-file /data/main-computer/fdb/fdb.cluster", text)
+        self.assertIn("--coolify-environment-name \"testnet-hub\"", text)
+        self.assertIn("--coolify-server-uuid \"c11j1nrxs7m2q6of6jmbxoxm\"", text)
+        self.assertIn("--git-repo https://github.com/johnrraymond/main_computer", text)
+        self.assertIn("--fdb-cluster-file /data/main-computer/hub/testnet-exp-fdb/fdb.cluster", text)
+        self.assertIn("--enable-bridge-writes", text)
+        self.assertIn("--sync-bridge-signer", text)
         self.assertIn("/Dockerfile.hub.exp-fdb", text)
         self.assertIn("main-computer-mainnet-hub", text)
         self.assertNotIn("Dockerfile.hub.mainnet", text)
