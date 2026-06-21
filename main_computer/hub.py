@@ -149,20 +149,114 @@ def _hub_credit_wei_from_decimal_text(
     )
 
 
+def _hub_credit_wei_from_value(value: Any, default: str = "1", *, minimum_wei: int = 1) -> int:
+    return _hub_credit_wei_from_decimal_text(value, default, minimum_wei=minimum_wei)
+
+
+def _hub_credit_public_value_from_wei(credit_wei: Any) -> int | str:
+    text = credit_wei_to_decimal_text(credit_wei)
+    return int(text) if text.isdigit() else text
+
+
+def _hub_credit_display_from_wei(credit_wei: Any) -> str:
+    return credit_wei_to_decimal_text(credit_wei)
+
+
+def _hub_pricing_target_output_tokens(pricing: dict[str, Any], payload: dict[str, Any], default: int = 1024) -> int:
+    return _hub_as_int(
+        pricing.get(
+            "target_output_tokens",
+            pricing.get("target_tokens_per_request", payload.get("target_output_tokens", payload.get("target_tokens", default))),
+        ),
+        default,
+        minimum=1,
+        maximum=128_000,
+    )
+
+
+def _hub_pricing_credit_per_token_wei(pricing: dict[str, Any], payload: dict[str, Any], default: str = "0.001") -> int:
+    raw_wei = pricing.get("credits_per_token_wei", payload.get("credits_per_token_wei"))
+    if raw_wei not in (None, ""):
+        try:
+            parsed = int(str(raw_wei).strip())
+            if parsed > 0:
+                return parsed
+        except (TypeError, ValueError):
+            pass
+    return _hub_credit_wei_from_decimal_text(
+        pricing.get("credits_per_token", payload.get("credits_per_token", default)),
+        default,
+        minimum_wei=1,
+    )
+
+
+def _hub_pricing_credit_wei(pricing: dict[str, Any], payload: dict[str, Any], default: str = "1") -> int:
+    raw_estimated_wei = pricing.get("estimated_credits_per_request_wei", payload.get("estimated_credits_per_request_wei"))
+    if raw_estimated_wei not in (None, ""):
+        try:
+            parsed = int(str(raw_estimated_wei).strip())
+            if parsed > 0:
+                return parsed
+        except (TypeError, ValueError):
+            pass
+
+    pricing_type = str(pricing.get("pricing_type") or pricing.get("type") or "").strip().lower()
+    token_priced = (
+        "token" in pricing_type
+        or pricing.get("credits_per_token") not in (None, "")
+        or pricing.get("credits_per_token_wei") not in (None, "")
+        or payload.get("credits_per_token") not in (None, "")
+        or payload.get("credits_per_token_wei") not in (None, "")
+    )
+    if token_priced:
+        token_wei = _hub_pricing_credit_per_token_wei(pricing, payload, "0.001")
+        target_output_tokens = _hub_pricing_target_output_tokens(pricing, payload, 1024)
+        estimated_wei = credit_wei_product(target_output_tokens, token_wei)
+        if estimated_wei > 0:
+            return estimated_wei
+
+    raw_wei = pricing.get("credits_per_request_wei", payload.get("credits_per_request_wei"))
+    if raw_wei not in (None, ""):
+        try:
+            parsed = int(str(raw_wei).strip())
+            if parsed > 0:
+                return parsed
+        except (TypeError, ValueError):
+            pass
+    return _hub_credit_wei_from_value(
+        pricing.get("credits_per_request", payload.get("credits_per_request", default)),
+        default,
+        minimum_wei=1,
+    )
+
+
 def _hub_ceil_decimal_to_int(value: Decimal, *, minimum: int = 0) -> int:
     return max(int(minimum), int(value.to_integral_value(rounding=ROUND_CEILING)))
 
 
-def _phase9_offer_id(*, worker_node_id: str, models: list[str], credits_per_request: int, execution_mode: str) -> str:
+def _phase9_offer_id(
+    *,
+    worker_node_id: str,
+    models: list[str],
+    credits_per_request_wei: int,
+    execution_mode: str,
+    pricing_type: str = PHASE9_PRICING_TYPE,
+    credits_per_token_wei: int | None = None,
+) -> str:
+    seed_payload = {
+        "worker_node_id": str(worker_node_id or ""),
+        "models": sorted(str(model) for model in models if str(model).strip()),
+        "pricing_type": str(pricing_type or PHASE9_PRICING_TYPE),
+        "credits_per_request_wei": max(0, int(credits_per_request_wei or 0)),
+        "credits_per_request": _hub_credit_public_value_from_wei(credits_per_request_wei),
+        "unit": "compute_credit",
+        "execution_mode": str(execution_mode or PHASE9_EXECUTION_MODE),
+    }
+    if credits_per_token_wei is not None:
+        seed_payload["credits_per_token_wei"] = max(0, int(credits_per_token_wei or 0))
+        seed_payload["credits_per_token"] = _hub_credit_public_value_from_wei(credits_per_token_wei)
     seed = json.dumps(
-        {
-            "worker_node_id": str(worker_node_id or ""),
-            "models": sorted(str(model) for model in models if str(model).strip()),
-            "pricing_type": PHASE9_PRICING_TYPE,
-            "credits_per_request": max(0, int(credits_per_request or 0)),
-            "unit": "compute_credit",
-            "execution_mode": str(execution_mode or PHASE9_EXECUTION_MODE),
-        },
+        seed_payload,
         ensure_ascii=False,
         sort_keys=True,
     ).encode("utf-8")
@@ -177,12 +271,31 @@ def _phase9_worker_offer_from_payload(payload: dict[str, Any]) -> dict[str, Any]
     pricing_type = str(pricing.get("pricing_type") or pricing.get("type") or PHASE9_PRICING_TYPE).strip()
     if pricing_type in {"", "none", "unpriced", "unpriced_v0"}:
         return {}
-    try:
-        credits = int(pricing.get("credits_per_request", payload.get("credits_per_request", 0)) or 0)
-    except (TypeError, ValueError):
-        credits = 0
-    if credits <= 0:
+    target_output_tokens = _hub_pricing_target_output_tokens(
+        pricing,
+        {**payload, "target_output_tokens": capabilities.get("target_output_tokens", payload.get("target_output_tokens"))},
+        1024,
+    )
+    token_priced = (
+        "token" in pricing_type.lower()
+        or pricing.get("credits_per_token") not in (None, "")
+        or pricing.get("credits_per_token_wei") not in (None, "")
+        or payload.get("credits_per_token") not in (None, "")
+        or payload.get("credits_per_token_wei") not in (None, "")
+    )
+    credits_per_token_wei = _hub_pricing_credit_per_token_wei(pricing, payload, "0.001") if token_priced else None
+    credits_wei = _hub_pricing_credit_wei(
+        pricing,
+        {
+            **payload,
+            "target_output_tokens": target_output_tokens,
+        },
+        "1",
+    )
+    if credits_wei <= 0:
         return {}
+    credits = _hub_credit_public_value_from_wei(credits_wei)
+    credits_display = _hub_credit_display_from_wei(credits_wei)
     models = [
         str(model).strip()
         for model in (payload.get("models") if isinstance(payload.get("models"), list) else [])
@@ -221,8 +334,10 @@ def _phase9_worker_offer_from_payload(payload: dict[str, Any]) -> dict[str, Any]
         "offer_id": _phase9_offer_id(
             worker_node_id=worker_instance_id,
             models=models,
-            credits_per_request=credits,
+            credits_per_request_wei=credits_wei,
             execution_mode=execution_mode,
+            pricing_type=pricing_type,
+            credits_per_token_wei=credits_per_token_wei,
         ),
         "worker_node_id": worker_node_id,
         "worker_instance_id": worker_instance_id,
@@ -231,8 +346,14 @@ def _phase9_worker_offer_from_payload(payload: dict[str, Any]) -> dict[str, Any]
         "capabilities": [str(item) for item in capabilities.get("capabilities", [])]
         if isinstance(capabilities.get("capabilities"), list)
         else ["chat.completions"],
-        "pricing_type": PHASE9_PRICING_TYPE,
+        "pricing_type": pricing_type,
         "credits_per_request": credits,
+        "credits_per_request_wei": str(credits_wei),
+        "credits_per_request_display": credits_display,
+        "estimated_credits_per_request": credits,
+        "estimated_credits_per_request_wei": str(credits_wei),
+        "estimated_credits_per_request_display": credits_display,
+        "target_output_tokens": target_output_tokens,
         "unit": "compute_credit",
         "execution_mode": execution_mode,
         "price_source": "worker_registration",
@@ -242,6 +363,10 @@ def _phase9_worker_offer_from_payload(payload: dict[str, Any]) -> dict[str, Any]
             "settlement_mode": "rounded_batch_v0",
         },
     }
+    if credits_per_token_wei is not None:
+        offer["credits_per_token"] = _hub_credit_public_value_from_wei(credits_per_token_wei)
+        offer["credits_per_token_wei"] = str(credits_per_token_wei)
+        offer["credits_per_token_display"] = _hub_credit_display_from_wei(credits_per_token_wei)
     if assigned_ring is not None:
         offer["assigned_ring"] = assigned_ring
     return offer
@@ -323,7 +448,7 @@ class HubWorker:
     model: str = ""
     models: list[str] = field(default_factory=list)
     status: str = "available"
-    credits_per_request: int = 1
+    credits_per_request: int | str = 1
     settlement_precision_places: int = DEFAULT_WORKER_PAYOUT_PRECISION_PLACES
     registered_at: str = ""
     last_seen_at: str = ""
@@ -352,7 +477,7 @@ class HubUpstream:
     node_id: str
     endpoint: str
     status: str = "available"
-    credits_per_request: int = 1
+    credits_per_request: int | str = 1
     settlement_precision_places: int = DEFAULT_WORKER_PAYOUT_PRECISION_PLACES
     registered_at: str = ""
     last_seen_at: str = ""
@@ -418,7 +543,7 @@ class HubRegistry:
         model: str = "",
         models: list[str] | None = None,
         capabilities: dict[str, Any] | None = None,
-        credits_per_request: int = 1,
+        credits_per_request: Any = 1,
         settlement_precision_places: int | None = None,
         queue_depth: int = 0,
         active_requests: int = 0,
@@ -436,10 +561,23 @@ class HubRegistry:
             allow_insecure_dev_network=self.allow_insecure_dev_network,
         )
         now = _utc_now()
-        credit_price = max(1, int(credits_per_request or 1))
+        clean_capabilities = dict(capabilities or {})
+        pricing_payload = dict(clean_capabilities.get("pricing", {})) if isinstance(clean_capabilities.get("pricing"), dict) else {}
+        credit_price_wei = _hub_pricing_credit_wei(pricing_payload, {"credits_per_request": credits_per_request}, "1")
+        credit_price = _hub_credit_public_value_from_wei(credit_price_wei)
+        credit_price_display = _hub_credit_display_from_wei(credit_price_wei)
+        pricing_payload.update(
+            {
+                "pricing_type": str(pricing_payload.get("pricing_type") or PHASE9_PRICING_TYPE),
+                "credits_per_request": credit_price,
+                "credits_per_request_wei": str(credit_price_wei),
+                "credits_per_request_display": credit_price_display,
+                "unit": str(pricing_payload.get("unit") or "compute_credit"),
+            }
+        )
+        clean_capabilities["pricing"] = pricing_payload
         clean_models = self._normalize_models(model=model, models=models)
         primary_model = clean_models[0] if clean_models else str(model or "").strip()
-        clean_capabilities = dict(capabilities or {})
         clean_capabilities.setdefault("worker_instance_id", clean_worker_instance_id)
         precision_source = (
             settlement_precision_places
@@ -489,6 +627,7 @@ class HubRegistry:
                         "model": primary_model,
                         "models": clean_models,
                         "credits_per_request": credit_price,
+                        "credits_per_request_wei": str(credit_price_wei),
                         "capabilities": clean_capabilities,
                     }
                 ),
@@ -882,7 +1021,9 @@ class HubRegistry:
                 "model": primary_model,
                 "models": models,
                 "status": status,
-                "credits_per_request": max(1, int(item.get("credits_per_request", 1) or 1)),
+                "credits_per_request": _hub_credit_public_value_from_wei(_hub_pricing_credit_wei(dict(item.get("capabilities", {}).get("pricing", {})) if isinstance(item.get("capabilities", {}), dict) and isinstance(item.get("capabilities", {}).get("pricing", {}), dict) else {}, item, "1")),
+                "credits_per_request_wei": str(_hub_pricing_credit_wei(dict(item.get("capabilities", {}).get("pricing", {})) if isinstance(item.get("capabilities", {}), dict) and isinstance(item.get("capabilities", {}).get("pricing", {}), dict) else {}, item, "1")),
+                "credits_per_request_display": _hub_credit_display_from_wei(_hub_pricing_credit_wei(dict(item.get("capabilities", {}).get("pricing", {})) if isinstance(item.get("capabilities", {}), dict) and isinstance(item.get("capabilities", {}).get("pricing", {}), dict) else {}, item, "1")),
                 "settlement_precision_places": normalize_worker_payout_precision_places(
                     item.get("settlement_precision_places")
                     if item.get("settlement_precision_places") is not None
@@ -1001,7 +1142,7 @@ class HubRegistry:
             model=model,
             models=models,
             status=str(item.get("status", "available")),
-            credits_per_request=max(1, int(item.get("credits_per_request", 1) or 1)),
+            credits_per_request=_hub_credit_public_value_from_wei(_hub_pricing_credit_wei(dict(item.get("capabilities", {}).get("pricing", {})) if isinstance(item.get("capabilities", {}), dict) and isinstance(item.get("capabilities", {}).get("pricing", {}), dict) else {}, item, "1")),
             settlement_precision_places=normalize_worker_payout_precision_places(
                 item.get("settlement_precision_places")
                 if item.get("settlement_precision_places") is not None
@@ -2061,7 +2202,7 @@ class HubServerHandler(_JsonHandler):
             model=str(worker_payload.get("model", "")),
             models=[str(item) for item in worker_payload.get("models", [])] if isinstance(worker_payload.get("models"), list) else None,
             capabilities=capabilities,
-            credits_per_request=int(raw_price if raw_price is not None else self.server.config.hub_credits_per_request),
+            credits_per_request=raw_price if raw_price is not None else self.server.config.hub_credits_per_request,
             settlement_precision_places=worker_payload.get("settlement_precision_places"),
             queue_depth=int(worker_payload.get("queue_depth", 0) or 0),
             active_requests=int(worker_payload.get("active_requests", 0) or 0),
@@ -3312,7 +3453,7 @@ class HubServerHandler(_JsonHandler):
                         model=str(body.get("model", "")),
                         models=[str(item) for item in body.get("models", [])] if isinstance(body.get("models"), list) else None,
                         capabilities=capabilities,
-                        credits_per_request=int(raw_price if raw_price is not None else self.server.config.hub_credits_per_request),
+                        credits_per_request=raw_price if raw_price is not None else self.server.config.hub_credits_per_request,
                         settlement_precision_places=body.get("settlement_precision_places"),
                         queue_depth=int(body.get("queue_depth", 0) or 0),
                         active_requests=int(body.get("active_requests", 0) or 0),

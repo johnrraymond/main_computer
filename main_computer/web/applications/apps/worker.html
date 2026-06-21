@@ -87,21 +87,20 @@
 
         <div class="worker-card worker-field-grid worker-primary-offer">
           <h4>How others pay me</h4>
-          <div class="worker-seller-hub-status worker-wide" aria-label="Registration hub status">
-            <span>Registration hub</span>
-            <output id="worker-registration-hub-status" for="worker-network-sign-order">Select a worker connection below.</output>
-            <small>Comes from the Signed Worker Connection below; this hub is not edited here.</small>
-            <input id="worker-registration-hub" type="hidden" value="">
-          </div>
+          <label>
+            <span>Target output tokens per request</span>
+            <input id="worker-offer-target-tokens" type="number" min="1" step="1" value="1024">
+            <small>Matches the requester default max output-token authorization so default buyers and sellers line up.</small>
+          </label>
           <label class="worker-disabled-field">
             <span>Models offered</span>
-            <input id="worker-offer-models" type="text" value="mock-ai-model-phase9" autocomplete="off" disabled aria-disabled="true">
+            <input id="worker-offer-models" type="text" value="gemma4:26b" autocomplete="off" disabled aria-disabled="true">
             <small>Model selection is fixed until local model discovery is connected.</small>
           </label>
           <label>
-            <span>Minimum price per request</span>
-            <input id="worker-offer-price" type="number" min="1" step="1" value="5500123">
-            <small>compute credits, fixed_per_call_v0</small>
+            <span>Minimum credits per estimated token</span>
+            <input id="worker-offer-credits-per-token" type="number" min="0.000001" step="0.001" value="0.001">
+            <small>Matches the requester default max credits per estimated token; request totals remain approximate.</small>
           </label>
         </div>
 

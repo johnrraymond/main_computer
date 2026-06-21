@@ -116,11 +116,23 @@ def test_worker_app_proxy_registers_phase12_seller_offer_with_hub() -> None:
                     "endpoint": "http://127.0.0.1:8771",
                     "model": "mock-ai-model-phase12",
                     "models": ["mock-ai-model-phase12"],
-                    "credits_per_request": 5500123,
+                    "credits_per_token": "0.001",
+                    "credits_per_token_wei": "1000000000000000",
+                    "estimated_credits_per_request": "1.024",
+                    "estimated_credits_per_request_wei": "1024000000000000000",
+                    "credits_per_request": "1.024",
+                    "credits_per_request_wei": "1024000000000000000",
+                    "target_output_tokens": 1024,
                     "max_concurrency": 1,
                     "pricing": {
-                        "pricing_type": "fixed_per_call_v0",
-                        "credits_per_request": 5500123,
+                        "pricing_type": "approx_per_token_v0",
+                        "credits_per_token": "0.001",
+                        "credits_per_token_wei": "1000000000000000",
+                        "target_output_tokens": 1024,
+                        "estimated_credits_per_request": "1.024",
+                        "estimated_credits_per_request_wei": "1024000000000000000",
+                        "credits_per_request": "1.024",
+                        "credits_per_request_wei": "1024000000000000000",
                         "unit": "compute_credit",
                     },
                     "execution": {
@@ -140,14 +152,30 @@ def test_worker_app_proxy_registers_phase12_seller_offer_with_hub() -> None:
             assert isinstance(worker, dict)
             assert worker["node_id"] == "phase12-ui-worker-001"
             assert worker["models"] == ["mock-ai-model-phase12"]
-            assert worker["credits_per_request"] == 5500123
+            assert worker["credits_per_token"] == "0.001"
+            assert worker["credits_per_token_wei"] == "1000000000000000"
+            assert worker["estimated_credits_per_request"] == "1.024"
+            assert worker["estimated_credits_per_request_wei"] == "1024000000000000000"
+            assert worker["credits_per_request"] == "1.024"
+            assert worker["credits_per_request_wei"] == "1024000000000000000"
+            assert worker["capabilities"]["pricing"]["pricing_type"] == "approx_per_token_v0"
+            assert worker["capabilities"]["pricing"]["credits_per_token"] == "0.001"
+            assert worker["capabilities"]["pricing"]["target_output_tokens"] == 1024
             assert worker["max_concurrency"] == 1
 
             offer = data["offer"]
             assert isinstance(offer, dict)
             assert offer["worker_node_id"] == "phase12-ui-worker-001"
-            assert offer["pricing_type"] == "fixed_per_call_v0"
-            assert offer["credits_per_request"] == 5500123
+            assert offer["pricing_type"] == "approx_per_token_v0"
+            assert offer["credits_per_token"] == "0.001"
+            assert offer["credits_per_token_wei"] == "1000000000000000"
+            assert offer["credits_per_token_display"] == "0.001"
+            assert offer["estimated_credits_per_request"] == "1.024"
+            assert offer["estimated_credits_per_request_wei"] == "1024000000000000000"
+            assert offer["credits_per_request"] == "1.024"
+            assert offer["credits_per_request_wei"] == "1024000000000000000"
+            assert offer["credits_per_request_display"] == "1.024"
+            assert offer["target_output_tokens"] == 1024
             assert offer["unit"] == "compute_credit"
             assert offer["execution_mode"] == "worker_pull_v0"
             assert offer["price_source"] == "worker_registration"
@@ -230,11 +258,23 @@ def test_worker_connect_order_proxy_registers_signed_worker_with_selected_hub() 
                         "endpoint": "http://127.0.0.1:8771",
                         "model": "mock-ai-model-signed-worker",
                         "models": ["mock-ai-model-signed-worker"],
-                        "credits_per_request": 5500123,
+                        "credits_per_token": "0.001",
+                        "credits_per_token_wei": "1000000000000000",
+                        "estimated_credits_per_request": "1.024",
+                        "estimated_credits_per_request_wei": "1024000000000000000",
+                        "credits_per_request": "1.024",
+                        "credits_per_request_wei": "1024000000000000000",
+                        "target_output_tokens": 1024,
                         "max_concurrency": 1,
                         "pricing": {
-                            "pricing_type": "fixed_per_call_v0",
-                            "credits_per_request": 5500123,
+                            "pricing_type": "approx_per_token_v0",
+                            "credits_per_token": "0.001",
+                            "credits_per_token_wei": "1000000000000000",
+                            "target_output_tokens": 1024,
+                            "estimated_credits_per_request": "1.024",
+                            "estimated_credits_per_request_wei": "1024000000000000000",
+                            "credits_per_request": "1.024",
+                            "credits_per_request_wei": "1024000000000000000",
                             "unit": "compute_credit",
                         },
                         "execution": {

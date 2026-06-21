@@ -10,11 +10,18 @@ from urllib.request import Request, urlopen
 from main_computer.viewport_state import *  # noqa: F401,F403
 from main_computer.hub_networks import HubNetworkConfigError, load_hub_network_registry
 from main_computer.windows_user_activity import collect_windows_user_activity
+from main_computer.credit_units import credit_decimal_text_to_wei, credit_wei_to_decimal_text
 
 class ViewportEnergyRoutesMixin:
 
     _ENERGY_RPC_USER_AGENT = "MainComputerEnergy/1.0"
     _ENERGY_NETWORK_ORDER = ("mainnet", "testnet", "test", "dev")
+    _WORKER_DEFAULT_CREDITS_PER_REQUEST = "1.024"
+    _WORKER_DEFAULT_CREDITS_PER_TOKEN = "0.001"
+    _WORKER_DEFAULT_SELLER_TARGET_TOKENS = 1024
+    _WORKER_DEFAULT_SELLER_MODEL = "gemma4:26b"
+    _WORKER_LEGACY_CREDITS_PER_REQUESTS = {"5500123", "5500123.0", "5500123.00", "1.25", "1.250", "1.2500"}
+    _WORKER_LEGACY_SELLER_MODELS = {"mock-ai-model-phase9"}
     _ENERGY_EXPECTED_CONTRACTS = (
         ("alpha-beta-lockout", "AlphaBetaLockout"),
         ("xlag-bridge-reserve", "XLagBridgeReserve"),
@@ -439,6 +446,61 @@ class ViewportEnergyRoutesMixin:
     def _worker_settings_path(self) -> Path:
         return self.server.debug_root / "worker_settings.json"
 
+    def _worker_credit_amount_text(self, value: Any, default: str | None = None) -> str:
+        default_text = str(default or self._WORKER_DEFAULT_CREDITS_PER_REQUEST)
+        amount_wei = credit_decimal_text_to_wei(value, default=default_text, minimum_wei=1)
+        return credit_wei_to_decimal_text(amount_wei)
+
+    def _worker_credit_amount_wei_text(self, value: Any, default: str | None = None, *, value_is_wei: bool = False) -> str:
+        if value_is_wei:
+            try:
+                parsed = int(str(value).strip())
+                if parsed > 0:
+                    return str(parsed)
+            except (TypeError, ValueError):
+                pass
+        default_text = str(default or self._WORKER_DEFAULT_CREDITS_PER_REQUEST)
+        return str(credit_decimal_text_to_wei(value, default=default_text, minimum_wei=1))
+
+    def _worker_seller_credit_amount_text(self, value: Any, default: str | None = None) -> str:
+        raw_text = str(value if value is not None else "").strip().replace(",", "")
+        default_text = str(default or self._WORKER_DEFAULT_CREDITS_PER_REQUEST)
+        if not raw_text or raw_text in self._WORKER_LEGACY_CREDITS_PER_REQUESTS:
+            return self._worker_credit_amount_text(default_text, default_text)
+        return self._worker_credit_amount_text(value, default_text)
+
+    def _worker_seller_credit_per_token_text(self, value: Any, default: str | None = None) -> str:
+        raw_text = str(value if value is not None else "").strip().replace(",", "")
+        default_text = str(default or self._WORKER_DEFAULT_CREDITS_PER_TOKEN)
+        if not raw_text or raw_text in self._WORKER_LEGACY_CREDITS_PER_REQUESTS:
+            return self._worker_credit_amount_text(default_text, default_text)
+        return self._worker_credit_amount_text(value, default_text)
+
+    def _worker_estimated_request_credits_from_token_rate(self, credits_per_token: Any, target_output_tokens: Any) -> tuple[str, str]:
+        try:
+            token_count = int(target_output_tokens)
+        except (TypeError, ValueError):
+            token_count = self._WORKER_DEFAULT_SELLER_TARGET_TOKENS
+        token_count = min(128_000, max(1, token_count))
+        credits_per_token_wei = credit_decimal_text_to_wei(
+            credits_per_token,
+            default=self._WORKER_DEFAULT_CREDITS_PER_TOKEN,
+            minimum_wei=1,
+        )
+        request_wei = credits_per_token_wei * token_count
+        return credit_wei_to_decimal_text(request_wei), str(request_wei)
+
+    def _worker_seller_model_text(self, value: Any) -> str:
+        if isinstance(value, list):
+            models = [str(item).strip() for item in value if str(item).strip()]
+        else:
+            models = [item.strip() for item in str(value if value is not None else "").split(",") if item.strip()]
+        if not models:
+            return self._WORKER_DEFAULT_SELLER_MODEL
+        if len(models) == 1 and models[0] in self._WORKER_LEGACY_SELLER_MODELS:
+            return self._WORKER_DEFAULT_SELLER_MODEL
+        return ",".join(dict.fromkeys(models))
+
     def _sanitize_worker_settings(self, value: Any) -> dict[str, Any]:
         settings = value.get("settings") if isinstance(value, dict) and isinstance(value.get("settings"), dict) else value
         if not isinstance(settings, dict):
@@ -544,9 +606,24 @@ class ViewportEnergyRoutesMixin:
             "registrationHubUrl": self._clean_hub_url(text(settings.get("registrationHubUrl", settings.get("registration_hub_url")), self.server.config.hub_url), allow_empty=True),
             "nodeId": text(settings.get("nodeId", settings.get("node_id")), "local-worker-001"),
             "endpoint": text(settings.get("endpoint"), "http://127.0.0.1:8771"),
-            "models": text(settings.get("models"), ""),
+            "models": self._worker_seller_model_text(settings.get("models", self._WORKER_DEFAULT_SELLER_MODEL)),
+            "sellerTargetTokens": intish(
+                settings.get(
+                    "sellerTargetTokens",
+                    settings.get("seller_target_tokens", settings.get("targetOutputTokens", settings.get("target_output_tokens"))),
+                ),
+                self._WORKER_DEFAULT_SELLER_TARGET_TOKENS,
+                minimum=1,
+                maximum=128_000,
+            ),
             "capability": text(settings.get("capability"), "chat.completions"),
-            "creditsPerRequest": intish(settings.get("creditsPerRequest", settings.get("credits_per_request")), 5500123, minimum=0),
+            "sellerCreditsPerToken": self._worker_seller_credit_per_token_text(
+                settings.get(
+                    "sellerCreditsPerToken",
+                    settings.get("seller_credits_per_token", settings.get("creditsPerToken", settings.get("credits_per_token", settings.get("creditsPerRequest", settings.get("credits_per_request"))))),
+                ),
+                self._WORKER_DEFAULT_CREDITS_PER_TOKEN,
+            ),
             "maxConcurrency": intish(settings.get("maxConcurrency", settings.get("max_concurrency")), 1, minimum=1, maximum=1024),
             "executionMode": text(settings.get("executionMode", settings.get("execution_mode")), "worker_pull_v0"),
         }
@@ -1680,16 +1757,46 @@ class ViewportEnergyRoutesMixin:
         model = str(worker_payload.get("model") or (models[0] if models else "")).strip()
         if model and model not in models:
             models.insert(0, model)
+        models_text = self._worker_seller_model_text(models)
+        models = [item.strip() for item in models_text.split(",") if item.strip()]
+        model = models[0] if models else ""
         if not models:
             raise ValueError("At least one worker model is required.")
 
         pricing = dict(worker_payload.get("pricing", {})) if isinstance(worker_payload.get("pricing"), dict) else {}
-        try:
-            credits_per_request = int(pricing.get("credits_per_request", worker_payload.get("credits_per_request", 0)) or 0)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("credits_per_request must be a positive integer.") from exc
-        if credits_per_request <= 0:
-            raise ValueError("credits_per_request must be a positive integer.")
+
+        def target_tokens(raw: Any, default: int = self._WORKER_DEFAULT_SELLER_TARGET_TOKENS) -> int:
+            try:
+                parsed = int(raw)
+            except (TypeError, ValueError):
+                parsed = int(default)
+            return min(128_000, max(1, parsed))
+
+        target_output_tokens = target_tokens(
+            pricing.get(
+                "target_output_tokens",
+                pricing.get("target_tokens_per_request", worker_payload.get("target_output_tokens", worker_payload.get("target_tokens"))),
+            )
+        )
+        credits_per_token = self._worker_seller_credit_per_token_text(
+            pricing.get("credits_per_token", worker_payload.get("credits_per_token", worker_payload.get("sellerCreditsPerToken"))),
+            self._WORKER_DEFAULT_CREDITS_PER_TOKEN,
+        )
+        credits_per_token_wei_source = pricing.get("credits_per_token_wei", worker_payload.get("credits_per_token_wei"))
+        if credits_per_token_wei_source not in (None, ""):
+            credits_per_token_wei = self._worker_credit_amount_wei_text(
+                credits_per_token_wei_source,
+                credits_per_token,
+                value_is_wei=True,
+            )
+        else:
+            credits_per_token_wei = self._worker_credit_amount_wei_text(credits_per_token, credits_per_token)
+        estimated_credits_per_request, estimated_credits_per_request_wei = self._worker_estimated_request_credits_from_token_rate(
+            credits_per_token,
+            target_output_tokens,
+        )
+        credits_per_request = estimated_credits_per_request
+        credits_per_request_wei = estimated_credits_per_request_wei
 
         execution = dict(worker_payload.get("execution", {})) if isinstance(worker_payload.get("execution"), dict) else {}
         execution_mode = str(execution.get("mode") or worker_payload.get("execution_mode") or "worker_pull_v0").strip() or "worker_pull_v0"
@@ -1697,8 +1804,14 @@ class ViewportEnergyRoutesMixin:
         capabilities = dict(worker_payload.get("capabilities", {})) if isinstance(worker_payload.get("capabilities"), dict) else {}
         capabilities.setdefault("capabilities", ["chat.completions"])
         capabilities["pricing"] = {
-            "pricing_type": str(pricing.get("pricing_type") or "fixed_per_call_v0"),
+            "pricing_type": str(pricing.get("pricing_type") or "approx_per_token_v0"),
+            "credits_per_token": credits_per_token,
+            "credits_per_token_wei": credits_per_token_wei,
+            "target_output_tokens": target_output_tokens,
+            "estimated_credits_per_request": estimated_credits_per_request,
+            "estimated_credits_per_request_wei": estimated_credits_per_request_wei,
             "credits_per_request": credits_per_request,
+            "credits_per_request_wei": credits_per_request_wei,
             "unit": str(pricing.get("unit") or "compute_credit"),
         }
         capabilities["execution"] = {
@@ -1709,13 +1822,20 @@ class ViewportEnergyRoutesMixin:
         availability, user_activity = self._worker_seller_availability_from_payload(worker_payload)
         self._enforce_worker_seller_availability(availability, user_activity)
         capabilities["availability"] = availability
+        capabilities["target_output_tokens"] = target_output_tokens
 
         payload = {
             "node_id": str(worker_payload.get("node_id") or "").strip(),
             "endpoint": self._clean_hub_url(str(worker_payload.get("endpoint") or "")),
             "model": model,
             "models": models,
+            "credits_per_token": credits_per_token,
+            "credits_per_token_wei": credits_per_token_wei,
+            "estimated_credits_per_request": estimated_credits_per_request,
+            "estimated_credits_per_request_wei": estimated_credits_per_request_wei,
             "credits_per_request": credits_per_request,
+            "credits_per_request_wei": credits_per_request_wei,
+            "target_output_tokens": target_output_tokens,
             "max_concurrency": max_concurrency,
             "queue_depth": max(0, int(worker_payload.get("queue_depth", 0) or 0)),
             "active_requests": max(0, int(worker_payload.get("active_requests", 0) or 0)),

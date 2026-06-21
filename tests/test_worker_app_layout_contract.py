@@ -60,17 +60,21 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert "Signed Worker Connection" in seller_section
     assert "Signed Worker Connection" not in network_surface
     assert seller_section.index("How others pay me") < seller_section.index("Signed Worker Connection")
-    assert '<select id="worker-registration-hub"' not in seller_section
-    assert 'id="worker-registration-hub-status"' in seller_section
-    assert "Comes from the Signed Worker Connection below; this hub is not edited here." in seller_section
-    assert 'id="worker-registration-hub" type="hidden"' in seller_section
+    assert "Registration hub" not in seller_section
+    assert 'id="worker-registration-hub-status"' not in seller_section
+    assert 'id="worker-registration-hub"' not in seller_section
     assert 'id="worker-node-id"' not in seller_section
     assert 'id="worker-endpoint"' not in seller_section
     assert 'id="worker-offer-capability"' not in seller_section
     assert 'id="worker-max-concurrency"' not in seller_section
     assert 'id="worker-execution-mode"' not in seller_section
-    assert 'id="worker-offer-models" type="text" value="mock-ai-model-phase9" autocomplete="off" disabled aria-disabled="true"' in seller_section
-    assert 'id="worker-offer-price" type="number" min="1" step="1" value="5500123"' in seller_section
+    assert "Target output tokens per request" in seller_section
+    assert 'id="worker-offer-target-tokens" type="number" min="1" step="1" value="1024"' in seller_section
+    assert "Matches the requester default max output-token authorization" in seller_section
+    assert 'id="worker-offer-models" type="text" value="gemma4:26b" autocomplete="off" disabled aria-disabled="true"' in seller_section
+    assert "Minimum credits per estimated token" in seller_section
+    assert 'id="worker-offer-credits-per-token" type="number" min="0.000001" step="0.001" value="0.001"' in seller_section
+    assert "Matches the requester default max credits per estimated token" in seller_section
     assert 'class="worker-card worker-contract-summary"' not in seller_section
     assert "Seller offer contract this UI registers" not in html
     assert "deterministic worker-pull test path" not in html
@@ -129,11 +133,18 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert "startedAt < workerRemoteEnabledLastLocalEditAt" in js
     assert 'bindWorkerAutosaveSetting(workerRemoteEnabled, "change", ["remoteEnabled"])' in js
     assert 'bindWorkerAutosaveSetting(workerRemoteCreditsPerToken, "input", ["remoteCreditsPerToken"])' in js
+    assert 'bindWorkerAutosaveSetting(workerOfferTargetTokens, "input", ["sellerTargetTokens"])' in js
+    assert 'bindWorkerAutosaveSetting(workerOfferCreditsPerToken, "input", ["sellerCreditsPerToken"])' in js
     assert "changed_fields" in js
     assert "remoteMaxOutputTokens" in js
+    assert "sellerTargetTokens" in js
+    assert "sellerCreditsPerToken" in js
+    assert "target_output_tokens: targetOutputTokens" in js
     assert "remoteAskBeforeSpend" in js
     assert "workerRemoteCreditsPerToken" in bindings
     assert "workerRemoteMaxOutputTokens" in bindings
+    assert "workerOfferTargetTokens" in bindings
+    assert "workerOfferCreditsPerToken" in bindings
     assert "workerRemoteAskBeforeSpend" in bindings
 
 
@@ -144,8 +155,8 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     dispatch = VIEWPORT_ROUTES.read_text(encoding="utf-8")
     energy_routes = VIEWPORT_ENERGY_ROUTES.read_text(encoding="utf-8")
 
-    assert 'id="worker-registration-hub-status"' in html
-    assert 'id="worker-registration-hub" type="hidden"' in html
+    assert 'id="worker-registration-hub-status"' not in html
+    assert 'id="worker-registration-hub"' not in html
     assert '<select id="worker-registration-hub"' not in html
     assert 'id="worker-node-id"' not in html
     assert 'id="worker-endpoint"' not in html
@@ -156,8 +167,12 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert 'id="worker-registered-offer-id"' in html
 
     assert "buildWorkerOfferRegistrationPayload" in js
-    assert "Select a worker connection below." in js
-    assert 'pricing_type: "fixed_per_call_v0"' in js
+    assert 'pricing_type: "approx_per_token_v0"' in js
+    assert 'credits_per_token: creditsPerToken' in js
+    assert "credits_per_token_wei: creditsPerTokenWei" in js
+    assert "estimated_credits_per_request: estimatedCreditsPerRequest" in js
+    assert "estimated_credits_per_request_wei: estimatedCreditsPerRequestWei" in js
+    assert "target_output_tokens: targetOutputTokens" in js
     assert 'unit: "compute_credit"' in js
     assert 'mode: settings.executionMode' in js
     assert '"/api/applications/worker/register-offer"' in js
@@ -172,8 +187,10 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert "requestMultiSessionKeySignature" in js
     assert "workerLoadMultisessionKeysForWallet" in js
 
-    assert "workerRegistrationHub" in bindings
-    assert "workerRegistrationHubStatus" in bindings
+    assert "workerRegistrationHub" not in bindings
+    assert "workerRegistrationHubStatus" not in bindings
+    assert "workerOfferTargetTokens" in bindings
+    assert "workerOfferCreditsPerToken" in bindings
     assert "workerRegisterOffer" in bindings
     assert "workerRegisteredOfferId" in bindings
 

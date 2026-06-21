@@ -107,10 +107,11 @@ function gitProjectCommitTargetMismatch(workbench = null, repoDir = "") {
   return {ok: mismatches.length === 0, expected, sources, mismatches};
 }
 function setGitProjectNextStep(title, message = "", meta = "", tone = "informative", actionHtml = "") {
-  if (!gitProjectNextStep) return;
-  gitProjectNextStep.classList.remove("tone-blocking", "tone-actionable", "tone-informative");
-  gitProjectNextStep.classList.add(`tone-${tone || "informative"}`);
-  gitProjectNextStep.innerHTML = [
+  const nextStepNode = typeof gitProjectNextStep === "undefined" ? null : gitProjectNextStep;
+  if (!nextStepNode) return;
+  nextStepNode.classList.remove("tone-blocking", "tone-actionable", "tone-informative");
+  nextStepNode.classList.add(`tone-${tone || "informative"}`);
+  nextStepNode.innerHTML = [
     `<strong>${escapeHtml(title || "Next step")}</strong>`,
     message ? `<span>${escapeHtml(message)}</span>` : "",
     meta ? `<code>${escapeHtml(meta)}</code>` : "",

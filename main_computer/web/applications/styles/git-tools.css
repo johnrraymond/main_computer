@@ -530,7 +530,6 @@
   min-width: 0;
 }
 
-.git-project-next-step,
 .git-project-wizard-plan,
 .git-project-roster {
   overflow-wrap: anywhere;
@@ -541,36 +540,6 @@
   color: var(--text);
   font-family: var(--mono);
   font-size: 12px;
-}
-
-.git-project-next-step strong {
-  color: var(--gold);
-  text-transform: uppercase;
-}
-
-.git-project-next-step span {
-  color: var(--muted);
-}
-
-.git-project-next-step code {
-  color: var(--cyan);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-
-.git-project-next-step-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.git-project-repo-boundary-open {
-  width: fit-content;
-  border-color: rgba(255, 206, 77, 0.65);
-  color: var(--gold);
 }
 
 .git-project-repo-boundary-modal-open {
@@ -876,28 +845,24 @@
   gap: 6px;
 }
 
-.git-project-next-step.tone-blocking,
 .git-project-wizard-section.tone-blocking,
 .git-project-wizard-step.tone-blocking {
   border-color: #a63e32;
   background: rgba(122, 21, 8, 0.22);
 }
 
-.git-project-next-step.tone-actionable,
 .git-project-wizard-section.tone-actionable,
 .git-project-wizard-step.tone-actionable {
   border-color: #d57d18;
   background: rgba(124, 68, 9, 0.2);
 }
 
-.git-project-next-step.tone-informative,
 .git-project-wizard-section.tone-informative,
 .git-project-wizard-step.tone-informative {
   border-color: #d8b74f;
   background: rgba(104, 84, 15, 0.16);
 }
 
-.git-project-next-step.tone-complete,
 .git-project-wizard-section.tone-complete,
 .git-project-wizard-step.tone-complete {
   border-color: rgba(117, 255, 188, 0.68);

@@ -97,8 +97,9 @@ function initTaskManagerApp() {
         });
       });
     setTaskNotebookTab(taskNotebookTabFromPath(window.location.pathname), {replaceRoute: true});
-    if (gitProjectNextStep) {
-      gitProjectNextStep.addEventListener("click", (event) => {
+    const nextStepNode = typeof gitProjectNextStep === "undefined" ? null : gitProjectNextStep;
+    if (nextStepNode) {
+      nextStepNode.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
         const button = target?.closest("button[data-git-repo-boundary-action='open']");
         if (!button) return;

@@ -43,14 +43,13 @@
     const workerRentalEnabled = document.querySelector("#worker-rental-enabled");
     const workerSellerOnlyWhenIdle = document.querySelector("#worker-seller-only-when-idle");
     const workerLockAiModel = document.querySelector("#worker-lock-ai-model");
-    const workerRegistrationHub = document.querySelector("#worker-registration-hub");
-    const workerRegistrationHubStatus = document.querySelector("#worker-registration-hub-status");
     const workerRegistrationStatusPill = document.querySelector("#worker-registration-status-pill");
     const workerNodeId = document.querySelector("#worker-node-id");
     const workerEndpoint = document.querySelector("#worker-endpoint");
     const workerOfferModels = document.querySelector("#worker-offer-models");
+    const workerOfferTargetTokens = document.querySelector("#worker-offer-target-tokens");
     const workerOfferCapability = document.querySelector("#worker-offer-capability");
-    const workerOfferPrice = document.querySelector("#worker-offer-price");
+    const workerOfferCreditsPerToken = document.querySelector("#worker-offer-credits-per-token");
     const workerMaxConcurrency = document.querySelector("#worker-max-concurrency");
     const workerExecutionMode = document.querySelector("#worker-execution-mode");
     const workerRegistrationSummary = document.querySelector("#worker-registration-summary");

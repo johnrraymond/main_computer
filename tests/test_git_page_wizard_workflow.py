@@ -104,7 +104,6 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
                 self.assertIn(snippet, APPLICATIONS_INDEX_HTML)
 
         expected_css = (
-            ".git-project-next-step-actions",
             ".git-project-repo-boundary-overlay",
             ".git-project-repo-boundary-dialog",
             ".git-project-repo-boundary-options",
@@ -118,7 +117,6 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
     def test_git_project_selector_exposes_vip_lock_and_dirty_plan_wizard(self) -> None:
         expected_snippets = (
             'id="git-project-selector-panel"',
-            'id="git-project-next-step"',
             'class="git-project-layout"',
             'class="git-project-roster"',
             "Current Projects",
@@ -216,6 +214,8 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
                 self.assertIn(snippet, APPLICATIONS_INDEX_HTML)
         self.assertNotIn('id="git-project-current"', GIT_TOOLS_APP_HTML)
         self.assertNotIn(".git-project-current", GIT_TOOLS_CSS)
+        self.assertNotIn('id="git-project-next-step"', GIT_TOOLS_APP_HTML)
+        self.assertNotIn(".git-project-next-step", GIT_TOOLS_CSS)
         project_main_match = re.search(
             r'<div class="git-project-main"[^>]*>.*?<div class="git-project-wizard-plan"',
             GIT_TOOLS_APP_HTML,
@@ -274,7 +274,6 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         self.assertIn("flex-wrap: nowrap;", GIT_TOOLS_CSS)
         self.assertIn("flex: 1 0 min(380px, calc((100% - 8px) / 2));", GIT_TOOLS_CSS)
         self.assertIn("overflow-x: auto;", GIT_TOOLS_CSS)
-        self.assertIn(".git-project-next-step", GIT_TOOLS_CSS)
         self.assertIn(".git-project-wizard-section", GIT_TOOLS_CSS)
         self.assertIn(".git-project-wizard-empty", GIT_TOOLS_CSS)
         self.assertIn(".git-project-wizard-step", GIT_TOOLS_CSS)

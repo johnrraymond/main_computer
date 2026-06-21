@@ -10,6 +10,12 @@
     const WORKER_NETWORK_ORDER = ["mainnet", "testnet", "test", "dev"];
     const WORKER_NETWORK_NONE = "none";
     const WORKER_DEFAULT_RING = "3";
+    const WORKER_DEFAULT_SELLER_CREDITS_PER_TOKEN = "0.001";
+    const WORKER_DEFAULT_SELLER_TARGET_TOKENS = 1024;
+    const WORKER_DEFAULT_SELLER_MODEL = "gemma4:26b";
+    const WORKER_LEGACY_SELLER_CREDITS_PER_REQUESTS = new Set(["5500123", "5500123.0", "5500123.00", "1.25", "1.250", "1.2500"]);
+    const WORKER_LEGACY_SELLER_MODELS = new Set(["mock-ai-model-phase9"]);
+    const WORKER_CREDIT_BASE_UNITS_PER_CREDIT = 1000000000000000000n;
     const WORKER_RING_LABELS = {
       "0": "Ring 0 - Operator",
       "1": "Ring 1 - Protected",
@@ -47,7 +53,6 @@
     const WORKER_WALLET_BALANCE_TIMEOUT_MS = 8000;
     const WORKER_METAMASK_RPC_BACKOFF_TIMEOUT_MS = 75000;
     const WORKER_METAMASK_RPC_BACKOFF_POLL_MS = 3000;
-    const WORKER_CREDIT_BASE_UNITS_PER_CREDIT = 1000000000000000000n;
     const WORKER_HUB_CREDIT_BRIDGE_ESCROW_ABI = [
       "function depositFor(address account,uint256 amountUnits,bytes32 depositId,string memo) payable returns (bool)",
       "event CreditDeposited(bytes32 indexed depositId,address indexed account,address indexed payer,uint256 amountUnits,string memo)"
@@ -3237,6 +3242,27 @@
       return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
     }
 
+    function workerNormalizeSellerCreditsPerToken(value) {
+      const raw = String(value ?? "").trim();
+      const normalized = raw.replace(/,/g, "");
+      if (!normalized || WORKER_LEGACY_SELLER_CREDITS_PER_REQUESTS.has(normalized)) {
+        return WORKER_DEFAULT_SELLER_CREDITS_PER_TOKEN;
+      }
+      return raw;
+    }
+
+    function workerNormalizeSellerModels(value) {
+      const raw = String(value ?? "").trim();
+      const models = raw.split(",").map((item) => item.trim()).filter(Boolean);
+      if (!models.length) {
+        return WORKER_DEFAULT_SELLER_MODEL;
+      }
+      if (models.length === 1 && WORKER_LEGACY_SELLER_MODELS.has(models[0])) {
+        return WORKER_DEFAULT_SELLER_MODEL;
+      }
+      return [...new Set(models)].join(",");
+    }
+
     function workerPositiveDecimalString(value, fallback = "1") {
       const raw = String(value ?? "").trim();
       const parsed = Number.parseFloat(raw);
@@ -3244,6 +3270,45 @@
         return String(fallback);
       }
       return raw;
+    }
+
+    function workerCreditDecimalToWei(value, fallback = "1") {
+      const raw = workerPositiveDecimalString(value, fallback);
+      const parts = raw.split(".");
+      const whole = parts[0] || "0";
+      const fraction = (parts[1] || "").slice(0, 18).padEnd(18, "0");
+      try {
+        return (BigInt(whole) * WORKER_CREDIT_BASE_UNITS_PER_CREDIT + BigInt(fraction || "0")).toString();
+      } catch {
+        const fallbackParts = String(fallback).split(".");
+        const fallbackWhole = fallbackParts[0] || "0";
+        const fallbackFraction = (fallbackParts[1] || "").slice(0, 18).padEnd(18, "0");
+        return (BigInt(fallbackWhole) * WORKER_CREDIT_BASE_UNITS_PER_CREDIT + BigInt(fallbackFraction || "0")).toString();
+      }
+    }
+
+    function workerCreditWeiToDecimal(value) {
+      try {
+        const amount = BigInt(String(value ?? "0"));
+        const whole = amount / WORKER_CREDIT_BASE_UNITS_PER_CREDIT;
+        const remainder = amount % WORKER_CREDIT_BASE_UNITS_PER_CREDIT;
+        if (remainder === 0n) return whole.toString();
+        const fraction = remainder.toString().padStart(18, "0").replace(/0+$/, "");
+        return `${whole.toString()}.${fraction}`;
+      } catch {
+        return "0";
+      }
+    }
+
+    function workerEstimatedCreditsPerRequestFromTokenRate(creditsPerTokenWei, targetOutputTokens) {
+      try {
+        const tokenWei = BigInt(String(creditsPerTokenWei ?? "0"));
+        const tokenCount = BigInt(Math.max(1, workerPositiveInteger(targetOutputTokens, WORKER_DEFAULT_SELLER_TARGET_TOKENS)));
+        return (tokenWei * tokenCount).toString();
+      } catch {
+        const fallbackWei = BigInt(workerCreditDecimalToWei(WORKER_DEFAULT_SELLER_CREDITS_PER_TOKEN, WORKER_DEFAULT_SELLER_CREDITS_PER_TOKEN));
+        return (fallbackWei * BigInt(WORKER_DEFAULT_SELLER_TARGET_TOKENS)).toString();
+      }
     }
 
     function workerSavedBoolean(value, fallback = false) {
@@ -3257,9 +3322,9 @@
     }
 
     function workerOfferModelsArray() {
-      const raw = workerElementValue(workerOfferModels, "mock-ai-model-phase9");
+      const raw = workerNormalizeSellerModels(workerElementValue(workerOfferModels, WORKER_DEFAULT_SELLER_MODEL));
       const models = raw.split(",").map((item) => item.trim()).filter(Boolean);
-      return models.length ? [...new Set(models)] : ["mock-ai-model-phase9"];
+      return models.length ? [...new Set(models)] : [WORKER_DEFAULT_SELLER_MODEL];
     }
 
     function workerNetworkHubUrl() {
@@ -3284,28 +3349,7 @@
     }
 
     function workerRenderRegistrationHubOptions(selectedUrl = "") {
-      const hubUrl = String(workerNetworkHubUrl() || selectedUrl || workerElementValue(workerRegistrationHub)).trim();
-      if (workerRegistrationHub && "value" in workerRegistrationHub) {
-        workerRegistrationHub.value = hubUrl;
-      }
-      if (!workerRegistrationHubStatus) return;
-      const selected = workerNetworkKey(workerNetworkSession.selected_network);
-      if (!hubUrl || selected === WORKER_NETWORK_NONE) {
-        workerRegistrationHubStatus.textContent = "Select a worker connection below.";
-        return;
-      }
-      const signed = workerNetworkSignedConnection();
-      const signedForSelected = (
-        signed.network === selected
-        && String(signed.requested_ring || "") === String(workerNetworkSession.requested_ring || "")
-        && workerWalletValidAddress(signed.wallet_address || "")
-      );
-      const registrationState = workerNetworkHubRegistered()
-        ? "Accepted"
-        : signedForSelected
-          ? "Signed; hub registration pending"
-          : "Selected; not signed yet";
-      workerRegistrationHubStatus.textContent = `${registrationState}: ${workerHubDisplayLabel(hubUrl)}`;
+      return String(workerNetworkHubUrl() || selectedUrl || "").trim();
     }
 
     function workerSetRegistrationStatus(message, kind = "") {
@@ -3336,8 +3380,17 @@
       if (workerRegisteredHub) workerRegisteredHub.textContent = hubUrl || "—";
       if (workerRegisteredOfferId) workerRegisteredOfferId.textContent = offer.offer_id || "—";
       if (workerRegisteredPrice) {
-        const credits = offer.credits_per_request || worker.credits_per_request || "";
-        workerRegisteredPrice.textContent = credits ? `${credits} compute credits` : "—";
+        const tokenCredits = offer.credits_per_token || worker.credits_per_token || "";
+        const targetTokens = offer.target_output_tokens || worker.target_output_tokens || "";
+        const estimatedCredits = offer.estimated_credits_per_request || offer.credits_per_request || worker.estimated_credits_per_request || worker.credits_per_request || "";
+        if (tokenCredits) {
+          const estimateText = estimatedCredits && targetTokens
+            ? ` (~${estimatedCredits} credits at ${targetTokens} target tokens)`
+            : "";
+          workerRegisteredPrice.textContent = `${tokenCredits} credits per estimated token${estimateText}`;
+        } else {
+          workerRegisteredPrice.textContent = estimatedCredits ? `${estimatedCredits} compute credits` : "—";
+        }
       }
       if (workerRegisteredModel) workerRegisteredModel.textContent = models[0] || worker.model || "—";
     }
@@ -3418,8 +3471,12 @@
         nodeId: workerElementValue(workerNodeId, "local-worker-001"),
         endpoint: workerElementValue(workerEndpoint, "http://127.0.0.1:8771"),
         models: models.join(","),
+        sellerTargetTokens: workerPositiveInteger(workerElementValue(workerOfferTargetTokens, WORKER_DEFAULT_SELLER_TARGET_TOKENS), WORKER_DEFAULT_SELLER_TARGET_TOKENS),
         capability: workerElementValue(workerOfferCapability, "chat.completions"),
-        creditsPerRequest: workerPositiveInteger(workerElementValue(workerOfferPrice, "5500123"), 5500123),
+        sellerCreditsPerToken: workerPositiveDecimalString(
+          workerNormalizeSellerCreditsPerToken(workerElementValue(workerOfferCreditsPerToken, WORKER_DEFAULT_SELLER_CREDITS_PER_TOKEN)),
+          WORKER_DEFAULT_SELLER_CREDITS_PER_TOKEN
+        ),
         maxConcurrency: workerPositiveInteger(workerElementValue(workerMaxConcurrency, "1"), 1),
         executionMode: workerElementValue(workerExecutionMode, "worker_pull_v0"),
         hubs: workerHubs
@@ -3522,9 +3579,10 @@
       }
       assignWorkerValue(workerNodeId, parsed.nodeId);
       assignWorkerValue(workerEndpoint, parsed.endpoint);
-      assignWorkerValue(workerOfferModels, parsed.models);
+      assignWorkerValue(workerOfferModels, workerNormalizeSellerModels(parsed.models));
+      assignWorkerValue(workerOfferTargetTokens, parsed.sellerTargetTokens);
       assignWorkerValue(workerOfferCapability, parsed.capability);
-      assignWorkerValue(workerOfferPrice, parsed.creditsPerRequest);
+      assignWorkerValue(workerOfferCreditsPerToken, workerNormalizeSellerCreditsPerToken(parsed.sellerCreditsPerToken));
       assignWorkerValue(workerMaxConcurrency, parsed.maxConcurrency);
       assignWorkerValue(workerExecutionMode, parsed.executionMode);
       workerRenderRegistrationHubOptions(parsed.registrationHubUrl);
@@ -3594,9 +3652,20 @@
       if (!models.length) {
         throw new Error("At least one model is required.");
       }
+      const targetOutputTokens = workerPositiveInteger(settings.sellerTargetTokens, WORKER_DEFAULT_SELLER_TARGET_TOKENS);
+      const creditsPerToken = workerPositiveDecimalString(settings.sellerCreditsPerToken, WORKER_DEFAULT_SELLER_CREDITS_PER_TOKEN);
+      const creditsPerTokenWei = workerCreditDecimalToWei(creditsPerToken, WORKER_DEFAULT_SELLER_CREDITS_PER_TOKEN);
+      const estimatedCreditsPerRequestWei = workerEstimatedCreditsPerRequestFromTokenRate(creditsPerTokenWei, targetOutputTokens);
+      const estimatedCreditsPerRequest = workerCreditWeiToDecimal(estimatedCreditsPerRequestWei);
       const pricing = {
-        pricing_type: "fixed_per_call_v0",
-        credits_per_request: settings.creditsPerRequest,
+        pricing_type: "approx_per_token_v0",
+        credits_per_token: creditsPerToken,
+        credits_per_token_wei: creditsPerTokenWei,
+        target_output_tokens: targetOutputTokens,
+        estimated_credits_per_request: estimatedCreditsPerRequest,
+        estimated_credits_per_request_wei: estimatedCreditsPerRequestWei,
+        credits_per_request: estimatedCreditsPerRequest,
+        credits_per_request_wei: estimatedCreditsPerRequestWei,
         unit: "compute_credit"
       };
       const execution = {
@@ -3613,7 +3682,13 @@
         endpoint: settings.endpoint,
         model: models[0],
         models,
-        credits_per_request: settings.creditsPerRequest,
+        credits_per_token: creditsPerToken,
+        credits_per_token_wei: creditsPerTokenWei,
+        estimated_credits_per_request: estimatedCreditsPerRequest,
+        estimated_credits_per_request_wei: estimatedCreditsPerRequestWei,
+        credits_per_request: estimatedCreditsPerRequest,
+        credits_per_request_wei: estimatedCreditsPerRequestWei,
+        target_output_tokens: targetOutputTokens,
         max_concurrency: settings.maxConcurrency,
         queue_depth: 0,
         active_requests: 0,
@@ -3625,6 +3700,7 @@
           pricing,
           execution,
           availability,
+          target_output_tokens: targetOutputTokens,
           phase12_worker_seller_offer_ui: true
         }
       };
@@ -3848,15 +3924,6 @@
           if (workerSaveStatus) workerSaveStatus.textContent = `${removed?.name || "Hub"} removed. Save settings to keep the change.`;
         });
       }
-      if (workerRegistrationHub && !workerRegistrationHub.dataset.workerBound) {
-        workerRegistrationHub.dataset.workerBound = "true";
-        workerRegistrationHub.addEventListener("change", async () => {
-          saveWorkerSettings();
-          if (workerBridgeState.wallet.connected && workerBridgeState.wallet.address) {
-            await workerLoadMultisessionKeysForWallet(workerBridgeState.wallet.address, "hub-change");
-          }
-        });
-      }
       if (workerRegisterOffer && !workerRegisterOffer.dataset.workerBound) {
         workerRegisterOffer.dataset.workerBound = "true";
         workerRegisterOffer.addEventListener("click", registerWorkerOffer);
@@ -3873,6 +3940,10 @@
       bindWorkerAutosaveSetting(workerRemoteDailyLimit, "change", ["remoteDailyLimit"]);
       bindWorkerAutosaveSetting(workerRemoteAskBeforeSpend, "change", ["remoteAskBeforeSpend"]);
       bindWorkerAutosaveSetting(workerRemoteOnlyWhenBusy, "change", ["remoteOnlyWhenBusy"]);
+      bindWorkerAutosaveSetting(workerOfferTargetTokens, "change", ["sellerTargetTokens"]);
+      bindWorkerAutosaveSetting(workerOfferTargetTokens, "input", ["sellerTargetTokens"]);
+      bindWorkerAutosaveSetting(workerOfferCreditsPerToken, "change", ["sellerCreditsPerToken"]);
+      bindWorkerAutosaveSetting(workerOfferCreditsPerToken, "input", ["sellerCreditsPerToken"]);
       bindWorkerAutosaveSetting(workerRentalEnabled, "change", ["sellerEnabled", "rentalEnabled"]);
       bindWorkerAutosaveSetting(workerSellerOnlyWhenIdle, "change", ["sellerOnlyWhenIdle", "rentalOnlyWhenIdle"]);
       if (workerPauseRentals && !workerPauseRentals.dataset.workerBound) {
