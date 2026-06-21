@@ -2,7 +2,6 @@
     const gitRepoDir = document.querySelector("#git-repo-dir");
     const gitToolsStatus = document.querySelector("#git-tools-status");
     const gitToolsBranch = document.querySelector("#git-tools-branch");
-    const gitProjectCurrent = document.querySelector("#git-project-current");
     const gitProjectNextStep = document.querySelector("#git-project-next-step");
     const gitProjectPath = document.querySelector("#git-project-path");
     const gitProjectAdd = document.querySelector("#git-project-add");

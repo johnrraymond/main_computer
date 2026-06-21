@@ -29,13 +29,11 @@ function element(name) {{
 }}
 const projectList = element("gitProjectList");
 const archiveList = element("gitProjectArchiveList");
-const currentNode = element("gitProjectCurrent");
 const context = {{
   console,
   window: null,
   gitProjectsLastState: null,
   gitProjectLastInspection: null,
-  gitProjectCurrent: currentNode,
   gitProjectList: projectList,
   gitProjectArchiveList: archiveList,
   gitProjectPath: element("gitProjectPath"),
@@ -123,7 +121,6 @@ vm.runInContext(fs.readFileSync({json.dumps(str(project_panel))}, "utf8"), conte
     compatInspect: context.inspectSelectedGitProject === api.inspectSelectedGitProject,
     badges,
     projectListHtml: projectList.innerHTML,
-    currentHtml: currentNode.innerHTML,
     archiveHtml: archiveList.innerHTML,
     apiCalls,
     lifecycle,

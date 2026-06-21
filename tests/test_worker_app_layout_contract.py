@@ -18,13 +18,15 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     js = WORKER_JS.read_text(encoding="utf-8")
     bindings = WORKER_BINDINGS_JS.read_text(encoding="utf-8")
 
-    assert 'class="worker-market-tabs"' in html
-    assert 'href="#worker-sell-work"' in html
-    assert 'href="#worker-use-remote-workers"' in html
+    assert 'class="worker-market-tabs"' not in html
+    assert 'class="worker-market-tab"' not in html
+    assert 'href="#worker-sell-work"' not in html
+    assert 'href="#worker-use-remote-workers"' not in html
     assert "Sell Work" in html
     assert "How others pay me" in html
     assert "Use Remote Workers" in html
     assert "How I pay others" in html
+    assert html.index('id="worker-sell-work"') < html.index('id="worker-use-remote-workers"')
 
     # The Worker surface owns both marketplace policies, but the labels make it
     # clear which side pays and which side gets paid.
@@ -45,15 +47,20 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert "lowest price" not in html.lower()
     assert "future/requester concern" not in html
 
-    # The layout presents sell and buy as peer marketplace tabs, then hub
-    # connection support below; it does not regress to the old skinny rail.
-    assert '"tabs tabs"' in css
-    assert '"seller buyer"' in css
-    assert '"hubs hubs"' in css
+    # The layout presents selling first, then buying remote work below it,
+    # because a worker must be sell-ready before it can safely use others.
+    assert "grid-template-columns: minmax(0, 1fr);" in css
+    assert '        "seller"\n        "buyer"\n        "hubs";' in css
+    assert '"seller buyer"' not in css
+    assert '"tabs tabs"' not in css
+    assert '"hubs hubs"' not in css
     assert '"seller seller"' not in css
     assert '"hubs buyer"' not in css
-    assert ".worker-market-tabs" in css
-    assert ".worker-market-tab-remote" in css
+    assert css.index('"seller"') < css.index('"buyer"')
+    assert ".worker-market-tabs" not in css
+    assert ".worker-market-tab-remote" not in css
+    assert ".worker-seller > .worker-pane-head" in css
+    assert "grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));" in css
     assert ".worker-remote-policy" in css
     assert ".worker-remote-flow ol" in css
     assert "container-type: inline-size" in css

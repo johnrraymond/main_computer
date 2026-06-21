@@ -33,11 +33,6 @@ async function loadGitProjects() {
 function renderGitProjects(data) {
   if (!data) return;
   const current = data.current_project || null;
-  if (gitProjectCurrent) {
-    gitProjectCurrent.innerHTML = current
-      ? `<strong>${current.vip ? "★ " : ""}${escapeHtml(current.name || current.id)}</strong><span>${escapeHtml(projectBadges(current))}</span><code>${escapeHtml(current.path || "")}</code>`
-      : `<strong>No project selected</strong><span>Select a project from Current Projects.</span>`;
-  }
   if (current?.path) gitProjectSetTargetPathInputs(current.path);
   renderGitProjectNextStep(gitProjectLastInspection?.project?.id === current?.id ? gitProjectLastInspection : null);
   renderGitProjectList(gitProjectList, data.projects || [], {archived: false});

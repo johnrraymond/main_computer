@@ -3576,7 +3576,6 @@
     const MCEL_CANONICAL_GIT_TOOLS_REQUIRED_IDS = [
       "git-tools-app",
       "git-project-selector-panel",
-      "git-project-current",
       "git-project-list",
       "git-workflow-accordion",
       "git-server-pane",

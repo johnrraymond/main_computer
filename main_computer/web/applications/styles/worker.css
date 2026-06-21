@@ -459,7 +459,7 @@
       }
     }
 
-    /* Phase 13 layout correction: one Worker market surface with explicit sell-vs-buy tabs. */
+    /* Phase 13 layout correction: one Worker market surface with sell before buy. */
     .worker-app,
     .worker-app * {
       box-sizing: border-box;
@@ -489,49 +489,16 @@
     }
     .worker-workspace {
       display: grid;
-      grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr);
+      grid-template-columns: minmax(0, 1fr);
       grid-template-areas:
-        "tabs tabs"
-        "seller buyer"
-        "hubs hubs";
+        "seller"
+        "buyer"
+        "hubs";
       gap: 14px;
       align-items: start;
       min-height: 0;
       height: auto;
       overflow: visible;
-    }
-    .worker-market-tabs {
-      grid-area: tabs;
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 10px;
-      min-width: 0;
-    }
-    .worker-market-tab {
-      display: grid;
-      gap: 4px;
-      min-width: 0;
-      border: 1px solid rgba(246, 199, 91, 0.32);
-      border-radius: 12px;
-      background:
-        linear-gradient(135deg, rgba(246, 199, 91, 0.1), rgba(115, 214, 255, 0.05)),
-        rgba(12, 12, 10, 0.96);
-      color: var(--ink);
-      padding: 12px;
-      text-decoration: none;
-    }
-    .worker-market-tab strong {
-      color: var(--gold);
-      font-size: 14px;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
-    .worker-market-tab span {
-      color: var(--muted);
-      font-weight: 800;
-    }
-    .worker-market-tab-remote {
-      border-color: rgba(115, 214, 255, 0.32);
     }
     .worker-hubs {
       grid-area: hubs;
@@ -551,12 +518,7 @@
     }
     .worker-seller {
       display: grid;
-      grid-template-columns: minmax(220px, 300px) minmax(360px, 1fr);
-      grid-template-areas:
-        "seller-head offer"
-        "advanced offer"
-        "contract contract"
-        "registration registration";
+      grid-template-columns: minmax(0, 1fr);
       gap: 12px;
       align-items: start;
       min-height: 0;
@@ -564,36 +526,22 @@
       border-color: rgba(246, 199, 91, 0.36);
     }
     .worker-seller > .worker-pane-head {
-      grid-area: seller-head;
       display: grid;
-      grid-template-columns: minmax(0, 1fr);
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: start;
       gap: 12px;
       min-width: 0;
     }
-    .worker-seller > .worker-primary-offer {
-      grid-area: offer;
-      min-width: 0;
-      width: 100%;
-    }
-    .worker-seller > .worker-drawer {
-      grid-area: advanced;
-      min-width: 0;
-    }
-    .worker-seller > .worker-contract-summary {
-      grid-area: contract;
-      min-width: 0;
-      width: 100%;
-      align-self: start;
-    }
+    .worker-seller > .worker-primary-offer,
+    .worker-seller > .worker-drawer,
+    .worker-seller > .worker-contract-summary,
     .worker-seller > .worker-registration-card {
-      grid-area: registration;
       min-width: 0;
       width: 100%;
-      align-self: start;
     }
     .worker-primary-offer {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
       align-content: start;
       min-width: 0;
     }
@@ -787,44 +735,30 @@
       .worker-workspace {
         grid-template-columns: 1fr;
         grid-template-areas:
-          "tabs"
           "seller"
           "buyer"
           "hubs";
       }
       .worker-seller {
         grid-template-columns: 1fr;
-        grid-template-areas:
-          "seller-head"
-          "offer"
-          "contract"
-          "registration"
-          "advanced";
       }
     }
     @media (max-width: 1150px) {
       .worker-workspace {
         grid-template-columns: 1fr;
         grid-template-areas:
-          "tabs"
           "seller"
           "buyer"
           "hubs";
       }
       .worker-seller {
         grid-template-columns: 1fr;
-        grid-template-areas:
-          "seller-head"
-          "offer"
-          "contract"
-          "registration"
-          "advanced";
       }
     }
     @media (max-width: 760px) {
       .worker-hero,
       .worker-network-tabs,
-      .worker-market-tabs,
+      .worker-seller > .worker-pane-head,
       .worker-buyer .worker-pane-head {
         grid-template-columns: 1fr;
       }

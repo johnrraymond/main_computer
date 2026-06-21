@@ -118,7 +118,6 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
     def test_git_project_selector_exposes_vip_lock_and_dirty_plan_wizard(self) -> None:
         expected_snippets = (
             'id="git-project-selector-panel"',
-            'id="git-project-current"',
             'id="git-project-next-step"',
             'class="git-project-layout"',
             'class="git-project-roster"',
@@ -214,6 +213,8 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         for snippet in expected_snippets:
             with self.subTest(snippet=snippet):
                 self.assertIn(snippet, APPLICATIONS_INDEX_HTML)
+        self.assertNotIn('id="git-project-current"', GIT_TOOLS_APP_HTML)
+        self.assertNotIn(".git-project-current", GIT_TOOLS_CSS)
         project_main_match = re.search(
             r'<div class="git-project-main"[^>]*>.*?<div class="git-project-wizard-plan"',
             GIT_TOOLS_APP_HTML,
@@ -227,6 +228,15 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         self.assertNotIn('id="git-project-lock"', GIT_TOOLS_APP_HTML)
         self.assertNotIn('id="git-project-unlock"', GIT_TOOLS_APP_HTML)
         self.assertIn('class="git-project-add-section"', GIT_TOOLS_APP_HTML)
+        self.assertNotIn(
+            "The selected project is highlighted. Use Inspect to refresh the report without changing selection.",
+            GIT_TOOLS_APP_HTML,
+        )
+        roster_index = GIT_TOOLS_APP_HTML.find('class="git-project-roster"')
+        main_index = GIT_TOOLS_APP_HTML.find('class="git-project-main"')
+        self.assertGreaterEqual(roster_index, 0)
+        self.assertGreaterEqual(main_index, 0)
+        self.assertLess(roster_index, main_index)
         hidden_generated_groups = (
             'renderStepGroup("Immediate attention"',
             'renderStepGroup("Satisfied prerequisites"',
@@ -257,9 +267,12 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         self.assertIn(".git-tools-project-card", GIT_TOOLS_CSS)
         self.assertIn(".git-project-layout", GIT_TOOLS_CSS)
         self.assertNotIn(".git-project-header", GIT_TOOLS_CSS)
-        self.assertIn("grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);", GIT_TOOLS_CSS)
+        self.assertIn("grid-template-columns: minmax(0, 1fr);", GIT_TOOLS_CSS)
         self.assertIn(".git-project-roster", GIT_TOOLS_CSS)
         self.assertIn(".git-project-add-section", GIT_TOOLS_CSS)
+        self.assertIn("flex-wrap: nowrap;", GIT_TOOLS_CSS)
+        self.assertIn("flex: 1 0 min(380px, calc((100% - 8px) / 2));", GIT_TOOLS_CSS)
+        self.assertIn("overflow-x: auto;", GIT_TOOLS_CSS)
         self.assertIn(".git-project-next-step", GIT_TOOLS_CSS)
         self.assertIn(".git-project-wizard-section", GIT_TOOLS_CSS)
         self.assertIn(".git-project-wizard-empty", GIT_TOOLS_CSS)

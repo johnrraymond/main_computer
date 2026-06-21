@@ -530,7 +530,6 @@
   min-width: 0;
 }
 
-.git-project-current,
 .git-project-next-step,
 .git-project-wizard-plan,
 .git-project-roster {
@@ -544,23 +543,15 @@
   font-size: 12px;
 }
 
-.git-project-current {
-  display: grid;
-  gap: 4px;
-}
-
-.git-project-current strong,
 .git-project-next-step strong {
   color: var(--gold);
   text-transform: uppercase;
 }
 
-.git-project-current span,
 .git-project-next-step span {
   color: var(--muted);
 }
 
-.git-project-current code,
 .git-project-next-step code {
   color: var(--cyan);
   white-space: nowrap;
@@ -745,7 +736,7 @@
 }
 
 .git-project-layout {
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
 }
 
@@ -755,8 +746,8 @@
 
 .git-project-roster {
   align-content: start;
-  max-height: 720px;
-  overflow: auto;
+  max-height: none;
+  overflow: hidden;
 }
 
 .git-project-roster h3,
@@ -765,10 +756,6 @@
   color: var(--gold);
   font-size: 12px;
   text-transform: uppercase;
-}
-
-.git-project-roster .git-tools-intro {
-  margin: 0;
 }
 
 .git-project-add-row {
@@ -787,8 +774,22 @@
 }
 
 .git-project-list {
-  display: grid;
+  display: flex;
+  flex-wrap: nowrap;
   gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+}
+
+.git-project-list > .git-project-row {
+  flex: 1 0 min(380px, calc((100% - 8px) / 2));
+  min-width: 280px;
+  max-width: 380px;
+}
+
+.git-project-list > .git-tools-empty {
+  flex: 1 1 auto;
 }
 
 .git-project-add-section,
