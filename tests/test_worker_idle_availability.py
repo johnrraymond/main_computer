@@ -352,7 +352,7 @@ def _runtime_settings(harness: _WorkerRoutesHarness | None = None) -> dict[str, 
                 "credit_wallet": "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf",
                 "hub_url": "http://127.0.0.1:8770",
                 "chain_id": "42424242",
-                "message": "{}",
+                "message": '{"kind":"main_computer_worker_connect_order","expires_at":"9999-12-31T23:59:59.999999+00:00"}',
                 "signature": "0xabc",
                 "status": "hub-registered",
                 "hub_registered": True,
@@ -616,9 +616,9 @@ def test_worker_runtime_status_truth_signed_order_missing_but_local_policy_allow
 
     assert status["status"] == "not_accepting"
     assert status["reason"] == "Connect order has not been signed."
-    assert status["next"] == "Sign and submit connect order."
+    assert status["next"] == "Sign connect order."
     assert status["signedOrder"]["label"] == "Not signed"
-    assert status["hubRegistration"]["label"] == "Not registered"
+    assert status["hubRegistration"]["label"] == "Not submitted"
     assert status["localPolicy"]["label"] == "Allowed"
     assert status["localPolicy"]["reason"] == "AI is idle."
     assert status["runtime"]["label"] == "Not accepting"
@@ -659,6 +659,8 @@ def test_worker_runtime_status_truth_hub_registration_missing_is_separate_from_s
     settings["workerHubRegistration"] = {}
     signed = dict(settings["signedWorkerConnection"])
     signed["status"] = "signed"
+    signed["signed_order_status"] = "signed_locally"
+    signed["hub_registration_status"] = "not_submitted"
     signed["hub_registered"] = False
     signed.pop("worker_id", None)
     signed.pop("worker", None)
@@ -667,9 +669,9 @@ def test_worker_runtime_status_truth_hub_registration_missing_is_separate_from_s
     _saved, status = harness._worker_runtime_transition(settings, action="sync", send_heartbeat=False)
 
     assert status["status"] == "not_accepting"
-    assert status["reason"] == "Hub registration has not been accepted."
-    assert status["signedOrder"]["label"] == "Signed"
-    assert status["hubRegistration"]["label"] == "Not registered"
+    assert status["reason"] == "Signed connect order has not been submitted to the Hub."
+    assert status["signedOrder"]["label"] == "Signed locally"
+    assert status["hubRegistration"]["label"] == "Not submitted"
     assert status["localPolicy"]["label"] == "Allowed"
 
 
@@ -712,6 +714,8 @@ def test_worker_runtime_status_truth_hub_registration_failed_after_signed_submit
     }
     signed = dict(settings["signedWorkerConnection"])
     signed["status"] = "hub-registration-failed"
+    signed["signed_order_status"] = "signed_locally"
+    signed["hub_registration_status"] = "failed"
     signed["hub_registered"] = False
     signed["hub_registration_error"] = "Hub returned HTTP 400: bad worker price"
     signed.pop("worker_id", None)
@@ -721,11 +725,11 @@ def test_worker_runtime_status_truth_hub_registration_failed_after_signed_submit
     _saved, status = harness._worker_runtime_transition(settings, action="sync", send_heartbeat=False)
 
     assert status["status"] == "not_accepting"
-    assert status["signedOrder"]["label"] == "Signed"
+    assert status["signedOrder"]["label"] == "Signed locally"
     assert status["hubRegistration"]["label"] == "Failed"
     assert status["hubRegistration"]["lastError"] == "Hub returned HTTP 400: bad worker price"
     assert status["reason"] == "Hub registration failed: Hub returned HTTP 400: bad worker price"
-    assert status["next"] == "Retry signing and submitting the connect order."
+    assert status["next"] == "Retry Hub registration."
     assert status["runtime"]["lastError"] == "Hub returned HTTP 400: bad worker price"
 
 
@@ -745,6 +749,15 @@ def test_worker_network_connect_order_persists_signed_failure_state(tmp_path: Pa
             self.sent_payload: dict[str, object] | None = None
             self.sent_status: HTTPStatus | None = None
             self.hub_payload: dict[str, object] | None = None
+            self.saved_hub_registration_statuses: list[str] = []
+
+        def _save_worker_settings(self, settings: dict[str, object], *, changed_fields: list[str] | None = None) -> dict[str, object]:
+            saved = super()._save_worker_settings(settings, changed_fields=changed_fields)
+            signed = saved.get("signedWorkerConnection") if isinstance(saved.get("signedWorkerConnection"), dict) else {}
+            status = str(signed.get("hub_registration_status") or "")
+            if status:
+                self.saved_hub_registration_statuses.append(status)
+            return saved
 
         def _read_json(self) -> dict[str, object]:
             return {
@@ -752,7 +765,7 @@ def test_worker_network_connect_order_persists_signed_failure_state(tmp_path: Pa
                 "requested_ring": "3",
                 "wallet_address": "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf",
                 "hub_url": "http://127.0.0.1:8770",
-                "message": '{"kind":"main_computer_worker_connect_order"}',
+                "message": '{"kind":"main_computer_worker_connect_order","issued_at":"2026-06-22T12:00:00+00:00","expires_at":"9999-12-31T23:59:59.999999+00:00"}',
                 "signature": "0xabc",
                 "worker": payload,
             }
@@ -784,16 +797,92 @@ def test_worker_network_connect_order_persists_signed_failure_state(tmp_path: Pa
     assert harness.sent_status == HTTPStatus.BAD_REQUEST
     assert harness.sent_payload and harness.sent_payload["ok"] is False
     assert harness.hub_payload is not None
+    assert harness.hub_payload["signed_connection"]["issued_at"] == "2026-06-22T12:00:00+00:00"  # type: ignore[index]
+    assert harness.hub_payload["signed_connection"]["expires_at"] == "9999-12-31T23:59:59.999999+00:00"  # type: ignore[index]
     assert harness.hub_payload["worker"]["credits_per_request"] == "2"  # type: ignore[index]
     assert harness.hub_payload["worker"]["pricing"]["credits_per_request"] == "1.024"  # type: ignore[index]
+    assert signed["issued_at"] == "2026-06-22T12:00:00+00:00"
+    assert signed["expires_at"] == "9999-12-31T23:59:59.999999+00:00"
     assert signed["signature"] == "0xabc"
-    assert signed["message"] == '{"kind":"main_computer_worker_connect_order"}'
+    assert json.loads(signed["message"])["expires_at"] == "9999-12-31T23:59:59.999999+00:00"
+    assert harness.saved_hub_registration_statuses[-3:] == ["not_submitted", "submitting", "failed"]
     assert signed["status"] == "hub-registration-failed"
+    assert signed["signed_order_status"] == "signed_locally"
+    assert signed["hub_registration_status"] == "failed"
+    assert signed["hub_registration_attempted_at"]
     assert signed["hub_registered"] is False
     assert "invalid literal for int()" in signed["hub_registration_error"]
     assert saved["workerHubRegistration"]["status"] == "failed"
     assert "invalid literal for int()" in saved["workerHubRegistration"]["error"]
     assert saved["workerConnectionStatus"] == "failed"
+
+
+
+def test_worker_network_connect_order_missing_expires_at_is_local_invalid_not_hub_submit(tmp_path: Path) -> None:
+    payload = _seller_payload()
+    payload["availability"] = {
+        "accept_paid_jobs": True,
+        "availability_mode": "ai_idle",
+        "only_when_idle": False,
+        "idle_source": "local_ai_capacity_v1",
+        "ai_idle_required": True,
+    }
+
+    class _ConnectOrderHarness(_WorkerRoutesHarness):
+        def __init__(self) -> None:
+            self.client_address = ("127.0.0.1", 12345)
+            self.sent_payload: dict[str, object] | None = None
+            self.sent_status: HTTPStatus | None = None
+            self.hub_post_called = False
+
+        def _read_json(self) -> dict[str, object]:
+            return {
+                "network": "dev",
+                "requested_ring": "3",
+                "wallet_address": "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf",
+                "hub_url": "http://127.0.0.1:8770",
+                "message": '{"kind":"main_computer_worker_connect_order","issued_at":"2026-06-22T12:00:00+00:00"}',
+                "signature": "0xabc",
+                "worker": payload,
+            }
+
+        def _send_json(self, payload: dict[str, object], status: HTTPStatus = HTTPStatus.OK) -> None:
+            self.sent_payload = payload
+            self.sent_status = status
+
+        def _post_worker_connect_order_to_hub(self, *, hub_url: str, payload: dict[str, object]) -> dict[str, object]:
+            self.hub_post_called = True
+            raise AssertionError("message without expires_at must not be submitted to Hub")
+
+    harness = _ConnectOrderHarness()
+    harness.server = type(
+        "Server",
+        (),
+        {
+            "debug_root": tmp_path,
+            "config": type("Config", (), {"hub_url": "http://127.0.0.1:8770"})(),
+            "signal": lambda *args, **kwargs: None,
+        },
+    )()
+    harness._save_worker_settings({"selectedNetwork": "dev", "sellerEnabled": True})
+
+    harness._handle_worker_network_connect_order_sign()
+
+    saved = harness._load_worker_settings()
+    signed = saved["signedWorkerConnection"]
+    assert harness.sent_status == HTTPStatus.BAD_REQUEST
+    assert harness.sent_payload and "missing expires_at" in str(harness.sent_payload["error"])
+    assert harness.hub_post_called is False
+    assert signed["message"] == '{"kind":"main_computer_worker_connect_order","issued_at":"2026-06-22T12:00:00+00:00"}'
+    assert signed["expires_at"] == ""
+    assert signed["signed_order_status"] == "invalid"
+    assert signed["hub_registration_status"] == "not_submitted"
+    assert signed["hub_registered"] is False
+
+    _saved, status = harness._worker_runtime_transition(saved, action="sync", send_heartbeat=False)
+    assert status["signedOrder"]["label"] == "Invalid"
+    assert status["reason"] == "Signed connect order is invalid."
+    assert status["next"] == "Re-sign connect order."
 
 
 def test_worker_runtime_status_truth_ai_busy_blocks_after_registration(tmp_path: Path) -> None:

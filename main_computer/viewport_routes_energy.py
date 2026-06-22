@@ -589,23 +589,55 @@ class ViewportEnergyRoutesMixin:
             signed_assigned_ring = text(signed_connection.get("assigned_ring"), "")
             if signed_assigned_ring not in {"0", "1", "2", "3"}:
                 signed_assigned_ring = ""
+            signed_wallet = text(signed_connection.get("wallet_address"), "")
+            signed_message = text(signed_connection.get("message"), "")
+            signed_signature = text(signed_connection.get("signature"), "")
+            legacy_status = text(signed_connection.get("status"), "signed")
+            hub_registered = boolish(signed_connection.get("hub_registered"), False)
+            hub_registration_error = text(
+                signed_connection.get(
+                    "hub_registration_error",
+                    signed_connection.get("registration_error", signed_connection.get("last_error")),
+                ),
+                "",
+            )
+            signed_order_status = text(signed_connection.get("signed_order_status"), "")
+            if signed_order_status not in {"not_signed", "signing", "signed_locally", "expired", "invalid"}:
+                if signed_wallet and signed_message and signed_signature:
+                    signed_order_status = "signed_locally"
+                else:
+                    signed_order_status = "not_signed"
+            hub_registration_status = text(signed_connection.get("hub_registration_status"), "")
+            if hub_registration_status not in {"not_submitted", "submitting", "accepted", "failed", "stale"}:
+                legacy_status_lower = legacy_status.lower()
+                if hub_registered or legacy_status_lower in {"hub-registered", "registered"}:
+                    hub_registration_status = "accepted"
+                elif hub_registration_error or legacy_status_lower in {"failed", "hub-registration-failed", "registration-failed"}:
+                    hub_registration_status = "failed"
+                else:
+                    hub_registration_status = "not_submitted"
             signed_connection = {
                 "network": text(signed_connection.get("network"), selected_network),
                 "requested_ring": text(signed_connection.get("requested_ring"), requested_ring),
-                "wallet_address": text(signed_connection.get("wallet_address"), ""),
+                "wallet_address": signed_wallet,
                 "credit_wallet": text(signed_connection.get("credit_wallet"), ""),
                 "hub_url": self._clean_hub_url(text(signed_connection.get("hub_url"), ""), allow_empty=True),
                 "chain_id": text(signed_connection.get("chain_id"), ""),
-                "message": text(signed_connection.get("message"), ""),
-                "signature": text(signed_connection.get("signature"), ""),
+                "message": signed_message,
+                "signature": signed_signature,
+                "issued_at": text(signed_connection.get("issued_at"), ""),
                 "signed_at": text(signed_connection.get("signed_at"), ""),
                 "expires_at": text(signed_connection.get("expires_at"), ""),
-                "status": text(signed_connection.get("status"), "signed"),
-                "hub_registered": boolish(signed_connection.get("hub_registered"), False),
+                "status": legacy_status,
+                "signed_order_status": signed_order_status,
+                "hub_registration_status": hub_registration_status,
+                "hub_registration_attempted_at": text(signed_connection.get("hub_registration_attempted_at"), ""),
+                "hub_registered_at": text(signed_connection.get("hub_registered_at"), ""),
+                "hub_registered": hub_registered,
                 "assigned_ring": signed_assigned_ring,
                 "worker_id": text(signed_connection.get("worker_id"), ""),
                 "pricing_policy": text(signed_connection.get("pricing_policy"), ""),
-                "hub_registration_error": text(signed_connection.get("hub_registration_error"), ""),
+                "hub_registration_error": hub_registration_error,
                 "registration_error": text(signed_connection.get("registration_error"), ""),
                 "last_error": text(signed_connection.get("last_error"), ""),
                 "hub_registration": jsonable(signed_connection.get("hub_registration"), {}),
@@ -765,6 +797,9 @@ class ViewportEnergyRoutesMixin:
         signed = settings.get("signedWorkerConnection")
         if not isinstance(signed, dict):
             return False
+        explicit_hub_status = str(signed.get("hub_registration_status") or "").strip()
+        if explicit_hub_status:
+            return explicit_hub_status == "accepted" and bool(signed.get("hub_registered"))
         if str(signed.get("status") or "") in {"hub-registered", "registered"}:
             return True
         return bool(signed.get("hub_registered"))
@@ -829,6 +864,17 @@ class ViewportEnergyRoutesMixin:
             return "Ring 3 - Public untrusted"
         return ""
 
+    def _worker_connect_order_message_payload(self, message: Any) -> dict[str, Any]:
+        try:
+            parsed = json.loads(str(message or ""))
+        except (TypeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _worker_connect_order_message_expires_at(self, message: Any) -> str:
+        payload = self._worker_connect_order_message_payload(message)
+        return str(payload.get("expires_at") or "").strip()
+
     def _worker_runtime_signed_order_state(self, settings: dict[str, Any]) -> dict[str, Any]:
         signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
         signature = str(signed.get("signature") or "").strip()
@@ -836,9 +882,24 @@ class ViewportEnergyRoutesMixin:
         wallet = str(signed.get("wallet_address") or "").strip()
         credit_wallet = str(signed.get("credit_wallet") or wallet).strip()
         has_signed_order = bool(signature and message and wallet)
+        message_expires_at = self._worker_connect_order_message_expires_at(message) if message else ""
+        status = str(signed.get("signed_order_status") or "").strip()
+        if status not in {"not_signed", "signing", "signed_locally", "expired", "invalid"}:
+            status = "signed_locally" if has_signed_order else "not_signed"
+        if has_signed_order and status == "signed_locally" and not message_expires_at:
+            status = "invalid"
+        if not has_signed_order and status not in {"signing", "invalid"}:
+            status = "not_signed"
+        labels = {
+            "not_signed": "Not signed",
+            "signing": "Signing",
+            "signed_locally": "Signed locally",
+            "expired": "Expired",
+            "invalid": "Invalid",
+        }
         return {
-            "status": "signed" if has_signed_order else "not_signed",
-            "label": "Signed" if has_signed_order else "Not signed",
+            "status": status,
+            "label": labels.get(status, "Not signed"),
             "signedAt": str(signed.get("signed_at") or ""),
             "expiresAt": str(signed.get("expires_at") or ""),
             "wallet": wallet,
@@ -860,21 +921,31 @@ class ViewportEnergyRoutesMixin:
             or settings.get("workerConnectionError")
             or ""
         ).strip()
-        registered = self._worker_runtime_signed_connection_registered(settings)
-        failed = bool(last_error) or raw_status in {"failed", "hub-registration-failed", "registration-failed"}
-        if registered:
-            status = "registered"
-            label = "Registered"
-        elif failed:
-            status = "failed"
-            label = "Failed"
-        else:
-            status = "not_registered"
-            label = "Not registered"
+        status = str(signed.get("hub_registration_status") or "").strip()
+        if status not in {"not_submitted", "submitting", "accepted", "failed", "stale"}:
+            registered = self._worker_runtime_signed_connection_registered(settings)
+            failed = bool(last_error) or raw_status in {"failed", "hub-registration-failed", "registration-failed"}
+            if registered:
+                status = "accepted"
+            elif failed:
+                status = "failed"
+            else:
+                status = "not_submitted"
+        elif status == "accepted" and not self._worker_runtime_signed_connection_registered(settings):
+            status = "stale"
+        labels = {
+            "not_submitted": "Not submitted",
+            "submitting": "Submitting",
+            "accepted": "Accepted",
+            "failed": "Failed",
+            "stale": "Stale",
+        }
         return {
             "status": status,
-            "label": label,
+            "label": labels.get(status, "Not submitted"),
             "lastError": last_error,
+            "attemptedAt": str(signed.get("hub_registration_attempted_at") or ""),
+            "registeredAt": str(signed.get("hub_registered_at") or ""),
             "rawStatus": raw_status,
         }
 
@@ -952,13 +1023,15 @@ class ViewportEnergyRoutesMixin:
         seller_enabled = bool(local_policy.get("enabled"))
         availability_mode = self._normalize_worker_seller_availability_mode(local_policy.get("mode"))
         only_when_idle = availability_mode == self._WORKER_SELLER_AVAILABILITY_TOTAL_IDLE
-        signed_registered = hub_registration.get("status") == "registered"
-        signed_ready = signed_order.get("status") == "signed"
+        signed_ready = signed_order.get("status") == "signed_locally"
+        hub_accepted = hub_registration.get("status") == "accepted" and self._worker_runtime_signed_connection_registered(settings)
         requirements = {
             "seller_enabled": seller_enabled,
             "network_selected": selected_network != "none",
             "signed_order": signed_ready,
-            "hub_registered": signed_registered,
+            "signed_order_status": signed_order.get("status"),
+            "hub_registered": hub_accepted,
+            "hub_registration_status": hub_registration.get("status"),
             "worker_id_present": bool(worker_id),
             "hub_url_present": bool(hub_url),
             "availability_mode": availability_mode,
@@ -973,13 +1046,28 @@ class ViewportEnergyRoutesMixin:
         if selected_network == "none":
             reasons.append("No worker network is selected.")
         if not signed_ready:
-            reasons.append("Connect order has not been signed.")
-        elif not signed_registered:
-            if hub_registration.get("status") == "failed" and hub_registration.get("lastError"):
-                reasons.append(f"Hub registration failed: {hub_registration['lastError']}")
+            signed_status = str(signed_order.get("status") or "not_signed")
+            if signed_status == "signing":
+                reasons.append("Wallet signature is in progress.")
+            elif signed_status == "invalid":
+                reasons.append("Signed connect order is invalid.")
+            elif signed_status == "expired":
+                reasons.append("Signed connect order expired.")
             else:
-                reasons.append("Hub registration has not been accepted.")
-        if signed_registered and not worker_id:
+                reasons.append("Connect order has not been signed.")
+        elif not hub_accepted:
+            hub_status = str(hub_registration.get("status") or "not_submitted")
+            if hub_status == "failed" and hub_registration.get("lastError"):
+                reasons.append(f"Hub registration failed: {hub_registration['lastError']}")
+            elif hub_status == "failed":
+                reasons.append("Hub registration failed.")
+            elif hub_status == "submitting":
+                reasons.append("Signed connect order is being submitted to the Hub.")
+            elif hub_status == "stale":
+                reasons.append("Hub registration is stale.")
+            else:
+                reasons.append("Signed connect order has not been submitted to the Hub.")
+        if hub_accepted and not worker_id:
             reasons.append("Worker ID is missing.")
         if selected_network != "none" and not hub_url:
             reasons.append("Hub URL is missing.")
@@ -1139,26 +1227,62 @@ class ViewportEnergyRoutesMixin:
                 "reason": "Wallet is not connected.",
                 "next": "Connect a wallet.",
             }
-        if signed_order.get("status") != "signed":
+        if signed_order.get("status") != "signed_locally":
+            signed_status = str(signed_order.get("status") or "not_signed")
+            if signed_status == "signing":
+                reason = "Wallet signature is in progress."
+                next_action = "Finish the wallet signature prompt."
+            elif signed_status == "invalid":
+                reason = "Signed connect order is invalid."
+                next_action = "Re-sign connect order."
+            elif signed_status == "expired":
+                reason = "Signed connect order expired."
+                next_action = "Re-sign connect order."
+            else:
+                reason = "Connect order has not been signed."
+                next_action = "Sign connect order."
             return {
                 "status": "not_accepting",
                 "label": "Not accepting",
-                "reason": "Connect order has not been signed.",
-                "next": "Sign and submit connect order.",
+                "reason": reason,
+                "next": next_action,
             }
-        if hub_registration.get("status") != "registered":
-            if hub_registration.get("status") == "failed" and hub_registration.get("lastError"):
+        hub_status = str(hub_registration.get("status") or "not_submitted")
+        hub_accepted = hub_status == "accepted" and self._worker_runtime_signed_connection_registered(settings)
+        if not hub_accepted:
+            if hub_status == "failed" and hub_registration.get("lastError"):
                 return {
                     "status": "not_accepting",
                     "label": "Not accepting",
                     "reason": f"Hub registration failed: {hub_registration['lastError']}",
-                    "next": "Retry signing and submitting the connect order.",
+                    "next": "Retry Hub registration.",
+                }
+            if hub_status == "failed":
+                return {
+                    "status": "not_accepting",
+                    "label": "Not accepting",
+                    "reason": "Hub registration failed.",
+                    "next": "Retry Hub registration.",
+                }
+            if hub_status == "submitting":
+                return {
+                    "status": "not_accepting",
+                    "label": "Not accepting",
+                    "reason": "Signed connect order is being submitted to the Hub.",
+                    "next": "Wait for Hub registration to finish.",
+                }
+            if hub_status == "stale":
+                return {
+                    "status": "not_accepting",
+                    "label": "Not accepting",
+                    "reason": "Hub registration is stale.",
+                    "next": "Retry Hub registration.",
                 }
             return {
                 "status": "not_accepting",
                 "label": "Not accepting",
-                "reason": "Hub registration has not been accepted.",
-                "next": "Sign and submit connect order, or retry if a prior submit failed.",
+                "reason": "Signed connect order has not been submitted to the Hub.",
+                "next": "Submit signed order to Hub.",
             }
         if not bool(local_policy.get("allowed")):
             mode = str(local_policy.get("mode") or "")
@@ -1220,7 +1344,7 @@ class ViewportEnergyRoutesMixin:
         wallet = str(signed_order.get("wallet") or signed.get("wallet_address") or "").strip()
         credit_wallet = str(signed_order.get("creditWallet") or signed.get("credit_wallet") or wallet).strip()
         last_heartbeat_status = str(settings.get("workerRuntimeLastHeartbeatStatus") or "")
-        hub_availability = last_heartbeat_status or (hub_status if hub_registration.get("status") == "registered" else "not_announced")
+        hub_availability = last_heartbeat_status or (hub_status if hub_registration.get("status") == "accepted" else "not_announced")
         runtime_last_error = str(heartbeat_error or settings.get("workerRuntimeError") or hub_registration.get("lastError") or "")
         return {
             "ok": True,
@@ -1644,7 +1768,11 @@ class ViewportEnergyRoutesMixin:
             if profile_hub_url and hub_url != self._clean_hub_url(profile_hub_url):
                 raise ValueError(f"Signed worker connect order hub {hub_url!r} does not match selected network hub {profile_hub_url!r}.")
             chain_id = str(profile.get("chain_id") or body.get("chain_id") or "")
+            message_payload = self._worker_connect_order_message_payload(message)
+            issued_at = str(message_payload.get("issued_at") or "")
+            expires_at = str(message_payload.get("expires_at") or "").strip()
 
+            signed_at = datetime.now(timezone.utc).isoformat()
             signed_connection = {
                 "network": selected,
                 "requested_ring": requested_ring,
@@ -1654,9 +1782,60 @@ class ViewportEnergyRoutesMixin:
                 "chain_id": chain_id,
                 "message": message,
                 "signature": signature,
-                "signed_at": datetime.now(timezone.utc).isoformat(),
-                "status": "registering-with-hub",
+                "issued_at": issued_at,
+                "signed_at": signed_at,
+                "expires_at": expires_at,
+                "status": "signed",
+                "signed_order_status": "signed_locally",
+                "hub_registration_status": "not_submitted",
+                "hub_registration_error": "",
+                "hub_registration_attempted_at": "",
+                "hub_registered_at": "",
+                "hub_registered": False,
             }
+            settings["workerRequestedRing"] = requested_ring
+            settings["workerAssignedRing"] = ""
+            settings["workerRegisteredId"] = ""
+            settings["workerPricingPolicy"] = ""
+            settings["workerConnectedHubUrl"] = hub_url
+            settings["workerConnectionStatus"] = "connected"
+            settings["workerConnectionError"] = ""
+            settings["workerHubRegistration"] = {}
+            settings["workerPool"] = {}
+            settings["signedWorkerConnection"] = signed_connection
+            settings = self._save_worker_settings(settings)
+            if not expires_at:
+                signed_connection = dict(settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else signed_connection)
+                signed_connection.update(
+                    {
+                        "status": "invalid",
+                        "signed_order_status": "invalid",
+                        "hub_registration_status": "not_submitted",
+                        "hub_registration_error": "",
+                        "last_error": "",
+                        "hub_registered": False,
+                    }
+                )
+                settings["signedWorkerConnection"] = signed_connection
+                self._save_worker_settings(settings)
+                raise ValueError("Signed connect order message is missing expires_at; re-sign connect order.")
+
+            attempted_at = datetime.now(timezone.utc).isoformat()
+            signed_connection = dict(settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else signed_connection)
+            signed_connection.update(
+                {
+                    "status": "registering-with-hub",
+                    "signed_order_status": "signed_locally",
+                    "hub_registration_status": "submitting",
+                    "hub_registration_attempted_at": attempted_at,
+                    "hub_registration_error": "",
+                    "last_error": "",
+                    "hub_registered": False,
+                }
+            )
+            settings["signedWorkerConnection"] = signed_connection
+            settings = self._save_worker_settings(settings)
+
             try:
                 registration = self._post_worker_connect_order_to_hub(
                     hub_url=hub_url,
@@ -1677,6 +1856,8 @@ class ViewportEnergyRoutesMixin:
                 signed_connection.update(
                     {
                         "status": "hub-registration-failed",
+                        "signed_order_status": "signed_locally",
+                        "hub_registration_status": "failed",
                         "hub_registered": False,
                         "hub_registration_error": registration_error,
                         "last_error": registration_error,
@@ -1684,7 +1865,6 @@ class ViewportEnergyRoutesMixin:
                         "hub_registration": failed_registration,
                     }
                 )
-                settings["workerRequestedRing"] = requested_ring
                 settings["workerAssignedRing"] = ""
                 settings["workerRegisteredId"] = ""
                 settings["workerPricingPolicy"] = ""
@@ -1704,7 +1884,12 @@ class ViewportEnergyRoutesMixin:
             signed_connection.update(
                 {
                     "status": "hub-registered",
+                    "signed_order_status": "signed_locally",
+                    "hub_registration_status": "accepted",
                     "hub_registered": True,
+                    "hub_registered_at": datetime.now(timezone.utc).isoformat(),
+                    "hub_registration_error": "",
+                    "last_error": "",
                     "assigned_ring": assigned_ring,
                     "worker_id": worker_id,
                     "pricing_policy": pricing_policy,

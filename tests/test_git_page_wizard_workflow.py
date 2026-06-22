@@ -471,6 +471,8 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             "function gitProjectCommitUpdateFinalReadiness(workbench, paths = [])",
             "function gitProjectCommitCreateHtml(step = {})",
             "function gitProjectCommitExecutionPaneHtml(message = \"\")",
+            "function gitProjectCommitMessageFromExecutionPane(workbench)",
+            "textarea data-git-commit-execution-message",
             "function gitProjectWireCommitExecution(workbench)",
             "function gitProjectCommitRunExecution(workbench)",
             "function gitProjectCommitStartEventStream(workbench, data = {})",
@@ -548,6 +550,8 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             "Commit steps",
             "function gitProjectCommitStepsHtml",
             "data-git-commit-step",
+            'gitProjectCommitFieldHtml(review, "commit_message"',
+            'data-git-commit-panel="commit_message"',
             "git-project-commit-left",
             "Upstream gates",
             "Commit workflow",
@@ -599,8 +603,14 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             ".git-project-commit-execution-pane",
             ".git-project-commit-execution-overlay",
             ".git-project-commit-execution-dialog",
+            ".git-project-commit-execution-main",
             ".git-project-commit-execution-options",
+            ".git-project-commit-execution-files",
             ".git-project-commit-execution-results",
+            "flex-wrap: wrap;",
+            "flex: 1 1 420px;",
+            "min-width: min(100%, 420px);",
+            "max-height: clamp(180px, 42vh, 460px);",
             ".git-project-commit-wunderbaum",
             ".git-project-commit-tree-dir",
             ".git-project-commit-tree-file",
@@ -617,6 +627,20 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         ):
             with self.subTest(css_snippet=css_snippet):
                 self.assertIn(css_snippet, GIT_TOOLS_CSS)
+
+        commit_modal_css = GIT_TOOLS_CSS[
+            GIT_TOOLS_CSS.index(".git-project-commit-execution-main"):
+            GIT_TOOLS_CSS.index(".git-project-commit-execution-status")
+        ]
+        for snippet in (
+            "display: flex;",
+            "flex-wrap: wrap;",
+            "flex: 1 1 420px;",
+            "overflow: hidden;",
+        ):
+            with self.subTest(commit_modal_layout_snippet=snippet):
+                self.assertIn(snippet, commit_modal_css)
+        self.assertNotIn("grid-template-columns: minmax(260px, 0.85fr) minmax(340px, 1.15fr);", commit_modal_css)
 
 
     def test_archive_files_card_uses_commit_style_status_group_workbench(self) -> None:

@@ -2307,12 +2307,15 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 28px;
+  padding: clamp(10px, 2vw, 24px);
 }
 
 .git-project-commit-execution-dialog {
-  width: min(980px, calc(100vw - 56px));
-  height: min(760px, calc(100vh - 56px));
+  width: min(1180px, calc(100vw - 2rem));
+  height: min(820px, calc(100vh - 2rem));
+  max-width: none;
+  min-width: 0;
+  box-sizing: border-box;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   overflow: hidden;
@@ -2398,19 +2401,35 @@
 
 .git-project-commit-execution-main {
   overflow: auto;
-  display: grid;
-  grid-template-columns: minmax(260px, 0.85fr) minmax(340px, 1.15fr);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
   gap: 16px;
+  min-width: 0;
+  box-sizing: border-box;
   padding: 18px 22px;
 }
 
 .git-project-commit-execution-detail-card,
 .git-project-commit-execution-files,
 .git-project-commit-execution-output-card {
+  min-width: 0;
+  box-sizing: border-box;
   border: 1px solid rgba(255,255,255,0.16);
   border-radius: 14px;
   background: rgba(255,255,255,0.03);
   padding: 14px;
+}
+
+.git-project-commit-execution-detail-card {
+  flex: 1 1 360px;
+  min-width: min(100%, 360px);
+}
+
+.git-project-commit-execution-files {
+  flex: 1 1 420px;
+  min-width: min(100%, 420px);
+  overflow: hidden;
 }
 
 .git-project-commit-execution-detail-card strong,
@@ -2421,6 +2440,27 @@
   font-size: 13px;
   font-weight: 900;
   text-transform: uppercase;
+}
+
+.git-project-commit-execution-message-field {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.git-project-commit-execution-message-field textarea {
+  min-height: 86px;
+  resize: vertical;
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid rgba(255, 206, 77, 0.30);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.32);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 10px;
 }
 
 .git-project-commit-execution-detail-card pre {
@@ -2450,11 +2490,19 @@
 }
 
 .git-project-commit-execution-files ol {
-  margin: 0 0 0 22px;
-  padding: 0;
+  max-height: clamp(180px, 42vh, 460px);
+  overflow: auto;
+  margin: 0 0 0 1.25rem;
+  padding: 0 8px 0 0;
   color: var(--text);
   font-size: 12px;
   line-height: 1.55;
+}
+
+.git-project-commit-execution-files li {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .git-project-commit-execution-files li + li {
@@ -2463,6 +2511,8 @@
 
 .git-project-commit-execution-output-card {
   grid-column: 1 / -1;
+  flex: 1 0 100%;
+  min-width: 100%;
   display: grid;
   gap: 8px;
 }
@@ -2533,8 +2583,7 @@
   }
 
   .git-project-commit-execution-header,
-  .git-project-commit-execution-options,
-  .git-project-commit-execution-main {
+  .git-project-commit-execution-options {
     grid-template-columns: 1fr;
   }
 

@@ -228,7 +228,6 @@ function gitProjectCommitConfigStripHtml(review = {}) {
     <div class="git-project-commit-config-title">CONFIG STRIP</div>
     <div class="git-project-commit-config-grid">
       ${gitProjectCommitFieldHtml(review, "branch", "Branch", {placeholder: "master"})}
-      ${gitProjectCommitFieldHtml(review, "commit_message", "Commit message", {placeholder: "Take project snapshot"})}
       ${gitProjectCommitFieldHtml(review, "git_user_name", "Name", {placeholder: "Your Name"})}
       ${gitProjectCommitFieldHtml(review, "git_user_email", "Email", {type: "email", placeholder: "you@example.com"})}
       ${gitProjectCommitFieldHtml(review, "identity_scope", "Scope", {type: "radio"})}
@@ -281,9 +280,7 @@ function gitProjectCommitRepoIdentityHtml(review = {}) {
 }
 
 function gitProjectCommitComposeHtml(review = {}) {
-  return `<section class="git-project-commit-panel git-project-commit-compose" data-git-commit-panel="commit_message">
-    ${gitProjectCommitFieldHtml(review, "commit_message", "Commit message", {placeholder: "Take project snapshot"})}
-  </section>`;
+  return "";
 }
 
 function gitProjectCommitBasketControlsHtml(review = {}) {
@@ -389,8 +386,10 @@ function gitProjectCommitExecutionPaneHtml(message = "") {
       </div>
       <main class="git-project-commit-execution-main">
         <section class="git-project-commit-execution-detail-card">
-          <strong>Commit message</strong>
-          <pre data-git-commit-execution-message>${escapeHtml(renderedMessage)}</pre>
+          <label class="git-project-commit-execution-message-field">
+            <strong>Commit message</strong>
+            <textarea data-git-commit-execution-message rows="3" placeholder="Take project snapshot">${escapeHtml(renderedMessage)}</textarea>
+          </label>
           <strong>Target</strong>
           <pre data-git-commit-execution-target># Branch and identity will be verified here.</pre>
         </section>
@@ -686,7 +685,29 @@ function gitProjectCommitSummaryValue(workbench, key = "") {
   return value && value !== "(missing)" ? value : "";
 }
 
+function gitProjectCommitMessageNodeValue(node) {
+  if (!node) return "";
+  return String("value" in node ? node.value : node.textContent || "").trim();
+}
+
+function gitProjectCommitSetMessageNodeValue(node, value = "") {
+  if (!node) return;
+  const nextValue = String(value ?? "");
+  if ("value" in node) {
+    if (node.value !== nextValue) node.value = nextValue;
+  } else if (node.textContent !== nextValue) {
+    node.textContent = nextValue;
+  }
+}
+
+function gitProjectCommitMessageFromExecutionPane(workbench) {
+  const messageNode = workbench?.querySelector?.("[data-git-commit-execution-message]");
+  return gitProjectCommitMessageNodeValue(messageNode);
+}
+
 function gitProjectCommitMessageFromWorkbench(workbench) {
+  const messageNode = workbench?.querySelector?.("[data-git-commit-execution-message]");
+  if (messageNode) return gitProjectCommitMessageNodeValue(messageNode);
   const input = workbench?.querySelector?.('[data-git-commit-field="commit_message"] input');
   return String(input?.value || DEFAULT_COMMIT_MESSAGE || "").trim();
 }
@@ -881,7 +902,10 @@ function gitProjectCommitUpdateExecutionPane(workbench, paths = [], state = null
   const stateNode = pane.querySelector("[data-git-commit-execution-state]");
   const doButton = pane.querySelector('[data-git-commit-action="do_git_commit"]');
   const dryRun = pane.querySelector('[data-git-commit-execution-option="dry_run"]');
-  if (messageNode) messageNode.textContent = currentState.message || DEFAULT_COMMIT_MESSAGE;
+  if (messageNode) {
+    const renderedMessage = typeof currentState.message === "string" ? currentState.message : DEFAULT_COMMIT_MESSAGE;
+    gitProjectCommitSetMessageNodeValue(messageNode, renderedMessage);
+  }
   if (targetNode) targetNode.textContent = gitProjectCommitExecutionTargetText(currentState);
   gitProjectCommitRenderExecutionFiles(filesNode, fileCountNode, paths);
   const isDryRun = dryRun?.checked !== false;
@@ -1119,7 +1143,7 @@ function gitProjectCommitExecutionPayload(workbench, paths = [], state = {}) {
     paths,
     selected_paths: paths,
     blocked_paths: Array.isArray(state.stats?.selectedBlockedPaths) ? state.stats.selectedBlockedPaths : [],
-    message: state.message || gitProjectCommitMessageFromWorkbench(workbench) || DEFAULT_COMMIT_MESSAGE,
+    message: gitProjectCommitMessageFromWorkbench(workbench) || state.message || DEFAULT_COMMIT_MESSAGE,
     branch: state.branch || gitProjectCommitBranchFromWorkbench(workbench),
     git_user_name: identity.name || "",
     git_user_email: identity.email || "",
@@ -1328,7 +1352,9 @@ function gitProjectWireCommitExecution(workbench) {
     }
   });
   workbench.addEventListener("input", (event) => {
-    if (event.target?.closest?.('[data-git-commit-field="commit_message"], [data-git-commit-field="branch"], [data-git-commit-field="git_user_name"], [data-git-commit-field="git_user_email"]')) {
+    const messageChanged = event.target?.matches?.("[data-git-commit-execution-message]");
+    const configChanged = event.target?.closest?.('[data-git-commit-field="branch"], [data-git-commit-field="git_user_name"], [data-git-commit-field="git_user_email"]');
+    if (messageChanged || configChanged) {
       const paths = gitProjectCommitSelectedFilesFromWorkbench(workbench);
       gitProjectCommitUpdateReviewStatus(workbench, paths);
       gitProjectCommitUpdateFinalReadiness(workbench, paths);
@@ -1623,6 +1649,9 @@ function gitProjectInitializeCommitWorkbenches(container) {
     gitProjectCommitReviewStats,
     gitProjectCommitControlChecked,
     gitProjectCommitSummaryValue,
+    gitProjectCommitMessageNodeValue,
+    gitProjectCommitSetMessageNodeValue,
+    gitProjectCommitMessageFromExecutionPane,
     gitProjectCommitMessageFromWorkbench,
     gitProjectCommitBranchFromWorkbench,
     gitProjectCommitIdentityFromWorkbench,
@@ -1744,6 +1773,9 @@ function gitProjectInitializeCommitWorkbenches(container) {
     gitProjectCommitReviewStats,
     gitProjectCommitControlChecked,
     gitProjectCommitSummaryValue,
+    gitProjectCommitMessageNodeValue,
+    gitProjectCommitSetMessageNodeValue,
+    gitProjectCommitMessageFromExecutionPane,
     gitProjectCommitMessageFromWorkbench,
     gitProjectCommitBranchFromWorkbench,
     gitProjectCommitIdentityFromWorkbench,

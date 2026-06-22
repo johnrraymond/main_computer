@@ -462,11 +462,20 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "workerRuntimePhaseLabel" in js
     assert "workerRuntimePrimaryDisplay" in js
     assert "workerRuntimePolicyPayload" in js
-    assert "Hub registration has not been accepted." in js
+    assert "Signed connect order has not been submitted to the Hub." in js
+    assert "Retry Hub Registration" in js
+    assert "workerConnectOrderMessageHasExpiresAt" in js
+    assert "workerNetworkSignedConnectionCanSubmitToHub" in js
+    assert "workerNetworkHasRetryableHubRegistration" in js
+    assert "Re-sign Connect Order" in js
     assert "Connect order has not been signed." in js
     assert "workerSelectNetwork" in js
     assert "signWorkerNetworkConnectOrder" in js
     assert "workerBuildConnectOrderMessage" in js
+    assert 'WORKER_CONNECT_ORDER_FAR_FUTURE_EXPIRES_AT = "9999-12-31T23:59:59.999999+00:00"' in js
+    assert 'expires_at: expires' in js
+    assert 'const expires = String(expiresAt || WORKER_CONNECT_ORDER_FAR_FUTURE_EXPIRES_AT);' in js
+    assert "Date.now() + 10 * 60 * 1000" not in js
     assert "workerSelectedWalletChainIdHex" in js
     assert "workerSelectedWalletRpcUrl" in js
     assert "workerNetworkWalletConnectedToSelected" in js
