@@ -137,6 +137,12 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             "function loadGitProjects()",
             "function inspectSelectedGitProject(",
             "function renderGitProjectWizard(",
+            "function renderGitProjectWizardLoading(",
+            "function clearGitProjectWizardLoadingState(",
+            "function renderGitProjectWizardInspectionFailed(",
+            "renderGitProjectWizardLoading({",
+            "Waiting for backend results. Running git_dirty.py plan and Git state checks.",
+            "renderGitProjectWizardInspectionFailed(error, projectContext);",
             "function gitProjectCardInlinePanelHtml(",
             "function gitProjectIgnoreWorkbenchHtml(",
             "function gitProjectCommitWorkbenchHtml(",
@@ -227,7 +233,7 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         self.assertNotIn('id="git-project-next-step"', GIT_TOOLS_APP_HTML)
         self.assertNotIn(".git-project-next-step", GIT_TOOLS_CSS)
         project_main_match = re.search(
-            r'<div class="git-project-main"[^>]*>.*?<div class="git-project-wizard-plan"',
+            r'<div class="git-project-main"[^>]*>.*?<div class="git-project-wizard-plan(?: [^"]*)?"',
             GIT_TOOLS_APP_HTML,
             re.S,
         )
@@ -239,6 +245,9 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         self.assertNotIn('id="git-project-lock"', GIT_TOOLS_APP_HTML)
         self.assertNotIn('id="git-project-unlock"', GIT_TOOLS_APP_HTML)
         self.assertIn('class="git-project-add-section"', GIT_TOOLS_APP_HTML)
+        self.assertIn('class="git-project-wizard-plan git-project-wizard-loading"', GIT_TOOLS_APP_HTML)
+        self.assertIn('aria-busy="true"', GIT_TOOLS_APP_HTML)
+        self.assertIn("Waiting for backend results. The wizard plan will appear after inspection completes.", GIT_TOOLS_APP_HTML)
         self.assertNotIn(
             "The selected project is highlighted. Use Inspect to refresh the report without changing selection.",
             GIT_TOOLS_APP_HTML,
@@ -285,6 +294,11 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         self.assertIn("flex: 1 0 min(380px, calc((100% - 8px) / 2));", GIT_TOOLS_CSS)
         self.assertIn("overflow-x: auto;", GIT_TOOLS_CSS)
         self.assertIn(".git-project-wizard-section", GIT_TOOLS_CSS)
+        self.assertIn(".git-project-wizard-loading", GIT_TOOLS_CSS)
+        self.assertIn(".git-project-wizard-loading-spinner", GIT_TOOLS_CSS)
+        self.assertIn("@keyframes gitProjectWizardLoadingSpin", GIT_TOOLS_CSS)
+        self.assertIn("@keyframes gitProjectWizardLoadingDots", GIT_TOOLS_CSS)
+        self.assertIn(".git-project-wizard-error", GIT_TOOLS_CSS)
         self.assertIn(".git-project-wizard-empty", GIT_TOOLS_CSS)
         self.assertIn(".git-project-wizard-step", GIT_TOOLS_CSS)
         self.assertIn(".git-project-action-row", GIT_TOOLS_CSS)
@@ -472,6 +486,11 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             "function gitProjectCommitCreateHtml(step = {})",
             "function gitProjectCommitExecutionPaneHtml(message = \"\")",
             "function gitProjectCommitMessageFromExecutionPane(workbench)",
+            "function gitProjectCommitTrimmedMessageValue(value = \"\")",
+            "function gitProjectCommitMessageForValidation(workbench)",
+            "gitProjectCommitMessageForValidation(workbench)",
+            "document.activeElement !== messageNode",
+            "message: gitProjectCommitMessageForValidation(workbench) || state.message || DEFAULT_COMMIT_MESSAGE",
             "textarea data-git-commit-execution-message",
             "function gitProjectWireCommitExecution(workbench)",
             "function gitProjectCommitRunExecution(workbench)",
@@ -541,6 +560,19 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         for snippet in expected_snippets:
             with self.subTest(snippet=snippet):
                 self.assertIn(snippet, APPLICATIONS_INDEX_HTML)
+
+        message_helper_region = APPLICATIONS_INDEX_HTML[
+            APPLICATIONS_INDEX_HTML.index("function gitProjectCommitMessageNodeValue(node)"):
+            APPLICATIONS_INDEX_HTML.index("function gitProjectCommitBranchFromWorkbench(workbench)")
+        ]
+        self.assertNotIn(".trim();\n}\n\nfunction gitProjectCommitSetMessageNodeValue", message_helper_region)
+        self.assertIn('return String("value" in node ? node.value : node.textContent || "");', message_helper_region)
+
+        update_execution_region = APPLICATIONS_INDEX_HTML[
+            APPLICATIONS_INDEX_HTML.index("function gitProjectCommitUpdateExecutionPane(workbench"):
+            APPLICATIONS_INDEX_HTML.index("function gitProjectCommitRefreshExecutionRemainingFiles(workbench")
+        ]
+        self.assertIn("if (document.activeElement !== messageNode)", update_execution_region)
 
         commit_region = APPLICATIONS_INDEX_HTML[
             APPLICATIONS_INDEX_HTML.index("const GIT_PROJECT_WUNDERBAUM_VERSION"):

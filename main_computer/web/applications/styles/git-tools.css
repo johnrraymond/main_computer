@@ -1081,6 +1081,140 @@
   gap: 8px;
 }
 
+.git-project-wizard-plan.git-project-wizard-loading {
+  min-height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow: hidden;
+  border-color: rgba(255, 218, 68, 0.55);
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 218, 68, 0.12), transparent 38%),
+    #020302;
+  box-shadow: 0 0 0 1px rgba(255, 218, 68, 0.12), 0 0 28px rgba(255, 218, 68, 0.08) inset;
+}
+
+.git-project-wizard-loading-box {
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+  max-width: 560px;
+  text-align: center;
+}
+
+.git-project-wizard-loading-spinner {
+  width: 42px;
+  height: 42px;
+  border: 4px solid rgba(255, 218, 68, 0.22);
+  border-top-color: rgba(255, 218, 68, 0.95);
+  border-radius: 999px;
+  box-shadow: 0 0 18px rgba(255, 218, 68, 0.22);
+  animation: gitProjectWizardLoadingSpin 0.8s linear infinite;
+}
+
+.git-project-wizard-loading-title {
+  color: var(--gold);
+  font-size: 16px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.git-project-wizard-loading-detail {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  opacity: 0.9;
+}
+
+.git-project-wizard-loading-context {
+  display: grid;
+  gap: 4px;
+  max-width: 100%;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.git-project-wizard-loading-context span {
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.git-project-wizard-loading-context code {
+  display: block;
+  max-width: min(520px, 100%);
+  overflow-wrap: anywhere;
+  color: var(--cyan);
+  white-space: normal;
+}
+
+.git-project-wizard-loading-dots::after {
+  content: "";
+  animation: gitProjectWizardLoadingDots 1.2s steps(4, end) infinite;
+}
+
+.git-project-wizard-plan.git-project-wizard-error {
+  border-color: rgba(255, 138, 138, 0.72);
+  background: rgba(122, 21, 8, 0.18);
+}
+
+.git-project-wizard-error-box {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  color: var(--text);
+}
+
+.git-project-wizard-error-box strong {
+  color: #ff8a8a;
+  font-size: 13px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.git-project-wizard-error-box span {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+@keyframes gitProjectWizardLoadingSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes gitProjectWizardLoadingDots {
+  0% {
+    content: "";
+  }
+
+  25% {
+    content: ".";
+  }
+
+  50% {
+    content: "..";
+  }
+
+  75%,
+  100% {
+    content: "...";
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .git-project-wizard-loading-spinner,
+  .git-project-wizard-loading-dots::after {
+    animation: none;
+  }
+
+  .git-project-wizard-loading-dots::after {
+    content: "...";
+  }
+}
+
 .git-project-card-open-button,
 .git-project-ignore-preview-tools button,
 .git-project-secrets-actions button {

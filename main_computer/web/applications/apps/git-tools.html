@@ -21,7 +21,13 @@
                       </details>
                     </aside>
                     <div class="git-project-main" data-mc-component-id="git-tools.projects.main" data-mc-component-kind="panel" data-mc-component-label="Selected Project Workflow" data-mc-component-owner="git-tools.projects.layout" data-mc-feature-id="git-tools.feature.projects">
-                      <div class="git-project-wizard-plan" id="git-project-wizard-plan" data-mc-component-id="git-tools.projects.wizard-plan" data-mc-component-kind="output" data-mc-component-label="Project Wizard Plan" data-mc-component-owner="git-tools.projects.main" data-mc-feature-id="git-tools.feature.projects">Wizard plan will appear after inspection.</div>
+                      <div class="git-project-wizard-plan git-project-wizard-loading" id="git-project-wizard-plan" role="status" aria-live="polite" aria-busy="true" data-mc-component-id="git-tools.projects.wizard-plan" data-mc-component-kind="output" data-mc-component-label="Project Wizard Plan" data-mc-component-owner="git-tools.projects.main" data-mc-feature-id="git-tools.feature.projects">
+                        <div class="git-project-wizard-loading-box">
+                          <div class="git-project-wizard-loading-spinner" aria-hidden="true"></div>
+                          <div class="git-project-wizard-loading-title">Inspecting project<span class="git-project-wizard-loading-dots"></span></div>
+                          <div class="git-project-wizard-loading-detail">Waiting for backend results. The wizard plan will appear after inspection completes.</div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>

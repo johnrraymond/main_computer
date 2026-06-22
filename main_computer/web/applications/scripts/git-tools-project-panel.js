@@ -152,11 +152,20 @@ async function setSelectedGitProjectLock(locked) {
 }
 
 async function inspectSelectedGitProject(options = {}) {
-  const projectId = options.project_id || currentGitProject()?.id || "";
+  const project = currentGitProject();
+  const projectId = options.project_id || project?.id || "";
+  const projectContext = projectId || project?.path || "current";
   const payload = projectId ? {project_id: projectId} : {};
   try {
+    if (typeof renderGitProjectWizardLoading === "function") {
+      renderGitProjectWizardLoading({
+        title: options.quiet ? "Refreshing project plan" : "Inspecting selected project",
+        detail: "Waiting for backend results. Running git_dirty.py plan and Git state checks.",
+        context: projectContext,
+      });
+    }
     if (!options.quiet) {
-      setGitProjectNextStep("Inspecting selected project…", "Running git_dirty.py plan and Git state checks.", projectId || "current", "actionable");
+      setGitProjectNextStep("Inspecting selected project…", "Running git_dirty.py plan and Git state checks.", projectContext, "actionable");
     }
     const data = await gitToolsStatusApi().inspectProject(payload);
     gitProjectLastInspection = data;
@@ -168,7 +177,10 @@ async function inspectSelectedGitProject(options = {}) {
     }
     return data;
   } catch (error) {
-    setGitProjectNextStep("Project inspection failed", error?.message || String(error), projectId || "", "blocking");
+    if (typeof renderGitProjectWizardInspectionFailed === "function") {
+      renderGitProjectWizardInspectionFailed(error, projectContext);
+    }
+    setGitProjectNextStep("Project inspection failed", error?.message || String(error), projectContext, "blocking");
     throw error;
   }
 }

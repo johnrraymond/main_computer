@@ -38,8 +38,53 @@ function gitProjectMergeGitignoreReviewSteps(steps = []) {
 function gitProjectWizardDisplayActions(actions = []) {
   return gitProjectWorkflowIntegration().wizardDisplayActions(actions, gitProjectWorkflowHooks());
 }
+function clearGitProjectWizardLoadingState() {
+  if (!gitProjectWizardPlan) return;
+  gitProjectWizardPlan.classList.remove("git-project-wizard-loading", "git-project-wizard-error");
+  gitProjectWizardPlan.removeAttribute("role");
+  gitProjectWizardPlan.removeAttribute("aria-live");
+  gitProjectWizardPlan.removeAttribute("aria-busy");
+}
+function renderGitProjectWizardLoading(options = {}) {
+  if (!gitProjectWizardPlan) return;
+  const title = options.title || "Inspecting project";
+  const detail = options.detail || "Waiting for backend results. The wizard plan will appear after inspection completes.";
+  const context = String(options.context || "").trim();
+  const contextHtml = context
+    ? `<div class="git-project-wizard-loading-context"><span>Target</span><code>${escapeHtml(context)}</code></div>`
+    : "";
+  gitProjectWizardPlan.classList.add("git-project-wizard-loading");
+  gitProjectWizardPlan.classList.remove("git-project-wizard-error");
+  gitProjectWizardPlan.setAttribute("role", "status");
+  gitProjectWizardPlan.setAttribute("aria-live", "polite");
+  gitProjectWizardPlan.setAttribute("aria-busy", "true");
+  gitProjectWizardPlan.innerHTML = `<div class="git-project-wizard-loading-box">
+    <div class="git-project-wizard-loading-spinner" aria-hidden="true"></div>
+    <div class="git-project-wizard-loading-title">${escapeHtml(title)}<span class="git-project-wizard-loading-dots"></span></div>
+    <div class="git-project-wizard-loading-detail">${escapeHtml(detail)}</div>
+    ${contextHtml}
+  </div>`;
+}
+function renderGitProjectWizardInspectionFailed(error, context = "") {
+  if (!gitProjectWizardPlan) return;
+  const message = error?.message || String(error || "Unknown project inspection error.");
+  const contextText = String(context || "").trim();
+  const contextHtml = contextText
+    ? `<div class="git-project-wizard-loading-context"><span>Target</span><code>${escapeHtml(contextText)}</code></div>`
+    : "";
+  clearGitProjectWizardLoadingState();
+  gitProjectWizardPlan.classList.add("git-project-wizard-error");
+  gitProjectWizardPlan.setAttribute("role", "alert");
+  gitProjectWizardPlan.setAttribute("aria-live", "assertive");
+  gitProjectWizardPlan.innerHTML = `<div class="git-project-wizard-error-box">
+    <strong>Project inspection failed</strong>
+    <span>${escapeHtml(message)}</span>
+    ${contextHtml}
+  </div>`;
+}
 function renderGitProjectWizard(wizard, data = {}) {
   if (!gitProjectWizardPlan) return;
+  clearGitProjectWizardLoadingState();
   const steps = Array.isArray(wizard.steps) ? wizard.steps : [];
   if (!steps.length) {
     gitProjectWizardPlan.textContent = "No wizard steps available.";
@@ -155,6 +200,9 @@ function renderGitProjectWizard(wizard, data = {}) {
     gitProjectWizardIgnoreRules,
     gitProjectMergeGitignoreReviewSteps,
     gitProjectWizardDisplayActions,
+    clearGitProjectWizardLoadingState,
+    renderGitProjectWizardLoading,
+    renderGitProjectWizardInspectionFailed,
     renderGitProjectWizard
   });
 
@@ -171,6 +219,9 @@ function renderGitProjectWizard(wizard, data = {}) {
     gitProjectWizardIgnoreRules,
     gitProjectMergeGitignoreReviewSteps,
     gitProjectWizardDisplayActions,
+    clearGitProjectWizardLoadingState,
+    renderGitProjectWizardLoading,
+    renderGitProjectWizardInspectionFailed,
     renderGitProjectWizard
   });
 })(window);

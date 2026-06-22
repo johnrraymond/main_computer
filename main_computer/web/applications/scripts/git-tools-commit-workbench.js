@@ -687,7 +687,15 @@ function gitProjectCommitSummaryValue(workbench, key = "") {
 
 function gitProjectCommitMessageNodeValue(node) {
   if (!node) return "";
-  return String("value" in node ? node.value : node.textContent || "").trim();
+  return String("value" in node ? node.value : node.textContent || "");
+}
+
+function gitProjectCommitTrimmedMessageValue(value = "") {
+  return String(value ?? "").trim();
+}
+
+function gitProjectCommitMessageForValidation(workbench) {
+  return gitProjectCommitTrimmedMessageValue(gitProjectCommitMessageFromWorkbench(workbench));
 }
 
 function gitProjectCommitSetMessageNodeValue(node, value = "") {
@@ -735,7 +743,7 @@ function gitProjectCommitSelectedReadiness(workbench, paths = []) {
   const stats = gitProjectCommitReviewStats(workbench, paths);
   const selectedPhrase = paths.length ? `${paths.length} FILE${paths.length === 1 ? "" : "S"} SELECTED` : "NO FILES SELECTED";
   const reviewed = gitProjectCommitControlChecked(workbench, "reviewed_staged_diff");
-  const message = gitProjectCommitMessageFromWorkbench(workbench);
+  const message = gitProjectCommitMessageForValidation(workbench);
   const branch = gitProjectCommitBranchFromWorkbench(workbench);
   const identity = gitProjectCommitIdentityFromWorkbench(workbench);
   const repoWarningsPresent = Boolean(stats.review || stats.blocked || stats.selectedReview);
@@ -904,7 +912,9 @@ function gitProjectCommitUpdateExecutionPane(workbench, paths = [], state = null
   const dryRun = pane.querySelector('[data-git-commit-execution-option="dry_run"]');
   if (messageNode) {
     const renderedMessage = typeof currentState.message === "string" ? currentState.message : DEFAULT_COMMIT_MESSAGE;
-    gitProjectCommitSetMessageNodeValue(messageNode, renderedMessage);
+    if (document.activeElement !== messageNode) {
+      gitProjectCommitSetMessageNodeValue(messageNode, renderedMessage);
+    }
   }
   if (targetNode) targetNode.textContent = gitProjectCommitExecutionTargetText(currentState);
   gitProjectCommitRenderExecutionFiles(filesNode, fileCountNode, paths);
@@ -1143,7 +1153,7 @@ function gitProjectCommitExecutionPayload(workbench, paths = [], state = {}) {
     paths,
     selected_paths: paths,
     blocked_paths: Array.isArray(state.stats?.selectedBlockedPaths) ? state.stats.selectedBlockedPaths : [],
-    message: gitProjectCommitMessageFromWorkbench(workbench) || state.message || DEFAULT_COMMIT_MESSAGE,
+    message: gitProjectCommitMessageForValidation(workbench) || state.message || DEFAULT_COMMIT_MESSAGE,
     branch: state.branch || gitProjectCommitBranchFromWorkbench(workbench),
     git_user_name: identity.name || "",
     git_user_email: identity.email || "",
@@ -1650,6 +1660,8 @@ function gitProjectInitializeCommitWorkbenches(container) {
     gitProjectCommitControlChecked,
     gitProjectCommitSummaryValue,
     gitProjectCommitMessageNodeValue,
+    gitProjectCommitTrimmedMessageValue,
+    gitProjectCommitMessageForValidation,
     gitProjectCommitSetMessageNodeValue,
     gitProjectCommitMessageFromExecutionPane,
     gitProjectCommitMessageFromWorkbench,
@@ -1774,6 +1786,8 @@ function gitProjectInitializeCommitWorkbenches(container) {
     gitProjectCommitControlChecked,
     gitProjectCommitSummaryValue,
     gitProjectCommitMessageNodeValue,
+    gitProjectCommitTrimmedMessageValue,
+    gitProjectCommitMessageForValidation,
     gitProjectCommitSetMessageNodeValue,
     gitProjectCommitMessageFromExecutionPane,
     gitProjectCommitMessageFromWorkbench,
