@@ -864,17 +864,6 @@ class ViewportEnergyRoutesMixin:
             return "Ring 3 - Public untrusted"
         return ""
 
-    def _worker_connect_order_message_payload(self, message: Any) -> dict[str, Any]:
-        try:
-            parsed = json.loads(str(message or ""))
-        except (TypeError, ValueError):
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-
-    def _worker_connect_order_message_expires_at(self, message: Any) -> str:
-        payload = self._worker_connect_order_message_payload(message)
-        return str(payload.get("expires_at") or "").strip()
-
     def _worker_runtime_signed_order_state(self, settings: dict[str, Any]) -> dict[str, Any]:
         signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
         signature = str(signed.get("signature") or "").strip()
@@ -882,12 +871,9 @@ class ViewportEnergyRoutesMixin:
         wallet = str(signed.get("wallet_address") or "").strip()
         credit_wallet = str(signed.get("credit_wallet") or wallet).strip()
         has_signed_order = bool(signature and message and wallet)
-        message_expires_at = self._worker_connect_order_message_expires_at(message) if message else ""
         status = str(signed.get("signed_order_status") or "").strip()
         if status not in {"not_signed", "signing", "signed_locally", "expired", "invalid"}:
             status = "signed_locally" if has_signed_order else "not_signed"
-        if has_signed_order and status == "signed_locally" and not message_expires_at:
-            status = "invalid"
         if not has_signed_order and status not in {"signing", "invalid"}:
             status = "not_signed"
         labels = {
@@ -1255,14 +1241,14 @@ class ViewportEnergyRoutesMixin:
                     "status": "not_accepting",
                     "label": "Not accepting",
                     "reason": f"Hub registration failed: {hub_registration['lastError']}",
-                    "next": "Retry Hub registration.",
+                    "next": "Re-sign connect order.",
                 }
             if hub_status == "failed":
                 return {
                     "status": "not_accepting",
                     "label": "Not accepting",
                     "reason": "Hub registration failed.",
-                    "next": "Retry Hub registration.",
+                    "next": "Re-sign connect order.",
                 }
             if hub_status == "submitting":
                 return {
@@ -1276,13 +1262,13 @@ class ViewportEnergyRoutesMixin:
                     "status": "not_accepting",
                     "label": "Not accepting",
                     "reason": "Hub registration is stale.",
-                    "next": "Retry Hub registration.",
+                    "next": "Re-sign connect order.",
                 }
             return {
                 "status": "not_accepting",
                 "label": "Not accepting",
                 "reason": "Signed connect order has not been submitted to the Hub.",
-                "next": "Submit signed order to Hub.",
+                "next": "Re-sign connect order.",
             }
         if not bool(local_policy.get("allowed")):
             mode = str(local_policy.get("mode") or "")
@@ -1768,9 +1754,15 @@ class ViewportEnergyRoutesMixin:
             if profile_hub_url and hub_url != self._clean_hub_url(profile_hub_url):
                 raise ValueError(f"Signed worker connect order hub {hub_url!r} does not match selected network hub {profile_hub_url!r}.")
             chain_id = str(profile.get("chain_id") or body.get("chain_id") or "")
-            message_payload = self._worker_connect_order_message_payload(message)
+            message_payload: dict[str, Any] = {}
+            try:
+                parsed_message = json.loads(message)
+                if isinstance(parsed_message, dict):
+                    message_payload = parsed_message
+            except (TypeError, ValueError):
+                message_payload = {}
             issued_at = str(message_payload.get("issued_at") or "")
-            expires_at = str(message_payload.get("expires_at") or "").strip()
+            expires_at = str(message_payload.get("expires_at") or "")
 
             signed_at = datetime.now(timezone.utc).isoformat()
             signed_connection = {
@@ -1793,6 +1785,30 @@ class ViewportEnergyRoutesMixin:
                 "hub_registered_at": "",
                 "hub_registered": False,
             }
+            if not expires_at:
+                invalid_error = "Signed connect order message is missing expires_at; re-sign connect order."
+                signed_connection.update(
+                    {
+                        "status": "invalid",
+                        "signed_order_status": "invalid",
+                        "hub_registration_status": "not_submitted",
+                        "hub_registration_error": invalid_error,
+                        "last_error": invalid_error,
+                        "worker": registration_payload,
+                    }
+                )
+                settings["workerRequestedRing"] = requested_ring
+                settings["workerAssignedRing"] = ""
+                settings["workerRegisteredId"] = ""
+                settings["workerPricingPolicy"] = ""
+                settings["workerConnectedHubUrl"] = hub_url
+                settings["workerConnectionStatus"] = "failed"
+                settings["workerConnectionError"] = invalid_error
+                settings["workerHubRegistration"] = {}
+                settings["workerPool"] = {}
+                settings["signedWorkerConnection"] = signed_connection
+                self._save_worker_settings(settings)
+                raise ValueError(invalid_error)
             settings["workerRequestedRing"] = requested_ring
             settings["workerAssignedRing"] = ""
             settings["workerRegisteredId"] = ""
@@ -1804,21 +1820,6 @@ class ViewportEnergyRoutesMixin:
             settings["workerPool"] = {}
             settings["signedWorkerConnection"] = signed_connection
             settings = self._save_worker_settings(settings)
-            if not expires_at:
-                signed_connection = dict(settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else signed_connection)
-                signed_connection.update(
-                    {
-                        "status": "invalid",
-                        "signed_order_status": "invalid",
-                        "hub_registration_status": "not_submitted",
-                        "hub_registration_error": "",
-                        "last_error": "",
-                        "hub_registered": False,
-                    }
-                )
-                settings["signedWorkerConnection"] = signed_connection
-                self._save_worker_settings(settings)
-                raise ValueError("Signed connect order message is missing expires_at; re-sign connect order.")
 
             attempted_at = datetime.now(timezone.utc).isoformat()
             signed_connection = dict(settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else signed_connection)

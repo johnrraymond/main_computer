@@ -2888,33 +2888,6 @@
       return signed && typeof signed === "object" ? signed : {};
     }
 
-    function workerConnectOrderMessagePayload(message) {
-      try {
-        const parsed = JSON.parse(String(message || ""));
-        return parsed && typeof parsed === "object" ? parsed : {};
-      } catch {
-        return {};
-      }
-    }
-
-    function workerConnectOrderMessageHasExpiresAt(message) {
-      const payload = workerConnectOrderMessagePayload(message);
-      return Boolean(String(payload.expires_at || "").trim());
-    }
-
-    function workerNetworkSignedConnectionHasRequiredExpiresAt() {
-      return workerConnectOrderMessageHasExpiresAt(workerNetworkSignedConnection().message);
-    }
-
-    function workerNetworkSignedConnectionCanSubmitToHub() {
-      const signed = workerNetworkSignedConnection();
-      return Boolean(
-        String(signed.message || "").trim()
-        && String(signed.signature || "").trim()
-        && workerNetworkSignedConnectionHasRequiredExpiresAt()
-      );
-    }
-
     function workerNetworkSignedConnectionWorker() {
       const signed = workerNetworkSignedConnection();
       const worker = signed.worker && typeof signed.worker === "object"
@@ -2968,15 +2941,11 @@
       return workerNetworkHubRegistrationStatus() === "accepted" && Boolean(signed.hub_registered);
     }
 
-    function workerNetworkHasRetryableHubRegistration() {
+    function workerNetworkCanRetryHubRegistration() {
+      if (!workerNetworkCanSign()) return false;
       if (!workerNetworkSignedForSelected()) return false;
-      if (!workerNetworkSignedConnectionCanSubmitToHub()) return false;
       if (workerNetworkHubRegistered()) return false;
       return ["not_submitted", "failed", "stale"].includes(workerNetworkHubRegistrationStatus());
-    }
-
-    function workerNetworkCanRetryHubRegistration() {
-      return workerNetworkCanSign() && workerNetworkHasRetryableHubRegistration();
     }
 
     function workerRuntimePhaseLabel(phase = workerRuntimeStatus.phase) {
@@ -3098,13 +3067,6 @@
           next: "Sign connect order."
         };
       }
-      if (!workerNetworkSignedConnectionHasRequiredExpiresAt()) {
-        return {
-          status: "Not accepting",
-          reason: "Signed connect order is invalid.",
-          next: "Re-sign connect order."
-        };
-      }
       if (signedOrder.status && signedOrder.status !== "signed_locally") {
         if (signedOrder.status === "signing") {
           return {
@@ -3201,17 +3163,15 @@
     }
 
     function workerConnectOrderButtonText({signedForSelected = false, hubRegistered = false, hubRegistration = {}, signedOrder = {}} = {}) {
-      const retryable = workerNetworkHasRetryableHubRegistration();
+      const hubStatus = hubRegistration.status || workerNetworkHubRegistrationStatus();
+      const needsFreshSignature = signedForSelected && !hubRegistered && ["not_submitted", "failed", "stale"].includes(hubStatus);
       if (workerNetworkSignatureInFlight) {
-        return retryable ? "Submitting…" : "Signing…";
-      }
-      if (retryable) {
-        return "Retry Hub Registration";
+        return "Signing…";
       }
       if (signedOrder.status === "expired") {
         return "Re-sign Expired Order";
       }
-      if (signedForSelected && !hubRegistered && !workerNetworkSignedConnectionHasRequiredExpiresAt()) {
+      if (needsFreshSignature) {
         return "Re-sign Connect Order";
       }
       return "Sign Connect Order";
@@ -3441,11 +3401,7 @@
       workerNetworkSetText(
         workerNetworkSignatureStatus,
         signedForSelected
-          ? workerSignedOrderStatusLabel(
-              workerNetworkSignedConnectionHasRequiredExpiresAt()
-                ? signedOrder.status || signed.signed_order_status || "signed_locally"
-                : "invalid"
-            )
+          ? workerSignedOrderStatusLabel(signedOrder.status || signed.signed_order_status || "signed_locally")
           : (signedOrder.status === "signed_locally" || signed.signed_order_status === "signed_locally")
             ? "Signed locally for another selection"
             : workerSignedOrderStatusLabel(signedOrder.status || signed.signed_order_status)
@@ -3676,38 +3632,20 @@
         renderWorkerNetworkSurface();
         return;
       }
-      const retryingHubRegistration = workerNetworkCanRetryHubRegistration();
       workerNetworkSignatureInFlight = true;
       renderWorkerNetworkSurface();
       try {
-        let walletAddress = "";
-        let message = "";
-        let signature = "";
-        if (retryingHubRegistration) {
-          const signed = workerNetworkSignedConnection();
-          walletAddress = signed.wallet_address || workerNetworkWalletAddress();
-          message = String(signed.message || "");
-          signature = String(signed.signature || "");
-          if (!message || !signature) {
-            throw new Error("Saved signed connect order is missing its message or signature; re-sign connect order.");
-          }
-        } else {
-          const context = await workerGetWalletProviderContext();
-          const signer = await context.browserProvider.getSigner();
-          walletAddress = await signer.getAddress();
-          message = workerBuildConnectOrderMessage();
-          signature = await signer.signMessage(message);
-        }
+        const context = await workerGetWalletProviderContext();
+        const signer = await context.browserProvider.getSigner();
+        const walletAddress = await signer.getAddress();
+        const message = workerBuildConnectOrderMessage();
+        const signature = await signer.signMessage(message);
         const data = await workerPostJson(
           WORKER_NETWORK_CONNECT_ORDER_ENDPOINT,
           buildWorkerNetworkRegistrationPayload({message, signature, walletAddress})
         );
         workerApplyNetworkPayload(data);
-        workerSetSaveStatus(
-          retryingHubRegistration
-            ? `Submitted saved ${workerRingLabel(workerNetworkSession.requested_ring)} worker connect order to the ${workerNetworkDisplayName(workerNetworkSession.selected_network)} Hub.`
-            : `Signed ${workerRingLabel(workerNetworkSession.requested_ring)} worker connect order and registered worker with the ${workerNetworkDisplayName(workerNetworkSession.selected_network)} Hub.`
-        );
+        workerSetSaveStatus(`Signed fresh ${workerRingLabel(workerNetworkSession.requested_ring)} worker connect order and submitted it to the ${workerNetworkDisplayName(workerNetworkSession.selected_network)} Hub.`);
       } catch (error) {
         workerSetSaveStatus("", {walletError: error, prefix: "Worker connect order submission failed: "});
         await Promise.allSettled([

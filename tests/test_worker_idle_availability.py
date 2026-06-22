@@ -352,7 +352,7 @@ def _runtime_settings(harness: _WorkerRoutesHarness | None = None) -> dict[str, 
                 "credit_wallet": "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf",
                 "hub_url": "http://127.0.0.1:8770",
                 "chain_id": "42424242",
-                "message": '{"kind":"main_computer_worker_connect_order","expires_at":"9999-12-31T23:59:59.999999+00:00"}',
+                "message": "{}",
                 "signature": "0xabc",
                 "status": "hub-registered",
                 "hub_registered": True,
@@ -729,7 +729,7 @@ def test_worker_runtime_status_truth_hub_registration_failed_after_signed_submit
     assert status["hubRegistration"]["label"] == "Failed"
     assert status["hubRegistration"]["lastError"] == "Hub returned HTTP 400: bad worker price"
     assert status["reason"] == "Hub registration failed: Hub returned HTTP 400: bad worker price"
-    assert status["next"] == "Retry Hub registration."
+    assert status["next"] == "Re-sign connect order."
     assert status["runtime"]["lastError"] == "Hub returned HTTP 400: bad worker price"
 
 
@@ -818,7 +818,7 @@ def test_worker_network_connect_order_persists_signed_failure_state(tmp_path: Pa
 
 
 
-def test_worker_network_connect_order_missing_expires_at_is_local_invalid_not_hub_submit(tmp_path: Path) -> None:
+def test_worker_network_connect_order_rejects_missing_expires_at_before_hub_submit(tmp_path: Path) -> None:
     payload = _seller_payload()
     payload["availability"] = {
         "accept_paid_jobs": True,
@@ -833,7 +833,7 @@ def test_worker_network_connect_order_missing_expires_at_is_local_invalid_not_hu
             self.client_address = ("127.0.0.1", 12345)
             self.sent_payload: dict[str, object] | None = None
             self.sent_status: HTTPStatus | None = None
-            self.hub_post_called = False
+            self.hub_called = False
 
         def _read_json(self) -> dict[str, object]:
             return {
@@ -851,8 +851,8 @@ def test_worker_network_connect_order_missing_expires_at_is_local_invalid_not_hu
             self.sent_status = status
 
         def _post_worker_connect_order_to_hub(self, *, hub_url: str, payload: dict[str, object]) -> dict[str, object]:
-            self.hub_post_called = True
-            raise AssertionError("message without expires_at must not be submitted to Hub")
+            self.hub_called = True
+            return {}
 
     harness = _ConnectOrderHarness()
     harness.server = type(
@@ -871,18 +871,10 @@ def test_worker_network_connect_order_missing_expires_at_is_local_invalid_not_hu
     saved = harness._load_worker_settings()
     signed = saved["signedWorkerConnection"]
     assert harness.sent_status == HTTPStatus.BAD_REQUEST
-    assert harness.sent_payload and "missing expires_at" in str(harness.sent_payload["error"])
-    assert harness.hub_post_called is False
-    assert signed["message"] == '{"kind":"main_computer_worker_connect_order","issued_at":"2026-06-22T12:00:00+00:00"}'
-    assert signed["expires_at"] == ""
+    assert harness.hub_called is False
     assert signed["signed_order_status"] == "invalid"
     assert signed["hub_registration_status"] == "not_submitted"
-    assert signed["hub_registered"] is False
-
-    _saved, status = harness._worker_runtime_transition(saved, action="sync", send_heartbeat=False)
-    assert status["signedOrder"]["label"] == "Invalid"
-    assert status["reason"] == "Signed connect order is invalid."
-    assert status["next"] == "Re-sign connect order."
+    assert signed["hub_registration_error"] == "Signed connect order message is missing expires_at; re-sign connect order."
 
 
 def test_worker_runtime_status_truth_ai_busy_blocks_after_registration(tmp_path: Path) -> None:

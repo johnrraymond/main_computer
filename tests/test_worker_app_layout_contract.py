@@ -463,11 +463,10 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "workerRuntimePrimaryDisplay" in js
     assert "workerRuntimePolicyPayload" in js
     assert "Signed connect order has not been submitted to the Hub." in js
-    assert "Retry Hub Registration" in js
-    assert "workerConnectOrderMessageHasExpiresAt" in js
-    assert "workerNetworkSignedConnectionCanSubmitToHub" in js
-    assert "workerNetworkHasRetryableHubRegistration" in js
     assert "Re-sign Connect Order" in js
+    assert "Retry Hub Registration" not in js
+    assert "Submitted saved" not in js
+    assert "const retryingHubRegistration" not in js
     assert "Connect order has not been signed." in js
     assert "workerSelectNetwork" in js
     assert "signWorkerNetworkConnectOrder" in js
