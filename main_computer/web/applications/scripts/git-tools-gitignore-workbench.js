@@ -219,6 +219,7 @@ function gitProjectApplyIgnoreRuleToRightPane(workbench, input) {
     gitProjectSetGitignoreRowChecked(workbench, row, false);
   }
   gitProjectUpdateGitignoreDirtyState(workbench);
+  gitProjectScheduleGitignoreWorkbenchLayoutCaps(workbench.closest("[data-git-project-card-inline-panel]") || document);
 }
 function gitProjectUpdateGitignoreDirtyState(workbench) {
   if (!workbench) return false;
@@ -292,9 +293,66 @@ function gitProjectHandleGitignoreRightChange(workbench, input) {
   gitProjectSetGitignoreRowChecked(workbench, row, !!input.checked);
   gitProjectUpdateGitignoreDirtyState(workbench);
   gitProjectRefreshIgnoreRulePreview(workbench.closest("[data-git-project-card-inline-panel]") || workbench);
+  gitProjectScheduleGitignoreWorkbenchLayoutCaps(workbench.closest("[data-git-project-card-inline-panel]") || document);
+}
+function gitProjectGitignoreViewportHeight() {
+  return Number(global.visualViewport?.height || document.documentElement?.clientHeight || global.innerHeight || 700);
+}
+function gitProjectGitignoreCapPx(value) {
+  return `${Math.max(180, Math.floor(Number(value) || 0))}px`;
+}
+function gitProjectUpdateGitignoreWorkbenchLayoutCaps(container = document) {
+  const scope = container?.querySelectorAll ? container : document;
+  const viewportHeight = gitProjectGitignoreViewportHeight();
+  const bottomGap = 16;
+  scope.querySelectorAll(".git-project-gitignore-workbench").forEach((workbench) => {
+    if (!workbench || workbench.offsetParent === null) return;
+    const inlineBody = workbench.closest(".git-project-card-inline-body.is-gitignore");
+    const inlinePanel = workbench.closest(".git-project-card-inline-panel");
+    const suggestions = workbench.querySelector(".git-project-gitignore-suggestions");
+    const filePanel = workbench.querySelector(".git-project-gitignore-file-panel");
+    const inlineTop = (inlineBody || workbench).getBoundingClientRect().top;
+    const workbenchTop = workbench.getBoundingClientRect().top;
+    const inlineCap = gitProjectGitignoreCapPx(viewportHeight - inlineTop - bottomGap);
+    const workbenchCap = gitProjectGitignoreCapPx(viewportHeight - workbenchTop - bottomGap);
+    inlineBody?.style.setProperty("--gitignore-inline-cap", inlineCap);
+    inlinePanel?.style.setProperty("--gitignore-inline-cap", inlineCap);
+    workbench.style.setProperty("--gitignore-workbench-cap", workbenchCap);
+    [suggestions, filePanel].filter(Boolean).forEach((element) => {
+      const panelCap = gitProjectGitignoreCapPx(viewportHeight - element.getBoundingClientRect().top - bottomGap);
+      element.style.setProperty("--gitignore-panel-cap", panelCap);
+    });
+  });
+}
+function gitProjectScheduleGitignoreWorkbenchLayoutCaps(container = document) {
+  if (global.gitProjectGitignoreLayoutCapFrame) {
+    global.cancelAnimationFrame?.(global.gitProjectGitignoreLayoutCapFrame);
+  }
+  const update = () => {
+    global.gitProjectGitignoreLayoutCapFrame = 0;
+    gitProjectUpdateGitignoreWorkbenchLayoutCaps(container);
+  };
+  if (global.requestAnimationFrame) {
+    global.gitProjectGitignoreLayoutCapFrame = global.requestAnimationFrame(update);
+  } else {
+    global.setTimeout(update, 0);
+  }
+}
+function gitProjectEnsureGitignoreLayoutCapListeners() {
+  if (global.gitProjectGitignoreLayoutCapListenersBound === true) return;
+  global.gitProjectGitignoreLayoutCapListenersBound = true;
+  const schedule = () => gitProjectScheduleGitignoreWorkbenchLayoutCaps(document);
+  global.addEventListener("resize", schedule, { passive: true });
+  global.visualViewport?.addEventListener("resize", schedule, { passive: true });
+  global.addEventListener("scroll", schedule, { passive: true, capture: true });
 }
 function gitProjectInitializeGitignoreWorkbench(workbench) {
-  if (!workbench || workbench.dataset.gitignoreBound === "true") return;
+  if (!workbench) return;
+  gitProjectEnsureGitignoreLayoutCapListeners();
+  if (workbench.dataset.gitignoreBound === "true") {
+    gitProjectScheduleGitignoreWorkbenchLayoutCaps(workbench.closest("[data-git-project-card-inline-panel]") || document);
+    return;
+  }
   workbench.dataset.gitignoreBound = "true";
   workbench.addEventListener("change", (event) => {
     const target = event.target;
@@ -328,12 +386,16 @@ function gitProjectInitializeGitignoreWorkbench(workbench) {
   }
   gitProjectUpdateGitignoreDirtyState(workbench);
   gitProjectUpdateGitignoreEmptyMessage(workbench);
+  gitProjectScheduleGitignoreWorkbenchLayoutCaps(workbench.closest("[data-git-project-card-inline-panel]") || document);
+  global.setTimeout(() => gitProjectScheduleGitignoreWorkbenchLayoutCaps(workbench.closest("[data-git-project-card-inline-panel]") || document), 50);
+  global.setTimeout(() => gitProjectScheduleGitignoreWorkbenchLayoutCaps(workbench.closest("[data-git-project-card-inline-panel]") || document), 250);
 }
 function gitProjectInitializeGitignoreWorkbenches(container) {
   container?.querySelectorAll(".git-project-gitignore-workbench").forEach((workbench) => {
     gitProjectInitializeGitignoreWorkbench(workbench);
   });
   gitProjectEnsureGitignoreBeforeUnloadGuard();
+  gitProjectScheduleGitignoreWorkbenchLayoutCaps(container || document);
 }
 function gitProjectDirtyGitignoreWorkbenches(container = document) {
   return Array.from(container.querySelectorAll?.(".git-project-gitignore-workbench[data-gitignore-dirty='true']") || []);
@@ -380,6 +442,11 @@ function gitProjectEnsureGitignoreBeforeUnloadGuard() {
     gitProjectRenderSavedGitignoreRows,
     gitProjectSaveGitignoreWorkbench,
     gitProjectHandleGitignoreRightChange,
+    gitProjectGitignoreViewportHeight,
+    gitProjectGitignoreCapPx,
+    gitProjectUpdateGitignoreWorkbenchLayoutCaps,
+    gitProjectScheduleGitignoreWorkbenchLayoutCaps,
+    gitProjectEnsureGitignoreLayoutCapListeners,
     gitProjectInitializeGitignoreWorkbench,
     gitProjectInitializeGitignoreWorkbenches,
     gitProjectDirtyGitignoreWorkbenches,
@@ -413,6 +480,11 @@ function gitProjectEnsureGitignoreBeforeUnloadGuard() {
     gitProjectRenderSavedGitignoreRows,
     gitProjectSaveGitignoreWorkbench,
     gitProjectHandleGitignoreRightChange,
+    gitProjectGitignoreViewportHeight,
+    gitProjectGitignoreCapPx,
+    gitProjectUpdateGitignoreWorkbenchLayoutCaps,
+    gitProjectScheduleGitignoreWorkbenchLayoutCaps,
+    gitProjectEnsureGitignoreLayoutCapListeners,
     gitProjectInitializeGitignoreWorkbench,
     gitProjectInitializeGitignoreWorkbenches,
     gitProjectDirtyGitignoreWorkbenches,

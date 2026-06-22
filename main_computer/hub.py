@@ -1733,6 +1733,173 @@ class HubServerHandler(_JsonHandler):
                 return dict(record)
         return None
 
+    def _multisession_authorization_from_body(self, body: dict[str, Any]) -> dict[str, Any]:
+        metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+        for key in ("multisession_authorization", "payment_authorization"):
+            value = body.get(key)
+            if isinstance(value, dict):
+                return dict(value)
+            value = metadata.get(key) if isinstance(metadata, dict) else None
+            if isinstance(value, dict):
+                return dict(value)
+        return {}
+
+    def _validate_multisession_authorization(
+        self,
+        authorization: dict[str, Any],
+        *,
+        required_wallet_address: str = "",
+        required_chain_id: str = "",
+        required_credit_wei: int = 0,
+    ) -> dict[str, Any]:
+        if not isinstance(authorization, dict) or not authorization:
+            raise HubCreditAuthorizationError("A multi-session key authorization is required.")
+
+        kind = str(authorization.get("kind") or "multisession_key").strip().lower()
+        if kind != "multisession_key":
+            raise HubCreditAuthorizationError("Authorization kind must be multisession_key.")
+
+        wallet_address = normalize_address(authorization.get("wallet_address"))
+        if required_wallet_address and normalize_address(required_wallet_address) != wallet_address:
+            raise HubCreditAuthorizationError("The multi-session key wallet does not match the required wallet.")
+
+        key_id = str(
+            authorization.get("multisession_key_id")
+            or authorization.get("key_id")
+            or ""
+        ).strip()
+        if not key_id:
+            raise HubCreditAuthorizationError("A multi-session key id is required.")
+
+        with self.server.multisession_key_store_lock:
+            data = self._load_multisession_key_store_unlocked()
+            record = data.get("keys", {}).get(key_id)
+            if not isinstance(record, dict) or record.get("status") != "active":
+                raise HubCreditAuthorizationError("The multi-session key is not active.")
+            record = dict(record)
+
+        record_wallet = normalize_address(record.get("wallet_address"))
+        if record_wallet != wallet_address:
+            raise HubCreditAuthorizationError("The multi-session key does not belong to the requested wallet.")
+
+        record_chain_id = str(record.get("chain_id") or "").strip().lower()
+        requested_chain_id = str(authorization.get("chain_id") or required_chain_id or record_chain_id or "").strip().lower()
+        if requested_chain_id and record_chain_id and requested_chain_id != record_chain_id:
+            raise HubCreditAuthorizationError("The multi-session key chain id does not match this request.")
+        if requested_chain_id and requested_chain_id != HUB_MULTISESSION_KEY_EXPECTED_CHAIN_ID:
+            raise HubCreditAuthorizationError("This Hub only accepts local dev-chain multi-session keys for wallet-authenticated lab work.")
+
+        max_authorized_credit_wei = _hub_as_int(
+            authorization.get("max_authorized_credit_wei"),
+            0,
+            minimum=0,
+        )
+        if max_authorized_credit_wei <= 0:
+            max_authorized_credits = _hub_as_int(
+                authorization.get("max_authorized_credits", authorization.get("max_credits")),
+                0,
+                minimum=0,
+            )
+            if max_authorized_credits > 0:
+                max_authorized_credit_wei = max_authorized_credits * CREDIT_WEI_PER_CREDIT
+        if required_credit_wei > 0 and max_authorized_credit_wei > 0 and max_authorized_credit_wei < required_credit_wei:
+            raise HubCreditAuthorizationError("The multi-session key authorization is below the requested credit hold.")
+
+        account_id = wallet_account_id(wallet_address)
+        return {
+            "kind": "multisession_key",
+            "wallet_address": wallet_address,
+            "account_id": account_id,
+            "multisession_key_id": key_id,
+            "chain_id": requested_chain_id or record_chain_id,
+            "record": record,
+            "max_authorized_credit_wei": str(max_authorized_credit_wei),
+        }
+
+    def _apply_request_multisession_authorization(
+        self,
+        *,
+        body: dict[str, Any],
+        metadata: dict[str, Any],
+        required: bool,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        authorization = self._multisession_authorization_from_body(body)
+        if not authorization:
+            if required:
+                raise HubCreditAuthorizationError("Wallet-backed worker-pull requests require a multi-session key authorization.")
+            return body, metadata
+
+        requested_credits = _hub_as_int(
+            body.get("max_credits", metadata.get("max_credits", body.get("max_price_credits", metadata.get("max_price_credits", 0)))),
+            0,
+            minimum=0,
+        )
+        verified = self._validate_multisession_authorization(
+            authorization,
+            required_chain_id=str(body.get("chain_id") or metadata.get("chain_id") or ""),
+            required_credit_wei=requested_credits * CREDIT_WEI_PER_CREDIT if requested_credits > 0 else 0,
+        )
+
+        clean_body = dict(body)
+        clean_metadata = dict(metadata)
+        clean_body["account_id"] = verified["account_id"]
+        clean_metadata["account_id"] = verified["account_id"]
+        clean_metadata["wallet_address"] = verified["wallet_address"]
+        clean_metadata["multisession_key_id"] = verified["multisession_key_id"]
+        clean_metadata["multisession_key_authorized"] = True
+        clean_metadata["auth_mode"] = "multisession-wallet"
+        if verified.get("chain_id"):
+            clean_metadata["chain_id"] = verified["chain_id"]
+        clean_body["metadata"] = clean_metadata
+        return clean_body, clean_metadata
+
+    def _registered_worker_wallet(self, worker: Any) -> str:
+        if worker is None:
+            return ""
+        capabilities = getattr(worker, "capabilities", None)
+        if not isinstance(capabilities, dict):
+            try:
+                payload = worker.as_dict()
+            except Exception:
+                payload = {}
+            capabilities = payload.get("capabilities") if isinstance(payload, dict) else {}
+        try:
+            return normalize_address(
+                (capabilities or {}).get("wallet_address")
+                or (capabilities or {}).get("worker_wallet_address")
+                or ((capabilities or {}).get("worker_connect_order", {}) or {}).get("wallet_address")
+            )
+        except Exception:
+            return ""
+
+    def _authorize_worker_route(
+        self,
+        *,
+        body: dict[str, Any],
+        worker_id: str,
+        current_worker: Any = None,
+        registration: bool = False,
+    ) -> dict[str, Any]:
+        authorization = self._multisession_authorization_from_body(body)
+        require_auth = bool(getattr(self.server.config, "hub_require_multisession_auth", False))
+        if not authorization:
+            if require_auth:
+                raise HubCreditAuthorizationError("Worker routes require a multi-session key authorization.")
+            return {}
+
+        verified = self._validate_multisession_authorization(
+            authorization,
+            required_chain_id=str(body.get("chain_id") or ""),
+        )
+        if not registration:
+            if current_worker is None:
+                raise HubCreditAuthorizationError("Worker must be registered before authenticated heartbeat, poll, or result submission.")
+            registered_wallet = self._registered_worker_wallet(current_worker)
+            if registered_wallet and registered_wallet != verified["wallet_address"]:
+                raise HubCreditAuthorizationError("The multi-session key wallet does not match the registered worker wallet.")
+
+        return verified
+
     def _wallet_credit_balance_payload(self, wallet_address: str) -> dict[str, Any]:
         normalized_wallet = normalize_address(wallet_address)
         account_id = wallet_account_id(normalized_wallet)
@@ -3411,6 +3578,19 @@ class HubServerHandler(_JsonHandler):
                         capabilities["execution"] = execution
                     if body.get("execution_mode") is not None:
                         capabilities["execution_mode"] = str(body.get("execution_mode") or "")
+                    worker_authorization = self._authorize_worker_route(
+                        body=body,
+                        worker_id=str(body.get("node_id", "")),
+                        registration=True,
+                    )
+                    if worker_authorization:
+                        capabilities["wallet_address"] = worker_authorization["wallet_address"]
+                        capabilities["credit_wallet"] = worker_authorization["wallet_address"]
+                        capabilities["multisession_key_id"] = worker_authorization["multisession_key_id"]
+                        capabilities["multisession_key_authorized"] = True
+                        capabilities["auth_mode"] = "multisession-wallet"
+                        if worker_authorization.get("chain_id"):
+                            capabilities["chain_id"] = worker_authorization["chain_id"]
                     decision, wallet_address = self._evaluate_ring_registration(body=body, capabilities=capabilities)
                     if not decision.ok:
                         worker_node_id = str(body.get("node_id", ""))
@@ -3475,6 +3655,17 @@ class HubServerHandler(_JsonHandler):
                     self._send_json(self._worker_route_success_payload(worker))
                     self._worker_route_diag_step(diag_id, "worker.register", "send_json.done", diag_started_at, status=200)
                     return
+                except HubCreditAuthorizationError as exc:
+                    self._worker_route_diag_step(
+                        diag_id,
+                        "worker.register",
+                        "auth_error",
+                        diag_started_at,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                    self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.FORBIDDEN)
+                    return
                 except Exception as exc:
                     self._worker_route_diag_step(
                         diag_id,
@@ -3508,6 +3699,19 @@ class HubServerHandler(_JsonHandler):
                         raise ValueError("worker_node_id is required.")
                     capabilities = dict(body.get("capabilities", {})) if isinstance(body.get("capabilities"), dict) else None
                     current_worker = self.server.registry.get_worker(worker_id, worker_instance_id=worker_instance_id)
+                    worker_authorization = self._authorize_worker_route(
+                        body=body,
+                        worker_id=worker_id,
+                        current_worker=current_worker,
+                    )
+                    if worker_authorization:
+                        if capabilities is None:
+                            capabilities = {}
+                        capabilities["wallet_address"] = worker_authorization["wallet_address"]
+                        capabilities["credit_wallet"] = worker_authorization["wallet_address"]
+                        capabilities["multisession_key_id"] = worker_authorization["multisession_key_id"]
+                        capabilities["multisession_key_authorized"] = True
+                        capabilities["auth_mode"] = "multisession-wallet"
                     heartbeat_sent_ring = self._payload_has_requested_ring(body, capabilities)
                     if heartbeat_sent_ring:
                         if capabilities is None:
@@ -3593,6 +3797,17 @@ class HubServerHandler(_JsonHandler):
                     self._send_json(self._worker_route_success_payload(worker))
                     self._worker_route_diag_step(diag_id, "worker.heartbeat", "send_json.done", diag_started_at, status=200)
                     return
+                except HubCreditAuthorizationError as exc:
+                    self._worker_route_diag_step(
+                        diag_id,
+                        "worker.heartbeat",
+                        "auth_error",
+                        diag_started_at,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                    self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.FORBIDDEN)
+                    return
                 except Exception as exc:
                     self._worker_route_diag_step(
                         diag_id,
@@ -3630,6 +3845,19 @@ class HubServerHandler(_JsonHandler):
                         return
                     capabilities = dict(body.get("capabilities", {})) if isinstance(body.get("capabilities"), dict) else None
                     current_worker = self.server.registry.get_worker(worker_id, worker_instance_id=worker_instance_id)
+                    worker_authorization = self._authorize_worker_route(
+                        body=body,
+                        worker_id=worker_id,
+                        current_worker=current_worker,
+                    )
+                    if worker_authorization:
+                        if capabilities is None:
+                            capabilities = {}
+                        capabilities["wallet_address"] = worker_authorization["wallet_address"]
+                        capabilities["credit_wallet"] = worker_authorization["wallet_address"]
+                        capabilities["multisession_key_id"] = worker_authorization["multisession_key_id"]
+                        capabilities["multisession_key_authorized"] = True
+                        capabilities["auth_mode"] = "multisession-wallet"
                     heartbeat_sent_ring = self._payload_has_requested_ring(body, capabilities)
                     if heartbeat_sent_ring:
                         if capabilities is None:
@@ -3715,6 +3943,17 @@ class HubServerHandler(_JsonHandler):
                     self._send_json(self._worker_route_success_payload(worker))
                     self._worker_route_diag_step(diag_id, "worker.heartbeat_by_id", "send_json.done", diag_started_at, status=200)
                     return
+                except HubCreditAuthorizationError as exc:
+                    self._worker_route_diag_step(
+                        diag_id,
+                        "worker.heartbeat_by_id",
+                        "auth_error",
+                        diag_started_at,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                    self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.FORBIDDEN)
+                    return
                 except Exception as exc:
                     self._worker_route_diag_step(
                         diag_id,
@@ -3746,6 +3985,12 @@ class HubServerHandler(_JsonHandler):
                     )
                     if not worker_id:
                         raise ValueError("worker_node_id is required.")
+                    current_worker = self.server.registry.get_worker(worker_id, worker_instance_id=worker_instance_id)
+                    self._authorize_worker_route(
+                        body=body,
+                        worker_id=worker_id,
+                        current_worker=current_worker,
+                    )
                     self._worker_route_diag_step(diag_id, "worker.poll", "dispatcher.poll_worker.start", diag_started_at, worker_node_id=worker_id)
                     response_payload = self.server.dispatcher.poll_worker(
                         worker_node_id=worker_id,
@@ -3766,6 +4011,17 @@ class HubServerHandler(_JsonHandler):
                     self._worker_route_diag_step(diag_id, "worker.poll", "send_json.start", diag_started_at, status=200)
                     self._send_json(response_payload)
                     self._worker_route_diag_step(diag_id, "worker.poll", "send_json.done", diag_started_at, status=200)
+                    return
+                except HubCreditAuthorizationError as exc:
+                    self._worker_route_diag_step(
+                        diag_id,
+                        "worker.poll",
+                        "auth_error",
+                        diag_started_at,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                    self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.FORBIDDEN)
                     return
                 except Exception as exc:
                     self._worker_route_diag_step(
@@ -3802,6 +4058,12 @@ class HubServerHandler(_JsonHandler):
                     )
                     if not isinstance(result, dict):
                         raise ValueError("result or response object is required.")
+                    current_worker = self.server.registry.get_worker(worker_id, worker_instance_id=worker_instance_id)
+                    self._authorize_worker_route(
+                        body=body,
+                        worker_id=worker_id,
+                        current_worker=current_worker,
+                    )
                     self._worker_route_diag_step(diag_id, "worker.results", "dispatcher.submit_worker_result.start", diag_started_at, worker_node_id=worker_id)
                     response_payload = self.server.dispatcher.submit_worker_result(
                         worker_node_id=worker_id,
@@ -3814,6 +4076,17 @@ class HubServerHandler(_JsonHandler):
                     self._worker_route_diag_step(diag_id, "worker.results", "send_json.start", diag_started_at, status=200)
                     self._send_json(response_payload)
                     self._worker_route_diag_step(diag_id, "worker.results", "send_json.done", diag_started_at, status=200)
+                    return
+                except HubCreditAuthorizationError as exc:
+                    self._worker_route_diag_step(
+                        diag_id,
+                        "worker.results",
+                        "auth_error",
+                        diag_started_at,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                    self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.FORBIDDEN)
                     return
                 except Exception as exc:
                     self._worker_route_diag_step(
@@ -4136,6 +4409,21 @@ class HubServerHandler(_JsonHandler):
                 return
             if path == "/api/hub/v1/requests":
                 body = self._read_json()
+                incoming_metadata = dict(body.get("metadata", {})) if isinstance(body.get("metadata"), dict) else {}
+                execution_mode_hint = str(body.get("execution_mode") or incoming_metadata.get("execution_mode") or "").strip().lower()
+                is_worker_pull = (
+                    execution_mode_hint in {"worker_pull_v0", "worker-pull-v0", "worker_pull", "worker-pull"}
+                    or incoming_metadata.get("worker_pull_v0") is True
+                )
+                try:
+                    body, _authorized_metadata = self._apply_request_multisession_authorization(
+                        body=body,
+                        metadata=incoming_metadata,
+                        required=bool(self.server.config.hub_require_multisession_auth and is_worker_pull),
+                    )
+                except HubCreditAuthorizationError as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.FORBIDDEN)
+                    return
                 hub_request = HubAIRequest.from_payload(
                     body,
                     default_model=self.server.config.model,
@@ -4147,6 +4435,8 @@ class HubServerHandler(_JsonHandler):
                     status_payload = self.server.dispatcher.submit_worker_pull(hub_request)
                 else:
                     status_payload = self.server.dispatcher.submit(hub_request)
+                if hasattr(status_payload, "as_dict"):
+                    status_payload = status_payload.as_dict()
                 self._send_json({"ok": True, "request": status_payload})
                 return
             if path.startswith("/api/hub/v1/requests/") and path.endswith("/feedback"):

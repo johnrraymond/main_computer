@@ -187,6 +187,40 @@ The leading integer in the filename determines total node rows. For example,
 `240-scale-test.jsonl` creates 240 nodes, preserving the default 5:1 worker to
 requester ratio unless `--workers` or `--requesters` is supplied.
 
+
+## Wallet-authenticated multi-session lab mode
+
+Use this mode when the lab is meant to exercise the same wallet-authenticated
+identity boundary that a deployed Hub will require. In this mode, each lab node
+gets or derives a dev wallet, asks the Hub for a wallet-signed multi-session key,
+and then uses that key on worker registration, heartbeat, poll, result, and
+worker-pull requester submissions.
+
+```bash
+python -m tools.scheduler_lab.run_lab \
+  --auth-mode multisession-wallet \
+  --request-mode worker_pull_v0
+```
+
+For deployed or strict local Hub runs, enable Hub-side enforcement:
+
+```bash
+MAIN_COMPUTER_HUB_REQUIRE_MULTISESSION_AUTH=1
+```
+
+When enforcement is enabled, the Hub rejects unsigned worker-pull requester
+spend and unsigned worker routes. Requester `account_id` is derived from the
+wallet attached to the active multi-session key, so caller-supplied account labels
+cannot spend another wallet-backed bridge balance. The scheduler lab funds
+wallet accounts through `/api/hub/v1/credits/wallet-funding/import` in
+`multisession-wallet` mode instead of admin-issuing credits to arbitrary lab
+account names.
+
+The multi-session key remains the current bearer credential for the lab. Treat
+it like a secret in logs and deployment wiring. A later hardening pass should add
+a separate session secret/hash or proof-of-possession envelope while preserving
+this sign-once, use-many-times flow.
+
 ## Notes about the first version
 
 The first simulator is deliberately HTTP-only and standard-library-only.

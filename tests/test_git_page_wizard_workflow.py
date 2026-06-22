@@ -57,6 +57,11 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             "beforeunload",
             "Discard unsaved .gitignore changes?",
             "gitProjectConfirmDiscardGitignoreChanges(subscreen)",
+            "function gitProjectUpdateGitignoreWorkbenchLayoutCaps(",
+            "visualViewport?.height",
+            "gitProjectEnsureGitignoreLayoutCapListeners()",
+            "gitProjectScheduleGitignoreWorkbenchLayoutCaps(container || document)",
+            "class=\"git-project-card-inline-panel ${panelKindClass}\"",
         )
         for snippet in expected_js:
             with self.subTest(snippet=snippet):
@@ -67,9 +72,11 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             ".git-project-gitignore-save-panel",
             ".git-project-gitignore-workbench.is-dirty",
             ".git-project-gitignore-file-panel",
-            "grid-template-rows: auto auto minmax(0, 1fr) auto;",
-            "max-height: calc(100vh - 24px);",
-            "max-height: calc(100dvh - 24px);",
+            ".git-project-card-inline-panel.is-gitignore",
+            "max-height: var(--gitignore-inline-cap, calc(100dvh - 150px));",
+            "max-height: var(--gitignore-panel-cap, calc(100dvh - 170px));",
+            "grid-template-rows: auto auto minmax(0, 1fr) auto auto;",
+            "overscroll-behavior: contain;",
         ):
             with self.subTest(css_snippet=snippet):
                 self.assertIn(snippet, GIT_TOOLS_CSS)

@@ -22,6 +22,8 @@ from tools.scheduler_lab.run_lab import (
     event_payload,
     hazard_probability_per_tick,
     is_insufficient_credit_response,
+    lab_auth_mode,
+    build_lab_multisession_key_request,
     node_account_id,
     node_can_request,
     node_can_work,
@@ -340,6 +342,120 @@ def top_up_account_to(
         )
 
 
+def prepare_multisession_wallet_auth_sync(
+    node: dict[str, Any],
+    *,
+    args: argparse.Namespace,
+    sink: SyncEventSink,
+    client: HubClient,
+    runner: NodeHttpRunner,
+) -> None:
+    if lab_auth_mode(args) != "multisession-wallet":
+        return
+    try:
+        signed_request = build_lab_multisession_key_request(node, args=args, run_id=sink.run_id)
+    except Exception as exc:
+        sink.emit(event_payload("node.multisession_wallet.prepare_failed", node, error=str(exc)))
+        return
+    response = runner.call_once("node.multisession_wallet.key_requested", client.request_multisession_key, signed_request)
+    key = response.payload.get("key") if isinstance(response.payload, dict) else None
+    if response.ok and isinstance(key, dict) and key.get("id"):
+        node["_multisession_key_id"] = str(key.get("id"))
+        sink.emit(
+            event_payload(
+                "node.multisession_wallet.key_ready",
+                node,
+                wallet_address=node.get("_wallet_address"),
+                account_id=node.get("_wallet_account_id"),
+                multisession_key_id=node.get("_multisession_key_id"),
+                chain_id=node.get("_multisession_chain_id"),
+            )
+        )
+    else:
+        sink.emit(
+            event_payload(
+                "node.multisession_wallet.key_unavailable",
+                node,
+                status=response.status,
+                response_summary=response.payload if isinstance(response.payload, dict) else {},
+            )
+        )
+
+
+def top_up_wallet_to_sync(
+    *,
+    runner: NodeHttpRunner,
+    sink: SyncEventSink,
+    node: dict[str, Any],
+    client: HubClient,
+    wallet_address: str,
+    account_id: str,
+    desired_credits: int,
+    reason: str,
+) -> None:
+    desired = max(0, int(desired_credits))
+    if desired <= 0:
+        sink.emit(event_payload("node.funding.wallet.skipped_zero_target", node, account_id=account_id, wallet_address=wallet_address, reason=reason))
+        return
+
+    balance = runner.call_once("node.funding.wallet.balance_checked", client.get_credit_balance, account_id)
+    if balance.status == 0:
+        sink.emit(
+            event_payload(
+                "node.funding.wallet.top_up_deferred.transport_failure",
+                node,
+                account_id=account_id,
+                wallet_address=wallet_address,
+                desired_credits=desired,
+                reason=reason,
+                balance_hub_base_url=balance.base_url,
+            )
+        )
+        return
+
+    available = account_available_credits(balance.payload)
+    if balance.ok and available >= desired:
+        sink.emit(event_payload("node.funding.wallet.not_needed", node, account_id=account_id, wallet_address=wallet_address, available_credits=available, desired_credits=desired, reason=reason))
+        return
+
+    delta = desired if not balance.ok else max(0, desired - available)
+    if delta <= 0:
+        sink.emit(event_payload("node.funding.wallet.not_needed", node, account_id=account_id, wallet_address=wallet_address, available_credits=available, desired_credits=desired, reason=reason))
+        return
+
+    issue = runner.call_once(
+        "node.funding.wallet.imported",
+        client.import_wallet_funding,
+        wallet_address=wallet_address,
+        chain_id=node.get("_multisession_chain_id") or node.get("chain_id") or 42424242,
+        credits=delta,
+        idempotency_key=f"scheduler-lab:{sink.run_id}:{node.get('node_id')}:{reason}:{delta}",
+        memo=f"scheduler lab wallet {reason} funding for {node.get('node_id')}",
+        metadata={
+            "scheduler_lab": True,
+            "node_id": node.get("node_id"),
+            "node_kind": node.get("kind"),
+            "behavior_mode": node.get("behavior_mode"),
+            "reason": reason,
+            "scheduler_lab_run_id": sink.run_id,
+            "auth_mode": "multisession-wallet",
+        },
+    )
+    if issue.status == 0:
+        sink.emit(
+            event_payload(
+                "node.funding.wallet.top_up_deferred.transport_failure",
+                node,
+                account_id=account_id,
+                wallet_address=wallet_address,
+                desired_credits=desired,
+                delta_credits=delta,
+                reason=reason,
+                issue_hub_base_url=issue.base_url,
+            )
+        )
+
+
 def bootstrap_node_funding_sync(node: dict[str, Any], *, args: argparse.Namespace, sink: SyncEventSink, client: HubClient, runner: NodeHttpRunner) -> None:
     account_id = node_account_id(node, args)
     sink.emit(
@@ -375,6 +491,22 @@ def bootstrap_node_funding_sync(node: dict[str, Any], *, args: argparse.Namespac
                 balance_status=balance.status,
                 balance_hub_base_url=balance.base_url,
             )
+        )
+        return
+    if lab_auth_mode(args) == "multisession-wallet":
+        wallet_address = str(node.get("_wallet_address") or node.get("wallet_address") or "").strip()
+        if not wallet_address:
+            sink.emit(event_payload("node.funding.wallet.skipped_missing_wallet", node, account_id=account_id, desired_credits=desired, reason="bootstrap"))
+            return
+        top_up_wallet_to_sync(
+            runner=runner,
+            sink=sink,
+            node=node,
+            client=client,
+            wallet_address=wallet_address,
+            account_id=account_id,
+            desired_credits=desired,
+            reason="bootstrap",
         )
         return
     top_up_account_to(runner=runner, sink=sink, node=node, client=client, account_id=account_id, desired_credits=desired, reason="bootstrap")
@@ -418,7 +550,19 @@ def handle_low_credit_remediation_sync(
             as_int(node.get("low_credit_threshold"), 0) + max(1, as_int(node.get("offered_credits"), 1)),
         )
         sink.emit(event_payload("node.low_credit.remediation_faucet", node, account_id=account_id, desired_credits=desired))
-        top_up_account_to(runner=runner, sink=sink, node=node, client=client, account_id=account_id, desired_credits=desired, reason="low_credit_faucet")
+        if lab_auth_mode(args) == "multisession-wallet" and str(node.get("_wallet_address") or node.get("wallet_address") or "").strip():
+            top_up_wallet_to_sync(
+                runner=runner,
+                sink=sink,
+                node=node,
+                client=client,
+                wallet_address=str(node.get("_wallet_address") or node.get("wallet_address") or "").strip(),
+                account_id=account_id,
+                desired_credits=desired,
+                reason="low_credit_faucet",
+            )
+        else:
+            top_up_account_to(runner=runner, sink=sink, node=node, client=client, account_id=account_id, desired_credits=desired, reason="low_credit_faucet")
         state.request_blocked_until = time.monotonic() + backoff_s
         return
 
@@ -767,6 +911,7 @@ def run_node_process(args: argparse.Namespace) -> int:
             )
             startup_request_sent = startup_response.status != 0
 
+        prepare_multisession_wallet_auth_sync(node, args=args, sink=sink, client=client, runner=runner)
         bootstrap_node_funding_sync(node, args=args, sink=sink, client=client, runner=runner)
 
         worker_registered = False
@@ -968,6 +1113,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--duration-seconds", type=float, default=default_duration_seconds)
     parser.add_argument("--request-mode", choices=["worker_pull_v0", "legacy", "registration_only"], default=os.environ.get("REQUEST_MODE", "worker_pull_v0"))
     parser.add_argument("--account-id-prefix", default=os.environ.get("LAB_ACCOUNT_ID_PREFIX", "lab-account"))
+    parser.add_argument("--auth-mode", choices=["legacy", "multisession-wallet"], default=os.environ.get("LAB_AUTH_MODE", "legacy"))
+    parser.add_argument("--multisession-key-ttl-seconds", type=float, default=float(os.environ.get("LAB_MULTISESSION_KEY_TTL_SECONDS", "3600")))
     parser.add_argument("--funded", type=parse_funded_percent, default=parse_funded_percent(os.environ.get("LAB_FUNDED", "0")))
     parser.add_argument("--bootstrap-funding", dest="bootstrap_funding", action="store_true", default=str(os.environ.get("LAB_BOOTSTRAP_FUNDING", "1")).lower() in {"1", "true", "yes", "on"})
     parser.add_argument("--no-bootstrap-funding", dest="bootstrap_funding", action="store_false")

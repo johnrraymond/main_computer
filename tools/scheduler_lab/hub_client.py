@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+import hashlib
 import threading
 import time
 from typing import Any, Iterator, Sequence
@@ -134,6 +135,48 @@ class HubClient:
     def post_json(self, path: str, payload: dict[str, Any]) -> HubHttpResponse:
         return self.request_json("POST", path, payload)
 
+    def request_multisession_key(self, signed_request: dict[str, Any]) -> HubHttpResponse:
+        return self.post_json("/api/hub/v1/credits/multisession-keys/request", {"signed_request": signed_request})
+
+    def import_wallet_funding(
+        self,
+        *,
+        wallet_address: str,
+        chain_id: int | str,
+        credits: int,
+        idempotency_key: str,
+        memo: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> HubHttpResponse:
+        wallet = str(wallet_address).strip().lower()
+        seed = json.dumps(
+            {
+                "wallet_address": wallet,
+                "chain_id": str(chain_id),
+                "credits": int(credits),
+                "idempotency_key": str(idempotency_key),
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+        digest = hashlib.sha256(seed).hexdigest()
+        return self.post_json(
+            "/api/hub/v1/credits/wallet-funding/import",
+            {
+                "wallet_address": wallet,
+                "chain_id": int(str(chain_id), 0),
+                "contract_address": "0x" + "0" * 39 + "1",
+                "tx_hash": "0x" + digest,
+                "log_index": 0,
+                "block_number": 1,
+                "payment_asset": "native",
+                "payment_amount_base_units": max(1, int(credits)),
+                "credits_granted_wei": max(1, int(credits)) * 10**18,
+                "idempotency_key": str(idempotency_key),
+                "memo": memo or f"scheduler lab wallet funding for {wallet}",
+                "metadata": dict(metadata or {}),
+            },
+        )
+
     def register_worker(self, node: dict[str, Any]) -> HubHttpResponse:
         models = _json_list(node.get("models_json")) or [str(node.get("model") or "mock-ai-model-phase9")]
         min_credits = _as_int(node.get("min_accepted_credits"), 1)
@@ -168,6 +211,14 @@ class HubClient:
                 "minimum_accepted_credits": min_credits,
             },
         }
+        auth = _node_multisession_authorization(node)
+        if auth:
+            payload["multisession_authorization"] = auth
+            payload["wallet_address"] = auth["wallet_address"]
+            payload["chain_id"] = auth.get("chain_id", node.get("chain_id", ""))
+            payload["capabilities"]["wallet_address"] = auth["wallet_address"]
+            payload["capabilities"]["multisession_key_id"] = auth["multisession_key_id"]
+            payload["capabilities"]["auth_mode"] = "multisession-wallet"
         return self.post_json("/api/hub/v1/workers/register", payload)
 
     def heartbeat_worker(self, node: dict[str, Any], *, active_requests: int = 0, status: str = "available") -> HubHttpResponse:
@@ -188,27 +239,39 @@ class HubClient:
                 "ring": _as_int(node.get("ring"), 2),
             },
         }
+        auth = _node_multisession_authorization(node)
+        if auth:
+            payload["multisession_authorization"] = auth
+            payload["wallet_address"] = auth["wallet_address"]
+            payload["chain_id"] = auth.get("chain_id", node.get("chain_id", ""))
+            payload["capabilities"]["wallet_address"] = auth["wallet_address"]
+            payload["capabilities"]["multisession_key_id"] = auth["multisession_key_id"]
+            payload["capabilities"]["auth_mode"] = "multisession-wallet"
         return self.post_json("/api/hub/v1/workers/heartbeat", payload)
 
     def poll_worker(self, node: dict[str, Any], *, lease_seconds: float) -> HubHttpResponse:
-        return self.post_json(
-            "/api/hub/v1/workers/poll",
-            {
-                "worker_node_id": str(node.get("node_id")),
-                "lease_seconds": max(1.0, float(lease_seconds)),
-            },
-        )
+        payload = {
+            "worker_node_id": str(node.get("node_id")),
+            "lease_seconds": max(1.0, float(lease_seconds)),
+        }
+        auth = _node_multisession_authorization(node)
+        if auth:
+            payload["multisession_authorization"] = auth
+            payload["chain_id"] = auth.get("chain_id", node.get("chain_id", ""))
+        return self.post_json("/api/hub/v1/workers/poll", payload)
 
     def submit_worker_result(self, node: dict[str, Any], lease: dict[str, Any], result: dict[str, Any]) -> HubHttpResponse:
-        return self.post_json(
-            "/api/hub/v1/workers/results",
-            {
-                "worker_node_id": str(node.get("node_id")),
-                "request_id": str(lease.get("request_id") or ""),
-                "lease_id": str(lease.get("lease_id") or ""),
-                "result": result,
-            },
-        )
+        payload = {
+            "worker_node_id": str(node.get("node_id")),
+            "request_id": str(lease.get("request_id") or ""),
+            "lease_id": str(lease.get("lease_id") or ""),
+            "result": result,
+        }
+        auth = _node_multisession_authorization(node)
+        if auth:
+            payload["multisession_authorization"] = auth
+            payload["chain_id"] = auth.get("chain_id", node.get("chain_id", ""))
+        return self.post_json("/api/hub/v1/workers/results", payload)
 
     def submit_request(
         self,
@@ -250,6 +313,16 @@ class HubClient:
             payload["max_credits"] = int(offered)
             payload["metadata"]["account_id"] = payload["account_id"]
             payload["metadata"]["max_credits"] = int(offered)
+            auth = _node_multisession_authorization(node, max_authorized_credits=int(offered))
+            if auth:
+                payload["multisession_authorization"] = auth
+                payload["payment_authorization"] = auth
+                payload["wallet_address"] = auth["wallet_address"]
+                payload["chain_id"] = auth.get("chain_id", node.get("chain_id", ""))
+                payload["metadata"]["multisession_authorization"] = auth
+                payload["metadata"]["wallet_address"] = auth["wallet_address"]
+                payload["metadata"]["multisession_key_id"] = auth["multisession_key_id"]
+                payload["metadata"]["auth_mode"] = "multisession-wallet"
         return self.post_json("/api/hub/v1/requests", payload)
 
     def get_credit_balance(self, account_id: str) -> HubHttpResponse:
@@ -274,6 +347,32 @@ class HubClient:
             },
         )
 
+
+
+
+def _node_multisession_authorization(node: dict[str, Any], *, max_authorized_credits: int | None = None) -> dict[str, Any]:
+    key_id = str(
+        node.get("_multisession_key_id")
+        or node.get("multisession_key_id")
+        or ""
+    ).strip()
+    wallet_address = str(
+        node.get("_wallet_address")
+        or node.get("wallet_address")
+        or ""
+    ).strip().lower()
+    if not key_id or not wallet_address:
+        return {}
+    auth: dict[str, Any] = {
+        "kind": "multisession_key",
+        "wallet_address": wallet_address,
+        "multisession_key_id": key_id,
+        "key_id": key_id,
+        "chain_id": str(node.get("_multisession_chain_id") or node.get("chain_id") or ""),
+    }
+    if max_authorized_credits is not None:
+        auth["max_authorized_credits"] = max(0, int(max_authorized_credits))
+    return auth
 
 
 def _as_int(value: Any, default: int = 0) -> int:

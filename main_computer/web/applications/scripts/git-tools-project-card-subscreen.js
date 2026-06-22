@@ -57,8 +57,20 @@ function gitProjectCardInlinePanelHtml(step = {}, actionKey = "") {
               <p>${escapeHtml(step.why || "")}</p>
             </section>`;
 
-  return `<div id="${escapeHtml(gitProjectInlineCardDomId(actionKey))}" class="git-project-card-inline-panel" data-git-project-card-inline-panel="${escapeHtml(actionKey)}" aria-hidden="true" hidden>
-      <div class="git-project-card-inline-body ${isSecretsFilter ? "is-secrets-filter" : isGitignore ? "is-gitignore" : isCommit ? "is-commit" : isArchive ? "is-archive-files" : isPathList ? "is-path-list" : ""}">
+  const panelKindClass = isSecretsFilter
+    ? "is-secrets-filter"
+    : isGitignore
+      ? "is-gitignore"
+      : isCommit
+        ? "is-commit"
+        : isArchive
+          ? "is-archive-files"
+          : isPathList
+            ? "is-path-list"
+            : "";
+
+  return `<div id="${escapeHtml(gitProjectInlineCardDomId(actionKey))}" class="git-project-card-inline-panel ${panelKindClass}" data-git-project-card-inline-panel="${escapeHtml(actionKey)}" aria-hidden="true" hidden>
+      <div class="git-project-card-inline-body ${panelKindClass}">
         ${body}
       </div>
     </div>`;

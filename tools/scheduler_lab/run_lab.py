@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
+import hashlib
 import json
 import math
 import os
@@ -14,11 +15,17 @@ import time
 import uuid
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
 from tools.scheduler_lab.hub_client import HubClient, HubHttpResponse
+from main_computer.hub_credit_indexer import wallet_account_id
+from main_computer.multisession_key_signing import (
+    build_personal_sign_blob,
+    private_key_to_address,
+)
+
 from tools.scheduler_lab.node_list import (
     DEFAULT_HUB_BASE_URL,
     DEFAULT_SEED,
@@ -502,6 +509,185 @@ def env_optional_int(name: str) -> int | None:
         raise SystemExit(f"{name} must be an integer when set; got {raw!r}") from exc
 
 
+def lab_auth_mode(args: argparse.Namespace) -> str:
+    mode = str(getattr(args, "auth_mode", "") or os.environ.get("LAB_AUTH_MODE", "legacy")).strip().lower()
+    if mode in {"", "none"}:
+        return "legacy"
+    if mode in {"multisession_wallet", "multisession-wallet", "wallet-multisession"}:
+        return "multisession-wallet"
+    if mode == "legacy":
+        return "legacy"
+    raise ValueError(f"unsupported lab auth mode: {mode!r}")
+
+
+def _chain_id_hex(value: Any) -> str:
+    if value is None or str(value).strip() == "":
+        return "0x28757b2"
+    text = str(value).strip().lower()
+    try:
+        numeric = int(text, 0)
+    except Exception:
+        numeric = int(float(text))
+    return hex(numeric)
+
+
+def _lab_private_key_for_node(node: dict[str, Any], run_id: str) -> str:
+    for key in ("wallet_private_key", "private_key", "_wallet_private_key"):
+        raw = str(node.get(key) or "").strip()
+        if raw:
+            return raw if raw.startswith("0x") else "0x" + raw
+    seed = json.dumps(
+        {
+            "node_id": str(node.get("node_id") or ""),
+            "sim_seed": str(node.get("sim_seed") or ""),
+            "run_id": str(run_id or ""),
+            "purpose": "scheduler_lab_multisession_wallet_dev_key_v1",
+        },
+        sort_keys=True,
+    ).encode("utf-8")
+    digest = hashlib.sha256(seed).hexdigest()
+    if int(digest, 16) == 0:
+        digest = "1".rjust(64, "0")
+    return "0x" + digest
+
+
+def prepare_multisession_wallet_identity(node: dict[str, Any], *, args: argparse.Namespace, run_id: str = "") -> dict[str, str]:
+    private_key = _lab_private_key_for_node(node, run_id or str(getattr(args, "run_id", "") or ""))
+    wallet_address = private_key_to_address(private_key)
+    chain_id = _chain_id_hex(node.get("chain_id") or getattr(args, "chain_id", 42424242))
+    account_id = wallet_account_id(wallet_address)
+    node["_wallet_private_key"] = private_key
+    node["_wallet_address"] = wallet_address
+    node["_wallet_account_id"] = account_id
+    node["_multisession_chain_id"] = chain_id
+    node["wallet_address"] = wallet_address
+    node["account_id"] = account_id
+    return {
+        "wallet_address": wallet_address,
+        "account_id": account_id,
+        "chain_id": chain_id,
+        "private_key": private_key,
+    }
+
+
+def build_lab_multisession_key_request(
+    node: dict[str, Any],
+    *,
+    args: argparse.Namespace,
+    run_id: str = "",
+) -> dict[str, Any]:
+    identity = prepare_multisession_wallet_identity(node, args=args, run_id=run_id)
+    ttl_seconds = max(60.0, float(getattr(args, "multisession_key_ttl_seconds", 3600.0) or 3600.0))
+    issued_at = datetime.now(timezone.utc)
+    expires_at = issued_at + timedelta(seconds=ttl_seconds)
+    request_seed = json.dumps(
+        {
+            "node_id": str(node.get("node_id") or ""),
+            "wallet_address": identity["wallet_address"],
+            "run_id": str(run_id or getattr(args, "run_id", "") or ""),
+            "chain_id": identity["chain_id"],
+        },
+        sort_keys=True,
+    ).encode("utf-8")
+    request_id = "msk_req_lab_" + hashlib.sha256(request_seed).hexdigest()[:24]
+    message = {
+        "purpose": "request_multi_session_key",
+        "request_id": request_id,
+        "wallet_address": identity["wallet_address"],
+        "chain_id": identity["chain_id"],
+        "origin": "scheduler-lab",
+        "version": "main-computer-multisession-key-request-v1",
+        "issued_at": issued_at.isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "scheduler_lab_run_id": str(run_id or getattr(args, "run_id", "") or ""),
+        "node_id": str(node.get("node_id") or ""),
+        "auth_mode": "multisession-wallet",
+    }
+    return build_personal_sign_blob(message=message, private_key=identity["private_key"], chain_id=identity["chain_id"])
+
+
+async def prepare_multisession_wallet_auth(
+    node: dict[str, Any],
+    *,
+    args: argparse.Namespace,
+    sink: EventSink,
+    client: HubClient,
+) -> None:
+    if lab_auth_mode(args) != "multisession-wallet":
+        return
+    try:
+        signed_request = build_lab_multisession_key_request(node, args=args, run_id=sink.run_id)
+    except Exception as exc:
+        await sink.emit(event_payload("node.multisession_wallet.prepare_failed", node, error=str(exc)))
+        return
+    response = await http_call(
+        sink,
+        node,
+        "node.multisession_wallet.key_requested",
+        client.request_multisession_key,
+        signed_request,
+    )
+    key = response.payload.get("key") if isinstance(response.payload, dict) else None
+    if response.ok and isinstance(key, dict) and key.get("id"):
+        node["_multisession_key_id"] = str(key.get("id"))
+        await sink.emit(
+            event_payload(
+                "node.multisession_wallet.key_ready",
+                node,
+                wallet_address=node.get("_wallet_address"),
+                account_id=node.get("_wallet_account_id"),
+                multisession_key_id=node.get("_multisession_key_id"),
+                chain_id=node.get("_multisession_chain_id"),
+            )
+        )
+
+
+async def top_up_wallet_to(
+    *,
+    sink: EventSink,
+    node: dict[str, Any],
+    client: HubClient,
+    wallet_address: str,
+    account_id: str,
+    desired_credits: int,
+    reason: str,
+) -> None:
+    desired = max(0, int(desired_credits))
+    if desired <= 0:
+        await sink.emit(event_payload("node.funding.wallet.skipped_zero_target", node, account_id=account_id, wallet_address=wallet_address, reason=reason))
+        return
+    balance = await http_call(sink, node, "node.funding.wallet.balance_checked", client.get_credit_balance, account_id)
+    available = account_available_credits(balance.payload)
+    if balance.ok and available >= desired:
+        await sink.emit(event_payload("node.funding.wallet.not_needed", node, account_id=account_id, wallet_address=wallet_address, available_credits=available, desired_credits=desired, reason=reason))
+        return
+    delta = desired if not balance.ok else max(0, desired - available)
+    if delta <= 0:
+        await sink.emit(event_payload("node.funding.wallet.not_needed", node, account_id=account_id, wallet_address=wallet_address, available_credits=available, desired_credits=desired, reason=reason))
+        return
+    await http_call(
+        sink,
+        node,
+        "node.funding.wallet.imported",
+        client.import_wallet_funding,
+        wallet_address=wallet_address,
+        chain_id=node.get("_multisession_chain_id") or node.get("chain_id") or 42424242,
+        credits=delta,
+        idempotency_key=f"scheduler-lab:{sink.run_id}:{node.get('node_id')}:{reason}:{delta}",
+        memo=f"scheduler lab wallet {reason} funding for {node.get('node_id')}",
+        metadata={
+            "scheduler_lab": True,
+            "node_id": node.get("node_id"),
+            "behavior_mode": node.get("behavior_mode", ""),
+            "reason": reason,
+            "desired_credits": desired,
+            "observed_available_credits": available,
+            "scheduler_lab_run_id": sink.run_id,
+            "auth_mode": "multisession-wallet",
+        },
+    )
+
+
 def parse_funded_percent(value: Any) -> float:
     """Parse an already-funded account percentage.
 
@@ -815,7 +1001,7 @@ def _request_response_is_insufficient_credit(event: dict[str, Any]) -> bool:
 
 
 def node_account_id(node: dict[str, Any], args: argparse.Namespace) -> str:
-    return str(node.get("account_id") or f"{args.account_id_prefix}-{node.get('node_id')}")
+    return str(node.get("_wallet_account_id") or node.get("account_id") or f"{args.account_id_prefix}-{node.get('node_id')}")
 
 
 def request_probability(node: dict[str, Any]) -> float:
@@ -923,6 +1109,21 @@ async def bootstrap_node_funding(node: dict[str, Any], *, args: argparse.Namespa
                 desired_credits=desired,
                 funded_percent=float(getattr(args, "funded", 0.0) or 0.0),
             )
+        )
+        return
+    if lab_auth_mode(args) == "multisession-wallet":
+        wallet_address = str(node.get("_wallet_address") or node.get("wallet_address") or "").strip()
+        if not wallet_address:
+            await sink.emit(event_payload("node.funding.wallet.skipped_missing_wallet", node, account_id=account_id, desired_credits=desired, reason="bootstrap"))
+            return
+        await top_up_wallet_to(
+            sink=sink,
+            node=node,
+            client=client,
+            wallet_address=wallet_address,
+            account_id=account_id,
+            desired_credits=desired,
+            reason="bootstrap",
         )
         return
     await top_up_account_to(
@@ -1152,7 +1353,22 @@ async def handle_low_credit_remediation(
             as_int(node.get("low_credit_threshold"), 0) + max(1, as_int(node.get("offered_credits"), 1)),
         )
         await sink.emit(event_payload("node.low_credit.remediation_faucet", node, account_id=account_id, desired_credits=desired))
-        await top_up_account_to(sink=sink, node=node, client=client, account_id=account_id, desired_credits=desired, reason="low_credit_faucet")
+        if lab_auth_mode(args) == "multisession-wallet":
+            wallet_address = str(node.get("_wallet_address") or node.get("wallet_address") or "").strip()
+            if wallet_address:
+                await top_up_wallet_to(
+                    sink=sink,
+                    node=node,
+                    client=client,
+                    wallet_address=wallet_address,
+                    account_id=account_id,
+                    desired_credits=desired,
+                    reason="low_credit_faucet",
+                )
+            else:
+                await sink.emit(event_payload("node.funding.wallet.skipped_missing_wallet", node, account_id=account_id, desired_credits=desired, reason="low_credit_faucet"))
+        else:
+            await top_up_account_to(sink=sink, node=node, client=client, account_id=account_id, desired_credits=desired, reason="low_credit_faucet")
         state.request_blocked_until = time.monotonic() + backoff_s
         return
 
@@ -1271,6 +1487,7 @@ async def run_node(
         await asyncio.sleep(min(startup_delay, max(0.0, stop_at - time.monotonic())))
 
     state = NodeRuntimeState()
+    await prepare_multisession_wallet_auth(node, args=args, sink=sink, client=client)
     await bootstrap_node_funding(node, args=args, sink=sink, client=client)
 
     tasks: list[asyncio.Task[None]] = []
@@ -3159,6 +3376,10 @@ def build_node_process_command(args: argparse.Namespace, *, runtime_node_list: P
         str(args.request_mode),
         "--account-id-prefix",
         str(args.account_id_prefix),
+        "--auth-mode",
+        str(getattr(args, "auth_mode", "legacy")),
+        "--multisession-key-ttl-seconds",
+        str(float(getattr(args, "multisession_key_ttl_seconds", 3600.0) or 3600.0)),
         "--lease-seconds",
         str(float(args.lease_seconds)),
         "--worker-poll-interval-ms",
@@ -3640,6 +3861,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--problematic-failure-multiplier", type=float, default=float(os.environ.get("PROBLEMATIC_FAILURE_MULTIPLIER", "4.0")))
     parser.add_argument("--disable-problematic", action="store_true")
     parser.add_argument("--request-mode", choices=["worker_pull_v0", "legacy", "registration_only"], default=os.environ.get("REQUEST_MODE", "worker_pull_v0"))
+    parser.add_argument(
+        "--auth-mode",
+        choices=["legacy", "multisession-wallet"],
+        default=os.environ.get("LAB_AUTH_MODE", "legacy").replace("_", "-"),
+        help="Hub authentication mode. multisession-wallet signs once per lab wallet, then uses the returned key for worker/requester routes.",
+    )
+    parser.add_argument(
+        "--multisession-key-ttl-seconds",
+        type=float,
+        default=float(os.environ.get("LAB_MULTISESSION_KEY_TTL_SECONDS", "3600")),
+        help="Expiry window for lab-created multi-session key requests.",
+    )
     parser.add_argument("--account-id-prefix", default=os.environ.get("LAB_ACCOUNT_ID_PREFIX", "lab-account"))
     parser.add_argument(
         "--funded",

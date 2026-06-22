@@ -1323,12 +1323,26 @@
   padding: 8px;
 }
 
+.git-project-card-inline-panel.is-gitignore,
+.git-project-card-inline-body.is-gitignore,
+.git-project-gitignore-workbench {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.git-project-card-inline-panel.is-gitignore,
+.git-project-card-inline-body.is-gitignore {
+  max-height: var(--gitignore-inline-cap, calc(100dvh - 150px));
+}
+
 .git-project-gitignore-workbench {
   display: grid;
   grid-template-columns: minmax(280px, 0.85fr) minmax(360px, 1.15fr);
+  align-items: stretch;
   gap: 10px;
   min-width: 0;
   min-height: 0;
+  max-height: var(--gitignore-workbench-cap, calc(100dvh - 150px));
   overflow: hidden;
 }
 
@@ -1348,11 +1362,20 @@
   font-size: 12px;
 }
 
+.git-project-gitignore-suggestions,
 .git-project-gitignore-file-panel {
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  box-sizing: border-box;
+  max-height: var(--gitignore-panel-cap, calc(100dvh - 170px));
+}
+
+.git-project-gitignore-suggestions {
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.git-project-gitignore-file-panel {
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
   align-content: stretch;
-  max-height: calc(100vh - 24px);
-  max-height: calc(100dvh - 24px);
   overflow: hidden;
 }
 
@@ -2206,7 +2229,8 @@
 .git-project-path-chip-list code {
   color: var(--cyan);
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .git-project-ignore-preview-tools {
@@ -2242,11 +2266,15 @@
   display: grid;
   gap: 4px;
   min-height: 0;
+  max-height: none;
   overflow: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
 }
 
 .git-project-gitignore-line {
   grid-template-columns: auto 44px minmax(0, 1fr);
+  min-width: 0;
   font-family: Consolas, "Lucida Console", monospace;
 }
 

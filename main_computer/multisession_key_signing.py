@@ -390,3 +390,102 @@ def verify_personal_sign_blob(
         "signature": signature,
         "message": message,
     }
+
+def private_key_to_int(private_key: Any) -> int:
+    """Normalize a dev/test secp256k1 private key to an integer.
+
+    This helper is intentionally small and dependency-free so scheduler-lab
+    wallet-auth smokes can sign the same personal_sign messages the browser UI
+    asks wallets to sign. It is not a key-management system.
+    """
+
+    if isinstance(private_key, int):
+        value = private_key
+    else:
+        text = str(private_key or "").strip().lower()
+        if text.startswith("0x"):
+            text = text[2:]
+        if not text:
+            die("private key is required")
+        try:
+            value = int(text, 16)
+        except ValueError as exc:
+            raise ValueError("private key must be hex") from exc
+    if not (1 <= value < _SECP256K1_N):
+        die("private key is out of secp256k1 range")
+    return value
+
+
+def private_key_to_address(private_key: Any) -> str:
+    value = private_key_to_int(private_key)
+    public_key = _point_multiply(value, _SECP256K1_G)
+    if public_key is None:
+        die("could not derive public key from private key")
+    return ethereum_address_from_public_key_xy(*public_key)
+
+
+def sign_personal_message(message_text: str, private_key: Any) -> str:
+    """Return an Ethereum personal_sign-compatible signature.
+
+    The deterministic nonce keeps tests reproducible and avoids depending on
+    web3/eth-account inside stdlib scheduler-lab code.  Callers must still keep
+    private keys out of events, summaries, and logs.
+    """
+
+    key_int = private_key_to_int(private_key)
+    message_hash = personal_sign_message_hash(message_text)
+    digest = int.from_bytes(message_hash, "big")
+    seed = keccak256(int(key_int).to_bytes(32, "big") + message_hash)
+    nonce = int.from_bytes(seed, "big") % _SECP256K1_N or 1
+    while True:
+        point = _point_multiply(nonce, _SECP256K1_G)
+        if point is None:
+            nonce = (nonce + 1) % _SECP256K1_N or 1
+            continue
+        r = point[0] % _SECP256K1_N
+        if r:
+            s = (_inverse(nonce, _SECP256K1_N) * (digest + r * key_int)) % _SECP256K1_N
+            if s:
+                recovery_id = (point[1] & 1) | (2 if point[0] >= _SECP256K1_N else 0)
+                if s > _SECP256K1_N // 2:
+                    s = _SECP256K1_N - s
+                    recovery_id ^= 1
+                signature = "0x" + r.to_bytes(32, "big").hex() + s.to_bytes(32, "big").hex() + bytes([27 + recovery_id]).hex()
+                if recover_personal_sign_address(message_text, signature) != private_key_to_address(key_int):
+                    die("generated signature failed recovery check")
+                return signature
+        nonce = (nonce + 1) % _SECP256K1_N or 1
+
+
+def build_personal_sign_blob(
+    *,
+    message: dict[str, Any],
+    private_key: Any,
+    wallet_address: Any | None = None,
+    chain_id: Any | None = None,
+) -> dict[str, Any]:
+    """Build the signed blob accepted by /multisession-keys/request."""
+
+    derived_wallet = private_key_to_address(private_key)
+    requested_wallet = normalize_address(wallet_address or derived_wallet)
+    if requested_wallet != derived_wallet:
+        die(f"private key derives {derived_wallet}, not {requested_wallet}")
+    payload = dict(message)
+    payload.setdefault("wallet_address", derived_wallet)
+    payload["wallet_address"] = normalize_address(payload["wallet_address"])
+    if payload["wallet_address"] != derived_wallet:
+        die(f"message wallet mismatch: {payload['wallet_address']} != {derived_wallet}")
+    if chain_id is not None:
+        payload.setdefault("chain_id", str(chain_id))
+    message_text = json.dumps(payload, separators=(",", ":"), sort_keys=False)
+    return {
+        "kind": EXPECTED_KIND,
+        "signing_method": "personal_sign",
+        "wallet_address": derived_wallet,
+        "chain_id": normalize_chain_id(chain_id if chain_id is not None else payload.get("chain_id")),
+        "message": payload,
+        "message_text": message_text,
+        "message_hex": "0x" + message_text.encode("utf-8").hex(),
+        "signature": sign_personal_message(message_text, private_key),
+    }
+
