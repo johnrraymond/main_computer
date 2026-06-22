@@ -49,20 +49,47 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert "lowest price" not in html.lower()
     assert "future/requester concern" not in html
 
+    assert "Advanced seller availability ideas" not in html
+    assert "Idle windows, resource limits, model warmth, and future work types" not in html
+    assert "Future seller pricing ideas" not in html
+    assert "Future allowed work" not in html
+    assert "Normal usage hours" not in html
+    assert "Lock AI model when working" not in html
+    assert "worker-lock-ai-model" not in html
+    assert "worker-rental-window" not in html
+    assert "lockAiModel" not in js
+    assert "workerLockAiModel" not in js
+    assert "workerLockAiModel" not in bindings
+
     # The sell pane must not be a nested <main>: the application shell applies
     # taskbar-reserved padding to main elements, which would shove the seller
     # content to the right and starve the form for width.
     assert html.count("<main") == 0
 
     seller_section = html[html.index('id="worker-sell-work"') : html.index('id="worker-use-remote-workers"')]
+    assert 'class="worker-drawer"' not in seller_section
     network_surface = html[html.index('class="worker-network-surface"') : html.index('id="worker-sell-work"')]
-    assert 'class="worker-card worker-connect-order-card"' in seller_section
-    assert "Signed Worker Connection" in seller_section
+    primary_offer = seller_section[
+        seller_section.index('class="worker-card worker-field-grid worker-primary-offer"') :
+    ]
+    assert 'class="worker-card worker-connect-order-card"' not in seller_section
+    assert 'class="worker-connect-order-card worker-wide" aria-label="Worker connection"' in primary_offer
+    assert "Signed Worker Connection" not in html
+    assert "Choose a ring, then sign a connection/account-balance order" not in html
     assert "Signed Worker Connection" not in network_surface
-    assert seller_section.index("How others pay me") < seller_section.index("Signed Worker Connection")
+    assert primary_offer.index("How others pay me") < primary_offer.index('class="worker-connect-order-card worker-wide"')
+    assert primary_offer.index('id="worker-offer-credits-per-token"') < primary_offer.index('id="worker-network-ring"')
     assert "Registration hub" not in seller_section
     assert 'id="worker-registration-hub-status"' not in seller_section
     assert 'id="worker-registration-hub"' not in seller_section
+    assert 'class="worker-card worker-registration-card"' not in seller_section
+    assert 'aria-label="Worker offer registration result"' not in seller_section
+    assert "Registration status" not in seller_section
+    assert 'id="worker-registration-summary"' not in seller_section
+    assert 'id="worker-registered-hub"' not in seller_section
+    assert 'id="worker-registered-offer-id"' not in seller_section
+    assert 'id="worker-registered-price"' not in seller_section
+    assert 'id="worker-registered-model"' not in seller_section
     assert 'id="worker-node-id"' not in seller_section
     assert 'id="worker-endpoint"' not in seller_section
     assert 'id="worker-offer-capability"' not in seller_section
@@ -79,6 +106,7 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert "Seller offer contract this UI registers" not in html
     assert "deterministic worker-pull test path" not in html
     assert ".worker-contract-summary" not in css
+    assert ".worker-registration-card" not in css
     assert 'id="worker-rental-enabled"' in seller_section
     assert 'Accept paid jobs' in seller_section
     assert 'id="worker-seller-only-when-idle" checked' in seller_section
@@ -89,6 +117,8 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert "rentalOnlyWhenIdle" in js
     assert 'const workerSellerOnlyWhenIdle = document.querySelector("#worker-seller-only-when-idle");' in bindings
     assert ".worker-seller-controls" in css
+    assert ".worker-primary-offer > .worker-connect-order-card" in css
+    assert "grid-column: 1 / -1;" in css
 
     assert '<option value="2">Ring 2 - Public</option>' in html
     assert '<option value="2" selected>Ring 2' not in html
@@ -164,7 +194,10 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert 'id="worker-max-concurrency"' not in html
     assert 'id="worker-execution-mode"' not in html
     assert 'id="worker-register-offer"' in html
-    assert 'id="worker-registered-offer-id"' in html
+    assert 'id="worker-registration-summary"' not in html
+    assert 'id="worker-registered-offer-id"' not in html
+    assert 'id="worker-registered-price"' not in html
+    assert 'class="worker-card worker-registration-card"' not in html
 
     assert "buildWorkerOfferRegistrationPayload" in js
     assert 'pricing_type: "approx_per_token_v0"' in js
@@ -192,7 +225,9 @@ def test_worker_offer_registration_ui_posts_through_local_proxy() -> None:
     assert "workerOfferTargetTokens" in bindings
     assert "workerOfferCreditsPerToken" in bindings
     assert "workerRegisterOffer" in bindings
-    assert "workerRegisteredOfferId" in bindings
+    assert "workerRegistrationSummary" not in bindings
+    assert "workerRegisteredOfferId" not in bindings
+    assert "workerRegisteredPrice" not in bindings
 
     assert '"/api/applications/worker/register-offer"' in dispatch
     assert "self._handle_worker_offer_register()" in dispatch
@@ -368,7 +403,7 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert 'id="worker-network-ring"' in html
     assert 'id="worker-network-sign-order"' in html
     assert 'id="worker-network-connect-wallet"' not in html
-    assert "Network selection handles wallet connection" in html
+    assert "Network selection handles wallet connection" not in html
     assert 'id="worker-network-disconnect"' in html
     assert "None / Full Disconnect" in html
     assert "All four worker targets are visible by default" in html

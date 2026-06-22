@@ -375,7 +375,9 @@ class ViewportStaticPageTests(unittest.TestCase):
             with urlopen(f"{base}/applications/worker", timeout=5) as response:
                 worker_page = response.read().decode("utf-8")
             self.assertIn("Main Computer Applications", worker_page)
-            self.assertIn("Lock AI model when working", worker_page)
+            self.assertIn("Only accept jobs when idle", worker_page)
+            self.assertNotIn("Advanced seller availability ideas", worker_page)
+            self.assertNotIn("Lock AI model when working", worker_page)
 
             with urlopen(f"{base}/applications/wallet", timeout=5) as response:
                 wallet_page = response.read().decode("utf-8")

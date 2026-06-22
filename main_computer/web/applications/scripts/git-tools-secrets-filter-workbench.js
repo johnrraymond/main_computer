@@ -264,7 +264,7 @@ function gitProjectReplaceSecretsFilterWorkbench(workbench, step, secretsFilter,
   const parent = workbench.parentElement;
   workbench.outerHTML = gitProjectSecretsFilterWorkbenchHtml(replacementStep);
   const fresh = parent?.querySelector("[data-git-secrets-filter-workbench]") || document.querySelector("[data-git-secrets-filter-workbench]");
-  gitProjectBindSecretsFilterActions(fresh?.closest("[data-git-project-card-subscreen]") || fresh);
+  gitProjectBindSecretsFilterActions(fresh?.closest("[data-git-project-card-inline-panel]") || fresh);
   return fresh;
 }
 function gitProjectSecretsActionLabel(action = "") {

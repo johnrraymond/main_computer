@@ -602,7 +602,6 @@ class ViewportEnergyRoutesMixin:
                 settings.get("rentalOnlyWhenIdle", settings.get("rental_only_when_idle", settings.get("sellerOnlyWhenIdle", settings.get("seller_only_when_idle")))),
                 True,
             ),
-            "lockAiModel": boolish(settings.get("lockAiModel", settings.get("lock_ai_model")), False),
             "registrationHubUrl": self._clean_hub_url(text(settings.get("registrationHubUrl", settings.get("registration_hub_url")), self.server.config.hub_url), allow_empty=True),
             "nodeId": text(settings.get("nodeId", settings.get("node_id")), "local-worker-001"),
             "endpoint": text(settings.get("endpoint"), "http://127.0.0.1:8771"),

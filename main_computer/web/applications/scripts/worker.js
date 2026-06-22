@@ -3356,14 +3356,6 @@
       if (workerSaveStatus) {
         workerSaveStatus.textContent = message;
       }
-      if (workerRegistrationSummary) {
-        workerRegistrationSummary.textContent = message;
-      }
-      const registrationCard = workerRegistrationSummary?.closest(".worker-registration-card");
-      if (registrationCard) {
-        registrationCard.classList.toggle("is-ok", kind === "ok");
-        registrationCard.classList.toggle("is-error", kind === "error");
-      }
       if (workerRegistrationStatusPill) {
         workerRegistrationStatusPill.textContent = kind === "ok"
           ? "Offer: registered"
@@ -3371,28 +3363,6 @@
             ? "Offer: registration failed"
             : "Offer: local only";
       }
-    }
-
-    function workerUpdateRegistrationResult(result, hubUrl) {
-      const worker = result?.worker || result?.registration?.worker || {};
-      const offer = worker.offer || {};
-      const models = Array.isArray(worker.models) ? worker.models : [];
-      if (workerRegisteredHub) workerRegisteredHub.textContent = hubUrl || "—";
-      if (workerRegisteredOfferId) workerRegisteredOfferId.textContent = offer.offer_id || "—";
-      if (workerRegisteredPrice) {
-        const tokenCredits = offer.credits_per_token || worker.credits_per_token || "";
-        const targetTokens = offer.target_output_tokens || worker.target_output_tokens || "";
-        const estimatedCredits = offer.estimated_credits_per_request || offer.credits_per_request || worker.estimated_credits_per_request || worker.credits_per_request || "";
-        if (tokenCredits) {
-          const estimateText = estimatedCredits && targetTokens
-            ? ` (~${estimatedCredits} credits at ${targetTokens} target tokens)`
-            : "";
-          workerRegisteredPrice.textContent = `${tokenCredits} credits per estimated token${estimateText}`;
-        } else {
-          workerRegisteredPrice.textContent = estimatedCredits ? `${estimatedCredits} compute credits` : "—";
-        }
-      }
-      if (workerRegisteredModel) workerRegisteredModel.textContent = models[0] || worker.model || "—";
     }
 
     function renderWorkerHubs() {
@@ -3466,7 +3436,6 @@
         rentalEnabled: Boolean(workerRentalEnabled?.checked),
         sellerOnlyWhenIdle: Boolean(workerSellerOnlyWhenIdle?.checked),
         rentalOnlyWhenIdle: Boolean(workerSellerOnlyWhenIdle?.checked),
-        lockAiModel: Boolean(workerLockAiModel?.checked),
         registrationHubUrl: workerSelectedHubUrl(),
         nodeId: workerElementValue(workerNodeId, "local-worker-001"),
         endpoint: workerElementValue(workerEndpoint, "http://127.0.0.1:8771"),
@@ -3573,9 +3542,6 @@
         } else if (typeof parsed.rentalOnlyWhenIdle === "boolean") {
           workerSellerOnlyWhenIdle.checked = parsed.rentalOnlyWhenIdle;
         }
-      }
-      if (workerLockAiModel && typeof parsed.lockAiModel === "boolean") {
-        workerLockAiModel.checked = parsed.lockAiModel;
       }
       assignWorkerValue(workerNodeId, parsed.nodeId);
       assignWorkerValue(workerEndpoint, parsed.endpoint);
@@ -3782,7 +3748,6 @@
       try {
         const data = await workerPostJson("/api/applications/worker/register-offer", payload);
         const offerId = data.offer?.offer_id || data.worker?.offer?.offer_id || data.registration?.worker?.offer?.offer_id || "offer registered";
-        workerUpdateRegistrationResult(data, payload.hub_url);
         workerSetRegistrationStatus(`Registered worker seller offer ${offerId}.`, "ok");
         try {
           localStorage.setItem(

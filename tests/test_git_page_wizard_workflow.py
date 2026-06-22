@@ -66,6 +66,10 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             ".git-project-gitignore-line.is-deleted",
             ".git-project-gitignore-save-panel",
             ".git-project-gitignore-workbench.is-dirty",
+            ".git-project-gitignore-file-panel",
+            "grid-template-rows: auto auto minmax(0, 1fr) auto;",
+            "max-height: calc(100vh - 24px);",
+            "max-height: calc(100dvh - 24px);",
         ):
             with self.subTest(css_snippet=snippet):
                 self.assertIn(snippet, GIT_TOOLS_CSS)
@@ -133,7 +137,7 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             "function loadGitProjects()",
             "function inspectSelectedGitProject(",
             "function renderGitProjectWizard(",
-            "function gitProjectCardSubscreenHtml(",
+            "function gitProjectCardInlinePanelHtml(",
             "function gitProjectIgnoreWorkbenchHtml(",
             "function gitProjectCommitWorkbenchHtml(",
             "function gitProjectSecretsFilterWorkbenchHtml(",
@@ -147,6 +151,10 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             "secrets_filter",
             "prepare_commit_snapshot",
             "function bindGitProjectCardSubscreen(",
+            "function gitProjectScrollExpandedCardIntoView(panel)",
+            'panel.closest("[data-git-project-card-shell]")',
+            'target.scrollIntoView({ behavior: "smooth", block: "start", inline: "nearest" });',
+            "gitProjectScrollExpandedCardIntoView(panel);",
             "Action queue",
             ".gitignore review",
             "function gitProjectWizardDisplayActions(actions = [])",
@@ -179,7 +187,7 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             "function gitProjectActionStatusLabel(actionKey = \"\")",
             "data-git-project-action-status",
             "data-git-project-open-card",
-            "data-git-project-card-subscreen",
+            "data-git-project-card-inline-panel",
             "git-project-card-open-corner",
             "has-card-open-control",
             "data-git-ignore-rule",
@@ -258,7 +266,7 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             APPLICATIONS_INDEX_HTML,
         )
         self.assertIn(
-            'const openCardCorner = openCardButton ? `<div class="git-project-card-open-corner" ${gitProjectMcComponentAttrs(`${stepComponentId}.open-card`, "toolbar", `${stepLabel} Open Card Control`, stepComponentId)}>${openCardButton}</div>` : "";',
+            'const openCardCorner = openCardButton ? `<div class="git-project-card-open-corner" ${gitProjectMcComponentAttrs(`${stepComponentId}.open-card`, "toolbar", `${stepLabel} Expand/Collapse Control`, stepComponentId)}>${openCardButton}</div>` : "";',
             APPLICATIONS_INDEX_HTML,
         )
         self.assertNotIn(
@@ -284,11 +292,11 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         self.assertIn(".git-project-command-history", GIT_TOOLS_CSS)
         self.assertIn(".git-project-step-note", GIT_TOOLS_CSS)
         self.assertIn(".git-project-wizard-section.is-evidence", GIT_TOOLS_CSS)
-        self.assertIn(".git-project-card-subscreen", GIT_TOOLS_CSS)
+        self.assertIn(".git-project-card-inline-panel", GIT_TOOLS_CSS)
         self.assertIn(".git-project-gitignore-workbench", GIT_TOOLS_CSS)
         self.assertIn(".git-project-commit-workbench", GIT_TOOLS_CSS)
         self.assertIn(".git-project-secrets-filter-workbench", GIT_TOOLS_CSS)
-        self.assertIn(".git-project-card-subscreen-body.is-secrets-filter", GIT_TOOLS_CSS)
+        self.assertIn(".git-project-card-inline-body.is-secrets-filter", GIT_TOOLS_CSS)
         self.assertIn(".git-project-secrets-rule", GIT_TOOLS_CSS)
         self.assertIn(".git-project-secrets-detect-status", GIT_TOOLS_CSS)
         self.assertIn(".git-project-secrets-results-panel", GIT_TOOLS_CSS)
@@ -324,6 +332,18 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
         for snippet in forbidden_snippets:
             with self.subTest(forbidden_snippet=snippet):
                 self.assertNotIn(snippet, APPLICATIONS_INDEX_HTML)
+        removed_card_modal_snippets = (
+            "git-project-card-subscreen-backdrop",
+            "git-project-card-subscreen-body",
+        )
+        for snippet in removed_card_modal_snippets:
+            with self.subTest(removed_card_modal_snippet=snippet):
+                self.assertNotIn(snippet, GIT_TOOLS_MODULE_JS + GIT_TOOLS_CSS)
+        card_html_start = GIT_TOOLS_MODULE_JS.index("function gitProjectCardInlinePanelHtml")
+        card_html_end = GIT_TOOLS_MODULE_JS.index("function gitProjectCardInlinePanelForAction", card_html_start)
+        card_html = GIT_TOOLS_MODULE_JS[card_html_start:card_html_end]
+        self.assertNotIn('aria-modal="true"', card_html)
+        self.assertNotIn('role="dialog"', card_html)
         self.assertTrue((PROJECT_ROOT / "tools/git/git_tool_fix_project_head.py").exists())
 
     def test_git_project_wizard_markup_keeps_mc_metadata_without_report_pane(self) -> None:
@@ -400,7 +420,7 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             flags=re.DOTALL,
         )
         self.assertIsNotNone(route_match)
-        self.assertIn(".git-project-card-subscreen-body:not(.is-gitignore):not(.is-commit):not(.is-secrets-filter)", GIT_TOOLS_CSS)
+        self.assertIn(".git-project-card-inline-body:not(.is-gitignore):not(.is-commit):not(.is-secrets-filter)", GIT_TOOLS_CSS)
         self.assertNotIn("const savedRules = Array.isArray(model.saved_rules) ? model.saved_rules : rules;", APPLICATIONS_INDEX_HTML)
         self.assertNotIn("const savedSummary = model.saved_summary || summary;", APPLICATIONS_INDEX_HTML)
         self.assertNotIn('gitProjectSecretsFilterRuleRowsHtml(savedRules, {interactive: false', APPLICATIONS_INDEX_HTML)
@@ -671,7 +691,7 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
                 self.assertNotIn(snippet, render_step_card)
 
         self.assertIn("gitProjectClosedCardSummaryHtml(step, stepComponentId, stepLabel)", render_step_card)
-        self.assertIn("${cardSubscreen}", render_step_card)
+        self.assertIn("${cardPanel}", render_step_card)
 
     def test_git_project_selector_api_routes_are_registered(self) -> None:
         expected_routes = (

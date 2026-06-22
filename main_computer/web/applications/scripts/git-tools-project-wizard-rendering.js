@@ -97,18 +97,20 @@ function renderGitProjectWizard(wizard, data = {}) {
     const actionKey = gitProjectActionKey(step, "wizard");
     const stepComponentId = gitProjectWizardStepComponentId(step, actionKey);
     const stepLabel = gitProjectVisibleStepLabel(step);
-    const cardSubscreen = gitProjectCardSubscreenHtml(step, actionKey);
-    const openCardButton = cardSubscreen
-      ? `<button type="button" class="git-project-card-open-button" data-git-project-open-card="${escapeHtml(actionKey)}">${escapeHtml(gitProjectOpenCardButtonLabel(step))}</button>`
+    const cardPanel = gitProjectCardInlinePanelHtml(step, actionKey);
+    const openCardLabel = gitProjectOpenCardButtonLabel(step);
+    const cardPanelId = gitProjectInlineCardDomId(actionKey);
+    const openCardButton = cardPanel
+      ? `<button type="button" class="git-project-card-open-button" data-git-project-open-card="${escapeHtml(actionKey)}" data-git-project-open-label="${escapeHtml(openCardLabel)}" data-git-project-close-label="Collapse" aria-expanded="false" aria-controls="${escapeHtml(cardPanelId)}">${escapeHtml(openCardLabel)}</button>`
       : "";
-    const openCardCorner = openCardButton ? `<div class="git-project-card-open-corner" ${gitProjectMcComponentAttrs(`${stepComponentId}.open-card`, "toolbar", `${stepLabel} Open Card Control`, stepComponentId)}>${openCardButton}</div>` : "";
+    const openCardCorner = openCardButton ? `<div class="git-project-card-open-corner" ${gitProjectMcComponentAttrs(`${stepComponentId}.open-card`, "toolbar", `${stepLabel} Expand/Collapse Control`, stepComponentId)}>${openCardButton}</div>` : "";
     const closedSummary = gitProjectClosedCardSummaryHtml(step, stepComponentId, stepLabel);
     const cardAttrs = [
       `data-priority-weight="${Number(step.weight || 0)}"`,
-      cardSubscreen ? `data-git-project-card-shell="${escapeHtml(actionKey)}"` : "",
+      cardPanel ? `data-git-project-card-shell="${escapeHtml(actionKey)}"` : "",
       gitProjectMcComponentAttrs(stepComponentId, "panel", stepLabel, "git-tools.projects.wizard.queue"),
     ].filter(Boolean).join(" ");
-    const cardClass = `git-project-wizard-step git-project-mini-action-card tone-${escapeHtml(step.tone)} ${escapeHtml(step.uiLane || step.state || "planned")}${gitProjectStepIsCommitCard(step) ? " has-commit-workbench" : ""}${gitProjectStepIsArchiveCard(step) ? " has-archive-workbench" : ""}${cardSubscreen ? " has-card-open-control" : ""}`;
+    const cardClass = `git-project-wizard-step git-project-mini-action-card tone-${escapeHtml(step.tone)} ${escapeHtml(step.uiLane || step.state || "planned")}${gitProjectStepIsCommitCard(step) ? " has-commit-workbench" : ""}${gitProjectStepIsArchiveCard(step) ? " has-archive-workbench" : ""}${cardPanel ? " has-card-open-control" : ""}`;
     const displayNumber = Number.isFinite(displayIndex) ? displayIndex + 1 : Number(step.order ?? 0) + 1;
     return `<div class="${cardClass}" ${cardAttrs}>
       <div class="git-project-wizard-step-title" ${gitProjectMcComponentAttrs(`${stepComponentId}.title`, "status", `${stepLabel} Title`, stepComponentId)}>
@@ -117,7 +119,7 @@ function renderGitProjectWizard(wizard, data = {}) {
       </div>
       ${closedSummary}
       ${openCardCorner}
-      ${cardSubscreen}
+      ${cardPanel}
     </div>`;
   };
   const renderActionQueue = (items, emptyText) => {

@@ -42,7 +42,6 @@
     const workerRemoteOnlyWhenBusy = document.querySelector("#worker-remote-only-when-busy");
     const workerRentalEnabled = document.querySelector("#worker-rental-enabled");
     const workerSellerOnlyWhenIdle = document.querySelector("#worker-seller-only-when-idle");
-    const workerLockAiModel = document.querySelector("#worker-lock-ai-model");
     const workerRegistrationStatusPill = document.querySelector("#worker-registration-status-pill");
     const workerNodeId = document.querySelector("#worker-node-id");
     const workerEndpoint = document.querySelector("#worker-endpoint");
@@ -52,11 +51,6 @@
     const workerOfferCreditsPerToken = document.querySelector("#worker-offer-credits-per-token");
     const workerMaxConcurrency = document.querySelector("#worker-max-concurrency");
     const workerExecutionMode = document.querySelector("#worker-execution-mode");
-    const workerRegistrationSummary = document.querySelector("#worker-registration-summary");
-    const workerRegisteredHub = document.querySelector("#worker-registered-hub");
-    const workerRegisteredOfferId = document.querySelector("#worker-registered-offer-id");
-    const workerRegisteredPrice = document.querySelector("#worker-registered-price");
-    const workerRegisteredModel = document.querySelector("#worker-registered-model");
     const workerSaveStatus = document.querySelector("#worker-save-status");
     const workerRegisterOffer = document.querySelector("#worker-register-offer");
     const workerSaveSettings = document.querySelector("#worker-save-settings");

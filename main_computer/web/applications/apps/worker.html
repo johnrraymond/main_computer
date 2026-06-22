@@ -102,178 +102,35 @@
             <input id="worker-offer-credits-per-token" type="number" min="0.000001" step="0.001" value="0.001">
             <small>Matches the requester default max credits per estimated token; request totals remain approximate.</small>
           </label>
-        </div>
 
-        <div class="worker-card worker-connect-order-card" aria-label="Signed worker connection">
-          <h4>Signed Worker Connection</h4>
-          <p class="worker-card-note">Choose a ring, then sign a connection/account-balance order. Network selection handles wallet connection so the selected Hub knows which wallet to credit for completed work.</p>
-          <label>
-            <span>Requested ring</span>
-            <select id="worker-network-ring" autocomplete="off">
-              <option value="0">Ring 0 - Operator / direct whitelist</option>
-              <option value="1">Ring 1 - Protected trusted worker</option>
-              <option value="2">Ring 2 - Public</option>
-              <option value="3" selected>Ring 3 - Public untrusted</option>
-            </select>
-          </label>
-          <dl class="worker-network-status-grid">
-            <div><dt>Wallet</dt><dd id="worker-network-wallet">Not connected</dd></div>
-            <div><dt>Credit wallet</dt><dd id="worker-network-credit-wallet">—</dd></div>
-            <div><dt>Requested ring</dt><dd id="worker-network-requested-ring">Ring 3 - Public untrusted</dd></div>
-            <div><dt>Assigned ring</dt><dd id="worker-network-assigned-ring">—</dd></div>
-            <div><dt>Signed order</dt><dd id="worker-network-signature-status">Not signed</dd></div>
-            <div><dt>Hub registration</dt><dd id="worker-network-hub-registration">—</dd></div>
-            <div><dt>Worker ID</dt><dd id="worker-network-worker-id">—</dd></div>
-            <div><dt>Pricing policy</dt><dd id="worker-network-pricing-policy">—</dd></div>
-            <div><dt>Worker pool</dt><dd id="worker-network-pool">—</dd></div>
-            <div><dt>Worker runtime</dt><dd id="worker-network-runtime">Inactive</dd></div>
-          </dl>
-          <div class="worker-inline-actions">
-            <button type="button" id="worker-network-sign-order" disabled>Sign Connect Order</button>
-          </div>
-        </div>
-
-        <div class="worker-card worker-registration-card" aria-label="Worker offer registration result">
-          <h4>Registration status</h4>
-          <p id="worker-registration-summary">Not registered from this browser session yet.</p>
-          <dl>
-            <div><dt>Hub</dt><dd id="worker-registered-hub">—</dd></div>
-            <div><dt>Offer id</dt><dd id="worker-registered-offer-id">—</dd></div>
-            <div><dt>Registered price</dt><dd id="worker-registered-price">—</dd></div>
-            <div><dt>Registered model</dt><dd id="worker-registered-model">—</dd></div>
-          </dl>
-        </div>
-
-        <details class="worker-drawer">
-          <summary>
-            <span>Advanced seller availability ideas</span>
-            <small>Idle windows, resource limits, model warmth, and future work types are hidden until they are enforced.</small>
-          </summary>
-
-          <fieldset class="worker-card worker-radio-grid">
-            <legend>Allow paid jobs</legend>
-            <label><input type="radio" name="worker-rental-window" value="anytime"> Anytime</label>
-            <label><input type="radio" name="worker-rental-window" value="idle"> Only when machine is idle</label>
-            <label><input type="radio" name="worker-rental-window" value="outside-hours"> Only outside normal usage hours</label>
-            <label><input type="radio" name="worker-rental-window" value="idle-and-outside-hours" checked> Only when idle AND outside normal usage hours</label>
-          </fieldset>
-
-          <div class="worker-card worker-field-grid">
-            <h4>Idle detection</h4>
+          <div class="worker-connect-order-card worker-wide" aria-label="Worker connection">
             <label>
-              <span>Machine counts as idle after</span>
-              <input type="number" min="1" step="1" value="10">
-              <small>minutes</small>
-            </label>
-            <label>
-              <span>CPU below</span>
-              <input type="number" min="0" max="100" step="1" value="25">
-              <small>%</small>
-            </label>
-            <label>
-              <span>GPU below</span>
-              <input type="number" min="0" max="100" step="1" value="20">
-              <small>%</small>
-            </label>
-            <label class="worker-checkline"><input type="checkbox" checked> Require no keyboard or mouse activity</label>
-            <label class="worker-checkline"><input type="checkbox" checked> Pause paid jobs when on battery</label>
-            <label class="worker-checkline"><input type="checkbox" checked> Pause paid jobs when temperature is high</label>
-          </div>
-
-          <div class="worker-card worker-field-grid">
-            <h4>Normal usage hours</h4>
-            <label>
-              <span>Weekdays start</span>
-              <input type="time" value="08:00">
-            </label>
-            <label>
-              <span>Weekdays end</span>
-              <input type="time" value="18:00">
-            </label>
-            <label>
-              <span>Weekend policy</span>
-              <select>
-                <option>Use same hours</option>
-                <option>Paid jobs anytime</option>
-                <option>No paid jobs</option>
-                <option>Custom later</option>
+              <span>Requested ring</span>
+              <select id="worker-network-ring" autocomplete="off">
+                <option value="0">Ring 0 - Operator / direct whitelist</option>
+                <option value="1">Ring 1 - Protected trusted worker</option>
+                <option value="2">Ring 2 - Public</option>
+                <option value="3" selected>Ring 3 - Public untrusted</option>
               </select>
             </label>
-            <label>
-              <span>Timezone</span>
-              <select>
-                <option>Local timezone</option>
-                <option>UTC</option>
-              </select>
-            </label>
+            <dl class="worker-network-status-grid">
+              <div><dt>Wallet</dt><dd id="worker-network-wallet">Not connected</dd></div>
+              <div><dt>Credit wallet</dt><dd id="worker-network-credit-wallet">—</dd></div>
+              <div><dt>Requested ring</dt><dd id="worker-network-requested-ring">Ring 3 - Public untrusted</dd></div>
+              <div><dt>Assigned ring</dt><dd id="worker-network-assigned-ring">—</dd></div>
+              <div><dt>Signed order</dt><dd id="worker-network-signature-status">Not signed</dd></div>
+              <div><dt>Hub registration</dt><dd id="worker-network-hub-registration">—</dd></div>
+              <div><dt>Worker ID</dt><dd id="worker-network-worker-id">—</dd></div>
+              <div><dt>Pricing policy</dt><dd id="worker-network-pricing-policy">—</dd></div>
+              <div><dt>Worker pool</dt><dd id="worker-network-pool">—</dd></div>
+              <div><dt>Worker runtime</dt><dd id="worker-network-runtime">Inactive</dd></div>
+            </dl>
+            <div class="worker-inline-actions">
+              <button type="button" id="worker-network-sign-order" disabled>Sign Connect Order</button>
+            </div>
           </div>
+        </div>
 
-          <div class="worker-card worker-field-grid">
-            <h4>Model warmth</h4>
-            <label class="worker-checkline worker-wide">
-              <input type="checkbox" id="worker-lock-ai-model" checked>
-              Lock AI model when working so it stays loaded and avoids slow start.
-            </label>
-            <label>
-              <span>Keep model loaded after last job</span>
-              <input type="number" min="0" step="1" value="30">
-              <small>minutes</small>
-            </label>
-            <label>
-              <span>Model to keep warm</span>
-              <select>
-                <option>Use active job model</option>
-                <option>Prefer local default model</option>
-                <option>Do not preselect</option>
-              </select>
-            </label>
-          </div>
-
-          <div class="worker-card worker-field-grid">
-            <h4>Local resource limits</h4>
-            <label>
-              <span>Max GPU memory for paid jobs</span>
-              <input type="number" min="0" max="100" step="1" value="50">
-              <small>%</small>
-            </label>
-            <label>
-              <span>Max CPU for paid jobs</span>
-              <input type="number" min="0" max="100" step="1" value="50">
-              <small>%</small>
-            </label>
-            <label>
-              <span>Max job runtime</span>
-              <input type="number" min="1" step="1" value="10">
-              <small>minutes</small>
-            </label>
-            <label class="worker-checkline worker-wide"><input type="checkbox" checked> Keep local jobs higher priority than paid worker jobs</label>
-          </div>
-
-          <div class="worker-card worker-check-grid">
-            <h4>Future allowed work</h4>
-            <label><input type="checkbox" checked> Text generation</label>
-            <label><input type="checkbox"> Embeddings</label>
-            <label><input type="checkbox"> Image generation</label>
-            <label><input type="checkbox"> Batch inference</label>
-            <label><input type="checkbox" disabled> Arbitrary code / containers</label>
-          </div>
-
-          <div class="worker-card worker-field-grid">
-            <h4>Future seller pricing ideas</h4>
-            <label>
-              <span>Charge per input token</span>
-              <input type="number" min="0" step="0.0001" value="0.0015">
-            </label>
-            <label>
-              <span>Charge per output token</span>
-              <input type="number" min="0" step="0.0001" value="0.0030">
-            </label>
-            <label>
-              <span>Minimum charge per request</span>
-              <input type="number" min="0" step="0.01" value="0.05">
-            </label>
-          </div>
-        </details>
       </section>
 
       <section class="worker-pane worker-buyer mc-app-pane" id="worker-use-remote-workers" aria-label="Use remote workers payment policy" data-mc-component-id="worker.buyer-policy.panel" data-mc-component-kind="panel" data-mc-component-label="Use Remote Workers" data-mc-component-owner="worker.root" data-mc-feature-id="worker.feature.remote-use">

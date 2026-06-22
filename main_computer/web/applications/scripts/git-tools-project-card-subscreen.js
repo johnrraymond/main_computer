@@ -2,7 +2,7 @@
   "use strict";
 
   const VERSION = "0.1.0";
-  const SURFACE_ID = "git-tools.project-card-subscreen";
+  const SURFACE_ID = "git-tools.project-card-inline";
   const SOURCE_FILE = "main_computer/web/applications/scripts/git-tools-project-card-subscreen.js";
 
 function gitProjectCommitWorkbenchHtml(step = {}) {
@@ -16,7 +16,14 @@ function gitProjectCommitWorkbenchHtml(step = {}) {
     </div>
   </div>`;
 }
-function gitProjectCardSubscreenHtml(step = {}, actionKey = "") {
+function gitProjectInlineCardDomId(actionKey = "") {
+  const safeKey = String(actionKey || "card")
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 72) || "card";
+  return `git-project-card-inline-${safeKey}`;
+}
+function gitProjectCardInlinePanelHtml(step = {}, actionKey = "") {
   if (!gitProjectStepSupportsCardSubscreen(step)) return "";
   const stepId = gitProjectStepId(step);
   const isGitignore = stepId === "update_gitignore_before_initial_commit" || (step.gitignore_file && (Array.isArray(step.ignore_rules) || Array.isArray(step.questionable_ignore_rules)));
@@ -24,7 +31,6 @@ function gitProjectCardSubscreenHtml(step = {}, actionKey = "") {
   const isCommit = gitProjectStepIsCommitCard(step);
   const isArchive = gitProjectStepIsArchiveCard(step);
   const isPathList = !isCommit && !isArchive && !isGitignore && Array.isArray(step.paths) && step.paths.length;
-  const dialogLabel = isCommit ? gitProjectCommitCardTitle(step) : (isArchive ? gitProjectArchiveCardTitle(step) : (step.label || "Git project card"));
 
   const body = isSecretsFilter
     ? gitProjectSecretsFilterWorkbenchHtml(step)
@@ -51,44 +57,85 @@ function gitProjectCardSubscreenHtml(step = {}, actionKey = "") {
               <p>${escapeHtml(step.why || "")}</p>
             </section>`;
 
-  return `<div class="git-project-card-subscreen-backdrop" data-git-project-card-subscreen="${escapeHtml(actionKey)}" aria-hidden="true" hidden>
-    <section class="git-project-card-subscreen" role="dialog" aria-modal="true" aria-label="${escapeHtml(dialogLabel || "Git project card")}">
-      <header class="git-project-card-subscreen-header">
-        <div>
-          <strong>${escapeHtml(dialogLabel || "Git project card")}</strong>
-          <span>${escapeHtml(step.why || "")}</span>
-        </div>
-        <button type="button" class="git-project-card-subscreen-close" data-git-project-close-card="${escapeHtml(actionKey)}">Close</button>
-      </header>
-      <div class="git-project-card-subscreen-body ${isSecretsFilter ? "is-secrets-filter" : isGitignore ? "is-gitignore" : isCommit ? "is-commit" : isArchive ? "is-archive-files" : isPathList ? "is-path-list" : ""}">
+  return `<div id="${escapeHtml(gitProjectInlineCardDomId(actionKey))}" class="git-project-card-inline-panel" data-git-project-card-inline-panel="${escapeHtml(actionKey)}" aria-hidden="true" hidden>
+      <div class="git-project-card-inline-body ${isSecretsFilter ? "is-secrets-filter" : isGitignore ? "is-gitignore" : isCommit ? "is-commit" : isArchive ? "is-archive-files" : isPathList ? "is-path-list" : ""}">
         ${body}
       </div>
-    </section>
-  </div>`;
+    </div>`;
+}
+function gitProjectCardSubscreenHtml(step = {}, actionKey = "") {
+  return gitProjectCardInlinePanelHtml(step, actionKey);
+}
+function gitProjectCardInlinePanelForAction(actionKey = "") {
+  return document.querySelector(gitProjectCardSelector("data-git-project-card-inline-panel", actionKey));
+}
+function gitProjectCardShellForAction(actionKey = "") {
+  return document.querySelector(gitProjectCardSelector("data-git-project-card-shell", actionKey));
+}
+function gitProjectSetInlineCardButtonState(actionKey = "", expanded = false) {
+  const button = document.querySelector(gitProjectCardSelector("data-git-project-open-card", actionKey));
+  if (!button) return;
+  button.setAttribute("aria-expanded", expanded ? "true" : "false");
+  const openLabel = button.dataset.gitProjectOpenLabel || button.textContent || "Expand";
+  const closeLabel = button.dataset.gitProjectCloseLabel || "Collapse";
+  button.textContent = expanded ? closeLabel : openLabel;
+}
+function gitProjectSetCardInlinePanelState(actionKey = "", expanded = false) {
+  const panel = gitProjectCardInlinePanelForAction(actionKey);
+  const card = gitProjectCardShellForAction(actionKey);
+  if (!panel) return false;
+  panel.hidden = !expanded;
+  panel.setAttribute("aria-hidden", expanded ? "false" : "true");
+  if (card) card.classList.toggle("is-expanded", !!expanded);
+  gitProjectSetInlineCardButtonState(actionKey, !!expanded);
+  return true;
+}
+function gitProjectScrollExpandedCardIntoView(panel) {
+  const card = panel && typeof panel.closest === "function"
+    ? panel.closest("[data-git-project-card-shell]")
+    : null;
+  const target = card || panel;
+  if (!target || typeof target.scrollIntoView !== "function") return;
+  const scrollCard = () => {
+    try {
+      target.scrollIntoView({ behavior: "smooth", block: "start", inline: "nearest" });
+    } catch (error) {
+      target.scrollIntoView(true);
+    }
+  };
+  if (global.requestAnimationFrame) {
+    global.requestAnimationFrame(() => global.requestAnimationFrame(scrollCard));
+    return;
+  }
+  global.setTimeout(scrollCard, 0);
 }
 function gitProjectOpenCardSubscreen(actionKey = "") {
-  const current = document.querySelector("[data-git-project-card-subscreen]:not([hidden])");
-  if (current && current.dataset.gitProjectCardSubscreen !== actionKey && !gitProjectConfirmDiscardGitignoreChanges(current)) return false;
-  const subscreen = document.querySelector(gitProjectCardSelector("data-git-project-card-subscreen", actionKey));
-  if (!subscreen) return false;
-  subscreen.hidden = false;
-  subscreen.setAttribute("aria-hidden", "false");
-  gitProjectRefreshIgnoreRulePreview(subscreen);
-  gitProjectInitializeGitignoreWorkbenches(subscreen);
-  gitProjectInitializeCommitWorkbenches(subscreen);
-  const close = subscreen.querySelector("[data-git-project-close-card]");
-  if (close) close.focus();
+  const current = document.querySelector("[data-git-project-card-inline-panel]:not([hidden])");
+  if (current && current.dataset.gitProjectCardInlinePanel === actionKey) return true;
+  if (current && !gitProjectConfirmDiscardGitignoreChanges(current)) return false;
+  if (current) gitProjectSetCardInlinePanelState(current.dataset.gitProjectCardInlinePanel || "", false);
+  const panel = gitProjectCardInlinePanelForAction(actionKey);
+  if (!panel) return false;
+  gitProjectSetCardInlinePanelState(actionKey, true);
+  gitProjectRefreshIgnoreRulePreview(panel);
+  gitProjectInitializeGitignoreWorkbenches(panel);
+  gitProjectInitializeCommitWorkbenches(panel);
+  gitProjectInitializeArchiveWorkbenches(panel);
+  gitProjectBindSecretsFilterActions(panel);
+  gitProjectScrollExpandedCardIntoView(panel);
   return true;
 }
 function gitProjectCloseCardSubscreen(actionKey = "", options = {}) {
-  const subscreen = document.querySelector(gitProjectCardSelector("data-git-project-card-subscreen", actionKey));
-  if (!subscreen) return false;
-  if (!options.force && !gitProjectConfirmDiscardGitignoreChanges(subscreen)) return false;
-  subscreen.hidden = true;
-  subscreen.setAttribute("aria-hidden", "true");
-  const opener = document.querySelector(gitProjectCardSelector("data-git-project-open-card", actionKey));
-  if (opener) opener.focus();
-  return true;
+  const panel = gitProjectCardInlinePanelForAction(actionKey);
+  if (!panel) return false;
+  if (!panel.hidden && !options.force && !gitProjectConfirmDiscardGitignoreChanges(panel)) return false;
+  return gitProjectSetCardInlinePanelState(actionKey, false);
+}
+function gitProjectToggleCardSubscreen(actionKey = "") {
+  const panel = gitProjectCardInlinePanelForAction(actionKey);
+  if (!panel) return false;
+  if (!panel.hidden) return gitProjectCloseCardSubscreen(actionKey);
+  return gitProjectOpenCardSubscreen(actionKey);
 }
 function bindGitProjectCardSubscreen(container) {
   if (!container) return;
@@ -96,7 +143,7 @@ function bindGitProjectCardSubscreen(container) {
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      gitProjectOpenCardSubscreen(button.dataset.gitProjectOpenCard || "");
+      gitProjectToggleCardSubscreen(button.dataset.gitProjectOpenCard || "");
     });
   });
   container.querySelectorAll("[data-git-project-close-card]").forEach((button) => {
@@ -105,26 +152,17 @@ function bindGitProjectCardSubscreen(container) {
       gitProjectCloseCardSubscreen(button.dataset.gitProjectCloseCard || "");
     });
   });
-  container.querySelectorAll("[data-git-project-card-subscreen]").forEach((backdrop) => {
-    backdrop.addEventListener("click", (event) => {
-      if (event.target === backdrop) {
-        event.preventDefault();
-        event.stopPropagation();
-        gitProjectCloseCardSubscreen(backdrop.dataset.gitProjectCardSubscreen || "");
-      }
-    });
-  });
   container.querySelectorAll("[data-git-project-card-shell]").forEach((card) => {
     card.addEventListener("click", (event) => {
-      if (event.target.closest("button, a, input, textarea, select, details, summary, code[contenteditable='true']")) return;
+      if (event.target.closest("button, a, input, textarea, select, details, summary, code[contenteditable='true'], [data-git-project-card-inline-panel]")) return;
       const actionKey = card.dataset.gitProjectCardShell || "";
-      if (actionKey) gitProjectOpenCardSubscreen(actionKey);
+      if (actionKey) gitProjectToggleCardSubscreen(actionKey);
     });
   });
   container.querySelectorAll("[data-git-ignore-select]").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.preventDefault();
-      const scope = button.closest("[data-git-project-card-subscreen]");
+      const scope = button.closest("[data-git-project-card-inline-panel]");
       const workbench = scope?.querySelector(".git-project-gitignore-workbench");
       const mode = button.dataset.gitIgnoreSelect || "safe";
       scope?.querySelectorAll("[data-git-ignore-rule]").forEach((input) => {
@@ -153,9 +191,13 @@ function renderGitProjectInspection(data) {
     surfaceId: SURFACE_ID,
     sourceFile: SOURCE_FILE,
     gitProjectCommitWorkbenchHtml,
+    gitProjectInlineCardDomId,
+    gitProjectCardInlinePanelHtml,
     gitProjectCardSubscreenHtml,
+    gitProjectCardInlinePanelForAction,
     gitProjectOpenCardSubscreen,
     gitProjectCloseCardSubscreen,
+    gitProjectToggleCardSubscreen,
     bindGitProjectCardSubscreen,
     renderGitProjectInspection
   });
@@ -163,9 +205,13 @@ function renderGitProjectInspection(data) {
   global.GitToolsProjectCardSubscreen = api;
   Object.assign(global, {
     gitProjectCommitWorkbenchHtml,
+    gitProjectInlineCardDomId,
+    gitProjectCardInlinePanelHtml,
     gitProjectCardSubscreenHtml,
+    gitProjectCardInlinePanelForAction,
     gitProjectOpenCardSubscreen,
     gitProjectCloseCardSubscreen,
+    gitProjectToggleCardSubscreen,
     bindGitProjectCardSubscreen,
     renderGitProjectInspection
   });

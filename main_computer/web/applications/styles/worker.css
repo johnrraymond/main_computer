@@ -34,9 +34,7 @@
     .worker-card-note,
     .worker-hub-card span,
     .worker-save-note,
-    .worker-drawer summary small,
-    .worker-registration-card dd,
-    .worker-registration-card p {
+    .worker-drawer summary small {
       color: var(--muted);
       line-height: 1.35;
     }
@@ -107,12 +105,23 @@
       cursor: progress;
     }
     .worker-network-card,
-    .worker-fleet-card,
-    .worker-connect-order-card {
+    .worker-fleet-card {
       border-color: rgba(167, 216, 109, 0.28);
       background:
         linear-gradient(180deg, rgba(167, 216, 109, 0.055), transparent 150px),
         rgba(17, 17, 14, 0.96);
+    }
+    .worker-primary-offer > .worker-connect-order-card {
+      display: grid;
+      grid-column: 1 / -1;
+      gap: 10px;
+      min-width: 0;
+      margin-top: 2px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(167, 216, 109, 0.28);
+    }
+    .worker-primary-offer > .worker-connect-order-card > label {
+      max-width: min(420px, 100%);
     }
     .worker-network-status-grid {
       display: grid;
@@ -321,39 +330,6 @@
       margin-top: -4px;
       font-weight: 700;
     }
-    .worker-registration-card dl {
-      display: grid;
-      gap: 8px;
-      margin: 0;
-    }
-    .worker-registration-card dl div {
-      display: grid;
-      grid-template-columns: minmax(100px, 0.5fr) minmax(0, 1fr);
-      gap: 10px;
-    }
-    .worker-registration-card dt {
-      color: var(--mint);
-      font-size: 12px;
-      font-weight: 900;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
-    .worker-registration-card dd {
-      margin: 0;
-      font-weight: 700;
-      overflow-wrap: anywhere;
-    }
-    .worker-registration-card {
-      border-color: rgba(115, 214, 255, 0.32);
-    }
-    .worker-registration-card.is-ok {
-      border-color: rgba(167, 216, 109, 0.45);
-      background: rgba(22, 37, 18, 0.5);
-    }
-    .worker-registration-card.is-error {
-      border-color: rgba(255, 107, 107, 0.42);
-      background: rgba(52, 14, 14, 0.44);
-    }
     .worker-drawer {
       display: grid;
       gap: 10px;
@@ -453,8 +429,7 @@
       }
       .worker-radio-grid,
       .worker-check-grid,
-      .worker-field-grid,
-      .worker-registration-card dl div {
+      .worker-field-grid {
         grid-template-columns: 1fr;
       }
       .worker-actions div,
@@ -544,8 +519,7 @@
       min-width: min(460px, 100%);
     }
     .worker-seller > .worker-primary-offer,
-    .worker-seller > .worker-drawer,
-    .worker-seller > .worker-registration-card {
+    .worker-seller > .worker-drawer {
       min-width: 0;
       width: 100%;
     }
@@ -563,30 +537,6 @@
     .worker-primary-offer select {
       min-width: 0;
       width: 100%;
-    }
-    .worker-registration-card dl {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-      gap: 10px;
-      margin: 0;
-    }
-    .worker-registration-card dl div {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 3px;
-      min-width: 0;
-    }
-    .worker-registration-card dt,
-    .worker-registration-card dd {
-      overflow-wrap: normal;
-      word-break: normal;
-      white-space: normal;
-    }
-    .worker-registration-card h4 {
-      margin-bottom: 8px;
-    }
-    .worker-registration-card p {
-      margin: 0 0 10px 0;
     }
     .worker-buyer {
       border-style: solid;
@@ -761,8 +711,7 @@
       .worker-field-grid,
       .worker-radio-grid,
       .worker-check-grid,
-      .worker-network-status-grid,
-      .worker-registration-card dl div {
+      .worker-network-status-grid {
         grid-template-columns: 1fr;
       }
       .worker-actions,

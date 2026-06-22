@@ -273,7 +273,7 @@ async function gitProjectSaveGitignoreWorkbench(workbench) {
       input.checked = !!rule && savedLines.some((line) => gitProjectNormalizeGitignoreMatchText(line) === rule);
       input.closest(".git-project-ignore-rule")?.classList.toggle("is-linked", input.checked);
     });
-    gitProjectRefreshIgnoreRulePreview(workbench.closest("[data-git-project-card-subscreen]") || workbench);
+    gitProjectRefreshIgnoreRulePreview(workbench.closest("[data-git-project-card-inline-panel]") || workbench);
     gitProjectUpdateGitignoreDirtyState(workbench);
     if (status) status.textContent = "Saved .gitignore.";
   } catch (error) {
@@ -291,7 +291,7 @@ function gitProjectHandleGitignoreRightChange(workbench, input) {
   if (!row) return;
   gitProjectSetGitignoreRowChecked(workbench, row, !!input.checked);
   gitProjectUpdateGitignoreDirtyState(workbench);
-  gitProjectRefreshIgnoreRulePreview(workbench.closest("[data-git-project-card-subscreen]") || workbench);
+  gitProjectRefreshIgnoreRulePreview(workbench.closest("[data-git-project-card-inline-panel]") || workbench);
 }
 function gitProjectInitializeGitignoreWorkbench(workbench) {
   if (!workbench || workbench.dataset.gitignoreBound === "true") return;
@@ -301,7 +301,7 @@ function gitProjectInitializeGitignoreWorkbench(workbench) {
     if (!(target instanceof HTMLInputElement)) return;
     if (target.matches("[data-git-ignore-rule]")) {
       gitProjectApplyIgnoreRuleToRightPane(workbench, target);
-      gitProjectRefreshIgnoreRulePreview(workbench.closest("[data-git-project-card-subscreen]") || workbench);
+      gitProjectRefreshIgnoreRulePreview(workbench.closest("[data-git-project-card-inline-panel]") || workbench);
     } else if (target.matches("[data-gitignore-existing-line]")) {
       gitProjectHandleGitignoreRightChange(workbench, target);
     }
