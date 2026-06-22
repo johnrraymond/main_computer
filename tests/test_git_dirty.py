@@ -446,6 +446,38 @@ class GitDirtyPlannerTests(unittest.TestCase):
         self.assertEqual(by_path["src/new.py"]["status"], "untracked")
         self.assertTrue(by_path["src/new.py"]["untracked"])
 
+    def test_commit_review_includes_unstaged_tracked_files_with_untracked_files(self) -> None:
+        if shutil.which("git") is None:
+            self.skipTest("git executable is not available")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "config", "--local", "user.name", "Test User"], cwd=root, check=True)
+            subprocess.run(["git", "config", "--local", "user.email", "test@example.com"], cwd=root, check=True)
+            (root / "main_computer" / "web" / "applications" / "scripts").mkdir(parents=True)
+            tracked = root / "main_computer" / "web" / "applications" / "scripts" / "worker.js"
+            tracked.write_text("console.log('one')\n", encoding="utf-8")
+            subprocess.run(["git", "add", "main_computer/web/applications/scripts/worker.js"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=root, check=True, capture_output=True, text=True)
+            tracked.write_text("console.log('two')\n", encoding="utf-8")
+            (root / "worker_settings.json").write_text("{}\n", encoding="utf-8")
+
+            plan = git_dirty.make_plan(root)
+
+        commit_step = next(step for step in plan["steps"] if step.get("id") == "start_tracking_real_work")
+        commit_review = commit_step["commit_review"]
+        review_paths = {
+            item["path"]
+            for group in commit_review["candidate_groups"].values()
+            for item in group
+        }
+        self.assertIn("main_computer/web/applications/scripts/worker.js", review_paths)
+        self.assertIn("worker_settings.json", review_paths)
+        self.assertEqual(set(commit_step["paths"]), {
+            "main_computer/web/applications/scripts/worker.js",
+            "worker_settings.json",
+        })
+
     def test_dirty_planner_does_not_emit_removed_unstaged_passthrough_card(self) -> None:
         if shutil.which("git") is None:
             self.skipTest("git executable is not available")
