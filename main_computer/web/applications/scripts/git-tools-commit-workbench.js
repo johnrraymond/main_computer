@@ -360,7 +360,6 @@ function gitProjectCommitStagePreviewHtml(step = {}) {
     <div class="git-project-commit-checklist">
       <strong>Required confirmations</strong>
       <label><input type="checkbox" data-git-commit-stage-check="reviewed_staged_diff"> <span>I reviewed the Selected Files Preview and it matches the intended commit.</span></label>
-      <label><input type="checkbox" data-git-commit-stage-check="upstream_gates_accepted"> <span>I understand the remaining warnings and still want to proceed with this selected-file commit.</span></label>
     </div>
     <details class="git-project-commit-dev-diagnostics" data-git-commit-dev-diagnostics>
       <summary>Developer diagnostics</summary>
@@ -715,7 +714,6 @@ function gitProjectCommitSelectedReadiness(workbench, paths = []) {
   const stats = gitProjectCommitReviewStats(workbench, paths);
   const selectedPhrase = paths.length ? `${paths.length} FILE${paths.length === 1 ? "" : "S"} SELECTED` : "NO FILES SELECTED";
   const reviewed = gitProjectCommitControlChecked(workbench, "reviewed_staged_diff");
-  const warningsAccepted = gitProjectCommitControlChecked(workbench, "upstream_gates_accepted");
   const message = gitProjectCommitMessageFromWorkbench(workbench);
   const branch = gitProjectCommitBranchFromWorkbench(workbench);
   const identity = gitProjectCommitIdentityFromWorkbench(workbench);
@@ -732,9 +730,6 @@ function gitProjectCommitSelectedReadiness(workbench, paths = []) {
   if (paths.length && !reviewed) {
     reasons.push("selected files preview not confirmed");
   }
-  if (paths.length && repoWarningsPresent && !warningsAccepted) {
-    reasons.push("warnings not accepted");
-  }
   if (!message) {
     reasons.push("commit message missing");
   }
@@ -747,11 +742,9 @@ function gitProjectCommitSelectedReadiness(workbench, paths = []) {
 
   const ready = reasons.length === 0;
   if (ready) {
-    status = warningsAccepted || repoWarningsPresent ? "warnings-accepted" : "ready";
+    status = repoWarningsPresent ? "ready-with-warnings" : "ready";
   } else if (stats.selectedBlocked) {
     status = "selected-blocked";
-  } else if (paths.length && repoWarningsPresent && !warningsAccepted) {
-    status = "warnings-needed";
   } else if (paths.length && !reviewed) {
     status = "review-needed";
   } else if (!paths.length) {
@@ -759,7 +752,7 @@ function gitProjectCommitSelectedReadiness(workbench, paths = []) {
   }
 
   const summary = ready
-    ? `${warningsAccepted || repoWarningsPresent ? "WARNINGS ACCEPTED" : "GATES CLEAR"} · ${selectedPhrase} · READY TO COMMIT`
+    ? `${repoWarningsPresent ? "WARNINGS PRESENT" : "GATES CLEAR"} · ${selectedPhrase} · READY TO COMMIT`
     : `${selectedPhrase} · ${reasons.join(" · ") || "commit is blocked until validation passes"}`;
 
   return {
@@ -770,7 +763,6 @@ function gitProjectCommitSelectedReadiness(workbench, paths = []) {
     stats,
     selectedPhrase,
     reviewed,
-    warningsAccepted,
     repoWarningsPresent,
     message,
     branch,

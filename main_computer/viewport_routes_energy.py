@@ -465,6 +465,23 @@ class ViewportEnergyRoutesMixin:
         default_text = str(default or self._WORKER_DEFAULT_CREDITS_PER_REQUEST)
         return str(credit_decimal_text_to_wei(value, default=default_text, minimum_wei=1))
 
+    def _worker_legacy_credit_amount_ceiling_text(self, value_wei: Any, default: str | None = None) -> str:
+        """Return an integer credit string for legacy Hub fields.
+
+        Older Hubs parse ``credits_per_request`` with ``int(...)`` even when the
+        newer pricing payload also carries precise wei and fractional display
+        values.  Keep the precise values in pricing fields, but make the legacy
+        top-level field conservative and integer-compatible.
+        """
+
+        try:
+            amount_wei = int(str(value_wei).strip())
+        except (TypeError, ValueError):
+            default_text = str(default or self._WORKER_DEFAULT_CREDITS_PER_REQUEST)
+            amount_wei = credit_decimal_text_to_wei(default_text, default=default_text, minimum_wei=1)
+        credit_base = 10**18
+        return str(max(1, (max(1, amount_wei) + credit_base - 1) // credit_base))
+
     def _worker_seller_credit_amount_text(self, value: Any, default: str | None = None) -> str:
         raw_text = str(value if value is not None else "").strip().replace(",", "")
         default_text = str(default or self._WORKER_DEFAULT_CREDITS_PER_REQUEST)
@@ -582,11 +599,15 @@ class ViewportEnergyRoutesMixin:
                 "message": text(signed_connection.get("message"), ""),
                 "signature": text(signed_connection.get("signature"), ""),
                 "signed_at": text(signed_connection.get("signed_at"), ""),
+                "expires_at": text(signed_connection.get("expires_at"), ""),
                 "status": text(signed_connection.get("status"), "signed"),
                 "hub_registered": boolish(signed_connection.get("hub_registered"), False),
                 "assigned_ring": signed_assigned_ring,
                 "worker_id": text(signed_connection.get("worker_id"), ""),
                 "pricing_policy": text(signed_connection.get("pricing_policy"), ""),
+                "hub_registration_error": text(signed_connection.get("hub_registration_error"), ""),
+                "registration_error": text(signed_connection.get("registration_error"), ""),
+                "last_error": text(signed_connection.get("last_error"), ""),
                 "hub_registration": jsonable(signed_connection.get("hub_registration"), {}),
                 "worker": jsonable(signed_connection.get("worker"), {}),
                 "pool": jsonable(signed_connection.get("pool"), {}),
@@ -796,30 +817,154 @@ class ViewportEnergyRoutesMixin:
             "active_runs": [],
         }
 
-    def _worker_runtime_policy(self, settings: dict[str, Any], *, user_activity: dict[str, Any] | None = None, active_jobs: int = 0) -> dict[str, Any]:
-        """Return the local consent decision for accepting new Hub work.
+    def _worker_ring_label(self, value: Any) -> str:
+        ring = str(value if value is not None else "").strip()
+        if ring == "0":
+            return "Ring 0 - Operator / direct whitelist"
+        if ring == "1":
+            return "Ring 1 - Protected trusted worker"
+        if ring == "2":
+            return "Ring 2 - Public"
+        if ring == "3":
+            return "Ring 3 - Public untrusted"
+        return ""
 
-        ``allowed_to_accept`` is intentionally app-owned.  A Hub registration is
-        necessary, but not sufficient: the local idle policy must also allow work
-        before the app sends an available heartbeat.
-        """
+    def _worker_runtime_signed_order_state(self, settings: dict[str, Any]) -> dict[str, Any]:
+        signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
+        signature = str(signed.get("signature") or "").strip()
+        message = str(signed.get("message") or "").strip()
+        wallet = str(signed.get("wallet_address") or "").strip()
+        credit_wallet = str(signed.get("credit_wallet") or wallet).strip()
+        has_signed_order = bool(signature and message and wallet)
+        return {
+            "status": "signed" if has_signed_order else "not_signed",
+            "label": "Signed" if has_signed_order else "Not signed",
+            "signedAt": str(signed.get("signed_at") or ""),
+            "expiresAt": str(signed.get("expires_at") or ""),
+            "wallet": wallet,
+            "creditWallet": credit_wallet,
+            "rawStatus": str(signed.get("status") or ""),
+        }
 
-        selected_network = str(settings.get("selectedNetwork") or "none")
+    def _worker_runtime_hub_registration_state(self, settings: dict[str, Any]) -> dict[str, Any]:
+        signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
+        registration = settings.get("workerHubRegistration") if isinstance(settings.get("workerHubRegistration"), dict) else {}
+        signed_registration = signed.get("hub_registration") if isinstance(signed.get("hub_registration"), dict) else {}
+        registration = registration or signed_registration
+        raw_status = str(signed.get("status") or "").strip().lower()
+        last_error = str(
+            signed.get("hub_registration_error")
+            or signed.get("registration_error")
+            or signed.get("last_error")
+            or (registration.get("error") if isinstance(registration, dict) else "")
+            or settings.get("workerConnectionError")
+            or ""
+        ).strip()
+        registered = self._worker_runtime_signed_connection_registered(settings)
+        failed = bool(last_error) or raw_status in {"failed", "hub-registration-failed", "registration-failed"}
+        if registered:
+            status = "registered"
+            label = "Registered"
+        elif failed:
+            status = "failed"
+            label = "Failed"
+        else:
+            status = "not_registered"
+            label = "Not registered"
+        return {
+            "status": status,
+            "label": label,
+            "lastError": last_error,
+            "rawStatus": raw_status,
+        }
+
+    def _worker_runtime_local_policy(self, settings: dict[str, Any], *, user_activity: dict[str, Any] | None = None, active_jobs: int = 0) -> dict[str, Any]:
         seller_enabled = bool(settings.get("sellerEnabled"))
         availability_mode = self._normalize_worker_seller_availability_mode(settings.get("sellerAvailabilityMode"))
         only_when_idle = availability_mode == self._WORKER_SELLER_AVAILABILITY_TOTAL_IDLE
+        local_ai_capacity: dict[str, Any] | None = None
+        active_ai_jobs = 0
+        reasons: list[str] = []
+
+        if not seller_enabled:
+            reasons.append("Accept paid jobs is off.")
+
+        if only_when_idle:
+            if user_activity is None:
+                user_activity = collect_windows_user_activity()
+            active = user_activity.get("active") if isinstance(user_activity, dict) else None
+            if active is True:
+                reasons.append("Waiting for computer to be idle. Windows reports an active interactive user session.")
+            elif active is not False:
+                reason = str(user_activity.get("reason") or "idle status unavailable") if isinstance(user_activity, dict) else "idle status unavailable"
+                reasons.append(f"Waiting for computer idle status. Windows quser could not verify idle status: {reason}.")
+        else:
+            user_activity = None
+            local_ai_capacity = self._worker_local_ai_capacity_snapshot(max_local_concurrency=1)
+            try:
+                active_ai_jobs = max(0, int(local_ai_capacity.get("active_run_count", 0) or 0))
+            except (TypeError, ValueError):
+                active_ai_jobs = 0
+            ai_available = bool(local_ai_capacity.get("available_now"))
+            # While this app is already running a worker job, the local AI slot is
+            # expected to be busy. Keep the session alive as busy instead of
+            # interpreting the app's own job as a policy failure.
+            if active_jobs <= 0 and not ai_available:
+                message = str(local_ai_capacity.get("user_message") or local_ai_capacity.get("reason_code") or "").strip()
+                reasons.append(f"Local AI is busy. {message}".strip())
+
+        allowed = not reasons
+        if allowed and only_when_idle:
+            reason = "Computer is idle."
+        elif allowed:
+            reason = "AI is idle."
+        else:
+            reason = " ".join(reasons)
+
+        return {
+            "enabled": seller_enabled,
+            "mode": availability_mode,
+            "allowed": allowed,
+            "label": "Allowed" if allowed else "Blocked",
+            "reason": reason,
+            "activeAiJobs": active_ai_jobs,
+            "active_ai_jobs": active_ai_jobs,
+            "user_activity": user_activity,
+            "local_ai_capacity": local_ai_capacity,
+            "source": "windows_quser_v1" if only_when_idle else "local_ai_capacity_v1",
+        }
+
+    def _worker_runtime_policy(self, settings: dict[str, Any], *, user_activity: dict[str, Any] | None = None, active_jobs: int = 0) -> dict[str, Any]:
+        """Return whether the app may currently announce availability to the Hub.
+
+        The runtime decision still requires identity, signed order, Hub registration,
+        and a Hub URL.  The nested ``local_policy`` field stays independent so the
+        UI can truthfully show that local policy may allow work even while another
+        blocker, such as Hub registration, keeps the runtime from accepting work.
+        """
+
+        selected_network = str(settings.get("selectedNetwork") or "none")
         worker_id = self._worker_runtime_worker_id(settings)
         hub_url = self._worker_runtime_hub_url(settings)
-        signed_registered = self._worker_runtime_signed_connection_registered(settings)
+        signed_order = self._worker_runtime_signed_order_state(settings)
+        hub_registration = self._worker_runtime_hub_registration_state(settings)
+        local_policy = self._worker_runtime_local_policy(settings, user_activity=user_activity, active_jobs=active_jobs)
+        seller_enabled = bool(local_policy.get("enabled"))
+        availability_mode = self._normalize_worker_seller_availability_mode(local_policy.get("mode"))
+        only_when_idle = availability_mode == self._WORKER_SELLER_AVAILABILITY_TOTAL_IDLE
+        signed_registered = hub_registration.get("status") == "registered"
+        signed_ready = signed_order.get("status") == "signed"
         requirements = {
             "seller_enabled": seller_enabled,
             "network_selected": selected_network != "none",
+            "signed_order": signed_ready,
             "hub_registered": signed_registered,
             "worker_id_present": bool(worker_id),
             "hub_url_present": bool(hub_url),
             "availability_mode": availability_mode,
             "idle_only": only_when_idle,
             "ai_idle": availability_mode == self._WORKER_SELLER_AVAILABILITY_AI_IDLE,
+            "local_policy_allowed": bool(local_policy.get("allowed")),
         }
 
         reasons: list[str] = []
@@ -827,49 +972,36 @@ class ViewportEnergyRoutesMixin:
             reasons.append("Accept paid jobs is off.")
         if selected_network == "none":
             reasons.append("No worker network is selected.")
-        if not signed_registered:
-            reasons.append("No Hub-registered signed worker connect order is available.")
-        if not worker_id:
-            reasons.append("Worker id is missing.")
-        if not hub_url:
+        if not signed_ready:
+            reasons.append("Connect order has not been signed.")
+        elif not signed_registered:
+            if hub_registration.get("status") == "failed" and hub_registration.get("lastError"):
+                reasons.append(f"Hub registration failed: {hub_registration['lastError']}")
+            else:
+                reasons.append("Hub registration has not been accepted.")
+        if signed_registered and not worker_id:
+            reasons.append("Worker ID is missing.")
+        if selected_network != "none" and not hub_url:
             reasons.append("Hub URL is missing.")
-
-        local_ai_capacity: dict[str, Any] | None = None
-        if only_when_idle:
-            if user_activity is None:
-                user_activity = collect_windows_user_activity()
-            active = user_activity.get("active") if isinstance(user_activity, dict) else None
-            if active is True:
-                reasons.append("Windows quser reports an active interactive user session.")
-            elif active is not False:
-                reason = str(user_activity.get("reason") or "idle status unavailable") if isinstance(user_activity, dict) else "idle status unavailable"
-                reasons.append(f"Windows quser idle status could not be verified: {reason}.")
-        else:
-            user_activity = None
-            local_ai_capacity = self._worker_local_ai_capacity_snapshot(max_local_concurrency=1)
-            ai_available = bool(local_ai_capacity.get("available_now"))
-            # While this app is already running a worker job, the local AI slot is
-            # expected to be busy.  Keep the session alive as busy instead of
-            # interpreting the app's own job as a policy failure.
-            if active_jobs <= 0 and not ai_available:
-                message = str(local_ai_capacity.get("user_message") or local_ai_capacity.get("reason_code") or "Local AI is busy.")
-                reasons.append(f"Local AI is not idle: {message}")
+        if not bool(local_policy.get("allowed")) and str(local_policy.get("reason") or "") not in reasons:
+            reasons.append(str(local_policy.get("reason") or "Local policy blocks work."))
 
         allowed = not reasons
         return {
             "allowed_to_accept": allowed,
             "reason": (
-                "Local idle policy allows this app to accept Hub work."
-                if allowed and only_when_idle
-                else "Local AI is idle; this app may accept Hub work."
+                "Hub registration accepted and local policy allows work."
                 if allowed
-                else " ".join(reasons)
+                else " ".join(reason for reason in reasons if reason)
             ),
             "requirements": requirements,
-            "user_activity": user_activity,
-            "local_ai_capacity": local_ai_capacity,
+            "user_activity": local_policy.get("user_activity"),
+            "local_ai_capacity": local_policy.get("local_ai_capacity"),
             "availability_mode": availability_mode,
             "source": "windows_quser_v1" if only_when_idle else "local_ai_capacity_v1",
+            "local_policy": local_policy,
+            "signed_order": signed_order,
+            "hub_registration": hub_registration,
         }
 
     def _worker_runtime_models(self, settings: dict[str, Any]) -> list[str]:
@@ -955,6 +1087,185 @@ class ViewportEnergyRoutesMixin:
         if data.get("error"):
             raise RuntimeError(str(data["error"]))
         return data
+
+    def _worker_runtime_phase_label(self, phase: Any) -> str:
+        normalized = str(phase or "not_accepting")
+        if normalized == "accepting":
+            return "Accepting work"
+        if normalized == "draining":
+            return "Finishing current work"
+        return "Not accepting"
+
+    def _worker_runtime_primary_status(
+        self,
+        settings: dict[str, Any],
+        *,
+        phase: str,
+        active_jobs: int,
+        can_accept: bool,
+        policy: dict[str, Any],
+        heartbeat_error: str = "",
+    ) -> dict[str, str]:
+        signed_order = policy.get("signed_order") if isinstance(policy.get("signed_order"), dict) else self._worker_runtime_signed_order_state(settings)
+        hub_registration = policy.get("hub_registration") if isinstance(policy.get("hub_registration"), dict) else self._worker_runtime_hub_registration_state(settings)
+        local_policy = policy.get("local_policy") if isinstance(policy.get("local_policy"), dict) else self._worker_runtime_local_policy(settings, active_jobs=active_jobs)
+        wallet = str(signed_order.get("wallet") or "").strip()
+        credit_wallet = str(signed_order.get("creditWallet") or wallet).strip()
+        if heartbeat_error:
+            return {
+                "status": "not_accepting",
+                "label": "Not accepting",
+                "reason": f"Hub heartbeat failed: {heartbeat_error}",
+                "next": "Check the Hub connection and retry.",
+            }
+        if phase == "draining" and active_jobs > 0:
+            return {
+                "status": "draining",
+                "label": "Finishing current work",
+                "reason": "The worker is draining and will disconnect after active work finishes.",
+                "next": "Wait for the active job to finish.",
+            }
+        if not bool(local_policy.get("enabled")):
+            return {
+                "status": "not_accepting",
+                "label": "Not accepting",
+                "reason": "Accept paid jobs is off.",
+                "next": "Turn on Accept paid jobs when you want this computer to work.",
+            }
+        if not wallet or not credit_wallet:
+            return {
+                "status": "not_accepting",
+                "label": "Not accepting",
+                "reason": "Wallet is not connected.",
+                "next": "Connect a wallet.",
+            }
+        if signed_order.get("status") != "signed":
+            return {
+                "status": "not_accepting",
+                "label": "Not accepting",
+                "reason": "Connect order has not been signed.",
+                "next": "Sign and submit connect order.",
+            }
+        if hub_registration.get("status") != "registered":
+            if hub_registration.get("status") == "failed" and hub_registration.get("lastError"):
+                return {
+                    "status": "not_accepting",
+                    "label": "Not accepting",
+                    "reason": f"Hub registration failed: {hub_registration['lastError']}",
+                    "next": "Retry signing and submitting the connect order.",
+                }
+            return {
+                "status": "not_accepting",
+                "label": "Not accepting",
+                "reason": "Hub registration has not been accepted.",
+                "next": "Sign and submit connect order, or retry if a prior submit failed.",
+            }
+        if not bool(local_policy.get("allowed")):
+            mode = str(local_policy.get("mode") or "")
+            return {
+                "status": "not_accepting",
+                "label": "Not accepting",
+                "reason": str(local_policy.get("reason") or "Local policy blocks work."),
+                "next": (
+                    "Wait until the computer is idle."
+                    if mode == self._WORKER_SELLER_AVAILABILITY_TOTAL_IDLE
+                    else "Wait until local AI work finishes."
+                ),
+            }
+        if phase == "accepting" and can_accept:
+            return {
+                "status": "accepting",
+                "label": "Accepting work",
+                "reason": "Hub registration accepted and local policy allows work.",
+                "next": "Waiting for Hub job assignment.",
+            }
+        return {
+            "status": "not_accepting",
+            "label": "Not accepting",
+            "reason": "Worker is not ready.",
+            "next": "Check registration and local policy.",
+        }
+
+    def _worker_runtime_status_payload(
+        self,
+        settings: dict[str, Any],
+        *,
+        phase: str,
+        active_jobs: int,
+        can_accept: bool,
+        hub_status: str,
+        reason: str,
+        now: str,
+        heartbeat_error: str,
+        heartbeat_result: dict[str, Any] | None,
+        policy: dict[str, Any],
+    ) -> dict[str, Any]:
+        signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
+        signed_worker = signed.get("worker") if isinstance(signed.get("worker"), dict) else {}
+        signed_order = policy.get("signed_order") if isinstance(policy.get("signed_order"), dict) else self._worker_runtime_signed_order_state(settings)
+        hub_registration = policy.get("hub_registration") if isinstance(policy.get("hub_registration"), dict) else self._worker_runtime_hub_registration_state(settings)
+        local_policy = policy.get("local_policy") if isinstance(policy.get("local_policy"), dict) else self._worker_runtime_local_policy(settings, active_jobs=active_jobs)
+        primary = self._worker_runtime_primary_status(
+            settings,
+            phase=phase,
+            active_jobs=active_jobs,
+            can_accept=can_accept,
+            policy=policy,
+            heartbeat_error=heartbeat_error,
+        )
+        requested_ring = str(settings.get("workerRequestedRing") or signed.get("requested_ring") or "3")
+        assigned_ring = str(settings.get("workerAssignedRing") or signed.get("assigned_ring") or signed_worker.get("assigned_ring") or "")
+        worker_id = self._worker_runtime_worker_id(settings)
+        pricing_policy = str(settings.get("workerPricingPolicy") or signed.get("pricing_policy") or signed_worker.get("pricing_policy") or "")
+        wallet = str(signed_order.get("wallet") or signed.get("wallet_address") or "").strip()
+        credit_wallet = str(signed_order.get("creditWallet") or signed.get("credit_wallet") or wallet).strip()
+        last_heartbeat_status = str(settings.get("workerRuntimeLastHeartbeatStatus") or "")
+        hub_availability = last_heartbeat_status or (hub_status if hub_registration.get("status") == "registered" else "not_announced")
+        runtime_last_error = str(heartbeat_error or settings.get("workerRuntimeError") or hub_registration.get("lastError") or "")
+        return {
+            "ok": True,
+            "status": primary["status"],
+            "statusLabel": primary["label"],
+            "reason": primary["reason"],
+            "next": primary["next"],
+            "identity": {
+                "wallet": wallet,
+                "creditWallet": credit_wallet,
+                "workerId": worker_id,
+                "requestedRing": self._worker_ring_label(requested_ring) or requested_ring,
+                "assignedRing": self._worker_ring_label(assigned_ring) if assigned_ring else None,
+            },
+            "signedOrder": signed_order,
+            "hubRegistration": hub_registration,
+            "localPolicy": local_policy,
+            "runtime": {
+                "enabled": bool(settings.get("workerRuntimeEnabled")),
+                "phase": phase,
+                "label": self._worker_runtime_phase_label(phase),
+                "active_jobs": active_jobs,
+                "activeJobs": active_jobs,
+                "allowed_to_accept": can_accept,
+                "allowedToAccept": can_accept,
+                "hub_status": hub_status,
+                "hubAvailability": hub_availability,
+                "reason": reason,
+                "last_checked_at": now,
+                "lastCheckedAt": now,
+                "last_connected_at": settings.get("workerRuntimeLastConnectedAt", ""),
+                "last_disconnected_at": settings.get("workerRuntimeLastDisconnectedAt", ""),
+                "last_heartbeat_at": settings.get("workerRuntimeLastHeartbeatAt", ""),
+                "lastHeartbeatAt": settings.get("workerRuntimeLastHeartbeatAt", ""),
+                "lastError": runtime_last_error,
+                "heartbeat_error": heartbeat_error,
+                "heartbeat_result": heartbeat_result,
+                "policy": policy,
+            },
+            "worker": {
+                "pricingPolicy": pricing_policy,
+                "pool": settings.get("workerPool") if isinstance(settings.get("workerPool"), dict) else None,
+            },
+            "settings": settings,
+        }
 
     def _worker_runtime_transition(
         self,
@@ -1044,25 +1355,18 @@ class ViewportEnergyRoutesMixin:
         cleaned["workerRuntimeError"] = heartbeat_error
         saved = self._save_worker_settings(cleaned)
 
-        status = {
-            "ok": True,
-            "runtime": {
-                "enabled": bool(saved.get("workerRuntimeEnabled")),
-                "phase": phase,
-                "active_jobs": active,
-                "allowed_to_accept": can_accept,
-                "hub_status": hub_status,
-                "reason": reason,
-                "last_checked_at": now,
-                "last_connected_at": saved.get("workerRuntimeLastConnectedAt", ""),
-                "last_disconnected_at": saved.get("workerRuntimeLastDisconnectedAt", ""),
-                "last_heartbeat_at": saved.get("workerRuntimeLastHeartbeatAt", ""),
-                "heartbeat_error": heartbeat_error,
-                "heartbeat_result": heartbeat_result,
-                "policy": policy,
-            },
-            "settings": saved,
-        }
+        status = self._worker_runtime_status_payload(
+            saved,
+            phase=phase,
+            active_jobs=active,
+            can_accept=can_accept,
+            hub_status=hub_status,
+            reason=reason,
+            now=now,
+            heartbeat_error=heartbeat_error,
+            heartbeat_result=heartbeat_result,
+            policy=policy,
+        )
         return saved, status
 
     def _handle_worker_runtime_status(self) -> None:
@@ -1353,13 +1657,45 @@ class ViewportEnergyRoutesMixin:
                 "signed_at": datetime.now(timezone.utc).isoformat(),
                 "status": "registering-with-hub",
             }
-            registration = self._post_worker_connect_order_to_hub(
-                hub_url=hub_url,
-                payload={
-                    "signed_connection": signed_connection,
-                    "worker": registration_payload,
-                },
-            )
+            try:
+                registration = self._post_worker_connect_order_to_hub(
+                    hub_url=hub_url,
+                    payload={
+                        "signed_connection": signed_connection,
+                        "worker": registration_payload,
+                    },
+                )
+            except Exception as register_exc:
+                registration_error = str(register_exc)
+                failed_registration = {
+                    "status": "failed",
+                    "label": "Failed",
+                    "hub_url": hub_url,
+                    "error": registration_error,
+                    "failed_at": datetime.now(timezone.utc).isoformat(),
+                }
+                signed_connection.update(
+                    {
+                        "status": "hub-registration-failed",
+                        "hub_registered": False,
+                        "hub_registration_error": registration_error,
+                        "last_error": registration_error,
+                        "worker": registration_payload,
+                        "hub_registration": failed_registration,
+                    }
+                )
+                settings["workerRequestedRing"] = requested_ring
+                settings["workerAssignedRing"] = ""
+                settings["workerRegisteredId"] = ""
+                settings["workerPricingPolicy"] = ""
+                settings["workerConnectedHubUrl"] = hub_url
+                settings["workerConnectionStatus"] = "failed"
+                settings["workerConnectionError"] = registration_error
+                settings["workerHubRegistration"] = failed_registration
+                settings["workerPool"] = {}
+                settings["signedWorkerConnection"] = signed_connection
+                self._save_worker_settings(settings)
+                raise
             worker = registration.get("worker") if isinstance(registration.get("worker"), dict) else {}
             pool = registration.get("pool") if isinstance(registration.get("pool"), dict) else {}
             assigned_ring = str(registration.get("assigned_ring") or worker.get("assigned_ring") or requested_ring)
@@ -2198,6 +2534,7 @@ class ViewportEnergyRoutesMixin:
         )
         credits_per_request = estimated_credits_per_request
         credits_per_request_wei = estimated_credits_per_request_wei
+        legacy_credits_per_request = self._worker_legacy_credit_amount_ceiling_text(credits_per_request_wei, credits_per_request)
 
         execution = dict(worker_payload.get("execution", {})) if isinstance(worker_payload.get("execution"), dict) else {}
         execution_mode = str(execution.get("mode") or worker_payload.get("execution_mode") or "worker_pull_v0").strip() or "worker_pull_v0"
@@ -2234,7 +2571,7 @@ class ViewportEnergyRoutesMixin:
             "credits_per_token_wei": credits_per_token_wei,
             "estimated_credits_per_request": estimated_credits_per_request,
             "estimated_credits_per_request_wei": estimated_credits_per_request_wei,
-            "credits_per_request": credits_per_request,
+            "credits_per_request": legacy_credits_per_request,
             "credits_per_request_wei": credits_per_request_wei,
             "target_output_tokens": target_output_tokens,
             "max_concurrency": max_concurrency,

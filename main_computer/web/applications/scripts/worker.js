@@ -54,11 +54,24 @@
     let workerNetworkSignatureInFlight = false;
     let workerRuntimeStatus = {
       enabled: false,
+      status: "not_accepting",
+      statusLabel: "Not accepting",
       phase: "not_accepting",
       active_jobs: 0,
       allowed_to_accept: false,
+      hub_status: "",
+      hubAvailability: "not_announced",
       reason: "",
+      next: "",
+      identity: null,
+      signedOrder: null,
+      hubRegistration: null,
+      localPolicy: null,
+      worker: null,
       policy: null,
+      last_checked_at: "",
+      last_heartbeat_at: "",
+      lastError: "",
       heartbeat_error: ""
     };
     let workerRuntimeSyncInFlight = false;
@@ -2907,14 +2920,47 @@
       return signed.status === "hub-registered" || signed.status === "registered" || Boolean(signed.hub_registered);
     }
 
-function workerRuntimePhaseLabel(phase = workerRuntimeStatus.phase) {
+    function workerRuntimePhaseLabel(phase = workerRuntimeStatus.phase) {
       const normalized = String(phase || "not_accepting");
       if (normalized === "accepting") return "Accepting work";
-      if (normalized === "draining") return "Finishing current work, then disconnecting";
+      if (normalized === "draining") return "Finishing current work";
       return "Not accepting";
     }
 
+    function workerAvailabilityModeLabel(mode) {
+      const normalized = String(mode || workerSellerAvailabilityModeFromForm() || WORKER_SELLER_AVAILABILITY_TOTAL_IDLE);
+      if (normalized === WORKER_SELLER_AVAILABILITY_AI_IDLE) return "When AI is idle";
+      return "Only when totally idle";
+    }
+
+    function workerHubAvailabilityLabel(value) {
+      const normalized = String(value || "").trim();
+      if (!normalized || normalized === "not_announced") return "Not announced";
+      if (normalized === "available") return "Available";
+      if (normalized === "busy") return "Busy";
+      if (normalized === "draining") return "Draining";
+      if (normalized === "offline") return "Offline";
+      return normalized;
+    }
+
+    function workerRuntimePolicyPayload() {
+      if (workerRuntimeStatus.localPolicy && typeof workerRuntimeStatus.localPolicy === "object") {
+        return workerRuntimeStatus.localPolicy;
+      }
+      const policy = workerRuntimeStatus.policy && typeof workerRuntimeStatus.policy === "object"
+        ? workerRuntimeStatus.policy
+        : {};
+      if (policy.local_policy && typeof policy.local_policy === "object") {
+        return policy.local_policy;
+      }
+      return {};
+    }
+
     function workerRuntimePolicyLabel() {
+      const localPolicy = workerRuntimePolicyPayload();
+      if (localPolicy.label) {
+        return localPolicy.reason ? `${localPolicy.label} — ${localPolicy.reason}` : String(localPolicy.label);
+      }
       const policy = workerRuntimeStatus.policy && typeof workerRuntimeStatus.policy === "object"
         ? workerRuntimeStatus.policy
         : {};
@@ -2929,24 +2975,102 @@ function workerRuntimePhaseLabel(phase = workerRuntimeStatus.phase) {
           ? policy.local_ai_capacity
           : null;
         if (localAi?.available_now && workerRuntimeStatus.allowed_to_accept) {
-          return "Local AI is idle; allowed to accept work.";
+          return "Allowed — AI is idle.";
         }
         if (localAi?.busy) {
-          return localAi.user_message || "Local AI is busy; waiting.";
+          return `Blocked — ${localAi.user_message || "Local AI is busy."}`;
         }
       }
       if (userActivity) {
         if (userActivity.active === false && workerRuntimeStatus.allowed_to_accept) {
-          return "quser reports totally idle; allowed to accept work.";
+          return "Allowed — computer is idle.";
         }
         if (userActivity.active === true) {
-          return "quser reports an active user; waiting.";
+          return "Blocked — waiting for computer to be idle.";
         }
         if (userActivity.supported === false) {
-          return `quser unavailable: ${userActivity.reason || "non-Windows"}.`;
+          return `Blocked — idle status unavailable: ${userActivity.reason || "non-Windows"}.`;
         }
       }
       return workerRuntimeStatus.reason || "Waiting for setup.";
+    }
+
+    function workerRuntimePrimaryDisplay({walletAddress = "", signedForSelected = false, hubRegistered = false} = {}) {
+      const localPolicy = workerRuntimePolicyPayload();
+      const signedOrder = workerRuntimeStatus.signedOrder && typeof workerRuntimeStatus.signedOrder === "object"
+        ? workerRuntimeStatus.signedOrder
+        : {};
+      const hubRegistration = workerRuntimeStatus.hubRegistration && typeof workerRuntimeStatus.hubRegistration === "object"
+        ? workerRuntimeStatus.hubRegistration
+        : {};
+      const activeJobs = Number(workerRuntimeStatus.active_jobs || 0);
+      if (workerRuntimeStatus.heartbeat_error) {
+        return {
+          status: "Not accepting",
+          reason: `Hub heartbeat failed: ${workerRuntimeStatus.heartbeat_error}`,
+          next: "Check the Hub connection and retry."
+        };
+      }
+      if (workerRuntimeStatus.phase === "draining" && activeJobs > 0) {
+        return {
+          status: "Finishing current work",
+          reason: "The worker is draining and will disconnect after active work finishes.",
+          next: "Wait for the active job to finish."
+        };
+      }
+      if (!workerRentalEnabled?.checked) {
+        return {
+          status: "Not accepting",
+          reason: "Accept paid jobs is off.",
+          next: "Turn on Accept paid jobs when you want this computer to work."
+        };
+      }
+      if (!workerWalletValidAddress(walletAddress)) {
+        return {
+          status: "Not accepting",
+          reason: "Wallet is not connected.",
+          next: "Connect a wallet."
+        };
+      }
+      if (!signedForSelected) {
+        return {
+          status: "Not accepting",
+          reason: "Connect order has not been signed.",
+          next: "Sign and submit connect order."
+        };
+      }
+      if (!hubRegistered) {
+        return {
+          status: "Not accepting",
+          reason: hubRegistration.status === "failed" && hubRegistration.lastError
+            ? `Hub registration failed: ${hubRegistration.lastError}`
+            : "Hub registration has not been accepted.",
+          next: hubRegistration.status === "failed"
+            ? "Retry signing and submitting the connect order."
+            : "Sign and submit connect order, or retry if a prior submit failed."
+        };
+      }
+      if (localPolicy.allowed === false) {
+        return {
+          status: "Not accepting",
+          reason: localPolicy.reason || "Local policy blocks work.",
+          next: localPolicy.mode === WORKER_SELLER_AVAILABILITY_AI_IDLE
+            ? "Wait until local AI work finishes."
+            : "Wait until the computer is idle."
+        };
+      }
+      if (workerRuntimeStatus.phase === "accepting" && workerRuntimeStatus.allowed_to_accept) {
+        return {
+          status: "Accepting work",
+          reason: "Hub registration accepted and local policy allows work.",
+          next: "Waiting for Hub job assignment."
+        };
+      }
+      return {
+        status: workerRuntimeStatus.statusLabel || workerRuntimePhaseLabel(workerRuntimeStatus.phase),
+        reason: workerRuntimeStatus.reason || "Worker is not ready.",
+        next: workerRuntimeStatus.next || "Check registration and local policy."
+      };
     }
 
     function workerApplyRuntimePayload(data) {
@@ -2955,13 +3079,25 @@ function workerRuntimePhaseLabel(phase = workerRuntimeStatus.phase) {
       workerRuntimeStatus = {
         ...workerRuntimeStatus,
         enabled: Boolean(runtime.enabled),
+        status: String(data.status || workerRuntimeStatus.status || "not_accepting"),
+        statusLabel: String(data.statusLabel || runtime.label || workerRuntimePhaseLabel(runtime.phase)),
         phase: String(runtime.phase || "not_accepting"),
-        active_jobs: Number(runtime.active_jobs || 0),
-        allowed_to_accept: Boolean(runtime.allowed_to_accept),
+        active_jobs: Number(runtime.active_jobs ?? runtime.activeJobs ?? 0),
+        allowed_to_accept: Boolean(runtime.allowed_to_accept ?? runtime.allowedToAccept),
         hub_status: String(runtime.hub_status || ""),
-        reason: String(runtime.reason || ""),
+        hubAvailability: String(runtime.hubAvailability || runtime.hub_status || "not_announced"),
+        reason: String(data.reason || runtime.reason || ""),
+        next: String(data.next || ""),
+        identity: data.identity && typeof data.identity === "object" ? data.identity : null,
+        signedOrder: data.signedOrder && typeof data.signedOrder === "object" ? data.signedOrder : null,
+        hubRegistration: data.hubRegistration && typeof data.hubRegistration === "object" ? data.hubRegistration : null,
+        localPolicy: data.localPolicy && typeof data.localPolicy === "object" ? data.localPolicy : null,
+        worker: data.worker && typeof data.worker === "object" ? data.worker : null,
         policy: runtime.policy && typeof runtime.policy === "object" ? runtime.policy : null,
-        heartbeat_error: String(runtime.heartbeat_error || "")
+        last_checked_at: String(runtime.last_checked_at || runtime.lastCheckedAt || ""),
+        last_heartbeat_at: String(runtime.last_heartbeat_at || runtime.lastHeartbeatAt || ""),
+        lastError: String(runtime.lastError || ""),
+        heartbeat_error: String(runtime.heartbeat_error || runtime.lastError || "")
       };
       if (data.settings && typeof data.settings === "object") {
         applyWorkerSettings(data.settings, {source: "runtime"});
@@ -3042,7 +3178,7 @@ function workerRuntimePhaseLabel(phase = workerRuntimeStatus.phase) {
       }, WORKER_RUNTIME_SYNC_INTERVAL_MS);
     }
 
-        function workerNetworkWalletAddress() {
+    function workerNetworkWalletAddress() {
       loadWorkerBridgeState();
       return workerBridgeState.wallet?.address || "";
     }
@@ -3129,8 +3265,16 @@ function workerRuntimePhaseLabel(phase = workerRuntimeStatus.phase) {
       );
       const hubRegistered = signedForSelected && workerNetworkHubRegistered();
       const assignedRing = String(signed.assigned_ring || registeredWorker.assigned_ring || workerNetworkSession.assigned_ring || "");
-      const workerId = String(signed.worker_id || registeredWorker.worker_id || registeredWorker.node_id || workerNetworkSession.worker_id || "");
-      const pricingPolicy = String(signed.pricing_policy || registeredWorker.pricing_policy || registeredWorker.pricing?.pricing_policy || workerNetworkSession.pricing_policy || "");
+      const workerId = String(signed.worker_id || registeredWorker.worker_id || registeredWorker.node_id || workerNetworkSession.worker_id || workerRuntimeStatus.identity?.workerId || "");
+      const pricingPolicy = String(signed.pricing_policy || registeredWorker.pricing_policy || registeredWorker.pricing?.pricing_policy || workerNetworkSession.pricing_policy || workerRuntimeStatus.worker?.pricingPolicy || "");
+      const localPolicy = workerRuntimePolicyPayload();
+      const hubRegistration = workerRuntimeStatus.hubRegistration && typeof workerRuntimeStatus.hubRegistration === "object"
+        ? workerRuntimeStatus.hubRegistration
+        : {};
+      const signedOrder = workerRuntimeStatus.signedOrder && typeof workerRuntimeStatus.signedOrder === "object"
+        ? workerRuntimeStatus.signedOrder
+        : {};
+      const primaryStatus = workerRuntimePrimaryDisplay({walletAddress, signedForSelected, hubRegistered});
 
       workerNetworkTabs.forEach((tab) => {
         const key = workerNetworkKey(tab.getAttribute("data-worker-network"));
@@ -3154,15 +3298,25 @@ function workerRuntimePhaseLabel(phase = workerRuntimeStatus.phase) {
       workerNetworkSetText(workerNetworkWallet, walletAddress ? workerShortAddress(walletAddress) : "Not connected");
       workerNetworkSetText(workerNetworkCreditWallet, signed.credit_wallet ? workerShortAddress(signed.credit_wallet) : walletAddress ? workerShortAddress(walletAddress) : "—");
       workerNetworkSetText(workerNetworkRequestedRing, workerRingLabel(workerNetworkSession.requested_ring));
-      workerNetworkSetText(workerNetworkAssignedRing, hubRegistered ? workerRingLabel(assignedRing || workerNetworkSession.requested_ring) : signedForSelected ? "Pending Hub" : "—");
-      workerNetworkSetText(workerNetworkSignatureStatus, hubRegistered ? "Valid; Hub registration accepted." : signedForSelected ? "Valid; Hub registration pending." : "Not signed");
-      workerNetworkSetText(workerNetworkHubRegistration, hubRegistered ? "Accepted" : signedForSelected ? "Pending" : "—");
+      workerNetworkSetText(workerNetworkAssignedRing, hubRegistered ? workerRingLabel(assignedRing || workerNetworkSession.requested_ring) : "—");
+      workerNetworkSetText(workerNetworkSignatureStatus, signedForSelected ? "Signed" : signedOrder.status === "signed" ? "Signed for another selection" : "Not signed");
+      workerNetworkSetText(workerNetworkHubRegistration, hubRegistered ? "Registered" : hubRegistration.status === "failed" ? "Failed" : "Not registered");
       workerNetworkSetText(workerNetworkWorkerId, hubRegistered ? workerId || "—" : "—");
       workerNetworkSetText(workerNetworkPricingPolicy, hubRegistered ? pricingPolicy || "—" : "—");
       workerNetworkSetText(workerNetworkPool, hubRegistered ? workerPoolCountText(pool) : "—");
-      workerNetworkSetText(workerNetworkRuntime, hubRegistered ? workerRuntimePhaseLabel() : signedForSelected && hubConnected && walletConnectedToSelected ? "Registration pending" : "Not accepting");
-      workerNetworkSetText(workerRuntimePolicy, hubRegistered ? workerRuntimePolicyLabel() : "Waiting for signed Hub registration.");
+      workerNetworkSetText(workerRuntimeAcceptPaidJobs, workerRentalEnabled?.checked ? "On" : "Off");
+      workerNetworkSetText(workerRuntimeAvailabilityMode, workerAvailabilityModeLabel(localPolicy.mode));
+      workerNetworkSetText(workerRuntimePolicy, localPolicy.label ? `${localPolicy.label}${localPolicy.reason ? ` — ${localPolicy.reason}` : ""}` : workerRuntimePolicyLabel());
+      workerNetworkSetText(workerRuntimePolicyReason, localPolicy.reason || workerRuntimeStatus.reason || "Waiting for setup.");
+      workerNetworkSetText(workerNetworkRuntime, workerRuntimePhaseLabel());
+      workerNetworkSetText(workerRuntimeHubAvailability, workerHubAvailabilityLabel(workerRuntimeStatus.hubAvailability || workerRuntimeStatus.hub_status));
       workerNetworkSetText(workerRuntimeActiveJobs, String(workerRuntimeStatus.active_jobs || 0));
+      workerNetworkSetText(workerRuntimeLastUpdate, workerRuntimeStatus.last_checked_at || "—");
+      workerNetworkSetText(workerRuntimeLastHeartbeat, workerRuntimeStatus.last_heartbeat_at || "—");
+      workerNetworkSetText(workerRuntimeLastError, workerRuntimeStatus.lastError || workerRuntimeStatus.heartbeat_error || "—");
+      workerNetworkSetText(workerRuntimePrimaryStatus, primaryStatus.status);
+      workerNetworkSetText(workerRuntimePrimaryReason, primaryStatus.reason);
+      workerNetworkSetText(workerRuntimePrimaryNext, primaryStatus.next);
 
       if (workerNetworkHelp) {
         if (selected === WORKER_NETWORK_NONE) {
@@ -3380,7 +3534,11 @@ function workerRuntimePhaseLabel(phase = workerRuntimeStatus.phase) {
         workerApplyNetworkPayload(data);
         workerSetSaveStatus(`Signed ${workerRingLabel(workerNetworkSession.requested_ring)} worker connect order and registered worker with the ${workerNetworkDisplayName(workerNetworkSession.selected_network)} Hub.`);
       } catch (error) {
-        workerSetSaveStatus("", {walletError: error, prefix: "Worker connect order signing failed: "});
+        workerSetSaveStatus("", {walletError: error, prefix: "Worker connect order submission failed: "});
+        await Promise.allSettled([
+          workerLoadNetworkSessionFromBackend(),
+          workerLoadRuntimeStatus()
+        ]);
       } finally {
         workerNetworkSignatureInFlight = false;
         renderWorkerNetworkSurface();

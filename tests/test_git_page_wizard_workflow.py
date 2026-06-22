@@ -574,6 +574,11 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             "2. Review",
             "3. Stage",
             "4. Commit",
+            "upstream_gates_accepted",
+            "I understand the remaining warnings",
+            "warnings not accepted",
+            "WARNINGS ACCEPTED",
+            "warningsAccepted",
         )
         for snippet in forbidden_snippets:
             with self.subTest(forbidden_snippet=snippet):

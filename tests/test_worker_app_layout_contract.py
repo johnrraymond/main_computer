@@ -409,8 +409,18 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert 'id="worker-network-sign-order"' in html
     assert 'id="worker-runtime-activate"' not in html
     assert 'id="worker-runtime-stop"' not in html
+    assert 'id="worker-runtime-accept-paid-jobs"' in html
+    assert 'id="worker-runtime-availability-mode"' in html
     assert 'id="worker-runtime-policy"' in html
+    assert 'id="worker-runtime-policy-reason"' in html
+    assert 'id="worker-runtime-hub-availability"' in html
     assert 'id="worker-runtime-active-jobs"' in html
+    assert 'id="worker-runtime-last-update"' in html
+    assert 'id="worker-runtime-last-heartbeat"' in html
+    assert 'id="worker-runtime-last-error"' in html
+    assert 'id="worker-runtime-primary-status"' in html
+    assert 'id="worker-runtime-primary-reason"' in html
+    assert 'id="worker-runtime-primary-next"' in html
     assert 'id="worker-network-connect-wallet"' not in html
     assert "Network selection handles wallet connection" not in html
     assert 'id="worker-network-disconnect"' in html
@@ -422,8 +432,18 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "workerNetworkSignOrder" in bindings
     assert "workerRuntimeActivate" not in bindings
     assert "workerRuntimeStop" not in bindings
+    assert "workerRuntimeAcceptPaidJobs" in bindings
+    assert "workerRuntimeAvailabilityMode" in bindings
     assert "workerRuntimePolicy" in bindings
+    assert "workerRuntimePolicyReason" in bindings
+    assert "workerRuntimeHubAvailability" in bindings
     assert "workerRuntimeActiveJobs" in bindings
+    assert "workerRuntimeLastUpdate" in bindings
+    assert "workerRuntimeLastHeartbeat" in bindings
+    assert "workerRuntimeLastError" in bindings
+    assert "workerRuntimePrimaryStatus" in bindings
+    assert "workerRuntimePrimaryReason" in bindings
+    assert "workerRuntimePrimaryNext" in bindings
     assert "workerNetworkConnectWallet" not in bindings
     assert "workerFleetMainnet" in bindings
 
@@ -440,6 +460,10 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "workerLoadNetworkSessionFromBackend" in js
     assert "workerSyncRuntime" in js
     assert "workerRuntimePhaseLabel" in js
+    assert "workerRuntimePrimaryDisplay" in js
+    assert "workerRuntimePolicyPayload" in js
+    assert "Hub registration has not been accepted." in js
+    assert "Connect order has not been signed." in js
     assert "workerSelectNetwork" in js
     assert "signWorkerNetworkConnectOrder" in js
     assert "workerBuildConnectOrderMessage" in js

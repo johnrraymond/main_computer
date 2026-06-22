@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from http import HTTPStatus
 from pathlib import Path
 
 import pytest
@@ -209,7 +210,7 @@ def test_worker_offer_registration_allows_idle_only_when_windows_user_is_idle(mo
     assert payload["credits_per_token_wei"] == "1000000000000000"
     assert payload["estimated_credits_per_request"] == "1.024"
     assert payload["estimated_credits_per_request_wei"] == "1024000000000000000"
-    assert payload["credits_per_request"] == "1.024"
+    assert payload["credits_per_request"] == "2"
     assert payload["credits_per_request_wei"] == "1024000000000000000"
     assert payload["target_output_tokens"] == 1024
     assert payload["capabilities"]["pricing"]["pricing_type"] == "approx_per_token_v0"  # type: ignore[index]
@@ -263,7 +264,7 @@ def test_worker_offer_registration_migrates_legacy_default_model_and_price(monke
     assert normalized["credits_per_token_wei"] == "1000000000000000"
     assert normalized["estimated_credits_per_request"] == "1.024"
     assert normalized["estimated_credits_per_request_wei"] == "1024000000000000000"
-    assert normalized["credits_per_request"] == "1.024"
+    assert normalized["credits_per_request"] == "2"
     assert normalized["credits_per_request_wei"] == "1024000000000000000"
     assert normalized["capabilities"]["pricing"]["pricing_type"] == "fixed_per_call_v0"  # type: ignore[index]
     assert normalized["capabilities"]["pricing"]["credits_per_token"] == "0.001"  # type: ignore[index]
@@ -483,7 +484,9 @@ def test_worker_runtime_policy_ai_idle_mode_uses_local_ai_capacity(monkeypatch: 
     blocked = harness._worker_runtime_policy(settings)
 
     assert blocked["allowed_to_accept"] is False
-    assert "Local AI is not idle" in blocked["reason"]
+    assert "Local AI is busy" in blocked["reason"]
+    assert blocked["local_policy"]["label"] == "Blocked"
+    assert blocked["local_policy"]["reason"].startswith("Local AI is busy")
 
     allowed_while_own_job_runs = harness._worker_runtime_policy(settings, active_jobs=1)
 
@@ -533,6 +536,359 @@ def test_worker_runtime_transition_derives_enabled_from_seller_policy(tmp_path: 
     assert status["runtime"]["enabled"] is False
     assert status["runtime"]["phase"] == "not_accepting"
 
+
+
+def test_worker_runtime_status_truth_accept_paid_jobs_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    harness = _WorkerRoutesHarness()
+    harness.server = type(
+        "Server",
+        (),
+        {
+            "debug_root": tmp_path,
+            "config": type("Config", (), {"hub_url": "http://127.0.0.1:8765"})(),
+            "signal": lambda *args, **kwargs: None,
+        },
+    )()
+    monkeypatch.setattr(
+        "main_computer.viewport_routes_energy.collect_windows_user_activity",
+        lambda: {"supported": True, "ok": True, "active": False, "reason": "unit-test-idle", "sessions": []},
+    )
+
+    settings = dict(_runtime_settings(harness))
+    settings["sellerEnabled"] = False
+    settings["rentalEnabled"] = False
+
+    _saved, status = harness._worker_runtime_transition(settings, action="sync", send_heartbeat=False)
+
+    assert status["status"] == "not_accepting"
+    assert status["statusLabel"] == "Not accepting"
+    assert status["reason"] == "Accept paid jobs is off."
+    assert status["next"] == "Turn on Accept paid jobs when you want this computer to work."
+    assert status["localPolicy"]["label"] == "Blocked"
+
+
+def test_worker_runtime_status_truth_signed_order_missing_but_local_policy_allowed(tmp_path: Path) -> None:
+    harness = _WorkerRoutesHarness()
+    harness.server = type(
+        "Server",
+        (),
+        {
+            "debug_root": tmp_path,
+            "config": type("Config", (), {"hub_url": "http://127.0.0.1:8765"})(),
+            "signal": lambda *args, **kwargs: None,
+            "chat_ai_processes": type(
+                "ChatAI",
+                (),
+                {
+                    "local_ai_capacity_snapshot": lambda self, *, thread_id="", max_local_concurrency=1: {
+                        "ok": True,
+                        "available_now": True,
+                        "busy": False,
+                        "reason_code": "local_ai_available",
+                        "user_message": "AI is idle.",
+                        "active_run_count": 0,
+                        "active_runs": [],
+                    }
+                },
+            )(),
+        },
+    )()
+
+    settings = dict(_runtime_settings(harness))
+    settings["sellerAvailabilityMode"] = "ai_idle"
+    settings["sellerOnlyWhenIdle"] = False
+    settings["rentalOnlyWhenIdle"] = False
+    settings["workerRegisteredId"] = ""
+    settings["workerHubRegistration"] = {}
+    settings["signedWorkerConnection"] = {
+        "network": "dev",
+        "requested_ring": "3",
+        "wallet_address": "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf",
+        "credit_wallet": "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf",
+        "hub_url": "http://127.0.0.1:8770",
+        "chain_id": "42424242",
+        "message": "",
+        "signature": "",
+        "status": "unsigned",
+    }
+
+    _saved, status = harness._worker_runtime_transition(settings, action="sync", send_heartbeat=False)
+
+    assert status["status"] == "not_accepting"
+    assert status["reason"] == "Connect order has not been signed."
+    assert status["next"] == "Sign and submit connect order."
+    assert status["signedOrder"]["label"] == "Not signed"
+    assert status["hubRegistration"]["label"] == "Not registered"
+    assert status["localPolicy"]["label"] == "Allowed"
+    assert status["localPolicy"]["reason"] == "AI is idle."
+    assert status["runtime"]["label"] == "Not accepting"
+
+
+def test_worker_runtime_status_truth_hub_registration_missing_is_separate_from_signed_order(tmp_path: Path) -> None:
+    harness = _WorkerRoutesHarness()
+    harness.server = type(
+        "Server",
+        (),
+        {
+            "debug_root": tmp_path,
+            "config": type("Config", (), {"hub_url": "http://127.0.0.1:8765"})(),
+            "signal": lambda *args, **kwargs: None,
+            "chat_ai_processes": type(
+                "ChatAI",
+                (),
+                {
+                    "local_ai_capacity_snapshot": lambda self, *, thread_id="", max_local_concurrency=1: {
+                        "ok": True,
+                        "available_now": True,
+                        "busy": False,
+                        "reason_code": "local_ai_available",
+                        "user_message": "AI is idle.",
+                        "active_run_count": 0,
+                        "active_runs": [],
+                    }
+                },
+            )(),
+        },
+    )()
+
+    settings = dict(_runtime_settings(harness))
+    settings["sellerAvailabilityMode"] = "ai_idle"
+    settings["sellerOnlyWhenIdle"] = False
+    settings["rentalOnlyWhenIdle"] = False
+    settings["workerRegisteredId"] = ""
+    settings["workerHubRegistration"] = {}
+    signed = dict(settings["signedWorkerConnection"])
+    signed["status"] = "signed"
+    signed["hub_registered"] = False
+    signed.pop("worker_id", None)
+    signed.pop("worker", None)
+    settings["signedWorkerConnection"] = signed
+
+    _saved, status = harness._worker_runtime_transition(settings, action="sync", send_heartbeat=False)
+
+    assert status["status"] == "not_accepting"
+    assert status["reason"] == "Hub registration has not been accepted."
+    assert status["signedOrder"]["label"] == "Signed"
+    assert status["hubRegistration"]["label"] == "Not registered"
+    assert status["localPolicy"]["label"] == "Allowed"
+
+
+
+def test_worker_runtime_status_truth_hub_registration_failed_after_signed_submit(tmp_path: Path) -> None:
+    harness = _WorkerRoutesHarness()
+    harness.server = type(
+        "Server",
+        (),
+        {
+            "debug_root": tmp_path,
+            "config": type("Config", (), {"hub_url": "http://127.0.0.1:8765"})(),
+            "signal": lambda *args, **kwargs: None,
+            "chat_ai_processes": type(
+                "ChatAI",
+                (),
+                {
+                    "local_ai_capacity_snapshot": lambda self, *, thread_id="", max_local_concurrency=1: {
+                        "ok": True,
+                        "available_now": True,
+                        "busy": False,
+                        "reason_code": "local_ai_available",
+                        "user_message": "AI is idle.",
+                        "active_run_count": 0,
+                        "active_runs": [],
+                    }
+                },
+            )(),
+        },
+    )()
+
+    settings = dict(_runtime_settings(harness))
+    settings["sellerAvailabilityMode"] = "ai_idle"
+    settings["sellerOnlyWhenIdle"] = False
+    settings["rentalOnlyWhenIdle"] = False
+    settings["workerRegisteredId"] = ""
+    settings["workerHubRegistration"] = {
+        "status": "failed",
+        "error": "Hub returned HTTP 400: bad worker price",
+    }
+    signed = dict(settings["signedWorkerConnection"])
+    signed["status"] = "hub-registration-failed"
+    signed["hub_registered"] = False
+    signed["hub_registration_error"] = "Hub returned HTTP 400: bad worker price"
+    signed.pop("worker_id", None)
+    signed.pop("worker", None)
+    settings["signedWorkerConnection"] = signed
+
+    _saved, status = harness._worker_runtime_transition(settings, action="sync", send_heartbeat=False)
+
+    assert status["status"] == "not_accepting"
+    assert status["signedOrder"]["label"] == "Signed"
+    assert status["hubRegistration"]["label"] == "Failed"
+    assert status["hubRegistration"]["lastError"] == "Hub returned HTTP 400: bad worker price"
+    assert status["reason"] == "Hub registration failed: Hub returned HTTP 400: bad worker price"
+    assert status["next"] == "Retry signing and submitting the connect order."
+    assert status["runtime"]["lastError"] == "Hub returned HTTP 400: bad worker price"
+
+
+def test_worker_network_connect_order_persists_signed_failure_state(tmp_path: Path) -> None:
+    payload = _seller_payload()
+    payload["availability"] = {
+        "accept_paid_jobs": True,
+        "availability_mode": "ai_idle",
+        "only_when_idle": False,
+        "idle_source": "local_ai_capacity_v1",
+        "ai_idle_required": True,
+    }
+
+    class _ConnectOrderHarness(_WorkerRoutesHarness):
+        def __init__(self) -> None:
+            self.client_address = ("127.0.0.1", 12345)
+            self.sent_payload: dict[str, object] | None = None
+            self.sent_status: HTTPStatus | None = None
+            self.hub_payload: dict[str, object] | None = None
+
+        def _read_json(self) -> dict[str, object]:
+            return {
+                "network": "dev",
+                "requested_ring": "3",
+                "wallet_address": "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf",
+                "hub_url": "http://127.0.0.1:8770",
+                "message": '{"kind":"main_computer_worker_connect_order"}',
+                "signature": "0xabc",
+                "worker": payload,
+            }
+
+        def _send_json(self, payload: dict[str, object], status: HTTPStatus = HTTPStatus.OK) -> None:
+            self.sent_payload = payload
+            self.sent_status = status
+
+        def _post_worker_connect_order_to_hub(self, *, hub_url: str, payload: dict[str, object]) -> dict[str, object]:
+            self.hub_payload = payload
+            raise RuntimeError("Hub returned HTTP 400: invalid literal for int() with base 10: '1.024'")
+
+    harness = _ConnectOrderHarness()
+    harness.server = type(
+        "Server",
+        (),
+        {
+            "debug_root": tmp_path,
+            "config": type("Config", (), {"hub_url": "http://127.0.0.1:8770"})(),
+            "signal": lambda *args, **kwargs: None,
+        },
+    )()
+    harness._save_worker_settings({"selectedNetwork": "dev", "sellerEnabled": True})
+
+    harness._handle_worker_network_connect_order_sign()
+
+    saved = harness._load_worker_settings()
+    signed = saved["signedWorkerConnection"]
+    assert harness.sent_status == HTTPStatus.BAD_REQUEST
+    assert harness.sent_payload and harness.sent_payload["ok"] is False
+    assert harness.hub_payload is not None
+    assert harness.hub_payload["worker"]["credits_per_request"] == "2"  # type: ignore[index]
+    assert harness.hub_payload["worker"]["pricing"]["credits_per_request"] == "1.024"  # type: ignore[index]
+    assert signed["signature"] == "0xabc"
+    assert signed["message"] == '{"kind":"main_computer_worker_connect_order"}'
+    assert signed["status"] == "hub-registration-failed"
+    assert signed["hub_registered"] is False
+    assert "invalid literal for int()" in signed["hub_registration_error"]
+    assert saved["workerHubRegistration"]["status"] == "failed"
+    assert "invalid literal for int()" in saved["workerHubRegistration"]["error"]
+    assert saved["workerConnectionStatus"] == "failed"
+
+
+def test_worker_runtime_status_truth_ai_busy_blocks_after_registration(tmp_path: Path) -> None:
+    harness = _WorkerRoutesHarness()
+
+    class _BusyChatAI:
+        def local_ai_capacity_snapshot(self, *, thread_id: str = "", max_local_concurrency: int = 1) -> dict[str, object]:
+            return {
+                "ok": True,
+                "available_now": False,
+                "busy": True,
+                "reason_code": "local_concurrency_exhausted",
+                "user_message": "Local AI has no free slot right now.",
+                "active_run_count": 1,
+                "active_runs": [],
+            }
+
+    harness.server = type(
+        "Server",
+        (),
+        {
+            "debug_root": tmp_path,
+            "config": type("Config", (), {"hub_url": "http://127.0.0.1:8765"})(),
+            "signal": lambda *args, **kwargs: None,
+            "chat_ai_processes": _BusyChatAI(),
+        },
+    )()
+
+    settings = dict(_runtime_settings(harness))
+    settings["sellerAvailabilityMode"] = "ai_idle"
+    settings["sellerOnlyWhenIdle"] = False
+    settings["rentalOnlyWhenIdle"] = False
+
+    _saved, status = harness._worker_runtime_transition(settings, action="sync", send_heartbeat=False)
+
+    assert status["status"] == "not_accepting"
+    assert status["reason"].startswith("Local AI is busy.")
+    assert status["next"] == "Wait until local AI work finishes."
+    assert status["localPolicy"]["label"] == "Blocked"
+    assert status["runtime"]["label"] == "Not accepting"
+
+
+def test_worker_runtime_status_truth_registered_policy_allowed_accepting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    harness = _WorkerRoutesHarness()
+    harness.server = type(
+        "Server",
+        (),
+        {
+            "debug_root": tmp_path,
+            "config": type("Config", (), {"hub_url": "http://127.0.0.1:8765"})(),
+            "signal": lambda *args, **kwargs: None,
+        },
+    )()
+    monkeypatch.setattr(
+        "main_computer.viewport_routes_energy.collect_windows_user_activity",
+        lambda: {"supported": True, "ok": True, "active": False, "reason": "unit-test-idle", "sessions": []},
+    )
+
+    _saved, status = harness._worker_runtime_transition(_runtime_settings(harness), action="sync", send_heartbeat=False)
+
+    assert status["status"] == "accepting"
+    assert status["statusLabel"] == "Accepting work"
+    assert status["reason"] == "Hub registration accepted and local policy allows work."
+    assert status["next"] == "Waiting for Hub job assignment."
+    assert status["runtime"]["phase"] == "accepting"
+    assert status["localPolicy"]["label"] == "Allowed"
+
+
+def test_worker_runtime_status_truth_draining_with_active_job(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    harness = _WorkerRoutesHarness()
+    harness.server = type(
+        "Server",
+        (),
+        {
+            "debug_root": tmp_path,
+            "config": type("Config", (), {"hub_url": "http://127.0.0.1:8765"})(),
+            "signal": lambda *args, **kwargs: None,
+        },
+    )()
+    monkeypatch.setattr(
+        "main_computer.viewport_routes_energy.collect_windows_user_activity",
+        lambda: {"supported": True, "ok": True, "active": False, "reason": "unit-test-idle", "sessions": []},
+    )
+
+    settings = dict(_runtime_settings(harness))
+    settings["workerRuntimePhase"] = "accepting"
+    settings["workerRuntimeActiveJobs"] = 1
+
+    _saved, status = harness._worker_runtime_transition(settings, action="deactivate", send_heartbeat=False)
+
+    assert status["status"] == "draining"
+    assert status["statusLabel"] == "Finishing current work"
+    assert status["reason"] == "The worker is draining and will disconnect after active work finishes."
+    assert status["next"] == "Wait for the active job to finish."
+    assert status["runtime"]["phase"] == "draining"
 
 def test_worker_runtime_transition_heartbeats_accepting_then_offline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     harness = _WorkerRoutesHarness()
