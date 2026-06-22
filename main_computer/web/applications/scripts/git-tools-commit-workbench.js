@@ -254,55 +254,6 @@ function gitProjectCommitGateSummaryHtml(review = {}) {
   </section>`;
 }
 
-function gitProjectCommitSecuritySecretsPaneHtml(review = {}) {
-  const gates = gitProjectCommitGateSummary(review);
-  const secretsGate = gates.secrets_filter || {};
-  const gitignoreGate = gates.gitignore || {};
-  const groups = gitProjectCommitGroups(review);
-  const privacySummary = review.privacy_scan?.summary || {};
-  const blockedFiles = groups.blocked_possible_secrets.filter((item = {}) => item.path);
-  const reviewFiles = groups.review_before_selecting.filter((item = {}) => item.path);
-  const status = String(secretsGate.state || "unknown").toLowerCase();
-  const statusTone = status.replace(/[^a-z0-9_-]+/g, "-") || "unknown";
-  const countParts = [
-    `${blockedFiles.length} blocked file${blockedFiles.length === 1 ? "" : "s"}`,
-    `${reviewFiles.length} review file${reviewFiles.length === 1 ? "" : "s"}`,
-  ];
-  if (Number(privacySummary.blocking || 0)) countParts.push(`${Number(privacySummary.blocking || 0)} blocking finding${Number(privacySummary.blocking || 0) === 1 ? "" : "s"}`);
-  if (Number(privacySummary.critical || 0)) countParts.push(`${Number(privacySummary.critical || 0)} critical finding${Number(privacySummary.critical || 0) === 1 ? "" : "s"}`);
-  const blockedPreview = blockedFiles.slice(0, 6);
-  const extraBlocked = blockedFiles.length - blockedPreview.length;
-  return `<section class="git-project-commit-panel git-project-commit-security-secrets is-${escapeHtml(statusTone)}" data-git-commit-panel="security_secrets">
-    <div class="git-project-subscreen-panel-head">
-      <strong>Security / Secrets review</strong>
-      <span>${escapeHtml(status || "unknown")}</span>
-    </div>
-    <p class="git-project-muted">This is a commit readiness summary. Open the Security / Secrets card to run or review the full scan before committing.</p>
-    <div class="git-project-commit-security-grid">
-      <article class="git-project-commit-security-tile is-${escapeHtml(statusTone)}">
-        <strong>${escapeHtml(secretsGate.label || "Secrets / Filter")}</strong>
-        <span>${escapeHtml(secretsGate.state || "unknown")}</span>
-        <p>${escapeHtml(secretsGate.summary || "No secrets summary was returned by the planner.")}</p>
-      </article>
-      <article class="git-project-commit-security-tile is-${escapeHtml(String(gitignoreGate.state || "unknown").toLowerCase().replace(/[^a-z0-9_-]+/g, "-") || "unknown")}">
-        <strong>${escapeHtml(gitignoreGate.label || ".gitignore")}</strong>
-        <span>${escapeHtml(gitignoreGate.state || "unknown")}</span>
-        <p>${escapeHtml(gitignoreGate.summary || ".gitignore gate summary was not returned by the planner.")}</p>
-      </article>
-    </div>
-    <div class="git-project-commit-security-counts">
-      ${countParts.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
-    </div>
-    ${blockedPreview.length ? `<div class="git-project-commit-security-blocked">
-      <strong>Blocked files stay out of the commit basket</strong>
-      <ul>
-        ${blockedPreview.map((item = {}) => `<li><code>${escapeHtml(item.path || "")}</code><span>${escapeHtml(item.reason || item.risk || "requires review")}</span></li>`).join("")}
-        ${extraBlocked > 0 ? `<li><code>+${Number(extraBlocked)} more</code><span>Open the dedicated Secrets / Filter card for full scanner details.</span></li>` : ""}
-      </ul>
-    </div>` : ""}
-  </section>`;
-}
-
 function gitProjectCommitRepoIdentityHtml(review = {}) {
   const head = gitProjectCommitHead(review);
   const identity = gitProjectCommitIdentity(review);
@@ -515,7 +466,6 @@ function gitProjectCommitCreateHtml(step = {}) {
 function gitProjectCommitCenterHtml(step = {}, selectedPanel = "gate_summary") {
   const review = step.commit_review || {};
   return `<section class="git-project-commit-center">
-    ${gitProjectCommitSecuritySecretsPaneHtml(review)}
     ${gitProjectCommitComposeHtml(review)}
     ${gitProjectCommitBasketControlsHtml(review)}
     ${gitProjectCommitStagePreviewHtml(step)}
@@ -1681,7 +1631,6 @@ function gitProjectInitializeCommitWorkbenches(container) {
     gitProjectCommitHeaderHtml,
     gitProjectCommitConfigStripHtml,
     gitProjectCommitGateSummaryHtml,
-    gitProjectCommitSecuritySecretsPaneHtml,
     gitProjectCommitRepoIdentityHtml,
     gitProjectCommitComposeHtml,
     gitProjectCommitBasketControlsHtml,
@@ -1805,7 +1754,6 @@ function gitProjectInitializeCommitWorkbenches(container) {
     gitProjectCommitHeaderHtml,
     gitProjectCommitConfigStripHtml,
     gitProjectCommitGateSummaryHtml,
-    gitProjectCommitSecuritySecretsPaneHtml,
     gitProjectCommitRepoIdentityHtml,
     gitProjectCommitComposeHtml,
     gitProjectCommitBasketControlsHtml,

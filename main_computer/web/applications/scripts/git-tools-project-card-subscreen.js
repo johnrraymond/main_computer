@@ -152,6 +152,13 @@ function bindGitProjectCardSubscreen(container) {
       gitProjectCloseCardSubscreen(button.dataset.gitProjectCloseCard || "");
     });
   });
+  container.querySelectorAll("[data-git-project-card-inline-panel]").forEach((panel) => {
+    if (panel.dataset.gitProjectInlinePanelClickBoundary === "true") return;
+    panel.dataset.gitProjectInlinePanelClickBoundary = "true";
+    panel.addEventListener("click", (event) => {
+      event.stopPropagation();
+    });
+  });
   container.querySelectorAll("[data-git-project-card-shell]").forEach((card) => {
     card.addEventListener("click", (event) => {
       if (event.target.closest("button, a, input, textarea, select, details, summary, code[contenteditable='true'], [data-git-project-card-inline-panel]")) return;
