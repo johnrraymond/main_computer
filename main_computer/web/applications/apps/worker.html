@@ -78,10 +78,17 @@
               <input type="checkbox" id="worker-rental-enabled" checked>
               <span>Accept paid jobs</span>
             </label>
-            <label class="worker-switch">
-              <input type="checkbox" id="worker-seller-only-when-idle" checked>
-              <span>Only accept jobs when idle</span>
-            </label>
+            <fieldset class="worker-seller-availability-mode" aria-label="When this app may accept paid work">
+              <legend>Accept work when</legend>
+              <label class="worker-switch">
+                <input type="radio" name="worker-seller-availability-mode" id="worker-seller-availability-mode-totally-idle" value="totally_idle" checked>
+                <span>Only when totally idle</span>
+              </label>
+              <label class="worker-switch">
+                <input type="radio" name="worker-seller-availability-mode" id="worker-seller-availability-mode-ai-idle" value="ai_idle">
+                <span>When AI is idle</span>
+              </label>
+            </fieldset>
           </div>
         </div>
 
@@ -123,7 +130,9 @@
               <div><dt>Worker ID</dt><dd id="worker-network-worker-id">—</dd></div>
               <div><dt>Pricing policy</dt><dd id="worker-network-pricing-policy">—</dd></div>
               <div><dt>Worker pool</dt><dd id="worker-network-pool">—</dd></div>
-              <div><dt>Worker runtime</dt><dd id="worker-network-runtime">Inactive</dd></div>
+              <div><dt>Worker runtime</dt><dd id="worker-network-runtime">Not accepting</dd></div>
+              <div><dt>Local policy</dt><dd id="worker-runtime-policy">Waiting for setup</dd></div>
+              <div><dt>Active jobs</dt><dd id="worker-runtime-active-jobs">0</dd></div>
             </dl>
             <div class="worker-inline-actions">
               <button type="button" id="worker-network-sign-order" disabled>Sign Connect Order</button>

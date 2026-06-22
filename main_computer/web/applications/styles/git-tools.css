@@ -2210,66 +2210,6 @@
 }
 
 
-.git-project-commit-review-status {
-  border: 1px solid rgba(255,255,255,0.14);
-  border-radius: 10px;
-  background: rgba(255,255,255,0.03);
-  padding: 10px;
-}
-
-.git-project-commit-review-status.is-blocked {
-  border-color: rgba(255, 143, 112, 0.34);
-  background: rgba(255, 143, 112, 0.08);
-}
-
-.git-project-commit-review-status.is-ready {
-  border-color: rgba(117, 255, 188, 0.34);
-  background: rgba(39, 132, 82, 0.14);
-}
-
-.git-project-commit-review-status strong {
-  display: block;
-  color: var(--gold);
-  font-size: 12px;
-  text-transform: uppercase;
-}
-
-.git-project-commit-review-status span {
-  display: block;
-  color: var(--text);
-  font-size: 12px;
-  line-height: 1.4;
-  margin-top: 4px;
-}
-
-.git-project-commit-review-flow {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.git-project-commit-review-flow article {
-  min-height: 74px;
-  border: 1px solid rgba(255, 206, 77, 0.22);
-  border-radius: 9px;
-  background: rgba(0,0,0,0.18);
-  padding: 8px;
-}
-
-.git-project-commit-review-flow strong {
-  display: block;
-  color: var(--gold);
-  font-size: 11px;
-  text-transform: uppercase;
-}
-
-.git-project-commit-review-flow span {
-  display: block;
-  color: var(--text);
-  font-size: 11px;
-  line-height: 1.3;
-  margin-top: 4px;
-}
 
 .git-project-commit-review-stats {
   display: grid;
@@ -2345,13 +2285,6 @@
 }
 
 
-.git-project-commit-review-status small {
-  display: block;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.35;
-  margin-top: 6px;
-}
 
 .git-project-commit-execution-modal-open {
   overflow: hidden;
@@ -2620,7 +2553,6 @@
 
 
 @media (max-width: 1050px) {
-  .git-project-commit-review-flow,
   .git-project-commit-review-stats {
     grid-template-columns: 1fr;
   }

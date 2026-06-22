@@ -109,13 +109,17 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert ".worker-registration-card" not in css
     assert 'id="worker-rental-enabled"' in seller_section
     assert 'Accept paid jobs' in seller_section
-    assert 'id="worker-seller-only-when-idle" checked' in seller_section
-    assert 'Only accept jobs when idle' in seller_section
-    assert seller_section.index('id="worker-rental-enabled"') < seller_section.index('id="worker-seller-only-when-idle"')
-    assert "workerSellerOnlyWhenIdle" in js
+    assert 'name="worker-seller-availability-mode"' in seller_section
+    assert 'id="worker-seller-availability-mode-totally-idle" value="totally_idle" checked' in seller_section
+    assert 'Only when totally idle' in seller_section
+    assert 'id="worker-seller-availability-mode-ai-idle" value="ai_idle"' in seller_section
+    assert 'When AI is idle' in seller_section
+    assert seller_section.index('id="worker-rental-enabled"') < seller_section.index('id="worker-seller-availability-mode-totally-idle"')
+    assert "workerSellerAvailabilityModes" in js
+    assert "sellerAvailabilityMode" in js
     assert "sellerOnlyWhenIdle" in js
     assert "rentalOnlyWhenIdle" in js
-    assert 'const workerSellerOnlyWhenIdle = document.querySelector("#worker-seller-only-when-idle");' in bindings
+    assert 'const workerSellerAvailabilityModes = Array.from(document.querySelectorAll(\'input[name="worker-seller-availability-mode"]\'));' in bindings
     assert ".worker-seller-controls" in css
     assert ".worker-primary-offer > .worker-connect-order-card" in css
     assert "grid-column: 1 / -1;" in css
@@ -129,7 +133,8 @@ def test_worker_app_keeps_buy_and_sell_concerns_in_one_clear_worker_surface() ->
     assert '"2": "Ring 2 - Public"' in js
     energy_routes = VIEWPORT_ENERGY_ROUTES.read_text(encoding="utf-8")
     assert "collect_windows_user_activity" in energy_routes
-    assert "Only accept jobs when idle is enabled" in energy_routes
+    assert "_worker_local_ai_capacity_snapshot" in energy_routes
+    assert "Only when totally idle is selected" in energy_routes
     # The layout presents selling first, then buying remote work below it,
     # because a worker must be sell-ready before it can safely use others.
     assert "grid-template-columns: minmax(0, 1fr);" in css
@@ -402,6 +407,10 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert html.index('data-worker-network="mainnet"') < html.index('data-worker-network="testnet"') < html.index('data-worker-network="test"') < html.index('data-worker-network="dev"') < html.index('data-worker-network="none"')
     assert 'id="worker-network-ring"' in html
     assert 'id="worker-network-sign-order"' in html
+    assert 'id="worker-runtime-activate"' not in html
+    assert 'id="worker-runtime-stop"' not in html
+    assert 'id="worker-runtime-policy"' in html
+    assert 'id="worker-runtime-active-jobs"' in html
     assert 'id="worker-network-connect-wallet"' not in html
     assert "Network selection handles wallet connection" not in html
     assert 'id="worker-network-disconnect"' in html
@@ -411,6 +420,10 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "workerNetworkTabs" in bindings
     assert "workerNetworkRing" in bindings
     assert "workerNetworkSignOrder" in bindings
+    assert "workerRuntimeActivate" not in bindings
+    assert "workerRuntimeStop" not in bindings
+    assert "workerRuntimePolicy" in bindings
+    assert "workerRuntimeActiveJobs" in bindings
     assert "workerNetworkConnectWallet" not in bindings
     assert "workerFleetMainnet" in bindings
 
@@ -422,7 +435,11 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert 'WORKER_NETWORK_NONE = "none"' in js
     assert '"/api/applications/worker/network-session"' in js
     assert '"/api/applications/worker/network-connect-order"' in js
+    assert '"/api/applications/worker/runtime-status"' in js
+    assert '"/api/applications/worker/runtime-sync"' in js
     assert "workerLoadNetworkSessionFromBackend" in js
+    assert "workerSyncRuntime" in js
+    assert "workerRuntimePhaseLabel" in js
     assert "workerSelectNetwork" in js
     assert "signWorkerNetworkConnectOrder" in js
     assert "workerBuildConnectOrderMessage" in js
@@ -435,6 +452,10 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "Connect your wallet to ${workerNetworkDisplayName(selected)} before accepting jobs." in js
     assert "workerNetworkConnectWallet" not in js
     assert "workerNetworkSignOrder.disabled = !workerNetworkCanSign()" in js
+    assert "workerRuntimeActivate" not in js
+    assert "workerRuntimeStop" not in js
+    assert "The app connects automatically while Accept Paid Jobs and quser/local policy allow it." in js
+    assert "workerRuntimeShouldSync" in js
     assert "workerNetworkWalletConnectedToSelected()" in js
 
     assert "WORKER_STATUS_MESSAGE_MAX_LENGTH = 260" in js
@@ -452,11 +473,19 @@ def test_worker_network_tabs_drive_selected_network_session() -> None:
     assert "self._handle_worker_network_session_select()" in dispatch
     assert '"/api/applications/worker/network-connect-order"' in dispatch
     assert "self._handle_worker_network_connect_order_sign()" in dispatch
+    assert '"/api/applications/worker/runtime-status"' in dispatch
+    assert "self._handle_worker_runtime_status()" in dispatch
+    assert '"/api/applications/worker/runtime-sync"' in dispatch
+    assert "self._handle_worker_runtime_sync()" in dispatch
 
     assert "load_hub_network_registry" in energy_routes
     assert "def _handle_worker_network_session_load" in energy_routes
     assert "def _handle_worker_network_session_select" in energy_routes
     assert "def _handle_worker_network_connect_order_sign" in energy_routes
+    assert "def _handle_worker_runtime_sync" in energy_routes
+    assert "def _worker_runtime_policy" in energy_routes
+    assert "windows_quser_v1" in energy_routes
+    assert '"/api/hub/v1/workers/heartbeat"' in energy_routes
     assert '"mainnet", "testnet", "test", "dev"' in energy_routes
     assert '"selectedNetwork": selected_network' in energy_routes
     assert '"workerRequestedRing": requested_ring' in energy_routes

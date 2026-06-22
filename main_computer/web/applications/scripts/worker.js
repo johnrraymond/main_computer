@@ -6,6 +6,9 @@
     ];
     const WORKER_NETWORK_SESSION_ENDPOINT = "/api/applications/worker/network-session";
     const WORKER_NETWORK_CONNECT_ORDER_ENDPOINT = "/api/applications/worker/network-connect-order";
+    const WORKER_RUNTIME_STATUS_ENDPOINT = "/api/applications/worker/runtime-status";
+    const WORKER_RUNTIME_SYNC_ENDPOINT = "/api/applications/worker/runtime-sync";
+    const WORKER_RUNTIME_SYNC_INTERVAL_MS = 10000;
     const WORKER_STATUS_MESSAGE_MAX_LENGTH = 260;
     const WORKER_NETWORK_ORDER = ["mainnet", "testnet", "test", "dev"];
     const WORKER_NETWORK_NONE = "none";
@@ -13,6 +16,12 @@
     const WORKER_DEFAULT_SELLER_CREDITS_PER_TOKEN = "0.001";
     const WORKER_DEFAULT_SELLER_TARGET_TOKENS = 1024;
     const WORKER_DEFAULT_SELLER_MODEL = "gemma4:26b";
+    const WORKER_SELLER_AVAILABILITY_TOTAL_IDLE = "totally_idle";
+    const WORKER_SELLER_AVAILABILITY_AI_IDLE = "ai_idle";
+    const WORKER_SELLER_AVAILABILITY_MODES = new Set([
+      WORKER_SELLER_AVAILABILITY_TOTAL_IDLE,
+      WORKER_SELLER_AVAILABILITY_AI_IDLE
+    ]);
     const WORKER_LEGACY_SELLER_CREDITS_PER_REQUESTS = new Set(["5500123", "5500123.0", "5500123.00", "1.25", "1.250", "1.2500"]);
     const WORKER_LEGACY_SELLER_MODELS = new Set(["mock-ai-model-phase9"]);
     const WORKER_CREDIT_BASE_UNITS_PER_CREDIT = 1000000000000000000n;
@@ -43,6 +52,17 @@
     };
     let workerNetworkSessionInFlight = false;
     let workerNetworkSignatureInFlight = false;
+    let workerRuntimeStatus = {
+      enabled: false,
+      phase: "not_accepting",
+      active_jobs: 0,
+      allowed_to_accept: false,
+      reason: "",
+      policy: null,
+      heartbeat_error: ""
+    };
+    let workerRuntimeSyncInFlight = false;
+    let workerRuntimeSyncTimer = null;
 
     const workerBridgeReadinessStorageKey = "main-computer-worker-bridge-readiness-v1";
     const WORKER_SETTINGS_POLL_INTERVAL_MS = 2500;
@@ -2887,7 +2907,142 @@
       return signed.status === "hub-registered" || signed.status === "registered" || Boolean(signed.hub_registered);
     }
 
-    function workerNetworkWalletAddress() {
+function workerRuntimePhaseLabel(phase = workerRuntimeStatus.phase) {
+      const normalized = String(phase || "not_accepting");
+      if (normalized === "accepting") return "Accepting work";
+      if (normalized === "draining") return "Finishing current work, then disconnecting";
+      return "Not accepting";
+    }
+
+    function workerRuntimePolicyLabel() {
+      const policy = workerRuntimeStatus.policy && typeof workerRuntimeStatus.policy === "object"
+        ? workerRuntimeStatus.policy
+        : {};
+      const userActivity = policy.user_activity && typeof policy.user_activity === "object"
+        ? policy.user_activity
+        : null;
+      if (workerRuntimeStatus.heartbeat_error) {
+        return `Hub heartbeat failed: ${workerRuntimeStatus.heartbeat_error}`;
+      }
+      if (policy.availability_mode === WORKER_SELLER_AVAILABILITY_AI_IDLE) {
+        const localAi = policy.local_ai_capacity && typeof policy.local_ai_capacity === "object"
+          ? policy.local_ai_capacity
+          : null;
+        if (localAi?.available_now && workerRuntimeStatus.allowed_to_accept) {
+          return "Local AI is idle; allowed to accept work.";
+        }
+        if (localAi?.busy) {
+          return localAi.user_message || "Local AI is busy; waiting.";
+        }
+      }
+      if (userActivity) {
+        if (userActivity.active === false && workerRuntimeStatus.allowed_to_accept) {
+          return "quser reports totally idle; allowed to accept work.";
+        }
+        if (userActivity.active === true) {
+          return "quser reports an active user; waiting.";
+        }
+        if (userActivity.supported === false) {
+          return `quser unavailable: ${userActivity.reason || "non-Windows"}.`;
+        }
+      }
+      return workerRuntimeStatus.reason || "Waiting for setup.";
+    }
+
+    function workerApplyRuntimePayload(data) {
+      if (!data || typeof data !== "object") return;
+      const runtime = data.runtime && typeof data.runtime === "object" ? data.runtime : data;
+      workerRuntimeStatus = {
+        ...workerRuntimeStatus,
+        enabled: Boolean(runtime.enabled),
+        phase: String(runtime.phase || "not_accepting"),
+        active_jobs: Number(runtime.active_jobs || 0),
+        allowed_to_accept: Boolean(runtime.allowed_to_accept),
+        hub_status: String(runtime.hub_status || ""),
+        reason: String(runtime.reason || ""),
+        policy: runtime.policy && typeof runtime.policy === "object" ? runtime.policy : null,
+        heartbeat_error: String(runtime.heartbeat_error || "")
+      };
+      if (data.settings && typeof data.settings === "object") {
+        applyWorkerSettings(data.settings, {source: "runtime"});
+      } else {
+        renderWorkerNetworkSurface();
+      }
+    }
+
+    async function workerSyncRuntime(action = "sync", {activeJobs = null, includeSettings = true} = {}) {
+      if (workerRuntimeSyncInFlight && action === "sync") return;
+      workerRuntimeSyncInFlight = true;
+      renderWorkerNetworkSurface();
+      const payload = {action};
+      if (activeJobs !== null && activeJobs !== undefined) {
+        payload.active_jobs = Number(activeJobs || 0);
+      }
+      if (includeSettings) {
+        payload.settings = readWorkerFormSettings();
+      }
+      try {
+        const data = await workerPostJson(WORKER_RUNTIME_SYNC_ENDPOINT, payload);
+        workerApplyRuntimePayload(data);
+        if (action === "job-start" && workerSaveStatus) {
+          workerSaveStatus.textContent = "Worker job started. The app will keep the Hub in sync while work is active.";
+        } else if (action === "job-finish" && workerSaveStatus) {
+          workerSaveStatus.textContent = workerRuntimeStatus.phase === "draining"
+            ? "Worker job finished; disconnecting because local policy no longer allows new work."
+            : "Worker job finished. The app will keep accepting work while local policy allows it.";
+        }
+      } catch (error) {
+        workerRuntimeStatus = {
+          ...workerRuntimeStatus,
+          phase: "not_accepting",
+          allowed_to_accept: false,
+          heartbeat_error: error.message || String(error),
+          reason: error.message || String(error)
+        };
+        if (workerSaveStatus && action !== "sync") {
+          workerSaveStatus.textContent = `Worker runtime sync failed: ${error.message || error}`;
+        }
+      } finally {
+        workerRuntimeSyncInFlight = false;
+        renderWorkerNetworkSurface();
+      }
+    }
+
+    async function workerLoadRuntimeStatus() {
+      try {
+        const data = await workerGetJson(WORKER_RUNTIME_STATUS_ENDPOINT);
+        workerApplyRuntimePayload(data);
+      } catch (error) {
+        workerRuntimeStatus = {
+          ...workerRuntimeStatus,
+          phase: "not_accepting",
+          allowed_to_accept: false,
+          reason: error.message || String(error)
+        };
+        renderWorkerNetworkSurface();
+      }
+    }
+
+    function workerRuntimeShouldSync() {
+      return (
+        Boolean(workerRentalEnabled?.checked)
+        || Boolean(workerRuntimeStatus.enabled)
+        || workerRuntimeStatus.phase === "accepting"
+        || workerRuntimeStatus.phase === "draining"
+        || Number(workerRuntimeStatus.active_jobs || 0) > 0
+      );
+    }
+
+    function workerStartRuntimeSync() {
+      if (workerRuntimeSyncTimer) return;
+      workerRuntimeSyncTimer = setInterval(() => {
+        if (workerRuntimeShouldSync()) {
+          workerSyncRuntime("sync", {includeSettings: true});
+        }
+      }, WORKER_RUNTIME_SYNC_INTERVAL_MS);
+    }
+
+        function workerNetworkWalletAddress() {
       loadWorkerBridgeState();
       return workerBridgeState.wallet?.address || "";
     }
@@ -3005,7 +3160,9 @@
       workerNetworkSetText(workerNetworkWorkerId, hubRegistered ? workerId || "—" : "—");
       workerNetworkSetText(workerNetworkPricingPolicy, hubRegistered ? pricingPolicy || "—" : "—");
       workerNetworkSetText(workerNetworkPool, hubRegistered ? workerPoolCountText(pool) : "—");
-      workerNetworkSetText(workerNetworkRuntime, hubRegistered ? "Hub registered; inactive" : signedForSelected && hubConnected && walletConnectedToSelected ? "Registration pending" : "Inactive");
+      workerNetworkSetText(workerNetworkRuntime, hubRegistered ? workerRuntimePhaseLabel() : signedForSelected && hubConnected && walletConnectedToSelected ? "Registration pending" : "Not accepting");
+      workerNetworkSetText(workerRuntimePolicy, hubRegistered ? workerRuntimePolicyLabel() : "Waiting for signed Hub registration.");
+      workerNetworkSetText(workerRuntimeActiveJobs, String(workerRuntimeStatus.active_jobs || 0));
 
       if (workerNetworkHelp) {
         if (selected === WORKER_NETWORK_NONE) {
@@ -3014,8 +3171,12 @@
           workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} Hub is reachable. Connect your wallet to ${workerNetworkDisplayName(selected)} before accepting jobs.`;
         } else if (hubConnected && walletConnectedToSelected && !signedForSelected) {
           workerNetworkHelp.textContent = `Wallet is connected to ${workerNetworkDisplayName(selected)}. Choose a ring and sign the connect order before accepting jobs.`;
+        } else if (hubConnected && hubRegistered && workerRuntimeStatus.phase === "accepting") {
+          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} worker is accepting work while quser/local policy allows it.`;
+        } else if (hubConnected && hubRegistered && workerRuntimeStatus.phase === "draining") {
+          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} worker is finishing current work, then it will disconnect.`;
         } else if (hubConnected && hubRegistered) {
-          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} wallet and Hub registration are ready. Activate the worker before accepting jobs.`;
+          workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} wallet and Hub registration are ready. The app connects automatically while Accept Paid Jobs and quser/local policy allow it.`;
         } else if (hubConnected && signedForSelected) {
           workerNetworkHelp.textContent = `${workerNetworkDisplayName(selected)} connect order is signed, but Hub registration has not been accepted yet. Re-sign to submit it to the Hub.`;
         } else if (workerNetworkSession.connection_status === "failed") {
@@ -3034,7 +3195,11 @@
       WORKER_NETWORK_ORDER.forEach((key) => {
         const state = selected === key
           ? hubRegistered && hubConnected && walletConnectedToSelected
-            ? "Hub registered / selected"
+            ? workerRuntimeStatus.phase === "accepting"
+              ? "Accepting work"
+              : workerRuntimeStatus.phase === "draining"
+                ? "Draining"
+                : "Registered / not accepting"
             : signedForSelected && hubConnected && walletConnectedToSelected
               ? "Registration pending"
               : hubConnected && walletConnectedToSelected
@@ -3411,6 +3576,37 @@
       return true;
     }
 
+    function workerNormalizeSellerAvailabilityMode(value, fallback = WORKER_SELLER_AVAILABILITY_TOTAL_IDLE) {
+      const normalized = String(value || "").trim().toLowerCase();
+      if (WORKER_SELLER_AVAILABILITY_MODES.has(normalized)) return normalized;
+      const fallbackMode = String(fallback || "").trim().toLowerCase();
+      return WORKER_SELLER_AVAILABILITY_MODES.has(fallbackMode)
+        ? fallbackMode
+        : WORKER_SELLER_AVAILABILITY_TOTAL_IDLE;
+    }
+
+    function workerSellerAvailabilityModeFromForm() {
+      const selected = (workerSellerAvailabilityModes || []).find((input) => input?.checked);
+      return workerNormalizeSellerAvailabilityMode(selected?.value);
+    }
+
+    function workerSetSellerAvailabilityMode(mode) {
+      const normalized = workerNormalizeSellerAvailabilityMode(mode);
+      (workerSellerAvailabilityModes || []).forEach((input) => {
+        if (!input) return;
+        input.checked = String(input.value || "") === normalized;
+      });
+      return normalized;
+    }
+
+    function workerRefreshSellerAvailabilityControls() {
+      const paidJobsEnabled = Boolean(workerRentalEnabled?.checked);
+      (workerSellerAvailabilityModes || []).forEach((input) => {
+        if (!input) return;
+        input.disabled = !paidJobsEnabled;
+      });
+    }
+
     function readWorkerFormSettings() {
       const models = workerOfferModelsArray();
       return {
@@ -3425,6 +3621,10 @@
         signedWorkerConnection: workerNetworkSignedConnection(),
         workerHubRegistration: workerNetworkSession.hub_registration || null,
         workerPool: workerNetworkSession.worker_pool || null,
+        workerRuntimeEnabled: Boolean(workerRentalEnabled?.checked),
+        workerRuntimePhase: String(workerRuntimeStatus.phase || "not_accepting"),
+        workerRuntimeActiveJobs: Number(workerRuntimeStatus.active_jobs || 0),
+        workerRuntimeLastReason: String(workerRuntimeStatus.reason || ""),
         remoteEnabled: workerSavedBoolean(workerRemoteEnabled?.checked, false),
         remoteMode: workerElementValue(workerRemoteMode, "ask-when-busy"),
         remoteCreditsPerToken: workerPositiveDecimalString(workerElementValue(workerRemoteCreditsPerToken, "0.001"), "0.001"),
@@ -3434,8 +3634,9 @@
         remoteOnlyWhenBusy: Boolean(workerRemoteOnlyWhenBusy?.checked),
         sellerEnabled: Boolean(workerRentalEnabled?.checked),
         rentalEnabled: Boolean(workerRentalEnabled?.checked),
-        sellerOnlyWhenIdle: Boolean(workerSellerOnlyWhenIdle?.checked),
-        rentalOnlyWhenIdle: Boolean(workerSellerOnlyWhenIdle?.checked),
+        sellerAvailabilityMode: workerSellerAvailabilityModeFromForm(),
+        sellerOnlyWhenIdle: workerSellerAvailabilityModeFromForm() === WORKER_SELLER_AVAILABILITY_TOTAL_IDLE,
+        rentalOnlyWhenIdle: workerSellerAvailabilityModeFromForm() === WORKER_SELLER_AVAILABILITY_TOTAL_IDLE,
         registrationHubUrl: workerSelectedHubUrl(),
         nodeId: workerElementValue(workerNodeId, "local-worker-001"),
         endpoint: workerElementValue(workerEndpoint, "http://127.0.0.1:8771"),
@@ -3514,6 +3715,16 @@
           hub_registration: parsed.workerHubRegistration && typeof parsed.workerHubRegistration === "object" ? parsed.workerHubRegistration : workerNetworkSession.hub_registration,
           worker_pool: parsed.workerPool && typeof parsed.workerPool === "object" ? parsed.workerPool : workerNetworkSession.worker_pool
         };
+        if (Object.prototype.hasOwnProperty.call(parsed, "workerRuntimeEnabled")) {
+          workerRuntimeStatus = {
+            ...workerRuntimeStatus,
+            enabled: Boolean(parsed.workerRuntimeEnabled),
+            phase: String(parsed.workerRuntimePhase || "not_accepting"),
+            active_jobs: Number(parsed.workerRuntimeActiveJobs || 0),
+            reason: String(parsed.workerRuntimeLastReason || ""),
+            heartbeat_error: String(parsed.workerRuntimeError || "")
+          };
+        }
         renderWorkerNetworkSurface();
       }
       if (Object.prototype.hasOwnProperty.call(parsed, "remoteEnabled")) {
@@ -3536,13 +3747,18 @@
           workerRentalEnabled.checked = parsed.rentalEnabled;
         }
       }
-      if (workerSellerOnlyWhenIdle) {
-        if (typeof parsed.sellerOnlyWhenIdle === "boolean") {
-          workerSellerOnlyWhenIdle.checked = parsed.sellerOnlyWhenIdle;
+      if (workerSellerAvailabilityModes?.length) {
+        if (typeof parsed.sellerAvailabilityMode === "string") {
+          workerSetSellerAvailabilityMode(parsed.sellerAvailabilityMode);
+        } else if (typeof parsed.sellerOnlyWhenIdle === "boolean") {
+          workerSetSellerAvailabilityMode(parsed.sellerOnlyWhenIdle ? WORKER_SELLER_AVAILABILITY_TOTAL_IDLE : WORKER_SELLER_AVAILABILITY_AI_IDLE);
         } else if (typeof parsed.rentalOnlyWhenIdle === "boolean") {
-          workerSellerOnlyWhenIdle.checked = parsed.rentalOnlyWhenIdle;
+          workerSetSellerAvailabilityMode(parsed.rentalOnlyWhenIdle ? WORKER_SELLER_AVAILABILITY_TOTAL_IDLE : WORKER_SELLER_AVAILABILITY_AI_IDLE);
+        } else {
+          workerSetSellerAvailabilityMode(WORKER_SELLER_AVAILABILITY_TOTAL_IDLE);
         }
       }
+      workerRefreshSellerAvailabilityControls();
       assignWorkerValue(workerNodeId, parsed.nodeId);
       assignWorkerValue(workerEndpoint, parsed.endpoint);
       assignWorkerValue(workerOfferModels, workerNormalizeSellerModels(parsed.models));
@@ -3640,8 +3856,10 @@
       };
       const availability = {
         accept_paid_jobs: settings.sellerEnabled,
+        availability_mode: settings.sellerAvailabilityMode,
         only_when_idle: settings.sellerOnlyWhenIdle,
-        idle_source: "windows_user_activity_v1"
+        idle_source: settings.sellerOnlyWhenIdle ? "windows_user_activity_v1" : "local_ai_capacity_v1",
+        ai_idle_required: settings.sellerAvailabilityMode === WORKER_SELLER_AVAILABILITY_AI_IDLE
       };
       const worker = {
         node_id: settings.nodeId,
@@ -3799,6 +4017,10 @@
           remoteEnabledSerial = workerRemoteEnabledSaveSerial;
         }
         saveWorkerSettings({changedFields: fields, remoteEnabledSerial});
+        if (fields?.some((field) => ["sellerEnabled", "rentalEnabled", "sellerAvailabilityMode", "sellerOnlyWhenIdle", "rentalOnlyWhenIdle"].includes(field))) {
+          workerRefreshSellerAvailabilityControls();
+          workerSyncRuntime("sync", {includeSettings: true});
+        }
       });
     }
 
@@ -3808,6 +4030,8 @@
       loadWorkerBridgeState();
       renderWorkerBridgeReadiness();
       const workerNetworkSessionLoadPromise = workerLoadNetworkSessionFromBackend();
+      workerLoadRuntimeStatus();
+      workerStartRuntimeSync();
       workerRefreshHubCreditBridgeConfig();
       workerRefreshFaucetRuntimeStatus();
       workerNetworkTabs.forEach((tab) => {
@@ -3910,13 +4134,17 @@
       bindWorkerAutosaveSetting(workerOfferCreditsPerToken, "change", ["sellerCreditsPerToken"]);
       bindWorkerAutosaveSetting(workerOfferCreditsPerToken, "input", ["sellerCreditsPerToken"]);
       bindWorkerAutosaveSetting(workerRentalEnabled, "change", ["sellerEnabled", "rentalEnabled"]);
-      bindWorkerAutosaveSetting(workerSellerOnlyWhenIdle, "change", ["sellerOnlyWhenIdle", "rentalOnlyWhenIdle"]);
+      (workerSellerAvailabilityModes || []).forEach((input) => {
+        bindWorkerAutosaveSetting(input, "change", ["sellerAvailabilityMode", "sellerOnlyWhenIdle", "rentalOnlyWhenIdle"]);
+      });
+      workerRefreshSellerAvailabilityControls();
       if (workerPauseRentals && !workerPauseRentals.dataset.workerBound) {
         workerPauseRentals.dataset.workerBound = "true";
         workerPauseRentals.addEventListener("click", () => {
           if (workerRentalEnabled) workerRentalEnabled.checked = false;
           saveWorkerSettings({changedFields: ["sellerEnabled", "rentalEnabled"]});
-          if (workerSaveStatus) workerSaveStatus.textContent = "Selling paused locally. Paid jobs are being saved as off.";
+          workerSyncRuntime("sync", {includeSettings: true});
+          if (workerSaveStatus) workerSaveStatus.textContent = "Selling paused locally. The worker will drain active work and stop accepting new jobs.";
         });
       }
       if (workerTestHubs && !workerTestHubs.dataset.workerBound) {

@@ -467,8 +467,6 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             "function gitProjectCommitComposeHtml(review = {})",
             "function gitProjectCommitGateSummaryHtml(review = {})",
             "function gitProjectCommitStagePreviewHtml(step = {})",
-            "function gitProjectCommitStageReviewStatusHtml()",
-            "function gitProjectCommitStageReviewFlowHtml()",
             "function gitProjectCommitUpdateReviewStatus(workbench, paths = [])",
             "function gitProjectCommitUpdateFinalReadiness(workbench, paths = [])",
             "function gitProjectCommitCreateHtml(step = {})",
@@ -542,15 +540,6 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             with self.subTest(snippet=snippet):
                 self.assertIn(snippet, APPLICATIONS_INDEX_HTML)
 
-        for warning_scope_snippet in (
-            "Commit blocking is scoped to the selected files",
-            "Selected hard blockers:",
-            "WARNINGS ACCEPTED",
-            "Unselected repo warnings remain visible as context only",
-        ):
-            with self.subTest(warning_scope_snippet=warning_scope_snippet):
-                self.assertIn(warning_scope_snippet, APPLICATIONS_INDEX_HTML)
-
         commit_region = APPLICATIONS_INDEX_HTML[
             APPLICATIONS_INDEX_HTML.index("const GIT_PROJECT_WUNDERBAUM_VERSION"):
             APPLICATIONS_INDEX_HTML.index("function gitProjectSecretsFilterRuleRowsHtml(")
@@ -575,6 +564,16 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             "data-git-commit-panel=\"security_secrets\"",
             "git-project-commit-security-secrets",
             "This is a commit readiness summary. Open the Security / Secrets card to run or review the full scan before committing.",
+            "function gitProjectCommitStageReviewStatusHtml",
+            "function gitProjectCommitStageReviewFlowHtml",
+            "git-project-commit-review-status",
+            "git-project-commit-review-flow",
+            "Choose files first",
+            "Selected hard blockers:",
+            "1. Choose",
+            "2. Review",
+            "3. Stage",
+            "4. Commit",
         )
         for snippet in forbidden_snippets:
             with self.subTest(forbidden_snippet=snippet):
@@ -590,8 +589,6 @@ class GitPageWizardWorkflowTests(unittest.TestCase):
             ".git-project-commit-compose",
             ".git-project-commit-gate-summary",
             ".git-project-commit-stage-preview",
-            ".git-project-commit-review-status",
-            ".git-project-commit-review-flow",
             ".git-project-commit-review-stats",
             ".git-project-commit-dev-diagnostics",
             ".git-project-commit-execution-pane",

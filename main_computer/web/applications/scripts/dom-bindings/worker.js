@@ -22,6 +22,8 @@
     const workerNetworkPricingPolicy = document.querySelector("#worker-network-pricing-policy");
     const workerNetworkPool = document.querySelector("#worker-network-pool");
     const workerNetworkRuntime = document.querySelector("#worker-network-runtime");
+    const workerRuntimePolicy = document.querySelector("#worker-runtime-policy");
+    const workerRuntimeActiveJobs = document.querySelector("#worker-runtime-active-jobs");
     const workerNetworkSignOrder = document.querySelector("#worker-network-sign-order");
     const workerFleetMainnet = document.querySelector("#worker-fleet-mainnet");
     const workerFleetTestnet = document.querySelector("#worker-fleet-testnet");
@@ -41,7 +43,7 @@
     const workerRemoteAskBeforeSpend = document.querySelector("#worker-remote-ask-before-spend");
     const workerRemoteOnlyWhenBusy = document.querySelector("#worker-remote-only-when-busy");
     const workerRentalEnabled = document.querySelector("#worker-rental-enabled");
-    const workerSellerOnlyWhenIdle = document.querySelector("#worker-seller-only-when-idle");
+    const workerSellerAvailabilityModes = Array.from(document.querySelectorAll('input[name="worker-seller-availability-mode"]'));
     const workerRegistrationStatusPill = document.querySelector("#worker-registration-status-pill");
     const workerNodeId = document.querySelector("#worker-node-id");
     const workerEndpoint = document.querySelector("#worker-endpoint");

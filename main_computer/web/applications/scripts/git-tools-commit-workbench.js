@@ -329,28 +329,6 @@ function gitProjectCommitStageCommands(step = {}, review = {}) {
   return rendered.length ? rendered : defaults;
 }
 
-function gitProjectCommitStageReviewStatusHtml() {
-  return `<div class="git-project-commit-review-status is-blocked" data-git-commit-review-status>
-    <strong data-git-commit-review-title>Choose files first</strong>
-    <span data-git-commit-review-body>Select clean files from the File Basket. The selected paths will appear in the Selected Files Preview above.</span>
-    <small data-git-commit-review-scope>Commit blocking is scoped to the selected files. Unselected repo warnings stay visible as context.</small>
-  </div>`;
-}
-
-function gitProjectCommitStageReviewFlowHtml() {
-  const steps = [
-    ["1. Choose", "Select clean files from the basket. Review and blocked files stay out until resolved."],
-    ["2. Review", "Use Selected Files Preview above as the single source of truth for commit contents."],
-    ["3. Stage", "Backend stages selected paths only, then checks cached Git state."],
-    ["4. Commit", "Create the local commit after gates, identity, and staged-state checks pass."],
-  ];
-  return `<div class="git-project-commit-review-flow">
-    ${steps.map(([title, detail]) => `<article>
-      <strong>${escapeHtml(title)}</strong>
-      <span>${escapeHtml(detail)}</span>
-    </article>`).join("")}
-  </div>`;
-}
 
 function gitProjectCommitStageStatsHtml(review = {}) {
   const groups = gitProjectCommitGroups(review);
@@ -378,8 +356,6 @@ function gitProjectCommitStagePreviewHtml(step = {}) {
       <strong>Review selected files</strong>
       <span>pre-stage check</span>
     </div>
-    ${gitProjectCommitStageReviewStatusHtml()}
-    ${gitProjectCommitStageReviewFlowHtml()}
     ${gitProjectCommitStageStatsHtml(review)}
     <div class="git-project-commit-checklist">
       <strong>Required confirmations</strong>
@@ -831,39 +807,6 @@ function gitProjectCommitDeveloperCommandPreview(paths = []) {
 function gitProjectCommitUpdateReviewStatus(workbench, paths = []) {
   const state = gitProjectCommitSelectedReadiness(workbench, paths);
   const {stats} = state;
-
-  let title = "Choose files first";
-  let body = "Select clean files from the File Basket. The selected paths will appear in the Selected Files Preview above.";
-  if (paths.length && stats.selectedBlocked) {
-    title = "Remove selected hard blockers";
-    body = `${stats.selectedBlocked} selected file${stats.selectedBlocked === 1 ? " is" : "s are"} hard-blocked. Warning acceptance does not override selected blocked files.`;
-  } else if (paths.length && !state.reviewed) {
-    title = "Review selected files";
-    body = "Use Selected Files Preview as the source of truth, then confirm it matches the intended commit.";
-  } else if (paths.length && state.repoWarningsPresent && !state.warningsAccepted) {
-    title = "Accept warnings to proceed";
-    body = "The selected files have no hard blockers. Accept the remaining warnings to proceed with this selected-file commit.";
-  } else if (paths.length && state.ready) {
-    title = "Ready to open commit preview";
-    body = "Unselected repo warnings remain visible as context only. The selected files have no hard blockers and the warning acknowledgement is satisfied.";
-  } else if (paths.length) {
-    title = "Commit details need attention";
-    body = state.reasons.join(" · ");
-  }
-
-  const status = workbench.querySelector("[data-git-commit-review-status]");
-  if (status) {
-    status.classList.toggle("is-ready", state.ready);
-    status.classList.toggle("is-blocked", !state.ready);
-  }
-  const titleNode = workbench.querySelector("[data-git-commit-review-title]");
-  const bodyNode = workbench.querySelector("[data-git-commit-review-body]");
-  const scopeNode = workbench.querySelector("[data-git-commit-review-scope]");
-  if (titleNode) titleNode.textContent = title;
-  if (bodyNode) bodyNode.textContent = body;
-  if (scopeNode) {
-    scopeNode.textContent = `Selected hard blockers: ${stats.selectedBlocked}. Warnings accepted: ${state.warningsAccepted ? "yes" : "no"}. Global context: ${stats.review} need review, ${stats.blocked} blocked.`;
-  }
 
   const selectedCount = workbench.querySelector("[data-git-commit-review-count='selected']");
   const reviewCount = workbench.querySelector("[data-git-commit-review-count='review']");
@@ -1637,8 +1580,6 @@ function gitProjectInitializeCommitWorkbenches(container) {
     gitProjectCommitShellQuote,
     gitProjectCommitJoinCommand,
     gitProjectCommitStageCommands,
-    gitProjectCommitStageReviewStatusHtml,
-    gitProjectCommitStageReviewFlowHtml,
     gitProjectCommitStageStatsHtml,
     gitProjectCommitStagePreviewHtml,
     gitProjectCommitExecutionPaneHtml,
@@ -1760,8 +1701,6 @@ function gitProjectInitializeCommitWorkbenches(container) {
     gitProjectCommitShellQuote,
     gitProjectCommitJoinCommand,
     gitProjectCommitStageCommands,
-    gitProjectCommitStageReviewStatusHtml,
-    gitProjectCommitStageReviewFlowHtml,
     gitProjectCommitStageStatsHtml,
     gitProjectCommitStagePreviewHtml,
     gitProjectCommitExecutionPaneHtml,

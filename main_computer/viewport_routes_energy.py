@@ -20,6 +20,9 @@ class ViewportEnergyRoutesMixin:
     _WORKER_DEFAULT_CREDITS_PER_TOKEN = "0.001"
     _WORKER_DEFAULT_SELLER_TARGET_TOKENS = 1024
     _WORKER_DEFAULT_SELLER_MODEL = "gemma4:26b"
+    _WORKER_SELLER_AVAILABILITY_TOTAL_IDLE = "totally_idle"
+    _WORKER_SELLER_AVAILABILITY_AI_IDLE = "ai_idle"
+    _WORKER_SELLER_AVAILABILITY_MODES = {_WORKER_SELLER_AVAILABILITY_TOTAL_IDLE, _WORKER_SELLER_AVAILABILITY_AI_IDLE}
     _WORKER_LEGACY_CREDITS_PER_REQUESTS = {"5500123", "5500123.0", "5500123.00", "1.25", "1.250", "1.2500"}
     _WORKER_LEGACY_SELLER_MODELS = {"mock-ai-model-phase9"}
     _ENERGY_EXPECTED_CONTRACTS = (
@@ -501,6 +504,15 @@ class ViewportEnergyRoutesMixin:
             return self._WORKER_DEFAULT_SELLER_MODEL
         return ",".join(dict.fromkeys(models))
 
+    def _normalize_worker_seller_availability_mode(self, value: Any, *, default: str = _WORKER_SELLER_AVAILABILITY_TOTAL_IDLE) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized in self._WORKER_SELLER_AVAILABILITY_MODES:
+            return normalized
+        fallback = str(default or "").strip().lower()
+        if fallback in self._WORKER_SELLER_AVAILABILITY_MODES:
+            return fallback
+        return self._WORKER_SELLER_AVAILABILITY_TOTAL_IDLE
+
     def _sanitize_worker_settings(self, value: Any) -> dict[str, Any]:
         settings = value.get("settings") if isinstance(value, dict) and isinstance(value.get("settings"), dict) else value
         if not isinstance(settings, dict):
@@ -542,6 +554,19 @@ class ViewportEnergyRoutesMixin:
         connection_status = text(settings.get("workerConnectionStatus", settings.get("worker_connection_status")), "disconnected")
         if connection_status not in {"disconnected", "connecting", "connected", "failed", "stale"}:
             connection_status = "disconnected"
+        runtime_phase = text(settings.get("workerRuntimePhase", settings.get("worker_runtime_phase")), "not_accepting").lower()
+        if runtime_phase not in {"not_accepting", "accepting", "draining"}:
+            runtime_phase = "not_accepting"
+        raw_seller_idle = settings.get(
+            "sellerOnlyWhenIdle",
+            settings.get("seller_only_when_idle", settings.get("rentalOnlyWhenIdle", settings.get("rental_only_when_idle"))),
+        )
+        default_availability_mode = self._WORKER_SELLER_AVAILABILITY_TOTAL_IDLE if boolish(raw_seller_idle, True) else self._WORKER_SELLER_AVAILABILITY_AI_IDLE
+        seller_availability_mode = self._normalize_worker_seller_availability_mode(
+            settings.get("sellerAvailabilityMode", settings.get("seller_availability_mode")),
+            default=default_availability_mode,
+        )
+        seller_only_when_idle = seller_availability_mode == self._WORKER_SELLER_AVAILABILITY_TOTAL_IDLE
         signed_connection = settings.get("signedWorkerConnection", settings.get("signed_worker_connection"))
         if isinstance(signed_connection, dict):
             signed_assigned_ring = text(signed_connection.get("assigned_ring"), "")
@@ -585,6 +610,16 @@ class ViewportEnergyRoutesMixin:
             "workerConnectionError": text(settings.get("workerConnectionError", settings.get("worker_connection_error")), ""),
             "workerConnectedHubUrl": self._clean_hub_url(text(settings.get("workerConnectedHubUrl", settings.get("worker_connected_hub_url")), ""), allow_empty=True),
             "signedWorkerConnection": signed_connection,
+            "workerRuntimeEnabled": boolish(settings.get("workerRuntimeEnabled", settings.get("worker_runtime_enabled")), False),
+            "workerRuntimePhase": runtime_phase,
+            "workerRuntimeActiveJobs": intish(settings.get("workerRuntimeActiveJobs", settings.get("worker_runtime_active_jobs")), 0, minimum=0, maximum=1024),
+            "workerRuntimeLastReason": text(settings.get("workerRuntimeLastReason", settings.get("worker_runtime_last_reason")), ""),
+            "workerRuntimeLastCheckedAt": text(settings.get("workerRuntimeLastCheckedAt", settings.get("worker_runtime_last_checked_at")), ""),
+            "workerRuntimeLastConnectedAt": text(settings.get("workerRuntimeLastConnectedAt", settings.get("worker_runtime_last_connected_at")), ""),
+            "workerRuntimeLastDisconnectedAt": text(settings.get("workerRuntimeLastDisconnectedAt", settings.get("worker_runtime_last_disconnected_at")), ""),
+            "workerRuntimeLastHeartbeatAt": text(settings.get("workerRuntimeLastHeartbeatAt", settings.get("worker_runtime_last_heartbeat_at")), ""),
+            "workerRuntimeLastHeartbeatStatus": text(settings.get("workerRuntimeLastHeartbeatStatus", settings.get("worker_runtime_last_heartbeat_status")), ""),
+            "workerRuntimeError": text(settings.get("workerRuntimeError", settings.get("worker_runtime_error")), ""),
             "remoteEnabled": boolish(settings.get("remoteEnabled", settings.get("remote_enabled")), False),
             "remoteMode": text(settings.get("remoteMode", settings.get("remote_mode")), "ask-when-busy"),
             "remoteCreditsPerToken": text(settings.get("remoteCreditsPerToken", settings.get("remote_credits_per_token")), "0.001"),
@@ -594,14 +629,9 @@ class ViewportEnergyRoutesMixin:
             "remoteOnlyWhenBusy": boolish(settings.get("remoteOnlyWhenBusy", settings.get("remote_only_when_busy")), False),
             "sellerEnabled": boolish(settings.get("sellerEnabled", settings.get("seller_enabled")), False),
             "rentalEnabled": boolish(settings.get("rentalEnabled", settings.get("rental_enabled")), False),
-            "sellerOnlyWhenIdle": boolish(
-                settings.get("sellerOnlyWhenIdle", settings.get("seller_only_when_idle", settings.get("rentalOnlyWhenIdle", settings.get("rental_only_when_idle")))),
-                True,
-            ),
-            "rentalOnlyWhenIdle": boolish(
-                settings.get("rentalOnlyWhenIdle", settings.get("rental_only_when_idle", settings.get("sellerOnlyWhenIdle", settings.get("seller_only_when_idle")))),
-                True,
-            ),
+            "sellerAvailabilityMode": seller_availability_mode,
+            "sellerOnlyWhenIdle": seller_only_when_idle,
+            "rentalOnlyWhenIdle": seller_only_when_idle,
             "registrationHubUrl": self._clean_hub_url(text(settings.get("registrationHubUrl", settings.get("registration_hub_url")), self.server.config.hub_url), allow_empty=True),
             "nodeId": text(settings.get("nodeId", settings.get("node_id")), "local-worker-001"),
             "endpoint": text(settings.get("endpoint"), "http://127.0.0.1:8771"),
@@ -708,6 +738,373 @@ class ViewportEnergyRoutesMixin:
         except Exception as exc:
             self.server.signal("api-worker-hub-health-error", error=exc)
             self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+
+    def _worker_runtime_signed_connection_registered(self, settings: dict[str, Any]) -> bool:
+        signed = settings.get("signedWorkerConnection")
+        if not isinstance(signed, dict):
+            return False
+        if str(signed.get("status") or "") in {"hub-registered", "registered"}:
+            return True
+        return bool(signed.get("hub_registered"))
+
+    def _worker_runtime_worker_id(self, settings: dict[str, Any]) -> str:
+        signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
+        worker = signed.get("worker") if isinstance(signed.get("worker"), dict) else {}
+        return str(
+            signed.get("worker_id")
+            or worker.get("worker_id")
+            or worker.get("node_id")
+            or settings.get("workerRegisteredId")
+            or settings.get("nodeId")
+            or ""
+        ).strip()
+
+    def _worker_runtime_instance_id(self, settings: dict[str, Any]) -> str:
+        signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
+        worker = signed.get("worker") if isinstance(signed.get("worker"), dict) else {}
+        worker_id = self._worker_runtime_worker_id(settings)
+        return str(
+            worker.get("worker_instance_id")
+            or signed.get("worker_instance_id")
+            or worker_id
+        ).strip()
+
+    def _worker_runtime_hub_url(self, settings: dict[str, Any]) -> str:
+        signed = settings.get("signedWorkerConnection") if isinstance(settings.get("signedWorkerConnection"), dict) else {}
+        return self._clean_hub_url(
+            str(settings.get("workerConnectedHubUrl") or signed.get("hub_url") or settings.get("registrationHubUrl") or self.server.config.hub_url),
+            allow_empty=True,
+        )
+
+    def _worker_local_ai_capacity_snapshot(self, *, max_local_concurrency: int = 1) -> dict[str, Any]:
+        manager = getattr(getattr(self, "server", None), "chat_ai_processes", None)
+        snapshot_method = getattr(manager, "local_ai_capacity_snapshot", None)
+        if callable(snapshot_method):
+            snapshot = snapshot_method(thread_id="", max_local_concurrency=max_local_concurrency)
+            return snapshot if isinstance(snapshot, dict) else {"ok": False, "available_now": False, "busy": True, "reason_code": "invalid_local_ai_capacity"}
+        return {
+            "ok": True,
+            "scope": "local-ai",
+            "available_now": True,
+            "busy": False,
+            "reason_code": "local_ai_capacity_unavailable_assumed_idle",
+            "user_message": "Local AI capacity monitor is unavailable; assuming idle for this app-level worker check.",
+            "active_run_count": 0,
+            "max_local_concurrency": max(1, int(max_local_concurrency or 1)),
+            "active_thread_ids": [],
+            "active_runs": [],
+        }
+
+    def _worker_runtime_policy(self, settings: dict[str, Any], *, user_activity: dict[str, Any] | None = None, active_jobs: int = 0) -> dict[str, Any]:
+        """Return the local consent decision for accepting new Hub work.
+
+        ``allowed_to_accept`` is intentionally app-owned.  A Hub registration is
+        necessary, but not sufficient: the local idle policy must also allow work
+        before the app sends an available heartbeat.
+        """
+
+        selected_network = str(settings.get("selectedNetwork") or "none")
+        seller_enabled = bool(settings.get("sellerEnabled"))
+        availability_mode = self._normalize_worker_seller_availability_mode(settings.get("sellerAvailabilityMode"))
+        only_when_idle = availability_mode == self._WORKER_SELLER_AVAILABILITY_TOTAL_IDLE
+        worker_id = self._worker_runtime_worker_id(settings)
+        hub_url = self._worker_runtime_hub_url(settings)
+        signed_registered = self._worker_runtime_signed_connection_registered(settings)
+        requirements = {
+            "seller_enabled": seller_enabled,
+            "network_selected": selected_network != "none",
+            "hub_registered": signed_registered,
+            "worker_id_present": bool(worker_id),
+            "hub_url_present": bool(hub_url),
+            "availability_mode": availability_mode,
+            "idle_only": only_when_idle,
+            "ai_idle": availability_mode == self._WORKER_SELLER_AVAILABILITY_AI_IDLE,
+        }
+
+        reasons: list[str] = []
+        if not seller_enabled:
+            reasons.append("Accept paid jobs is off.")
+        if selected_network == "none":
+            reasons.append("No worker network is selected.")
+        if not signed_registered:
+            reasons.append("No Hub-registered signed worker connect order is available.")
+        if not worker_id:
+            reasons.append("Worker id is missing.")
+        if not hub_url:
+            reasons.append("Hub URL is missing.")
+
+        local_ai_capacity: dict[str, Any] | None = None
+        if only_when_idle:
+            if user_activity is None:
+                user_activity = collect_windows_user_activity()
+            active = user_activity.get("active") if isinstance(user_activity, dict) else None
+            if active is True:
+                reasons.append("Windows quser reports an active interactive user session.")
+            elif active is not False:
+                reason = str(user_activity.get("reason") or "idle status unavailable") if isinstance(user_activity, dict) else "idle status unavailable"
+                reasons.append(f"Windows quser idle status could not be verified: {reason}.")
+        else:
+            user_activity = None
+            local_ai_capacity = self._worker_local_ai_capacity_snapshot(max_local_concurrency=1)
+            ai_available = bool(local_ai_capacity.get("available_now"))
+            # While this app is already running a worker job, the local AI slot is
+            # expected to be busy.  Keep the session alive as busy instead of
+            # interpreting the app's own job as a policy failure.
+            if active_jobs <= 0 and not ai_available:
+                message = str(local_ai_capacity.get("user_message") or local_ai_capacity.get("reason_code") or "Local AI is busy.")
+                reasons.append(f"Local AI is not idle: {message}")
+
+        allowed = not reasons
+        return {
+            "allowed_to_accept": allowed,
+            "reason": (
+                "Local idle policy allows this app to accept Hub work."
+                if allowed and only_when_idle
+                else "Local AI is idle; this app may accept Hub work."
+                if allowed
+                else " ".join(reasons)
+            ),
+            "requirements": requirements,
+            "user_activity": user_activity,
+            "local_ai_capacity": local_ai_capacity,
+            "availability_mode": availability_mode,
+            "source": "windows_quser_v1" if only_when_idle else "local_ai_capacity_v1",
+        }
+
+    def _worker_runtime_models(self, settings: dict[str, Any]) -> list[str]:
+        models = [item.strip() for item in self._worker_seller_model_text(settings.get("models")).split(",") if item.strip()]
+        return models or [self._WORKER_DEFAULT_SELLER_MODEL]
+
+    def _post_worker_runtime_heartbeat_to_hub(
+        self,
+        *,
+        hub_url: str,
+        settings: dict[str, Any],
+        phase: str,
+        hub_status: str,
+        active_jobs: int,
+        policy: dict[str, Any],
+    ) -> dict[str, Any]:
+        worker_id = self._worker_runtime_worker_id(settings)
+        worker_instance_id = self._worker_runtime_instance_id(settings)
+        models = self._worker_runtime_models(settings)
+        if not worker_id:
+            raise ValueError("Worker runtime heartbeat requires a worker id.")
+        if not hub_url:
+            raise ValueError("Worker runtime heartbeat requires a Hub URL.")
+
+        signed_connection = settings.get("signedWorkerConnection")
+        signed_worker = signed_connection.get("worker") if isinstance(signed_connection, dict) else {}
+        stored_worker = settings.get("workerHubRegistration")
+        base_worker = signed_worker if isinstance(signed_worker, dict) else {}
+        if not base_worker and isinstance(stored_worker, dict):
+            base_worker = stored_worker
+        capabilities = dict(base_worker.get("capabilities", {})) if isinstance(base_worker.get("capabilities"), dict) else {}
+        if not capabilities.get("capabilities"):
+            capabilities["capabilities"] = ["chat.completions"]
+
+        availability_mode = self._normalize_worker_seller_availability_mode(settings.get("sellerAvailabilityMode"))
+        availability = {
+            "accept_paid_jobs": bool(settings.get("sellerEnabled")),
+            "availability_mode": availability_mode,
+            "only_when_idle": availability_mode == self._WORKER_SELLER_AVAILABILITY_TOTAL_IDLE,
+            "idle_source": "windows_quser_v1" if availability_mode == self._WORKER_SELLER_AVAILABILITY_TOTAL_IDLE else "local_ai_capacity_v1",
+            "ai_idle_required": availability_mode == self._WORKER_SELLER_AVAILABILITY_AI_IDLE,
+            "worker_runtime_phase": phase,
+            "allowed_to_accept": bool(policy.get("allowed_to_accept")),
+            "last_user_activity": policy.get("user_activity"),
+            "local_ai_capacity": policy.get("local_ai_capacity"),
+        }
+        capabilities["availability"] = availability
+        capabilities["runtime"] = {
+            "phase": phase,
+            "source": "main_app_worker_runtime_v1",
+            "no_job_polling": True,
+            "drains_before_disconnect": True,
+        }
+        request = Request(
+            self._clean_hub_url(hub_url) + "/api/hub/v1/workers/heartbeat",
+            data=json.dumps(
+                {
+                    "worker_node_id": worker_id,
+                    "worker_instance_id": worker_instance_id,
+                    "status": hub_status,
+                    "model": models[0] if models else self._WORKER_DEFAULT_SELLER_MODEL,
+                    "models": models,
+                    "queue_depth": 0,
+                    "active_requests": max(0, int(active_jobs or 0)),
+                    "max_concurrency": 1,
+                    "capabilities": capabilities,
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+            headers=self._hub_json_request_headers({"Content-Type": "application/json"}),
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=5.0) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Hub returned HTTP {exc.code}: {body}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"Hub is unreachable: {exc}") from exc
+        if not isinstance(data, dict):
+            raise RuntimeError("Hub returned a non-object worker heartbeat response.")
+        if data.get("error"):
+            raise RuntimeError(str(data["error"]))
+        return data
+
+    def _worker_runtime_transition(
+        self,
+        settings: dict[str, Any],
+        *,
+        action: str = "sync",
+        active_jobs: int | None = None,
+        send_heartbeat: bool = True,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        cleaned = self._sanitize_worker_settings(settings)
+        action = str(action or "sync").strip().lower()
+        if action not in {"sync", "activate", "deactivate", "job-start", "job-finish"}:
+            raise ValueError("Worker runtime action must be sync, activate, deactivate, job-start, or job-finish.")
+
+        if action == "activate":
+            # Legacy callers used to toggle a separate runtime latch.  The golden
+            # path now derives worker availability from the saved seller policy,
+            # so activation is an alias for enabling paid jobs.
+            cleaned["sellerEnabled"] = True
+            cleaned["rentalEnabled"] = True
+        elif action == "deactivate":
+            # Deactivation is likewise just the saved seller policy going false.
+            # Active work drains before the Hub sees the worker offline.
+            cleaned["sellerEnabled"] = False
+            cleaned["rentalEnabled"] = False
+
+        previous_phase = str(cleaned.get("workerRuntimePhase") or "not_accepting")
+        previous_active = max(0, int(cleaned.get("workerRuntimeActiveJobs", 0) or 0))
+        if active_jobs is None:
+            active = previous_active
+            if action == "job-start":
+                active += 1
+            elif action == "job-finish":
+                active = max(0, active - 1)
+        else:
+            active = max(0, int(active_jobs or 0))
+
+        policy = self._worker_runtime_policy(cleaned, active_jobs=active)
+        runtime_enabled = bool(cleaned.get("sellerEnabled"))
+        cleaned["workerRuntimeEnabled"] = runtime_enabled
+        can_accept = runtime_enabled and bool(policy.get("allowed_to_accept"))
+
+        if can_accept:
+            phase = "accepting"
+            hub_status = "busy" if active > 0 else "available"
+        elif active > 0 and previous_phase in {"accepting", "draining"}:
+            phase = "draining"
+            hub_status = "draining"
+        else:
+            phase = "not_accepting"
+            hub_status = "offline"
+
+        now = datetime.now(timezone.utc).isoformat()
+        reason = str(policy.get("reason") or "")
+        heartbeat_result: dict[str, Any] | None = None
+        heartbeat_error = ""
+        hub_url = self._worker_runtime_hub_url(cleaned)
+        should_heartbeat = send_heartbeat and self._worker_runtime_signed_connection_registered(cleaned) and bool(hub_url)
+        if should_heartbeat:
+            try:
+                heartbeat_result = self._post_worker_runtime_heartbeat_to_hub(
+                    hub_url=hub_url,
+                    settings=cleaned,
+                    phase=phase,
+                    hub_status=hub_status,
+                    active_jobs=active,
+                    policy=policy,
+                )
+            except Exception as exc:
+                heartbeat_error = str(exc)
+                if phase == "accepting":
+                    phase = "not_accepting"
+                    hub_status = "offline"
+                    reason = f"Hub heartbeat failed: {heartbeat_error}"
+
+        if previous_phase != "accepting" and phase == "accepting":
+            cleaned["workerRuntimeLastConnectedAt"] = now
+        if previous_phase != "not_accepting" and phase == "not_accepting":
+            cleaned["workerRuntimeLastDisconnectedAt"] = now
+        cleaned["workerRuntimePhase"] = phase
+        cleaned["workerRuntimeActiveJobs"] = active
+        cleaned["workerRuntimeLastReason"] = reason
+        cleaned["workerRuntimeLastCheckedAt"] = now
+        cleaned["workerRuntimeLastHeartbeatStatus"] = hub_status if should_heartbeat and not heartbeat_error else ""
+        if should_heartbeat and not heartbeat_error:
+            cleaned["workerRuntimeLastHeartbeatAt"] = now
+        cleaned["workerRuntimeError"] = heartbeat_error
+        saved = self._save_worker_settings(cleaned)
+
+        status = {
+            "ok": True,
+            "runtime": {
+                "enabled": bool(saved.get("workerRuntimeEnabled")),
+                "phase": phase,
+                "active_jobs": active,
+                "allowed_to_accept": can_accept,
+                "hub_status": hub_status,
+                "reason": reason,
+                "last_checked_at": now,
+                "last_connected_at": saved.get("workerRuntimeLastConnectedAt", ""),
+                "last_disconnected_at": saved.get("workerRuntimeLastDisconnectedAt", ""),
+                "last_heartbeat_at": saved.get("workerRuntimeLastHeartbeatAt", ""),
+                "heartbeat_error": heartbeat_error,
+                "heartbeat_result": heartbeat_result,
+                "policy": policy,
+            },
+            "settings": saved,
+        }
+        return saved, status
+
+    def _handle_worker_runtime_status(self) -> None:
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Worker runtime status is only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                return
+            settings = self._load_worker_settings()
+            _saved, status = self._worker_runtime_transition(settings, action="sync", send_heartbeat=False)
+            self.server.signal("api-worker-runtime-status", phase=status["runtime"]["phase"], allowed=status["runtime"]["allowed_to_accept"])
+            self._send_json(status)
+        except Exception as exc:
+            self.server.signal("api-worker-runtime-status-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+    def _handle_worker_runtime_sync(self) -> None:
+        try:
+            if not self._worker_ui_client_is_local():
+                self._send_json({"ok": False, "error": "Worker runtime sync is only available to local viewport clients."}, status=HTTPStatus.FORBIDDEN)
+                return
+            body = self._read_json()
+            action = str(body.get("action") or "sync")
+            active_jobs_raw = body.get("active_jobs")
+            active_jobs = int(active_jobs_raw) if active_jobs_raw is not None else None
+            settings = self._load_worker_settings()
+            incoming_settings = body.get("settings")
+            if isinstance(incoming_settings, dict):
+                settings.update(self._sanitize_worker_settings(incoming_settings))
+                settings = self._save_worker_settings(settings)
+            _saved, status = self._worker_runtime_transition(settings, action=action, active_jobs=active_jobs, send_heartbeat=True)
+            self.server.signal(
+                "api-worker-runtime-sync",
+                action=action,
+                phase=status["runtime"]["phase"],
+                allowed=status["runtime"]["allowed_to_accept"],
+                active_jobs=status["runtime"]["active_jobs"],
+            )
+            self._send_json(status)
+        except Exception as exc:
+            self.server.signal("api-worker-runtime-sync-error", error=exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
 
     def _worker_network_order(self) -> list[str]:
         return ["mainnet", "testnet", "test", "dev"]
@@ -1723,11 +2120,16 @@ class ViewportEnergyRoutesMixin:
             return bool(default)
 
         accept_paid_jobs = boolish(availability.get("accept_paid_jobs", availability.get("seller_enabled", True)), True)
-        only_when_idle = boolish(availability.get("only_when_idle", availability.get("seller_only_when_idle")), False)
+        raw_only_when_idle = availability.get("only_when_idle", availability.get("seller_only_when_idle"))
+        default_mode = self._WORKER_SELLER_AVAILABILITY_TOTAL_IDLE if boolish(raw_only_when_idle, True) else self._WORKER_SELLER_AVAILABILITY_AI_IDLE
+        availability_mode = self._normalize_worker_seller_availability_mode(availability.get("availability_mode"), default=default_mode)
+        only_when_idle = availability_mode == self._WORKER_SELLER_AVAILABILITY_TOTAL_IDLE
         cleaned = {
             "accept_paid_jobs": accept_paid_jobs,
+            "availability_mode": availability_mode,
             "only_when_idle": only_when_idle,
-            "idle_source": str(availability.get("idle_source") or "windows_user_activity_v1"),
+            "idle_source": "windows_user_activity_v1" if only_when_idle else "local_ai_capacity_v1",
+            "ai_idle_required": availability_mode == self._WORKER_SELLER_AVAILABILITY_AI_IDLE,
         }
         user_activity: dict[str, Any] | None = None
         if only_when_idle:
@@ -1746,10 +2148,10 @@ class ViewportEnergyRoutesMixin:
             return
         active = user_activity.get("active") if isinstance(user_activity, dict) else None
         if active is True:
-            raise ValueError("Only accept jobs when idle is enabled, but Windows reports an active interactive user session.")
+            raise ValueError("Only when totally idle is selected, but Windows reports an active interactive user session.")
         if active is not False:
             reason = str(user_activity.get("reason") or "idle status unavailable") if isinstance(user_activity, dict) else "idle status unavailable"
-            raise ValueError(f"Only accept jobs when idle is enabled, but this machine's idle status could not be verified: {reason}.")
+            raise ValueError(f"Only when totally idle is selected, but this machine's idle status could not be verified: {reason}.")
 
     def _worker_registration_payload_from_ui(self, worker_payload: dict[str, Any]) -> dict[str, Any]:
         models = [str(item).strip() for item in worker_payload.get("models", []) if str(item).strip()] if isinstance(worker_payload.get("models"), list) else []

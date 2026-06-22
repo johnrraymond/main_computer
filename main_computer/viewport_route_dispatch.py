@@ -2021,6 +2021,9 @@ def dispatch_get(self) -> None:
     if route_path == "/api/applications/worker/network-session":
         self._handle_worker_network_session_load()
         return
+    if route_path == "/api/applications/worker/runtime-status":
+        self._handle_worker_runtime_status()
+        return
     if route_path == "/api/applications/worker/settings":
         self._handle_worker_settings_load()
         return
@@ -2222,6 +2225,9 @@ def dispatch_post(self) -> None:
         return
     if self.path == "/api/applications/worker/network-connect-order":
         self._handle_worker_network_connect_order_sign()
+        return
+    if self.path == "/api/applications/worker/runtime-sync":
+        self._handle_worker_runtime_sync()
         return
     if self.path == "/api/applications/worker/register-offer":
         self._handle_worker_offer_register()

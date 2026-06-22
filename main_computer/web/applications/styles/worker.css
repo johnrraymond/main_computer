@@ -518,6 +518,23 @@
       gap: 8px;
       min-width: min(460px, 100%);
     }
+    .worker-seller-availability-mode {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      min-width: 0;
+      margin: 0;
+      padding: 0;
+      border: 0;
+    }
+    .worker-seller-availability-mode legend {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+    }
     .worker-seller > .worker-primary-offer,
     .worker-seller > .worker-drawer {
       min-width: 0;
