@@ -3653,7 +3653,7 @@ def make_plan(input_path: Path, *, include_actions: bool = False) -> dict[str, A
 
         repo_root_for_review = Path(detection.get("worktree_root") or input_path)
         security_candidate_paths: list[str] = []
-        for candidate_path in [*source_untracked, *staged]:
+        for candidate_path in [*source_untracked, *unstaged, *staged]:
             if candidate_path not in security_candidate_paths:
                 security_candidate_paths.append(candidate_path)
         security_candidate_path_set = set(security_candidate_paths)
@@ -3690,6 +3690,7 @@ def make_plan(input_path: Path, *, include_actions: bool = False) -> dict[str, A
             filter_step["source_config_test_candidates"] = source_untracked
             filter_step["first_commit_candidate_groups"] = {
                 "source_config_test": source_untracked,
+                "unstaged": unstaged,
                 "staged": staged,
             }
             filter_step["secrets_filter"] = secrets_filter_payload(
@@ -3699,56 +3700,35 @@ def make_plan(input_path: Path, *, include_actions: bool = False) -> dict[str, A
             steps.append(filter_step)
             order += 1
 
-        if source_untracked:
-            source_untracked_set = set(source_untracked)
-            source_untracked_files = [
+        commit_candidate_paths: list[str] = []
+        for candidate_path in [*source_untracked, *unstaged, *staged]:
+            if candidate_path not in commit_candidate_paths:
+                commit_candidate_paths.append(candidate_path)
+
+        if commit_candidate_paths:
+            commit_candidate_path_set = set(commit_candidate_paths)
+            commit_candidate_files = [
                 f for f in files
-                if f.get("path") in source_untracked_set
+                if f.get("path") in commit_candidate_path_set
             ]
 
             track_step = step(
                 order,
                 "start_tracking_real_work",
-                "Start tracking real work",
-                "Untracked source/config files look intentional and should be reviewed for tracking.",
-                paths=source_untracked,
+                "Start tracking real work — take snapshot/commit",
+                "Review the current git status files, choose what belongs in this local commit, then stage only those selected paths.",
+                paths=commit_candidate_paths,
             )
             track_step["commit_review"] = commit_review_payload(
                 repo_root_for_review,
                 detection,
-                source_untracked_files,
-                default_paths=[],
-                mode="track_untracked",
-                locked_reason="",
-                commit_identity=status.get("git_identity"),
-            )
-            steps.append(track_step)
-            order += 1
-
-        if staged:
-            staged_set = set(staged)
-            staged_files = [
-                f for f in files
-                if f.get("path") in staged_set
-            ]
-
-            commit_step = step(
-                order,
-                "record_current_work_as_commit",
-                "Consider recording staged work",
-                "Staged files may represent intentional work already selected for commit.",
-                paths=staged,
-            )
-            commit_step["commit_review"] = commit_review_payload(
-                repo_root_for_review,
-                detection,
-                staged_files,
+                commit_candidate_files,
                 default_paths=staged,
                 mode="normal_commit",
                 locked_reason="",
                 commit_identity=status.get("git_identity"),
             )
-            steps.append(commit_step)
+            steps.append(track_step)
             order += 1
         if generated:
             strategy = "preserve_then_clean_generated_noise" if strategy == "snapshot_then_classify" else strategy
