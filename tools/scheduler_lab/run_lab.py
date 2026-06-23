@@ -63,6 +63,48 @@ def lab_request_key_for(node: dict[str, Any], request_index: int) -> str:
     return f"{node.get('node_id') or 'node'}-{int(request_index)}"
 
 
+
+def argv_has_option(raw_argv: Sequence[str], option: str) -> bool:
+    """Return true when a CLI option was supplied as --flag or --flag=value."""
+
+    return any(str(item) == option or str(item).startswith(f"{option}=") for item in raw_argv)
+
+
+def apply_worker_register_response_to_node(node: dict[str, Any], response: HubHttpResponse) -> bool:
+    """Keep the lab node's ring aligned with the Hub-assigned worker ring.
+
+    Ring admission can lift a dev worker to the Hub's minimum allowed ring.  The
+    lab must reuse that effective ring for heartbeat and requester metadata;
+    otherwise strict hubs correctly reject heartbeats as ring changes and worker
+    pull requests cannot match the registered offer.
+    """
+
+    if not getattr(response, "ok", False) or not isinstance(getattr(response, "payload", None), dict):
+        return False
+    payload = response.payload
+    worker = payload.get("worker") if isinstance(payload.get("worker"), dict) else {}
+    capabilities = worker.get("capabilities") if isinstance(worker.get("capabilities"), dict) else {}
+    candidates = (
+        payload.get("effective_ring"),
+        payload.get("assigned_ring"),
+        worker.get("effective_ring"),
+        worker.get("assigned_ring"),
+        capabilities.get("effective_ring"),
+        capabilities.get("assigned_ring"),
+        payload.get("fallback_ring"),
+    )
+    for candidate in candidates:
+        try:
+            effective_ring = int(candidate)
+        except (TypeError, ValueError):
+            continue
+        if effective_ring <= 0:
+            continue
+        node["ring"] = effective_ring
+        node["effective_ring"] = effective_ring
+        return True
+    return False
+
 def _parse_event_epoch_seconds(value: Any) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
@@ -1174,7 +1216,8 @@ async def run_worker_loop(
     client: HubClient,
     rng: random.Random,
 ) -> None:
-    await http_call(sink, node, "worker.register", client.register_worker, node)
+    register_response = await http_call(sink, node, "worker.register", client.register_worker, node)
+    apply_worker_register_response_to_node(node, register_response)
 
     heartbeat_interval = max(0.1, as_float(node.get("heartbeat_interval_ms"), 2000.0) / 1000.0)
     heartbeat_drop = max(0.0, min(1.0, as_float(node.get("heartbeat_drop_probability"), 0.0)))
@@ -3970,6 +4013,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
     args = build_arg_parser().parse_args(raw_argv)
+    if (
+        lab_auth_mode(args) == "multisession-wallet"
+        and "LAB_RING" not in os.environ
+        and not argv_has_option(raw_argv, "--ring")
+    ):
+        args.ring = 3
     if args.hub_base_urls:
         normalized_urls = normalize_hub_base_urls(args.hub_base_urls, args.hub_base_url)
         args.hub_base_urls = ",".join(normalized_urls)

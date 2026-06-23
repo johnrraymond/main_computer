@@ -12,6 +12,7 @@ from main_computer.hub import HubHttpServer
 from main_computer.hub_credit_indexer import wallet_account_id
 from main_computer.multisession_key_signing import build_personal_sign_blob, private_key_to_address
 from tools.scheduler_lab.hub_client import HubClient
+from tools.scheduler_lab.run_lab import apply_worker_register_response_to_node
 from tools.scheduler_lab.http_transport import HubHttpResponse, HubTransport
 
 
@@ -297,7 +298,64 @@ def test_scheduler_lab_client_uses_multisession_authorization_for_wallet_nodes()
     assert url.endswith("/api/hub/v1/requests")
     assert payload is not None
     assert payload["account_id"] == "attacker-supplied-account"
+    assert payload["idempotency_key"] == "run-unit:requester-001:7"
+    assert payload["metadata"]["idempotency_key"] == "run-unit:requester-001:7"  # type: ignore[index]
     assert payload["multisession_authorization"]["wallet_address"] == node["_wallet_address"]  # type: ignore[index]
     assert payload["multisession_authorization"]["multisession_key_id"] == "msk_unit"  # type: ignore[index]
     assert payload["payment_authorization"] == payload["multisession_authorization"]
     assert payload["metadata"]["auth_mode"] == "multisession-wallet"  # type: ignore[index]
+
+
+def test_scheduler_lab_request_idempotency_is_run_scoped() -> None:
+    transport = _CaptureTransport()
+    client = HubClient("http://hub.test", transport=transport)
+    node = {
+        "node_id": "requester-001",
+        "role": "requester",
+        "model": "mock-ai-model-phase9",
+        "offered_credits": 3,
+    }
+
+    client.submit_request(
+        node,
+        request_index=1,
+        request_mode="worker_pull_v0",
+        account_id_prefix="lab-requester",
+        prompt="hello",
+        scheduler_lab_run_id="run-a",
+    )
+    client.submit_request(
+        node,
+        request_index=1,
+        request_mode="worker_pull_v0",
+        account_id_prefix="lab-requester",
+        prompt="hello",
+        scheduler_lab_run_id="run-b",
+    )
+
+    first_payload = transport.requests[-2][2]
+    second_payload = transport.requests[-1][2]
+    assert first_payload is not None
+    assert second_payload is not None
+    assert first_payload["idempotency_key"] == "run-a:requester-001:1"
+    assert second_payload["idempotency_key"] == "run-b:requester-001:1"
+    assert first_payload["idempotency_key"] != second_payload["idempotency_key"]
+
+
+def test_scheduler_lab_updates_node_ring_from_worker_registration_response() -> None:
+    node = {"node_id": "worker-001", "ring": 2}
+    response = HubHttpResponse(
+        ok=True,
+        status=200,
+        payload={
+            "ok": True,
+            "effective_ring": 3,
+            "worker": {"capabilities": {"requested_ring": 2, "effective_ring": 3}},
+        },
+        elapsed_ms=0.0,
+        base_url="http://hub.test",
+    )
+
+    assert apply_worker_register_response_to_node(node, response) is True
+    assert node["ring"] == 3
+    assert node["effective_ring"] == 3

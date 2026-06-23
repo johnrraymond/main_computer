@@ -299,11 +299,17 @@ class HubClient:
         }
         if scheduler_lab_run_id:
             metadata["scheduler_lab_run_id"] = str(scheduler_lab_run_id)
+        idempotency_key = _scheduler_lab_idempotency_key(
+            node_id=node_id,
+            request_index=request_index,
+            scheduler_lab_run_id=scheduler_lab_run_id,
+        )
+        metadata["idempotency_key"] = idempotency_key
         payload = {
             "messages": [{"role": "user", "content": prompt}],
             "model": model,
             "client_node_id": node_id,
-            "idempotency_key": f"{node_id}-{request_index}",
+            "idempotency_key": idempotency_key,
             "deadline_seconds": 60,
             "metadata": metadata,
         }
@@ -348,6 +354,27 @@ class HubClient:
         )
 
 
+
+
+def _scheduler_lab_idempotency_key(*, node_id: str, request_index: int, scheduler_lab_run_id: str = "") -> str:
+    """Return a Hub idempotency key scoped to one scheduler-lab run.
+
+    The Hub deduplicates requester work by ``client_node_id`` and
+    ``idempotency_key``. Scheduler-lab node ids and request indexes repeat across
+    runs, so the run id must be part of the key when available. Otherwise a later
+    clean run against the same Hub namespace can replay stale request records
+    from a previous failed run instead of queuing fresh worker-pull work.
+    """
+
+    clean_node_id = str(node_id or "unknown-node").strip() or "unknown-node"
+    clean_run_id = str(scheduler_lab_run_id or "").strip()
+    try:
+        clean_request_index = int(request_index)
+    except Exception:
+        clean_request_index = 0
+    if clean_run_id:
+        return f"{clean_run_id}:{clean_node_id}:{clean_request_index}"
+    return f"{clean_node_id}-{clean_request_index}"
 
 
 def _node_multisession_authorization(node: dict[str, Any], *, max_authorized_credits: int | None = None) -> dict[str, Any]:

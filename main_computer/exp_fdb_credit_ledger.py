@@ -28,6 +28,7 @@ from main_computer.hub_credit_models import (
     CREDIT_UNIT_KEY,
     CREDIT_UNIT_NAME,
     HubCreditAccount,
+    CreditDeposit,
     HubCreditHold,
     HubCreditTransaction,
     RequestCharge,
@@ -232,6 +233,7 @@ class ExperimentalFoundationDbCreditLedger:
             return {
                 "accounts": self._list_dicts(tr, "account"),
                 "transactions": self._list_dicts(tr, "transaction"),
+                "deposits": self._list_dicts(tr, "deposit"),
                 "holds": self._list_dicts(tr, "hold"),
                 "charges": self._list_dicts(tr, "charge"),
                 "worker_earnings": self._list_dicts(tr, "worker_earning"),
@@ -248,6 +250,7 @@ class ExperimentalFoundationDbCreditLedger:
     def _status_from_snapshot(self, snapshot: dict[str, list[dict[str, Any]]], *, recent_limit: int = 25) -> dict[str, Any]:
         accounts = [_account_from_dict(item) for item in snapshot["accounts"]]
         transactions = [_transaction_from_dict(item) for item in snapshot["transactions"]]
+        deposits = list(snapshot.get("deposits", []))
         holds = [_hold_from_dict(item) for item in snapshot["holds"]]
         charges = [_charge_from_dict(item) for item in snapshot["charges"]]
         earnings = [_earning_from_dict(item) for item in snapshot["worker_earnings"]]
@@ -264,7 +267,7 @@ class ExperimentalFoundationDbCreditLedger:
             "store_version": EXPERIMENTAL_FDB_LEDGER_VERSION,
             "json_store_version": HUB_CREDIT_LEDGER_STORE_VERSION,
             "account_count": len(accounts),
-            "deposit_count": 0,
+            "deposit_count": len(deposits),
             "purchase_count": 0,
             "transaction_count": len(transactions),
             "hold_count": len(holds),
@@ -426,6 +429,92 @@ class ExperimentalFoundationDbCreditLedger:
             self._write_dict(tr, "account", account.account_id, account.as_dict())
             self._write_dict(tr, "transaction", tx.transaction_id, tx.as_dict())
             return {"account": account.as_dict(), "transaction": tx.as_dict()}
+
+        result = _tx(self.db)
+        return {"ok": True, **result, "ledger": self.status(recent_limit=10)}
+
+
+    def record_deposit(self, deposit: CreditDeposit) -> dict[str, Any]:
+        """Import an indexed bridge-escrow deposit exactly once.
+
+        The JSON ledger already exposes this method and HubCreditIndexer calls it
+        for normalized wallet funding imports.  The experimental FoundationDB
+        ledger uses the same durable account/transaction records so wallet-backed
+        Hub labs can fund FDB accounts through the same indexer path.
+        """
+
+        now = utc_now()
+
+        @self.fdb.transactional
+        def _tx(tr: Any) -> dict[str, Any]:
+            existing = self._read_dict(tr, "deposit", deposit.deposit_id)
+            if isinstance(existing, dict):
+                account = self._account_from_payload(
+                    self._read_dict(tr, "account", deposit.account_id),
+                    deposit.account_id,
+                    now=now,
+                )
+                return {
+                    "idempotent": True,
+                    "deposit": existing,
+                    "account": account.as_dict(),
+                }
+
+            current = self._account_from_payload(
+                self._read_dict(tr, "account", deposit.account_id),
+                deposit.account_id,
+                now=now,
+            )
+            account = HubCreditAccount(
+                account_id=current.account_id,
+                owner_address=current.owner_address or deposit.payer_address,
+                available_credit_wei=current.available_credit_wei + int(deposit.credits_granted_wei),
+                held_credit_wei=current.held_credit_wei,
+                spent_credit_wei=current.spent_credit_wei,
+                earned_credit_wei=current.earned_credit_wei,
+                bridge_completed_credit_wei=current.bridge_completed_credit_wei,
+                created_at=current.created_at,
+                updated_at=now,
+                metadata=dict(current.metadata or {}),
+            )
+            tx = HubCreditTransaction(
+                transaction_id=stable_id(
+                    "ctx",
+                    {
+                        "account_id": account.account_id,
+                        "type": "deposit_indexed",
+                        "deposit_id": deposit.deposit_id,
+                    },
+                ),
+                account_id=account.account_id,
+                transaction_type="deposit_indexed",
+                credits=deposit.credits_granted,
+                credit_wei=deposit.credits_granted_wei,
+                created_at=deposit.created_at or now,
+                deposit_id=deposit.deposit_id,
+                memo=deposit.memo,
+                metadata={"chain_event": deposit.chain_event.as_dict()},
+            )
+            self._write_dict(tr, "account", account.account_id, account.as_dict())
+            self._write_dict(tr, "deposit", deposit.deposit_id, deposit.as_dict())
+            self._write_dict(tr, "transaction", tx.transaction_id, tx.as_dict())
+            event = self._write_audit_event(
+                tr,
+                event_type="deposit.indexed",
+                wallet_address=deposit.payer_address,
+                account_id=account.account_id,
+                amount_wei=deposit.credits_granted_wei,
+                reference_id=deposit.deposit_id,
+                metadata={"chain_event": deposit.chain_event.as_dict()},
+                now=now,
+            )
+            return {
+                "idempotent": False,
+                "deposit": deposit.as_dict(),
+                "account": account.as_dict(),
+                "transaction": tx.as_dict(),
+                "audit_event": event,
+            }
 
         result = _tx(self.db)
         return {"ok": True, **result, "ledger": self.status(recent_limit=10)}

@@ -199,7 +199,8 @@ worker-pull requester submissions.
 ```bash
 python -m tools.scheduler_lab.run_lab \
   --auth-mode multisession-wallet \
-  --request-mode worker_pull_v0
+  --request-mode worker_pull_v0 \
+  --ring 3
 ```
 
 For deployed or strict local Hub runs, enable Hub-side enforcement:
@@ -214,7 +215,9 @@ wallet attached to the active multi-session key, so caller-supplied account labe
 cannot spend another wallet-backed bridge balance. The scheduler lab funds
 wallet accounts through `/api/hub/v1/credits/wallet-funding/import` in
 `multisession-wallet` mode instead of admin-issuing credits to arbitrary lab
-account names.
+account names. When `LAB_RING`/`--ring` is not set, `multisession-wallet` mode
+defaults to ring 3 so worker registration, heartbeat, and requester market
+matching use the Hub's default dev minimum ring consistently.
 
 The multi-session key remains the current bearer credential for the lab. Treat
 it like a secret in logs and deployment wiring. A later hardening pass should add

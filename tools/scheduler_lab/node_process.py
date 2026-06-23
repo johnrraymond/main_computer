@@ -16,6 +16,7 @@ from tools.scheduler_lab.run_lab import (
     NodeRuntimeState,
     WorktimeDistribution,
     account_available_credits,
+    apply_worker_register_response_to_node,
     as_float,
     as_int,
     env_duration_seconds_or_none,
@@ -923,6 +924,7 @@ def run_node_process(args: argparse.Namespace) -> int:
             register_response = runner.call_once("worker.register", client.register_worker, node)
             worker_registration_attempted = True
             worker_registered = register_response.status != 0 and register_response.ok
+            apply_worker_register_response_to_node(node, register_response)
             _emit_worker_register_diagnostic(
                 sink,
                 node,
