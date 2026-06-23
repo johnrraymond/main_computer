@@ -630,6 +630,7 @@ $exportItems = @(
   "deploy/scheduler-lab/README.md",
   "deploy/coolify/local-docker",
   "deploy/coolify/push_site_scp.py",
+  "deploy/stable-hub-lab/dev-topology.json",
   "proto-dev",
   "control-main-computer.ps1",
   "dev-control.ps1",

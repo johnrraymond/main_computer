@@ -1,0 +1,65 @@
+{
+  "kind": "main_computer.stable_hub_topology.v1",
+  "cluster_id": "main-computer-dev-stable-hub",
+  "network": {
+    "network_key": "dev",
+    "network_display_name": "Main Computer Local Dev",
+    "network_kind": "dev",
+    "chain_id": "42424242",
+    "chain_rpc_url": "http://127.0.0.1:18545"
+  },
+  "storage": {
+    "backend": "foundationdb",
+    "cluster_file": ".foundationdb/docker.cluster",
+    "namespace": "main-computer-stable-hub-dev",
+    "api_version": 740
+  },
+  "entry_urls": [
+    "http://127.0.0.1:8871",
+    "http://127.0.0.1:8872",
+    "http://127.0.0.1:8873"
+  ],
+  "selection": {
+    "default_mode": "random",
+    "lab_mode": "fixed"
+  },
+  "hubs": [
+    {
+      "hub_id": "dev-hub1",
+      "hub_url": "http://127.0.0.1:8871",
+      "public_url": "http://127.0.0.1:8871",
+      "roles": [
+        "entry",
+        "execution"
+      ]
+    },
+    {
+      "hub_id": "dev-hub2",
+      "hub_url": "http://127.0.0.1:8872",
+      "public_url": "http://127.0.0.1:8872",
+      "roles": [
+        "entry",
+        "execution"
+      ]
+    },
+    {
+      "hub_id": "dev-hub3",
+      "hub_url": "http://127.0.0.1:8873",
+      "public_url": "http://127.0.0.1:8873",
+      "roles": [
+        "entry",
+        "execution"
+      ]
+    }
+  ],
+  "contract": {
+    "auth": "multisession-wallet",
+    "worker_connection": "long-lived-msk-session",
+    "heartbeat": "connection-ping-pong",
+    "availability_source": "live-worker-session-owner",
+    "routing": "entry-hub-reserves-with-worker-home-hub-then-returns-concrete-execution-hub-url",
+    "worker_live_session_transport": "websocket",
+    "worker_heartbeat": "live-connection-ping-pong",
+    "rest_worker_heartbeat": "forbidden"
+  }
+}

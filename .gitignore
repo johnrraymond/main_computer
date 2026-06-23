@@ -1,6 +1,8 @@
 # Local secrets
 local.secrets
 
+
+
 # Aider / local AI session artifacts
 .aider*
 !.aiderignore
@@ -228,6 +230,7 @@ runtime/websites/*
 !runtime/websites/johnrraymond/
 !runtime/websites/johnrraymond/**
 
+
 # Disposable static route/publish probe pages under versioned runtime sites.
 # These are local diagnostics and should not be committed.
 runtime/websites/*/__*probe*/
@@ -246,3 +249,6 @@ supercut_smoke_output/
 
 # Don't need the hub lab output.
 deploy/scheduler-lab/output
+
+# Local developemnt topology is part of "dev mode."
+!deploy/stable-hub-lab/dev-topology.json
